@@ -79,10 +79,20 @@ export interface SessionUsage {
   turnCount: number;
 }
 
+/** Cost + turns aggregated into a single calendar month, for the trend chart. */
+export interface MonthlyUsage {
+  /** Month bucket as `YYYY-MM` (UTC). */
+  month: string;
+  costUsd: number;
+  turns: number;
+}
+
 export interface UsageStats {
   sessions: SessionUsage[];
   totalCostUsd: number;
   totalTurns: number;
+  /** Per-month buckets, oldest → newest, for the usage trend chart. */
+  monthly: MonthlyUsage[];
 }
 
 // ---- Usage tracking messages ----

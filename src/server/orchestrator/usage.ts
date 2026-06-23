@@ -1,4 +1,4 @@
-import type { UsageTurn, SessionUsage, UsageStats, TurnUsage } from "../shared/types.js";
+import type { UsageTurn, SessionUsage, UsageStats, TurnUsage, MonthlyUsage } from "../shared/types.js";
 import type { DatabaseManager } from "../shared/database.js";
 
 interface UsageRow {
@@ -231,10 +231,26 @@ export class UsageManager {
       "SELECT SUM(cost_usd) as total_cost, COUNT(*) as total_turns FROM usage_turns",
     ).get() as { total_cost: number | null; total_turns: number };
 
+    // Per-month buckets for the trend chart. `created_at` is an ISO timestamp;
+    // strftime over UTC gives stable `YYYY-MM` keys, oldest → newest.
+    const monthlyRows = this.db.prepare(`
+      SELECT strftime('%Y-%m', created_at) as month,
+             SUM(cost_usd) as total_cost, COUNT(*) as turns
+      FROM usage_turns
+      GROUP BY month ORDER BY month
+    `).all() as { month: string; total_cost: number | null; turns: number }[];
+
+    const monthly: MonthlyUsage[] = monthlyRows.map((r) => ({
+      month: r.month,
+      costUsd: r.total_cost ?? 0,
+      turns: r.turns,
+    }));
+
     return {
       sessions,
       totalCostUsd: totalRow.total_cost ?? 0,
       totalTurns: totalRow.total_turns,
+      monthly,
     };
   }
 
