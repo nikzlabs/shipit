@@ -17,10 +17,22 @@ import type { AgentOption } from "../agent-types.js";
  * are agent-defined (`agent.reasoning`); a "Default" entry maps to no value (the
  * CLI's native default). Hidden when the active agent exposes no reasoning knob.
  *
+ * Reasoning is **per session**: the displayed value is the active session's own
+ * persisted level (`sessionReasoning`), so switching to a previous session
+ * restores *its* level rather than bleeding the level last picked elsewhere.
+ *
  * Value precedence: an optimistic local pick (until the session row catches up) →
  * the server-persisted per-session value (`sessionReasoning`) → the per-agent
- * localStorage seed. The seed is what makes switching agents restore each one's
- * last composer pick (docs/217 — "persist per agent separately").
+ * localStorage seed. The seed is consulted **only in the new-session composer**
+ * (`seedFromHistory`, i.e. no active session yet): there it previews the level
+ * the about-to-be-created session will inherit, which is how changing the level
+ * carries forward to new sessions. For an active session the seed is *not* a
+ * display fallback — a session genuinely at "Default" shows "Default". The
+ * optimistic `pending` pick is reset across a session switch by keying this
+ * component on the session id at the call site, so a "Max" picked in one session
+ * can never linger into the next (both were the "forgot it was on Max" footgun).
+ * The seed still drives new sessions and per-agent restore via `saveReasoning`
+ * and the `?reasoning=` connect param (docs/217).
  */
 export function ReasoningSelector({
   agent,
@@ -28,6 +40,7 @@ export function ReasoningSelector({
   onChange,
   disabled,
   compactTrigger = false,
+  seedFromHistory = false,
 }: {
   agent: AgentOption | undefined;
   sessionReasoning: string | undefined;
@@ -36,6 +49,12 @@ export function ReasoningSelector({
   disabled?: boolean;
   /** Mobile composer mode: show only the brain icon to conserve toolbar width. */
   compactTrigger?: boolean;
+  /**
+   * When true (new-session composer — no active session), fall back to the
+   * per-agent localStorage seed so the picker previews the level the new session
+   * will inherit. False for an active session, whose own value is authoritative.
+   */
+  seedFromHistory?: boolean;
 }) {
   const [pending, setPending] = useState<string | null | undefined>(undefined);
 
@@ -53,11 +72,12 @@ export function ReasoningSelector({
   if (!agent || !reasoning || reasoning.options.length === 0) return null;
 
   // `pending` (incl. an explicit null = "Default just picked") wins until cleared;
-  // otherwise the server value, then the per-agent seed. `undefined` ⇒ Default.
+  // otherwise the per-session value. The per-agent seed is consulted only when
+  // composing a brand-new session (`seedFromHistory`). `undefined` ⇒ Default.
   const current =
     pending !== undefined
       ? pending ?? undefined
-      : sessionReasoning ?? getSavedReasoning(agent.id);
+      : sessionReasoning ?? (seedFromHistory ? getSavedReasoning(agent.id) : undefined);
 
   const currentLabel =
     reasoning.options.find((o) => o.value === current)?.label ?? "Default";

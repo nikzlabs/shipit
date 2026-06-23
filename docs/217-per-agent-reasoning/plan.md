@@ -141,6 +141,18 @@ seeds new sessions from localStorage.
    WS connect query param (mirroring `?model=`); the server applies it only for an unpinned session
    with no persisted value, after validating it against the resolved agent's options. Without this
    the composer would *display* the seed while a brand-new session's first turn ran with no flag.
+7. **Seed is for new sessions only — never a live display fallback (SHI-186).** Reasoning is
+   per-session: switching to a previous session must restore *its* level, not bleed the level last
+   picked elsewhere. The localStorage seed therefore drives only (a) new-session creation (via the
+   `?reasoning=` connect param above) and (b) the **new-session composer preview** (`ReasoningSelector`
+   prop `seedFromHistory`, true only when there is no active session). For an **active** session the
+   seed is *not* consulted — a session genuinely at "Default" shows "Default", matching what its next
+   turn actually runs with (a pinned session never re-applies the seed server-side, so a seed fallback
+   would also desync display from the run). Two leaks fixed here: the seed display fallback above, and
+   the optimistic `pending` pick lingering across a switch — the composer keys `ReasoningSelector` on
+   the session id so a switch remounts it and clears the pick. Both produced the "I changed it to Max
+   for one task, forgot, and the next session was silently on Max" footgun (worse on mobile, where the
+   control is offscreen). Guarded in `ReasoningSelector.test.tsx`.
 
 ## Notes / known limitation
 

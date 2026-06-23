@@ -841,11 +841,14 @@ export function MessageInput({
             {onReasoningChange && (
               <div className="flex items-center shrink-0" style={{ order: isMobile ? 41 : 61 }}>
                 <ReasoningSelector
+                  // Key on the session so the optimistic pick never lingers across a switch.
+                  key={sessionId ?? "__new__"}
                   agent={agents.find((a) => a.id === activeAgentId)}
                   sessionReasoning={sessionReasoning}
                   onChange={onReasoningChange}
                   disabled={disabled || isLoading}
                   compactTrigger={isMobile}
+                  seedFromHistory={!hasActiveSession}
                 />
               </div>
             )}
