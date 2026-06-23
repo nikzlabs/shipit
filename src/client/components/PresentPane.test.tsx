@@ -173,6 +173,23 @@ describe("PresentPane", () => {
     expect(usePresentStore.getState().activePresentIndex).toBe(1);
   });
 
+  it("renders a markdown thumbnail (rendered prose, not the icon placeholder)", async () => {
+    useSessionStore.getState().setSessionId("sess_1");
+    mockContentFetch(
+      { pres_one: "# Hello heading", pres_two: "# Other" },
+      "text/markdown",
+    );
+    usePresentStore.getState().hydrate([
+      meta({ presentId: "pres_one", title: "Doc", filePath: "/tmp/one.md", mimeType: "text/markdown" }),
+      meta({ presentId: "pres_two", title: "Two", filePath: "/tmp/two.md", mimeType: "text/markdown" }),
+    ]);
+    render(<PresentPane isActiveTab />);
+
+    fireEvent.click(screen.getByLabelText("View all presentations"));
+    // The markdown renderer turns the source into prose — the heading text shows.
+    expect(await screen.findByText("Hello heading")).toBeInTheDocument();
+  });
+
   it("exposes no Save control — keeping an artifact is the agent's job", () => {
     seedPresentations();
     render(<PresentPane isActiveTab />);

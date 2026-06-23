@@ -8,12 +8,14 @@
  * collapses back to the single view.
  *
  * Thumbnails are LAZY LIVE renders: each tile mounts a scaled, non-interactive
- * sandboxed iframe (the same `RenderedFrame` the single view uses) only once it
- * scrolls near the viewport, and fetches its bytes on reveal via the shared
- * `loadPresentContent`. Rendering at a fixed logical size and scaling down to
- * the tile width gives a faithful "shrunk page" preview rather than a
+ * preview only once it scrolls near the viewport, and fetches its bytes on
+ * reveal via the shared `loadPresentContent`. HTML/SVG use the same sandboxed
+ * `RenderedFrame` the single view uses; markdown reuses the docs `MarkdownBlock`
+ * renderer; images draw directly. Rendering at a fixed logical size and scaling
+ * down to the tile width gives a faithful "shrunk page" preview rather than a
  * mobile-width reflow. Columns are container-query responsive (2 → 3 → 4) so the
- * grid adapts to the pane width, not the viewport.
+ * grid adapts to the pane width, not the viewport. Tiles animate in on open with
+ * a staggered fade/zoom/slide (honoring `prefers-reduced-motion`).
  */
 
 // eslint-disable-next-line no-restricted-imports -- useEffect: IntersectionObserver reveal + ResizeObserver scale (browser API subscriptions)
@@ -24,10 +26,17 @@ import type { Presentation } from "../stores/present-store.js";
 import { loadPresentContent } from "../utils/present-content-fetch.js";
 import { kindFromMimeType } from "../utils/file-content-kind.js";
 import { RenderedFrame } from "./FileContentView/RenderedFrame.js";
+import { MarkdownBlock } from "./MarkdownSelectionComments/MarkdownBlock.js";
 
-/** Fixed logical render size for a thumbnail (16:10) — scaled down to tile width. */
+/** Fixed logical render size for an HTML/SVG thumbnail (16:10) — scaled to tile width. */
 const THUMB_W = 1280;
 const THUMB_H = 800;
+/** Narrower logical page for markdown so prose renders at a readable thumbnail size. */
+const MD_W = 800;
+const MD_H = 500;
+/** Per-tile entrance stagger (ms), capped so a large gallery still opens promptly. */
+const STAGGER_MS = 35;
+const STAGGER_CAP = 11;
 
 interface PresentGalleryProps {
   presentations: Presentation[];
@@ -73,7 +82,7 @@ function GalleryTile({
   const tileRef = useRef<HTMLButtonElement>(null);
   const previewRef = useRef<HTMLDivElement>(null);
   const [inView, setInView] = useState(false);
-  const [scale, setScale] = useState(0);
+  const [previewW, setPreviewW] = useState(0);
 
   const { content, mimeType, filePath, title } = presentation;
   const kind = kindFromMimeType(mimeType, filePath);
@@ -109,12 +118,12 @@ function GalleryTile({
     }
   }, [inView, sessionId, presentation.presentId, content]);
 
-  // Scale the fixed-size render down to the actual tile width.
+  // Measure the tile width so the fixed-size render can be scaled to fit.
   // eslint-disable-next-line no-restricted-syntax -- ResizeObserver subscription with cleanup
   useEffect(() => {
     const el = previewRef.current;
     if (!el) return;
-    const update = () => setScale(el.clientWidth / THUMB_W);
+    const update = () => setPreviewW(el.clientWidth);
     update();
     if (typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(update);
@@ -124,6 +133,7 @@ function GalleryTile({
 
   const hasBytes = inView && content !== undefined;
   const showFrame = hasBytes && (kind === "html" || kind === "svg");
+  const showMarkdown = hasBytes && kind === "markdown";
 
   return (
     <button
@@ -132,19 +142,34 @@ function GalleryTile({
       onClick={() => onSelect(index)}
       aria-label={`View ${title ?? basename(filePath)}`}
       aria-current={isActive}
-      className={`group flex flex-col overflow-hidden rounded-lg border bg-(--color-bg-secondary) text-left transition-shadow hover:shadow-lg ${
+      style={{ animationDelay: `${Math.min(index, STAGGER_CAP) * STAGGER_MS}ms` }}
+      className={`group flex flex-col overflow-hidden rounded-lg border bg-(--color-bg-secondary) text-left transition-shadow hover:shadow-lg animate-in fade-in-0 zoom-in-95 slide-in-from-bottom-2 fill-mode-both duration-300 motion-reduce:animate-none ${
         isActive
           ? "border-(--color-accent) ring-1 ring-(--color-accent)"
           : "border-(--color-border-primary) hover:border-(--color-border-secondary)"
       }`}
     >
-      <div ref={previewRef} className="relative aspect-[16/10] overflow-hidden bg-white">
+      <div
+        ref={previewRef}
+        className={`relative aspect-[16/10] overflow-hidden ${
+          showMarkdown ? "bg-(--color-bg-primary)" : "bg-white"
+        }`}
+      >
         {showFrame ? (
           <div
             className="pointer-events-none origin-top-left"
-            style={{ width: THUMB_W, height: THUMB_H, transform: `scale(${scale})` }}
+            style={{ width: THUMB_W, height: THUMB_H, transform: `scale(${previewW / THUMB_W})` }}
           >
             <RenderedFrame kind={kind} content={content} />
+          </div>
+        ) : showMarkdown ? (
+          <div
+            className="pointer-events-none origin-top-left overflow-hidden"
+            style={{ width: MD_W, height: MD_H, transform: `scale(${previewW / MD_W})` }}
+          >
+            <div className="p-8">
+              <MarkdownBlock source={content} />
+            </div>
           </div>
         ) : hasBytes && kind === "image" ? (
           <img src={content} alt={filePath} className="h-full w-full object-contain" />

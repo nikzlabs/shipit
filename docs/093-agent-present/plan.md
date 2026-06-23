@@ -724,14 +724,19 @@ Three related Present-tab refinements (folded into one change):
   toggles a thumbnail grid of every artifact; clicking a tile jumps to it and
   collapses back to the single view. Shown only when there's more than one
   artifact (same threshold as the carousel). `Esc` closes it. Thumbnails are
-  **lazy live renders**: each tile mounts a scaled, `pointer-events:none`
-  sandboxed `RenderedFrame` only once it scrolls near the viewport
-  (IntersectionObserver, 300px margin) and fetches its bytes on reveal via the
-  shared `loadPresentContent`. Rendering at a fixed logical size (1280×800) and
-  scaling to the tile width (ResizeObserver) gives a faithful shrunk-page
-  preview rather than a mobile-width reflow. Columns are container-query
-  responsive (2 → 3 → 4) so the grid adapts to the **pane** width, not the
-  viewport. Store state: `galleryOpen` (reset on session switch / full clear).
+  **lazy live renders**, mounted only once a tile scrolls near the viewport
+  (IntersectionObserver, 300px margin) with bytes fetched on reveal via the
+  shared `loadPresentContent`: HTML/SVG use the same `pointer-events:none`
+  sandboxed `RenderedFrame` as the single view (fixed 1280×800 logical size
+  scaled to the tile width via ResizeObserver, for a faithful shrunk-page
+  preview rather than a mobile reflow); **markdown reuses the docs
+  `MarkdownBlock` renderer** on the app background at a narrower 800×500 logical
+  page so prose stays readable; images draw directly; other kinds fall back to a
+  type icon. Columns are container-query responsive (2 → 3 → 4) so the grid
+  adapts to the **pane** width, not the viewport. Tiles **animate in** on open
+  with a staggered fade/zoom/slide (`animate-in` utilities, 35ms-per-tile delay
+  capped at 11 tiles, `motion-reduce:animate-none`). Store state: `galleryOpen`
+  (reset on session switch / full clear).
 
 - **Active-position memory.** The active artifact is remembered per session
   (`lastViewedBySession`, keyed by the stable `presentId`, kept OUTSIDE the

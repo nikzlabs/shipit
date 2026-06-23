@@ -179,3 +179,10 @@ restart** by persisting metadata orchestrator-side. Bytes stay on disk/git.
 - [x] Bug fix: arrow-key nav ignores keystrokes from text fields (chat typing no longer moves the carousel)
 - [x] Tests: store restore/fallback/forget, keydown focus guard, gallery toggle + tile select
 - [x] `npm run typecheck` + `npm run lint:dev` clean; present tests pass (44)
+
+### Gallery polish: markdown thumbnails + entrance animation
+
+- [x] Markdown thumbnails render via the docs `MarkdownBlock` (readable prose at an 800×500 logical page on the app bg), instead of the icon placeholder
+- [x] Tiles animate in on open — staggered fade/zoom/slide (`animate-in`, capped delay, `motion-reduce:animate-none`)
+- [x] Test: a markdown artifact shows rendered prose (heading text) in the gallery, not the placeholder
+- [x] `npm run typecheck` + lint clean; present tests pass (24)
