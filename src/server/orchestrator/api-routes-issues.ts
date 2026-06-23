@@ -17,6 +17,7 @@ import {
   listTrackers,
   listIssuesForTracker,
   listLabelsForTracker,
+  listStatusesForTracker,
   getIssueForTracker,
   listIssueCommentsForTracker,
   addIssueCommentForTracker,
@@ -412,6 +413,60 @@ export async function registerIssueRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to list issues: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // GET /api/sessions/:id/issue/labels?tracker= — the tracker's pickable label
+  // set (name + color), so the agent can discover valid `--label` values up front
+  // instead of guessing and tripping the create/edit rejection (SHI-199). The
+  // session-scoped sibling of the UI's `GET /api/issue/labels`: GitHub binds to
+  // this session's repo, Linear is workspace-wide. A discovery read — emits NO
+  // transcript card (label config isn't an issue the user would navigate to).
+  app.get<{ Params: { id: string }; Querystring: { tracker?: string } }>(
+    "/api/sessions/:id/issue/labels",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      if (!sessionManager.get(request.params.id)) {
+        reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      const trackerId = request.query.tracker ?? "github";
+      const github = resolveGitHubContext(request.params.id);
+      try {
+        return await listLabelsForTracker(credentialStore, trackerId, trackerFetchImpl, github);
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to list labels: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // GET /api/sessions/:id/issue/statuses?tracker= — the tracker's assignable
+  // statuses (name + type + color), so the agent can pick a valid `issue status`
+  // target without first `view`-ing an issue (SHI-199). Same session-scoping +
+  // no-card contract as the labels route above.
+  app.get<{ Params: { id: string }; Querystring: { tracker?: string } }>(
+    "/api/sessions/:id/issue/statuses",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      if (!sessionManager.get(request.params.id)) {
+        reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      const trackerId = request.query.tracker ?? "github";
+      const github = resolveGitHubContext(request.params.id);
+      try {
+        return await listStatusesForTracker(credentialStore, trackerId, trackerFetchImpl, github);
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to list statuses: ${getErrorMessage(err)}` });
       }
     },
   );

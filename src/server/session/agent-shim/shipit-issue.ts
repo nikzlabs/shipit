@@ -183,7 +183,7 @@ export async function handleIssueView(args: string[], deps: RunDeps): Promise<vo
 export async function handleIssueList(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
     values: { "--tracker": "tracker", "--state": "state" },
-    booleans: { "--json": "json" },
+    booleans: { "--json": "json", "--full": "full" },
   });
   if (parsed.unsupported.length > 0) {
     fail(deps.io, `Unsupported flag for shipit issue list: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
@@ -206,7 +206,15 @@ export async function handleIssueList(args: string[], deps: RunDeps): Promise<vo
 
   const issues = (res.body.issues as Record<string, unknown>[] | undefined) ?? [];
   if (parsed.booleans.has("json")) {
-    deps.io.stdout(`${JSON.stringify(issues)}\n`);
+    // Token economy (SHI-199): a `--json` list is almost always a "which issue do
+    // I pick?" scan needing only identifier/title/status/priority/assignee — never
+    // every issue's full markdown body. Both adapters populate `description` on
+    // every row, so a default list could ship tens of thousands of tokens of body
+    // the agent didn't ask for. Drop it by default; `--full` opts back in. This is
+    // a shim-only projection (the UI's own `/api/issues` payload is untouched), so
+    // it can't break the browser Issues list that renders `description`.
+    const rows = parsed.booleans.has("full") ? issues : issues.map(leanListRow);
+    deps.io.stdout(`${JSON.stringify(rows)}\n`);
     deps.io.exit(0);
     return;
   }
@@ -236,6 +244,110 @@ export async function handleIssueList(args: string[], deps: RunDeps): Promise<vo
       truncated,
     }),
   );
+}
+
+/**
+ * Project a list row down to the lean default for `shipit issue list --json`
+ * (SHI-199) — strip the heavy `description` (full markdown body) that both
+ * adapters populate per row. The body belongs on `view`, not on a pick-an-issue
+ * scan; `--full` skips this projection. A shallow copy, so the source object is
+ * untouched.
+ */
+function leanListRow(issue: Record<string, unknown>): Record<string, unknown> {
+  const rest = { ...issue };
+  delete rest.description;
+  return rest;
+}
+
+/**
+ * `shipit issue labels` — list the tracker's pickable labels (SHI-199). The
+ * discovery surface that lets the agent see valid `--label` values for
+ * create/edit without guessing and tripping the rejection error. Read-only;
+ * label names are workspace/repo-configured metadata (not reporter free-text),
+ * so they print plain — no untrusted-input envelope.
+ */
+export async function handleIssueLabels(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, {
+    values: { "--tracker": "tracker" },
+    booleans: { "--json": "json" },
+  });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for shipit issue labels: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+  const tracker = (parsed.values.tracker ?? "github").toLowerCase();
+  if (!VALID_TRACKERS.has(tracker)) {
+    fail(deps.io, `shipit issue labels: --tracker must be 'github' or 'linear' (got '${parsed.values.tracker}').`);
+  }
+  const res = await deps.call(
+    "GET",
+    `/agent-ops/issue/labels?tracker=${encodeURIComponent(tracker)}`,
+    undefined,
+    deps.env,
+  );
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to list labels"), 1);
+  }
+  const labels = (res.body.labels as Record<string, unknown>[] | undefined) ?? [];
+  if (parsed.booleans.has("json")) {
+    deps.io.stdout(`${JSON.stringify(labels)}\n`);
+    deps.io.exit(0);
+    return;
+  }
+  if (labels.length === 0) {
+    success(deps.io, `No labels available for ${tracker}.`);
+    return;
+  }
+  // One name per line — directly usable as `--label <name>` on create/edit.
+  success(deps.io, labels.map((l) => asString(l.name)).filter(Boolean).join("\n"));
+}
+
+/**
+ * `shipit issue statuses` — list the tracker's assignable statuses (SHI-199).
+ * Lets the agent pick a valid `shipit issue status <pointer> <state>` target
+ * without first `view`-ing an issue (which only carries `availableStatuses`
+ * per-issue). Read-only; status names are tracker-config metadata, printed plain
+ * (no envelope), each annotated with its normalized type so the portable type
+ * (`completed`, `started`, …) is visible alongside the native name.
+ */
+export async function handleIssueStatuses(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, {
+    values: { "--tracker": "tracker" },
+    booleans: { "--json": "json" },
+  });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for shipit issue statuses: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+  const tracker = (parsed.values.tracker ?? "github").toLowerCase();
+  if (!VALID_TRACKERS.has(tracker)) {
+    fail(deps.io, `shipit issue statuses: --tracker must be 'github' or 'linear' (got '${parsed.values.tracker}').`);
+  }
+  const res = await deps.call(
+    "GET",
+    `/agent-ops/issue/statuses?tracker=${encodeURIComponent(tracker)}`,
+    undefined,
+    deps.env,
+  );
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to list statuses"), 1);
+  }
+  const statuses = (res.body.statuses as Record<string, unknown>[] | undefined) ?? [];
+  if (parsed.booleans.has("json")) {
+    deps.io.stdout(`${JSON.stringify(statuses)}\n`);
+    deps.io.exit(0);
+    return;
+  }
+  if (statuses.length === 0) {
+    success(deps.io, `No statuses available for ${tracker}.`);
+    return;
+  }
+  // `name (type)` per line — the native name feeds `issue status`, the type is
+  // the portable target that also works.
+  const lines = statuses.map((s) => {
+    const name = asString(s.name);
+    const type = asString(s.type);
+    return type ? `${name} (${type})` : name;
+  });
+  success(deps.io, lines.filter(Boolean).join("\n"));
 }
 
 /**

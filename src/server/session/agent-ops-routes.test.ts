@@ -448,6 +448,20 @@ describe("agent-ops routes", () => {
     expect(client.calls[0].path).toBe("/issue/list?tracker=linear&state=all");
   });
 
+  it("GET /agent-ops/issue/labels forwards the tracker (SHI-199)", async () => {
+    client.setResponse("GET", "/issue/labels", { ok: true, status: 200, body: { labels: [{ name: "bug" }] } });
+    const res = await app.inject({ method: "GET", url: "/agent-ops/issue/labels?tracker=github" });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0].path).toBe("/issue/labels?tracker=github");
+  });
+
+  it("GET /agent-ops/issue/statuses forwards the tracker (SHI-199)", async () => {
+    client.setResponse("GET", "/issue/statuses", { ok: true, status: 200, body: { statuses: [{ name: "Open" }] } });
+    const res = await app.inject({ method: "GET", url: "/agent-ops/issue/statuses?tracker=linear" });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0].path).toBe("/issue/statuses?tracker=linear");
+  });
+
   it("GET /agent-ops/issue/view surfaces a 404 verbatim", async () => {
     client.setResponse("GET", "/issue/view", {
       ok: false, status: 404, body: { error: "Issue not found: SHI-99" },

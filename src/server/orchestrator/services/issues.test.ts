@@ -17,6 +17,7 @@ import {
   getIssueForTracker,
   listIssuesForTracker,
   listLabelsForTracker,
+  listStatusesForTracker,
   listIssueCommentsForTracker,
   addIssueCommentForTracker,
   userSetIssueStatus,
@@ -314,6 +315,55 @@ describe("listLabelsForTracker (SHI-92 foundation)", () => {
     // Linear with no token/team is unconfigured — a normal empty state.
     const out = await listLabelsForTracker(tmpStore(), "linear", undefined, undefined);
     expect(out.labels).toEqual([]);
+  });
+});
+
+describe("listStatusesForTracker (SHI-199)", () => {
+  it("returns GitHub's fixed Open/Closed pair without a network call", async () => {
+    // GitHub has no workflow states — the discovery list is the static pair, so
+    // no fetch should fire.
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const out = await listStatusesForTracker(tmpStore(), "github", fetchImpl, GH);
+    expect(out.statuses).toEqual([
+      { name: "Open", type: "started", color: "#3fb950" },
+      { name: "Closed", type: "completed", color: "#8957e5" },
+    ]);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("returns the Linear team's workflow states in board order", async () => {
+    const store = tmpStore();
+    store.setLinearToken("lin_x");
+    store.setLinearTeam(TEAM);
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
+      if (query.includes("TeamStates")) {
+        return jsonResponse({
+          data: {
+            team: {
+              states: {
+                nodes: [
+                  { id: "s2", name: "In Progress", type: "started", position: 2, color: "#f2c94c" },
+                  { id: "s1", name: "Backlog", type: "backlog", position: 1, color: "#bec2c8" },
+                ],
+              },
+            },
+          },
+        });
+      }
+      throw new Error(`no route for "${query.trim().slice(0, 20)}"`);
+    }) as unknown as typeof fetch;
+    const out = await listStatusesForTracker(store, "linear", fetchImpl, undefined);
+    // Sorted by board position, not the order returned.
+    expect(out.statuses).toEqual([
+      { name: "Backlog", type: "backlog", color: "#bec2c8" },
+      { name: "In Progress", type: "started", color: "#f2c94c" },
+    ]);
+  });
+
+  it("returns an empty set for an unconfigured tracker (no error)", async () => {
+    const out = await listStatusesForTracker(tmpStore(), "linear", undefined, undefined);
+    expect(out.statuses).toEqual([]);
   });
 });
 
