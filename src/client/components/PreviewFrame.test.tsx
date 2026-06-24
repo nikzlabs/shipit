@@ -159,6 +159,20 @@ describe("PreviewFrame", () => {
     await screen.findByTitle("Live Preview");
   });
 
+  it("posts a back-navigation message to the active iframe when Back is clicked", async () => {
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} {...defaultProps} />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+    const postMessage = vi.fn();
+    Object.defineProperty(iframe, "contentWindow", { value: { postMessage }, configurable: true });
+
+    fireEvent.click(screen.getByTitle("Back"));
+    expect(postMessage).toHaveBeenCalledWith(
+      { source: "shipit-toolbar", type: "back" },
+      "*",
+    );
+  });
+
   it("selector label matches selectedPort", () => {
     const preview: PreviewStatus = { running: true, port: 3001, url: "http://localhost:3001", source: "detected", detectedPorts: [3001, 8080] };
     render(<PreviewFrame preview={preview} {...defaultProps} detectedPorts={[3001, 8080]} selectedPort={8080} onSelectPort={vi.fn()} />);

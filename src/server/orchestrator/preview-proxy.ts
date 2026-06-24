@@ -70,7 +70,15 @@ const HMR_WS_PATCH = `<script>(function(){` +
   // Notify parent that the preview loaded successfully (used to detect
   // auth-blocked iframes when behind a reverse proxy like Cloudflare Zero Trust)
   `if(window.parent!==window){` +
-    `window.parent.postMessage({source:"shipit-preview",type:"loaded"},"*")` +
+    `window.parent.postMessage({source:"shipit-preview",type:"loaded"},"*");` +
+    // Let the preview toolbar drive the embedded browser's session history.
+    // The iframe is cross-origin (preview subdomain / a different port), so the
+    // parent can't touch `contentWindow.history` directly — it asks us to here.
+    `window.addEventListener("message",function(e){` +
+      `var d=e.data;if(!d||d.source!=="shipit-toolbar")return;` +
+      `if(d.type==="back")history.back();` +
+      `else if(d.type==="forward")history.forward()` +
+    `})` +
   `}` +
   `})()</script>`;
 

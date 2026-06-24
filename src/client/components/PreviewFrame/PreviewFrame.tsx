@@ -435,6 +435,14 @@ export function PreviewFrame({
         errorPanelOpen={errorPanelOpen}
         setErrorPanelOpen={setErrorPanelOpen}
         onRefresh={() => setRefreshKey((k) => k + 1)}
+        onBack={() => {
+          // The iframe is cross-origin, so we can't call `history.back()` on it
+          // directly — ask the injected preview script (preview-proxy.ts) to.
+          if (!activeSlotKey) return;
+          iframeRefs.current
+            .get(activeSlotKey)
+            ?.contentWindow?.postMessage({ source: "shipit-toolbar", type: "back" }, "*");
+        }}
         activeSlotUrl={activeSlotUrl}
       />
 
