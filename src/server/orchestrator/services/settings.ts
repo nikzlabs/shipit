@@ -8,7 +8,7 @@ import fs from "node:fs/promises";
 import type { CredentialStore } from "../credential-store.js";
 import type { AgentRegistry } from "../../shared/agent-registry.js";
 import { getAuthEnvKey, isAllowedAgentEnvKey } from "../../shared/agent-registry.js";
-import type { AgentId, ProviderAccount } from "../../shared/types.js";
+import type { AgentId, ProviderAccount, SubAgentDefaultsPatch } from "../../shared/types.js";
 import type { VoiceDeliveryMode } from "../../shared/types/voice-note-types.js";
 import { getGitIdentity, setGitIdentity as writeGitIdentity } from "../git-config.js";
 import { buildAgentSystemInstructions } from "../agent-instructions.js";
@@ -139,10 +139,11 @@ export interface SaveGlobalSettingsOptions {
   enableSubAgents?: boolean;
   /**
    * docs/217 — per-agent sub-agent defaults patch, keyed by agent id. Each entry
-   * is merged into the stored value; `reasoningEffort: null` clears it. Validated
-   * against the agent's registered reasoning options.
+   * is merged into the stored value; a `null` field clears it. `reasoningEffort`
+   * is validated against the agent's registered reasoning options and `model`
+   * against its registered models.
    */
-  agentSubAgentDefaults?: Record<string, { reasoningEffort?: string | null }>;
+  agentSubAgentDefaults?: Record<string, SubAgentDefaultsPatch>;
   /** docs/163 — voice-note delivery mode (native / external / both). */
   voiceDeliveryMode?: VoiceDeliveryMode;
 }
@@ -211,7 +212,7 @@ export async function saveGlobalSettings(
   }
 
   // docs/217 — merge per-agent sub-agent defaults. Validate each agent id and
-  // reasoning value against the registry before persisting; a bad value is a
+  // each field's value against the registry before persisting; a bad value is a
   // 400 (the picker only ever sends in-set values, so this guards API misuse).
   if (agentSubAgentDefaults !== undefined) {
     for (const [agentId, patch] of Object.entries(agentSubAgentDefaults)) {
@@ -226,6 +227,15 @@ export async function saveGlobalSettings(
           }
         }
         credentialStore.setAgentSubAgentDefaults(agentId, { reasoningEffort: value ?? null });
+      }
+      if ("model" in patch) {
+        const value = patch.model;
+        if (value !== null && value !== undefined) {
+          if (!info.capabilities.models.includes(value)) {
+            throw new ServiceError(400, `Invalid model "${value}" for ${info.name}`);
+          }
+        }
+        credentialStore.setAgentSubAgentDefaults(agentId, { model: value ?? null });
       }
     }
   }

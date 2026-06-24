@@ -182,10 +182,11 @@ export async function runSubAgent(
     );
   };
 
-  // docs/217 — a sub-agent runs with the invoked agent's OWN global reasoning
-  // default (set on its Settings tab), independent of the caller's session
-  // composer value. Resolved per spawn so a Settings change applies next time.
-  const reasoningEffort = deps.credentialStore.getAgentSubAgentDefaults(subAgentId).reasoningEffort;
+  // docs/217 — a sub-agent runs with the invoked agent's OWN global defaults
+  // (reasoning effort + model, set on its Settings tab), independent of the
+  // caller's session composer value. Resolved per spawn so a Settings change
+  // applies next time. An unset model lets the adapter pick `models[0]`.
+  const { reasoningEffort, model } = deps.credentialStore.getAgentSubAgentDefaults(subAgentId);
 
   try {
     const result = await runner.spawnSubAgent({
@@ -194,6 +195,7 @@ export async function runSubAgent(
       spawnId,
       depth,
       ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+      ...(model !== undefined ? { model } : {}),
     });
 
     // §5 — attribute the sub-agent's cost AND token usage to subAgentId, not the

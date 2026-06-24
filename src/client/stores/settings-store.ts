@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { PermissionMode, FileContextRef, ProviderAccount } from "../../server/shared/types.js";
+import type { PermissionMode, FileContextRef, ProviderAccount, SubAgentDefaults } from "../../server/shared/types.js";
 import {
   getSavedNotifyOnFinish, saveNotifyOnFinish,
   getSavedSoundOnFinish, saveSoundOnFinish,
@@ -108,7 +108,7 @@ interface SettingsState {
    * docs/217 — per-agent defaults applied when an agent runs as a sub-agent
    * (Control A), keyed by agent id. Hydrated from bootstrap / settings broadcast.
    */
-  agentSubAgentDefaults: Record<string, { reasoningEffort?: string }>;
+  agentSubAgentDefaults: Record<string, SubAgentDefaults>;
   /** Active Codex device-auth flow state — `null` when no flow is running. */
   codexDeviceAuth: CodexDeviceAuth | null;
   /** Last device-auth failure message — `null` when no error. */
@@ -146,7 +146,7 @@ interface SettingsState {
   setAutoResetMergedBranch: (enabled: boolean) => void;
   setEnableSubAgents: (enabled: boolean) => void;
   /** docs/217 — replace the per-agent sub-agent defaults map (Control A). */
-  setAgentSubAgentDefaults: (map: Record<string, { reasoningEffort?: string }>) => void;
+  setAgentSubAgentDefaults: (map: Record<string, SubAgentDefaults>) => void;
   setCodexDeviceAuth: (state: CodexDeviceAuth | null) => void;
   setCodexDeviceAuthError: (message: string | null) => void;
   setProviderAccounts: (accounts: ProviderAccount[]) => void;

@@ -32,6 +32,7 @@ function makeDeps(opts: {
   subAgentSpawnsThisTurn?: number;
   spawnResult?: SubAgentRunResult;
   runnerPresent?: boolean;
+  subAgentDefaults?: { reasoningEffort?: string; model?: string };
 }) {
   const session: FakeSession | null =
     opts.session === undefined ? { id: "s1", agentId: "claude", agentPinned: true } : opts.session;
@@ -77,7 +78,7 @@ function makeDeps(opts: {
     } as never,
     credentialStore: {
       getEnableSubAgents: () => opts.enableSubAgents ?? true,
-      getAgentSubAgentDefaults: () => ({}),
+      getAgentSubAgentDefaults: () => opts.subAgentDefaults ?? {},
     } as never,
     agentRegistry: {
       refreshAuth: vi.fn(),
@@ -189,6 +190,23 @@ describe("runSubAgent — happy path", () => {
     );
     // the card was persisted in-band (not emit-only) — survives switch/reload
     expect(replaceInProgress).toHaveBeenCalled();
+  });
+
+  it("forwards the invoked agent's global reasoning + model defaults to the spawn (docs/217)", async () => {
+    const { deps, runner } = makeDeps({ subAgentDefaults: { reasoningEffort: "high", model: "gpt-5.5" } });
+    await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+    expect(runner.spawnSubAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: "codex", reasoningEffort: "high", model: "gpt-5.5" }),
+    );
+  });
+
+  it("omits reasoningEffort + model when no defaults are set — backend uses its own default", async () => {
+    const { deps, runner } = makeDeps({ subAgentDefaults: {} });
+    await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+    const calls = (runner.spawnSubAgent as unknown as { mock: { calls: Record<string, unknown>[][] } }).mock.calls;
+    const arg = calls[0][0];
+    expect(arg).not.toHaveProperty("reasoningEffort");
+    expect(arg).not.toHaveProperty("model");
   });
 
   it("forwards a carried-back rate-limit snapshot into the sub-agent's limits provider", async () => {
