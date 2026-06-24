@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Recently-resolved collapse — placement prototypes</title>
+<style>
+  :root {
+    --color-bg-primary: #1a1410;
+    --color-bg-secondary: #231c16;
+    --color-bg-hover: rgba(217, 119, 87, 0.08);
+    --color-text-primary: #e8e0d8;
+    --color-text-secondary: #a89a8c;
+    --color-text-tertiary: #7a6e62;
+    --color-border-primary: #2e2519;
+    --color-success: #5cb870;
+    --color-accent: #d97757;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: #0d0a08;
+    color: var(--color-text-primary);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: 28px;
+  }
+  h1 { font-size: 16px; font-weight: 600; margin: 0 0 4px; }
+  .sub { color: var(--color-text-tertiary); font-size: 12px; margin: 0 0 24px; max-width: 720px; line-height: 1.5; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 24px;
+    align-items: start;
+  }
+  .variant { display: flex; flex-direction: column; gap: 10px; }
+  .variant > .caption { font-size: 12px; font-weight: 600; color: var(--color-text-secondary); }
+  .variant > .note { font-size: 11px; color: var(--color-text-tertiary); line-height: 1.45; min-height: 30px; }
+  .recommend { color: var(--color-success); }
+
+  /* Sidebar shell */
+  .sidebar {
+    width: 280px;
+    background: var(--color-bg-primary);
+    border: 1px solid var(--color-border-primary);
+    border-radius: 10px;
+    padding: 6px 0 10px;
+    overflow: hidden;
+  }
+
+  /* Repo header row */
+  .repo-header {
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 12px 6px 14px;
+  }
+  .caret { width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; color: var(--color-text-tertiary); flex: 0 0 auto; }
+  .repo-name { font-size: 12px; font-weight: 600; color: var(--color-text-secondary); letter-spacing: .02em; }
+  .gh { color: var(--color-text-secondary); flex: 0 0 auto; display: flex; }
+  .overflow { margin-left: auto; color: var(--color-text-tertiary); display: flex; }
+
+  /* Session rows */
+  .row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 12px 6px 20px;
+    font-size: 13px; color: var(--color-text-primary);
+    border-radius: 6px; margin: 0 6px;
+  }
+  .row .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--color-text-tertiary); flex: 0 0 auto; }
+  .row.active .dot { background: var(--color-accent); }
+  .row.sel { background: var(--color-bg-hover); }
+  .row .label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row.resolved { color: var(--color-text-secondary); }
+  .row.resolved .merge { color: var(--color-success); display: flex; flex: 0 0 auto; }
+
+  .newrow {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 12px 6px 14px;
+    font-size: 12px; color: var(--color-text-tertiary);
+    margin: 2px 0;
+  }
+  .newrow .plus { width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; flex: 0 0 auto; }
+
+  /* Recently-resolved sub-header — base */
+  .resolved-head {
+    display: flex; align-items: center; gap: 6px;
+    padding: 8px 8px 2px 8px;
+    margin: 4px 4px 0;
+  }
+  .resolved-head .ico { color: var(--color-text-tertiary); display: flex; flex: 0 0 auto; }
+  .resolved-head .text {
+    font-size: 10px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: .06em; color: var(--color-text-tertiary);
+  }
+  .resolved-head .count {
+    font-size: 10px; font-weight: 600; color: var(--color-text-tertiary);
+    opacity: .8;
+  }
+  .resolved-head .right { margin-left: auto; display: flex; align-items: center; color: var(--color-text-tertiary); }
+  .resolved-head.clickable { cursor: pointer; border-radius: 6px; }
+  .resolved-head.clickable:hover { background: var(--color-bg-hover); }
+
+  svg { display: block; }
+  .divider { height: 1px; background: var(--color-border-primary); margin: 6px 12px; }
+  .legend { margin-top: 26px; font-size: 11px; color: var(--color-text-tertiary); line-height: 1.6; }
+  .legend b { color: var(--color-text-secondary); }
+</style>
+</head>
+<body>
+  <h1>Recently-resolved collapse — where does the control go?</h1>
+  <p class="sub">
+    Same sidebar, four placements for the collapse affordance on the <b>Recently resolved</b> sub-header.
+    The repo header above it already owns a <b>left caret</b> — the question is how to add a second collapse
+    control without it reading as a nested repo header. Cap shown at 5; expanded by default.
+  </p>
+
+  <div class="grid">
+
+    <!-- VARIANT A: left caret (the blend risk) -->
+    <div class="variant">
+      <div class="caption">A · Caret on the left</div>
+      <div class="note">Mirrors the repo header's left caret one level down. Reads as "a second repo" — the blend you were worried about.</div>
+      <div class="sidebar">
+        <div class="repo-header">
+          <span class="caret">
+            <svg width="10" height="10" viewBox="0 0 256 256" fill="currentColor"><path d="M128 188a12 12 0 0 1-8.49-3.51l-80-80a12 12 0 0 1 17-17L128 159l71.51-71.52a12 12 0 0 1 17 17l-80 80A12 12 0 0 1 128 188Z"/></svg>
+          </span>
+          <span class="gh"><svg width="10" height="10" viewBox="0 0 256 256" fill="currentColor"><path d="M208.31 75.68A59.78 59.78 0 0 0 202.93 28a8 8 0 0 0-6.93-4 59.75 59.75 0 0 0-48 24h-24a59.75 59.75 0 0 0-48-24 8 8 0 0 0-6.93 4 59.78 59.78 0 0 0-5.38 47.68A58.14 58.14 0 0 0 56 104v8a56.06 56.06 0 0 0 48.44 55.47A39.8 39.8 0 0 0 96 192v8H72a24 24 0 0 1-24-24 40 40 0 0 0-40-40 8 8 0 0 0 0 16 24 24 0 0 1 24 24 40 40 0 0 0 40 40h24v16a8 8 0 0 0 16 0v-40a24 24 0 0 1 48 0v40a8 8 0 0 0 16 0v-40a39.8 39.8 0 0 0-8.44-24.53A56.06 56.06 0 0 0 200 112v-8a58.14 58.14 0 0 0-8.69-28.32Z"/></svg></span>
+          <span class="repo-name">shipit</span>
+          <span class="overflow"><svg width="14" height="14" viewBox="0 0 256 256" fill="currentColor"><path d="M140 128a12 12 0 1 1-12-12 12 12 0 0 1 12 12ZM48 116a12 12 0 1 0 12 12 12 12 0 0 0-12-12Zm160 0a12 12 0 1 0 12 12 12 12 0 0 0-12-12Z"/></svg></span>
+        </div>
+        <div class="row active"><span class="dot"></span><span class="label">Fix preview HMR over proxy</span></div>
+        <div class="row active"><span class="dot"></span><span class="label">Add sandbox session kind</span></div>
+        <div class="newrow"><span class="plus"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor"><path d="M224 128a8 8 0 0 1-8 8h-80v80a8 8 0 0 1-16 0v-80H40a8 8 0 0 1 0-16h80V40a8 8 0 0 1 16 0v80h80a8 8 0 0 1 8 8Z"/></svg></span>New session</div>
+
+        <div class="resolved-head clickable">
+          <span class="caret" style="width:auto;height:auto">
+            <svg width="9" height="9" viewBox="0 0 256 256" fill="currentColor"><path d="M128 188a12 12 0 0 1-8.49-3.51l-80-80a12 12 0 0 1 17-17L128 159l71.51-71.52a12 12 0 0 1 17 17l-80 80A12 12 0 0 1 128 188Z"/></svg>
+          </span>
+          <span class="text">Recently resolved</span>
+          <span class="count">5</span>
+        </div>
+        <div class="row resolved"><span class="merge"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor"><path d="M224 64a32 32 0 1 0-40 31v9a16 16 0 0 1-16 16h-40a31.8 31.8 0 0 0-16 4.31V95a32 32 0 1 0-16 0v66a32 32 0 1 0 16 0v-9a16 16 0 0 1 16-16h40a32 32 0 0 0 32-32v-9a32.06 32.06 0 0 0 24-31Z"/></svg></span><span class="label">Installable PWA</span></div>
+        <div class="row resolved"><span class="merge"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor"><path d="M224 64a32 32 0 1 0-40 31v9a16 16 0 0 1-16 16h-40a31.8 31.8 0 0 0-16 4.31V95a32 32 0 1 0-16 0v66a32 32 0 1 0 16 0v-9a16 16 0 0 1 16-16h40a32 32 0 0 0 32-32v-9a32.06 32.06 0 0 0 24-31Z"/></svg></span><span class="label">Sub-agent defaults</span></div>
+        <div class="row resolved"><span class="merge"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor"><path d="M224 64a32 32 0 1 0-40 31v9a16 16 0 0 1-16 16h-40a31.8 31.8 0 0 0-16 4.31V95a32 32 0 1 0-16 0v66a32 32 0 1 0 16 0v-9a16 16 0 0 1 16-16h40a32 32 0 0 0 32-32v-9a32.06 32.06 0 0 0 24-31Z"/></svg></span><span class="label">Hide start-from-base control</span></div>
+      </div>
+    </div>
+
+    <!-- VARIANT B: caret on the right (user's idea) -->
+    <div class="variant">
+      <div class="caption recommend">B · Caret on the right ★</div>
+      <div class="note">Keeps the git-merge glyph on the left (identity), pushes the collapse caret to the far right. No left-caret echo of the repo header.</div>
+      <div class="sidebar">
+        <div class="repo-header">
+          <span class="caret">
+            <svg width="10" height="10" viewBox="0 0 256 256" fill="currentColor"><path d="M128 188a12 12 0 0 1-8.49-3.51l-80-80a12 12 0 0 1 17-17L128 159l71.51-71.52a12 12 0 0 1 17 17l-80 80A12 12 0 0 1 128 188Z"/></svg>
+          </span>
+          <span class="gh"><svg width="10" height="10" viewBox="0 0 256 256" fill="currentColor"><path d="M208.31 75.68A59.78 59.78 0 0 0 202.93 28a8 8 0 0 0-6.93-4 59.75 59.75 0 0 0-48 24h-24a59.75 59.75 0 0 0-48-24 8 8 0 0 0-6.93 4 59.78 59.78 0 0 0-5.38 47.68A58.14 58.14 0 0 0 56 104v8a56.06 56.06 0 0 0 48.44 55.47A39.8 39.8 0 0 0 96 192v8H72a24 24 0 0 1-24-24 40 40 0 0 0-40-40 8 8 0 0 0 0 16 24 24 0 0 1 24 24 40 40 0 0 0 40 40h24v16a8 8 0 0 0 16 0v-40a24 24 0 0 1 48 0v40a8 8 0 0 0 16 0v-40a39.8 39.8 0 0 0-8.44-24.53A56.06 56.06 0 0 0 200 112v-8a58.14 58.14 0 0 0-8.69-28.32Z"/></svg></span>
+          <span class="repo-name">shipit</span>
+          <span class="overflow"><svg width="14" height="14" viewBox="0 0 256 256" fill="currentColor"><path d="M140 128a12 12 0 1 1-12-12 12 12 0 0 1 12 12ZM48 116a12 12 0 1 0 12 12 12 12 0 0 0-12-12Zm160 0a12 12 0 1 0 12 12 12 12 0 0 0-12-12Z"/></svg></span>
+        </div>
+        <div class="row active"><span class="dot"></span><span class="label">Fix preview HMR over proxy</span></div>
+        <div class="row active"><span class="dot"></span><span class="label">Add sandbox session kind</span></div>
+        <div class="newrow"><span class="plus"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor"><path d="M224 128a8 8 0 0 1-8 8h-80v80a8 8 0 0 1-16 0v-80H40a8 8 0 0 1 0-16h80V40a8 8 0 0 1 16 0v80h80a8 8 0 0 1 8 8Z"/></svg></span>New session</div>
+
+        <div class="resolved-head clickable">
+          <span class="ico"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor"><path d="M224 64a32 32 0 1 0-40 31v9a16 16 0 0 1-16 16h-40a31.8 31.8 0 0 0-16 4.31V95a32 32 0 1 0-16 0v66a32 32 0 1 0 16 0v-9a16 16 0 0 1 16-16h40a32 32 0 0 0 32-32v-9a32.06 32.06 0 0 0 24-31Z"/></svg></span>
+          <span class="text">Recently resolved</span>
+          <span class="right">
+            <svg width="9" height="9" viewBox="0 0 256 256" fill="currentColor"><path d="M128 188a12 12 0 0 1-8.49-3.51l-80-80a12 12 0 0 1 17-17L128 159l71.51-71.52a12 12 0 0 1 17 17l-80 80A12 12 0 0 1 128 188Z"/></svg>
+          </span>
+        </div>
+        <div class="row resolved"><span class="merge"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor"><path d="M224 64a32 32 0 1 0-40 31v9a16 16 0 0 1-16 16h-40a31.8 31.8 0 0 0-16 4.31V95a32 32 0 1 0-16 0v66a32 32 0 1 0 16 0v-9a16 16 0 0 1 16-16h40a32 32 0 0 0 32-32v-9a32.06 32.06 0 0 0 24-31Z"/></svg></span><span class="label">Installable PWA</span></div>
+        <div class="row resolved"><span class="merge"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor"><path d="M224 64a32 32 0 1 0-40 31v9a16 16 0 0 1-16 16h-40a31.8 31.8 0 0 0-16 4.31V95a32 32 0 1 0-16 0v66a32 32 0 1 0 16 0v-9a16 16 0 0 1 16-16h40a32 32 0 0 0 32-32v-9a32.06 32.06 0 0 0 24-31Z"/></svg></span><span class="label">Sub-agent defaults</span></div>
+        <div class="row resolved"><span class="merge"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor"><path d="M224 64a32 32 0 1 0-40 31v9a16 16 0 0 1-16 16h-40a31.8 31.8 0 0 0-16 4.31V95a32 32 0 1 0-16 0v66a32 32 0 1 0 16 0v-9a16 16 0 0 1 16-16h40a32 32 0 0 0 32-32v-9a32.06 32.06 0 0 0 24-31Z"/></svg></span><span class="label">Hide start-from-base control</span></div>
+      </div>
+    </div>
+
+    <!-- VARIANT C: right caret + count -->
+    <div class="variant">
+      <div class="caption recommend">C · Right caret, with count ★</div>
+      <div class="note">Same as B but surfaces the hidden count. Most useful in the collapsed state — see the collapsed row below — where the number is the "there's more here" cue.</div>
+      <div class="sidebar">
+        <div class="repo-header">
+          <span class="caret">
+            <svg width="10" height="10" viewBox="0 0 256 256" fill="currentColor"><path d="M128 188a12 12 0 0 1-8.49-3.51l-80-80a12 12 0 0 1 17-17L128 159l71.51-71.52a12 12 0 0 1 17 17l-80 80A12 12 0 0 1 128 188Z"/></svg>
+          </span>
+          <span class="gh"><svg width="10" height="10" viewBox="0 0 256 256" fill="currentColor"><path d="M208.31 75.68A59.78 59.78 0 0 0 202.93 28a8 8 0 0 0-6.93-4 59.75 59.75 0 0 0-48 24h-24a59.75 59.75 0 0 0-48-24 8 8 0 0 0-6.93 4 59.78 59.78 0 0 0-5.38 47.68A58.14 58.14 0 0 0 56 104v8a56.06 56.06 0 0 0 48.44 55.47A39.8 39.8 0 0 0 96 192v8H72a24 24 0 0 1-24-24 40 40 0 0 0-40-40 8 8 0 0 0 0 16 24 24 0 0 1 24 24 40 40 0 0 0 40 40h24v16a8 8 0 0 0 16 0v-40a24 24 0 0 1 48 0v40a8 8 0 0 0 16 0v-40a39.8 39.8 0 0 0-8.44-24.53A56.06 56.06 0 0 0 200 112v-8a58.14 58.14 0 0 0-8.69-28.32Z"/></svg></span>
+          <span class="repo-name">shipit</span>
+          <span class="overflow"><svg width="14" height="14" viewBox="0 0 256 256" fill="currentColor"><path d="M140 128a12 12 0 1 1-12-12 12 12 0 0 1 12 12ZM48 116a12 12 0 1 0 12 12 12 12 0 0 0-12-12Zm160 0a12 12 0 1 0 12 12 12 12 0 0 0-12-12Z"/></svg></span>
+        </div>
+        <div class="row active"><span class="dot"></span><span class="label">Fix preview HMR over proxy</span></div>
+        <div class="newrow"><span class="plus"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor"><path d="M224 128a8 8 0 0 1-8 8h-80v80a8 8 0 0 1-16 0v-80H40a8 8 0 0 1 0-16h80V40a8 8 0 0 1 16 0v80h80a8 8 0 0 1 8 8Z"/></svg></span>New session</div>
+
+        <div class="resolved-head clickable">
+          <span class="ico"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor"><path d="M224 64a32 32 0 1 0-40 31v9a16 16 0 0 1-16 16h-40a31.8 31.8 0 0 0-16 4.31V95a32 32 0 1 0-16 0v66a32 32 0 1 0 16 0v-9a16 16 0 0 1 16-16h40a32 32 0 0 0 32-32v-9a32.06 32.06 0 0 0 24-31Z"/></svg></span>
+          <span class="text">Recently resolved</span>
+          <span class="right" style="gap:6px">
+            <span class="count">5</span>
+            <svg width="9" height="9" viewBox="0 0 256 256" fill="currentColor"><path d="M128 188a12 12 0 0 1-8.49-3.51l-80-80a12 12 0 0 1 17-17L128 159l71.51-71.52a12 12 0 0 1 17 17l-80 80A12 12 0 0 1 128 188Z"/></svg>
+          </span>
+        </div>
+        <div class="row resolved"><span class="merge"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor"><path d="M224 64a32 32 0 1 0-40 31v9a16 16 0 0 1-16 16h-40a31.8 31.8 0 0 0-16 4.31V95a32 32 0 1 0-16 0v66a32 32 0 1 0 16 0v-9a16 16 0 0 1 16-16h40a32 32 0 0 0 32-32v-9a32.06 32.06 0 0 0 24-31Z"/></svg></span><span class="label">Installable PWA</span></div>
+        <div class="row resolved"><span class="merge"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor"><path d="M224 64a32 32 0 1 0-40 31v9a16 16 0 0 1-16 16h-40a31.8 31.8 0 0 0-16 4.31V95a32 32 0 1 0-16 0v66a32 32 0 1 0 16 0v-9a16 16 0 0 1 16-16h40a32 32 0 0 0 32-32v-9a32.06 32.06 0 0 0 24-31Z"/></svg></span><span class="label">Sub-agent defaults</span></div>
+
+        <div class="divider"></div>
+        <!-- collapsed state preview -->
+        <div class="resolved-head clickable" title="collapsed state">
+          <span class="ico"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor"><path d="M224 64a32 32 0 1 0-40 31v9a16 16 0 0 1-16 16h-40a31.8 31.8 0 0 0-16 4.31V95a32 32 0 1 0-16 0v66a32 32 0 1 0 16 0v-9a16 16 0 0 1 16-16h40a32 32 0 0 0 32-32v-9a32.06 32.06 0 0 0 24-31Z"/></svg></span>
+          <span class="text">Recently resolved</span>
+          <span class="right" style="gap:6px">
+            <span class="count">5</span>
+            <svg width="9" height="9" viewBox="0 0 256 256" fill="currentColor"><path d="M104 184V72a8 8 0 0 1 13.66-5.66l56 56a8 8 0 0 1 0 11.32l-56 56A8 8 0 0 1 104 184Z"/></svg>
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <!-- VARIANT D: count as the only affordance (text-link style) -->
+    <div class="variant">
+      <div class="caption">D · No caret — count toggles</div>
+      <div class="note">Drops the caret entirely; the whole row is the hit target and the count carries state ("5 ▸" collapsed / "Hide" expanded). Cleanest, but the affordance is less obvious.</div>
+      <div class="sidebar">
+        <div class="repo-header">
+          <span class="caret">
+            <svg width="10" height="10" viewBox="0 0 256 256" fill="currentColor"><path d="M128 188a12 12 0 0 1-8.49-3.51l-80-80a12 12 0 0 1 17-17L128 159l71.51-71.52a12 12 0 0 1 17 17l-80 80A12 12 0 0 1 128 188Z"/></svg>
+          </span>
+          <span class="gh"><svg width="10" height="10" viewBox="0 0 256 256" fill="currentColor"><path d="M208.31 75.68A59.78 59.78 0 0 0 202.93 28a8 8 0 0 0-6.93-4 59.75 59.75 0 0 0-48 24h-24a59.75 59.75 0 0 0-48-24 8 8 0 0 0-6.93 4 59.78 59.78 0 0 0-5.38 47.68A58.14 58.14 0 0 0 56 104v8a56.06 56.06 0 0 0 48.44 55.47A39.8 39.8 0 0 0 96 192v8H72a24 24 0 0 1-24-24 40 40 0 0 0-40-40 8 8 0 0 0 0 16 24 24 0 0 1 24 24 40 40 0 0 0 40 40h24v16a8 8 0 0 0 16 0v-40a24 24 0 0 1 48 0v40a8 8 0 0 0 16 0v-40a39.8 39.8 0 0 0-8.44-24.53A56.06 56.06 0 0 0 200 112v-8a58.14 58.14 0 0 0-8.69-28.32Z"/></svg></span>
+          <span class="repo-name">shipit</span>
+          <span class="overflow"><svg width="14" height="14" viewBox="0 0 256 256" fill="currentColor"><path d="M140 128a12 12 0 1 1-12-12 12 12 0 0 1 12 12ZM48 116a12 12 0 1 0 12 12 12 12 0 0 0-12-12Zm160 0a12 12 0 1 0 12 12 12 12 0 0 0-12-12Z"/></svg></span>
+        </div>
+        <div class="row active"><span class="dot"></span><span class="label">Fix preview HMR over proxy</span></div>
+        <div class="newrow"><span class="plus"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor"><path d="M224 128a8 8 0 0 1-8 8h-80v80a8 8 0 0 1-16 0v-80H40a8 8 0 0 1 0-16h80V40a8 8 0 0 1 16 0v80h80a8 8 0 0 1 8 8Z"/></svg></span>New session</div>
+
+        <div class="resolved-head clickable">
+          <span class="ico"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor"><path d="M224 64a32 32 0 1 0-40 31v9a16 16 0 0 1-16 16h-40a31.8 31.8 0 0 0-16 4.31V95a32 32 0 1 0-16 0v66a32 32 0 1 0 16 0v-9a16 16 0 0 1 16-16h40a32 32 0 0 0 32-32v-9a32.06 32.06 0 0 0 24-31Z"/></svg></span>
+          <span class="text">Recently resolved</span>
+          <span class="right"><span class="count" style="text-transform:none;letter-spacing:0">Hide</span></span>
+        </div>
+        <div class="row resolved"><span class="merge"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor"><path d="M224 64a32 32 0 1 0-40 31v9a16 16 0 0 1-16 16h-40a31.8 31.8 0 0 0-16 4.31V95a32 32 0 1 0-16 0v66a32 32 0 1 0 16 0v-9a16 16 0 0 1 16-16h40a32 32 0 0 0 32-32v-9a32.06 32.06 0 0 0 24-31Z"/></svg></span><span class="label">Installable PWA</span></div>
+        <div class="row resolved"><span class="merge"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor"><path d="M224 64a32 32 0 1 0-40 31v9a16 16 0 0 1-16 16h-40a31.8 31.8 0 0 0-16 4.31V95a32 32 0 1 0-16 0v66a32 32 0 1 0 16 0v-9a16 16 0 0 1 16-16h40a32 32 0 0 0 32-32v-9a32.06 32.06 0 0 0 24-31Z"/></svg></span><span class="label">Sub-agent defaults</span></div>
+
+        <div class="divider"></div>
+        <!-- collapsed state preview -->
+        <div class="resolved-head clickable" title="collapsed state">
+          <span class="ico"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor"><path d="M224 64a32 32 0 1 0-40 31v9a16 16 0 0 1-16 16h-40a31.8 31.8 0 0 0-16 4.31V95a32 32 0 1 0-16 0v66a32 32 0 1 0 16 0v-9a16 16 0 0 1 16-16h40a32 32 0 0 0 32-32v-9a32.06 32.06 0 0 0 24-31Z"/></svg></span>
+          <span class="text">Recently resolved</span>
+          <span class="right"><span class="count">5 hidden</span></span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="legend">
+    <b>Reading the mock:</b> the orange dots are active sessions, the green merge glyphs are resolved ones.
+    Variants C and D show both the expanded and the collapsed state (separated by a divider) in one column.
+    <br><b>My lean:</b> <span class="recommend">B or C</span> — right-aligned caret avoids the left-caret echo of the repo header, and the
+    git-merge glyph keeps the section's identity. C's count earns its keep mainly when collapsed.
+  </div>
+</body>
+</html>
