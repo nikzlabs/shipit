@@ -128,5 +128,11 @@ opens a chore PR that forward-ports the released version onto `main`.
 - [x] `pull-requests: write` added at the job level (workflow only grants `contents: write`)
 - [x] Docs: `RELEASING.md` ("`main`'s version is auto-synced after publish"), `prompts/releases.md`
   (merge the follow-up sync PR), plan.md Key files
-- [ ] **Open:** carry the same `sync-main` job into the scaffolded template (`templates-release.ts`)
-  so any `release-branch` repo ShipIt sets up gets default-branch version sync, not just ShipIt's own repo
+- [x] Carry the same sync into the scaffolded template (`templates-release.ts`): a `sync-default-branch`
+  job (default branch resolved at runtime via `gh repo view`; skipped when it equals the maintenance
+  branch) + a new generic write helper `shipit-write-version.mjs` (mirrors `writeVersionToSource` so the
+  sync works for package.json / Cargo.toml / pyproject.toml / VERSION, not just `npm version`). Best-effort
+  `ignore-for-release` label (may not exist in a fresh repo). Scaffold now ships **four** files.
+- [x] Tests: `templates-release.test.ts` — sync job present in the rendered workflow; write helper ⇔
+  `writeVersionToSource` byte-identity across all four ecosystems + lockfile bump + non-zero on missing field;
+  scaffold returns four artifacts
