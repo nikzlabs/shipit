@@ -132,6 +132,18 @@ Stable instances pick up the release the next time a user clicks **Check for
 Updates** → **Update Now** (the updater resets to the latest final tag reachable
 from `origin/stable`).
 
+### `main`'s version is auto-synced after publish
+
+The version bump lands only on `stable` (the `release/<version>` PR is never
+merged back to `main`), so `main`'s `package.json` would otherwise stay behind
+every release. After a successful publish on the branch path, `release.yml`'s
+**`sync-main`** job opens a small chore PR (`release-sync/vX.Y.Z` → `main`) that
+bumps `main`'s `package.json` + `package-lock.json` to the just-released version.
+Merge it to bring `main` in sync — it touches only the version files. The PR is
+labeled `ignore-for-release` so it doesn't clutter the next release's notes, and
+the job is idempotent (no-op when `main` already carries the version, or when the
+sync branch already exists). rc's (the tag path) never touch `main`.
+
 ## Release candidates (prereleases)
 
 rc's do **not** go through `stable` (they must not advance the stable channel, and

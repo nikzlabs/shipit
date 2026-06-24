@@ -439,7 +439,11 @@ path and the script as the fallback.
 ## Key files
 
 - `.github/workflows/release.yml`, `.github/release.yml` — the auto-publish CI;
-  `.github/workflows/ci.yml` — add `stable` to `pull_request: branches`.
+  `.github/workflows/ci.yml` — add `stable` to `pull_request: branches`. The
+  `sync-main` job in `release.yml` (branch path, after a green publish) opens a
+  chore PR forward-porting the released version onto `main` (the bump lands only
+  on `stable`, so `main` would otherwise drift behind every release) — labeled
+  `ignore-for-release`, idempotent on repair re-runs.
 - `docs/162` updater (`deployment/vps/update.sh`, `services/updates.ts`,
   `release-channel.ts`) — resolve the latest final tag reachable from `origin/stable`.
 - `src/server/shared/shipit-config.ts` — `release-branch` mechanism + `branch` + `version-source-path`.
