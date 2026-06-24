@@ -754,6 +754,13 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE messages ADD COLUMN branch_synced TEXT");
   },
+  // Hide a repo from the sidebar without removing it (docs/222). A pure
+  // visibility flag: `hidden = 1` drops the repo (and its sessions) from the
+  // sidebar but touches nothing else — sessions, containers, working copies and
+  // history all survive, unlike Remove. Existing rows default to visible (0).
+  (db) => {
+    db.exec("ALTER TABLE repos ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0");
+  },
 ];
 
 export class DatabaseManager {

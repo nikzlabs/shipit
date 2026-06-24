@@ -226,6 +226,77 @@ describe("POST /api/repos/trust (docs/178)", () => {
   });
 });
 
+describe("PATCH /api/repos/:url (hide/show, docs/222)", () => {
+  const url = "https://github.com/owner/repo.git";
+
+  it("hides a repo without removing it or its sessions", async () => {
+    repoStore.add(url);
+    sessionManager.track("sess-a", "A");
+    sessionManager.setRemoteUrl("sess-a", url);
+
+    const res = await app.inject({
+      method: "PATCH",
+      url: `/api/repos/${encodeURIComponent(url)}`,
+      payload: { hidden: true },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().repo).toMatchObject({ url, hidden: true });
+
+    // Repo row and session both survive — only the visibility flag changed.
+    expect(repoStore.has(url)).toBe(true);
+    expect(repoStore.get(url)?.hidden).toBe(true);
+    expect(sessionManager.get("sess-a")?.userArchived).toBeFalsy();
+    expect(sessionManager.list().map((s) => s.id)).toContain("sess-a");
+  });
+
+  it("shows a hidden repo again", async () => {
+    repoStore.add(url);
+    repoStore.setHidden(url, true);
+
+    const res = await app.inject({
+      method: "PATCH",
+      url: `/api/repos/${encodeURIComponent(url)}`,
+      payload: { hidden: false },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().repo).toMatchObject({ url, hidden: false });
+    expect(repoStore.get(url)?.hidden).toBe(false);
+  });
+
+  it("re-adding a hidden repo unhides it", async () => {
+    repoStore.add(url);
+    repoStore.setHidden(url, true);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/repos",
+      payload: { url },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().repo.hidden).toBe(false);
+    expect(repoStore.get(url)?.hidden).toBe(false);
+  });
+
+  it("returns 400 when 'hidden' is missing or not a boolean", async () => {
+    repoStore.add(url);
+    const res = await app.inject({
+      method: "PATCH",
+      url: `/api/repos/${encodeURIComponent(url)}`,
+      payload: {},
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("returns 404 for an unknown repo", async () => {
+    const res = await app.inject({
+      method: "PATCH",
+      url: `/api/repos/${encodeURIComponent("https://github.com/never/added.git")}`,
+      payload: { hidden: true },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+});
+
 describe("DELETE /api/repos/:url", () => {
   it("removes a repo", async () => {
     repoStore.add("https://github.com/owner/repo.git");

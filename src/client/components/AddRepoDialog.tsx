@@ -1,8 +1,9 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: auto-close on async repo clone completion (reacts to external process finishing)
 import { useState, useRef, useEffect } from "react";
-import { XIcon, CircleNotchIcon, GithubLogoIcon } from "@phosphor-icons/react";
+import { XIcon, CircleNotchIcon, GithubLogoIcon, EyeIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import type { RepoInfo } from "../../server/shared/types.js";
+import { parseRepoLabel } from "../utils/repo-label.js";
 import { Badge } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
@@ -103,6 +104,12 @@ export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, onRepoReady, 
 
   const isCloning = pendingRepo?.status === "cloning";
 
+  // docs/222 — labels of repos already added but hidden. A search result whose
+  // canonical label is in this set is "already added · hidden": selecting it
+  // re-adds via the same onAdd path, which clears the hidden flag server-side
+  // (RepoStore.add), so the action reads as "Show" rather than a fresh add.
+  const hiddenLabels = new Set(repos.filter((r) => r.hidden).map((r) => parseRepoLabel(r.url)));
+
   return (
     <Dialog open={open} onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
       <DialogContent className="w-full max-w-lg rounded-lg border-(--color-border-secondary)">
@@ -169,12 +176,14 @@ export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, onRepoReady, 
           {/* Search results */}
           {searchResults.length > 0 && !isCloning && (
             <div className="mt-2 max-h-64 overflow-y-auto rounded-md border border-(--color-border-secondary)">
-              {searchResults.map((repo) => (
+              {searchResults.map((repo) => {
+                const isHidden = hiddenLabels.has(parseRepoLabel(repo.cloneUrl));
+                return (
                 <button
                   key={repo.cloneUrl}
                   onClick={() => handleSelect(repo.cloneUrl)}
                   disabled={submitting}
-                  className="flex w-full items-start gap-2 px-3 py-2 text-left hover:bg-(--color-bg-hover) transition-colors border-b border-(--color-border-primary)/50 last:border-b-0"
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-(--color-bg-hover) transition-colors border-b border-(--color-border-primary)/50 last:border-b-0"
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
@@ -183,12 +192,21 @@ export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, onRepoReady, 
                         {repo.private ? "Private" : "Public"}
                       </Badge>
                     </div>
-                    {repo.description && (
+                    {isHidden ? (
+                      <p className="mt-0.5 text-xs text-(--color-text-tertiary) truncate">Already added · hidden</p>
+                    ) : repo.description ? (
                       <p className="mt-0.5 text-xs text-(--color-text-secondary) truncate">{repo.description}</p>
-                    )}
+                    ) : null}
                   </div>
+                  {isHidden && (
+                    <span className="ml-auto flex shrink-0 items-center gap-1 rounded text-xs font-medium text-(--color-text-link) px-2 py-1">
+                      <EyeIcon size={ICON_SIZE.XS} className="shrink-0" />
+                      Show
+                    </span>
+                  )}
                 </button>
-              ))}
+                );
+              })}
             </div>
           )}
 

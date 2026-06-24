@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo } from "react";
-import { CubeIcon, DotsSixVerticalIcon, GithubLogoIcon, GitMergeIcon, ListBulletsIcon, PlusIcon, PushPinIcon, TrashIcon, WrenchIcon, SlidersHorizontalIcon, CaretRightIcon, CaretDownIcon } from "@phosphor-icons/react";
+import { CubeIcon, DotsSixVerticalIcon, EyeSlashIcon, GithubLogoIcon, GitMergeIcon, ListBulletsIcon, PlusIcon, PushPinIcon, TrashIcon, WrenchIcon, SlidersHorizontalIcon, CaretRightIcon, CaretDownIcon } from "@phosphor-icons/react";
 import { useAutoAnimate } from "@formkit/auto-animate/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import { parseRepoName } from "../../utils/repo-label.js";
@@ -201,6 +201,7 @@ export function RepoGroup({
   onNewSession,
   onViewAll,
   onProjectSettings,
+  onHideRepo,
   onRemoveRepo,
   isTouch,
   // Drag-and-drop reordering
@@ -227,6 +228,7 @@ export function RepoGroup({
   onNewSession: () => void;
   onViewAll: () => void;
   onProjectSettings: () => void;
+  onHideRepo: () => void;
   onRemoveRepo: () => void;
   isTouch: boolean;
   // Drag-and-drop reordering — only enabled when there's more than one repo.
@@ -379,6 +381,18 @@ export function RepoGroup({
             <DropdownMenuItem onSelect={onProjectSettings}>
               <SlidersHorizontalIcon size={ICON_SIZE.XS} className="shrink-0" />
               Project Settings
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              // docs/222 — pure visibility toggle: drops the repo (and its
+              // sessions) from the sidebar without archiving anything. Reversible
+              // via the "Hidden" section or by re-adding. Acts inline (no confirm)
+              // because nothing is destroyed; normal styling, NOT the destructive
+              // red reserved for Remove below.
+              onSelect={onHideRepo}
+            >
+              <EyeSlashIcon size={ICON_SIZE.XS} className="shrink-0" />
+              Hide from sidebar
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem

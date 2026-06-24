@@ -9,6 +9,7 @@ interface RepoRow {
   status: string;
   warm_session_id: string | null;
   trusted: number;
+  hidden: number;
 }
 
 export class RepoStore {
@@ -27,14 +28,20 @@ export class RepoStore {
     };
     if (row.warm_session_id) info.warmSessionId = row.warm_session_id;
     info.trusted = row.trusted === 1;
+    info.hidden = row.hidden === 1;
     return info;
   }
 
-  /** Add a repo. Sets status to "cloning". Returns the new RepoInfo. */
+  /**
+   * Add a repo. Sets status to "cloning". Returns the new RepoInfo.
+   * Re-adding an existing repo bumps `last_used_at` AND clears `hidden`, so
+   * adding a hidden repo through the normal Add flow brings it back into the
+   * sidebar (docs/222) — no separate unhide step needed.
+   */
   add(url: string): RepoInfo {
     const existing = this.get(url);
     if (existing) {
-      this.db.prepare("UPDATE repos SET last_used_at = ? WHERE url = ?").run(new Date().toISOString(), url);
+      this.db.prepare("UPDATE repos SET last_used_at = ?, hidden = 0 WHERE url = ?").run(new Date().toISOString(), url);
       return this.get(url)!;
     }
     const now = new Date().toISOString();
@@ -138,6 +145,16 @@ export class RepoStore {
       }
     });
     tx();
+  }
+
+  /**
+   * docs/222 — set the sidebar visibility flag. Matched by exact URL (callers
+   * pass the stored repo's url, never a search-result clone URL). Returns true
+   * when a row was updated, false when the url isn't tracked.
+   */
+  setHidden(url: string, hidden: boolean): boolean {
+    const result = this.db.prepare("UPDATE repos SET hidden = ? WHERE url = ?").run(hidden ? 1 : 0, url);
+    return result.changes > 0;
   }
 
   /** Check if a repo URL is already tracked. */

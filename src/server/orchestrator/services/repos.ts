@@ -55,6 +55,25 @@ export function setRepoTrusted(
   repoStore.setTrusted(trimmed, true);
 }
 
+/**
+ * docs/222 — hide or show a repo in the sidebar. A pure visibility flag: it does
+ * NOT touch sessions, containers, working copies, or history (unlike removeRepo).
+ * Throws 404 when the url isn't a tracked repo.
+ */
+export function setRepoHidden(
+  repoStore: RepoStore,
+  url: string | undefined,
+  hidden: boolean,
+): void {
+  if (!url?.trim()) {
+    throw new ServiceError(400, "Repository URL is required");
+  }
+  const updated = repoStore.setHidden(url.trim(), hidden);
+  if (!updated) {
+    throw new ServiceError(404, "Repository not found");
+  }
+}
+
 /** Remove a repo from the store. */
 export function removeRepo(
   repoStore: RepoStore,
