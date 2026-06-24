@@ -33,6 +33,31 @@ export interface AgentReasoningCapability {
   options: { value: string; label: string }[];
 }
 
+/**
+ * docs/217 — per-agent defaults applied when an agent is invoked as a SUB-agent
+ * (`shipit agent run --agent <id>` from inside another session). A grouped
+ * object (not a scalar) so the "Sub-agent defaults" section can grow: it started
+ * with `reasoningEffort` and now also carries a default `model`. Each field
+ * absent ⇒ the sub-agent falls back to the backend's native default (no
+ * `--effort` flag; `models[0]` for the model).
+ */
+export interface SubAgentDefaults {
+  /** Reasoning effort the sub-agent runs with (a value from `reasoning.options`). */
+  reasoningEffort?: string;
+  /** Model alias/id the sub-agent runs with (a value from the agent's `models`). */
+  model?: string;
+}
+
+/**
+ * A write patch for {@link SubAgentDefaults}. An explicit `null` for a field
+ * clears it (reverting to the backend's native default); `undefined`/absent
+ * leaves it unchanged.
+ */
+export interface SubAgentDefaultsPatch {
+  reasoningEffort?: string | null;
+  model?: string | null;
+}
+
 export interface AgentCapabilities {
   /** Whether the agent can resume a previous conversation (e.g. --resume). */
   supportsResume: boolean;

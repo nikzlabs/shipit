@@ -72,7 +72,7 @@ import { RebaseBanner } from "./components/RebaseBanner.js";
 import { QueueIndicator } from "./components/QueueIndicator.js";
 import { AgentStatusBar } from "./components/AgentStatusBar.js";
 import type { AgentOption } from "./agent-types.js";
-import type { AgentId, DocEntry, ProviderAccount, TrackerIssue, ReleaseMechanism } from "../server/shared/types.js";
+import type { AgentId, DocEntry, ProviderAccount, TrackerIssue, ReleaseMechanism, SubAgentDefaults } from "../server/shared/types.js";
 
 import { useSessionStore } from "./stores/session-store.js";
 import { useGitStore } from "./stores/git-store.js";
@@ -770,7 +770,7 @@ export default function App() {
     useUiStore.getState().setSettingsTab(tab);
     useUiStore.getState().setSettingsOpen(true);
     try {
-      const data = await apiGet<{ settings: { gitIdentity: { name: string; email: string }; systemPrompt: string; agents: AgentOption[]; maxIdleContainers?: number; agentSystemInstructionsEnabled?: boolean; agentSystemInstructions?: string; autoCreatePr?: boolean; liveSteering?: boolean; autoResolveConflicts?: boolean; autoFixCi?: boolean; autoResetMergedBranch?: boolean; enableSubAgents?: boolean; agentSubAgentDefaults?: Record<string, { reasoningEffort?: string }>; voiceDeliveryMode?: "native" | "external" | "both"; voiceWebhookConfigured?: boolean; providerAccounts?: ProviderAccount[] } }>("/api/bootstrap");
+      const data = await apiGet<{ settings: { gitIdentity: { name: string; email: string }; systemPrompt: string; agents: AgentOption[]; maxIdleContainers?: number; agentSystemInstructionsEnabled?: boolean; agentSystemInstructions?: string; autoCreatePr?: boolean; liveSteering?: boolean; autoResolveConflicts?: boolean; autoFixCi?: boolean; autoResetMergedBranch?: boolean; enableSubAgents?: boolean; agentSubAgentDefaults?: Record<string, SubAgentDefaults>; voiceDeliveryMode?: "native" | "external" | "both"; voiceWebhookConfigured?: boolean; providerAccounts?: ProviderAccount[] } }>("/api/bootstrap");
       useGitStore.getState().setIdentity(data.settings.gitIdentity);
       useSettingsStore.getState().setSystemPromptContent(data.settings.systemPrompt);
       useSettingsStore.getState().setHasSystemPrompt(data.settings.systemPrompt.length > 0);

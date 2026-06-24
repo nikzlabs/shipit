@@ -55,6 +55,36 @@ describe("CredentialStore", () => {
       expect(store.getAgentSubAgentDefaults("codex")).toEqual({});
       expect(store.getAllAgentSubAgentDefaults()).toEqual({});
     });
+
+    it("round-trips a model default and persists it", () => {
+      const dir = createTmpDir();
+      const store = new CredentialStore(dir);
+      store.setAgentSubAgentDefaults("codex", { model: "gpt-5.5" });
+      expect(store.getAgentSubAgentDefaults("codex")).toEqual({ model: "gpt-5.5" });
+
+      const reloaded = new CredentialStore(dir);
+      expect(reloaded.getAgentSubAgentDefaults("codex")).toEqual({ model: "gpt-5.5" });
+    });
+
+    it("merges reasoningEffort and model independently", () => {
+      const store = new CredentialStore(createTmpDir());
+      store.setAgentSubAgentDefaults("claude", { reasoningEffort: "high" });
+      store.setAgentSubAgentDefaults("claude", { model: "opus" });
+      expect(store.getAgentSubAgentDefaults("claude")).toEqual({ reasoningEffort: "high", model: "opus" });
+
+      // Clearing one field leaves the other intact.
+      store.setAgentSubAgentDefaults("claude", { reasoningEffort: null });
+      expect(store.getAgentSubAgentDefaults("claude")).toEqual({ model: "opus" });
+    });
+
+    it("drops the entry only once both fields are cleared", () => {
+      const store = new CredentialStore(createTmpDir());
+      store.setAgentSubAgentDefaults("codex", { reasoningEffort: "low", model: "gpt-5.5" });
+      store.setAgentSubAgentDefaults("codex", { model: null });
+      expect(store.getAgentSubAgentDefaults("codex")).toEqual({ reasoningEffort: "low" });
+      store.setAgentSubAgentDefaults("codex", { reasoningEffort: null });
+      expect(store.getAllAgentSubAgentDefaults()).toEqual({});
+    });
   });
 
   // ---- Agent env ----

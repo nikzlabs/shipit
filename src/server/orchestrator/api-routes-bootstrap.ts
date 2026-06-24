@@ -4,7 +4,7 @@
  */
 
 import type { FastifyInstance } from "fastify";
-import type { AgentId } from "../shared/types.js";
+import type { AgentId, SubAgentDefaultsPatch } from "../shared/types.js";
 import type { ApiDeps } from "./api-routes.js";
 
 import {
@@ -75,7 +75,7 @@ export async function registerBootstrapRoutes(
     /** docs/144 — global gate for sub-agent spawning. */
     enableSubAgents?: boolean;
     /** docs/217 — per-agent sub-agent defaults patch, keyed by agent id. */
-    agentSubAgentDefaults?: Record<string, { reasoningEffort?: string | null }>;
+    agentSubAgentDefaults?: Record<string, SubAgentDefaultsPatch>;
     /** docs/163 — voice-note delivery mode (native / external / both). */
     voiceDeliveryMode?: "native" | "external" | "both";
   } }>(

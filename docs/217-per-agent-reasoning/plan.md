@@ -43,11 +43,11 @@ Control A lives on each agent's existing Settings tab — the page that already
 holds that agent's connection/auth info (`ClaudeAuthCard` + `ProviderAccountSection`
 in `ClaudeTab.tsx` / `CodexTab.tsx`). It is framed as a **"Sub-agent defaults"**
 section: the settings a *parent* agent's sub-invocation of *this* agent should
-run with. Reasoning effort is the first member; a **default model** for the
-sub-agent invocation is the natural next member of the same group (sub-agents
-otherwise fall back to the agent's `models[0]`). The server store is therefore
-shaped to grow — keep the per-agent sub-agent settings together rather than as a
-single scalar.
+run with. It has **two members**: a **default model** and a **reasoning effort**.
+Each defaults to the backend's own choice when left at "Default" — `models[0]`
+for the model, no `--effort` flag for reasoning. The server store is a per-agent
+object (`SubAgentDefaults`, shared in `agent-types.ts`) rather than a scalar so
+the group can keep growing.
 
 Both controls share the **same per-agent option metadata** and the **same
 spawn-time plumbing** (`AgentRunParams.reasoningEffort` → CLI flag); only the
@@ -94,24 +94,29 @@ nothing / passes no CLI flag, so each backend uses its own native default.
 ## Control A — Sub-agent defaults (per-agent Settings tab → sub-agents)
 
 1. **Store (extensible shape)** — `CredentialStore` (`orchestrator/credential-store.ts`): add
-   `agentSubAgentDefaults?: Record<string, { reasoningEffort?: string }>` — a per-agent object so the
-   group can grow (a default `model` is the planned next member; sub-agents otherwise use `models[0]`).
-   Accessors `getAgentSubAgentDefaults(agentId)` and `setAgentSubAgentDefaults(agentId, partial)`
-   (merge; `reasoningEffort: null`/undefined clears → default), each calling `save()`. Persists to the
-   global `/credentials/shipit-credentials.json`, alongside `autoCreatePr`, `enableSubAgents`, etc.
+   `agentSubAgentDefaults?: Record<string, SubAgentDefaults>` where
+   `SubAgentDefaults = { reasoningEffort?: string; model?: string }` (shared type in `agent-types.ts`)
+   — a per-agent object so the group can grow. Accessors `getAgentSubAgentDefaults(agentId)` and
+   `setAgentSubAgentDefaults(agentId, patch)` (per-field merge; a `null`/undefined field clears →
+   default, leaving sibling fields intact; the entry drops out only once empty), each calling `save()`.
+   Persists to the global `/credentials/shipit-credentials.json`, alongside `autoCreatePr`,
+   `enableSubAgents`, etc.
 2. **Global settings surface** — add `agentSubAgentDefaults` to the `GlobalSettings` type and to
    `getGlobalSettings()` / `saveGlobalSettings()` (`orchestrator/services/settings.ts`); extend
    `PUT /api/settings` (`api-routes-bootstrap.ts`) to accept a partial map and merge per-agent.
    Returned in `/api/bootstrap`.
-3. **Validation** (`orchestrator/validation.ts`): agentId must be registered and `reasoningEffort`
-   must be in that agent's `reasoning.options` (or null). Reject with `ServiceError(400, …)`.
-4. **Sub-agent run-params** — thread `reasoningEffort` through `buildSubAgentRunParams`
-   (`src/server/shared/sub-agent-run.ts`) / `runSubAgent` (`services/sub-agent.ts`), sourced from
-   `getAgentSubAgentDefaults(subAgentId).reasoningEffort` so the invoked backend gets **its own** default.
-5. **Settings UI** — add a **"Sub-agent defaults"** section to each agent's tab
-   (`Settings/tabs/ClaudeTab.tsx`, `CodexTab.tsx`), beside the auth card. It renders that agent's
-   `reasoning.options` (+ "Default") and writes the map via the settings store → `PUT /api/settings`.
-   Built to host the future default-model selector in the same section.
+3. **Validation** (`services/settings.ts` `saveGlobalSettings`): agentId must be registered;
+   `reasoningEffort` must be in that agent's `reasoning.options` (or null), and `model` must be in
+   that agent's `models` (or null). Reject with `ServiceError(400, …)`.
+4. **Sub-agent run-params** — `model` and `reasoningEffort` both already flow through
+   `SubAgentSpawnRequest` → `buildSubAgentRunParams` (`src/server/shared/sub-agent-run.ts`) → the
+   adapters; `runSubAgent` (`services/sub-agent.ts`) sources both from
+   `getAgentSubAgentDefaults(subAgentId)` so the invoked backend gets **its own** defaults.
+5. **Settings UI** — a **"Sub-agent defaults"** section (`SubAgentDefaultsSection.tsx`) on each
+   agent's tab (`Settings/tabs/ClaudeTab.tsx`, `CodexTab.tsx`), beside the auth card. It renders a
+   **Model** row (the agent's `models` + "Default") and a **reasoning** row (`reasoning.options` +
+   "Default"), each writing a single-field patch via the settings store → `PUT /api/settings`. The
+   merge/clear is field-generic (`FIELDS` loop) so adding a third member is one array entry.
 
 ## Control B — Session control (composer → active turns)
 

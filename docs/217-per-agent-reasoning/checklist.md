@@ -8,14 +8,14 @@
 - [x] Tests: registry metadata distinct per agent; claude arg-build; codex arg-build
 
 ## Control A — Sub-agent defaults (per-agent Settings tab → sub-agents)
-- [x] `agentSubAgentDefaults` map (`Record<agentId, { reasoningEffort? }>`) + merge accessors on `CredentialStore`
+- [x] `agentSubAgentDefaults` map (`Record<agentId, SubAgentDefaults>`, `{ reasoningEffort?, model? }`) + per-field merge accessors on `CredentialStore`
 - [x] `agentSubAgentDefaults` in `GlobalSettings` + `get/saveGlobalSettings`
-- [x] `PUT /api/settings` accepts + merges partial `agentSubAgentDefaults`
-- [x] Validation rejects unknown agent / out-of-set `reasoningEffort`
-- [x] Sub-agent spawn reads `getAgentSubAgentDefaults(subAgentId).reasoningEffort` (threaded through `sub-agent-run.ts`, `services/sub-agent.ts`, runners, worker)
-- [x] Settings UI: "Sub-agent defaults" section on `ClaudeTab`/`CodexTab` (`SubAgentDefaultsSection.tsx`)
+- [x] `PUT /api/settings` accepts + merges partial `agentSubAgentDefaults` (both fields)
+- [x] Validation rejects unknown agent / out-of-set `reasoningEffort` / out-of-set `model`
+- [x] Sub-agent spawn reads `getAgentSubAgentDefaults(subAgentId)` (`reasoningEffort` + `model`) — both threaded through `sub-agent-run.ts`, `services/sub-agent.ts`, runners, worker
+- [x] Settings UI: "Sub-agent defaults" section on `ClaudeTab`/`CodexTab` (`SubAgentDefaultsSection.tsx`) — Model + reasoning rows
 - [x] Client store hydration (`agentSubAgentDefaults` in settings-store, bootstrap, settings broadcast)
-- [x] Tests: credential-store round-trip/persist/clear
+- [x] Tests: credential-store round-trip/persist/clear (reasoning + model + independent merge); sub-agent spawn forwards both defaults
 
 ## Control B — Session control (composer → active turns)
 - [x] `reasoning_effort` column + migration (`database.ts`)

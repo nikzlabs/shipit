@@ -7,7 +7,7 @@ import type {
   OAuthTokens,
   McpOAuthRegisteredClient,
 } from "../shared/types/mcp-types.js";
-import type { AgentId, ProviderAccount } from "../shared/types.js";
+import type { AgentId, ProviderAccount, SubAgentDefaults, SubAgentDefaultsPatch } from "../shared/types.js";
 import type { VoiceDeliveryMode } from "../shared/types/voice-note-types.js";
 import { DEFAULT_VOICE_DELIVERY_MODE } from "../shared/types/voice-note-types.js";
 
@@ -68,10 +68,10 @@ interface CredentialData {
    * docs/217 — per-agent defaults applied when this agent is invoked as a
    * SUB-agent (`shipit agent run --agent <id>` from inside another session).
    * Keyed by agent id. A per-agent object (not a scalar) so the group can grow
-   * — a default `model` for the sub-agent invocation is the planned next member.
-   * Absent / `reasoningEffort` unset ⇒ pass no flag (the CLI's native default).
+   * — `reasoningEffort` and a default `model` for the sub-agent invocation.
+   * A field unset ⇒ the backend's native default (no `--effort` flag; `models[0]`).
    */
-  agentSubAgentDefaults?: Record<string, { reasoningEffort?: string }>;
+  agentSubAgentDefaults?: Record<string, SubAgentDefaults>;
   /**
    * Account-level MCP server configs keyed by name (docs/088). Values use
    * `$secret:` placeholders — the raw secret values live in `agentEnv` under
@@ -668,31 +668,33 @@ export class CredentialStore {
   // ---- Sub-agent defaults (docs/217) ----
 
   /** Read the per-agent sub-agent defaults (empty object when unset). */
-  getAgentSubAgentDefaults(agentId: string): { reasoningEffort?: string } {
+  getAgentSubAgentDefaults(agentId: string): SubAgentDefaults {
     return this.data.agentSubAgentDefaults?.[agentId] ?? {};
   }
 
   /** Read the full per-agent sub-agent-defaults map (for the settings payload). */
-  getAllAgentSubAgentDefaults(): Record<string, { reasoningEffort?: string }> {
+  getAllAgentSubAgentDefaults(): Record<string, SubAgentDefaults> {
     return { ...(this.data.agentSubAgentDefaults ?? {}) };
   }
 
   /**
    * Merge a partial sub-agent-defaults patch for one agent. An explicit `null`
-   * (or `undefined`) for a key clears it, falling back to the CLI's own default.
+   * (or `undefined`) for a field clears it, falling back to the CLI's own
+   * default. A field absent from the patch is left unchanged.
    */
-  setAgentSubAgentDefaults(
-    agentId: string,
-    patch: { reasoningEffort?: string | null },
-  ): void {
+  setAgentSubAgentDefaults(agentId: string, patch: SubAgentDefaultsPatch): void {
     const current = { ...(this.data.agentSubAgentDefaults?.[agentId] ?? {}) };
     if ("reasoningEffort" in patch) {
       if (patch.reasoningEffort) current.reasoningEffort = patch.reasoningEffort;
       else delete current.reasoningEffort;
     }
+    if ("model" in patch) {
+      if (patch.model) current.model = patch.model;
+      else delete current.model;
+    }
     // Rebuild the map (rather than `delete map[agentId]`) so a now-empty entry
     // drops out without a dynamic-delete.
-    const next: Record<string, { reasoningEffort?: string }> = {};
+    const next: Record<string, SubAgentDefaults> = {};
     for (const [id, value] of Object.entries(this.data.agentSubAgentDefaults ?? {})) {
       if (id !== agentId) next[id] = value;
     }

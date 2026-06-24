@@ -3,7 +3,7 @@
  */
 
 import type { AgentId, PermissionMode } from "../../shared/types.js";
-import type { AgentReasoningCapability } from "../../shared/types/agent-types.js";
+import type { AgentReasoningCapability, SubAgentDefaults } from "../../shared/types/agent-types.js";
 import type { ProviderAccount, SessionInfo, ProjectTemplate, RepoInfo, RuntimeMode } from "../../shared/types.js";
 import type { VoiceDeliveryMode } from "../../shared/types/voice-note-types.js";
 
@@ -81,7 +81,7 @@ export interface GlobalSettings {
    * sub-agent (governs the `shipit agent run` path). Keyed by agent id; set on
    * each agent's Settings tab. Empty object when nothing is configured.
    */
-  agentSubAgentDefaults: Record<string, { reasoningEffort?: string }>;
+  agentSubAgentDefaults: Record<string, SubAgentDefaults>;
   /**
    * docs/163 — voice-note delivery mode: "native" (inline note + TTS),
    * "external" (webhook only), or "both". Default "native".
