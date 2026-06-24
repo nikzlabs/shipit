@@ -535,12 +535,26 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
       this.claudeConfigDir(this.activeCredentialDir),
     );
 
+    // Strip env-var auth from the login subprocess. `claude /login` honors
+    // `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` *over* the interactive OAuth
+    // flow: with either present it treats the CLI as already authenticated and
+    // never emits the code-paste URL, so the flow silently hangs on
+    // "Starting…". The on-disk wipe above can't fix this because the blocker
+    // lives in the environment, not on disk — which is exactly why the only
+    // workaround that worked was "Clear saved credentials" (DELETE
+    // /api/auth/api-key → `clearApiKey()` *deletes* `process.env.ANTHROPIC_API_KEY`).
+    // We sanitize only this child's env, never the orchestrator's own, so
+    // env-var auth keeps working everywhere else (dogfooding, agent turns).
+    const loginEnv: NodeJS.ProcessEnv = { ...process.env, HOME: home };
+    delete loginEnv.ANTHROPIC_API_KEY;
+    delete loginEnv.ANTHROPIC_AUTH_TOKEN;
+
     // Use a wide terminal to minimize URL wrapping
     this.proc = pty.spawn("claude", ["/login"], {
       name: "xterm-256color",
       cols: 200,
       rows: 24,
-      env: { ...process.env, HOME: home },
+      env: loginEnv,
     });
     console.log("[auth] Spawned claude /login (pid %d)", this.proc.pid);
 
