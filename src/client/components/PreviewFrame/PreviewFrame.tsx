@@ -32,7 +32,7 @@ export interface PreviewStatus {
 
 interface PreviewFrameProps {
   preview: PreviewStatus | null;
-  /** Current session ID — used in iframe key to force reload on session switch. */
+  /** Current session ID — part of the iframe-pool slot key (`sessionId:port`). */
   sessionId?: string;
   /** Sessions whose PR has merged; background iframes for these sessions are torn down. */
   mergedSessionIds?: string[];
@@ -494,8 +494,15 @@ export function PreviewFrame({
         ref={deviceContainerRef}
         className={`flex-1 relative ${deviceFrameActive ? "bg-(--color-bg-tertiary) overflow-hidden" : ""}`}
       >
-        {/* Persistent iframes — each (session, port) gets its own iframe, hidden via CSS when not active */}
-        {slotOrder.map((key) => {
+        {/* Persistent iframes — each (session, port) gets its own iframe, hidden via CSS when not active.
+            Render in stable INSERTION order (the `slots` Map preserves it), NOT the LRU `slotOrder`.
+            `slotOrder` reorders on every session switch (promoteSlot moves the active slot to the
+            front), and reordering keyed <iframe> elements moves them in the DOM — which forces the
+            browser to RELOAD the iframe, wiping its in-page state and defeating the whole pool.
+            Insertion order never moves an existing iframe, so a cached preview survives switching
+            away and back. The active slot is chosen via CSS visibility below, so render order is
+            purely structural and doesn't affect which preview is shown. */}
+        {[...slots.keys()].map((key) => {
           const slot = slots.get(key);
           if (!slot) return null;
           const isActive = key === activeSlotKey;
