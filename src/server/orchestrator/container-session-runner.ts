@@ -203,6 +203,17 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     "compose.yaml",
   ]);
 
+  /**
+   * Cooldown between dependency-change-triggered reinstalls (#1622). A git
+   * `reset`/`checkout`/`rebase` or a manual `npm install` can rewrite a lockfile
+   * repeatedly; this throttles the auto-reinstall so back-to-back dep-input
+   * changes (including the reinstall's own lockfile rewrite) can't spin an
+   * install loop. A change arriving inside the window schedules a single
+   * trailing reinstall so the final lockfile state always wins. Matches the
+   * "30s cooldown" the agent-facing docs (environment.md / preview.md) promise.
+   */
+  private static readonly DEP_REINSTALL_COOLDOWN_MS = 30_000;
+
   private _disposed = false;
   pendingCommitLink: { commitHash: string; parentCommitHash: string } | null = null;
   private _subAgentSpawnsThisTurn = 0;
@@ -1149,6 +1160,22 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _installPostIssued = false;
 
   /**
+   * #1622 — dependency-change auto-reinstall state. `_depReinstallCommands` is
+   * this session's `agent.install` and `_depReinstallInputs` the resolved set
+   * of dependency input files to watch (lockfiles + manifests, from
+   * `resolveDepsHashInputs`), both pushed by `setupServiceManager` via
+   * {@link setDepReinstallInputs}. When the file watcher reports one of those
+   * inputs changed — including from a git operation, which rewrites files on
+   * disk like any edit — we re-run install and restart gated services. The
+   * cooldown fields throttle that (see {@link DEP_REINSTALL_COOLDOWN_MS}).
+   */
+  private _depReinstallCommands: string[] = [];
+  private _depReinstallInputs: string[] = [];
+  private _lastDepReinstallAt = 0;
+  private _depReinstallPending = false;
+  private _depReinstallTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
    * Run agent.install commands on the session worker. Returns a promise that
    * resolves when the install is fully complete — success, error, or skipped.
    * Progress streams via SSE events to attached viewers.
@@ -1243,6 +1270,85 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       });
       this.signalInstallComplete(false);
       return { ok: false };
+    }
+  }
+
+  /**
+   * #1622 — record this session's install commands and the dependency input
+   * files (lockfiles + manifests) whose change should trigger an auto-reinstall.
+   * Pushed by `setupServiceManager` once it has resolved `shipit.yaml`. An empty
+   * `inputs` (no install configured, or a non-content-keyable install such as a
+   * shell script) disables auto-reinstall for this session — the safe default.
+   */
+  setDepReinstallInputs(commands: string[], inputs: string[]): void {
+    this._depReinstallCommands = commands;
+    this._depReinstallInputs = inputs;
+  }
+
+  /**
+   * True when a changed path is one of this session's dependency input files.
+   * Paths arrive workspace-relative; the watcher and `git` may prefix `./`, so
+   * normalize before comparing. Pure so the predicate is unit-testable.
+   */
+  private isDepInputChange(paths: string[]): boolean {
+    if (this._depReinstallInputs.length === 0) return false;
+    return paths.some((p) => this._depReinstallInputs.includes(p.replace(/^\.\//, "")));
+  }
+
+  /**
+   * #1622 — a dependency input file changed (edit OR git operation). Re-run
+   * install so the agent container and gated services pick up the new tree,
+   * throttled by {@link DEP_REINSTALL_COOLDOWN_MS}. Leading-edge: fire at once
+   * when idle; while a reinstall is in flight or within the cooldown, set a
+   * pending flag and arm a single trailing timer so the final lockfile state is
+   * always installed. The worker `/install` marker gate makes a no-op change a
+   * fast skip, so triggering eagerly is safe.
+   */
+  private maybeReinstallForDepChange(): void {
+    if (this._disposed) return;
+    if (this._depReinstallCommands.length === 0) return;
+
+    const now = Date.now();
+    const elapsed = now - this._lastDepReinstallAt;
+    const inFlight = this._installComplete !== null;
+    if (inFlight || (this._lastDepReinstallAt !== 0 && elapsed < ContainerSessionRunner.DEP_REINSTALL_COOLDOWN_MS)) {
+      // Coalesce into one trailing reinstall after the cooldown window.
+      this._depReinstallPending = true;
+      if (!this._depReinstallTimer) {
+        const wait = inFlight
+          ? ContainerSessionRunner.DEP_REINSTALL_COOLDOWN_MS
+          : ContainerSessionRunner.DEP_REINSTALL_COOLDOWN_MS - elapsed;
+        this._depReinstallTimer = setTimeout(() => {
+          this._depReinstallTimer = null;
+          if (this._depReinstallPending) this.maybeReinstallForDepChange();
+        }, Math.max(0, wait));
+        this._depReinstallTimer.unref?.();
+      }
+      return;
+    }
+
+    this._depReinstallPending = false;
+    this._lastDepReinstallAt = now;
+    void this.reinstallForDepChange();
+  }
+
+  /**
+   * Run the bracketed mid-session reinstall: open the install gate (which holds
+   * + tears down `dependsOnInstall` services), re-run `agent.install`, then
+   * close the gate (which relaunches them against the fresh tree, or latches
+   * them to `error` on failure). Mirrors the bracket in `setupServiceManager`.
+   */
+  private async reinstallForDepChange(): Promise<void> {
+    const mgr = this._serviceManager;
+    console.log(`[container-runner:${this.sessionId}] dependency input changed — reinstalling`);
+    mgr?.setInstallRunning(true);
+    let res: { ok: boolean } = { ok: true };
+    try {
+      res = await this.runInstall(this._depReinstallCommands);
+    } catch {
+      res = { ok: false };
+    } finally {
+      mgr?.setInstallRunning(false, { failed: !res.ok });
     }
   }
 
@@ -1702,6 +1808,15 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
               this.onComposeConfigChanged();
             }
           }
+
+          // #1622 — a dependency input file (lockfile/manifest) changed. This
+          // fires for git operations (reset/checkout/rebase) as well as direct
+          // edits, since they rewrite files on disk the watcher reports. Re-run
+          // install + restart gated services so a stale dep tree can't leave the
+          // preview 500'ing on an unresolved import.
+          if (this.isDepInputChange(paths)) {
+            this.maybeReinstallForDepChange();
+          }
           break;
         }
       }
@@ -1903,6 +2018,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // would force a full restart on reconnect.
 
     this.stopReconcileTimer();
+    if (this._depReinstallTimer) {
+      clearTimeout(this._depReinstallTimer);
+      this._depReinstallTimer = null;
+    }
+    this._depReinstallPending = false;
     this.clearServiceManager();
     this.sse.disconnect();
     this.clearPushTimer();

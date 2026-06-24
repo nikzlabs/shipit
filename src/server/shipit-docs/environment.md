@@ -78,9 +78,12 @@ commit message is derived from your turn summary.
 **Hot reload**: When you edit files, compose services with mounted volumes
 pick up changes automatically. No need to restart dev servers after code edits.
 
-**Dependency detection**: Changes to lockfiles (`package-lock.json`,
-`yarn.lock`, `pnpm-lock.yaml`) trigger an automatic install + service restart
-(debounced with a 30s cooldown).
+**Dependency detection**: Changes to a dependency file — a lockfile
+(`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`) or the manifest your
+install reads — trigger an automatic install + service restart (throttled with
+a 30s cooldown). This covers **git operations** (`git reset`/`checkout`/`rebase`
+that change the dependency tree), not just direct edits — so a reset to a commit
+that added a dependency reinstalls and restarts the preview automatically.
 
 **Compose services**: Project services (dev servers, databases, caches) run as
 Docker Compose containers managed by ShipIt. Define them in
