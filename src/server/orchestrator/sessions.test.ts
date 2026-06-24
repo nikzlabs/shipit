@@ -975,11 +975,13 @@ describe("SessionManager", () => {
 
     it("excludes an old merged session beyond the cap, then includes it once reopened", () => {
       const mgr = new SessionManager(dbManager);
-      // 4 merged sessions in one repo, cap is 3. `target` has the oldest merge.
+      // cap+1 merged sessions in one repo; `target` has the oldest merge, so it
+      // falls beyond the top-N merged cap (whatever the cap is set to).
       seedMerged(mgr, "target", "2024-01-01 09:00:00", "2024-01-01 09:00:00");
-      seedMerged(mgr, "m2", "2024-01-02 09:00:00", "2024-01-02 09:00:00");
-      seedMerged(mgr, "m3", "2024-01-03 09:00:00", "2024-01-03 09:00:00");
-      seedMerged(mgr, "m4", "2024-01-04 09:00:00", "2024-01-04 09:00:00");
+      for (let i = 0; i < MAX_MERGED_SESSIONS_PER_REPO; i++) {
+        const day = String(i + 2).padStart(2, "0");
+        seedMerged(mgr, `m${i + 2}`, `2024-01-${day} 09:00:00`, `2024-01-${day} 09:00:00`);
+      }
 
       // Before reopening: target is beyond the top-N merged cap → not listed.
       expect(mgr.list().map((s) => s.id)).not.toContain("target");
@@ -996,16 +998,24 @@ describe("SessionManager", () => {
 
     it("archiving a visible merged session lowers the count without surfacing a demoted one", () => {
       const mgr = new SessionManager(dbManager);
-      // 4 merged in one repo, default cap is 3. m1 has the oldest merge → demoted.
-      seedMerged(mgr, "m1", "2024-01-01 09:00:00", "2024-01-01 09:00:00");
-      seedMerged(mgr, "m2", "2024-01-02 09:00:00", "2024-01-02 09:00:00");
-      seedMerged(mgr, "m3", "2024-01-03 09:00:00", "2024-01-03 09:00:00");
-      seedMerged(mgr, "m4", "2024-01-04 09:00:00", "2024-01-04 09:00:00");
-      expect(mgr.list().map((s) => s.id).sort()).toEqual(["m2", "m3", "m4"]);
+      // cap+1 merged in one repo; m1 has the oldest merge → demoted beyond the cap.
+      const ids: string[] = [];
+      for (let i = 0; i <= MAX_MERGED_SESSIONS_PER_REPO; i++) {
+        const day = String(i + 1).padStart(2, "0");
+        const id = `m${i + 1}`;
+        ids.push(id);
+        seedMerged(mgr, id, `2024-01-${day} 09:00:00`, `2024-01-${day} 09:00:00`);
+      }
+      // Visible = the newest `cap` (everything except the oldest, m1).
+      const visible = ids.slice(1);
+      expect(mgr.list().map((s) => s.id).sort()).toEqual([...visible].sort());
 
-      // Archive a visible one → count drops to 2; m1 stays demoted (not promoted).
-      mgr.archive("m3");
-      expect(mgr.list().map((s) => s.id).sort()).toEqual(["m2", "m4"]);
+      // Archive one visible session → count drops by one; the demoted m1 stays
+      // demoted (archiving must NOT promote a session past the cap).
+      const archived = visible[1];
+      mgr.archive(archived);
+      const remaining = visible.filter((id) => id !== archived);
+      expect(mgr.list().map((s) => s.id).sort()).toEqual([...remaining].sort());
     });
   });
 });

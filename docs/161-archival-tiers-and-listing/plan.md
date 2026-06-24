@@ -1,4 +1,5 @@
 ---
+issue: https://linear.app/shipit-ai/issue/SHI-210
 description: Decouple session *visibility* in the sidebar from *disk reclamation*, replace the single destructive archive with graduated cleanup tiers, and guarantee a restored session is based on fresh origin/main instead of a stale bare-cache snapshot.
 ---
 
@@ -60,9 +61,9 @@ Today a single boolean, `archived`, does three unrelated jobs at once:
    container, drops the compose named volumes, and `fs.rm`s the *entire*
    workspace checkout (`services/session.ts:248-344`).
 3. **Is triggered automatically** the instant any PR in the repo merges, keeping
-   only the 3 most-recently-active merged sessions per repo
+   only the N most-recently-active merged sessions per repo
    (`markMergedAndPruneExcess`, `services/session.ts:364`,
-   `MAX_MERGED_SESSIONS_PER_REPO = 3`).
+   `MAX_MERGED_SESSIONS_PER_REPO`; N raised 3 → 5 in Part 4).
 
 Because these three are fused, the product behaves badly:
 
@@ -520,6 +521,35 @@ would be retried 3× and then rethrown, aborting restore. The implementation mus
 separate the two: a failed fetch is caught and downgraded to "serve cached
 `main` + warn," while clone failures keep their retry. Same principle as 157's
 "surface staleness in bootstrap."
+
+## Part 4 — Collapsible "Recently resolved" sub-section
+
+The "Recently resolved" sub-section sinks merged/closed sessions to the bottom of
+their repo group (Part 1). Two refinements, no new setting:
+
+- **Cap raised 3 → 5** (`MAX_MERGED_SESSIONS_PER_REPO`). The "I merged a few in a
+  row after a break and want to step back into one" moment routinely reaches past
+  the last three. The cap is view-only (exceeding it just hides from the sidebar;
+  the session stays reachable via search / All Sessions and via the pin / reopen
+  exemptions), so a higher cap costs nothing.
+- **Per-repo collapse, expanded by default, remembered.** The sub-header is a
+  toggle. Default is *expanded* (the feature exists for quick access to the thing
+  you just merged — collapsing by default would fight that for the common 1–2 repo
+  user). The clutter case is the multi-repo user with many resolved rows; they
+  collapse a noisy repo's list **once** and it sticks. Because the cap — and thus
+  the sub-section — is *per repo*, the per-repo collapse doubles as the per-repo
+  control a numeric "how many to show" setting would have given, without a knob.
+
+UI: the collapse caret hugs the "Recently resolved" label (not the right gutter)
+so it reads as part of the section title rather than echoing the repo header's own
+left caret one indent up; the whole row is the hit target. Variants explored in
+`mocks/resolved-collapse-placement.html` (chosen: caret-next-to-text). State lives
+in `repo-store` (`collapsedResolved: Set<repoUrl>`), persisted to localStorage
+(`shipit-collapsed-resolved`), mirroring `collapsedRepos`. Absence = expanded.
+
+Key files: `SessionGroup.tsx` (`RepoGroup` resolved sub-header + render gate),
+`SessionSidebar.tsx` (store wiring), `repo-store.ts` (`toggleResolvedCollapsed`),
+`local-storage.ts` (`get/saveCollapsedResolved`), `sessions.ts` (the cap constant).
 
 ---
 

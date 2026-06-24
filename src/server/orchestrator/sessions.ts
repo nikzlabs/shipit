@@ -62,8 +62,14 @@ interface SessionRow {
   merged_head_sha: string | null;
 }
 
-/** Maximum number of merged sessions shown per repository in the sidebar. */
-export const MAX_MERGED_SESSIONS_PER_REPO = 3;
+/**
+ * Maximum number of recently-resolved sessions shown per repository in the
+ * sidebar. docs/161 — raised from 3 to 5: the "I merged a few in a row after a
+ * break and want to step back into one" moment routinely reaches past the last
+ * three. The sidebar's "Recently resolved" sub-section is collapsible per repo
+ * (expanded by default), so a higher cap costs nothing for users who tuck it away.
+ */
+export const MAX_MERGED_SESSIONS_PER_REPO = 5;
 
 /**
  * docs/211 — parse the persisted `capabilities` JSON, tolerating corrupt/legacy

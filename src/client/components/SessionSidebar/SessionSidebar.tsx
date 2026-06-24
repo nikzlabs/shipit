@@ -66,6 +66,8 @@ export function SessionSidebar({
   const toggleRepoCollapsed = useRepoStore((s) => s.toggleRepoCollapsed);
   const collapsedParents = useRepoStore((s) => s.collapsedParents);
   const toggleParentCollapsed = useRepoStore((s) => s.toggleParentCollapsed);
+  const collapsedResolved = useRepoStore((s) => s.collapsedResolved);
+  const toggleResolvedCollapsed = useRepoStore((s) => s.toggleResolvedCollapsed);
   const opsCollapsed = useRepoStore((s) => s.opsCollapsed);
   const toggleOpsCollapsed = useRepoStore((s) => s.toggleOpsCollapsed);
   const sandboxCollapsed = useRepoStore((s) => s.sandboxCollapsed);
@@ -475,6 +477,8 @@ export function SessionSidebar({
               isNewSessionSelected={activeNewSessionRepoUrl === group.repo.url}
               isCollapsed={!isSingleRepo && collapsedRepos.has(group.repo.url)}
               onToggleCollapse={() => toggleRepoCollapsed(group.repo.url)}
+              isResolvedCollapsed={collapsedResolved.has(group.repo.url)}
+              onToggleResolvedCollapsed={() => toggleResolvedCollapsed(group.repo.url)}
               collapsedParents={collapsedParents}
               onToggleParentCollapsed={toggleParentCollapsed}
               onResume={onResume}

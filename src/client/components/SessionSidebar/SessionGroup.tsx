@@ -193,6 +193,8 @@ export function RepoGroup({
   isNewSessionSelected,
   isCollapsed,
   onToggleCollapse,
+  isResolvedCollapsed,
+  onToggleResolvedCollapsed,
   collapsedParents,
   onToggleParentCollapsed,
   onResume,
@@ -220,6 +222,9 @@ export function RepoGroup({
   isNewSessionSelected: boolean;
   isCollapsed: boolean;
   onToggleCollapse: () => void;
+  /** docs/161 — whether this repo's "Recently resolved" sub-section is collapsed. */
+  isResolvedCollapsed: boolean;
+  onToggleResolvedCollapsed: () => void;
   collapsedParents: Set<string>;
   onToggleParentCollapsed: (parentId: string) => void;
   onResume: (id: string) => void;
@@ -570,15 +575,34 @@ export function RepoGroup({
                   )}
                   {newSessionButton}
                   {active}
+                  {/* docs/161 — collapsible "Recently resolved" sub-section.
+                      Expanded by default; the per-repo collapsed state is
+                      remembered (repo-store → localStorage). The caret hugs the
+                      label (variant E) rather than sitting in the right gutter,
+                      so it reads as part of the section title instead of echoing
+                      the repo header's own left caret one indent up. The whole
+                      row is the hit target for a forgiving click area. */}
                   {resolved.length > 0 && (
-                    <div className="flex items-center gap-1.5 px-2 pt-2 pb-0.5 mx-1" aria-hidden>
+                    <button
+                      type="button"
+                      onClick={onToggleResolvedCollapsed}
+                      aria-expanded={!isResolvedCollapsed}
+                      aria-label={isResolvedCollapsed ? "Expand recently resolved" : "Collapse recently resolved"}
+                      className="group/resolved flex items-center gap-1.5 px-3 pt-2 pb-0.5 mx-1 text-left"
+                    >
                       <GitMergeIcon size={ICON_SIZE.XS} className="shrink-0 text-(--color-text-tertiary)" />
                       <span className="text-[10px] font-semibold uppercase tracking-wide text-(--color-text-tertiary)">
                         Recently resolved
                       </span>
-                    </div>
+                      <span className="shrink-0 flex items-center text-(--color-text-tertiary) group-hover/resolved:text-(--color-text-secondary) transition-colors">
+                        {isResolvedCollapsed
+                          ? <CaretRightIcon size={ICON_SIZE.XS} />
+                          : <CaretDownIcon size={ICON_SIZE.XS} />
+                        }
+                      </span>
+                    </button>
                   )}
-                  {resolved}
+                  {!isResolvedCollapsed && resolved}
                 </>
               );
             })();

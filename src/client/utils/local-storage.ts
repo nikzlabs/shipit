@@ -474,6 +474,28 @@ export function saveCollapsedParents(collapsed: Set<string>): void {
   } catch { /* ignore */ }
 }
 
+// docs/161 — per-repo collapsed state for the "Recently resolved" sub-section.
+// Keyed by repo URL, like COLLAPSED_REPOS_KEY. Absence = expanded (the default),
+// so a fresh user sees the resolved list open; presence = the user collapsed it.
+const COLLAPSED_RESOLVED_KEY = "shipit-collapsed-resolved";
+
+export function getSavedCollapsedResolved(): Set<string> {
+  try {
+    const raw = localStorage.getItem(COLLAPSED_RESOLVED_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw) as string[];
+      return new Set(arr);
+    }
+  } catch { /* ignore */ }
+  return new Set();
+}
+
+export function saveCollapsedResolved(collapsed: Set<string>): void {
+  try {
+    localStorage.setItem(COLLAPSED_RESOLVED_KEY, JSON.stringify([...collapsed]));
+  } catch { /* ignore */ }
+}
+
 const OPS_COLLAPSED_KEY = "shipit-ops-collapsed";
 
 export function getSavedOpsCollapsed(): boolean {
