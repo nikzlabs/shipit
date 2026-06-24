@@ -182,8 +182,21 @@ export async function runSubAgent(
     );
   };
 
+  // docs/217 — a sub-agent runs with the invoked agent's OWN global defaults
+  // (reasoning effort + model, set on its Settings tab), independent of the
+  // caller's session composer value. Resolved per spawn so a Settings change
+  // applies next time. An unset model lets the adapter pick `models[0]`.
+  const { reasoningEffort, model } = deps.credentialStore.getAgentSubAgentDefaults(subAgentId);
+
   try {
-    const result = await runner.spawnSubAgent({ agentId: subAgentId, prompt, spawnId, depth });
+    const result = await runner.spawnSubAgent({
+      agentId: subAgentId,
+      prompt,
+      spawnId,
+      depth,
+      ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+      ...(model !== undefined ? { model } : {}),
+    });
 
     // §5 — attribute the sub-agent's cost AND token usage to subAgentId, not the
     // pinned agentId. A subscription backend (Codex) reports tokens but $0 cost,
@@ -232,6 +245,10 @@ export async function runSubAgent(
       durationMs: result.durationMs,
       costUsd: result.costUsd,
       truncated: result.truncated,
+      // docs/220 — carry the verbatim output so the brokered consult is visible,
+      // not just attested. Already capped upstream (`maxOutputChars`), which is
+      // also what flags `truncated`. Omitted when empty.
+      ...(result.text ? { outputMarkdown: result.text } : {}),
       createdAt: new Date().toISOString(),
     });
 

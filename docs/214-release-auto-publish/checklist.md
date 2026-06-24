@@ -113,3 +113,26 @@ hotfixes are forward-ported to main anyway), so conflicts must be structurally i
   as content-free)
 - [x] Docs: plan.md (`--from` tree-override + tree-based guard, error-surface, rejected-alt),
   `RELEASING.md` chat-driven section, `shipit-docs/release.md`
+
+## Follow-up — sync the released version onto `main`
+The version bump lands only on `stable` (the `release/<version>` PR is never merged back to
+`main`), so `main`'s `package.json` drifted behind every release — `main` kept showing the
+pre-release version forever. Fix: after a successful publish on the branch path, `release.yml`
+opens a chore PR that forward-ports the released version onto `main`.
+- [x] `release.yml`: `sync-main` job (`needs: [resolve, publish]`, gated to the branch path +
+  `publish` success) — checks out `main`, skips if already at the version (repair re-runs) or if
+  the sync branch exists, else `npm version <v> --no-git-tag-version` bump on `release-sync/vX.Y.Z`,
+  commit, push, and `gh pr create --base main`
+- [x] PR labeled `ignore-for-release` (it merges into `main`; keep it out of the next release's
+  auto-generated notes); body built with `printf` so no indentation leaks in as a markdown code block
+- [x] `pull-requests: write` added at the job level (workflow only grants `contents: write`)
+- [x] Docs: `RELEASING.md` ("`main`'s version is auto-synced after publish"), `prompts/releases.md`
+  (merge the follow-up sync PR), plan.md Key files
+- [x] Carry the same sync into the scaffolded template (`templates-release.ts`): a `sync-default-branch`
+  job (default branch resolved at runtime via `gh repo view`; skipped when it equals the maintenance
+  branch) + a new generic write helper `shipit-write-version.mjs` (mirrors `writeVersionToSource` so the
+  sync works for package.json / Cargo.toml / pyproject.toml / VERSION, not just `npm version`). Best-effort
+  `ignore-for-release` label (may not exist in a fresh repo). Scaffold now ships **four** files.
+- [x] Tests: `templates-release.test.ts` — sync job present in the rendered workflow; write helper ⇔
+  `writeVersionToSource` byte-identity across all four ecosystems + lockfile bump + non-zero on missing field;
+  scaffold returns four artifacts

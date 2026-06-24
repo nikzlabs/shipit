@@ -42,6 +42,17 @@ jobs:
         with:
           gradle-version: "8.7"
 
+      # Stamp every build in this run with a single monotonic versionCode derived
+      # from epoch seconds — the SAME scheme build.gradle.kts uses for local
+      # builds. This is deliberate: run_number (small integers) and a local
+      # build's epoch seconds (~1.75e9) are wildly different magnitudes, so an
+      # APK built locally would always outrank a CI APK and block it from
+      # installing (INSTALL_FAILED_VERSION_DOWNGRADE). Sharing the wall-clock
+      # scale means the newer build always wins regardless of where it was built.
+      # Exported once here so debug + release + AAB in one run all match.
+      - name: Compute versionCode
+        run: echo "ANDROID_VERSION_CODE=$(date +%s)" >> "$GITHUB_ENV"
+
       - name: Build debug APK
         if: ${{ inputs.release == false }}
         run: gradle :app:assembleDebug --no-daemon --stacktrace
@@ -64,7 +75,6 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-          ANDROID_VERSION_CODE: ${{ github.run_number }}
         run: gradle :app:assembleRelease --no-daemon --stacktrace
 
       - name: Build release AAB (signed, for Play Store)
@@ -73,7 +83,6 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-          ANDROID_VERSION_CODE: ${{ github.run_number }}
         run: gradle :app:bundleRelease --no-daemon --stacktrace
 
       - name: Upload debug APK artifact

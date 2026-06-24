@@ -7,6 +7,7 @@ import type {
   WsPrStatus,
   WsPrLifecycleUpdate,
   WsPrNotableFiles,
+  WsResetEligible,
 } from "../github-types.js";
 import type { WsTerminalOutput, WsTerminalExit, WsTerminalReconnecting, WsLogSnapshot, WsLogAppend } from "../terminal-types.js";
 import type { WsUsageStats, WsUsageUpdate, WsTurnUsageUpdate } from "../usage-types.js";
@@ -84,7 +85,6 @@ import type {
   WsPresentStateMessage,
 } from "./present.js";
 import type {
-  WsAiReviewAdded,
   WsVoiceNote,
   WsBugReportCard,
   WsBugReportFiled,
@@ -101,6 +101,8 @@ import type {
   WsReleaseCard,
   WsSubAgentConsultCard,
   WsActionChecklistCard,
+  WsBranchAutoResetCard,
+  WsBranchSyncedCard,
 } from "./cards.js";
 import type {
   WsError,
@@ -132,6 +134,8 @@ export type WsServerMessage =
   | WsReleaseCard
   | WsSubAgentConsultCard
   | WsActionChecklistCard
+  | WsBranchAutoResetCard
+  | WsBranchSyncedCard
   | WsBugReportCard
   | WsBugReportFiled
   | WsBugReportFailed
@@ -194,6 +198,7 @@ export type WsServerMessage =
   | WsRepoList
   | WsPrLifecycleUpdate
   | WsPrNotableFiles
+  | WsResetEligible
   | WsSystemUserMessage
   | WsSystemNotice
   | WsCommitLinked
@@ -225,7 +230,6 @@ export type WsServerMessage =
   | WsRebaseAborted
   | WsAutoResolveStarted
   | WsAutoResolveResult
-  | WsAiReviewAdded
   | WsPresentContentMessage
   | WsPresentClearedMessage
   | WsPresentStateMessage

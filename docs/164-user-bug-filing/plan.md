@@ -352,10 +352,27 @@ agent-event stream), so it follows the **voice-note precedent** (`docs/163`):
   same primitive — the two previously-parallel implementations were unified.)
 - `PersistedMessage.bugReport` (a `PersistedBugReport`) carries the full payload
   + phase; a new `bug_report` column (`database.ts` migration) stores it.
-- `filed`/`failed` transitions patch the persisted record in place via
-  `ChatHistoryManager.updateBugReportCard(sessionId, cardId, patch)` — safe
-  because the proposing-turn row is finalized (`in_progress=0`) by the time the
-  user clicks Submit.
+- `filed`/`failed` transitions persist through the shared `persistCardTransition`
+  primitive (`chat-card-persistence.ts`), via the thin `persistBugCardTransition`
+  wrapper in `bug-report-handlers.ts`. The naive path — a direct
+  `ChatHistoryManager.updateBugReportCard(sessionId, cardId, patch)` — is only
+  safe once the proposing turn has finalized (`in_progress=0`). But
+  `recordedCards` is cleared **only at the next turn start**, never at turn end,
+  so if the user confirms the card while the proposing turn is *still in flight*
+  (the agent filed a bug then kept working), a DB-only patch is clobbered when
+  that turn finalizes and rebuilds its rows from the stale draft `recordedCards`
+  — the card reverts to its full draft form on the next switch/reload. So
+  `persistCardTransition` (generalizing the permission-card path, `docs/193`):
+  when `runner.running`, it patches the recorded card in place via
+  `updateRecordedCard` (so every rebuild and the end-of-turn persist carry the
+  terminal state) and flushes with `persistTurnInProgress`; otherwise it falls
+  back to the direct `updateBugReportCard` DB patch (finalized → stale
+  `recordedCards` are inert → safe). The **same primitive** fixes the identical
+  latent clobber in the egress allow-once card (`docs/172`) and the issue-write
+  undo card (`docs/177`). Regression: `user-bug-filing.test.ts` "(b/d) keeps a
+  filed transition through finalize when the proposing turn is still in flight",
+  plus `chat-card-persistence.test.ts` (`persistCardTransition`) and the egress
+  in-flight wiring test.
 - On the client, `loadSessionHistory` seeds `bug-report-store` from persisted
   cards (`seedCards`, authoritative). The live `bug_report_card` handler's marker
   append and the store's `upsertCard` are both idempotent/non-clobbering, so the

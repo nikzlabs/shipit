@@ -14,6 +14,7 @@ import {
   removeRepo,
   reorderRepos,
   setRepoTrusted,
+  setRepoHidden,
   createRepoWithTemplate,
   deleteSession,
   archiveSession,
@@ -224,6 +225,37 @@ export async function registerSessionReposRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to reorder repos: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // PATCH /api/repos/:url — hide or show a repo in the sidebar (docs/222).
+  // A pure visibility toggle: unlike DELETE it archives nothing and reclaims no
+  // disk — sessions, containers, working copies and history all survive, so the
+  // repo can be brought back instantly. Registered before DELETE for the same
+  // readability reason as the order route above (distinct HTTP methods, so no
+  // actual routing conflict).
+  app.patch<{ Params: { url: string }; Body: { hidden?: boolean } }>(
+    "/api/repos/:url",
+    async (request, reply) => {
+      try {
+        const url = decodeURIComponent(request.params.url);
+        const hidden = request.body?.hidden;
+        if (typeof hidden !== "boolean") {
+          reply.code(400).send({ error: "Request body must include a boolean 'hidden'" });
+          return;
+        }
+        setRepoHidden(deps.repoStore, url, hidden);
+        // Broadcast so every connected tab updates its sidebar immediately —
+        // same pattern as add/remove/reorder.
+        deps.sseBroadcast("repo_list", { repos: listRepos(deps.repoStore) });
+        return { repo: deps.repoStore.get(url) ?? null };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to update repo: ${getErrorMessage(err)}` });
       }
     },
   );

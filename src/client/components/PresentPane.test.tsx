@@ -72,9 +72,13 @@ describe("PresentPane", () => {
 
     // Header is immediate; bytes arrive after the fetch resolves.
     expect(screen.getByText("One")).toBeInTheDocument();
-    const iframe = await screen.findByTitle("Presentation");
+    const iframe = await screen.findByTitle("Rendered content");
     expect(iframe).toHaveAttribute("sandbox", "allow-scripts");
-    expect(iframe).toHaveAttribute("srcdoc", "<h1>One</h1>");
+    // The shared frame injects a best-effort CSP and wraps bare fragments, so
+    // assert the content is present rather than an exact srcdoc (docs/219).
+    const srcdoc = iframe.getAttribute("srcdoc") ?? "";
+    expect(srcdoc).toContain("<h1>One</h1>");
+    expect(srcdoc).toContain("connect-src 'none'");
     // Cached back onto the entry so re-selecting doesn't refetch.
     expect(usePresentStore.getState().presentations[0].content).toBe("<h1>One</h1>");
     expect(screen.queryByLabelText("Previous presentation")).toBeNull();
@@ -99,7 +103,7 @@ describe("PresentPane", () => {
     render(<PresentPane isActiveTab />);
 
     expect(screen.getByLabelText("Download presentation")).toBeDisabled();
-    await screen.findByTitle("Presentation");
+    await screen.findByTitle("Rendered content");
     expect(screen.getByLabelText("Download presentation")).toBeEnabled();
   });
 
@@ -137,6 +141,53 @@ describe("PresentPane", () => {
     fireEvent.keyDown(window, { key: "ArrowLeft" });
     expect(screen.getByText("1/2")).toBeInTheDocument();
     expect(usePresentStore.getState().activePresentIndex).toBe(0);
+  });
+
+  it("ignores arrow keys originating from a text field (chat-typing must not move the carousel)", () => {
+    // The keydown listener is on window and the chat composer is on screen at
+    // the same time as the Present tab, so pressing ◀/▶ to move the text cursor
+    // while typing must NOT step the carousel.
+    seedPresentations();
+    render(<PresentPane isActiveTab />);
+
+    fireEvent.click(screen.getByLabelText("Next presentation"));
+    expect(usePresentStore.getState().activePresentIndex).toBe(1);
+
+    const textarea = document.createElement("textarea");
+    document.body.appendChild(textarea);
+    fireEvent.keyDown(textarea, { key: "ArrowLeft" });
+    expect(usePresentStore.getState().activePresentIndex).toBe(1); // unchanged
+    textarea.remove();
+  });
+
+  it("toggles the thumbnail gallery from the header and closes it on tile select", () => {
+    seedPresentations();
+    render(<PresentPane isActiveTab />);
+
+    fireEvent.click(screen.getByLabelText("View all presentations"));
+    expect(usePresentStore.getState().galleryOpen).toBe(true);
+
+    // Selecting a tile jumps to it and collapses back to the single view.
+    fireEvent.click(screen.getByLabelText("View Two"));
+    expect(usePresentStore.getState().galleryOpen).toBe(false);
+    expect(usePresentStore.getState().activePresentIndex).toBe(1);
+  });
+
+  it("renders a markdown thumbnail (rendered prose, not the icon placeholder)", async () => {
+    useSessionStore.getState().setSessionId("sess_1");
+    mockContentFetch(
+      { pres_one: "# Hello heading", pres_two: "# Other" },
+      "text/markdown",
+    );
+    usePresentStore.getState().hydrate([
+      meta({ presentId: "pres_one", title: "Doc", filePath: "/tmp/one.md", mimeType: "text/markdown" }),
+      meta({ presentId: "pres_two", title: "Two", filePath: "/tmp/two.md", mimeType: "text/markdown" }),
+    ]);
+    render(<PresentPane isActiveTab />);
+
+    fireEvent.click(screen.getByLabelText("View all presentations"));
+    // The markdown renderer turns the source into prose — the heading text shows.
+    expect(await screen.findByText("Hello heading")).toBeInTheDocument();
   });
 
   it("exposes no Save control — keeping an artifact is the agent's job", () => {

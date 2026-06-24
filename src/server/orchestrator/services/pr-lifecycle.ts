@@ -179,6 +179,7 @@ export async function emitPrLifecycleAfterCommit(args: {
                 mergeMethod: autoMerge.mergeMethod,
                 managed: autoMerge.managed,
                 settingsUrl: autoMerge.settingsUrl,
+                reason: autoMerge.reason,
                 error: autoMerge.error,
               }
             : undefined,
@@ -223,6 +224,7 @@ export async function emitPrLifecycleAfterCommit(args: {
             mergeMethod: autoMerge.mergeMethod,
             managed: autoMerge.managed,
             settingsUrl: autoMerge.settingsUrl,
+            reason: autoMerge.reason,
             error: autoMerge.error,
           }
         : undefined,

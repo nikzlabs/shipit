@@ -74,17 +74,25 @@ Supported subcommands:
   gh pr close    [<number>]
   gh pr reopen   <number>
 
+  gh run list      [-w WORKFLOW] [-b BRANCH] [-s STATUS] [-L LIMIT] [--json FIELDS]
+  gh run view      [<run-id>] [--log] [--log-failed] [--json FIELDS]
+  gh workflow list [--json FIELDS]
+  gh workflow view <workflow> [--json FIELDS]
+
 Operations target the repo of the current working directory's clone. Pass
 --repo OWNER/NAME to target a specific repo explicitly.
 
-This is a ShipIt shim, not the real gh CLI. Subcommands like \`gh api\`, \`gh repo\`,
-\`gh release\`, \`gh workflow\`, \`gh auth\`, and \`gh secret\` are intentionally
-unavailable. See /shipit-docs/github.md.`;
+This is a ShipIt shim, not the real gh CLI. \`gh run\`/\`gh workflow\` are
+READ-ONLY here — listing and viewing runs/workflows (e.g. the result of a
+manually-dispatched workflow). Subcommands like \`gh api\`, \`gh repo\`,
+\`gh release\`, \`gh auth\`, \`gh secret\`, and the workflow *manipulation* verbs
+(\`gh workflow run\`, \`gh run rerun\`, \`gh run cancel\`, \`gh run delete\`) are
+intentionally unavailable. See /shipit-docs/github.md.`;
 
 const REJECTED_SUBCOMMANDS = new Set([
   "api", "auth", "browse", "codespace", "completion", "config", "extension",
-  "gist", "gpg-key", "issue", "label", "release", "repo", "run", "ruleset",
-  "secret", "ssh-key", "status", "variable", "workflow", "cache", "alias",
+  "gist", "gpg-key", "issue", "label", "release", "repo", "ruleset",
+  "secret", "ssh-key", "status", "variable", "cache", "alias",
   "attestation", "co", "search", "org", "project",
 ]);
 
@@ -450,6 +458,225 @@ function formatError(
 }
 
 // ---------------------------------------------------------------------------
+// GitHub Actions handlers (read-only) — `gh run` / `gh workflow`
+// ---------------------------------------------------------------------------
+
+async function handleRunList(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, {
+    values: {
+      "-w": "workflow", "--workflow": "workflow",
+      "-b": "branch", "--branch": "branch",
+      "-s": "status", "--status": "status",
+      "-L": "limit", "--limit": "limit",
+      "--json": "json",
+      "--repo": "repo", "-R": "repo",
+    },
+  });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for gh run list: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+  const qs = targetQuery(deps, parsed.values.repo, {
+    workflow: parsed.values.workflow,
+    branch: parsed.values.branch,
+    status: parsed.values.status,
+    limit: parsed.values.limit,
+  });
+  const res = await deps.call("GET", `/agent-ops/run/list${qs}`, undefined, deps.env);
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to list workflow runs"), 1);
+  }
+  const runs = (res.body.runs as Record<string, unknown>[] | undefined) ?? [];
+  if (parsed.values.json !== undefined) {
+    const fields = parsed.values.json.split(",").map((s) => s.trim()).filter(Boolean);
+    deps.io.stdout(`${JSON.stringify(runs.map((r) => filterJson(r, fields)))}\n`);
+    deps.io.exit(0);
+    return;
+  }
+  if (runs.length === 0) {
+    success(deps.io, "No workflow runs found.");
+    return;
+  }
+  // STATUS  CONCLUSION  TITLE  WORKFLOW  BRANCH  EVENT  ID
+  const lines = runs.map((r) =>
+    [
+      asString(r.status),
+      asString(r.conclusion) || "-",
+      asString(r.displayTitle),
+      asString(r.workflowName),
+      asString(r.headBranch),
+      asString(r.event),
+      asString(r.databaseId),
+    ].join("\t"),
+  );
+  success(deps.io, lines.join("\n"));
+}
+
+async function handleRunView(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, {
+    values: {
+      "--json": "json",
+      "--repo": "repo", "-R": "repo",
+    },
+    booleans: {
+      "--log": "log",
+      "--log-failed": "logFailed",
+      "-w": "web", "--web": "web",
+    },
+  });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for gh run view: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+  if (parsed.booleans.has("web")) {
+    fail(deps.io, "ShipIt's gh shim does not support --web. The run details are printed on stdout.");
+  }
+  const wantsLog = parsed.booleans.has("log");
+  const wantsLogFailed = parsed.booleans.has("logFailed");
+  const qs = targetQuery(deps, parsed.values.repo, {
+    id: parsed.positional[0],
+    log: wantsLog ? "true" : undefined,
+    logFailed: wantsLogFailed ? "true" : undefined,
+  });
+  const res = await deps.call("GET", `/agent-ops/run/view${qs}`, undefined, deps.env);
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to view workflow run"), 1);
+  }
+  const run = res.body.run as Record<string, unknown> | null;
+  if (!run) {
+    fail(deps.io, "No workflow run found.", 1);
+  }
+  const jobs = (res.body.jobs as Record<string, unknown>[] | undefined) ?? [];
+  const logs = asString(res.body.logs);
+
+  if (parsed.values.json !== undefined) {
+    const fields = parsed.values.json.split(",").map((s) => s.trim()).filter(Boolean);
+    // Merge jobs/logs into the run object so `--json jobs` / `--json …` works.
+    const merged = { ...run, jobs, logs };
+    deps.io.stdout(`${JSON.stringify(filterJson(merged, fields))}\n`);
+    deps.io.exit(0);
+    return;
+  }
+
+  const lines = [
+    `${asString(run.displayTitle)} · ${asString(run.workflowName)} #${asString(run.number)}`,
+    `${asString(run.status)}${run.conclusion ? ` (${asString(run.conclusion)})` : ""}`.trim(),
+    `${asString(run.headBranch)} · ${asString(run.event)}`,
+    asString(run.url),
+  ];
+  if (jobs.length > 0) {
+    lines.push("", "Jobs:");
+    for (const j of jobs) {
+      lines.push(`  ${asString(j.status)}${j.conclusion ? ` (${asString(j.conclusion)})` : ""}\t${asString(j.name)}`);
+    }
+  }
+  if (wantsLog || wantsLogFailed) {
+    lines.push("", logs.trim() ? logs : "(no logs available)");
+  }
+  success(deps.io, lines.join("\n"));
+}
+
+async function handleWorkflowList(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, {
+    values: {
+      "--json": "json",
+      "--repo": "repo", "-R": "repo",
+      // Accepted for real-gh compatibility but not forwarded (the orchestrator
+      // returns the repo's workflows up to a fixed cap).
+      "-L": "limit", "--limit": "limit",
+    },
+    booleans: { "-a": "all", "--all": "all" },
+  });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for gh workflow list: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+  const res = await deps.call("GET", `/agent-ops/workflow/list${targetQuery(deps, parsed.values.repo)}`, undefined, deps.env);
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to list workflows"), 1);
+  }
+  const workflows = (res.body.workflows as Record<string, unknown>[] | undefined) ?? [];
+  if (parsed.values.json !== undefined) {
+    const fields = parsed.values.json.split(",").map((s) => s.trim()).filter(Boolean);
+    deps.io.stdout(`${JSON.stringify(workflows.map((w) => filterJson(w, fields)))}\n`);
+    deps.io.exit(0);
+    return;
+  }
+  if (workflows.length === 0) {
+    success(deps.io, "No workflows found.");
+    return;
+  }
+  // NAME  STATE  ID
+  const lines = workflows.map((w) =>
+    [asString(w.name), asString(w.state), asString(w.id)].join("\t"),
+  );
+  success(deps.io, lines.join("\n"));
+}
+
+async function handleWorkflowView(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, {
+    values: {
+      "--json": "json",
+      "--repo": "repo", "-R": "repo",
+    },
+    booleans: {
+      "-w": "web", "--web": "web",
+      "-y": "yaml", "--yaml": "yaml",
+    },
+  });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for gh workflow view: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+  if (parsed.booleans.has("web")) {
+    fail(deps.io, "ShipIt's gh shim does not support --web.");
+  }
+  if (parsed.booleans.has("yaml")) {
+    fail(deps.io, "ShipIt's gh shim does not support --yaml. Read the workflow file from the workspace directly (e.g. cat .github/workflows/<file>).");
+  }
+  const wf = parsed.positional[0];
+  if (!wf) {
+    fail(deps.io, "gh workflow view: a workflow name, filename, or id is required.");
+  }
+  const qs = targetQuery(deps, parsed.values.repo, { workflow: wf });
+  const res = await deps.call("GET", `/agent-ops/workflow/view${qs}`, undefined, deps.env);
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to view workflow"), 1);
+  }
+  const workflow = res.body.workflow as Record<string, unknown> | null;
+  if (!workflow) {
+    fail(deps.io, `No workflow matching "${wf}" found.`, 1);
+  }
+  if (parsed.values.json !== undefined) {
+    const fields = parsed.values.json.split(",").map((s) => s.trim()).filter(Boolean);
+    deps.io.stdout(`${JSON.stringify(filterJson(workflow, fields))}\n`);
+    deps.io.exit(0);
+    return;
+  }
+  const runs = (res.body.runs as Record<string, unknown>[] | undefined) ?? [];
+  const lines = [
+    `${asString(workflow.name)} (${asString(workflow.state)})`,
+    asString(workflow.path),
+    asString(workflow.url),
+  ];
+  if (runs.length > 0) {
+    lines.push("", "Recent runs:");
+    for (const r of runs) {
+      lines.push(
+        `  ${asString(r.status)}${r.conclusion ? ` (${asString(r.conclusion)})` : ""}\t${asString(r.displayTitle)}\t${asString(r.headBranch)}\t${asString(r.databaseId)}`,
+      );
+    }
+  }
+  success(deps.io, lines.join("\n"));
+}
+
+const RUN_HANDLERS: Record<string, (args: string[], deps: RunDeps) => Promise<void>> = {
+  list: handleRunList,
+  view: handleRunView,
+};
+
+const WORKFLOW_HANDLERS: Record<string, (args: string[], deps: RunDeps) => Promise<void>> = {
+  list: handleWorkflowList,
+  view: handleWorkflowView,
+};
+
+// ---------------------------------------------------------------------------
 // Top-level dispatch
 // ---------------------------------------------------------------------------
 
@@ -466,6 +693,16 @@ const PR_HANDLERS: Record<
   ready: (args, deps) => handlePrSimple(args, deps, "ready"),
   close: (args, deps) => handlePrSimple(args, deps, "close"),
   reopen: (args, deps) => handlePrSimple(args, deps, "reopen"),
+};
+
+/** Top-level command groups the shim allows, each with its own subcommand map. */
+const COMMAND_GROUPS: Record<
+  string,
+  Record<string, (args: string[], deps: RunDeps) => Promise<void>>
+> = {
+  pr: PR_HANDLERS,
+  run: RUN_HANDLERS,
+  workflow: WORKFLOW_HANDLERS,
 };
 
 /**
@@ -497,10 +734,11 @@ export async function runShim(
   const command = args[0];
 
   if (REJECTED_SUBCOMMANDS.has(command)) {
-    fail(io, `${SHIM_NAME} only supports a subset of pull-request operations.\nTried: gh ${command}\nSee /shipit-docs/github.md for the full list.`);
+    fail(io, `${SHIM_NAME} only supports a subset of pull-request and read-only workflow operations.\nTried: gh ${command}\nSee /shipit-docs/github.md for the full list.`);
   }
 
-  if (command !== "pr") {
+  const group = COMMAND_GROUPS[command];
+  if (!group) {
     fail(io, `Unknown gh subcommand: ${command}\n${REJECTED_HELP}`);
   }
 
@@ -510,9 +748,9 @@ export async function runShim(
     return;
   }
 
-  const handler = PR_HANDLERS[sub];
+  const handler = group[sub];
   if (!handler) {
-    fail(io, `Unsupported gh pr subcommand: ${sub}\n${REJECTED_HELP}`);
+    fail(io, `Unsupported gh ${command} subcommand: ${sub}\n${REJECTED_HELP}`);
   }
 
   await handler(args.slice(2), deps);

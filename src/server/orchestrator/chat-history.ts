@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import type { DatabaseManager } from "../shared/database.js";
 import type { SubagentEvent } from "./session-runner.js";
-import type { IssueWriteCard, IssueRefCard, CompactionCard, ChildMergedCard, SubAgentConsultCard, AiReviewCard, ActionChecklistCard } from "../shared/types.js";
+import type { IssueWriteCard, IssueRefCard, CompactionCard, ChildMergedCard, SubAgentConsultCard, AiReviewCard, ActionChecklistCard, BranchAutoResetCard, BranchSyncedCard } from "../shared/types.js";
 import type { ReleaseStatusSummary } from "../shared/types/release-types.js";
 
 export type RewindSnapshotAction = "chat" | "code" | "both" | "fork";
@@ -236,6 +236,24 @@ export interface PersistedMessage {
    */
   actionChecklist?: ActionChecklistCard;
   /**
+   * docs/218 — when set, this message renders an inline "Branch updated to latest
+   * base" card. Emitted right after the user's message when a merged session's
+   * branch was auto-reset to `origin/<base>` before the turn ran (a side-channel
+   * card, off the agent-event stream), recorded in-band via `emitChatCard` and
+   * persisted here so the destructive move's record survives a switch/reload.
+   * Immutable static payload — written once on emit, never patched.
+   */
+  branchAutoReset?: BranchAutoResetCard;
+  /**
+   * docs/221 — when set, this message renders an inline "Synced with <base>"
+   * card recording a manual "Sync with <base>" that rebased the session branch
+   * onto `origin/<base>` and/or fast-forwarded the local `<base>` ref. A
+   * side-channel card off the agent-event stream (the clean-rebase path isn't an
+   * agent turn), appended directly to history so the sync's record survives a
+   * switch/reload. Immutable static payload — written once on emit, never patched.
+   */
+  branchSynced?: BranchSyncedCard;
+  /**
    * docs/196 — when set, this message renders an inline "Child PR merged /
    * closed" card in the PARENT session's transcript. Surfaced from a PR-poller
    * event (a watched child's PR reached a terminal state) — outside any turn, so
@@ -295,12 +313,12 @@ export interface PersistedMessage {
     failedAt: string;
   };
   /**
-   * docs/203 — when set, renders an inline plain-text `ReviewCard`. One card per
-   * review run, keyed by `reviewId`; the parent's re-review patches the same
-   * card (the patch lands by replacing the recorded card in `recordedCards`
-   * mid-turn — see `emitOrReplaceChatCard` — not via a finalized-row update).
-   * Legacy pre-docs/203 `agent_review` rows are mapped to a degraded `AiReviewCard`
-   * (`legacy: true`) on read so old transcript cards still render.
+   * docs/203 — when set, renders an inline plain-text `ReviewCard`, keyed by
+   * `reviewId`. **Legacy read path only (docs/220):** the `submit_review` write
+   * path was removed, so no new rows set this field (cross-agent reviews surface
+   * in the consult card, same-model reviews are narrated as prose). Retained so
+   * rows persisted before docs/220 — and degraded pre-docs/203 `agent_review`
+   * rows mapped to a `legacy: true` `AiReviewCard` — still render on read.
    */
   aiReview?: AiReviewCard;
   /**
@@ -358,6 +376,8 @@ interface MessageRow {
   compaction: string | null;
   sub_agent_consult: string | null;
   action_checklist: string | null;
+  branch_auto_reset: string | null;
+  branch_synced: string | null;
   child_merged: string | null;
   release_card: string | null;
   spawned_session: string | null;
@@ -382,8 +402,8 @@ interface MessageRow {
 }
 
 const INSERT_SQL = `
-  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, permission_prompt, egress_prompt, issue_write, issue_ref, compaction, sub_agent_consult, action_checklist, child_merged, release_card, spawned_session, spawn_failed, agent_review, ai_review, user_review, notice_id)
-  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @permission_prompt, @egress_prompt, @issue_write, @issue_ref, @compaction, @sub_agent_consult, @action_checklist, @child_merged, @release_card, @spawned_session, @spawn_failed, @agent_review, @ai_review, @user_review, @notice_id)
+  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, permission_prompt, egress_prompt, issue_write, issue_ref, compaction, sub_agent_consult, action_checklist, branch_auto_reset, branch_synced, child_merged, release_card, spawned_session, spawn_failed, agent_review, ai_review, user_review, notice_id)
+  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @permission_prompt, @egress_prompt, @issue_write, @issue_ref, @compaction, @sub_agent_consult, @action_checklist, @branch_auto_reset, @branch_synced, @child_merged, @release_card, @spawned_session, @spawn_failed, @agent_review, @ai_review, @user_review, @notice_id)
 `;
 
 const UPDATE_SQL = `
@@ -392,7 +412,7 @@ const UPDATE_SQL = `
     in_progress=@in_progress, tool_results=@tool_results, upload_paths=@upload_paths,
     turn_usage=@turn_usage, subagent_events=@subagent_events, rolled_back=@rolled_back,
     notice=@notice, notice_level=@notice_level, fork_child=@fork_child, code_rollback_hash=@code_rollback_hash,
-    voice_note=@voice_note, bug_report=@bug_report, permission_prompt=@permission_prompt, egress_prompt=@egress_prompt, issue_write=@issue_write, issue_ref=@issue_ref, compaction=@compaction, sub_agent_consult=@sub_agent_consult, action_checklist=@action_checklist, child_merged=@child_merged, release_card=@release_card,
+    voice_note=@voice_note, bug_report=@bug_report, permission_prompt=@permission_prompt, egress_prompt=@egress_prompt, issue_write=@issue_write, issue_ref=@issue_ref, compaction=@compaction, sub_agent_consult=@sub_agent_consult, action_checklist=@action_checklist, branch_auto_reset=@branch_auto_reset, branch_synced=@branch_synced, child_merged=@child_merged, release_card=@release_card,
     spawned_session=@spawned_session, spawn_failed=@spawn_failed, agent_review=@agent_review, ai_review=@ai_review, user_review=@user_review, notice_id=@notice_id
   WHERE id = @id
 `;
@@ -459,6 +479,8 @@ export class ChatHistoryManager {
       compaction: msg.compaction ? JSON.stringify(msg.compaction) : null,
       sub_agent_consult: msg.subAgentConsult ? JSON.stringify(msg.subAgentConsult) : null,
       action_checklist: msg.actionChecklist ? JSON.stringify(msg.actionChecklist) : null,
+      branch_auto_reset: msg.branchAutoReset ? JSON.stringify(msg.branchAutoReset) : null,
+      branch_synced: msg.branchSynced ? JSON.stringify(msg.branchSynced) : null,
       child_merged: msg.childMerged ? JSON.stringify(msg.childMerged) : null,
       release_card: msg.releaseCard ? JSON.stringify(msg.releaseCard) : null,
       spawned_session: msg.spawnedSession ? JSON.stringify(msg.spawnedSession) : null,
@@ -502,6 +524,8 @@ export class ChatHistoryManager {
     if (row.compaction) msg.compaction = JSON.parse(row.compaction) as CompactionCard;
     if (row.sub_agent_consult) msg.subAgentConsult = JSON.parse(row.sub_agent_consult) as SubAgentConsultCard;
     if (row.action_checklist) msg.actionChecklist = JSON.parse(row.action_checklist) as ActionChecklistCard;
+    if (row.branch_auto_reset) msg.branchAutoReset = JSON.parse(row.branch_auto_reset) as BranchAutoResetCard;
+    if (row.branch_synced) msg.branchSynced = JSON.parse(row.branch_synced) as BranchSyncedCard;
     if (row.child_merged) msg.childMerged = JSON.parse(row.child_merged) as ChildMergedCard;
     if (row.release_card) msg.releaseCard = JSON.parse(row.release_card) as ReleaseStatusSummary;
     if (row.spawned_session) msg.spawnedSession = JSON.parse(row.spawned_session) as PersistedMessage["spawnedSession"];
@@ -582,9 +606,10 @@ export class ChatHistoryManager {
    * docs/164 — patch a persisted bug-report card's lifecycle fields in place,
    * keyed by `cardId`. Used by the `submit_bug_report` WS handler so a `filed`
    * (issue number + url) or `failed` (error / scope flag) transition survives a
-   * reload — the proposing-turn row was already finalized (in_progress=0) by the
-   * time the user clicks Submit, so a direct update is safe and won't be undone
-   * by a later `replaceInProgress`. Returns true if a matching card was found.
+   * reload. This is the finalized-row fallback inside `persistCardTransition`:
+   * when the user confirms while the proposing turn is still in flight, the
+   * handler patches the recorded card instead so the transition isn't clobbered
+   * by that turn's finalize. Returns true if a matching card was found.
    */
   updateBugReportCard(
     sessionId: string,
@@ -637,8 +662,11 @@ export class ChatHistoryManager {
   /**
    * docs/172 / SHI-90 — patch a persisted egress allow-once card's phase in
    * place, keyed by `cardId`. Used by the `egress_decision` WS handler so an
-   * allow-once / add / denied resolution survives a reload. Same in-place-update
-   * rationale as `updateBugReportCard`. Returns true if a matching card was found.
+   * allow-once / add / denied resolution survives a reload. This is the
+   * finalized-row fallback inside `persistCardTransition` (the handler patches
+   * the recorded card instead when the proposing turn is still in flight, so the
+   * resolution isn't clobbered by that turn's finalize). Returns true if a
+   * matching card was found.
    */
   updateEgressPromptCard(
     sessionId: string,
@@ -707,9 +735,11 @@ export class ChatHistoryManager {
 
   /**
    * docs/177 — patch a persisted issue-write card's undo lifecycle in place,
-   * keyed by `cardId` (mirrors `updateBugReportCard`). The proposing-turn row
-   * is finalized by the time the user clicks Undo, so a direct update is safe.
-   * Returns true if a matching card was found.
+   * keyed by `cardId` (mirrors `updateBugReportCard`). This is the finalized-row
+   * fallback inside `persistCardTransition`: when the user clicks Undo while the
+   * card's proposing turn is still in flight, the handler patches the recorded
+   * card instead so the undo isn't clobbered by that turn's finalize. Returns
+   * true if a matching card was found.
    */
   updateIssueWriteCard(
     sessionId: string,

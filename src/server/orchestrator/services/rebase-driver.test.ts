@@ -747,6 +747,151 @@ describe("rebase-driver: runRebaseFlow", () => {
   });
 });
 
+/** Advance origin/main by one commit via a throwaway clone (so workDir's
+ * origin/main diverges from its local main without touching local main). */
+function advanceOriginMain(bareDir: string, workDir: string, file: string, content: string) {
+  const tempClone = path.join(path.dirname(workDir), `temp-adv-${file}`);
+  fs.mkdirSync(tempClone, { recursive: true });
+  execSync(`git clone ${bareDir} .`, { cwd: tempClone, stdio: "pipe" });
+  execSync("git checkout main", { cwd: tempClone, stdio: "pipe" });
+  fs.writeFileSync(path.join(tempClone, file), content);
+  execSync("git add -A && git commit -m 'Origin main advance'", { cwd: tempClone, stdio: "pipe" });
+  execSync("git push", { cwd: tempClone, stdio: "pipe" });
+  fs.rmSync(tempClone, { recursive: true, force: true });
+}
+
+describe("rebase-driver: docs/221 sync card + local base move", () => {
+  let tmpDir: string;
+  let origGitConfigGlobal: string | undefined;
+  let origGitEditor: string | undefined;
+
+  beforeEach(() => {
+    vi.mocked(handWorkspaceBackToWorker).mockClear();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-rebase-sync-"));
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    origGitEditor = process.env.GIT_EDITOR;
+    initGlobalGitConfig(path.join(tmpDir, "credentials"));
+    setGitIdentity("Test User", "test@test.com");
+    process.env.GIT_EDITOR = "true";
+  });
+
+  afterEach(() => {
+    if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    else delete process.env.GIT_CONFIG_GLOBAL;
+    if (origGitEditor !== undefined) process.env.GIT_EDITOR = origGitEditor;
+    else delete process.env.GIT_EDITOR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const baseDeps = (git: GitManager, runner: SessionRunner, captured: { role: string; text: string }[], authed: boolean) => ({
+    git,
+    githubAuthManager: makeStubAuth(authed),
+    runner,
+    sessionManager: makeStubSessionManager(),
+    chatHistoryManager: makeStubHistory(captured),
+    agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+    usageManager: makeStubUsageManager(),
+    authManager: makeStubAuthManager(),
+    sseBroadcast: () => {},
+  });
+
+  it("clean rebase with recordSyncCard — emits a branch_synced_card, persists it, and advances local main", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    const messages: WsServerMessage[] = [];
+    runner.on("message", (m: WsServerMessage) => messages.push(m));
+    const captured: { role: string; text: string; branchSynced?: { cardId: string } }[] = [];
+
+    const result = await runFlow({ ...baseDeps(git, runner, captured, true), recordSyncCard: true }, "main");
+
+    expect(result.status).toBe("rebased");
+
+    // Local main fast-forwarded to origin/main (the headline correctness ask).
+    expect(await git.getRefHash("main")).toBe(await git.getRefHash("origin/main"));
+
+    // A persisted, broadcast card recording the move.
+    const card = messages.find((m) => m.type === "branch_synced_card");
+    expect(card).toBeDefined();
+    if (card?.type === "branch_synced_card") {
+      expect(card.card.base).toBe("main");
+      expect(card.card.forcePushed).toBe(true);
+      expect(card.card.headFromSha).not.toBe(card.card.headToSha); // branch rebased
+    }
+    // The card is written to chat history (survives reload), not emit-only.
+    expect(captured.some((m) => m.branchSynced)).toBe(true);
+  });
+
+  it("does NOT emit a sync card when recordSyncCard is unset (auto-resolve path) — but still moves local main", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    const messages: WsServerMessage[] = [];
+    runner.on("message", (m: WsServerMessage) => messages.push(m));
+
+    const result = await runFlow(baseDeps(git, runner, [], true), "main");
+
+    expect(result.status).toBe("rebased");
+    expect(messages.find((m) => m.type === "branch_synced_card")).toBeUndefined();
+    // Local base move is unconditional (plain correctness), independent of the card.
+    expect(await git.getRefHash("main")).toBe(await git.getRefHash("origin/main"));
+  });
+
+  it("up-to-date branch but local main behind — moves main, emits card, and flags baseMoved on rebase_complete", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    execSync("git checkout -b feature", { cwd: workDir, stdio: "pipe" });
+    // Advance origin/main, then bring feature up to date so the sync is a no-op
+    // rebase — leaving local main the only thing still behind.
+    advanceOriginMain(bareDir, workDir, "up.txt", "up\n");
+    execSync("git fetch origin", { cwd: workDir, stdio: "pipe" });
+    execSync("git rebase origin/main", { cwd: workDir, stdio: "pipe" });
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+
+    const originMain = await git.getRefHash("origin/main");
+    expect(await git.getRefHash("main")).not.toBe(originMain); // local main is behind
+
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    const messages: WsServerMessage[] = [];
+    runner.on("message", (m: WsServerMessage) => messages.push(m));
+
+    const result = await runFlow({ ...baseDeps(git, runner, [], true), recordSyncCard: true }, "main");
+
+    expect(result.status).toBe("up_to_date");
+    expect(await git.getRefHash("main")).toBe(originMain); // local main caught up
+
+    const card = messages.find((m) => m.type === "branch_synced_card");
+    expect(card).toBeDefined();
+
+    const complete = messages.find((m) => m.type === "rebase_complete");
+    expect(complete).toBeDefined();
+    if (complete?.type === "rebase_complete") {
+      expect(complete.upToDate).toBe(true);
+      expect(complete.baseMoved).toBe(true); // suppresses the "Already up to date" toast
+    }
+  });
+
+  it("nothing to do (local main already current) — no card, no baseMoved", async () => {
+    const { workDir, git } = setupRepoWithRemote(tmpDir);
+    // No divergence: session is on main, which already matches origin/main.
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    const messages: WsServerMessage[] = [];
+    runner.on("message", (m: WsServerMessage) => messages.push(m));
+
+    const result = await runFlow({ ...baseDeps(git, runner, [], false), recordSyncCard: true }, "main");
+
+    expect(result.status).toBe("up_to_date");
+    expect(messages.find((m) => m.type === "branch_synced_card")).toBeUndefined();
+    const complete = messages.find((m) => m.type === "rebase_complete");
+    if (complete?.type === "rebase_complete") {
+      expect(complete.baseMoved).toBeFalsy();
+    }
+  });
+});
+
 describe("rebase-driver: buildRebaseConflictPrompt", () => {
   it("includes base branch and file list", () => {
     const prompt = buildRebaseConflictPrompt("main", [

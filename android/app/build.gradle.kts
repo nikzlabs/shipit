@@ -3,6 +3,25 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// Single source of truth for the user-visible version: the root package.json
+// (one level above the android/ Gradle root). Keeps the app-info "version"
+// string in lockstep with the rest of the project instead of a hand-edited
+// literal that silently goes stale. Parsed with a regex to avoid pulling a JSON
+// dependency into the build classpath; falls back to "0.0.0" if the file is
+// missing (e.g. the android/ dir built in isolation).
+val projectVersionName: String = run {
+    val packageJson = rootDir.parentFile?.resolve("package.json")
+    val fallback = "0.0.0"
+    if (packageJson?.exists() == true) {
+        Regex("\"version\"\\s*:\\s*\"([^\"]+)\"")
+            .find(packageJson.readText())
+            ?.groupValues?.get(1)
+            ?: fallback
+    } else {
+        fallback
+    }
+}
+
 android {
     namespace = "com.shipit.wrapper"
     compileSdk = 35
@@ -14,11 +33,18 @@ android {
         // submissions. Targeting 35 also opts the app into enforced edge-to-edge
         // — see MainActivity/SettingsActivity inset handling and themes.xml.
         targetSdk = 35
-        // versionCode must strictly increase on every Play Store upload. In CI
-        // it's set from the GitHub Actions run number (see android.yml); locally
-        // it falls back to 1 so `gradle assembleRelease` works offline.
-        versionCode = System.getenv("ANDROID_VERSION_CODE")?.toIntOrNull() ?: 1
-        versionName = "0.1.0"
+        // versionCode must strictly increase or Android refuses to install the
+        // new APK over the old one (INSTALL_FAILED_VERSION_DOWNGRADE). Both CI
+        // and local builds use the SAME scale — epoch seconds — so a newer build
+        // always outranks an older one no matter where it was built (CI sets
+        // ANDROID_VERSION_CODE to `date +%s`; see android.yml). Locally we fall
+        // back to the same computation, so a hand-run `gradle assembleDebug`
+        // also outranks whatever is on the device. Fits in an Int until 2038.
+        versionCode = System.getenv("ANDROID_VERSION_CODE")?.toIntOrNull()
+            ?: (System.currentTimeMillis() / 1000).toInt()
+        // Read from the root package.json (see projectVersionName above) so the
+        // app-info "version" tracks the project version automatically.
+        versionName = projectVersionName
     }
 
     buildFeatures {

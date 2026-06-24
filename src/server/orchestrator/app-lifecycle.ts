@@ -1,4 +1,5 @@
 import path from "node:path";
+import fs from "node:fs/promises";
 import type { Server as HttpServer } from "node:http";
 import type { FastifyInstance } from "fastify";
 import { SessionContainerManager, resolveAgentDockerLimits } from "./session-container.js";
@@ -19,6 +20,7 @@ import { getErrorMessage } from "./validation.js";
 import type { LogStore } from "./log-store.js";
 import { fetchCIFailureLogs, buildCIFixPrompt } from "./services/github.js";
 import { markMergedAndPruneExcess } from "./services/session.js";
+import { emitResetEligibleSignal } from "./services/pre-turn-reset.js";
 import { runAutoResolveAttempt } from "./services/rebase-driver.js";
 import type { AutoResolveResult, RebaseAndResolveCb } from "./auto-conflict-resolve-manager.js";
 import type { AutoFixResult } from "./auto-fix-manager.js";
@@ -170,6 +172,21 @@ export async function setupContainerManager(
         if (workerImageId) {
           process.env.SESSION_WORKER_IMAGE_ID = workerImageId;
           console.log(`[server] Overlay runtime scope pinned to worker image ${workerImageId}`);
+        }
+      }
+      // SHI-194 — the overlay scope keys on the worker's pinned base-image digest
+      // (`BASE_IMAGE_DIGEST`), not its full image id, so an app-code-only deploy
+      // no longer rotates the scope (no churn, post-deploy installs stay warm).
+      // Resolve it from the worker image's baked env and publish into the channel
+      // both `overlayRuntimeKey()` (orchestrator scope) and `buildEnv` (forwarded
+      // to the worker's install-runtime marker) read. Same gating as above: flag
+      // on, operator-set value always wins. A pre-SHI-194 image (no baked digest)
+      // resolves to nothing → the `SESSION_WORKER_IMAGE_ID` fallback stands.
+      if (isOverlayEnabled() && !process.env.BASE_IMAGE_DIGEST) {
+        const baseDigest = await containerManager.resolveWorkerBaseDigest();
+        if (baseDigest) {
+          process.env.BASE_IMAGE_DIGEST = baseDigest;
+          console.log(`[server] Overlay runtime scope pinned to base image ${baseDigest}`);
         }
       }
       const activeIds = new Set(sessionManager.allIds());
@@ -336,6 +353,22 @@ async function createContainerForRunner(opts: {
 
   try {
     if (opts.destroyExisting) await mgr.destroy(sessionId);
+    // SHI-179 — fail fast with a clear, terminal message if the workspace clone
+    // is missing. The activation path (route-registry `activateSession`)
+    // re-materializes an evicted/missing workspace from the bare cache before
+    // reaching here, so this only trips when recovery was impossible (no remote,
+    // bare cache also gone) or a non-activation path reached creation with a
+    // reclaimed workspace. Without it the Docker bind-mount 404s with a cryptic
+    // "no such file or directory" and the connect → create → 404 → dispose cycle
+    // repeats; this turns it into a single greppable error the health strip shows.
+    try {
+      await fs.stat(opts.workspaceDir);
+    } catch {
+      throw new Error(
+        `Session workspace is missing at ${opts.workspaceDir} — it could not be restored from the `
+        + `repository (the clone may have been reclaimed and no recoverable copy remains).`,
+      );
+    }
     // docs/183 dep-dir design — resolve per-dep-dir overlay specs (flag-gated;
     // [] when off / ineligible / nothing overlay-worthy). The byte-for-byte
     // unchanged path returns [], so non-overlay sessions are untouched.
@@ -848,6 +881,25 @@ export function createPrStatusPoller(
         );
         sseBroadcast("session_list", { sessions: result.sessions });
         console.log(`[pr-poller] Post-merge: marked ${sessionId} as merged`);
+        // docs/218 — the merge just made this session reset-eligible (mergedAt +
+        // mergedHeadSha are both set now). If the user is sitting ON this session
+        // and never re-activates it, neither the activation nor the post-turn
+        // recompute fires, so the "start from latest base" composer control would
+        // stay hidden until they switch away and back. Push the freshly-recomputed
+        // signal to the attached viewers now; skipped when no live runner (the
+        // activation path covers the reattach case).
+        const mergedRunner = runnerRegistry.get(sessionId);
+        if (mergedRunner) {
+          await emitResetEligibleSignal(
+            {
+              getSession: (id) => sessionManager.get(id),
+              getPrStatus: (id) => sessionManager.getPrStatus(id),
+              createGitManager,
+            },
+            mergedRunner,
+            sessionId,
+          );
+        }
         // docs/145: a merge moved `main`, so the bare cache is now stale.
         // Refresh it off the request path so the next claim can skip its
         // synchronous fetch. Best-effort — the pre-fetcher coalesces/swallows.

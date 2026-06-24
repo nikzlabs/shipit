@@ -2,6 +2,7 @@ import type { AgentOption } from "../../../agent-types.js";
 import { ClaudeAuthCard } from "../../ClaudeAuthCard.js";
 import { useSettingsStore } from "../../../stores/settings-store.js";
 import { ProviderAccountSection } from "../ProviderAccountSection.js";
+import { SubAgentDefaultsSection } from "../SubAgentDefaultsSection.js";
 
 export function ClaudeTab({
   agent,
@@ -37,6 +38,7 @@ export function ClaudeTab({
         hasStoredCredentials={claudeHasStoredCredentials}
       />
       <ProviderAccountSection provider="claude" />
+      <SubAgentDefaultsSection agent={agent} />
     </div>
   );
 }

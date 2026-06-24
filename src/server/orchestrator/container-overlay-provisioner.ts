@@ -80,6 +80,35 @@ export async function resolveWorkerImageId(docker: Docker, imageName: string): P
   }
 }
 
+/**
+ * SHI-194 — resolve the **pinned base-image digest** baked into the session-worker
+ * image's `BASE_IMAGE_DIGEST` env (set from the worker Dockerfile's digest-pinned
+ * `FROM`). This is the ABI fingerprint the overlay scope now keys on instead of
+ * the full worker-image id: it stays constant across app-code-only rebuilds and
+ * rolls only on a deliberate base bump, so a deploy no longer mints a fresh base
+ * scope. The orchestrator can't read the worker's baked env from its own process,
+ * so it reads it out of the image's `Config.Env` here, once at startup.
+ *
+ * Returns `""` (a miss) when the image can't be inspected OR carries no
+ * `BASE_IMAGE_DIGEST` (a pre-SHI-194 worker image) — the caller then leaves the
+ * scope on the `SESSION_WORKER_IMAGE_ID`/`"unknown"` fallback, i.e. the prior
+ * behavior, never a wrong reuse. Cached by the caller, incl. the miss.
+ */
+export async function resolveWorkerBaseDigest(docker: Docker, imageName: string): Promise<string> {
+  try {
+    const info = await docker.getImage(imageName).inspect();
+    const env = info.Config?.Env ?? [];
+    const entry = env.find((e) => e.startsWith("BASE_IMAGE_DIGEST="));
+    return entry ? entry.slice("BASE_IMAGE_DIGEST=".length) : "";
+  } catch (err) {
+    console.warn(
+      `[overlay] could not inspect worker image ${imageName} for the base digest:`,
+      err instanceof Error ? err.message : String(err),
+    );
+    return "";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Overlay spec resolution (docs/183)
 // ---------------------------------------------------------------------------

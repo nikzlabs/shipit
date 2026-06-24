@@ -62,8 +62,8 @@ The janitor runs **once at orchestrator startup** (fire-and-forget; never blocks
 It covers the leaks the two layers above can't see:
 
 - **Orphan `shipit-managed` compose volumes.** Sessions can be archived in the gap between deploys; `docker compose down --volumes` should have dropped the volume but if it failed (compose-stack already torn down, daemon restart mid-operation) the label-scoped prune sweeps it next tick. `docker volume prune -f --filter "label=shipit-managed=true"`.
-- **Orphan `repo-cache/<hash>` and `dep-cache/<hash>` directories.** Each tick reads `repoStore.list()`, builds the set of live hashes (where `last_used_at` is within `DISK_JANITOR_CACHE_DAYS`, default 30), and `fs.rm`s any cache subdir whose hash isn't in that set.
-- **Archived workspaces** (safety net, opt-in). `archiveSession` already drops `workspaceDir` at archive time for every session — all sessions in the current product have a `remoteUrl` and can re-clone from the bare cache on unarchive. The janitor's workspace sweep exists as a backstop: archives that failed mid-flight (worker crash, fs error), legacy sessions from before the cleanup code shipped, or any future edge case where the workspace outlives the archive. Enabled via `DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS=<n>` (sessions older than `<n>` days). **Conversation data is always preserved** — chat history rows, usage rows, session metadata, PR snapshot. Only the on-disk git checkout + `node_modules` go. Sessions without a `remoteUrl` are skipped defensively (no remote to re-clone from). Default `0` (sweep disabled). Prod opts in via `docker-compose.yml`: `DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS=30`.
+- **Orphan `repo-cache/<hash>` and `dep-cache/<hash>` directories.** Each tick reads `repoStore.list()`, builds the set of live hashes (where `last_used_at` is within the cold-artifact retention `DISK_JANITOR_COLD_ARTIFACT_RETENTION_DAYS`, default 30), and `fs.rm`s any cache subdir whose hash isn't in that set.
+- **Archived workspaces** (crash-recovery backstop). `archiveSession` already drops `workspaceDir` synchronously at archive time for every session — all sessions in the current product have a `remoteUrl` and can re-clone from the bare cache on unarchive. The janitor's workspace sweep exists as a backstop: archives whose synchronous cleanup crashed mid-flight (worker crash, fs error), legacy sessions from before the cleanup code shipped, or any future edge case where the workspace outlives the archive. **Conversation data is always preserved** — chat history rows, usage rows, session metadata, PR snapshot. Only the on-disk git checkout + `node_modules` go. Sessions without a `remoteUrl` are skipped defensively (no remote to re-clone from). SHI-197: this is no longer an independently-tunable knob — post-SHI-192 it's pure crash-recovery, so it rides the single `DISK_JANITOR_COLD_ARTIFACT_RETENTION_DAYS` (default 30) alongside the caches, ON by default rather than the old disabled-by-default `DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS=0`.
 
 Build-time prunes (BuildKit cache, dangling images) deliberately **do not** live in the janitor — they're owned by `deploy.sh`. They only grow as a side effect of builds, so pruning at deploy time is causal.
 
@@ -73,14 +73,13 @@ Build-time prunes (BuildKit cache, dangling images) deliberately **do not** live
 
 ## Production configuration
 
-`deployment/hetzner/docker-compose.yml` sets the janitor knobs explicitly for visibility:
+`deployment/vps/docker-compose.yml` sets the janitor knob explicitly for visibility:
 
 ```yaml
-- DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS=30
-- DISK_JANITOR_CACHE_DAYS=30
+- DISK_JANITOR_COLD_ARTIFACT_RETENTION_DAYS=30
 ```
 
-Self-hosted deployments using their own compose file get the safe defaults (no archive sweep, 30-day cache cutoff) unless they opt in.
+SHI-197 collapsed the two coincidental 30-day knobs (`DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS` + `DISK_JANITOR_CACHE_DAYS`) into this single cold-artifact retention covering both the archived-workspace crash-recovery backstop and the cold caches. Self-hosted deployments using their own compose file get the safe 30-day default unless they override it.
 
 ## Key files
 

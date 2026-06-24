@@ -654,6 +654,59 @@ describe("GitHubAuthManager.enableAutoMerge", () => {
     expect(graphqlVariables).toMatchObject({ commitBody: "" });
     fetchSpy.mockRestore();
   });
+
+  // The returned `message` is surfaced verbatim in the managed-merge tooltip
+  // (docs/077), so GitHub's cryptic GraphQL errors are mapped to actionable text.
+  function mockGraphqlError(message: string) {
+    return vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const u = urlOf(input);
+      if (u.endsWith("/pulls/42") && (init?.method ?? "GET") === "GET") {
+        return new Response(JSON.stringify({ node_id: "PR_node_42", title: "t", body: null }), {
+          status: 200, headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (u === "https://api.github.com/graphql") {
+        return new Response(JSON.stringify({ errors: [{ message }] }), {
+          status: 200, headers: { "Content-Type": "application/json" },
+        });
+      }
+      throw new Error(`Unexpected fetch: ${u}`);
+    });
+  }
+
+  it("maps a GitHub auto-merge-disabled error to actionable repo-settings guidance", async () => {
+    const fetchSpy = mockGraphqlError("Auto merge is not allowed for this repository");
+    const mgr = new GitHubAuthManager(tmpDir, credentialStore);
+    mgr.checkCredentials();
+    const result = await mgr.enableAutoMerge("o", "r", 42, "SQUASH");
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain("Allow auto-merge");
+    expect(result.message).toContain("Settings");
+    fetchSpy.mockRestore();
+  });
+
+  it("maps a 'clean status' error to required-check guidance", async () => {
+    const fetchSpy = mockGraphqlError("Pull request is in clean status");
+    const mgr = new GitHubAuthManager(tmpDir, credentialStore);
+    mgr.checkCredentials();
+    const result = await mgr.enableAutoMerge("o", "r", 42, "SQUASH");
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain("required check");
+    fetchSpy.mockRestore();
+  });
+
+  it("passes through an unrecognized GraphQL error verbatim", async () => {
+    const fetchSpy = mockGraphqlError("Some novel GitHub error");
+    const mgr = new GitHubAuthManager(tmpDir, credentialStore);
+    mgr.checkCredentials();
+    const result = await mgr.enableAutoMerge("o", "r", 42, "SQUASH");
+
+    expect(result.success).toBe(false);
+    expect(result.message).toBe("Some novel GitHub error");
+    fetchSpy.mockRestore();
+  });
 });
 
 describe("validateGitHubToken", () => {

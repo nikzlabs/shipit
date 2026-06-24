@@ -17,6 +17,7 @@ import {
   getIssueForTracker,
   listIssuesForTracker,
   listLabelsForTracker,
+  listStatusesForTracker,
   listIssueCommentsForTracker,
   addIssueCommentForTracker,
   userSetIssueStatus,
@@ -314,6 +315,55 @@ describe("listLabelsForTracker (SHI-92 foundation)", () => {
     // Linear with no token/team is unconfigured — a normal empty state.
     const out = await listLabelsForTracker(tmpStore(), "linear", undefined, undefined);
     expect(out.labels).toEqual([]);
+  });
+});
+
+describe("listStatusesForTracker (SHI-199)", () => {
+  it("returns GitHub's fixed Open/Closed pair without a network call", async () => {
+    // GitHub has no workflow states — the discovery list is the static pair, so
+    // no fetch should fire.
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const out = await listStatusesForTracker(tmpStore(), "github", fetchImpl, GH);
+    expect(out.statuses).toEqual([
+      { name: "Open", type: "started", color: "#3fb950" },
+      { name: "Closed", type: "completed", color: "#8957e5" },
+    ]);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("returns the Linear team's workflow states in board order", async () => {
+    const store = tmpStore();
+    store.setLinearToken("lin_x");
+    store.setLinearTeam(TEAM);
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
+      if (query.includes("TeamStates")) {
+        return jsonResponse({
+          data: {
+            team: {
+              states: {
+                nodes: [
+                  { id: "s2", name: "In Progress", type: "started", position: 2, color: "#f2c94c" },
+                  { id: "s1", name: "Backlog", type: "backlog", position: 1, color: "#bec2c8" },
+                ],
+              },
+            },
+          },
+        });
+      }
+      throw new Error(`no route for "${query.trim().slice(0, 20)}"`);
+    }) as unknown as typeof fetch;
+    const out = await listStatusesForTracker(store, "linear", fetchImpl, undefined);
+    // Sorted by board position, not the order returned.
+    expect(out.statuses).toEqual([
+      { name: "Backlog", type: "backlog", color: "#bec2c8" },
+      { name: "In Progress", type: "started", color: "#f2c94c" },
+    ]);
+  });
+
+  it("returns an empty set for an unconfigured tracker (no error)", async () => {
+    const out = await listStatusesForTracker(tmpStore(), "linear", undefined, undefined);
+    expect(out.statuses).toEqual([]);
   });
 });
 
@@ -702,6 +752,29 @@ describe("issue write services (docs/177)", () => {
     expect(JSON.parse(patch[1]?.body as string).labels).toEqual(["existing"]);
   });
 
+  it("undo: edit → restores the prior parent on Linear (SHI-206)", async () => {
+    store.setLinearToken("lin_x");
+    store.setLinearTeam(TEAM);
+    const node = {
+      id: "uuid-1", identifier: "SHI-9", title: "Doc", url: "https://linear.app/x/SHI-9",
+      priority: 0, priorityLabel: "No priority", state: { name: "Todo" }, assignee: null, labels: { nodes: [] },
+    };
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
+      if (query.includes("IssueId")) return jsonResponse({ data: { issue: { id: "uuid-prior" } } });
+      if (query.includes("issueUpdate")) return jsonResponse({ data: { issueUpdate: { success: true, issue: node } } });
+      throw new Error(`no route for "${query.trim().slice(0, 30)}"`);
+    });
+    await undoIssueWrite(
+      store,
+      { tracker: "linear", issueId: "uuid-1", undo: { kind: "edit", previousParentId: "uuid-prior" } },
+      fetchImpl as unknown as typeof fetch,
+    );
+    // The reverse write re-parents to the snapshotted prior id (resolved verbatim).
+    const update = fetchImpl.mock.calls.find(([, i]) => ((JSON.parse((i?.body as string) ?? "{}").query as string) ?? "").includes("issueUpdate"))!;
+    expect(JSON.parse(update[1]?.body as string).variables.input).toEqual({ parentId: "uuid-prior" });
+  });
+
   it("edit: snapshots the prior priority level for undo on Linear (SHI-92)", async () => {
     store.setLinearToken("lin_x");
     store.setLinearTeam(TEAM);
@@ -725,6 +798,58 @@ describe("issue write services (docs/177)", () => {
     const update = fetchImpl.mock.calls.find(([, i]) => ((JSON.parse((i?.body as string) ?? "{}").query as string) ?? "").includes("issueUpdate"))!;
     expect(JSON.parse(update[1]?.body as string).variables.input).toEqual({ priority: 2 });
     expect(out.undo).toMatchObject({ kind: "edit", previousPriority: "low" });
+  });
+
+  it("edit: reparents on Linear, resolves the parentId, and snapshots the prior parent (SHI-206)", async () => {
+    store.setLinearToken("lin_x");
+    store.setLinearTeam(TEAM);
+    const node = {
+      id: "uuid-1", identifier: "SHI-9", title: "Doc", url: "https://linear.app/x/SHI-9",
+      priority: 2, priorityLabel: "High", state: { name: "Todo", type: "unstarted" }, assignee: null,
+      labels: { nodes: [] },
+    };
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
+      if (query.includes("query Issue")) {
+        // Prior issue already nests under SHI-100 → its internal id is snapshotted.
+        return jsonResponse({ data: { issue: { ...node, parent: { id: "uuid-old", identifier: "SHI-100" } } } });
+      }
+      if (query.includes("IssueId")) return jsonResponse({ data: { issue: { id: "uuid-1" } } });
+      if (query.includes("issueUpdate")) {
+        return jsonResponse({ data: { issueUpdate: { success: true, issue: { ...node, parent: { id: "uuid-204", identifier: "SHI-204" } } } } });
+      }
+      throw new Error(`no route for "${query.trim().slice(0, 30)}"`);
+    });
+    const out = await updateIssueForTracker(store, "linear", "SHI-9", { parent: "SHI-204" }, fetchImpl as unknown as typeof fetch);
+    // The issueUpdate input carries the resolved parentId.
+    const update = fetchImpl.mock.calls.find(([, i]) => ((JSON.parse((i?.body as string) ?? "{}").query as string) ?? "").includes("issueUpdate"))!;
+    expect(JSON.parse(update[1]?.body as string).variables.input).toEqual({ parentId: "uuid-1" });
+    expect(out.undo).toMatchObject({ kind: "edit", previousParentId: "uuid-old" });
+    // docs/189 — the reparent is surfaced on line 2.
+    expect(out.content?.attrs).toContain("parent → SHI-204");
+  });
+
+  it("edit: detaching on Linear snapshots previousParentId null and sends parentId null (SHI-206)", async () => {
+    store.setLinearToken("lin_x");
+    store.setLinearTeam(TEAM);
+    const node = {
+      id: "uuid-1", identifier: "SHI-9", title: "Doc", url: "https://linear.app/x/SHI-9",
+      priority: 0, priorityLabel: "No priority", state: { name: "Todo", type: "unstarted" }, assignee: null,
+      labels: { nodes: [] },
+    };
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
+      // Prior issue has no parent → previousParentId is null (undo would detach).
+      if (query.includes("query Issue")) return jsonResponse({ data: { issue: node } });
+      if (query.includes("IssueId")) return jsonResponse({ data: { issue: { id: "uuid-1" } } });
+      if (query.includes("issueUpdate")) return jsonResponse({ data: { issueUpdate: { success: true, issue: node } } });
+      throw new Error(`no route for "${query.trim().slice(0, 30)}"`);
+    });
+    const out = await updateIssueForTracker(store, "linear", "SHI-9", { parent: null }, fetchImpl as unknown as typeof fetch);
+    const update = fetchImpl.mock.calls.find(([, i]) => ((JSON.parse((i?.body as string) ?? "{}").query as string) ?? "").includes("issueUpdate"))!;
+    expect(JSON.parse(update[1]?.body as string).variables.input).toEqual({ parentId: null });
+    expect(out.undo).toMatchObject({ kind: "edit", previousParentId: null });
+    expect(out.content?.attrs).toContain("parent → none");
   });
 
   it("status: snapshots the prior native status name for undo", async () => {

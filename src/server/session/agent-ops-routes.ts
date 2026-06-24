@@ -94,14 +94,6 @@ export function registerAgentOpsRoutes(
     return res.body ?? {};
   }
 
-  // POST /agent-ops/review/submit — plain-text AI review write-back (docs/203).
-  // The consolidated `shipit` bridge forwards `submit_review` here; the worker
-  // relays to the orchestrator with the trusted SESSION_ID injected.
-  app.post<{ Body: { filePath?: string; markdown?: string; reviewerLabel?: string } }>(
-    "/agent-ops/review/submit",
-    async (request, reply) => relay("POST", "/review-submit", request.body ?? {}, reply),
-  );
-
   // POST /agent-ops/voice/note — built-in voice_note tool write-back (docs/163).
   // The consolidated `shipit` bridge forwards `voice_note` here; the worker
   // relays to the orchestrator with the trusted SESSION_ID injected. The
@@ -205,6 +197,58 @@ export function registerAgentOpsRoutes(
       relay("POST", `/pr/${encodeURIComponent(request.params.number)}/reopen`, request.body ?? {}, reply),
   );
 
+  // ---------------------------------------------------------------------------
+  // GitHub Actions reads (read-only) — back `gh run list|view` and
+  // `gh workflow list|view`. Repo-aware (cwd/repo) like the PR ops. The worker
+  // injects the trusted SESSION_ID; the orchestrator resolves the target repo.
+  // There is intentionally NO dispatch/rerun/cancel route — manipulating CI is
+  // a human/CI action, so the shim keeps those verbs blocked.
+  // ---------------------------------------------------------------------------
+
+  // GET /agent-ops/run/list — list workflow runs
+  app.get<{ Querystring: { workflow?: string; branch?: string; status?: string; limit?: string; cwd?: string; repo?: string } }>(
+    "/agent-ops/run/list",
+    async (request, reply) => {
+      const { workflow, branch, status, limit } = request.query;
+      const extra: Record<string, string> = {};
+      if (workflow) extra.workflow = workflow;
+      if (branch) extra.branch = branch;
+      if (status) extra.status = status;
+      if (limit) extra.limit = limit;
+      return relay("GET", `/actions/runs${prTargetQs(request.query, extra)}`, undefined, reply);
+    },
+  );
+
+  // GET /agent-ops/run/view — view one run (id optional → latest)
+  app.get<{ Querystring: { id?: string; log?: string; logFailed?: string; cwd?: string; repo?: string } }>(
+    "/agent-ops/run/view",
+    async (request, reply) => {
+      const { id, log, logFailed } = request.query;
+      const extra: Record<string, string> = {};
+      if (id) extra.id = id;
+      if (log) extra.log = log;
+      if (logFailed) extra.logFailed = logFailed;
+      return relay("GET", `/actions/runs/view${prTargetQs(request.query, extra)}`, undefined, reply);
+    },
+  );
+
+  // GET /agent-ops/workflow/list — list workflow definitions
+  app.get<{ Querystring: { cwd?: string; repo?: string } }>(
+    "/agent-ops/workflow/list",
+    async (request, reply) =>
+      relay("GET", `/actions/workflows${prTargetQs(request.query)}`, undefined, reply),
+  );
+
+  // GET /agent-ops/workflow/view — view one workflow + recent runs
+  app.get<{ Querystring: { workflow?: string; cwd?: string; repo?: string } }>(
+    "/agent-ops/workflow/view",
+    async (request, reply) => {
+      const extra: Record<string, string> = {};
+      if (request.query.workflow) extra.workflow = request.query.workflow;
+      return relay("GET", `/actions/workflows/view${prTargetQs(request.query, extra)}`, undefined, reply);
+    },
+  );
+
   // POST /agent-ops/release/plan — read-only release plan (docs/214). Backs
   // `shipit release plan`. The worker injects the trusted SESSION_ID; the
   // orchestrator detects the version source + computes the next version.
@@ -270,6 +314,24 @@ export function registerAgentOpsRoutes(
     },
   );
 
+  // GET /agent-ops/issue/labels?tracker= — the tracker's pickable label set (read, SHI-199)
+  app.get<{ Querystring: { tracker?: string } }>(
+    "/agent-ops/issue/labels",
+    async (request, reply) => {
+      const qs = request.query.tracker ? `?tracker=${encodeURIComponent(request.query.tracker)}` : "";
+      return relay("GET", `/issue/labels${qs}`, undefined, reply);
+    },
+  );
+
+  // GET /agent-ops/issue/statuses?tracker= — the tracker's assignable statuses (read, SHI-199)
+  app.get<{ Querystring: { tracker?: string } }>(
+    "/agent-ops/issue/statuses",
+    async (request, reply) => {
+      const qs = request.query.tracker ? `?tracker=${encodeURIComponent(request.query.tracker)}` : "";
+      return relay("GET", `/issue/statuses${qs}`, undefined, reply);
+    },
+  );
+
   // GET /agent-ops/issue/comments?tracker=&id= — issue comment thread (read, SHI-137)
   app.get<{ Querystring: { tracker?: string; id?: string } }>(
     "/agent-ops/issue/comments",
@@ -282,8 +344,8 @@ export function registerAgentOpsRoutes(
     },
   );
 
-  // POST /agent-ops/issue/create { tracker, title, body, labels?, priority? } (docs/187, SHI-92)
-  app.post<{ Body: { tracker?: string; title?: string; body?: string; labels?: string[]; priority?: string } }>(
+  // POST /agent-ops/issue/create { tracker, title, body, labels?, priority?, parent? } (docs/187, SHI-92, SHI-206)
+  app.post<{ Body: { tracker?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null } }>(
     "/agent-ops/issue/create",
     async (request, reply) => relay("POST", "/issue/create", request.body ?? {}, reply),
   );
@@ -294,8 +356,8 @@ export function registerAgentOpsRoutes(
     async (request, reply) => relay("POST", "/issue/comment", request.body ?? {}, reply),
   );
 
-  // POST /agent-ops/issue/edit { tracker, id, title?, body?, labels?, priority? } (SHI-92)
-  app.post<{ Body: { tracker?: string; id?: string; title?: string; body?: string; labels?: string[]; priority?: string } }>(
+  // POST /agent-ops/issue/edit { tracker, id, title?, body?, labels?, priority?, parent? } (SHI-92, SHI-206)
+  app.post<{ Body: { tracker?: string; id?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null } }>(
     "/agent-ops/issue/edit",
     async (request, reply) => relay("POST", "/issue/edit", request.body ?? {}, reply),
   );

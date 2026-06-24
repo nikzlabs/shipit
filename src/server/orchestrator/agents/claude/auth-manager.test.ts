@@ -456,6 +456,36 @@ describe("AuthManager / scoped spawn (docs/150)", () => {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  it("strips ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN from the login subprocess env", () => {
+    // Companion to the on-disk wipe: `claude /login` honors these env vars over
+    // the interactive OAuth flow, so a stale key/token in the orchestrator's
+    // environment makes the flow hang on "Starting…" no matter how clean the
+    // disk is. The login child must never inherit them — while the
+    // orchestrator's own `process.env` is left untouched.
+    const origKey = process.env.ANTHROPIC_API_KEY;
+    const origToken = process.env.ANTHROPIC_AUTH_TOKEN;
+    process.env.ANTHROPIC_API_KEY = "sk-ant-stale";
+    process.env.ANTHROPIC_AUTH_TOKEN = "stale-bearer";
+    try {
+      const mgr = new AuthManager();
+      mgr.startOAuthFlow();
+
+      const env = ptyHoisted.calls[0].opts.env!;
+      expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+      expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+      // The orchestrator's own env is unchanged — env-var auth still works for
+      // agent turns / dogfooding.
+      expect(process.env.ANTHROPIC_API_KEY).toBe("sk-ant-stale");
+      expect(process.env.ANTHROPIC_AUTH_TOKEN).toBe("stale-bearer");
+      mgr.kill();
+    } finally {
+      if (origKey !== undefined) process.env.ANTHROPIC_API_KEY = origKey;
+      else delete process.env.ANTHROPIC_API_KEY;
+      if (origToken !== undefined) process.env.ANTHROPIC_AUTH_TOKEN = origToken;
+      else delete process.env.ANTHROPIC_AUTH_TOKEN;
+    }
+  });
 });
 
 describe("AuthManager / fresh-credential completion gate", () => {

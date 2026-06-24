@@ -723,7 +723,9 @@ describe("MessageList", () => {
       expect(screen.queryByLabelText("Fork current state")).not.toBeInTheDocument();
     });
 
-    it("does not show intermediate gap controls while loading", () => {
+    it("offers fork-only at intermediate gaps while loading (SHI-182)", () => {
+      // While a turn runs, in-place rewind (chat/code/both) is hidden but fork
+      // stays available — it spins off a new session and doesn't mutate this one.
       const onRewindAtGap = vi.fn();
       const errorMsg: ChatMessage = { role: "user", text: "bad", isError: true, streaming: false };
       render(
@@ -733,7 +735,12 @@ describe("MessageList", () => {
           onRewindAtGap={onRewindAtGap}
         />
       );
-      expect(screen.getAllByLabelText("Rewind options")[0]).toBeDisabled();
+      const forkControl = screen.getAllByLabelText("Fork as new session")[0];
+      expect(forkControl).toBeInTheDocument();
+      expect(forkControl).not.toBeDisabled();
+      // The full rewind menu is suppressed mid-turn, and the current-state fork
+      // handle (rendered only when idle) is absent.
+      expect(screen.queryByLabelText("Rewind options")).not.toBeInTheDocument();
       expect(screen.queryByLabelText("Fork current state")).not.toBeInTheDocument();
     });
 

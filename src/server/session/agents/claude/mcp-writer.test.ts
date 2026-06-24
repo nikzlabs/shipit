@@ -66,7 +66,7 @@ describe("ClaudeAdapter.writeMcpConfig (docs/155 hair 10, SHI-128)", () => {
     expect(servers.shipit).toEqual({
       command: shipitBridge.tsxBin,
       args: [shipitBridge.bridgePath],
-      env: { SHIPIT_MCP_TOOLS: "review,present,voice,bug,permission,propose_actions" },
+      env: { SHIPIT_MCP_TOOLS: "present,voice,bug,permission,propose_actions" },
     });
   });
 

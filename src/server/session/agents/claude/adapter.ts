@@ -334,6 +334,7 @@ export class ClaudeAdapter
         ?.filter((s) => s.enabled)
         .map((s) => s.name),
       model: params.model,
+      reasoningEffort: params.reasoningEffort,
       settingsPath: params.settingsPath,
       autoCreatePr: params.autoCreatePr,
       // docs/211 — sets SHIPIT_SANDBOX=1 so the branch-block hook self-gates off.
@@ -470,7 +471,7 @@ export class ClaudeAdapter
       mcpServers.shipit = {
         command: ctx.shipitBridge.tsxBin,
         args: [ctx.shipitBridge.bridgePath],
-        env: { SHIPIT_MCP_TOOLS: "review,present,voice,bug,permission,propose_actions" },
+        env: { SHIPIT_MCP_TOOLS: "present,voice,bug,permission,propose_actions" },
       };
       // The permission tool is the CLI's `--permission-prompt-tool` (set below
       // at run time): instead of auto-denying a gated sensitive-file edit in

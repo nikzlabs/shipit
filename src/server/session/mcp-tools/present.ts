@@ -1,7 +1,9 @@
 /**
- * present tool — `present` (docs/093). Pure transport: POSTs the artifact to the
- * worker's `/agent-ops/present/submit` broker, which persists the bytes, emits
- * the `present_content` SSE event, and returns `{ presentId, viewUrl }`.
+ * present tool — `present` (docs/093). Pure transport: POSTs the artifact PATH to
+ * the worker's `/agent-ops/present/submit` broker, which records its metadata,
+ * emits the `present_content` SSE event, and returns `{ presentId, viewUrl }`.
+ * The broker's `presentId` is internal (derived from the path) — the agent never
+ * passes it back, so the tool surfaces only `{ status, viewUrl }` to the agent.
  * Extracted from the former standalone `mcp-present-bridge.ts` for the
  * consolidated bridge; its server-level guidance becomes part of the merged
  * `shipit` server instructions.
@@ -10,27 +12,32 @@
 import type { ToolDescriptor } from "./types.js";
 
 const TOOL_DESCRIPTION = [
-  "Show the user a visual artifact — a diagram, chart, graph, mockup, wireframe,",
-  "rendered markdown doc, comparison view, or HTML/SVG prototype — rendered in",
-  "ShipIt's dedicated Present tab, with no dev server. Reach for this proactively",
-  "whenever you produce something visual for the user to look at, instead of only",
-  "describing it in chat or writing a file you never surface.",
-  "Workflow: write a single self-contained file with the Write tool, then call",
-  "`present` with its path.",
-  "Write the file under /tmp for a throwaway artifact (it never enters git), or",
-  "into the workspace if you want it tracked and committed — either way it renders",
-  "in the Present tab; the path's location is the only difference.",
+  "Show the user one or more visual artifacts — diagrams, charts, graphs, mockups,",
+  "wireframes, rendered markdown docs, comparison views, or HTML/SVG prototypes —",
+  "rendered in ShipIt's dedicated Present tab, with no dev server. Reach for this",
+  "proactively whenever you produce something visual for the user to look at,",
+  "instead of only describing it in chat or writing a file you never surface.",
+  "Multiple presentations coexist in the Present tab. Each call presents one file,",
+  "so to show several artifacts at once (e.g. three design variants) write each",
+  "file and call `present` once per file — they all stay visible together. Don't",
+  "show one variant and point the user elsewhere for the rest; present them all.",
+  "Identity is the file PATH: presenting a new path adds an entry, and presenting",
+  "the SAME path again updates that entry in place (that's how you iterate — edit",
+  "the file and re-present it, no version flag needed).",
+  "Workflow: write a self-contained file with the Write tool, then call `present`",
+  "with its path; repeat for each additional artifact.",
+  "Write the file under /persist for a throwaway artifact (it never enters git but",
+  "survives container restarts, so the user still sees it tomorrow), or into the",
+  "workspace if you want it tracked and committed — either way it renders in the",
+  "Present tab; the path's location is the only difference.",
   "The MIME type is inferred from the file extension (.html, .svg, .md, .png,",
   ".jpg, .gif, .webp); pass `mimeType` only to override it.",
-  "Pass `replaceId` with a prior call's `presentId` to revise an existing",
-  "presentation in-place (e.g. mockup v1 → v2) — edit the file and call again;",
-  "omit it for a brand-new entry.",
-  "Returns `{ presentId, viewUrl }`. To verify how the artifact actually",
+  "Returns `{ status, viewUrl }`. To verify how the artifact actually",
   "renders, navigate your browser to `viewUrl` and screenshot it — do NOT open",
   "the file directly, because `viewUrl` applies the same rendering the user",
   "sees (markdown→HTML, SVG/image wrapping) and the raw file does not. Then fix",
   "any layout/contrast/clipping defects, edit the file, and call `present` again",
-  "with `replaceId` set to the same `presentId` to revise in place.",
+  "with the same path to update it in place.",
   "The file is capped at ~1 MB; larger artifacts will be rejected.",
   "Full guide (screenshot loop, MIME inference, limits): /shipit-docs/present.md.",
 ].join(" ");
@@ -41,7 +48,7 @@ const inputSchema = {
     file: {
       type: "string",
       description:
-        "Path to the file to present. Relative paths resolve against the workspace; absolute paths (e.g. /tmp/chart.html) are read as-is. Write the file first, then present it.",
+        "Path to the file to present. Relative paths resolve against the workspace; absolute paths (e.g. /persist/chart.html) are read as-is. Write the file first, then present it.",
     },
     mimeType: {
       type: "string",
@@ -52,11 +59,6 @@ const inputSchema = {
       type: "string",
       description:
         "Short human-friendly name for the artifact, shown as the heading in the Present tab above the file path (e.g. 'Architecture Diagram', 'Sales Chart v2'). Optional — without it the header falls back to the file's name.",
-    },
-    replaceId: {
-      type: "string",
-      description:
-        "When set to a previous call's `presentId`, replaces that entry in-place (revision flow). Omit to append a new entry.",
     },
   },
   required: ["file"],
@@ -71,8 +73,11 @@ const INSTRUCTIONS = [
   "tab without a dev server: a diagram, chart, graph, mockup, wireframe, rendered",
   "markdown doc, comparison view, or HTML/SVG prototype. Reach for it whenever you",
   "create something visual for the user to look at, rather than only describing",
-  "it. Write a single self-contained file (to /tmp for a throwaway, or into the",
-  "workspace to keep it tracked), then call `present` with the file path.",
+  "it. Write a self-contained file (to /persist for a throwaway that still",
+  "survives a restart, or into the workspace to keep it tracked), then call",
+  "`present` with the file path. Each call presents one file and multiple",
+  "presentations coexist in the tab, so to show several artifacts at once call",
+  "`present` once per file.",
 ].join(" ");
 
 export const presentTool: ToolDescriptor = {
@@ -86,7 +91,6 @@ export const presentTool: ToolDescriptor = {
       file?: string;
       mimeType?: string;
       title?: string;
-      replaceId?: string;
     };
     try {
       const res = await fetch(`${workerUrl}/agent-ops/present/submit`, {
@@ -96,12 +100,10 @@ export const presentTool: ToolDescriptor = {
           file: a.file,
           mimeType: a.mimeType,
           title: a.title,
-          replaceId: a.replaceId,
         }),
       });
       const body = (await res.json().catch(() => ({}))) as {
         error?: string;
-        presentId?: string;
         status?: string;
         viewUrl?: string;
       };
@@ -112,16 +114,16 @@ export const presentTool: ToolDescriptor = {
           isError: true,
         };
       }
+      // The agent acts only on `viewUrl` (to screenshot the rendered artifact)
+      // and re-presents by the same file PATH to update an entry — it never
+      // passes an id back, so we don't echo `presentId` (it's internal).
       return {
         content: [
           {
             type: "text",
             text: JSON.stringify({
               status: body.status ?? "presented",
-              presentId: body.presentId,
               ...(body.viewUrl !== undefined ? { viewUrl: body.viewUrl } : {}),
-              ...(a.title !== undefined ? { title: a.title } : {}),
-              ...(a.replaceId !== undefined ? { replaceId: a.replaceId } : {}),
             }),
           },
         ],

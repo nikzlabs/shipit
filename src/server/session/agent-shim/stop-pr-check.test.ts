@@ -10,6 +10,8 @@
  * Decision table (matches the script's flow):
  *   stop_hook_active true             → exit 0 (avoid loops)
  *   not a git repo                    → exit 0
+ *   transient state (detached HEAD,   → exit 0 (can't/shouldn't PR mid-op;
+ *     rebase/merge/cherry-pick)            re-check after it finishes)
  *   no base branch resolvable         → exit 0
  *   on the default branch             → exit 0
  *   no commits ahead of base          → exit 0
@@ -258,6 +260,51 @@ describe("stop-pr-check.sh", () => {
     expect(r.stderr).toContain("gh pr create");
     expect(r.stderr).toContain("Summary");
     expect(r.stderr).toContain("Test plan");
+  });
+
+  it("exits 0 when HEAD is detached (mid-rebase / bare SHA checkout)", () => {
+    // During a rebase HEAD is detached, so `gh pr create` cannot push to a
+    // branch. The hook must fail open instead of forcing an impossible action,
+    // even with commits ahead + a real diff + no PR.
+    const cwd = trackRepo(makeRepo({ commitsAheadOfBase: 2 }));
+    execFileSync("git", ["checkout", "--detach"], { cwd });
+    const r = runHook({
+      cwd,
+      // gh must never be reached — the transient-state guard exits first.
+      ghScript: 'echo "gh should not be invoked" 1>&2; exit 42',
+    });
+    expect(r.status).toBe(0);
+    expect(r.stderr).toBe("");
+  });
+
+  it("exits 0 when a rebase is in progress (rebase-merge marker present)", () => {
+    // Simulate an in-progress rebase by creating the marker dir git uses; HEAD
+    // stays on the branch but the tree is transient, so the hook fails open.
+    const cwd = trackRepo(makeRepo({ commitsAheadOfBase: 2 }));
+    mkdirSync(path.join(cwd, ".git", "rebase-merge"));
+    const r = runHook({
+      cwd,
+      ghScript: 'echo "gh should not be invoked" 1>&2; exit 42',
+    });
+    expect(r.status).toBe(0);
+    expect(r.stderr).toBe("");
+  });
+
+  it("exits 0 when a merge is in progress (MERGE_HEAD present)", () => {
+    // A conflicted/in-progress merge leaves MERGE_HEAD; fail open until it
+    // resolves rather than blocking the turn.
+    const cwd = trackRepo(makeRepo({ commitsAheadOfBase: 2 }));
+    const headSha = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd,
+      encoding: "utf8",
+    }).trim();
+    writeFileSync(path.join(cwd, ".git", "MERGE_HEAD"), `${headSha}\n`);
+    const r = runHook({
+      cwd,
+      ghScript: 'echo "gh should not be invoked" 1>&2; exit 42',
+    });
+    expect(r.status).toBe(0);
+    expect(r.stderr).toBe("");
   });
 
   it("exits 0 (no enforcement) when SHIPIT_AUTO_CREATE_PR is unset", () => {

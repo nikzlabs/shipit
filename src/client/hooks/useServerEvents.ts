@@ -270,6 +270,10 @@ export function useServerEvents(): void {
           // 138 — permission modes the agent supports; absent on old payloads,
           // in which case the selector simply won't offer `guarded`.
           supportedPermissionModes?: PermissionMode[];
+          // 217 — reasoning/effort options; absent on old payloads or agents
+          // with no reasoning knob, in which case the controls are hidden.
+          reasoning?: { label: string; options: { value: string; label: string }[] };
+          skillInvocationPrefix?: string;
         }[];
       };
       const agents = data.agents.map((a) => ({

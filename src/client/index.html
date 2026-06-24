@@ -2,17 +2,24 @@
 <html lang="en" class="dark">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-  <link rel="manifest" href="/manifest.webmanifest" />
+  <!-- crossorigin="use-credentials" so the manifest fetch carries cookies.
+       Without it the browser requests the manifest anonymously, and an auth
+       proxy in front of ShipIt (e.g. Cloudflare Zero Trust / Access) answers
+       that credential-less request with its login interstitial instead of the
+       JSON — Chrome then reports "No manifest detected" and won't offer
+       installation, even though the service worker (fetched with credentials)
+       registers fine. See docs/222-pwa-installable. -->
+  <link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials" />
   <meta name="theme-color" content="#030712" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="ShipIt" />
-  <link rel="apple-touch-icon" href="/favicon.svg" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
   <title>ShipIt</title>
 </head>
-<body class="bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100">
+<body class="text-gray-900 dark:text-gray-100">
   <div id="root"></div>
   <script type="module" src="./main.tsx"></script>
 </body>

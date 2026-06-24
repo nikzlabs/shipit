@@ -8,8 +8,6 @@ import { SessionManager } from "./sessions.js";
 import { RepoStore } from "./repo-store.js";
 import { runDiskJanitor } from "./startup-janitor.js";
 import { repoUrlToHash } from "./git-utils.js";
-import { liveOverlayScopeHashes, overlayRuntimeKey, pnpmStoreHash } from "./overlay-session.js";
-import { overlayScopeHash } from "./overlay-volume.js";
 
 describe("runDiskJanitor", () => {
   let tmpDir: string;
@@ -346,7 +344,7 @@ describe("runDiskJanitor", () => {
     expect(result.orphanNetworksRemoved).toBe(0);
   });
 
-  it("sweeps archived workspaces older than archivedWorkspaceDays", async () => {
+  it("sweeps archived workspaces older than coldArtifactRetentionDays", async () => {
     setup();
     const sessionManager = new SessionManager(dbManager!);
     const repoStore = new RepoStore(dbManager!);
@@ -373,7 +371,7 @@ describe("runDiskJanitor", () => {
       sessionManager,
       repoStore,
       stateDir: tmpDir,
-      archivedWorkspaceDays: 30,
+      coldArtifactRetentionDays: 30,
       runDocker: () => Promise.resolve(""),
     });
 
@@ -382,7 +380,79 @@ describe("runDiskJanitor", () => {
     expect(fs.existsSync(recentDir)).toBe(true);
   });
 
-  it("archive sweep is disabled by default (archivedWorkspaceDays = 0)", async () => {
+  it("SHI-192: archive sweep reclaims overlay/ sibling but preserves uploads/", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const sessionRoot = path.join(tmpDir, "sessions", "old-session");
+    const workspaceDir = path.join(sessionRoot, "workspace");
+    const overlayDir = path.join(sessionRoot, "overlay", "abc123", "upper");
+    const uploadsDir = path.join(sessionRoot, "uploads");
+    fs.mkdirSync(workspaceDir, { recursive: true });
+    fs.mkdirSync(overlayDir, { recursive: true });
+    fs.mkdirSync(uploadsDir, { recursive: true });
+    fs.writeFileSync(path.join(workspaceDir, "file"), "checkout");
+    fs.writeFileSync(path.join(overlayDir, "dep"), "install delta");
+    fs.writeFileSync(path.join(uploadsDir, "photo.png"), "user upload");
+
+    const old = new Date(Date.now() - 40 * 86_400_000).toISOString();
+    underlyingDb!.prepare(
+      "INSERT INTO sessions (id, title, created_at, last_used_at, workspace_dir, remote_url, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, ?, 1, 1, 'evicted')",
+    ).run("old-session", "Old", old, old, workspaceDir, "https://github.com/example/repo.git");
+
+    const result = await runDiskJanitor({
+      sessionManager,
+      repoStore,
+      stateDir: tmpDir,
+      coldArtifactRetentionDays: 30,
+      runDocker: () => Promise.resolve(""),
+    });
+
+    expect(result.workspacesRemoved).toBe(1);
+    expect(fs.existsSync(workspaceDir)).toBe(false);
+    // The regenerable overlay upper is the ~60 GB prod leak — it must go.
+    expect(fs.existsSync(path.join(sessionRoot, "overlay"))).toBe(false);
+    // uploads/ is durable, referenced by persisted chat history — it must survive.
+    expect(fs.existsSync(path.join(uploadsDir, "photo.png"))).toBe(true);
+  });
+
+  it("SHI-192: archive sweep reclaims an orphaned overlay/ even when workspace/ is already gone", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    // The exact leak shape on prod: an evicted session whose `workspace/` was
+    // already removed by an earlier (buggy) reclaim, leaving only `overlay/`.
+    const sessionRoot = path.join(tmpDir, "sessions", "orphan-session");
+    const workspaceDir = path.join(sessionRoot, "workspace"); // never created
+    const overlayDir = path.join(sessionRoot, "overlay", "abc123", "upper");
+    fs.mkdirSync(overlayDir, { recursive: true });
+    fs.writeFileSync(path.join(overlayDir, "dep"), "orphaned install delta");
+
+    const old = new Date(Date.now() - 40 * 86_400_000).toISOString();
+    underlyingDb!.prepare(
+      "INSERT INTO sessions (id, title, created_at, last_used_at, workspace_dir, remote_url, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, ?, 1, 1, 'evicted')",
+    ).run("orphan-session", "Orphan", old, old, workspaceDir, "https://github.com/example/repo.git");
+
+    const result = await runDiskJanitor({
+      sessionManager,
+      repoStore,
+      stateDir: tmpDir,
+      coldArtifactRetentionDays: 30,
+      runDocker: () => Promise.resolve(""),
+    });
+
+    expect(result.workspacesRemoved).toBe(1);
+    expect(fs.existsSync(path.join(sessionRoot, "overlay"))).toBe(false);
+  });
+
+  // SHI-197 — the archived-workspace backstop is now ON by default at the single
+  // cold-artifact retention (30d), no longer gated behind a disabled-by-default
+  // knob. It's pure crash-recovery (SHI-192 frees the workspace synchronously at
+  // archive time), so a workspace this old only exists if that synchronous
+  // cleanup crashed — exactly what the backstop is here to mop up.
+  it("archive backstop runs by default at the cold-artifact retention", async () => {
     setup();
     const sessionManager = new SessionManager(dbManager!);
     const repoStore = new RepoStore(dbManager!);
@@ -394,6 +464,7 @@ describe("runDiskJanitor", () => {
       "INSERT INTO sessions (id, title, created_at, last_used_at, workspace_dir, remote_url, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, ?, 1, 1, 'evicted')",
     ).run("old-session", "Old", old, old, oldDir, "https://github.com/example/repo.git");
 
+    // No coldArtifactRetentionDays passed → defaults to COLD_ARTIFACT_RETENTION_DAYS (30).
     const result = await runDiskJanitor({
       sessionManager,
       repoStore,
@@ -401,8 +472,8 @@ describe("runDiskJanitor", () => {
       runDocker: () => Promise.resolve(""),
     });
 
-    expect(result.workspacesRemoved).toBe(0);
-    expect(fs.existsSync(oldDir)).toBe(true);
+    expect(result.workspacesRemoved).toBe(1);
+    expect(fs.existsSync(oldDir)).toBe(false);
   });
 
   it("skips archived sessions without a remoteUrl (defensive)", async () => {
@@ -422,78 +493,12 @@ describe("runDiskJanitor", () => {
       sessionManager,
       repoStore,
       stateDir: tmpDir,
-      archivedWorkspaceDays: 30,
+      coldArtifactRetentionDays: 30,
       runDocker: () => Promise.resolve(""),
     });
 
     expect(result.workspacesRemoved).toBe(0);
     expect(fs.existsSync(oldDir)).toBe(true);
-  });
-
-  it("sweeps unreferenced repo/dep cache directories", async () => {
-    setup();
-    const sessionManager = new SessionManager(dbManager!);
-    const repoStore = new RepoStore(dbManager!);
-
-    const liveRepo = "https://github.com/example/live.git";
-    const liveHash = repoUrlToHash(liveRepo);
-    const staleHash = repoUrlToHash("https://github.com/example/stale.git");
-
-    repoStore.add(liveRepo);
-    repoStore.setReady(liveRepo);
-
-    for (const sub of ["repo-cache", "dep-cache"]) {
-      fs.mkdirSync(path.join(tmpDir, sub, liveHash), { recursive: true });
-      fs.mkdirSync(path.join(tmpDir, sub, staleHash), { recursive: true });
-      fs.writeFileSync(path.join(tmpDir, sub, liveHash, "marker"), "");
-      fs.writeFileSync(path.join(tmpDir, sub, staleHash, "marker"), "");
-    }
-
-    const result = await runDiskJanitor({
-      sessionManager,
-      repoStore,
-      stateDir: tmpDir,
-      cacheDays: 30,
-      runDocker: () => Promise.resolve(""),
-    });
-
-    expect(result.cachesRemoved).toBe(2);
-    expect(fs.existsSync(path.join(tmpDir, "repo-cache", liveHash))).toBe(true);
-    expect(fs.existsSync(path.join(tmpDir, "dep-cache", liveHash))).toBe(true);
-    expect(fs.existsSync(path.join(tmpDir, "repo-cache", staleHash))).toBe(false);
-    expect(fs.existsSync(path.join(tmpDir, "dep-cache", staleHash))).toBe(false);
-  });
-
-  it("sweeps unreferenced repo-memory dirs but keeps live ones (docs/155)", async () => {
-    setup();
-    const sessionManager = new SessionManager(dbManager!);
-    const repoStore = new RepoStore(dbManager!);
-
-    const liveRepo = "https://github.com/example/live.git";
-    const liveHash = repoUrlToHash(liveRepo);
-    const staleHash = repoUrlToHash("https://github.com/example/stale.git");
-    repoStore.add(liveRepo);
-    repoStore.setReady(liveRepo);
-
-    const credentialsDir = path.join(tmpDir, "credentials");
-    for (const hash of [liveHash, staleHash]) {
-      const dir = path.join(credentialsDir, "repo-memory", hash);
-      fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(path.join(dir, "MEMORY.md"), "");
-    }
-
-    const result = await runDiskJanitor({
-      sessionManager,
-      repoStore,
-      stateDir: tmpDir,
-      credentialsDir,
-      cacheDays: 30,
-      runDocker: () => Promise.resolve(""),
-    });
-
-    expect(result.repoMemoryDirsRemoved).toBe(1);
-    expect(fs.existsSync(path.join(credentialsDir, "repo-memory", liveHash))).toBe(true);
-    expect(fs.existsSync(path.join(credentialsDir, "repo-memory", staleHash))).toBe(false);
   });
 
   it("reclaims the dead nm-store subtree wholesale under tracked repos (docs/183)", async () => {
@@ -555,7 +560,7 @@ describe("runDiskJanitor", () => {
     expect(result.nmStoresRemoved).toBe(0);
   });
 
-  it("continues with workspace + cache sweeps when the volume sweep fails", async () => {
+  it("continues with the workspace sweep when the volume sweep fails", async () => {
     setup();
     const sessionManager = new SessionManager(dbManager!);
     const repoStore = new RepoStore(dbManager!);
@@ -575,7 +580,7 @@ describe("runDiskJanitor", () => {
       sessionManager,
       repoStore,
       stateDir: tmpDir,
-      archivedWorkspaceDays: 30,
+      coldArtifactRetentionDays: 30,
       runDocker,
     });
 
@@ -1094,19 +1099,24 @@ describe("runDiskJanitor", () => {
 
     const liveId = "live000000000000";
     const archivedId = "arch000000000000";
+    const evictedLiveId = "evic000000000000";
     const goneId = "gone000000000000";
     underlyingDb!.prepare(
       "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, archived) VALUES (?, ?, ?, ?, ?, 0)",
     ).run(liveId, "Live", "2026-05-12", "2026-05-12", "https://github.com/example/repo.git");
-    // archivedId must be disk-evicted: the credential sweep keys off
-    // listArchived() = disk_tier 'evicted'.
+    // archivedId is USER-archived (also disk-evicted, as archive sets both).
     underlyingDb!.prepare(
       "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, 1, 1, 'evicted')",
     ).run(archivedId, "Archived", "2026-05-12", "2026-05-12", "https://github.com/example/repo.git");
+    // SHI-179: disk-evicted but NOT user-archived — still LIVE (re-clones on
+    // activation), so its credentials must be PRESERVED.
+    underlyingDb!.prepare(
+      "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, 0, 0, 'evicted')",
+    ).run(evictedLiveId, "Evicted live", "2026-05-12", "2026-05-12", "https://github.com/example/repo.git");
 
-    // Lay down per-session credential dirs for all three.
+    // Lay down per-session credential dirs for all four.
     const credentialsDir = path.join(tmpDir, "credentials");
-    for (const id of [liveId, archivedId, goneId]) {
+    for (const id of [liveId, archivedId, evictedLiveId, goneId]) {
       const dir = path.join(credentialsDir, "sessions", id);
       fs.mkdirSync(path.join(dir, ".claude"), { recursive: true });
       fs.writeFileSync(path.join(dir, ".claude", ".credentials.json"), "{}");
@@ -1120,11 +1130,90 @@ describe("runDiskJanitor", () => {
       runDocker: () => Promise.resolve(""),
     });
 
-    // Live (tracked + not archived) is preserved; archived and untracked are reaped.
+    // Live and disk-evicted-but-live are preserved; user-archived and untracked are reaped.
     expect(fs.existsSync(path.join(credentialsDir, "sessions", liveId))).toBe(true);
+    expect(fs.existsSync(path.join(credentialsDir, "sessions", evictedLiveId))).toBe(true);
     expect(fs.existsSync(path.join(credentialsDir, "sessions", archivedId))).toBe(false);
     expect(fs.existsSync(path.join(credentialsDir, "sessions", goneId))).toBe(false);
     expect(result.credentialDirsRemoved).toBe(2);
+  });
+
+  it("preserves per-session logs for disk-evicted-but-live sessions; reaps user-archived/untracked (SHI-179)", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const liveId = "live000000000000";
+    const evictedLiveId = "evic000000000000";
+    const archivedId = "arch000000000000";
+    const goneId = "gone000000000000";
+    underlyingDb!.prepare(
+      "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, archived) VALUES (?, ?, ?, ?, ?, 0)",
+    ).run(liveId, "Live", "2026-05-12", "2026-05-12", "https://github.com/example/repo.git");
+    underlyingDb!.prepare(
+      "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, 0, 0, 'evicted')",
+    ).run(evictedLiveId, "Evicted live", "2026-05-12", "2026-05-12", "https://github.com/example/repo.git");
+    underlyingDb!.prepare(
+      "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, 1, 1, 'evicted')",
+    ).run(archivedId, "Archived", "2026-05-12", "2026-05-12", "https://github.com/example/repo.git");
+
+    // Lay down per-session `logs/` dirs for all four.
+    const sessionsRoot = path.join(tmpDir, "sessions");
+    for (const id of [liveId, evictedLiveId, archivedId, goneId]) {
+      const dir = path.join(sessionsRoot, id, "logs");
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, "container.log"), "x");
+    }
+
+    const result = await runDiskJanitor({
+      sessionManager,
+      repoStore,
+      stateDir: tmpDir,
+      sessionsRoot,
+      runDocker: () => Promise.resolve(""),
+    });
+
+    expect(fs.existsSync(path.join(sessionsRoot, liveId, "logs"))).toBe(true);
+    expect(fs.existsSync(path.join(sessionsRoot, evictedLiveId, "logs"))).toBe(true);
+    expect(fs.existsSync(path.join(sessionsRoot, archivedId, "logs"))).toBe(false);
+    expect(fs.existsSync(path.join(sessionsRoot, goneId, "logs"))).toBe(false);
+    expect(result.logDirsRemoved).toBe(2);
+  });
+
+  it("archived-workspace sweep skips disk-evicted-but-live sessions (SHI-179)", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const liveDir = path.join(tmpDir, "sessions", "evicted-live", "workspace");
+    const archivedDir = path.join(tmpDir, "sessions", "user-archived", "workspace");
+    fs.mkdirSync(liveDir, { recursive: true });
+    fs.mkdirSync(archivedDir, { recursive: true });
+    fs.writeFileSync(path.join(liveDir, "file"), "content");
+    fs.writeFileSync(path.join(archivedDir, "file"), "content");
+
+    const old = new Date(Date.now() - 40 * 86_400_000).toISOString();
+    const remote = "https://github.com/example/repo.git";
+    // Disk-evicted, NOT user-archived — workspace must be PRESERVED.
+    underlyingDb!.prepare(
+      "INSERT INTO sessions (id, title, created_at, last_used_at, workspace_dir, remote_url, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, ?, 0, 0, 'evicted')",
+    ).run("evicted-live", "Evicted live", old, old, liveDir, remote);
+    // User-archived — eligible for the safety-net reclaim.
+    underlyingDb!.prepare(
+      "INSERT INTO sessions (id, title, created_at, last_used_at, workspace_dir, remote_url, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, ?, 1, 1, 'evicted')",
+    ).run("user-archived", "User archived", old, old, archivedDir, remote);
+
+    const result = await runDiskJanitor({
+      sessionManager,
+      repoStore,
+      stateDir: tmpDir,
+      coldArtifactRetentionDays: 30,
+      runDocker: () => Promise.resolve(""),
+    });
+
+    expect(result.workspacesRemoved).toBe(1);
+    expect(fs.existsSync(liveDir)).toBe(true);
+    expect(fs.existsSync(archivedDir)).toBe(false);
   });
 
   it("credential-dir sweep is a no-op when credentialsDir is omitted", async () => {
@@ -1178,190 +1267,6 @@ describe("runDiskJanitor", () => {
     expect(result.orphanVolumesRemoved).toBe(1);
   });
 
-  it("overlay-base sweep is skipped when liveOverlayScopeHashes is not provided", async () => {
-    setup();
-    const sessionManager = new SessionManager(dbManager!);
-    const repoStore = new RepoStore(dbManager!);
-
-    // Seed a stale overlay-base dir; without a live-scope-hash source the sweep
-    // must NOT touch it (we can't confirm it isn't a live lowerdir).
-    const baseDir = path.join(tmpDir, "overlay-base", "0123456789abcdef");
-    fs.mkdirSync(baseDir, { recursive: true });
-    fs.writeFileSync(path.join(baseDir, "marker"), "x");
-    const old = Date.now() / 1000 - 99 * 86_400;
-    fs.utimesSync(baseDir, old, old);
-
-    const result = await runDiskJanitor({
-      sessionManager, repoStore, stateDir: tmpDir,
-      runDocker: () => Promise.resolve(""),
-    });
-
-    expect(fs.existsSync(baseDir)).toBe(true);
-    expect(result.overlayBasesRemoved).toBe(0);
-  });
-
-  it("overlay-base sweep removes stale, unreferenced bases but keeps live + young ones", async () => {
-    setup();
-    const sessionManager = new SessionManager(dbManager!);
-    const repoStore = new RepoStore(dbManager!);
-
-    const root = path.join(tmpDir, "overlay-base");
-    fs.mkdirSync(root, { recursive: true });
-    const mk = (hash: string, ageDays: number) => {
-      const d = path.join(root, hash);
-      fs.mkdirSync(d, { recursive: true });
-      fs.writeFileSync(path.join(d, "marker"), "x");
-      const t = Date.now() / 1000 - ageDays * 86_400;
-      fs.utimesSync(d, t, t);
-      return d;
-    };
-    const liveStale = mk("aaaaaaaaaaaaaaaa", 99);   // live → keep despite age
-    const orphanStale = mk("bbbbbbbbbbbbbbbb", 99);  // unreferenced + old → REMOVE
-    const orphanYoung = mk("cccccccccccccccc", 1);   // unreferenced but young → keep
-    // A stray file (not a dir) must be ignored.
-    fs.writeFileSync(path.join(root, "stray.txt"), "x");
-
-    const result = await runDiskJanitor({
-      sessionManager, repoStore, stateDir: tmpDir,
-      cacheDays: 30,
-      liveOverlayScopeHashes: () => new Set(["aaaaaaaaaaaaaaaa"]),
-      runDocker: () => Promise.resolve(""),
-    });
-
-    expect(fs.existsSync(liveStale)).toBe(true);
-    expect(fs.existsSync(orphanStale)).toBe(false);
-    expect(fs.existsSync(orphanYoung)).toBe(true);
-    expect(fs.existsSync(path.join(root, "stray.txt"))).toBe(true);
-    expect(result.overlayBasesRemoved).toBe(1);
-  });
-
-  // docs/197 Part 2 — pnpm shared-store sweep.
-  it("pnpm-store sweep is skipped when pnpmStoreRuntimeHash is not provided", async () => {
-    setup();
-    const sessionManager = new SessionManager(dbManager!);
-    const repoStore = new RepoStore(dbManager!);
-
-    const storeDir = path.join(tmpDir, "pnpm-store", "0123456789abcdef");
-    fs.mkdirSync(storeDir, { recursive: true });
-    const old = Date.now() / 1000 - 99 * 86_400;
-    fs.utimesSync(storeDir, old, old);
-
-    const result = await runDiskJanitor({
-      sessionManager, repoStore, stateDir: tmpDir,
-      runDocker: () => Promise.resolve(""),
-    });
-
-    expect(fs.existsSync(storeDir)).toBe(true);
-    expect(result.pnpmStoresRemoved).toBe(0);
-  });
-
-  it("pnpm-store sweep keeps the live store, reaps a stale-runtime store, keeps a young one", async () => {
-    setup();
-    const sessionManager = new SessionManager(dbManager!);
-    const repoStore = new RepoStore(dbManager!);
-
-    const root = path.join(tmpDir, "pnpm-store");
-    fs.mkdirSync(root, { recursive: true });
-    const mk = (hash: string, ageDays: number) => {
-      const d = path.join(root, hash);
-      fs.mkdirSync(d, { recursive: true });
-      const t = Date.now() / 1000 - ageDays * 86_400;
-      fs.utimesSync(d, t, t);
-      return d;
-    };
-    const liveHash = pnpmStoreHash(overlayRuntimeKey());
-    const liveStore = mk(liveHash, 99);                 // current runtime → keep despite age
-    const staleStore = mk("bbbbbbbbbbbbbbbb", 99);      // old, non-current → REMOVE
-    const youngStore = mk("cccccccccccccccc", 1);       // non-current but young → keep
-    fs.writeFileSync(path.join(root, "stray.txt"), "x"); // non-dir → ignored
-
-    const result = await runDiskJanitor({
-      sessionManager, repoStore, stateDir: tmpDir,
-      cacheDays: 30,
-      pnpmStoreRuntimeHash: () => liveHash,
-      runDocker: () => Promise.resolve(""),
-    });
-
-    expect(fs.existsSync(liveStore)).toBe(true);
-    expect(fs.existsSync(staleStore)).toBe(false);
-    expect(fs.existsSync(youngStore)).toBe(true);
-    expect(fs.existsSync(path.join(root, "stray.txt"))).toBe(true);
-    expect(result.pnpmStoresRemoved).toBe(1);
-  });
-
-  it("pnpm-store sweep reaps ALL stale stores when the feature is off (null live hash)", async () => {
-    setup();
-    const sessionManager = new SessionManager(dbManager!);
-    const repoStore = new RepoStore(dbManager!);
-
-    const root = path.join(tmpDir, "pnpm-store");
-    fs.mkdirSync(root, { recursive: true });
-    const old = Date.now() / 1000 - 99 * 86_400;
-    for (const h of ["aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb"]) {
-      const d = path.join(root, h);
-      fs.mkdirSync(d, { recursive: true });
-      fs.utimesSync(d, old, old);
-    }
-
-    const result = await runDiskJanitor({
-      sessionManager, repoStore, stateDir: tmpDir,
-      cacheDays: 30,
-      pnpmStoreRuntimeHash: () => null, // feature off → nothing is live
-      runDocker: () => Promise.resolve(""),
-    });
-
-    expect(result.pnpmStoresRemoved).toBe(2);
-  });
-
-  it("reaps stale superseded generations inside a LIVE scope, keeping g0 + the current generation", async () => {
-    // Generational bases (overlay-base.ts): a live scope dir is never removed,
-    // but superseded `g<N>` children and crash-orphaned `.tmp-*` copies age out.
-    // The pointer's current generation and `g0` (the empty cold-start lowerdir)
-    // are kept unconditionally; young non-current generations survive too (a
-    // long-running container may still pin one).
-    setup();
-    const sessionManager = new SessionManager(dbManager!);
-    const repoStore = new RepoStore(dbManager!);
-
-    const hash = "aaaaaaaaaaaaaaaa";
-    const scopeDir = path.join(tmpDir, "overlay-base", hash);
-    const mkGen = (name: string, ageDays: number) => {
-      const d = path.join(scopeDir, name);
-      fs.mkdirSync(d, { recursive: true });
-      fs.writeFileSync(path.join(d, "marker"), "x");
-      const t = Date.now() / 1000 - ageDays * 86_400;
-      fs.utimesSync(d, t, t);
-      return d;
-    };
-    const g0 = mkGen("g0", 99);          // cold-start lowerdir → always kept
-    const g1 = mkGen("g1", 99);          // superseded + old → REMOVE
-    const g2 = mkGen("g2", 1);           // superseded but young → keep
-    const g3 = mkGen("g3", 99);          // current per pointer → keep despite age
-    const tmp = mkGen(".tmp-g4-ab12", 99); // crash-orphaned copy → REMOVE
-    // Pointer names g3 as current.
-    const metaDir = path.join(tmpDir, "overlay-base-meta");
-    fs.mkdirSync(metaDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(metaDir, `${hash}.json`),
-      JSON.stringify({ scopeHash: hash, commit: "c".repeat(40), depth: 2, generation: 3, baseDir: g3, updatedAt: "2026-06-01T00:00:00Z" }),
-    );
-
-    const result = await runDiskJanitor({
-      sessionManager, repoStore, stateDir: tmpDir,
-      cacheDays: 30,
-      liveOverlayScopeHashes: () => new Set([hash]),
-      runDocker: () => Promise.resolve(""),
-    });
-
-    expect(fs.existsSync(g0)).toBe(true);
-    expect(fs.existsSync(g1)).toBe(false);
-    expect(fs.existsSync(g2)).toBe(true);
-    expect(fs.existsSync(g3)).toBe(true);
-    expect(fs.existsSync(tmp)).toBe(false);
-    expect(fs.existsSync(scopeDir)).toBe(true);
-    expect(result.overlayBasesRemoved).toBe(2);
-  });
-
   it("reclaims ALL N per-dep-dir orphan overlay volumes and preserves a live session's N", async () => {
     // The dep-dir design names overlay volumes `shipit-<id12>_overlay-<hash8>`,
     // one per declared dep dir. The existing `^shipit-([a-f0-9-]{12})_` orphan
@@ -1394,52 +1299,5 @@ describe("runDiskJanitor", () => {
     expect([...rmRequests].sort()).toEqual([...orphanVols].sort());
     for (const v of liveVols) expect(rmRequests).not.toContain(v);
     expect(result.orphanVolumesRemoved).toBe(2);
-  });
-
-  it("retains EVERY per-(session, dep-dir) base in the live-set; reaps only unreferenced ones", async () => {
-    // End-to-end: a live session with N declared dep dirs contributes N scope
-    // hashes to the live-set (via the real `liveOverlayScopeHashes`), and the
-    // overlay-base sweep must keep ALL of them while still reaping a stale base
-    // that belongs to no live (session, dep-dir).
-    setup();
-    const sessionManager = new SessionManager(dbManager!);
-    const repoStore = new RepoStore(dbManager!);
-
-    const remoteUrl = "https://github.com/example/repo.git";
-    const liveId = "feed1234beef-aaaa-bbbb-cccc-dddddddddddd";
-    underlyingDb!.prepare(
-      "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, archived) VALUES (?, ?, ?, ?, ?, 0)",
-    ).run(liveId, "Live", "2026-05-12", "2026-05-12", remoteUrl);
-
-    const env = { OVERLAY_DEP_STORE: "1", SESSION_WORKER_IMAGE_ID: "img-6" } as NodeJS.ProcessEnv;
-    const depDirs = ["node_modules", "packages/api/node_modules"];
-    const runtimeKey = overlayRuntimeKey(env);
-
-    const root = path.join(tmpDir, "overlay-base");
-    fs.mkdirSync(root, { recursive: true });
-    const mkBase = (hash: string, ageDays: number): string => {
-      const d = path.join(root, hash);
-      fs.mkdirSync(d, { recursive: true });
-      fs.writeFileSync(path.join(d, "marker"), "x");
-      const t = Date.now() / 1000 - ageDays * 86_400;
-      fs.utimesSync(d, t, t);
-      return d;
-    };
-    // One stale base per (live session × dep dir) — all must survive despite age.
-    const liveBases = depDirs.map((d) => mkBase(overlayScopeHash(remoteUrl, runtimeKey, d), 99));
-    // A stale base for a dep dir no live session declares — must be reaped.
-    const orphanBase = mkBase(overlayScopeHash(remoteUrl, runtimeKey, "vendor/bundle"), 99);
-
-    const result = await runDiskJanitor({
-      sessionManager, repoStore, stateDir: tmpDir,
-      cacheDays: 30,
-      liveOverlayScopeHashes: () =>
-        liveOverlayScopeHashes(sessionManager.listAll(), () => depDirs, env),
-      runDocker: () => Promise.resolve(""),
-    });
-
-    for (const b of liveBases) expect(fs.existsSync(b)).toBe(true);
-    expect(fs.existsSync(orphanBase)).toBe(false);
-    expect(result.overlayBasesRemoved).toBe(1);
   });
 });

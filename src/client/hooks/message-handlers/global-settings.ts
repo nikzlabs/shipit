@@ -15,5 +15,7 @@ export const handleGlobalSettings: Handler<WsGlobalSettings> = (_ctx, data) => {
   if (data.liveSteering !== undefined) settings.setLiveSteering(data.liveSteering);
   if (data.autoResolveConflicts !== undefined) settings.setAutoResolveConflicts(data.autoResolveConflicts);
   if (data.autoFixCi !== undefined) settings.setAutoFixCi(data.autoFixCi);
+  if (data.autoResetMergedBranch !== undefined) settings.setAutoResetMergedBranch(data.autoResetMergedBranch);
   if (data.enableSubAgents !== undefined) settings.setEnableSubAgents(data.enableSubAgents);
+  if (data.agentSubAgentDefaults !== undefined) settings.setAgentSubAgentDefaults(data.agentSubAgentDefaults);
 };

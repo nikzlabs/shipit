@@ -65,6 +65,12 @@ export interface ClaudeRunOptions {
   /** Model alias or ID to use (e.g., "sonnet", "opus"). */
   model?: string;
   /**
+   * docs/217 — reasoning effort passed as `--effort <level>`. Valid levels:
+   * low, medium, high, xhigh, max (validated server-side against the agent's
+   * option set). Omitted → the model's adaptive default.
+   */
+  reasoningEffort?: string;
+  /**
    * Path to a Claude Code settings file (passed as `--settings`). The
    * orchestrator always points this at /etc/shipit/managed-settings.json for
    * the `claude` agent so the PreToolUse branch-block hook is active. See
@@ -110,15 +116,15 @@ export class ClaudeProcess extends EventEmitter {
    * they're saved to the host uploads directory and referenced in the prompt.
    */
   run(opts: ClaudeRunOptions): void {
-    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, settingsPath, autoCreatePr, sandbox, permissionPromptTool } = opts;
+    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, reasoningEffort, settingsPath, autoCreatePr, sandbox, permissionPromptTool } = opts;
 
     // `Skill` is allowlisted in both modes — including plan — so an explicit
     // `/my-skill` invocation is honored in every permission mode. This accepts
     // that plan mode is no longer guaranteed read-only when a user
     // deliberately invokes a side-effecting skill. See docs/138.
     //
-    // The internal `shipit` tools (`mcp__shipit__submit_review`,
-    // `mcp__shipit__present`, `mcp__shipit__voice_note`,
+    // The internal `shipit` tools (`mcp__shipit__present`,
+    // `mcp__shipit__voice_note`,
     // `mcp__shipit__report_shipit_bug`, `mcp__shipit__propose_actions`) are
     // allowlisted by exact name alongside playwright because they're served by
     // the built-in consolidated `shipit` MCP server the worker registers
@@ -126,10 +132,10 @@ export class ClaudeProcess extends EventEmitter {
     // user-configured one — so they never flow through `mcpServerNames`. Without
     // these entries the CLI gates the tools behind an interactive prompt that
     // headless `-p` mode cannot satisfy ("permission not yet granted", docs/149).
-    // They write only to ShipIt's own state (review drafts, present buffer, a
-    // voice note, a bug-report proposal, an action-checklist card), so they are
+    // They write only to ShipIt's own state (present buffer, a voice note, a
+    // bug-report proposal, an action-checklist card), so they are
     // safe under plan mode — and the voice tool is needed in plan mode so the
-    // agent can author a headline before ExitPlanMode. We list the five
+    // agent can author a headline before ExitPlanMode. We list the four
     // model-facing tools by name rather than a `mcp__shipit__*` glob so the
     // server's `permission_prompt` tool (the CLI's --permission-prompt-tool, not
     // model-callable) is deliberately NOT allowlisted.
@@ -142,8 +148,8 @@ export class ClaudeProcess extends EventEmitter {
     // so the session is stranded in plan mode (no working PlanApproval card, no
     // file edits). Allowlisting it lets the CLI surface the tool_use, which lets
     // the docs/140 §6.8 live-steering guard render an interactive card.
-    const AUTO_TOOLS = "Write,Read,Edit,NotebookEdit,Bash,PowerShell,Monitor,Glob,Grep,LSP,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,ShareOnboardingGuide,Workflow,mcp__playwright__*,mcp__shipit__submit_review,mcp__shipit__present,mcp__shipit__voice_note,mcp__shipit__report_shipit_bug,mcp__shipit__propose_actions";
-    const PLAN_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot,mcp__shipit__submit_review,mcp__shipit__present,mcp__shipit__voice_note,mcp__shipit__report_shipit_bug,mcp__shipit__propose_actions";
+    const AUTO_TOOLS = "Write,Read,Edit,NotebookEdit,Bash,PowerShell,Monitor,Glob,Grep,LSP,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,ShareOnboardingGuide,Workflow,mcp__playwright__*,mcp__shipit__present,mcp__shipit__voice_note,mcp__shipit__report_shipit_bug,mcp__shipit__propose_actions";
+    const PLAN_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot,mcp__shipit__present,mcp__shipit__voice_note,mcp__shipit__report_shipit_bug,mcp__shipit__propose_actions";
 
     // docs/088: enabled user MCP servers contribute a `mcp__<name>__*` glob to
     // the `auto` allowlist. `plan` mode deliberately omits them
@@ -196,6 +202,10 @@ export class ClaudeProcess extends EventEmitter {
 
     if (model) {
       args.push("--model", model);
+    }
+
+    if (reasoningEffort) {
+      args.push("--effort", reasoningEffort);
     }
 
     if (settingsPath) {
@@ -389,12 +399,12 @@ export class StreamingClaudeProcess extends EventEmitter {
   private requestIdCounter = 0;
 
   run(opts: ClaudeRunOptions): void {
-    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, settingsPath, autoCreatePr, sandbox, permissionPromptTool } = opts;
+    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, reasoningEffort, settingsPath, autoCreatePr, sandbox, permissionPromptTool } = opts;
 
     // See ClaudeProcess.run above for why the named `mcp__shipit__*` tools join
     // `mcp__playwright__*` in both lists (SHI-128; docs/125, docs/149).
-    const AUTO_TOOLS = "Write,Read,Edit,NotebookEdit,Bash,PowerShell,Monitor,Glob,Grep,LSP,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,ShareOnboardingGuide,Workflow,mcp__playwright__*,mcp__shipit__submit_review,mcp__shipit__present,mcp__shipit__voice_note,mcp__shipit__report_shipit_bug,mcp__shipit__propose_actions";
-    const PLAN_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot,mcp__shipit__submit_review,mcp__shipit__present,mcp__shipit__voice_note,mcp__shipit__report_shipit_bug,mcp__shipit__propose_actions";
+    const AUTO_TOOLS = "Write,Read,Edit,NotebookEdit,Bash,PowerShell,Monitor,Glob,Grep,LSP,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,ShareOnboardingGuide,Workflow,mcp__playwright__*,mcp__shipit__present,mcp__shipit__voice_note,mcp__shipit__report_shipit_bug,mcp__shipit__propose_actions";
+    const PLAN_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot,mcp__shipit__present,mcp__shipit__voice_note,mcp__shipit__report_shipit_bug,mcp__shipit__propose_actions";
 
     const userMcpGlobs = (mcpServerNames ?? []).map((name) => `mcp__${name}__*`).join(",");
     const withUserMcp = (base: string): string => userMcpGlobs ? `${base},${userMcpGlobs}` : base;
@@ -421,6 +431,7 @@ export class StreamingClaudeProcess extends EventEmitter {
     // mode too; routes the sensitive-file gate to ShipIt's approve/deny card.
     if (permissionPromptTool) args.push("--permission-prompt-tool", permissionPromptTool);
     if (model) args.push("--model", model);
+    if (reasoningEffort) args.push("--effort", reasoningEffort);
     if (settingsPath) args.push("--settings", settingsPath);
     if (systemPrompt) {
       // See the PTY-spawn branch above for why we use --append-system-prompt

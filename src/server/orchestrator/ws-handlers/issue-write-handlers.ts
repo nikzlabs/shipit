@@ -15,13 +15,38 @@
 
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import type { WsUndoIssueWrite } from "../../shared/types/ws-client-messages.js";
+import type { SessionRunnerInterface } from "../session-runner.js";
+import type { IssueWriteCard } from "../../shared/types.js";
 import { resolveRunner } from "./resolve-runner.js";
+import { persistCardTransition } from "../chat-card-persistence.js";
 import { undoIssueWrite } from "../services/issues.js";
 import { resolveGitHubTrackerContext } from "../api-routes-issues.js";
 
 type IssueWriteCtx = ConnectionCtx &
   RunnerCtx &
   Pick<AppCtx, "sessionManager" | "githubAuthManager" | "chatHistoryManager" | "credentialStore" | "trackerFetchImpl">;
+
+/**
+ * Persist an issue-write card's undo lifecycle (undoing → undone / failed) so it
+ * survives a switch/reload, clobber-free if the user clicks Undo while the
+ * card's proposing turn is still in flight. Thin wrapper over the shared
+ * `persistCardTransition` primitive (see its docstring for the clobber).
+ */
+function persistIssueWriteTransition(
+  ctx: IssueWriteCtx,
+  runner: SessionRunnerInterface,
+  sessionId: string,
+  cardId: string,
+  patch: Partial<IssueWriteCard>,
+): void {
+  persistCardTransition(
+    runner,
+    { chatHistoryManager: ctx.chatHistoryManager, sessionId },
+    (m) => m.issueWrite?.cardId === cardId,
+    (m) => ({ ...m, issueWrite: { ...m.issueWrite!, ...patch } }),
+    () => ctx.chatHistoryManager.updateIssueWriteCard(sessionId, cardId, patch),
+  );
+}
 
 export async function handleUndoIssueWrite(
   ctx: IssueWriteCtx,
@@ -51,7 +76,7 @@ export async function handleUndoIssueWrite(
   // Optimistic "undoing" so the button can't be re-clicked mid-flight; persisted
   // so a reload during the reverse write shows the in-flight state.
   runner.emitMessage({ type: "issue_write_update", sessionId, cardId: msg.cardId, undoState: "undoing" });
-  ctx.chatHistoryManager.updateIssueWriteCard(sessionId, msg.cardId, { undoState: "undoing" });
+  persistIssueWriteTransition(ctx, runner, sessionId, msg.cardId, { undoState: "undoing" });
 
   const github = resolveGitHubTrackerContext(ctx.githubAuthManager, ctx.sessionManager, sessionId);
   try {
@@ -65,7 +90,7 @@ export async function handleUndoIssueWrite(
       undoState: "failed",
       errorMessage: message,
     });
-    ctx.chatHistoryManager.updateIssueWriteCard(sessionId, msg.cardId, {
+    persistIssueWriteTransition(ctx, runner, sessionId, msg.cardId, {
       undoState: "failed",
       errorMessage: message,
     });
@@ -73,7 +98,7 @@ export async function handleUndoIssueWrite(
   }
 
   runner.emitMessage({ type: "issue_write_update", sessionId, cardId: msg.cardId, undoState: "undone" });
-  ctx.chatHistoryManager.updateIssueWriteCard(sessionId, msg.cardId, {
+  persistIssueWriteTransition(ctx, runner, sessionId, msg.cardId, {
     undoState: "undone",
     errorMessage: undefined,
   });

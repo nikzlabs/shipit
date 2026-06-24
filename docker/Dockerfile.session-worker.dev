@@ -1,5 +1,13 @@
 FROM node:24-slim@sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45efcbc9c5f5d
 
+# SHI-194 — bake the pinned base-image digest into the runtime env so the overlay
+# dep store keys its rolling base scope on the native-addon ABI surface, not the
+# full worker-image id. The ARG default MUST track the `FROM` digest above (a base
+# bump changes both together — and only that rolls the scope). See the canonical
+# comment in Dockerfile.session-worker.prod.
+ARG BASE_IMAGE_DIGEST=sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45efcbc9c5f5d
+ENV BASE_IMAGE_DIGEST=${BASE_IMAGE_DIGEST}
+
 # bubblewrap (bwrap): Codex probes for it on PATH at startup and logs an
 # ERROR + configWarning when it's missing (falling back to its bundled copy).
 # python3-pip + python3-venv let Python web projects (Streamlit, FastAPI, Gradio,

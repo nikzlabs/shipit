@@ -17,6 +17,7 @@ import {
   listTrackers,
   listIssuesForTracker,
   listLabelsForTracker,
+  listStatusesForTracker,
   getIssueForTracker,
   listIssueCommentsForTracker,
   addIssueCommentForTracker,
@@ -416,6 +417,60 @@ export async function registerIssueRoutes(
     },
   );
 
+  // GET /api/sessions/:id/issue/labels?tracker= — the tracker's pickable label
+  // set (name + color), so the agent can discover valid `--label` values up front
+  // instead of guessing and tripping the create/edit rejection (SHI-199). The
+  // session-scoped sibling of the UI's `GET /api/issue/labels`: GitHub binds to
+  // this session's repo, Linear is workspace-wide. A discovery read — emits NO
+  // transcript card (label config isn't an issue the user would navigate to).
+  app.get<{ Params: { id: string }; Querystring: { tracker?: string } }>(
+    "/api/sessions/:id/issue/labels",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      if (!sessionManager.get(request.params.id)) {
+        reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      const trackerId = request.query.tracker ?? "github";
+      const github = resolveGitHubContext(request.params.id);
+      try {
+        return await listLabelsForTracker(credentialStore, trackerId, trackerFetchImpl, github);
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to list labels: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // GET /api/sessions/:id/issue/statuses?tracker= — the tracker's assignable
+  // statuses (name + type + color), so the agent can pick a valid `issue status`
+  // target without first `view`-ing an issue (SHI-199). Same session-scoping +
+  // no-card contract as the labels route above.
+  app.get<{ Params: { id: string }; Querystring: { tracker?: string } }>(
+    "/api/sessions/:id/issue/statuses",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      if (!sessionManager.get(request.params.id)) {
+        reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      const trackerId = request.query.tracker ?? "github";
+      const github = resolveGitHubContext(request.params.id);
+      try {
+        return await listStatusesForTracker(credentialStore, trackerId, trackerFetchImpl, github);
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to list statuses: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
   // GET /api/sessions/:id/issue/comments?tracker=&id= — read an issue's comment
   // thread (SHI-137). The read-only sibling of the comment WRITE route below:
   // brokered through the orchestrator so the tracker token never enters the
@@ -635,6 +690,9 @@ export async function registerIssueRoutes(
       // colored read shape back to names here.
       labels: (outcome.issue.labels ?? []).map((l) => l.name),
       priority: outcome.issue.priority.label,
+      // Reflect the resolved parent (SHI-206) so `--json` shows the nesting that
+      // was applied; absent when the issue is top-level.
+      ...(outcome.issue.parentIdentifier ? { parent: outcome.issue.parentIdentifier } : {}),
     };
     recentWrites.set(dedupKey, { at: now, result });
     return result;
@@ -644,21 +702,24 @@ export async function registerIssueRoutes(
   //   { tracker, title, body, labels?, priority? } (docs/187, SHI-92)
   app.post<{
     Params: { sessionId: string };
-    Body: { tracker?: string; title?: string; body?: string; labels?: string[]; priority?: string };
+    Body: { tracker?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null };
   }>(
     "/api/sessions/:sessionId/issue/create",
     { config: { containerAccessible: true } },
     async (request, reply) => {
-      const { tracker, title, body, labels, priority } = request.body ?? {};
+      const { tracker, title, body, labels, priority, parent } = request.body ?? {};
       if (!tracker || !title?.trim()) {
         reply.code(400).send({ error: "tracker and title are required" });
         return;
       }
+      // Create can only SET a parent (a new issue has no prior relation to
+      // detach), so a `null`/detach sentinel is a no-op here — fold to undefined.
+      const parentToSet = parent ?? undefined;
       // The issue id is assigned by the tracker, so pass "" and let handleWrite
       // stamp the card's issueId from the created issue.
-      const dedup = { verb: "create", content: JSON.stringify({ title, body: body ?? "", labels: labels ?? [], priority: priority ?? null }) };
+      const dedup = { verb: "create", content: JSON.stringify({ title, body: body ?? "", labels: labels ?? [], priority: priority ?? null, parent: parentToSet ?? null }) };
       return handleWrite(request.params.sessionId, tracker, "", reply, "Failed to create issue", dedup, (github) =>
-        createIssueForTracker(credentialStore, tracker, title, body ?? "", { labels, priority }, trackerFetchImpl, github),
+        createIssueForTracker(credentialStore, tracker, title, body ?? "", { labels, priority, parent: parentToSet }, trackerFetchImpl, github),
       );
     },
   );
@@ -683,15 +744,15 @@ export async function registerIssueRoutes(
   //   { tracker, id, title?, body?, labels?, priority? } (SHI-92)
   app.post<{
     Params: { sessionId: string };
-    Body: { tracker?: string; id?: string; title?: string; body?: string; labels?: string[]; priority?: string };
+    Body: { tracker?: string; id?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null };
   }>(
     "/api/sessions/:sessionId/issue/edit",
     { config: { containerAccessible: true } },
     async (request, reply) => {
-      const { tracker, id, title, body, labels, priority } = request.body ?? {};
+      const { tracker, id, title, body, labels, priority, parent } = request.body ?? {};
       const hasLabels = labels !== undefined && labels.length > 0;
-      if (!tracker || !id || (title === undefined && body === undefined && !hasLabels && priority === undefined)) {
-        reply.code(400).send({ error: "tracker, id and at least one of title/body/label/priority are required" });
+      if (!tracker || !id || (title === undefined && body === undefined && !hasLabels && priority === undefined && parent === undefined)) {
+        reply.code(400).send({ error: "tracker, id and at least one of title/body/label/priority/parent are required" });
         return;
       }
       const patch = {
@@ -699,6 +760,8 @@ export async function registerIssueRoutes(
         ...(body !== undefined ? { description: body } : {}),
         ...(hasLabels ? { labels } : {}),
         ...(priority !== undefined ? { priority } : {}),
+        // `parent: null` is meaningful (detach) — forward when the key is present.
+        ...(parent !== undefined ? { parent } : {}),
       };
       return handleWrite(request.params.sessionId, tracker, id, reply, "Failed to edit issue", { verb: "edit", content: JSON.stringify(patch) }, (github) =>
         updateIssueForTracker(credentialStore, tracker, id, patch, trackerFetchImpl, github),

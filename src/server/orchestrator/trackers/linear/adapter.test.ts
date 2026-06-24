@@ -332,6 +332,45 @@ describe("LinearTracker writes (docs/177)", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  it("creates a sub-issue with a resolved parentId (SHI-206)", async () => {
+    const fetchImpl = routerFetch([
+      { match: "IssueId", data: { issue: { id: "uuid-parent" } } },
+      { match: "issueCreate", data: { issueCreate: { success: true, issue: issueNode({ identifier: "SHI-9" }) } } },
+    ]);
+    const tracker = new LinearTracker({ token: "t", team: TEAM, fetchImpl });
+    await tracker.createIssue({ title: "Child", body: "", parent: "SHI-204" });
+    const input = JSON.parse(
+      fetchImpl.mock.calls.find(([, i]) => ((JSON.parse((i?.body as string) ?? "{}").query as string) ?? "").includes("issueCreate"))![1]?.body as string,
+    ).variables.input;
+    expect(input).toMatchObject({ teamId: "team-123", title: "Child", parentId: "uuid-parent" });
+  });
+
+  it("reparents via issueUpdate with a resolved parentId (SHI-206)", async () => {
+    const fetchImpl = routerFetch([
+      { match: "IssueId", data: { issue: { id: "uuid-1" } } },
+      { match: "issueUpdate", data: { issueUpdate: { success: true, issue: issueNode() } } },
+    ]);
+    const tracker = new LinearTracker({ token: "t", team: TEAM, fetchImpl });
+    await tracker.updateIssue("SHI-1", { parent: "SHI-204" });
+    // resolveUuid runs for both the target and the parent (both "IssueId"); the
+    // mutation input carries the resolved parentId.
+    const input = JSON.parse((fetchImpl.mock.calls.at(-1)![1]?.body as string)).variables.input;
+    expect(input).toEqual({ parentId: "uuid-1" });
+  });
+
+  it("detaches a sub-issue with parentId: null on --parent none (SHI-206)", async () => {
+    const fetchImpl = routerFetch([
+      { match: "IssueId", data: { issue: { id: "uuid-1" } } },
+      { match: "issueUpdate", data: { issueUpdate: { success: true, issue: issueNode() } } },
+    ]);
+    const tracker = new LinearTracker({ token: "t", team: TEAM, fetchImpl });
+    await tracker.updateIssue("SHI-1", { parent: null });
+    const input = JSON.parse((fetchImpl.mock.calls[1][1]?.body as string)).variables.input;
+    expect(input).toEqual({ parentId: null });
+    // Detach needs no parent resolution — only the target resolveUuid + update.
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   it("surfaces labels with their colors on a read (SHI-92 + foundation)", async () => {
     const fetchImpl = routerFetch([
       {

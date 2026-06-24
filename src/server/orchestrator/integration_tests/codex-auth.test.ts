@@ -166,10 +166,14 @@ class SseTestClient {
   }
 }
 
-const findCodex = (data: Record<string, unknown>): { authConfigured?: boolean } | undefined =>
-  (data.agents as { id: string; authConfigured?: boolean }[] | undefined)?.find(
-    (a) => a.id === "codex",
-  );
+const findCodex = (
+  data: Record<string, unknown>,
+): { authConfigured?: boolean; reasoning?: { options: unknown[] } } | undefined =>
+  (
+    data.agents as
+      | { id: string; authConfigured?: boolean; reasoning?: { options: unknown[] } }[]
+      | undefined
+  )?.find((a) => a.id === "codex");
 
 // ---------------------------------------------------------------------------
 // Suite
@@ -253,6 +257,11 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
     // Snapshot on connect reports codex unauthenticated (no file, no env key).
     const initial = await sse.waitFor("agent_list", (d) => !!findCodex(d));
     expect(findCodex(initial)?.authConfigured).toBe(false);
+    // docs/217 — the connect snapshot must carry per-agent `reasoning` (it uses
+    // the same listAgents() serializer as the broadcasts). A drifted inline copy
+    // once omitted it, so the composer's reasoning control vanished on every SSE
+    // reconnect (session switch / tab refocus) until an auth broadcast re-sent it.
+    expect(findCodex(initial)?.reasoning?.options.length).toBeGreaterThan(0);
 
     // Kick off the flow.
     const start = await app.inject({ method: "POST", url: "/api/codex-auth/start" });

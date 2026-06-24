@@ -7,7 +7,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { AgentRegistry, ALLOWED_ENV_KEYS, isAllowedAgentEnvKey } from "./agent-registry.js";
+import { AgentRegistry, ALLOWED_ENV_KEYS, isAllowedAgentEnvKey, getAgentCapabilities } from "./agent-registry.js";
 
 const ORIGINAL_OPENAI_KEY = process.env.OPENAI_API_KEY;
 
@@ -101,6 +101,29 @@ describe("AgentRegistry / isAuthConfigured('codex')", () => {
     process.env.OPENAI_API_KEY = "sk-only";
     registry.refreshAuth("codex");
     expect(registry.get("codex")?.authConfigured).toBe(true);
+  });
+});
+
+describe("reasoning capability metadata (docs/217)", () => {
+  it("exposes the verified Claude --effort levels", () => {
+    const values = getAgentCapabilities("claude")?.reasoning?.options.map((o) => o.value);
+    expect(values).toEqual(["low", "medium", "high", "xhigh", "max"]);
+  });
+
+  it("exposes the verified Codex model_reasoning_effort levels", () => {
+    const values = getAgentCapabilities("codex")?.reasoning?.options.map((o) => o.value);
+    expect(values).toEqual(["none", "minimal", "low", "medium", "high", "xhigh"]);
+  });
+
+  it("gives each agent a distinct option set (named differently per backend)", () => {
+    const claude = getAgentCapabilities("claude")?.reasoning;
+    const codex = getAgentCapabilities("codex")?.reasoning;
+    expect(claude?.label).not.toBe(codex?.label);
+    // Codex has "none"/"minimal" that Claude lacks; Claude has "max" that Codex lacks.
+    expect(codex?.options.some((o) => o.value === "none")).toBe(true);
+    expect(claude?.options.some((o) => o.value === "max")).toBe(true);
+    expect(claude?.options.some((o) => o.value === "none")).toBe(false);
+    expect(codex?.options.some((o) => o.value === "max")).toBe(false);
   });
 });
 

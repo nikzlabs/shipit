@@ -145,7 +145,7 @@ skip and the store mount derive from one decision.
 - Keyed by runtimeKey hash → an image rebuild starts a fresh store (same ABI argument
   as overlay scope rotation, docs/183 precondition (c)).
 - Reclaim: disk-janitor sweeps store dirs whose runtimeKey is no longer current and
-  untouched stores past the cache cutoff (same `DISK_JANITOR_CACHE_DAYS` family).
+  untouched stores past the cold-artifact retention (`DISK_JANITOR_COLD_ARTIFACT_RETENTION_DAYS`, SHI-197).
   pnpm's own `store prune` can run as part of the sweep for the live store.
 - Known caveat (document in shipit-docs): in-place mutation of hardlinked store files
   (patch-package style) — pnpm's own ecosystem answer (copy-on-patch via

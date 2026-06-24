@@ -463,7 +463,12 @@ draws:
   Static payload (no client store) — rendered straight from the message field
   and idempotent by `cardId`. Rendered for **every** terminal status
   (success / error / timeout / cancel), since a cancelled or failed consult is
-  still a fact the transcript should keep. **Why anchored-inline works live:**
+  still a fact the transcript should keep. **docs/220 — content-carrying:** the
+  card now also carries the sub-agent's verbatim output (`outputMarkdown`, riding
+  inside the existing `sub_agent_consult` JSON blob — no migration). The row shows
+  a stripped-down preview and opens the full markdown in a read-only viewer, so a
+  brokered consult is *visible*, not just attested — ShipIt renders what it
+  brokers. **Why anchored-inline works live:**
   during the spawn the primary is blocked on the `shipit agent` Bash call, so no
   assistant content streams in those 30–120s — appending the card at the current
   end of the transcript lands it right after the triggering tool call, and the
@@ -729,5 +734,14 @@ Deferred from the plan's full test list (the v0 behavior is covered at the
 unit/service level above rather than through a Docker-backed integration run):
 the two-CLI-memory floor confirmation and the live token-rotation-mid-run
 assertion. See `checklist.md`.
+
+## Proposal — cross-agent review surfacing (moved)
+
+The proposal that cross-agent reviewer output should be rendered
+deterministically by ShipIt (a content-carrying `sub_agent_consult_card`)
+rather than routed back through the parent agent's `submit_review` call — i.e.
+**"ShipIt renders what it brokers"** — now lives in its own doc:
+`docs/220-cross-agent-review-surfacing`. It revisits §6–§7 above and partially
+supersedes `docs/203`. Pre-decision; nothing implemented.
 
 ## Out of scope

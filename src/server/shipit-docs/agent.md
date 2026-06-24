@@ -63,9 +63,12 @@ $(git diff)
 EOF
 ```
 
-The command prints the sub-agent's findings on stdout. You read them and act —
-relay them to the user, fix what's real, or summarize. The sub-agent's output
-reaches the user through **your** voice; there is no separate card.
+The command prints the sub-agent's findings on stdout. You read them and **act**
+— fix what's real, or summarize. You do **not** need to paste the output back for
+the user to see it: ShipIt surfaces the sub-agent's verbatim output inline, in
+the persisted "Consulted Codex" card, with attribution (docs/220). So treat
+stdout as input for *acting*, not as something to re-type into chat — re-pasting
+it just duplicates what the card already shows.
 
 ## What to expect
 

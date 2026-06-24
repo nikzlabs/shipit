@@ -28,11 +28,22 @@ must be on; `publish` requires the `PLAY_SERVICE_ACCOUNT_JSON` secret (see
 
 ### versionCode
 
-Google Play rejects an upload whose `versionCode` is not strictly greater than
-the previous one. In CI, `versionCode` is set from the GitHub Actions
-`run_number` (via the `ANDROID_VERSION_CODE` env var), so every release build
-gets a higher code automatically. Local builds fall back to `1`
-(see `app/build.gradle.kts`).
+Android refuses to install an APK whose `versionCode` is not strictly greater
+than the one already on the device (`INSTALL_FAILED_VERSION_DOWNGRADE`), and
+Google Play rejects an upload that isn't strictly greater than the previous one.
+Both CI and local builds derive `versionCode` from **epoch seconds** (CI sets
+`ANDROID_VERSION_CODE` to `date +%s`; local builds fall back to the same
+computation in `app/build.gradle.kts`). Using one wall-clock scale everywhere
+means the newer build always outranks the older one regardless of where it was
+built — a CI APK installs over a locally-built one and vice versa, with no manual
+bumping. (Earlier the CI path used `run_number`, a small integer that a local
+build's ~1.75-billion epoch code would always outrank, blocking CI installs.)
+
+Note this is the *internal* `versionCode` only. The user-visible version string
+in Android's app-info screen is `versionName`, which is read from the root
+`package.json` `version` field at build time (see `app/build.gradle.kts`) — so it
+tracks the project version automatically and changes when you bump the release.
+Debug builds carry a `-debug` suffix.
 
 ### Local builds (optional)
 
@@ -147,16 +158,33 @@ theme attributes are **ignored** (they were removed from `Theme.ShipIt`). The
 system bars are transparent; the dark `windowBackground` shows through them, so
 the app still looks full-bleed.
 
-Because the WebView loads a **remote** ShipIt instance we don't control, we
-can't rely on the web side honoring CSS `env(safe-area-inset-*)`. So inset
-handling is native:
+Inset handling is **split top vs. bottom** — the two are owned by different
+layers, and applying both to the bottom double-counts it:
 
-- **`MainActivity`** pads the WebView's container by the top + bottom
-  system-bar insets (`WindowInsetsCompat.Type.systemBars()`), keeping chat
-  content clear of the status bar and the bottom-anchored input clear of the
-  nav/gesture bar. It also injects `viewport-fit=cover` into the page as a
-  best-effort extra — but the native padding is the reliable path, not the
-  injection.
+- **`MainActivity`** pads the WebView's container by **only the top** system-bar
+  inset (`WindowInsetsCompat.Type.systemBars()`), keeping chat content clear of
+  the status bar. The web UI does not honor `env(safe-area-inset-top)`, so the
+  top is native.
+- **The bottom (nav/gesture bar) inset is owned by the web side.** `index.html`
+  declares `viewport-fit=cover` and bottom-anchored web surfaces pad themselves by
+  `env(safe-area-inset-bottom)`; `MainActivity` injects `viewport-fit=cover` as a
+  belt-and-braces fallback. The native container's bottom inset stays at **0** —
+  `env(safe-area-inset-bottom)` is a window/display property that returns the
+  nav-bar height no matter where the WebView sits in the window, so padding the
+  container up natively *as well* lifted the WebView by the nav-bar height while
+  the web side padded itself by the same amount, leaving a theme-colored gap above
+  the nav bar (the "white gap at the bottom" report).
+  - Which web surfaces pad themselves: the bottom **`MobileTabBar`** caps the
+    normal flex-column layout, so all *in-flow* content (chat, the workspace
+    panel, the docs/Present panel, the session drawer) sits above it and is
+    automatically clear of the nav bar. The surfaces that *escape* that column —
+    `fixed inset-0` / portalled overlays — must reserve the inset themselves:
+    the shared fullscreen **`DialogContent`** (file/doc review, all-sessions,
+    settings, every modal) plus the standalone overlays
+    (`MobileRecordingOverlay`, `OnboardingWizard`, `QuickCaptureOverlay`). A new
+    fullscreen overlay that reaches the viewport bottom needs the same
+    `env(safe-area-inset-bottom)` padding or its bottom controls hide under the
+    nav bar.
 - **`SettingsActivity`** pads its scrolling root by the union of the system-bar
   **and IME** insets (`systemBars() or ime()`), so the URL field and Save button
   stay clear of both the status bar and the on-screen keyboard.

@@ -52,9 +52,10 @@ export class TrackerResolutionError extends Error {
     message: string,
     /**
      * Which write tripped: a status target, an assignee handle, a label name,
-     * or a priority value (SHI-92 added label/priority).
+     * a priority value (SHI-92 added label/priority), or a parent pointer
+     * (SHI-206 added parent — used to reject `--parent` on GitHub).
      */
-    readonly kind: "status" | "assignee" | "label" | "priority",
+    readonly kind: "status" | "assignee" | "label" | "priority" | "parent",
     /** Concrete, valid choices the agent can retry with. */
     readonly options: string[],
   ) {
@@ -133,12 +134,16 @@ export interface Tracker {
    * rather than silently creating a stray label (SHI-92). `priority` is a
    * normalized level (`urgent|high|medium|low|none`) or a native priority name —
    * Linear maps it to its numeric field; GitHub (no native priority) throws.
+   * `parent` is a tracker-native issue id/key the new issue nests under as a
+   * sub-issue (SHI-206) — Linear-only; GitHub (flat issues) throws
+   * {@link TrackerResolutionError} (`kind: "parent"`).
    */
   createIssue(input: {
     title: string;
     body: string;
     labels?: string[];
     priority?: string;
+    parent?: string;
   }): Promise<TrackerIssue>;
 
   /** Add a comment to an issue. Returns the created comment (id used for undo). */
@@ -153,11 +158,13 @@ export interface Tracker {
    * not a merge) — the caller computes the additive set and passes the full list
    * (SHI-92); names resolve per tracker, an unknown one throws
    * {@link TrackerResolutionError}. `priority` follows the same rules as
-   * {@link createIssue}.
+   * {@link createIssue}. `parent` reparents the issue (SHI-206): a tracker-native
+   * id/key to nest under, or `null` to detach into a top-level issue — Linear-only
+   * (GitHub throws `kind: "parent"`).
    */
   updateIssue(
     id: string,
-    patch: { title?: string; description?: string; labels?: string[]; priority?: string },
+    patch: { title?: string; description?: string; labels?: string[]; priority?: string; parent?: string | null },
   ): Promise<TrackerIssue>;
 
   /**

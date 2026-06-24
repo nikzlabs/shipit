@@ -30,10 +30,24 @@ The fallback is transparent: the user toggles auto-merge, it activates, and the 
 
 ### UI indicator
 
-When managed auto-merge is active, a small info icon (`InfoIcon` from Phosphor) appears next to the auto-merge toggle. Hovering shows a tooltip:
+When managed auto-merge is active, a small info icon (`InfoIcon` from Phosphor) appears next to the auto-merge toggle. Hovering shows a tooltip.
 
-> GitHub auto-merge requires branch protection rules. ShipIt will merge this PR when CI passes.
+The tooltip surfaces **the real GitHub error** (`reason`) that blocked native auto-merge, rather than a fixed guess. `enableAutoMerge` maps GitHub's cryptic GraphQL errors to actionable text before returning them:
+
+- *"Allow auto-merge" off in repo settings* (most common — fires even when branch protection / rulesets are already configured) → "**Allow auto-merge** is turned off for this repository. Enable it in Settings → General → Pull Requests."
+- *Nothing gating the PR* (GitHub returns "Pull request is in clean status") → "No branch protection rule requires a status check or review on the base branch… Add a required check to the rule (or ruleset)."
+- *Any other error* → passed through verbatim.
+
+When `reason` is present the tooltip reads:
+
+> GitHub couldn't enable native auto-merge:
+> "{reason}"
+> ShipIt will merge this PR itself when CI passes.
 > [Configure in GitHub settings](link)
+
+The settings link now points at the repo's **General** settings page (where "Allow auto-merge" lives and which links out to branch protection), not `/settings/branches`. When `reason` is absent (older state) the tooltip falls back to the original generic "requires branch protection rules" line.
+
+`reason` is threaded through every broadcast channel so it survives a reload: the toggle HTTP response, the SSE `pr_status` summary (`attachAutomationState`), and the WS `pr_lifecycle_update` card. It is cleared when the user disables auto-merge.
 
 Errors from the managed merge (e.g., "PR has merge conflicts") show as a warning line below the status, without the GitHub settings link (since the issue isn't about settings).
 
@@ -41,11 +55,14 @@ Errors from the managed merge (e.g., "PR has merge conflicts") show as a warning
 
 | File | Role |
 |------|------|
-| `src/server/shared/types/github-types.ts` | `managed?: boolean` and `settingsUrl?: string` on `AutoMergeState` and `PrStatusSummary.autoMerge` |
-| `src/server/orchestrator/services/github.ts` | `toggleAutoMerge()` falls back to managed mode on GitHub API failure |
-| `src/server/orchestrator/pr-status-poller.ts` | `handleManagedAutoMerge()` merges via REST when CI passes; `setAutoMergeManaged()` setter |
-| `src/client/components/PrLifecycleCard.tsx` | `ManagedMergeInfo` tooltip component, updated error display |
-| `src/client/stores/pr-store.ts` | `managed` and `settingsUrl` on `PrCardState.autoMerge` |
+| `src/server/shared/types/github-types.ts` | `managed?`, `settingsUrl?`, `reason?` on `AutoMergeState`, `PrStatusSummary.autoMerge`, and `WsPrLifecycleUpdate.autoMerge` |
+| `src/server/orchestrator/github-auth-prs.ts` | `enableAutoMerge()` maps GitHub's GraphQL errors to actionable `reason` text |
+| `src/server/orchestrator/services/github.ts` | `toggleAutoMerge()` falls back to managed mode on GitHub API failure, threading `result.message` through as `reason` |
+| `src/server/orchestrator/auto-merge-manager.ts` | `AutoMergeManager.setManaged(…, reason?)` stores `reason`; cleared on disable |
+| `src/server/orchestrator/pr-status-poller.ts` | `handleManagedAutoMerge()` merges via REST when CI passes; `setAutoMergeManaged()` setter forwards `reason`; `attachAutomationState()` projects it onto the SSE summary |
+| `src/server/orchestrator/services/pr-lifecycle.ts` | ready/open card emits include `reason` |
+| `src/client/components/PrStatusControls.tsx` | `ManagedMergeInfo` tooltip renders the real `reason` |
+| `src/client/stores/pr-store.ts` | `managed`, `settingsUrl`, `reason` on `PrCardState.autoMerge`; toggle response handler stores `reason` |
 
 ## Edge cases
 

@@ -6,8 +6,9 @@ import type { Handler } from "./types.js";
 
 /**
  * docs/093 — the agent emitted an artifact via the `present` MCP tool. Append
- * (or replace via `replaceId`) into the present-store; the AppLayout right
- * panel will surface the Present tab when the store gains its first entry.
+ * a new file, or refresh an existing one in place (the store keys on the
+ * content-addressed `presentId`); the AppLayout right panel surfaces the
+ * Present tab when the store gains its first entry.
  *
  * Discards messages from a previous session's WS connection — same guard the
  * preview-status handler uses for late-batched messages around session
@@ -29,7 +30,6 @@ export const handlePresentContent: Handler<WsPresentContentMessage> = (_ctx, dat
     mimeType: data.mimeType,
     createdAt: data.createdAt,
     filePath: data.filePath,
-    ...(data.replaceId !== undefined ? { replaceId: data.replaceId } : {}),
     ...(data.title !== undefined ? { title: data.title } : {}),
   });
   const after = usePresentStore.getState().presentations.length;

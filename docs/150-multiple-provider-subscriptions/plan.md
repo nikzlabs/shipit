@@ -1361,6 +1361,21 @@ Implementation started:
   at 0 so any write the flow produces counts as fresh. Regression test:
   `auth-manager.test.ts` → "wipes a stale/expired credential file before
   spawning the login CLI".
+- **Re-auth also strips env-var auth from the login subprocess.** The on-disk
+  wipe above is necessary but *not sufficient*: `claude /login` honors
+  `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` over the interactive OAuth flow,
+  so when either is set in the orchestrator's environment (dogfood secrets, a
+  stale exported key) the CLI treats itself as already authenticated and never
+  emits the code-paste URL — the UI hangs on "Starting…" regardless of disk
+  state. This is why the *only* thing that recovered the flow was "Clear saved
+  credentials" (`DELETE /api/auth/api-key` → `clearApiKey()` deletes
+  `process.env.ANTHROPIC_API_KEY`), not the on-disk wipe. `startOAuthFlow` now
+  builds the child env as `{ ...process.env, HOME }` with `ANTHROPIC_API_KEY`
+  and `ANTHROPIC_AUTH_TOKEN` deleted, sanitizing only the login subprocess (the
+  orchestrator's own `process.env` is left intact, so env-var auth keeps working
+  for agent turns / dogfooding). Regression test: `auth-manager.test.ts` →
+  "strips ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN from the login subprocess
+  env".
 - `ProviderAccountManager` gained `attachAuthManagers` + `startAccountAuth` /
   `cancelAccountAuth` / `submitAccountCode` / `signOutAccount` /
   `setAccountStatus`, and is wired to the auth-manager map in `index.ts` after

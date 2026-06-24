@@ -5,10 +5,12 @@
  * agent showed via the `present` MCP tool, with a single "active" entry shown
  * at a time. Entries are METADATA only — the artifact bytes (`content`) are
  * fetched lazily by the Present pane from the authenticated session API and
- * cached back onto the entry via `setContent`. New `present_content` messages
- * append + activate (or replace in-place when `replaceId` matches).
- * `present_cleared` drops one entry (a revision superseding an id) or wipes the
- * list (session switch / full clear).
+ * cached back onto the entry via `setContent`. `presentId` is content-addressed
+ * by the file path, so a `present_content` whose id is already known means the
+ * same file was re-presented (the screenshot iteration loop) → refresh that
+ * entry in place and drop its cached bytes so the pane refetches; a new id
+ * appends + activates. `present_cleared` drops one entry by id or wipes the list
+ * (session switch / full clear).
  *
  * Nothing is persisted across browser refresh — the list rehydrates from the
  * orchestrator's `present_state` replay (metadata), and the pane re-fetches the
@@ -16,6 +18,40 @@
  */
 
 import { create } from "zustand";
+import { useSessionStore } from "./session-store.js";
+import {
+  getSavedActivePresentBySession,
+  saveActivePresentBySession,
+} from "../utils/local-storage.js";
+
+/**
+ * The artifact the user last viewed, keyed by session id. Lives OUTSIDE the
+ * store state on purpose: `reset()` fires on every session switch and wipes the
+ * list, so a position kept in state would be lost — exactly the bug this fixes.
+ * Keyed by the content-addressed `presentId` (not a numeric index, which shifts
+ * as artifacts append or clear). `hydrate` runs on every switch / late tab open
+ * and restores the remembered entry instead of snapping back to the first one.
+ *
+ * Seeded from / written through to localStorage so the position survives a full
+ * page reload too — browser-local view state (may differ across devices), not
+ * server-persisted. A stale entry (artifact since gone) is harmless: `hydrate`
+ * falls back to clamping when the id isn't found. Forgotten on a full clear.
+ */
+const lastViewedBySession = new Map<string, string>(
+  Object.entries(getSavedActivePresentBySession()),
+);
+
+function persistLastViewed(): void {
+  saveActivePresentBySession(Object.fromEntries(lastViewedBySession));
+}
+
+function rememberActive(presentId: string | undefined): void {
+  const sessionId = useSessionStore.getState().sessionId;
+  if (sessionId && presentId && lastViewedBySession.get(sessionId) !== presentId) {
+    lastViewedBySession.set(sessionId, presentId);
+    persistLastViewed();
+  }
+}
 
 export interface Presentation {
   presentId: string;
@@ -35,7 +71,6 @@ export interface Presentation {
 /** The metadata carried by a `present_content` / `present_state` message. */
 interface PresentationMeta {
   presentId: string;
-  replaceId?: string;
   mimeType: string;
   title?: string;
   filePath: string;
@@ -51,6 +86,8 @@ interface PresentState {
    * behavior. Cleared when the tab is focused.
    */
   unseenCount: number;
+  /** True while the thumbnail gallery (all artifacts) is shown instead of one. */
+  galleryOpen: boolean;
 
   /** Apply a `present_content` WS message (metadata). */
   addOrReplace: (p: PresentationMeta) => void;
@@ -60,13 +97,15 @@ interface PresentState {
    * or auto-switching the panel (it's a silent sync). Already-fetched `content`
    * is preserved for ids that survive, so a reconnect doesn't refetch.
    */
-  hydrate: (presentations: Omit<PresentationMeta, "replaceId">[]) => void;
+  hydrate: (presentations: PresentationMeta[]) => void;
   /** Cache fetched bytes onto an entry (no-op if the id is gone). */
   setContent: (presentId: string, content: string) => void;
   /** Apply a `present_cleared` WS message. `presentId` undefined → wipe all. */
   clear: (presentId?: string) => void;
   /** Switch the visible entry (carousel navigation, click handler). */
   setActiveIndex: (index: number) => void;
+  /** Open/close the thumbnail gallery (the "view all" grid). */
+  setGalleryOpen: (open: boolean) => void;
   /** Focus a specific presentation by id. Returns false when it is not loaded. */
   focusById: (presentId: string) => boolean;
   /** Mark the user as having seen current presentations (clears the badge). */
@@ -79,6 +118,7 @@ const initialState = {
   presentations: [] as Presentation[],
   activePresentIndex: 0,
   unseenCount: 0,
+  galleryOpen: false,
 };
 
 /** Build a metadata entry (no content yet). */
@@ -98,37 +138,28 @@ export const usePresentStore = create<PresentState>((set) => ({
 
   addOrReplace: (p) =>
     set((s) => {
-      // Revision flow: replace in-place if replaceId points at a known entry.
-      // It's a new file version, so drop any cached bytes — the pane refetches.
-      if (p.replaceId) {
-        const idx = s.presentations.findIndex((q) => q.presentId === p.replaceId);
-        if (idx >= 0) {
-          const next = [...s.presentations];
-          next[idx] = toEntry(p);
-          return {
-            presentations: next,
-            activePresentIndex: idx,
-            unseenCount: s.unseenCount + 1,
-          };
-        }
-      }
-
-      // Idempotent re-delivery: a `present_state` hydrate may overlap with a
-      // live `present_content` for the same id. Replace in place, preserving
-      // any already-fetched bytes (same id → same file).
-      const dupeIdx = s.presentations.findIndex((q) => q.presentId === p.presentId);
-      if (dupeIdx >= 0) {
+      // Known id → the same file (presentId is content-addressed by path).
+      // Refresh in place, keeping its carousel slot. Drop cached bytes so the
+      // pane refetches the edited file — UNLESS this is a true re-delivery of the
+      // same event (identical createdAt, e.g. a WS reconnect replay), where the
+      // bytes are unchanged and worth preserving to avoid a needless refetch.
+      const idx = s.presentations.findIndex((q) => q.presentId === p.presentId);
+      if (idx >= 0) {
+        const prior = s.presentations[idx];
+        const isReplay = prior.createdAt === p.createdAt;
         const next = [...s.presentations];
-        next[dupeIdx] = toEntry(p, s.presentations[dupeIdx].content);
+        next[idx] = toEntry(p, isReplay ? prior.content : undefined);
+        rememberActive(p.presentId);
         return {
           presentations: next,
-          activePresentIndex: dupeIdx,
+          activePresentIndex: idx,
           unseenCount: s.unseenCount + 1,
         };
       }
 
       // Brand-new entry — append + activate so the user sees the latest.
       const presentations = [...s.presentations, toEntry(p)];
+      rememberActive(p.presentId);
       return {
         presentations,
         activePresentIndex: presentations.length - 1,
@@ -144,10 +175,25 @@ export const usePresentStore = create<PresentState>((set) => ({
         s.presentations.filter((p) => p.content !== undefined).map((p) => [p.presentId, p.content]),
       );
       const entries = presentations.map((p) => toEntry(p, priorContent.get(p.presentId)));
-      const activePresentIndex =
-        entries.length === 0
-          ? 0
-          : Math.max(0, Math.min(s.activePresentIndex, entries.length - 1));
+      // Restore the artifact the user was last viewing in THIS session (keyed by
+      // the stable presentId) so a session switch / late tab open lands them
+      // where they left off instead of snapping back to the first artifact.
+      // Fall back to the clamped current index when nothing is remembered or the
+      // remembered entry is gone.
+      let activePresentIndex: number;
+      if (entries.length === 0) {
+        activePresentIndex = 0;
+      } else {
+        const sessionId = useSessionStore.getState().sessionId;
+        const remembered = sessionId ? lastViewedBySession.get(sessionId) : undefined;
+        const rememberedIdx = remembered
+          ? entries.findIndex((e) => e.presentId === remembered)
+          : -1;
+        activePresentIndex =
+          rememberedIdx >= 0
+            ? rememberedIdx
+            : Math.max(0, Math.min(s.activePresentIndex, entries.length - 1));
+      }
       return { presentations: entries, activePresentIndex };
     }),
 
@@ -163,7 +209,9 @@ export const usePresentStore = create<PresentState>((set) => ({
   clear: (presentId) =>
     set((s) => {
       if (presentId === undefined) {
-        return { presentations: [], activePresentIndex: 0, unseenCount: 0 };
+        const sessionId = useSessionStore.getState().sessionId;
+        if (sessionId && lastViewedBySession.delete(sessionId)) persistLastViewed();
+        return { presentations: [], activePresentIndex: 0, unseenCount: 0, galleryOpen: false };
       }
       const idx = s.presentations.findIndex((p) => p.presentId === presentId);
       if (idx < 0) return s;
@@ -183,12 +231,16 @@ export const usePresentStore = create<PresentState>((set) => ({
         return { activePresentIndex: 0 };
       }
       const clamped = Math.max(0, Math.min(index, s.presentations.length - 1));
+      rememberActive(s.presentations[clamped]?.presentId);
       return { activePresentIndex: clamped };
     }),
+
+  setGalleryOpen: (open) => set({ galleryOpen: open }),
 
   focusById: (presentId) => {
     const idx = usePresentStore.getState().presentations.findIndex((p) => p.presentId === presentId);
     if (idx < 0) return false;
+    rememberActive(presentId);
     set({ activePresentIndex: idx, unseenCount: 0 });
     return true;
   },

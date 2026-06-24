@@ -1,8 +1,12 @@
 /**
  * ReviewCard — inline chat affordance for a plain-text AI review (docs/203).
  *
- * Rendered at the chat-history position where the parent's `submit_review` call
- * landed. Read-only and self-contained: a collapsible header (file + reviewer
+ * **Legacy render path only (docs/220):** new AI reviews no longer produce this
+ * card — the `submit_review` tool was removed (cross-agent reviews surface in the
+ * consult card, same-model reviews are narrated as prose). This component remains
+ * solely to render `aiReview` rows persisted before docs/220.
+ *
+ * Read-only and self-contained: a collapsible header (file + reviewer
  * label + timestamp) over the reviewer's markdown findings, which render with
  * the same `path:line`-linkifying markdown renderer as chat messages so a
  * finding's location is clickable. No line anchoring, no snapshot, no modal.

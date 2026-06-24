@@ -303,6 +303,19 @@ Codex runs with `approvalPolicy: "never"`, so the browser tools auto-approve
 exactly like every other tool — no Claude-style `--allowedTools` allowlisting is
 required on the Codex side.
 
+**Env forwarding (SHI-#1558).** Unlike Claude — whose MCP children inherit the
+session worker's full environment — Codex spawns each MCP server with a
+*controlled* environment: only variables named in the block's `env_vars` reach
+the child process (the same mechanism that carries resolved secrets, docs/088).
+The pre-installed `chrome-for-testing` build is pinned to
+`PLAYWRIGHT_BROWSERS_PATH` (= `/opt/playwright-browsers`, docs/150 §8), so the
+Codex `[mcp_servers.playwright]` block must forward that var
+(`env_vars = ["PLAYWRIGHT_BROWSERS_PATH"]` + the value in `runtimeEnv`).
+Without it the Playwright MCP server falls back to the default browser cache,
+finds nothing, and every `browser_*` tool fails on first use with
+`Browser "chrome-for-testing" is not installed`. Claude never hit this because
+its child inherited the worker's `PLAYWRIGHT_BROWSERS_PATH` for free.
+
 ### Alternatives considered
 
 **DOM-only access (jsdom/fetch)** — No JS execution, can't click buttons, can't see rendered layout. Doesn't solve the core problem.

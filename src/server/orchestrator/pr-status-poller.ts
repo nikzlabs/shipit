@@ -258,6 +258,14 @@ export class PrStatusPoller {
       tracker: this.tracker,
       autoFix: this.autoFix,
       autoMerge: this.autoMerge,
+      // Armed auto-resolve keeps the supervisor alive headlessly, same as
+      // auto-fix. Undefined in degraded setups that skip wiring the manager
+      // (no runner registry) — the gate treats that as "feature inactive."
+      autoConflictResolve: this.autoConflictResolveManager,
+      // docs/196 — a pending notify-on-merge watch must keep polling so the
+      // child's human merge is observed and the parent woken, even with no
+      // viewer anywhere. Read lazily per gate check (only when no viewer).
+      hasPendingMergeWatch: () => this.sessionManager.listPendingMergeWatches().length > 0,
     });
     this.supervisor = new PrPollingSupervisor({
       gate: this.gate,
@@ -376,6 +384,17 @@ export class PrStatusPoller {
    * Force a REST verification for a single session's PR. This is used after
    * ShipIt itself merges a PR, where waiting for the open-PR GraphQL view to
    * drop the branch can leave the UI stale for one or more poll intervals.
+   *
+   * Note this deliberately does NOT route through `pollRepo` like
+   * `forceRefreshSession` does: `pollRepo`'s bulk query is `states: [OPEN]`, and
+   * GitHub's GraphQL view can still report a *just-merged* PR as open for a beat
+   * (eventual consistency). `pollRepo` would then match it on the open path and
+   * never reach `verifyMissingPr` — exactly the staleness this fast-path exists
+   * to bypass with a definitive any-state REST probe. The cost of skipping
+   * `pollRepo` is that we don't inherit its `canonicalApiTarget` retarget, so we
+   * resolve the canonical owner ourselves (below) before the REST probe — else,
+   * on a transferred/renamed repo, `findPullRequestAnyState` filters
+   * `head=<old-owner>:<branch>` and matches nothing (SHI-159).
    */
   async forceVerifySessionPrState(sessionId: string): Promise<void> {
     const repoKey = this.tracker.sessionRepos.get(sessionId);
@@ -389,8 +408,9 @@ export class PrStatusPoller {
     this.supervisor.ensure();
     this.tracker.verifiedAbsent.delete(sessionId);
 
-    const owner = repoKey.slice(0, slash);
-    const repo = repoKey.slice(slash + 1);
+    const polledOwner = repoKey.slice(0, slash);
+    const polledRepo = repoKey.slice(slash + 1);
+    const { owner, repo } = await this.resolveCanonicalApiTarget(repoKey, polledOwner, polledRepo);
     await this.verifyMissingPr(sessionId, owner, repo, session.branch);
     this.tracker.verifiedAbsent.add(sessionId);
   }
@@ -596,8 +616,8 @@ export class PrStatusPoller {
   }
 
   /** Mark auto-merge as ShipIt-managed (GitHub native unavailable). */
-  setAutoMergeManaged(sessionId: string, managed: boolean, settingsUrl?: string): void {
-    this.autoMerge.setManaged(sessionId, managed, settingsUrl);
+  setAutoMergeManaged(sessionId: string, managed: boolean, settingsUrl?: string, reason?: string): void {
+    this.autoMerge.setManaged(sessionId, managed, settingsUrl, reason);
     // Managed auto-merge depends on the poller to detect CI-success → merge.
     // Open the gate so a closed tab doesn't strand the flow.
     if (managed) this.supervisor.ensure();
@@ -650,6 +670,7 @@ export class PrStatusPoller {
           mergeMethod: mergeState.mergeMethod,
           managed: mergeState.managed,
           settingsUrl: mergeState.settingsUrl,
+          reason: mergeState.reason,
           error: mergeState.error,
         },
       };
@@ -708,6 +729,31 @@ export class PrStatusPoller {
     const repo = nameWithOwner.slice(slash + 1);
     if (`${owner}/${repo}` === polledKey) return unchanged;
     return { owner, repo };
+  }
+
+  /**
+   * Resolve the canonical owner/repo for a (possibly transferred/renamed) repo
+   * via a lightweight `repository { nameWithOwner }` GraphQL probe, then apply
+   * `canonicalApiTarget`. `pollRepo` gets `nameWithOwner` for free from its bulk
+   * query, but the targeted single-session verify path bypasses `pollRepo` on
+   * purpose (see `forceVerifySessionPrState`), so it must resolve the canonical
+   * owner itself before its owner-qualified REST probe. Falls back to the polled
+   * owner/repo whenever the probe yields nothing (unauthenticated, rate-limited,
+   * network error, or no redirect), so the steady-state path is unchanged.
+   */
+  private async resolveCanonicalApiTarget(
+    repoKey: string,
+    owner: string,
+    repo: string,
+  ): Promise<{ owner: string; repo: string }> {
+    const result = await this.githubAuth.graphqlQuery<{
+      data?: { repository?: { nameWithOwner?: string } };
+    }>(
+      `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { nameWithOwner } }`,
+      { owner, name: repo },
+    );
+    const nameWithOwner = result?.data?.repository?.nameWithOwner;
+    return this.canonicalApiTarget(repoKey, owner, repo, nameWithOwner);
   }
 
   private async pollRepo(
@@ -1165,6 +1211,19 @@ export class PrStatusPoller {
     }
 
     if (isMerged && !alreadyTerminal) {
+      // docs/218 — record the merged PR's head-branch tip as the session's
+      // auto-reset safety anchor, BEFORE the merge side effects (archive,
+      // issue-lifecycle close, notify-on-merge) fire. We deliberately store the
+      // PR's `head.sha` rather than the session's current local HEAD: a turn
+      // that ran between the GitHub merge and this detection would have advanced
+      // local HEAD onto unmerged work, and anchoring on that would later let the
+      // pre-turn reset discard it. Fail closed when the SHA is absent (malformed
+      // REST response) — leaving `mergedHeadSha` NULL means the reset can't fire.
+      if (pr.head_sha) {
+        this.sessionManager.setMergedHeadSha(sessionId, pr.head_sha);
+      } else {
+        console.warn(`[pr-poller] merged PR #${pr.number} for ${sessionId} had no head.sha — auto-reset anchor not recorded`);
+      }
       if (this.onMergeDetectedCb) {
         this.onMergeDetectedCb(sessionId).catch((err: unknown) => {
           console.error(`[pr-poller] Post-merge archive error for ${sessionId}:`, err);

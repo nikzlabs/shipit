@@ -38,6 +38,12 @@ export interface BuildAgentRunParamsDeps {
    */
   getSelectedModel: () => string | undefined;
   /**
+   * docs/217 — reasoning effort for this turn (Control B). WS path reads the
+   * per-connection selection; the system-turn path uses the session's persisted
+   * value. Undefined ⇒ pass no flag. Optional so older callers/tests omit it.
+   */
+  getSelectedReasoning?: () => string | undefined;
+  /**
    * Per-agent run-params prep hooks (docs/155 Phase 3). Each backend's hook
    * injects its own backend-specific fields — Claude's adds `settingsPath`
    * and `autoCreatePr`; others are identity today. Optional so test setups
@@ -100,6 +106,7 @@ export async function buildAgentRunParams(
   );
   const replay = deps.sessionManager.consumeConversationReplay(sessionId);
   const selectedModel = deps.getSelectedModel();
+  const reasoningEffort = deps.getSelectedReasoning?.();
   // docs/128 / docs/211 — read the server-authoritative session kind
   // synchronously, in the pre-`await` DB block (same ordering rule as the reads
   // above), so the ops overlay in the system prompt can't be lost to a mid-build
@@ -142,6 +149,7 @@ export async function buildAgentRunParams(
     ...(systemPrompt !== undefined ? { systemPrompt } : {}),
     ...(permissionMode !== undefined ? { permissionMode } : {}),
     ...(selectedModel !== undefined ? { model: selectedModel } : {}),
+    ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
     ...(mcpServers.length > 0 ? { mcpServers } : {}),
     ...(compact ? { compact: true } : {}),
   };

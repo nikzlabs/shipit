@@ -5,6 +5,26 @@ description: Let the agent display visual artifacts (HTML, SVG, charts, markdown
 
 # Agent Present — lightweight content display without full preview
 
+> **Update (path-based identity — supersedes the `replaceId` design below):**
+> the `presentId` is now **derived deterministically from the file path**
+> (`derivePresentId(sessionId, resolvedPath)` in `present-registry.ts`), so the
+> file path IS the identity. There is **no `replaceId` parameter** anymore.
+> - Present a **new path** → a new carousel entry is appended.
+> - Present the **same path again** → the same id is derived, so the entry
+>   updates **in place** at every layer (worker registry `Map.set`, orchestrator
+>   `ON CONFLICT(present_id) DO UPDATE`, client store dedupe-by-id) — keeping its
+>   slot. This is the screenshot iteration loop: edit the file, re-present it.
+> - Because the id is stable across re-presents *and container restarts*,
+>   re-presenting a committed workspace file after a restart updates the existing
+>   persisted row instead of duplicating it — and `viewUrl` stays valid.
+> - The present flow no longer emits a per-id `present_cleared`; the only clear is
+>   a full wipe on session switch. The client drops cached bytes on a genuine
+>   re-present (newer `createdAt`) but preserves them on a true event replay
+>   (identical `createdAt`, e.g. a WS reconnect). Motivation: GitHub issue #1543 —
+>   the old `replaceId` framing implied a one-artifact-at-a-time limit and the
+>   agent misused it; deriving identity from the path removes the knob entirely.
+> Mentions of `replaceId` / "revision flow" below are the prior design.
+>
 > **Update (docs/188):** the `present` tool is now **file-based** — the agent
 > writes a file and presents it by path (`present({ file })`), instead of passing
 > an inline `content` string. The MIME type is inferred from the extension. A
@@ -693,3 +713,54 @@ is durable. The scope is deliberately **metadata-only**: bytes stay on disk/git.
   artifact. Multi-file (`files`/`entry`) and orchestrator preview-proxy routing
   for the *user's* browser remain future work.
 - `src/server/orchestrator/preview-proxy.ts` — proxy route for scratch-dir files
+
+## Gallery view, active-position memory, and the typing-carousel fix
+
+Three related Present-tab refinements (folded into one change):
+
+- **Gallery view ("view all").** With many artifacts, stepping the `◀ N/M ▶`
+  carousel one at a time is tedious. A grid icon **beside the carousel
+  controls** (where the eye already is — not off in the right-side actions)
+  toggles a thumbnail grid of every artifact; clicking a tile jumps to it and
+  collapses back to the single view. Shown only when there's more than one
+  artifact (same threshold as the carousel). `Esc` closes it. Thumbnails are
+  **lazy live renders**, mounted only once a tile scrolls near the viewport
+  (IntersectionObserver, 300px margin) with bytes fetched on reveal via the
+  shared `loadPresentContent`: HTML/SVG use the same `pointer-events:none`
+  sandboxed `RenderedFrame` as the single view (fixed 1280×800 logical size
+  scaled to the tile width via ResizeObserver, for a faithful shrunk-page
+  preview rather than a mobile reflow); **markdown reuses the docs
+  `MarkdownBlock` renderer** on the app background at a narrower 800×500 logical
+  page so prose stays readable; images draw directly; other kinds fall back to a
+  type icon. Columns are container-query responsive (2 → 3 → 4) so the grid
+  adapts to the **pane** width, not the viewport. Tiles **animate in** on open
+  with a staggered fade/zoom/slide (`animate-in` utilities, 35ms-per-tile delay
+  capped at 11 tiles, `motion-reduce:animate-none`), and the gallery ↔ single
+  swap **cross-fades** (both the gallery container and the single-view wrapper
+  carry `animate-in fade-in`; the single wrapper persists across carousel nav so
+  the fade plays only on the gallery swap, not on every ◀/▶). Store state:
+  `galleryOpen` (reset on session switch / full clear).
+
+- **Active-position memory.** The active artifact is remembered per session
+  (`lastViewedBySession`, keyed by the stable `presentId`, kept OUTSIDE the
+  store state so `reset()` on a session switch doesn't wipe it) and restored
+  inside `hydrate`. A session switch / late tab open lands the user back where
+  they left off instead of snapping to the first artifact. Seeded from / written
+  through to localStorage (`getSavedActivePresentBySession` /
+  `saveActivePresentBySession`), so the position also survives a full page
+  reload — browser-local view state (may differ across devices), not
+  server-persisted. A stale entry (artifact since gone) is harmless: `hydrate`
+  falls back to clamping when the id isn't found.
+
+- **Typing no longer moves the carousel.** The pane's arrow-key nav listener is
+  on `window`, and the chat composer is on screen alongside the Present tab, so
+  pressing ◀/▶ to move the text cursor while typing also stepped the carousel.
+  The handler now ignores keystrokes whose target is an `INPUT`/`TEXTAREA`/
+  `SELECT`/`contenteditable`, mirroring `useKeyboardShortcuts`' input guard.
+
+Key files:
+- `src/client/components/PresentGallery.tsx` — the thumbnail grid + lazy tile
+- `src/client/utils/present-content-fetch.ts` — shared lazy bytes fetch (single view + gallery)
+- `src/client/components/PresentPane.tsx` — gallery toggle, gallery render, keydown focus guard
+- `src/client/stores/present-store.ts` — `galleryOpen`, per-session active-position memory
+- `src/client/utils/local-storage.ts` — `getSavedActivePresentBySession` / `saveActivePresentBySession` (reload-durable position)

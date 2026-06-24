@@ -1,4 +1,4 @@
-import { ArrowClockwiseIcon, ArrowSquareOutIcon, CaretDownIcon, CheckIcon } from "@phosphor-icons/react";
+import { ArrowClockwiseIcon, ArrowLeftIcon, ArrowSquareOutIcon, CaretDownIcon, CheckIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import {
   DropdownMenu,
@@ -54,6 +54,8 @@ interface PreviewToolbarProps {
   setErrorPanelOpen: (fn: (prev: boolean) => boolean) => void;
   /** Force-reload the active iframe. */
   onRefresh: () => void;
+  /** Navigate the embedded preview back one step in its session history. */
+  onBack: () => void;
   /** URL of the active iframe slot, or null when none is mounted. */
   activeSlotUrl: string | null;
 }
@@ -85,6 +87,7 @@ export function PreviewToolbar({
   errorPanelOpen,
   setErrorPanelOpen,
   onRefresh,
+  onBack,
   activeSlotUrl,
 }: PreviewToolbarProps) {
   const autoFixEnabled = usePreviewStore((s) => s.autoFixEnabled);
@@ -200,6 +203,16 @@ export function PreviewToolbar({
             Auto-fix{autoFixEnabled && autoFixRetries > 0 ? ` (${autoFixRetries}/3)` : ""}
           </span>
         </label>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onBack}
+          title="Back"
+          disabled={!activeSlotUrl}
+          className="h-7 w-7 p-0"
+        >
+          <ArrowLeftIcon size={ICON_SIZE.SM} />
+        </Button>
         <Button
           variant="ghost"
           size="sm"

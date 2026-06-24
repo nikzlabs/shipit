@@ -236,12 +236,19 @@ const GOLDEN_CONTAINER_ROUTES = [
   "POST /api/sessions/:id/pr/:number/ready",
   "POST /api/sessions/:id/pr/:number/close",
   "POST /api/sessions/:id/pr/:number/reopen",
+  // github actions — gh run / gh workflow (read-only)
+  "GET /api/sessions/:id/actions/runs",
+  "GET /api/sessions/:id/actions/runs/view",
+  "GET /api/sessions/:id/actions/workflows",
+  "GET /api/sessions/:id/actions/workflows/view",
   // release — shipit release plan/prepare (docs/214)
   "POST /api/sessions/:id/release/plan",
   "POST /api/sessions/:id/release/prepare",
   // issues — shipit issue
   "GET /api/sessions/:id/issue/view",
   "GET /api/sessions/:id/issue/list",
+  "GET /api/sessions/:id/issue/labels",
+  "GET /api/sessions/:id/issue/statuses",
   "GET /api/sessions/:id/issue/comments",
   "POST /api/sessions/:sessionId/issue/create",
   "POST /api/sessions/:sessionId/issue/comment",
@@ -265,13 +272,12 @@ const GOLDEN_CONTAINER_ROUTES = [
   "POST /api/sessions/:parentId/children/:childId/message",
   "POST /api/sessions/:parentId/children/:childId/archive",
   "POST /api/sessions/:parentId/children/:childId/notify-on-merge",
-  // bridges — voice_note / report_shipit_bug / submit_review
+  // bridges — voice_note / report_shipit_bug
   "POST /api/sessions/:sessionId/voice-note",
   "POST /api/sessions/:sessionId/bug-report",
   // docs/207 (SHI-153) — the `propose_actions` tool relays an action checklist
   // card here; container-reachable so the worker can broker it.
   "POST /api/sessions/:sessionId/propose-actions",
-  "POST /api/sessions/:sessionId/review-submit",
   // docs/172 Tier C (SHI-90) — the SNI proxy queries this for an unknown host.
   // Query-only: it returns allow/deny and may surface an allow-once card, but
   // cannot GRANT (granting is the browser-only `egress_decision` WS path).
@@ -293,8 +299,8 @@ describe("GOLDEN container-reachable route table", () => {
       chatHistoryManager: new ChatHistoryManager(dbManager),
       authManager: new StubAuthManager() as unknown as AuthManager,
       agentFactory: () => new FakeClaudeProcess() as any,
-      // NOTE: review-submit lives in the review module, which `buildApp`
-      // registers unconditionally (it constructs its own FileReviewStore via
+      // NOTE: the review module's user-comment routes are registered
+      // unconditionally by `buildApp` (it constructs its own FileReviewStore via
       // app-di). If a future container-facing route lands in a module gated on
       // an injectable store (e.g. secrets/marketplace), wire that store into
       // this buildApp call or the snapshot will silently under-count.

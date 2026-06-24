@@ -4,26 +4,12 @@ import type {
   IssueRefCard,
   CompactionCard,
   SubAgentConsultCard,
-  AiReviewCard,
   ActionChecklistCard,
+  BranchAutoResetCard,
+  BranchSyncedCard,
 } from "../domain-types.js";
 import type { ReleaseStatusSummary } from "../release-types.js";
 import type { VoiceNoteSource } from "../voice-note-types.js";
-
-/**
- * Server → Client: a plain-text AI review card was added to (or patched in) the
- * chat transcript (docs/203). Emitted via `emitChatCard` on the first
- * `submit_review`, and re-emitted (as an upsert keyed by `reviewId`) when the
- * parent's re-review patches the same card. Carries the full `AiReviewCard`
- * payload — the reviewer's markdown renders verbatim in the card; there is no
- * snapshot, no anchoring, and no lazy fetch. Idempotent by `reviewId` so the
- * turn-event buffer replay on reconnect doesn't double-render.
- */
-export interface WsAiReviewAdded {
-  type: "ai_review_added";
-  sessionId: string;
-  card: AiReviewCard;
-}
 
 /**
  * docs/163 — the Native sink of a voice note. Emitted via `runner.emitMessage`
@@ -251,4 +237,32 @@ export interface WsActionChecklistCard {
   type: "action_checklist_card";
   sessionId: string;
   card: ActionChecklistCard;
+}
+
+/**
+ * docs/218 — the persisted "branch updated to latest base" transcript card.
+ * Emitted via `emitChatCard` (so it broadcasts live AND records in-band with the
+ * turn, surviving a reconnect, switch, and reload) right after the user's message
+ * when a merged session's branch was auto-reset to `origin/<base>` before the
+ * turn ran. Carries the full `BranchAutoResetCard`; the card has no lifecycle, so
+ * there is no follow-up update message. Idempotent on the client by `card.cardId`.
+ */
+export interface WsBranchAutoResetCard {
+  type: "branch_auto_reset_card";
+  sessionId: string;
+  card: BranchAutoResetCard;
+}
+
+/**
+ * docs/221 — the persisted "synced with <base>" transcript card. Emitted after a
+ * successful manual "Sync with <base>" flow (`runRebaseFlow`, manual route only)
+ * that rebased the session branch onto `origin/<base>` and/or fast-forwarded the
+ * local `<base>` ref. The clean-rebase path is not an agent turn, so the card is
+ * appended directly to chat history AND broadcast here, sharing one `card.cardId`
+ * that the client dedupes on. Carries the full `BranchSyncedCard`; no lifecycle.
+ */
+export interface WsBranchSyncedCard {
+  type: "branch_synced_card";
+  sessionId: string;
+  card: BranchSyncedCard;
 }

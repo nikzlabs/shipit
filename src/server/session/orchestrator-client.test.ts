@@ -49,20 +49,19 @@ describe("OrchestratorClient", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
 
     const client = new OrchestratorClient();
-    const res = await client.request("POST", "/review-submit", {
-      filePath: "docs/plan.md",
-      markdown: "No material issues found.",
+    const res = await client.request("POST", "/voice-note", {
+      headline: "done",
     });
 
     expect(res).toEqual({ ok: true, status: 200, body: { ok: true } });
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
-      "http://stale-container-id:4123/api/sessions/sess-1/review-submit",
+      "http://stale-container-id:4123/api/sessions/sess-1/voice-note",
       expect.objectContaining({ method: "POST" }),
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
-      "http://shipit:4123/api/sessions/sess-1/review-submit",
+      "http://shipit:4123/api/sessions/sess-1/voice-note",
       expect.objectContaining({ method: "POST" }),
     );
   });

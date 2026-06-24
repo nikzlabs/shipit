@@ -89,6 +89,7 @@ interface BootstrapResponse {
     liveSteering?: boolean;
     autoResolveConflicts?: boolean;
     autoFixCi?: boolean;
+    autoResetMergedBranch?: boolean;
     enableSubAgents?: boolean;
     providerAccounts?: ProviderAccount[];
   };
@@ -303,6 +304,7 @@ export async function loadBootstrapData(): Promise<void> {
   if (data.settings.liveSteering !== undefined) useSettingsStore.getState().setLiveSteering(data.settings.liveSteering);
   if (data.settings.autoResolveConflicts !== undefined) useSettingsStore.getState().setAutoResolveConflicts(data.settings.autoResolveConflicts);
   if (data.settings.autoFixCi !== undefined) useSettingsStore.getState().setAutoFixCi(data.settings.autoFixCi);
+  if (data.settings.autoResetMergedBranch !== undefined) useSettingsStore.getState().setAutoResetMergedBranch(data.settings.autoResetMergedBranch);
   if (data.settings.enableSubAgents !== undefined) useSettingsStore.getState().setEnableSubAgents(data.settings.enableSubAgents);
   if (data.settings.providerAccounts) useSettingsStore.getState().setProviderAccounts(data.settings.providerAccounts);
   useUiStore.getState().setRuntimeMode(data.runtimeMode ?? "containerized");

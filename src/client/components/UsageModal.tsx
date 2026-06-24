@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { XIcon } from "@phosphor-icons/react";
 import { Button } from "./ui/button.js";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
@@ -12,10 +13,17 @@ export interface SessionUsage {
   turnCount: number;
 }
 
+export interface MonthlyUsage {
+  month: string;
+  costUsd: number;
+  turns: number;
+}
+
 export interface UsageStats {
   sessions: SessionUsage[];
   totalCostUsd: number;
   totalTurns: number;
+  monthly: MonthlyUsage[];
 }
 
 interface UsageModalProps {
@@ -36,6 +44,121 @@ function formatCost(usd: number): string {
   if (usd === 0) return "$0.00";
   if (usd < 0.01) return `$${usd.toFixed(3)}`;
   return `$${usd.toFixed(2)}`;
+}
+
+/** `2026-06` → `Jun '26`, for compact x-axis labels. */
+function formatMonth(month: string): string {
+  const [year, mon] = month.split("-");
+  const names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const idx = Number(mon) - 1;
+  const name = names[idx] ?? mon;
+  return `${name} '${year.slice(2)}`;
+}
+
+type MonthlyMetric = "cost" | "turns";
+
+/** Compact metric label for the hover tooltip / average line. */
+function formatMonthlyValue(metric: MonthlyMetric, costUsd: number, turns: number): string {
+  return metric === "cost" ? formatCost(costUsd) : `${turns}`;
+}
+
+/**
+ * Compact per-month bar chart for the all-sessions trend. Pure CSS/Tailwind
+ * (no charting lib, matching the ContextDial sparkline), toggles between cost
+ * and turns, scaled to the largest bar in the series. Windowed to the most
+ * recent 12 months so the x-axis stays readable as data accumulates; draws an
+ * average baseline and emphasizes the current (most recent) month.
+ */
+function MonthlyUsageChart({ monthly }: { monthly: MonthlyUsage[] }) {
+  const [metric, setMetric] = useState<MonthlyMetric>("cost");
+
+  // Keep the x-axis bounded — only the latest 12 months are charted.
+  const recent = monthly.slice(-12);
+  const value = (m: MonthlyUsage) => (metric === "cost" ? m.costUsd : m.turns);
+  const max = recent.reduce((hi, m) => Math.max(hi, value(m)), 0);
+  const total = recent.reduce((sum, m) => sum + value(m), 0);
+  const avg = recent.length > 0 ? total / recent.length : 0;
+  const avgPct = max > 0 ? (avg / max) * 100 : 0;
+  const fmt = (m: MonthlyUsage) => formatMonthlyValue(metric, m.costUsd, m.turns);
+  const avgLabel = metric === "cost" ? formatCost(avg) : `${Math.round(avg)}`;
+
+  return (
+    <section data-testid="monthly-usage-section">
+      <div className="flex items-center justify-between mb-2">
+        <h3 className="text-sm font-medium text-(--color-text-secondary)">Monthly trend</h3>
+        <div className="flex gap-1 text-xs">
+          {(["cost", "turns"] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => setMetric(m)}
+              className={`px-2 py-0.5 rounded capitalize transition-colors ${
+                metric === m
+                  ? "bg-(--color-bg-tertiary) text-(--color-text-primary)"
+                  : "text-(--color-text-secondary) hover:text-(--color-text-primary)"
+              }`}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
+      </div>
+      {/* Bars and labels are separate rows with matching flex-1 columns so the
+          percentage-height bars resolve against a definite-height ancestor. */}
+      <div className="relative flex items-end gap-1 h-20" data-testid="monthly-usage-chart">
+        {recent.map((m, i) => {
+          const h = max > 0 ? Math.max(2, (value(m) / max) * 100) : 2;
+          const isCurrent = i === recent.length - 1;
+          return (
+            <div
+              key={m.month}
+              className="group relative flex-1 h-full flex items-end min-w-0"
+            >
+              {/* Hover value label, floats above the bar. */}
+              <span className="pointer-events-none absolute bottom-full left-1/2 z-10 mb-1 hidden -translate-x-1/2 whitespace-nowrap rounded bg-(--color-bg-tertiary) px-1.5 py-0.5 text-[10px] text-(--color-text-primary) shadow group-hover:block">
+                {fmt(m)}
+              </span>
+              <div
+                className={`w-full rounded-sm bg-(--color-accent) transition-all group-hover:opacity-80 ${
+                  isCurrent ? "" : "opacity-55"
+                }`}
+                style={{ height: `${h}%` }}
+                title={`${formatMonth(m.month)}: ${fmt(m)}`}
+              />
+            </div>
+          );
+        })}
+        {/* Average baseline across the bars. */}
+        {avg > 0 && (
+          <div
+            className="pointer-events-none absolute left-0 right-0 flex items-center"
+            style={{ bottom: `${avgPct}%` }}
+            data-testid="monthly-usage-avg"
+          >
+            <span className="mr-1 rounded bg-(--color-bg-secondary) px-1 text-[9px] leading-tight text-(--color-text-secondary)">
+              avg {avgLabel}
+            </span>
+            <div className="flex-1 border-t border-dashed border-(--color-text-secondary) opacity-60" />
+          </div>
+        )}
+      </div>
+      <div className="flex gap-1 mt-1">
+        {recent.map((m, i) => {
+          const isCurrent = i === recent.length - 1;
+          return (
+            <span
+              key={m.month}
+              className={`flex-1 text-[10px] truncate text-center ${
+                isCurrent ? "text-(--color-text-primary) font-medium" : "text-(--color-text-secondary)"
+              }`}
+            >
+              {formatMonth(m.month)}
+            </span>
+          );
+        })}
+      </div>
+    </section>
+  );
 }
 
 function formatDuration(ms: number): string {
@@ -210,6 +333,11 @@ export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, m
               <p className="text-sm text-(--color-text-secondary)">No usage data yet</p>
             )}
           </section>
+
+          {/* Monthly trend chart */}
+          {allUsage && allUsage.monthly.length > 0 && (
+            <MonthlyUsageChart monthly={allUsage.monthly} />
+          )}
 
           {/* Per-session breakdown */}
           {allUsage && allUsage.sessions.length > 0 && (

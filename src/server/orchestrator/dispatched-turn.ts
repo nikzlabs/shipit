@@ -41,7 +41,6 @@ function queuedMessageToDispatchOptions(next: QueuedMessage): AgentDispatchOptio
   if (next.files !== undefined) nextOpts.files = next.files;
   if (next.uploads !== undefined) nextOpts.uploads = next.uploads;
   if (next.permissionMode !== undefined) nextOpts.permissionMode = next.permissionMode;
-  if (next.reviewFilePath !== undefined) nextOpts.reviewFilePath = next.reviewFilePath;
   if (next.postTurn !== undefined) nextOpts.postTurn = next.postTurn;
   if (next.systemTurn !== undefined) nextOpts.systemTurn = next.systemTurn;
   // docs/196 fix — carry the completion callback so an enqueued turn signals
@@ -224,7 +223,6 @@ export async function runDispatchedTurn(
       // reuse branch).
       ...(reuse ? { reuseExistingAgent: true } : {}),
       ...(opts.permissionMode !== undefined ? { permissionMode: opts.permissionMode } : {}),
-      ...(opts.reviewFilePath !== undefined ? { reviewFilePath: opts.reviewFilePath } : {}),
       // docs/169 — post-turn policy + system-turn marker + completion signal.
       ...(opts.postTurn !== undefined ? { postTurn: opts.postTurn } : {}),
       ...(opts.systemTurn !== undefined ? { systemTurn: opts.systemTurn } : {}),

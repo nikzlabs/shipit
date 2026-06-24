@@ -40,7 +40,7 @@ afterEach(() => {
   useSessionStore.setState({ activeRunnerSessions: new Set<string>(), messages: [], rewindRecoveries: {} });
   usePrStore.setState({ cardBySession: {}, statusBySession: {}, autoMergeBySession: {} });
   useUiStore.getState().setProjectSettingsRepoUrl(null);
-  useRepoStore.setState({ collapsedParents: new Set<string>() });
+  useRepoStore.setState({ collapsedParents: new Set<string>(), collapsedResolved: new Set<string>() });
 });
 
 const baseSession = (overrides: Partial<SessionInfo> = {}): SessionInfo => ({
@@ -622,6 +622,54 @@ describe("SessionSidebar", () => {
       expect(parent.compareDocumentPosition(child) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       expect(child.compareDocumentPosition(header) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       expect(header.compareDocumentPosition(otherResolved) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it("renders the Recently resolved sub-section expanded by default", () => {
+      const sessions = [
+        baseSession({
+          id: "s-merged",
+          title: "Merged work",
+          remoteUrl: repoA.url,
+          createdAt: "2024-01-01T00:00:00.000Z",
+          lastUsedAt: "2024-01-01T00:00:00.000Z",
+          mergedAt: "2024-01-01T00:00:00.000Z",
+        }),
+      ];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} />);
+      // Expanded default — the resolved row is visible and the toggle offers Collapse.
+      expect(screen.getByText("Merged work")).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Collapse recently resolved" })).toBeTruthy();
+    });
+
+    it("collapses the Recently resolved rows on click and remembers it per repo", async () => {
+      const user = userEvent.setup();
+      const sessions = [
+        baseSession({
+          id: "s-active",
+          title: "Active work",
+          remoteUrl: repoA.url,
+          createdAt: "2024-01-02T00:00:00.000Z",
+          lastUsedAt: "2024-01-02T00:00:00.000Z",
+        }),
+        baseSession({
+          id: "s-merged",
+          title: "Merged work",
+          remoteUrl: repoA.url,
+          createdAt: "2024-01-01T00:00:00.000Z",
+          lastUsedAt: "2024-01-01T00:00:00.000Z",
+          mergedAt: "2024-01-01T00:00:00.000Z",
+        }),
+      ];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} />);
+
+      await user.click(screen.getByRole("button", { name: "Collapse recently resolved" }));
+
+      // Resolved rows hide; the active session and the (now Expand) toggle remain.
+      expect(screen.queryByText("Merged work")).toBeNull();
+      expect(screen.getByText("Active work")).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Expand recently resolved" })).toBeTruthy();
+      // State is recorded per repo URL so it survives a reload (localStorage-backed).
+      expect(useRepoStore.getState().collapsedResolved.has(repoA.url)).toBe(true);
     });
   });
 

@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { RepoInfo } from "../../server/shared/types.js";
-import { getSavedActiveRepo, saveActiveRepo, getSavedCollapsedRepos, saveCollapsedRepos, getSavedCollapsedParents, saveCollapsedParents, getSavedOpsCollapsed, saveOpsCollapsed, getSavedSandboxCollapsed, saveSandboxCollapsed } from "../utils/local-storage.js";
+import { getSavedActiveRepo, saveActiveRepo, getSavedCollapsedRepos, saveCollapsedRepos, getSavedCollapsedParents, saveCollapsedParents, getSavedCollapsedResolved, saveCollapsedResolved, getSavedOpsCollapsed, saveOpsCollapsed, getSavedSandboxCollapsed, saveSandboxCollapsed, getSavedHiddenReposCollapsed, saveHiddenReposCollapsed } from "../utils/local-storage.js";
 
 /** Buffers SSE status updates that arrive before addRepo stores the repo. */
 const pendingStatusUpdates = new Map<string, "cloning" | "ready">();
@@ -17,10 +17,19 @@ interface RepoState {
    * the rest. Persisted to localStorage — see [[collapse-spawned-sessions]].
    */
   collapsedParents: Set<string>;
+  /**
+   * docs/161 — repo URLs whose "Recently resolved" sub-section is collapsed.
+   * Per-repo (like {@link collapsedRepos}) so the multi-repo user can tuck away
+   * the resolved list on a noisy repo while keeping it open on the one they're
+   * actively shipping. Absence = expanded (the default). Persisted to localStorage.
+   */
+  collapsedResolved: Set<string>;
   /** Whether the "Host / Ops" sidebar group is collapsed. Persisted to localStorage. */
   opsCollapsed: boolean;
   /** docs/211 — whether the "Sandbox" sidebar group is collapsed. Persisted to localStorage. */
   sandboxCollapsed: boolean;
+  /** docs/222 — whether the "Hidden" repos sidebar section is collapsed. Persisted; defaults collapsed. */
+  hiddenReposCollapsed: boolean;
 
   // Actions
   setRepos: (repos: RepoInfo[]) => void;
@@ -31,13 +40,23 @@ interface RepoState {
   updateRepoWarmSession: (url: string, sessionId: string) => void;
   toggleRepoCollapsed: (url: string) => void;
   toggleParentCollapsed: (parentId: string) => void;
+  toggleResolvedCollapsed: (url: string) => void;
   toggleOpsCollapsed: () => void;
   toggleSandboxCollapsed: () => void;
+  toggleHiddenReposCollapsed: () => void;
   reset: () => void;
 
   // Async actions
   addRepo: (url: string) => Promise<RepoInfo | null>;
   removeRepo: (url: string) => Promise<boolean>;
+  /**
+   * docs/222 — hide/show a repo in the sidebar. Pure visibility toggle (no
+   * sessions archived, no disk reclaimed). Flips the repo's `hidden` flag
+   * optimistically so the sidebar updates instantly, then PATCHes. The server
+   * broadcasts `repo_list`, which re-sets the authoritative list (a no-op when
+   * the optimistic update was correct). Reverts on failure.
+   */
+  setRepoHidden: (url: string, hidden: boolean) => Promise<boolean>;
   /**
    * Reorder repos in the sidebar. Applies the new order optimistically to
    * the local list (so the drop feels instant) and persists to the server.
@@ -63,8 +82,10 @@ export const useRepoStore = create<RepoState>((set, get) => ({
   newRepoDialogOpen: false,
   collapsedRepos: getSavedCollapsedRepos(),
   collapsedParents: getSavedCollapsedParents(),
+  collapsedResolved: getSavedCollapsedResolved(),
   opsCollapsed: getSavedOpsCollapsed(),
   sandboxCollapsed: getSavedSandboxCollapsed(),
+  hiddenReposCollapsed: getSavedHiddenReposCollapsed(),
 
   setRepos: (repos) => {
     const { activeRepoUrl } = get();
@@ -123,6 +144,15 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       return { collapsedParents: next };
     }),
 
+  toggleResolvedCollapsed: (url) =>
+    set((state) => {
+      const next = new Set(state.collapsedResolved);
+      if (next.has(url)) next.delete(url);
+      else next.add(url);
+      saveCollapsedResolved(next);
+      return { collapsedResolved: next };
+    }),
+
   toggleOpsCollapsed: () =>
     set((state) => {
       const next = !state.opsCollapsed;
@@ -135,6 +165,13 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       const next = !state.sandboxCollapsed;
       saveSandboxCollapsed(next);
       return { sandboxCollapsed: next };
+    }),
+
+  toggleHiddenReposCollapsed: () =>
+    set((state) => {
+      const next = !state.hiddenReposCollapsed;
+      saveHiddenReposCollapsed(next);
+      return { hiddenReposCollapsed: next };
     }),
 
   reset: () => set({ repos: [], activeRepoUrl: undefined, addRepoDialogOpen: false, newRepoDialogOpen: false }),
@@ -238,6 +275,29 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       return true;
     } catch (err) {
       console.error("[repo-store] removeRepo failed:", err);
+      return false;
+    }
+  },
+
+  setRepoHidden: async (url, hidden) => {
+    const apply = (h: boolean) =>
+      set((state) => ({ repos: state.repos.map((r) => (r.url === url ? { ...r, hidden: h } : r)) }));
+    // Optimistic — the repo leaves/returns to the sidebar immediately.
+    apply(hidden);
+    try {
+      const res = await fetch(`/api/repos/${encodeURIComponent(url)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ hidden }),
+      });
+      if (!res.ok) {
+        apply(!hidden);
+        return false;
+      }
+      return true;
+    } catch (err) {
+      console.error("[repo-store] setRepoHidden failed:", err);
+      apply(!hidden);
       return false;
     }
   },

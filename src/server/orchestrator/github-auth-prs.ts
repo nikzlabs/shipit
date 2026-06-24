@@ -98,7 +98,7 @@ export async function findPullRequestAnyState(
 ): Promise<{
   url: string; number: number; base: string; title: string; body: string;
   state: "open" | "closed"; merged_at: string | null; merge_commit_sha: string | null;
-  additions: number; deletions: number;
+  head_sha: string | null; additions: number; deletions: number;
 } | null> {
   const res = await fetchGitHub(
     `https://api.github.com/repos/${owner}/${repo}/pulls?head=${owner}:${head}&state=all&sort=updated&direction=desc&per_page=1`,
@@ -109,7 +109,7 @@ export async function findPullRequestAnyState(
   const prs = (await res.json()) as {
     html_url: string; number: number; base: { ref: string }; title: string; body: string | null;
     state: "open" | "closed"; merged_at: string | null; merge_commit_sha: string | null;
-    additions: number; deletions: number;
+    head: { sha: string } | null; additions: number; deletions: number;
   }[];
   if (prs.length === 0) return null;
 
@@ -143,6 +143,12 @@ export async function findPullRequestAnyState(
     state: pr.state,
     merged_at: pr.merged_at,
     merge_commit_sha: pr.merge_commit_sha ?? null,
+    // docs/218 — the branch tip the PR shipped from. Recorded as the session's
+    // `mergedHeadSha` safety anchor so a later auto-reset on continue only fires
+    // when the local branch still sits exactly at this commit (no post-merge
+    // work to clobber). The list endpoint includes `head.sha`; fail closed to
+    // null if a malformed/partial response omits it.
+    head_sha: pr.head?.sha ?? null,
     additions,
     deletions,
   };
@@ -254,8 +260,21 @@ export async function enableAutoMerge(
 
   if (graphqlData.errors) {
     const errMsg = graphqlData.errors[0]?.message ?? "Unknown error";
-    if (errMsg.includes("auto-merge")) {
-      return { success: false, message: "Auto-merge is not enabled for this repository. Enable it in repo Settings > General." };
+    const lower = errMsg.toLowerCase();
+    // Map GitHub's GraphQL errors to actionable guidance. These strings are
+    // surfaced verbatim in the managed-merge tooltip (docs/077), so a cryptic
+    // raw error like "Pull request is in clean status" is rewritten to name the
+    // precondition the user actually needs to fix.
+    if (lower.includes("auto-merge") || lower.includes("not allowed")) {
+      // Repo-level "Allow auto-merge" checkbox is off (Settings → General →
+      // Pull Requests). This is the most common cause even when branch
+      // protection / rulesets are already configured.
+      return { success: false, message: "“Allow auto-merge” is turned off for this repository. Enable it in Settings → General → Pull Requests." };
+    }
+    if (lower.includes("clean status") || lower.includes("not in")) {
+      // Nothing is gating the PR (no required status check / approval), so
+      // GitHub considers it immediately mergeable and refuses auto-merge.
+      return { success: false, message: "No branch protection rule requires a status check or review on the base branch, so there's nothing for auto-merge to wait on. Add a required check to the rule (or ruleset)." };
     }
     return { success: false, message: errMsg };
   }

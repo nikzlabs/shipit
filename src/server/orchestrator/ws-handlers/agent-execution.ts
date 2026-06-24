@@ -1,9 +1,12 @@
-import type { WsServerMessage, ImageAttachment, FileAttachment, PermissionMode } from "../../shared/types.js";
+import { randomUUID } from "node:crypto";
+import type { WsServerMessage, ImageAttachment, FileAttachment, PermissionMode, BranchAutoResetCard } from "../../shared/types.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import { getErrorMessage, resolveFileAttachments, resolveUploadRefs, formatFileContext } from "../validation.js";
 import { buildTurnMessages, type AgentListenerDeps } from "./agent-listeners.js";
+import { emitChatCard } from "../chat-card-persistence.js";
 import { postTurnCommit } from "./post-turn.js";
 import { resolveRunner } from "./resolve-runner.js";
+import { autoResetMergedBranchOnContinue, isResetEligible } from "../services/pre-turn-reset.js";
 import { routeVoiceNote } from "../voice/voice-note-router.js";
 import type { SessionRunnerInterface, SystemTurnDeps } from "../session-runner.js";
 import {
@@ -143,7 +146,6 @@ export async function drainNextQueuedMessage(
       permissionMode: next.permissionMode,
       isNewSession: false,
       uploadPaths: nextUploadRefs?.map((u) => u.path),
-      reviewFilePath: next.reviewFilePath,
     });
   } catch (err) {
     console.error("[queue] Error processing queued message:", getErrorMessage(err));
@@ -183,19 +185,18 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
    */
   userReview?: { filePaths: string[]; commentCount: number };
   /**
-   * docs/125 — when this turn is a chat-native review, the file the
-   * `submit_review` tool is authorized to write on. Set on the runner
-   * at turn start (here, which is also the dequeue point for queued turns) and
-   * cleared when the turn ends.
-   */
-  reviewFilePath?: string;
-  /**
    * docs/178 — this turn is a context-compaction request (`/compact`). The
    * prompt is `/compact`; for Claude the CLI honors it as a slash command, and
    * the flag is forwarded to Codex so it issues `thread/compact/start` instead
    * of a normal turn. Set by the `/compact` interception in send-message.ts.
    */
   compact?: boolean;
+  /**
+   * docs/218 — per-send intent for the auto-reset-merged-branch control. `false`
+   * = user unticked it for this message (skip); `true`/undefined = follow the
+   * global setting. Non-sticky.
+   */
+  resetMergedBranch?: boolean;
 }): Promise<void> {
   const { userText, images, validatedFiles, permissionMode, isNewSession, uploadPaths, userReview } = opts;
 
@@ -268,14 +269,95 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     });
   };
 
+  // docs/218 — pre-turn auto-reset of a MERGED session's branch to the latest
+  // base, BEFORE the turn runs. Interactive path only (queued messages recurse
+  // back through here, so they're covered). Fully fail-safe: a skip/throw leaves
+  // the branch un-moved and the turn runs normally. On a real move we prepend a
+  // context prefix to the prompt (agent: don't re-apply shipped work) and emit a
+  // persisted "branch updated" card right after the user row (see below).
+  let branchResetCard: BranchAutoResetCard | null = null;
+  let resetAgentPrefix = "";
+  if (capturedSessionId && capturedSessionDir && runner) {
+    const reset = await autoResetMergedBranchOnContinue(
+      {
+        getSession: (id) => ctx.sessionManager.get(id),
+        getPrStatus: (id) => ctx.sessionManager.getPrStatus(id),
+        createGitManager: ctx.createGitManager,
+        getAutoResetMergedBranch: () => ctx.credentialStore.getAutoResetMergedBranch(),
+      },
+      capturedSessionId,
+      capturedSessionDir,
+      opts.resetMergedBranch,
+    );
+    if (reset.moved) {
+      resetAgentPrefix = reset.agentPrefix ?? "";
+      branchResetCard = {
+        cardId: `branch-reset-${randomUUID()}`,
+        base: reset.base!,
+        prNumber: reset.prNumber!,
+        prUrl: reset.prUrl!,
+        fromSha: reset.fromSha!,
+        toSha: reset.toSha!,
+        createdAt: new Date().toISOString(),
+      };
+      // docs/216 + docs/218 — the branch now sits at the clean base, so the
+      // lingering "merged" PR card no longer reflects reality. Re-arm NOW (clear
+      // merged + reArm poller + emit a gray "ready" card carrying the
+      // previousMergedPr breadcrumb that overrides the active viewer's stale
+      // merged card) so the PR card flips to the no-current-PR state the moment
+      // the branch-updated card appears — rather than lagging until the
+      // post-turn `postTurnReArmReset` runs after the whole turn. The post-turn
+      // call stays as a fail-safe (manual `git reset` with no pre-turn move) and
+      // no-ops here, having already cleared `mergedAt`.
+      await detectAndReArmResetSession({
+        deps: {
+          sessionManager: ctx.sessionManager,
+          prStatusPoller: ctx.prStatusPoller,
+          createGitManager: ctx.createGitManager,
+          sseBroadcast: ctx.sseBroadcast,
+        },
+        sessionId: capturedSessionId,
+        sessionDir: capturedSessionDir,
+        emit: (msg) => runner.emitMessage(msg),
+      });
+      // docs/218 — the branch now sits at the fresh base (HEAD !== mergedHeadSha),
+      // so the session is no longer reset-eligible. Push `reset_eligible: false`
+      // NOW so the composer's "start from the latest base" control disappears the
+      // moment the reset runs — rather than lingering for the entire turn until
+      // the post-turn recompute fires. This covers every send path (composer,
+      // action buttons, programmatic), unlike the client-side optimistic clear.
+      runner.emitMessage({ type: "reset_eligible", sessionId: capturedSessionId, eligible: false });
+    }
+  }
+
   // Assemble the prompt from user text plus optional file/image context. Images
   // are saved to the host uploads dir and referenced by path (avoids large
-  // base64 payloads over HTTP to the worker).
+  // base64 payloads over HTTP to the worker). The reset prefix (if any) rides in
+  // front so the agent sees it this turn only (no persistence).
   const activeDir = ctx.getActiveDir();
   const fileContext = validatedFiles.length > 0 ? formatFileContext(validatedFiles) : "";
   const imageContext =
     images && images.length > 0 && activeDir ? saveImagesToUploadsDir(images, activeDir) : "";
-  const prompt = assembleAgentPrompt({ userText, fileContext, imageContext });
+  const prompt =
+    (resetAgentPrefix ? `${resetAgentPrefix}\n\n` : "") +
+    assembleAgentPrompt({ userText, fileContext, imageContext });
+
+  // docs/218 — emit the persisted "branch updated" card right after the resumed
+  // user row (and before the agent's response). Runs inside the executor via the
+  // `afterUserMessagePersisted` hook so it lands in the FRESH turn (post
+  // `resetRunnerTurnState`) at its true transcript anchor. `emitChatCard` makes it
+  // durable in the same call, so the destructive move always has a record.
+  const afterUserMessagePersisted =
+    branchResetCard && runner
+      ? (sid: string): void => {
+          emitChatCard(
+            runner,
+            { type: "branch_auto_reset_card", sessionId: sid, card: branchResetCard },
+            { role: "assistant", text: "", branchAutoReset: branchResetCard },
+            { chatHistoryManager: ctx.chatHistoryManager, sessionId: sid },
+          );
+        }
+      : undefined;
 
   // Listener deps — same shape the runner-registry builds for system turns.
   const listenerDeps: AgentListenerDeps = {
@@ -328,6 +410,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
           sessionManager: ctx.sessionManager,
           readSystemPrompt: ctx.readSystemPrompt,
           getSelectedModel: ctx.getSelectedModel,
+          getSelectedReasoning: ctx.getSelectedReasoning,
           ...(ctx.runParamsPreps ? { runParamsPreps: ctx.runParamsPreps } : {}),
         },
         sessionId,
@@ -418,6 +501,25 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
         sessionDir,
         emit,
       });
+      // docs/218 — recompute + push the composer's reset-eligibility signal
+      // after every turn. A turn that reset the branch (or committed new work)
+      // flips it false → the control disappears; an unticked send leaves it
+      // eligible → the control reappears. Safety-only; the client ANDs the
+      // global setting. Best-effort — never blocks the post-turn flow.
+      try {
+        const eligible = await isResetEligible(
+          {
+            getSession: (id) => ctx.sessionManager.get(id),
+            getPrStatus: (id) => ctx.sessionManager.getPrStatus(id),
+            createGitManager: ctx.createGitManager,
+          },
+          sessionId,
+          sessionDir,
+        );
+        emit({ type: "reset_eligible", sessionId, eligible });
+      } catch (err) {
+        console.error(`[pre-turn-reset] post-turn eligibility signal failed for ${sessionId}:`, err);
+      }
     },
     postTurnReleaseFlow: async (sessionId, sessionDir, turnText) => {
       await reactToReleaseMarkers({
@@ -459,10 +561,10 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     prompt,
     userText,
     ...(effectivePermissionMode !== undefined ? { permissionMode: effectivePermissionMode } : {}),
-    ...(opts.reviewFilePath !== undefined ? { reviewFilePath: opts.reviewFilePath } : {}),
     // The client already rendered an optimistic bubble — don't echo.
     emitUserEcho: false,
     persistUserMessage,
+    ...(afterUserMessagePersisted ? { afterUserMessagePersisted } : {}),
     isNewSession,
     fallbackTitle: userText.slice(0, 80) || "New session",
     turnStartHeadHash,

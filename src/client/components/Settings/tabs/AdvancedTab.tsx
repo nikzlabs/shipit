@@ -104,9 +104,10 @@ function LiveSteeringSettings() {
 function PrAutomationsSettings() {
   const autoResolveConflicts = useSettingsStore((s) => s.autoResolveConflicts);
   const autoFixCi = useSettingsStore((s) => s.autoFixCi);
+  const autoResetMergedBranch = useSettingsStore((s) => s.autoResetMergedBranch);
 
   const makeToggle = (
-    key: "autoResolveConflicts" | "autoFixCi",
+    key: "autoResolveConflicts" | "autoFixCi" | "autoResetMergedBranch",
     setter: (v: boolean) => void,
     label: string,
   ) => async (v: boolean) => {
@@ -135,6 +136,11 @@ function PrAutomationsSettings() {
     (v) => useSettingsStore.getState().setAutoFixCi(v),
     "auto-fix",
   );
+  const handleResetMergedToggle = makeToggle(
+    "autoResetMergedBranch",
+    (v) => useSettingsStore.getState().setAutoResetMergedBranch(v),
+    "start from latest base",
+  );
 
   return (
     <div className="space-y-3">
@@ -153,6 +159,13 @@ function PrAutomationsSettings() {
             <p className="text-xs text-(--color-text-tertiary)">Detects when the PR can no longer merge cleanly. When the agent isn&rsquo;t busy, runs a rebase and asks the agent to fix any conflicts. Force-pushes the result.</p>
           </div>
           <ToggleSwitch enabled={autoResolveConflicts} onToggle={(v) => void handleResolveToggle(v)} testId="settings-auto-resolve-conflicts" />
+        </div>
+        <div className="flex items-center justify-between py-1 gap-4">
+          <div>
+            <span className="text-sm text-(--color-text-primary)">Start from the latest base after a merge</span>
+            <p className="text-xs text-(--color-text-tertiary)">When you continue a session whose PR already merged and the branch hasn&rsquo;t moved since, resets it to the latest base before the next turn so the agent builds on current code. A per-message checkbox lets you skip it for any one send.</p>
+          </div>
+          <ToggleSwitch enabled={autoResetMergedBranch} onToggle={(v) => void handleResetMergedToggle(v)} testId="settings-auto-reset-merged-branch" />
         </div>
       </div>
     </div>

@@ -159,6 +159,20 @@ describe("PreviewFrame", () => {
     await screen.findByTitle("Live Preview");
   });
 
+  it("posts a back-navigation message to the active iframe when Back is clicked", async () => {
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} {...defaultProps} />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+    const postMessage = vi.fn();
+    Object.defineProperty(iframe, "contentWindow", { value: { postMessage }, configurable: true });
+
+    fireEvent.click(screen.getByTitle("Back"));
+    expect(postMessage).toHaveBeenCalledWith(
+      { source: "shipit-toolbar", type: "back" },
+      "*",
+    );
+  });
+
   it("selector label matches selectedPort", () => {
     const preview: PreviewStatus = { running: true, port: 3001, url: "http://localhost:3001", source: "detected", detectedPorts: [3001, 8080] };
     render(<PreviewFrame preview={preview} {...defaultProps} detectedPorts={[3001, 8080]} selectedPort={8080} onSelectPort={vi.fn()} />);
@@ -659,6 +673,41 @@ describe("PreviewFrame", () => {
 
     await screen.findByTitle("Live Preview");
     expect(screen.getByTitle("Background Preview")).toHaveAttribute("src", "http://localhost:5173");
+  });
+
+  it("keeps iframe DOM order stable across A→B→A switches (no reorder → no reload)", async () => {
+    // Repro for "the preview reloads when I switch back and forth between two
+    // sessions". The iframe pool kept its render list in LRU order, so every
+    // switch moved the active slot to the front of the list. Reordering keyed
+    // <iframe> elements moves them in the DOM, and a moved iframe is reloaded
+    // by the browser — wiping its in-page state and defeating the pool. The
+    // fix renders in stable insertion order, so an existing iframe never
+    // changes its DOM position. We assert that order directly (jsdom can't
+    // observe the real-browser reload).
+    const order = (container: HTMLElement) =>
+      [...container.querySelectorAll("iframe")].map((f) => f.getAttribute("src"));
+
+    const previewA: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    const previewB: PreviewStatus = { running: true, port: 3000, url: "http://localhost:3000", source: "vite" };
+
+    const { rerender, container } = render(
+      <PreviewFrame preview={previewA} sessionId="session-a" {...defaultProps} />,
+    );
+    await screen.findByTitle("Live Preview");
+    expect(order(container)).toEqual(["http://localhost:5173"]);
+
+    // Switch to B. A must stay at its original DOM position (index 0); B is
+    // appended after it. The buggy LRU order would put the active B first
+    // (["http://localhost:3000", "http://localhost:5173"]), moving A.
+    rerender(<PreviewFrame preview={previewB} sessionId="session-b" {...defaultProps} />);
+    await screen.findByTitle("Live Preview");
+    expect(order(container)).toEqual(["http://localhost:5173", "http://localhost:3000"]);
+
+    // Switch back to A. The order must remain identical — A is not promoted
+    // back to the front, so its iframe node never moves (no reload).
+    rerender(<PreviewFrame preview={previewA} sessionId="session-a" {...defaultProps} />);
+    await screen.findByTitle("Live Preview");
+    expect(order(container)).toEqual(["http://localhost:5173", "http://localhost:3000"]);
   });
 
   it("shows spinner for fresh session start (no stale iframe)", () => {

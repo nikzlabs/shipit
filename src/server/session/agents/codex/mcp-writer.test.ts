@@ -66,6 +66,43 @@ describe("CodexAdapter.writeMcpConfig (docs/125, docs/155 hair 10, SHI-128)", ()
     expect(cfg).toContain("--browser chromium");
   });
 
+  // SHI-#1558 — Codex spawns MCP servers with a controlled env, so the
+  // pre-installed browser path (PLAYWRIGHT_BROWSERS_PATH) must be forwarded via
+  // env_vars + runtimeEnv or every browser_* tool fails with
+  // `Browser "chrome-for-testing" is not installed`. Claude's children inherit
+  // the worker env so it never needed this; Codex does.
+  it("forwards PLAYWRIGHT_BROWSERS_PATH to the playwright MCP server (SHI-#1558)", () => {
+    const prev = process.env.PLAYWRIGHT_BROWSERS_PATH;
+    process.env.PLAYWRIGHT_BROWSERS_PATH = "/opt/playwright-browsers";
+    try {
+      const runtimeEnv = write([], null);
+      const cfg = configText();
+      expect(cfg).toContain('env_vars = ["PLAYWRIGHT_BROWSERS_PATH"]');
+      expect(runtimeEnv).toMatchObject({
+        PLAYWRIGHT_BROWSERS_PATH: "/opt/playwright-browsers",
+      });
+    } finally {
+      if (prev === undefined) delete process.env.PLAYWRIGHT_BROWSERS_PATH;
+      else process.env.PLAYWRIGHT_BROWSERS_PATH = prev;
+    }
+  });
+
+  it("omits playwright env_vars when PLAYWRIGHT_BROWSERS_PATH is unset", () => {
+    const prev = process.env.PLAYWRIGHT_BROWSERS_PATH;
+    delete process.env.PLAYWRIGHT_BROWSERS_PATH;
+    try {
+      const runtimeEnv = write([], null);
+      const cfg = configText();
+      // The playwright block is still written; only the env_vars line is gated.
+      expect(cfg).toContain("[mcp_servers.playwright]");
+      expect(cfg).not.toContain('env_vars = ["PLAYWRIGHT_BROWSERS_PATH"]');
+      expect(runtimeEnv?.PLAYWRIGHT_BROWSERS_PATH).toBeUndefined();
+    } finally {
+      if (prev === undefined) delete process.env.PLAYWRIGHT_BROWSERS_PATH;
+      else process.env.PLAYWRIGHT_BROWSERS_PATH = prev;
+    }
+  });
+
   it("appends a single managed [mcp_servers.shipit] block selecting Codex's tool subset", () => {
     const runtimeEnv = write();
     const cfg = configText();
@@ -74,7 +111,7 @@ describe("CodexAdapter.writeMcpConfig (docs/125, docs/155 hair 10, SHI-128)", ()
     expect(cfg).toMatch(/command = ".+node"/);
     // Tool subset is passed via the child env, allowlisted with env_vars.
     expect(cfg).toContain('env_vars = ["SHIPIT_MCP_TOOLS"]');
-    expect(runtimeEnv).toMatchObject({ SHIPIT_MCP_TOOLS: "review,present,voice,ask,bug,propose_actions" });
+    expect(runtimeEnv).toMatchObject({ SHIPIT_MCP_TOOLS: "present,voice,ask,bug,propose_actions" });
     // No per-tool servers remain.
     expect(cfg).not.toContain("[mcp_servers.shipit-review]");
     expect(cfg).not.toContain("[mcp_servers.shipit-ask]");

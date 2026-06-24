@@ -17,7 +17,6 @@ export { postTurnCommit } from "./post-turn.js";
 type FullCtx = ConnectionCtx & RunnerCtx & AppCtx;
 
 type WsSendMessage = Extract<WsClientMessage, { type: "send_message" }>;
-type WsSendReviewMessage = Extract<WsClientMessage, { type: "send_review_message" }>;
 type WsAnswerQuestion = Extract<WsClientMessage, { type: "answer_question" }>;
 
 /**
@@ -90,25 +89,9 @@ function ensureActiveAgentAuthenticated(ctx: FullCtx): boolean {
 // Exported handlers
 // ---------------------------------------------------------------------------
 
-/**
- * docs/125 — start a chat-native review turn. Thin wrapper over
- * `handleSendMessage`: it routes the composed prompt through the exact same
- * agent code path, but passes `reviewFilePath` so the turn authorizes the
- * `submit_review` tool for that file (and only that file). The client
- * has already ensured a draft exists for the file before sending this.
- */
-export async function handleSendReviewMessage(ctx: FullCtx, msg: WsSendReviewMessage): Promise<void> {
-  await handleSendMessage(
-    ctx,
-    { type: "send_message", text: msg.text, sessionId: msg.sessionId },
-    msg.reviewFilePath,
-  );
-}
-
 export async function handleSendMessage(
   ctx: FullCtx,
   msg: WsSendMessage,
-  reviewFilePath?: string,
 ): Promise<void> {
   // Check auth before spawning — some CLIs hang if not authenticated.
   if (!ensureActiveAgentAuthenticated(ctx)) return;
@@ -170,10 +153,6 @@ export async function handleSendMessage(
         return;
       }
       // Live steering: inject the message mid-turn if capability + setting active.
-      // Review messages (reviewFilePath set) are never steered — a review needs
-      // its own turn so the per-turn review-tool allow-list is established
-      // (docs/125). They fall through to the queue, which carries reviewFilePath
-      // and applies the allow-list at dequeue/turn-start.
       //
       // docs/140 — also require `runner.isStreamingActive`. `supportsSteering` is
       // a static fact about the adapter (Claude can stream), but the currently-
@@ -200,7 +179,6 @@ export async function handleSendMessage(
         steeringCapable,
         liveSteering,
         streamingActive,
-        isReviewTurn: reviewFilePath !== undefined,
         systemTurnInProgress,
       })) {
         // Steer the running agent — inject message mid-turn
@@ -336,7 +314,6 @@ export async function handleSendMessage(
         ...(msg.files !== undefined ? { files: msg.files } : {}),
         ...(msg.uploads !== undefined ? { uploads: msg.uploads } : {}),
         ...(msg.permissionMode !== undefined ? { permissionMode: msg.permissionMode } : {}),
-        ...(reviewFilePath !== undefined ? { reviewFilePath } : {}),
       });
       return;
     }
@@ -507,7 +484,7 @@ export async function handleSendMessage(
     isNewSession: !msg.sessionId,
     uploadPaths,
     ...(msg.userReview ? { userReview: msg.userReview } : {}),
-    reviewFilePath,
+    ...(msg.resetMergedBranch !== undefined ? { resetMergedBranch: msg.resetMergedBranch } : {}),
     compact: isCompactRequest,
   });
 }

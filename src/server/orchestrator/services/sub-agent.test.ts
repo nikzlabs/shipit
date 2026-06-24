@@ -32,6 +32,7 @@ function makeDeps(opts: {
   subAgentSpawnsThisTurn?: number;
   spawnResult?: SubAgentRunResult;
   runnerPresent?: boolean;
+  subAgentDefaults?: { reasoningEffort?: string; model?: string };
 }) {
   const session: FakeSession | null =
     opts.session === undefined ? { id: "s1", agentId: "claude", agentPinned: true } : opts.session;
@@ -75,7 +76,10 @@ function makeDeps(opts: {
       get: vi.fn((id: string) => (session?.id === id ? session : undefined)),
       list: vi.fn(() => opts.sessions ?? []),
     } as never,
-    credentialStore: { getEnableSubAgents: () => opts.enableSubAgents ?? true } as never,
+    credentialStore: {
+      getEnableSubAgents: () => opts.enableSubAgents ?? true,
+      getAgentSubAgentDefaults: () => opts.subAgentDefaults ?? {},
+    } as never,
     agentRegistry: {
       refreshAuth: vi.fn(),
       get: vi.fn(() => (opts.agentKnown === false ? undefined : { name: "Codex", authConfigured: opts.authConfigured ?? true })),
@@ -170,7 +174,15 @@ describe("runSubAgent — happy path", () => {
     });
     expect(msgs[2]).toMatchObject({
       type: "sub_agent_consult_card",
-      card: expect.objectContaining({ subAgentId: "codex", status: "success", durationMs: 4200, costUsd: 0.03 }),
+      // docs/220 — the card carries the sub-agent's verbatim output so the
+      // brokered consult is visible, not just attested.
+      card: expect.objectContaining({
+        subAgentId: "codex",
+        status: "success",
+        durationMs: 4200,
+        costUsd: 0.03,
+        outputMarkdown: "2 bugs found",
+      }),
     });
     // the spinner and the card share a spawnId (the card clears the spinner)
     expect((msgs[2] as unknown as { card: { spawnId: string } }).card.spawnId).toBe(
@@ -178,6 +190,23 @@ describe("runSubAgent — happy path", () => {
     );
     // the card was persisted in-band (not emit-only) — survives switch/reload
     expect(replaceInProgress).toHaveBeenCalled();
+  });
+
+  it("forwards the invoked agent's global reasoning + model defaults to the spawn (docs/217)", async () => {
+    const { deps, runner } = makeDeps({ subAgentDefaults: { reasoningEffort: "high", model: "gpt-5.5" } });
+    await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+    expect(runner.spawnSubAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: "codex", reasoningEffort: "high", model: "gpt-5.5" }),
+    );
+  });
+
+  it("omits reasoningEffort + model when no defaults are set — backend uses its own default", async () => {
+    const { deps, runner } = makeDeps({ subAgentDefaults: {} });
+    await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+    const calls = (runner.spawnSubAgent as unknown as { mock: { calls: Record<string, unknown>[][] } }).mock.calls;
+    const arg = calls[0][0];
+    expect(arg).not.toHaveProperty("reasoningEffort");
+    expect(arg).not.toHaveProperty("model");
   });
 
   it("forwards a carried-back rate-limit snapshot into the sub-agent's limits provider", async () => {
@@ -201,6 +230,29 @@ describe("runSubAgent — happy path", () => {
     expect(recordAgentRateLimits).not.toHaveBeenCalled();
   });
 
+  it("omits outputMarkdown when the sub-agent returned empty text (docs/220)", async () => {
+    const { deps, emitMessage } = makeDeps({
+      spawnResult: { status: "success", text: "", truncated: false, durationMs: 1000, costUsd: 0 },
+    });
+    await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+    const card = emitMessage.mock.calls
+      .map((c) => c[0] as { type: string; card?: { outputMarkdown?: string } })
+      .find((m) => m.type === "sub_agent_consult_card")?.card;
+    expect(card?.outputMarkdown).toBeUndefined();
+  });
+
+  it("gives each brokered call its own card id — no patch-in-place (docs/220)", async () => {
+    const { deps, emitMessage } = makeDeps({});
+    await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+    await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "re-review", depth: 0 });
+    const cardIds = emitMessage.mock.calls
+      .map((c) => c[0] as { type: string; card?: { cardId?: string } })
+      .filter((m) => m.type === "sub_agent_consult_card")
+      .map((m) => m.card?.cardId);
+    expect(cardIds).toHaveLength(2);
+    expect(cardIds[0]).not.toBe(cardIds[1]);
+  });
+
   it("emits an error consult card when the spawn throws (spinner never left spinning)", async () => {
     const { deps, runner, emitMessage } = makeDeps({});
     runner.spawnSubAgent = vi.fn(async () => {
@@ -215,6 +267,8 @@ describe("runSubAgent — happy path", () => {
       type: "sub_agent_consult_card",
       card: expect.objectContaining({ status: "error" }),
     });
+    // a transport failure produced no result, so there is no output to carry
+    expect((msgs[1] as unknown as { card: { outputMarkdown?: string } }).card.outputMarkdown).toBeUndefined();
   });
 
   it("allows a same-provider spawn (no extra credentials needed)", async () => {

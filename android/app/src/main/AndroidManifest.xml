@@ -6,6 +6,13 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Voice dictation (docs/144): mic capture inside the WebView -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- WebRTC's audio capture path configures AudioManager (audio mode, echo
+         cancellation, gain) when it starts the source. Without this normal
+         install-time permission, getUserMedia(audio) fails on many devices/ROMs
+         with NotReadableError "Could not start audio source" even though
+         RECORD_AUDIO is granted — the OS allowed capture but the source can't
+         be configured/started. See docs/144-voice-input. -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
     <application

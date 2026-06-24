@@ -1,4 +1,5 @@
 ---
+issue: https://linear.app/shipit-ai/issue/SHI-188
 description: When the PR poller sees the branch has conflicts with its base and the session's agent is idle, auto-start a rebase + agent-driven conflict resolution turn.
 ---
 
@@ -42,6 +43,8 @@ Update doc 113's Out-of-scope to cross-reference this doc when this lands, so th
 Piggyback on the existing per-repo poll (`pr-status-poller.ts`, 15s cadence). After computing the new `PrStatusSummary`, the poller unconditionally calls `autoConflictResolveManager.handleTransition(sessionId, current, baseBranch, headSha)` for every tracked session — same call site / same cadence as the existing `autoFix.handleTransition`. The manager itself owns the edge / sticky / unknown filtering.
 
 No new polling, no new API calls. The mergeable field is already in the existing GraphQL query and the rate-limit budget already absorbs it.
+
+**Headless gating — the poll must stay alive with no viewer.** "Piggyback on the existing per-repo poll" carries a hidden dependency: the poll loop only runs while `PollingGlobalGate.isOpen()` is true (`polling-global-gate.ts`), and with no browser viewer attached the gate is open only if `anyAutonomousActionInFlight()` finds a reason. Auto-resolve must register as one of those reasons — exactly like auto-fix does (SHI-62) — or a viewerless session with a conflict is never polled, the conflict is never observed, and the rebase never fires. The gate therefore checks `autoConflictResolve.isEnabledFor(sessionId)` (armed) and `status === "running"`, mirroring the auto-fix armed/running checks. Without this the feature silently only worked while a tab was open (the same chicken-and-egg the SHI-62 auto-fix fix described, on a path that fix didn't touch). Covered by `polling-global-gate.test.ts` ("armed auto-resolve … keeps the gate open").
 
 **`mergeable === "unknown"` handling.** GitHub returns `UNKNOWN` while it's computing mergeability — common right after a push (mapped to `"unknown"` in `pr-status-poller.ts`, near the REST fallback at line ~693). If we naively edge-detect, a single sticky conflict will oscillate `conflicting → unknown → conflicting` and re-fire on every flop-back. The manager carries forward the **last non-unknown value** of `mergeable` per session in `lastKnownMergeable` and runs the edge test against *that*, not the raw `prev` summary. An `unknown` poll is treated as "no change" and never triggers, never resets. (The filter has to live in the manager — not the poller — because UNKNOWN-flop-back protection needs the cached history, not just the raw `prev` summary.)
 

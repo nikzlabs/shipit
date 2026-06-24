@@ -7,7 +7,8 @@
 #     to call `gh pr create`.
 #   - in any other state (no commits, empty net diff, a PR already exists in
 #     ANY state — open/merged/closed, GitHub not connected, no remote, hook
-#     already retried once), exit 0 silently.
+#     already retried once, OR the working tree is mid-rebase/merge/etc so HEAD
+#     isn't on a branch), exit 0 silently.
 #
 # Two guards keep this from re-prompting after a PR has already merged — the
 # duplicate-PR bug where a long-running session opened a fresh PR every turn
@@ -59,6 +60,29 @@ esac
 # Need a git repo to do anything useful.
 git rev-parse --git-dir >/dev/null 2>&1 || exit 0
 
+# Fail open while the working tree is in a transient state — a detached HEAD or
+# an in-progress rebase/merge/cherry-pick/revert/bisect. In any of these states
+# HEAD is not on a branch (or is about to move), so `gh pr create` cannot push:
+#
+#     error: The destination you provided is not a full refname
+#     (i.e., starting with "refs/") ... 'HEAD'
+#
+# Blocking here would force the agent into an action that *cannot succeed* until
+# the operation finishes. The real PR check belongs after the operation
+# completes (HEAD back on a branch), so exit 0 now and re-check on a later stop.
+if ! git symbolic-ref --quiet HEAD >/dev/null 2>&1; then
+  exit 0  # detached HEAD (mid-rebase, or a bare SHA checkout)
+fi
+if [ -d "$(git rev-parse --git-path rebase-merge)" ] \
+  || [ -d "$(git rev-parse --git-path rebase-apply)" ]; then
+  exit 0  # rebase in progress
+fi
+for MARKER in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD BISECT_LOG; do
+  if [ -e "$(git rev-parse --git-path "$MARKER")" ]; then
+    exit 0  # merge / cherry-pick / revert / bisect in progress
+  fi
+done
+
 # Resolve the base branch. Prefer origin/HEAD; fall back to origin/main, then
 # origin/master. If none resolve, we can't tell whether anything changed —
 # fail open.
@@ -79,9 +103,12 @@ done
 COMMITS_AHEAD=$(git rev-list --count "$BASE..HEAD" 2>/dev/null || echo 0)
 [ "$COMMITS_AHEAD" -gt 0 ] 2>/dev/null || exit 0
 
-# Skip on the default branch itself (no PR concept).
+# Skip on the default branch itself (no PR concept). An empty HEAD_BRANCH means
+# HEAD is detached — the transient-state guard above already exits 0 for that,
+# but guard here too so an empty branch name can never fall through and block.
 HEAD_BRANCH=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || echo "")
 BASE_LOCAL=${BASE#origin/}
+[ -n "$HEAD_BRANCH" ] || exit 0
 [ "$HEAD_BRANCH" != "$BASE_LOCAL" ] || exit 0
 
 # Fail open when the branch introduces no net change vs base. Commits-ahead

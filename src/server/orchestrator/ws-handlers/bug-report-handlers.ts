@@ -15,10 +15,36 @@
 
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import type { WsSubmitBugReport } from "../../shared/types/ws-client-messages.js";
+import type { SessionRunnerInterface } from "../session-runner.js";
+import type { PersistedBugReport } from "../chat-history.js";
 import { resolveRunner } from "./resolve-runner.js";
+import { persistCardTransition } from "../chat-card-persistence.js";
 import { fileBugReport, type BugReportProducer } from "../services/bug-report.js";
 
 type BugReportCtx = ConnectionCtx & RunnerCtx & Pick<AppCtx, "sessionManager" | "githubAuthManager" | "chatHistoryManager">;
+
+/**
+ * Persist a bug-report card's terminal (filed/failed) transition so it survives
+ * a session switch / full reload, clobber-free if the user confirms the card
+ * while its proposing turn is still in flight. Thin wrapper over the shared
+ * `persistCardTransition` primitive (see its docstring for the clobber and why
+ * the running-gated recorded-card patch fixes it).
+ */
+function persistBugCardTransition(
+  ctx: BugReportCtx,
+  runner: SessionRunnerInterface,
+  sessionId: string,
+  cardId: string,
+  patch: Partial<PersistedBugReport>,
+): void {
+  persistCardTransition(
+    runner,
+    { chatHistoryManager: ctx.chatHistoryManager, sessionId },
+    (m) => m.bugReport?.cardId === cardId,
+    (m) => ({ ...m, bugReport: { ...m.bugReport!, ...patch } }),
+    () => ctx.chatHistoryManager.updateBugReportCard(sessionId, cardId, patch),
+  );
+}
 
 export async function handleSubmitBugReport(
   ctx: BugReportCtx,
@@ -59,10 +85,10 @@ export async function handleSubmitBugReport(
       url: result.url,
     });
     // Persist the terminal state so the card comes back as "filed" (with its
-    // issue link) on reload — the proposing-turn row is finalized by now, so a
-    // direct patch is safe. We also persist the user-edited title/body that was
-    // actually filed.
-    ctx.chatHistoryManager.updateBugReportCard(sessionId, msg.cardId, {
+    // issue link) on reload. We also persist the user-edited title/body that
+    // was actually filed. `persistBugCardTransition` keeps the patch from being
+    // clobbered if the proposing turn is still in flight when the user confirms.
+    persistBugCardTransition(ctx, runner, sessionId, msg.cardId, {
       phase: "filed",
       title,
       body,
@@ -85,7 +111,7 @@ export async function handleSubmitBugReport(
   // Persist the failure as an editable draft (mirrors the client `setFailed`
   // → draft behavior) so a reload brings the card back ready for retry rather
   // than losing the error context entirely.
-  ctx.chatHistoryManager.updateBugReportCard(sessionId, msg.cardId, {
+  persistBugCardTransition(ctx, runner, sessionId, msg.cardId, {
     phase: "draft",
     title,
     body,

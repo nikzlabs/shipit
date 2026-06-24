@@ -65,6 +65,11 @@ function wasCompacted(turns: TurnUsage[]): boolean {
  * The previous standalone cost pill in the composer toolbar (driven from
  * the same `currentSessionUsage` the dial now reads) was removed when
  * these two surfaces were unified.
+ *
+ * On mobile the K-token reading and the cost are both hidden (`hidden
+ * md:inline`) to keep the composer's input bar compact — the dial icon
+ * stays, and tapping it opens the popover where the full total cost
+ * (and "Total cost → usage modal" row) remains available.
  */
 export function ContextDial({
   modelInfo,
@@ -205,7 +210,7 @@ export function ContextDial({
           )}
           {totalCost > 0 && (
             <span
-              className="text-[11px] font-mono text-(--color-accent)"
+              className="hidden md:inline text-[11px] font-mono text-(--color-accent)"
               data-testid="context-dial-cost"
             >
               {formatCost(totalCost)}

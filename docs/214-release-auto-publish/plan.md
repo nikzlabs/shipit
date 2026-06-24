@@ -360,6 +360,17 @@ flow — **not** the project-template grid (docs/171 Phase 3).
   helper is Node (`release-version.ts` uses `node:fs`), the scaffolded workflow runs
   `setup-node` to read the version **even in non-Node repos** (the read step is
   ShipIt's, independent of the repo's own toolchain/gate).
+- **The scaffold also forward-ports the version onto the default branch** — a
+  `sync-default-branch` job mirroring ShipIt's own (the release bump lands only on
+  the maintenance branch, so the default branch's version source would drift behind
+  every release). It resolves the default branch at runtime (`gh repo view`, so no
+  extra config; works for `main`/`master`), skips when that equals the maintenance
+  branch, and opens a chore PR (`release-sync/vX.Y.Z`) best-effort labeled
+  `ignore-for-release`. Because the bump must be ecosystem-generic (not `npm version`),
+  the scaffold ships a **write helper** `shipit-write-version.mjs` mirroring
+  `writeVersionToSource` — the write-side twin of the read helper, keeping the synced
+  version byte-identical to what the release command writes. The scaffold is now
+  **four** files; a `templates-release.test.ts` round-trip asserts write/read parity.
 - `shipit-config.ts` gains a `"release-branch"` `mechanism` value and a `branch`
   field; `release.mechanism`/`branch`/`versionSource`/`gate` parameterize the
   render and select this template vs. the simpler tag-triggered one.
@@ -439,7 +450,11 @@ path and the script as the fallback.
 ## Key files
 
 - `.github/workflows/release.yml`, `.github/release.yml` — the auto-publish CI;
-  `.github/workflows/ci.yml` — add `stable` to `pull_request: branches`.
+  `.github/workflows/ci.yml` — add `stable` to `pull_request: branches`. The
+  `sync-main` job in `release.yml` (branch path, after a green publish) opens a
+  chore PR forward-porting the released version onto `main` (the bump lands only
+  on `stable`, so `main` would otherwise drift behind every release) — labeled
+  `ignore-for-release`, idempotent on repair re-runs.
 - `docs/162` updater (`deployment/vps/update.sh`, `services/updates.ts`,
   `release-channel.ts`) — resolve the latest final tag reachable from `origin/stable`.
 - `src/server/shared/shipit-config.ts` — `release-branch` mechanism + `branch` + `version-source-path`.
@@ -450,6 +465,8 @@ path and the script as the fallback.
 - `src/server/session/agent-shim/shipit.ts` + `shipit-release.ts` (new), `agent-ops-routes.ts`, `api-routes-github.ts`.
 - `release-types.ts`, `release-markers.ts`, `release-status-poller.ts`, `services/release-flow.ts` — `pr_open`/`pr_merged` lifecycle; `mechanism` on the card (resolved from `shipit.yaml` in `release-flow.ts`).
 - `src/client/utils/release-confirm-message.ts` (new) — pure, mechanism-aware builder for the "Confirm & publish" reply; consumed by `App.tsx` (`handleReleaseConfirm`), threaded via `ReleaseLifecycleCard` → `MessageList`/`MessageCards` `onReleaseConfirm(version, mechanism)`.
-- `src/server/orchestrator/templates-release.ts` (new) — scaffolding.
+- `src/server/orchestrator/templates-release.ts` (new) — scaffolding; renders the
+  workflow (incl. the `sync-default-branch` job), notes config, and the read +
+  write version helpers (`templates-release-files/shipit-{read,write}-version.mjs`).
 - `src/server/shipit-docs/release.md`, `orchestrator/prompts/releases.md`, `RELEASING.md`, `CLAUDE.md` — agent + maintainer guidance.
 - Related: `docs/162-release-channels/plan.md`, `docs/171-release-from-ui/plan.md`.

@@ -77,25 +77,29 @@ export function useIframePool(): IframePool {
   }, []);
 
   const pruneSlots = useCallback((shouldRemove: (key: string) => boolean) => {
-    const removed = new Set<string>();
+    // Apply `shouldRemove` independently in each updater. We must NOT collect
+    // the removed keys in one updater and read them in the other: React invokes
+    // functional `setState` updaters lazily during the next render, not at the
+    // call site, so any set populated inside the `setSlotOrder` updater is still
+    // empty when synchronous code after it runs. Evaluating the predicate in
+    // both updaters keeps `slots` and `slotOrder` in lockstep — critical now
+    // that the render reads `slots` directly (see PreviewFrame).
     setSlotOrder((prev) => {
-      const next = prev.filter((key) => {
-        if (!shouldRemove(key)) return true;
-        removed.add(key);
-        return false;
-      });
+      const next = prev.filter((key) => !shouldRemove(key));
       return next.length === prev.length ? prev : next;
     });
-    if (removed.size === 0) return;
     setSlots((prev) => {
+      let changed = false;
       const updated = new Map(prev);
-      for (const key of removed) {
+      for (const key of prev.keys()) {
+        if (!shouldRemove(key)) continue;
         updated.delete(key);
         iframeRefs.current.delete(key);
         createdSlotsRef.current.delete(key);
         pollingRef.current.delete(key);
+        changed = true;
       }
-      return updated;
+      return changed ? updated : prev;
     });
   }, []);
 

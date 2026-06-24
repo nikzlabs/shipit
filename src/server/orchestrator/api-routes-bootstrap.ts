@@ -4,7 +4,7 @@
  */
 
 import type { FastifyInstance } from "fastify";
-import type { AgentId } from "../shared/types.js";
+import type { AgentId, SubAgentDefaultsPatch } from "../shared/types.js";
 import type { ApiDeps } from "./api-routes.js";
 
 import {
@@ -70,8 +70,12 @@ export async function registerBootstrapRoutes(
     autoResolveConflicts?: boolean;
     /** docs/169 — global gate for the auto-fix-CI loop. */
     autoFixCi?: boolean;
+    /** docs/218 — global gate for auto-resetting a merged session's branch on continue. */
+    autoResetMergedBranch?: boolean;
     /** docs/144 — global gate for sub-agent spawning. */
     enableSubAgents?: boolean;
+    /** docs/217 — per-agent sub-agent defaults patch, keyed by agent id. */
+    agentSubAgentDefaults?: Record<string, SubAgentDefaultsPatch>;
     /** docs/163 — voice-note delivery mode (native / external / both). */
     voiceDeliveryMode?: "native" | "external" | "both";
   } }>(
@@ -103,7 +107,9 @@ export async function registerBootstrapRoutes(
           ...(request.body.liveSteering !== undefined ? { liveSteering: request.body.liveSteering } : {}),
           ...(request.body.autoResolveConflicts !== undefined ? { autoResolveConflicts: request.body.autoResolveConflicts } : {}),
           ...(request.body.autoFixCi !== undefined ? { autoFixCi: request.body.autoFixCi } : {}),
+          ...(request.body.autoResetMergedBranch !== undefined ? { autoResetMergedBranch: request.body.autoResetMergedBranch } : {}),
           ...(request.body.enableSubAgents !== undefined ? { enableSubAgents: request.body.enableSubAgents } : {}),
+          ...(request.body.agentSubAgentDefaults !== undefined ? { agentSubAgentDefaults: request.body.agentSubAgentDefaults } : {}),
           ...(request.body.voiceDeliveryMode !== undefined ? { voiceDeliveryMode: request.body.voiceDeliveryMode } : {}),
         });
       } catch (err) {

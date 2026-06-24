@@ -1,3 +1,6 @@
+---
+issue: https://linear.app/shipit-ai/issue/SHI-187
+---
 
 # 129 — Stop-hook enforcement of agent-driven PR creation
 
@@ -244,6 +247,51 @@ create it explicitly.
 | `stop-pr-check.test.ts` "commits + diff + no PR" (existing) | Genuine first change still blocks (exit 2). |
 | `pr-status.test.ts` "surfaces a merged/closed PR" / "pr/view resolves a merged PR" | `getPrStatus` / `viewPullRequest` fall back to any-state. |
 | `agent-driven-pr.test.ts` "does NOT create a duplicate PR when the prior PR merged" | `agentCreatePr` returns the merged PR, no second `createPullRequest`. |
+
+## Update — fail open during transient git state (mid-rebase/merge)
+
+A turn that ended while the working tree was **mid-rebase** got the agent stuck.
+During a rebase HEAD is detached, so the branch-skip guard
+(`git symbolic-ref --short HEAD` → empty) did **not** match the base branch and
+fell through; the hook saw commits-ahead + a non-empty diff + no PR for the
+(nonexistent) current branch and blocked with "run `gh pr create`". But
+`gh pr create` then failed to push, because HEAD isn't a branch:
+
+```
+error: The destination you provided is not a full refname (i.e., starting
+with "refs/") ... 'HEAD'
+```
+
+So the hook forced the agent into an action that *cannot succeed* until the
+operation completes.
+
+### Fix
+
+A new **transient-state guard** in `stop-pr-check.sh`, placed right after the
+`git rev-parse --git-dir` repo check and before any base/commits logic, exits 0
+(fail open) when ANY of these hold:
+
+- **Detached HEAD** — `git symbolic-ref --quiet HEAD` fails (mid-rebase, or a
+  bare-SHA checkout).
+- **Rebase in progress** — the `rebase-merge` or `rebase-apply` dir exists
+  (`git rev-parse --git-path …`).
+- **Merge / cherry-pick / revert / bisect in progress** — `MERGE_HEAD`,
+  `CHERRY_PICK_HEAD`, `REVERT_HEAD`, or `BISECT_LOG` exists.
+
+The rationale matches the existing fail-open posture: a PR cannot (and should
+not) be created while the tree is in a transient state — the real PR check
+belongs **after** the operation finishes and HEAD is back on a branch, which a
+later stop re-evaluates. The branch-skip guard is also hardened to exit 0 on an
+empty `HEAD_BRANCH` (defense-in-depth) so a detached HEAD can never fall through
+and block.
+
+### Tests
+
+| Test | What it covers |
+|---|---|
+| `stop-pr-check.test.ts` "HEAD is detached" | Detached HEAD + commits + diff + no PR → exit 0, `gh` never reached. |
+| `stop-pr-check.test.ts` "rebase is in progress" | `rebase-merge` marker present → exit 0. |
+| `stop-pr-check.test.ts` "merge is in progress" | `MERGE_HEAD` present → exit 0. |
 
 ## Future extensions
 

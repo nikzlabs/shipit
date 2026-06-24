@@ -55,6 +55,14 @@ export interface WsRebaseComplete {
    * that had nothing to do would flash the banner and vanish silently.
    */
   upToDate?: boolean;
+  /**
+   * docs/221 — set when the sync moved the session clone's local `<base>` ref
+   * (and therefore emitted a persisted "Synced with <base>" card). On the
+   * `upToDate` path the client suppresses the "Already up to date" toast when
+   * this is true, since the card already records what changed. Only ever set by
+   * the manual "Sync with <base>" route (the card-recording path).
+   */
+  baseMoved?: boolean;
 }
 
 /** Server → Client: rebase was aborted. */

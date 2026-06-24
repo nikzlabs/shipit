@@ -87,10 +87,15 @@ export function ModelAgentSelector({
   // hardcoded row keys (e.g. "sonnet", "claude-opus-4-8"):
   //   - the session's own persisted model wins over localStorage so switching
   //     sessions doesn't bleed the last-selected model into other sessions
-  //   - localStorage's last selection seeds the new-session view
+  //   - localStorage's last selection seeds ONLY the new-session view
+  //     (`!hasActiveSession`); for an active session it is never a fallback, so
+  //     a session that never had a model explicitly picked highlights the agent
+  //     default it actually runs, not the model last chosen elsewhere. Mirrors
+  //     ReasoningSelector's per-session rule (docs/217).
   //   - the first model the active agent supports is the final fallback
   const savedModel = getSavedModelId();
-  const persistedSelection = sessionModel ?? savedModel ?? activeAgent?.models[0];
+  const seededModel = hasActiveSession ? undefined : savedModel;
+  const persistedSelection = sessionModel ?? seededModel ?? activeAgent?.models[0];
 
   // Which hardcoded model is selected — drives the dropdown checkmark. A pending
   // pick wins so a mid-session switch highlights immediately, before the next

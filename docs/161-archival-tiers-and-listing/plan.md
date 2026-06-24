@@ -1,4 +1,5 @@
 ---
+issue: https://linear.app/shipit-ai/issue/SHI-210
 description: Decouple session *visibility* in the sidebar from *disk reclamation*, replace the single destructive archive with graduated cleanup tiers, and guarantee a restored session is based on fresh origin/main instead of a stale bare-cache snapshot.
 ---
 
@@ -25,6 +26,31 @@ description: Decouple session *visibility* in the sidebar from *disk reclamation
 > tests (reopened-reappears-in-`list()`, and `evicted`-restore-cut-from-fresh-
 > `origin/main`) are now in place too — see `checklist.md`.
 
+> **SHI-179 follow-up (workspace-lost recovery + invariant):** an `evicted`
+> session is a **live, non-user-archived** session — its workspace was reclaimed
+> but it must always be **recoverable**. Two gaps let an evicted session become
+> permanently unrecoverable (observed live 2026-06-19): (1) `activateSession`
+> assumed `evicted` sessions are always restored via `unarchiveSession` first, so
+> a direct WS activation booted a container against the wiped workspace →
+> `connect → create → 404 → dispose` loop; (2) the startup janitor's
+> credential/logs/archived-workspace sweeps keyed reclamation off
+> `listArchived()` (= `disk_tier = 'evicted'`), so they reaped a live
+> evicted-but-not-user-archived session's dirs. Fixes:
+>
+> - **Recovery on activation** — `restoreSessionWorkspace` (`services/session.ts`)
+>   re-clones a missing workspace from the bare cache, **preserving the committed
+>   branch** (unlike `unarchiveSession`, which cuts a fresh branch for a
+>   *user*-archived restore). `activateSession` calls it before `getOrCreate`; on
+>   an unrecoverable workspace it surfaces a terminal `session_status` error
+>   instead of looping.
+> - **Fail-fast at container create** — `createContainerForRunner`
+>   (`app-lifecycle.ts`) stats the workspace before building the bind-mount and
+>   throws a clear, greppable error rather than the cryptic Docker 404.
+> - **Invariant: the workspace lifecycle is tied to USER-archive state, not disk
+>   tier** — the credential, logs, and archived-workspace sweeps
+>   (`startup-janitor.ts`) now key off `userArchived`, never reaping a live
+>   disk-evicted session.
+
 ## Problem
 
 Today a single boolean, `archived`, does three unrelated jobs at once:
@@ -35,9 +61,9 @@ Today a single boolean, `archived`, does three unrelated jobs at once:
    container, drops the compose named volumes, and `fs.rm`s the *entire*
    workspace checkout (`services/session.ts:248-344`).
 3. **Is triggered automatically** the instant any PR in the repo merges, keeping
-   only the 3 most-recently-active merged sessions per repo
+   only the N most-recently-active merged sessions per repo
    (`markMergedAndPruneExcess`, `services/session.ts:364`,
-   `MAX_MERGED_SESSIONS_PER_REPO = 3`).
+   `MAX_MERGED_SESSIONS_PER_REPO`; N raised 3 → 5 in Part 4).
 
 Because these three are fused, the product behaves badly:
 
@@ -171,7 +197,7 @@ Grouping in the sidebar:
 > `SessionManager.markClosed`, a no-op if already merged) when a branch's PR is
 > found closed without a merge. It is **deliberately weaker than `merged_at`**:
 > closing does **not** delete the head branch and does **not** trigger
-> merge-aware disk reclaim (`IDLE_EVICT_MERGED_MS`), because a closed PR can be
+> merge-aware disk reclaim (the short `evictMergedAfterMs` clock), because a closed PR can be
 > reopened. Reopen is handled two ways: `setPrStatus` clears `closed_at` the
 > moment the poller observes the PR open again, and—failing that—
 > `reopenedAfterResolve` floats the session back to Active on the next turn
@@ -374,6 +400,24 @@ are set). `deployment/vps/docker-compose.yml` now sets `DISK_FREE_LOW_PCT=0.10`,
 orchestrator service; `DISK_IDLE_EVICT_MS` is left at its 14d default so unmerged
 WIP stays on the gentle clock. This is what actually turns the pressure valve on.
 
+**SHI-197 — one validated ladder config + single cold-artifact retention.** The
+three free-floating ladder constants (`IDLE_LIGHT_MS` / `IDLE_EVICT_MS` /
+`IDLE_EVICT_MERGED_MS`) are consolidated into a single ordered, unit-consistent
+config `DiskLadderThresholds { lightAfterMs, evictMergedAfterMs,
+evictUnmergedAfterMs }` (`DEFAULT_DISK_LADDER` in `sessions.ts`), threaded into
+`escalateDiskTiers` as one `ladder` dep. The orchestrator validates the ordering
+invariant `lightAfterMs ≤ evictMergedAfterMs ≤ evictUnmergedAfterMs` once at
+startup (`assertDiskLadderOrdering`) — nothing previously stopped an env override
+from inverting it. The three env overrides (`DISK_IDLE_LIGHT_MS`,
+`DISK_IDLE_EVICT_MERGED_MS`, `DISK_IDLE_EVICT_MS`) are unchanged. Separately, the
+two coincidental 30-day startup-janitor knobs
+(`DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS` + `DISK_JANITOR_CACHE_DAYS`) collapse into
+one `DISK_JANITOR_COLD_ARTIFACT_RETENTION_DAYS` (`COLD_ARTIFACT_RETENTION_DAYS`,
+default 30) covering both the cold caches and the now-vestigial archived-workspace
+backstop (post-SHI-192 the workspace is freed synchronously at archive time, so
+that sweep is pure crash-recovery and is no longer independently tunable — it's
+now ON by default at the shared retention rather than disabled-by-default).
+
 ### Guards (the gate every automatic descent passes)
 
 A transition's guard column above references these. **No automatic trigger may
@@ -412,13 +456,14 @@ confirm) "running", but still auto-commits dirty work rather than losing it.
 | Constant | Meaning | Proposed default |
 |---|---|---|
 | `maxIdleContainers` | container-stop cap (exists, `docs/063`) | 5 |
-| `IDLE_LIGHT` | idle before `hot → light` (janitor) | 24 h |
-| `IDLE_EVICT` (`IDLE_EVICT_MS`) | idle before `light → evicted`, **unmerged** (janitor) | 14 d |
-| `IDLE_EVICT_MERGED_MS` | idle before `light → evicted`, **merged PR** (janitor) | 2 d (`172800000`) |
+| `DiskLadderThresholds.lightAfterMs` (`DISK_IDLE_LIGHT_MS`) | idle before `hot → light` (janitor) | 24 h |
+| `DiskLadderThresholds.evictUnmergedAfterMs` (`DISK_IDLE_EVICT_MS`) | idle before `light → evicted`, **unmerged** (janitor) | 14 d |
+| `DiskLadderThresholds.evictMergedAfterMs` (`DISK_IDLE_EVICT_MERGED_MS`) | idle before `light → evicted`, **merged PR** (janitor) | 2 d (`172800000`) |
+| _ordering invariant_ | `lightAfterMs ≤ evictMergedAfterMs ≤ evictUnmergedAfterMs`, asserted at startup (SHI-197) | — |
 | `DISK_FREE_LOW_PCT` / `DISK_FREE_HIGH_PCT` | disk-pressure watermarks as **fractions of total disk** (portable) | `0.10` / `0.20` (prod) |
 | `DISK_FREE_LOW_BYTES` / `DISK_FREE_HIGH_BYTES` | absolute-byte watermarks; **take precedence** over the `_PCT` pair when set | unset |
 | `DISK_ESCALATION_INTERVAL_MS` | period of the standalone escalation timer (issue #1049) | 1 h (`3600000`) |
-| `DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS` | janitor backstop for `evicted` (exists) | 30 d (prod) |
+| `DISK_JANITOR_COLD_ARTIFACT_RETENTION_DAYS` (`COLD_ARTIFACT_RETENTION_DAYS`) | single cold-artifact retention: archived-workspace crash-recovery backstop **+** cold caches (repo/dep/pnpm/repo-memory) (SHI-197, replaces the two coincidental 30d knobs) | 30 d |
 | `DISK_JANITOR_PACE_MS` | pause between each destructive janitor op (volume/network rm, branch delete, cache/workspace/nm-store rm) so the fire-and-forget startup sweep drips out instead of bursting `docker` spawns + git pushes that contend with a concurrent agent start | `500` |
 | `DISK_ESCALATION_PACE_MS` | pause between each **age-based** tier descent (same anti-contention goal). **Not** applied to the disk-pressure LRU descent — when the box is critically low and starts are already failing, fast reclaim is the point | `500` |
 
@@ -476,6 +521,35 @@ would be retried 3× and then rethrown, aborting restore. The implementation mus
 separate the two: a failed fetch is caught and downgraded to "serve cached
 `main` + warn," while clone failures keep their retry. Same principle as 157's
 "surface staleness in bootstrap."
+
+## Part 4 — Collapsible "Recently resolved" sub-section
+
+The "Recently resolved" sub-section sinks merged/closed sessions to the bottom of
+their repo group (Part 1). Two refinements, no new setting:
+
+- **Cap raised 3 → 5** (`MAX_MERGED_SESSIONS_PER_REPO`). The "I merged a few in a
+  row after a break and want to step back into one" moment routinely reaches past
+  the last three. The cap is view-only (exceeding it just hides from the sidebar;
+  the session stays reachable via search / All Sessions and via the pin / reopen
+  exemptions), so a higher cap costs nothing.
+- **Per-repo collapse, expanded by default, remembered.** The sub-header is a
+  toggle. Default is *expanded* (the feature exists for quick access to the thing
+  you just merged — collapsing by default would fight that for the common 1–2 repo
+  user). The clutter case is the multi-repo user with many resolved rows; they
+  collapse a noisy repo's list **once** and it sticks. Because the cap — and thus
+  the sub-section — is *per repo*, the per-repo collapse doubles as the per-repo
+  control a numeric "how many to show" setting would have given, without a knob.
+
+UI: the collapse caret hugs the "Recently resolved" label (not the right gutter)
+so it reads as part of the section title rather than echoing the repo header's own
+left caret one indent up; the whole row is the hit target. Variants explored in
+`mocks/resolved-collapse-placement.html` (chosen: caret-next-to-text). State lives
+in `repo-store` (`collapsedResolved: Set<repoUrl>`), persisted to localStorage
+(`shipit-collapsed-resolved`), mirroring `collapsedRepos`. Absence = expanded.
+
+Key files: `SessionGroup.tsx` (`RepoGroup` resolved sub-header + render gate),
+`SessionSidebar.tsx` (store wiring), `repo-store.ts` (`toggleResolvedCollapsed`),
+`local-storage.ts` (`get/saveCollapsedResolved`), `sessions.ts` (the cap constant).
 
 ---
 

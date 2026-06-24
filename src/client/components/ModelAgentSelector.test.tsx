@@ -324,4 +324,48 @@ describe("ModelAgentSelector — mid-session model picking", () => {
     expect(screen.getByTestId("model-agent-trigger")).toHaveTextContent("Sonnet 4.7");
     expect(screen.getByTestId("model-agent-trigger")).not.toHaveTextContent("GPT-5.4");
   });
+
+  it("does not bleed the localStorage seed into an active session without a persisted model", async () => {
+    // Symmetric with the ReasoningSelector per-session fix: the user last picked
+    // Opus elsewhere (localStorage seed), then opens a session that never had a
+    // model explicitly chosen. That session should highlight the agent default it
+    // actually runs (Sonnet = models[0]), not the model last picked elsewhere.
+    const user = userEvent.setup();
+    localStorage.setItem("vibe-model-id", "opus");
+    setSessionState(makeSession({ id: "s1", agentId: "claude", agentPinned: true }));
+    render(
+      <ModelAgentSelector
+        agents={agents}
+        activeAgentId="claude"
+        onAgentChange={vi.fn()}
+        onModelChange={vi.fn()}
+        modelInfo={null}
+        hasActiveSession={true}
+      />,
+    );
+    await user.click(screen.getByTestId("model-agent-trigger"));
+    // The checkmark is on the agent default, not the localStorage seed.
+    expect(screen.getByTestId("model-option-sonnet").querySelector("svg")).not.toBeNull();
+    expect(screen.getByTestId("model-option-opus").querySelector("svg")).toBeNull();
+  });
+
+  it("still seeds the new-session view from the localStorage last pick", async () => {
+    // New-session composer (no active session): the seed is the right default to
+    // preview, so the about-to-be-created session inherits the last pick.
+    const user = userEvent.setup();
+    localStorage.setItem("vibe-model-id", "opus");
+    setSessionState(undefined);
+    render(
+      <ModelAgentSelector
+        agents={agents}
+        activeAgentId="claude"
+        onAgentChange={vi.fn()}
+        onModelChange={vi.fn()}
+        modelInfo={null}
+        hasActiveSession={false}
+      />,
+    );
+    await user.click(screen.getByTestId("model-agent-trigger"));
+    expect(screen.getByTestId("model-option-opus").querySelector("svg")).not.toBeNull();
+  });
 });

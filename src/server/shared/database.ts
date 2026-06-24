@@ -654,8 +654,9 @@ const MIGRATIONS: Migration[] = [
   // including the container-internal `resolved_path` so the orchestrator can
   // re-register a presentation with a freshly-started worker and serve its bytes
   // again. Bytes are never stored; they're re-read from disk on demand. `id` is
-  // the insertion-order rowid the carousel sorts by; a `replaceId` revision
-  // updates the superseded row in place so it keeps its slot. `present_id` is the
+  // the insertion-order rowid the carousel sorts by; re-presenting the same file
+  // upserts the existing row in place (present_id is content-addressed by the
+  // file path) so it keeps its slot. `present_id` is the
   // natural unique key shared end-to-end with the worker, runner cache, and
   // client store.
   (db) => {
@@ -701,6 +702,64 @@ const MIGRATIONS: Migration[] = [
   // `cardId`) and emits a `release_card` WS. NULL = ordinary (non-card) message.
   (db) => {
     db.exec("ALTER TABLE messages ADD COLUMN release_card TEXT");
+  },
+  // docs/217 — per-session reasoning effort (Control B). Persists the composer's
+  // reasoning pick for the active agent's own turns so it survives reconnects,
+  // the warm pool, and an orchestrator restart. NULL = the CLI's own default.
+  (db) => {
+    db.exec("ALTER TABLE sessions ADD COLUMN reasoning_effort TEXT");
+  },
+  // docs/218 — the branch tip SHA the session's PR shipped from, captured from
+  // the merged PR's `head.sha` when the poller promotes the session to merged.
+  // It is the safety anchor for the auto-reset-merged-branch-on-continue feature:
+  // a later pre-turn `reset --hard origin/<base>` only fires when the local HEAD
+  // still equals this recorded SHA (proving no post-merge work would be lost).
+  // NULL = no merged tip recorded → reset fails closed. Cleared by `clearMerged`
+  // on a docs/202 re-arm (the merged tip no longer applies once un-merged).
+  (db) => {
+    db.exec("ALTER TABLE sessions ADD COLUMN merged_head_sha TEXT");
+  },
+  // docs/218 — persist the "branch updated to latest base" transcript card so it
+  // survives a session switch / full reload. The card arrives outside the
+  // agent-event stream (the pre-turn auto-reset of a merged session's branch) and
+  // is recorded in-band via emitChatCard; without this column it would render live
+  // but vanish on the next loadSessionHistory, which rebuilds from the DB. The
+  // card is immutable (no lifecycle), written once on emit and never patched.
+  (db) => {
+    db.exec("ALTER TABLE messages ADD COLUMN branch_auto_reset TEXT");
+  },
+  // SHI-cost-delta — store the raw cumulative cost the CLI reports alongside the
+  // per-turn delta now written to `cost_usd`. Each `claude -p --resume` turn
+  // reports `total_cost_usd` as the running total of the entire resumed
+  // conversation, not that turn's cost; persisting those snapshots into
+  // `cost_usd` and SUM()-ing them over-counted the session bill ~N× (once per
+  // resume chain). UsageManager.record now converts the cumulative into a
+  // per-turn delta (max(0, current - previous-for-this-session)) and stores it
+  // in `cost_usd`; `cumulative_cost_usd` retains the raw snapshot so the next
+  // turn can diff against it across an orchestrator restart. NULL for sub-agent
+  // rows (one-shot consults already report a per-run cost) and for legacy rows
+  // written before this migration. Historical rows are NOT backfilled — their
+  // `cost_usd` stays the old cumulative snapshot, so pre-migration sessions keep
+  // their (over-counted) totals; only turns recorded after this point are exact.
+  (db) => {
+    db.exec("ALTER TABLE usage_turns ADD COLUMN cumulative_cost_usd REAL");
+  },
+  // docs/221 — persist the "synced with <base>" transcript card so it survives a
+  // session switch / full reload. Emitted after a manual "Sync with <base>" flow
+  // (which rebases the session branch onto origin/<base> and fast-forwards the
+  // local <base> ref); the clean-rebase path isn't an agent turn, so the card is
+  // appended directly to history rather than via emitChatCard. Without this column
+  // it would render live but vanish on the next loadSessionHistory. Immutable (no
+  // lifecycle), written once on emit and never patched.
+  (db) => {
+    db.exec("ALTER TABLE messages ADD COLUMN branch_synced TEXT");
+  },
+  // Hide a repo from the sidebar without removing it (docs/222). A pure
+  // visibility flag: `hidden = 1` drops the repo (and its sessions) from the
+  // sidebar but touches nothing else — sessions, containers, working copies and
+  // history all survive, unlike Remove. Existing rows default to visible (0).
+  (db) => {
+    db.exec("ALTER TABLE repos ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0");
   },
 ];
 

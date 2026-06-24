@@ -44,6 +44,10 @@
 html, body {
   overflow: hidden;
   overscroll-behavior: none;
+  /* Theme background, not white. The body shows through wherever the app shell
+     doesn't reach — e.g. the strip the mobile keyboard exposes — so it must
+     match the app, otherwise that strip flashes pure white in light themes. */
+  background: var(--color-bg-primary);
 }
 
 /* Custom highlight for the markdown-comments "pending comment" range. The

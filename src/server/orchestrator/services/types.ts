@@ -3,6 +3,7 @@
  */
 
 import type { AgentId, PermissionMode } from "../../shared/types.js";
+import type { AgentReasoningCapability, SubAgentDefaults } from "../../shared/types/agent-types.js";
 import type { ProviderAccount, SessionInfo, ProjectTemplate, RepoInfo, RuntimeMode } from "../../shared/types.js";
 import type { VoiceDeliveryMode } from "../../shared/types/voice-note-types.js";
 
@@ -40,6 +41,11 @@ export interface AgentInfo {
    * over the wire so the client doesn't repeat the per-agent branch. (docs/155)
    */
   skillInvocationPrefix: string;
+  /**
+   * docs/217 — reasoning/effort options this agent exposes (or undefined). Drives
+   * both the composer's reasoning control and the per-agent Settings tab default.
+   */
+  reasoning?: AgentReasoningCapability;
 }
 
 export interface GlobalSettings {
@@ -63,11 +69,19 @@ export interface GlobalSettings {
   autoResolveConflicts: boolean;
   /** docs/169 — when true, the PR poller's auto-fix-CI loop fires on FAILURE while the agent is idle. */
   autoFixCi: boolean;
+  /** docs/218 — when true, resuming a merged, untouched session resets its branch to the latest base before the turn. Default on. */
+  autoResetMergedBranch: boolean;
   /**
    * docs/144 — when true, a pinned session's agent may spawn another registered
    * agent for a one-shot sub-task (`shipit agent run`). Default off.
    */
   enableSubAgents: boolean;
+  /**
+   * docs/217 — per-agent defaults applied when an agent is invoked as a
+   * sub-agent (governs the `shipit agent run` path). Keyed by agent id; set on
+   * each agent's Settings tab. Empty object when nothing is configured.
+   */
+  agentSubAgentDefaults: Record<string, SubAgentDefaults>;
   /**
    * docs/163 — voice-note delivery mode: "native" (inline note + TTS),
    * "external" (webhook only), or "both". Default "native".

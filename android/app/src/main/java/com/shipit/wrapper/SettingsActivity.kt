@@ -35,6 +35,15 @@ class SettingsActivity : AppCompatActivity() {
 
         binding.urlInput.setText(prefs.shipitUrl ?: "")
         binding.saveButton.setOnClickListener { onSaveClicked() }
+
+        // Show the running build so a tester can confirm exactly which version is
+        // installed before reinstalling. versionCode is the unique, increasing
+        // build number (epoch seconds; matches the GitHub Actions build).
+        binding.versionText.text = getString(
+            R.string.settings_version,
+            BuildConfig.VERSION_NAME,
+            BuildConfig.VERSION_CODE,
+        )
     }
 
     /**

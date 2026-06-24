@@ -10,6 +10,16 @@ description: Replace the structured submit_review_comments flow with a plain-tex
 > and `docs/151-agent-review-cards`. The **user-comment** half of those docs (a
 > human leaving inline notes and sending them to the implementation agent) is
 > **kept and decoupled**, not removed.
+>
+> **Superseded by `docs/220-cross-agent-review-surfacing` (shipped):** the
+> `submit_review` **write path described below has been removed.** ShipIt now
+> renders what it brokers — a **cross-agent** review surfaces in the
+> content-carrying `sub_agent_consult_card`, and a **same-model** review is
+> narrated by the parent as **prose** (no card, no tool). The §3 + "submit_review"
+> mechanism (parent records the card; review→re-review patches one card) no longer
+> exists. The `aiReview` field / column and `ReviewCard` are **kept as a legacy
+> read path only** so reviews persisted before docs/220 still render. The
+> **user-comment** half of this doc (a human leaving inline notes) is unchanged.
 
 ## Goal
 

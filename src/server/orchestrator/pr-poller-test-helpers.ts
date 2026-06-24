@@ -112,7 +112,10 @@ export const CONVERSATION_OVERRIDES = {
   },
 };
 
-export function makeSessionManager(sessions: { id: string; branch?: string; remoteUrl?: string; workspaceDir?: string }[]): SessionManager {
+export function makeSessionManager(
+  sessions: { id: string; branch?: string; remoteUrl?: string; workspaceDir?: string }[],
+  opts: { pendingMergeWatches?: string[] } = {},
+): SessionManager {
   return {
     list: () => sessions.map((s) => ({
       id: s.id,
@@ -126,7 +129,18 @@ export function makeSessionManager(sessions: { id: string; branch?: string; remo
     get: (id: string) => sessions.find((s) => s.id === id) as never,
     setPrStatus: vi.fn(),
     markClosed: vi.fn(),
+    // docs/218 — capture the merged PR's head tip as the auto-reset safety anchor.
+    setMergedHeadSha: vi.fn(),
     getAllPrStatuses: vi.fn().mockReturnValue([]),
+    // docs/196 — the polling gate calls this to keep the supervisor alive while
+    // a child session carries a non-terminal notify-on-merge watch. Default
+    // empty; tests opt in via `opts.pendingMergeWatches`.
+    listPendingMergeWatches: vi.fn(() =>
+      (opts.pendingMergeWatches ?? []).map((childSessionId) => ({
+        childSessionId,
+        watch: { parentSessionId: "parent", state: "armed", registeredAt: new Date().toISOString() },
+      })),
+    ),
     // Mutate the backing array so a later get() reflects the corrected URL,
     // mirroring the real manager's persist-then-read behavior.
     setRemoteUrl: vi.fn((id: string, remoteUrl: string | undefined) => {

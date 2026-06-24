@@ -43,7 +43,7 @@ import type { OrchestratorClient } from "./orchestrator-client.js";
 import { ServiceRequestQueue } from "./service-request-queue.js";
 import { SseBroadcaster } from "./sse-broadcaster.js";
 import type { SseClient, WorkerSSEEvent } from "./sse-broadcaster.js";
-import { PresentRegistry } from "./present-registry.js";
+import { PresentRegistry, derivePresentId } from "./present-registry.js";
 import {
   registerPresentFilesRoutes,
   inferPresentMimeType,
@@ -468,10 +468,9 @@ export class SessionWorker extends EventEmitter {
         file?: string;
         mimeType?: string;
         title?: string;
-        replaceId?: string;
       };
     }>("/agent-ops/present/submit", async (request, reply) => {
-      const { file, mimeType, title, replaceId } = request.body ?? {};
+      const { file, mimeType, title } = request.body ?? {};
       if (typeof file !== "string" || file.length === 0) {
         return reply.code(400).send({ error: "file is required and must be a path string" });
       }
@@ -500,13 +499,14 @@ export class SessionWorker extends EventEmitter {
 
       const resolvedTitle =
         typeof title === "string" && title.length > 0 ? title : undefined;
-      const resolvedReplaceId =
-        typeof replaceId === "string" && replaceId.length > 0 ? replaceId : undefined;
       const sessionId = process.env.SESSION_ID ?? "";
 
-      const presentId = `pres_${crypto.randomUUID()}`;
+      // Identity is the file path: the same file re-presented (the screenshot
+      // iteration loop) derives the same id and updates its carousel entry in
+      // place; a different file appends a new one. No explicit replace flag.
+      const presentId = derivePresentId(sessionId, resolvedPath);
       const createdAt = new Date().toISOString();
-      const result = this.presentRegistry.put(presentId, {
+      const meta = this.presentRegistry.put(presentId, {
         resolvedPath,
         // The presented path (verbatim — relative or absolute), shown in the
         // Present tab header. `file` is validated non-empty above.
@@ -514,7 +514,6 @@ export class SessionWorker extends EventEmitter {
         mimeType: resolvedMime,
         createdAt,
         ...(resolvedTitle !== undefined ? { title: resolvedTitle } : {}),
-        ...(resolvedReplaceId !== undefined ? { replaceId: resolvedReplaceId } : {}),
       });
 
       this.broadcastSSE({
@@ -522,25 +521,17 @@ export class SessionWorker extends EventEmitter {
         data: {
           sessionId,
           presentId,
-          ...(resolvedReplaceId !== undefined ? { replaceId: resolvedReplaceId } : {}),
-          mimeType: result.meta.mimeType,
-          ...(result.meta.title !== undefined ? { title: result.meta.title } : {}),
-          filePath: result.meta.filePath,
-          createdAt: result.meta.createdAt,
+          mimeType: meta.mimeType,
+          ...(meta.title !== undefined ? { title: meta.title } : {}),
+          filePath: meta.filePath,
+          createdAt: meta.createdAt,
           // docs/093 — the container-internal absolute path, carried on the SSE
           // event (not the client-facing WS message) so the orchestrator can
           // persist it and re-register this artifact with a freshly-started
           // worker after a container restart.
-          resolvedPath: result.meta.resolvedPath,
+          resolvedPath: meta.resolvedPath,
         },
       });
-
-      for (const evictedId of result.evicted) {
-        this.broadcastSSE({
-          type: "present_cleared",
-          data: { sessionId, presentId: evictedId },
-        });
-      }
 
       // The agent's in-container browser can navigate to this worker-local URL
       // to screenshot the rendered artifact and iterate (docs/170). Handing

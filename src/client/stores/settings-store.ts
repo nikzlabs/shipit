@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { PermissionMode, FileContextRef, ProviderAccount } from "../../server/shared/types.js";
+import type { PermissionMode, FileContextRef, ProviderAccount, SubAgentDefaults } from "../../server/shared/types.js";
 import {
   getSavedNotifyOnFinish, saveNotifyOnFinish,
   getSavedSoundOnFinish, saveSoundOnFinish,
@@ -100,8 +100,15 @@ interface SettingsState {
   autoResolveConflicts: boolean;
   /** docs/169 — global gate for the auto-fix-CI loop. */
   autoFixCi: boolean;
+  /** docs/218 — global gate for auto-resetting a merged session's branch on continue. */
+  autoResetMergedBranch: boolean;
   /** docs/144 — global gate for sub-agent spawning. */
   enableSubAgents: boolean;
+  /**
+   * docs/217 — per-agent defaults applied when an agent runs as a sub-agent
+   * (Control A), keyed by agent id. Hydrated from bootstrap / settings broadcast.
+   */
+  agentSubAgentDefaults: Record<string, SubAgentDefaults>;
   /** Active Codex device-auth flow state — `null` when no flow is running. */
   codexDeviceAuth: CodexDeviceAuth | null;
   /** Last device-auth failure message — `null` when no error. */
@@ -136,7 +143,10 @@ interface SettingsState {
   setLiveSteering: (enabled: boolean) => void;
   setAutoResolveConflicts: (enabled: boolean) => void;
   setAutoFixCi: (enabled: boolean) => void;
+  setAutoResetMergedBranch: (enabled: boolean) => void;
   setEnableSubAgents: (enabled: boolean) => void;
+  /** docs/217 — replace the per-agent sub-agent defaults map (Control A). */
+  setAgentSubAgentDefaults: (map: Record<string, SubAgentDefaults>) => void;
   setCodexDeviceAuth: (state: CodexDeviceAuth | null) => void;
   setCodexDeviceAuthError: (message: string | null) => void;
   setProviderAccounts: (accounts: ProviderAccount[]) => void;
@@ -198,7 +208,9 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   liveSteering: true,
   autoResolveConflicts: false,
   autoFixCi: false,
+  autoResetMergedBranch: true,
   enableSubAgents: false,
+  agentSubAgentDefaults: {},
   codexDeviceAuth: null,
   codexDeviceAuthError: null,
   providerAccounts: [],
@@ -310,7 +322,9 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setAutoResolveConflicts: (enabled) => set({ autoResolveConflicts: enabled }),
 
   setAutoFixCi: (enabled) => set({ autoFixCi: enabled }),
+  setAutoResetMergedBranch: (enabled) => set({ autoResetMergedBranch: enabled }),
   setEnableSubAgents: (enabled) => set({ enableSubAgents: enabled }),
+  setAgentSubAgentDefaults: (map) => set({ agentSubAgentDefaults: map }),
 
   setCodexDeviceAuth: (state) => set({ codexDeviceAuth: state }),
 

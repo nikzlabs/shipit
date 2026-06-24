@@ -212,6 +212,20 @@ makes them all correct for N volumes. See `plan.md` → "Disk cleanup under the 
       atomic-swap old-gen reclaim), all gated behind `OVERLAY_DEP_STORE`. No agent-facing `shipit-docs`
       change needed (the overlay is transparent to the agent; escalation behavior is unchanged when the
       flag is off).
+- [x] **SHI-193 — base GC switched from a 30-day age cutoff to a deterministic live-mount check.** A base
+      scope keys on `overlayRuntimeKey` (worker-image id + arch), so a worker-image rebuild rotates every
+      scope hash and old-image scopes go obsolete the instant the image rolls — the age proxy over-retained
+      ~26 GB of dead scopes (measured: 46 of 47 prod scope dirs). `sweepOrphanedOverlayBases` now keeps a
+      scope iff a running container pins one of its generations as a `lowerdir` right now
+      (`liveMountedOverlayBaseGenerations`: `docker ps` → `container inspect` mounts → `docker volume
+      inspect {{.Options.o}}` → `overlay-base/<hash>/g<N>`) OR a resumable session would re-pin its
+      current-runtime base (`liveOverlayScopeHashes`); everything outside that union is reclaimed
+      immediately (no delay). Generation reaping inside a live scope uses the same mount check (keep `g0`,
+      the pointer's current gen, and any running-container-pinned gen); only crash-orphaned `.tmp-*` copies
+      keep a short fixed grace window (`OVERLAY_TMP_GRACE_MS`, dodges an in-flight publish). The
+      old-image-container-mid-deploy race is handled exactly: its scope stays pinned until it exits.
+      Tests rewritten in `startup-janitor.test.ts` (immediate reclaim, running-mount keep, age-no-longer-
+      protects, tmp grace).
 
 ### Phase 7.5 — Live hardening on real Docker (2026-06-10; see FINDINGS.md "Live end-to-end")
 

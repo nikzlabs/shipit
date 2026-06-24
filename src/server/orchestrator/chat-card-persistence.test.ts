@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { emitChatCard, emitOrReplaceChatCard, recordChatCard, updateRecordedCard, persistTurnInProgress, emitNoticeInTurn, emitNoticePostTurn } from "./chat-card-persistence.js";
+import { emitChatCard, recordChatCard, updateRecordedCard, persistCardTransition, persistTurnInProgress, emitNoticeInTurn, emitNoticePostTurn } from "./chat-card-persistence.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import type { PersistedMessage } from "./chat-history.js";
 import type { WsServerMessage } from "../shared/types.js";
@@ -23,11 +23,17 @@ function fakeRunner(groups: { text: string; toolUse: unknown[] }[] = []): {
     replaceInProgress: (sessionId: string, messages: PersistedMessage[]) =>
       persisted.push({ sessionId, messages }),
   };
+  // Model the turn-event replay buffer: `emitMessage` buffers (as the real
+  // runner does), so a test can assert `emitChatCard` advances the persisted
+  // cursor past it (the switch/reconnect overlap fix).
+  const turnEventBuffer: WsServerMessage[] = [];
   const runner = {
-    emitMessage: (m: WsServerMessage) => emitted.push(m),
+    emitMessage: (m: WsServerMessage) => { emitted.push(m); turnEventBuffer.push(m); },
     chatMessageGroups: groups,
     recordedCards: [],
     steeredMessages: [],
+    getTurnEventBuffer: () => [...turnEventBuffer],
+    lastPersistedBufferIndex: 0,
   } as unknown as SessionRunnerInterface;
   return { runner, emitted, persisted, chatHistoryManager };
 }
@@ -59,31 +65,30 @@ describe("chat-card-persistence", () => {
     });
   });
 
-  it("emitOrReplaceChatCard records a new card, then REPLACES it in place on a matching re-emit (docs/203)", () => {
-    const { runner, emitted, persisted, chatHistoryManager } = fakeRunner([{ text: "reviewed", toolUse: [] }]);
-    const ctx = { chatHistoryManager, sessionId: "s1" };
-    const matches = (m: PersistedMessage) => (m as { aiReview?: { reviewId?: string } }).aiReview?.reviewId === "r1";
+  it("advances lastPersistedBufferIndex past the buffer so a later switch/reconnect doesn't replay pre-card events onto the snapshot", () => {
+    // Reproduces the vanishing-permission-card bug (SHI-112): a gated tool's
+    // `agent_assistant` was buffered but unpersisted (the buffer cursor only
+    // moved at tool-result boundaries), so emitChatCard persisted a snapshot
+    // AHEAD of the cursor. On a session switch the buffered event replayed on
+    // top of that snapshot, merged into the card's carrier message, and dropped
+    // the card field — the card showing only after the agent stopped (which
+    // clears the buffer). Advancing the cursor here removes that overlap.
+    const { runner, emitted, chatHistoryManager } = fakeRunner([{ text: "I'll run a command", toolUse: [{}] }]);
+    // A prior agent_assistant (the gated action) sits in the buffer, unpersisted.
+    runner.emitMessage({ type: "agent_event" } as unknown as WsServerMessage);
+    expect(runner.lastPersistedBufferIndex).toBe(0);
 
-    const ws = (markdown: string, reReviewed: boolean): WsServerMessage =>
-      ({ type: "ai_review_added", sessionId: "s1", card: { reviewId: "r1", filePath: "a.ts", markdown, reviewerLabel: "Reviewed by Codex", createdAt: "t", reReviewed } } as unknown as WsServerMessage);
-    const row = (markdown: string, reReviewed: boolean): PersistedMessage =>
-      ({ role: "assistant", text: "", aiReview: { reviewId: "r1", filePath: "a.ts", markdown, reviewerLabel: "Reviewed by Codex", createdAt: "t", reReviewed } } as unknown as PersistedMessage);
+    emitChatCard(
+      runner,
+      { type: "permission_request_card", sessionId: "s1", requestId: "p1", toolName: "Bash" } as unknown as WsServerMessage,
+      { role: "assistant", text: "", permissionPrompt: { requestId: "p1", phase: "pending", toolName: "Bash" } } as unknown as PersistedMessage,
+      { chatHistoryManager, sessionId: "s1" },
+    );
 
-    // First submit → records a new card.
-    expect(emitOrReplaceChatCard(runner, ws("issue A", false), row("issue A", false), ctx, matches)).toEqual({ replaced: false });
-    expect(runner.recordedCards).toHaveLength(1);
-    const anchor = runner.recordedCards[0].afterGroupIndex;
-
-    // Re-review → replaces in place: still ONE card, same anchor, patched message.
-    expect(emitOrReplaceChatCard(runner, ws("clean", true), row("clean", true), ctx, matches)).toEqual({ replaced: true });
-    expect(runner.recordedCards).toHaveLength(1);
-    expect(runner.recordedCards[0].afterGroupIndex).toBe(anchor);
-    expect((runner.recordedCards[0].message as { aiReview?: { markdown?: string; reReviewed?: boolean } }).aiReview)
-      .toMatchObject({ markdown: "clean", reReviewed: true });
-
-    // Both the live emit and the durable persist happened on each call.
-    expect(emitted).toHaveLength(2);
-    expect(persisted).toHaveLength(2);
+    // The buffer now holds the prior agent_event + the card's own WS message;
+    // the cursor must point past BOTH so neither is replayed over the snapshot.
+    expect(runner.getTurnEventBuffer()).toHaveLength(emitted.length);
+    expect(runner.lastPersistedBufferIndex).toBe(runner.getTurnEventBuffer().length);
   });
 
   it("anchors the card after the persistable assistant groups produced so far", () => {
@@ -144,6 +149,77 @@ describe("chat-card-persistence", () => {
     it("returns false when no recorded card matches (caller falls back to the DB-row patch)", () => {
       const { runner } = fakeRunner();
       expect(updateRecordedCard(runner, () => true, (m) => m)).toBe(false);
+    });
+  });
+
+  describe("persistCardTransition — running-gated recorded-vs-DB patch (docs/164/172/177)", () => {
+    interface BugMsg { bugReport?: { cardId?: string; phase?: string } }
+    const recordDraft = (
+      runner: SessionRunnerInterface,
+      chatHistoryManager: { replaceInProgress(s: string, m: PersistedMessage[]): void },
+    ) => {
+      recordChatCard(runner, { role: "assistant", text: "", bugReport: { cardId: "c1", phase: "draft" } } as unknown as PersistedMessage);
+      persistTurnInProgress(chatHistoryManager, runner, "s1");
+    };
+    const findCard = (messages: PersistedMessage[]) =>
+      messages.find((m) => (m as BugMsg).bugReport?.cardId === "c1") as BugMsg | undefined;
+    const toFiled = (m: PersistedMessage) =>
+      ({ ...m, bugReport: { ...(m as Required<BugMsg>).bugReport, phase: "filed" } }) as unknown as PersistedMessage;
+
+    it("patches the recorded card (not the DB) while the turn is in flight, surviving a later rebuild", () => {
+      const { runner, persisted, chatHistoryManager } = fakeRunner([{ text: "filing a bug", toolUse: [{}] }]);
+      runner.running = true;
+      recordDraft(runner, chatHistoryManager);
+
+      let dbPatched = false;
+      persistCardTransition(
+        runner,
+        { chatHistoryManager, sessionId: "s1" },
+        (m) => (m as BugMsg).bugReport?.cardId === "c1",
+        toFiled,
+        () => { dbPatched = true; },
+      );
+
+      // In-flight → recorded card patched, DB fallback NOT used.
+      expect(dbPatched).toBe(false);
+      // A LATER in-turn rebuild (next tool boundary / end-of-turn finalize) still
+      // carries "filed" — the clobber the fix prevents.
+      persistTurnInProgress(chatHistoryManager, runner, "s1");
+      expect(findCard(persisted[persisted.length - 1].messages)?.bugReport?.phase).toBe("filed");
+    });
+
+    it("uses the DB-row fallback once the proposing turn has finalized (running=false)", () => {
+      const { runner, chatHistoryManager } = fakeRunner([{ text: "filing a bug", toolUse: [{}] }]);
+      runner.running = false;
+      recordDraft(runner, chatHistoryManager);
+
+      let dbPatched = false;
+      persistCardTransition(
+        runner,
+        { chatHistoryManager, sessionId: "s1" },
+        (m) => (m as BugMsg).bugReport?.cardId === "c1",
+        toFiled,
+        () => { dbPatched = true; },
+      );
+
+      // Finalized → direct DB-row patch is safe; the (now inert) recorded card is
+      // left untouched, and no spurious in-progress turn is revived.
+      expect(dbPatched).toBe(true);
+      expect((runner.recordedCards[0].message as BugMsg).bugReport?.phase).toBe("draft");
+    });
+
+    it("falls back to the DB patch when the card isn't in this turn's recorded set", () => {
+      const { runner, chatHistoryManager } = fakeRunner();
+      runner.running = true; // running, but nothing recorded (proposed by a prior, finalized turn)
+      let dbPatched = false;
+      persistCardTransition(
+        runner,
+        { chatHistoryManager, sessionId: "s1" },
+        (m) => (m as BugMsg).bugReport?.cardId === "c1",
+        (m) => m,
+        () => { dbPatched = true; },
+      );
+      expect(dbPatched).toBe(true);
     });
   });
 

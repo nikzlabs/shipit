@@ -81,13 +81,39 @@ describe("overlay feature gate + eligibility", () => {
   });
 });
 
-describe("overlayRuntimeKey", () => {
-  it("uses image id + arch, falling back to unknown", () => {
+describe("overlayRuntimeKey (SHI-194 — pinned base digest, not the full image id)", () => {
+  it("uses base digest + arch", () => {
+    expect(overlayRuntimeKey({ BASE_IMAGE_DIGEST: "sha256:base" } as NodeJS.ProcessEnv))
+      .toBe(`sha256:base|${process.arch}`);
+  });
+
+  it("falls back to the worker image id, then IMAGE_DIGEST, then unknown", () => {
     expect(overlayRuntimeKey({ SESSION_WORKER_IMAGE_ID: "sha256:abc" } as NodeJS.ProcessEnv))
       .toBe(`sha256:abc|${process.arch}`);
     expect(overlayRuntimeKey({ IMAGE_DIGEST: "sha256:def" } as NodeJS.ProcessEnv))
       .toBe(`sha256:def|${process.arch}`);
     expect(overlayRuntimeKey({} as NodeJS.ProcessEnv)).toBe(`unknown|${process.arch}`);
+  });
+
+  // Safety guard #1: an app-code-only rebuild (worker image id churns, base digest
+  // fixed) MUST preserve the scope key — no fresh base minted, post-deploy installs
+  // stay warm.
+  it("a no-op app rebuild preserves the scope key", () => {
+    const before = overlayRuntimeKey({
+      BASE_IMAGE_DIGEST: "sha256:base",
+      SESSION_WORKER_IMAGE_ID: "sha256:worker-v1",
+    } as NodeJS.ProcessEnv);
+    const after = overlayRuntimeKey({
+      BASE_IMAGE_DIGEST: "sha256:base",
+      SESSION_WORKER_IMAGE_ID: "sha256:worker-v2",
+    } as NodeJS.ProcessEnv);
+    expect(after).toBe(before);
+  });
+
+  // Safety guard #2: a base-image bump MUST roll the scope key.
+  it("a base-digest bump changes the scope key", () => {
+    expect(overlayRuntimeKey({ BASE_IMAGE_DIGEST: "sha256:base-A" } as NodeJS.ProcessEnv))
+      .not.toBe(overlayRuntimeKey({ BASE_IMAGE_DIGEST: "sha256:base-B" } as NodeJS.ProcessEnv));
   });
 });
 
