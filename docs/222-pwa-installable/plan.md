@@ -71,6 +71,25 @@ Three layers, none of which add a cache:
 - `src/client/utils/register-service-worker.test.ts` — registers at root scope
   with cache bypass; no-op when unsupported; swallows registration failures.
 
+## Behind an auth proxy (Cloudflare Zero Trust / Access)
+
+The `<link rel="manifest">` tag carries **`crossorigin="use-credentials"`**. This
+is load-bearing when ShipIt is served behind a cookie-based auth proxy:
+
+- A service worker script is fetched **with credentials** (same-origin cookies),
+  so it registers normally behind the proxy.
+- A manifest, by spec, is fetched **without credentials by default**. The proxy
+  intercepts that anonymous request and returns its login interstitial instead
+  of the JSON, so Chrome reports **"No manifest detected"** and refuses to offer
+  installation — the SW is green but the app is not installable.
+
+`use-credentials` makes the manifest (and the icon fetches it references) carry
+cookies, so the authenticated user gets the real manifest and installability
+criteria pass. Symptom when this is missing: DevTools → Application → Service
+Workers shows *activated and running*, but Application → Manifest shows *No
+manifest detected*, and "Add to Home screen" only creates a shortcut (opens in a
+tab with the address bar) rather than a standalone install.
+
 ## Notes / future
 
 - This is intended to reduce reliance on the Android WebView wrapper
