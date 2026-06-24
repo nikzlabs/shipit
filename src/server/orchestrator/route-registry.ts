@@ -1221,7 +1221,7 @@ Example docker-compose.yml for a Node.js project:
 \`\`\`yaml
 services:
   web:
-    image: node:20
+    image: node:24-slim
     working_dir: /app
     volumes:
       - .:/app
