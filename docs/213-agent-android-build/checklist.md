@@ -20,8 +20,8 @@ phases are future work (the session brief said do not commit to a heavy implemen
 
 ## Implementation (future work — not this session)
 
-- [ ] Phase 0: commit Gradle wrapper (8.7); `shipit.yaml` `android:` schema + path-scoped detection + staged resolver
-- [ ] Phase 1: base store + writable overlay + AGP→Gradle→JDK resolution; green build/lint/test for a generic repo and a monorepo; `shipit-docs/android.md` + skill
+- [ ] Phase 0: commit Gradle wrapper (8.7); `shipit.yaml` `android:` schema (explicit opt-in) + staged version resolver
+- [ ] Phase 1: bake SDK+JDK base into `Dockerfile.session-worker.*` + per-session overlay + AGP→Gradle→JDK resolution; green build/lint/test for a generic repo and a monorepo; `shipit-docs/android.md` + skill
 - [ ] Phase 2: P1 render harness (Paparazzi/Roborazzi via init script, ComposablePreviewScanner + manifest/`res/layout`) wired into the preview pane
 - [ ] Phase 3: narrowly-scoped `/dev/kvm` `devices:` allowance in `compose-generator.ts` + canonical emulator Compose recipe; confirm host KVM
 - [ ] Phase 4: agent `adb` debug/drive loop (logcat + tap/screenshot/snapshot triad, optional Maestro) + interactive preview via `x-shipit-preview`
