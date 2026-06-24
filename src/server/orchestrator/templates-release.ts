@@ -5,9 +5,10 @@
  * opens a PR (CI still does the publish). These render functions produce the
  * three files written into the workspace:
  *
- *   .github/workflows/release.yml        — renderReleaseWorkflow(opts)
- *   .github/release.yml                  — renderReleaseNotesConfig()
- *   .github/scripts/shipit-read-version.mjs — renderReleaseVersionHelper()
+ *   .github/workflows/release.yml          — renderReleaseWorkflow(opts)
+ *   .github/release.yml                    — renderReleaseNotesConfig()
+ *   .github/scripts/shipit-read-version.mjs  — renderReleaseVersionHelper()
+ *   .github/scripts/shipit-write-version.mjs — renderReleaseVersionWriter()
  *
  * Unlike `templates.ts`, these are NOT registered in the `TEMPLATES` array —
  * scaffolding a release workflow is a chat-driven file write + the existing
@@ -42,6 +43,7 @@ import type { VersionSourceType } from "./release-version.js";
 export const RELEASE_WORKFLOW_PATH = ".github/workflows/release.yml";
 export const RELEASE_NOTES_CONFIG_PATH = ".github/release.yml";
 export const RELEASE_VERSION_HELPER_PATH = ".github/scripts/shipit-read-version.mjs";
+export const RELEASE_VERSION_WRITER_PATH = ".github/scripts/shipit-write-version.mjs";
 
 /**
  * Version sources a `release-branch` workflow can derive a tag from. The branch
@@ -78,9 +80,18 @@ export interface RenderReleaseWorkflowOptions {
 // and stay lintable + unit-testable. A missing file fails loudly at boot.
 const VERSION_HELPER = loadPrompt(import.meta.url, "./templates-release-files/shipit-read-version.mjs");
 
+// The write-side counterpart, used by the `sync-default-branch` job to forward-port
+// the released version onto the default branch. Mirrors `writeVersionToSource`.
+const VERSION_WRITER = loadPrompt(import.meta.url, "./templates-release-files/shipit-write-version.mjs");
+
 /** The Node version-read helper script, scaffolded to `RELEASE_VERSION_HELPER_PATH`. */
 export function renderReleaseVersionHelper(): string {
   return VERSION_HELPER;
+}
+
+/** The Node version-write helper script, scaffolded to `RELEASE_VERSION_WRITER_PATH`. */
+export function renderReleaseVersionWriter(): string {
+  return VERSION_WRITER;
 }
 
 // ---------------------------------------------------------------------------
@@ -175,8 +186,9 @@ export function renderReleaseWorkflow(opts: RenderReleaseWorkflowOptions): strin
     ...(prerelease ? ["version-guard"] : []),
   ];
   const publishJob = renderPublishJob(publishNeeds);
+  const syncJob = renderSyncDefaultBranchJob(versionSource, helper, RELEASE_VERSION_WRITER_PATH, branch);
 
-  const jobs = [resolveJob, gateJob, versionGuardJob, publishJob].filter(Boolean).join("\n");
+  const jobs = [resolveJob, gateJob, versionGuardJob, publishJob, syncJob].filter(Boolean).join("\n");
 
   return `name: Release
 
@@ -383,19 +395,108 @@ function renderPublishJob(needs: string[]): string {
 `;
 }
 
+function renderSyncDefaultBranchJob(
+  versionSource: ReleaseWorkflowVersionSource,
+  readHelper: string,
+  writeHelper: string,
+  branch: string,
+): string {
+  // Forward-port the released version onto the repo's DEFAULT (development)
+  // branch. A release bump lands only on the maintenance branch (`branch`), which
+  // is never merged back — so the default branch's version source drifts behind
+  // every release. After a green publish on the branch path, open (or leave) a
+  // chore PR bumping the default branch to the released version. A PR (not a
+  // direct push) respects branch protection; idempotent (no-op when already in
+  // sync or the sync branch exists). rc's (tag path) never reach here — the job
+  // is gated to the branch path. The default branch is resolved at runtime
+  // (`gh repo view`) so this needs no extra config and works for main/master;
+  // when it equals the maintenance branch the merge already advanced it, so skip.
+  return `  # Forward-port the released version onto the repo's default branch (the release
+  # bump lands only on \`${branch}\`, so the default branch would otherwise drift
+  # behind every release). Opens a chore PR; the default branch is resolved at
+  # runtime. Idempotent; skipped when the default branch IS the release branch.
+  sync-default-branch:
+    name: Sync version to the default branch
+    needs: [resolve, publish]
+    if: \${{ !cancelled() && !failure() && needs.resolve.outputs.is_branch == 'true' && needs.resolve.outputs.proceed == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Open a version-sync PR if the default branch is behind
+        env:
+          GH_TOKEN: \${{ github.token }}
+          TAG: \${{ needs.resolve.outputs.tag }}
+          VERSION: \${{ needs.resolve.outputs.version }}
+          RELEASE_BRANCH: '${branch}'
+        run: |
+          set -euo pipefail
+          DEFAULT_BRANCH="$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name)"
+          if [ "$DEFAULT_BRANCH" = "$RELEASE_BRANCH" ]; then
+            echo "Default branch ($DEFAULT_BRANCH) is the release branch — the merge already advanced it, nothing to sync."
+            exit 0
+          fi
+
+          git checkout -B "$DEFAULT_BRANCH" "origin/$DEFAULT_BRANCH"
+          CURRENT="$(node ${readHelper} '${versionSource}')"
+          if [ "$CURRENT" = "$VERSION" ]; then
+            echo "$DEFAULT_BRANCH already at $VERSION — nothing to sync."
+            exit 0
+          fi
+
+          SYNC_BRANCH="release-sync/$TAG"
+          if git ls-remote --exit-code --heads origin "$SYNC_BRANCH" >/dev/null 2>&1; then
+            echo "Sync branch $SYNC_BRANCH already exists — leaving the existing PR."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$SYNC_BRANCH"
+
+          # Write the released version with the SAME logic ShipIt used to bump it.
+          node ${writeHelper} '${versionSource}' "$VERSION"
+          git commit -am "Sync version to $TAG on $DEFAULT_BRANCH"
+          git push origin "$SYNC_BRANCH"
+
+          # Build the body with printf so no indentation leaks in as a markdown code block.
+          BODY="$(printf '%s\\n' \\
+            "Forward-ports the released version \\\`$VERSION\\\` (\\\`$TAG\\\`) onto \\\`$DEFAULT_BRANCH\\\`." \\
+            "" \\
+            "The release version bump lands only on \\\`$RELEASE_BRANCH\\\`, so \\\`$DEFAULT_BRANCH\\\`'s version source would otherwise stay behind every release. Merging this keeps it in sync with the latest published release." \\
+            "" \\
+            "Safe to merge as-is — it only touches the version source.")"
+
+          # Create the PR, then best-effort add the exclusion label so this
+          # version-bump PR stays out of the NEXT release's notes (the label may
+          # not exist in a freshly scaffolded repo — don't fail the job over it).
+          PR_URL="$(gh pr create --base "$DEFAULT_BRANCH" --head "$SYNC_BRANCH" --title "Sync version to $TAG on $DEFAULT_BRANCH" --body "$BODY")"
+          gh pr edit "$PR_URL" --add-label ignore-for-release >/dev/null 2>&1 || \\
+            echo "note: could not add the 'ignore-for-release' label (it may not exist) — the PR will appear in the next release's notes."
+`;
+}
+
 // ---------------------------------------------------------------------------
 // Convenience: the full scaffold as a path → content map
 // ---------------------------------------------------------------------------
 
 /**
  * Render the complete release-workflow scaffold for the agent flow to write
- * into the workspace: the workflow, the notes config, and the version-read
- * helper. Returns a map of repo-relative path → file content.
+ * into the workspace: the workflow, the notes config, and the version read +
+ * write helpers. Returns a map of repo-relative path → file content.
  */
 export function renderReleaseScaffold(opts: RenderReleaseWorkflowOptions): Record<string, string> {
   return {
     [RELEASE_WORKFLOW_PATH]: renderReleaseWorkflow(opts),
     [RELEASE_NOTES_CONFIG_PATH]: renderReleaseNotesConfig(),
     [RELEASE_VERSION_HELPER_PATH]: renderReleaseVersionHelper(),
+    [RELEASE_VERSION_WRITER_PATH]: renderReleaseVersionWriter(),
   };
 }
