@@ -121,14 +121,27 @@ agent:
 compose: docker-compose.yml     # all Compose previews live here — web services AND, if you add one,
                                 # the Android emulator service (see "Running app" below)
 android:
-  - project: android            # path to the Gradle project/module — explicit opt-in, like compose:
-    preview: rendered           # rendered (platform gallery) | none.
-                                # The emulator preview isn't a mode here — it's a Compose service in
-                                # docker-compose.yml above.
-    # toolchain is derived from the Gradle build; optional overrides for blind spots / pre-provisioning:
-    # sdk: ["ndk;26.1.10909125", "cmake;3.22.1"]
-    # jdk: 17
+  - project: android            # REQUIRED. Gradle project root (has settings.gradle + gradlew).
+    preview: rendered           # optional, default `rendered`. `rendered` = the platform render gallery;
+                                # `none` = no gallery (e.g. a library or WebView module). NOT the emulator.
+    # optional toolchain overrides — derived from the Gradle build by default:
+    # sdk: ["ndk;26.1.10909125", "cmake;3.22.1"]   # extra sdkmanager packages to pre-provision
+    # jdk: 17                                        # pin the JDK major, overriding the AGP→JDK matrix
 ```
+
+#### `android:` schema
+
+A list (one entry per Android Gradle project), so a monorepo names each. Per entry:
+
+| Field | Type | Default | What it does |
+|---|---|---|---|
+| `project` | string | **required** | Path to the **Gradle project root** (the dir with `settings.gradle(.kts)` + the wrapper). This is the opt-in + location: it scopes every Gradle invocation (`-p <project>`), tells the version resolver where to read `compileSdk`/AGP/etc., and is what the render gallery renders from. ShipIt builds the **application module** within it (the one applying `com.android.application`); `:app` by default. |
+| `preview` | `rendered` \| `none` | `rendered` | Whether ShipIt wires up the **platform rendered-screen gallery** (P1) for this module and refreshes it on change. `none` suppresses it — correct for a library module or the `android/` WebView shell (`layoutlib` can't render a `WebView`). It does **not** govern the interactive emulator preview, which is a Compose service in `docker-compose.yml`. |
+| `sdk` | string[] | derived | Extra `sdkmanager` package IDs to pre-provision into the per-session overlay (e.g. `ndk;…`, `cmake;…`, an off-matrix platform). **Supplements** the set ShipIt derives from the build — for the heavy/exact cases (a ~1 GB NDK) or resolver blind spots. |
+| `jdk` | integer | derived (AGP→JDK matrix) | Pin the JDK major version when the matrix would guess wrong (legacy/ambiguous repos). |
+
+Only `project` is required; the rest are derived/defaulted. `sdk`/`jdk` are escape hatches (see "Derived,
+not declared") — most repos set neither.
 
 - **Declaration is explicit**, not inferred — `android:` opts the repo in, the same way `compose:` opts
   in a web stack. Listing each module makes monorepos and per-app preview selection unambiguous and avoids
