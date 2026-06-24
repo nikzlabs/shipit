@@ -505,6 +505,24 @@ export function saveSandboxCollapsed(collapsed: boolean): void {
   } catch { /* ignore */ }
 }
 
+// docs/222 — collapsed state for the sidebar's "Hidden" repos section. Starts
+// collapsed (true) by default so it stays unobtrusive for users who hide repos.
+const HIDDEN_REPOS_COLLAPSED_KEY = "shipit-hidden-repos-collapsed";
+
+export function getSavedHiddenReposCollapsed(): boolean {
+  try {
+    // Default true (collapsed) when unset.
+    return localStorage.getItem(HIDDEN_REPOS_COLLAPSED_KEY) !== "0";
+  } catch { /* ignore */ }
+  return true;
+}
+
+export function saveHiddenReposCollapsed(collapsed: boolean): void {
+  try {
+    localStorage.setItem(HIDDEN_REPOS_COLLAPSED_KEY, collapsed ? "1" : "0");
+  } catch { /* ignore */ }
+}
+
 const DRAFT_MESSAGE_KEY_PREFIX = "shipit-draft-message:";
 
 /** Read the saved draft message text for a session (or `"new"` for the new-session view). */

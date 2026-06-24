@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Hide repository — UI mockup</title>
+<style>
+  :root{
+    --bg:#0a0a0a; --bg2:#161618; --bg3:#1e1e21; --hover:#202024;
+    --tp:#ededed; --ts:#a1a1aa; --tt:#71717a;
+    --bd:#27272a; --bd2:#323237;
+    --err:#f87171; --ok:#4ade80; --warn:#fbbf24; --accent:#60a5fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:#050506;color:var(--tp);
+    font:13px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    padding:32px;}
+  h1{font-size:18px;margin:0 0 4px}
+  .sub{color:var(--ts);margin:0 0 28px;font-size:13px;max-width:760px}
+  .row{display:flex;gap:28px;flex-wrap:wrap;align-items:flex-start}
+  .panel{display:flex;flex-direction:column;gap:10px}
+  .cap{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--tt);font-weight:600}
+  .capn{color:var(--ts);text-transform:none;letter-spacing:0;font-weight:400;font-size:11.5px}
+
+  /* sidebar */
+  .sb{width:290px;background:var(--bg);border:1px solid var(--bd);border-radius:10px;overflow:hidden;
+      display:flex;flex-direction:column;box-shadow:0 8px 40px rgba(0,0,0,.5)}
+  .sbtop{display:flex;align-items:center;gap:8px;padding:0 12px;height:41px;border-bottom:1px solid var(--bd);color:var(--tt)}
+  .sbtop .ico{margin-left:auto}
+  .sbbody{padding:6px 0;display:flex;flex-direction:column}
+
+  .ghdr{display:flex;align-items:center;gap:6px;padding:6px 12px 6px 14px;position:relative}
+  .caret{width:18px;text-align:center;color:var(--tt);font-size:10px}
+  .glogo{color:var(--ts);font-size:12px}
+  .gname{font-size:12px;font-weight:600;color:var(--ts);letter-spacing:.02em;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .dots{color:var(--tt);font-weight:700;letter-spacing:1px;padding:2px 4px;border-radius:4px}
+  .ghdr:hover .dots{background:var(--hover);color:var(--ts)}
+
+  .srow{display:flex;align-items:center;gap:6px;margin:0 4px;padding:6px 8px;border-radius:6px;color:var(--ts);font-size:12px}
+  .srow .pl{width:18px;text-align:center;opacity:.7}
+  .srow.new{color:var(--ts)}
+  .srow.cur{background:var(--bg3);color:var(--tp)}
+  .srow:hover{background:var(--hover);color:var(--tp)}
+  .dot{width:6px;height:6px;border-radius:50%;background:var(--ok);margin-left:auto;flex:none}
+
+  /* dropdown menu */
+  .menu{position:absolute;top:30px;right:6px;width:208px;background:var(--bg2);border:1px solid var(--bd2);
+        border-radius:8px;padding:4px;box-shadow:0 12px 40px rgba(0,0,0,.6);z-index:5}
+  .mi{display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:6px;font-size:12.5px;color:var(--tp);cursor:default}
+  .mi:hover{background:var(--hover)}
+  .mi .mico{width:14px;text-align:center;color:var(--ts);font-size:12px}
+  .mi.err{color:var(--err)} .mi.err .mico{color:var(--err)}
+  .sep{height:1px;background:var(--bd);margin:4px 6px}
+  .new-badge{margin-left:auto;font-size:9px;background:#1d3a5f;color:#7cc0ff;border-radius:4px;padding:1px 5px;font-weight:600}
+
+  /* hidden section */
+  .hidsec{margin-top:4px;border-top:1px solid var(--bd)}
+  .hidhdr{display:flex;align-items:center;gap:6px;padding:7px 12px 7px 14px;color:var(--tt);font-size:11.5px;font-weight:600;letter-spacing:.02em}
+  .hidhdr:hover{color:var(--ts)}
+  .hidhdr .cnt{color:var(--tt);font-weight:500}
+  .hidrow{display:flex;align-items:center;gap:6px;margin:0 4px;padding:6px 8px 6px 28px;border-radius:6px;color:var(--tt);font-size:12px}
+  .hidrow .hg{font-size:11px;opacity:.6}
+  .hidrow .hn{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .showbtn{margin-left:auto;font-size:11px;color:var(--accent);opacity:0;padding:1px 6px;border-radius:4px}
+  .hidrow:hover{background:var(--hover);color:var(--ts)}
+  .hidrow:hover .showbtn{opacity:1}
+  .hidrow:hover .showbtn:hover{background:#16314d}
+
+  /* add dialog */
+  .modal{width:420px;background:var(--bg2);border:1px solid var(--bd2);border-radius:12px;
+         box-shadow:0 20px 60px rgba(0,0,0,.6);overflow:hidden}
+  .mh{padding:16px 18px 10px}
+  .mh h3{margin:0 0 3px;font-size:15px}
+  .mh p{margin:0;color:var(--ts);font-size:12px}
+  .search{margin:6px 18px 4px;display:flex;align-items:center;gap:8px;background:var(--bg);border:1px solid var(--bd2);
+          border-radius:8px;padding:8px 11px;color:var(--ts);font-size:12.5px}
+  .reslist{padding:6px 10px 14px;display:flex;flex-direction:column;gap:2px;max-height:260px;overflow:auto}
+  .res{display:flex;align-items:center;gap:9px;padding:8px 9px;border-radius:7px;font-size:12.5px;color:var(--tp)}
+  .res:hover{background:var(--hover)}
+  .res .rg{color:var(--ts);font-size:13px}
+  .res .meta{margin-left:auto;font-size:10.5px;color:var(--tt)}
+  .res.hiddenmatch{background:#13233a;border:1px solid #1d3a5f}
+  .res.hiddenmatch:hover{background:#16294480}
+  .pill{margin-left:auto;display:flex;align-items:center;gap:7px}
+  .pill .lbl{font-size:10.5px;color:#7cc0ff}
+  .pill .act{font-size:11px;font-weight:600;color:#0a0a0a;background:var(--accent);border-radius:5px;padding:3px 9px}
+  .lock{color:var(--tt);font-size:10px}
+  .note{margin:0 18px 16px;font-size:11px;color:var(--tt);background:var(--bg);border:1px solid var(--bd);border-radius:7px;padding:9px 11px;line-height:1.5}
+  .note b{color:var(--ts);font-weight:600}
+</style>
+</head>
+<body>
+  <h1>Hide repository — UI</h1>
+  <p class="sub">Hide is a pure visibility flag: it drops the repo from the sidebar and touches nothing else (sessions, containers, working copies stay put; idle containers reap normally). Fully reversible. Remove stays as the heavier "reclaim disk" action.</p>
+
+  <div class="row">
+
+    <!-- 1. dropdown -->
+    <div class="panel">
+      <div class="cap">1 · Dropdown menu <span class="capn">— Hide sits above Remove, normal styling</span></div>
+      <div class="sb">
+        <div class="sbtop"><span style="font-size:12px">⌷</span><span style="flex:1"></span><span style="font-size:13px">＋</span><span class="ico">⌥</span></div>
+        <div class="sbbody">
+          <div class="ghdr">
+            <span class="caret">▾</span><span class="glogo">⌂</span>
+            <span class="gname">acme / web-app</span>
+            <span class="dots">⋯</span>
+            <div class="menu">
+              <div class="mi"><span class="mico">☰</span>View All Sessions</div>
+              <div class="mi"><span class="mico">⚙</span>Project Settings</div>
+              <div class="sep"></div>
+              <div class="mi"><span class="mico">⊘</span>Hide from sidebar</div>
+              <div class="sep"></div>
+              <div class="mi err"><span class="mico">🗑</span>Remove Repository</div>
+            </div>
+          </div>
+          <div class="srow new"><span class="pl">＋</span>New session</div>
+          <div class="srow cur"><span class="pl">▸</span>fix login redirect<span class="dot"></span></div>
+          <div class="srow"><span class="pl">▸</span>bump deps</div>
+          <div class="ghdr" style="margin-top:4px"><span class="caret">▸</span><span class="glogo">⌂</span><span class="gname">acme / api</span><span class="dots">⋯</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 2. hidden section -->
+    <div class="panel">
+      <div class="cap">2 · Sidebar reveal <span class="capn">— "Hidden · N" footer, expands to unhide inline</span></div>
+      <div class="sb">
+        <div class="sbtop"><span style="font-size:12px">⌷</span><span style="flex:1"></span><span style="font-size:13px">＋</span><span class="ico">⌥</span></div>
+        <div class="sbbody">
+          <div class="ghdr"><span class="caret">▸</span><span class="glogo">⌂</span><span class="gname">acme / web-app</span><span class="dots">⋯</span></div>
+          <div class="ghdr"><span class="caret">▸</span><span class="glogo">⌂</span><span class="gname">acme / api</span><span class="dots">⋯</span></div>
+
+          <div class="hidsec">
+            <div class="hidhdr"><span class="caret" style="color:var(--tt)">▾</span>Hidden <span class="cnt">· 3</span></div>
+            <div class="hidrow"><span class="hg">⌂</span><span class="hn">acme / marketing-site</span><span class="showbtn">Show</span></div>
+            <div class="hidrow"><span class="hg">⌂</span><span class="hn">acme / legacy-cron</span><span class="showbtn">Show</span></div>
+            <div class="hidrow"><span class="hg">⌂</span><span class="hn">nikzlabs / experiments</span><span class="showbtn">Show</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3. add dialog detection -->
+    <div class="panel">
+      <div class="cap">3 · Add flow detection <span class="capn">— re-adding a hidden repo just shows it again</span></div>
+      <div class="modal">
+        <div class="mh"><h3>Add Repository</h3><p>Search your GitHub repos or paste a URL.</p></div>
+        <div class="search"><span>🔍</span><span>marketing</span></div>
+        <div class="reslist">
+          <div class="res hiddenmatch">
+            <span class="rg">⌂</span>acme / marketing-site
+            <span class="pill"><span class="lbl">Already added · hidden</span><span class="act">Show</span></span>
+          </div>
+          <div class="res"><span class="rg">⌂</span>acme / marketing-emails<span class="meta">updated 3d ago</span></div>
+          <div class="res"><span class="rg">⌂</span>acme / marketing-archive <span class="lock">🔒</span><span class="meta">updated 1y ago</span></div>
+        </div>
+        <p class="note"><b>Detection:</b> the repo is matched by canonical URL. If it's already added but hidden, the primary action becomes <b>Show</b> (clears the flag, no re-clone). If already visible, it just bumps it to the top as today.</p>
+      </div>
+    </div>
+
+  </div>
+</body>
+</html>

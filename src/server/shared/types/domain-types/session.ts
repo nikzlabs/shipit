@@ -346,4 +346,11 @@ export interface RepoInfo {
    * populated from the store; only omitted on hand-built RepoInfo literals.
    */
   trusted?: boolean;
+  /**
+   * docs/222 — sidebar visibility flag. `true` hides the repo (and its sessions)
+   * from the sidebar without removing anything: a pure declutter toggle, fully
+   * reversible via the "Hidden" section or by re-adding the repo. Distinct from
+   * Remove, which archives sessions and reclaims disk. Defaults to visible.
+   */
+  hidden?: boolean;
 }
