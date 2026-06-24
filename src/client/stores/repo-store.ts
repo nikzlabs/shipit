@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { RepoInfo } from "../../server/shared/types.js";
-import { getSavedActiveRepo, saveActiveRepo, getSavedCollapsedRepos, saveCollapsedRepos, getSavedCollapsedParents, saveCollapsedParents, getSavedOpsCollapsed, saveOpsCollapsed, getSavedSandboxCollapsed, saveSandboxCollapsed, getSavedHiddenReposCollapsed, saveHiddenReposCollapsed } from "../utils/local-storage.js";
+import { getSavedActiveRepo, saveActiveRepo, getSavedCollapsedRepos, saveCollapsedRepos, getSavedCollapsedParents, saveCollapsedParents, getSavedCollapsedResolved, saveCollapsedResolved, getSavedOpsCollapsed, saveOpsCollapsed, getSavedSandboxCollapsed, saveSandboxCollapsed, getSavedHiddenReposCollapsed, saveHiddenReposCollapsed } from "../utils/local-storage.js";
 
 /** Buffers SSE status updates that arrive before addRepo stores the repo. */
 const pendingStatusUpdates = new Map<string, "cloning" | "ready">();
@@ -17,6 +17,13 @@ interface RepoState {
    * the rest. Persisted to localStorage — see [[collapse-spawned-sessions]].
    */
   collapsedParents: Set<string>;
+  /**
+   * docs/161 — repo URLs whose "Recently resolved" sub-section is collapsed.
+   * Per-repo (like {@link collapsedRepos}) so the multi-repo user can tuck away
+   * the resolved list on a noisy repo while keeping it open on the one they're
+   * actively shipping. Absence = expanded (the default). Persisted to localStorage.
+   */
+  collapsedResolved: Set<string>;
   /** Whether the "Host / Ops" sidebar group is collapsed. Persisted to localStorage. */
   opsCollapsed: boolean;
   /** docs/211 — whether the "Sandbox" sidebar group is collapsed. Persisted to localStorage. */
@@ -33,6 +40,7 @@ interface RepoState {
   updateRepoWarmSession: (url: string, sessionId: string) => void;
   toggleRepoCollapsed: (url: string) => void;
   toggleParentCollapsed: (parentId: string) => void;
+  toggleResolvedCollapsed: (url: string) => void;
   toggleOpsCollapsed: () => void;
   toggleSandboxCollapsed: () => void;
   toggleHiddenReposCollapsed: () => void;
@@ -74,6 +82,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
   newRepoDialogOpen: false,
   collapsedRepos: getSavedCollapsedRepos(),
   collapsedParents: getSavedCollapsedParents(),
+  collapsedResolved: getSavedCollapsedResolved(),
   opsCollapsed: getSavedOpsCollapsed(),
   sandboxCollapsed: getSavedSandboxCollapsed(),
   hiddenReposCollapsed: getSavedHiddenReposCollapsed(),
@@ -133,6 +142,15 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       else next.add(parentId);
       saveCollapsedParents(next);
       return { collapsedParents: next };
+    }),
+
+  toggleResolvedCollapsed: (url) =>
+    set((state) => {
+      const next = new Set(state.collapsedResolved);
+      if (next.has(url)) next.delete(url);
+      else next.add(url);
+      saveCollapsedResolved(next);
+      return { collapsedResolved: next };
     }),
 
   toggleOpsCollapsed: () =>

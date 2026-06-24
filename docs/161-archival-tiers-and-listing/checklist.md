@@ -40,6 +40,15 @@
 - [x] Base restored branch on freshly-fetched `origin/<defaultBranch>` (already in place)
 - [x] `light` restore reinstalls deps, preserves branch + checkout + uncommitted work — selecting a `light` session flips it back to `hot` in `activateSession`; the normal container boot + `agent.install` / dep-cache path re-materializes `node_modules`
 
+## Part 4 — Collapsible "Recently resolved" + cap bump
+- [x] Raise `MAX_MERGED_SESSIONS_PER_REPO` 3 → 5 (`sessions.ts`); cap tests made cap-aware (track the constant, not a literal 3)
+- [x] `repo-store`: `collapsedResolved: Set<repoUrl>` + `toggleResolvedCollapsed`, hydrated from / persisted to localStorage (`shipit-collapsed-resolved`), mirroring `collapsedRepos`
+- [x] `local-storage.ts`: `get/saveCollapsedResolved`
+- [x] `RepoGroup` ("Recently resolved" sub-header → toggle button, caret-next-to-text, full-row hit target; render gate `{!isResolvedCollapsed && resolved}`); expanded by default
+- [x] `SessionSidebar` wires `collapsedResolved` / `toggleResolvedCollapsed` into `RepoGroup`
+- [x] Placement variants prototyped in `mocks/resolved-collapse-placement.html` (chosen: caret-next-to-text, variant E)
+- [x] Tests: sub-section expanded by default; click collapses the resolved rows, flips the toggle to Expand, records per-repo state (`SessionSidebar.test.tsx`)
+
 ## Tests
 - [x] Unit: `filterVisibleInSidebar` / `reopenedAfterMerge` predicate cases (`sessions.test.ts`)
 - [x] Unit: `archive`/`unarchive` set `userArchived` + `diskTier`; `listArchived`/`listAll`/`list` semantics
