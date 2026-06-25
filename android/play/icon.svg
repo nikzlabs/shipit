@@ -13,8 +13,9 @@
   </defs>
   <!-- Full-bleed red gradient (no rounding/margin; Play rounds it on the store). -->
   <rect x="0" y="0" width="512" height="512" fill="url(#tile)"/>
-  <!-- White rocket knockout, centered; same geometry as the favicon. -->
-  <g transform="translate(256,256) scale(1.0485) translate(-256,-266)">
+  <!-- White rocket knockout, centered; same geometry as the favicon (~60px margin so Play's
+       circular mask never clips it, while keeping the rocket visually substantial). -->
+  <g transform="translate(256,256) scale(0.95) translate(-256,-266)">
     <path d="M214 394 L256 472 L298 394 Z" fill="#ffd27a"/>
     <path d="M236 394 L256 440 L276 394 Z" fill="#fff6df"/>
     <path d="M256 60 C300 110 326 182 326 262 L326 352 Q326 382 296 394 L216 394 Q186 382 186 352 L186 262 C186 182 212 110 256 60 Z" fill="#fff"/>

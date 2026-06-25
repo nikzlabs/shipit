@@ -7,8 +7,10 @@
   </defs>
   <!-- Red rounded-square tile (carries its own background, so one icon works on any backdrop) -->
   <rect x="16" y="16" width="480" height="480" rx="108" fill="url(#tile)"/>
-  <!-- White rocket knockout. Scaled + centered so the top (nose) and bottom (flame) gaps are equal (~24px). -->
-  <g transform="translate(256,256) scale(1.0485) translate(-256,-266)">
+  <!-- White rocket knockout, centered. Sized down from full-bleed so it keeps a clear margin
+       (~60px gaps top/bottom) and survives a circular (PWA) mask without touching the edges,
+       while staying visually substantial. -->
+  <g transform="translate(256,256) scale(0.95) translate(-256,-266)">
     <path d="M214 394 L256 472 L298 394 Z" fill="#ffd27a"/>
     <path d="M236 394 L256 440 L276 394 Z" fill="#fff6df"/>
     <path d="M256 60 C300 110 326 182 326 262 L326 352 Q326 382 296 394 L216 394 Q186 382 186 352 L186 262 C186 182 212 110 256 60 Z" fill="#fff"/>
