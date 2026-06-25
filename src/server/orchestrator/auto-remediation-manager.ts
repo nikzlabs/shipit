@@ -204,6 +204,19 @@ export abstract class AutoRemediationManager<TSignal> {
   /** Clear subclass-owned caches for a session. Default no-op. */
   protected onDelete(_sessionId: string): void { /* override to clear caches */ }
 
+  /**
+   * True when a "fire" signal merely repeats work this session has ALREADY had
+   * dispatched — e.g. the same failed CI run, re-reported by GitHub in the lag
+   * window after a retrigger push (a new commit, an empty retrigger commit, a
+   * manual re-run) before the new head's checks register. The base treats such a
+   * signal like "ignore": skip it silently and wait for a poll carrying a
+   * genuinely fresh verdict (new identifiers), rather than re-sending identical
+   * work the agent already saw. Default: never stale; only auto-fix overrides it.
+   */
+  protected isStaleFire(_sessionId: string, _signal: TSignal): boolean {
+    return false;
+  }
+
   // ---- Shared state-machine drivers --------------------------------------
 
   /**
@@ -270,6 +283,13 @@ export abstract class AutoRemediationManager<TSignal> {
     // 1.
     const kind = this.classify(signal);
     if (kind === "ignore") return;
+
+    // 1b — a "fire" signal that only repeats already-dispatched work is not a
+    // fresh verdict: it's GitHub re-reporting the prior run after a retrigger
+    // push, before the new head's checks exist. Skip it like an "ignore" so we
+    // don't re-send identical work; the next poll carrying new identifiers falls
+    // through and fires. No-op unless a subclass overrides `isStaleFire`.
+    if (kind === "fire" && this.isStaleFire(sessionId, signal)) return;
 
     // 2 — cache unconditionally (even while disabled) so a first-enable poll
     // has the right baseline.
@@ -422,6 +442,9 @@ export abstract class AutoRemediationManager<TSignal> {
 
     const signal = this.rebuildSignalForIdle(sessionId);
     if (!signal) return; // shouldn't happen — handleTransition seeds the cache first
+    // Same guard as the poll path: don't re-fire an already-dispatched verdict
+    // when the runner frees up — wait for a fresh one.
+    if (this.isStaleFire(sessionId, signal)) return;
 
     if (!this.tryClaim(sessionId, state.lastHeadSha)) return;
     state.status = "running";

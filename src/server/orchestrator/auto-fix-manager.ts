@@ -78,6 +78,19 @@ export class AutoFixManager extends AutoRemediationManager<CiSignal> {
   /** sessionId → last fire-able signal, for `onRunnerIdle` re-fires. */
   private signalCache = new Map<string, CiSignal>();
 
+  /**
+   * sessionId → failed check-run databaseIds already dispatched to the agent.
+   * Each failed run is sent at most once. After a retrigger push (a new commit,
+   * an empty retrigger commit, a manual re-run) GitHub keeps reporting the
+   * PREVIOUS run's failure for a beat — same head, same check-run IDs — before
+   * the new head's checks register. Without this, the loop re-fired CI-fix with
+   * the SAME stale logs the agent already saw (and, in the reported case,
+   * already judged flaky). A genuinely fresh run always carries new databaseIds,
+   * so it is never a subset and fires normally. Cleared on session delete and
+   * when CI goes green (the base drops state → `onDelete`).
+   */
+  private dispatchedCheckIds = new Map<string, Set<number>>();
+
   private fetchAndFixCb?: FetchAndFixCb;
 
   constructor(
@@ -134,6 +147,31 @@ export class AutoFixManager extends AutoRemediationManager<CiSignal> {
 
   protected override onDelete(sessionId: string): void {
     this.signalCache.delete(sessionId);
+    this.dispatchedCheckIds.delete(sessionId);
+  }
+
+  /**
+   * A failure verdict whose every failing run we've already sent is stale — the
+   * previous run lingering in GitHub's API after a retrigger push, not a fresh
+   * result. Suppress the re-fire until a run we haven't sent (a new databaseId)
+   * appears. Empty `failedChecks` (legacy status contexts / no rollup) can't be
+   * deduped this way, so they fall back to the budget/cooldown gating.
+   */
+  protected override isStaleFire(sessionId: string, signal: CiSignal): boolean {
+    if (signal.failedChecks.length === 0) return false;
+    const dispatched = this.dispatchedCheckIds.get(sessionId);
+    if (!dispatched) return false;
+    return signal.failedChecks.every((c) => dispatched.has(c.databaseId));
+  }
+
+  /** Record the check runs a just-fired attempt sent to the agent. */
+  private recordDispatched(sessionId: string, signal: CiSignal): void {
+    let set = this.dispatchedCheckIds.get(sessionId);
+    if (!set) {
+      set = new Set<number>();
+      this.dispatchedCheckIds.set(sessionId, set);
+    }
+    for (const c of signal.failedChecks) set.add(c.databaseId);
   }
 
   // ---- Public entry point (poller auto-loop) ------------------------------
@@ -183,6 +221,10 @@ export class AutoFixManager extends AutoRemediationManager<CiSignal> {
   private async runAttempt(sessionId: string, signal: CiSignal, cb: FetchAndFixCb): Promise<void> {
     try {
       const result = await cb(sessionId, signal.owner, signal.repo, signal.failedChecks);
+      // Record the dispatched runs only when a fix turn actually ran (the agent
+      // saw these logs). A "noop" sent nothing — leave them un-recorded so the
+      // next eligible poll retries.
+      if (result.outcome === "fixed") this.recordDispatched(sessionId, signal);
       this.completeTurn(sessionId, result);
     } catch (err: unknown) {
       // A throw from the callback is almost always pre-flight (log fetch
