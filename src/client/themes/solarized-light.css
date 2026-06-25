@@ -42,9 +42,10 @@
   --color-pr: #6c71c4;
   --color-pr-subtle: rgba(108, 113, 196, 0.1);
   --color-pr-border: rgba(108, 113, 196, 0.3);
-  /* docs/211 — sandbox accent darkened for light surfaces: the :root teal-400
-     reads too pale as text on a light tint. Mirrors --color-warning's per-theme
-     darkening; dark themes keep the bright :root token. */
+  /* docs/211 — sandbox accent for light surfaces: teal-800 for text contrast on
+     light tints (the bright :root-era teal-400 read too pale). This is also the
+     base default; dark themes override to teal-400 in index.css. See the cascade
+     note there — the override MUST live on the dark-theme classes, not :root. */
   --color-sandbox: #115e59;
   --color-sandbox-subtle: rgba(17, 94, 89, 0.18);
   --color-sandbox-border: rgba(17, 94, 89, 0.38);
