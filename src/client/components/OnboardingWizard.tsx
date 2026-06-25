@@ -14,6 +14,7 @@ import { Button } from "./ui/button.js";
 import { ClaudeAuthCard } from "./ClaudeAuthCard.js";
 import { CodexAuthCard, type CodexDeviceAuthState } from "./CodexAuthCard.js";
 import { GitHubTokenForm } from "./GitHubTokenForm.js";
+import { Logo } from "./Logo.js";
 
 export interface OnboardingWizardProps {
   // Step 1: GitHub connect
@@ -78,12 +79,11 @@ function WizardHero({
 }) {
   return (
     <div className="hidden md:flex flex-col gap-6 p-8 border-r border-(--color-border-secondary) bg-(--color-bg-secondary)">
-      <div className="flex items-center gap-2.5">
-        <img src="/favicon.svg" alt="" className="w-8 h-8 rounded-lg" />
-        <span className="text-base font-bold tracking-tight text-(--color-text-primary)">
-          ShipIt
-        </span>
-      </div>
+      <Logo
+        className="gap-2.5"
+        iconClassName="w-8 h-8 rounded-lg"
+        textClassName="text-base font-bold tracking-tight text-(--color-text-primary)"
+      />
 
       <div>
         <h1 className="text-xl font-semibold leading-snug text-(--color-text-primary)">
