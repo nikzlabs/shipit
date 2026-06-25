@@ -14,20 +14,20 @@ describe("preview-store device viewport", () => {
 
   describe("setDevicePreset", () => {
     it("updates the active preset in store state", () => {
-      const preset = findPresetById("iphone-14")!;
+      const preset = findPresetById("iphone-16")!;
       usePreviewStore.getState().setDevicePreset(preset);
-      expect(usePreviewStore.getState().devicePreset?.id).toBe("iphone-14");
+      expect(usePreviewStore.getState().devicePreset?.id).toBe("iphone-16");
     });
 
     it("clears the preset when called with null", () => {
-      usePreviewStore.getState().setDevicePreset(findPresetById("iphone-14"));
+      usePreviewStore.getState().setDevicePreset(findPresetById("iphone-16"));
       usePreviewStore.getState().setDevicePreset(null);
       expect(usePreviewStore.getState().devicePreset).toBeNull();
     });
 
     it("clears customSize when switching to a non-custom preset", () => {
       usePreviewStore.getState().setCustomSize({ width: 500, height: 900 });
-      usePreviewStore.getState().setDevicePreset(findPresetById("iphone-14"));
+      usePreviewStore.getState().setDevicePreset(findPresetById("iphone-16"));
       expect(usePreviewStore.getState().customSize).toBeNull();
     });
   });
@@ -63,7 +63,7 @@ describe("preview-store device viewport", () => {
     });
 
     it("persists device viewport state per session snapshot", () => {
-      usePreviewStore.getState().setDevicePreset(findPresetById("iphone-14"));
+      usePreviewStore.getState().setDevicePreset(findPresetById("iphone-16"));
       usePreviewStore.getState().toggleLandscape();
       usePreviewStore.getState().snapshotSession("session-a");
 
@@ -72,7 +72,7 @@ describe("preview-store device viewport", () => {
       usePreviewStore.getState().snapshotSession("session-b");
 
       usePreviewStore.getState().restoreSession("session-a");
-      expect(usePreviewStore.getState().devicePreset?.id).toBe("iphone-14");
+      expect(usePreviewStore.getState().devicePreset?.id).toBe("iphone-16");
       expect(usePreviewStore.getState().isLandscape).toBe(true);
       expect(usePreviewStore.getState().customSize).toBeNull();
 
@@ -104,7 +104,7 @@ describe("preview-store device viewport", () => {
 
   describe("reset()", () => {
     it("clears device state and session snapshots", () => {
-      usePreviewStore.getState().setDevicePreset(findPresetById("iphone-14"));
+      usePreviewStore.getState().setDevicePreset(findPresetById("iphone-16"));
       usePreviewStore.getState().toggleLandscape();
       usePreviewStore.getState().setCustomSize({ width: 500, height: 900 });
       usePreviewStore.getState().snapshotSession("session-a");

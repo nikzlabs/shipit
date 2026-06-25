@@ -17,10 +17,10 @@ export interface DevicePreset {
 
 export const DEVICE_PRESETS: DevicePreset[] = [
   { id: "iphone-se", label: "iPhone SE", width: 375, height: 667, category: "phone" },
-  { id: "iphone-14", label: "iPhone 14", width: 390, height: 844, category: "phone" },
-  { id: "iphone-14-pro-max", label: "iPhone 14 Pro Max", width: 430, height: 932, category: "phone" },
-  { id: "pixel-7", label: "Pixel 7", width: 412, height: 915, category: "phone" },
-  { id: "ipad-mini", label: "iPad Mini", width: 768, height: 1024, category: "tablet" },
+  { id: "iphone-16", label: "iPhone 16", width: 393, height: 852, category: "phone" },
+  { id: "iphone-16-pro-max", label: "iPhone 16 Pro Max", width: 440, height: 956, category: "phone" },
+  { id: "pixel-9", label: "Pixel 9", width: 412, height: 916, category: "phone" },
+  { id: "ipad-mini", label: "iPad Mini", width: 744, height: 1133, category: "tablet" },
   { id: "ipad-air", label: "iPad Air", width: 820, height: 1180, category: "tablet" },
 ];
 
