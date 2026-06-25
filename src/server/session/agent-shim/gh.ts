@@ -73,6 +73,7 @@ Supported subcommands:
   gh pr ready    [<number>]
   gh pr close    [<number>]
   gh pr reopen   <number>
+  gh pr merge    [<number>] [--merge|--squash|--rebase] [--auto]   (Sandbox sessions with "Allow merging PRs" only)
 
   gh run list      [-w WORKFLOW] [-b BRANCH] [-s STATUS] [-L LIMIT] [--json FIELDS]
   gh run view      [<run-id>] [--log] [--log-failed] [--json FIELDS]
@@ -389,6 +390,64 @@ async function handlePrSimple(args: string[], deps: RunDeps, op: "ready" | "clos
   fail(deps.io, formatError(res, `Failed to ${op} PR`), 1);
 }
 
+/**
+ * `gh pr merge` (docs/224). Brokered only for Sandbox sessions with the
+ * "Allow merging PRs" grant — the orchestrator enforces that gate plus the
+ * green-checks / branch-protection / no-force guardrails and returns a clear
+ * message. The shim's job is to parse the method/auto flags, reject `--admin`
+ * (force-merge is never available), and surface the result.
+ */
+async function handlePrMerge(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, {
+    values: { "--repo": "repo", "-R": "repo" },
+    booleans: {
+      "--merge": "merge",
+      "--squash": "squash",
+      "--rebase": "rebase",
+      "--auto": "auto",
+      "--admin": "admin",
+      "-d": "deleteBranch", "--delete-branch": "deleteBranch",
+    },
+  });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for gh pr merge: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+  if (parsed.booleans.has("admin")) {
+    fail(
+      deps.io,
+      "ShipIt's gh shim does not support --admin (force-merge / bypassing branch protection). A merge must satisfy the repo's required checks and reviews.",
+    );
+  }
+  // Method is one of --merge / --squash / --rebase (mutually exclusive). Default merge.
+  const methods = ["merge", "squash", "rebase"].filter((m) => parsed.booleans.has(m));
+  if (methods.length > 1) {
+    fail(deps.io, "gh pr merge: choose only one of --merge, --squash, --rebase.");
+  }
+  const method = methods[0] ?? "merge";
+  if (parsed.booleans.has("deleteBranch")) {
+    // Branch deletion isn't brokered — note it rather than silently dropping it.
+    deps.io.stderr("Note: ShipIt's gh shim does not delete the branch after merge (--delete-branch ignored).\n");
+  }
+  const num = await resolvePrNumber(parsed.positional, deps, { repo: parsed.values.repo });
+  const payload = {
+    method,
+    auto: parsed.booleans.has("auto"),
+    ...targetBody(deps, parsed.values.repo),
+  };
+  const res = await deps.call("POST", `/agent-ops/pr/${num}/merge`, payload, deps.env);
+  if (res.status >= 200 && res.status < 300) {
+    // A guardrail refusal (checks not green, draft, branch protection) comes back
+    // 200 with success:false — surface it as a non-zero exit, matching real gh on
+    // an un-mergeable PR.
+    if (res.body.success === false) {
+      fail(deps.io, asString(res.body.message) || `Failed to merge PR #${num}`, 1);
+    }
+    success(deps.io, asString(res.body.message) || `Merged PR #${num}`);
+    return;
+  }
+  fail(deps.io, formatError(res, `Failed to merge PR #${num}`), 1);
+}
+
 async function resolveBody(
   body: string | undefined,
   bodyFile: string | undefined,
@@ -693,6 +752,7 @@ const PR_HANDLERS: Record<
   ready: (args, deps) => handlePrSimple(args, deps, "ready"),
   close: (args, deps) => handlePrSimple(args, deps, "close"),
   reopen: (args, deps) => handlePrSimple(args, deps, "reopen"),
+  merge: handlePrMerge,
 };
 
 /** Top-level command groups the shim allows, each with its own subcommand map. */

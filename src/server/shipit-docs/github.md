@@ -124,10 +124,35 @@ The shim:
 | `gh pr ready [<n>]` | Mark a draft PR as ready for review. |
 | `gh pr close [<n>]` | Close a PR. |
 | `gh pr reopen <n>` | Reopen a closed PR. (PR number is required.) |
+| `gh pr merge [<n>] [--merge\|--squash\|--rebase] [--auto]` | **Sandbox sessions only, and only when the user granted "Allow merging PRs".** Merge a PR. Refused unless required checks are green (or pass `--auto` to enable merge-when-green). Branch protection / required reviews are enforced by GitHub — a rejection is reported, never forced. `--admin` (force-merge) is not available. See "Merging PRs" below. |
 
 Every PR subcommand also accepts `--repo OWNER/NAME` (alias `-R`) to target a
 specific repo — useful in a Sandbox session where you've cloned more than one.
 Without it, the op targets the repo of the directory you ran `gh` in.
+
+### Merging PRs (`gh pr merge`)
+
+Merging is an outward-facing, effectively-irreversible action and the verb most
+exposed to prompt-injection (untrusted PR content talking you into shipping
+code), so it is **gated**, not part of the open allowlist:
+
+- It works **only in a Sandbox session** (the "you own git / bring your own
+  repos" mode). In a normal **repo-bound** session ShipIt owns the PR lifecycle —
+  merge from the PR card in the ShipIt UI, not the shim; `gh pr merge` returns a
+  403 there.
+- Even in a Sandbox it is **off by default**. The user must turn on **"Allow
+  merging PRs"** under GitHub access when creating the sandbox. Without that
+  grant the shim returns a 403 explaining it isn't enabled.
+
+When enabled, the guardrails are enforced server-side:
+
+- **Required checks must be green.** A failing or still-running check refuses the
+  merge with a clear message. Pass `--auto` to enable GitHub auto-merge
+  (merge-when-green) instead of waiting.
+- **Branch protection / required reviews are respected.** If GitHub rejects the
+  merge (e.g. a required review is missing), the rejection reason is surfaced —
+  the shim never forces past it. `--admin` is rejected.
+- A draft PR is refused (run `gh pr ready` first).
 
 ### Workflow runs (read-only)
 

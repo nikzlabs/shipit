@@ -352,7 +352,7 @@ describe("sandboxLifelineBase", () => {
 describe("sandboxLifelineEgressConfig", () => {
   const sandbox = (caps: Partial<SessionInfo["capabilities"]>): Pick<SessionInfo, "kind" | "capabilities"> => ({
     kind: "sandbox",
-    capabilities: { git: false, docker: false, network: true, ...caps },
+    capabilities: { git: false, docker: false, network: true, dangerousGitHubOps: false, ...caps },
   });
 
   it("returns null for a non-sandbox session (normal store-driven path)", () => {

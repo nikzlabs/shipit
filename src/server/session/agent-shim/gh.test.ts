@@ -191,7 +191,7 @@ describe("runShim — allowlist", () => {
 
   it("rejects unsupported pr subcommand", async () => {
     const { run } = makeRunner();
-    const out = await run(["pr", "merge"]);
+    const out = await run(["pr", "checkout"]);
     expect(out.exitCode).not.toBe(0);
     expect(out.stderr).toContain("Unsupported gh pr subcommand");
   });
@@ -582,6 +582,90 @@ describe("gh pr ready / close / reopen", () => {
     );
     expect(out.calls[0].path).toBe("/agent-ops/pr/12/reopen");
     expect(out.exitCode).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gh pr merge (docs/224)
+// ---------------------------------------------------------------------------
+
+describe("gh pr merge", () => {
+  it("POSTs to /merge with default method 'merge'", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "merge", "20"],
+      { "POST /agent-ops/pr/20/merge": { status: 200, body: { success: true, message: "Merged PR #20" } } },
+    );
+    expect(out.calls[0].path).toBe("/agent-ops/pr/20/merge");
+    expect(out.calls[0].body).toMatchObject({ method: "merge", auto: false });
+    expect(out.stdout).toContain("Merged PR #20");
+    expect(out.exitCode).toBe(0);
+  });
+
+  it("forwards the chosen merge method and --auto", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "merge", "21", "--squash", "--auto"],
+      { "POST /agent-ops/pr/21/merge": { status: 200, body: { success: true, message: "Auto-merge enabled" } } },
+    );
+    expect(out.calls[0].body).toMatchObject({ method: "squash", auto: true });
+    expect(out.exitCode).toBe(0);
+  });
+
+  it("rejects more than one merge method", async () => {
+    const { run } = makeRunner();
+    const out = await run(["pr", "merge", "22", "--squash", "--rebase"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("choose only one");
+    expect(out.calls.length).toBe(0);
+  });
+
+  it("rejects --admin (no force-merge)", async () => {
+    const { run } = makeRunner();
+    const out = await run(["pr", "merge", "23", "--admin"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("does not support --admin");
+    expect(out.calls.length).toBe(0);
+  });
+
+  it("surfaces a guardrail refusal (200 success:false) as a non-zero exit", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "merge", "24"],
+      {
+        "POST /agent-ops/pr/24/merge": {
+          status: 200,
+          body: { success: false, message: "Cannot merge PR #24: 1 required check(s) failing." },
+        },
+      },
+    );
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("required check(s) failing");
+  });
+
+  it("surfaces a 403 gate (not enabled for this sandbox) as an error", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "merge", "25"],
+      { "POST /agent-ops/pr/25/merge": { status: 403, body: { error: "Merging PRs is not enabled for this sandbox." } } },
+    );
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("not enabled for this sandbox");
+  });
+
+  it("resolves the current-branch PR when no number is given, carrying cwd/repo", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "merge", "--repo", "octocat/hello"],
+      {
+        "GET /agent-ops/pr/status": { status: 200, body: { pr: { number: 8 } } },
+        "POST /agent-ops/pr/8/merge": { status: 200, body: { success: true, message: "Merged PR #8" } },
+      },
+      "/workspace/clone-z",
+    );
+    expect(out.exitCode).toBe(0);
+    const mergeCall = out.calls.find((c) => c.path === "/agent-ops/pr/8/merge");
+    expect(mergeCall?.body).toMatchObject({ method: "merge", cwd: "/workspace/clone-z", repo: "octocat/hello" });
   });
 });
 

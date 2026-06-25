@@ -238,7 +238,7 @@ export async function registerSessionCrudRoutes(
   // Sandbox session. `kind` and `capabilities` are stamped server-authoritatively
   // (the body's capabilities are normalized, never trusted as-is) before any
   // container boots, mirroring the ops kind gate. No clone, no remoteUrl.
-  app.post<{ Body: { capabilities?: { git?: boolean; docker?: boolean; network?: boolean } } }>(
+  app.post<{ Body: { capabilities?: { git?: boolean; docker?: boolean; network?: boolean; dangerousGitHubOps?: boolean } } }>(
     "/api/sessions/sandbox",
     async (request, reply) => {
       try {

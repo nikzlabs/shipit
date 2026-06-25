@@ -655,7 +655,7 @@ describe("repo-aware PR brokering (docs/211)", () => {
       await githubAuth.setToken("test-token");
       const { sessionId, sessionDir } = await createBareSession();
       sessionManager.setKind(sessionId, "sandbox");
-      sessionManager.setCapabilities(sessionId, { git: true, docker: false, network: true });
+      sessionManager.setCapabilities(sessionId, { git: true, docker: false, network: true, dangerousGitHubOps: false });
 
       // The agent cloned a repo into /workspace/cloned (host: sessionDir/cloned).
       const cloneDir = path.join(sessionDir, "cloned");
@@ -691,7 +691,7 @@ describe("repo-aware PR brokering (docs/211)", () => {
       await githubAuth.setToken("test-token");
       const { sessionId, sessionDir } = await createBareSession();
       sessionManager.setKind(sessionId, "sandbox");
-      sessionManager.setCapabilities(sessionId, { git: true, docker: false, network: true });
+      sessionManager.setCapabilities(sessionId, { git: true, docker: false, network: true, dangerousGitHubOps: false });
 
       // Clone whose own origin differs from the explicit --repo target.
       const cloneDir = path.join(sessionDir, "wherever");
@@ -750,7 +750,7 @@ describe("repo-aware PR brokering (docs/211)", () => {
       sessionManager.setKind(sessionId, "sandbox");
 
       // git off → 403 (defense in depth at the broker).
-      sessionManager.setCapabilities(sessionId, { git: false, docker: false, network: true });
+      sessionManager.setCapabilities(sessionId, { git: false, docker: false, network: true, dangerousGitHubOps: false });
       const denied = await app.inject({
         method: "POST",
         url: `/api/sessions/${sessionId}/git/credential`,
@@ -759,7 +759,7 @@ describe("repo-aware PR brokering (docs/211)", () => {
       expect(denied.statusCode).toBe(403);
 
       // git on → the brokered credential is returned.
-      sessionManager.setCapabilities(sessionId, { git: true, docker: false, network: true });
+      sessionManager.setCapabilities(sessionId, { git: true, docker: false, network: true, dangerousGitHubOps: false });
       const allowed = await app.inject({
         method: "POST",
         url: `/api/sessions/${sessionId}/git/credential`,
@@ -783,6 +783,88 @@ describe("repo-aware PR brokering (docs/211)", () => {
       });
       expect(res.statusCode).toBe(200);
       expect(res.json()).toMatchObject({ username: "x-access-token", password: "test-token" });
+    },
+  );
+
+  // docs/224 — `gh pr merge` is gated behind the sandbox dangerousGitHubOps grant.
+  it(
+    "agent merge is 403 for a repo-bound session (use the PR card)",
+    { timeout: 15_000 },
+    async () => {
+      await githubAuth.setToken("test-token");
+      const { sessionId } = await setupPrimedSession();
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/5/merge`,
+        payload: {},
+      });
+      expect(res.statusCode).toBe(403);
+      expect(res.json()).toMatchObject({ error: expect.stringContaining("Sandbox sessions") });
+    },
+  );
+
+  it(
+    "agent merge is 403 for a sandbox without the dangerousGitHubOps grant",
+    { timeout: 15_000 },
+    async () => {
+      await githubAuth.setToken("test-token");
+      const { sessionId } = await createBareSession();
+      sessionManager.setKind(sessionId, "sandbox");
+      sessionManager.setCapabilities(sessionId, { git: true, docker: false, network: true, dangerousGitHubOps: false });
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/5/merge`,
+        payload: {},
+      });
+      expect(res.statusCode).toBe(403);
+      expect(res.json()).toMatchObject({ error: expect.stringContaining("not enabled") });
+    },
+  );
+
+  it(
+    "agent merge succeeds for a sandbox with the grant and green checks",
+    { timeout: 15_000 },
+    async () => {
+      await githubAuth.setToken("test-token");
+      const { sessionId, sessionDir } = await createBareSession();
+      sessionManager.setKind(sessionId, "sandbox");
+      sessionManager.setCapabilities(sessionId, { git: true, docker: false, network: true, dangerousGitHubOps: true });
+
+      // A clone whose own origin is the merge target.
+      const cloneDir = path.join(sessionDir, "cloned");
+      fs.mkdirSync(cloneDir, { recursive: true });
+      const gitEnv = { ...process.env, HOME: tmpDir };
+      execSync("git init -q", { cwd: cloneDir, env: gitEnv });
+      execSync("git remote add origin https://github.com/sand-user/sand-repo.git", { cwd: cloneDir, env: gitEnv });
+
+      githubAuth.setViewPrResult({
+        url: "https://github.com/sand-user/sand-repo/pull/20",
+        number: 20, base: "main", head: "shipit/feat", title: "T", body: "B",
+        state: "open", isDraft: false, merged: false, additions: 1, deletions: 0,
+      });
+      githubAuth.setCheckStatus({ state: "success", total: 1, passed: 1, failed: 0, pending: 0 });
+
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/20/merge`,
+        payload: { method: "squash", cwd: "/workspace/cloned" },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ success: true });
+
+      // A draft PR is refused even with the grant.
+      githubAuth.setViewPrResult({
+        url: "https://github.com/sand-user/sand-repo/pull/21",
+        number: 21, base: "main", head: "shipit/draft", title: "T", body: "B",
+        state: "open", isDraft: true, merged: false, additions: 1, deletions: 0,
+      });
+      const draft = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/21/merge`,
+        payload: { cwd: "/workspace/cloned" },
+      });
+      expect(draft.statusCode).toBe(200);
+      expect(draft.json()).toMatchObject({ success: false, message: expect.stringContaining("draft") });
     },
   );
 });

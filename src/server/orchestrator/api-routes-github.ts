@@ -33,6 +33,7 @@ import {
   listWorkflows,
   viewWorkflow,
   mergePullRequest,
+  agentMergePullRequest,
   generatePrDescription,
   setGitHubToken,
   gitHubLogout,
@@ -48,7 +49,7 @@ import {
 } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
 import { parseGitHubRemote } from "./git-utils.js";
-import { resolvePrTarget, gitCredentialAllowed } from "./pr-target.js";
+import { resolvePrTarget, gitCredentialAllowed, mergeDisposition } from "./pr-target.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { assessMergeAutoPublish } from "./release-autopublish-check.js";
 
@@ -1052,6 +1053,69 @@ export async function registerGitHubRoutes(
           }
         }
         return result;
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        return { success: false, message: `Merge failed: ${getErrorMessage(err)}` };
+      }
+    },
+  );
+
+  // POST /api/sessions/:id/pr/:number/merge — agent-driven merge (docs/224),
+  // backing `gh pr merge`. Gated behind the sandbox `dangerousGitHubOps` grant.
+  //
+  // Deliberately separate from the UI merge route above: it merges an explicit
+  // PR number (repo-aware via cwd/repo), and it does NOT apply that route's
+  // "block while the agent is running" guard — the agent calls this mid-turn, so
+  // its own runner is always running. The check/review guardrails live in
+  // `agentMergePullRequest` (the poller doesn't track sandbox PRs).
+  app.post<{
+    Params: { id: string; number: string };
+    Body: { method?: string; auto?: boolean; cwd?: string; repo?: string };
+  }>(
+    "/api/sessions/:id/pr/:number/merge",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      const session = sessionManager.get(request.params.id);
+      if (!session) {
+        reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      // docs/224 — gate the dangerous verb. Distinct messages so the agent knows
+      // whether this is a "wrong session kind" (use the PR card) or "not opted in".
+      const disposition = mergeDisposition(session);
+      if (disposition === "not-sandbox") {
+        reply.code(403).send({
+          error:
+            "gh pr merge is only available in Sandbox sessions. In a repo-bound session, merge from the PR lifecycle card in the ShipIt UI.",
+        });
+        return;
+      }
+      if (disposition === "not-granted") {
+        reply.code(403).send({
+          error:
+            "Merging PRs is not enabled for this sandbox. The user must turn on \"Allow merging PRs\" under GitHub access when creating the sandbox.",
+        });
+        return;
+      }
+      const dir = resolveSessionDir(sessionManager, request.params.id, reply);
+      if (!dir) return;
+      const num = Number(request.params.number);
+      if (!Number.isFinite(num) || num <= 0) {
+        reply.code(400).send({ error: "Invalid PR number" });
+        return;
+      }
+      try {
+        const { gitDir, remoteUrl } = resolvePrTarget(session, dir, request.body ?? {});
+        const git = createGitManager(gitDir);
+        return await agentMergePullRequest(git, deps.githubAuthManager, {
+          number: num,
+          method: request.body?.method,
+          auto: request.body?.auto,
+          remoteUrl,
+        });
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });
