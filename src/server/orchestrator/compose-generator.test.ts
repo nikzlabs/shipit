@@ -46,6 +46,21 @@ services:
     expect(services[1].name).toBe("db");
   });
 
+  it("captures an explicit user: field (#1646)", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    user: "1001:1001"
+  db:
+    image: postgres:16
+`);
+    const services = parseComposeFile(p, { dockerSocket: false });
+    expect(services[0].user).toBe("1001:1001");
+    expect(services[1].user).toBeUndefined();
+  });
+
   it("extracts x-shipit-preview values", () => {
     const dir = setup();
     const p = writeCompose(dir, `
@@ -422,6 +437,57 @@ describe("generateComposeOverride", () => {
     );
     expect(override).toContain("source: shipit-workspace");
     expect(override).toContain("subpath: ws/dir");
+  });
+});
+
+// #1646 — when the non-root worker runtime is active, compose services must run
+// as the same UID so dev-server caches in the shared workspace are agent-owned
+// and a terminal `npm run build` doesn't EACCES on a root-owned `.vite` dir.
+describe("generateComposeOverride — session-worker UID (#1646)", () => {
+  const baseOpts = {
+    sessionId: "test-session-123",
+    composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+  };
+  const origUid = process.env.SHIPIT_SESSION_WORKER_UID;
+  afterEach(() => {
+    if (origUid === undefined) delete process.env.SHIPIT_SESSION_WORKER_UID;
+    else process.env.SHIPIT_SESSION_WORKER_UID = origUid;
+  });
+
+  it("does not set user when SHIPIT_SESSION_WORKER_UID is unset (legacy all-root)", () => {
+    delete process.env.SHIPIT_SESSION_WORKER_UID;
+    const override = generateComposeOverride([{ name: "web", ports: ["5173:5173"] }], baseOpts);
+    const doc = parseYaml(override) as { services: Record<string, { user?: string }> };
+    expect(doc.services.web.user).toBeUndefined();
+  });
+
+  it("runs services as the worker UID when the var is set", () => {
+    process.env.SHIPIT_SESSION_WORKER_UID = "1000";
+    const override = generateComposeOverride([{ name: "web", ports: ["5173:5173"] }], baseOpts);
+    const doc = parseYaml(override) as { services: Record<string, { user?: string }> };
+    expect(doc.services.web.user).toBe("1000:1000");
+  });
+
+  it("applies the UID to every service in the stack", () => {
+    process.env.SHIPIT_SESSION_WORKER_UID = "1000";
+    const override = generateComposeOverride(
+      [{ name: "web", ports: ["5173:5173"] }, { name: "api", ports: ["3000:3000"] }],
+      baseOpts,
+    );
+    const doc = parseYaml(override) as { services: Record<string, { user?: string }> };
+    expect(doc.services.web.user).toBe("1000:1000");
+    expect(doc.services.api.user).toBe("1000:1000");
+  });
+
+  it("honors an explicit user: from the compose file and never overrides it", () => {
+    process.env.SHIPIT_SESSION_WORKER_UID = "1000";
+    const override = generateComposeOverride(
+      [{ name: "web", ports: ["5173:5173"], user: "root" }],
+      baseOpts,
+    );
+    const doc = parseYaml(override) as { services: Record<string, { user?: string }> };
+    // The override omits `user:` so compose merge keeps the user's `root`.
+    expect(doc.services.web.user).toBeUndefined();
   });
 });
 

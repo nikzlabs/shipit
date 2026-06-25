@@ -65,6 +65,19 @@ volumes:
   - ./packages/frontend:/app
 ```
 
+### Services share the agent's user
+
+ShipIt runs your compose services as the **same user as the agent and terminal**,
+so files a dev server writes into the shared workspace — build caches like
+`node_modules/.vite`, `.next/`, `.svelte-kit/` — are owned by that same user. This
+is what lets you run a one-off `npm run build` or typecheck from the terminal while
+the dev server is running, without hitting `EACCES` on a cache the server created.
+
+You don't need to configure anything for this. **Avoid setting `user:` (especially
+`user: root`) on a service that writes into the mounted workspace** — an explicit
+`user:` is honored as-is, which can re-introduce root-owned caches the terminal
+user can't delete or rebuild.
+
 ## Hot reload (HMR) needs polling
 
 Dev servers in a preview service run in their **own container**, watching the

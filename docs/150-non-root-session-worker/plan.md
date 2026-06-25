@@ -78,8 +78,14 @@ add-backs should be revisited.
 - Implementing network egress filtering.
 - Making `/credentials` read-only.
 - Changing the orchestrator trust boundary or Docker-per-session architecture.
-- Changing user compose service users. This doc covers the agent/session worker
-  container, not user-declared service containers.
+- ~~Changing user compose service users. This doc covers the agent/session worker
+  container, not user-declared service containers.~~ **Revised (#1646):** the
+  override now DOES set `user:` on compose services to the worker UID — see §7.2.
+  Leaving services as root re-created root-owned caches in the *shared* workspace
+  (e.g. `node_modules/.vite`) that the non-root agent/terminal couldn't delete or
+  rebuild, breaking a one-off `npm run build`. Aligning the UID is required for
+  the shared-workspace invariant to hold; it does not change the user's own
+  *image* or in-container privileges beyond which UID the process runs as.
 
 ## Design
 
@@ -559,6 +565,35 @@ and folds it into the `install_error` message (`install-failure.ts:formatInstall
 and the orchestrator `console.error`s the failure (`container-session-runner.ts`,
 `install_error` SSE case) so a no-viewer recreate-time install failure lands in
 the service-log stream Ops reads instead of being swallowed.
+
+#### 7.3 Addendum — compose services must share the worker UID (#1646)
+
+§7 hands *orchestrator*-written files back to the worker UID, and the entrypoint
+chowns the writable mounts at boot. But the **compose preview services** kept
+running as their image's default user — almost always **root**. They share the
+agent's workspace (the `.` bind mount is rewritten to the same named volume), so a
+running dev server writes its build caches there as `root:root`:
+`node_modules/.vite`, `.next/`, `.svelte-kit/`, etc. The non-root agent/terminal
+(UID 1000) then can't `rmdir`/overwrite those caches, and a one-off
+`npm run build` aborts with `EACCES: permission denied, rmdir '…/node_modules/.vite'`
+— with no `sudo` to recover. This is the exact mismatch §7 fixes for orchestrator
+writes, reappearing through the service containers.
+
+**Fix.** `generateComposeOverride` (`compose-generator.ts`) now emits
+`user: "<uid>:<uid>"` on every service entry whenever `sessionWorkerUid()` is set
+(the same `SHIPIT_SESSION_WORKER_UID` gate as the entrypoint and the §7 chowns), so
+the dev server writes shared-workspace files as the same UID the agent reads/writes
+them with. Symmetric and single-deploy-safe:
+
+- **var unset (legacy default)** → no `user:` emitted; worker AND services are both
+  root, so there's no mismatch to fix. Byte-identical to prior behavior.
+- **var set (e.g. 1000)** → both sides run as 1000; one env flips both.
+
+An explicit `user:` in the user's compose file is **honored, not overridden**
+(`parseComposeFile` captures `svc.user`; the injection is skipped when it's set) —
+documented in `shipit-docs/compose.md` with a warning that `user: root` on a
+workspace-writing service re-introduces the EACCES. Tests:
+`compose-generator.test.ts` → "session-worker UID (#1646)".
 
 ### 8. Playwright browser cache must be reachable by `shipit`
 
