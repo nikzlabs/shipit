@@ -16,7 +16,8 @@ import os from "node:os";
 import path from "node:path";
 import type { GitManager } from "../../shared/git.js";
 import type { GitHubAuthManager } from "../github-auth.js";
-import { planRelease, prepareRelease } from "./release-prepare.js";
+import { buildPlanProposeInput, planRelease, prepareRelease } from "./release-prepare.js";
+import type { ReleasePlan } from "./release-prepare.js";
 
 const { agentCreatePrMock } = vi.hoisted(() => ({ agentCreatePrMock: vi.fn() }));
 
@@ -292,5 +293,46 @@ describe("release-branch version anchor (docs/214 bugfix)", () => {
     // rc targets the patch above the released 0.2.2, not the working tree's 0.2.0.
     expect(res.version).toBe("0.2.3-rc.1");
     expect(res.tag).toBe("v0.2.3-rc.1");
+  });
+});
+
+/**
+ * docs/214 — the `POST /release/plan` route reflects the plan onto the
+ * `proposed` card via this pure builder. The bug it fixes: the route dropped the
+ * `mechanism`, so a `release-branch` repo's "Confirm & publish" message used the
+ * tag-triggered wording. The builder must carry the mechanism through.
+ */
+describe("buildPlanProposeInput (docs/214 — plan-route propose options)", () => {
+  const basePlan: ReleasePlan = {
+    currentVersion: "0.2.2",
+    version: "0.2.3",
+    tag: "v0.2.3",
+    bumpType: "patch",
+    versionSource: "package.json",
+    versionSourcePath: "/repo/package.json",
+    prerelease: false,
+  };
+
+  it("carries the mechanism for a release-branch repo", () => {
+    const input = buildPlanProposeInput(basePlan, "release-branch");
+    expect(input).toMatchObject({
+      version: "0.2.3",
+      tag: "v0.2.3",
+      prerelease: false,
+      bumpType: "patch",
+      versionSource: "package.json",
+      mechanism: "release-branch",
+    });
+  });
+
+  it("omits the mechanism when none is configured (card defaults to tag-triggered)", () => {
+    const input = buildPlanProposeInput(basePlan, undefined);
+    expect(input).not.toHaveProperty("mechanism");
+  });
+
+  it("omits bumpType for an explicit version", () => {
+    const input = buildPlanProposeInput({ ...basePlan, bumpType: "explicit" }, "release-branch");
+    expect(input).not.toHaveProperty("bumpType");
+    expect(input.mechanism).toBe("release-branch");
   });
 });
