@@ -258,6 +258,23 @@ notes worth recording:
   completion synthesizes the `agent_result` that ends the run. The live
   `agent.compact()` method covers the in-flight-turn case.
 
+## Fix (2026-06-25): `/compact` no longer triggers the docs/218 branch reset
+
+A between-turns `/compact` routes through `runAgentWithMessage` with
+`compact: true` (the fresh-spawn path), which also runs the docs/218 **pre-turn
+auto-reset of a merged session's branch** (`autoResetMergedBranchOnContinue`).
+On a merged, reset-eligible session that reset would (a) hard-reset the branch to
+`origin/<base>` and (b) prepend the `[System] Your previous pull request … was
+merged …` prefix to the prompt — so the agent reacted to the merge notice
+**instead of compacting**, and the branch silently moved to main.
+
+`/compact` is a maintenance command, not a continuation of work, so the pre-turn
+reset block in `agent-execution.ts` (`runAgentWithMessage`) is now gated on
+`!opts.compact`: the reset is skipped entirely for a compaction request and runs
+on the user's next real turn, where it belongs. Key file:
+`src/server/orchestrator/ws-handlers/agent-execution.ts` (the docs/218 pre-turn
+reset guard).
+
 ## Fix (2026-06-10): transient indicator bled across session switch
 
 The "Compacting…" spinner is a **global** Zustand flag (`SessionState.compacting`),

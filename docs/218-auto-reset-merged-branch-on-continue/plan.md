@@ -308,6 +308,13 @@ fail-safe for the manual-`git reset` path and no-ops here (it has already cleare
   run the turn normally. (The continue path rehydrates the clone before this hook.)
 - **Stale client eligibility flag:** harmless — the server re-validates the full gate
   at send time, so the checkbox is intent only.
+- **`/compact` on a merged, eligible session (docs/178):** a between-turns `/compact`
+  routes through `runAgentWithMessage` with `compact: true`, which would otherwise
+  reach this pre-turn reset. Compaction is a maintenance command, not a continuation
+  of work — so the reset block is gated on `!opts.compact` and skipped for compaction
+  requests. Without the guard the reset moved the branch to base **and** prepended the
+  `[System] …PR was merged…` prefix to the `/compact` prompt, so the agent reacted to
+  the merge notice instead of compacting. The reset still runs on the next real turn.
 
 ## Product-principle check
 

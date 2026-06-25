@@ -275,9 +275,16 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   // the branch un-moved and the turn runs normally. On a real move we prepend a
   // context prefix to the prompt (agent: don't re-apply shipped work) and emit a
   // persisted "branch updated" card right after the user row (see below).
+  //
+  // Skip entirely for a `/compact` request (docs/178): compaction is a
+  // maintenance command, not a continuation of work, so it must NOT trigger the
+  // destructive branch move — and the `[System] …PR was merged…` prefix the
+  // reset prepends would derail the compaction (the agent reacts to the merge
+  // notice instead of compacting). The reset still runs on the user's next real
+  // turn, where it belongs.
   let branchResetCard: BranchAutoResetCard | null = null;
   let resetAgentPrefix = "";
-  if (capturedSessionId && capturedSessionDir && runner) {
+  if (capturedSessionId && capturedSessionDir && runner && !opts.compact) {
     const reset = await autoResetMergedBranchOnContinue(
       {
         getSession: (id) => ctx.sessionManager.get(id),
