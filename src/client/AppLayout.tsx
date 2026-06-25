@@ -159,7 +159,9 @@ export function AppLayout({
               }}
             >
               <img src="/favicon.svg" alt="" className="w-5 h-5" />
-              ShipIt
+              <span>
+                Ship<span style={{ color: "#f0506e" }}>It</span>
+              </span>
             </a>
           </h1>
         </div>
