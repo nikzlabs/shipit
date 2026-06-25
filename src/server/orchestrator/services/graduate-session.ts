@@ -94,6 +94,12 @@ export interface GraduateSessionOpts {
   skipBranchRename?: boolean;
   /** Optional model override (quick + child). */
   model?: string;
+  /**
+   * docs/217 — optional per-session reasoning effort (Control B), set on the
+   * session row before the first turn runs. Quick-capture only; assumed already
+   * validated against the agent's options by the caller.
+   */
+  reasoning?: string;
   /** Optional parent linkage (child only). */
   parentSessionId?: string;
   /** Optional spawn-turn id paired with `parentSessionId`. */
@@ -124,7 +130,7 @@ export interface GraduateSessionOpts {
  */
 export function graduateSession(deps: GraduateSessionDeps, opts: GraduateSessionOpts): void {
   const { sessionManager, runnerRegistry, repoStore, createGitManager, prStatusPoller, sseBroadcast, ensureAgentTokenFresh } = deps;
-  const { sessionId, userText, agentId, explicitTitle, explicitBranch, skipBranchRename, model, parentSessionId, spawnedByTurn, rootSessionId } = opts;
+  const { sessionId, userText, agentId, explicitTitle, explicitBranch, skipBranchRename, model, reasoning, parentSessionId, spawnedByTurn, rootSessionId } = opts;
 
   // 1. Activation — flip warm to false (no-op when already active, e.g. fork).
   sessionManager.setWarm(sessionId, false);
@@ -136,8 +142,9 @@ export function graduateSession(deps: GraduateSessionDeps, opts: GraduateSession
   const placeholderTitle = explicitTitle?.trim() || userText.slice(0, 60) || "New session";
   sessionManager.rename(sessionId, placeholderTitle);
 
-  // 4. Optional model + parent linkage (child + quick concerns).
+  // 4. Optional model + reasoning + parent linkage (child + quick concerns).
   if (model) sessionManager.setModel(sessionId, model);
+  if (reasoning) sessionManager.setReasoning(sessionId, reasoning);
   if (parentSessionId) {
     sessionManager.setParentSession(sessionId, parentSessionId, spawnedByTurn, rootSessionId);
   } else if (spawnedByTurn) {

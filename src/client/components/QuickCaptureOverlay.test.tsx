@@ -257,6 +257,27 @@ describe("QuickCaptureOverlay", () => {
     localStorage.removeItem("vibe-model-id");
   });
 
+  it("forwards the active agent's saved reasoning seed as the creation param (docs/217)", () => {
+    // The quick session's first turn is dispatched server-side, so the chosen
+    // reasoning must ride the creation request (the `?reasoning=` WS connect
+    // param can't reach turn 1). The ReasoningSelector persists every pick to
+    // the per-agent seed; the overlay reads it back at send for the active agent.
+    localStorage.setItem("shipit-reasoning-by-agent", JSON.stringify({ claude: "high" }));
+    useRepoStore.setState({
+      repos: [repo("https://github.com/acme/app.git")],
+      activeRepoUrl: "https://github.com/acme/app.git",
+    });
+    openOverlay();
+
+    render(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Send mock" }));
+
+    const callArgs = startQuickSessionMock.mock.calls[0][0] as Record<string, unknown>;
+    expect(callArgs.reasoning).toBe("high");
+
+    localStorage.removeItem("shipit-reasoning-by-agent");
+  });
+
   it("forwards attached files to the background start helper", () => {
     useRepoStore.setState({
       repos: [repo("https://github.com/acme/app.git")],

@@ -101,6 +101,13 @@ export async function createHeadlessSession(opts: {
   agent?: AgentId;
   model?: string;
   /**
+   * docs/217 — per-session reasoning effort (Control B) for the new session's
+   * first turn. Unlike the WS `?reasoning=` connect param (which only reaches
+   * WS-driven turns), this rides the creation request so the server-dispatched
+   * first turn runs with it. Persistence to localStorage stays in the picker.
+   */
+  reasoning?: string;
+  /**
    * docs/175 — arm auto-merge for the new session at creation time. Per-session
    * and never persisted (decision #1): the overlay does NOT remember it in
    * localStorage, unlike the model/agent pickers.

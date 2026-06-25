@@ -170,6 +170,54 @@ describe("createHeadlessSession", () => {
     }).trim()).toBe("quick-tests");
   });
 
+  it("persists a valid reasoning effort on the session row before the first turn", async () => {
+    // docs/217 — the quick session's first turn is dispatched server-side, so
+    // the chosen reasoning must land on the row (graduateSession) before the
+    // dispatched turn reads it. "high" is valid for both Claude and Codex.
+    await createHeadlessSession(
+      sessionManager,
+      registry as unknown as SessionRunnerRegistry,
+      claimService(),
+      {
+        repoUrl: "https://github.com/acme/app.git",
+        prompt: "reason hard",
+        agent: "claude",
+        reasoning: "high",
+      },
+      "claude",
+      undefined,
+      undefined,
+      undefined,
+      graduationDeps,
+    );
+
+    expect(sessionManager.get("quick-1")?.reasoningEffort).toBe("high");
+  });
+
+  it("drops a reasoning effort that isn't valid for the resolved agent", async () => {
+    // "max" is a Claude-only level; with a Codex model the agent resolves to
+    // codex, whose options stop at xhigh — so it must be ignored, not pinned.
+    await createHeadlessSession(
+      sessionManager,
+      registry as unknown as SessionRunnerRegistry,
+      claimService(),
+      {
+        repoUrl: "https://github.com/acme/app.git",
+        prompt: "reason hard",
+        model: "gpt-5.4",
+        reasoning: "max",
+      },
+      "claude",
+      undefined,
+      undefined,
+      undefined,
+      graduationDeps,
+    );
+
+    expect(sessionManager.get("quick-1")?.agentId).toBe("codex");
+    expect(sessionManager.get("quick-1")?.reasoningEffort).toBeUndefined();
+  });
+
   it("uses an existing warm runner when the registry already has one", async () => {
     const reusedRunner = { running: true, dispatch: vi.fn() };
 

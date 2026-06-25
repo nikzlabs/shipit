@@ -7,7 +7,7 @@ import { useRepoStore } from "../stores/repo-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { startQuickSessionInBackground } from "../stores/actions/session-actions.js";
-import { getSavedAgentId, getSavedModelId, saveAgentId, saveModelId } from "../utils/local-storage.js";
+import { getSavedAgentId, getSavedModelId, getSavedReasoning, saveAgentId, saveModelId } from "../utils/local-storage.js";
 import { agentIdForModel } from "../utils/agent-for-model.js";
 import { parseRepoLabel } from "../utils/repo-label.js";
 import { MessageInput, type SendPayload } from "./MessageInput.js";
@@ -35,6 +35,13 @@ export function QuickCaptureOverlay({
   const [selectedRepoUrl, setSelectedRepoUrl] = useState<string | undefined>(undefined);
   const [pendingFiles, setPendingFiles] = useState<FileContextRef[]>([]);
   const [selectedModel, setSelectedModel] = useState<string | undefined>(getSavedModelId());
+  // docs/217 — per-session reasoning effort (Control B), seeded from the active
+  // agent's localStorage pick. Mirrors the regular composer's new-session
+  // behavior, but a quick session's first turn is dispatched server-side at
+  // creation (docs/205) — before any WS connect — so the `?reasoning=` connect
+  // param can't reach turn 1. We therefore send the chosen level in the
+  // creation params (below). `undefined` falls back to the saved seed at send.
+  const [selectedReasoning, setSelectedReasoning] = useState<string | undefined>(undefined);
   // docs/175-auto-merge-at-session-creation/plan.md decision #1: this toggle is
   // per-session and must NEVER be persisted. Do NOT wire it to localStorage the
   // way the model/agent pickers are — a sticky auto-merge is an invisible,
@@ -82,6 +89,8 @@ export function QuickCaptureOverlay({
     }
     wasOpenRef.current = true;
     setSelectedModel(getSavedModelId());
+    // Clear any explicit pick so the picker previews each agent's saved seed.
+    setSelectedReasoning(undefined);
     // docs/175 decision #1 — auto-merge never persists across openings either.
     // Reset to off on every open so a prior session's opt-in can't carry over.
     setArmAutoMerge(false);
@@ -129,11 +138,16 @@ export function QuickCaptureOverlay({
       setError("Add a repo first.");
       return;
     }
+    // docs/217 — the explicit pick wins; otherwise the active agent's saved
+    // seed (the ReasoningSelector persists every pick via `saveReasoning`), so
+    // the level carries forward to new quick sessions exactly like the model.
+    const reasoning = selectedReasoning ?? getSavedReasoning(selectedAgentId);
     const params = {
       repoUrl: selectedRepo.url,
       initialPrompt: payload.text,
       agent: selectedAgentId,
       ...(selectedModel ? { model: selectedModel } : {}),
+      ...(reasoning ? { reasoning } : {}),
       ...(armAutoMerge ? { armAutoMerge: true } : {}),
       ...(payload.deferredFiles.length > 0 ? { files: payload.deferredFiles } : {}),
     };
@@ -235,7 +249,16 @@ export function QuickCaptureOverlay({
             onModelChange={(model) => {
               saveModelId(model);
               setSelectedModel(model);
+              // Reasoning is per-agent; a model switch can change the agent, so
+              // drop the explicit pick and let the new agent's seed take over.
+              setSelectedReasoning(undefined);
             }}
+            // No `sessionReasoning` here: there's no session yet, and the
+            // selector's own seed fallback (`seedFromHistory`) + post-pick
+            // `pending` state drive the displayed value. We only need the
+            // callback to (a) make the control visible and (b) capture the pick
+            // for the creation params below.
+            onReasoningChange={(effort) => setSelectedReasoning(effort ?? undefined)}
             modelInfo={modelInfo}
             hasActiveSession={false}
           />
