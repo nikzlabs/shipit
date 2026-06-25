@@ -132,6 +132,69 @@ describe("DiffPanel", () => {
       render(<DiffPanel {...props} />);
       expect(screen.getByText(/Binary file/)).toBeInTheDocument();
     });
+
+    it("renders before/after images for an image diff", () => {
+      const props = defaultProps();
+      props.diff = makeDiff({
+        files: [makeFile({
+          path: "logo.png",
+          status: "modified",
+          binary: true,
+          image: true,
+          oldContent: "data:image/png;base64,AAAA",
+          newContent: "data:image/png;base64,BBBB",
+        })],
+      });
+      render(<DiffPanel {...props} />);
+      // No "binary" placeholder for a renderable image.
+      expect(screen.queryByText(/Binary file/)).not.toBeInTheDocument();
+      expect(screen.getByText("Before")).toBeInTheDocument();
+      expect(screen.getByText("After")).toBeInTheDocument();
+      const imgs = screen.getAllByRole("img");
+      expect(imgs.map((i) => i.getAttribute("src"))).toEqual([
+        "data:image/png;base64,AAAA",
+        "data:image/png;base64,BBBB",
+      ]);
+    });
+
+    it("shows an added/deleted placeholder for the missing image side", () => {
+      const props = defaultProps();
+      props.diff = makeDiff({
+        files: [makeFile({
+          path: "new.png",
+          status: "added",
+          binary: true,
+          image: true,
+          oldContent: "",
+          newContent: "data:image/png;base64,BBBB",
+        })],
+      });
+      render(<DiffPanel {...props} />);
+      expect(screen.getByText(/added — no previous version/)).toBeInTheDocument();
+      expect(screen.getAllByRole("img")).toHaveLength(1);
+    });
+
+    it("defaults SVG to the text diff and toggles to a rendered comparison", () => {
+      const props = defaultProps();
+      props.diff = makeDiff({
+        files: [makeFile({
+          path: "icon.svg",
+          binary: false,
+          oldContent: "<svg>old</svg>",
+          newContent: "<svg>new</svg>",
+        })],
+      });
+      render(<DiffPanel {...props} />);
+      // Source (text diff) by default.
+      expect(screen.getByTestId("mock-diff-editor")).toBeInTheDocument();
+      expect(screen.queryByTitle("Rendered content")).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "rendered" }));
+
+      // Now two rendered frames (before/after), no Monaco.
+      expect(screen.queryByTestId("mock-diff-editor")).not.toBeInTheDocument();
+      expect(screen.getAllByTitle("Rendered content")).toHaveLength(2);
+    });
   });
 
   describe("file selection", () => {

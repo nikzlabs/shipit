@@ -15,6 +15,8 @@ import type { FileDiff } from "../../server/shared/types.js";
 import type { PrReviewThread } from "../../server/shared/types/github-types.js";
 import { buildFileTree, type FileTreeNode } from "./diff-utils.js";
 import { DiffTreeNode } from "./DiffTreeNode.js";
+import { ImageDiffView, SvgDiffView, isSvgPath } from "./DiffMediaView.js";
+import { SourceToggle, type ViewMode } from "./FileContentView/SourceToggle.js";
 import type { SendCommentsPayload } from "./FilePreviewModal.js";
 
 /** Map file extensions to Monaco language IDs. */
@@ -112,6 +114,9 @@ const DIFF_EDITOR_OPTIONS = {
 export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: DiffPanelProps) {
   const [selectedFileIndex, setSelectedFileIndex] = useState(0);
   const [collapsedFiles, setCollapsedFiles] = useState<Set<number>>(new Set());
+  // Per-file "rendered | source" mode for SVGs. Defaults to "source" (the text
+  // diff) so nothing changes until the user opts into the rendered comparison.
+  const [svgViewModes, setSvgViewModes] = useState<Record<string, ViewMode>>({});
   // Mobile master-detail: on narrow viewports we show either the file list or a
   // single file's diff, not both. Desktop ignores this state entirely.
   const [mobileView, setMobileView] = useState<"list" | "detail">("list");
@@ -379,6 +384,9 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
           {diff.files.map((file, i) => {
             if (isMobile && i !== selectedFileIndex) return null;
             const collapsed = !isMobile && collapsedFiles.has(i);
+            // SVGs are text (Monaco diff) but can also render side by side.
+            const isSvg = !file.binary && isSvgPath(file.path);
+            const svgMode = svgViewModes[file.path] ?? "source";
             return (
               <div
                 key={file.path}
@@ -399,7 +407,20 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
                   <span className="text-xs text-(--color-text-primary) truncate">
                     {file.oldPath ? `${file.oldPath} \u2192 ${file.path}` : file.path}
                   </span>
-                  <span className="ml-auto shrink-0 flex gap-1.5 text-xs font-mono">
+                  {isSvg && !collapsed && (
+                    <div
+                      className="ml-auto shrink-0"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <SourceToggle
+                        value={svgMode}
+                        onChange={(mode) =>
+                          setSvgViewModes((prev) => ({ ...prev, [file.path]: mode }))
+                        }
+                      />
+                    </div>
+                  )}
+                  <span className={`${isSvg && !collapsed ? "" : "ml-auto"} shrink-0 flex gap-1.5 text-xs font-mono`}>
                     {file.insertions > 0 && <span className="text-(--color-success)">+{file.insertions}</span>}
                     {file.deletions > 0 && <span className="text-(--color-error)">-{file.deletions}</span>}
                   </span>
@@ -407,7 +428,11 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
 
                 {/* Diff editor (collapsible) */}
                 {!collapsed && (
-                  file.binary ? (
+                  file.image ? (
+                    <ImageDiffView file={file} />
+                  ) : isSvg && svgMode === "rendered" ? (
+                    <SvgDiffView file={file} />
+                  ) : file.binary ? (
                     <div className="flex items-center justify-center py-8 text-(--color-text-secondary) text-sm">
                       Binary file — cannot display diff
                     </div>

@@ -1,4 +1,5 @@
 import simpleGit, { type SimpleGit, type LogResult } from "simple-git";
+import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { scanDiffForSecrets, redactSecretsInText, type SecretFinding } from "./secret-scan.js";
@@ -627,6 +628,32 @@ export class GitManager {
     } catch {
       return "";
     }
+  }
+
+  /**
+   * Read a blob at a commit as raw bytes (not decoded to UTF-8, which would
+   * corrupt binary content like images). Returns `null` when the path doesn't
+   * exist at that commit or the blob exceeds `maxBytes` (default 16 MB).
+   *
+   * Uses `git show` over `execFile` with a Buffer encoding because simple-git's
+   * `.show()`/`.raw()` always decode stdout to a string.
+   */
+  async getFileBufferAtCommit(
+    commitHash: string,
+    filePath: string,
+    maxBytes = 16 * 1_048_576,
+  ): Promise<Buffer | null> {
+    return new Promise((resolve) => {
+      execFile(
+        "git",
+        ["show", `${commitHash}:${filePath}`],
+        { cwd: this.workspaceDir, encoding: "buffer", maxBuffer: maxBytes },
+        (err, stdout) => {
+          if (err || !stdout || stdout.length === 0) resolve(null);
+          else resolve(stdout);
+        },
+      );
+    });
   }
 
   /**
