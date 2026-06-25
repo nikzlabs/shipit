@@ -78,7 +78,10 @@ function MonthlyUsageChart({ monthly }: { monthly: MonthlyUsage[] }) {
   const max = recent.reduce((hi, m) => Math.max(hi, value(m)), 0);
   const total = recent.reduce((sum, m) => sum + value(m), 0);
   const avg = recent.length > 0 ? total / recent.length : 0;
-  const avgPct = max > 0 ? (avg / max) * 100 : 0;
+  // Cap bar height below 100% so the persistent value label above the tallest
+  // bar still fits inside the chart area. The avg baseline uses the same scale.
+  const BAR_SCALE = 82;
+  const avgPct = max > 0 ? (avg / max) * BAR_SCALE : 0;
   const fmt = (m: MonthlyUsage) => formatMonthlyValue(metric, m.costUsd, m.turns);
   const avgLabel = metric === "cost" ? formatCost(avg) : `${Math.round(avg)}`;
 
@@ -107,15 +110,20 @@ function MonthlyUsageChart({ monthly }: { monthly: MonthlyUsage[] }) {
           percentage-height bars resolve against a definite-height ancestor. */}
       <div className="relative flex items-end gap-1 h-20" data-testid="monthly-usage-chart">
         {recent.map((m, i) => {
-          const h = max > 0 ? Math.max(2, (value(m) / max) * 100) : 2;
+          const h = max > 0 ? Math.max(2, (value(m) / max) * BAR_SCALE) : 2;
           const isCurrent = i === recent.length - 1;
           return (
             <div
               key={m.month}
-              className="group relative flex-1 h-full flex items-end min-w-0"
+              className="group relative flex-1 h-full flex flex-col justify-end min-w-0"
             >
-              {/* Hover value label, floats above the bar. */}
-              <span className="pointer-events-none absolute bottom-full left-1/2 z-10 mb-1 hidden -translate-x-1/2 whitespace-nowrap rounded bg-(--color-bg-tertiary) px-1.5 py-0.5 text-[10px] text-(--color-text-primary) shadow group-hover:block">
+              {/* Persistent per-month value label, sits directly above the bar. */}
+              <span
+                className={`pointer-events-none mb-0.5 text-center text-[9px] leading-tight tabular-nums truncate ${
+                  isCurrent ? "text-(--color-text-primary) font-medium" : "text-(--color-text-secondary)"
+                }`}
+                data-testid="monthly-usage-bar-label"
+              >
                 {fmt(m)}
               </span>
               <div

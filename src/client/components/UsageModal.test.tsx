@@ -120,6 +120,36 @@ describe("UsageModal", () => {
     expect(screen.getByTestId("monthly-usage-avg")).toBeInTheDocument();
   });
 
+  it("shows a persistent cost label above each monthly bar", () => {
+    render(
+      <UsageModal
+        currentSessionUsage={mockCurrentUsage}
+        allUsage={mockAllUsage}
+        sessions={mockSessions}
+        onClose={() => {}}
+      />
+    );
+    const labels = screen.getAllByTestId("monthly-usage-bar-label");
+    expect(labels).toHaveLength(mockAllUsage.monthly.length);
+    expect(labels.map((l) => l.textContent)).toEqual(["$0.15", "$0.55", "$0.65"]);
+  });
+
+  it("switches the persistent bar labels to turn counts when toggled", async () => {
+    const user = userEvent.setup();
+    render(
+      <UsageModal
+        currentSessionUsage={mockCurrentUsage}
+        allUsage={mockAllUsage}
+        sessions={mockSessions}
+        onClose={() => {}}
+      />
+    );
+    const section = screen.getByTestId("monthly-usage-section");
+    await user.click(within(section).getByRole("button", { name: "turns" }));
+    const labels = screen.getAllByTestId("monthly-usage-bar-label");
+    expect(labels.map((l) => l.textContent)).toEqual(["2", "4", "5"]);
+  });
+
   it("toggles the monthly chart between cost and turns", async () => {
     const user = userEvent.setup();
     render(
