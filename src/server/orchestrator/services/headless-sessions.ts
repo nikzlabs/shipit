@@ -8,7 +8,7 @@ import type { ProviderAccountManager } from "../provider-account-manager.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import { toggleAutoMerge } from "./github.js";
-import { agentIdForModel } from "../../shared/agent-registry.js";
+import { agentIdForModel, getAgentCapabilities } from "../../shared/agent-registry.js";
 import { generateBranchPrefix } from "../git-utils.js";
 import { prepareSessionAgentEnvironment } from "../session-agent-env.js";
 import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js";
@@ -79,6 +79,13 @@ export interface CreateHeadlessSessionOptions {
   branch?: string;
   agent?: AgentId;
   model?: string;
+  /**
+   * docs/217 — per-session reasoning effort (Control B) for the first turn.
+   * Validated against the resolved agent's options below and persisted to the
+   * session row before dispatch, so the server-dispatched first turn picks it
+   * up (the `?reasoning=` WS connect param only reaches WS-driven turns).
+   */
+  reasoning?: string;
   /**
    * Raw files uploaded alongside the prompt (multipart). Saved into the new
    * session's uploads dir before the agent turn is dispatched, so the
@@ -170,6 +177,17 @@ export async function createHeadlessSession(
   // explicit agent only when no model is given or the model is unrecognized.
   // See docs/166-quick-capture-agent-pin.
   const agentId = agentIdForModel(opts.model) ?? opts.agent ?? defaultAgentId;
+
+  // docs/217 — validate the requested reasoning effort against the resolved
+  // agent's options; drop silently if invalid (mirrors the WS connect-param
+  // path in route-registry.ts). Persisted onto the session row by
+  // graduateSession so the first dispatched turn runs with it.
+  const reasoningOpts = getAgentCapabilities(agentId)?.reasoning?.options;
+  const reasoning =
+    opts.reasoning && reasoningOpts?.some((o) => o.value === opts.reasoning)
+      ? opts.reasoning
+      : undefined;
+
   const runner = runnerRegistry.getOrCreate(newSessionId, newWorkspaceDir, agentId);
   if (credentialsDir && credentialStore) {
     await prepareSessionAgentEnvironment(runner, {
@@ -219,6 +237,7 @@ export async function createHeadlessSession(
     ...(explicitTitle ? { explicitTitle } : {}),
     ...(explicitBranch ? { explicitBranch } : {}),
     ...(opts.model ? { model: opts.model } : {}),
+    ...(reasoning ? { reasoning } : {}),
   });
 
   // docs/175 — arm auto-merge for the new session via the SAME pre-PR arm path

@@ -302,6 +302,12 @@ export async function registerSessionCrudRoutes(
       agent?: AgentId;
       model?: string;
       /**
+       * docs/217 — per-session reasoning effort (Control B) for the first turn.
+       * Multipart sends it as a string field; validated server-side against the
+       * resolved agent's options in `createHeadlessSession`.
+       */
+      reasoning?: string;
+      /**
        * docs/170 — when present, the new session is seeded from a tracker
        * issue (branch + title + first prompt derived from it). Sent by the
        * Issues tab's "Start session" row action. JSON path only.
@@ -322,6 +328,7 @@ export async function registerSessionCrudRoutes(
       let branch: string | undefined;
       let agent: AgentId | undefined;
       let model: string | undefined;
+      let reasoning: string | undefined;
       let issueRef: IssueRef | undefined;
       let armAutoMerge = false;
       const uploadInputs: { filename: string; data: Buffer }[] = [];
@@ -351,6 +358,9 @@ export async function registerSessionCrudRoutes(
               case "model":
                 model = value;
                 break;
+              case "reasoning":
+                reasoning = value;
+                break;
               case "armAutoMerge":
                 armAutoMerge = value === "true";
                 break;
@@ -369,6 +379,7 @@ export async function registerSessionCrudRoutes(
         branch = body.branch;
         agent = body.agent;
         model = body.model;
+        reasoning = body.reasoning;
         issueRef = body.issueRef;
         if (body.armAutoMerge !== undefined && typeof body.armAutoMerge !== "boolean") {
           reply.code(400).send({ error: "armAutoMerge must be a boolean" });
@@ -389,6 +400,7 @@ export async function registerSessionCrudRoutes(
             ...(branch !== undefined ? { branch } : {}),
             ...(agent !== undefined ? { agent } : {}),
             ...(model !== undefined ? { model } : {}),
+            ...(reasoning !== undefined ? { reasoning } : {}),
             ...(uploadInputs.length > 0 ? { uploads: uploadInputs } : {}),
             armAutoMerge,
           },
