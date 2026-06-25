@@ -297,3 +297,33 @@ which is the only feedback the user needs. The `FixCIButton` (no longer hidden b
 dispatched mid-fix. Keep-alive during the manual turn is covered by the existing
 headless-runner signal (`runner.running && viewerCount === 0`) in
 `anyAutonomousActionInFlight`.
+
+## Follow-up: per-check-run dedup so a retrigger push can't re-send stale logs
+
+A user hit this: after the agent judged a CI failure to be flakiness and pushed an **empty
+retrigger commit**, the auto-fix loop immediately re-fired `[ci-fix]` with the *same* logs —
+before the new head's CI had even run. GitHub keeps reporting the **previous** run's failure
+(same head commit node, same check-run `databaseId`s) for a beat after a push, before the new
+head's checks register, and the loop fired on that stale verdict.
+
+The arbiter's await-fresh-signal (Workstream C) doesn't cover this case: it keys on head SHA
+and only arms when an *automation* pushes. Here the **agent** pushed, and in the lag window the
+head SHA GitHub returns is still the old one — so there's nothing for a head-SHA guard to catch.
+
+Fix: the auto-fix loop now dispatches each **failed check run at most once**.
+`AutoFixManager` keeps a per-session set of dispatched check-run `databaseId`s (recorded only
+on an `outcome: "fixed"` — a `noop` sent nothing). A failure verdict whose every failing run is
+already in that set is **stale** and skipped, via a new base hook `isStaleFire(sessionId,
+signal)` checked in `runTransition` (step 1b, treated like `ignore`) and `onRunnerIdle`. A
+genuinely fresh run — a new push, a manual re-run, the retrigger commit's eventual checks —
+always carries new `databaseId`s, so it is never a subset and fires normally. The set clears on
+session delete and when CI goes green (the base drops state → `onDelete`). The per-head
+attempt budget remains as a backstop; this also retires the old wasteful "re-send identical
+logs on the same head until the budget is spent" behavior. The hook defaults to a no-op, so the
+conflict manager is unchanged.
+
+This pairs with the run-ID-keyed CI log filename (`<check>-<databaseId>.log`, replacing the
+fetch-timestamp name): the dedup stops the stale re-send, and the stable filename makes any
+repeat that *does* slip through visibly the same file in chat history. Key files:
+`auto-remediation-manager.ts` (`isStaleFire` hook), `auto-fix-manager.ts` (dispatched-IDs set +
+override), `services/github-ci-fix.ts` (filename), `auto-fix-manager.test.ts` (dedup tests).

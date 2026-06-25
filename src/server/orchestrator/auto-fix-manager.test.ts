@@ -51,6 +51,34 @@ function makeNode(oid: string): GraphQLPrNode {
   return { commits: { nodes: [{ commit: { oid, statusCheckRollup: null } }] } } as unknown as GraphQLPrNode;
 }
 
+/**
+ * Build a node whose rollup carries failed CHECK RUNS with real databaseIds, so
+ * `extractFailedCheckRuns` returns a non-empty set (the dedup discriminator).
+ * Each id becomes one FAILURE check run.
+ */
+function makeNodeWithChecks(oid: string, checkIds: number[]): GraphQLPrNode {
+  return {
+    commits: {
+      nodes: [{
+        commit: {
+          oid,
+          statusCheckRollup: {
+            contexts: {
+              nodes: checkIds.map((id) => ({
+                databaseId: id,
+                name: `job-${id}`,
+                status: "COMPLETED",
+                conclusion: "FAILURE",
+                title: "failed",
+              })),
+            },
+          },
+        },
+      }],
+    },
+  } as unknown as GraphQLPrNode;
+}
+
 interface RecordingCb extends FetchAndFixCb {
   count: () => number;
 }
@@ -87,6 +115,8 @@ function makeFixture(opts?: { enabled?: boolean; runner?: RunnerStub; cb?: Recor
     setRunner: (r: RunnerStub | undefined) => { runner = r; },
     advance: (ms: number) => { time += ms; },
     fail: (oid = "sha1") => manager.handleTransition("s1", makeSummary("failure"), makeNode(oid), "o", "r"),
+    failChecks: (checkIds: number[], oid = "sha1") =>
+      manager.handleTransition("s1", makeSummary("failure"), makeNodeWithChecks(oid, checkIds), "o", "r"),
     transition: (state: PrStatusSummary["checks"]["state"], oid = "sha1") =>
       manager.handleTransition("s1", makeSummary(state), makeNode(oid), "o", "r"),
   };
@@ -238,6 +268,73 @@ describe("AutoFixManager", () => {
     expect(fx.manager.get("s1")?.nextEligibleAt).toBeUndefined();
     // No cooldown now → fires again.
     await fx.fail();
+    await tick();
+    expect(fx.cb.count()).toBe(2);
+  });
+
+  // ---- Stale-verdict dedup (the retrigger-push bug) ----------------------
+
+  it("does NOT re-fire the same failed check runs after the cooldown (stale re-send)", async () => {
+    // Attempt 1 sends runs {101, 102}.
+    await fx.failChecks([101, 102]);
+    await tick();
+    expect(fx.cb.count()).toBe(1);
+
+    // Cooldown elapses and GitHub still reports the SAME run (the retrigger
+    // commit's checks haven't registered yet) — must NOT re-send.
+    fx.advance(AUTO_FIX_COOLDOWN_MS + 1);
+    await fx.failChecks([101, 102]);
+    await tick();
+    expect(fx.cb.count()).toBe(1);
+  });
+
+  it("DOES fire when a genuinely new run (new check-run IDs) appears", async () => {
+    await fx.failChecks([101, 102]);
+    await tick();
+    expect(fx.cb.count()).toBe(1);
+
+    // New head + new check-run databaseIds = a fresh verdict → fire.
+    fx.advance(AUTO_FIX_COOLDOWN_MS + 1);
+    await fx.failChecks([201], "sha2");
+    await tick();
+    expect(fx.cb.count()).toBe(2);
+  });
+
+  it("fires when any run is new even if another was already sent", async () => {
+    await fx.failChecks([101], "sha1");
+    await tick();
+    expect(fx.cb.count()).toBe(1);
+
+    // {101} already sent but {102} is new → not a subset → fire.
+    fx.advance(AUTO_FIX_COOLDOWN_MS + 1);
+    await fx.failChecks([101, 102], "sha1");
+    await tick();
+    expect(fx.cb.count()).toBe(2);
+  });
+
+  it("a noop attempt does NOT record check runs — the next poll retries them", async () => {
+    fx = makeFixture({ cb: recordingCb(() => ({ outcome: "noop", lastError: "no_logs" })) });
+    await fx.failChecks([101]);
+    await tick();
+    expect(fx.cb.count()).toBe(1);
+    expect(fx.manager.get("s1")?.status).toBe("deferred");
+
+    // Deferred cooldown elapses; same runs re-fire because the noop sent nothing.
+    fx.advance(AUTO_FIX_DEFERRED_COOLDOWN_MS + 1);
+    await fx.failChecks([101]);
+    await tick();
+    expect(fx.cb.count()).toBe(2);
+  });
+
+  it("CI green forgets dispatched runs so a later identical-ID failure can fire", async () => {
+    await fx.failChecks([101]);
+    await tick();
+    expect(fx.cb.count()).toBe(1);
+    // Green drops state (and the dispatched set).
+    await fx.transition("success");
+    expect(fx.manager.get("s1")).toBeUndefined();
+    // A fresh failure — even reusing the id — fires, because the set was cleared.
+    await fx.failChecks([101]);
     await tick();
     expect(fx.cb.count()).toBe(2);
   });
