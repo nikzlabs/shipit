@@ -78,6 +78,12 @@ brokering capabilities on request instead of automatically.
     container still has its agent API egress — so "off" means **no GitHub token
     / no push to the user's repos**, *not* a fully network-sealed box. (If a
     truly sealed posture is wanted, that's an egress concern — see Security.)
+  - `dangerousGitHubOps` (UI label **"Allow merging PRs"**, default **off**) — a
+    sub-grant under GitHub access for outward-facing, effectively-irreversible
+    GitHub verbs (merge being the first). Off ⇒ `gh pr merge` is refused at the
+    broker. Only meaningful when `git` is also granted. See **docs/224** for the
+    full design (guardrails: green checks, no force, branch protection deferred to
+    GitHub).
   - `docker` — **session-scoped** Docker (see below). Off ⇒ no Docker.
   - `network` (UI label **"Network access"**, default **on**) — controls *how
     contained* egress is. It only ever **tightens**, never loosens (a Sandbox is

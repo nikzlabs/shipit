@@ -197,6 +197,15 @@ export function registerAgentOpsRoutes(
       relay("POST", `/pr/${encodeURIComponent(request.params.number)}/reopen`, request.body ?? {}, reply),
   );
 
+  // POST /agent-ops/pr/:number/merge — merge a PR (docs/224). The orchestrator
+  // gates this behind the sandbox `dangerousGitHubOps` grant and enforces the
+  // green-checks / no-force guardrails; this router just narrows the surface.
+  app.post<{ Params: { number: string }; Body: { method?: string; auto?: boolean; cwd?: string; repo?: string } }>(
+    "/agent-ops/pr/:number/merge",
+    async (request, reply) =>
+      relay("POST", `/pr/${encodeURIComponent(request.params.number)}/merge`, request.body ?? {}, reply),
+  );
+
   // ---------------------------------------------------------------------------
   // GitHub Actions reads (read-only) — back `gh run list|view` and
   // `gh workflow list|view`. Repo-aware (cwd/repo) like the PR ops. The worker

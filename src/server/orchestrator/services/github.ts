@@ -306,6 +306,80 @@ export async function mergePullRequest(
   return { success: false, message: result.message };
 }
 
+/**
+ * docs/224 — agent-driven merge backing `gh pr merge`, gated behind the sandbox
+ * `dangerousGitHubOps` grant at the route. Distinct from {@link mergePullRequest}
+ * (the UI card's current-branch merge): the agent passes an explicit PR number,
+ * and because the agent is *mid-turn* the PR-status poller's cached checks/review
+ * state is unavailable (sandbox PRs aren't tracked), so the guardrails are
+ * enforced inline against the GitHub API:
+ *   - Refuse a draft PR (mark it ready first).
+ *   - Refuse unless required checks are green — unless `auto`, which enables
+ *     GitHub auto-merge (merge-when-green) instead of merging now.
+ *   - Branch protection / required reviews are enforced by GitHub server-side;
+ *     its rejection message is surfaced verbatim rather than forced.
+ *   - No admin/force path (the shim rejects `--admin` before it reaches here).
+ */
+export async function agentMergePullRequest(
+  git: GitManager,
+  githubAuthManager: GitHubAuthManager,
+  opts: { number: number; method?: string; auto?: boolean; remoteUrl?: string },
+): Promise<{ success: boolean; message: string; autoMergeEnabled?: boolean; url?: string }> {
+  if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
+
+  const resolved = await resolveGitHubRemote(git, opts.remoteUrl);
+  if ("error" in resolved) return { success: false, message: resolved.error };
+
+  const { owner, repo } = resolved;
+  const pr = await githubAuthManager.viewPullRequest(owner, repo, opts.number);
+  if (!pr) return { success: false, message: `PR #${opts.number} not found` };
+  if (pr.merged) return { success: true, message: `PR #${opts.number} is already merged`, url: pr.url };
+  if (pr.state === "closed") return { success: false, message: `PR #${opts.number} is closed` };
+  if (pr.isDraft) {
+    return { success: false, message: `PR #${opts.number} is a draft — mark it ready first (gh pr ready ${opts.number})` };
+  }
+
+  const mergeMethod = (opts.method || "merge") as "merge" | "squash" | "rebase";
+
+  // Guardrail: required checks must be green. Checked directly against the PR
+  // head's combined status — the poller doesn't track sandbox PRs.
+  const checks = await githubAuthManager.getCheckStatus(owner, repo, pr.head);
+  if (checks.state === "failure") {
+    return {
+      success: false,
+      message: `Cannot merge PR #${opts.number}: ${checks.failed} required check(s) failing. Fix CI before merging.`,
+    };
+  }
+  if (checks.state === "pending") {
+    if (opts.auto) {
+      const graphqlMethod =
+        mergeMethod === "merge" ? ("MERGE" as const)
+        : mergeMethod === "squash" ? ("SQUASH" as const)
+        : ("REBASE" as const);
+      const autoResult = await githubAuthManager.enableAutoMerge(owner, repo, opts.number, graphqlMethod);
+      return {
+        success: autoResult.success,
+        message: autoResult.success
+          ? `Auto-merge enabled for PR #${opts.number} — it will merge once checks pass.`
+          : autoResult.message,
+        autoMergeEnabled: autoResult.success,
+        url: pr.url,
+      };
+    }
+    return {
+      success: false,
+      message: `Cannot merge PR #${opts.number}: ${checks.pending} check(s) still running. Wait for green, or pass --auto to merge when checks pass.`,
+    };
+  }
+
+  // checks.state is "success" or "none" (no checks configured) → merge now.
+  const result = await githubAuthManager.mergePullRequest(owner, repo, opts.number, mergeMethod);
+  if (result.success) return { success: true, message: `Merged PR #${opts.number}`, url: pr.url };
+  // GitHub rejected the merge (branch protection, required review, conflicts).
+  // Surface its reason verbatim — never force.
+  return { success: false, message: result.message };
+}
+
 /** Generate a PR description using the agent's generateText capability. */
 export async function generatePrDescription(
   git: GitManager,

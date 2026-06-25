@@ -236,6 +236,8 @@ const GOLDEN_CONTAINER_ROUTES = [
   "POST /api/sessions/:id/pr/:number/ready",
   "POST /api/sessions/:id/pr/:number/close",
   "POST /api/sessions/:id/pr/:number/reopen",
+  // docs/224 — gated agent merge (`gh pr merge`), sandbox dangerousGitHubOps grant.
+  "POST /api/sessions/:id/pr/:number/merge",
   // github actions — gh run / gh workflow (read-only)
   "GET /api/sessions/:id/actions/runs",
   "GET /api/sessions/:id/actions/runs/view",

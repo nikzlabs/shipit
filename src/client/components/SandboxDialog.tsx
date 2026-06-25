@@ -38,7 +38,13 @@ export function SandboxDialog({
   const reset = () => setCaps(DEFAULT_SANDBOX_CAPABILITIES);
 
   const toggle = (key: keyof SessionCapabilities) =>
-    setCaps((c) => ({ ...c, [key]: !c[key] }));
+    setCaps((c) => {
+      const next = { ...c, [key]: !c[key] };
+      // "Allow merging PRs" is a sub-grant of GitHub access — turning git off
+      // clears it so a re-enabled toggle never silently carries a stale grant.
+      if (key === "git" && !next.git) next.dangerousGitHubOps = false;
+      return next;
+    });
 
   return (
     <Dialog
@@ -73,6 +79,16 @@ export function SandboxDialog({
             }}
             checked={caps.git}
             onToggle={() => toggle("git")}
+          />
+          <SubToggleRow
+            title="Allow merging PRs"
+            chip={{ label: "dangerous" }}
+            desc="Let the agent run gh pr merge to land PRs — gated on green checks, never force-merges."
+            note="Merging is outward-facing, effectively irreversible, and the action most exposed to prompt-injection from PR content. Off by default; only the agent in this sandbox is affected."
+            checked={caps.git && caps.dangerousGitHubOps}
+            disabled={!caps.git}
+            disabledHint="Turn on GitHub access first."
+            onToggle={() => toggle("dangerousGitHubOps")}
           />
           <ToggleRow
             icon={<ShippingContainerIcon size={ICON_SIZE.SM} />}
@@ -119,6 +135,75 @@ export function SandboxDialog({
         </div>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * docs/224 — an indented sub-grant under a parent capability (here, "Allow
+ * merging PRs" under GitHub access). Visually nested and dimmed/disabled until
+ * its parent is on, so the dependency reads at a glance.
+ */
+function SubToggleRow({
+  title,
+  chip,
+  desc,
+  note,
+  checked,
+  disabled,
+  disabledHint,
+  onToggle,
+}: {
+  title: string;
+  chip?: { label: string };
+  desc: string;
+  note: string;
+  checked: boolean;
+  disabled: boolean;
+  disabledHint: string;
+  onToggle: () => void;
+}) {
+  return (
+    <div
+      className={`flex gap-3 py-3 pl-11 border-t border-(--color-border-primary) ${
+        disabled ? "opacity-50" : ""
+      }`}
+    >
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 text-[13px] font-semibold text-(--color-text-primary)">
+          {title}
+          {chip && (
+            <span className="text-[11px] font-medium px-1.5 rounded-full bg-(--color-warning-subtle) text-(--color-warning)">
+              {chip.label}
+            </span>
+          )}
+        </div>
+        <p className="text-xs text-(--color-text-secondary) mt-0.5">{desc}</p>
+        <p className="text-[11px] mt-1.5 px-2 py-1 rounded-md border bg-(--color-warning-subtle) text-(--color-warning) border-(--color-warning-subtle)">
+          {disabled ? disabledHint : note}
+        </p>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-label={title}
+        disabled={disabled}
+        onClick={onToggle}
+        className={`relative w-9.5 h-5.5 rounded-full shrink-0 mt-0.5 transition-colors border ${
+          disabled ? "cursor-not-allowed" : ""
+        } ${
+          checked
+            ? "bg-(--color-sandbox) border-(--color-sandbox)"
+            : "bg-(--color-bg-tertiary) border-(--color-border-secondary)"
+        }`}
+      >
+        <span
+          className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-[left] ${
+            checked ? "left-[18px]" : "left-0.5"
+          }`}
+        />
+      </button>
+    </div>
   );
 }
 

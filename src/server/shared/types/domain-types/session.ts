@@ -17,6 +17,12 @@ import type { ProviderRouteKind } from "./provider.js";
  *               = the standard Tier A allowlist every session runs under; `false`
  *               = lifeline-only (LLM API + ShipIt, plus github.com when `git` is
  *               granted). It only ever tightens, never widens. Defaults to `true`.
+ *   - `dangerousGitHubOps` (docs/224, UI "Allow merging PRs") — a sub-grant under
+ *               `git` for outward-facing, effectively-irreversible GitHub verbs
+ *               (merge being the first). Off ⇒ `gh pr merge` is refused at the
+ *               broker. Only meaningful when `git` is also granted. Defaults to
+ *               `false`; this is the most prompt-injection-exposed verb, so it is
+ *               never on unless the user explicitly opts in at creation.
  *
  * Capability *wiring* (threading `docker`/`network`/`git` into the container and
  * brokers) lands in docs/211 Phase 2; the foundation persists the chosen set.
@@ -25,6 +31,7 @@ export interface SessionCapabilities {
   git: boolean;
   docker: boolean;
   network: boolean;
+  dangerousGitHubOps: boolean;
 }
 
 /**
@@ -37,6 +44,7 @@ export const DEFAULT_SANDBOX_CAPABILITIES: SessionCapabilities = {
   git: false,
   docker: false,
   network: true,
+  dangerousGitHubOps: false,
 };
 
 /**
@@ -51,7 +59,12 @@ export function normalizeCapabilities(input: unknown): SessionCapabilities {
     const v = obj[key];
     return typeof v === "boolean" ? v : DEFAULT_SANDBOX_CAPABILITIES[key];
   };
-  return { git: flag("git"), docker: flag("docker"), network: flag("network") };
+  return {
+    git: flag("git"),
+    docker: flag("docker"),
+    network: flag("network"),
+    dangerousGitHubOps: flag("dangerousGitHubOps"),
+  };
 }
 
 export interface SessionInfo {

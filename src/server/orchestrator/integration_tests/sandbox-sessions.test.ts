@@ -75,13 +75,13 @@ describe("Integration: sandbox session creation (docs/211)", () => {
     expect(res.statusCode).toBe(200);
     const body = res.json() as { session: { id: string; kind: string; remoteUrl: string }; capabilities: unknown };
     expect(body.session.kind).toBe("sandbox");
-    expect(body.capabilities).toEqual({ git: true, docker: true, network: false });
+    expect(body.capabilities).toEqual({ git: true, docker: true, network: false, dangerousGitHubOps: false });
     expect(body.session.remoteUrl).toBe("");
 
     // Server-authoritative + durable: read straight off the session row.
     const persisted = sessionManager.get(body.session.id);
     expect(persisted?.kind).toBe("sandbox");
-    expect(persisted?.capabilities).toEqual({ git: true, docker: true, network: false });
+    expect(persisted?.capabilities).toEqual({ git: true, docker: true, network: false, dangerousGitHubOps: false });
 
     // It shows up in the sidebar list (its own sandbox grouping is client-side).
     expect(sessionManager.list().some((s) => s.id === body.session.id && s.kind === "sandbox")).toBe(true);
@@ -91,7 +91,7 @@ describe("Integration: sandbox session creation (docs/211)", () => {
     const res = await app.inject({ method: "POST", url: "/api/sessions/sandbox", payload: {} });
     expect(res.statusCode).toBe(200);
     const body = res.json() as { capabilities: unknown };
-    expect(body.capabilities).toEqual({ git: false, docker: false, network: true });
+    expect(body.capabilities).toEqual({ git: false, docker: false, network: true, dangerousGitHubOps: false });
   });
 
   it("normalizes a partial / junk capability payload against the defaults", async () => {
@@ -103,6 +103,6 @@ describe("Integration: sandbox session creation (docs/211)", () => {
     });
     expect(res.statusCode).toBe(200);
     const body = res.json() as { capabilities: unknown };
-    expect(body.capabilities).toEqual({ git: false, docker: true, network: true });
+    expect(body.capabilities).toEqual({ git: false, docker: true, network: true, dangerousGitHubOps: false });
   });
 });
