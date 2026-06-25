@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo } from "react";
-import { CaretDownIcon, CaretRightIcon, CubeIcon, EyeIcon, EyeSlashIcon, GithubLogoIcon, LightningIcon, MicrophoneIcon, PlusIcon, SidebarSimpleIcon, WrenchIcon, XIcon } from "@phosphor-icons/react";
+import { CaretDownIcon, CaretRightIcon, CubeIcon, EyeIcon, EyeSlashIcon, GithubLogoIcon, LightningIcon, MicrophoneIcon, PlusIcon, SidebarSimpleIcon, WrenchIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import { parseRepoName } from "../../utils/repo-label.js";
 import { Button } from "../ui/button.js";
@@ -395,22 +395,27 @@ export function SessionSidebar({
       style={mobile ? undefined : { width }}
     >
       {/* Top bar. Desktop: collapse + advanced "+" menu + quick/voice + repo
-          switcher. Mobile drawer: a close button, the advanced "+" menu, and the
-          repo switcher — the latter moves here from the app header to declutter
-          it. Quick session, voice, and "new session" live in the bottom tab bar
-          on mobile, so they're omitted here to avoid duplicating them. */}
+          switcher. Mobile drawer: the advanced "+" menu and the repo switcher
+          (moved here from the app header to declutter it), right-aligned. There's
+          no collapse/close affordance on mobile — Sessions is one mode of the
+          bottom tab bar's segmented control, so you switch away from it (tap
+          Chat/Workspace) rather than closing it. Quick session, voice, and "new
+          session" also live in the bottom tab bar, so they're omitted here to
+          avoid duplicating them. */}
       <div className="flex items-center gap-2 px-3 h-10.25 border-b border-(--color-border-primary) shrink-0">
-        <WithTooltip label={mobile ? "Close" : "Collapse sidebar"}>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onToggleCollapse}
-          className="p-0! w-7 h-7 text-(--color-text-tertiary)"
-          aria-label={mobile ? "Close sessions" : "Collapse sidebar"}
-        >
-          {mobile ? <XIcon size={ICON_SIZE.SM} /> : <SidebarSimpleIcon size={ICON_SIZE.SM} />}
-        </Button>
-        </WithTooltip>
+        {!mobile && (
+          <WithTooltip label="Collapse sidebar">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onToggleCollapse}
+            className="p-0! w-7 h-7 text-(--color-text-tertiary)"
+            aria-label="Collapse sidebar"
+          >
+            <SidebarSimpleIcon size={ICON_SIZE.SM} />
+          </Button>
+          </WithTooltip>
+        )}
         <span className="flex-1" />
         {renderAdvancedSessionMenu()}
         {!mobile && renderQuickSessionControls()}
