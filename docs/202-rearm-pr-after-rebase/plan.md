@@ -395,6 +395,32 @@ _None — see "Re-armed card presentation"._
   `previousMergedPr` breadcrumbs over `list()` (a re-armed session is always in
   the visible Active list, so no archived-row scan is needed) so the suppression
   survives a restart before the new PR exists.
+
+- **Suppression must not arm the `verifiedAbsent` debounce (terminal-convergence
+  bug fix, SHI gray-badge report).** `verifyMissingPr` now returns its resting
+  outcome (`"absent" | "open" | "terminal" | "suppressed"`), and both callers —
+  `pollRepo`'s missing-PR branch and `forceVerifySessionPrState` — arm
+  `verifiedAbsent` for every outcome **except** `"suppressed"`. Why: a re-armed
+  session whose only branch PR is still the superseded merged one returns
+  `"suppressed"`, and the old code armed the single-probe debounce after it. If
+  the session's NEW PR was then opened **and merged externally** (e.g. via the
+  `gh pr create` shim, then merged on GitHub) without ever being observed OPEN in
+  the bulk view — common when the tab is closed, or when it opens-and-merges
+  between two polls — nothing ever cleared `verifiedAbsent` (it only clears on a
+  bulk-view reappearance or a forced refresh), so every periodic poll skipped the
+  REST verify and the merge of the *different-numbered* new PR was never caught.
+  The session stayed with no PR snapshot — the gray "Branch" fallback in
+  `PrStateBadge` — instead of converging to GitHub's terminal state. The
+  superseded suppression also never cleared (it only clears when a
+  different-numbered PR is *observed*), so it was self-reinforcing. Leaving the
+  debounce un-armed for the suppressed case lets the next periodic poll re-verify
+  and promote the moment `findPullRequestAnyState` returns the new (now-terminal)
+  PR — no forced refresh / viewer attach required. The `"open"` and `"absent"`
+  outcomes still arm the debounce (a known open PR is sustained by the
+  coverage-alias query; a genuinely absent branch must not re-probe every poll),
+  so steady-state REST load is unchanged for non-re-armed sessions. Coverage:
+  `pr-status-poller.test.ts` "converges to merged when the NEW PR opens and merges
+  between polls (never seen open)".
 - **New-PR creation**: `quickCreatePr` takes a `reArm?: { baseBranch?;
   forceWithLease? }` arg — re-arm targets the prior PR's base (not auto-detected
   main/master) and pushes with `--force-with-lease` (the old remote branch often
