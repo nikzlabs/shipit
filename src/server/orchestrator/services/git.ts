@@ -11,6 +11,73 @@ import type { FileDiff } from "../../shared/types.js";
 import { scanFileTree } from "../../shared/file-tree.js";
 import { ServiceError } from "./types.js";
 
+// ---- Image diff support ----
+
+/**
+ * Raster image extensions whose old/new bytes we embed into the diff so the
+ * viewer can render the two variants side by side. SVG is deliberately absent:
+ * it's text, so it flows through the normal text-diff path and gets a
+ * render toggle client-side.
+ */
+const DIFF_IMAGE_EXTENSIONS = new Set([
+  "png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "ico",
+]);
+
+/** Per-side cap for an embedded image blob. Larger images fall back to the
+ *  "binary file" placeholder rather than bloating the diff payload. */
+const MAX_DIFF_IMAGE_BYTES = 2 * 1_048_576;
+
+/** MIME type for a renderable image path, or `null` if it isn't one we embed. */
+function diffImageMime(filePath: string): string | null {
+  const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
+  if (!DIFF_IMAGE_EXTENSIONS.has(ext)) return null;
+  if (ext === "jpg") return "image/jpeg";
+  if (ext === "ico") return "image/x-icon";
+  return `image/${ext}`;
+}
+
+/** Load an image blob at a ref as a base64 `data:` URI, or "" if absent/too big. */
+async function imageDataUri(
+  git: GitManager,
+  ref: string,
+  filePath: string,
+): Promise<string> {
+  const mime = diffImageMime(filePath);
+  if (!mime) return "";
+  const buf = await git.getFileBufferAtCommit(ref, filePath);
+  if (!buf || buf.length === 0 || buf.length > MAX_DIFF_IMAGE_BYTES) return "";
+  return `data:${mime};base64,${buf.toString("base64")}`;
+}
+
+/**
+ * Resolve the old/new content for one changed file, shared by `getTurnDiff` and
+ * `getDiffVsBranch` (which differ only in the refs they diff). For text files
+ * the content is the UTF-8 blob; for binary *images* it's base64 `data:` URIs
+ * (and `image: true`); other binaries get empty content (`image: false`) and
+ * render as the placeholder.
+ */
+async function buildFileDiffContent(
+  git: GitManager,
+  fromRef: string,
+  toRef: string,
+  entry: { path: string; oldPath?: string },
+  status: FileDiff["status"],
+  isBinary: boolean,
+): Promise<{ oldContent: string; newContent: string; image: boolean }> {
+  const oldPath = status === "renamed" ? (entry.oldPath ?? entry.path) : entry.path;
+
+  if (isBinary) {
+    if (!diffImageMime(entry.path)) return { oldContent: "", newContent: "", image: false };
+    const oldContent = status === "added" ? "" : await imageDataUri(git, fromRef, oldPath);
+    const newContent = status === "deleted" ? "" : await imageDataUri(git, toRef, entry.path);
+    return { oldContent, newContent, image: Boolean(oldContent || newContent) };
+  }
+
+  const oldContent = status === "added" ? "" : await git.getFileAtCommit(fromRef, oldPath);
+  const newContent = status === "deleted" ? "" : await git.getFileAtCommit(toRef, entry.path);
+  return { oldContent, newContent, image: false };
+}
+
 // ---- Rebase types ----
 
 export type RebaseFlowResult =
@@ -94,22 +161,9 @@ export async function getTurnDiff(
       default: status = "modified"; break;
     }
 
-    let oldContent = "";
-    let newContent = "";
-
-    if (!isBinary) {
-      if (status === "deleted") {
-        oldContent = await git.getFileAtCommit(fromCommit, entry.path);
-      } else if (status === "added") {
-        newContent = await git.getFileAtCommit(toCommit, entry.path);
-      } else if (status === "renamed") {
-        oldContent = await git.getFileAtCommit(fromCommit, entry.oldPath ?? entry.path);
-        newContent = await git.getFileAtCommit(toCommit, entry.path);
-      } else {
-        oldContent = await git.getFileAtCommit(fromCommit, entry.path);
-        newContent = await git.getFileAtCommit(toCommit, entry.path);
-      }
-    }
+    const { oldContent, newContent, image } = await buildFileDiffContent(
+      git, fromCommit, toCommit, entry, status, isBinary,
+    );
 
     totalInsertions += stats.insertions;
     totalDeletions += stats.deletions;
@@ -121,6 +175,7 @@ export async function getTurnDiff(
       insertions: stats.insertions,
       deletions: stats.deletions,
       binary: isBinary,
+      image,
       oldContent,
       newContent,
     });
@@ -226,22 +281,9 @@ export async function getDiffVsBranch(
       default: status = "modified"; break;
     }
 
-    let oldContent = "";
-    let newContent = "";
-
-    if (!isBinary) {
-      if (status === "deleted") {
-        oldContent = await git.getFileAtCommit(mergeBaseHash, entry.path);
-      } else if (status === "added") {
-        newContent = await git.getFileAtCommit(headHash, entry.path);
-      } else if (status === "renamed") {
-        oldContent = await git.getFileAtCommit(mergeBaseHash, entry.oldPath ?? entry.path);
-        newContent = await git.getFileAtCommit(headHash, entry.path);
-      } else {
-        oldContent = await git.getFileAtCommit(mergeBaseHash, entry.path);
-        newContent = await git.getFileAtCommit(headHash, entry.path);
-      }
-    }
+    const { oldContent, newContent, image } = await buildFileDiffContent(
+      git, mergeBaseHash, headHash, entry, status, isBinary,
+    );
 
     totalInsertions += stats.insertions;
     totalDeletions += stats.deletions;
@@ -253,6 +295,7 @@ export async function getDiffVsBranch(
       insertions: stats.insertions,
       deletions: stats.deletions,
       binary: isBinary,
+      image,
       oldContent,
       newContent,
     });
