@@ -46,13 +46,6 @@ export async function fetchCIFailureLogs(
     chownToSessionWorker(path.join(sessionDir!, ".gitignore"));
   }
 
-  // One timestamp per fetch batch — disambiguates logs from different CI runs of
-  // the same check. Without it, a re-run of the same failing check overwrites the
-  // previous log at an identical path, and the agent (which sees the path twice in
-  // chat history) can't tell whether it's looking at a fresh failure or a stale one.
-  // Filesystem-safe: ISO with colons/dots swapped for dashes (e.g. 2026-06-22T14-30-00-000Z).
-  const batchTimestamp = new Date().toISOString().replace(/[:.]/g, "-");
-
   const logs: CIFailureLog[] = [];
 
   for (const check of failedChecks) {
@@ -71,8 +64,22 @@ export async function fetchCIFailureLogs(
     const cleanLog = stripCILogBloat(fullLog);
     let logFilePath: string | undefined;
     if (logDir && cleanLog) {
+      // Name the log file after the check run's GitHub database ID — its stable,
+      // per-run identity — NOT the wall-clock time we happened to fetch it. The
+      // databaseId is unique per (commit, re-run attempt, job): a genuinely fresh
+      // CI run (a new push, an empty retrigger commit, a manual re-run) always
+      // gets a new ID and therefore a new file, while re-fetching the SAME failed
+      // run lands at the SAME path (overwriting identical content).
+      //
+      // This is what lets the agent tell a stale re-send from a real new failure.
+      // The poller can re-fire CI-fix in the window after a retrigger commit but
+      // before GitHub has produced a verdict for the new head — fetching the
+      // previous run's logs again. A fetch-timestamp filename made each of those
+      // identical re-sends look like a distinct failure (a new path every time);
+      // keying on the run ID makes the repeat visibly the same file in chat
+      // history, so the agent won't re-debug an already-resolved/flaky run.
       const safeName = check.name.replace(/[^a-zA-Z0-9_-]/g, "_");
-      const fileName = `${safeName}-${batchTimestamp}.log`;
+      const fileName = `${safeName}-${check.databaseId}.log`;
       const absPath = path.join(logDir, fileName);
       fs.writeFileSync(absPath, cleanLog, "utf-8");
       chownToSessionWorker(absPath); // docs/150 §7 — agent reads as `shipit`
