@@ -14,7 +14,7 @@ import path from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import type { ComposeConfig } from "../shared/shipit-config.js";
 import type { SecretRequirement } from "../shared/types/domain-types.js";
-import { chownToSessionWorker } from "./session-worker-uid.js";
+import { chownToSessionWorker, sessionWorkerUid } from "./session-worker-uid.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -57,6 +57,13 @@ export interface ComposeService {
    * shorthand).
    */
   secretRequirements?: SecretRequirement[];
+  /**
+   * Explicit `user:` declared by the service in the user's compose file, if any.
+   * When set, ShipIt honors it and does NOT inject the session-worker UID
+   * (see {@link generateComposeOverride}). Captured as a string so both the
+   * `1000` and `1000:1000` / named forms round-trip.
+   */
+  user?: string;
 }
 
 export interface ComposeOverrideOptions {
@@ -306,6 +313,11 @@ export function parseComposeFile(
     const requirements = parseSecretEntries(name, svc["x-shipit-secrets"]);
     const secrets = requirements?.map((r) => r.name);
 
+    // Preserve an explicit `user:` so the override doesn't clobber it. Compose
+    // accepts string (`node`, `1000:1000`) and bare-number forms.
+    const user =
+      typeof svc.user === "string" || typeof svc.user === "number" ? String(svc.user) : undefined;
+
     result.push({
       name,
       ports,
@@ -315,6 +327,7 @@ export function parseComposeFile(
       volumes,
       secrets,
       secretRequirements: requirements,
+      user,
     });
   }
 
@@ -657,6 +670,24 @@ export function generateComposeOverride(
       networks: ["shipit-session"],
       cap_drop: ["NET_RAW"],
     };
+
+    // docs/150 §7 / #1646 — run compose services as the same UID the session
+    // worker drops to, so files a dev server writes into the SHARED workspace
+    // (e.g. `node_modules/.vite`, framework build caches) are owned by the agent
+    // user. Otherwise a root-owned cache from the running dev server makes a
+    // one-off `npm run build` in the terminal (run as `shipit`) fail with EACCES
+    // when the tool tries to rmdir/overwrite it — and `sudo` isn't available.
+    // Symmetric with the worker entrypoint's `gosu ${UID}:${UID}` and the
+    // orchestrator's §7 chowns, all gated on the same env var:
+    //   - unset (legacy default) → no-op; worker AND services are both root, so
+    //     there's no ownership mismatch to begin with.
+    //   - set (e.g. 1000) → both sides share the UID; one deploy flips both.
+    // An explicit `user:` in the user's compose file is honored — we never
+    // override a deliberate choice.
+    const workerUid = sessionWorkerUid();
+    if (workerUid !== null && svc.user === undefined) {
+      entry.user = `${workerUid}:${workerUid}`;
+    }
 
     // Strip host port bindings — compose services are accessed through
     // the preview proxy via the session network, not direct host ports.
