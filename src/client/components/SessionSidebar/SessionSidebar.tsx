@@ -274,7 +274,7 @@ export function SessionSidebar({
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-60">
         <DropdownMenuLabel>New session</DropdownMenuLabel>
-        <DropdownMenuItem onSelect={() => setSandboxDialogOpen(true)} className="items-start gap-2.5 py-2">
+        <DropdownMenuItem onSelect={() => { setSandboxDialogOpen(true); if (mobile) onClose?.(); }} className="items-start gap-2.5 py-2">
           <span className="w-7 h-7 rounded-md bg-(--color-sandbox-subtle) text-(--color-sandbox) flex items-center justify-center shrink-0">
             <CubeIcon size={ICON_SIZE.SM} weight="fill" />
           </span>
@@ -394,12 +394,16 @@ export function SessionSidebar({
       className={`flex flex-col h-full bg-(--color-bg-primary) ${mobile ? "min-w-0 flex-1" : "border-r border-(--color-border-primary)"} min-h-0`}
       style={mobile ? undefined : { width }}
     >
-      {/* Top bar — desktop only. On mobile the drawer is toggled open/closed
-          via the bottom tab bar's Sessions button, and the repo switcher lives
-          in the header, so this strip would be redundant. Quick session lives
-          in the header on desktop and the bottom tab bar on mobile. */}
-      {!mobile && (
-        <div className="flex items-center gap-2 px-3 h-10.25 border-b border-(--color-border-primary) shrink-0">
+      {/* Top bar. Desktop: collapse + advanced "+" menu + quick/voice + repo
+          switcher. Mobile drawer: the advanced "+" menu and the repo switcher
+          (moved here from the app header to declutter it), right-aligned. There's
+          no collapse/close affordance on mobile — Sessions is one mode of the
+          bottom tab bar's segmented control, so you switch away from it (tap
+          Chat/Workspace) rather than closing it. Quick session, voice, and "new
+          session" also live in the bottom tab bar, so they're omitted here to
+          avoid duplicating them. */}
+      <div className="flex items-center gap-2 px-3 h-10.25 border-b border-(--color-border-primary) shrink-0">
+        {!mobile && (
           <WithTooltip label="Collapse sidebar">
           <Button
             variant="ghost"
@@ -411,27 +415,27 @@ export function SessionSidebar({
             <SidebarSimpleIcon size={ICON_SIZE.SM} />
           </Button>
           </WithTooltip>
-          <span className="flex-1" />
-          {renderAdvancedSessionMenu()}
-          {renderQuickSessionControls()}
-          <RepoSwitcher
-            repos={repos}
-            activeRepoUrl={useRepoStore.getState().activeRepoUrl}
-            onSelectRepo={(url) => useRepoStore.getState().setActiveRepoUrl(url)}
-            onAddRepo={onAddRepo}
-            onCreateNew={onCreateNewRepo}
+        )}
+        <span className="flex-1" />
+        {renderAdvancedSessionMenu()}
+        {!mobile && renderQuickSessionControls()}
+        <RepoSwitcher
+          repos={repos}
+          activeRepoUrl={useRepoStore.getState().activeRepoUrl}
+          onSelectRepo={(url) => useRepoStore.getState().setActiveRepoUrl(url)}
+          onAddRepo={onAddRepo}
+          onCreateNew={onCreateNewRepo}
+        >
+          <Button
+            variant="ghost"
+            size="sm"
+            className="p-0! w-7 h-7 text-(--color-text-tertiary) hover:text-(--color-text-primary)"
+            aria-label="Repository"
           >
-            <Button
-              variant="ghost"
-              size="sm"
-              className="p-0! w-7 h-7 text-(--color-text-tertiary) hover:text-(--color-text-primary)"
-              aria-label="Repository"
-            >
-              <GithubLogoIcon size={ICON_SIZE.SM} weight="fill" className="shrink-0" />
-            </Button>
-          </RepoSwitcher>
-        </div>
-      )}
+            <GithubLogoIcon size={ICON_SIZE.SM} weight="fill" className="shrink-0" />
+          </Button>
+        </RepoSwitcher>
+      </div>
 
       {/* Scrollable grouped repo sections */}
       <div className="flex-1 overflow-y-auto min-h-0 flex flex-col py-1">

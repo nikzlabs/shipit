@@ -1,11 +1,8 @@
 import type { ReactNode, RefObject } from "react";
-import { GaugeIcon, GearSixIcon, GithubLogoIcon, QuestionIcon } from "@phosphor-icons/react";
-import { useRepoStore } from "./stores/repo-store.js";
+import { GaugeIcon, GearSixIcon, QuestionIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "./design-tokens.js";
 import { Popover, PopoverContent, PopoverTrigger } from "./components/ui/popover.js";
 import { WithTooltip } from "./components/ui/tooltip.js";
-import { Button } from "./components/ui/button.js";
-import { RepoSwitcher } from "./components/RepoSwitcher.js";
 import { ThemePicker } from "./components/ThemePicker.js";
 import { SessionSidebar } from "./components/SessionSidebar.js";
 import { ResizeHandle } from "./components/ResizeHandle.js";
@@ -165,24 +162,6 @@ export function AppLayout({
               ShipIt
             </a>
           </h1>
-          {isMobile && (
-            <RepoSwitcher
-              repos={repos}
-              activeRepoUrl={useRepoStore.getState().activeRepoUrl}
-              onSelectRepo={(url) => useRepoStore.getState().setActiveRepoUrl(url)}
-              onAddRepo={onAddRepo}
-              onCreateNew={onCreateNewRepo}
-            >
-              <Button
-                variant="ghost"
-                size="sm"
-                className="p-0! w-7 h-7 text-(--color-text-secondary) hover:text-(--color-text-primary)"
-                aria-label="Repository"
-              >
-                <GithubLogoIcon size={ICON_SIZE.MD} weight="fill" className="shrink-0" />
-              </Button>
-            </RepoSwitcher>
-          )}
         </div>
         {showConnectionBanner && !isMobile && (
           <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 max-w-[60vw] pointer-events-none flex justify-center">
@@ -275,18 +254,23 @@ export function AppLayout({
               </div>
             )}
           </div>
-          {(!showHomeScreen || showNewSessionView) && (
-            <MobileTabBar
-              activePanel={mobilePanel}
-              sidebarOpen={mobileSidebarOpen}
-              onChangePanel={onMobilePanelChange}
-              onOpenSessions={onOpenSessions}
-              onNewSession={onMobileNewSession}
-              onQuickSession={onMobileQuickSession}
-              onVoiceSession={onMobileVoiceSession}
-              newSessionDisabled={repos.length === 0}
-            />
-          )}
+          {/* The tab bar is always present on mobile so the Sessions drawer — now
+              home to the repo switcher and the advanced "+" menu — stays reachable
+              everywhere, including the home screen. On the home screen there's no
+              session to view, so the Chat/Workspace content tabs are disabled
+              rather than the whole bar being hidden (which used to be a mobile-only
+              special case). */}
+          <MobileTabBar
+            activePanel={mobilePanel}
+            sidebarOpen={mobileSidebarOpen}
+            contentTabsDisabled={showHomeScreen && !showNewSessionView}
+            onChangePanel={onMobilePanelChange}
+            onOpenSessions={onOpenSessions}
+            onNewSession={onMobileNewSession}
+            onQuickSession={onMobileQuickSession}
+            onVoiceSession={onMobileVoiceSession}
+            newSessionDisabled={repos.length === 0}
+          />
         </>
       ) : (
         <div className="flex flex-1 min-h-0">
