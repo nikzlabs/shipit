@@ -357,6 +357,20 @@ What shipped, and where it diverged from the sketch above:
   independently show an inline `GitHubTokenForm` connect prompt when
   unauthenticated rather than a generic failure toast.)
 
+  **Mobile parity.** The advanced-session menu used to be unreachable on mobile:
+  it lived only in the desktop sidebar top bar (`!mobile`), and the mobile bottom
+  tab bar exposed just the repo-backed quick/voice/new flows — so there was no way
+  to create a Sandbox (or Ops) session from a phone. The sidebar top bar now also
+  renders inside the mobile **Sessions drawer** (`SessionSidebar`, `mobile`): on
+  mobile it shows a close (`X`) button, the `+` advanced menu, and the repo
+  switcher (moved here from the app header to declutter it), while quick/voice/new
+  stay in the bottom tab bar to avoid duplication. To keep the drawer reachable
+  everywhere, `MobileTabBar` is now always rendered on mobile (previously hidden on
+  the home screen); on the home screen its Chat/Workspace content tabs are
+  `contentTabsDisabled` (no session to view) while Sessions + creation actions stay
+  live. Opening `SandboxDialog` from the drawer closes the drawer first (the dialog
+  is rendered at App level, so it survives the sidebar unmount).
+
 Phase 2 (building on the stable
 `kind`/`capabilities`/`POST /api/sessions/sandbox` contract) shipped as two
 parallel efforts, both now landed: capability *wiring* (docker, network,

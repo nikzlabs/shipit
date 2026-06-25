@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo } from "react";
-import { CaretDownIcon, CaretRightIcon, CubeIcon, EyeIcon, EyeSlashIcon, GithubLogoIcon, LightningIcon, MicrophoneIcon, PlusIcon, SidebarSimpleIcon, WrenchIcon } from "@phosphor-icons/react";
+import { CaretDownIcon, CaretRightIcon, CubeIcon, EyeIcon, EyeSlashIcon, GithubLogoIcon, LightningIcon, MicrophoneIcon, PlusIcon, SidebarSimpleIcon, WrenchIcon, XIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import { parseRepoName } from "../../utils/repo-label.js";
 import { Button } from "../ui/button.js";
@@ -274,7 +274,7 @@ export function SessionSidebar({
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-60">
         <DropdownMenuLabel>New session</DropdownMenuLabel>
-        <DropdownMenuItem onSelect={() => setSandboxDialogOpen(true)} className="items-start gap-2.5 py-2">
+        <DropdownMenuItem onSelect={() => { setSandboxDialogOpen(true); if (mobile) onClose?.(); }} className="items-start gap-2.5 py-2">
           <span className="w-7 h-7 rounded-md bg-(--color-sandbox-subtle) text-(--color-sandbox) flex items-center justify-center shrink-0">
             <CubeIcon size={ICON_SIZE.SM} weight="fill" />
           </span>
@@ -394,44 +394,43 @@ export function SessionSidebar({
       className={`flex flex-col h-full bg-(--color-bg-primary) ${mobile ? "min-w-0 flex-1" : "border-r border-(--color-border-primary)"} min-h-0`}
       style={mobile ? undefined : { width }}
     >
-      {/* Top bar — desktop only. On mobile the drawer is toggled open/closed
-          via the bottom tab bar's Sessions button, and the repo switcher lives
-          in the header, so this strip would be redundant. Quick session lives
-          in the header on desktop and the bottom tab bar on mobile. */}
-      {!mobile && (
-        <div className="flex items-center gap-2 px-3 h-10.25 border-b border-(--color-border-primary) shrink-0">
-          <WithTooltip label="Collapse sidebar">
+      {/* Top bar. Desktop: collapse + advanced "+" menu + quick/voice + repo
+          switcher. Mobile drawer: a close button, the advanced "+" menu, and the
+          repo switcher — the latter moves here from the app header to declutter
+          it. Quick session, voice, and "new session" live in the bottom tab bar
+          on mobile, so they're omitted here to avoid duplicating them. */}
+      <div className="flex items-center gap-2 px-3 h-10.25 border-b border-(--color-border-primary) shrink-0">
+        <WithTooltip label={mobile ? "Close" : "Collapse sidebar"}>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onToggleCollapse}
+          className="p-0! w-7 h-7 text-(--color-text-tertiary)"
+          aria-label={mobile ? "Close sessions" : "Collapse sidebar"}
+        >
+          {mobile ? <XIcon size={ICON_SIZE.SM} /> : <SidebarSimpleIcon size={ICON_SIZE.SM} />}
+        </Button>
+        </WithTooltip>
+        <span className="flex-1" />
+        {renderAdvancedSessionMenu()}
+        {!mobile && renderQuickSessionControls()}
+        <RepoSwitcher
+          repos={repos}
+          activeRepoUrl={useRepoStore.getState().activeRepoUrl}
+          onSelectRepo={(url) => useRepoStore.getState().setActiveRepoUrl(url)}
+          onAddRepo={onAddRepo}
+          onCreateNew={onCreateNewRepo}
+        >
           <Button
             variant="ghost"
             size="sm"
-            onClick={onToggleCollapse}
-            className="p-0! w-7 h-7 text-(--color-text-tertiary)"
-            aria-label="Collapse sidebar"
+            className="p-0! w-7 h-7 text-(--color-text-tertiary) hover:text-(--color-text-primary)"
+            aria-label="Repository"
           >
-            <SidebarSimpleIcon size={ICON_SIZE.SM} />
+            <GithubLogoIcon size={ICON_SIZE.SM} weight="fill" className="shrink-0" />
           </Button>
-          </WithTooltip>
-          <span className="flex-1" />
-          {renderAdvancedSessionMenu()}
-          {renderQuickSessionControls()}
-          <RepoSwitcher
-            repos={repos}
-            activeRepoUrl={useRepoStore.getState().activeRepoUrl}
-            onSelectRepo={(url) => useRepoStore.getState().setActiveRepoUrl(url)}
-            onAddRepo={onAddRepo}
-            onCreateNew={onCreateNewRepo}
-          >
-            <Button
-              variant="ghost"
-              size="sm"
-              className="p-0! w-7 h-7 text-(--color-text-tertiary) hover:text-(--color-text-primary)"
-              aria-label="Repository"
-            >
-              <GithubLogoIcon size={ICON_SIZE.SM} weight="fill" className="shrink-0" />
-            </Button>
-          </RepoSwitcher>
-        </div>
-      )}
+        </RepoSwitcher>
+      </div>
 
       {/* Scrollable grouped repo sections */}
       <div className="flex-1 overflow-y-auto min-h-0 flex flex-col py-1">
