@@ -19,6 +19,7 @@ import { MobileStatusPanel } from "./components/MobileStatusPanel.js";
 import { MemoryPressureBanner } from "./components/MemoryPressureBanner.js";
 import { GitHubRateLimitBanner } from "./components/GitHubRateLimitBanner.js";
 import { LocalModeBanner } from "./components/LocalModeBanner.js";
+import { Logo } from "./components/Logo.js";
 import { QuickCaptureOverlay } from "./components/QuickCaptureOverlay.js";
 
 interface AppLayoutProps {
@@ -148,7 +149,7 @@ export function AppLayout({
           <h1 className="text-base sm:text-lg font-semibold tracking-tight shrink-0">
             <a
               href="/"
-              className="flex items-center gap-1.5 hover:opacity-80 transition-opacity"
+              className="inline-flex hover:opacity-80 transition-opacity"
               onClick={(e) => {
                 // Left-click (no modifier) stays in-app via client-side routing.
                 // Middle-click / cmd+click / ctrl+click fall through to the
@@ -158,8 +159,7 @@ export function AppLayout({
                 onNavigateHome();
               }}
             >
-              <img src="/favicon.svg" alt="" className="w-5 h-5" />
-              ShipIt
+              <Logo />
             </a>
           </h1>
         </div>
