@@ -124,7 +124,7 @@ The shim:
 | `gh pr ready [<n>]` | Mark a draft PR as ready for review. |
 | `gh pr close [<n>]` | Close a PR. |
 | `gh pr reopen <n>` | Reopen a closed PR. (PR number is required.) |
-| `gh pr merge [<n>] [--merge\|--squash\|--rebase] [--auto]` | **Sandbox sessions only, and only when the user granted "Allow merging PRs".** Merge a PR. Refused unless required checks are green (or pass `--auto` to enable merge-when-green). Branch protection / required reviews are enforced by GitHub — a rejection is reported, never forced. `--admin` (force-merge) is not available. See "Merging PRs" below. |
+| `gh pr merge [<n>] [--merge\|--squash\|--rebase] [--auto]` | **Sandbox sessions only, and only when the user granted "Allow merging PRs".** Merge a PR. A repo with **no checks merges normally**; a *failing* or *still-running* check blocks it (pass `--auto` to merge-when-green). Branch protection / required reviews are enforced by GitHub — a rejection is reported, never forced. `--admin` (force-merge) is not available. See "Merging PRs" below. |
 
 Every PR subcommand also accepts `--repo OWNER/NAME` (alias `-R`) to target a
 specific repo — useful in a Sandbox session where you've cloned more than one.
@@ -146,9 +146,11 @@ code), so it is **gated**, not part of the open allowlist:
 
 When enabled, the guardrails are enforced server-side:
 
-- **Required checks must be green.** A failing or still-running check refuses the
-  merge with a clear message. Pass `--auto` to enable GitHub auto-merge
-  (merge-when-green) instead of waiting.
+- **Required checks must be green.** These are GitHub's checks on the PR's head
+  commit (GitHub Actions / required status checks) — not anything ShipIt-local. A
+  repo that configures **no checks merges normally**; only a *failing* or
+  *still-running* check refuses the merge, with a clear message. Pass `--auto` to
+  enable GitHub auto-merge (merge-when-green) instead of waiting.
 - **Branch protection / required reviews are respected.** If GitHub rejects the
   merge (e.g. a required review is missing), the rejection reason is surfaced —
   the shim never forces past it. `--admin` is rejected.
