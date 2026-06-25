@@ -731,31 +731,31 @@ describe("PreviewFrame", () => {
   });
 
   it("applies explicit width/height to the iframe when a preset is active", async () => {
-    const preset = findPresetById("iphone-14")!;
+    const preset = findPresetById("iphone-16")!;
     usePreviewStore.setState({ devicePreset: preset, isLandscape: false, customSize: null });
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     render(<PreviewFrame preview={preview} {...defaultProps} />);
     const iframe = await screen.findByTitle("Live Preview");
-    expect(iframe.style.width).toBe("390px");
-    expect(iframe.style.height).toBe("844px");
+    expect(iframe.style.width).toBe("393px");
+    expect(iframe.style.height).toBe("852px");
   });
 
   it("swaps width and height when isLandscape is true", async () => {
-    const preset = findPresetById("iphone-14")!;
+    const preset = findPresetById("iphone-16")!;
     usePreviewStore.setState({ devicePreset: preset, isLandscape: true, customSize: null });
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     render(<PreviewFrame preview={preview} {...defaultProps} />);
     const iframe = await screen.findByTitle("Live Preview");
-    expect(iframe.style.width).toBe("844px");
-    expect(iframe.style.height).toBe("390px");
+    expect(iframe.style.width).toBe("852px");
+    expect(iframe.style.height).toBe("393px");
   });
 
   it("shows dimension label when a preset is active", async () => {
-    const preset = findPresetById("iphone-14")!;
+    const preset = findPresetById("iphone-16")!;
     usePreviewStore.setState({ devicePreset: preset, isLandscape: false, customSize: null });
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     render(<PreviewFrame preview={preview} {...defaultProps} />);
-    expect(screen.getByText(/390×844/)).toBeInTheDocument();
+    expect(screen.getByText(/393×852/)).toBeInTheDocument();
   });
 
   it("does not show dimension label when responsive is active", () => {
