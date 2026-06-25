@@ -26,8 +26,8 @@ export function ErrorPhase({
   };
 
   return (
-    <div className="flex items-start gap-3 min-w-0 flex-1">
-      <XCircleIcon size={ICON_SIZE.SM} className="text-(--color-error) shrink-0 mt-0.5" />
+    <div className="flex items-center gap-3 min-w-0 flex-1">
+      <XCircleIcon size={ICON_SIZE.SM} className="text-(--color-error) shrink-0 self-start mt-0.5" />
       <span className="text-xs text-(--color-text-secondary) wrap-break-word min-w-0">
         Failed to create PR{lines.length > 0 && ": "}
         {lines.map((line, i) => (
@@ -46,19 +46,19 @@ export function ErrorPhase({
       {isAuthError && (
         <Button
           variant="ghost"
-          size="md"
+          size="sm"
           onClick={handleSignIn}
-          className="shrink-0"
+          className="shrink-0 h-6"
         >
           Sign in to GitHub
         </Button>
       )}
       <Button
         variant="ghost"
-        size="md"
+        size="sm"
         onClick={onCreatePr}
         disabled={agentRunning || !onCreatePr}
-        className="shrink-0"
+        className="shrink-0 h-6"
       >
         {agentRunning ? "Retrying..." : "Retry"}
       </Button>
