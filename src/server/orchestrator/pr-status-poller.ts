@@ -411,8 +411,13 @@ export class PrStatusPoller {
     const polledOwner = repoKey.slice(0, slash);
     const polledRepo = repoKey.slice(slash + 1);
     const { owner, repo } = await this.resolveCanonicalApiTarget(repoKey, polledOwner, polledRepo);
-    await this.verifyMissingPr(sessionId, owner, repo, session.branch);
-    this.tracker.verifiedAbsent.add(sessionId);
+    const outcome = await this.verifyMissingPr(sessionId, owner, repo, session.branch);
+    // Arm the single-probe debounce for every resting outcome EXCEPT a
+    // superseded-PR suppression — see the matching note in `pollRepo`'s missing-
+    // PR branch. A suppressed verify means the only PR on the branch is still the
+    // re-armed session's OLD merged PR (docs/202); arming here would wedge
+    // convergence if the NEW PR opens-and-merges before being observed open.
+    if (outcome !== "suppressed") this.tracker.verifiedAbsent.add(sessionId);
   }
 
   /** Untrack a session (archived, PR merged, etc.). */
@@ -1009,13 +1014,35 @@ export class PrStatusPoller {
         // `verifiedAbsent` until the PR reappears in a bulk response.
         if ((!opts.force && this.tracker.verifiedAbsent.has(session.id)) || this.tracker.inFlightVerify.has(session.id)) continue;
         this.tracker.inFlightVerify.add(session.id);
+        // eslint-disable-next-line no-restricted-syntax -- fire-and-forget in the synchronous poll loop; the outcome decides whether to arm the debounce
         const verify = this.verifyMissingPr(session.id, owner, repo, session.branch)
+          .then((outcome) => {
+            // Arm the single-probe debounce for every resting outcome EXCEPT a
+            // superseded-PR suppression. A `"suppressed"` verify means the only
+            // PR on the branch is still the re-armed session's OLD merged PR
+            // (docs/202) — the session's NEW PR hasn't been observed yet. If we
+            // armed the debounce here, a NEW PR that opens AND merges entirely
+            // between two polls (so it never appears in the OPEN bulk view to
+            // clear `verifiedAbsent` — exactly the `gh pr create` → merge-on-
+            // GitHub case, especially while the tab is closed) would never be
+            // REST-verified again. The suppression also never clears (it only
+            // clears when a *different*-numbered PR is observed), so the session
+            // stays stuck with no PR card — the gray "Branch" badge — instead of
+            // converging to GitHub's terminal `merged`/`closed` state. Leaving the
+            // debounce un-armed for the suppressed case lets the next poll
+            // re-verify and promote once `findPullRequestAnyState` returns the
+            // different-numbered (now-terminal) PR.
+            if (outcome !== "suppressed") this.tracker.verifiedAbsent.add(session.id);
+          })
           .catch((err: unknown) => {
             console.error(`[pr-poller] REST verify error for ${session.id}:`, err);
+            // On a transient REST/GraphQL error, arm the debounce as before so a
+            // persistent failure doesn't re-probe every poll; the next forced
+            // refresh (viewer attach / activation) clears it and retries.
+            this.tracker.verifiedAbsent.add(session.id);
           })
           .finally(() => {
             this.tracker.inFlightVerify.delete(session.id);
-            this.tracker.verifiedAbsent.add(session.id);
           });
         if (opts.waitForMissingVerify) await verify;
       }
@@ -1044,10 +1071,21 @@ export class PrStatusPoller {
    *     alone and wait for the next GraphQL poll to pick the PR back up.
    *   - Closed or merged: promote, persist, broadcast, and trigger the
    *     archive callback for merged.
+   *
+   * Returns the resting outcome so the caller can decide whether to arm the
+   * `verifiedAbsent` single-probe debounce. Crucially, a `"suppressed"` result
+   * (the superseded re-armed PR, docs/202) must NOT arm the debounce, or a NEW
+   * PR that opens-and-merges between polls is never re-verified and the session
+   * never converges to its terminal state (see the callers).
    */
-  private async verifyMissingPr(sessionId: string, owner: string, repo: string, branch: string): Promise<void> {
+  private async verifyMissingPr(
+    sessionId: string,
+    owner: string,
+    repo: string,
+    branch: string,
+  ): Promise<"absent" | "open" | "terminal" | "suppressed"> {
     const pr = await this.githubAuth.findPullRequestAnyState(owner, repo, branch);
-    if (!pr) return;
+    if (!pr) return "absent";
 
     const isMerged = pr.merged_at !== null;
     const prState = isMerged ? "merged" as const : pr.state === "closed" ? "closed" as const : "open" as const;
@@ -1065,7 +1103,11 @@ export class PrStatusPoller {
     } else if (superseded !== undefined && prState !== "open") {
       // Same-numbered terminal PR — the one we're suppressing. Treat as "no
       // current PR": leave the session active with its `ready` card standing.
-      return;
+      // Reported as `"suppressed"` so the caller does NOT arm `verifiedAbsent`:
+      // the session's NEW PR hasn't appeared yet, and the next poll must stay
+      // free to re-verify and catch it (even if it opens-and-merges between
+      // polls, never showing in the OPEN bulk view).
+      return "suppressed";
     }
 
     if (prState === "open") {
@@ -1073,7 +1115,7 @@ export class PrStatusPoller {
       // A GraphQL-derived open snapshot is strictly richer than anything REST
       // gives us here (real check rollup, mergeable, conversation, files), so
       // never clobber it — the next GraphQL poll keeps it fresh.
-      if (prev?.prState === "open") return;
+      if (prev?.prState === "open") return "open";
 
       // Either a brand-new PR that the bulk GraphQL view hasn't indexed yet
       // (GitHub's eventual consistency right after `gh pr create` — the forced
@@ -1118,7 +1160,7 @@ export class PrStatusPoller {
       this.tracker.lastKnown.set(sessionId, summary);
       this.sessionManager.setPrStatus(sessionId, summary);
       this.sseBroadcast("pr_status", { updates: [this.attachAutomationState(summary)] });
-      return;
+      return "open";
     }
 
     // Capture whether this session was already promoted to a terminal state
@@ -1245,5 +1287,7 @@ export class PrStatusPoller {
         });
       }
     }
+
+    return "terminal";
   }
 }

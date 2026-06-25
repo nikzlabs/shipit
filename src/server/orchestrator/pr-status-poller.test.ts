@@ -1082,6 +1082,58 @@ describe("PrStatusPoller", () => {
       expect(poller.getStatus("s1")?.prNumber).toBe(99);
     });
 
+    it("converges to merged when the NEW PR opens and merges between polls (never seen open)", async () => {
+      // The bug: a re-armed session (superseded #42) opens a NEW PR via the gh
+      // shim, the user merges it manually on GitHub, and the poller never
+      // observes it OPEN (e.g. tab closed, or it opens-and-merges between
+      // polls). The new PR is therefore absent from the OPEN bulk view forever.
+      //
+      // Before the fix, the re-arm-time verify found only the superseded #42,
+      // returned early (suppression), and the missing-PR branch ARMED
+      // `verifiedAbsent` — so every subsequent periodic poll skipped the REST
+      // verify and the merge of the different-numbered new PR was never caught.
+      // The session stayed stuck with no PR snapshot — the gray "Branch" badge.
+      githubAuth = makeGitHubAuth(
+        { data: { repository: { pullRequests: { nodes: [] } } } },
+        SUPERSEDED_MERGED,
+      );
+      sessionManager = makeSessionManager([
+        { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+      ]);
+      poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+
+      // Re-arm: the immediate forced poll's REST verify finds only the old #42
+      // (suppressed) — no card, and the debounce must NOT be armed.
+      poller.reArm("s1", 42);
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(poller.getStatus("s1")).toBeUndefined();
+
+      // The NEW PR (#99) is opened then merged externally — REST now returns it
+      // merged. It never appeared in the OPEN bulk view, which stays empty.
+      (githubAuth.findPullRequestAnyState as ReturnType<typeof vi.fn>).mockResolvedValue({
+        url: "https://github.com/owner/repo/pull/99",
+        number: 99,
+        base: "main",
+        title: "Next slice",
+        body: "",
+        state: "closed" as const,
+        merged_at: "2026-05-22T10:00:00Z",
+        merge_commit_sha: "mergesha99",
+        head_sha: "headsha99",
+        additions: 5,
+        deletions: 1,
+      });
+
+      // A later periodic poll (NOT a forced refresh) must re-verify and promote
+      // the session to merged, clearing the superseded suppression on the way.
+      await vi.advanceTimersByTimeAsync(PR_STATUS_SLOW_INTERVAL_MS);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(poller.getStatus("s1")?.prState).toBe("merged");
+      expect(poller.getStatus("s1")?.prNumber).toBe(99);
+    });
+
     it("reArm broadcasts no destructive pr_status removal", async () => {
       githubAuth = makeGitHubAuth(
         { data: { repository: { pullRequests: { nodes: [] } } } },
