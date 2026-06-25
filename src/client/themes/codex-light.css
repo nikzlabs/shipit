@@ -47,8 +47,8 @@
      base default; dark themes override to teal-400 in index.css. See the cascade
      note there — the override MUST live on the dark-theme classes, not :root. */
   --color-sandbox: #115e59;
-  --color-sandbox-subtle: rgba(17, 94, 89, 0.18);
-  --color-sandbox-border: rgba(17, 94, 89, 0.38);
+  --color-sandbox-subtle: rgba(45, 212, 191, 0.15);
+  --color-sandbox-border: rgba(45, 212, 191, 0.3);
   --color-folder: #a09018;
   --color-autofix: #c07020;
   --color-attention: #d97706;

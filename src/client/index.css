@@ -30,12 +30,13 @@
 }
 
 /* docs/211 — sandbox-session accent: teal, distinct from PR violet, ops amber,
-   and folder yellow. The LIGHT value (teal-800, for text contrast on light
-   tints) is the base default and lives in the per-theme files (`light.css`
-   `:root,.light` + the light theme classes). Dark themes get the bright
-   teal-400 here, which pops on dark surfaces.
+   and folder yellow. Only the TEXT/solid accent (--color-sandbox) changes per
+   surface: teal-800 on light themes (legible on the pale pill) and the bright
+   teal-400 below on dark themes (it pops on dark). The PILL tint
+   (--color-sandbox-subtle / -border) is a single shared teal-400 mint defined
+   in the base :root (light.css) and is intentionally NOT re-themed here.
 
-   CASCADE NOTE — do NOT move these back into the :root block above. The theme
+   CASCADE NOTE — do NOT move this back into the :root block above. The theme
    class (`.dark`, `.warm-light`, …) is applied to <html> (see useTheme.ts), so
    it sits on the SAME element as :root and ties on specificity (0,1,0). At a
    tie, source order wins. Because this file @imports the themes first and then
@@ -46,8 +47,6 @@
    dark <html>) makes it win for dark themes and stay out of the light ones. */
 .dark, .midnight, .forest, .rose, .claude, .codex, .solarized, .high-contrast {
   --color-sandbox: #2dd4bf;
-  --color-sandbox-subtle: rgba(45, 212, 191, 0.15);
-  --color-sandbox-border: rgba(45, 212, 191, 0.3);
 }
 
 /* Lock the page to the visible viewport. The app shell uses h-[100dvh] and
