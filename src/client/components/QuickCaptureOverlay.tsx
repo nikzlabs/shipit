@@ -253,8 +253,12 @@ export function QuickCaptureOverlay({
               // drop the explicit pick and let the new agent's seed take over.
               setSelectedReasoning(undefined);
             }}
+            // No `sessionReasoning` here: there's no session yet, and the
+            // selector's own seed fallback (`seedFromHistory`) + post-pick
+            // `pending` state drive the displayed value. We only need the
+            // callback to (a) make the control visible and (b) capture the pick
+            // for the creation params below.
             onReasoningChange={(effort) => setSelectedReasoning(effort ?? undefined)}
-            sessionReasoning={selectedReasoning}
             modelInfo={modelInfo}
             hasActiveSession={false}
           />
