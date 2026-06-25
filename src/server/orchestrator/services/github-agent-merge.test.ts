@@ -19,11 +19,11 @@ function makeGit(): GitManager {
   } as unknown as GitManager;
 }
 
-type PrView = {
+interface PrView {
   url: string; number: number; base: string; head: string;
   title: string; body: string; state: "open" | "closed"; isDraft: boolean; merged: boolean;
   additions: number; deletions: number;
-};
+}
 
 function pr(over: Partial<PrView> = {}): PrView {
   return {
@@ -33,7 +33,7 @@ function pr(over: Partial<PrView> = {}): PrView {
   };
 }
 
-type Checks = { state: "pending" | "success" | "failure" | "none"; total: number; passed: number; failed: number; pending: number };
+interface Checks { state: "pending" | "success" | "failure" | "none"; total: number; passed: number; failed: number; pending: number }
 function checks(state: Checks["state"], over: Partial<Checks> = {}): Checks {
   return { state, total: 0, passed: 0, failed: 0, pending: 0, ...over };
 }
