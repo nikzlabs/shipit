@@ -17,6 +17,13 @@ export interface WsSendMessage {
    * `UserReviewCard` instead of a plain text bubble after a reload.
    */
   userReview?: { filePaths: string[]; commentCount: number };
+  /**
+   * docs/218 — per-send intent for the auto-reset-merged-branch control. `false`
+   * = the user unticked "start from the latest base" for THIS message (skip the
+   * reset). `true`/absent = follow the global setting. Non-sticky: it's a
+   * per-message choice, never persisted.
+   */
+  resetMergedBranch?: boolean;
 }
 
 export interface WsAnswerQuestion {
@@ -45,25 +52,6 @@ export interface WsAnswerQuestion {
   permissionMode?: PermissionMode;
 }
 
-/**
- * Client → Server: start a chat-native AI review turn (docs/125, docs/203).
- *
- * Distinct from `send_message` so the orchestrator can authorize the review
- * tool: on receipt the handler sets `runner.activeReviewFilePath` to
- * `reviewFilePath`, and the `submit_review` tool handler rejects any call whose
- * `file_path` doesn't match (and any call outside a review turn). A user who
- * simply types "Review docs/foo.md" in the composer goes through `send_message`
- * instead — plain chat, no tool authorization. The text is routed through the
- * same agent code path as `send_message` for everything else.
- */
-export interface WsSendReviewMessage {
-  type: "send_review_message";
-  text: string;
-  sessionId?: string;
-  /** The file the review tool is authorized to record a card for this turn. */
-  reviewFilePath: string;
-}
-
 // ---- Agent selection (per-connection state, must stay on WS) ----
 
 /** Client → Server: set the active agent for this connection. */
@@ -76,6 +64,15 @@ export interface WsSetAgentMessage {
 export interface WsSetModelMessage {
   type: "set_model";
   model: string;
+}
+
+/**
+ * docs/217 — Client → Server: set the per-session reasoning effort for the
+ * active agent's own turns (Control B). `effort: null` clears it (CLI default).
+ */
+export interface WsSetReasoningMessage {
+  type: "set_reasoning";
+  effort: string | null;
 }
 
 // ---- Interrupt messages ----
@@ -216,12 +213,12 @@ export type WsClientMessage =
   | WsUndoIssueWrite
   | WsResolvePermission
   | WsEgressDecision
-  | WsSendReviewMessage
   | WsSubscribeLogs
   | WsLogClear
   | WsAnswerQuestion
   | WsSetAgentMessage
   | WsSetModelMessage
+  | WsSetReasoningMessage
   | WsTerminalStart
   | WsTerminalInput
   | WsTerminalResize

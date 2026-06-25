@@ -130,7 +130,7 @@ docs/
 - **Link the mock from `plan.md`** with a short "Visual reference" note so a reader of the design lands on the picture.
 - **Keep the asset inside the `docs/NNN-*` folder** so it travels with the doc — it's reference material, same as `plan.md`.
 
-The `present` tool renders a mock in an ephemeral Present tab, but that artifact never touches the repo, so the prototype vanishes and only the prose survives. A committed mock is reviewable in PRs, renders in the file tree, and survives across sessions.
+The `present` tool renders a mock in the Present tab, but that artifact never touches the repo — so even though a `/persist`-backed mock survives restarts, it isn't committed, isn't reviewable in the PR, and only the prose travels with the design. A committed mock is reviewable in PRs, renders in the file tree, and travels with the repo.
 
 ## Common mistakes
 
@@ -139,4 +139,4 @@ The `present` tool renders a mock in an ephemeral Present tab, but that artifact
 - **Frontmatter not at file start**: The `---` block must be the very first thing in the file — no blank lines or content before it.
 - **Not a `.md` file**: Only files ending in `.md` are scanned. Other formats (`.txt`, `.rst`) won't appear in the list.
 - **Checklist embedded in `plan.md`**: Put remaining work in a sibling `checklist.md` file, not as a section inside `plan.md`.
-- **Leaving a UI prototype only in the Present tab**: That artifact is ephemeral and never reaches the repo. Commit a static `mockup.html`/`mockup.svg` into the feature folder and link it from `plan.md`.
+- **Leaving a UI prototype only in the Present tab**: That artifact never reaches the repo, so it isn't committed or reviewable with the design (even if it survives restarts in `/persist`). Commit a static `mockup.html`/`mockup.svg` into the feature folder and link it from `plan.md`.

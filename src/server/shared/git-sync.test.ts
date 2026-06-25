@@ -73,3 +73,64 @@ describe("GitManager: push and pull", () => {
     }
   });
 });
+
+describe("GitManager: forceUpdateBranchRef + getRefHash (docs/221)", () => {
+  let origGitConfigGlobal: string | undefined;
+  let credDir: string;
+
+  beforeEach(() => {
+    credDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-git-ff-cred-"));
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    initGlobalGitConfig(path.join(credDir, "credentials"));
+    setGitIdentity("Test", "test@test.com");
+  });
+
+  afterEach(() => {
+    if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    else delete process.env.GIT_CONFIG_GLOBAL;
+    fs.rmSync(credDir, { recursive: true, force: true });
+  });
+
+  it("force-moves a non-current branch to another ref WITHOUT switching HEAD", async () => {
+    const { execSync } = await import("node:child_process");
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-git-ff-"));
+    try {
+      execSync("git init -b main", { cwd: work, stdio: "pipe" });
+      fs.writeFileSync(path.join(work, "a.txt"), "c1\n");
+      execSync("git add -A && git commit -m c1", { cwd: work, stdio: "pipe" });
+      // A second branch one commit ahead of main.
+      execSync("git checkout -b feature", { cwd: work, stdio: "pipe" });
+      fs.writeFileSync(path.join(work, "a.txt"), "c2\n");
+      execSync("git add -A && git commit -m c2", { cwd: work, stdio: "pipe" });
+
+      const git = new GitManager(work);
+      const featureSha = await git.getRefHash("feature");
+      expect(await git.getRefHash("main")).not.toBe(featureSha);
+
+      // Move main up to feature while staying ON feature.
+      await git.forceUpdateBranchRef("main", "feature");
+
+      expect(await git.getCurrentBranch()).toBe("feature"); // HEAD unchanged
+      expect(await git.getRefHash("main")).toBe(featureSha); // ref moved
+      // Working tree untouched — still feature's content, not a checkout of main.
+      expect(fs.readFileSync(path.join(work, "a.txt"), "utf-8")).toBe("c2\n");
+    } finally {
+      fs.rmSync(work, { recursive: true, force: true });
+    }
+  });
+
+  it("getRefHash returns null for a ref that doesn't resolve", async () => {
+    const { execSync } = await import("node:child_process");
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-git-ref-"));
+    try {
+      execSync("git init -b main", { cwd: work, stdio: "pipe" });
+      fs.writeFileSync(path.join(work, "a.txt"), "c1\n");
+      execSync("git add -A && git commit -m c1", { cwd: work, stdio: "pipe" });
+      const git = new GitManager(work);
+      expect(await git.getRefHash("origin/main")).toBeNull();
+      expect(await git.getRefHash("main")).not.toBeNull();
+    } finally {
+      fs.rmSync(work, { recursive: true, force: true });
+    }
+  });
+});

@@ -1,6 +1,7 @@
 import { useSessionStore } from "../stores/session-store.js";
 import { usePrStore } from "../stores/pr-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
+import { isRecentlyResolved } from "../components/SessionSidebar/useSessionGrouping.js";
 import type { PrCardState } from "../stores/pr-store.js";
 import type { PrStatusSummary } from "../../server/shared/types/github-types.js";
 
@@ -14,6 +15,18 @@ export interface AttentionInputs {
   autoFixEnabled: boolean;
   /** Global `autoResolveConflicts` setting — when on, a conflict has a resolve loop coming. */
   autoResolveEnabled: boolean;
+  /**
+   * The session's PR has reached a terminal state — merged or
+   * closed-without-merge — and hasn't been reopened (worked in) since. This is
+   * the SAME signal that demotes the row into the sidebar's "Recently resolved"
+   * group (`isRecentlyResolved`, keyed on `SessionInfo.mergedAt`/`closedAt`). It
+   * is passed in — rather than re-derived from the pr-store `status.prState` —
+   * so the grouping and the attention marker can never disagree: a just-merged
+   * row whose pr-store status still reads `open` (or carries a stale CI
+   * `failure`) would otherwise wear the amber "needs attention" bar in the very
+   * group that means "done".
+   */
+  resolved: boolean;
 }
 
 /**
@@ -37,6 +50,7 @@ export function computeAttentionReason({
   awaitingPermission,
   autoFixEnabled,
   autoResolveEnabled,
+  resolved,
 }: AttentionInputs): string | null {
   const checks = card?.checks;
   const autoFix = card?.autoFix;
@@ -52,6 +66,14 @@ export function computeAttentionReason({
   if (awaitingPermission) return "Needs your approval to continue";
 
   if (isAgentRunning) return null;
+
+  // Terminal PR — merged or closed-without-merge, and not reopened since. There
+  // is nothing left for the user to do, so no stale CI/conflict/auto-merge state
+  // on the now-historical PR card should raise a flag. This short-circuits ABOVE
+  // those branches (a merged PR can still carry a `failure` checks state that
+  // would otherwise read as "CI checks failed") and uses the grouping's own
+  // resolve signal, so a row in "Recently resolved" never wears the bar.
+  if (resolved) return null;
 
   // CI failure — stay silent while a fix is in flight or queued; speak only
   // when the loop gives up (exhausted) or auto-fix is off entirely.
@@ -95,5 +117,9 @@ export function useAttentionInfo(sessionId: string): string | null {
   const awaitingPermission = useSessionStore((s) => s.awaitingPermissionSessions.has(sessionId));
   const autoFixEnabled = useSettingsStore((s) => s.autoFixCi);
   const autoResolveEnabled = useSettingsStore((s) => s.autoResolveConflicts);
-  return computeAttentionReason({ card, status, isAgentRunning, awaitingPermission, autoFixEnabled, autoResolveEnabled });
+  const resolved = useSessionStore((s) => {
+    const session = s.sessions.find((sess) => sess.id === sessionId);
+    return session ? isRecentlyResolved(session) : false;
+  });
+  return computeAttentionReason({ card, status, isAgentRunning, awaitingPermission, autoFixEnabled, autoResolveEnabled, resolved });
 }

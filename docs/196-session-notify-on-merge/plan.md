@@ -107,6 +107,18 @@ of duplicate "Child PR merged" wake-turns on each restart/reconnect. Carrying
   `MergeWatchManager.reconcilePending()` re-derives "child PR terminal + watch
   un-delivered → fire" from the persisted PR snapshot (`loadPersisted` seeds it),
   independent of whether the poller re-observes the (now-archived) merged child.
+- **Fires headlessly — keeps the poll alive with no viewer.** The live (non-restart)
+  fire path depends on a poll *observing* the child PR's terminal state, but the
+  poll loop only runs while `PollingGlobalGate.isOpen()` is true. A child waiting
+  on a human merge has no viewer and no armed remediation of its own, so without a
+  signal the gate closes, the supervisor stops, and the merge is never observed
+  until someone reopens a tab. The gate therefore treats *any* pending watch as a
+  reason to keep polling: `hasPendingMergeWatch()` (backed by
+  `SessionManager.listPendingMergeWatches()`) is wired into
+  `anyAutonomousActionInFlight()` (`polling-global-gate.ts`). `reconcilePending`
+  is the restart backstop; this is the steady-state one. Covered by
+  `polling-global-gate.test.ts` ("a pending notify-on-merge watch keeps the gate
+  open with no viewer").
 - **Self-describing payload.** The wake-turn prompt carries the child id, branch,
   PR ref, merge SHA, and intent — it depends on no in-memory state, so it stands
   alone even if it runs many turns or a restart later.

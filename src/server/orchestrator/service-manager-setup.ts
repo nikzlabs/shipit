@@ -9,6 +9,7 @@ import type { CredentialStore } from "./credential-store.js";
 import type { LogSource, SessionInfo } from "../shared/types.js";
 import type { LogStore } from "./log-store.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
+import { resolveDepsHashInputs } from "../shared/deps-hash.js";
 import { agentLogAppend } from "./log-emit.js";
 import { collectMcpAgentEnv } from "./secret-resolver.js";
 import { getErrorMessage } from "./validation.js";
@@ -347,6 +348,15 @@ export function setupServiceManager(
   // a real install in seconds, so duration classifies the warm-vs-cold scenario.
   const installStartedAt = Date.now();
   if (installCommands.length > 0 && runner instanceof ContainerSessionRunner) {
+    // #1622 — record the install commands + the dependency input files
+    // (lockfiles/manifests) so the runner can auto-reinstall when one of them
+    // changes mid-session (e.g. a git reset that pulls in new deps). A
+    // non-content-keyable install resolves to `null` → empty set → no
+    // auto-reinstall, the safe default.
+    runner.setDepReinstallInputs(
+      installCommands,
+      resolveDepsHashInputs(installCommands, shipitConfig.agent.installInputs) ?? [],
+    );
     installPromise = runner.runInstall(installCommands).catch((err: unknown) => {
       console.error(`[install:${runner.sessionId}] Install failed:`, getErrorMessage(err));
       return { ok: false };

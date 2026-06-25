@@ -89,7 +89,7 @@ export function MobileRecordingOverlay({ voice }: { voice: VoiceInputApi }) {
       aria-label="Voice recording"
       data-testid="mobile-recording-overlay"
       data-state={state}
-      className="fixed inset-0 z-[60] flex flex-col items-center justify-center gap-8 bg-black/75 px-6 backdrop-blur-md"
+      className="fixed inset-0 z-[60] flex flex-col items-center justify-center gap-8 bg-black/75 px-6 pb-[env(safe-area-inset-bottom)] backdrop-blur-md"
     >
       <div className="flex flex-col items-center gap-2">
         {recording && (

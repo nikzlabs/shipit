@@ -8,7 +8,7 @@ import fs from "node:fs/promises";
 import type { CredentialStore } from "../credential-store.js";
 import type { AgentRegistry } from "../../shared/agent-registry.js";
 import { getAuthEnvKey, isAllowedAgentEnvKey } from "../../shared/agent-registry.js";
-import type { AgentId, ProviderAccount } from "../../shared/types.js";
+import type { AgentId, ProviderAccount, SubAgentDefaultsPatch } from "../../shared/types.js";
 import type { VoiceDeliveryMode } from "../../shared/types/voice-note-types.js";
 import { getGitIdentity, setGitIdentity as writeGitIdentity } from "../git-config.js";
 import { buildAgentSystemInstructions } from "../agent-instructions.js";
@@ -33,6 +33,7 @@ export function listAgents(agentRegistry: AgentRegistry): AgentInfo[] {
     supportsCompaction: a.capabilities.supportsCompaction,
     supportedPermissionModes: a.capabilities.supportedPermissionModes,
     skillInvocationPrefix: a.capabilities.skillInvocationPrefix,
+    ...(a.capabilities.reasoning ? { reasoning: a.capabilities.reasoning } : {}),
   }));
 }
 
@@ -67,7 +68,9 @@ export async function getGlobalSettings(
   const liveSteering = credentialStore?.getLiveSteering() ?? true;
   const autoResolveConflicts = credentialStore?.getAutoResolveConflicts() ?? false;
   const autoFixCi = credentialStore?.getAutoFixCi() ?? false;
+  const autoResetMergedBranch = credentialStore?.getAutoResetMergedBranch() ?? true;
   const enableSubAgents = credentialStore?.getEnableSubAgents() ?? false;
+  const agentSubAgentDefaults = credentialStore?.getAllAgentSubAgentDefaults() ?? {};
   // Settings page renders the per-agent "Parallel sessions" guidance as a
   // preview. Pick the first installed-and-authed agent so a Codex-only host
   // shows Codex's variant, not Claude's. Fall back to the first registered
@@ -79,7 +82,7 @@ export async function getGlobalSettings(
   const providerAccounts = providerAccountManager?.list() ?? credentialStore?.listProviderAccounts() ?? [];
   const voiceDeliveryMode = credentialStore?.getVoiceDeliveryMode() ?? "native";
   const voiceWebhookConfigured = !!credentialStore?.getVoiceWebhook();
-  return { gitIdentity, systemPrompt, agents, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, autoResolveConflicts, autoFixCi, enableSubAgents, voiceDeliveryMode, voiceWebhookConfigured, providerAccounts };
+  return { gitIdentity, systemPrompt, agents, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, agentSubAgentDefaults, voiceDeliveryMode, voiceWebhookConfigured, providerAccounts };
 }
 
 // ---- Mutation operations ----
@@ -130,8 +133,17 @@ export interface SaveGlobalSettingsOptions {
   autoResolveConflicts?: boolean;
   /** docs/169 — when true, the PR poller's auto-fix-CI loop fires on FAILURE while the agent is idle. */
   autoFixCi?: boolean;
+  /** docs/218 — when true, resuming a merged, untouched session resets its branch to the latest base before the turn. */
+  autoResetMergedBranch?: boolean;
   /** docs/144 — global gate for sub-agent spawning. */
   enableSubAgents?: boolean;
+  /**
+   * docs/217 — per-agent sub-agent defaults patch, keyed by agent id. Each entry
+   * is merged into the stored value; a `null` field clears it. `reasoningEffort`
+   * is validated against the agent's registered reasoning options and `model`
+   * against its registered models.
+   */
+  agentSubAgentDefaults?: Record<string, SubAgentDefaultsPatch>;
   /** docs/163 — voice-note delivery mode (native / external / both). */
   voiceDeliveryMode?: VoiceDeliveryMode;
 }
@@ -144,7 +156,7 @@ export async function saveGlobalSettings(
     onAutoResolveConflictsEnabled,
     gitIdentity, systemPrompt, maxIdleContainers,
     agentSystemInstructionsEnabled, autoCreatePr, liveSteering,
-    autoResolveConflicts, autoFixCi, enableSubAgents, voiceDeliveryMode,
+    autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, agentSubAgentDefaults, voiceDeliveryMode,
   } = opts;
 
   // Save git identity if provided
@@ -199,6 +211,35 @@ export async function saveGlobalSettings(
     credentialStore.setEnableSubAgents(enableSubAgents);
   }
 
+  // docs/217 — merge per-agent sub-agent defaults. Validate each agent id and
+  // each field's value against the registry before persisting; a bad value is a
+  // 400 (the picker only ever sends in-set values, so this guards API misuse).
+  if (agentSubAgentDefaults !== undefined) {
+    for (const [agentId, patch] of Object.entries(agentSubAgentDefaults)) {
+      const info = agentRegistry.get(agentId as AgentId);
+      if (!info) throw new ServiceError(400, `Unknown agent: ${agentId}`);
+      if ("reasoningEffort" in patch) {
+        const value = patch.reasoningEffort;
+        if (value !== null && value !== undefined) {
+          const allowed = info.capabilities.reasoning?.options.some((o) => o.value === value);
+          if (!allowed) {
+            throw new ServiceError(400, `Invalid reasoning effort "${value}" for ${info.name}`);
+          }
+        }
+        credentialStore.setAgentSubAgentDefaults(agentId, { reasoningEffort: value ?? null });
+      }
+      if ("model" in patch) {
+        const value = patch.model;
+        if (value !== null && value !== undefined) {
+          if (!info.capabilities.models.includes(value)) {
+            throw new ServiceError(400, `Invalid model "${value}" for ${info.name}`);
+          }
+        }
+        credentialStore.setAgentSubAgentDefaults(agentId, { model: value ?? null });
+      }
+    }
+  }
+
   // docs/163 — save voice-note delivery mode if provided
   if (voiceDeliveryMode !== undefined) {
     credentialStore.setVoiceDeliveryMode(voiceDeliveryMode);
@@ -222,6 +263,14 @@ export async function saveGlobalSettings(
     const prev = credentialStore.getAutoFixCi();
     credentialStore.setAutoFixCi(autoFixCi);
     if (!prev && autoFixCi) opts.onAutoFixCiEnabled?.();
+  }
+
+  // docs/218 — save the auto-reset-merged-branch toggle. No re-broadcast hook:
+  // the `reset_eligible` signal is recomputed on each session activation and
+  // post-turn, so a flipped setting takes effect the next time the user opens or
+  // acts in a merged session (the client ANDs the setting with the signal).
+  if (autoResetMergedBranch !== undefined) {
+    credentialStore.setAutoResetMergedBranch(autoResetMergedBranch);
   }
 
   return getGlobalSettings(agentRegistry, workspaceDir, credentialStore, providerAccountManager);

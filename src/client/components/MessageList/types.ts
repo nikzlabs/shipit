@@ -4,6 +4,8 @@ import type {
   CompactionCard as CompactionCardData,
   SubAgentConsultCard as SubAgentConsultCardData,
   ActionChecklistCard as ActionChecklistCardData,
+  BranchAutoResetCard as BranchAutoResetCardData,
+  BranchSyncedCard as BranchSyncedCardData,
   AiReviewCard,
 } from "../../../server/shared/types.js";
 import type { ReleaseStatusSummary } from "../../../server/shared/types/release-types.js";
@@ -200,10 +202,10 @@ export interface ChatMessage {
   };
   /**
    * docs/203 — when set, this message renders a plain-text `ReviewCard` inline
-   * in the chat. Populated from `ai_review_added` WS events (and rehydrated from
-   * the persisted `aiReview` column). The reviewer's markdown renders verbatim;
-   * there is no snapshot, no anchoring, and no modal. Legacy pre-docs/203 rows
-   * arrive degraded (`legacy: true`).
+   * in the chat. **Legacy read path only (docs/220):** new AI reviews no longer
+   * produce this card (cross-agent → consult card, same-model → prose), so this
+   * is populated solely by rehydrating the persisted `aiReview` column for rows
+   * written before docs/220. Pre-docs/203 rows arrive degraded (`legacy: true`).
    */
   aiReview?: AiReviewCard;
   /**
@@ -336,6 +338,24 @@ export interface ChatMessage {
    * persisted — so on reload the card returns to its original definition.
    */
   actionChecklist?: ActionChecklistCardData;
+  /**
+   * docs/218 — when set, this message renders a `BranchUpdatedCard` inline ("Branch
+   * updated to latest <base>"), shown right after the user's message when a merged
+   * session's branch was auto-reset to `origin/<base>` before the turn ran. The
+   * card has no lifecycle and no store, so both the live `branch_auto_reset_card`
+   * WS handler and a history rehydration carry the full payload on the message; the
+   * component renders straight from it.
+   */
+  branchAutoReset?: BranchAutoResetCardData;
+  /**
+   * docs/221 — when set, this message renders an inline "Synced with <base>" card
+   * recording a manual "Sync with <base>" that rebased the session branch onto
+   * `origin/<base>` and/or fast-forwarded the local `<base>` ref. The card has no
+   * lifecycle and no store, so both the live `branch_synced_card` WS handler and a
+   * history rehydration carry the full payload on the message; the component
+   * renders straight from it.
+   */
+  branchSynced?: BranchSyncedCardData;
 }
 
 export interface TextSegment {

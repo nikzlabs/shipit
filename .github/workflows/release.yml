@@ -241,3 +241,85 @@ jobs:
             --generate-notes \
             --verify-tag \
             $PRERELEASE_FLAG
+
+  # 4. Forward-port the released version onto `main` (SHI-172 follow-up). The
+  # release bump lands ONLY on `stable` (the `release/<version>` PR), so without
+  # this `main`'s package.json drifts behind every release — `main` keeps showing
+  # the pre-release version forever. After a successful publish on the BRANCH path,
+  # open (or leave) a small chore PR that bumps `main`'s package.json + lockfile to
+  # the just-released version. A PR (not a direct push) respects `main`'s branch
+  # protection and surfaces inline in ShipIt as a PR card; the user merges it to
+  # bring `main` in sync. Idempotent: no-op when `main` already carries the version
+  # (repair re-runs) or when the sync branch already exists. rc's (tag path) never
+  # touch `main`, so this is gated to the branch path.
+  sync-main:
+    name: Sync version to main
+    needs: [resolve, publish]
+    if: >-
+      always() &&
+      needs.resolve.outputs.is_branch == 'true' &&
+      needs.resolve.outputs.proceed == 'true' &&
+      needs.publish.result == 'success'
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Open version-sync PR if main is behind
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+
+          CURRENT="$(node -p "require('./package.json').version")"
+          if [ "$CURRENT" = "$VERSION" ]; then
+            echo "main already at $VERSION — nothing to sync."
+            exit 0
+          fi
+
+          SYNC_BRANCH="release-sync/$TAG"
+          if git ls-remote --exit-code --heads origin "$SYNC_BRANCH" >/dev/null 2>&1; then
+            echo "Sync branch $SYNC_BRANCH already exists — leaving the existing PR."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$SYNC_BRANCH"
+
+          # Same bump the local script + the release PR use: rewrites package.json
+          # AND package-lock.json with no git side effects, so the commit is ours.
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          git add package.json package-lock.json
+          git commit -m "Sync version to $TAG on main"
+          git push origin "$SYNC_BRANCH"
+
+          # Build the body with printf so no YAML/bash indentation leaks in as
+          # leading whitespace (which markdown would render as a code block).
+          BODY="$(printf '%s\n' \
+            "Forward-ports the released version \`$VERSION\` (\`$TAG\`) onto \`main\`." \
+            "" \
+            "The release version bump lands only on \`stable\` (via the \`release/$VERSION\` PR), so \`main\`'s \`package.json\` would otherwise stay behind every release. Merging this keeps \`main\` in sync with the latest published release." \
+            "" \
+            "Safe to merge as-is — it only touches \`package.json\` + \`package-lock.json\`.")"
+
+          # `ignore-for-release` keeps this version-bump PR out of the NEXT
+          # release's auto-generated notes (it merges into main). A PR opened with
+          # the default GITHUB_TOKEN does not re-trigger `on: pull_request`
+          # workflows, so ci.yml won't run on it — acceptable for a version-only
+          # bump that CI already vetted on the release commit.
+          gh pr create \
+            --base main \
+            --head "$SYNC_BRANCH" \
+            --title "Sync version to $TAG on main" \
+            --label ignore-for-release \
+            --body "$BODY"

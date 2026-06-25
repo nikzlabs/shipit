@@ -7,12 +7,13 @@ on:
     # PR into `stable` gets a green check before merge — the same gates the
     # post-merge release.yml run re-runs to gate the publish.
     branches: [main, stable]
-    # Doc-only / markdown-only changes don't affect the build on EITHER branch,
-    # so they skip CI uniformly. A release-bump PR touches package.json /
-    # package-lock.json (not ignored), so it always runs the gates.
-    paths-ignore:
-      - 'docs/**'
-      - '**.md'
+    # NOTE: deliberately NO `paths-ignore` here. These jobs are *required* status
+    # checks in branch protection, and GitHub treats a trigger-level path skip
+    # (paths-ignore) as a check that never reports — it sits "Expected / pending"
+    # and blocks the PR from merging forever. A *job-level* `if:` skip, by
+    # contrast, reports "success" and satisfies the requirement. So docs-only
+    # changes are short-circuited at the job level (see the `changes` job +
+    # `needs: changes` gating below), not by filtering the trigger.
 
 # Cancel superseded runs. When a PR branch is pushed again before its CI
 # finishes, the in-flight run is now wasted work — every new push used to start
@@ -32,12 +33,44 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
+  # Cheap gate that decides whether the build-affecting jobs need to run. Lists
+  # the files a PR changes vs its base; if every one is a doc/markdown file, the
+  # heavy jobs below skip (and a skipped *job* reports "success", keeping a
+  # docs-only PR mergeable under branch protection). A release-bump PR touches
+  # package.json / package-lock.json (not docs), so it always runs the gates.
+  # Pure git — no third-party action — to keep the dependency surface pinned.
+  changes:
+    name: Detect code changes
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - id: filter
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          changed=$(git diff --name-only "$BASE_SHA"...HEAD)
+          echo "Changed files:"
+          echo "$changed"
+          if [ -z "$changed" ]; then
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          elif printf '%s\n' "$changed" | grep -qvE '(^docs/|\.md$)'; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+
   check:
     name: Lint, Type Check & Build
-    # Only run for PRs whose branch lives in this repo. Fork/external PRs have a
-    # different head repo, so this skips them entirely — no CI minutes spent on
-    # untrusted code, regardless of the repo's first-time-contributor setting.
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    needs: changes
+    # Only run for PRs whose branch lives in this repo (fork/external PRs have a
+    # different head repo, so this skips them — no CI minutes on untrusted code),
+    # and only when the PR touches build-affecting files (docs-only PRs skip).
+    if: github.event.pull_request.head.repo.full_name == github.repository && needs.changes.outputs.code == 'true'
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v5
@@ -69,7 +102,8 @@ jobs:
 
   test:
     name: Test
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    needs: changes
+    if: github.event.pull_request.head.repo.full_name == github.repository && needs.changes.outputs.code == 'true'
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v5

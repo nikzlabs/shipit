@@ -267,7 +267,7 @@ the path in `release.workflow`) is absent.
      `npm test`).
    - **prerelease** — whether to also accept `vX.Y.Z-rc.N` tags for release
      candidates.
-3. **Write** these three files into the workspace:
+3. **Write** these four files into the workspace:
    - `.github/workflows/release.yml` — the auto-publish workflow (one workflow,
      gates + tags + publishes in the same run).
    - `.github/release.yml` — the categorized release-notes config.
@@ -275,6 +275,9 @@ the path in `release.workflow`) is absent.
      runs (via `setup-node`, even in non-Node repos) to read the version. It
      uses the **same logic** ShipIt uses to bump the version, so the tag CI
      creates can never silently disagree with the version source.
+   - `.github/scripts/shipit-write-version.mjs` — the write-side counterpart,
+     used by the `sync-default-branch` job (below) to bump the version source on
+     the default branch with the same logic.
 4. **Open a PR** via the normal auto-PR flow (you don't push the workflow to the
    default branch directly — it lands as a reviewable PR like any other change).
 
@@ -287,6 +290,17 @@ never pushes a tag for a final release; **merging the PR is the human-act gate**
 and CI does the irreversible publish. (When prereleases are enabled, an
 `vX.Y.Z-rc.N` tag pushed directly is published as a GitHub prerelease via the
 workflow's tag path.)
+
+After a green publish, a **`sync-default-branch`** job forward-ports the released
+version onto the repo's default (development) branch — the version bump lands
+only on the maintenance branch, so the default branch's version source would
+otherwise drift behind every release. It opens a small chore PR
+(`release-sync/vX.Y.Z` → the default branch) bumping only the version source;
+merge it to keep the default branch in sync. The default branch is resolved at
+runtime (`gh repo view`), so it needs no extra config and works for `main` or
+`master`; it skips when the default branch *is* the maintenance branch (the merge
+already advanced it). The PR is best-effort labeled `ignore-for-release` so it
+stays out of the next release's notes.
 
 ## Still unsupported (future phases)
 

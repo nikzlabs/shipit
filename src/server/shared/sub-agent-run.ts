@@ -59,6 +59,8 @@ export interface SubAgentRunOptions {
   cwd: string;
   /** Optional model alias/id; defaults to the adapter's default model. */
   model?: string;
+  /** docs/217 — reasoning effort for the sub-agent (the invoked agent's global default). */
+  reasoningEffort?: string;
   /** Wall-clock cap in ms. Defaults to {@link DEFAULT_SUB_AGENT_TIMEOUT_MS}. */
   timeoutMs?: number;
   /** Output character cap. Defaults to {@link DEFAULT_SUB_AGENT_MAX_OUTPUT_CHARS}. */
@@ -119,6 +121,8 @@ export interface SubAgentSpawnRequest {
   /** The caller's recursion depth (0 for a primary). The worker stamps depth+1. */
   depth: number;
   model?: string;
+  /** docs/217 — reasoning effort for the sub-agent (the invoked agent's global default). */
+  reasoningEffort?: string;
   timeoutMs?: number;
   maxOutputChars?: number;
 }
@@ -262,5 +266,6 @@ export function buildSubAgentRunParams(opts: SubAgentRunOptions): AgentRunParams
     prompt: opts.prompt,
     cwd: opts.cwd,
     ...(opts.model !== undefined ? { model: opts.model } : {}),
+    ...(opts.reasoningEffort !== undefined ? { reasoningEffort: opts.reasoningEffort } : {}),
   };
 }

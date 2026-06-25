@@ -72,7 +72,7 @@ import { RebaseBanner } from "./components/RebaseBanner.js";
 import { QueueIndicator } from "./components/QueueIndicator.js";
 import { AgentStatusBar } from "./components/AgentStatusBar.js";
 import type { AgentOption } from "./agent-types.js";
-import type { AgentId, DocEntry, ProviderAccount, TrackerIssue, ReleaseMechanism } from "../server/shared/types.js";
+import type { AgentId, DocEntry, ProviderAccount, TrackerIssue, ReleaseMechanism, SubAgentDefaults } from "../server/shared/types.js";
 
 import { useSessionStore } from "./stores/session-store.js";
 import { useGitStore } from "./stores/git-store.js";
@@ -369,12 +369,13 @@ export default function App() {
   // ── Callback helpers ──
   const handleSend = useCallback(
     async (payload: SendPayload) => {
-      const { text, uploadRefs, uploads: payloadUploads } = payload;
-      // docs/203 — `/review [@path]` is a chat-native entry point to AI review:
-      // same composed prompt as the modal button, routed through
-      // `send_review_message` so the orchestrator authorizes the review tool. The
-      // reviewer (cross-agent vs fresh subagent) is resolved here, at click time,
-      // from the settings store + agent registry — the prompt is concrete.
+      const { text, uploadRefs, uploads: payloadUploads, resetMergedBranch } = payload;
+      // docs/203, docs/220 — `/review [@path]` is a chat-native entry point to AI
+      // review: same composed prompt as the modal button, sent as a normal
+      // `send_message`. The reviewer (cross-agent vs fresh subagent) is resolved
+      // here, at click time, from the settings store + agent registry — the prompt
+      // is concrete. Cross-agent output is surfaced by the consult card (docs/220);
+      // a same-model review is narrated as prose. No review tool is involved.
       const trimmed = text.trim();
       if (/^\/review(?:\s|$)/.test(trimmed)) {
         const argMatch = /^\/review\s+@?(\S+)/.exec(trimmed);
@@ -410,7 +411,7 @@ export default function App() {
         sendUserMessage({
           bubble: { role: "user", text: prompt },
           activity: "Reviewing...",
-          dispatch: () => send({ type: "send_review_message", text: prompt, sessionId: sid, reviewFilePath: targetFile }),
+          dispatch: () => send({ type: "send_message", text: prompt, sessionId: sid }),
         });
         return;
       }
@@ -453,6 +454,8 @@ export default function App() {
             const pm = settings.getPermissionMode(currentSessionId);
             return pm !== "auto" ? pm : undefined;
           })(),
+          // docs/218 — per-send opt-out for the auto-reset-merged-branch control.
+          ...(resetMergedBranch !== undefined ? { resetMergedBranch } : {}),
         };
 
         sendUserMessage({
@@ -767,7 +770,7 @@ export default function App() {
     useUiStore.getState().setSettingsTab(tab);
     useUiStore.getState().setSettingsOpen(true);
     try {
-      const data = await apiGet<{ settings: { gitIdentity: { name: string; email: string }; systemPrompt: string; agents: AgentOption[]; maxIdleContainers?: number; agentSystemInstructionsEnabled?: boolean; agentSystemInstructions?: string; autoCreatePr?: boolean; liveSteering?: boolean; autoResolveConflicts?: boolean; autoFixCi?: boolean; enableSubAgents?: boolean; voiceDeliveryMode?: "native" | "external" | "both"; voiceWebhookConfigured?: boolean; providerAccounts?: ProviderAccount[] } }>("/api/bootstrap");
+      const data = await apiGet<{ settings: { gitIdentity: { name: string; email: string }; systemPrompt: string; agents: AgentOption[]; maxIdleContainers?: number; agentSystemInstructionsEnabled?: boolean; agentSystemInstructions?: string; autoCreatePr?: boolean; liveSteering?: boolean; autoResolveConflicts?: boolean; autoFixCi?: boolean; autoResetMergedBranch?: boolean; enableSubAgents?: boolean; agentSubAgentDefaults?: Record<string, SubAgentDefaults>; voiceDeliveryMode?: "native" | "external" | "both"; voiceWebhookConfigured?: boolean; providerAccounts?: ProviderAccount[] } }>("/api/bootstrap");
       useGitStore.getState().setIdentity(data.settings.gitIdentity);
       useSettingsStore.getState().setSystemPromptContent(data.settings.systemPrompt);
       useSettingsStore.getState().setHasSystemPrompt(data.settings.systemPrompt.length > 0);
@@ -778,7 +781,9 @@ export default function App() {
       if (data.settings.liveSteering !== undefined) useSettingsStore.getState().setLiveSteering(data.settings.liveSteering);
       if (data.settings.autoResolveConflicts !== undefined) useSettingsStore.getState().setAutoResolveConflicts(data.settings.autoResolveConflicts);
       if (data.settings.autoFixCi !== undefined) useSettingsStore.getState().setAutoFixCi(data.settings.autoFixCi);
+      if (data.settings.autoResetMergedBranch !== undefined) useSettingsStore.getState().setAutoResetMergedBranch(data.settings.autoResetMergedBranch);
       if (data.settings.enableSubAgents !== undefined) useSettingsStore.getState().setEnableSubAgents(data.settings.enableSubAgents);
+      if (data.settings.agentSubAgentDefaults !== undefined) useSettingsStore.getState().setAgentSubAgentDefaults(data.settings.agentSubAgentDefaults);
       if (data.settings.voiceDeliveryMode !== undefined) useSettingsStore.getState().setVoiceDeliveryMode(data.settings.voiceDeliveryMode);
       if (data.settings.voiceWebhookConfigured !== undefined) useSettingsStore.getState().setVoiceWebhookConfigured(data.settings.voiceWebhookConfigured);
       if (data.settings.providerAccounts) useSettingsStore.getState().setProviderAccounts(data.settings.providerAccounts);
@@ -928,7 +933,8 @@ export default function App() {
   // from send_message so the orchestrator authorizes the review tool for this
   // file. The reviewer (cross-agent vs fresh subagent) is resolved here at click
   // time from the settings store + agent registry, then baked into the prompt.
-  // Closing the modal shifts focus to the chat; the review card lands in chat.
+  // Closing the modal shifts focus to the chat; the review lands in chat
+  // (a consult card for cross-agent, prose for same-model — docs/220).
   const handleAskAgentReview = useCallback(
     (reviewFilePath: string) => {
       const sid = useSessionStore.getState().sessionId;
@@ -948,7 +954,7 @@ export default function App() {
       sendUserMessage({
         bubble: { role: "user", text: prompt },
         activity: "Reviewing...",
-        dispatch: () => send({ type: "send_review_message", text: prompt, sessionId: sid, reviewFilePath }),
+        dispatch: () => send({ type: "send_message", text: prompt, sessionId: sid }),
       });
     },
     [send, navigate, isNewSessionRoute],
@@ -993,6 +999,13 @@ export default function App() {
   const handleModelChange = useCallback((model: string) => {
     saveModelId(model);
     send({ type: "set_model", model });
+  }, [send]);
+
+  // docs/217 — Control B: per-session reasoning effort for the active agent's
+  // own turns. The seed save (per-agent localStorage) happens inside the
+  // ReasoningSelector; here we just push it to the server for this session.
+  const handleReasoningChange = useCallback((effort: string | null) => {
+    send({ type: "set_reasoning", effort });
   }, [send]);
 
   const handleInstructionsSave = useCallback(async (content: string) => {
@@ -1121,7 +1134,7 @@ export default function App() {
         ) : rightTab === "files" ? (
           <FileTree tree={fileTree} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) { useFileStore.getState().fetchTree(sid).catch(() => {}); void useFileStore.getState().hydrateUploads(sid); } }} onFileClick={handleOpenFilePreview} onEdit={sessionGraduated ? (f) => { const sid = useSessionStore.getState().sessionId; if (sid) void useFileStore.getState().openEditor(sid, f); } : undefined} onAddToChat={(f) => useSettingsStore.getState().addPendingFile(f)} onDownload={(f) => { const sid = useSessionStore.getState().sessionId; if (sid) { const a = document.createElement("a"); a.href = `/api/sessions/${sid}/files/download/${f}`; a.download = ""; document.body.appendChild(a); a.click(); a.remove(); } }} uploads={sessionUploads} onDeleteUpload={(u) => { const sid = useSessionStore.getState().sessionId; if (u.path) markUploadDeleted(u.path); if (sid && u.path) { const filename = u.path.replace(/^\/uploads\//, ""); void fetch(`/api/sessions/${sid}/files/uploads/${encodeURIComponent(filename)}`, { method: "DELETE" }); } if (u.previewUrl) URL.revokeObjectURL(u.previewUrl); if (u.path) useFileStore.getState().removeSessionUpload(u.path); else useFileStore.getState().removeSessionUploadById(u.id); }} />
         ) : rightTab === "present" ? (
-          <PresentPane isActiveTab={rightTab === "present"} />
+          <PresentPane isActiveTab={rightTab === "present"} onSendComments={handleFileSendComments} onAskAgentReview={handleAskAgentReview} />
         ) : rightTab === "host" ? (
           <HostPanel isActiveTab={rightTab === "host"} />
         ) : null}
@@ -1226,7 +1239,7 @@ export default function App() {
           </div>
         </div>
       )}
-      {(!showHomeScreen || showNewSessionView) && <MessageInput onSend={handleSend} disabled={showNewSessionView ? status !== "open" && !sessionId : status !== "open"} isLoading={isLoading} onInterrupt={() => send({ type: "interrupt_agent" })} permissionMode={permissionMode} onPermissionModeChange={(m) => useSettingsStore.getState().setPermissionMode(useSessionStore.getState().sessionId, m)} pendingFiles={pendingFiles} onRemoveFile={(i) => useSettingsStore.getState().removePendingFile(i)} onAddFile={(f) => useSettingsStore.getState().addPendingFile(f)} fileTree={fileTree} skills={skills} sessionId={wsSessionId} agents={agentList} activeAgentId={activeAgentId} onAgentChange={handleAgentChange} onModelChange={handleModelChange} modelInfo={modelInfo} contextTokens={contextTokens} hasActiveSession={!showNewSessionView && !!sessionId} onOpenUsageDetails={handleUsageBadgeClick} focusKey={messageInputFocusKey} liveSteeringActive={liveSteeringActive} />}
+      {(!showHomeScreen || showNewSessionView) && <MessageInput onSend={handleSend} disabled={showNewSessionView ? status !== "open" && !sessionId : status !== "open"} isLoading={isLoading} onInterrupt={() => send({ type: "interrupt_agent" })} permissionMode={permissionMode} onPermissionModeChange={(m) => useSettingsStore.getState().setPermissionMode(useSessionStore.getState().sessionId, m)} pendingFiles={pendingFiles} onRemoveFile={(i) => useSettingsStore.getState().removePendingFile(i)} onAddFile={(f) => useSettingsStore.getState().addPendingFile(f)} fileTree={fileTree} skills={skills} sessionId={wsSessionId} agents={agentList} activeAgentId={activeAgentId} onAgentChange={handleAgentChange} onModelChange={handleModelChange} onReasoningChange={handleReasoningChange} sessionReasoning={currentSession?.reasoningEffort} modelInfo={modelInfo} contextTokens={contextTokens} hasActiveSession={!showNewSessionView && !!sessionId} onOpenUsageDetails={handleUsageBadgeClick} focusKey={messageInputFocusKey} liveSteeringActive={liveSteeringActive} />}
     </>
   );
 
@@ -1358,8 +1371,8 @@ export default function App() {
           repoUrl={projectSettingsRepoUrl}
           repoName={parseRepoLabel(projectSettingsRepoUrl)}
           initialTab={projectSettingsTab}
-          onSecretsLoad={async (repoUrl) => { const data = await apiGet<{ secrets: Record<string, string> }>(`/api/secrets?repoUrl=${encodeURIComponent(repoUrl)}`); return data.secrets; }}
-          onSecretsSave={(repoUrl, secrets) => { apiPut("/api/secrets", { repoUrl, secrets }).catch(() => {}); }}
+          onSecretsLoad={async (repoUrl) => { const data = await apiGet<{ keys: string[] }>(`/api/secrets?repoUrl=${encodeURIComponent(repoUrl)}`); return data.keys; }}
+          onSecretsSave={(repoUrl, payload) => { apiPut("/api/secrets", { repoUrl, ...payload }).catch(() => {}); }}
           onClose={() => { useUiStore.getState().setProjectSettingsRepoUrl(null); }}
         />
       )}
@@ -1422,7 +1435,7 @@ export default function App() {
           if (session?.remoteUrl) useRepoStore.getState().setActiveRepoUrl(session.remoteUrl);
           handleSessionResume(sid, navigate);
         }}
-        onArchiveSession={async (sid: string) => { await useSessionStore.getState().archiveSession(sid); if (sid === useSessionStore.getState().sessionId) { const repoUrl = sessions.find((s) => s.id === sid)?.remoteUrl ?? activeRepoUrl; if (repoUrl) void handleNewSessionForRepo(repoUrl); } }}
+        onArchiveSession={async (sid: string) => { await useSessionStore.getState().archiveSession(sid); if (sid === useSessionStore.getState().sessionId) { const repoUrl = sessions.find((s) => s.id === sid)?.remoteUrl ?? activeRepoUrl; if (repoUrl) void handleNewSessionForRepo(repoUrl, { preserveMobileView: true }); } }}
         onNewSessionForRepo={handleNewSessionForRepo}
         onToggleSidebarCollapse={() => useUiStore.getState().setSidebarCollapsed(!sidebarCollapsed)}
         repos={repos}

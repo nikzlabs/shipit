@@ -31,7 +31,11 @@ fi
 # /opt/agent-cli, /usr/local/bin, or system dirs — those stay root-owned and
 # read-only to the worker (the shims under /usr/local/bin must stay traversable,
 # which they are by default).
-for d in /workspace /uploads /dep-cache /credentials /home/shipit; do
+# /persist (docs/217) is the agent's writable persistent scratch mount; it needs
+# the same worker-UID handoff as the other writable mounts or the non-root worker
+# can't write to it. (/uploads is :ro — its sentinel mkdir fails on the read-only
+# mount, so the chown self-skips; /persist is :rw, so it runs.)
+for d in /workspace /uploads /persist /dep-cache /credentials /home/shipit; do
   case "$d" in
     # Skip the workspace chown when the orchestrator bind-mounted the host source
     # tree (dev / dogfood). `chown -R` on a bind mount rewrites *host* filesystem

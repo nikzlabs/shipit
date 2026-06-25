@@ -129,6 +129,27 @@ Every PR subcommand also accepts `--repo OWNER/NAME` (alias `-R`) to target a
 specific repo — useful in a Sandbox session where you've cloned more than one.
 Without it, the op targets the repo of the directory you ran `gh` in.
 
+### Workflow runs (read-only)
+
+`gh run` and `gh workflow` are supported **read-only** — list and view workflow
+runs (including manually-dispatched `workflow_dispatch` runs) and workflow
+definitions, so you can fetch the result of a manual workflow inline. The
+*manipulation* verbs (`gh workflow run`, `gh run rerun`, `gh run cancel`,
+`gh run delete`) stay blocked: dispatching or cancelling CI is a deliberate
+human/CI action, not an agent action.
+
+| Subcommand | Notes |
+|---|---|
+| `gh run list [-w WORKFLOW] [-b BRANCH] [-s STATUS] [-L LIMIT] [--json FIELDS]` | List workflow runs, most-recent first. `-w` filters by workflow name/filename/id; `-s` by status (e.g. `completed`, `success`, `failure`, `in_progress`). Plain output is tab-separated: status, conclusion, title, workflow, branch, event, id. |
+| `gh run view [<run-id>] [--log] [--log-failed] [--json FIELDS]` | View one run with its jobs. With no `<run-id>`, resolves the **latest run for the current branch** (falling back to the latest run overall). `--log` appends the run's job logs (tail-capped); `--log-failed` only failed jobs' logs. |
+| `gh workflow list [--json FIELDS]` | List the repo's workflow definitions (name, state, id). |
+| `gh workflow view <workflow> [--json FIELDS]` | View one workflow (by name, filename, or id) and its recent runs. Use `cat .github/workflows/<file>` to read the YAML — `--yaml` is not supported. |
+
+These also accept `--repo OWNER/NAME` (alias `-R`). The `--json FIELDS` filter
+uses the same field names as the real `gh` (e.g. `databaseId`, `status`,
+`conclusion`, `displayTitle`, `workflowName`, `headBranch`, `event`, `url`; `gh
+run view --json jobs` includes the jobs array).
+
 ### Subcommands that are intentionally unavailable
 
 These are blocked because they widen the surface beyond pull-request review,
@@ -138,7 +159,9 @@ or because the corresponding action belongs to the user, not the agent:
 - `gh repo create|delete|edit|fork|sync|view|list` — repo lifecycle is owned
   by the orchestrator and the user.
 - `gh release …` — releases are deliberate human acts.
-- `gh workflow …`, `gh run …` — CI manipulation is out of scope.
+- `gh workflow run`, `gh run rerun|cancel|delete` — **CI manipulation** is out
+  of scope (the *read-only* `gh run list|view` and `gh workflow list|view` are
+  supported — see "Workflow runs" above).
 - `gh auth …` — auth is owned by the ShipIt UI.
 - `gh secret …`, `gh variable …` — use `shipit.yaml` and the secrets surface.
 - `gh ssh-key …`, `gh gpg-key …`, `gh codespace …`, `gh extension …` — out of

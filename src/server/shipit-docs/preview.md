@@ -127,11 +127,16 @@ services:
 Set it to `false` only when a preview service genuinely does not depend on
 `agent.install` output and you want fail-fast feedback.
 
-**Mid-session re-install.** Editing `shipit.yaml` or a lockfile re-runs
-`agent.install`. Gated services are torn down while install re-runs and
-restarted once it completes — so expect a brief preview blink on those edits.
-That's intentional: the edit changed the dependency tree, so the service
-relaunches against the fresh `node_modules`.
+**Mid-session re-install.** Changing a dependency file — a lockfile
+(`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, …) or the manifest your
+install reads — re-runs `agent.install`. This fires for **git operations**
+(`git reset`/`checkout`/`rebase` that pull in a different dependency tree) just
+as it does for direct edits, so resetting the branch to a commit that added a
+dependency recovers the preview automatically instead of leaving it 500'ing on
+an unresolved import. Gated services are torn down while install re-runs and
+restarted once it completes — so expect a brief preview blink. That's
+intentional: the dependency tree changed, so the service relaunches against the
+fresh `node_modules`. Reinstalls are throttled to one per 30s.
 
 ## Multi-service
 
@@ -169,7 +174,7 @@ out of the box.
 |--------|--------|
 | Source file edit | Hot reload (no restart) |
 | `shipit.yaml` or compose file edit | Stack reconciliation (restart services) |
-| Lockfile change | Install + restart (30s debounce) |
+| Lockfile/manifest change (edit **or** git reset/checkout/rebase) | Install + restart (30s cooldown) |
 
 ## Browser tools
 

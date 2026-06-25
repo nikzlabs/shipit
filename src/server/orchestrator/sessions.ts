@@ -32,6 +32,8 @@ interface SessionRow {
   merged_at: string | null;
   closed_at: string | null;
   model: string | null;
+  /** docs/217 — per-session reasoning effort (Control B); NULL = CLI default. */
+  reasoning_effort: string | null;
   agent_id: string | null;
   /** docs/138 — set once the session has taken its first turn (agent pinned). */
   agent_pinned: number;
@@ -56,10 +58,18 @@ interface SessionRow {
   merge_issue_effects: string | null;
   /** docs/202 — JSON `PreviousMergedPr` breadcrumb retained after re-arm, or NULL. */
   previous_merged_pr: string | null;
+  /** docs/218 — the merged PR's head-branch tip SHA; the auto-reset safety anchor. NULL = none. */
+  merged_head_sha: string | null;
 }
 
-/** Maximum number of merged sessions shown per repository in the sidebar. */
-export const MAX_MERGED_SESSIONS_PER_REPO = 3;
+/**
+ * Maximum number of recently-resolved sessions shown per repository in the
+ * sidebar. docs/161 — raised from 3 to 5: the "I merged a few in a row after a
+ * break and want to step back into one" moment routinely reaches past the last
+ * three. The sidebar's "Recently resolved" sub-section is collapsible per repo
+ * (expanded by default), so a higher cap costs nothing for users who tuck it away.
+ */
+export const MAX_MERGED_SESSIONS_PER_REPO = 5;
 
 /**
  * docs/211 — parse the persisted `capabilities` JSON, tolerating corrupt/legacy
@@ -75,22 +85,61 @@ function safeParseCapabilities(json: string): unknown {
 }
 
 /**
- * docs/161 — disk-idle ladder thresholds. "Idle age" for the ladder is
+ * docs/161 / SHI-197 — the disk-idle ladder thresholds as ONE ordered,
+ * unit-consistent config (all milliseconds), replacing three free-floating
+ * `*_MS` constants. "Idle age" for the ladder is
  * `now - max(Date.parse(lastUsedAt), Date.parse(lastViewedAt))` — turn activity
- * OR a recent viewer attach keeps a session warm. These are the defaults; the
- * orchestrator may override them from env (see `index.ts`). The disk-pressure
- * pass can escalate before these elapse when free space crosses the low-water
- * mark (LRU), so they're deliberately generous.
+ * OR a recent viewer attach keeps a session warm. The disk-pressure pass can
+ * escalate before these elapse when free space crosses the low-water mark
+ * (LRU), so they're deliberately generous.
+ *
+ * The ordering `lightAfterMs ≤ evictMergedAfterMs ≤ evictUnmergedAfterMs` is a
+ * coherence invariant the ladder depends on (`light` is the cheap
+ * non-destructive rung, so it must come first; a merged PR is "done" so it
+ * evicts sooner than unmerged WIP). It is asserted once at startup via
+ * {@link assertDiskLadderOrdering} — nothing previously stopped an env override
+ * from inverting it.
  */
-export const IDLE_LIGHT_MS = 24 * 60 * 60 * 1000; // 24h: hot → light (drop deps)
-export const IDLE_EVICT_MS = 14 * 24 * 60 * 60 * 1000; // 14d: light → evicted (wipe checkout)
+export interface DiskLadderThresholds {
+  /** `hot → light`: idle age (ms) before deps are dropped (checkout kept). */
+  lightAfterMs: number;
+  /** `light → evicted`: idle age (ms) for MERGED sessions ("done" → reclaim fast). */
+  evictMergedAfterMs: number;
+  /** `light → evicted`: idle age (ms) for UNMERGED WIP (the gentle clock). */
+  evictUnmergedAfterMs: number;
+}
+
 /**
- * docs/161 — merge-aware eviction. A merged PR is a much stronger "done" signal
- * than idle age: the work shipped and the checkout re-fetches fresh on reopen,
- * so finished sessions can be reclaimed far sooner than unmerged WIP (which
- * stays on the gentle `IDLE_EVICT_MS` clock). 2 days after last touch.
+ * docs/161 / SHI-197 — the default ladder.
+ *   - 24h `hot → light`: non-destructive (deps reinstall in seconds) → act early.
+ *   - 2d  merged `light → evicted`: a merge is a strong "done" signal and the
+ *     checkout re-fetches fresh on reopen → reclaim finished work soon.
+ *   - 14d unmerged `light → evicted`: WIP the user may return to → be gentle.
  */
-export const IDLE_EVICT_MERGED_MS = 2 * 24 * 60 * 60 * 1000; // 2d: merged light → evicted
+export const DEFAULT_DISK_LADDER: DiskLadderThresholds = {
+  lightAfterMs: 24 * 60 * 60 * 1000, // 24h
+  evictMergedAfterMs: 2 * 24 * 60 * 60 * 1000, // 2d
+  evictUnmergedAfterMs: 14 * 24 * 60 * 60 * 1000, // 14d
+};
+
+/**
+ * SHI-197 — fail-fast guard on the ladder ordering. The ladder is incoherent
+ * unless `lightAfterMs ≤ evictMergedAfterMs ≤ evictUnmergedAfterMs`; an env
+ * override that inverts it (e.g. `DISK_IDLE_EVICT_MERGED_MS < DISK_IDLE_LIGHT_MS`)
+ * would make a session jump straight to `evicted` before ever reaching `light`,
+ * or evict unmerged WIP sooner than merged work. Throw at startup rather than
+ * silently misbehave at runtime.
+ */
+export function assertDiskLadderOrdering(t: DiskLadderThresholds): void {
+  if (!(t.lightAfterMs <= t.evictMergedAfterMs && t.evictMergedAfterMs <= t.evictUnmergedAfterMs)) {
+    throw new Error(
+      "Incoherent disk-ladder thresholds: expected "
+      + "lightAfterMs ≤ evictMergedAfterMs ≤ evictUnmergedAfterMs, got "
+      + `lightAfterMs=${t.lightAfterMs}ms, evictMergedAfterMs=${t.evictMergedAfterMs}ms, `
+      + `evictUnmergedAfterMs=${t.evictUnmergedAfterMs}ms`,
+    );
+  }
+}
 
 /**
  * The instant a session's PR reached a terminal state — merged or
@@ -260,6 +309,7 @@ export class SessionManager {
     if (row.merged_at) info.mergedAt = row.merged_at;
     if (row.closed_at) info.closedAt = row.closed_at;
     if (row.model) info.model = row.model;
+    if (row.reasoning_effort) info.reasoningEffort = row.reasoning_effort;
     if (row.agent_id === "claude" || row.agent_id === "codex") info.agentId = row.agent_id;
     if (row.agent_pinned) info.agentPinned = true;
     if ((row.provider_route_kind === "account" || row.provider_route_kind === "reserved") && row.provider_route_id) {
@@ -286,6 +336,7 @@ export class SessionManager {
         // Corrupt/legacy JSON — drop the breadcrumb rather than crashing reads.
       }
     }
+    if (row.merged_head_sha) info.mergedHeadSha = row.merged_head_sha;
     return info;
   }
 
@@ -454,6 +505,20 @@ export class SessionManager {
   }
 
   /**
+   * docs/218 — record the merged PR's head-branch tip SHA. Captured by the PR
+   * poller when it promotes the session to merged (from the PR's `head.sha`),
+   * before the merge side effects fire. This is the safety anchor for the
+   * auto-reset-merged-branch-on-continue feature: a later pre-turn
+   * `reset --hard origin/<base>` only fires when the local HEAD still equals
+   * this SHA, proving the branch carries no post-merge work that the reset would
+   * discard. Stored unconditionally (idempotent re-writes of the same value are
+   * harmless); the feature fails closed when it is NULL.
+   */
+  setMergedHeadSha(id: string, sha: string): void {
+    this.db.prepare("UPDATE sessions SET merged_head_sha = ? WHERE id = ?").run(sha, id);
+  }
+
+  /**
    * docs/202 — un-merge a session that was re-armed after a rebase. Clears
    * `merged_at` (mirroring how {@link setPrStatus} clears `closed_at` on reopen)
    * and stashes a display-only `PreviousMergedPr` breadcrumb of the prior PR.
@@ -470,8 +535,11 @@ export class SessionManager {
    */
   clearMerged(id: string, previousMergedPr: PreviousMergedPr | null): boolean {
     const json = previousMergedPr === null ? null : JSON.stringify(previousMergedPr);
+    // docs/218 — also drop the merged-tip anchor: once un-merged there is no
+    // merged tip, and a stale value must never let the auto-reset feature fire
+    // against a session that is no longer in the merged state.
     const result = this.db.prepare(
-      "UPDATE sessions SET merged_at = NULL, previous_merged_pr = ? WHERE id = ? AND merged_at IS NOT NULL",
+      "UPDATE sessions SET merged_at = NULL, previous_merged_pr = ?, merged_head_sha = NULL WHERE id = ? AND merged_at IS NOT NULL",
     ).run(json, id);
     return result.changes > 0;
   }
@@ -657,6 +725,14 @@ export class SessionManager {
     this.db.prepare("UPDATE sessions SET model = ? WHERE id = ?").run(model, id);
   }
 
+  /**
+   * docs/217 — store the per-session reasoning effort (Control B). `null` clears
+   * it (back to the CLI default).
+   */
+  setReasoning(id: string, effort: string | null): void {
+    this.db.prepare("UPDATE sessions SET reasoning_effort = ? WHERE id = ?").run(effort, id);
+  }
+
   /** Store the selected agent (provider) for a session. */
   setAgentId(id: string, agentId: AgentId): void {
     this.db.prepare("UPDATE sessions SET agent_id = ? WHERE id = ?").run(agentId, id);
@@ -774,6 +850,22 @@ export class SessionManager {
    * Pass `null` to clear the snapshot (e.g., on unarchive when the session
    * starts a fresh branch).
    */
+  /**
+   * docs/218 — read the persisted PR-status snapshot for a session (or null).
+   * `SessionInfo` deliberately doesn't carry `prStatus` (it's poller-owned live
+   * state), but the pre-turn auto-reset needs the merged PR's base branch +
+   * number + url from the durable snapshot, which survives a container restart.
+   */
+  getPrStatus(id: string): PrStatusSummary | null {
+    const row = this.db.prepare("SELECT pr_status FROM sessions WHERE id = ?").get(id) as { pr_status: string | null } | undefined;
+    if (!row?.pr_status) return null;
+    try {
+      return JSON.parse(row.pr_status) as PrStatusSummary;
+    } catch {
+      return null;
+    }
+  }
+
   setPrStatus(id: string, status: PrStatusSummary | null): void {
     const json = status === null ? null : JSON.stringify(status);
     this.db.prepare("UPDATE sessions SET pr_status = ? WHERE id = ?").run(json, id);

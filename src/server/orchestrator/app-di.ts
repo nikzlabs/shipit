@@ -15,6 +15,7 @@ import { EgressAllowlistStore } from "./egress-allowlist-store.js";
 import { FileReviewStore } from "./review-store.js";
 import { PresentStore } from "./present-store.js";
 import { CredentialStore } from "./credential-store.js";
+import { resolveSecretCipher, type SecretCipher } from "./secret-cipher.js";
 import { ProviderAccountManager } from "./provider-account-manager.js";
 import { initGlobalGitConfig } from "./git-config.js";
 import { SessionContainerManager } from "./session-container.js";
@@ -111,6 +112,15 @@ export interface AppDeps {
    * Defaults to `new CredentialStore(credentialsDir)`.
    */
   credentialStore?: CredentialStore;
+  /**
+   * At-rest encryption for persisted secrets/credentials (docs/220). Defaults
+   * to `resolveSecretCipher({ credentialsDir })` — an AES-256-GCM cipher keyed
+   * from `SHIPIT_SECRET_KEY`, a key file on the credentials volume, or a freshly
+   * generated key. `null` disables encryption (plaintext). Tests that pass their
+   * own `credentialStore` are unaffected; pass `null` here to keep the SecretStore
+   * plaintext too.
+   */
+  secretCipher?: SecretCipher | null;
   /** Provider account registry/router (docs/150). */
   providerAccountManager?: ProviderAccountManager;
   /**
@@ -259,8 +269,36 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   // ---- Usage/cost tracking manager ----
   const usageManager = deps.usageManager ?? new UsageManager(databaseManager);
 
+  // ---- At-rest secret encryption (docs/220) ----
+  // Resolve the cipher once and inject it into both stores. `undefined` dep →
+  // resolve from env / key-file / auto-generate (encryption on by default in
+  // production); explicit `null` → disabled. A malformed/unreadable key throws
+  // here, failing the boot loudly rather than silently storing plaintext or
+  // wiping data.
+  //
+  // Test mode is plaintext by default: the integration suite shares stores
+  // through the API (round-trips are cipher-agnostic), and auto-generating a key
+  // file into the default `/credentials` (often unwritable in CI) would break
+  // boot. The cipher's own behavior is covered by dedicated unit tests that
+  // inject a real cipher; an integration test can still opt in via
+  // `deps.secretCipher`. We gate on `serveStatic === false` (the explicit test
+  // signal) OR the vitest runtime (`VITEST`), since not every buildApp test call
+  // sets serveStatic. The `NODE_ENV !== "production"` guard on the VITEST clause
+  // is defense-in-depth: a stray `VITEST` in a real deployment must never be
+  // able to silently flip encryption off (production sets NODE_ENV=production).
+  const isUnderTest =
+    deps.serveStatic === false ||
+    (!!process.env.VITEST && process.env.NODE_ENV !== "production");
+  const secretCipher =
+    deps.secretCipher === undefined
+      ? isUnderTest
+        ? null
+        : resolveSecretCipher({ credentialsDir })
+      : deps.secretCipher;
+
   // ---- Credential store ----
-  const credentialStore = deps.credentialStore ?? new CredentialStore(credentialsDir);
+  const credentialStore =
+    deps.credentialStore ?? new CredentialStore(credentialsDir, secretCipher ?? undefined);
 
   // ---- Provider accounts (docs/150 Phase 1) ----
   const providerAccountManager = deps.providerAccountManager ?? new ProviderAccountManager({
@@ -328,7 +366,7 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   }
 
   // ---- Secret store ----
-  const secretStore = new SecretStore(databaseManager);
+  const secretStore = new SecretStore(databaseManager, secretCipher ?? undefined);
 
   // ---- File review store ----
   const reviewStore = new FileReviewStore(databaseManager);

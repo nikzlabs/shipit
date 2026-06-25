@@ -45,6 +45,7 @@ import {
 } from "./container-config-builder.js";
 import {
   resolveWorkerImageId as resolveWorkerImageIdFn,
+  resolveWorkerBaseDigest as resolveWorkerBaseDigestFn,
   prepareOverlaySpecs as prepareOverlaySpecsFn,
   preparePnpmStore as preparePnpmStoreFn,
   type OverlayProvisionerDeps,
@@ -130,6 +131,14 @@ export interface ContainerConfig {
   pnpmStoreDir?: string;
   /** Host path: /workspace/sessions/{uuid}/uploads (uploaded files) */
   uploadsDir?: string;
+  /**
+   * docs/217 — Host path: /workspace/sessions/{uuid}/scratch. Mounted **rw** at
+   * `/persist`: a persistent, non-git, agent-writable scratch tier that survives
+   * container teardown (sibling of `workspace/`, like `uploads/`). The agent
+   * writes throwaway-but-keep files here (presented artifacts being the motivating
+   * case) instead of the ephemeral `/tmp`.
+   */
+  scratchDir?: string;
   /** Host path: /credentials (Claude CLI auth, GitHub token) */
   credentialsDir: string;
   /** Container image name. */
@@ -386,6 +395,14 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    * inspect is cached as `""` (a miss) so there is no per-session Docker call.
    */
   private workerImageId?: string;
+  /**
+   * SHI-194 — cached `BASE_IMAGE_DIGEST` baked into the session-worker image, the
+   * ABI fingerprint the overlay scope now keys on instead of `workerImageId`.
+   * Resolved once via `resolveWorkerBaseDigest`; a failed inspect / pre-SHI-194
+   * image (no baked digest) is cached as `""` (a miss) so there is no per-session
+   * Docker call and the scope falls back to the worker-image-id behavior.
+   */
+  private workerBaseDigest?: string;
   private standbySessionIds = new Set<string>();
   private healthMonitorState: HealthMonitorState = createHealthMonitorState();
   private _disposed = false;
@@ -852,6 +869,20 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     // resolveWorkerImageIdFn caches the miss as "" so we don't re-inspect per session.
     this.workerImageId = await resolveWorkerImageIdFn(this.docker, this.imageName);
     return this.workerImageId || undefined;
+  }
+
+  /**
+   * SHI-194 — resolve the `BASE_IMAGE_DIGEST` baked into the worker image, the
+   * pinned-base ABI fingerprint the overlay scope keys on. Mirrors
+   * {@link resolveWorkerImageId}'s caching (incl. caching a miss as `""`) so it
+   * adds no per-session Docker call. Returns `undefined` when the image can't be
+   * inspected or carries no baked digest (a pre-SHI-194 image) — the caller then
+   * leaves the scope on the worker-image-id / `"unknown"` fallback.
+   */
+  async resolveWorkerBaseDigest(): Promise<string | undefined> {
+    if (this.workerBaseDigest !== undefined) return this.workerBaseDigest || undefined;
+    this.workerBaseDigest = await resolveWorkerBaseDigestFn(this.docker, this.imageName);
+    return this.workerBaseDigest || undefined;
   }
 
   /** Get the container info for a session. */

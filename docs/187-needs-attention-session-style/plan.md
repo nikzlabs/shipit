@@ -1,4 +1,5 @@
 ---
+issue: https://linear.app/shipit-ai/issue/SHI-200
 description: Restyle how a session that "needs attention" is marked in the sidebar — explored as borders, backgrounds, and title treatments.
 ---
 
@@ -125,8 +126,33 @@ Verified live (dogfood dev server) across **dark**, **warm-light**, and
 **cool-light**: the warm amber bar + trail reads clearly on each and stays tasteful
 (it contrasts cleanly against the cool blue-gray surface rather than clashing).
 
+## Fix — resolved sessions never wear the bar
+
+A merged/closed session in the sidebar's **"Recently resolved"** group was
+showing the amber rail+trail ("needs attention"). Root cause: the grouping keys
+off `SessionInfo.mergedAt`/`closedAt` (`isRecentlyResolved`), but the attention
+marker derived its terminal-state check from the **pr-store `status.prState`**,
+which lags. A just-merged row whose pr-store status still read `open` fell
+through to `"Waiting for your input"`, and a merged PR carrying a stale CI
+`failure` checks state read as `"CI checks failed"` (that branch sits *above* the
+old `prState === "merged"` short-circuit).
+
+Fix: `computeAttentionReason` now takes a `resolved` input — the **same**
+`isRecentlyResolved` signal that drives the grouping — and short-circuits to
+`null` early (above the CI/conflict/auto-merge branches, below only the live
+`awaitingPermission`/`isAgentRunning` signals). Grouping and the attention marker
+can no longer disagree. Both call sites pass it: `useAttentionInfo` (looks the
+session up in the store) and `useAttentionNotifications` (already iterates
+sessions, so it computes it inline).
+
 ## Key files
 
+- `src/client/hooks/useAttentionInfo.ts` — `computeAttentionReason` + the
+  `resolved` input and short-circuit; the hook resolves it via the session store.
+- `src/client/hooks/useAttentionNotifications.ts` — passes `resolved` so a
+  resolved session also stops firing attention *notifications*.
+- `src/client/components/SessionSidebar/useSessionGrouping.ts` — `isRecentlyResolved`,
+  the single resolve signal both the grouping and the attention marker now share.
 - `src/client/components/SessionSidebar.tsx` — `SessionItem` (the row). The
   attention class is at the row `className`; currently
   `needsAttention ? "border-x-2 border-x-(--color-attention)" : "border-x-2 border-x-transparent"`.

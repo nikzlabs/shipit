@@ -207,7 +207,12 @@ export function recordChatCard(
 export function emitChatCard(
   runner: Pick<
     SessionRunnerInterface,
-    "emitMessage" | "chatMessageGroups" | "recordedCards" | "steeredMessages"
+    | "emitMessage"
+    | "chatMessageGroups"
+    | "recordedCards"
+    | "steeredMessages"
+    | "getTurnEventBuffer"
+    | "lastPersistedBufferIndex"
   >,
   wsMessage: WsServerMessage,
   persisted: PersistedMessage,
@@ -216,44 +221,21 @@ export function emitChatCard(
   runner.emitMessage(wsMessage);
   recordChatCard(runner, persisted);
   persistTurnInProgress(persist.chatHistoryManager, runner, persist.sessionId);
-}
 
-/**
- * Emit a transcript card, REPLACING an already-recorded card from this same turn
- * whose message matches `matches`, or recording a fresh one if none matches.
- *
- * Use this — not `emitChatCard` twice or a DB-row `updateXCard` — for a card with
- * a stable id that can be patched WITHIN the turn that created it (docs/203
- * review → re-review). Both `submit_review` calls happen mid-turn, so a DB-only
- * patch would be clobbered by the next `replaceInProgress` rebuild from
- * `recordedCards`; the `updateBugReportCard` pattern only works because that
- * card's transitions land AFTER the proposing turn is finalized. Replacing the
- * recorded card's message in place keeps it at its original transcript anchor and
- * makes every rebuild — and the live re-emit — reflect the latest state. The
- * client handler keys on the card id, so the re-emit upserts rather than
- * duplicating. Returns whether an existing card was replaced.
- */
-export function emitOrReplaceChatCard(
-  runner: Pick<
-    SessionRunnerInterface,
-    "emitMessage" | "chatMessageGroups" | "recordedCards" | "steeredMessages"
-  >,
-  wsMessage: WsServerMessage,
-  persisted: PersistedMessage,
-  persist: CardPersistCtx,
-  matches: (m: PersistedMessage) => boolean,
-): { replaced: boolean } {
-  const idx = runner.recordedCards.findIndex((c) => matches(c.message));
-  if (idx < 0) {
-    emitChatCard(runner, wsMessage, persisted, persist);
-    return { replaced: false };
+  // Advance the turn-event replay cursor past everything buffered so far — the
+  // SAME thing the tool-result / agent_result boundaries do after they persist
+  // (agent-listeners.ts). `persistTurnInProgress` just wrote a complete snapshot
+  // of the turn (every accumulated assistant group + this card), so the buffered
+  // events up to now are redundant with chat history. Without this advance the
+  // snapshot sits AHEAD of `lastPersistedBufferIndex`, so a later session switch
+  // / WS reconnect replays those buffered events ON TOP of the snapshot. The
+  // pre-card `agent_assistant` then merges into this card's carrier message and
+  // the client drops the card field (`agent-event.ts`) — the card vanishing on
+  // switch and reappearing only once the agent stops (which clears the buffer).
+  // Guarded for partial test stubs that don't model the buffer.
+  if (typeof runner.getTurnEventBuffer === "function") {
+    runner.lastPersistedBufferIndex = runner.getTurnEventBuffer().length;
   }
-  const updated = runner.recordedCards.slice();
-  updated[idx] = { ...updated[idx], message: persisted };
-  runner.recordedCards = updated;
-  runner.emitMessage(wsMessage);
-  persistTurnInProgress(persist.chatHistoryManager, runner, persist.sessionId);
-  return { replaced: true };
 }
 
 /**
@@ -269,9 +251,9 @@ export function emitOrReplaceChatCard(
  * switch/reload. Updating the recorded card here makes every rebuild — and the
  * final end-of-turn persist — carry the patched (terminal) state.
  *
- * This differs from `emitOrReplaceChatCard` on two axes: it does NOT re-emit the
- * card (the transition is communicated by a separate terminal WS message — e.g.
- * `permission_resolved` — that the client applies to its card store), and it
+ * Unlike `emitChatCard`, this does NOT re-emit the card (the transition is
+ * communicated by a separate terminal WS message — e.g. `permission_resolved` —
+ * that the client applies to its card store), and it
  * never records a fresh card when none matches (a transition for a card not in
  * this turn's recorded set means the proposing turn already finalized, so the
  * caller should fall back to the DB-row `updateXCard` patch, which is safe then).
@@ -288,6 +270,55 @@ export function updateRecordedCard(
   updated[idx] = { ...updated[idx], message: patch(updated[idx].message) };
   runner.recordedCards = updated;
   return true;
+}
+
+/**
+ * Persist a side-channel card's lifecycle transition (filed / resolved / undone
+ * / …) so it survives a session switch and a full reload — WITHOUT being
+ * clobbered when the user confirms the card while its proposing turn is still in
+ * flight. The recurring footgun behind docs/164 (bug report), docs/172 (egress),
+ * docs/177 (issue-write undo), and docs/193 (permission); this is their shared
+ * implementation.
+ *
+ * The clobber: a card is recorded on the runner at propose time (`emitChatCard`
+ * → `recordedCards`), and `recordedCards` is cleared only at the NEXT turn start,
+ * never at turn end (`resetRunnerTurnState`). So a DB-only `patchDb()` applied
+ * while the proposing turn is still running is reverted when that turn finalizes
+ * and rebuilds its rows from the stale (still-pending) `recordedCards` snapshot —
+ * the card reverts to its pre-transition form on the next switch/reload.
+ *
+ * While the turn is running and the card is in this turn's recorded set, patch
+ * the recorded card in place (`updateRecordedCard`) so every rebuild — and the
+ * end-of-turn persist — carries the terminal state, then flush with
+ * `persistTurnInProgress`. Otherwise (`running` is false, or the card was
+ * recorded by an already-finalized turn whose `recordedCards` are now inert) the
+ * direct DB-row `patchDb()` is safe — and is the default, since most cards are
+ * confirmed after their proposing turn ends. The `running` guard matters because
+ * — unlike a permission card, which always resolves mid-turn while the agent is
+ * blocked — these cards are usually confirmed post-turn, and a post-finalize
+ * `persistTurnInProgress` would revive the finalized turn as a duplicate
+ * in-progress row.
+ *
+ * `matches` selects the recorded card by its stable id; `patchRecorded` returns
+ * the patched `PersistedMessage`; `patchDb` performs the finalized-row
+ * `ChatHistoryManager.update*Card` fallback.
+ */
+export function persistCardTransition(
+  runner: Pick<
+    SessionRunnerInterface,
+    "running" | "recordedCards" | "chatMessageGroups" | "steeredMessages"
+  >,
+  persist: CardPersistCtx,
+  matches: (m: PersistedMessage) => boolean,
+  patchRecorded: (m: PersistedMessage) => PersistedMessage,
+  patchDb: () => void,
+): void {
+  const patchedInFlight = runner.running && updateRecordedCard(runner, matches, patchRecorded);
+  if (patchedInFlight) {
+    persistTurnInProgress(persist.chatHistoryManager, runner, persist.sessionId);
+  } else {
+    patchDb();
+  }
 }
 
 /**
@@ -320,7 +351,12 @@ function buildSystemNotice(
 export function emitNoticeInTurn(
   runner: Pick<
     SessionRunnerInterface,
-    "emitMessage" | "chatMessageGroups" | "recordedCards" | "steeredMessages"
+    | "emitMessage"
+    | "chatMessageGroups"
+    | "recordedCards"
+    | "steeredMessages"
+    | "getTurnEventBuffer"
+    | "lastPersistedBufferIndex"
   >,
   sessionId: string,
   message: string,

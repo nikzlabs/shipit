@@ -910,6 +910,7 @@ capture**:
 
 1. `android/app/src/main/AndroidManifest.xml`:
    - Add `<uses-permission android:name="android.permission.RECORD_AUDIO" />`
+   - Add `<uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />` — a *normal* (install-time, no runtime prompt) permission. WebRTC's audio capture path configures `AudioManager` (audio mode, echo cancellation, gain) when starting the source; without it `getUserMedia(audio)` fails on many devices/ROMs with `NotReadableError: "Could not start audio source"` **even though `RECORD_AUDIO` is granted** — the OS allowed capture but the source couldn't be configured/started. This is a distinct failure from permission denial (`NotAllowedError`).
    - Add `<uses-feature android:name="android.hardware.microphone" android:required="false" />` so Play Store filtering doesn't exclude mic-less devices.
 2. `android/app/src/main/java/com/shipit/wrapper/MainActivity.kt` (verify exact path during build): override `WebChromeClient.onPermissionRequest(request)` to grant `PermissionRequest.RESOURCE_AUDIO_CAPTURE` after the standard Android runtime-permission flow.
 

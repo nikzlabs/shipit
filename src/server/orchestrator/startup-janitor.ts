@@ -28,54 +28,41 @@
  *     primary cleanup paths (`cleanupSessionDockerResources`, compose
  *     teardown, `killStaleContainers`) handle the happy path — this is
  *     the safety net for when they didn't run (unclean shutdown).
- *   - **Archived session workspaces** older than
- *     `DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS` days. Safety net for archives
- *     where `fs.rm` didn't run — `archiveSession` already drops the
- *     workspace at archive time on a healthy host, so this normally finds
+ *   - **Archived session workspaces** older than `coldArtifactRetentionDays`
+ *     (SHI-197). Pure crash-recovery backstop for archives where `fs.rm`
+ *     didn't run — `archiveSession` already drops the workspace synchronously
+ *     at archive time (SHI-192) on a healthy host, so this normally finds
  *     nothing. Chat history, usage, and session metadata are preserved;
  *     `unarchiveSession` re-clones from the bare cache.
- *   - **Orphan `repo-cache/<hash>` and `dep-cache/<hash>` directories**
- *     whose repo URL has no `repos` row or whose `last_used_at` is older
- *     than `DISK_JANITOR_CACHE_DAYS` (default 30).
- *   - **Orphan `repo-memory/<hash>` directories** (docs/155) — shared
- *     per-repo Claude memory keyed by the same repo hash. Swept on the
- *     same liveness rule as the caches above, but lives under
- *     `credentialsDir`, so it only runs when that dep is wired.
  *   - **Dead `dep-cache/<hash>/nm-store` directories** for live repos. The
  *     lockfile-keyed `node_modules` copy store (docs/148) was removed in
  *     docs/183 Phase 1 (superseded by the overlay rolling base), so the whole
  *     subtree is reclaimed wholesale (~2.4 GB observed). Effectively one-time:
- *     the worker never writes nm-store again, so later sweeps no-op.
- *   - **Stale `overlay-base/<scope-hash>` dirs** (docs/183 Phase 2/3) whose
- *     scope-hash is not in the live-mount set AND whose mtime is older than
- *     `DISK_JANITOR_CACHE_DAYS`. Gated on a `liveOverlayScopeHashes` source
- *     (Phase 3) so a base still backing a live overlay `lowerdir` is never
- *     removed; skipped entirely until that source is wired.
+ *     the worker never writes nm-store again, so later sweeps no-op — which is
+ *     why this one-shot migration cleanup stays here rather than on the periodic
+ *     pass (it neither accumulates with the clock nor recovers from a crash).
  *
  * Why startup-only (no timer) for THESE sweeps: every item above is
  * recovering from a failure earlier in the lifecycle — orphan volumes only
  * exist if archive teardown crashed, orphan workspaces only exist if archive's
- * fs.rm failed, orphan caches only exist if repo removal didn't cascade, orphan
- * networks only exist if the disposal/teardown path didn't run. None
- * of them accumulate steadily, so running periodically would mostly
+ * fs.rm failed, orphan credentials/logs only exist if the disposal/teardown path
+ * didn't run, orphan branches only exist if the per-merge deletion hook didn't
+ * fire. None of them accumulate steadily, so running periodically would mostly
  * burn cycles doing nothing. Startup is the natural "we just came back
  * from possibly-unclean shutdown — clean up after the previous run" moment.
  *
- * NOTE: prod is deployed *manually*, not on push — so the orchestrator can run
- * for a long time between restarts, and a startup-only sweep can go a long time
- * between runs. That's fine for the failure-recovery items above (they don't
- * accumulate steadily), but NOT for docs/161's disk-tier escalation, which is
- * the one disk task that DOES accumulate steadily (idle node_modules piling up).
- * That ladder therefore does NOT live in `runDiskJanitor`: it's
- * `escalateDiskTiers` (`tier-escalation.ts`), invoked async after each session
- * start (the primary steady-state reclaim), at orchestrator boot, AND on a
- * low-frequency periodic timer (issue #1049 — `DISK_ESCALATION_INTERVAL_MS`,
- * hourly default, wired in `index.ts`). The timer exists specifically because
- * escalation accumulates steadily: session-start kicks alone create a self-heal
- * feedback trap (a full disk fails new starts → the kick never fires → nothing
- * reclaims). The failure-recovery sweeps above deliberately get NO such timer.
- * The startup janitor remains the post-(unclean-)restart safety net for the
- * recovery items.
+ * Steady-growth sweeps live elsewhere (SHI-196): the disk reclaim that grows with
+ * the CLOCK — unreferenced repo/dep caches, `repo-memory/`, obsolete overlay bases,
+ * stale pnpm stores — moved to `runSteadyStateReclaim` (`steady-state-reclaim.ts`),
+ * which rides the periodic disk-tier escalation pass (`escalateDiskTiers`, fired at
+ * boot, per-activation, and hourly). prod is deployed *manually*, not on push, so the
+ * orchestrator can run a long time between restarts; a boot-only sweep would let
+ * those caches pile up unreclaimed between deploys, and a wedged box (full disk → new
+ * starts fail) would never reclaim at all. The disk-tier escalation ladder itself
+ * (docs/161, idle node_modules → hot/light/evicted) is the other steady-state disk
+ * task and likewise does NOT live here — it's `escalateDiskTiers`
+ * (`tier-escalation.ts`). The failure-recovery sweeps below deliberately get NO
+ * timer; this janitor remains the post-(unclean-)restart safety net for them.
  *
  * Scope split — what this DOESN'T do:
  *   - **BuildKit cache + dangling images** are pruned by `deploy.sh`
@@ -87,18 +74,25 @@
  *     primary cleanup didn't happen.
  *
  * Behavior knobs (env vars):
- *   - DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS: when set to a positive number,
- *     archived sessions whose `last_used_at` is older than this many days
- *     have their `workspaceDir` removed. Default `0` (disabled).
- *   - DISK_JANITOR_CACHE_DAYS: age in days at which `repo-cache/<hash>`
- *     and `dep-cache/<hash>` directories whose repo has no `repos` row are
- *     deleted. Default `30`.
+ *   - DISK_JANITOR_COLD_ARTIFACT_RETENTION_DAYS (SHI-197): the single
+ *     cold-artifact retention, in days, read once in `startup-monitors.ts` and
+ *     shared by two consumers. In THIS module it governs the crash-recovery
+ *     archived-workspace backstop (user-archived sessions whose `workspaceDir`
+ *     survived a crashed synchronous cleanup); the same value also drives the
+ *     steady-state cold-cache reclaim (`repo-cache` / `dep-cache` / `pnpm-store`
+ *     / `repo-memory`) in `steady-state-reclaim.ts` (SHI-196 moved those sweeps
+ *     onto the periodic escalation pass). Replaces the two coincidental
+ *     `DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS` (default `0`, disabled) +
+ *     `DISK_JANITOR_CACHE_DAYS` (default `30`) knobs. Default `30`. The
+ *     archived-workspace sweep is no longer independently tunable: it's pure
+ *     crash-recovery (SHI-192 frees the workspace synchronously at archive
+ *     time), so it rides the same retention.
  *   - DISK_JANITOR_ORPHAN_BRANCHES: when `"false"`, disables the
  *     orphan-`shipit/*`-branch sweep. Default enabled (set the env var to
  *     `"false"` to opt out). The sweep no-ops anyway without GitHub auth.
  *   - DISK_JANITOR_PACE_MS: milliseconds to pause between each destructive
- *     operation (volume/network removal, branch delete, cache/workspace/
- *     nm-store rm). The startup sweep is fire-and-forget and never urgent —
+ *     operation (volume/network removal, branch delete, workspace/nm-store/
+ *     credential/log rm). The startup sweep is fire-and-forget and never urgent —
  *     every item recovers from a past failure — so we deliberately drip it out
  *     rather than have a burst of `docker` spawns and git pushes contend with a
  *     concurrent agent start for the Docker daemon / bare-cache git layer. This
@@ -113,21 +107,26 @@ import type { RepoStore } from "./repo-store.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { RepoGit } from "./repo-git.js";
 import { repoUrlToHash, parseGitHubRemote } from "./git-utils.js";
-import { sessionCredentialsRoot, REPO_MEMORY_SUBDIR } from "./session-credentials.js";
-import { OVERLAY_BASE_SUBDIR } from "./overlay-volume.js";
-import { readBasePointerByHash } from "./overlay-base.js";
-import { PNPM_STORE_SUBDIR } from "./overlay-session.js";
-import { getMessage, sleep, defaultRunDocker } from "./disk-utils.js";
+import { sessionCredentialsRoot } from "./session-credentials.js";
+import { getMessage, sleep, defaultRunDocker, reclaimRegenerableSessionDirs } from "./disk-utils.js";
 
 export interface DiskJanitorDeps {
   sessionManager: SessionManager;
   repoStore: RepoStore;
-  /** Root that holds `repo-cache/<hash>` and `dep-cache/<hash>` subdirs. */
+  /** Root that holds the `dep-cache/<hash>/nm-store` subtree this janitor reaps. */
   stateDir: string;
-  /** When > 0, sweep archived session workspaces older than this many days. */
-  archivedWorkspaceDays?: number;
-  /** Age threshold (days) for unreferenced repo/dep cache directories. */
-  cacheDays?: number;
+  /**
+   * SHI-197 — the single cold-artifact retention (days). In this module it
+   * drives the crash-recovery archived-workspace backstop (sweep archived
+   * session workspaces older than this); post-SHI-196 the cold caches that once
+   * shared a knob with it live in `steady-state-reclaim.ts`, but both still read
+   * the SAME value (the old `DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS` +
+   * `DISK_JANITOR_CACHE_DAYS` coincidentally-30d pair collapsed into one). The
+   * archived-workspace sweep is no longer independently tunable: it's pure
+   * crash-recovery (SHI-192 frees the workspace synchronously at archive time —
+   * see `sweepArchivedWorkspaces`). Defaults to {@link COLD_ARTIFACT_RETENTION_DAYS}.
+   */
+  coldArtifactRetentionDays?: number;
   /**
    * docs/138 — source-of-truth credentials root (e.g. `/credentials`). When
    * provided, the janitor sweeps per-session credential subtrees under
@@ -163,42 +162,9 @@ export interface DiskJanitorDeps {
   /** Default true. Set false to disable the branch sweep entirely. */
   sweepOrphanBranches?: boolean;
   /**
-   * docs/183 Phase 2/3 — overlay rolling-base GC. Returns the set of overlay-base
-   * scope-hashes (`(repo, runtime fingerprint)`) that are currently live, i.e.
-   * mounted as a `lowerdir` by some session or otherwise referenced. The sweep
-   * removes `overlay-base/<hash>/` dirs NOT in this set (and older than
-   * `cacheDays`). This MUST be provided before the sweep runs: removing a base
-   * dir while it backs a live overlay mount is undefined behavior, and the
-   * scope-hash keying never matches the repo-url `liveHashes` set (the naive
-   * extension the plan warns against). The live-scope-hash registry is built in
-   * Phase 3 when sessions record their base scope; until then this is omitted and
-   * the overlay-base sweep is skipped (no bases exist on disk yet anyway).
-   *
-   * **Completeness is a hard requirement.** The returned set must be an
-   * authoritative snapshot of every base referenced by any *resumable* session
-   * (not just currently-running containers) — an incomplete set lets the mtime
-   * fallback reap a live base. The janitor runs at orchestrator startup, when
-   * reconciliation may not have repopulated the registry yet, so the Phase 3
-   * provider must either wait for that or err toward over-reporting live hashes.
-   * See `sweepOrphanedOverlayBases` for the matching mtime-stamp requirement on
-   * the publish path.
-   */
-  liveOverlayScopeHashes?: () => Set<string>;
-  /**
-   * docs/197 Part 2 — pnpm shared-store GC. Returns the hash of the store dir for
-   * the CURRENT runtime (`pnpm-store/<hash>`, the live store that must never be
-   * swept), or `null` when the `OVERLAY_DEP_STORE=0`/`false` kill switch disables
-   * the feature — in which case no store is live, so every `pnpm-store/<hash>` dir
-   * past `cacheDays` is reapable (the same "GC the disabled feature's leftovers"
-   * shape as the overlay-base sweep returning an empty live-set when killed off).
-   * The sweep runs only when this dep is
-   * provided; omitted in unit tests that don't exercise it.
-   */
-  pnpmStoreRuntimeHash?: () => string | null;
-  /**
    * Throttle: milliseconds to pause between each destructive operation
-   * (volume/network removal, branch delete, cache/workspace/nm-store rm). The
-   * startup sweep is never urgent — every item is recovering from a past
+   * (volume/network removal, branch delete, workspace/nm-store/credential/log rm).
+   * The startup sweep is never urgent — every item is recovering from a past
    * failure — so we deliberately drip the reclaim out rather than hammer the
    * Docker daemon and the bare-cache git layer that a concurrent agent start
    * also needs. Defaults to `0` (no pause) so unit tests stay fast; production
@@ -213,24 +179,24 @@ export interface DiskJanitorResult {
   /** Session networks removed (cross-referenced against active sessions). */
   orphanNetworksRemoved: number;
   workspacesRemoved: number;
-  cachesRemoved: number;
   /** docs/183 — dead `dep-cache/<hash>/nm-store` dirs removed (supersedes docs/148). */
   nmStoresRemoved: number;
-  /** docs/183 Phase 2/3 — stale, unreferenced `overlay-base/<hash>` dirs removed. */
-  overlayBasesRemoved: number;
-  /** docs/197 Part 2 — stale `pnpm-store/<hash>` dirs removed (non-current runtime, past cutoff). */
-  pnpmStoresRemoved: number;
   /** Remote `shipit/*` branches whose PR is merged and no live session uses them. */
   orphanBranchesRemoved: number;
   /** Per-session credential subtrees removed (archived or untracked sessions). */
   credentialDirsRemoved: number;
-  /** docs/155 — shared per-repo Claude memory dirs removed (unreferenced repo hash). */
-  repoMemoryDirsRemoved: number;
   /** docs/192 — per-session `logs/` dirs removed (archived or untracked sessions). */
   logDirsRemoved: number;
 }
 
-const DEFAULT_CACHE_DAYS = 30;
+/**
+ * SHI-197 — the one cold-artifact retention default (days). Read once in
+ * `startup-monitors.ts` and shared by both the crash-recovery archived-workspace
+ * backstop (here) and the steady-state cold-cache reclaim
+ * (`steady-state-reclaim.ts`, SHI-196), which previously had two coincidental
+ * `30`-day knobs that could drift apart.
+ */
+export const COLD_ARTIFACT_RETENTION_DAYS = 30;
 
 /**
  * Run the disk-janitor sweep once. Each sub-step is wrapped in try/catch
@@ -243,17 +209,17 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     orphanVolumesRemoved: 0,
     orphanNetworksRemoved: 0,
     workspacesRemoved: 0,
-    cachesRemoved: 0,
     nmStoresRemoved: 0,
-    overlayBasesRemoved: 0,
-    pnpmStoresRemoved: 0,
     orphanBranchesRemoved: 0,
     credentialDirsRemoved: 0,
-    repoMemoryDirsRemoved: 0,
     logDirsRemoved: 0,
   };
   const runDocker = deps.runDocker ?? defaultRunDocker;
   const paceMs = deps.paceMs ?? 0;
+  // SHI-197 — the single cold-artifact retention; here it drives the
+  // archived-workspace crash-recovery backstop (the cold caches that share this
+  // value are swept by `steady-state-reclaim.ts` on the periodic pass, SHI-196).
+  const coldDays = deps.coldArtifactRetentionDays ?? COLD_ARTIFACT_RETENTION_DAYS;
 
   try {
     result.orphanVolumesRemoved = await sweepOrphanSessionVolumes(
@@ -273,18 +239,10 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
 
   try {
     result.workspacesRemoved = await sweepArchivedWorkspaces(
-      deps.sessionManager, deps.archivedWorkspaceDays ?? 0, paceMs,
+      deps.sessionManager, coldDays, paceMs,
     );
   } catch (err) {
     console.warn("[disk-janitor] archived-workspace sweep failed:", getMessage(err));
-  }
-
-  try {
-    result.cachesRemoved = await sweepOrphanedCaches(
-      deps.stateDir, deps.repoStore, deps.cacheDays ?? DEFAULT_CACHE_DAYS, paceMs,
-    );
-  } catch (err) {
-    console.warn("[disk-janitor] cache sweep failed:", getMessage(err));
   }
 
   try {
@@ -295,39 +253,6 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     console.warn("[disk-janitor] nm-store sweep failed:", getMessage(err));
   }
 
-  // docs/183 Phase 2/3 — sweep stale, unreferenced overlay bases. Gated on a
-  // live-scope-hash source (Phase 3): removing a base dir that still backs a live
-  // overlay `lowerdir` is undefined behavior, so without a way to confirm which
-  // bases are in use we don't touch the subtree at all.
-  if (deps.liveOverlayScopeHashes) {
-    try {
-      result.overlayBasesRemoved = await sweepOrphanedOverlayBases(
-        deps.stateDir,
-        deps.liveOverlayScopeHashes(),
-        deps.cacheDays ?? DEFAULT_CACHE_DAYS,
-        paceMs,
-      );
-    } catch (err) {
-      console.warn("[disk-janitor] overlay-base sweep failed:", getMessage(err));
-    }
-  }
-
-  // docs/197 Part 2 — sweep stale pnpm shared stores. Gated on a runtime-hash
-  // source (mirrors the overlay-base gate): without a way to know which store is
-  // live, we don't touch the subtree at all.
-  if (deps.pnpmStoreRuntimeHash) {
-    try {
-      result.pnpmStoresRemoved = await sweepStalePnpmStores(
-        deps.stateDir,
-        deps.pnpmStoreRuntimeHash(),
-        deps.cacheDays ?? DEFAULT_CACHE_DAYS,
-        paceMs,
-      );
-    } catch (err) {
-      console.warn("[disk-janitor] pnpm-store sweep failed:", getMessage(err));
-    }
-  }
-
   if (deps.credentialsDir) {
     try {
       result.credentialDirsRemoved = await sweepOrphanCredentialDirs(
@@ -335,13 +260,6 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
       );
     } catch (err) {
       console.warn("[disk-janitor] credential-dir sweep failed:", getMessage(err));
-    }
-    try {
-      result.repoMemoryDirsRemoved = await sweepOrphanedRepoMemory(
-        deps.credentialsDir, deps.repoStore, deps.cacheDays ?? DEFAULT_CACHE_DAYS, paceMs,
-      );
-    } catch (err) {
-      console.warn("[disk-janitor] repo-memory sweep failed:", getMessage(err));
     }
   }
 
@@ -379,13 +297,9 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     `[disk-janitor] reclaimed orphan-volumes=${result.orphanVolumesRemoved} `
     + `orphan-networks=${result.orphanNetworksRemoved} `
     + `workspaces=${result.workspacesRemoved} `
-    + `caches=${result.cachesRemoved} `
     + `nm-stores=${result.nmStoresRemoved} `
-    + `overlay-bases=${result.overlayBasesRemoved} `
-    + `pnpm-stores=${result.pnpmStoresRemoved} `
     + `orphan-branches=${result.orphanBranchesRemoved} `
     + `credential-dirs=${result.credentialDirsRemoved} `
-    + `repo-memory=${result.repoMemoryDirsRemoved} `
     + `log-dirs=${result.logDirsRemoved}`,
   );
   return result;
@@ -397,11 +311,13 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
  * tracked in the DB. These hold copies of the pinned agent's credentials
  * (provisioned on first turn); they should not outlive the session.
  *
- * Preserved: dirs for **active, non-archived** sessions — i.e. sessions still
- * in `allIds()` and NOT in `listArchived()`. This keeps warm and idle-evicted
- * sessions intact (their containers may resume) while reaping archived,
- * deleted, and full-reset sessions. An archived session that's later
- * unarchived simply re-provisions on its next first turn / container create.
+ * Preserved: dirs for **live, non-user-archived** sessions — i.e. sessions
+ * still in `allIds()` and NOT user-archived. SHI-179: a disk-EVICTED session
+ * (`listArchived()` = `disk_tier = 'evicted'`) is NOT eligible — it is still
+ * live state the user can return to (its workspace re-clones from the bare
+ * cache on activation), so its credentials must survive. Only genuinely-gone
+ * (untracked) or USER-archived sessions are reaped. An archived session that's
+ * later unarchived simply re-provisions on its next first turn / container create.
  *
  * Returns the count of subtrees removed.
  */
@@ -419,7 +335,13 @@ async function sweepOrphanCredentialDirs(
   }
 
   const tracked = new Set(sessionManager.allIds());
-  const archived = new Set(sessionManager.listArchived().map((s) => s.id));
+  // SHI-179: key off USER-archive state, not `disk_tier = 'evicted'`. A
+  // disk-evicted but non-user-archived session is live and must keep its
+  // credentials; only an explicit user-archive (or a deleted/untracked row)
+  // makes them reclaimable.
+  const userArchived = new Set(
+    sessionManager.listAll().filter((s) => s.userArchived).map((s) => s.id),
+  );
   // docs/110 — defense-in-depth: never sweep a pinned (persistent) session's
   // credentials. Such a session is already tracked-and-not-archived, so the
   // check below keeps it; this makes the persistence invariant explicit.
@@ -428,65 +350,14 @@ async function sweepOrphanCredentialDirs(
   let removed = 0;
   for (const entry of entries) {
     if (pinned.has(entry)) continue;
-    // Keep dirs for sessions that are still tracked AND not archived.
-    if (tracked.has(entry) && !archived.has(entry)) continue;
+    // Keep dirs for sessions that are still tracked AND not user-archived.
+    if (tracked.has(entry) && !userArchived.has(entry)) continue;
     const full = path.join(root, entry);
     try {
       await sleep(paceMs);
       await fs.rm(full, { recursive: true, force: true });
       removed += 1;
       console.log(`[disk-janitor] removed orphan credentials dir ${full}`);
-    } catch (err) {
-      console.warn(`[disk-janitor] failed to remove ${full}:`, getMessage(err));
-    }
-  }
-  return removed;
-}
-
-/**
- * docs/155 — remove shared per-repo Claude memory dirs under
- * `<credentialsDir>/repo-memory/<repoHash>` whose repo hash is no longer
- * referenced by a recently-used repo. Keyed exactly like
- * {@link sweepOrphanedCaches}: a hash is "live" iff some `repos` row resolves to
- * it AND that repo's `lastUsedAt` is within `days`. An orphaned memory dir is
- * one whose repo was removed or has gone untouched past the cutoff.
- *
- * Memory is regeneratable accumulation, not the only copy of anything, so this
- * is safe to do without coordinating with live sessions — same posture as the
- * cache sweep. Returns the count of memory dirs removed.
- */
-async function sweepOrphanedRepoMemory(
-  credentialsDir: string,
-  repoStore: RepoStore,
-  days: number,
-  paceMs: number,
-): Promise<number> {
-  const cutoffMs = Date.now() - days * 86_400_000;
-  const liveHashes = new Set<string>();
-  for (const repo of repoStore.list()) {
-    const lastUsedMs = Date.parse(repo.lastUsedAt);
-    if (Number.isFinite(lastUsedMs) && lastUsedMs >= cutoffMs) {
-      liveHashes.add(repoUrlToHash(repo.url));
-    }
-  }
-
-  const dir = path.join(credentialsDir, REPO_MEMORY_SUBDIR);
-  let entries: string[];
-  try {
-    entries = await fs.readdir(dir);
-  } catch {
-    return 0; // No repo-memory subtree yet — nothing to sweep.
-  }
-
-  let removed = 0;
-  for (const entry of entries) {
-    if (liveHashes.has(entry)) continue;
-    const full = path.join(dir, entry);
-    try {
-      await sleep(paceMs);
-      await fs.rm(full, { recursive: true, force: true });
-      removed += 1;
-      console.log(`[disk-janitor] removed orphan repo-memory ${full}`);
     } catch (err) {
       console.warn(`[disk-janitor] failed to remove ${full}:`, getMessage(err));
     }
@@ -502,9 +373,11 @@ async function sweepOrphanedRepoMemory(
  * never the only copy of the user's work). An archived session that is later
  * unarchived simply starts a fresh log backlog.
  *
- * Preserved: dirs for active, non-archived sessions (still in `allIds()` and
- * NOT in `listArchived()`), and pinned sessions — mirrors the credential-dir
- * sweep so warm / idle-evicted sessions keep their logs for resume.
+ * Preserved: dirs for live, non-user-archived sessions (still in `allIds()` and
+ * NOT user-archived), and pinned sessions — mirrors the credential-dir sweep so
+ * warm / disk-evicted sessions keep their logs for resume. SHI-179: a
+ * disk-evicted (`listArchived()`) but non-user-archived session is live, so it
+ * is NOT eligible for reaping.
  *
  * Returns the count of `logs/` dirs removed.
  */
@@ -521,13 +394,17 @@ async function sweepOrphanSessionLogs(
   }
 
   const tracked = new Set(sessionManager.allIds());
-  const archived = new Set(sessionManager.listArchived().map((s) => s.id));
+  // SHI-179 — key off USER-archive state, not disk eviction (see the
+  // credential-dir sweep): a disk-evicted but non-user-archived session is live.
+  const userArchived = new Set(
+    sessionManager.listAll().filter((s) => s.userArchived).map((s) => s.id),
+  );
   const pinned = new Set(sessionManager.listAll().filter((s) => s.pinnedAt).map((s) => s.id));
 
   let removed = 0;
   for (const entry of entries) {
     if (pinned.has(entry)) continue;
-    if (tracked.has(entry) && !archived.has(entry)) continue;
+    if (tracked.has(entry) && !userArchived.has(entry)) continue;
     const logsDir = path.join(sessionsRoot, entry, "logs");
     try {
       // Only count it if there was actually a logs dir to remove.
@@ -721,10 +598,16 @@ async function sweepOrphanSessionNetworks(
 }
 
 /**
- * Delete `workspaceDir` for archived sessions whose `last_used_at` is
+ * Delete `workspaceDir` for USER-archived sessions whose `last_used_at` is
  * older than `days`. Chat history, usage, and session metadata are
  * preserved — `unarchiveSession` re-clones from the bare cache when the
  * user restores the session.
+ *
+ * SHI-179: `listArchived()` returns `disk_tier = 'evicted'` sessions, which
+ * also covers non-user-archived sessions reclaimed by the docs/161 disk ladder.
+ * Those remain live (re-cloned on activation), so the loop skips any session
+ * the user did not explicitly archive — the workspace lifecycle is tied to
+ * user-archive state, not disk tier.
  *
  * In the current product all sessions have a `remoteUrl`, and
  * `archiveSession` already removes the workspace at archive time, so on
@@ -751,6 +634,13 @@ async function sweepArchivedWorkspaces(
   let removed = 0;
   for (const session of archived) {
     if (!session.workspaceDir) continue;
+    // SHI-179 — `listArchived()` is `disk_tier = 'evicted'`, which includes
+    // non-user-archived sessions reclaimed by the docs/161 disk ladder. Those
+    // are LIVE state the user can return to (workspace re-clones from the bare
+    // cache on activation), so this safety-net sweep must never reclaim them.
+    // Only a session the user explicitly archived is eligible — its workspace
+    // is re-cloned by `unarchiveSession` on restore.
+    if (!session.userArchived) continue;
     // docs/110 — defensive: never sweep a pinned (persistent) session. Archive
     // clears the pin, so a pinned session is never in `listArchived()` to begin
     // with; this guard states the invariant in code rather than relying on it.
@@ -762,67 +652,27 @@ async function sweepArchivedWorkspaces(
     if (!session.remoteUrl) continue;
     const lastUsedMs = Date.parse(session.lastUsedAt);
     if (!Number.isFinite(lastUsedMs) || lastUsedMs >= cutoffMs) continue;
-    try {
-      const stat = await fs.stat(session.workspaceDir).catch(() => null);
-      if (!stat) continue;
-      await sleep(paceMs);
-      await fs.rm(session.workspaceDir, { recursive: true, force: true });
+    // SHI-192 — reclaim the checkout AND the regenerable overlay/ sibling,
+    // preserving durable siblings (uploads/). The legacy code rm'd only the
+    // checkout and orphaned the overlay upper, leaking ~60 GB on prod. Because
+    // each target is stat-checked independently, this also catches sessions
+    // whose `workspace/` was already removed by a prior reclaim but whose
+    // `overlay/` orphan survived — the exact leak shape this sweep must mop up.
+    const { removed: removedDirs, failed } = await reclaimRegenerableSessionDirs(
+      session.workspaceDir,
+      { paceMs },
+    );
+    if (removedDirs.length > 0) {
       removed += 1;
       console.log(
-        `[disk-janitor] removed archived workspace for ${session.id} (${session.workspaceDir})`,
+        `[disk-janitor] reclaimed archived session ${session.id}: ${removedDirs.join(", ")}`,
       );
-    } catch (err) {
+    }
+    for (const f of failed) {
       console.warn(
-        `[disk-janitor] failed to remove archived workspace ${session.workspaceDir}:`,
-        getMessage(err),
+        `[disk-janitor] failed to remove ${f.dir} for ${session.id}:`,
+        f.message,
       );
-    }
-  }
-  return removed;
-}
-
-/**
- * Remove `repo-cache/<hash>` and `dep-cache/<hash>` directories whose hash
- * doesn't appear in the active repos table OR whose repo `lastUsedAt` is
- * older than `days`. Bare clones / dep caches can always be recreated, so
- * this is safe to do without coordinating with active sessions.
- */
-async function sweepOrphanedCaches(
-  stateDir: string,
-  repoStore: RepoStore,
-  days: number,
-  paceMs: number,
-): Promise<number> {
-  const cutoffMs = Date.now() - days * 86_400_000;
-  const repos = repoStore.list();
-  const liveHashes = new Set<string>();
-  for (const repo of repos) {
-    const lastUsedMs = Date.parse(repo.lastUsedAt);
-    if (Number.isFinite(lastUsedMs) && lastUsedMs >= cutoffMs) {
-      liveHashes.add(repoUrlToHash(repo.url));
-    }
-  }
-
-  let removed = 0;
-  for (const subdir of ["repo-cache", "dep-cache"]) {
-    const dir = path.join(stateDir, subdir);
-    let entries: string[];
-    try {
-      entries = await fs.readdir(dir);
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      if (liveHashes.has(entry)) continue;
-      const full = path.join(dir, entry);
-      try {
-        await sleep(paceMs);
-        await fs.rm(full, { recursive: true, force: true });
-        removed += 1;
-        console.log(`[disk-janitor] removed orphan cache ${full}`);
-      } catch (err) {
-        console.warn(`[disk-janitor] failed to remove ${full}:`, getMessage(err));
-      }
     }
   }
   return removed;
@@ -861,205 +711,6 @@ async function sweepDeadNmStores(
       console.log(`[disk-janitor] removed dead nm-store ${nmRoot}`);
     } catch (err) {
       console.warn(`[disk-janitor] failed to remove ${nmRoot}:`, getMessage(err));
-    }
-  }
-  return removed;
-}
-
-/**
- * docs/183 Phase 2/3 — reclaim stale, unreferenced overlay bases under
- * `<stateDir>/overlay-base/<scope-hash>/`.
- *
- * Two guards, BOTH required for a dir to be removed — this is the "compute the
- * live scope-hashes, fall back to mtime for the rest" rule from plan §4:
- *
- *   1. The dir's scope-hash is NOT in `liveScopeHashes` (the set of bases
- *      currently mounted as a `lowerdir` by some session, or otherwise
- *      referenced). Removing a base while a live overlay mount uses it as its
- *      read-only lower is undefined behavior, so a live base is always kept.
- *   2. The dir's mtime is older than `days`. This is the safety net for bases we
- *      can't positively confirm live (same age-guard shape as `sweepOrphanedCaches`
- *      / `sweepArchivedWorkspaces`): a base published seconds ago by a session
- *      whose mount the registry hasn't observed yet is still young, so it survives.
- *
- * The repo-url `liveHashes` set used by `sweepOrphanedCaches` is deliberately NOT
- * reused: an overlay-base scope-hash keys on `(repo, runtime fingerprint)`, so it
- * never appears in a repo-url-keyed set — a naive extension would delete every
- * live base on the first run.
- *
- * **Phase 3 contract (must hold before this sweep is wired live):** the
- * scope-hash is STABLE across commits, so `overlay-base/<hash>/` is one long-lived
- * directory that rolls forward. POSIX only bumps a directory's own mtime on a
- * direct-child change, so guard #2 is a sound liveness proxy ONLY if every base
- * advance rewrites the TOP-LEVEL `overlay-base/<hash>` entry (publish into a temp
- * dir then atomic rename over the path, or `fs.utimes` the dir) — otherwise a
- * continuously-live base whose deps changed only in nested paths keeps an old
- * top-level mtime and could be reaped if it is also (transiently) absent from the
- * live set. And `liveScopeHashes` MUST be a COMPLETE, authoritative snapshot of
- * every base any resumable session could mount (not just currently-running
- * containers); the janitor runs at startup, exactly when in-flight reconciliation
- * may not have repopulated the registry, so an incomplete set there is the worst
- * case. See `DiskJanitorDeps.liveOverlayScopeHashes`.
- */
-async function sweepOrphanedOverlayBases(
-  stateDir: string,
-  liveScopeHashes: Set<string>,
-  days: number,
-  paceMs: number,
-): Promise<number> {
-  const cutoffMs = Date.now() - days * 86_400_000;
-  const dir = path.join(stateDir, OVERLAY_BASE_SUBDIR);
-  let entries: string[];
-  try {
-    entries = await fs.readdir(dir);
-  } catch {
-    return 0; // No overlay-base subtree yet — nothing to sweep.
-  }
-
-  let removed = 0;
-  for (const entry of entries) {
-    if (liveScopeHashes.has(entry)) {
-      // Live scope — never remove the scope dir, but reap its STALE generations.
-      // Bases are immutable `g<N>` children (overlay-base.ts): each publish
-      // creates the next generation and moves the pointer, so superseded
-      // generations (and crash-orphaned `.tmp-*` copies) accumulate. A non-
-      // current generation older than the cutoff can have no live mount left
-      // (no session container plausibly outlives the cutoff without recreate,
-      // which re-pins the current generation). `g0` — the tiny empty cold-start
-      // lowerdir — is always kept: cold mounts pin it and it costs nothing.
-      removed += await sweepStaleBaseGenerations(stateDir, path.join(dir, entry), entry, cutoffMs, paceMs);
-      continue;
-    }
-    const full = path.join(dir, entry);
-    let mtimeMs: number;
-    try {
-      // lstat, not stat: a symlink named like a scope-hash must never be treated
-      // as a base dir (and never have its target followed).
-      const st = await fs.lstat(full);
-      if (!st.isDirectory()) continue;
-      mtimeMs = st.mtimeMs;
-    } catch {
-      continue;
-    }
-    if (mtimeMs >= cutoffMs) continue; // recently touched — keep (young/unconfirmed).
-    try {
-      await sleep(paceMs);
-      await fs.rm(full, { recursive: true, force: true });
-      removed += 1;
-      console.log(`[disk-janitor] removed stale overlay base ${full}`);
-    } catch (err) {
-      console.warn(`[disk-janitor] failed to remove ${full}:`, getMessage(err));
-    }
-  }
-  return removed;
-}
-
-/**
- * Reap superseded generations inside one LIVE scope dir. Keeps the pointer's
- * current generation and `g0` (the empty cold-start lowerdir) unconditionally;
- * any other `g<N>` / `.tmp-*` child older than the cutoff is removed. See the
- * call site in `sweepOrphanedOverlayBases` for the liveness argument.
- */
-async function sweepStaleBaseGenerations(
-  stateDir: string,
-  scopeDir: string,
-  scopeHash: string,
-  cutoffMs: number,
-  paceMs: number,
-): Promise<number> {
-  let children: string[];
-  try {
-    children = await fs.readdir(scopeDir);
-  } catch {
-    return 0;
-  }
-  const currentGen = readBasePointerByHash(stateDir, scopeHash)?.generation ?? null;
-
-  let removed = 0;
-  for (const child of children) {
-    const isTmp = child.startsWith(".tmp-");
-    const genMatch = /^g(\d+)$/.exec(child);
-    if (!isTmp && !genMatch) continue; // unknown entry — never touch.
-    if (genMatch) {
-      const gen = Number(genMatch[1]);
-      if (gen === 0) continue; // empty cold-start lowerdir — always kept.
-      if (currentGen !== null && gen === currentGen) continue; // current base.
-    }
-    const full = path.join(scopeDir, child);
-    try {
-      const st = await fs.lstat(full);
-      if (!st.isDirectory()) continue;
-      if (st.mtimeMs >= cutoffMs) continue; // young — a mount may still pin it.
-    } catch {
-      continue;
-    }
-    try {
-      await sleep(paceMs);
-      await fs.rm(full, { recursive: true, force: true });
-      removed += 1;
-      console.log(`[disk-janitor] removed stale overlay base generation ${full}`);
-    } catch (err) {
-      console.warn(`[disk-janitor] failed to remove ${full}:`, getMessage(err));
-    }
-  }
-  return removed;
-}
-
-/**
- * docs/197 Part 2 — reclaim stale pnpm shared stores under
- * `<stateDir>/pnpm-store/<runtimeKey-hash>/`.
- *
- * One store per runtime fingerprint; a worker-image rebuild rotates the hash, so
- * the previous runtime's store is left behind. A dir is removed only when BOTH:
- *
- *   1. Its hash is NOT `liveHash` (the current runtime's store, or null when the
- *      feature is off — then nothing is live and every store is a candidate). The
- *      live store is never swept; a session installing into it right now must keep
- *      its hardlink targets.
- *   2. Its mtime is older than `days` — the same age guard the other cache sweeps
- *      use, so a store still in active use by a resuming session of the prior
- *      runtime (recently touched) survives until it has genuinely gone cold.
- *
- * Unlike the overlay base, a pnpm store is a pure content-addressed cache: dropping
- * it costs only a re-fetch+relink on the next install, never user data. Lazily
- * recreated on the next pnpm session for that runtime.
- */
-async function sweepStalePnpmStores(
-  stateDir: string,
-  liveHash: string | null,
-  days: number,
-  paceMs: number,
-): Promise<number> {
-  const cutoffMs = Date.now() - days * 86_400_000;
-  const dir = path.join(stateDir, PNPM_STORE_SUBDIR);
-  let entries: string[];
-  try {
-    entries = await fs.readdir(dir);
-  } catch {
-    return 0; // No pnpm-store subtree yet — nothing to sweep.
-  }
-
-  let removed = 0;
-  for (const entry of entries) {
-    if (liveHash !== null && entry === liveHash) continue; // live store — never sweep.
-    const full = path.join(dir, entry);
-    let mtimeMs: number;
-    try {
-      // lstat, not stat: a symlink named like a store hash must never be followed.
-      const st = await fs.lstat(full);
-      if (!st.isDirectory()) continue;
-      mtimeMs = st.mtimeMs;
-    } catch {
-      continue;
-    }
-    if (mtimeMs >= cutoffMs) continue; // recently touched — keep (a resume may use it).
-    try {
-      await sleep(paceMs);
-      await fs.rm(full, { recursive: true, force: true });
-      removed += 1;
-      console.log(`[disk-janitor] removed stale pnpm store ${full}`);
-    } catch (err) {
-      console.warn(`[disk-janitor] failed to remove ${full}:`, getMessage(err));
     }
   }
   return removed;

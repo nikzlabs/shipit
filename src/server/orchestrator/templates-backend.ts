@@ -79,7 +79,7 @@ compose: docker-compose.yml
 `,
       "docker-compose.yml": `services:
   api:
-    image: node:20-slim
+    image: node:24-slim
     working_dir: /app
     command: sh -c "npm install && npm run dev"
     ports:
@@ -159,7 +159,7 @@ compose: docker-compose.yml
 `,
       "docker-compose.yml": `services:
   api:
-    image: node:20-slim
+    image: node:24-slim
     working_dir: /app
     command: sh -c "npm install && npm run dev"
     ports:
@@ -237,7 +237,7 @@ compose: docker-compose.yml
 `,
       "docker-compose.yml": `services:
   api:
-    image: node:20-slim
+    image: node:24-slim
     working_dir: /app
     command: sh -c "npm install && npm run dev"
     ports:

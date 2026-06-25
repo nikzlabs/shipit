@@ -1,12 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { getErrorMessage } from "../shared/utils.js";
+import { isEncrypted, type SecretCipher } from "./secret-cipher.js";
 import type {
   McpServerConfig,
   OAuthTokens,
   McpOAuthRegisteredClient,
 } from "../shared/types/mcp-types.js";
-import type { AgentId, ProviderAccount } from "../shared/types.js";
+import type { AgentId, ProviderAccount, SubAgentDefaults, SubAgentDefaultsPatch } from "../shared/types.js";
 import type { VoiceDeliveryMode } from "../shared/types/voice-note-types.js";
 import { DEFAULT_VOICE_DELIVERY_MODE } from "../shared/types/voice-note-types.js";
 
@@ -49,12 +50,28 @@ interface CredentialData {
    */
   autoFixCi?: boolean;
   /**
+   * docs/218 — when true, resuming a MERGED session whose branch hasn't moved
+   * since the merge auto-resets the branch to the latest `origin/<base>` before
+   * the turn runs (with a per-send opt-out control + a persisted card). Global +
+   * persisted, a sibling of `autoResolveConflicts` / `autoFixCi`. Phase 2 ships it
+   * default OFF; Phase 3 flips the default ON and adds the composer control.
+   */
+  autoResetMergedBranch?: boolean;
+  /**
    * docs/144 — global gate for sub-agent spawning. When true, a pinned session's
    * agent may spawn another registered agent for a one-shot sub-task via the
    * `shipit agent run` CLI. Default off; when off the feature is fully inert and
    * no cross-agent credentials are ever provisioned.
    */
   enableSubAgents?: boolean;
+  /**
+   * docs/217 — per-agent defaults applied when this agent is invoked as a
+   * SUB-agent (`shipit agent run --agent <id>` from inside another session).
+   * Keyed by agent id. A per-agent object (not a scalar) so the group can grow
+   * — `reasoningEffort` and a default `model` for the sub-agent invocation.
+   * A field unset ⇒ the backend's native default (no `--effort` flag; `models[0]`).
+   */
+  agentSubAgentDefaults?: Record<string, SubAgentDefaults>;
   /**
    * Account-level MCP server configs keyed by name (docs/088). Values use
    * `$secret:` placeholders — the raw secret values live in `agentEnv` under
@@ -113,29 +130,102 @@ const FILENAME = "shipit-credentials.json";
 export class CredentialStore {
   private filePath: string;
   private data: CredentialData = {};
+  private cipher?: SecretCipher;
 
-  constructor(credentialsDir?: string) {
+  /**
+   * @param cipher At-rest encryption (docs/220). When provided, the entire
+   *   credentials JSON is encrypted as a single AES-256-GCM blob on disk — so
+   *   every present and future field is covered without per-field plumbing. A
+   *   legacy plaintext file is read transparently and re-encrypted once on
+   *   construction. When omitted, the store behaves exactly as before
+   *   (plaintext JSON) — this keeps the many `new CredentialStore(dir)` test
+   *   call sites working; production injects a cipher from app-di.
+   */
+  constructor(credentialsDir?: string, cipher?: SecretCipher) {
     this.filePath = path.join(credentialsDir ?? DEFAULT_CREDENTIALS_DIR, FILENAME);
+    this.cipher = cipher;
     this.load();
   }
 
   private load(): void {
+    let raw: string;
     try {
-      const raw = fs.readFileSync(this.filePath, "utf-8");
+      raw = fs.readFileSync(this.filePath, "utf-8");
+    } catch {
+      // No file yet — fresh store. (Distinct from a decrypt/parse failure on an
+      // existing file, which must NOT be swallowed; see below.)
+      this.data = {};
+      return;
+    }
+
+    const trimmed = raw.trim();
+    if (isEncrypted(trimmed)) {
+      if (!this.cipher) {
+        // Encrypted file but encryption is disabled / the key is missing. Do
+        // NOT fall through to the plaintext branch — JSON.parse would fail, the
+        // store would reset to `{}`, and the next save() would overwrite the
+        // real encrypted file with an empty one: a silent wipe. Fail closed.
+        throw new Error(
+          `[credential-store] ${this.filePath} is encrypted but no encryption ` +
+            "key is configured. Provide SHIPIT_SECRET_KEY / restore the key file, " +
+            "or run a deliberate decrypt-export before disabling encryption.",
+        );
+      }
+      // Decrypt failures (wrong/rotated key, tampered file) MUST propagate:
+      // swallowing them to `{}` would let the next save() overwrite the real
+      // (still-encrypted) file with an empty store re-encrypted under the new
+      // key — a silent wipe. Fail closed at boot instead.
+      this.data = JSON.parse(this.cipher.decrypt(trimmed)) as CredentialData;
+      return;
+    }
+
+    // Plaintext on disk: a legacy file (pre-encryption) or encryption disabled.
+    // Tolerate parse errors here exactly as before (corrupt file ⇒ empty store).
+    try {
       const parsed = JSON.parse(raw) as Record<string, unknown>;
       if (parsed && typeof parsed === "object") {
         this.data = parsed;
       }
     } catch {
       this.data = {};
+      return;
     }
+
+    // Re-encrypt a legacy plaintext file once, now, so it doesn't linger in
+    // plaintext until the next settings change (one-shot at-rest migration).
+    // Use the throwing write path: silently leaving plaintext on disk after the
+    // operator opted into encryption would defeat the feature, so surface a
+    // write failure rather than continuing.
+    if (this.cipher) {
+      try {
+        this.writeToDisk();
+      } catch (err) {
+        throw new Error(
+          `[credential-store] Failed to re-encrypt legacy credentials at ${this.filePath}: ${getErrorMessage(err)}`,
+          { cause: err },
+        );
+      }
+    }
+  }
+
+  /**
+   * Write the current data to disk (encrypted when a cipher is set). Throws on
+   * any failure — callers decide whether to tolerate it. `chmod` after the
+   * write repairs a pre-existing file whose mode is looser than 0600 (the
+   * `writeFileSync` mode only applies when the file is created).
+   */
+  private writeToDisk(): void {
+    const dir = path.dirname(this.filePath);
+    fs.mkdirSync(dir, { recursive: true });
+    const serialized = JSON.stringify(this.data, null, 2);
+    const payload = this.cipher ? this.cipher.encrypt(serialized) : serialized;
+    fs.writeFileSync(this.filePath, payload, { mode: 0o600 });
+    fs.chmodSync(this.filePath, 0o600);
   }
 
   private save(): void {
     try {
-      const dir = path.dirname(this.filePath);
-      fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(this.filePath, JSON.stringify(this.data, null, 2), { mode: 0o600 });
+      this.writeToDisk();
     } catch (err) {
       console.error("[credential-store] Failed to save:", getErrorMessage(err));
     }
@@ -550,6 +640,20 @@ export class CredentialStore {
     this.save();
   }
 
+  // ---- Auto-reset merged branch on continue (docs/218) ----
+
+  // docs/218 Phase 3 — default ON. Resuming a merged, untouched session resets
+  // the branch to the latest base before the turn (with the composer's per-send
+  // opt-out + the settings toggle as the global escape hatch).
+  getAutoResetMergedBranch(): boolean {
+    return this.data.autoResetMergedBranch ?? true;
+  }
+
+  setAutoResetMergedBranch(enabled: boolean): void {
+    this.data.autoResetMergedBranch = enabled;
+    this.save();
+  }
+
   // ---- Sub-agent spawning (docs/144) ----
 
   getEnableSubAgents(): boolean {
@@ -558,6 +662,44 @@ export class CredentialStore {
 
   setEnableSubAgents(enabled: boolean): void {
     this.data.enableSubAgents = enabled;
+    this.save();
+  }
+
+  // ---- Sub-agent defaults (docs/217) ----
+
+  /** Read the per-agent sub-agent defaults (empty object when unset). */
+  getAgentSubAgentDefaults(agentId: string): SubAgentDefaults {
+    return this.data.agentSubAgentDefaults?.[agentId] ?? {};
+  }
+
+  /** Read the full per-agent sub-agent-defaults map (for the settings payload). */
+  getAllAgentSubAgentDefaults(): Record<string, SubAgentDefaults> {
+    return { ...(this.data.agentSubAgentDefaults ?? {}) };
+  }
+
+  /**
+   * Merge a partial sub-agent-defaults patch for one agent. An explicit `null`
+   * (or `undefined`) for a field clears it, falling back to the CLI's own
+   * default. A field absent from the patch is left unchanged.
+   */
+  setAgentSubAgentDefaults(agentId: string, patch: SubAgentDefaultsPatch): void {
+    const current = { ...(this.data.agentSubAgentDefaults?.[agentId] ?? {}) };
+    if ("reasoningEffort" in patch) {
+      if (patch.reasoningEffort) current.reasoningEffort = patch.reasoningEffort;
+      else delete current.reasoningEffort;
+    }
+    if ("model" in patch) {
+      if (patch.model) current.model = patch.model;
+      else delete current.model;
+    }
+    // Rebuild the map (rather than `delete map[agentId]`) so a now-empty entry
+    // drops out without a dynamic-delete.
+    const next: Record<string, SubAgentDefaults> = {};
+    for (const [id, value] of Object.entries(this.data.agentSubAgentDefaults ?? {})) {
+      if (id !== agentId) next[id] = value;
+    }
+    if (Object.keys(current).length > 0) next[agentId] = current;
+    this.data.agentSubAgentDefaults = next;
     this.save();
   }
 

@@ -10,6 +10,7 @@ import { getGitIdentity } from "./git-config.js";
 import { pushToOrigin, isGitAuthError } from "./git-utils.js";
 import { isNonFastForwardError } from "./services/git.js";
 import { notableFilesForBranch } from "./services/notable-files.js";
+import { isResetEligible } from "./services/pre-turn-reset.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import { registerPreviewProxy } from "./preview-proxy.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./ws-handlers/types.js";
@@ -28,6 +29,8 @@ import type { GitManager } from "../shared/git.js";
 import { readDockerMemoryStats } from "./docker-memory.js";
 import { pruneSessionVolumes } from "./disk-janitor.js";
 import { ensureCatalogCloned, getCatalogCacheRoot } from "./services/marketplace.js";
+import { restoreSessionWorkspace } from "./services/session.js";
+import { listAgents } from "./services/settings.js";
 import { serveStaticClient } from "./app-assembly.js";
 import type { OrchestratorRuntime } from "./bootstrap-managers.js";
 import type { StartupMonitors } from "./startup-monitors.js";
@@ -138,15 +141,14 @@ export function registerSseEndpoint(app: FastifyInstance, rt: OrchestratorRuntim
     const repos = repoStore.list();
     client.write(`event: repo_list\ndata: ${JSON.stringify({ repos })}\n\n`);
 
-    const agents = agentRegistry.list().map((a) => ({
-      id: a.id, name: a.name, installed: a.installed,
-      authConfigured: a.authConfigured, models: a.capabilities.models,
-      supportsReview: a.capabilities.supportsReview,
-      supportsSteering: a.capabilities.supportsSteering,
-      supportsCompaction: a.capabilities.supportsCompaction,
-      supportedPermissionModes: a.capabilities.supportedPermissionModes,
-      skillInvocationPrefix: a.capabilities.skillInvocationPrefix,
-    }));
+    // Use the canonical `listAgents()` serializer (the same one every
+    // `agent_list` *broadcast* uses) rather than hand-rolling the payload here.
+    // A drifted inline copy previously omitted `reasoning`, so the connect/
+    // reconnect snapshot shipped a reasoning-less list that clobbered the good
+    // one in the store — the composer's reasoning control would vanish on SSE
+    // reconnect (e.g. session switch / tab refocus) and only reappear once an
+    // auth-event broadcast happened to re-send the full list. (docs/217)
+    const agents = listAgents(agentRegistry);
     client.write(`event: agent_list\ndata: ${JSON.stringify({ agents })}\n\n`);
     client.write(`event: provider_accounts\ndata: ${JSON.stringify({ accounts: providerAccountManager.list() })}\n\n`);
 
@@ -421,7 +423,7 @@ export async function registerRoutes(
   // ---- Per-session WebSocket route ----
   // Session-scoped WS: auto-activates the session on connect, no activate_session needed.
   // The session ID is in the URL path. Agent preference via ?agent= query param.
-  app.get<{ Params: { sessionId: string }; Querystring: { agent?: string; model?: string } }>(
+  app.get<{ Params: { sessionId: string }; Querystring: { agent?: string; model?: string; reasoning?: string } }>(
     "/ws/sessions/:sessionId",
     { websocket: true },
     (socket, request) => {
@@ -501,6 +503,26 @@ export async function registerRoutes(
       }
       if (selectedModel && selectedModel !== session.model) {
         try { sessionManager.setModel(sessionId, selectedModel); } catch { /* ignore */ }
+      }
+      // docs/217 — per-session reasoning effort (Control B). Prefer the persisted
+      // row; for an as-yet-unpinned (new/warm) session with none, fall back to the
+      // client's per-agent localStorage seed sent as `?reasoning=` — this mirrors
+      // model seeding (`session.model ?? requestedModel`) so the composer's
+      // displayed seed actually applies to the very first turn instead of silently
+      // running with no flag. Dropped if invalid for the resolved agent.
+      const requestedReasoning =
+        !session.agentPinned && typeof request.query.reasoning === "string"
+          ? request.query.reasoning
+          : undefined;
+      let selectedReasoning: string | undefined = session.reasoningEffort ?? requestedReasoning;
+      {
+        const reasoningOpts = agentRegistry.get(perConnectionAgentId)?.capabilities.reasoning?.options;
+        if (selectedReasoning && !reasoningOpts?.some((o) => o.value === selectedReasoning)) {
+          selectedReasoning = undefined;
+        }
+        if (selectedReasoning !== (session.reasoningEffort ?? undefined)) {
+          try { sessionManager.setReasoning(sessionId, selectedReasoning ?? null); } catch { /* ignore */ }
+        }
       }
       let attachedRunner: SessionRunnerInterface | null = null;
       let runnerMessageListener: ((msg: WsServerMessage) => void) | null = null;
@@ -756,10 +778,37 @@ export async function registerRoutes(
           // dropped; booting the runner re-materializes node_modules via the
           // normal `agent.install` / dep-cache path, so selecting it IS the
           // restore. Flip the tier back to `hot` now that we're bringing it up.
-          // (`evicted` is restored separately by `unarchiveSession`, which
-          // re-clones — it never reaches this branch with a live workspace.)
           if (s?.diskTier === "light") {
             sessionManager.setDiskTier(sid, "hot");
+          } else if (s?.remoteUrl) {
+            // docs/161 / SHI-179 — a non-archived session whose workspace is
+            // missing (disk-evicted, or lost to a real fs failure) must be
+            // re-materialized from the bare cache BEFORE we boot a container,
+            // or the workspace bind-mount source 404s and the connect → create
+            // → 404 → dispose cycle loops forever. This preserves the committed
+            // branch (unlike user-archive restore). `restoreSessionWorkspace`
+            // is a fast no-op when the checkout is already present.
+            try {
+              await restoreSessionWorkspace(
+                sessionManager, createRepoGit, getBareCacheDir, githubAuthManager, repoStore, sid,
+              );
+            } catch (err) {
+              // Recovery is genuinely impossible (no remote / bare cache also
+              // gone). Surface a terminal, user-visible state instead of
+              // booting a doomed container — do NOT getOrCreate.
+              const errMsg = getErrorMessage(err);
+              console.error(`[activate] workspace restore failed for ${sid}:`, errMsg);
+              broadcastLog(sid, "server", `Session workspace could not be restored: ${errMsg}`);
+              send({
+                type: "session_status",
+                sessionId: sid,
+                running: false,
+                error: "This session's workspace was lost and could not be restored from the repository.",
+              });
+              detachFromRunner();
+              if (dir !== activeSessionDir) activeSessionDir = dir;
+              return;
+            }
           }
           const runner = runnerRegistry.getOrCreate(sid, dir, sessionAgentId);
           attachToRunner(runner);
@@ -800,6 +849,29 @@ export async function registerRoutes(
                 });
               } catch (err) {
                 console.error(`[pr-lifecycle] notableFiles re-seed failed for ${sid}:`, getErrorMessage(err));
+              }
+            })();
+          }
+          // docs/218 — push the composer's reset-eligibility signal on activation
+          // so the "start from latest base" control can paint immediately for a
+          // merged, untouched session (before the user sends a turn). Git-derived
+          // and transient (like notableFiles above); recomputed each connect.
+          if (dir) {
+            const eligibleDir = dir;
+            void (async () => {
+              try {
+                const eligible = await isResetEligible(
+                  {
+                    getSession: (id) => sessionManager.get(id),
+                    getPrStatus: (id) => sessionManager.getPrStatus(id),
+                    createGitManager,
+                  },
+                  sid,
+                  eligibleDir,
+                );
+                send({ type: "reset_eligible", sessionId: sid, eligible });
+              } catch (err) {
+                console.error(`[pre-turn-reset] eligibility signal failed for ${sid}:`, getErrorMessage(err));
               }
             })();
           }
@@ -869,6 +941,8 @@ export async function registerRoutes(
         },
         getSelectedModel: () => selectedModel,
         setSelectedModel: (m) => { selectedModel = m; },
+        getSelectedReasoning: () => selectedReasoning,
+        setSelectedReasoning: (r) => { selectedReasoning = r; },
         clearLogBuffer: () => { clearLogBuffer(sessionId); },
         getRunner: () => attachedRunner,
         getRunnerRegistry: () => runnerRegistry,
@@ -1027,6 +1101,16 @@ export async function registerRoutes(
                 sessionManager.setModel(activeAppSessionId, fallbackModel);
               }
             }
+            // docs/217 — reasoning is per-agent; a stale value from the previous
+            // agent can't apply to the new one. Drop it (back to default) when it
+            // isn't in the new agent's option set.
+            const currentReasoning = ctx.getSelectedReasoning();
+            if (currentReasoning && !info.capabilities.reasoning?.options.some((o) => o.value === currentReasoning)) {
+              ctx.setSelectedReasoning(undefined);
+              if (activeAppSessionId) {
+                sessionManager.setReasoning(activeAppSessionId, null);
+              }
+            }
             // Persist per-session so reconnects don't pick up the global
             // localStorage agent from another session.
             if (activeAppSessionId) {
@@ -1076,12 +1160,45 @@ export async function registerRoutes(
                 if (activeAppSessionId) {
                   sessionManager.setAgentId(activeAppSessionId, owner.id);
                 }
+                // docs/217 — `set_model` can cross an agent boundary on its own
+                // (the picker fires set_agent + set_model, but they can race or
+                // set_agent's guard can bail, and QuickCapture sends set_model
+                // alone). Reasoning is per-agent, so self-heal it here too —
+                // otherwise a stale Claude `max` could ride a Codex spawn as
+                // `-c model_reasoning_effort=max`. Mirrors the set_agent path.
+                const currentReasoning = ctx.getSelectedReasoning();
+                if (currentReasoning && !owner.capabilities.reasoning?.options.some((o) => o.value === currentReasoning)) {
+                  ctx.setSelectedReasoning(undefined);
+                  if (activeAppSessionId) {
+                    sessionManager.setReasoning(activeAppSessionId, null);
+                  }
+                }
               }
             }
             ctx.setSelectedModel(msg.model);
             // Persist to session metadata so it survives reconnects and warm pool
             if (activeAppSessionId) {
               sessionManager.setModel(activeAppSessionId, msg.model);
+            }
+            return;
+          }
+          case "set_reasoning": {
+            // docs/217 — Control B: per-session reasoning effort for the active
+            // agent's own turns. `effort: null` clears it (back to the CLI
+            // default). Validate against the active agent's option set so a bad
+            // value can't reach the spawn; the picker only sends in-set values.
+            const reasoningAgent = agentRegistry.get(ctx.getActiveAgentId());
+            const effort = msg.effort;
+            if (effort !== null) {
+              const allowed = reasoningAgent?.capabilities.reasoning?.options.some((o) => o.value === effort);
+              if (!allowed) {
+                send({ type: "error", message: `Invalid reasoning effort "${effort}" for ${reasoningAgent?.name ?? "this agent"}` });
+                return;
+              }
+            }
+            ctx.setSelectedReasoning(effort ?? undefined);
+            if (activeAppSessionId) {
+              sessionManager.setReasoning(activeAppSessionId, effort);
             }
             return;
           }
@@ -1104,7 +1221,7 @@ Example docker-compose.yml for a Node.js project:
 \`\`\`yaml
 services:
   web:
-    image: node:20
+    image: node:24-slim
     working_dir: /app
     volumes:
       - .:/app
@@ -1141,13 +1258,6 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
               prStatusPoller.resetRemediationForUserActivity(sessionIdForReset);
             }
             return sendMessageHandlers.handleSendMessage(ctx, msg);
-          }
-          case "send_review_message": {
-            const sessionIdForReset = ctx.getActiveAppSessionId();
-            if (sessionIdForReset) {
-              prStatusPoller.resetRemediationForUserActivity(sessionIdForReset);
-            }
-            return sendMessageHandlers.handleSendReviewMessage(ctx, msg);
           }
           case "answer_question": {
             const sessionIdForReset = ctx.getActiveAppSessionId();

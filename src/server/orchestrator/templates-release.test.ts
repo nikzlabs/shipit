@@ -6,17 +6,21 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   RELEASE_NOTES_CONFIG_PATH,
   RELEASE_VERSION_HELPER_PATH,
+  RELEASE_VERSION_WRITER_PATH,
   RELEASE_WORKFLOW_PATH,
   renderReleaseNotesConfig,
   renderReleaseScaffold,
   renderReleaseVersionHelper,
+  renderReleaseVersionWriter,
   renderReleaseWorkflow,
 } from "./templates-release.js";
 import {
+  detectVersionSource,
   readCargoTomlVersion,
   readPackageJsonVersion,
   readPyprojectVersion,
   readVersionFile,
+  writeVersionToSource,
 } from "./release-version.js";
 
 describe("renderReleaseWorkflow", () => {
@@ -32,6 +36,23 @@ describe("renderReleaseWorkflow", () => {
     expect(wf).toContain("concurrency:");
     expect(wf).toContain("group: release-");
     expect(wf).toContain("cancel-in-progress: false");
+  });
+
+  it("forward-ports the released version onto the default branch via a sync job", () => {
+    const wf = renderReleaseWorkflow({ versionSource: "package.json", branch: "stable" });
+    expect(wf).toContain("sync-default-branch:");
+    // Runs only after a successful publish on the branch path.
+    expect(wf).toContain("needs: [resolve, publish]");
+    expect(wf).toContain("needs.resolve.outputs.is_branch == 'true'");
+    // Resolves the default branch at runtime (no extra config; main/master).
+    expect(wf).toContain("gh repo view --json defaultBranchRef");
+    // Skips when the default branch IS the maintenance branch.
+    expect(wf).toContain('if [ "$DEFAULT_BRANCH" = "$RELEASE_BRANCH" ]');
+    // Bumps via the shared write helper (same logic ShipIt uses), not ad-hoc edits.
+    expect(wf).toContain(`node ${RELEASE_VERSION_WRITER_PATH} 'package.json'`);
+    // Opens a PR (not a direct push) and needs pull-requests: write.
+    expect(wf).toContain("pull-requests: write");
+    expect(wf).toContain('gh pr create --base "$DEFAULT_BRANCH"');
   });
 
   it("omits the tag path + version-guard when prerelease is disabled", () => {
@@ -82,12 +103,18 @@ describe("renderReleaseNotesConfig", () => {
 });
 
 describe("renderReleaseScaffold", () => {
-  it("returns all three artifacts keyed by their repo-relative path", () => {
+  it("returns all four artifacts keyed by their repo-relative path", () => {
     const files = renderReleaseScaffold({ versionSource: "package.json", branch: "stable", prerelease: true });
     expect(Object.keys(files).sort()).toEqual(
-      [RELEASE_WORKFLOW_PATH, RELEASE_NOTES_CONFIG_PATH, RELEASE_VERSION_HELPER_PATH].sort(),
+      [
+        RELEASE_WORKFLOW_PATH,
+        RELEASE_NOTES_CONFIG_PATH,
+        RELEASE_VERSION_HELPER_PATH,
+        RELEASE_VERSION_WRITER_PATH,
+      ].sort(),
     );
     expect(files[RELEASE_VERSION_HELPER_PATH]).toBe(renderReleaseVersionHelper());
+    expect(files[RELEASE_VERSION_WRITER_PATH]).toBe(renderReleaseVersionWriter());
   });
 });
 
@@ -157,5 +184,106 @@ describe("shipit-read-version.mjs ⇔ release-version.ts consistency", () => {
 
   it("exits non-zero when the version cannot be read", () => {
     expect(() => runHelper("package.json")).toThrow();
+  });
+});
+
+// The scaffolded `sync-default-branch` job writes the released version onto the
+// default branch with shipit-write-version.mjs. It must produce byte-identical
+// output to release-version.ts's `writeVersionToSource` — otherwise the synced
+// version file could differ from what the release command writes. Prove it by
+// running the generated writer and the in-process writer on identical fixtures.
+describe("shipit-write-version.mjs ⇔ release-version.ts consistency", () => {
+  let helperDir: string;
+  let writerPath: string;
+
+  beforeEach(() => {
+    helperDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-release-writer-"));
+    writerPath = path.join(helperDir, "shipit-write-version.mjs");
+    fs.writeFileSync(writerPath, renderReleaseVersionWriter(), "utf8");
+  });
+
+  afterEach(() => {
+    fs.rmSync(helperDir, { recursive: true, force: true });
+  });
+
+  // Write `newVersion` into `filename` (content `seed`) two ways — via the
+  // generated helper and via writeVersionToSource — in separate dirs, and assert
+  // the resulting files are byte-identical.
+  const assertWritesMatch = (filename: string, seed: string, newVersion: string): void => {
+    const helperWorkDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-writer-h-"));
+    const inProcDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-writer-p-"));
+    try {
+      fs.writeFileSync(path.join(helperWorkDir, filename), seed, "utf8");
+      fs.writeFileSync(path.join(inProcDir, filename), seed, "utf8");
+
+      execFileSync("node", [writerPath, filename, newVersion], { cwd: helperWorkDir, encoding: "utf8" });
+      const detected = detectVersionSource(inProcDir);
+      expect(detected).not.toBeNull();
+      writeVersionToSource(detected!, newVersion);
+
+      expect(fs.readFileSync(path.join(helperWorkDir, filename), "utf8")).toBe(
+        fs.readFileSync(path.join(inProcDir, filename), "utf8"),
+      );
+    } finally {
+      fs.rmSync(helperWorkDir, { recursive: true, force: true });
+      fs.rmSync(inProcDir, { recursive: true, force: true });
+    }
+  };
+
+  it("writes package.json identically (indent + trailing newline preserved)", () => {
+    assertWritesMatch("package.json", '{\n  "name": "x",\n  "version": "1.2.3"\n}\n', "1.3.0");
+  });
+
+  it("writes Cargo.toml identically", () => {
+    assertWritesMatch(
+      "Cargo.toml",
+      '[package]\nname = "x"\nversion = "0.9.1"\n\n[dependencies]\nserde = "1"\n',
+      "0.10.0",
+    );
+  });
+
+  it("writes pyproject.toml (PEP 621) identically", () => {
+    assertWritesMatch("pyproject.toml", '[project]\nname = "x"\nversion = "2.0.0"\n', "2.1.0");
+  });
+
+  it("writes pyproject.toml (Poetry) identically", () => {
+    assertWritesMatch("pyproject.toml", '[tool.poetry]\nname = "x"\nversion = "3.1.4"\n', "3.2.0");
+  });
+
+  it("writes a VERSION file identically", () => {
+    assertWritesMatch("VERSION", "4.5.6\n", "4.6.0");
+  });
+
+  it("bumps an adjacent package-lock.json root version alongside package.json", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-writer-lock-"));
+    try {
+      fs.writeFileSync(path.join(dir, "package.json"), '{\n  "name": "x",\n  "version": "1.0.0"\n}\n', "utf8");
+      fs.writeFileSync(
+        path.join(dir, "package-lock.json"),
+        '{\n  "name": "x",\n  "version": "1.0.0",\n  "packages": {\n    "": {\n      "version": "1.0.0"\n    }\n  }\n}\n',
+        "utf8",
+      );
+      execFileSync("node", [writerPath, "package.json", "1.1.0"], { cwd: dir, encoding: "utf8" });
+      const lock = JSON.parse(fs.readFileSync(path.join(dir, "package-lock.json"), "utf8")) as {
+        version: string;
+        packages: Record<string, { version: string }>;
+      };
+      expect(lock.version).toBe("1.1.0");
+      expect(lock.packages[""].version).toBe("1.1.0");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("exits non-zero when the version field cannot be located", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-writer-nofield-"));
+    try {
+      fs.writeFileSync(path.join(dir, "Cargo.toml"), '[package]\nname = "x"\n', "utf8");
+      expect(() =>
+        execFileSync("node", [writerPath, "Cargo.toml", "1.0.0"], { cwd: dir, encoding: "utf8" }),
+      ).toThrow();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -149,6 +149,218 @@ describe("PollingGlobalGate — viewer-gated polling (Strategy 1)", () => {
     expect((githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1);
   });
 
+  it("armed auto-fix (enabled, no viewer, no running runner) keeps the gate open and polls continue", async () => {
+    // The regression: with auto-fix CI enabled, a CI failure that lands after
+    // the browser closes must still be detected and fixed. Before the fix the
+    // gate only stayed open once auto-fix was already "running" — a state a
+    // viewerless session could never reach, because the poll that fires the
+    // loop was itself viewer-gated. PENDING CI gives fast cadence; no viewer,
+    // no running runner — only the *armed* auto-fix loop keeps the gate open.
+    const pendingNode = makeGraphQLPrNode({
+      commits: {
+        nodes: [{
+          commit: {
+            statusCheckRollup: {
+              state: "PENDING",
+              contexts: { nodes: [{ name: "test", status: "IN_PROGRESS", conclusion: null }] },
+            },
+          },
+        }],
+      },
+    });
+    const graphqlResult = {
+      data: { repository: { pullRequests: { nodes: [pendingNode] } } },
+    };
+    githubAuth = makeGitHubAuth(graphqlResult);
+    sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+    const registry = makeFakeRegistry();
+    // No viewer, no running runner — only the global auto-fix toggle is on.
+
+    poller = new PrStatusPoller({
+      githubAuth,
+      sessionManager,
+      sseBroadcast,
+      runnerRegistry: registry,
+      isAutoFixEnabled: () => true,
+    });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+    // trackSession's initial-poll path fires because the armed-auto-fix gate
+    // is open even though nobody is watching.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(githubAuth.graphqlQuery).toHaveBeenCalledTimes(1);
+
+    // Polling keeps going on the fast cadence with no viewer attached.
+    await vi.advanceTimersByTimeAsync(PR_STATUS_POLL_INTERVAL_MS);
+    expect((githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it("does not keep polling for a viewerless session when auto-fix is disabled", async () => {
+    // Counterpart to the armed-auto-fix test: with the toggle OFF, a viewerless
+    // session must NOT hold the gate open — the budget optimization still
+    // applies to everyone who hasn't opted into autonomous fixing.
+    const pendingNode = makeGraphQLPrNode({
+      commits: {
+        nodes: [{
+          commit: {
+            statusCheckRollup: {
+              state: "PENDING",
+              contexts: { nodes: [{ name: "test", status: "IN_PROGRESS", conclusion: null }] },
+            },
+          },
+        }],
+      },
+    });
+    const graphqlResult = {
+      data: { repository: { pullRequests: { nodes: [pendingNode] } } },
+    };
+    githubAuth = makeGitHubAuth(graphqlResult);
+    sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+    const registry = makeFakeRegistry();
+
+    poller = new PrStatusPoller({
+      githubAuth,
+      sessionManager,
+      sseBroadcast,
+      runnerRegistry: registry,
+      isAutoFixEnabled: () => false,
+    });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(githubAuth.graphqlQuery).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(10 * PR_STATUS_POLL_INTERVAL_MS);
+    expect(githubAuth.graphqlQuery).not.toHaveBeenCalled();
+  });
+
+  it("armed auto-resolve (enabled, no viewer) keeps the gate open and polls continue", async () => {
+    // Companion to the armed-auto-fix regression: auto-resolve-conflicts is the
+    // same poller-driven, armed remediation. Before the gate accounted for it, a
+    // viewerless session with a merge conflict and auto-resolve enabled was
+    // never polled, so the conflict was never observed and the rebase never
+    // fired. PENDING CI gives fast cadence; no viewer, no running runner — only
+    // the *armed* auto-resolve loop keeps the gate open.
+    const conflictingPendingNode = makeGraphQLPrNode({
+      mergeable: "CONFLICTING",
+      commits: {
+        nodes: [{
+          commit: {
+            statusCheckRollup: {
+              state: "PENDING",
+              contexts: { nodes: [{ name: "test", status: "IN_PROGRESS", conclusion: null }] },
+            },
+          },
+        }],
+      },
+    });
+    const graphqlResult = {
+      data: { repository: { pullRequests: { nodes: [conflictingPendingNode] } } },
+    };
+    githubAuth = makeGitHubAuth(graphqlResult);
+    sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+    const registry = makeFakeRegistry();
+    // No viewer, no running runner, auto-fix OFF — only auto-resolve is armed.
+
+    poller = new PrStatusPoller({
+      githubAuth,
+      sessionManager,
+      sseBroadcast,
+      runnerRegistry: registry,
+      isAutoResolveEnabled: () => true,
+    });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+    // trackSession's initial-poll path fires because the armed-auto-resolve
+    // gate is open even though nobody is watching.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(githubAuth.graphqlQuery).toHaveBeenCalledTimes(1);
+
+    // Polling keeps going on the fast cadence with no viewer attached.
+    await vi.advanceTimersByTimeAsync(PR_STATUS_POLL_INTERVAL_MS);
+    expect((githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it("does not keep polling for a viewerless session when auto-resolve is disabled", async () => {
+    // Counterpart to the armed-auto-resolve test: with the toggle OFF a
+    // conflicting viewerless PR must NOT hold the gate open.
+    const conflictingPendingNode = makeGraphQLPrNode({
+      mergeable: "CONFLICTING",
+      commits: {
+        nodes: [{
+          commit: {
+            statusCheckRollup: {
+              state: "PENDING",
+              contexts: { nodes: [{ name: "test", status: "IN_PROGRESS", conclusion: null }] },
+            },
+          },
+        }],
+      },
+    });
+    const graphqlResult = {
+      data: { repository: { pullRequests: { nodes: [conflictingPendingNode] } } },
+    };
+    githubAuth = makeGitHubAuth(graphqlResult);
+    sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+    const registry = makeFakeRegistry();
+
+    poller = new PrStatusPoller({
+      githubAuth,
+      sessionManager,
+      sseBroadcast,
+      runnerRegistry: registry,
+      isAutoResolveEnabled: () => false,
+    });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(githubAuth.graphqlQuery).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(10 * PR_STATUS_POLL_INTERVAL_MS);
+    expect(githubAuth.graphqlQuery).not.toHaveBeenCalled();
+  });
+
+  it("a pending notify-on-merge watch keeps the gate open with no viewer", async () => {
+    // docs/196 — a child session waiting on a human merge has no viewer and no
+    // armed remediation of its own. The watch fires only when the child PR's
+    // terminal state is observed by a poll, so the supervisor must stay alive
+    // while any watch is pending or the parent's wake-turn never fires.
+    const pendingNode = makeGraphQLPrNode({
+      commits: {
+        nodes: [{
+          commit: {
+            statusCheckRollup: {
+              state: "PENDING",
+              contexts: { nodes: [{ name: "test", status: "IN_PROGRESS", conclusion: null }] },
+            },
+          },
+        }],
+      },
+    });
+    const graphqlResult = {
+      data: { repository: { pullRequests: { nodes: [pendingNode] } } },
+    };
+    githubAuth = makeGitHubAuth(graphqlResult);
+    // s1 carries a pending merge-watch; no viewer, no auto-fix/resolve.
+    sessionManager = makeSessionManager(
+      [{ id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" }],
+      { pendingMergeWatches: ["s1"] },
+    );
+    const registry = makeFakeRegistry();
+
+    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast, runnerRegistry: registry });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(githubAuth.graphqlQuery).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(PR_STATUS_POLL_INTERVAL_MS);
+    expect((githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(1);
+  });
+
   it("headless turn (running runner, no viewer) keeps the gate open and polls continue", async () => {
     // PR has pending CI so the cadence is fast — without the headless-gate
     // signal, this would still be skipped (no viewer, no autonomous action).

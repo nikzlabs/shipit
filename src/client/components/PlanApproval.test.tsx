@@ -78,6 +78,44 @@ describe("PlanApproval", () => {
     });
   });
 
+  describe("expand to fullscreen", () => {
+    it("does not show the expand button when there is no plan content", () => {
+      render(<PlanApproval onSend={vi.fn()} disabled={false} />);
+      expect(screen.queryByTestId("expand-plan")).not.toBeInTheDocument();
+    });
+
+    it("shows the expand button when plan content is provided", () => {
+      render(<PlanApproval onSend={vi.fn()} disabled={false} planContent="# Plan\n\nDo the thing" />);
+      expect(screen.getByTestId("expand-plan")).toBeInTheDocument();
+    });
+
+    it("opens a fullscreen dialog with the plan and action buttons when expanded", () => {
+      render(<PlanApproval onSend={vi.fn()} disabled={false} planContent="# Plan\n\nDo the thing" />);
+
+      fireEvent.click(screen.getByTestId("expand-plan"));
+
+      const dialog = screen.getByTestId("plan-expanded");
+      expect(dialog).toBeInTheDocument();
+      expect(dialog.textContent).toContain("Do the thing");
+      // The action buttons live in the dialog footer once expanded.
+      expect(screen.getByTestId("accept-plan")).toBeInTheDocument();
+      expect(screen.getByTestId("suggest-changes")).toBeInTheDocument();
+    });
+
+    it("accepting from the expanded dialog drives the same accept flow", () => {
+      const onSend = vi.fn();
+      render(<PlanApproval onSend={onSend} disabled={false} planContent="# Plan" />);
+
+      fireEvent.click(screen.getByTestId("expand-plan"));
+      fireEvent.click(screen.getByTestId("accept-plan"));
+
+      expect(onSend).toHaveBeenCalledWith("Execute the plan you just described.");
+      // Once answered the dialog and its buttons are gone.
+      expect(screen.queryByTestId("plan-expanded")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("accept-plan")).not.toBeInTheDocument();
+    });
+  });
+
   describe("feedback flow", () => {
     it("shows feedback input when suggest changes is clicked", () => {
       render(<PlanApproval onSend={vi.fn()} disabled={false} />);

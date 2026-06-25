@@ -235,6 +235,48 @@ describe("agent-ops routes", () => {
     expect(client.calls[0].body).toMatchObject({ cwd: "/workspace/clone", repo: "octocat/hello" });
   });
 
+  // ---- GitHub Actions reads (gh run / gh workflow, read-only) ----
+
+  it("GET /agent-ops/run/list forwards filters + cwd/repo to /actions/runs", async () => {
+    client.setResponse("GET", "/actions/runs", { ok: true, status: 200, body: { runs: [] } });
+    await app.inject({
+      method: "GET",
+      url: "/agent-ops/run/list?workflow=ci.yml&branch=main&status=failure&limit=5&cwd=%2Fworkspace%2Fc&repo=octocat%2Fhello",
+    });
+    const path = client.calls[0].path;
+    expect(path.split("?")[0]).toBe("/actions/runs");
+    expect(path).toContain("workflow=ci.yml");
+    expect(path).toContain("branch=main");
+    expect(path).toContain("status=failure");
+    expect(path).toContain("limit=5");
+    expect(path).toContain("cwd=%2Fworkspace%2Fc");
+    expect(path).toContain("repo=octocat%2Fhello");
+  });
+
+  it("GET /agent-ops/run/view forwards id + log flags to /actions/runs/view", async () => {
+    client.setResponse("GET", "/actions/runs/view", { ok: true, status: 200, body: { run: null } });
+    await app.inject({ method: "GET", url: "/agent-ops/run/view?id=42&logFailed=true" });
+    const path = client.calls[0].path;
+    expect(path.split("?")[0]).toBe("/actions/runs/view");
+    expect(path).toContain("id=42");
+    expect(path).toContain("logFailed=true");
+  });
+
+  it("GET /agent-ops/workflow/list forwards to /actions/workflows", async () => {
+    client.setResponse("GET", "/actions/workflows", { ok: true, status: 200, body: { workflows: [] } });
+    const res = await app.inject({ method: "GET", url: "/agent-ops/workflow/list" });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0].path.split("?")[0]).toBe("/actions/workflows");
+  });
+
+  it("GET /agent-ops/workflow/view forwards the workflow query to /actions/workflows/view", async () => {
+    client.setResponse("GET", "/actions/workflows/view", { ok: true, status: 200, body: { workflow: null } });
+    await app.inject({ method: "GET", url: "/agent-ops/workflow/view?workflow=CI" });
+    const path = client.calls[0].path;
+    expect(path.split("?")[0]).toBe("/actions/workflows/view");
+    expect(path).toContain("workflow=CI");
+  });
+
   // ---- Agent-spawned sessions (docs/117) ----
 
   it("POST /agent-ops/session/create forwards to /spawn with body", async () => {
@@ -446,6 +488,20 @@ describe("agent-ops routes", () => {
     const res = await app.inject({ method: "GET", url: "/agent-ops/issue/list?tracker=linear&state=all" });
     expect(res.statusCode).toBe(200);
     expect(client.calls[0].path).toBe("/issue/list?tracker=linear&state=all");
+  });
+
+  it("GET /agent-ops/issue/labels forwards the tracker (SHI-199)", async () => {
+    client.setResponse("GET", "/issue/labels", { ok: true, status: 200, body: { labels: [{ name: "bug" }] } });
+    const res = await app.inject({ method: "GET", url: "/agent-ops/issue/labels?tracker=github" });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0].path).toBe("/issue/labels?tracker=github");
+  });
+
+  it("GET /agent-ops/issue/statuses forwards the tracker (SHI-199)", async () => {
+    client.setResponse("GET", "/issue/statuses", { ok: true, status: 200, body: { statuses: [{ name: "Open" }] } });
+    const res = await app.inject({ method: "GET", url: "/agent-ops/issue/statuses?tracker=linear" });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0].path).toBe("/issue/statuses?tracker=linear");
   });
 
   it("GET /agent-ops/issue/view surfaces a 404 verbatim", async () => {

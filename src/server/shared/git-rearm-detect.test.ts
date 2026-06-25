@@ -164,4 +164,68 @@ describe("GitManager.advancedBeyondMergedBase (docs/202 re-arm detection)", () =
       expect(await git.headIsAtBase("does-not-exist")).toBe(false);
     });
   });
+
+  /**
+   * docs/218 — the git primitives behind the pre-turn auto-reset: detached-HEAD
+   * detection, sequencer-in-progress detection, and the hard reset itself.
+   */
+  describe("currentBranchOrNull / isMergeOrSequencerInProgress / resetHardToRemoteBase (docs/218)", () => {
+    it("currentBranchOrNull returns the branch name when on a branch", async () => {
+      const git = setup({ merge: "squash", rebase: false, newWork: false });
+      expect(await git.currentBranchOrNull()).toBe("feature");
+    });
+
+    it("currentBranchOrNull returns null on a detached HEAD", async () => {
+      const git = setup({ merge: "squash", rebase: false, newWork: false });
+      run("git checkout --detach", workDir);
+      expect(await git.currentBranchOrNull()).toBeNull();
+    });
+
+    it("isMergeOrSequencerInProgress is false on a clean checkout", async () => {
+      const git = setup({ merge: "squash", rebase: false, newWork: false });
+      expect(await git.isMergeOrSequencerInProgress()).toBe(false);
+    });
+
+    it("isMergeOrSequencerInProgress is true mid-conflicted-merge", async () => {
+      // Create a conflicting commit on main and on the branch, then attempt a
+      // merge that stops with MERGE_HEAD present.
+      const git = setup({ merge: "squash", rebase: false, newWork: false });
+      run("git reset --hard origin/main", workDir);
+      run("git checkout -b conflict-branch", workDir);
+      fs.writeFileSync(path.join(workDir, "base.txt"), "branch side\n");
+      run("git add -A && git commit -m 'branch edit'", workDir);
+      // Advance main on the remote with a conflicting change, fetch it.
+      run("git fetch origin", maintainerDir);
+      run("git checkout main", maintainerDir);
+      fs.writeFileSync(path.join(maintainerDir, "base.txt"), "main side\n");
+      run("git add -A && git commit -m 'main edit'", maintainerDir);
+      run("git push origin main", maintainerDir);
+      run("git fetch origin", workDir);
+      try {
+        run("git merge origin/main", workDir);
+      } catch {
+        // expected: merge stops with conflicts, leaving MERGE_HEAD.
+      }
+      expect(await git.isMergeOrSequencerInProgress()).toBe(true);
+    });
+
+    it("resetHardToRemoteBase moves the branch to origin/<base> and reports from→to", async () => {
+      // Squash-merged, branch still at its own (now-phantom) commit.
+      const git = setup({ merge: "squash", rebase: false, newWork: false });
+      const before = await git.getHeadHash();
+      const baseTip = run("git rev-parse origin/main", workDir).trim();
+
+      const { from, to } = await git.resetHardToRemoteBase("main");
+
+      expect(from).toBe(before);
+      expect(to).toBe(baseTip);
+      expect(await git.getHeadHash()).toBe(baseTip);
+      expect(await git.headIsAtBase("main")).toBe(true);
+    });
+
+    it("resetHardToRemoteBase throws when origin/<base> can't be resolved", async () => {
+      const git = setup({ merge: "squash", rebase: false, newWork: false });
+      await expect(git.resetHardToRemoteBase("does-not-exist")).rejects.toThrow();
+    });
+  });
 });

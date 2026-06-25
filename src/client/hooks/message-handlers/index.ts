@@ -4,7 +4,8 @@ import type { Handler, HandlerContext, QueuedMessageStash } from "./types.js";
 import { handleAgentEvent } from "./agent-event.js";
 import { handleAgentInterrupted } from "./agent-interrupted.js";
 import { handleActionChecklistCard } from "./action-checklist-card.js";
-import { handleAiReviewAdded } from "./ai-review-added.js";
+import { handleBranchAutoResetCard } from "./branch-auto-reset-card.js";
+import { handleBranchSyncedCard } from "./branch-synced-card.js";
 import { handleAuthRequired } from "./auth-required.js";
 import { handleBugReportCard } from "./bug-report-card.js";
 import { handleBugReportFailed } from "./bug-report-failed.js";
@@ -42,6 +43,7 @@ import { handleMessageSteered } from "./message-steered.js";
 import { handleModelInfo } from "./model-info.js";
 import { handlePrLifecycleUpdate } from "./pr-lifecycle-update.js";
 import { handlePrNotableFiles } from "./pr-notable-files.js";
+import { handleResetEligible } from "./reset-eligible.js";
 import { handlePresentCleared } from "./present-cleared.js";
 import { handlePresentContent } from "./present-content.js";
 import { handlePresentState } from "./present-state.js";
@@ -108,9 +110,10 @@ type MessageHandlerMap = {
  */
 export const messageHandlers: MessageHandlerMap = {
   action_checklist_card: handleActionChecklistCard,
+  branch_auto_reset_card: handleBranchAutoResetCard,
+  branch_synced_card: handleBranchSyncedCard,
   agent_event: handleAgentEvent,
   agent_interrupted: handleAgentInterrupted,
-  ai_review_added: handleAiReviewAdded,
   auth_required: handleAuthRequired,
   bug_report_card: handleBugReportCard,
   bug_report_failed: handleBugReportFailed,
@@ -149,6 +152,7 @@ export const messageHandlers: MessageHandlerMap = {
   model_info: handleModelInfo,
   pr_lifecycle_update: handlePrLifecycleUpdate,
   pr_notable_files: handlePrNotableFiles,
+  reset_eligible: handleResetEligible,
   present_cleared: handlePresentCleared,
   present_content: handlePresentContent,
   present_state: handlePresentState,

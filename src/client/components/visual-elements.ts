@@ -51,6 +51,8 @@ export const CARD_MESSAGE_FIELDS = [
   "compaction",
   "subAgentConsult",
   "actionChecklist",
+  "branchAutoReset",
+  "branchSynced",
   "releaseCard",
   "spawnedSession",
   "spawnFailed",

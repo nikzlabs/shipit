@@ -285,6 +285,11 @@ export default tseslint.config(
       // outside the typed-lint project service. Its logic is exercised by
       // templates-release.test.ts (the consistency round-trip).
       "src/server/orchestrator/templates-release-files/",
+      // Static PWA assets served verbatim from the client (manifest, icons, and
+      // the service worker). The service worker is plain browser JS copied as-is
+      // into dist/client — it's not part of the TS program, so the typed-lint
+      // project service can't resolve it. See docs/222-pwa-installable.
+      "src/client/public/",
     ],
   },
 );

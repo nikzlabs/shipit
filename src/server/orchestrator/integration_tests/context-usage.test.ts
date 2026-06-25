@@ -195,7 +195,12 @@ describe("Integration: Context window usage (105)", () => {
     });
     const u2 = (await client.receiveType("turn_usage_update")) as WsTurnUsageUpdate;
     expect(u2.turnCount).toBe(2);
-    expect(u2.totalCostUsd).toBeCloseTo(0.12);
+    // total_cost_usd is the CLI's CUMULATIVE total for the resumed conversation
+    // (same session_id "ctx-2turn"): 0.05 then 0.07. The session bill is the
+    // latest cumulative 0.07 (turn 2's own cost is the 0.02 delta) — not 0.12,
+    // which double-counted turn 1.
+    expect(u2.totalCostUsd).toBeCloseTo(0.07);
+    expect(u2.turn.costUsd).toBeCloseTo(0.02);
     expect(u2.turn.inputTokens).toBe(12_000);
     lastClaude.emit("done", 0);
 

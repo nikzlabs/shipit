@@ -332,9 +332,11 @@ export class GitHubTracker implements Tracker {
     body: string;
     labels?: string[];
     priority?: string;
+    parent?: string;
   }): Promise<TrackerIssue> {
     const ref = this.requireRepo();
     this.rejectPriority(input.priority);
+    this.rejectParent(input.parent);
     const body: Record<string, unknown> = { title: input.title, body: input.body };
     if (input.labels && input.labels.length > 0) {
       body.labels = await this.resolveLabels(input.labels);
@@ -358,9 +360,10 @@ export class GitHubTracker implements Tracker {
 
   async updateIssue(
     id: string,
-    patch: { title?: string; description?: string; labels?: string[]; priority?: string },
+    patch: { title?: string; description?: string; labels?: string[]; priority?: string; parent?: string | null },
   ): Promise<TrackerIssue> {
     this.rejectPriority(patch.priority);
+    this.rejectParent(patch.parent);
     const body: Record<string, unknown> = {};
     if (patch.title !== undefined) body.title = patch.title;
     if (patch.description !== undefined) body.body = patch.description;
@@ -461,6 +464,22 @@ export class GitHubTracker implements Tracker {
       throw new TrackerResolutionError(
         "GitHub Issues has no priority field. Use a label (e.g. --label 'priority: high') or file on Linear instead.",
         "priority",
+        [],
+      );
+    }
+  }
+
+  /**
+   * GitHub Issues are flat — there is no native parent/sub-issue relation
+   * (SHI-206). Rather than silently dropping `--parent`, we reject any attempt to
+   * set OR detach a parent with a clear message. The shim rejects it before the
+   * round-trip; this is the server-side backstop so a direct API call can't no-op.
+   */
+  private rejectParent(parent: string | null | undefined): void {
+    if (parent !== undefined) {
+      throw new TrackerResolutionError(
+        "GitHub Issues are flat — no sub-issue nesting. Sub-issue parents are Linear-only.",
+        "parent",
         [],
       );
     }

@@ -148,6 +148,54 @@ describe("RepoStore", () => {
     });
   });
 
+  describe("hidden (docs/222)", () => {
+    const URL = "https://github.com/owner/repo.git";
+
+    it("a freshly-added repo is visible by default", () => {
+      const repo = store.add(URL);
+      expect(repo.hidden).toBe(false);
+    });
+
+    it("setHidden flips the flag and get reflects it", () => {
+      store.add(URL);
+      expect(store.setHidden(URL, true)).toBe(true);
+      expect(store.get(URL)?.hidden).toBe(true);
+      expect(store.setHidden(URL, false)).toBe(true);
+      expect(store.get(URL)?.hidden).toBe(false);
+    });
+
+    it("setHidden returns false for an unknown repo", () => {
+      expect(store.setHidden("https://github.com/never/added.git", true)).toBe(false);
+    });
+
+    it("re-adding a hidden repo unhides it", () => {
+      store.add(URL);
+      store.setHidden(URL, true);
+      expect(store.get(URL)?.hidden).toBe(true);
+      const readded = store.add(URL);
+      expect(readded.hidden).toBe(false);
+      expect(store.get(URL)?.hidden).toBe(false);
+      // Still a single row — re-add dedups, it doesn't duplicate.
+      expect(store.list()).toHaveLength(1);
+    });
+
+    it("hidden state persists across store instances", () => {
+      store.add(URL);
+      store.setHidden(URL, true);
+      const store2 = new RepoStore(dbManager);
+      expect(store2.get(URL)?.hidden).toBe(true);
+    });
+
+    it("hiding does not affect other repos", () => {
+      const OTHER = "https://github.com/other/thing.git";
+      store.add(URL);
+      store.add(OTHER);
+      store.setHidden(URL, true);
+      expect(store.get(URL)?.hidden).toBe(true);
+      expect(store.get(OTHER)?.hidden).toBe(false);
+    });
+  });
+
   describe("setOrder", () => {
     it("orders repos by display_order when set", () => {
       store.add("https://github.com/a/repo.git");

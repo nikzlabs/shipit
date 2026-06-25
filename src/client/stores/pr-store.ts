@@ -68,6 +68,8 @@ export interface PrCardState {
     managed?: boolean;
     /** GitHub settings URL for configuring branch protection. */
     settingsUrl?: string;
+    /** The real GitHub error that triggered the managed-merge fallback. */
+    reason?: string;
     error?: { code: string; message: string; settingsUrl: string };
   };
   /**
@@ -136,6 +138,16 @@ interface PrState {
    */
   notableFilesBySession: Record<string, NotableFileChange[]>;
 
+  /**
+   * docs/218 — per-session "is this session reset-eligible right now?" signal
+   * (merged + branch untouched since the merge + clean tree). Pushed transiently
+   * via `reset_eligible` WS on session activation and post-turn. Drives the
+   * composer's "start from the latest base" control visibility (ANDed with the
+   * `autoResetMergedBranch` setting). Transient — never persisted; recomputed on
+   * each (re)connect, so a stale value self-heals.
+   */
+  resetEligibleBySession: Record<string, boolean>;
+
   // Repo import search (used by home page repo picker)
   importSearchResults: ImportSearchResult[];
 
@@ -164,6 +176,8 @@ interface PrState {
    * array clears the strip. `cardId` is unused (the slice is keyed by session).
    */
   setNotableFiles: (sessionId: string, cardId: string, notableFiles: NotableFileChange[]) => void;
+  /** docs/218 — set the transient reset-eligibility signal for a session (from `reset_eligible` WS). */
+  setResetEligible: (sessionId: string, eligible: boolean) => void;
 
   // CI fix actions
   /** Trigger manual CI fix. Returns error message on failure, null on success. */
@@ -231,6 +245,7 @@ const initialState = {
   cardBySession: {} as Record<string, PrCardState>,
   autoMergeBySession: {} as Record<string, NonNullable<PrCardState["autoMerge"]>>,
   notableFilesBySession: {} as Record<string, NotableFileChange[]>,
+  resetEligibleBySession: {} as Record<string, boolean>,
   importSearchResults: [] as ImportSearchResult[],
 };
 
@@ -395,6 +410,21 @@ export const usePrStore = create<PrState>((set, get) => ({
         next[sessionId] = notableFiles;
       }
       return { notableFilesBySession: next };
+    });
+  },
+
+  setResetEligible: (sessionId, eligible) => {
+    set((state) => {
+      // Drop the key when ineligible so the map doesn't grow an entry per session
+      // that was ever briefly eligible; absence reads as "not eligible".
+      const next = { ...state.resetEligibleBySession };
+      if (eligible) {
+        next[sessionId] = true;
+      } else {
+        // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+        delete next[sessionId];
+      }
+      return { resetEligibleBySession: next };
     });
   },
 
@@ -847,7 +877,7 @@ export const usePrStore = create<PrState>((set, get) => ({
         revert();
         return;
       }
-      const data = await res.json() as { enabled: boolean; mergeMethod: "squash" | "merge" | "rebase"; managed?: boolean };
+      const data = await res.json() as { enabled: boolean; mergeMethod: "squash" | "merge" | "rebase"; managed?: boolean; reason?: string };
       set((state) => {
         const existing = state.cardBySession[sessionId];
         const autoMerge = {
@@ -855,6 +885,7 @@ export const usePrStore = create<PrState>((set, get) => ({
           enabled: data.enabled,
           mergeMethod: data.mergeMethod,
           managed: data.managed,
+          reason: data.reason,
         };
         return {
           autoMergeBySession: {

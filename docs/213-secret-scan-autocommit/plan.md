@@ -208,6 +208,15 @@ A Codex review (SHI-169) surfaced additional vectors, now closed:
   `secretBlocked`; `agentCreatePr` aborts with a 422 when the just-made edit was
   refused for a secret, instead of silently opening/updating the PR from the
   prior (stale) commits. The redacted warning is surfaced by the flush.
+  - **Debounce cancellation is coupled to the synchronous push (SHI-198).**
+    `flushPendingTurnCommit` no longer cancels the pending 5s auto-push debounce.
+    It used to do so unconditionally at the top, on the assumption the caller
+    pushes synchronously right after — but on the `secretBlocked` (and
+    not-progressed-merged-PR) short-circuits no synchronous push follows, so the
+    cancelled timer silently dropped the prior commit from the remote with no
+    retry and no event. The cancel now lives in `agentCreatePr`, fired only
+    *after* a synchronous `git.push` succeeds; branches that don't push
+    synchronously leave the debounce armed. Regression: `github-push-timer.test.ts`.
 
 ## Backstop: GitHub native secret scanning (not a custom CI job)
 

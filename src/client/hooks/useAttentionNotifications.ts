@@ -5,6 +5,7 @@ import { usePrStore } from "../stores/pr-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { parseRepoLabel } from "../utils/repo-label.js";
 import { computeAttentionReason } from "./useAttentionInfo.js";
+import { isRecentlyResolved } from "../components/SessionSidebar/useSessionGrouping.js";
 import type { NotifyContext } from "./useNotification.js";
 
 /**
@@ -46,6 +47,7 @@ export function useAttentionNotifications(
         awaitingPermission: awaitingPermissionSessions.has(session.id),
         autoFixEnabled,
         autoResolveEnabled,
+        resolved: isRecentlyResolved(session),
       });
       next.set(session.id, reason);
 

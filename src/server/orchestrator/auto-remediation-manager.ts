@@ -128,6 +128,22 @@ export abstract class AutoRemediationManager<TSignal> {
   }
 
   /**
+   * True when this automation is *armed* for the session right now: the global
+   * toggle is on AND (if a per-session gate is configured) the session hasn't
+   * opted out. This is exactly the enable gate `runTransition` applies in
+   * step 3, surfaced as a public read so the polling gate can keep the
+   * supervisor running for a viewerless session that has an armed loop but
+   * hasn't fired yet. Without it the gate only stayed open once `status` was
+   * already `"running"` — a state a viewerless session could never reach,
+   * because the poll that fires the loop was itself gated off (chicken-and-egg).
+   */
+  isEnabledFor(sessionId: string): boolean {
+    if (!this.cfg.isGlobalEnabled()) return false;
+    if (this.cfg.isSessionEnabled && !this.cfg.isSessionEnabled(sessionId)) return false;
+    return true;
+  }
+
+  /**
    * Drop per-session state. Calls `onDelete` so the subclass can clear its own
    * caches. Used by the poller's untrack and the terminal-PR cleanup path.
    */

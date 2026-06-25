@@ -175,8 +175,8 @@ export class CodexAdapter
     // explicit instruction — exactly what the composed review prompt asks for)
     // and custom MCP tools (`[mcp_servers.*]` in config.toml). The worker
     // writes the consolidated `shipit` bridge into the Codex config before spawn
-    // (see CodexAdapter.writeMcpConfig), so `submit_review`
-    // is available to the parent and any subagent it spawns.
+    // (see CodexAdapter.writeMcpConfig), so the shipit tools are available to the
+    // parent and any subagent it spawns.
     supportsReview: true,
     supportsSteering: true,
     // docs/178 — the app-server exposes `thread/compact/start` and emits
@@ -257,7 +257,14 @@ export class CodexAdapter
       this.emit("log", "codex", "using OPENAI_API_KEY (Platform API billing)");
     }
 
-    const args = ["app-server"];
+    // docs/217 — reasoning effort is a startup config, not a per-turn param, so
+    // it rides a `-c model_reasoning_effort=…` global override placed BEFORE the
+    // `app-server` subcommand. Omitted entirely when unset so Codex uses its own
+    // default. The value is validated server-side against the agent's option set
+    // before it reaches here.
+    const args = params.reasoningEffort
+      ? ["-c", `model_reasoning_effort=${params.reasoningEffort}`, "app-server"]
+      : ["app-server"];
 
     this.emit("log", "codex", `spawning: codex ${args.join(" ")} | cwd: ${cwd}`);
 
@@ -481,12 +488,26 @@ export class CodexAdapter
     // auto-approve like every other tool; no allowlist plumbing is needed.
     // See playwright-mcp.ts for the `sh -c` launch / `--browser chromium`
     // rationale.
+    //
+    // SHI-#1558 — unlike Claude (whose MCP children inherit the worker's full
+    // env), Codex spawns each MCP server with a controlled environment: only
+    // vars named in `env_vars` reach the child (docs/088). The pre-installed
+    // browser is pinned to PLAYWRIGHT_BROWSERS_PATH (docs/150 §8); without
+    // forwarding it the Playwright MCP server can't find the chrome-for-testing
+    // build and every browser_* tool fails on first use with
+    // `Browser "chrome-for-testing" is not installed`. Forward it the same way
+    // user-server secrets are wired (runtimeEnv value + env_vars allowlist).
     lines.push(
       "",
       "[mcp_servers.playwright]",
       `command = ${tomlString(PLAYWRIGHT_MCP_COMMAND)}`,
       `args = ${tomlArray([...PLAYWRIGHT_MCP_ARGS])}`,
     );
+    const browsersPath = process.env.PLAYWRIGHT_BROWSERS_PATH;
+    if (browsersPath) {
+      runtimeEnv.PLAYWRIGHT_BROWSERS_PATH = browsersPath;
+      lines.push(`env_vars = ${tomlArray(["PLAYWRIGHT_BROWSERS_PATH"])}`);
+    }
 
     // SHI-128 / docs/199 — ONE consolidated stdio bridge serves all of ShipIt's
     // internal tools under the single `shipit` server, instead of five separate
@@ -498,7 +519,7 @@ export class CodexAdapter
     // approval channel). The value is passed through `runtimeEnv` (the child's
     // env) and allowlisted via `env_vars`, matching how user-server env is wired.
     if (ctx.shipitBridge) {
-      runtimeEnv.SHIPIT_MCP_TOOLS = "review,present,voice,ask,bug,propose_actions";
+      runtimeEnv.SHIPIT_MCP_TOOLS = "present,voice,ask,bug,propose_actions";
       lines.push(
         "",
         "[mcp_servers.shipit]",

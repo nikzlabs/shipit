@@ -5,6 +5,7 @@
 
 import type { GitManager } from "../../shared/git.js";
 import type { GitHubAuthManager } from "../github-auth.js";
+import type { WorkflowRunSummary, WorkflowJobSummary, WorkflowSummary } from "../github-auth-actions.js";
 import type { ChatHistoryManager } from "../chat-history.js";
 import type { PrAutoMergeError } from "../../shared/types/github-types.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
@@ -542,10 +543,12 @@ async function removePrLabels(
  * PR would be opened against the branch's previously-committed state and the
  * agent's just-made edits would not appear on the PR.
  *
- * Also clears any scheduled auto-push debounce: we're about to push
- * synchronously, and letting the debounced timer fire afterwards produces a
- * noisy duplicate "Auto-pushed to origin/..." event after the PR is already
- * open.
+ * Note: this function does NOT cancel the scheduled auto-push debounce. That
+ * is the caller's job, and it must happen *after* a synchronous push actually
+ * lands — see `agentCreatePr`. Cancelling here (the previous behavior) dropped
+ * the pending push whenever a caller short-circuited before its synchronous
+ * push (e.g. `secretBlocked`), leaving the commit local with no retry and no
+ * surfaced error (SHI-198).
  *
  * Chat-history linkage is deferred via `runner.pendingCommitLink`: writing
  * `commitHash` onto any row that exists right now would either land on a
@@ -575,10 +578,6 @@ export async function flushPendingTurnCommit(
   const runner = deps.sessionId && deps.runnerRegistry
     ? deps.runnerRegistry.get(deps.sessionId)
     : null;
-
-  // Always cancel any pending debounced push — agentCreatePr pushes
-  // synchronously below, so the timer would only produce a duplicate event.
-  runner?.clearPushTimer();
 
   const summary = runner?.turnSummary?.split("\n")[0]?.slice(0, 120) || "Agent turn";
   const parentHash = await git.getHeadHash();
@@ -691,6 +690,16 @@ export async function agentCreatePr(
 
   const head = await git.getCurrentBranch();
 
+  // Resolve the runner so we can cancel the debounced auto-push *after* a
+  // synchronous push lands below. We deliberately do NOT cancel before pushing:
+  // a pending debounced push is only safe to drop once a synchronous push has
+  // actually replaced it (SHI-198). On branches that don't push synchronously
+  // (e.g. a not-progressed merged PR returns without pushing), the debounce is
+  // left armed so the commit still reaches the remote.
+  const pushRunner = options.sessionId && options.runnerRegistry
+    ? options.runnerRegistry.get(options.sessionId)
+    : null;
+
   // A PR already on this branch short-circuits creation — but only when it can't
   // legitimately host the new work. The rule (matches /shipit-docs/github.md and
   // the re-arm flow, docs/202):
@@ -738,6 +747,8 @@ export async function agentCreatePr(
         }
         throw new ServiceError(500, `Push failed: ${msg}`);
       }
+      // Synchronous push landed — now safe to drop any pending debounce.
+      pushRunner?.clearPushTimer();
       return await returnExistingPr();
     }
 
@@ -771,6 +782,8 @@ export async function agentCreatePr(
     }
     throw new ServiceError(500, `Push failed: ${msg}`);
   }
+  // Synchronous push landed — now safe to drop any pending debounce.
+  pushRunner?.clearPushTimer();
 
   // Resolve base branch. A re-armed branch keeps the prior PR's base unless the
   // caller passed an explicit one.
@@ -1051,6 +1064,183 @@ export async function listPullRequests(
   return githubAuthManager.listPullRequests(remote.owner, remote.repo, options.state ?? "open");
 }
 
+// ---- GitHub Actions (read-only — backs `gh run` / `gh workflow`) ----
+
+/** Per-job log tail and total-output caps for `gh run view --log[-failed]`. */
+const RUN_LOG_TAIL_LINES = 200;
+const RUN_LOG_MAX_CHARS = 50_000;
+
+/** Conclusions that count as "failed" for `--log-failed`. */
+const FAILED_CONCLUSIONS = new Set(["failure", "cancelled", "timed_out", "action_required", "startup_failure"]);
+
+/** A workflow ref the GitHub API accepts directly: a numeric id or a `*.yml` file. */
+function isDirectWorkflowRef(ref: string): boolean {
+  return /^\d+$/.test(ref) || /\.ya?ml$/i.test(ref);
+}
+
+/** Keep only the last `n` lines of `text`. */
+function lastLines(text: string, n: number): string {
+  if (!text) return "";
+  const lines = text.split("\n");
+  return lines.length <= n ? text : lines.slice(-n).join("\n");
+}
+
+/**
+ * Resolve a user-supplied `--workflow` value (a name, filename, repo-relative
+ * path, or numeric id) to the `{workflow_id}` the Actions API endpoint accepts
+ * (a numeric id or a bare filename). Numeric ids and `*.yml`/`*.yaml` refs pass
+ * through (paths are reduced to their basename); anything else is matched
+ * against the repo's workflow list by name/path/filename. Throws a 404
+ * ServiceError when a name can't be resolved so the agent gets a clear message
+ * rather than a silently-empty run list.
+ */
+async function resolveWorkflowFile(
+  githubAuthManager: GitHubAuthManager,
+  owner: string,
+  repo: string,
+  ref: string,
+): Promise<string> {
+  if (isDirectWorkflowRef(ref)) {
+    return ref.includes("/") ? (ref.split("/").pop() ?? ref) : ref;
+  }
+  const all = await githubAuthManager.listWorkflows(owner, repo);
+  const match = all.find(
+    (w) => w.name === ref || w.path === ref || w.path.split("/").pop() === ref,
+  );
+  if (!match) {
+    throw new ServiceError(404, `No workflow matching "${ref}" found in ${owner}/${repo}`);
+  }
+  return String(match.id);
+}
+
+/** Concatenate (tail-capped) logs for a run's jobs, optionally only failed ones. */
+async function collectRunLogs(
+  githubAuthManager: GitHubAuthManager,
+  owner: string,
+  repo: string,
+  jobs: WorkflowJobSummary[],
+  onlyFailed: boolean,
+): Promise<string> {
+  const selected = onlyFailed
+    ? jobs.filter((j) => j.conclusion !== null && FAILED_CONCLUSIONS.has(j.conclusion))
+    : jobs;
+  const parts: string[] = [];
+  let total = 0;
+  for (const job of selected) {
+    if (total >= RUN_LOG_MAX_CHARS) {
+      parts.push("… (log output truncated)");
+      break;
+    }
+    const raw = await githubAuthManager.getJobLogs(owner, repo, job.databaseId);
+    const header = `===== ${job.name} (${job.conclusion ?? job.status}) =====`;
+    const chunk = `${header}\n${lastLines(raw, RUN_LOG_TAIL_LINES)}`.slice(0, RUN_LOG_MAX_CHARS - total);
+    parts.push(chunk);
+    total += chunk.length;
+  }
+  return parts.join("\n\n");
+}
+
+/**
+ * List workflow runs for the session's repo, most-recent first. `workflow`
+ * filters to a single workflow (by name/filename/path/id); `branch`/`status`
+ * map to GitHub's filters; `limit` caps the count (1–100, default 20).
+ */
+export async function listWorkflowRuns(
+  git: GitManager,
+  githubAuthManager: GitHubAuthManager,
+  options: { workflow?: string; branch?: string; status?: string; limit?: number; remoteUrl?: string } = {},
+): Promise<WorkflowRunSummary[]> {
+  if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
+  const remote = await resolveGitHubRemote(git, options.remoteUrl);
+  if ("error" in remote) throw new ServiceError(400, remote.error);
+
+  const workflowFile = options.workflow
+    ? await resolveWorkflowFile(githubAuthManager, remote.owner, remote.repo, options.workflow)
+    : undefined;
+
+  return githubAuthManager.listWorkflowRuns(remote.owner, remote.repo, {
+    ...(workflowFile ? { workflowFile } : {}),
+    ...(options.branch ? { branch: options.branch } : {}),
+    ...(options.status ? { status: options.status } : {}),
+    ...(typeof options.limit === "number" ? { limit: options.limit } : {}),
+  });
+}
+
+/**
+ * View a single workflow run with its jobs (and optionally logs). When `runId`
+ * is omitted, resolves the most recent run for the current branch, falling back
+ * to the most recent run overall. Returns null when no run can be resolved.
+ */
+export async function viewWorkflowRun(
+  git: GitManager,
+  githubAuthManager: GitHubAuthManager,
+  options: { runId?: number; log?: boolean; logFailed?: boolean; remoteUrl?: string } = {},
+): Promise<{ run: WorkflowRunSummary; jobs: WorkflowJobSummary[]; logs: string } | null> {
+  if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
+  const remote = await resolveGitHubRemote(git, options.remoteUrl);
+  if ("error" in remote) throw new ServiceError(400, remote.error);
+
+  let runId = options.runId;
+  if (typeof runId !== "number") {
+    // No id given — default to the latest run, preferring the current branch so
+    // "fetch the result of the workflow I just dispatched" resolves naturally.
+    const head = await git.getCurrentBranch();
+    let recent = await githubAuthManager.listWorkflowRuns(remote.owner, remote.repo, { branch: head, limit: 1 });
+    if (recent.length === 0) {
+      recent = await githubAuthManager.listWorkflowRuns(remote.owner, remote.repo, { limit: 1 });
+    }
+    if (recent.length === 0) return null;
+    runId = recent[0].databaseId;
+  }
+
+  const run = await githubAuthManager.getWorkflowRun(remote.owner, remote.repo, runId);
+  if (!run) return null;
+  const jobs = await githubAuthManager.listWorkflowRunJobs(remote.owner, remote.repo, runId);
+  const wantLogs = options.log === true || options.logFailed === true;
+  const logs = wantLogs
+    ? await collectRunLogs(githubAuthManager, remote.owner, remote.repo, jobs, options.logFailed === true)
+    : "";
+  return { run, jobs, logs };
+}
+
+/** List the repo's workflow definitions. */
+export async function listWorkflows(
+  git: GitManager,
+  githubAuthManager: GitHubAuthManager,
+  options: { remoteUrl?: string } = {},
+): Promise<WorkflowSummary[]> {
+  if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
+  const remote = await resolveGitHubRemote(git, options.remoteUrl);
+  if ("error" in remote) throw new ServiceError(400, remote.error);
+  return githubAuthManager.listWorkflows(remote.owner, remote.repo);
+}
+
+/**
+ * View a single workflow definition (by name/filename/path/id) along with its
+ * most recent runs. Returns null when the workflow can't be found.
+ */
+export async function viewWorkflow(
+  git: GitManager,
+  githubAuthManager: GitHubAuthManager,
+  options: { workflow: string; remoteUrl?: string },
+): Promise<{ workflow: WorkflowSummary; runs: WorkflowRunSummary[] } | null> {
+  if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
+  const ref = (options.workflow ?? "").trim();
+  if (!ref) throw new ServiceError(400, "A workflow name, filename, or id is required");
+  const remote = await resolveGitHubRemote(git, options.remoteUrl);
+  if ("error" in remote) throw new ServiceError(400, remote.error);
+
+  // Resolve to the API's {workflow_id} (numeric id or filename), then read it.
+  const file = await resolveWorkflowFile(githubAuthManager, remote.owner, remote.repo, ref);
+  const workflow = await githubAuthManager.getWorkflow(remote.owner, remote.repo, file);
+  if (!workflow) return null;
+  const runs = await githubAuthManager.listWorkflowRuns(remote.owner, remote.repo, {
+    workflowFile: String(workflow.id),
+    limit: 10,
+  });
+  return { workflow, runs };
+}
+
 /** Generate a conversation-aware PR description. */
 async function generatePrDescriptionFromContext(
   git: GitManager,
@@ -1179,7 +1369,7 @@ export async function toggleAutoMerge(
   prStatusPoller: PrStatusPoller,
   sessionId: string,
   enabled: boolean,
-): Promise<{ enabled: boolean; mergeMethod: "squash" | "merge" | "rebase"; managed?: boolean } | { error: PrAutoMergeError }> {
+): Promise<{ enabled: boolean; mergeMethod: "squash" | "merge" | "rebase"; managed?: boolean; reason?: string } | { error: PrAutoMergeError }> {
   if (!githubAuth.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
 
   const prStatus = prStatusPoller.getStatus(sessionId);
@@ -1204,13 +1394,18 @@ export async function toggleAutoMerge(
     const result = await githubAuth.enableAutoMerge(owner, repo, prStatus.prNumber, graphqlMethod);
 
     if (!result.success) {
-      // Fallback: ShipIt-managed auto-merge when GitHub native isn't available
+      // Fallback: ShipIt-managed auto-merge when GitHub native isn't available.
+      // Thread the real GitHub error (`result.message`) through as `reason` so
+      // the managed-merge tooltip names the actual missing precondition (e.g.
+      // "Allow auto-merge" off in repo settings) instead of a generic guess.
+      // Link to repo General settings — that's where the "Allow auto-merge"
+      // checkbox lives (the most common missing precondition) and it links out
+      // to branch protection / rulesets from the same page.
       const settingsUrl = `https://github.com/${owner}/${repo}/settings`;
-      const branchSettingsUrl = `${settingsUrl}/branches`;
 
       prStatusPoller.setAutoMergeEnabled(sessionId, true);
-      prStatusPoller.setAutoMergeManaged(sessionId, true, branchSettingsUrl);
-      return { enabled: true, mergeMethod, managed: true };
+      prStatusPoller.setAutoMergeManaged(sessionId, true, settingsUrl, result.message);
+      return { enabled: true, mergeMethod, managed: true, reason: result.message };
     }
 
     prStatusPoller.setAutoMergeEnabled(sessionId, true);

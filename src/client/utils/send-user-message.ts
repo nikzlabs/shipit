@@ -2,7 +2,7 @@
  * sendUserMessage — single client entry point for "user is sending something
  * to the agent over the WebSocket."
  *
- * Every WS send_message / send_review_message / answer_question callsite
+ * Every WS send_message / answer_question callsite
  * funnels through this helper so the optimistic state setup (chat bubble,
  * loading flag, activity label) lives in exactly one place. Previously each
  * callsite inlined the same three setters; one ("send doc comments") forgot
@@ -12,9 +12,8 @@
  * `dispatch` closure that either calls `send(frame)` directly or stashes the
  * frame on `setPendingWsMessage` when the socket isn't open yet (the
  * /{slug}/new path). Keeping that decision at the callsite means
- * `send_review_message` vs `send_message` vs `answer_question` all share the
- * same optimistic-state code without us building a typed union of WS frames
- * here.
+ * `send_message` vs `answer_question` all share the same optimistic-state code
+ * without us building a typed union of WS frames here.
  *
  * The HTTP-dispatch helper (`dispatch-agent-message.ts`) is a separate
  * counterpart for the POST /agent/dispatch flow — it can't fold into this one

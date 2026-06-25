@@ -19,9 +19,10 @@
  * own lifecycle.
  */
 
+import { randomUUID } from "node:crypto";
 import type { GitManager, RebaseConflictFile } from "../../shared/git.js";
 import type { GitHubAuthManager } from "../github-auth.js";
-import type { AgentProcess, AgentId } from "../../shared/types.js";
+import type { AgentProcess, AgentId, BranchSyncedCard } from "../../shared/types.js";
 import type { ChatHistoryManager } from "../chat-history.js";
 import type { SessionManager } from "../sessions.js";
 import type { UsageManager } from "../usage.js";
@@ -85,6 +86,15 @@ export interface RebaseDriverDeps {
    * state. Optional — tests / user-driven rebases can leave it unset.
    */
   drainQueue?: () => Promise<void> | void;
+  /**
+   * docs/221 — emit the persisted "Synced with <base>" transcript card when the
+   * sync actually changed something (branch rebased and/or local `<base>` moved).
+   * Set true ONLY by the manual "Sync with <base>" route — the automatic
+   * conflict-resolve-on-idle path leaves it unset so it keeps its own
+   * `auto_resolve_result` envelopes and doesn't gain a surprise card. The local
+   * `<base>` fast-forward itself is unconditional (it's plain correctness).
+   */
+  recordSyncCard?: boolean;
 }
 
 export type RebaseFlowOutcome =
@@ -110,6 +120,74 @@ export function buildRebaseConflictPrompt(
   ].join("\n");
 }
 
+/** docs/221 — the local-`<base>`-ref move outcome (`from`/`to` shas). */
+interface LocalBaseMove {
+  /** Local `<base>` sha before the move; null if the local ref didn't exist. */
+  from: string | null;
+  /** `origin/<base>` sha the local ref now points at. */
+  to: string;
+}
+
+/**
+ * docs/221 — fast-forward the session clone's local `<base>` ref up to
+ * `origin/<base>` after a fetch, WITHOUT checking it out. A session clone's
+ * default refspec only advances `origin/<base>`; local `<base>` stays frozen at
+ * clone time (docs/157), so the agent's `git diff main...HEAD` etc. reference
+ * stale code after a sync. Best-effort: any failure logs and returns null
+ * (a ref-move must never abort the rebase). Returns null when `origin/<base>`
+ * doesn't resolve. Skips the actual move (but still reports the shas) when the
+ * session is somehow ON the base branch, since `git branch -f` refuses that.
+ */
+async function syncLocalBaseRef(git: GitManager, baseBranch: string): Promise<LocalBaseMove | null> {
+  try {
+    const to = await git.getRefHash(`origin/${baseBranch}`);
+    if (!to) return null;
+    const from = await git.getRefHash(baseBranch);
+    if (from === to) return { from, to };
+    const current = await git.getCurrentBranch();
+    if (current !== baseBranch) {
+      await git.forceUpdateBranchRef(baseBranch, `origin/${baseBranch}`);
+    }
+    return { from, to };
+  } catch (err) {
+    console.error("[rebase] local base ref sync failed:", getErrorMessage(err));
+    return null;
+  }
+}
+
+/**
+ * docs/221 — emit the persisted "Synced with <base>" card, but ONLY when the
+ * sync actually changed something (the branch rebased and/or local `<base>`
+ * moved). The clean-rebase path is not an agent turn, so the card is appended
+ * directly to chat history AND broadcast over WS, sharing one `cardId` the
+ * client dedupes on (mirrors `emitNoticePostTurn`). Returns true when a card was
+ * emitted — the caller uses that to suppress the contradictory "Already up to
+ * date" toast on the up-to-date path.
+ */
+function emitSyncCard(
+  deps: RebaseDriverDeps,
+  opts: { baseBranch: string; headFrom: string | null; headTo: string | null; baseMove: LocalBaseMove | null; forcePushed: boolean },
+): boolean {
+  const { runner, chatHistoryManager } = deps;
+  const headMoved = !!opts.headFrom && !!opts.headTo && opts.headFrom !== opts.headTo;
+  const baseMoved = !!opts.baseMove && opts.baseMove.from !== opts.baseMove.to;
+  if (!headMoved && !baseMoved) return false;
+
+  const card: BranchSyncedCard = {
+    cardId: `sync-${randomUUID()}`,
+    base: opts.baseBranch,
+    headFromSha: opts.headFrom ?? "",
+    headToSha: opts.headTo ?? "",
+    baseFromSha: opts.baseMove?.from ?? null,
+    baseToSha: opts.baseMove?.to ?? "",
+    forcePushed: opts.forcePushed,
+    createdAt: new Date().toISOString(),
+  };
+  chatHistoryManager.append(runner.sessionId, { role: "assistant", text: "", branchSynced: card });
+  runner.emitMessage({ type: "branch_synced_card", sessionId: runner.sessionId, card });
+  return true;
+}
+
 /**
  * Run the full rebase flow. Emits WS events through the runner so the client
  * can update its UI as the flow progresses.
@@ -123,6 +201,7 @@ export async function runRebaseFlow(
   baseBranch: string,
 ): Promise<RebaseFlowOutcome> {
   const { git, githubAuthManager, runner } = deps;
+  const recordSync = deps.recordSyncCard ?? false;
 
   if (runner.running) {
     throw new ServiceError(409, "Cannot rebase while an agent turn is in progress");
@@ -138,10 +217,21 @@ export async function runRebaseFlow(
       throw new ServiceError(400, `Cannot resolve base branch: ${baseBranch}`);
     }
 
+    // docs/221 — fast-forward the local `<base>` ref to origin/<base> (the fetch
+    // above only advanced the remote-tracking ref) and snapshot the session
+    // branch HEAD, so a successful sync can record both moves on the card.
+    const headBefore = await git.getHeadHash();
+    const baseMove = await syncLocalBaseRef(git, baseBranch);
+
     // 3. Check ancestry — already up-to-date?
     const isAncestor = await git.isAncestor(baseRef, "HEAD");
     if (isAncestor) {
-      runner.emitMessage({ type: "rebase_complete", forcePushed: false, upToDate: true });
+      // The branch didn't move, but the local base may have. Emit the card iff
+      // something changed; suppress the "Already up to date" toast when it did.
+      const cardEmitted = recordSync
+        ? emitSyncCard(deps, { baseBranch, headFrom: headBefore, headTo: headBefore, baseMove, forcePushed: false })
+        : false;
+      runner.emitMessage({ type: "rebase_complete", forcePushed: false, upToDate: true, baseMoved: cardEmitted });
       return { status: "up_to_date" };
     }
 
@@ -156,6 +246,9 @@ export async function runRebaseFlow(
     // 5. Clean rebase — go straight to force push.
     if (result.status === "clean") {
       const forcePushed = await tryForcePush(git, githubAuthManager, runner);
+      if (recordSync) {
+        emitSyncCard(deps, { baseBranch, headFrom: headBefore, headTo: await git.getHeadHash(), baseMove, forcePushed });
+      }
       runner.emitMessage({ type: "rebase_complete", forcePushed });
       return { status: "rebased", forcePushed };
     }
@@ -205,6 +298,9 @@ export async function runRebaseFlow(
 
     // 7. Force push after successful resolution.
     const forcePushed = await tryForcePush(git, githubAuthManager, runner);
+    if (recordSync) {
+      emitSyncCard(deps, { baseBranch, headFrom: headBefore, headTo: await git.getHeadHash(), baseMove, forcePushed });
+    }
     runner.emitMessage({ type: "rebase_complete", forcePushed });
     return { status: "conflicts_resolved", iterations: iter, forcePushed };
   } finally {

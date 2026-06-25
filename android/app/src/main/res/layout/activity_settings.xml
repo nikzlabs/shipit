@@ -2,6 +2,7 @@
 <ScrollView
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/shipit_bg"
@@ -55,6 +56,16 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="24dp"
             android:text="@string/settings_save" />
+
+        <TextView
+            android:id="@+id/version_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="32dp"
+            android:gravity="center"
+            android:textColor="@color/shipit_text_muted"
+            android:textSize="12sp"
+            tools:text="Version 0.2.0-debug · build 1750680000" />
 
     </LinearLayout>
 </ScrollView>

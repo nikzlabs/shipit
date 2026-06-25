@@ -65,6 +65,23 @@ export async function serveStaticClient(
       root: clientDir,
       prefix: "/",
       wildcard: false,
+      // Own the Cache-Control header ourselves; @fastify/static's default
+      // (`public, max-age=0`) would otherwise clobber what setHeaders sets.
+      cacheControl: false,
+      setHeaders: (res, filePath) => {
+        // The PWA must always boot the latest code — never a cached shell or a
+        // cached (and possibly stale-caching) service worker. The HTML
+        // entrypoints and the worker script get `no-store` so a standalone
+        // install behaves exactly like a fresh browser tab, paired with the
+        // cache-free service worker (public/service-worker.js). Everything else
+        // (Vite's content-hashed assets) keeps the prior always-revalidate
+        // behavior — no new caching is introduced. See docs/222-pwa-installable.
+        if (filePath.endsWith(".html") || filePath.endsWith("service-worker.js")) {
+          res.setHeader("Cache-Control", "no-store, must-revalidate");
+        } else {
+          res.setHeader("Cache-Control", "public, max-age=0, must-revalidate");
+        }
+      },
     });
     // SPA fallback — serve index.html for non-file routes
     app.setNotFoundHandler((_req, reply) => {

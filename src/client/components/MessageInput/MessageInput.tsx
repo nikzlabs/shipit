@@ -3,10 +3,12 @@ import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { useSessionStore } from "../../stores/session-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { useIsMobile } from "../../hooks/useMediaQuery.js";
-import { PlusIcon, StopIcon, ArrowUpIcon } from "@phosphor-icons/react";
+import { PlusIcon, StopIcon, ArrowUpIcon, GitBranchIcon, CheckIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
+import { usePrStore } from "../../stores/pr-store.js";
 import { PermissionModeSelector } from "../PermissionModeSelector.js";
 import { ModelAgentSelector } from "../ModelAgentSelector.js";
+import { ReasoningSelector } from "../ReasoningSelector.js";
 import { FileAutoComplete } from "../FileAutoComplete.js";
 import { SkillAutoComplete, type SlashCommand } from "../SkillAutoComplete.js";
 import { FileAttachmentChips } from "../FileAttachmentChips.js";
@@ -58,6 +60,14 @@ export interface SendPayload {
   uploads: UploadItem[];
   /** Raw File objects for session-less callers that POST multipart themselves. */
   deferredFiles: File[];
+  /**
+   * docs/218 — per-send intent for the "start from the latest base" control.
+   * Only set when the control was visible at send time: `false` = the user
+   * unticked it (skip the reset this turn), `true` = leave it on. Undefined when
+   * the control wasn't shown (no eligible reset) — the server follows the global
+   * setting. Non-sticky.
+   */
+  resetMergedBranch?: boolean;
 }
 
 export function MessageInput({
@@ -77,6 +87,8 @@ export function MessageInput({
   activeAgentId = "claude",
   onAgentChange,
   onModelChange,
+  onReasoningChange,
+  sessionReasoning,
   modelInfo,
   contextTokens = 0,
   hasActiveSession = false,
@@ -110,6 +122,10 @@ export function MessageInput({
   activeAgentId?: AgentId;
   onAgentChange?: (agentId: AgentId) => void;
   onModelChange?: (model: string) => void;
+  /** docs/217 — per-session reasoning effort change; `null` clears to default. */
+  onReasoningChange?: (effort: string | null) => void;
+  /** docs/217 — the active session's persisted reasoning effort, if any. */
+  sessionReasoning?: string;
   modelInfo?: ModelInfo | null;
   contextTokens?: number;
   hasActiveSession?: boolean;
@@ -135,6 +151,21 @@ export function MessageInput({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const dragCountRef = useRef(0);
+
+  // ── docs/218 — "start from the latest base" control ───────────────────────
+  // Shown only when the session is reset-eligible (server signal: merged +
+  // branch untouched since the merge + clean tree) AND the global setting is on.
+  // Checked by default; the per-send untick is non-sticky (re-checks each time
+  // the control reappears). Correctness is server-side — the checkbox is intent.
+  const autoResetMergedBranch = useSettingsStore((s) => s.autoResetMergedBranch);
+  const resetEligible = usePrStore((s) => (sessionId ? s.resetEligibleBySession[sessionId] ?? false : false));
+  const showResetControl = resetEligible && autoResetMergedBranch;
+  const [resetChecked, setResetChecked] = useState(true);
+  // eslint-disable-next-line no-restricted-syntax -- syncs local opt-out to the external (WS-driven) eligibility signal: re-check whenever the control reappears so the untick is non-sticky
+  useEffect(() => {
+    // Non-sticky: default back to checked whenever the control (re)appears.
+    if (showResetControl) setResetChecked(true);
+  }, [showResetControl]);
 
   // ── Upload backend ───────────────────────────────────────────────────────
   // Two modes share the same surface (chip rendering, +/drop-zone, submit
@@ -377,7 +408,19 @@ export function MessageInput({
       uploadRefs,
       uploads: displayUploads,
       deferredFiles: isOverlay ? localFiles : [],
+      // docs/218 — only carry the intent when the control was actually shown.
+      ...(showResetControl ? { resetMergedBranch: resetChecked } : {}),
     };
+    // docs/218 — when this send carries the reset intent, the branch is about to
+    // be reset to the latest base, which makes the session no longer
+    // reset-eligible. Optimistically clear the signal so the control disappears
+    // immediately instead of lingering through the turn until the post-turn
+    // `reset_eligible: false` arrives. The server's post-turn recompute is
+    // authoritative and reconciles (re-arming the control if the reset was
+    // unticked or didn't run).
+    if (showResetControl && resetChecked && sessionId) {
+      usePrStore.getState().setResetEligible(sessionId, false);
+    }
     onSend(payload);
     setText("");
     // The transcript the cleanup notice referred to has now left the composer —
@@ -636,6 +679,38 @@ export function MessageInput({
 
         {/* Unified input box */}
         <div className="flex flex-col rounded-xl bg-(--color-bg-secondary) border border-(--color-border-secondary) focus-within:border-(--color-accent)/80 focus-within:ring-1 focus-within:ring-(--color-accent)/80">
+          {/* docs/218 — "start from the latest base" control. Lives INSIDE the
+              border as the top row (placement B) — same containment as the
+              footer controls, so the input's corners never change. Shown only
+              when the session is reset-eligible AND the setting is on; the
+              per-send untick is non-sticky. */}
+          {showResetControl && (
+            <button
+              type="button"
+              data-testid="reset-merged-branch-control"
+              aria-pressed={resetChecked}
+              onClick={() => setResetChecked((v) => !v)}
+              className="flex items-start gap-2.5 px-3 py-2.5 text-left rounded-t-xl border-b border-(--color-border-secondary) bg-(--color-accent-subtle)"
+            >
+              <span
+                className={`shrink-0 mt-0.5 grid place-items-center w-4 h-4 rounded ${
+                  resetChecked
+                    ? "bg-(--color-accent) text-white"
+                    : "border border-(--color-border-secondary) bg-(--color-bg-tertiary)"
+                }`}
+              >
+                {resetChecked && <CheckIcon size={12} weight="bold" />}
+              </span>
+              <span className="min-w-0">
+                <span className="flex items-center gap-1.5 text-xs font-medium text-(--color-text-primary)">
+                  <GitBranchIcon size={ICON_SIZE.XS} /> Start from the latest base
+                </span>
+                <span className="block text-[11px] text-(--color-text-tertiary) mt-0.5">
+                  Your PR merged — this branch will reset to the latest base before your message runs, so the agent builds on current code.
+                </span>
+              </span>
+            </button>
+          )}
           {/* Attachment chips — rendered inside the input box, above the
               textarea, so they're visually contained within the input dialog
               rather than floating above it and overlapping the chat history. */}
@@ -757,6 +832,23 @@ export function MessageInput({
                   modelInfo={modelInfo ?? null}
                   hasActiveSession={hasActiveSession}
                   disabled={disabled || isLoading}
+                />
+              </div>
+            )}
+
+            {/* docs/217 — Control B: per-session reasoning effort, beside the
+                model selector. Self-hides when the active agent has no knob. */}
+            {onReasoningChange && (
+              <div className="flex items-center shrink-0" style={{ order: isMobile ? 41 : 61 }}>
+                <ReasoningSelector
+                  // Key on the session so the optimistic pick never lingers across a switch.
+                  key={sessionId ?? "__new__"}
+                  agent={agents.find((a) => a.id === activeAgentId)}
+                  sessionReasoning={sessionReasoning}
+                  onChange={onReasoningChange}
+                  disabled={disabled || isLoading}
+                  compactTrigger={isMobile}
+                  seedFromHistory={!hasActiveSession}
                 />
               </div>
             )}

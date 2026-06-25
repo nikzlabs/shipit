@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo } from "react";
-import { CubeIcon, GithubLogoIcon, LightningIcon, MicrophoneIcon, PlusIcon, SidebarSimpleIcon, WrenchIcon } from "@phosphor-icons/react";
+import { CaretDownIcon, CaretRightIcon, CubeIcon, EyeIcon, EyeSlashIcon, GithubLogoIcon, LightningIcon, MicrophoneIcon, PlusIcon, SidebarSimpleIcon, WrenchIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import { parseRepoName } from "../../utils/repo-label.js";
 import { Button } from "../ui/button.js";
@@ -66,10 +66,14 @@ export function SessionSidebar({
   const toggleRepoCollapsed = useRepoStore((s) => s.toggleRepoCollapsed);
   const collapsedParents = useRepoStore((s) => s.collapsedParents);
   const toggleParentCollapsed = useRepoStore((s) => s.toggleParentCollapsed);
+  const collapsedResolved = useRepoStore((s) => s.collapsedResolved);
+  const toggleResolvedCollapsed = useRepoStore((s) => s.toggleResolvedCollapsed);
   const opsCollapsed = useRepoStore((s) => s.opsCollapsed);
   const toggleOpsCollapsed = useRepoStore((s) => s.toggleOpsCollapsed);
   const sandboxCollapsed = useRepoStore((s) => s.sandboxCollapsed);
   const toggleSandboxCollapsed = useRepoStore((s) => s.toggleSandboxCollapsed);
+  const hiddenReposCollapsed = useRepoStore((s) => s.hiddenReposCollapsed);
+  const toggleHiddenReposCollapsed = useRepoStore((s) => s.toggleHiddenReposCollapsed);
   const reorderRepos = useRepoStore((s) => s.reorderRepos);
 
   // docs/211 — the capability dialog for a new Sandbox session is opened from the
@@ -98,7 +102,19 @@ export function SessionSidebar({
   // can spell out the consequences before the destructive action runs.
   const [removeRepoTarget, setRemoveRepoTarget] = useState<{ url: string; name: string; sessionCount: number } | null>(null);
 
-  const repoGroups = useMemo(() => computeRepoGroups(repos, sessions), [repos, sessions]);
+  // docs/222 — a hidden repo (and its sessions) leaves the sidebar entirely.
+  // Split visible vs hidden, and drop hidden repos' sessions from the grouping
+  // input so they don't resurface in the "orphan" bucket (which catches any
+  // session whose remoteUrl isn't a known/visible repo). Nothing is archived —
+  // the sessions are simply not rendered while the repo is hidden.
+  const hiddenRepos = useMemo(() => repos.filter((r) => r.hidden), [repos]);
+  const visibleRepos = useMemo(() => repos.filter((r) => !r.hidden), [repos]);
+  const hiddenUrls = useMemo(() => new Set(hiddenRepos.map((r) => r.url)), [hiddenRepos]);
+  const visibleSessions = useMemo(
+    () => (hiddenUrls.size === 0 ? sessions : sessions.filter((s) => !s.remoteUrl || !hiddenUrls.has(s.remoteUrl))),
+    [sessions, hiddenUrls],
+  );
+  const repoGroups = useMemo(() => computeRepoGroups(visibleRepos, visibleSessions), [visibleRepos, visibleSessions]);
 
   const handleViewAll = useCallback((repoUrl: string) => {
     // Open AllSessionsDialog (it will default to filtering by the current repo)
@@ -128,12 +144,23 @@ export function SessionSidebar({
     setRemoveRepoTarget({ url: repoUrl, name: parseRepoName(repoUrl), sessionCount: count });
   }, [sessions]);
 
-  // Single repo mode: check if we only have one repo
-  const isSingleRepo = repos.length === 1;
+  // docs/222 — hide acts inline (no confirm dialog): it archives nothing and is
+  // instantly reversible via the "Hidden" section below or by re-adding.
+  const handleHideRepo = useCallback((repoUrl: string) => {
+    void useRepoStore.getState().setRepoHidden(repoUrl, true);
+  }, []);
+
+  const handleShowRepo = useCallback((repoUrl: string) => {
+    void useRepoStore.getState().setRepoHidden(repoUrl, false);
+  }, []);
+
+  // Single repo mode: check if we only have one *visible* repo (a hidden repo
+  // shouldn't force the lone visible repo's group to stay expanded-and-uncollapsible).
+  const isSingleRepo = visibleRepos.length === 1;
   const handleSelectCurrent = mobile ? onClose : undefined;
 
-  // Reordering is only meaningful when there's more than one repo to swap.
-  const reorderEnabled = repos.length > 1;
+  // Reordering is only meaningful when there's more than one visible repo to swap.
+  const reorderEnabled = visibleRepos.length > 1;
 
   const handleDragStart = useCallback(
     (repoUrl: string) => (e: React.DragEvent) => {
@@ -408,7 +435,7 @@ export function SessionSidebar({
 
       {/* Scrollable grouped repo sections */}
       <div className="flex-1 overflow-y-auto min-h-0 flex flex-col py-1">
-        {repoGroups.length === 0 ? (
+        {repoGroups.length === 0 && hiddenRepos.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-3 px-4 py-8">
             <p className="text-xs text-(--color-text-tertiary) text-center">No repositories yet.</p>
             <Button variant="primary" onClick={onAddRepo} className="gap-1.5">
@@ -450,6 +477,8 @@ export function SessionSidebar({
               isNewSessionSelected={activeNewSessionRepoUrl === group.repo.url}
               isCollapsed={!isSingleRepo && collapsedRepos.has(group.repo.url)}
               onToggleCollapse={() => toggleRepoCollapsed(group.repo.url)}
+              isResolvedCollapsed={collapsedResolved.has(group.repo.url)}
+              onToggleResolvedCollapsed={() => toggleResolvedCollapsed(group.repo.url)}
               collapsedParents={collapsedParents}
               onToggleParentCollapsed={toggleParentCollapsed}
               onResume={onResume}
@@ -458,6 +487,7 @@ export function SessionSidebar({
               onNewSession={() => onNewSessionForRepo(group.repo.url)}
               onViewAll={() => handleViewAll(group.repo.url)}
               onProjectSettings={() => handleProjectSettings(group.repo.url)}
+              onHideRepo={() => handleHideRepo(group.repo.url)}
               onRemoveRepo={() => handleRemoveRepo(group.repo.url)}
               isTouch={isTouch}
               draggable={reorderEnabled}
@@ -481,6 +511,53 @@ export function SessionSidebar({
               isTouch={isTouch}
             />
           ))
+        )}
+
+        {/* docs/222 — "Hidden" section: repos the user hid to declutter. A
+            collapsible footer (collapsed by default) that expands to unhide each
+            repo inline, so it's reachable without re-running the Add flow. Only
+            renders when something is hidden, so it's invisible otherwise. */}
+        {hiddenRepos.length > 0 && (
+          <div className="flex flex-col mt-1 border-t border-(--color-border-primary)">
+            <button
+              onClick={toggleHiddenReposCollapsed}
+              className="flex items-center gap-1.5 pl-3.5 pr-3 py-1.5 text-left group"
+              aria-label={hiddenReposCollapsed ? "Expand hidden repositories" : "Collapse hidden repositories"}
+            >
+              <span className="w-5 h-5 flex items-center justify-center shrink-0 text-(--color-text-tertiary) group-hover:text-(--color-text-secondary)">
+                {hiddenReposCollapsed
+                  ? <CaretRightIcon size={ICON_SIZE.XS} />
+                  : <CaretDownIcon size={ICON_SIZE.XS} />
+                }
+              </span>
+              <EyeSlashIcon size={ICON_SIZE.XS} weight="fill" className="shrink-0 text-(--color-text-tertiary)" />
+              <span className="text-xs font-semibold text-(--color-text-tertiary) truncate tracking-wide group-hover:text-(--color-text-secondary) transition-colors">
+                Hidden
+              </span>
+              <span className="text-xs text-(--color-text-tertiary) font-medium">· {hiddenRepos.length}</span>
+            </button>
+            {!hiddenReposCollapsed && (
+              <div className="flex flex-col gap-0.5 pb-1">
+                {hiddenRepos.map((repo) => (
+                  <div
+                    key={repo.url}
+                    className="group/hidden flex items-center gap-1.5 mx-1 pl-7 pr-2 py-1.5 rounded text-xs text-(--color-text-tertiary) hover:bg-(--color-bg-hover) transition-colors"
+                  >
+                    <GithubLogoIcon size={ICON_SIZE.XS} weight="fill" className="shrink-0 opacity-60" />
+                    <span className="truncate flex-1" title={parseRepoName(repo.url)}>{parseRepoName(repo.url)}</span>
+                    <button
+                      onClick={() => handleShowRepo(repo.url)}
+                      className="ml-auto flex items-center gap-1 shrink-0 text-[11px] text-(--color-text-link) px-1.5 py-0.5 rounded hover:bg-(--color-bg-secondary) opacity-0 group-hover/hidden:opacity-100 focus:opacity-100 transition-opacity"
+                      aria-label={`Show ${parseRepoName(repo.url)}`}
+                    >
+                      <EyeIcon size={ICON_SIZE.XS} className="shrink-0" />
+                      Show
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         )}
       </div>
     </div>

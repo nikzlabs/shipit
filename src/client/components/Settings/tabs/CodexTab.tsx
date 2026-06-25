@@ -1,6 +1,7 @@
 import type { AgentOption } from "../../../agent-types.js";
 import { CodexAuthCard, type CodexDeviceAuthState } from "../../CodexAuthCard.js";
 import { ProviderAccountSection } from "../ProviderAccountSection.js";
+import { SubAgentDefaultsSection } from "../SubAgentDefaultsSection.js";
 
 export function CodexTab({
   agent,
@@ -33,6 +34,7 @@ export function CodexTab({
         />
       )}
       <ProviderAccountSection provider="codex" />
+      <SubAgentDefaultsSection agent={agent} />
     </div>
   );
 }

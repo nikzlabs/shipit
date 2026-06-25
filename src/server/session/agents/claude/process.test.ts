@@ -342,6 +342,32 @@ describe("ClaudeProcess", () => {
       expect(args).not.toContain("--mcp-config");
     });
 
+    // docs/217 — reasoning effort via --effort.
+    it("includes --effort when reasoningEffort is provided", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "test", reasoningEffort: "xhigh" });
+
+      expect(mockPtySpawn).toHaveBeenCalledWith(
+        "claude",
+        expect.arrayContaining(["--effort", "xhigh"]),
+        expect.any(Object),
+      );
+    });
+
+    it("does not include --effort when reasoningEffort is absent (CLI default)", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "test" });
+
+      const args = mockPtySpawn.mock.calls[0][1] as string[];
+      expect(args).not.toContain("--effort");
+    });
+
     it("includes --permission-prompt-tool when permissionPromptTool is provided (docs/193)", () => {
       const mockProc = createMockPty();
       mockPtySpawn.mockReturnValue(mockProc as any);
@@ -489,11 +515,14 @@ describe("ClaudeProcess", () => {
     // They must be allowlisted explicitly by name or headless `-p` mode rejects
     // them as "permission not yet granted" — including from review subagents.
     // After SHI-128 the named tools live under the single `shipit` server.
+    // docs/220 — the `submit_review` tool was removed; it must NOT appear in the
+    // allowlist any longer (cross-agent reviews surface in the consult card,
+    // same-model reviews are prose).
     it.each([
       ["auto" as const, undefined],
       ["plan" as const, "plan" as const],
       ["guarded" as const, "guarded" as const],
-    ])("allowlists mcp__shipit__submit_review in %s mode", (_label, permissionMode) => {
+    ])("does NOT allowlist the removed mcp__shipit__submit_review in %s mode", (_label, permissionMode) => {
       const mockProc = createMockPty();
       mockPtySpawn.mockReturnValue(mockProc as any);
 
@@ -502,7 +531,7 @@ describe("ClaudeProcess", () => {
 
       const args = mockPtySpawn.mock.calls[0][1] as string[];
       const tools = args[args.indexOf("--allowedTools") + 1];
-      expect(tools.split(",")).toContain("mcp__shipit__submit_review");
+      expect(tools.split(",")).not.toContain("mcp__shipit__submit_review");
     });
 
     // Same rationale: `present` must be allowlisted explicitly or headless `-p`

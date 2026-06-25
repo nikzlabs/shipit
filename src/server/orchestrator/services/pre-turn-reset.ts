@@ -1,0 +1,246 @@
+/**
+ * docs/218 — auto-reset a merged session's branch to the latest base when work
+ * continues.
+ *
+ * After a session's PR merges, the branch is left exactly at its pre-merge tip,
+ * sitting behind the advanced base. When the user resumes the session with a new
+ * message, this runs in the PRE-TURN path (so a live, rehydrated workspace exists
+ * and the move has a purpose — see plan.md "Why lazy, not eager") and, with the
+ * user's consent, moves the branch to `origin/<base>` before the agent turn runs:
+ *
+ *   gate → `git fetch origin` → RE-gate (TOCTOU) → `git reset --hard origin/<base>`
+ *     → force-with-lease heal of `origin/<session-branch>`
+ *
+ * The trailing force-push heals the REMOTE: the reset moves only the local
+ * branch, leaving the session's remote branch on the old merged commits (it
+ * survives whenever the repo has auto-delete off), so without this every later
+ * plain auto-push is a silently-dropped non-fast-forward. See the heal block
+ * below for the full rationale and the docs/218 safety-net tradeoff.
+ *
+ * A hard reset is destructive, so it fires ONLY behind the full safety gate
+ * ({@link computeResetEligible}). The branch has no new work (every commit is
+ * already shipped via the merge), so a clean reset — not a rebase — is the
+ * squash-safe move (nothing to replay). The caller prepends the returned
+ * `agentPrefix` to the turn's prompt (so the agent starts fresh and doesn't
+ * re-apply shipped work) and emits a persisted card from the returned move info.
+ *
+ * Everything here is fail-safe: any gate failure or git error returns
+ * {@link NOT_MOVED} and the turn runs on the un-moved branch — the user falls
+ * back to today's manual flow (still picked up by the docs/202 / docs/216 re-arm).
+ */
+
+import type { SessionInfo } from "../../shared/types.js";
+import type { GitManager } from "../../shared/git.js";
+import type { PrStatusSummary } from "../../shared/types/github-types.js";
+import type { WsServerMessage } from "../../shared/types/ws-server-messages.js";
+
+export interface PreTurnResetDeps {
+  getSession: (id: string) => SessionInfo | undefined;
+  getPrStatus: (id: string) => PrStatusSummary | null;
+  createGitManager: (dir: string) => GitManager;
+  getAutoResetMergedBranch: () => boolean;
+}
+
+/** The deps the safety-only eligibility *signal* needs (no global-setting gate). */
+export type ResetEligibleSignalDeps = Omit<PreTurnResetDeps, "getAutoResetMergedBranch">;
+
+export interface ResetOutcome {
+  /** True only when the branch was actually moved. */
+  moved: boolean;
+  base?: string;
+  prNumber?: number;
+  prUrl?: string;
+  /** Short-able HEAD SHAs before → after the reset (for the transcript card). */
+  fromSha?: string;
+  toSha?: string;
+  /** The `[System] …` prefix to prepend to the turn's prompt (agent-facing). */
+  agentPrefix?: string;
+}
+
+const NOT_MOVED: ResetOutcome = { moved: false };
+
+/**
+ * The SAFETY-ONLY eligibility gate — "this branch carries nothing that isn't
+ * already merged AND the repo is in a plain, resettable state." Deliberately
+ * EXCLUDES the global setting and the per-send intent (those gate whether the
+ * user *wants* a reset; this gates whether one is *safe*). Surfaced to the client
+ * as the transient `resetEligible` signal in Phase 3.
+ *
+ * All clauses must hold; any failure → not eligible → no reset:
+ *   - session merged, with a recorded `mergedHeadSha` (the PR's head tip),
+ *   - the merged PR's base branch is known (the reset target),
+ *   - the working tree is clean (a hard reset over uncommitted edits is the one
+ *     irreversible loss — committed work is reflog-recoverable, edits are not),
+ *   - HEAD is on `session.branch`, not detached (a reset wouldn't move the branch),
+ *   - no rebase/merge/cherry-pick/revert in progress (a reset clobbers recovery),
+ *   - **`HEAD === mergedHeadSha`** — the load-bearing clause: it is the only
+ *     reliable distinction between "untouched since merge" and "new un-rebased
+ *     work" (deriving it from `advancedBeyondMergedBase`/`headIsAtBase` has a
+ *     data-loss hole — see plan.md "Safety gate").
+ */
+export async function computeResetEligible(
+  session: SessionInfo | undefined,
+  prStatus: PrStatusSummary | null,
+  git: GitManager,
+): Promise<boolean> {
+  if (!session?.mergedAt) return false;
+  if (!session.mergedHeadSha) return false;
+  if (!prStatus?.baseBranch) return false;
+
+  if (!(await git.isClean())) return false;
+
+  const branch = await git.currentBranchOrNull();
+  if (!branch) return false; // detached HEAD
+  if (session.branch && branch !== session.branch) return false;
+
+  if (await git.isRebaseInProgress()) return false;
+  if (await git.isMergeOrSequencerInProgress()) return false;
+
+  const head = await git.getHeadHash();
+  if (!head || head !== session.mergedHeadSha) return false;
+
+  return true;
+}
+
+/**
+ * Run the pre-turn auto-reset. Returns {@link NOT_MOVED} when the global setting
+ * is off, the safety gate fails, or anything throws (fail-safe). On a real move,
+ * returns the base + PR pointers + before/after SHAs + the agent prompt prefix.
+ *
+ * The gate is evaluated TWICE — once before the fetch and once after — because
+ * `git fetch` yields to the event loop, during which a terminal edit or a queued
+ * agent turn could move the branch out from under us (TOCTOU).
+ */
+/**
+ * Safety-only eligibility for a session, used to drive the client's composer
+ * control visibility (`reset_eligible` signal). EXCLUDES the global setting and
+ * the per-send intent — the client ANDs this with `autoResetMergedBranch`, and
+ * the pre-turn helper re-validates the full gate at send time, so this is purely
+ * "would a reset be safe right now?". Fail-safe false (and cheap-exits for
+ * non-merged sessions via `computeResetEligible`).
+ */
+export async function isResetEligible(
+  deps: ResetEligibleSignalDeps,
+  sessionId: string,
+  sessionDir: string,
+): Promise<boolean> {
+  try {
+    const session = deps.getSession(sessionId);
+    if (!session?.mergedAt) return false; // cheap-exit before constructing git
+    const prStatus = deps.getPrStatus(sessionId);
+    const git = deps.createGitManager(sessionDir);
+    return await computeResetEligible(session, prStatus, git);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Recompute the safety-only eligibility signal and push it to a session's
+ * attached viewers via the runner's broadcast transport. Used by the
+ * merge-detection path (`onMergeDetectedCb`): a PR that merges while the user is
+ * sitting ON the session — never re-activating it — makes the session newly
+ * reset-eligible, but neither the activation nor the post-turn recompute fires,
+ * so the "start from latest base" composer control would stay hidden until they
+ * switched away and back. This is transient + emit-only (recomputed on every
+ * activation), so a bare `emitMessage` is the right transport — nothing to
+ * persist. Fail-safe: `isResetEligible` already swallows its own errors.
+ */
+export async function emitResetEligibleSignal(
+  deps: ResetEligibleSignalDeps,
+  runner: { sessionDir: string; emitMessage: (msg: WsServerMessage) => void },
+  sessionId: string,
+): Promise<void> {
+  const eligible = await isResetEligible(deps, sessionId, runner.sessionDir);
+  runner.emitMessage({ type: "reset_eligible", sessionId, eligible });
+}
+
+export async function autoResetMergedBranchOnContinue(
+  deps: PreTurnResetDeps,
+  sessionId: string,
+  sessionDir: string,
+  /**
+   * The per-send intent from the composer control (Phase 3). `false` = the user
+   * unticked "start from latest base" for this message → skip. `true`/`undefined`
+   * = follow the global setting (the control was checked, or this send path has
+   * no control, e.g. a programmatic follow-up).
+   */
+  intent?: boolean,
+): Promise<ResetOutcome> {
+  try {
+    // Gate on the global setting AND an explicit per-send opt-out.
+    if (!deps.getAutoResetMergedBranch()) return NOT_MOVED;
+    if (intent === false) return NOT_MOVED;
+
+    const session = deps.getSession(sessionId);
+    const prStatus = deps.getPrStatus(sessionId);
+    const git = deps.createGitManager(sessionDir);
+
+    if (!(await computeResetEligible(session, prStatus, git))) return NOT_MOVED;
+    const base = prStatus!.baseBranch;
+
+    // Fetch the latest base, then RE-validate the full gate (TOCTOU window).
+    await git.fetch("origin");
+    if (!(await computeResetEligible(session, prStatus, git))) return NOT_MOVED;
+
+    const { from, to } = await git.resetHardToRemoteBase(base);
+
+    // Heal the remote branch so later plain auto-pushes fast-forward. The reset
+    // moved only the LOCAL branch to origin/<base>; the session's own remote
+    // branch (origin/<session-branch>) still points at the old merged commits —
+    // it survives the merge whenever the repo has auto-delete off, or ShipIt's
+    // best-effort delete (which runs in the bare cache, not this clone) failed —
+    // so local and remote have now diverged. The ordinary debounced auto-push
+    // (`scheduleAutoPush` → plain `git push`) is non-force, so that divergence
+    // turns every subsequent commit's push into a silently-dropped
+    // non-fast-forward until something force-pushes (only the PR-create path
+    // does today). Force the remote to match the reset branch NOW, leasing
+    // against its LIVE tip: `forcePush` reads the remote's current sha via
+    // `ls-remote` (not the stale local tracking ref) and create-or-leases — both
+    // "deleted at merge" (expected=null → plain create) and "surviving +
+    // diverged" (lease against the old tip) resolve. This deliberately gives up
+    // the surviving-remote-branch safety net that docs/218 kept for false-merge
+    // recovery (the reflog `HEAD@{1}` remains, and the lease refuses to clobber a
+    // remote that moved unexpectedly). Best-effort: a failure just leaves the
+    // pre-fix divergence for this session — no worse than before the heal.
+    try {
+      await git.forcePush("origin");
+    } catch (err) {
+      console.warn(
+        `[pre-turn-reset] remote heal force-push failed for ${sessionId} ` +
+          `(subsequent auto-push may be rejected as non-fast-forward):`,
+        err,
+      );
+    }
+
+    const prNumber = prStatus!.prNumber;
+    const prUrl = prStatus!.prUrl;
+
+    return {
+      moved: true,
+      base,
+      prNumber,
+      prUrl,
+      fromSha: from,
+      toSha: to,
+      agentPrefix: buildAgentPrefix(prNumber, base),
+    };
+  } catch (err) {
+    console.error(`[pre-turn-reset] auto-reset failed for ${sessionId} (running turn on the un-moved branch):`, err);
+    return NOT_MOVED;
+  }
+}
+
+/**
+ * The agent-facing context prefix. The last sentence is load-bearing: it stops
+ * the agent from recreating already-shipped work on the fresh base.
+ */
+function buildAgentPrefix(prNumber: number, base: string): string {
+  return (
+    `[System] Your previous pull request (#${prNumber}) was merged into ${base}. ` +
+    `This branch has been automatically reset to the latest origin/${base} — it no ` +
+    `longer contains the merged commits and starts from current code. Build the ` +
+    `requested work on top of this fresh base; do not re-apply or recreate anything ` +
+    `from the merged PR.`
+  );
+}

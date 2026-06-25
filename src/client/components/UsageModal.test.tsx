@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, cleanup, fireEvent } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { UsageModal, type SessionUsage, type UsageStats } from "./UsageModal.js";
 import type { ModelInfo } from "../utils/model-info.js";
@@ -26,6 +26,13 @@ const mockAllUsage: UsageStats = {
   ],
   totalCostUsd: 1.35,
   totalTurns: 19,
+  // Values deliberately distinct from the session/total figures above so the
+  // chart's hover tooltips and avg label don't collide with exact-text queries.
+  monthly: [
+    { month: "2026-04", costUsd: 0.15, turns: 2 },
+    { month: "2026-05", costUsd: 0.55, turns: 4 },
+    { month: "2026-06", costUsd: 0.65, turns: 5 },
+  ],
 };
 
 describe("UsageModal", () => {
@@ -95,6 +102,61 @@ describe("UsageModal", () => {
     expect(screen.getByText("19")).toBeInTheDocument();
   });
 
+  it("renders the monthly trend chart with a bar and label per month", () => {
+    render(
+      <UsageModal
+        currentSessionUsage={mockCurrentUsage}
+        allUsage={mockAllUsage}
+        sessions={mockSessions}
+        onClose={() => {}}
+      />
+    );
+    expect(screen.getByText("Monthly trend")).toBeInTheDocument();
+    const chart = screen.getByTestId("monthly-usage-chart");
+    // One column per month + the average baseline overlay (last child).
+    expect(chart.querySelectorAll("[title]")).toHaveLength(mockAllUsage.monthly.length);
+    expect(screen.getByText("Apr '26")).toBeInTheDocument();
+    expect(screen.getByText("Jun '26")).toBeInTheDocument();
+    expect(screen.getByTestId("monthly-usage-avg")).toBeInTheDocument();
+  });
+
+  it("toggles the monthly chart between cost and turns", async () => {
+    const user = userEvent.setup();
+    render(
+      <UsageModal
+        currentSessionUsage={mockCurrentUsage}
+        allUsage={mockAllUsage}
+        sessions={mockSessions}
+        onClose={() => {}}
+      />
+    );
+    const chart = screen.getByTestId("monthly-usage-chart");
+    // Cost mode (default): the most-recent bar's tooltip shows the formatted cost.
+    expect(chart.querySelector('[title="Jun \'26: $0.65"]')).not.toBeNull();
+    // Within the chart section, click the Turns toggle.
+    const section = screen.getByTestId("monthly-usage-section");
+    await user.click(within(section).getByRole("button", { name: "turns" }));
+    expect(chart.querySelector('[title="Jun \'26: 5"]')).not.toBeNull();
+  });
+
+  it("windows the monthly chart to the most recent 12 months", () => {
+    const many: UsageStats = {
+      sessions: [],
+      totalCostUsd: 10,
+      totalTurns: 100,
+      monthly: Array.from({ length: 18 }, (_, i) => ({
+        month: `2025-${String((i % 12) + 1).padStart(2, "0")}`,
+        costUsd: i + 1,
+        turns: i + 1,
+      })),
+    };
+    render(
+      <UsageModal currentSessionUsage={null} allUsage={many} sessions={[]} onClose={() => {}} />
+    );
+    const chart = screen.getByTestId("monthly-usage-chart");
+    expect(chart.querySelectorAll("[title]")).toHaveLength(12);
+  });
+
   it("displays per-session breakdown with titles", () => {
     render(
       <UsageModal
@@ -117,6 +179,7 @@ describe("UsageModal", () => {
       ],
       totalCostUsd: 0.10,
       totalTurns: 1,
+      monthly: [],
     };
     render(
       <UsageModal
@@ -183,7 +246,7 @@ describe("UsageModal", () => {
     render(
       <UsageModal
         currentSessionUsage={zeroUsage}
-        allUsage={{ sessions: [], totalCostUsd: 0, totalTurns: 0 }}
+        allUsage={{ sessions: [], totalCostUsd: 0, totalTurns: 0, monthly: [] }}
         sessions={mockSessions}
         onClose={() => {}}
       />

@@ -143,6 +143,24 @@ Key properties:
     carry the terminal phase; it falls back to the DB-row `updatePermissionCard`
     only when the card isn't in this turn's recorded set. This mirrors the
     `emitOrReplaceChatCard` rationale used by docs/203's mid-turn re-review.
+  - **A mid-turn card must also advance the turn-event replay cursor (the
+    "pending card vanishes on switch" bug, SHI-112).** `emitChatCard` persists a
+    snapshot of the turn-so-far the instant the card fires — but a gated tool's
+    `agent_assistant` event sits *unpersisted* in the turn-event buffer
+    (`lastPersistedBufferIndex` only advanced at tool-result / agent_result
+    boundaries). So the snapshot sat **ahead** of the buffer cursor. On a session
+    switch / WS reconnect, the orchestrator replays `buffer.slice(cursor)` *on
+    top of* that snapshot; the buffered pre-card `agent_assistant` then merges
+    into the card's carrier message — which `loadSessionHistory` marked
+    `streaming: true` (in-progress → streaming) — and the client's streaming
+    merge (`agent-event.ts`) rebuilds the message from a fixed field set,
+    **dropping `permissionPrompt`**. The card showed only after the agent
+    *stopped* (interrupt clears the buffer). Fix (two layers): `emitChatCard`
+    advances `lastPersistedBufferIndex` past the buffer after persisting — the
+    same thing the tool-result boundary does — so no buffered event overlaps the
+    snapshot; and the client never treats a card-carrying message as a merge
+    target (it falls to close-and-append, which preserves the card via `...m`).
+    This protects **every** mid-turn card, not just permission.
 
 ## Agent-agnostic seam
 
@@ -172,7 +190,8 @@ A future backend implements `setPermissionRequester` (or bridges to
 **Orchestrator**
 - `src/server/orchestrator/proxy-agent-process.ts` + `container-session-runner.ts` — `resolvePermission` → `/agent/permission/resolve`.
 - `src/server/orchestrator/ws-handlers/agent-listeners.ts` — `agent_permission_request` → emitChatCard + `session_attention` (Thread C); `agent_permission_resolved` → patch the recorded card via `updateRecordedCard` + `persistTurnInProgress` (mid-turn clobber fix; DB-row `updatePermissionCard` fallback) + `permission_resolved` + clear attention.
-- `src/server/orchestrator/chat-card-persistence.ts` — `updateRecordedCard` (patch a recorded card in place for a transition that lands within its own turn, without re-emitting it).
+- `src/server/orchestrator/chat-card-persistence.ts` — `updateRecordedCard` (patch a recorded card in place for a transition that lands within its own turn, without re-emitting it); `emitChatCard` advances `lastPersistedBufferIndex` past the buffer after persisting (the switch/reconnect overlap fix that kept a pending card from vanishing).
+- `src/client/hooks/message-handlers/agent-event.ts` — the streaming-assistant merge excludes card-carrying messages (`CARD_MESSAGE_FIELDS`) as merge targets, so a replayed event can't rebuild a card message and drop its card field.
 - `src/server/orchestrator/{session-runner,container-session-runner}.ts` — `awaitingPermissionIds` per-runner set (Thread C).
 - `src/server/orchestrator/index.ts` — `session_attention` connect snapshot.
 - `src/server/orchestrator/ws-handlers/send-message.ts` — `handleAnswerQuestion` forwards the session's permission mode so a clarifying answer stays in plan mode (Thread A).
@@ -191,9 +210,12 @@ A future backend implements `setPermissionRequester` (or bridges to
 - **Local mode** (dogfood) has no worker/broker, so the Claude bridge POST fails
   → deny. Sensitive-file edits there remain a dead-end (dev-only, already
   degraded per docs/118). Production (container) is the path that matters.
-- The exact Codex reject enum (`reject` / `denied`) is inferred from the v2/v1
-  schemas; verify against `codex app-server generate-json-schema` if a Codex
-  deny ever misbehaves. Allow (`accept`/`approved`) is confirmed by existing tests.
+- The Codex deny enum is confirmed against `codex app-server generate-json-schema`
+  (SHI-112): v2 deny is `"decline"` (deny + continue the turn; `"cancel"` would
+  also interrupt — not our semantics) and v1 deny is `"denied"`. An earlier
+  inferred value `"reject"` was stale — the schema defines no such variant — and
+  is fixed in `codex-event-handler.ts`. Allow (`accept`/`approved`) is confirmed
+  by existing tests.
 
 ## Tests
 

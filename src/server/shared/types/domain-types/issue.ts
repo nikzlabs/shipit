@@ -176,6 +176,11 @@ export type IssueWriteUndo =
       previousDescription?: string;
       previousLabels?: string[];
       previousPriority?: string;
+      // SHI-206 — an edit may also reparent (Linear sub-issues). The prior
+      // parent's tracker-internal id is snapshotted (or `null` when it had no
+      // parent) so undo restores the exact prior relation — re-parenting back to
+      // the prior id, or detaching when there was none.
+      previousParentId?: string | null;
     }
   | { kind: "status"; previousStatus: string }
   | { kind: "assignee"; previousAssigneeId: string | null }

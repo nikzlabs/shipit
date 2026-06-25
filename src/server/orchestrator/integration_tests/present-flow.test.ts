@@ -116,9 +116,11 @@ async function fetchRaw(workerUrl: string, presentId: string): Promise<{ content
  */
 async function submitPresent(
   workerUrl: string,
-  body: { content: string; mimeType?: string; title?: string; replaceId?: string },
+  body: { content: string; mimeType?: string; title?: string; file?: string },
 ): Promise<{ presentId: string; status: string; filePath: string }> {
-  const filePath = path.join(tmpDir, `artifact-${fileCounter++}.${extForMime(body.mimeType)}`);
+  // A fixed `file` re-presents the same path (in-place update); otherwise each
+  // submission gets a fresh path → a distinct presentId → a new carousel entry.
+  const filePath = body.file ?? path.join(tmpDir, `artifact-${fileCounter++}.${extForMime(body.mimeType)}`);
   await writeFile(filePath, body.content, "utf8");
   const res = await fetch(`${workerUrl}/agent-ops/present/submit`, {
     method: "POST",
@@ -127,7 +129,6 @@ async function submitPresent(
       file: filePath,
       ...(body.mimeType !== undefined ? { mimeType: body.mimeType } : {}),
       ...(body.title !== undefined ? { title: body.title } : {}),
-      ...(body.replaceId !== undefined ? { replaceId: body.replaceId } : {}),
     }),
   });
   expect(res.ok).toBe(true);
@@ -212,7 +213,6 @@ describe("Integration: present tool pipeline (worker → SSE → runner WS)", ()
     // The presented file path rides through verbatim so the header can show it.
     expect(msg.filePath).toBe(filePath);
     expect(typeof msg.createdAt).toBe("string");
-    expect(msg.replaceId).toBeUndefined();
     // The WS message carries NO bytes — content is fetched lazily from disk.
     expect((msg as { content?: unknown }).content).toBeUndefined();
 
@@ -282,11 +282,13 @@ describe("Integration: present tool pipeline (worker → SSE → runner WS)", ()
     expect(body.error).toContain("Could not read file");
   });
 
-  it("revises in place via replaceId and clears the superseded id", async () => {
+  it("re-presenting the same file updates the entry in place under the same id", async () => {
+    const samePath = path.join(tmpDir, "mockup.html");
     const first = await submitPresent(workerUrl, {
       content: "<p>v1</p>",
       mimeType: "text/html",
       title: "Mockup v1",
+      file: samePath,
     });
     await waitFor(() => presentContentMsgs().length >= 1, 3000, "first present_content");
 
@@ -294,33 +296,38 @@ describe("Integration: present tool pipeline (worker → SSE → runner WS)", ()
       content: "<p>v2</p>",
       mimeType: "text/html",
       title: "Mockup v2",
-      replaceId: first.presentId,
+      file: samePath,
     });
-    // The revision yields a new presentId distinct from the one it replaces.
-    expect(second.presentId).not.toBe(first.presentId);
+    // Identity is the path: re-presenting the same file yields the SAME id (no
+    // explicit replace flag), so the entry updates in place.
+    expect(second.presentId).toBe(first.presentId);
 
     await waitFor(
-      () => presentContentMsgs().some((m) => m.presentId === second.presentId),
+      () => presentContentMsgs().some((m) => m.title === "Mockup v2"),
       3000,
-      "revision present_content",
+      "updated present_content",
     );
 
-    const revision = presentContentMsgs().find((m) => m.presentId === second.presentId)!;
-    expect(revision.replaceId).toBe(first.presentId);
+    // No per-id present_cleared is emitted — there is nothing to supersede.
+    expect(presentClearedMsgs()).toHaveLength(0);
 
-    // The worker also broadcasts a present_cleared for the superseded id.
-    await waitFor(
-      () => presentClearedMsgs().some((m) => m.presentId === first.presentId),
-      3000,
-      "present_cleared for superseded id",
-    );
-
-    // Cache holds exactly one entry: the revision replaced the original in place
-    // (the trailing clear for the now-absent old id is a no-op).
+    // Cache holds exactly one entry under the stable id, with the new bytes.
     expect(runner.presentations).toHaveLength(1);
-    expect(runner.presentations[0].presentId).toBe(second.presentId);
-    // The revised bytes are served on demand under the new id.
-    expect((await fetchRaw(workerUrl, second.presentId)).content).toBe("<p>v2</p>");
+    expect(runner.presentations[0].presentId).toBe(first.presentId);
+    expect(runner.presentations[0].title).toBe("Mockup v2");
+    expect((await fetchRaw(workerUrl, first.presentId)).content).toBe("<p>v2</p>");
+  });
+
+  it("presenting two distinct files keeps both as separate carousel entries", async () => {
+    const a = await submitPresent(workerUrl, { content: "<p>a</p>", mimeType: "text/html", title: "A" });
+    const b = await submitPresent(workerUrl, { content: "<p>b</p>", mimeType: "text/html", title: "B" });
+    expect(a.presentId).not.toBe(b.presentId);
+    await waitFor(
+      () => runner.presentations.length >= 2,
+      3000,
+      "both present_content entries cached",
+    );
+    expect(runner.presentations.map((p) => p.presentId)).toEqual([a.presentId, b.presentId]);
   });
 
   it("keeps every presented artifact — no size or count eviction", async () => {

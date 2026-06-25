@@ -91,6 +91,46 @@ export function saveModelId(modelId: string | undefined): void {
   }
 }
 
+// docs/217 — composer reasoning seed, keyed PER AGENT so switching agents
+// restores each one's last composer pick. One JSON blob `{ [agentId]: effort }`.
+// This is only the SEED for a new session; the per-session value is server-
+// persisted (the session row) and authoritative once chosen.
+const REASONING_BY_AGENT_KEY = "shipit-reasoning-by-agent";
+
+function readReasoningByAgent(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(REASONING_BY_AGENT_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed)) {
+      if (typeof v === "string" && v) out[k] = v;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function getSavedReasoning(agentId: string): string | undefined {
+  return readReasoningByAgent()[agentId];
+}
+
+export function saveReasoning(agentId: string, effort: string | null): void {
+  try {
+    const map = readReasoningByAgent();
+    // Rebuild rather than `delete map[agentId]` (no dynamic-delete).
+    const next: Record<string, string> = {};
+    for (const [id, v] of Object.entries(map)) {
+      if (id !== agentId) next[id] = v;
+    }
+    if (effort) next[agentId] = effort;
+    localStorage.setItem(REASONING_BY_AGENT_KEY, JSON.stringify(next));
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
 export function getSavedActiveRepo(): string | undefined {
   try {
     return localStorage.getItem(ACTIVE_REPO_KEY) ?? undefined;
@@ -319,6 +359,40 @@ export function savePermissionModeBySession(map: Record<string, PermissionMode>)
   }
 }
 
+// ---- Present tab: last-viewed artifact per session (docs/093) ----
+//
+// The Present tab's active artifact, remembered per session so a session switch
+// OR a full page reload lands the user back on the artifact they were viewing
+// instead of snapping to the first one. Keyed by the content-addressed
+// `presentId` (stable across re-presents; a numeric index would drift as
+// artifacts append/clear). Pure view state, browser-local, not server-persisted
+// — it can differ between devices, which is fine. A stale entry (artifact since
+// gone) is harmless: the store falls back to clamping when the id isn't found.
+const ACTIVE_PRESENT_BY_SESSION_KEY = "shipit-active-present-by-session";
+
+export function getSavedActivePresentBySession(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(ACTIVE_PRESENT_BY_SESSION_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const out: Record<string, string> = {};
+    for (const [id, presentId] of Object.entries(parsed)) {
+      if (typeof presentId === "string" && presentId) out[id] = presentId;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function saveActivePresentBySession(map: Record<string, string>): void {
+  try {
+    localStorage.setItem(ACTIVE_PRESENT_BY_SESSION_KEY, JSON.stringify(map));
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
 // ---- Changed-docs strip collapse state (docs/205) ----
 //
 // Per-session expanded/collapsed state for the PR card's changed-docs strip.
@@ -400,6 +474,28 @@ export function saveCollapsedParents(collapsed: Set<string>): void {
   } catch { /* ignore */ }
 }
 
+// docs/161 — per-repo collapsed state for the "Recently resolved" sub-section.
+// Keyed by repo URL, like COLLAPSED_REPOS_KEY. Absence = expanded (the default),
+// so a fresh user sees the resolved list open; presence = the user collapsed it.
+const COLLAPSED_RESOLVED_KEY = "shipit-collapsed-resolved";
+
+export function getSavedCollapsedResolved(): Set<string> {
+  try {
+    const raw = localStorage.getItem(COLLAPSED_RESOLVED_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw) as string[];
+      return new Set(arr);
+    }
+  } catch { /* ignore */ }
+  return new Set();
+}
+
+export function saveCollapsedResolved(collapsed: Set<string>): void {
+  try {
+    localStorage.setItem(COLLAPSED_RESOLVED_KEY, JSON.stringify([...collapsed]));
+  } catch { /* ignore */ }
+}
+
 const OPS_COLLAPSED_KEY = "shipit-ops-collapsed";
 
 export function getSavedOpsCollapsed(): boolean {
@@ -428,6 +524,24 @@ export function getSavedSandboxCollapsed(): boolean {
 export function saveSandboxCollapsed(collapsed: boolean): void {
   try {
     localStorage.setItem(SANDBOX_COLLAPSED_KEY, collapsed ? "1" : "0");
+  } catch { /* ignore */ }
+}
+
+// docs/222 — collapsed state for the sidebar's "Hidden" repos section. Starts
+// collapsed (true) by default so it stays unobtrusive for users who hide repos.
+const HIDDEN_REPOS_COLLAPSED_KEY = "shipit-hidden-repos-collapsed";
+
+export function getSavedHiddenReposCollapsed(): boolean {
+  try {
+    // Default true (collapsed) when unset.
+    return localStorage.getItem(HIDDEN_REPOS_COLLAPSED_KEY) !== "0";
+  } catch { /* ignore */ }
+  return true;
+}
+
+export function saveHiddenReposCollapsed(collapsed: boolean): void {
+  try {
+    localStorage.setItem(HIDDEN_REPOS_COLLAPSED_KEY, collapsed ? "1" : "0");
   } catch { /* ignore */ }
 }
 

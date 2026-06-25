@@ -105,7 +105,7 @@ describe("isAskUserQuestionTool (docs/147)", () => {
   });
 
   it("does not match other tools or an undefined tool", () => {
-    expect(isAskUserQuestionTool("submit_review")).toBe(false);
+    expect(isAskUserQuestionTool("present")).toBe(false);
     expect(isAskUserQuestionTool(undefined)).toBe(false);
   });
 });

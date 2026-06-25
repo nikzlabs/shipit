@@ -27,6 +27,10 @@ import {
   reopenPullRequest,
   viewPullRequest,
   listPullRequests,
+  listWorkflowRuns,
+  viewWorkflowRun,
+  listWorkflows,
+  viewWorkflow,
   mergePullRequest,
   generatePrDescription,
   setGitHubToken,
@@ -602,6 +606,133 @@ export async function registerGitHubRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to view PR: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // ---- GitHub Actions reads (read-only — back `gh run` / `gh workflow`) ----
+  //
+  // Repo-aware (cwd/repo) like the PR ops above, and container-accessible so the
+  // gh shim can broker them. Read-only by construction: there is no route to
+  // dispatch, rerun, or cancel a workflow — that stays a human/CI action.
+
+  // GET /api/sessions/:id/actions/runs — list workflow runs
+  app.get<{
+    Params: { id: string };
+    Querystring: { workflow?: string; branch?: string; status?: string; limit?: string; cwd?: string; repo?: string };
+  }>(
+    "/api/sessions/:id/actions/runs",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      const dir = resolveSessionDir(sessionManager, request.params.id, reply);
+      if (!dir) return;
+      try {
+        const session = sessionManager.get(request.params.id);
+        const { gitDir, remoteUrl } = resolvePrTarget(session ?? { remoteUrl: "" }, dir, request.query);
+        const git = createGitManager(gitDir);
+        const limitRaw = request.query.limit ? Number(request.query.limit) : undefined;
+        const runs = await listWorkflowRuns(git, deps.githubAuthManager, {
+          workflow: request.query.workflow,
+          branch: request.query.branch,
+          status: request.query.status,
+          ...(typeof limitRaw === "number" && Number.isFinite(limitRaw) ? { limit: limitRaw } : {}),
+          remoteUrl,
+        });
+        return { runs };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to list workflow runs: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // GET /api/sessions/:id/actions/runs/view — view one run (id optional → latest)
+  app.get<{
+    Params: { id: string };
+    Querystring: { id?: string; log?: string; logFailed?: string; cwd?: string; repo?: string };
+  }>(
+    "/api/sessions/:id/actions/runs/view",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      const dir = resolveSessionDir(sessionManager, request.params.id, reply);
+      if (!dir) return;
+      let runId: number | undefined;
+      if (request.query.id) {
+        runId = Number(request.query.id);
+        if (!Number.isFinite(runId) || runId <= 0) {
+          reply.code(400).send({ error: "Invalid run id" });
+          return;
+        }
+      }
+      try {
+        const session = sessionManager.get(request.params.id);
+        const { gitDir, remoteUrl } = resolvePrTarget(session ?? { remoteUrl: "" }, dir, request.query);
+        const git = createGitManager(gitDir);
+        const result = await viewWorkflowRun(git, deps.githubAuthManager, {
+          ...(typeof runId === "number" ? { runId } : {}),
+          log: request.query.log === "true",
+          logFailed: request.query.logFailed === "true",
+          remoteUrl,
+        });
+        return result ?? { run: null };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to view workflow run: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // GET /api/sessions/:id/actions/workflows — list workflow definitions
+  app.get<{ Params: { id: string }; Querystring: { cwd?: string; repo?: string } }>(
+    "/api/sessions/:id/actions/workflows",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      const dir = resolveSessionDir(sessionManager, request.params.id, reply);
+      if (!dir) return;
+      try {
+        const session = sessionManager.get(request.params.id);
+        const { gitDir, remoteUrl } = resolvePrTarget(session ?? { remoteUrl: "" }, dir, request.query);
+        const git = createGitManager(gitDir);
+        const workflows = await listWorkflows(git, deps.githubAuthManager, { remoteUrl });
+        return { workflows };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to list workflows: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // GET /api/sessions/:id/actions/workflows/view — view one workflow + recent runs
+  app.get<{ Params: { id: string }; Querystring: { workflow?: string; cwd?: string; repo?: string } }>(
+    "/api/sessions/:id/actions/workflows/view",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      const dir = resolveSessionDir(sessionManager, request.params.id, reply);
+      if (!dir) return;
+      try {
+        const session = sessionManager.get(request.params.id);
+        const { gitDir, remoteUrl } = resolvePrTarget(session ?? { remoteUrl: "" }, dir, request.query);
+        const git = createGitManager(gitDir);
+        const result = await viewWorkflow(git, deps.githubAuthManager, {
+          workflow: request.query.workflow ?? "",
+          remoteUrl,
+        });
+        return result ?? { workflow: null };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to view workflow: ${getErrorMessage(err)}` });
       }
     },
   );

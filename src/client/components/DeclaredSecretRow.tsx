@@ -12,8 +12,16 @@ const PLATFORM_SOURCE_LABELS: Record<string, string> = {
 export interface DeclaredSecretRowProps {
   requirement: DeclaredSecretState;
   value: string;
+  /**
+   * Whether a value is already stored for this secret. The browser never
+   * receives the value itself (security), so a set secret renders with a
+   * masked placeholder and an empty input — blank means "keep", typing
+   * overwrites. `onClear` deletes the stored value.
+   */
+  isSet: boolean;
   missing: Record<string, string[]>;
   onChange: (v: string) => void;
+  onClear: () => void;
 }
 
 /**
@@ -25,8 +33,10 @@ export interface DeclaredSecretRowProps {
 export function DeclaredSecretRow({
   requirement,
   value,
+  isSet,
   missing,
   onChange,
+  onClear,
 }: DeclaredSecretRowProps) {
   const isPlatform = requirement.source?.startsWith("platform:");
   const platformLabel = requirement.source ? PLATFORM_SOURCE_LABELS[requirement.source] : null;
@@ -101,14 +111,31 @@ export function DeclaredSecretRow({
             : `Provided automatically (${requirement.source}).`}
         </div>
       ) : (
-        <input
-          type="password"
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder={requirement.required ? "Required — set a value" : "value (optional)"}
-          className="w-full rounded-md bg-(--color-bg-primary) border border-(--color-border-secondary) px-3 py-2 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none focus:border-(--color-border-focus) font-mono"
-          data-testid={`secret-value-${requirement.name}`}
-        />
+        <div className="flex items-center gap-2">
+          <input
+            type="password"
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            placeholder={
+              isSet
+                ? "•••••••• saved — type to replace"
+                : requirement.required
+                  ? "Required — set a value"
+                  : "value (optional)"
+            }
+            className="flex-1 rounded-md bg-(--color-bg-primary) border border-(--color-border-secondary) px-3 py-2 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none focus:border-(--color-border-focus) font-mono"
+            data-testid={`secret-value-${requirement.name}`}
+          />
+          {isSet && value.length === 0 && (
+            <button
+              onClick={onClear}
+              className="text-xs text-(--color-text-tertiary) hover:text-(--color-error) transition-colors shrink-0"
+              data-testid={`secret-clear-${requirement.name}`}
+            >
+              Clear
+            </button>
+          )}
+        </div>
       )}
     </div>
   );

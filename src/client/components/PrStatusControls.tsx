@@ -40,7 +40,7 @@ function ToggleSwitch({
 }
 
 /** Hover tooltip explaining ShipIt-managed auto-merge with a link to GitHub settings. */
-function ManagedMergeInfo({ settingsUrl }: { settingsUrl?: string }) {
+function ManagedMergeInfo({ settingsUrl, reason }: { settingsUrl?: string; reason?: string }) {
   return (
     <TooltipProvider>
       <Tooltip>
@@ -61,7 +61,15 @@ function ManagedMergeInfo({ settingsUrl }: { settingsUrl?: string }) {
           className="z-[60] w-[min(calc(100vw-2rem),16rem)] whitespace-normal p-2.5 text-(--color-text-secondary)"
         >
           <div>
-            GitHub auto-merge requires branch protection rules. ShipIt will merge this PR when CI passes.
+            {reason ? (
+              <>
+                <span className="block font-medium text-(--color-text-primary)">GitHub couldn’t enable native auto-merge:</span>
+                <span className="block mt-0.5 italic">“{reason}”</span>
+                <span className="block mt-1">ShipIt will merge this PR itself when CI passes.</span>
+              </>
+            ) : (
+              "GitHub auto-merge requires branch protection rules. ShipIt will merge this PR when CI passes."
+            )}
             {settingsUrl && (
               <a href={settingsUrl} target="_blank" rel="noopener noreferrer"
                 className="block mt-1 underline hover:opacity-80 text-(--color-text-link)">
@@ -115,7 +123,7 @@ export function AutoMergeToggle({ sessionId, autoMerge }: { sessionId: string; a
         onToggle={() => toggleAutoMerge(sessionId, !enabled)}
         title={enabled ? "Disable auto-merge" : "Enable auto-merge"}
       />
-      {autoMerge?.managed && <ManagedMergeInfo settingsUrl={autoMerge.settingsUrl} />}
+      {autoMerge?.managed && <ManagedMergeInfo settingsUrl={autoMerge.settingsUrl} reason={autoMerge.reason} />}
     </span>
   );
 }

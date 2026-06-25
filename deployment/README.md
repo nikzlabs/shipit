@@ -85,7 +85,7 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/sta
 ```
 
 The script will ask whether to install Cloudflare, Tailscale, both, or neither, then automatically:
-- Install git and clone ShipIt to `/opt/shipit` (installing a fork? set `SHIPIT_REPO_URL=https://github.com/you/shipit.git` before the command)
+- Install git and clone ShipIt to `/opt/shipit` (installing a fork? prefix the command with `sudo env SHIPIT_REPO_URL=https://github.com/you/shipit.git` — plain `sudo` drops the variable from the environment)
 - Install Docker
 - Configure host limits needed for session containers and file watching
 - Install the selected access path:

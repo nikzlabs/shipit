@@ -97,7 +97,7 @@ compose: docker-compose.yml
 `,
       "docker-compose.yml": `services:
   app:
-    image: node:20-slim
+    image: node:24-slim
     working_dir: /app
     command: sh -c "npm install && npm run dev"
     # The agent edits files from a different container; native inotify events
@@ -201,7 +201,7 @@ compose: docker-compose.yml
 `,
       "docker-compose.yml": `services:
   dev:
-    image: node:20-slim
+    image: node:24-slim
     working_dir: /app
     command: sh -c "npm install && npm run dev"
     ports:

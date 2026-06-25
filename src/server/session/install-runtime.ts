@@ -27,17 +27,35 @@
  * load-fail at agent startup. Erring on the side of more invalidations (a
  * spurious miss is one slow install) is the safe direction.
  *
- * `IMAGE_DIGEST`/`SESSION_WORKER_IMAGE_ID` is consulted first so a deploy
- * that rebuilds the worker image gets a fresh fingerprint for free.
+ * The fingerprint is composed from the *actual* ABI inputs, NOT the full
+ * worker-image id (SHI-194): the image digest changed on every rebuild —
+ * app-code layers, npm tooling, cache busts — none of which move the
+ * native-addon ABI, so each deploy minted a fresh ~500 MB overlay base and
+ * forced a cold reinstall. The four axes below capture the ABI surface
+ * precisely:
+ *   - **base-image digest** (`BASE_IMAGE_DIGEST`, injected at build time from the
+ *     worker Dockerfile's digest-pinned `FROM`) — the system C/C++ runtime and
+ *     crypto ABI the addon links against. Only a deliberate base bump moves it.
+ *   - **arch** (`process.arch`) and **libc** (`detectLibc()`) — the platform ABI.
+ *   - **Node ABI** (`process.versions.modules`, i.e. `NODE_MODULE_VERSION`) — the
+ *     exact addon ABI number, stricter than the old node-major proxy.
+ *
+ * `SESSION_WORKER_IMAGE_ID`/`IMAGE_DIGEST` remain as a fallback so a worker
+ * image built before `BASE_IMAGE_DIGEST` existed degrades to the previous
+ * (correct-but-churny) behavior rather than collapsing to `"unknown"`.
+ *
+ * Narrowing biases toward *reuse*, so the failure mode it must never hit is
+ * reusing a tree built against an incompatible ABI. That can't happen: every
+ * real ABI input is in the key, and a base bump is guaranteed to change
+ * `BASE_IMAGE_DIGEST` (it is the `FROM` content sha). The worker-side install
+ * marker (`install-marker.ts:markerMatches`) compares this key and forces a
+ * reinstall on any mismatch — the load-bearing corruption gate.
  */
 export function runtimeKey(env: NodeJS.ProcessEnv = process.env): string {
-  const imageId = env.SESSION_WORKER_IMAGE_ID ?? env.IMAGE_DIGEST ?? "unknown";
+  const base = env.BASE_IMAGE_DIGEST ?? env.SESSION_WORKER_IMAGE_ID ?? env.IMAGE_DIGEST ?? "unknown";
   const libc = detectLibc();
-  // `process.versions.node` carries the patch version too, but the ABI
-  // we care about is the major. A node 22.x → 22.y bump is compatible;
-  // 22 → 24 is not.
-  const nodeMajor = process.versions.node.split(".")[0];
-  return `${imageId}|${process.arch}|${libc}|node${nodeMajor}`;
+  const abi = process.versions.modules;
+  return `${base}|${process.arch}|${libc}|abi${abi}`;
 }
 
 export function detectLibc(): string {

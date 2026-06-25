@@ -122,6 +122,17 @@ export class GitManager {
     }
   }
 
+  /** Resolve an arbitrary ref (branch, tag, `origin/main`, sha) to its commit
+   * hash, or null if it doesn't resolve. */
+  async getRefHash(ref: string): Promise<string | null> {
+    try {
+      const hash = await this.git.revparse(["--verify", ref]);
+      return hash.trim() || null;
+    } catch {
+      return null;
+    }
+  }
+
   /**
    * Ensure the workspace is a git repo with at least one commit.
    * Identity and commit.gpgsign are inherited from the global git config
@@ -442,6 +453,65 @@ export class GitManager {
     } catch {
       return false; // origin/<base> or HEAD unresolvable — fail safe, stay merged
     }
+  }
+
+  /**
+   * docs/218 — the current branch name, or `null` when HEAD is detached. Unlike
+   * {@link getCurrentBranch} (which falls back to "main" on a null `status.current`,
+   * masking a detached HEAD), this reports detachment honestly via
+   * `rev-parse --abbrev-ref HEAD` returning the literal "HEAD". Used by the
+   * pre-turn auto-reset gate, which must NOT reset a detached HEAD (the reset
+   * would not move `session.branch`, making the card's "branch updated" claim
+   * false). Fail-safe `null` on any resolution error.
+   */
+  async currentBranchOrNull(): Promise<string | null> {
+    try {
+      const ref = (await this.git.revparse(["--abbrev-ref", "HEAD"])).trim();
+      return ref && ref !== "HEAD" ? ref : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * docs/218 — true when a merge, cherry-pick, or revert is mid-flight (an
+   * in-progress rebase is covered separately by {@link isRebaseInProgress}).
+   * Detected by the sentinel files git writes into the git dir. A hard reset
+   * during any of these would clobber the recovery state, so the pre-turn
+   * auto-reset gate bails when this (or a rebase) is in progress. Fail-safe
+   * `false` on a resolution error (the SHA-equality clause is the real guard).
+   */
+  async isMergeOrSequencerInProgress(): Promise<boolean> {
+    try {
+      const gitDir = (await this.git.revparse(["--absolute-git-dir"])).trim();
+      return (
+        fs.existsSync(path.join(gitDir, "MERGE_HEAD")) ||
+        fs.existsSync(path.join(gitDir, "CHERRY_PICK_HEAD")) ||
+        fs.existsSync(path.join(gitDir, "REVERT_HEAD"))
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * docs/218 — hard-reset the current branch to `origin/<baseBranch>`, discarding
+   * the branch's own (already-merged, now-phantom) commits. Returns the before →
+   * after HEAD SHAs for the transcript card's audit line. Throws if
+   * `origin/<baseBranch>` cannot be resolved — the caller fetches first and treats
+   * a throw as "skip the reset, run the turn on the un-moved branch".
+   *
+   * Caller owns the safety gate (clean tree, `HEAD === mergedHeadSha`, plain repo
+   * state); this method just performs the move.
+   */
+  async resetHardToRemoteBase(baseBranch: string): Promise<{ from: string; to: string }> {
+    const baseRef = `origin/${baseBranch}`;
+    const from = (await this.git.revparse(["HEAD"])).trim();
+    const to = (await this.git.revparse(["--verify", baseRef])).trim();
+    if (!to) throw new Error(`Cannot resolve ${baseRef}`);
+    await this.git.reset(["--hard", baseRef]);
+    console.log(`[git] Reset --hard to ${baseRef} (${from.slice(0, 8)} → ${to.slice(0, 8)})`);
+    return { from, to };
   }
 
   /**
@@ -788,6 +858,27 @@ export class GitManager {
   async createBranchFrom(branch: string, startPoint: string): Promise<void> {
     await this.git.checkout(["-B", branch, startPoint]);
     console.log("[git] checkout -B", branch, "from", startPoint);
+  }
+
+  /**
+   * Force-move a local branch ref to point at `target`, WITHOUT checking it out
+   * (`git branch -f <branch> <target>`). Unlike {@link createBranchFrom} (which
+   * uses `checkout -B` and switches the working branch), this leaves HEAD and the
+   * working tree untouched — the session stays on its own branch.
+   *
+   * Used by the "Sync with <base>" flow to fast-forward the session clone's local
+   * base ref (e.g. `main`) up to `origin/<base>` after a fetch, so the agent's
+   * `git diff main...HEAD` / `git log main..HEAD` reference current code rather
+   * than the frozen clone-time snapshot (a session clone's default refspec only
+   * advances `origin/<base>`, never local `<base>` — see docs/157 / repo-git.ts).
+   *
+   * `git branch -f` refuses to move the currently-checked-out branch; callers must
+   * skip when `branch === getCurrentBranch()` (in practice the session is always on
+   * `shipit/<id>`, never on the base).
+   */
+  async forceUpdateBranchRef(branch: string, target: string): Promise<void> {
+    await this.git.raw(["branch", "-f", branch, target]);
+    console.log("[git] branch -f", branch, "→", target);
   }
 
   /**

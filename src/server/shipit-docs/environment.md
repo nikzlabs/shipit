@@ -11,18 +11,23 @@ mistaken shell command can't modify system paths or read root-only files.
 
 What this means in practice:
 
-- **Writable:** `/workspace`, `/dep-cache`, `/credentials`, `/tmp`,
+- **Writable:** `/workspace`, `/persist`, `/dep-cache`, `/credentials`,
   and your home `/home/shipit` (including `~/.claude`, `~/.codex`, the npm
   global prefix at `~/.npm-global`, and the npm cache at `~/.npm`).
+- **Persistent scratch:** `/persist` is a writable, non-git directory that
+  **survives container restarts** (like `/workspace`, but never committed). Put
+  files here that should outlive the container without entering the repo — see
+  the filesystem layout below.
 - **Read-only data:** `/uploads` is mounted **read-only** (docs/172 Gap 6) —
   you can read the user's attached files but not modify or delete them. If you
-  need to transform an upload, copy it into `/workspace` or `/tmp` first.
+  need to transform an upload, copy it into `/workspace` or `/persist` first.
 - **Read-only to you:** `/app` (the worker), `/opt/agent-cli` (the agent CLIs),
   `/usr/local/bin` shims (`gh`, `shipit`, `shipit-git-credential`), and system
   dirs. You can run them, but not modify them. Some deployments additionally run
   with a **read-only root filesystem** (docs/172 Gap 5): the writable paths above
   are unchanged (they're mounts or tmpfs), but writing *elsewhere* on the rootfs
-  fails. Keep scratch under `/tmp` or your home and you'll never notice.
+  fails. Keep scratch under `/persist` (persistent) or your home and you'll never
+  notice.
 - **`npm install -g`** works — the global prefix is `~/.npm-global` (on your
   `PATH`), not the root-owned `/usr/local`. Manually-installed CLIs land there.
 - **`sudo` is not available** and there is no passwordless privilege escalation.
@@ -34,8 +39,8 @@ What this means in practice:
 | Path | Description |
 |------|-------------|
 | `/workspace` | Project root. This is the git repo. Your working directory. |
+| `/persist` | **Persistent, non-git scratch.** Writable; survives container restarts but is never committed. Put files here that the user should still see tomorrow without polluting the repo (e.g. presented artifacts you don't want tracked). Cleared only by a full session reset. |
 | `/uploads` | User-uploaded files (outside git, never committed). **Read-only** — read attachments here, but copy elsewhere to modify. |
-| `/tmp` | Scratch space — use for temporary files, unpacking archives. |
 | `/credentials` | OAuth tokens (managed by ShipIt). Holds **only the credentials for this session's agent** — a Claude session sees `~/.claude` but not `~/.codex`, and vice versa. The agent is pinned on the first message and can't be changed afterward. Symlinked into your home (`~/.claude`, `~/.claude.json`, `~/.codex` → `/credentials/...`). Write-protected (see below). |
 | `/dep-cache` | Shared npm/yarn/pnpm cache across sessions for the same repo. |
 | `/home/shipit` | Your home directory. Agent credentials (via symlink), npm global prefix, and caches live here. |
@@ -73,9 +78,12 @@ commit message is derived from your turn summary.
 **Hot reload**: When you edit files, compose services with mounted volumes
 pick up changes automatically. No need to restart dev servers after code edits.
 
-**Dependency detection**: Changes to lockfiles (`package-lock.json`,
-`yarn.lock`, `pnpm-lock.yaml`) trigger an automatic install + service restart
-(debounced with a 30s cooldown).
+**Dependency detection**: Changes to a dependency file — a lockfile
+(`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`) or the manifest your
+install reads — trigger an automatic install + service restart (throttled with
+a 30s cooldown). This covers **git operations** (`git reset`/`checkout`/`rebase`
+that change the dependency tree), not just direct edits — so a reset to a commit
+that added a dependency reinstalls and restarts the preview automatically.
 
 **Compose services**: Project services (dev servers, databases, caches) run as
 Docker Compose containers managed by ShipIt. Define them in
@@ -97,9 +105,10 @@ container is created and `/workspace` is re-cloned from git.
   a cron entry, a polling loop, an in-memory queue or timer — is killed on
   eviction and does **not** come back. The next message lands in a fresh
   container with none of it running.
-- **Only `/workspace` (the git repo) persists**, via re-clone. In-memory
-  state, processes, and files written outside `/workspace` and outside declared
-  volumes are gone after eviction.
+- **`/workspace` (the git repo) and `/persist` (non-git scratch) persist** —
+  `/workspace` via re-clone, `/persist` because it's host-backed and re-mounted.
+  In-memory state, processes, and files written *elsewhere* (outside `/workspace`,
+  `/persist`, and declared volumes) are gone after eviction.
 - **There is a grace period of 10 minutes** after the last viewer detaches
   before a container becomes eligible for eviction (host memory pressure can
   cut this short). A short-lived timer may fire within that window, but **do

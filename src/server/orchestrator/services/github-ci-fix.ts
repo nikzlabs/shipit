@@ -46,6 +46,13 @@ export async function fetchCIFailureLogs(
     chownToSessionWorker(path.join(sessionDir!, ".gitignore"));
   }
 
+  // One timestamp per fetch batch — disambiguates logs from different CI runs of
+  // the same check. Without it, a re-run of the same failing check overwrites the
+  // previous log at an identical path, and the agent (which sees the path twice in
+  // chat history) can't tell whether it's looking at a fresh failure or a stale one.
+  // Filesystem-safe: ISO with colons/dots swapped for dashes (e.g. 2026-06-22T14-30-00-000Z).
+  const batchTimestamp = new Date().toISOString().replace(/[:.]/g, "-");
+
   const logs: CIFailureLog[] = [];
 
   for (const check of failedChecks) {
@@ -65,11 +72,12 @@ export async function fetchCIFailureLogs(
     let logFilePath: string | undefined;
     if (logDir && cleanLog) {
       const safeName = check.name.replace(/[^a-zA-Z0-9_-]/g, "_");
-      const absPath = path.join(logDir, `${safeName}.log`);
+      const fileName = `${safeName}-${batchTimestamp}.log`;
+      const absPath = path.join(logDir, fileName);
       fs.writeFileSync(absPath, cleanLog, "utf-8");
       chownToSessionWorker(absPath); // docs/150 §7 — agent reads as `shipit`
       // Store relative path — the agent runs from the workspace root
-      logFilePath = `.shipit/ci-logs/${safeName}.log`;
+      logFilePath = `.shipit/ci-logs/${fileName}`;
     }
     const errorLines = extractErrorLines(cleanLog);
     const lines = cleanLog.split("\n");

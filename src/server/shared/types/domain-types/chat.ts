@@ -46,6 +46,15 @@ export interface SubAgentConsultCard {
   costUsd?: number;
   /** True when the sub-agent's output hit the wall-clock or character cap. */
   truncated?: boolean;
+  /**
+   * docs/220 — the sub-agent's verbatim final output (markdown), so a brokered
+   * consult is *visible*, not just attested. ShipIt renders what it brokers: the
+   * card shows a stripped-down preview and opens the full text in a read-only
+   * viewer. Already length-bounded upstream by the spawn primitive's
+   * `maxOutputChars` cap (32K), which is also what sets `truncated`. Absent on a
+   * transport-failure card (no output was produced) and on empty output.
+   */
+  outputMarkdown?: string;
   createdAt: string;
 }
 
@@ -102,6 +111,67 @@ export interface ActionChecklistCard {
   /** Short HEAD SHA the actions were proposed against (provenance, immutable). */
   headSha?: string;
   /** Emit time — doubles as the "proposed <date>" provenance stamp. */
+  createdAt: string;
+}
+
+/**
+ * docs/218 — a persisted "branch updated to latest base" transcript card. Emitted
+ * right after the user's message (and before the agent's response) when a merged
+ * session's branch was automatically reset to `origin/<base>` before continuing,
+ * so the user plainly sees the destructive move that just happened. Immutable, no
+ * lifecycle — the card is written once on emit and never patched. Shared verbatim
+ * by the live WS payload (`WsBranchAutoResetCard`), the persisted chat-history row
+ * (`PersistedMessage.branchAutoReset`), and the client card so the three can't
+ * drift (same static-payload pattern as the issue-ref / action-checklist cards).
+ */
+export interface BranchAutoResetCard {
+  /** Stable id — dedupes the live append vs the reconnect/reload replay. */
+  cardId: string;
+  /** The base branch the branch was reset onto (e.g. "main"). */
+  base: string;
+  /** The merged PR whose branch this was. */
+  prNumber: number;
+  prUrl: string;
+  /** Short HEAD SHAs before → after the reset, for auditability. */
+  fromSha: string;
+  toSha: string;
+  /** Emit time — doubles as the provenance stamp. */
+  createdAt: string;
+}
+
+/**
+ * docs/221 — a persisted "synced with <base>" transcript card. Emitted after a
+ * successful "Sync with <base>" (manual rebase-onto-base) flow that rewrote the
+ * session branch and/or fast-forwarded the session clone's local `<base>` ref up
+ * to `origin/<base>`. Unlike the transient rebase banner/toast, this is durable
+ * scrollback so the user has a lasting record that the branch was rebased and the
+ * local base moved. Immutable, no lifecycle — written once on emit, never patched.
+ * Shared verbatim by the live WS payload (`WsBranchSyncedCard`), the persisted
+ * chat-history row (`PersistedMessage.branchSynced`), and the client card so the
+ * three can't drift. Idempotent on the client by `cardId` (live emit vs the
+ * reconnect/reload replay).
+ */
+export interface BranchSyncedCard {
+  /** Stable id — dedupes the live append vs the reconnect/reload replay. */
+  cardId: string;
+  /** The base branch synced against (e.g. "main"). */
+  base: string;
+  /**
+   * Session-branch HEAD before → after the rebase. Equal (and present) when the
+   * branch was already up to date; the client suppresses the "rebased" line then.
+   */
+  headFromSha: string;
+  headToSha: string;
+  /**
+   * Local `<base>` ref before → after the fast-forward to `origin/<base>`.
+   * `baseFromSha` is null when the local base ref didn't exist before. Equal when
+   * the local base was already current; the client suppresses the "updated" line.
+   */
+  baseFromSha: string | null;
+  baseToSha: string;
+  /** Whether the rewritten branch was force-pushed to origin (false when no auth). */
+  forcePushed: boolean;
+  /** Emit time — doubles as the provenance stamp. */
   createdAt: string;
 }
 

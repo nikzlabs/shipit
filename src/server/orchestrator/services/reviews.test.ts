@@ -5,11 +5,7 @@ import {
   locateSelection,
   buildReviewPrompt,
   detectFileReviewType,
-  validateAiReviewSubmission,
-  MAX_REVIEW_MARKDOWN_CHARS,
-  DEFAULT_REVIEWER_LABEL,
 } from "./reviews.js";
-import { ServiceError } from "./types.js";
 
 // ---- Helpers ----
 
@@ -258,46 +254,5 @@ describe("buildReviewPrompt (code)", () => {
       "x",
     );
     expect(prompt).toContain("Please address each comment.");
-  });
-});
-
-// ============================================================
-// validateAiReviewSubmission (docs/203 — plain-text review)
-// ============================================================
-
-describe("validateAiReviewSubmission", () => {
-  it("accepts a well-formed submission and trims the markdown", () => {
-    const r = validateAiReviewSubmission("docs/plan.md", "  No material issues found.  ", "Reviewed by Codex");
-    expect(r).toEqual({
-      filePath: "docs/plan.md",
-      markdown: "No material issues found.",
-      reviewerLabel: "Reviewed by Codex",
-    });
-  });
-
-  it("defaults the reviewer label when absent or blank", () => {
-    expect(validateAiReviewSubmission("a.ts", "x", undefined).reviewerLabel).toBe(DEFAULT_REVIEWER_LABEL);
-    expect(validateAiReviewSubmission("a.ts", "x", "   ").reviewerLabel).toBe(DEFAULT_REVIEWER_LABEL);
-  });
-
-  it("caps the reviewer label length", () => {
-    const r = validateAiReviewSubmission("a.ts", "x", "y".repeat(200));
-    expect(r.reviewerLabel.length).toBe(80);
-  });
-
-  it("rejects a missing file path", () => {
-    expect(() => validateAiReviewSubmission(undefined, "x", "l")).toThrow(ServiceError);
-  });
-
-  it("rejects missing or empty markdown", () => {
-    expect(() => validateAiReviewSubmission("a.ts", "", "l")).toThrow(ServiceError);
-    expect(() => validateAiReviewSubmission("a.ts", "   ", "l")).toThrow(ServiceError);
-    expect(() => validateAiReviewSubmission("a.ts", 123 as unknown, "l")).toThrow(ServiceError);
-  });
-
-  it("rejects markdown over the size cap", () => {
-    expect(() =>
-      validateAiReviewSubmission("a.ts", "x".repeat(MAX_REVIEW_MARKDOWN_CHARS + 1), "l"),
-    ).toThrow(ServiceError);
   });
 });

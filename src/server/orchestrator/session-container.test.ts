@@ -46,6 +46,9 @@ function createMockDocker() {
   // docs/183 — control the worker image inspect for resolveWorkerImageId.
   // `undefined` Id models an inspect that throws (image absent).
   let imageId: string | undefined = "sha256:workerimageabc";
+  // SHI-194 — the BASE_IMAGE_DIGEST baked into the worker image's Config.Env, read
+  // by resolveWorkerBaseDigest. `undefined` models an image without the baked env.
+  let imageBaseDigest: string | undefined = "sha256:baseimagexyz";
   let imageInspectCalls = 0;
 
   // docs/183 Phase 2 — track overlay volume create/remove for the mock.
@@ -63,6 +66,7 @@ function createMockDocker() {
     _setPingResult: (v: boolean) => { pingResult = v; },
     _setNetworkExists: (v: boolean) => { networkExists = v; },
     _setImageId: (v: string | undefined) => { imageId = v; },
+    _setImageBaseDigest: (v: string | undefined) => { imageBaseDigest = v; },
     _imageInspectCalls: () => imageInspectCalls,
     _containers: containers,
     _eventEmitter: eventEmitter,
@@ -172,7 +176,12 @@ function createMockDocker() {
       inspect: vi.fn(async () => {
         imageInspectCalls++;
         if (imageId === undefined) throw new Error("no such image");
-        return { Id: imageId };
+        return {
+          Id: imageId,
+          Config: {
+            Env: imageBaseDigest === undefined ? [] : [`BASE_IMAGE_DIGEST=${imageBaseDigest}`],
+          },
+        };
       }),
     })),
   };
@@ -255,6 +264,36 @@ describe("SessionContainerManager", () => {
       // Re-flip to a real id: the cached miss must NOT trigger a re-inspect.
       mockDocker._setImageId("sha256:later");
       expect(await manager.resolveWorkerImageId()).toBeUndefined();
+      expect(mockDocker._imageInspectCalls()).toBe(1);
+    });
+  });
+
+  // --- resolveWorkerBaseDigest (SHI-194 — pinned-base overlay scope) ---
+
+  describe("resolveWorkerBaseDigest", () => {
+    it("reads BASE_IMAGE_DIGEST out of the worker image's Config.Env", async () => {
+      mockDocker._setImageBaseDigest("sha256:basexyz");
+      expect(await manager.resolveWorkerBaseDigest()).toBe("sha256:basexyz");
+      expect(mockDocker.getImage).toHaveBeenCalledWith("shipit-session-worker:test");
+    });
+
+    it("caches the result — a second call adds no Docker inspect", async () => {
+      await manager.resolveWorkerBaseDigest();
+      await manager.resolveWorkerBaseDigest();
+      expect(mockDocker._imageInspectCalls()).toBe(1);
+    });
+
+    it("returns undefined for a pre-SHI-194 image with no baked digest", async () => {
+      mockDocker._setImageBaseDigest(undefined); // env carries no BASE_IMAGE_DIGEST
+      expect(await manager.resolveWorkerBaseDigest()).toBeUndefined();
+    });
+
+    it("returns undefined and caches the miss when the image can't be inspected", async () => {
+      mockDocker._setImageId(undefined); // inspect throws
+      expect(await manager.resolveWorkerBaseDigest()).toBeUndefined();
+      mockDocker._setImageId("sha256:later");
+      mockDocker._setImageBaseDigest("sha256:basexyz");
+      expect(await manager.resolveWorkerBaseDigest()).toBeUndefined();
       expect(mockDocker._imageInspectCalls()).toBe(1);
     });
   });

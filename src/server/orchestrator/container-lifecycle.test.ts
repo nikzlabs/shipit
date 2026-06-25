@@ -143,6 +143,32 @@ describe("buildMounts", () => {
     expect(result.mounts.filter((m) => m.Target === "/uploads")).toHaveLength(0);
     expect(result.binds.filter((b) => b.includes(":/uploads:"))).toHaveLength(0);
   });
+
+  // docs/217 — /persist is the agent's persistent scratch, mounted READ-WRITE
+  // (the opposite of /uploads): the agent writes throwaway-but-keep files here so
+  // they survive container teardown instead of vanishing from /tmp.
+  it("mounts scratchDir at /persist read-write as a bind mount (dev mode)", () => {
+    const config = baseConfig({ scratchDir: "/workspace/sessions/sess-1/scratch" });
+    const result = buildMounts(config, undefined, undefined);
+    expect(result.binds).toContain("/workspace/sessions/sess-1/scratch:/persist:rw");
+    expect(result.binds).not.toContain("/workspace/sessions/sess-1/scratch:/persist:ro");
+  });
+
+  it("mounts scratchDir at /persist read-write as a volume subpath (prod mode)", () => {
+    const config = baseConfig({ scratchDir: "/workspace/sessions/sess-1/scratch" });
+    const result = buildMounts(config, "my-workspace-vol", undefined);
+    const scratchMount = result.mounts.find((m) => m.Target === "/persist");
+    expect(scratchMount).toBeDefined();
+    expect(scratchMount!.ReadOnly).toBe(false);
+    expect(scratchMount!.Source).toBe("my-workspace-vol");
+    expect(scratchMount!.VolumeOptions?.Subpath).toBe("sessions/sess-1/scratch");
+  });
+
+  it("adds no persist mount when scratchDir is undefined", () => {
+    const result = buildMounts(baseConfig(), "my-workspace-vol", undefined);
+    expect(result.mounts.filter((m) => m.Target === "/persist")).toHaveLength(0);
+    expect(result.binds.filter((b) => b.includes(":/persist:"))).toHaveLength(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -408,6 +434,22 @@ describe("buildEnv", () => {
     expect(env.some((e) => e.startsWith("SESSION_WORKER_IMAGE_ID="))).toBe(false);
   });
 
+  // SHI-194 — the orchestrator resolves the worker's pinned base-image digest at
+  // startup into BASE_IMAGE_DIGEST; buildEnv forwards it so the worker's
+  // install-runtime runtimeKey() (the install-marker ABI gate) keys on the same
+  // base digest the orchestrator's overlayRuntimeKey() scope uses.
+  it("SHI-194: forwards BASE_IMAGE_DIGEST into the container env", () => {
+    const env = buildEnv(baseConfig(), "/workspace", 9100, undefined, undefined, {
+      BASE_IMAGE_DIGEST: "sha256:base",
+    } as NodeJS.ProcessEnv);
+    expect(env).toContain("BASE_IMAGE_DIGEST=sha256:base");
+  });
+
+  it("SHI-194: forwards no BASE_IMAGE_DIGEST when it is unset (dev/local, flag off)", () => {
+    const env = buildEnv(baseConfig(), "/workspace", 9100, undefined, undefined, {} as NodeJS.ProcessEnv);
+    expect(env.some((e) => e.startsWith("BASE_IMAGE_DIGEST="))).toBe(false);
+  });
+
   it("docs/128: points an ops session at the read-only docker-socket-proxy", () => {
     const config = baseConfig({ opsSession: true });
     const env = buildEnv(config, "/workspace", 9100, undefined, undefined);
@@ -505,6 +547,30 @@ describe("buildContainerConfig", () => {
       credentialsDir: "/credentials",
     });
     expect(config.depCacheDir).toBeUndefined();
+  });
+
+  // docs/217 — scratchDir defaults to a `scratch/` sibling of the session dir
+  // (mirroring uploadsDir), so it's a sibling of `workspace/` and the disk-reclaim
+  // paths (which rm workspace/ only) leave it intact.
+  it("derives scratchDir as a sessionDir sibling by default", () => {
+    const config = buildContainerConfig(deps, {
+      sessionId: "s1",
+      sessionDir: "/workspace/sessions/s1",
+      credentialsDir: "/credentials",
+    });
+    expect(config.scratchDir).toBe("/workspace/sessions/s1/scratch");
+    // Sibling of workspace/, never nested inside it.
+    expect(config.scratchDir).not.toContain("/workspace/sessions/s1/workspace/");
+  });
+
+  it("passes through an explicit scratchDir", () => {
+    const config = buildContainerConfig(deps, {
+      sessionId: "s1",
+      sessionDir: "/workspace/sessions/s1",
+      credentialsDir: "/credentials",
+      scratchDir: "/custom/scratch",
+    });
+    expect(config.scratchDir).toBe("/custom/scratch");
   });
 
   // docs/128 regression (live audit FAIL #1/#11) — the ops template's

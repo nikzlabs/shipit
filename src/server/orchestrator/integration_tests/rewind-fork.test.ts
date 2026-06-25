@@ -357,6 +357,66 @@ describe("Integration: rewind and fork", () => {
     client.close();
   });
 
+  it("forks a session with no code commits from a past gap, basing the clone on HEAD", async () => {
+    // SHI-184: no autoCommit calls, so no message carries a commitHash and
+    // findCommitBeforeGap returns null. This used to fail with "No code state
+    // available to fork."; now it forks at HEAD (the repo's base).
+    const { sessionId, workspaceDir } = await createSession();
+    const git = new GitManager(workspaceDir);
+    const head = await git.getHeadHash();
+    expect(head).toBeTruthy();
+
+    chatHistoryManager.append(sessionId, { role: "user", text: "first" });
+    chatHistoryManager.append(sessionId, { role: "assistant", text: "reply" });
+    chatHistoryManager.append(sessionId, { role: "user", text: "discard" });
+
+    const client = await TestClient.connect(port, sessionId);
+    await client.receiveType("preview_status");
+
+    client.send({ type: "rewind_at_gap", gapPosition: 2, action: "fork", sessionName: "No-code fork" });
+    const forked = await client.receiveType("session_forked");
+    expect(forked).toMatchObject({ type: "session_forked", parentSessionId: sessionId, title: "No-code fork" });
+    if (forked.type !== "session_forked") throw new Error("Expected session_forked");
+
+    const child = sessionManager.get(forked.childSessionId);
+    expect(child?.workspaceDir).toBeTruthy();
+    const childGit = new GitManager(child!.workspaceDir!);
+    expect(await childGit.getHeadHash()).toBe(head);
+
+    client.close();
+  });
+
+  it("allows fork while a turn is running but still blocks in-place rewind", async () => {
+    // SHI-182: fork is independent of the running turn (new session off a
+    // committed SHA), so it must succeed; chat/code/both still conflict with
+    // the agent mutating the workspace and stay gated.
+    const { sessionId } = await createSession();
+    chatHistoryManager.append(sessionId, { role: "user", text: "keep" });
+    chatHistoryManager.append(sessionId, { role: "assistant", text: "kept response" });
+
+    const client = await TestClient.connect(port, sessionId);
+    await client.receiveType("preview_status");
+
+    const runningRes = await app.inject({
+      method: "POST",
+      url: `/api/_test/runner/${sessionId}/running`,
+      payload: { running: true },
+    });
+    expect(runningRes.statusCode).toBe(200);
+
+    client.send({ type: "rewind_at_gap", gapPosition: 1, action: "chat" });
+    await expect(client.receiveType("error")).resolves.toMatchObject({
+      type: "error",
+      message: "Cannot rewind while a turn is running.",
+    });
+
+    client.send({ type: "rewind_at_gap", gapPosition: 1, action: "fork", sessionName: "Mid-turn fork" });
+    const forked = await client.receiveType("session_forked");
+    expect(forked).toMatchObject({ type: "session_forked", parentSessionId: sessionId, title: "Mid-turn fork" });
+
+    client.close();
+  });
+
   it("restores fork snapshots by archiving the child and removing the parent breadcrumb", async () => {
     const { sessionId } = await createSession();
     chatHistoryManager.append(sessionId, { role: "user", text: "keep" });

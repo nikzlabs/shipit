@@ -187,7 +187,11 @@ describe("Integration: Usage & cost tracking", () => {
     expect(update2).toBeDefined();
     expect(update2.type).toBe("usage_update");
     expect(update2.turnCount).toBe(2);
-    expect(update2.totalCostUsd).toBeCloseTo(0.30);
+    // total_cost_usd is the CLI's CUMULATIVE running total for the resumed
+    // conversation (same session_id "accum-session"): 0.10 then 0.20. The
+    // second turn's own cost is the 0.10 delta, so the session bill is 0.20 —
+    // NOT 0.30 (summing the cumulative snapshots double-counted turn 1).
+    expect(update2.totalCostUsd).toBeCloseTo(0.20);
     expect(update2.totalDurationMs).toBe(3000);
 
     lastClaude.emit("done", 0);
