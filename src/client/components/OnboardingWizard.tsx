@@ -79,11 +79,7 @@ function WizardHero({
 }) {
   return (
     <div className="hidden md:flex flex-col gap-6 p-8 border-r border-(--color-border-secondary) bg-(--color-bg-secondary)">
-      <Logo
-        className="gap-2.5"
-        iconClassName="w-8 h-8 rounded-lg"
-        textClassName="text-base font-bold tracking-tight text-(--color-text-primary)"
-      />
+      <Logo size="lg" textClassName="text-(--color-text-primary)" />
 
       <div>
         <h1 className="text-xl font-semibold leading-snug text-(--color-text-primary)">
