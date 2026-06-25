@@ -33,6 +33,7 @@ import type { GitHubAuthManager } from "../github-auth.js";
 import type { ChatHistoryManager } from "../chat-history.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { ReleaseBumpType } from "../../shared/types/release-types.js";
+import type { ReleaseProposeInput } from "../release-status-poller.js";
 import { ServiceError } from "./types.js";
 import { agentCreatePr } from "./github.js";
 import {
@@ -234,6 +235,29 @@ export async function planRelease(git: GitManager, args: PlanReleaseArgs): Promi
     versionSource: detected.source,
     versionSourcePath: detected.path!,
     prerelease: args.prerelease ?? false,
+  };
+}
+
+/**
+ * Build the `proposed`-card input from a computed plan + the repo's mechanism.
+ * Pulled out of the `POST /release/plan` route so the conditional fields — most
+ * importantly `mechanism`, which drives the card's "Confirm & publish" wording
+ * (release-branch opens/merges a bump PR; tag-triggered pushes the tag) — are
+ * unit-testable without spinning a git remote. Mirrors the marker path in
+ * `release-flow.ts`: omit `mechanism` when absent (card defaults to
+ * tag-triggered), and omit `bumpType` for an explicit version. (docs/214)
+ */
+export function buildPlanProposeInput(
+  plan: ReleasePlan,
+  mechanism: string | undefined,
+): ReleaseProposeInput {
+  return {
+    version: plan.version,
+    tag: plan.tag,
+    prerelease: plan.prerelease,
+    ...(plan.bumpType !== "explicit" ? { bumpType: plan.bumpType } : {}),
+    versionSource: plan.versionSource,
+    ...(mechanism ? { mechanism: mechanism as ReleaseProposeInput["mechanism"] } : {}),
   };
 }
 

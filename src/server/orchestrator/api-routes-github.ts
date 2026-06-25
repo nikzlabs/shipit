@@ -17,6 +17,7 @@ import {
   quickCreatePr,
   agentCreatePr,
   planRelease,
+  buildPlanProposeInput,
   prepareRelease,
   adoptReleaseBranch,
   editPullRequest,
@@ -321,13 +322,15 @@ export async function registerGitHubRoutes(
         // Reflect a `proposed` card (informational for final releases; the rc
         // path's confirm gate also reads it). Requires a GitHub remote to poll.
         if (deps.releaseStatusPoller && remoteUrl) {
-          deps.releaseStatusPoller.propose(request.params.id, remoteUrl, {
-            version: plan.version,
-            tag: plan.tag,
-            prerelease: plan.prerelease,
-            ...(plan.bumpType !== "explicit" ? { bumpType: plan.bumpType } : {}),
-            versionSource: plan.versionSource,
-          });
+          // Carry the mechanism so the proposed card's "Confirm & publish"
+          // wording matches the repo (release-branch vs tag-triggered). Mirrors
+          // the marker path in release-flow.ts; absent → card defaults to
+          // tag-triggered. (docs/214)
+          deps.releaseStatusPoller.propose(
+            request.params.id,
+            remoteUrl,
+            buildPlanProposeInput(plan, rel.mechanism),
+          );
         }
         return plan;
       } catch (err) {

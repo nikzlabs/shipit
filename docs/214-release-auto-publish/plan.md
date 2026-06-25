@@ -366,7 +366,16 @@ flow — **not** the project-template grid (docs/171 Phase 3).
   every release). It resolves the default branch at runtime (`gh repo view`, so no
   extra config; works for `main`/`master`), skips when that equals the maintenance
   branch, and opens a chore PR (`release-sync/vX.Y.Z`) best-effort labeled
-  `ignore-for-release`. Because the bump must be ecosystem-generic (not `npm version`),
+  `ignore-for-release`. **Idempotency keys on an OPEN PR, not branch existence**
+  (mirroring ShipIt's own `sync-main` fix): a prior run can push the branch and
+  then fail to open the PR (e.g. GitHub blocks Actions from creating PRs), so
+  "branch exists" doesn't imply "PR exists" — a re-run reuses the already-pushed
+  branch (`fetch` + `checkout -B`) and (re)opens the PR instead of skipping. And
+  `gh pr create` is wrapped: on failure it prints an actionable `::error::`
+  naming the remedy (enable Settings → Actions → Workflow permissions → "Allow
+  GitHub Actions to create and approve pull requests") plus a one-click compare
+  URL, and exits non-zero so version drift is never silent. Because the bump must
+  be ecosystem-generic (not `npm version`),
   the scaffold ships a **write helper** `shipit-write-version.mjs` mirroring
   `writeVersionToSource` — the write-side twin of the read helper, keeping the synced
   version byte-identical to what the release command writes. The scaffold is now
