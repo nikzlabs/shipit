@@ -1,6 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: reset view mode on file change
 import { useEffect, useCallback, useState } from "react";
-import { XIcon, RobotIcon } from "@phosphor-icons/react";
+import { RobotIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
 import { Button } from "./ui/button.js";
@@ -133,7 +133,8 @@ export function FilePreviewModal({
       <DialogContent className="w-[90vw] max-w-4xl h-[85vh] flex flex-col">
         {/* Header */}
         <div className="border-b border-(--color-border-secondary) shrink-0">
-          <div className="flex items-center justify-between px-6 py-4">
+          {/* pr-14 clears the dialog's corner close button so the controls don't sit under it */}
+          <div className="flex items-center justify-between px-6 py-4 pr-14">
             <div className="min-w-0">
               <DialogTitle className="text-sm font-medium text-(--color-text-primary) truncate" title={filePath}>
                 {filePath}
@@ -159,13 +160,6 @@ export function FilePreviewModal({
                   {action.label}
                 </Button>
               ))}
-              <button
-                onClick={handleClose}
-                className="p-1 rounded hover:bg-(--color-bg-hover) text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors"
-                aria-label="Close"
-              >
-                <XIcon size={ICON_SIZE.MD} />
-              </button>
             </div>
           </div>
           {showSiblingTabs && siblings && (

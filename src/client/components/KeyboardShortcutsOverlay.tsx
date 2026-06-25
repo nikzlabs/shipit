@@ -1,8 +1,9 @@
-// eslint-disable-next-line no-restricted-imports -- useEffect: window keydown listener for Escape/? with cleanup (browser API subscription)
-import { useEffect, useRef } from "react";
+// eslint-disable-next-line no-restricted-imports -- useEffect: window keydown listener for ?/toggle with cleanup (browser API subscription)
+import { useEffect } from "react";
 import { PencilSimpleIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
+import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import {
   KEYBINDINGS,
@@ -30,7 +31,6 @@ function KeyCombo({ keys }: { keys: string[] }) {
 }
 
 export function KeyboardShortcutsOverlay({ onClose, onEdit }: { onClose: () => void; onEdit?: () => void }) {
-  const overlayRef = useRef<HTMLDivElement>(null);
   // Read overrides so the displayed chords reflect any customizations live.
   const keybindings = useSettingsStore((s) => s.keybindings);
 
@@ -39,11 +39,14 @@ export function KeyboardShortcutsOverlay({ onClose, onEdit }: { onClose: () => v
     return chordToKeys(keybindings[def.id] ?? def.defaultBinding);
   };
 
+  // The shared Dialog handles Escape, the backdrop, the close button, and the
+  // Back button. This listener only adds the two app-specific toggles: "?" and
+  // the (rebindable) toggle-shortcuts chord both close the open overlay.
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const toggle = keybindings["toggle-shortcuts"] ?? "mod+/";
-      if (e.key === "Escape" || e.key === "?" || eventMatchesChord(e, toggle)) {
+      if (e.key === "?" || eventMatchesChord(e, toggle)) {
         e.preventDefault();
         onClose();
       }
@@ -52,41 +55,25 @@ export function KeyboardShortcutsOverlay({ onClose, onEdit }: { onClose: () => v
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [onClose, keybindings]);
 
-  const handleBackdropClick = (e: React.MouseEvent) => {
-    if (e.target === overlayRef.current) {
-      onClose();
-    }
-  };
-
   const groups = GROUP_ORDER.map((group) => ({
     group,
     defs: KEYBINDINGS.filter((d) => d.group === group),
   })).filter((g) => g.defs.length > 0);
 
   return (
-    <div
-      ref={overlayRef}
-      role="dialog"
-      aria-label="Keyboard shortcuts"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-(--color-bg-overlay) backdrop-blur-sm"
-      onClick={handleBackdropClick}
-    >
-      <div className="max-w-lg w-full mx-4 max-h-[85vh] overflow-y-auto rounded-xl bg-(--color-bg-elevated) border border-(--color-border-secondary) p-6 space-y-5">
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-(--color-text-primary)">
+    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent className="max-w-lg w-full md:mx-4 md:max-h-[85vh] overflow-y-auto p-6 space-y-5">
+        {/* pr leaves room for the dialog's corner close button */}
+        <div className="flex items-center justify-between pr-10">
+          <DialogTitle className="text-lg font-semibold text-(--color-text-primary)">
             Keyboard Shortcuts
-          </h2>
-          <div className="flex items-center gap-2">
-            {onEdit && (
-              <Button variant="secondary" size="md" onClick={onEdit} className="gap-1.5">
-                <PencilSimpleIcon size={ICON_SIZE.SM} />
-                Edit
-              </Button>
-            )}
-            <Button variant="ghost" size="md" onClick={onClose} aria-label="Close">
-              Esc
+          </DialogTitle>
+          {onEdit && (
+            <Button variant="secondary" size="md" onClick={onEdit} className="gap-1.5">
+              <PencilSimpleIcon size={ICON_SIZE.SM} />
+              Edit
             </Button>
-          </div>
+          )}
         </div>
 
         {groups.map(({ group, defs }) => (
@@ -111,7 +98,7 @@ export function KeyboardShortcutsOverlay({ onClose, onEdit }: { onClose: () => v
         <p className="text-xs text-(--color-text-tertiary) text-center pt-2 border-t border-(--color-border-primary)">
           Customize these in <span className="text-(--color-text-secondary)">Settings → Keyboard</span>
         </p>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

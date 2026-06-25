@@ -1,6 +1,4 @@
 import { useState, useRef, useMemo } from "react";
-import { XIcon } from "@phosphor-icons/react";
-import { ICON_SIZE } from "../design-tokens.js";
 import { parseRepoLabel } from "../utils/repo-label.js";
 import type { SessionInfo, RepoInfo } from "../../server/shared/types.js";
 import { Button } from "./ui/button.js";
@@ -115,19 +113,10 @@ export function AllSessionsDialog({
     <Dialog open={open} onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
       <DialogContent className="w-full max-md:flex max-md:flex-col md:max-w-lg rounded-lg border-(--color-border-secondary)">
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-(--color-border-secondary) px-4 py-3">
+        <div className="flex items-center border-b border-(--color-border-secondary) px-4 py-3">
           <DialogTitle className="text-sm font-medium text-(--color-text-primary)">
             All Sessions
           </DialogTitle>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onClose}
-            className="h-9 w-9 max-md:h-10 max-md:w-10"
-            aria-label="Close"
-          >
-            <XIcon size={ICON_SIZE.MD} weight="bold" />
-          </Button>
         </div>
 
         {/* Filter bar */}

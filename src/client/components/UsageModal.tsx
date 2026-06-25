@@ -1,8 +1,5 @@
 import { useState } from "react";
-import { XIcon } from "@phosphor-icons/react";
-import { Button } from "./ui/button.js";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
-import { ICON_SIZE } from "../design-tokens.js";
 import type { SessionInfo, TurnUsage } from "../../server/shared/types.js";
 import { formatTokenCount, getContextLevel, type ModelInfo } from "../utils/model-info.js";
 
@@ -211,17 +208,8 @@ export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, m
         data-testid="usage-modal-backdrop"
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-(--color-border-secondary)">
+        <div className="flex items-center px-5 py-4 border-b border-(--color-border-secondary)">
           <DialogTitle className="text-lg font-semibold">Usage Summary</DialogTitle>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onClose}
-            className="h-9 w-9 max-md:h-10 max-md:w-10"
-            aria-label="Close"
-          >
-            <XIcon size={ICON_SIZE.MD} weight="bold" />
-          </Button>
         </div>
 
         {/* Body */}

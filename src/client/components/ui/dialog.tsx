@@ -1,8 +1,118 @@
-import { forwardRef, type ComponentPropsWithoutRef, type ComponentRef, type HTMLAttributes } from "react";
+import {
+  forwardRef,
+  // eslint-disable-next-line no-restricted-imports -- useEffect powers the Back-button history subscription (pushState + popstate, with cleanup) in useBackDismiss below
+  useEffect,
+  useRef,
+  type ComponentPropsWithoutRef,
+  type ComponentRef,
+  type HTMLAttributes,
+} from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
+import { XIcon } from "@phosphor-icons/react";
 import { cn } from "../../utils/cn.js";
+import { ICON_SIZE } from "../../design-tokens.js";
 
-const Dialog = DialogPrimitive.Root;
+// ── Back-button dismissal ───────────────────────────────────────────────────
+//
+// ShipIt runs on react-router (`/session/:id`). Without this, pressing the
+// browser / PWA / Android hardware **Back** button while a dialog is open pops a
+// ROUTE — so on a phone "back" navigates to *another session* instead of closing
+// the dialog the user is actually looking at (and on a fullscreen mobile dialog,
+// with no tappable backdrop and no Esc key, the in-dialog close button may be the
+// only other way out).
+//
+// So every dialog becomes a history "trap": opening pushes a dummy **same-URL**
+// history entry (react-router sees no location change, so it never navigates);
+// Back pops that entry and we translate it into a *close* instead; closing by any
+// OTHER means (the X, Esc, the backdrop, an action button) consumes the dummy
+// entry so the history stack stays balanced.
+//
+// This lives INSIDE the shared `Dialog` wrapper on purpose. Every dialog already
+// routes through it, so the behavior is automatic and impossible to forget —
+// there is no per-dialog hook to wire up (that "someone forgot to wire it"
+// failure mode is exactly what we're avoiding). A module-level LIFO stack makes a
+// single Back close only the *topmost* dialog when several are open at once.
+//
+// The matching half — the always-present close button — lives in `DialogContent`
+// below, so a dialog cannot ship without a way out (X, Esc, backdrop, or Back).
+
+interface DismissEntry {
+  close: () => void;
+}
+const dismissStack: DismissEntry[] = [];
+let popListenerInstalled = false;
+// Number of pending programmatic `history.back()` calls whose resulting popstate
+// must NOT be treated as a user pressing Back (they're our own cleanup).
+let suppressPops = 0;
+
+function handleGlobalPop() {
+  if (suppressPops > 0) {
+    suppressPops--;
+    return;
+  }
+  // Back was pressed: close the topmost open dialog. The browser has already
+  // popped our dummy entry, so the stack and history stay in sync.
+  const top = dismissStack.pop();
+  if (top) top.close();
+  // Empty stack → a real navigation; let react-router handle it untouched.
+}
+
+function ensurePopListener() {
+  if (popListenerInstalled || typeof window === "undefined") return;
+  window.addEventListener("popstate", handleGlobalPop);
+  popListenerInstalled = true;
+}
+
+function useBackDismiss(
+  open: boolean | undefined,
+  onOpenChange?: (open: boolean) => void,
+) {
+  // Keep the latest onOpenChange without re-running the effect every render.
+  const onOpenChangeRef = useRef(onOpenChange);
+  onOpenChangeRef.current = onOpenChange;
+
+  // eslint-disable-next-line no-restricted-syntax -- browser API subscription: pushes a history entry and listens for popstate (Back) to dismiss, with cleanup
+  useEffect(() => {
+    // Only controlled dialogs (the norm here) can be closed via onOpenChange.
+    if (!open || !onOpenChangeRef.current || typeof window === "undefined") return;
+
+    ensurePopListener();
+    const entry: DismissEntry = { close: () => onOpenChangeRef.current?.(false) };
+    dismissStack.push(entry);
+    window.history.pushState({ ...window.history.state, __shipitDialog: true }, "");
+
+    return () => {
+      const idx = dismissStack.indexOf(entry);
+      if (idx === -1) {
+        // Already removed by handleGlobalPop → Back closed us and the browser
+        // already popped our dummy entry. Nothing to balance.
+        return;
+      }
+      // Closed by some other means (X / Esc / backdrop / action button): our
+      // dummy entry is still on the history stack. Pop it to stay balanced, and
+      // suppress the resulting popstate so it doesn't also close the dialog
+      // beneath us.
+      dismissStack.splice(idx, 1);
+      suppressPops++;
+      window.history.back();
+    };
+  }, [open]);
+}
+
+// ── Components ──────────────────────────────────────────────────────────────
+
+function Dialog({
+  open,
+  onOpenChange,
+  ...props
+}: Omit<ComponentPropsWithoutRef<typeof DialogPrimitive.Root>, "onOpenChange"> & {
+  // Re-typed as a property (arrow) rather than Radix's method signature so the
+  // destructured handler doesn't trip @typescript-eslint/unbound-method.
+  onOpenChange?: (open: boolean) => void;
+}) {
+  useBackDismiss(open, onOpenChange);
+  return <DialogPrimitive.Root open={open} onOpenChange={onOpenChange} {...props} />;
+}
 
 const DialogTrigger = DialogPrimitive.Trigger;
 
@@ -53,6 +163,24 @@ const DialogContent = forwardRef<
       {...props}
     >
       {children}
+      {/* The single, canonical close button for every dialog. Defined here so no
+          dialog can ship without a way out — critical on mobile, where the dialog
+          is fullscreen with no tappable backdrop and no Esc key. Closing routes
+          through onOpenChange, the same path Esc / backdrop / Back already use. */}
+      <DialogPrimitive.Close
+        className={cn(
+          "absolute right-3 top-3 z-10 rounded-md p-1 transition-colors",
+          "text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)",
+          "focus:outline-none focus-visible:ring-2 focus-visible:ring-(--color-border-focus)",
+          // Keep it clear of the status bar / notch when the dialog is fullscreen
+          // on mobile. env() is 0 off-mobile, so this is the plain top-3 there.
+          "max-md:top-[max(0.75rem,env(safe-area-inset-top))]",
+        )}
+        aria-label="Close"
+        data-testid="dialog-close"
+      >
+        <XIcon size={ICON_SIZE.MD} />
+      </DialogPrimitive.Close>
     </DialogPrimitive.Content>
   </DialogPortal>
 ));

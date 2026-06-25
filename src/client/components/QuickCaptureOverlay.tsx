@@ -12,6 +12,7 @@ import { agentIdForModel } from "../utils/agent-for-model.js";
 import { parseRepoLabel } from "../utils/repo-label.js";
 import { MessageInput, type SendPayload } from "./MessageInput.js";
 import { Button } from "./ui/button.js";
+import { Dialog } from "./ui/dialog.js";
 import type { FileContextRef, SessionInfo } from "../../server/shared/types.js";
 
 export function QuickCaptureOverlay({
@@ -146,6 +147,11 @@ export function QuickCaptureOverlay({
   };
 
   return (
+    // Wrapped in the shared Dialog purely to inherit Back-button dismissal (the
+    // wrapper pushes a history entry and maps Back → onOpenChange(false)). The
+    // bespoke top-anchored, command-palette layout is kept as-is rather than
+    // forced into DialogContent's centered / fullscreen-on-mobile mold.
+    <Dialog open={open} onOpenChange={(o) => { if (!o) close(); }}>
     <div
       role="dialog"
       aria-label="Quick capture"
@@ -262,5 +268,6 @@ export function QuickCaptureOverlay({
         </div>
       </div>
     </div>
+    </Dialog>
   );
 }

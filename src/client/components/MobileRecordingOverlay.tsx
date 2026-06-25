@@ -29,6 +29,13 @@
  * context (App.tsx), and the main MessageInput composer — a later sibling of
  * that isolated container — paints on top of the overlay's bottom edge, so the
  * chat input bleeds through during recording (docs/144).
+ *
+ * It is wrapped in the shared `Dialog` purely to inherit Back-button dismissal:
+ * the wrapper pushes a history entry on open and maps Back → onOpenChange(false),
+ * which we route to this surface's *state-specific* exit (cancel while
+ * recording, dismiss on error; transcribing is intentionally non-dismissable).
+ * It deliberately does NOT use DialogContent — a generic corner close button
+ * would be wrong here, where dismissal depends on the recording state.
  */
 
 // eslint-disable-next-line no-restricted-imports -- Escape listener while the overlay is open
@@ -42,6 +49,7 @@ import {
   ArrowClockwiseIcon,
 } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
+import { Dialog } from "./ui/dialog.js";
 import type { VoiceInputApi } from "../voice/use-voice-input.js";
 
 function formatElapsed(ms: number): string {
@@ -79,104 +87,115 @@ export function MobileRecordingOverlay({ voice }: { voice: VoiceInputApi }) {
 
   if (!active) return null;
 
+  // The Back button routes through here via the shared Dialog wrapper. Map it to
+  // the same state-specific exit as Escape; transcribing has no dismiss.
+  const handleDismissRequest = () => {
+    if (recording) voice.cancelRecording();
+    else if (error) voice.dismissError();
+  };
+
   // Deliberately theme-independent: a recording surface is dark-with-light-text
   // in every app (Voice Memos, WhatsApp), and the themeable text tokens flip to
   // dark in light themes, blending into the scrim. A fixed dark scrim + explicit
   // light text keeps contrast high in every theme.
-  return createPortal(
-    <div
-      role="dialog"
-      aria-label="Voice recording"
-      data-testid="mobile-recording-overlay"
-      data-state={state}
-      className="fixed inset-0 z-[60] flex flex-col items-center justify-center gap-8 bg-black/75 px-6 pb-[env(safe-area-inset-bottom)] backdrop-blur-md"
-    >
-      <div className="flex flex-col items-center gap-2">
-        {recording && (
-          <>
-            <span className="text-6xl font-light tabular-nums text-white">
-              {formatElapsed(elapsedMs)}
-            </span>
-            <span className="text-sm text-white/60">Listening…</span>
-          </>
-        )}
-        {transcribing && <span className="text-xl text-white/80">Transcribing…</span>}
-        {error && (
+  return (
+    <Dialog open onOpenChange={(o) => { if (!o) handleDismissRequest(); }}>
+      {createPortal(
+        <div
+          role="dialog"
+          aria-label="Voice recording"
+          data-testid="mobile-recording-overlay"
+          data-state={state}
+          className="fixed inset-0 z-[60] flex flex-col items-center justify-center gap-8 bg-black/75 px-6 pb-[env(safe-area-inset-bottom)] backdrop-blur-md"
+        >
           <div className="flex flex-col items-center gap-2">
-            <WarningCircleIcon size={ICON_SIZE.LG} weight="fill" className="text-red-400" />
-            <p className="max-w-xs text-center text-base text-red-400">
-              {errorMessage ?? "Something went wrong"}
-            </p>
+            {recording && (
+              <>
+                <span className="text-6xl font-light tabular-nums text-white">
+                  {formatElapsed(elapsedMs)}
+                </span>
+                <span className="text-sm text-white/60">Listening…</span>
+              </>
+            )}
+            {transcribing && <span className="text-xl text-white/80">Transcribing…</span>}
+            {error && (
+              <div className="flex flex-col items-center gap-2">
+                <WarningCircleIcon size={ICON_SIZE.LG} weight="fill" className="text-red-400" />
+                <p className="max-w-xs text-center text-base text-red-400">
+                  {errorMessage ?? "Something went wrong"}
+                </p>
+              </div>
+            )}
           </div>
-        )}
-      </div>
 
-      {recording && (
-        <button
-          onClick={() => voice.stopRecording()}
-          aria-label="Stop recording"
-          data-testid="mobile-recording-stop"
-          className="relative flex h-32 w-32 items-center justify-center rounded-full bg-(--color-error) text-white shadow-2xl transition-transform active:scale-95"
-        >
-          <span className="absolute inset-0 rounded-full bg-(--color-error)/40 motion-safe:animate-ping" />
-          <StopIcon size={ICON_SIZE.XL} weight="fill" className="relative" />
-        </button>
-      )}
-      {transcribing && (
-        <div className="flex h-32 w-32 items-center justify-center rounded-full bg-white/10">
-          <SpinnerGapIcon size={ICON_SIZE.XL} className="animate-spin text-white/80" />
-        </div>
-      )}
-      {error && (
-        <button
-          onClick={() => (canResend ? voice.retryTranscription() : voice.startRecording())}
-          aria-label={canResend ? "Resend" : "Try again"}
-          data-testid="mobile-recording-retry"
-          className="relative flex h-32 w-32 flex-col items-center justify-center gap-1 rounded-full bg-red-500/20 text-red-300 transition-transform active:scale-95"
-        >
-          <ArrowClockwiseIcon size={ICON_SIZE.LG} weight="bold" />
-          <span className="text-xs font-medium">{canResend ? "Resend" : "Try again"}</span>
-        </button>
-      )}
-
-      {recording && (
-        <>
-          <span className="text-sm text-white/60">Tap to stop</span>
-          <button
-            onClick={() => voice.cancelRecording()}
-            aria-label="Cancel recording"
-            data-testid="mobile-recording-cancel"
-            className="mt-2 inline-flex items-center gap-2 rounded-full px-5 py-2.5 text-white/70 transition-colors hover:bg-white/10 hover:text-white"
-          >
-            <XIcon size={ICON_SIZE.SM} />
-            Cancel
-          </button>
-        </>
-      )}
-      {error && (
-        <div className="mt-2 flex items-center gap-3">
-          {canResend && (
+          {recording && (
             <button
-              onClick={() => voice.startRecording()}
-              aria-label="Re-record"
-              data-testid="mobile-recording-rerecord"
-              className="inline-flex items-center gap-2 rounded-full px-5 py-2.5 text-white/70 transition-colors hover:bg-white/10 hover:text-white"
+              onClick={() => voice.stopRecording()}
+              aria-label="Stop recording"
+              data-testid="mobile-recording-stop"
+              className="relative flex h-32 w-32 items-center justify-center rounded-full bg-(--color-error) text-white shadow-2xl transition-transform active:scale-95"
             >
-              Re-record
+              <span className="absolute inset-0 rounded-full bg-(--color-error)/40 motion-safe:animate-ping" />
+              <StopIcon size={ICON_SIZE.XL} weight="fill" className="relative" />
             </button>
           )}
-          <button
-            onClick={() => voice.dismissError()}
-            aria-label="Dismiss"
-            data-testid="mobile-recording-dismiss"
-            className="inline-flex items-center gap-2 rounded-full px-5 py-2.5 text-white/70 transition-colors hover:bg-white/10 hover:text-white"
-          >
-            <XIcon size={ICON_SIZE.SM} />
-            Dismiss
-          </button>
-        </div>
+          {transcribing && (
+            <div className="flex h-32 w-32 items-center justify-center rounded-full bg-white/10">
+              <SpinnerGapIcon size={ICON_SIZE.XL} className="animate-spin text-white/80" />
+            </div>
+          )}
+          {error && (
+            <button
+              onClick={() => (canResend ? voice.retryTranscription() : voice.startRecording())}
+              aria-label={canResend ? "Resend" : "Try again"}
+              data-testid="mobile-recording-retry"
+              className="relative flex h-32 w-32 flex-col items-center justify-center gap-1 rounded-full bg-red-500/20 text-red-300 transition-transform active:scale-95"
+            >
+              <ArrowClockwiseIcon size={ICON_SIZE.LG} weight="bold" />
+              <span className="text-xs font-medium">{canResend ? "Resend" : "Try again"}</span>
+            </button>
+          )}
+
+          {recording && (
+            <>
+              <span className="text-sm text-white/60">Tap to stop</span>
+              <button
+                onClick={() => voice.cancelRecording()}
+                aria-label="Cancel recording"
+                data-testid="mobile-recording-cancel"
+                className="mt-2 inline-flex items-center gap-2 rounded-full px-5 py-2.5 text-white/70 transition-colors hover:bg-white/10 hover:text-white"
+              >
+                <XIcon size={ICON_SIZE.SM} />
+                Cancel
+              </button>
+            </>
+          )}
+          {error && (
+            <div className="mt-2 flex items-center gap-3">
+              {canResend && (
+                <button
+                  onClick={() => voice.startRecording()}
+                  aria-label="Re-record"
+                  data-testid="mobile-recording-rerecord"
+                  className="inline-flex items-center gap-2 rounded-full px-5 py-2.5 text-white/70 transition-colors hover:bg-white/10 hover:text-white"
+                >
+                  Re-record
+                </button>
+              )}
+              <button
+                onClick={() => voice.dismissError()}
+                aria-label="Dismiss"
+                data-testid="mobile-recording-dismiss"
+                className="inline-flex items-center gap-2 rounded-full px-5 py-2.5 text-white/70 transition-colors hover:bg-white/10 hover:text-white"
+              >
+                <XIcon size={ICON_SIZE.SM} />
+                Dismiss
+              </button>
+            </div>
+          )}
+        </div>,
+        document.body,
       )}
-    </div>,
-    document.body,
+    </Dialog>
   );
 }
