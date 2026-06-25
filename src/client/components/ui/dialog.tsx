@@ -1,5 +1,6 @@
 import {
   forwardRef,
+  // eslint-disable-next-line no-restricted-imports -- useEffect powers the Back-button history subscription (pushState + popstate, with cleanup) in useBackDismiss below
   useEffect,
   useRef,
   type ComponentPropsWithoutRef,
@@ -32,7 +33,9 @@ import { ICON_SIZE } from "../../design-tokens.js";
 // failure mode is exactly what we're avoiding). A module-level LIFO stack makes a
 // single Back close only the *topmost* dialog when several are open at once.
 
-type DismissEntry = { close: () => void };
+interface DismissEntry {
+  close: () => void;
+}
 const dismissStack: DismissEntry[] = [];
 let popListenerInstalled = false;
 // Number of pending programmatic `history.back()` calls whose resulting popstate
@@ -65,6 +68,7 @@ function useBackDismiss(
   const onOpenChangeRef = useRef(onOpenChange);
   onOpenChangeRef.current = onOpenChange;
 
+  // eslint-disable-next-line no-restricted-syntax -- browser API subscription: pushes a history entry and listens for popstate (Back) to dismiss, with cleanup
   useEffect(() => {
     // Only controlled dialogs (the norm here) can be closed via onOpenChange.
     if (!open || !onOpenChangeRef.current || typeof window === "undefined") return;
@@ -94,7 +98,15 @@ function useBackDismiss(
 
 // ── Components ──────────────────────────────────────────────────────────────
 
-function Dialog({ open, onOpenChange, ...props }: ComponentPropsWithoutRef<typeof DialogPrimitive.Root>) {
+function Dialog({
+  open,
+  onOpenChange,
+  ...props
+}: Omit<ComponentPropsWithoutRef<typeof DialogPrimitive.Root>, "onOpenChange"> & {
+  // Re-typed as a property (arrow) rather than Radix's method signature so the
+  // destructured handler doesn't trip @typescript-eslint/unbound-method.
+  onOpenChange?: (open: boolean) => void;
+}) {
   useBackDismiss(open, onOpenChange);
   return <DialogPrimitive.Root open={open} onOpenChange={onOpenChange} {...props} />;
 }
@@ -124,17 +136,8 @@ DialogOverlay.displayName = DialogPrimitive.Overlay.displayName;
 
 const DialogContent = forwardRef<
   ComponentRef<typeof DialogPrimitive.Content>,
-  ComponentPropsWithoutRef<typeof DialogPrimitive.Content> & {
-    /**
-     * Suppress the built-in top-right close button. Pass this only when the
-     * dialog renders its OWN close affordance (e.g. a header with an X) so the
-     * two don't double up. Default: the close button is shown — every dialog
-     * gets one for free, so none can ship without a way out (critical on mobile,
-     * where the dialog is fullscreen with no tappable backdrop or Esc key).
-     */
-    hideClose?: boolean;
-  }
->(({ className, children, hideClose = false, ...props }, ref) => (
+  ComponentPropsWithoutRef<typeof DialogPrimitive.Content>
+>(({ className, children, ...props }, ref) => (
   <DialogPortal>
     <DialogOverlay />
     <DialogPrimitive.Content
@@ -157,22 +160,24 @@ const DialogContent = forwardRef<
       {...props}
     >
       {children}
-      {!hideClose && (
-        <DialogPrimitive.Close
-          className={cn(
-            "absolute right-3 top-3 z-10 rounded-md p-1 transition-colors",
-            "text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)",
-            "focus:outline-none focus-visible:ring-2 focus-visible:ring-(--color-border-focus)",
-            // Keep it clear of the status bar / notch when the dialog is fullscreen
-            // on mobile. env() is 0 off-mobile, so this is the plain top-3 there.
-            "max-md:top-[max(0.75rem,env(safe-area-inset-top))]",
-          )}
-          aria-label="Close"
-          data-testid="dialog-close"
-        >
-          <XIcon size={ICON_SIZE.MD} />
-        </DialogPrimitive.Close>
-      )}
+      {/* The single, canonical close button for every dialog. Defined here so no
+          dialog can ship without a way out — critical on mobile, where the dialog
+          is fullscreen with no tappable backdrop and no Esc key. Closing routes
+          through onOpenChange, the same path Esc / backdrop / Back already use. */}
+      <DialogPrimitive.Close
+        className={cn(
+          "absolute right-3 top-3 z-10 rounded-md p-1 transition-colors",
+          "text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)",
+          "focus:outline-none focus-visible:ring-2 focus-visible:ring-(--color-border-focus)",
+          // Keep it clear of the status bar / notch when the dialog is fullscreen
+          // on mobile. env() is 0 off-mobile, so this is the plain top-3 there.
+          "max-md:top-[max(0.75rem,env(safe-area-inset-top))]",
+        )}
+        aria-label="Close"
+        data-testid="dialog-close"
+      >
+        <XIcon size={ICON_SIZE.MD} />
+      </DialogPrimitive.Close>
     </DialogPrimitive.Content>
   </DialogPortal>
 ));

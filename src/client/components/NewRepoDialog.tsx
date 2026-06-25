@@ -1,7 +1,5 @@
 import { useState } from "react";
-import { XIcon } from "@phosphor-icons/react";
 import type { TemplateInfo } from "../utils/template-info.js";
-import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
 
@@ -89,22 +87,14 @@ export function NewRepoDialog({
 
   return (
     <Dialog open onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
-      <DialogContent className="max-w-2xl w-full mx-4 max-h-[90vh] flex flex-col" hideClose>
+      <DialogContent className="max-w-2xl w-full mx-4 max-h-[90vh] flex flex-col">
         {/* Header */}
         <div className="px-6 pt-6 pb-4 border-b border-(--color-border-secondary)">
-          <div className="flex items-center justify-between mb-4">
+          {/* pr leaves room for the dialog's corner close button */}
+          <div className="flex items-center mb-4 pr-10">
             <DialogTitle className="text-lg font-semibold">
               Create New Repository
             </DialogTitle>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={onClose}
-              className="h-9 w-9 max-md:h-10 max-md:w-10"
-              aria-label="Close"
-            >
-              <XIcon size={ICON_SIZE.MD} weight="bold" />
-            </Button>
           </div>
           <p className="text-sm text-(--color-text-secondary)">
             Create a new repository under <span className="text-(--color-text-primary) font-medium">{owner || username}</span> with a project template.

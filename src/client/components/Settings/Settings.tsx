@@ -1,8 +1,5 @@
 import { useState, useRef } from "react";
-import { XIcon } from "@phosphor-icons/react";
 import type { AgentOption } from "../../agent-types.js";
-import { ICON_SIZE } from "../../design-tokens.js";
-import { Button } from "../ui/button.js";
 import { Dialog, DialogContent, DialogTitle } from "../ui/dialog.js";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "../ui/tabs.js";
 import { type CodexDeviceAuthState } from "../CodexAuthCard.js";
@@ -145,20 +142,10 @@ export function Settings({
         className={dialogClass}
         data-testid="settings-backdrop"
         onKeyDown={handleKeyDown}
-        hideClose
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-(--color-border-secondary)">
+        <div className="flex items-center px-5 py-4 border-b border-(--color-border-secondary)">
           <DialogTitle className="text-lg font-semibold">Settings</DialogTitle>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onClose}
-            className="h-9 w-9 max-md:h-10 max-md:w-10"
-            aria-label="Close"
-          >
-            <XIcon size={ICON_SIZE.MD} weight="bold" />
-          </Button>
         </div>
 
         {/* Body: sidebar tabs + content (vertical sidebar on desktop, horizontal scroll strip on mobile) */}

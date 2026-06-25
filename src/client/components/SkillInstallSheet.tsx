@@ -13,11 +13,9 @@
 
 // eslint-disable-next-line no-restricted-imports -- useEffect: dynamic Monaco editor lifecycle + per-skill SKILL.md fetch
 import { useEffect, useRef, useState } from "react";
-import { XIcon } from "@phosphor-icons/react";
 import type * as MonacoEditor from "monaco-editor";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
 import { Button } from "./ui/button.js";
-import { ICON_SIZE } from "../design-tokens.js";
 import type { PluginInfo, SkillRef } from "../../server/shared/types.js";
 
 /** A repo the user can install into (docs/149 v1c repo picker). */
@@ -101,10 +99,9 @@ export function SkillInstallSheet({
       <DialogContent
         className="rounded-lg border-(--color-border-secondary) max-w-3xl w-full md:mx-4 flex flex-col md:h-[78vh] max-md:h-full"
         data-testid="skill-install-sheet"
-        hideClose
       >
-        {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-(--color-border-secondary)">
+        {/* Header — pr leaves room for the dialog's corner close button */}
+        <div className="flex items-center px-5 py-4 pr-12 border-b border-(--color-border-secondary)">
           <div className="min-w-0">
             <DialogTitle className="text-lg font-semibold text-(--color-text-primary)">
               Install {plugin.name}
@@ -113,15 +110,6 @@ export function SkillInstallSheet({
               {plugin.author ? `by ${plugin.author} · ` : ""}from {plugin.marketplaceId}
             </p>
           </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onCancel}
-            className="h-9 w-9 max-md:h-10 max-md:w-10"
-            aria-label="Close"
-          >
-            <XIcon size={ICON_SIZE.MD} weight="bold" />
-          </Button>
         </div>
 
         {/* Body */}

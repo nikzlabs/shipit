@@ -75,15 +75,4 @@ describe("DialogContent close button", () => {
     fireEvent.click(close);
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
-
-  it("hides the default close button when hideClose is set", () => {
-    render(
-      <Dialog open onOpenChange={() => {}}>
-        <DialogContent hideClose>
-          <DialogTitle>Hi</DialogTitle>
-        </DialogContent>
-      </Dialog>,
-    );
-    expect(screen.queryByTestId("dialog-close")).toBeNull();
-  });
 });

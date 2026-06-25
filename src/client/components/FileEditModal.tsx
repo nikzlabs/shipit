@@ -1,6 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect/useRef manage the Monaco editor lifecycle.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CircleNotchIcon, XIcon } from "@phosphor-icons/react";
+import { CircleNotchIcon } from "@phosphor-icons/react";
 import type * as MonacoEditor from "monaco-editor";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
@@ -151,9 +151,10 @@ export function FileEditModal({
 
   return (
     <Dialog open onOpenChange={(isOpen) => { if (!isOpen) requestClose(); }}>
-      <DialogContent className="w-[92vw] max-w-5xl h-[86vh] flex flex-col overflow-hidden" hideClose>
+      <DialogContent className="w-[92vw] max-w-5xl h-[86vh] flex flex-col overflow-hidden">
         <div className="border-b border-(--color-border-secondary) shrink-0">
-          <div className="flex items-center justify-between px-6 py-4 gap-4">
+          {/* pr leaves room for the dialog's corner close button */}
+          <div className="flex items-center px-6 py-4 gap-4 pr-14">
             <div className="min-w-0">
               <DialogTitle className="text-sm font-medium text-(--color-text-primary) truncate" title={filePath}>
                 {filePath}
@@ -162,13 +163,6 @@ export function FileEditModal({
                 {status}
               </div>
             </div>
-            <button
-              onClick={requestClose}
-              className="p-1 rounded hover:bg-(--color-bg-hover) text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors shrink-0"
-              aria-label="Close editor"
-            >
-              <XIcon size={ICON_SIZE.MD} />
-            </button>
           </div>
         </div>
 

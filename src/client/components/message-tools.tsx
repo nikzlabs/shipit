@@ -10,9 +10,7 @@ import {
   MagnifyingGlassIcon,
   NotebookIcon,
   PresentationChartIcon,
-  ScrollIcon,
-  XIcon,
-} from "@phosphor-icons/react";
+  ScrollIcon,} from "@phosphor-icons/react";
 import hljs from "highlight.js";
 import { DiffBlock } from "./DiffBlock.js";
 import { ToolSpinner } from "./StreamingIndicator.js";
@@ -448,16 +446,9 @@ function ToolOutputModal({ toolName, input, result, onClose }: {
   const duration = typeof result.durationMs === "number" ? formatToolDuration(result.durationMs) : "";
   return (
     <Dialog open onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
-    <DialogContent className="w-[min(90vw,56rem)] max-h-[80vh] flex flex-col" aria-label="Tool output" hideClose>
-      <div className="flex items-center justify-between px-4 py-3 border-b border-(--color-border-primary)">
+    <DialogContent className="w-[min(90vw,56rem)] max-h-[80vh] flex flex-col" aria-label="Tool output">
+      <div className="flex items-center px-4 py-3 border-b border-(--color-border-primary)">
         <span className="text-xs font-semibold text-(--color-text-primary) shrink-0">Tool Call</span>
-        <button
-          onClick={onClose}
-          className="p-1 rounded text-(--color-text-tertiary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors shrink-0 cursor-pointer"
-          aria-label="Close"
-        >
-          <XIcon size={16} />
-        </button>
       </div>
       <div className="flex-1 overflow-auto p-4">
         <ToolInput toolName={toolName} input={input} />

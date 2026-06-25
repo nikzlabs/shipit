@@ -1,7 +1,4 @@
 import { useState } from "react";
-import { XIcon } from "@phosphor-icons/react";
-import { ICON_SIZE } from "../design-tokens.js";
-import { Button } from "./ui/button.js";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./ui/tabs.js";
 import { SecretsTab } from "./SecretsTab.js";
@@ -54,23 +51,13 @@ export function ProjectSettings({
         className="rounded-lg border-(--color-border-secondary) max-w-2xl w-full md:mx-4 flex flex-col md:h-120 max-md:h-full"
         data-testid="project-settings-backdrop"
         onKeyDown={handleKeyDown}
-        hideClose
       >
-        {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-(--color-border-secondary)">
+        {/* Header — pr leaves room for the dialog's corner close button */}
+        <div className="flex items-center px-5 py-4 pr-12 border-b border-(--color-border-secondary)">
           <DialogTitle className="text-lg font-semibold truncate">
             Project Settings
             <span className="ml-2 text-sm font-normal text-(--color-text-tertiary)">{repoName}</span>
           </DialogTitle>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onClose}
-            className="h-9 w-9 max-md:h-10 max-md:w-10"
-            aria-label="Close"
-          >
-            <XIcon size={ICON_SIZE.MD} weight="bold" />
-          </Button>
         </div>
 
         {/* Body: sidebar tabs + content (vertical on desktop, horizontal strip on mobile) */}
