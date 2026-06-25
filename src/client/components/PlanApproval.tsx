@@ -212,7 +212,7 @@ export function PlanApproval({ onSend, disabled, planContent, resolved }: PlanAp
 
       {expanded && (
         <Dialog open onOpenChange={(open) => { if (!open) setExpanded(false); }}>
-          <DialogContent className="w-[90vw] max-w-2xl h-[85vh] flex flex-col p-0" data-testid="plan-expanded">
+          <DialogContent className="w-[90vw] max-w-2xl h-[85vh] flex flex-col p-0" data-testid="plan-expanded" hideClose>
             {/* Header */}
             <div className="flex items-center justify-between px-5 py-3 border-b border-(--color-border-secondary) shrink-0">
               <DialogTitle className="text-sm font-medium">Plan</DialogTitle>

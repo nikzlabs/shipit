@@ -101,6 +101,7 @@ export function SkillInstallSheet({
       <DialogContent
         className="rounded-lg border-(--color-border-secondary) max-w-3xl w-full md:mx-4 flex flex-col md:h-[78vh] max-md:h-full"
         data-testid="skill-install-sheet"
+        hideClose
       >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-(--color-border-secondary)">

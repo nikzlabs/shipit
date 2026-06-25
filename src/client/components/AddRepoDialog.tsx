@@ -112,7 +112,7 @@ export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, onRepoReady, 
 
   return (
     <Dialog open={open} onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
-      <DialogContent className="w-full max-w-lg rounded-lg border-(--color-border-secondary)">
+      <DialogContent className="w-full max-w-lg rounded-lg border-(--color-border-secondary)" hideClose>
         <div className="flex items-center justify-between border-b border-(--color-border-secondary) px-4 py-3">
           <DialogTitle className="text-sm font-medium text-(--color-text-primary)">Add Repository</DialogTitle>
           <Button

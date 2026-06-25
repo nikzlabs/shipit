@@ -89,7 +89,7 @@ export function NewRepoDialog({
 
   return (
     <Dialog open onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
-      <DialogContent className="max-w-2xl w-full mx-4 max-h-[90vh] flex flex-col">
+      <DialogContent className="max-w-2xl w-full mx-4 max-h-[90vh] flex flex-col" hideClose>
         {/* Header */}
         <div className="px-6 pt-6 pb-4 border-b border-(--color-border-secondary)">
           <div className="flex items-center justify-between mb-4">

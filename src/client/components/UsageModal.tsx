@@ -201,6 +201,7 @@ export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, m
       <DialogContent
         className="rounded-lg border-(--color-border-secondary) max-w-md w-full mx-4 max-h-[80vh] overflow-y-auto"
         data-testid="usage-modal-backdrop"
+        hideClose
       >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-(--color-border-secondary)">

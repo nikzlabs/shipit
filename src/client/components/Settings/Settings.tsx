@@ -145,6 +145,7 @@ export function Settings({
         className={dialogClass}
         data-testid="settings-backdrop"
         onKeyDown={handleKeyDown}
+        hideClose
       >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-(--color-border-secondary)">

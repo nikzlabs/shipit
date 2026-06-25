@@ -167,7 +167,7 @@ export function SessionDiagnosticsPanel({ sessionId, open, onOpenChange }: Sessi
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[min(960px,95vw)] max-w-none p-0 flex flex-col">
+      <DialogContent className="w-[min(960px,95vw)] max-w-none p-0 flex flex-col" hideClose>
         <DialogHeader>
           <DialogTitle>Session diagnostics</DialogTitle>
           <div className="flex items-center gap-2">

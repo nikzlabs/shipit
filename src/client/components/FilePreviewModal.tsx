@@ -130,7 +130,7 @@ export function FilePreviewModal({
 
   return (
     <Dialog open onOpenChange={(isOpen) => { if (!isOpen) handleClose(); }}>
-      <DialogContent className="w-[90vw] max-w-4xl h-[85vh] flex flex-col">
+      <DialogContent className="w-[90vw] max-w-4xl h-[85vh] flex flex-col" hideClose>
         {/* Header */}
         <div className="border-b border-(--color-border-secondary) shrink-0">
           <div className="flex items-center justify-between px-6 py-4">

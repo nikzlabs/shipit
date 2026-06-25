@@ -54,6 +54,7 @@ export function ProjectSettings({
         className="rounded-lg border-(--color-border-secondary) max-w-2xl w-full md:mx-4 flex flex-col md:h-120 max-md:h-full"
         data-testid="project-settings-backdrop"
         onKeyDown={handleKeyDown}
+        hideClose
       >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-(--color-border-secondary)">

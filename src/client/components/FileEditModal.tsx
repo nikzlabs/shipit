@@ -151,7 +151,7 @@ export function FileEditModal({
 
   return (
     <Dialog open onOpenChange={(isOpen) => { if (!isOpen) requestClose(); }}>
-      <DialogContent className="w-[92vw] max-w-5xl h-[86vh] flex flex-col overflow-hidden">
+      <DialogContent className="w-[92vw] max-w-5xl h-[86vh] flex flex-col overflow-hidden" hideClose>
         <div className="border-b border-(--color-border-secondary) shrink-0">
           <div className="flex items-center justify-between px-6 py-4 gap-4">
             <div className="min-w-0">
