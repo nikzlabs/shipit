@@ -32,6 +32,9 @@ import { ICON_SIZE } from "../../design-tokens.js";
 // there is no per-dialog hook to wire up (that "someone forgot to wire it"
 // failure mode is exactly what we're avoiding). A module-level LIFO stack makes a
 // single Back close only the *topmost* dialog when several are open at once.
+//
+// The matching half — the always-present close button — lives in `DialogContent`
+// below, so a dialog cannot ship without a way out (X, Esc, backdrop, or Back).
 
 interface DismissEntry {
   close: () => void;
