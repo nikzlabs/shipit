@@ -184,6 +184,21 @@ Grouping in the sidebar:
   **All Sessions** dialog (`AllSessionsDialog.tsx`, `/api/sessions/all` →
   `listAll()`), which already shows every non-warm session.
 
+> **Update — repo-less kinds are reachable in the dialog (SHI restore-archived-sandbox-ops).**
+> The All Sessions dialog scopes its list with a repo dropdown, but **sandbox**
+> (docs/211) and **ops** (docs/128) sessions are repo-less — they carry no
+> `remoteUrl`, so they belong to no repo bucket and only ever appeared under
+> "All Repositories". Once archived they were also gone from the sidebar (the
+> `!userArchived` guard above), leaving an archived sandbox/ops session
+> effectively unreachable. The dialog now adds synthetic **Sandbox** /
+> **Host / Ops** options to the dropdown (rendered only when such sessions
+> exist) that filter by `kind` instead of `remoteUrl`, so they can be found and
+> restored on their own. Server-side restore already worked for these: archive
+> *preserves* a repo-less session's workspace dir (`archiveSession` reclaim is
+> guarded on `remoteUrl`), `unarchive` flips it back to `hot`, and
+> `restoreSessionWorkspace` no-ops on the present dir — so the fix is
+> client-only.
+
 > **Update — closed PRs are "resolved" too.** A closed-without-merge PR is a
 > terminal state just like a merge, so its session must also leave the Active
 > list. The grouping now keys off **`resolvedAt(s) = mergedAt ?? closedAt`** and

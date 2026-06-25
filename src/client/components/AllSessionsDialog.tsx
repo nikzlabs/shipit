@@ -18,6 +18,13 @@ interface AllSessionsDialogProps {
 }
 
 const ALL_REPOS = "__all__";
+// docs/128 (ops) / docs/211 (sandbox) — these kinds are repo-less (no
+// `remoteUrl`), so they belong to no repo bucket and would only ever surface
+// under "All Repositories". Give them their own synthetic filter entries so an
+// archived sandbox/ops session is discoverable and restorable on its own,
+// instead of being effectively unreachable from a repo-scoped view.
+const SANDBOX_FILTER = "__sandbox__";
+const OPS_FILTER = "__ops__";
 
 export function AllSessionsDialog({
   open,
@@ -49,6 +56,11 @@ export function AllSessionsDialog({
     );
   }, [sessions, repos]);
 
+  // Only offer the kind-based filters when such sessions actually exist
+  // (archived ones are included — `sessions` is the full `/all` list).
+  const hasSandbox = useMemo(() => sessions.some((s) => s.kind === "sandbox"), [sessions]);
+  const hasOps = useMemo(() => sessions.some((s) => s.kind === "ops"), [sessions]);
+
   // Reset state when dialog opens (inline state reset during render)
   const prevOpenRef = useRef(false);
   if (open && !prevOpenRef.current) {
@@ -65,8 +77,14 @@ export function AllSessionsDialog({
   if (!open) return null;
 
   const filtered = sessions.filter((s) => {
-    // Repo filter
-    if (selectedRepo !== ALL_REPOS && s.remoteUrl !== selectedRepo) return false;
+    // Repo / kind filter
+    if (selectedRepo === SANDBOX_FILTER) {
+      if (s.kind !== "sandbox") return false;
+    } else if (selectedRepo === OPS_FILTER) {
+      if (s.kind !== "ops") return false;
+    } else if (selectedRepo !== ALL_REPOS && s.remoteUrl !== selectedRepo) {
+      return false;
+    }
     // Text filter
     if (query.trim()) {
       const q = query.toLowerCase();
@@ -138,6 +156,8 @@ export function AllSessionsDialog({
             className="shrink-0 max-w-[200px] rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) px-2 py-1.5 text-sm text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none truncate"
           >
             <option value={ALL_REPOS}>All Repositories</option>
+            {hasSandbox && <option value={SANDBOX_FILTER}>Sandbox</option>}
+            {hasOps && <option value={OPS_FILTER}>Host / Ops</option>}
             {repoOptions.map((url) => (
               <option key={url} value={url}>
                 {parseRepoLabel(url)}
