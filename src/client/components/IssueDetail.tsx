@@ -29,6 +29,7 @@ import {
   WarningCircleIcon,
   XIcon,
 } from "@phosphor-icons/react";
+import { Avatar } from "./ui/avatar.js";
 import { Banner } from "./ui/banner.js";
 import { Button } from "./ui/button.js";
 import { StartSessionButton } from "./StartSessionButton.js";
@@ -360,14 +361,7 @@ export function IssueDetail({
 
 /** Round avatar with a single-letter fallback when the tracker omits an image. */
 function CommentAvatar({ name, avatarUrl }: { name: string; avatarUrl?: string }) {
-  if (avatarUrl) {
-    return <img src={avatarUrl} alt="" className="size-5 shrink-0 rounded-full object-cover" loading="lazy" />;
-  }
-  return (
-    <div className="size-5 shrink-0 rounded-full bg-(--color-bg-tertiary) text-(--color-text-tertiary) flex items-center justify-center text-[10px] font-semibold uppercase">
-      {name.charAt(0) || "?"}
-    </div>
-  );
+  return <Avatar name={name} avatarUrl={avatarUrl} alt="" />;
 }
 
 function IssueCommentItem({
