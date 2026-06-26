@@ -12,6 +12,7 @@ import type { SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemI
 import { getLoadedClientBuildId, shouldReloadForServerBuild } from "../utils/client-build.js";
 import { getSavedModelId, saveAgentId, saveModelId } from "../utils/local-storage.js";
 import { resolveAuthedSelection } from "../utils/resolve-authed-selection.js";
+import { useEventListener } from "./useEventListener.js";
 
 let reloadingForClientUpdate = false;
 
@@ -449,16 +450,9 @@ export function useServerEvents(): void {
   // mobile, so we tear down and re-open instead of waiting for a (never-firing)
   // error event. Closing the previous EventSource is handled by the effect's
   // cleanup, which re-runs when `connectAttempt` changes.
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
-  useEffect(() => {
-    function handleVisibilityChange() {
-      if (!document.hidden) {
-        setConnectAttempt((n) => n + 1);
-      }
+  useEventListener(document, "visibilitychange", () => {
+    if (!document.hidden) {
+      setConnectAttempt((n) => n + 1);
     }
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () => {
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-  }, []);
+  });
 }

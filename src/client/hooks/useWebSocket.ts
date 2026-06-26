@@ -1,5 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: WebSocket connection lifecycle with cleanup and reconnection (external system sync)
 import { useRef, useEffect, useCallback, useState } from "react";
+import { useEventListeners } from "./useEventListener.js";
 
 export type WsStatus = "connecting" | "open" | "closed";
 
@@ -154,30 +155,24 @@ export function useWebSocket(url: string | null): UseWebSocketReturn {
   // OSes silently kill or stall backgrounded TCP sockets without notifying the
   // JS layer; the WebSocket's readyState can remain OPEN or CONNECTING even
   // though a reload would immediately recover. Foreground lifecycle events use
-  // an aggressive short retry burst before falling back to normal backoff.
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
-  useEffect(() => {
-    if (!url) return;
-    function handleForeground() {
-      if (!document.hidden) {
-        reconnectForForeground();
-      }
+  // an aggressive short retry burst before falling back to normal backoff. A
+  // null target while `url` is absent reproduces the old `if (!url) return` gate.
+  function handleForeground() {
+    if (!document.hidden) {
+      reconnectForForeground();
     }
-    function handleVisibilityChange() {
-      handleForeground();
-    }
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    window.addEventListener("pageshow", handleForeground);
-    window.addEventListener("focus", handleForeground);
-    window.addEventListener("online", handleForeground);
-    return () => {
-      clearForegroundRetryTimers();
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-      window.removeEventListener("pageshow", handleForeground);
-      window.removeEventListener("focus", handleForeground);
-      window.removeEventListener("online", handleForeground);
-    };
-  }, [url, reconnectForForeground, clearForegroundRetryTimers]);
+  }
+  useEventListeners([
+    { target: url ? document : null, type: "visibilitychange", handler: handleForeground },
+    { target: url ? window : null, type: "pageshow", handler: handleForeground },
+    { target: url ? window : null, type: "focus", handler: handleForeground },
+    { target: url ? window : null, type: "online", handler: handleForeground },
+  ]);
+  // The listener effect previously cleared the foreground retry timers on url
+  // change / unmount; useEventListeners owns only add/remove, so keep that
+  // teardown on the same [url] cadence so a stale retry can't fire post-switch.
+  // eslint-disable-next-line no-restricted-syntax -- non-listener cleanup (clear foreground retry timers on url change/unmount)
+  useEffect(() => () => clearForegroundRetryTimers(), [url, clearForegroundRetryTimers]);
 
   const drainMessages = useCallback((): MessageEvent[] => {
     const msgs = messageQueueRef.current;
