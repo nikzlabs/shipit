@@ -77,6 +77,42 @@ describe("useMessageScroll", () => {
     expect(rafQueue.length).toBe(0);
   });
 
+  it("stops the in-flight settle loop the instant the user wheels — even within the near-bottom band", () => {
+    const height = 2000;
+    // Park the user just inside the near-bottom threshold so isNearBottom stays
+    // true: only the explicit wheel gesture (not the threshold) must stop us.
+    let scrollTop = height - 500 - 20; // 1480; gap of 20px < BOTTOM_THRESHOLD_PX
+
+    const view = render(<Harness messages={[]} />);
+    const div = view.getByTestId("scroller");
+    Object.defineProperty(div, "scrollHeight", { configurable: true, get: () => height });
+    Object.defineProperty(div, "clientHeight", { configurable: true, get: () => 500 });
+    Object.defineProperty(div, "scrollTop", {
+      configurable: true,
+      get: () => scrollTop,
+      set: (v: number) => {
+        scrollTop = v;
+      },
+    });
+
+    act(() => {
+      view.rerender(<Harness messages={[user("a long message")]} />);
+    });
+    // The layout effect pinned us to the bottom; re-park within the band so the
+    // wheel gesture is the only thing that can stop the loop.
+    scrollTop = 1480;
+
+    act(() => {
+      div.dispatchEvent(new Event("wheel"));
+    });
+
+    // Subsequent frames must NOT yank us back to the bottom.
+    flushFrame();
+    flushFrame();
+    expect(scrollTop).toBe(1480);
+    expect(rafQueue.length).toBe(0);
+  });
+
   it("does not re-pin a message the user has scrolled away from when no new user message arrives", () => {
     let height = 2000;
     let scrollTop = 0; // user scrolled to the top, far from the bottom
