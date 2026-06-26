@@ -162,6 +162,56 @@ describe("ToolUseItem output modal input", () => {
   });
 });
 
+describe("ToolUseItem pending tool calls", () => {
+  it("is clickable while pending and shows input + a running indicator (no result yet)", () => {
+    render(
+      <ToolUseItem
+        tool={tool("Bash", { command: "sleep 5" })}
+        // No result — the tool is the last one in a still-streaming message.
+        isLast
+        isStreaming
+        isQuestionDisabled
+      />,
+    );
+
+    // Pending tools expose a "Show input" affordance (vs "Show output" once done).
+    fireEvent.click(screen.getByLabelText("Show input"));
+
+    // Input is shown.
+    expect(screen.getByText("command")).toBeInTheDocument();
+    // Output section renders a running indicator instead of a tool result.
+    expect(screen.getByText("Output")).toBeInTheDocument();
+    expect(screen.getByText("Running…")).toBeInTheDocument();
+  });
+
+  it("updates the open dialog in place when the result arrives", () => {
+    const t = tool("Bash", { command: "run-job" });
+    const { rerender } = render(
+      <ToolUseItem tool={t} isLast isStreaming isQuestionDisabled />,
+    );
+
+    // Open the dialog while pending.
+    fireEvent.click(screen.getByLabelText("Show input"));
+    expect(screen.getByText("Running…")).toBeInTheDocument();
+
+    // Result arrives — same component instance (stable position) re-renders with it.
+    rerender(
+      <ToolUseItem
+        tool={t}
+        result={{ toolUseId: "t1", content: "job complete", durationMs: 1234 }}
+        isLast={false}
+        isStreaming={false}
+        isQuestionDisabled
+      />,
+    );
+
+    // The running indicator is replaced in place by the output, no re-click needed.
+    expect(screen.queryByText("Running…")).toBeNull();
+    expect(screen.getByText("1.2 s")).toBeInTheDocument();
+    expect(screen.getByText("job complete")).toBeInTheDocument();
+  });
+});
+
 describe("formatToolDuration (docs/185)", () => {
   it("renders sub-second values in whole milliseconds", () => {
     expect(formatToolDuration(0)).toBe("0 ms");
