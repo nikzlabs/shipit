@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Starter-prompt suggestions — repo sessions</title>
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --card: #161618;
+    --card-2: #1d1d20;
+    --border: #2a2a2e;
+    --text: #fafafa;
+    --text-2: #b4b4bb;
+    --text-3: #8a8a92;
+    --accent: #f97316;
+    --green: #34d399;
+    --green-bg: rgba(52, 211, 153, .1);
+    --amber: #fbbf24;
+    --amber-bg: rgba(251, 191, 36, .1);
+    --red: #f87171;
+    --gray-bg: rgba(138, 138, 146, .12);
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    line-height: 1.55;
+    font-size: 16px;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 28px 18px 64px; }
+
+  header h1 { font-size: 23px; font-weight: 700; margin: 0 0 6px; letter-spacing: -.01em; }
+  header p { color: var(--text-2); margin: 0; font-size: 15px; }
+
+  .bar {
+    margin: 22px 0; padding: 14px 16px;
+    background: var(--card); border: 1px solid var(--border);
+    border-left: 3px solid var(--accent); border-radius: 10px;
+    font-size: 14px; color: var(--text-2);
+  }
+  .bar strong { color: var(--text); }
+
+  h2.section {
+    font-size: 13px; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--text-3); font-weight: 700;
+    margin: 34px 0 14px; display: flex; align-items: center; gap: 8px;
+  }
+  h2.section .count { color: var(--text-3); font-weight: 600; }
+
+  /* Cards */
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 14px; padding: 16px 16px 14px; margin-bottom: 14px;
+  }
+  .card.rec { border-color: rgba(52, 211, 153, .35); }
+  .card-head {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    gap: 12px; margin-bottom: 12px;
+  }
+  .card-title { font-size: 17px; font-weight: 650; margin: 0; }
+  .badge {
+    flex-shrink: 0; font-size: 11px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: .04em; padding: 4px 9px; border-radius: 9999px; white-space: nowrap;
+  }
+  .badge.rec { color: var(--green); background: var(--green-bg); }
+  .badge.maybe { color: var(--amber); background: var(--amber-bg); }
+  .badge.cond { color: var(--accent); background: rgba(249, 115, 22, .12); }
+
+  .gate {
+    display: flex; gap: 9px; align-items: flex-start;
+    margin: 0 0 12px; padding: 10px 12px;
+    background: rgba(249, 115, 22, .07); border: 1px solid rgba(249, 115, 22, .25);
+    border-radius: 10px; font-size: 13px; color: var(--text-2);
+  }
+  .gate .k { font-size: 14px; line-height: 1.3; }
+  .gate b { color: var(--text); font-weight: 600; }
+
+  /* Chip preview — mirrors the actual UI pill */
+  .chip {
+    display: inline-flex; align-items: center; gap: 7px;
+    border: 1px solid var(--border); background: var(--card-2);
+    color: var(--text-2); padding: 6px 12px; border-radius: 9999px;
+    font-size: 13px; margin-bottom: 12px;
+  }
+  .chip .ic { font-size: 14px; line-height: 1; }
+
+  .seed {
+    position: relative; margin: 0 0 12px; padding: 11px 13px 11px 15px;
+    background: var(--card-2); border: 1px solid var(--border);
+    border-radius: 10px; font-size: 14px; color: var(--text); line-height: 1.5;
+  }
+  .seed::before {
+    content: "Seeds the composer with"; display: block;
+    font-size: 10px; text-transform: uppercase; letter-spacing: .07em;
+    color: var(--text-3); margin-bottom: 4px; font-weight: 700;
+  }
+  .seed em { color: var(--text); font-style: normal; }
+
+  .why { font-size: 14px; color: var(--text-2); margin: 0 0 12px; }
+  .why b { color: var(--text); font-weight: 600; }
+
+  .src {
+    font-size: 12px; color: var(--text-3);
+    border-top: 1px solid var(--border); padding-top: 9px;
+  }
+  .src span { color: var(--text-2); }
+
+  /* Ruled-out list */
+  .out { background: var(--card); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; }
+  .out-row { padding: 13px 16px; border-bottom: 1px solid var(--border); }
+  .out-row:last-child { border-bottom: 0; }
+  .out-row .t {
+    font-weight: 600; font-size: 15px; color: var(--text-2);
+    display: flex; align-items: center; gap: 8px; margin-bottom: 3px;
+  }
+  .out-row .t .x { color: var(--red); font-weight: 700; }
+  .out-row .r { font-size: 13.5px; color: var(--text-3); }
+  .out-row .r b { color: var(--text-2); font-weight: 600; }
+
+  /* Open questions */
+  .q { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 6px 18px; }
+  .q li { margin: 12px 0; font-size: 14.5px; color: var(--text-2); }
+  .q li b { color: var(--text); font-weight: 600; }
+
+  a { color: var(--accent); text-decoration: none; }
+  @media (max-width: 480px) {
+    body { font-size: 15px; }
+    .wrap { padding: 22px 14px 56px; }
+    header h1 { font-size: 21px; }
+    .card-title { font-size: 16px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Starter-prompt suggestions</h1>
+    <p>Candidate chips for the empty-session launchpad — regular repo sessions only. Pick what you like; I haven't touched the UI yet.</p>
+  </header>
+
+  <div class="bar">
+    <strong>The bar each one has to clear:</strong> does it teach a <strong>ShipIt-specific</strong> thing a new user wouldn't think to ask for — <em>and</em> does it work as the very first message in a session?
+    <br><br>
+    <strong>Scope from your feedback:</strong> sandbox sessions get <strong>no</strong> launchpad (power users). Dropped <strong>“Open a PR”</strong> (automatic, not a discovery) and <strong>“Write tests”</strong> (not ShipIt-specific).
+  </div>
+
+  <!-- ===================== RECOMMENDED ===================== -->
+  <h2 class="section">✅ Recommended set <span class="count">· 3 always-on + 1 conditional</span></h2>
+
+  <div class="bar" style="border-left-color: var(--green); margin-top: 0;">
+    <strong>Proposed structure:</strong> three chips everyone sees — <b style="color:var(--text)">What should I work on?</b>, <b style="color:var(--text)">Diagram this codebase</b>, <b style="color:var(--text)">Report a ShipIt bug</b> — plus a fourth, <b style="color:var(--text)">Second opinion from another agent</b>, that <strong>only appears for users with two agent backends authenticated</strong>. That gate is both the power-user signal and the thing that stops the chip being a dead end.
+  </div>
+
+  <div class="card rec">
+    <div class="card-head">
+      <h3 class="card-title">Second opinion from another agent</h3>
+      <span class="badge cond">Conditional</span>
+    </div>
+    <div class="chip"><span class="ic">🤖</span> Second opinion from another agent</div>
+    <div class="gate">
+      <span class="k">🔒</span>
+      <span>Only shown when <b>two or more agent backends are authenticated</b> (e.g. Claude <i>and</i> Codex). Consulting another agent needs that agent set up, so this self-prunes to power users and never dead-ends.</span>
+    </div>
+    <p class="seed"><em>“Ask [the other authenticated agent] for a second opinion — have it review this codebase and flag anything risky or worth refactoring.”</em></p>
+    <p class="why">Cross-agent review is <b>genuinely unique to ShipIt</b> and almost nobody knows it exists — the session agent consults a <i>different</i> model inline, in the same turn, and returns its findings to the chat. <b>The prompt names whichever authed agent isn't active</b> (so a Codex session asks Claude), rather than hardcoding “Codex”.</p>
+    <div class="src">README: <span>“Cross-agent second opinions” (Review &amp; ship)</span></div>
+  </div>
+
+  <div class="card rec">
+    <div class="card-head">
+      <h3 class="card-title">What should I work on?</h3>
+      <span class="badge rec">Recommend</span>
+    </div>
+    <div class="chip"><span class="ic">🧭</span> What should I work on?</div>
+    <p class="seed"><em>“Show me the open issues for this project and suggest which one to start with.”</em></p>
+    <p class="why">Surfaces the <b>brokered, tracker-neutral issue access</b> — the agent reads Linear/GitHub issues without tracker tokens ever entering the container. Most users never realize the agent can see their tracker.</p>
+    <div class="src">README: <span>“Agent issue access”, “Inline Issues tab” (Plan &amp; track)</span></div>
+  </div>
+
+  <div class="card rec">
+    <div class="card-head">
+      <h3 class="card-title">Diagram this codebase</h3>
+      <span class="badge rec">Recommend</span>
+    </div>
+    <div class="chip"><span class="ic">🌳</span> Diagram this codebase</div>
+    <p class="seed"><em>“Draw a diagram of how this codebase is structured and how the main pieces fit together.”</em></p>
+    <p class="why">Teaches the <b>Present tab</b> — the agent renders a real diagram inline, not just prose. Very non-obvious, and a satisfying first “wow”.</p>
+    <div class="src">Capability: <span>the <code>present</code> tool (not in the README feature list)</span></div>
+  </div>
+
+  <div class="card rec">
+    <div class="card-head">
+      <h3 class="card-title">Report a ShipIt bug</h3>
+      <span class="badge rec">Recommend</span>
+    </div>
+    <div class="chip"><span class="ic">🛟</span> Report a ShipIt bug</div>
+    <p class="seed"><em>“Something in ShipIt isn't working right — help me put together a bug report for the team.”</em></p>
+    <p class="why">The one you flagged: file a <b>redacted, consent-gated</b> ShipIt bug straight from chat. Works at any time, and turns a frustrated moment into a filed issue.</p>
+    <div class="src">README: <span>“bug-report secret redaction” (Security)</span></div>
+  </div>
+
+  <!-- ===================== MAYBE ===================== -->
+  <h2 class="section">🤔 Also possible <span class="count">· weaker on one axis</span></h2>
+
+  <div class="card">
+    <div class="card-head">
+      <h3 class="card-title">Review my recent changes</h3>
+      <span class="badge maybe">Maybe</span>
+    </div>
+    <div class="chip"><span class="ic">🔍</span> Review my recent changes</div>
+    <p class="seed"><em>“Review the last few commits on this branch and flag any bugs or risky changes.”</em></p>
+    <p class="why"><b>Superseded.</b> Overlaps with the conditional cross-agent chip, which is the more distinctive of the two — so I'd <b>drop this one</b> rather than show two review chips. (Noting it here so the decision is explicit.)</p>
+    <div class="src">README: <span>“Chat-native AI review” (Review &amp; ship)</span></div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <h3 class="card-title">See it running</h3>
+      <span class="badge maybe">Maybe</span>
+    </div>
+    <div class="chip"><span class="ic">👁️</span> See it running</div>
+    <p class="seed"><em>“Set up a live preview so I can see this app running as we work.”</em></p>
+    <p class="why">Compose-native preview is a headline feature — but on a repo that <b>already declares Compose it just runs</b>, so the prompt only lands for repos without a preview yet.</p>
+    <div class="src">README: <span>“Compose-native live preview” (Build)</span></div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <h3 class="card-title">Try two approaches at once</h3>
+      <span class="badge maybe">Maybe</span>
+    </div>
+    <div class="chip"><span class="ic">🔀</span> Try two approaches at once</div>
+    <p class="seed"><em>“I have a change in mind — spin up two parallel sessions trying different approaches so I can compare.”</em></p>
+    <p class="why">Parallel PR-shaped sessions are distinctive, but this <b>needs a concrete task in mind</b>, so it's a weaker <i>first</i> message.</p>
+    <div class="src">README: <span>“Parallel PR-shaped sessions” (Iterate safely)</span></div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <h3 class="card-title">Explain this project</h3>
+      <span class="badge maybe">Maybe</span>
+    </div>
+    <div class="chip"><span class="ic">📖</span> Explain this project</div>
+    <p class="seed"><em>“Explain what this project does and how the codebase is structured.”</em></p>
+    <p class="why">The most natural first action in an unfamiliar repo — but it's a <b>generic LLM ability, not ShipIt-specific</b>. Great onboarding, weak on the “ShipIt-specific” axis. Best candidate for a 5th, soft on-ramp.</p>
+    <div class="src">Capability: <span>generic</span></div>
+  </div>
+
+  <!-- ===================== RULED OUT ===================== -->
+  <h2 class="section">❌ Ruled out <span class="count">· with reasons</span></h2>
+  <div class="out">
+    <div class="out-row">
+      <div class="t"><span class="x">✕</span> Open a PR</div>
+      <div class="r">ShipIt auto-commits every turn and opens the PR for you — <b>automatic, not a discovery</b>.</div>
+    </div>
+    <div class="out-row">
+      <div class="t"><span class="x">✕</span> Write tests for weak spots</div>
+      <div class="r">Useful, but a <b>generic coding ability</b> — nothing ShipIt-specific to discover.</div>
+    </div>
+    <div class="out-row">
+      <div class="t"><span class="x">✕</span> Deploy to Vercel / Cloudflare</div>
+      <div class="r">Deploys are triggered by the <b>user from the UI, not the agent</b> — so it can't be a chat prompt at all. <span style="color:var(--text-3)">(deployment.md)</span></div>
+    </div>
+    <div class="out-row">
+      <div class="t"><span class="x">✕</span> Cut a release</div>
+      <div class="r">A real ShipIt capability, but <b>never a first-message task</b> — it presupposes shippable work.</div>
+    </div>
+  </div>
+
+  <!-- ===================== QUESTIONS ===================== -->
+  <h2 class="section">Your call</h2>
+  <ul class="q">
+    <li><b>Decided:</b> cross-agent chip is in, gated to two-agent users; same-agent review chip dropped (overlap).</li>
+    <li>Base set of <b>3 always-on</b> (issues, diagram, bug report), or add <b>“Explain this project”</b> as a 4th always-on soft on-ramp? (Cross-agent rides on top either way for power users.)</li>
+    <li>Any <b>wording changes</b> to the seeded prompts above?</li>
+  </ul>
+</div>
+</body>
+</html>
