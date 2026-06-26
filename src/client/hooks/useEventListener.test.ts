@@ -91,6 +91,30 @@ describe("useEventListener", () => {
     expect(handler).toHaveBeenCalledTimes(1);
   });
 
+  it("honors the `once` option (fires at most once)", () => {
+    const { el } = makeTarget();
+    const handler = vi.fn();
+    renderHook(() => useEventListener(el, "ping", handler, { once: true }));
+
+    act(() => void el.dispatchEvent(new Event("ping")));
+    act(() => void el.dispatchEvent(new Event("ping")));
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("honors an AbortSignal — aborting detaches the listener", () => {
+    const { el } = makeTarget();
+    const handler = vi.fn();
+    const controller = new AbortController();
+    renderHook(() => useEventListener(el, "ping", handler, { signal: controller.signal }));
+
+    act(() => void el.dispatchEvent(new Event("ping")));
+    expect(handler).toHaveBeenCalledTimes(1);
+
+    act(() => controller.abort());
+    act(() => void el.dispatchEvent(new Event("ping")));
+    expect(handler).toHaveBeenCalledTimes(1); // no further calls after abort
+  });
+
   it("is a clean no-op when the target is null", () => {
     const handler = vi.fn();
     // Should neither throw nor attach anything.
@@ -133,6 +157,25 @@ describe("useEventListeners", () => {
     act(() => void b.el.dispatchEvent(new Event("focusish")));
     expect(onA).not.toHaveBeenCalled();
     expect(onB).not.toHaveBeenCalled();
+  });
+
+  it("rebinds when a non-capture option (once) changes", () => {
+    const { el, addSpy, removeSpy } = makeTarget();
+    const handler = vi.fn();
+
+    const { rerender } = renderHook(
+      ({ once }: { once: boolean }) =>
+        useEventListeners([{ target: el, type: "ping", handler, options: { once } }]),
+      { initialProps: { once: false } },
+    );
+    expect(addSpy).toHaveBeenCalledTimes(1);
+
+    rerender({ once: true });
+
+    // once is add-time only, so a stale binding would silently keep the old
+    // value — the key now includes once, forcing a correct rebind.
+    expect(removeSpy).toHaveBeenCalledTimes(1);
+    expect(addSpy).toHaveBeenCalledTimes(2);
   });
 
   it("swaps handlers across renders without rebinding", () => {

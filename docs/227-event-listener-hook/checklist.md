@@ -16,6 +16,11 @@
 - [x] `npm run typecheck` + `eslint` on the new files — clean
 - [x] Create Linear issue (SHI-214) and link it in `plan.md` frontmatter
 - [x] PR with `Refs SHI-212` + `Closes SHI-214`
+- [x] Second-opinion review (Codex) + fixes: honor `once`/`passive`/`signal` on add
+      (not just `capture`); multi-form key tracks all three booleans; correct the
+      `null`-target/ref guidance; expand the call-site audit (now non-exhaustive +
+      out-of-scope classes); note non-listener (timer) cleanup in the
+      `useConnectionSync` migration
 
 ## Follow-up PRs — migrate call sites (NOT this PR)
 

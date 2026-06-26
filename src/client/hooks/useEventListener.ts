@@ -46,11 +46,13 @@ export type EventTargetLike = Window | Document | HTMLElement | EventTarget | nu
  * @param type    Event name, e.g. "visibilitychange", "keydown".
  * @param handler Called on each event. May be a fresh inline arrow every render
  *                — it will NOT cause a rebind; the latest one is always invoked.
- * @param options Standard `addEventListener` options. Only `capture` affects
- *                add/remove pairing and is tracked for rebinds; `once`/`passive`
- *                are honored on add. Pass a stable value (or omit) — an inline
- *                object literal is read by-field, so changing values rebind and
- *                unchanged values do not.
+ * @param options Standard `addEventListener` options — `capture`, `once`,
+ *                `passive`, and `signal` are all honored on add. Only `capture`
+ *                participates in remove matching. All four are tracked, so a
+ *                rebind fires when any changes; an inline object literal is read
+ *                by-field (and `signal` by identity), so unchanged values do not
+ *                rebind. Note an aborted `signal` detaches the listener natively,
+ *                independent of unmount.
  */
 export function useEventListener(
   target: EventTargetLike,
@@ -63,7 +65,7 @@ export function useEventListener(
   const handlerRef = useRef(handler);
   handlerRef.current = handler;
 
-  const { capture, once, passive } = normalizeOptions(options);
+  const { capture, once, passive, signal } = normalizeOptions(options);
 
   // eslint-disable-next-line no-restricted-syntax -- the one sanctioned addEventListener/cleanup useEffect wrapper; see module docstring
   useEffect(() => {
@@ -71,7 +73,9 @@ export function useEventListener(
     // `listener` is created ONCE per effect run and captured by both the add and
     // the cleanup below — that shared reference is what makes removal correct.
     const listener = (event: Event) => handlerRef.current(event);
-    const addOpts: AddEventListenerOptions = { capture, once, passive };
+    // Pass every supported option through to the native add so `once`/`passive`/
+    // `signal` are actually honored — not silently dropped.
+    const addOpts: AddEventListenerOptions = { capture, once, passive, ...(signal ? { signal } : {}) };
     target.addEventListener(type, listener, addOpts);
     return () => {
       // `capture` is the only option that participates in matching; pass it back
@@ -79,8 +83,8 @@ export function useEventListener(
       target.removeEventListener(type, listener, { capture });
     };
     // handler is intentionally NOT a dep — it lives in handlerRef. Rebind only
-    // when the subscription identity (target/type/capture) actually changes.
-  }, [target, type, capture, once, passive]);
+    // when the subscription identity (target/type/options) actually changes.
+  }, [target, type, capture, once, passive, signal]);
 }
 
 /**
@@ -115,9 +119,15 @@ export function useEventListeners(specs: EventListenerSpec[]): void {
 
   // Derived key over the binding-identity fields only (NOT the handlers). When
   // this string is unchanged the effect does not re-run, so swapping handlers
-  // each render is free; adding/removing a spec or flipping capture rebinds.
+  // each render is free; adding/removing a spec or flipping any boolean option
+  // rebinds. `signal` is NOT in the key — it is add-time only and cannot be
+  // string-keyed by identity, so callers must pass a stable signal to the multi
+  // form (the single-event form does track signal identity).
   const key = specs
-    .map((s) => `${describeTarget(s.target)}:${s.type}:${normalizeOptions(s.options).capture ? 1 : 0}`)
+    .map((s) => {
+      const o = normalizeOptions(s.options);
+      return `${describeTarget(s.target)}:${s.type}:${o.capture ? 1 : 0}:${o.once ? 1 : 0}:${o.passive ? 1 : 0}`;
+    })
     .join("|");
 
   // eslint-disable-next-line no-restricted-syntax -- the one sanctioned addEventListener/cleanup useEffect wrapper; see module docstring
@@ -125,11 +135,11 @@ export function useEventListeners(specs: EventListenerSpec[]): void {
     // Snapshot the specs for THIS bind so each cleanup removes exactly what it
     // added, even if specsRef is later refreshed with a different array.
     const bound = specsRef.current.map((spec, i) => {
-      const { capture, once, passive } = normalizeOptions(spec.options);
+      const { capture, once, passive, signal } = normalizeOptions(spec.options);
       // Read the latest handler for this index at fire time, by index into the
       // live ref — so handler swaps without a rebind still call the new one.
       const listener = (event: Event) => specsRef.current[i]?.handler(event);
-      spec.target?.addEventListener(spec.type, listener, { capture, once, passive });
+      spec.target?.addEventListener(spec.type, listener, { capture, once, passive, ...(signal ? { signal } : {}) });
       return { spec, listener, capture };
     });
     return () => {
@@ -147,12 +157,16 @@ function normalizeOptions(options?: boolean | AddEventListenerOptions): {
   capture: boolean;
   once: boolean;
   passive: boolean;
+  signal: AbortSignal | undefined;
 } {
-  if (typeof options === "boolean") return { capture: options, once: false, passive: false };
+  if (typeof options === "boolean") {
+    return { capture: options, once: false, passive: false, signal: undefined };
+  }
   return {
     capture: options?.capture ?? false,
     once: options?.once ?? false,
     passive: options?.passive ?? false,
+    signal: options?.signal,
   };
 }
 

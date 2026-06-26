@@ -105,12 +105,25 @@ function useEventListeners(specs: EventListenerSpec[]): void;
 ```
 
 - **`target` accepts `null`/`undefined`** → clean no-op (nothing attached, nothing
-  to clean up). Lets a caller pass a not-yet-resolved ref or a conditionally
-  disabled target without branching at the call site.
-- **`options`** accepts the `boolean | AddEventListenerOptions` union. Only
-  `capture` participates in add/remove matching, so it is tracked in the rebind
-  key; `once`/`passive` are honored on add. Options are read **by field**, not by
-  object identity, so an inline literal does not churn the subscription.
+  to clean up). This is for a **conditionally disabled** target — a value computed
+  *during render*, e.g. `useEventListener(enabled ? window : null, …)` — so the
+  effect re-runs when the value flips. It is **not** safe for a plain
+  `useRef`-backed DOM node: `ref.current` going from `null` to an element does
+  **not** trigger a render, so the effect never re-runs and the listener stays
+  permanently unbound. A target that appears asynchronously must be promoted
+  through `useState` or a **callback ref** so the component re-renders when it
+  resolves. (None of the verified call sites below bind to an element ref — they
+  all bind to `window`/`document`, which are stable from first render.)
+- **`options`** accepts the `boolean | AddEventListenerOptions` union, and
+  `capture`, `once`, `passive`, and `signal` are **all** honored on add (passed
+  straight through to native `addEventListener`) — none are silently dropped. Only
+  `capture` participates in add/remove matching. The rebind set tracks all four:
+  the three booleans by value and `signal` by identity, all read **by field** (not
+  object identity), so an inline literal rebinds only when a value actually
+  changes. An aborted `signal` detaches the listener natively, independent of
+  unmount. **Multi-form exception:** `useEventListeners` keys on the three booleans
+  but **not** `signal` (a string key can't encode signal identity) — pass a stable
+  signal to the multi form, or use the single-event form when the signal changes.
 
 ### Single vs. multi-event — why both
 
@@ -130,19 +143,34 @@ multi form snapshots the spec array at bind time and removes each listener with 
 own captured reference.
 
 **`useEventListeners` rebind key caveat.** The multi form derives its effect dep
-from a string key over each spec's *target description* + type + capture. Targets
-are described as `window` / `document` / `el:TAG` / `target`. This is exact for the
-ambient singletons (`window`/`document`) the real sites use, but two *different*
-element instances with the same tag name would hash equal and not trigger a
-rebind. The contract: **`useEventListeners` is for ambient/singleton targets**; a
-listener on an element whose identity changes over time should use the single-event
-`useEventListener` (whose dep is the actual target reference). Documented, not a
-silent footgun.
+from a string key over each spec's *target description* + type + the three boolean
+options (`capture`/`once`/`passive`). Targets are described as `window` /
+`document` / `el:TAG` / `target`. This is exact for the ambient singletons
+(`window`/`document`) the real sites use, but two *different* element instances
+with the same tag name would hash equal and not trigger a rebind, and `signal`
+identity is not encoded (see options note above). The contract:
+**`useEventListeners` is for ambient/singleton targets with stable signals**; a
+listener on an element whose identity changes over time, or with a changing
+`signal`, should use the single-event `useEventListener` (whose deps are the actual
+target and signal references). Documented, not a silent footgun.
 
-## Verified call sites
+## Call sites
+
+A `grep -rn "addEventListener" src/client` surfaces **~40** matches. They are not
+all the same shape, so this section splits them into (a) the **priority migration
+set** below — the hook-level, ambient-target subscriptions this primitive most
+cleanly replaces — and (b) the **out-of-scope / later-batch classes** that follow.
+**This list is not the complete migration backlog**; component-level sites
+(`KeyboardShortcutsOverlay`, `FileAutoComplete`, `SkillAutoComplete`,
+`QuickCaptureOverlay`, `MobileRecordingOverlay`, `ui/dialog.tsx`, `PreviewFrame`,
+`ChatQuoteReply`, …) follow the identical `window`/`document` add+cleanup pattern
+and are equally valid targets — they are deferred to later sweeps to keep each
+migration PR reviewable, not because they don't qualify.
+
+### Priority migration set (hooks)
 
 Read from the current tree (file:line at time of writing). Each is a candidate for
-the **follow-up** migration PR, not this one.
+a **follow-up** migration PR, not this one.
 
 | # | Site | Target(s) | Event(s) | Handler stability | Migrates to |
 |---|---|---|---|---|---|
@@ -153,15 +181,37 @@ the **follow-up** migration PR, not this one.
 | 5 | `src/client/voice/use-voice-input.ts:322-345` | `window` + `document` | `blur`, `visibilitychange` | `useCallback` | `useEventListeners` (gated on `enabled`) |
 | 6 | `src/client/hooks/useKeyboardShortcuts.ts:22-36` | `window` | `keydown` (toggle overlay) | `useEffect` deps `[setShortcutsOpen, toggleChord]` | `useEventListener` |
 | 7 | `src/client/hooks/useKeyboardShortcuts.ts:41-50` | `window` | `keydown` (new session) | `useEffect` deps `[handleNewSession, newSessionChord]` | `useEventListener` |
+| 8 | `src/client/hooks/useQuickCaptureHotkey.ts:23` | `window` | `keydown` | stable | `useEventListener` |
+| 9 | `src/client/hooks/usePreviewErrors.ts:114` | `window` | `message` | stable | `useEventListener` |
+| 10 | `src/client/hooks/useWebSocket.ts:169-172` | `document` + `window` | `visibilitychange`, `pageshow`, `focus`, `online` | stable | `useEventListeners` |
 
-All seven currently carry a per-site
+All ten currently carry a per-site
 `// eslint-disable-next-line no-restricted-imports … useEffect …` justification
 (the repo restricts raw `useEffect` — see `eslint.config.js`,
 `RESTRICTED_USEEFFECT`). A secondary payoff of this hook: that disable lives in
 **one** audited place (the hook module), and migrated sites drop their own.
 
+### Out-of-scope classes (do NOT route through this hook)
+
+| Class | Examples | Why excluded |
+|---|---|---|
+| **Per-connection event tables** torn down wholesale by `close()` | `useServerEvents` SSE table (see next section), `useWebSocket` `ws.*` handlers | Listeners die with the connection object; no per-listener `removeEventListener`, so there is no cleanup bug to fix. (Note `useWebSocket`'s *separate* `document`/`window` foreground listeners at :169-172 ARE in scope — site #10.) |
+| **`MediaQueryList` subscriptions** | `useMediaQuery.ts:26` (`mql.addEventListener("change")`) | Already its own self-contained hook with correct cleanup; the target is a `MediaQueryList`, not an ambient DOM node — a different primitive (`matchMedia`) with its own `matches` read. Not worth folding in. |
+| **Imperative, non-React DOM wiring** | `components/MonacoCommentWidgets.ts`, `voice/capture.ts` (MediaRecorder), `register-service-worker.ts` | Not inside React render/effects — built imperatively against editor/recorder DOM. The hook is a React-effect tool and doesn't apply. |
+| **Drag-gesture listeners added inside an event handler** (not an effect) | `useResizablePanel.ts`, `useSidebarResize.ts` (mousemove/up added on mousedown) | Added/removed imperatively within a gesture, not on mount/unmount — a different lifecycle than this hook models. |
+
 ### Migration nuances to respect (not done in this PR)
 
+- **Site 2 (`useConnectionSync`) has non-listener cleanup in the same effect.**
+  Its current effect cleanup also clears `foregroundTimerRef` (`clearTimeout`,
+  `useConnectionSync.ts:43`) before removing the listeners. `useEventListeners`
+  only owns the add/remove pairs — it does **not** run that `clearTimeout`. The
+  migration must keep the timer teardown alive: either leave a tiny dedicated
+  cleanup effect for the timer, or hang the `clearTimeout` off an unmount effect
+  beside the `useEventListeners` call. Dropping it would leak a pending timeout
+  across unmount. (Same caution applies to any other site whose listener effect
+  also tears down a timer/subscription — audit the *whole* cleanup, not just the
+  `removeEventListener` lines, before deleting the effect.)
 - **Sites 4/5 are gated** (`enabled`, `hotkey`). The `null`-target no-op covers
   this: pass `enabled ? window : null`. Behavior (no listener when disabled) is
   preserved without an `if` around the hook (which the rules of hooks forbid).
@@ -204,7 +254,7 @@ Shipped and validated:
 
 - `src/client/hooks/useEventListener.ts` — `useEventListener` + `useEventListeners`
   + `EventTargetLike` / `EventListenerSpec` types.
-- `src/client/hooks/useEventListener.test.ts` — 7 tests, all green, proving:
+- `src/client/hooks/useEventListener.test.ts` — 10 tests, all green, proving:
   - attaches on mount and fires the handler;
   - on unmount the **removed reference === the added reference** (the exact bug the
     sketch had) **and** the listener verifiably stops firing afterward;
@@ -212,9 +262,12 @@ Shipped and validated:
     (single add, zero removes);
   - target/type change triggers a correct rebind (remove-old-then-add-new, old
     reference matched);
+  - `once` is honored (fires at most once) and an `AbortSignal` detaches the
+    listener on abort — i.e. options are passed through, not dropped;
   - `null` target is a clean no-op;
   - the multi form binds across two targets, tears all down with matching refs,
-    and swaps handlers without rebinding.
+    swaps handlers without rebinding, **and rebinds when a non-capture option
+    (`once`) changes** (the key tracks all three booleans, not just capture).
 
 Verified with `npx vitest run src/client/hooks/useEventListener.test.ts`,
 `npm run typecheck`, and `eslint` on the two new files. (Full `npm test` is not run
