@@ -6,6 +6,7 @@ import type { RepoInfo } from "../../server/shared/types.js";
 import { parseRepoLabel } from "../utils/repo-label.js";
 import { Badge } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
+import { Alert } from "./ui/banner.js";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
 import { GitHubTokenForm } from "./GitHubTokenForm.js";
 
@@ -135,10 +136,10 @@ export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, onRepoReady, 
         <div className="p-4">
           {/* Clone progress indicator */}
           {isCloning && (
-            <div className="mb-3 flex items-center gap-2 rounded-md border border-(--color-warning)/50 bg-(--color-warning-subtle) px-3 py-2">
+            <Alert variant="warning" className="mb-3 items-center">
               <CircleNotchIcon size={ICON_SIZE.SM} className="animate-spin text-(--color-warning)" />
-              <span className="text-xs text-(--color-warning)">Cloning repository...</span>
-            </div>
+              <span>Cloning repository...</span>
+            </Alert>
           )}
 
           <div className="relative">

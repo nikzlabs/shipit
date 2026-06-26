@@ -12,6 +12,7 @@ import { agentIdForModel } from "../utils/agent-for-model.js";
 import { parseRepoLabel } from "../utils/repo-label.js";
 import { MessageInput, type SendPayload } from "./MessageInput.js";
 import { Button } from "./ui/button.js";
+import { Alert } from "./ui/banner.js";
 import { Dialog } from "./ui/dialog.js";
 import type { FileContextRef, SessionInfo } from "../../server/shared/types.js";
 
@@ -214,14 +215,14 @@ export function QuickCaptureOverlay({
           </Button>
         </div>
         {error && (
-          <div className="mx-4 mt-3 rounded-md border border-(--color-error)/40 bg-(--color-error-subtle) px-3 py-2 text-sm text-(--color-error)">
+          <Alert variant="error" className="mx-4 mt-3 text-sm">
             {error}
-          </div>
+          </Alert>
         )}
         {selectedRepo && selectedRepo.status !== "ready" && (
-          <div className="mx-4 mt-3 rounded-md border border-(--color-warning)/40 bg-(--color-warning-subtle) px-3 py-2 text-sm text-(--color-warning)">
+          <Alert variant="warning" className="mx-4 mt-3 text-sm">
             This repo is still cloning.
-          </div>
+          </Alert>
         )}
         <div className="py-3">
           <MessageInput
