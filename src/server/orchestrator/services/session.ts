@@ -25,6 +25,7 @@ import { generateBranchPrefix } from "../git-utils.js";
 import { chownTreeToSessionWorker } from "../session-worker-uid.js";
 import { reclaimRegenerableSessionDirs } from "../disk-utils.js";
 import { ServiceError } from "./types.js";
+import { validateString, validateStringArray } from "./validation.js";
 
 // Re-exports so external consumers continue to resolve these from "./session.js".
 export { forkSession, mergeSession } from "./session-fork-merge.js";
@@ -442,10 +443,8 @@ export function reorderSessionPins(
   remoteUrl: string,
   ids: string[],
 ): { sessions: SessionInfo[] } {
-  if (typeof remoteUrl !== "string") throw new ServiceError(400, "remoteUrl must be a string");
-  if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string")) {
-    throw new ServiceError(400, "ids must be an array of session ids");
-  }
+  validateString(remoteUrl, "remoteUrl");
+  validateStringArray(ids, "ids");
   return { sessions: sessionManager.reorderPins(remoteUrl, ids) };
 }
 

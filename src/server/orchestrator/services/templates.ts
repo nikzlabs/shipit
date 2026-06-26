@@ -12,6 +12,7 @@ import type { SessionCapabilities, SessionInfo } from "../../shared/types.js";
 import { normalizeCapabilities } from "../../shared/types.js";
 import { getTemplate, applyTemplate as applyTemplateFiles, generatePackageLock, OPS_TEMPLATE_ID, buildOpsInvestigationSeed } from "../templates.js";
 import { ServiceError } from "./types.js";
+import { validateNonEmptyString } from "./validation.js";
 
 /** Create a GitHub repo with a template applied, committed, and pushed.
  *  Does NOT create a session — the caller should warm one via warmSessionForRepo(). */
@@ -107,9 +108,7 @@ export async function applyTemplate(
   sessionId?: string,
   targetSessionId?: string,
 ): Promise<{ templateId: string; name: string; session?: SessionInfo; sessionDir: string; seedPrompt?: string }> {
-  if (!templateId || typeof templateId !== "string" || !templateId.trim()) {
-    throw new ServiceError(400, "Template ID is required");
-  }
+  validateNonEmptyString(templateId, "Template ID");
   const trimmedTemplateId = templateId.trim();
   const template = getTemplate(trimmedTemplateId);
   if (!template) throw new ServiceError(400, `Unknown template: ${templateId}`);
