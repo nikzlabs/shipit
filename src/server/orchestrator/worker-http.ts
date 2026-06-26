@@ -53,6 +53,38 @@ function resolveTimeout(opts?: WorkerHttpOpts): number {
   return Math.max(0, opts.timeoutMs);
 }
 
+/**
+ * Wire the standard JSON response handling onto a worker {@link http.IncomingMessage}:
+ * buffer the body, parse it as JSON, reject on HTTP >= 400 (preferring the worker's
+ * `.error` field over a generic `HTTP <status>`), reject with an "Invalid response
+ * from worker" message when the body isn't JSON, otherwise resolve the parsed object.
+ *
+ * Shared by {@link workerPost}, {@link workerPut}, and {@link workerGet} — same
+ * treatment as the already-extracted {@link resolveTimeout}.
+ */
+function attachWorkerResponseHandler(
+  res: http.IncomingMessage,
+  resolve: (value: unknown) => void,
+  reject: (reason: Error) => void,
+): void {
+  let data = "";
+  res.setEncoding("utf-8");
+  res.on("data", (chunk: string) => { data += chunk; });
+  res.on("end", () => {
+    try {
+      const parsed = JSON.parse(data) as Record<string, unknown>;
+      if (res.statusCode && res.statusCode >= 400) {
+        reject(new Error((parsed.error as string) ?? `HTTP ${res.statusCode}`));
+      } else {
+        resolve(parsed);
+      }
+    } catch {
+      reject(new Error(`Invalid response from worker: ${data}`));
+    }
+  });
+  res.on("error", reject);
+}
+
 export async function workerPost(baseUrl: string, path: string, body?: unknown, opts?: WorkerHttpOpts): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const url = new URL(path, baseUrl);
@@ -73,24 +105,7 @@ export async function workerPost(baseUrl: string, path: string, body?: unknown, 
         headers,
         ...(timeoutMs > 0 ? { timeout: timeoutMs } : {}),
       },
-      (res) => {
-        let data = "";
-        res.setEncoding("utf-8");
-        res.on("data", (chunk: string) => { data += chunk; });
-        res.on("end", () => {
-          try {
-            const parsed = JSON.parse(data) as Record<string, unknown>;
-            if (res.statusCode && res.statusCode >= 400) {
-              reject(new Error((parsed.error as string) ?? `HTTP ${res.statusCode}`));
-            } else {
-              resolve(parsed);
-            }
-          } catch {
-            reject(new Error(`Invalid response from worker: ${data}`));
-          }
-        });
-        res.on("error", reject);
-      },
+      (res) => attachWorkerResponseHandler(res, resolve, reject),
     );
 
     if (timeoutMs > 0) {
@@ -153,24 +168,7 @@ export async function workerPut(baseUrl: string, path: string, body?: unknown, o
         headers,
         ...(timeoutMs > 0 ? { timeout: timeoutMs } : {}),
       },
-      (res) => {
-        let data = "";
-        res.setEncoding("utf-8");
-        res.on("data", (chunk: string) => { data += chunk; });
-        res.on("end", () => {
-          try {
-            const parsed = JSON.parse(data) as Record<string, unknown>;
-            if (res.statusCode && res.statusCode >= 400) {
-              reject(new Error((parsed.error as string) ?? `HTTP ${res.statusCode}`));
-            } else {
-              resolve(parsed);
-            }
-          } catch {
-            reject(new Error(`Invalid response from worker: ${data}`));
-          }
-        });
-        res.on("error", reject);
-      },
+      (res) => attachWorkerResponseHandler(res, resolve, reject),
     );
 
     if (timeoutMs > 0) {
@@ -206,24 +204,7 @@ export async function workerGet(baseUrl: string, path: string, opts?: WorkerHttp
         method: "GET",
         ...(timeoutMs > 0 ? { timeout: timeoutMs } : {}),
       },
-      (res) => {
-        let data = "";
-        res.setEncoding("utf-8");
-        res.on("data", (chunk: string) => { data += chunk; });
-        res.on("end", () => {
-          try {
-            const parsed = JSON.parse(data) as Record<string, unknown>;
-            if (res.statusCode && res.statusCode >= 400) {
-              reject(new Error((parsed.error as string) ?? `HTTP ${res.statusCode}`));
-            } else {
-              resolve(parsed);
-            }
-          } catch {
-            reject(new Error(`Invalid response from worker: ${data}`));
-          }
-        });
-        res.on("error", reject);
-      },
+      (res) => attachWorkerResponseHandler(res, resolve, reject),
     );
 
     if (timeoutMs > 0) {
