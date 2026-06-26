@@ -25,24 +25,7 @@ import { formatRelativeDate } from "../../utils/dates.js";
 import { MarkdownContent } from "../message-markdown.js";
 import { Button } from "../ui/button.js";
 import { Banner } from "../ui/banner.js";
-
-function Avatar({ login, avatarUrl }: { login: string; avatarUrl: string }) {
-  if (avatarUrl) {
-    return (
-      <img
-        src={avatarUrl}
-        alt={login}
-        className="size-5 shrink-0 rounded-full"
-        loading="lazy"
-      />
-    );
-  }
-  return (
-    <div className="size-5 shrink-0 rounded-full bg-(--color-bg-tertiary) text-(--color-text-tertiary) flex items-center justify-center text-[10px] font-semibold uppercase">
-      {login.charAt(0)}
-    </div>
-  );
-}
+import { Avatar } from "../ui/avatar.js";
 
 function CommentHeader({ login, createdAt }: { login: string; createdAt: string }) {
   return (
@@ -56,7 +39,7 @@ function CommentHeader({ login, createdAt }: { login: string; createdAt: string 
 function IssueComment({ comment }: { comment: PrIssueComment }) {
   return (
     <li className="flex gap-2">
-      <Avatar login={comment.author.login} avatarUrl={comment.author.avatarUrl} />
+      <Avatar name={comment.author.login} avatarUrl={comment.author.avatarUrl} />
       <div className="min-w-0 flex-1">
         <CommentHeader login={comment.author.login} createdAt={comment.createdAt} />
         <div className="text-sm text-(--color-text-secondary)">
@@ -130,7 +113,7 @@ function ReviewThreadItem({
       <ul className="flex flex-col gap-2">
         {thread.comments.map((c) => (
           <li key={c.id} className="flex gap-2">
-            <Avatar login={c.author.login} avatarUrl={c.author.avatarUrl} />
+            <Avatar name={c.author.login} avatarUrl={c.author.avatarUrl} />
             <div className="min-w-0 flex-1">
               <CommentHeader login={c.author.login} createdAt={c.createdAt} />
               <div className="text-sm text-(--color-text-secondary)">

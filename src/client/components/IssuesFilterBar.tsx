@@ -2,6 +2,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { CaretDownIcon, CheckIcon, MagnifyingGlassIcon, XIcon } from "@phosphor-icons/react";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover.js";
+import { Avatar } from "./ui/avatar.js";
 import { priorityColor, statusDotColor } from "./IssueFieldControls.js";
 import { labelDotColor } from "./issue-label-color.js";
 import { useSurfaceLuminance } from "../hooks/useSurfaceLuminance.js";
@@ -176,13 +177,15 @@ function AssigneeAvatar({ option }: { option: AssigneeOption }) {
       </span>
     );
   }
-  if (option.avatarUrl) {
-    return <img src={option.avatarUrl} alt="" className="shrink-0 w-[18px] h-[18px] rounded-full object-cover" />;
-  }
   return (
-    <span className="shrink-0 w-[18px] h-[18px] rounded-full bg-(--color-bg-hover) text-(--color-text-secondary) text-[9px] font-bold inline-flex items-center justify-center">
-      {initials(option.label)}
-    </span>
+    <Avatar
+      name={option.label}
+      avatarUrl={option.avatarUrl}
+      size={18}
+      getInitials={initials}
+      alt=""
+      className="bg-(--color-bg-hover) text-(--color-text-secondary) text-[9px] font-bold inline-flex"
+    />
   );
 }
 
