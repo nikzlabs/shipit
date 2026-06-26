@@ -179,8 +179,12 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
     );
   }
 
-  // Fallback: compact one-liner for non-file tools, with optional tool result
+  // Fallback: compact one-liner for non-file tools. The line is clickable both
+  // while the tool is pending (opens the dialog showing just the input) and once
+  // it has a result (input + output). The dialog updates in place when the
+  // result arrives — `result` is a prop, so the open modal re-renders with it.
   // (showModal state is hoisted to the top of the component — see comment there)
+  const isInspectable = inProgress || hasResult;
 
   // Build a summary of the command/input for the tool line
   const commandText = "command" in tool.input && tool.input.command
@@ -207,8 +211,8 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
   return (
     <div className="min-w-0 overflow-hidden">
       <div
-        className={`group/tool text-xs text-(--color-text-secondary) pl-[1em] py-1 font-mono flex items-center gap-2 opacity-70 border-l-2 border-(--color-text-tertiary)/40${hasResult ? " [@media(pointer:coarse)]:active:opacity-50" : ""}`}
-        onClick={hasResult ? () => setShowModal(true) : undefined}
+        className={`group/tool text-xs text-(--color-text-secondary) pl-[1em] py-1 font-mono flex items-center gap-2 opacity-70 border-l-2 border-(--color-text-tertiary)/40${isInspectable ? " cursor-pointer [@media(pointer:coarse)]:active:opacity-50" : ""}`}
+        onClick={isInspectable ? () => setShowModal(true) : undefined}
       >
         {inProgress && <ToolSpinner />}
         {!isCommandTool && <FormattedToolName name={tool.name} highlight={inProgress} />}
@@ -237,20 +241,20 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
             {urlText}
           </span>
         ) : null}
-        {hasResult && (
+        {isInspectable && (
           <Button
             variant="ghost"
             size="icon"
             onClick={() => setShowModal(true)}
             className="hidden group-hover/tool:inline-flex ml-1 cursor-pointer"
-            aria-label="Show output"
+            aria-label={hasResult ? "Show output" : "Show input"}
           >
             <EyeIcon size={12} />
-            <span className="whitespace-nowrap">Show output</span>
+            <span className="whitespace-nowrap">{hasResult ? "Show output" : "Show input"}</span>
           </Button>
         )}
       </div>
-      {showModal && result && (
+      {showModal && (
         <ToolOutputModal
           toolName={tool.name}
           input={tool.input}
@@ -439,14 +443,21 @@ export function formatToolDuration(ms: number): string {
   return s < 10 ? `${s.toFixed(1)} s` : `${Math.round(s)} s`;
 }
 
-/** Full-screen modal showing the agent's tool input and the tool's output. */
+/**
+ * Full-screen modal showing the agent's tool input and the tool's output.
+ *
+ * `result` is optional: the modal can be opened while the tool is still pending
+ * (input known, no output yet), in which case the Output section shows a running
+ * indicator. When the result arrives the parent re-renders this modal with the
+ * `result` prop populated and the output replaces the indicator in place.
+ */
 function ToolOutputModal({ toolName, input, result, onClose }: {
   toolName: string;
   input: Record<string, unknown>;
-  result: ToolResultBlock;
+  result?: ToolResultBlock;
   onClose: () => void;
 }) {
-  const duration = typeof result.durationMs === "number" ? formatToolDuration(result.durationMs) : "";
+  const duration = typeof result?.durationMs === "number" ? formatToolDuration(result.durationMs) : "";
   return (
     <Dialog open onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
     <DialogContent className="w-[min(90vw,56rem)] max-h-[80vh] flex flex-col" aria-label="Tool output">
@@ -466,7 +477,14 @@ function ToolOutputModal({ toolName, input, result, onClose }: {
             </span>
           ) : null}
         </div>
-        <ToolResult tool={toolName} result={result} />
+        {result ? (
+          <ToolResult tool={toolName} result={result} />
+        ) : (
+          <div className="flex items-center gap-2 text-xs text-(--color-text-tertiary) font-mono italic">
+            <ToolSpinner />
+            <span>Running…</span>
+          </div>
+        )}
       </div>
     </DialogContent>
     </Dialog>
