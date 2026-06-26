@@ -2,6 +2,47 @@ import type { AgentId, IssuePriorityLevel, PermissionMode } from "../../server/s
 import type { IssueFilters } from "../components/issues-filter.js";
 import { DEFAULT_SORT_PREFS, type GroupKey, type SortDir, type SortKey, type SortPrefs } from "../components/issues-sort.js";
 
+/**
+ * Parse a JSON string with a guaranteed fallback. Returns `fallback` when `raw`
+ * is null/empty, when `JSON.parse` throws, or when `validate` throws. `validate`
+ * doubles as a transform: it receives the parsed `unknown` and returns the
+ * typed/narrowed `T` (e.g. filtering an object down to well-formed entries).
+ */
+export function parseJsonWithFallback<T>(
+  raw: string | null,
+  fallback: T,
+  validate?: (parsed: unknown) => T,
+): T {
+  if (!raw) return fallback;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return validate ? validate(parsed) : (parsed as T);
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * Read a localStorage key, JSON-parse it, and apply an optional `transform`,
+ * with a guaranteed fallback. Returns `fallback` when the key is absent,
+ * localStorage is unavailable, the value isn't valid JSON, or `transform`
+ * throws. The single chokepoint for the repeated
+ * `try { getItem → JSON.parse → filter } catch { fallback }` pattern.
+ */
+export function getLocalStorageObject<T>(
+  key: string,
+  fallback: T,
+  transform?: (parsed: unknown) => T,
+): T {
+  let raw: string | null;
+  try {
+    raw = localStorage.getItem(key);
+  } catch {
+    return fallback;
+  }
+  return parseJsonWithFallback(raw, fallback, transform);
+}
+
 const SIDEBAR_COLLAPSED_KEY = "vibe-sidebar-collapsed";
 const RIGHT_TAB_KEY = "shipit-right-tab";
 const AGENT_PREFERENCE_KEY = "vibe-agent-id";
@@ -98,18 +139,13 @@ export function saveModelId(modelId: string | undefined): void {
 const REASONING_BY_AGENT_KEY = "shipit-reasoning-by-agent";
 
 function readReasoningByAgent(): Record<string, string> {
-  try {
-    const raw = localStorage.getItem(REASONING_BY_AGENT_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
+  return getLocalStorageObject<Record<string, string>>(REASONING_BY_AGENT_KEY, {}, (parsed) => {
     const out: Record<string, string> = {};
-    for (const [k, v] of Object.entries(parsed)) {
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
       if (typeof v === "string" && v) out[k] = v;
     }
     return out;
-  } catch {
-    return {};
-  }
+  });
 }
 
 export function getSavedReasoning(agentId: string): string | undefined {
@@ -291,12 +327,13 @@ export function getSavedKeybindings(): Record<string, string> {
   try {
     const raw = localStorage.getItem(KEYBINDINGS_KEY);
     if (raw) {
-      const parsed = JSON.parse(raw) as Record<string, unknown>;
-      const out: Record<string, string> = {};
-      for (const [k, v] of Object.entries(parsed)) {
-        if (typeof v === "string" && v) out[k] = v;
-      }
-      return out;
+      return parseJsonWithFallback<Record<string, string>>(raw, {}, (parsed) => {
+        const out: Record<string, string> = {};
+        for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+          if (typeof v === "string" && v) out[k] = v;
+        }
+        return out;
+      });
     }
     // No blob yet — migrate legacy single-purpose keys if present.
     const migrated: Record<string, string> = {};
@@ -335,20 +372,15 @@ const VALID_PERMISSION_MODES: readonly PermissionMode[] = ["auto", "plan", "guar
  * choice) — only the per-session map. Unknown modes are dropped defensively.
  */
 export function getSavedPermissionModeBySession(): Record<string, PermissionMode> {
-  try {
-    const raw = localStorage.getItem(PERMISSION_MODE_BY_SESSION_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
+  return getLocalStorageObject<Record<string, PermissionMode>>(PERMISSION_MODE_BY_SESSION_KEY, {}, (parsed) => {
     const result: Record<string, PermissionMode> = {};
-    for (const [id, mode] of Object.entries(parsed)) {
+    for (const [id, mode] of Object.entries(parsed as Record<string, unknown>)) {
       if (typeof mode === "string" && (VALID_PERMISSION_MODES as readonly string[]).includes(mode)) {
         result[id] = mode as PermissionMode;
       }
     }
     return result;
-  } catch {
-    return {};
-  }
+  });
 }
 
 export function savePermissionModeBySession(map: Record<string, PermissionMode>): void {
@@ -371,18 +403,13 @@ export function savePermissionModeBySession(map: Record<string, PermissionMode>)
 const ACTIVE_PRESENT_BY_SESSION_KEY = "shipit-active-present-by-session";
 
 export function getSavedActivePresentBySession(): Record<string, string> {
-  try {
-    const raw = localStorage.getItem(ACTIVE_PRESENT_BY_SESSION_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
+  return getLocalStorageObject<Record<string, string>>(ACTIVE_PRESENT_BY_SESSION_KEY, {}, (parsed) => {
     const out: Record<string, string> = {};
-    for (const [id, presentId] of Object.entries(parsed)) {
+    for (const [id, presentId] of Object.entries(parsed as Record<string, unknown>)) {
       if (typeof presentId === "string" && presentId) out[id] = presentId;
     }
     return out;
-  } catch {
-    return {};
-  }
+  });
 }
 
 export function saveActivePresentBySession(map: Record<string, string>): void {
@@ -405,18 +432,13 @@ export function saveActivePresentBySession(map: Record<string, string>): void {
 const CHANGED_DOCS_EXPANDED_KEY = "shipit-changed-docs-expanded-by-session";
 
 function readChangedDocsMap(): Record<string, boolean> {
-  try {
-    const raw = localStorage.getItem(CHANGED_DOCS_EXPANDED_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
+  return getLocalStorageObject<Record<string, boolean>>(CHANGED_DOCS_EXPANDED_KEY, {}, (parsed) => {
     const out: Record<string, boolean> = {};
-    for (const [id, v] of Object.entries(parsed)) {
+    for (const [id, v] of Object.entries(parsed as Record<string, unknown>)) {
       if (typeof v === "boolean") out[id] = v;
     }
     return out;
-  } catch {
-    return {};
-  }
+  });
 }
 
 export function getSavedChangedDocsExpanded(
@@ -743,28 +765,22 @@ export function saveSortPrefs(prefs: SortPrefs): void {
  * A legacy array form (`string[]` of collapsed ids) is migrated to `{id: true}`.
  */
 export function getSavedIssueCollapsed(): Record<string, boolean> {
-  try {
-    const raw = localStorage.getItem(ISSUE_COLLAPSED_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as unknown;
-      if (Array.isArray(parsed)) {
-        // Legacy: an array of collapsed ids → explicit `true` overrides.
-        const out: Record<string, boolean> = {};
-        for (const x of parsed) if (typeof x === "string") out[x] = true;
-        return out;
-      }
-      if (parsed && typeof parsed === "object") {
-        const out: Record<string, boolean> = {};
-        for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-          if (typeof v === "boolean") out[k] = v;
-        }
-        return out;
-      }
+  return getLocalStorageObject<Record<string, boolean>>(ISSUE_COLLAPSED_KEY, {}, (parsed) => {
+    if (Array.isArray(parsed)) {
+      // Legacy: an array of collapsed ids → explicit `true` overrides.
+      const out: Record<string, boolean> = {};
+      for (const x of parsed) if (typeof x === "string") out[x] = true;
+      return out;
     }
-  } catch {
-    /* ignore */
-  }
-  return {};
+    if (parsed && typeof parsed === "object") {
+      const out: Record<string, boolean> = {};
+      for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+        if (typeof v === "boolean") out[k] = v;
+      }
+      return out;
+    }
+    return {};
+  });
 }
 
 export function saveIssueCollapsed(collapsed: Record<string, boolean>): void {

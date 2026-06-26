@@ -8,10 +8,80 @@ import {
   saveDraftUploads,
   addDraftUpload,
   removeDraftUploads,
+  parseJsonWithFallback,
+  getLocalStorageObject,
 } from "./local-storage.js";
 
 beforeEach(() => {
   localStorage.clear();
+});
+
+describe("parseJsonWithFallback", () => {
+  it("round-trips valid JSON", () => {
+    expect(parseJsonWithFallback('{"a":1}', {})).toEqual({ a: 1 });
+    expect(parseJsonWithFallback("[1,2,3]", [])).toEqual([1, 2, 3]);
+  });
+
+  it("returns the fallback for null/empty input", () => {
+    expect(parseJsonWithFallback(null, { def: true })).toEqual({ def: true });
+    expect(parseJsonWithFallback("", { def: true })).toEqual({ def: true });
+  });
+
+  it("returns the fallback for malformed JSON", () => {
+    expect(parseJsonWithFallback("not json", { def: 1 })).toEqual({ def: 1 });
+    expect(parseJsonWithFallback("{unclosed", [])).toEqual([]);
+  });
+
+  it("applies the validate transform to the parsed value", () => {
+    const out = parseJsonWithFallback<Record<string, string>>(
+      JSON.stringify({ a: "x", b: 2, c: "y" }),
+      {},
+      (parsed) => {
+        const result: Record<string, string> = {};
+        for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+          if (typeof v === "string") result[k] = v;
+        }
+        return result;
+      },
+    );
+    expect(out).toEqual({ a: "x", c: "y" });
+  });
+
+  it("returns the fallback when validate throws", () => {
+    expect(
+      parseJsonWithFallback(JSON.stringify(5), new Set<string>(), (parsed) => new Set(parsed as string[])),
+    ).toEqual(new Set());
+  });
+});
+
+describe("getLocalStorageObject", () => {
+  it("round-trips valid JSON stored under a key", () => {
+    localStorage.setItem("k", JSON.stringify({ a: 1, b: 2 }));
+    expect(getLocalStorageObject("k", {})).toEqual({ a: 1, b: 2 });
+  });
+
+  it("returns the fallback for a missing key", () => {
+    expect(getLocalStorageObject("absent", { def: true })).toEqual({ def: true });
+  });
+
+  it("returns the fallback for a malformed stored blob", () => {
+    localStorage.setItem("k", "not json");
+    expect(getLocalStorageObject("k", { def: 1 })).toEqual({ def: 1 });
+  });
+
+  it("applies the transform to the parsed value", () => {
+    localStorage.setItem("k", JSON.stringify(["a", "b", "a"]));
+    expect(getLocalStorageObject<Set<string>>("k", new Set(), (parsed) => new Set(parsed as string[]))).toEqual(
+      new Set(["a", "b"]),
+    );
+  });
+
+  it("returns the fallback when the transform throws", () => {
+    localStorage.setItem("k", JSON.stringify(42));
+    expect(
+      getLocalStorageObject<Set<string>>("k", new Set(), (parsed) => new Set(parsed as string[])),
+    ).toEqual(new Set());
+  });
 });
 
 describe("draft uploads (attached-but-unsent chips)", () => {
