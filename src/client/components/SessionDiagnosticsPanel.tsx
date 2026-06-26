@@ -16,8 +16,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: polling external state
 import { useEffect, useState, useCallback } from "react";
 import {
-  CopyIcon,
-  CheckIcon,
   CaretRightIcon,
   CaretDownIcon,} from "@phosphor-icons/react";
 import {
@@ -26,7 +24,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "./ui/dialog.js";
-import { Button } from "./ui/button.js";
+import { CopyButton } from "./ui/copy-button.js";
 import { useApi, ApiError } from "../hooks/useApi.js";
 import { ICON_SIZE } from "../design-tokens.js";
 
@@ -117,7 +115,6 @@ export function SessionDiagnosticsPanel({ sessionId, open, onOpenChange }: Sessi
   const api = useApi();
   const [data, setData] = useState<DiagnosticsPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
 
   const poll = useCallback(async () => {
     if (!sessionId) return;
@@ -137,7 +134,6 @@ export function SessionDiagnosticsPanel({ sessionId, open, onOpenChange }: Sessi
     if (!open || !sessionId) {
       setData(null);
       setError(null);
-      setCopied(false);
       return;
     }
     void poll();
@@ -145,22 +141,12 @@ export function SessionDiagnosticsPanel({ sessionId, open, onOpenChange }: Sessi
     return () => clearInterval(id);
   }, [open, sessionId, poll]);
 
-  const onCopy = useCallback(async () => {
-    if (!data) return;
-    const payload = {
-      ...data,
-      clientCopiedAt: new Date().toISOString(),
-    };
-    try {
-      await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // Browsers may deny clipboard access (insecure context, permission
-      // policy). Fall back to letting the user copy manually from the JSON
-      // panel in the UI — silently swallow here so we don't crash the
-      // dialog.
-    }
+  // Built lazily at click time so `clientCopiedAt` reflects the moment the user
+  // copied, not when the panel last rendered. The button is disabled while
+  // `!data`, so this only runs with a payload in hand.
+  const copyPayload = useCallback(() => {
+    if (!data) return "";
+    return JSON.stringify({ ...data, clientCopiedAt: new Date().toISOString() }, null, 2);
   }, [data]);
 
   return (
@@ -170,18 +156,14 @@ export function SessionDiagnosticsPanel({ sessionId, open, onOpenChange }: Sessi
         <DialogHeader className="pr-14">
           <DialogTitle>Session diagnostics</DialogTitle>
           <div className="flex items-center gap-2">
-            <Button
+            <CopyButton
               variant="secondary"
               size="md"
-              onClick={() => void onCopy()}
+              text={copyPayload}
               disabled={!data}
+              iconSize={ICON_SIZE.XS}
               title="Copy the full diagnostics payload as JSON for bug reports."
-            >
-              {copied
-                ? <CheckIcon size={ICON_SIZE.XS} />
-                : <CopyIcon size={ICON_SIZE.XS} />}
-              {copied ? "Copied" : "Copy"}
-            </Button>
+            />
           </div>
         </DialogHeader>
         <div className="flex-1 overflow-auto p-5 space-y-5 text-xs font-mono">
