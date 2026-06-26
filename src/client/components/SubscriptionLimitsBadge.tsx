@@ -2,6 +2,7 @@ import { ArrowClockwiseIcon, CircleNotchIcon } from "@phosphor-icons/react";
 import { useCallback, useState } from "react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { useApi } from "../hooks/useApi.js";
+import { Badge } from "./ui/badge.js";
 import type {
   AgentId,
   SubscriptionLimits,
@@ -81,9 +82,14 @@ export function SubscriptionLimitPill({ label, snapshot, showRefresh }: Subscrip
   const now = Date.now();
   const hasData = snapshot.session !== null || snapshot.weekly !== null;
 
+  // The pill carries inline meters with underline gauges, so it overrides
+  // Badge's symmetric padding with the asymmetric `pl-2 pr-* pt-0 pb-0.5` it
+  // needs (tighter right edge when the refresh button is tucked in) and adds
+  // the `gap-2` flex spacing between label / meters / button.
   return (
-    <span
-      className={`inline-flex items-center gap-2 text-xs pl-2 ${showRefresh ? "pr-1" : "pr-2"} pb-0.5 rounded-full bg-(--color-bg-hover) font-medium tabular-nums text-(--color-text-secondary)`}
+    <Badge
+      numeric
+      className={`gap-2 pl-2 ${showRefresh ? "pr-1" : "pr-2"} pt-0 pb-0.5 bg-(--color-bg-hover)`}
       title={buildTooltip(label, snapshot, now)}
     >
       <span>{label}</span>
@@ -107,7 +113,7 @@ export function SubscriptionLimitPill({ label, snapshot, showRefresh }: Subscrip
       )}
       {!hasData && <span>—</span>}
       {showRefresh && <LimitsRefreshButton snapshot={snapshot} />}
-    </span>
+    </Badge>
   );
 }
 
