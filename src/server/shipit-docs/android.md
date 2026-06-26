@@ -134,6 +134,12 @@ services:
     x-shipit-preview: auto         # shows the web UI as the interactive preview
 ```
 
+`/dev/kvm:/dev/kvm` is the **only** device mapping ShipIt permits — any other
+device, or `/dev/kvm` remapped elsewhere, is rejected (it's not a general device
+passthrough). An operator can disable even this deployment-wide with
+`SESSION_ALLOW_DEV_KVM=0`; if so, declaring the device fails with a clear message
+and you fall back to the cloud device farm below. See [compose.md](compose.md).
+
 ShipIt reaches services by **service DNS on the Compose network** (host ports
 aren't published), so connect adb by service name:
 

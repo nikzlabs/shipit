@@ -8,6 +8,9 @@ import {
   generateComposeOverride,
   writeComposeOverride,
   ComposeValidationError,
+  validateDevices,
+  isDevKvmAllowed,
+  ALLOWED_DEVICE,
 } from "./compose-generator.js";
 
 describe("parseComposeFile", () => {
@@ -187,6 +190,45 @@ services:
     network_mode: host
 `);
     expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("network_mode: host");
+  });
+
+  // docs/213 Phase 3 — the Android emulator service needs /dev/kvm. ShipIt
+  // allows exactly that one device mapping and rejects any other passthrough.
+  it("accepts the exact /dev/kvm:/dev/kvm device mapping (emulator)", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  emulator:
+    image: budtmo/docker-android:emulator_14
+    devices: ["/dev/kvm:/dev/kvm"]
+    expose: ["5555"]
+`);
+    const services = parseComposeFile(p, { dockerSocket: false });
+    expect(services).toHaveLength(1);
+    expect(services[0].name).toBe("emulator");
+  });
+
+  it("rejects any device other than /dev/kvm", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  bad:
+    image: node:20
+    devices: ["/dev/sda:/dev/sda"]
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow(ComposeValidationError);
+    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("is not allowed");
+  });
+
+  it("rejects a /dev/kvm host remapped to a different container device", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  sneaky:
+    image: node:20
+    devices: ["/dev/kvm:/dev/sda"]
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("is not allowed");
   });
 
   it("rejects Docker socket mount when docker-socket is false", () => {
@@ -1044,5 +1086,66 @@ describe("generateComposeOverride — overlay dep-dir mounts (docs/183 Phase 5)"
     expect(atNodeModules).toEqual([
       { type: "volume", source: NM.volumeName, target: "/app/node_modules" },
     ]);
+  });
+});
+
+describe("isDevKvmAllowed (docs/213 operator kill-switch)", () => {
+  it("defaults to allowed when unset", () => {
+    expect(isDevKvmAllowed({})).toBe(true);
+  });
+
+  it("treats 0/false/no/off (any case) as disabled", () => {
+    for (const v of ["0", "false", "FALSE", "no", "Off", " off "]) {
+      expect(isDevKvmAllowed({ SESSION_ALLOW_DEV_KVM: v })).toBe(false);
+    }
+  });
+
+  it("treats any other value as allowed", () => {
+    for (const v of ["1", "true", "yes", "on", ""]) {
+      expect(isDevKvmAllowed({ SESSION_ALLOW_DEV_KVM: v })).toBe(true);
+    }
+  });
+});
+
+describe("validateDevices (docs/213 — only /dev/kvm)", () => {
+  it("is a no-op when devices is absent", () => {
+    expect(() => validateDevices("svc", { image: "x" }, true)).not.toThrow();
+  });
+
+  it("accepts the exact /dev/kvm mapping in every supported form", () => {
+    const forms: unknown[] = [
+      "/dev/kvm",
+      "/dev/kvm:/dev/kvm",
+      "/dev/kvm:/dev/kvm:rwm", // cgroup permissions are ignored
+      { source: "/dev/kvm", target: "/dev/kvm" },
+      { source: "/dev/kvm" }, // target defaults to source
+    ];
+    for (const dev of forms) {
+      expect(() => validateDevices("emulator", { devices: [dev] }, true)).not.toThrow();
+    }
+    expect(ALLOWED_DEVICE).toBe("/dev/kvm");
+  });
+
+  it("rejects any other device, and a /dev/kvm host remapped to another container device", () => {
+    const bad: unknown[] = [
+      "/dev/sda",
+      "/dev/sda:/dev/sda",
+      "/dev/snd:/dev/snd:rwm",
+      "/dev/kvm:/dev/sda", // host is kvm but container target is not
+      "/dev/sda:/dev/kvm", // container is kvm but host source is not
+      { source: "/dev/sda", target: "/dev/sda" },
+    ];
+    for (const dev of bad) {
+      expect(() => validateDevices("svc", { devices: [dev] }, true)).toThrow("is not allowed");
+    }
+  });
+
+  it("rejects a non-list devices value", () => {
+    expect(() => validateDevices("svc", { devices: "/dev/kvm" }, true)).toThrow("must be a list");
+  });
+
+  it("rejects even /dev/kvm when the operator kill-switch is off", () => {
+    expect(() => validateDevices("emulator", { devices: ["/dev/kvm:/dev/kvm"] }, false))
+      .toThrow("disabled on this deployment");
   });
 });

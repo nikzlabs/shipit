@@ -36,9 +36,16 @@ phases are future work (the session brief said do not commit to a heavy implemen
 - [x] Document the read-the-diff-PNG → `present` habit for inline visual feedback (no new code — `present` exists)
 - [ ] **CI/post-deploy only:** confirm the baked `layoutlib` runtime runs a repo's snapshot tests headlessly (needs the rebuilt image; a SHI-205 native test app exercises it end to end)
 
-### Phases 3–5 (future work — not this session)
+### Phase 3 — running-app enabler (`/dev/kvm`) (shipped)
 
-- [ ] Phase 3: narrowly-scoped `/dev/kvm` `devices:` allowlist in `compose-generator.ts` + canonical emulator Compose recipe; confirm host KVM
+- [x] Narrowly-scoped `devices:` allowlist in `compose-generator.ts` — accept **only** the exact `/dev/kvm:/dev/kvm` mapping (`validateDevices`), reject every other device + `/dev/kvm` remapped elsewhere
+- [x] Operator kill-switch `SESSION_ALLOW_DEV_KVM=0` (`isDevKvmAllowed`) — deployment-level disable, not a per-repo field
+- [x] Co-located unit tests (allow exact mapping in all forms; reject other devices/remaps/non-list; reject when kill-switch off; env parsing)
+- [x] Canonical emulator Compose recipe + constraints in `compose.md`; `android.md` + skill updated with the one-device rule + kill-switch
+- [ ] **Operator/post-deploy only:** confirm host KVM (`kvm-ok`) and that the budtmo emulator image boots + is `adb`-reachable on a real deployment (also check the seccomp profile permits KVM ioctls)
+
+### Phases 4–5 (future work — not this session)
+
 - [ ] Phase 4: agent `adb` debug/drive loop (logcat + tap/screenshot/snapshot triad, optional Maestro) + interactive preview via `x-shipit-preview`
 - [ ] Phase 5: Firebase Test Lab / GMD-on-KVM for instrumented tests; results as inline PR artifacts
 - [ ] Persistent SDK overlay so on-demand `sdkmanager` installs survive a container restart

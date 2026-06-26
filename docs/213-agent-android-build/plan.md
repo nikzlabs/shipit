@@ -252,9 +252,10 @@ Each phase is shippable on its own and ordered by value-per-effort.
 - **Phase 5 — instrumented / cloud.** Firebase Test Lab (or GMD on a KVM CI runner) for instrumented tests
   and real-device validation on no-KVM hosts, surfaced as inline PR artifacts.
 
-## Implementation status (Phases 1–2 shipped)
+## Implementation status (Phases 1–3 shipped)
 
-Phases 1 and 2 are implemented. What landed and where:
+Phases 1, 2, and 3 are implemented (Phases 1–2 verified end-to-end: a real `assembleDebug` + `lint` builds
+green in a fresh session). What landed and where:
 
 - **Baked toolchain** (`Dockerfile.session-worker.prod` + `.dev`, after the Playwright block): JDK 17
   (`JAVA_HOME=/opt/java`, an arch-independent symlink), the Android SDK (`ANDROID_SDK_ROOT=/opt/android-sdk`
@@ -279,6 +280,17 @@ Phases 1 and 2 are implemented. What landed and where:
 - **Phase 2** is documentation over the same baked toolchain: `android.md` + the skill carry the
   `record`/`verify` snapshot loop and the **read-the-diff-PNG → `present` it** habit. No new orchestrator
   code — `present` already exists.
+- **Phase 3 — running-app enabler** (`compose-generator.ts`): `validateDevices` permits a service's
+  `devices:` only when it is the **exact** `/dev/kvm:/dev/kvm` mapping (Android-emulator hardware accel) and
+  rejects everything else — other devices, `/dev/kvm` remapped to a different container path, a non-list
+  value. It is **not** a general passthrough. The single allowed device is gated by the operator
+  kill-switch `isDevKvmAllowed` (`SESSION_ALLOW_DEV_KVM=0` disables it deployment-wide — a deployment
+  setting, not a per-repo field). `devices:` flows straight to `docker compose` from the user's file (the
+  override only sets labels/networks/ports/user/volumes), so this is a pure validation gate. The canonical
+  emulator recipe + the one-device rule live in `compose.md`; `android.md` + the skill name the constraint
+  and the kill-switch. Co-located unit tests cover the allow/reject matrix and the env parsing. **Not
+  verified here** (needs a KVM host + the emulator image): that the device actually reaches a booting
+  emulator — and that the compose-service seccomp profile permits KVM ioctls.
 
 Two deliberate deviations from the design sketch above, both toward "the agent is the actor":
 

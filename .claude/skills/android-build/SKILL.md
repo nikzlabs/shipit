@@ -81,11 +81,14 @@ sdkmanager --install "ndk;26.1.10909125"
 ## Want a live device? Add an emulator Compose service
 
 For runtime logs, touch interaction, or an interactive preview, add an emulator
-to `docker-compose.yml` (needs `/dev/kvm` on the host) — the recipe and the full
-`adb` debug/drive triad (`logcat`, `uiautomator dump` = snapshot, `input tap` =
-press, `screencap` = screenshot, the Playwright-tools analog) are in
-**`/shipit-docs/android.md`**. Its web UI becomes the interactive preview via
-`x-shipit-preview`. No host KVM → Firebase Test Lab for batch test runs.
+to `docker-compose.yml` with `devices: ["/dev/kvm:/dev/kvm"]` (needs `/dev/kvm`
+on the host). That exact mapping is the **only** device ShipIt allows — anything
+else is rejected, and an operator can disable even it with
+`SESSION_ALLOW_DEV_KVM=0`. The recipe and the full `adb` debug/drive triad
+(`logcat`, `uiautomator dump` = snapshot, `input tap` = press, `screencap` =
+screenshot, the Playwright-tools analog) are in **`/shipit-docs/android.md`**.
+Its web UI becomes the interactive preview via `x-shipit-preview`. No host KVM →
+Firebase Test Lab for batch test runs.
 
 ## Don't
 

@@ -429,12 +429,41 @@ install finishes. Do not paper over this with `(test -x ... || npm
 install) && npm run dev` in the compose `command`; that re-introduces the
 race the install-in-agent-only pattern avoids.
 
+## Android emulator (`/dev/kvm`)
+
+To run a live Android device (interactive preview + `adb` debugging — see
+[android.md](android.md)), declare an emulator as a service. This is the **one**
+case where ShipIt permits a `devices:` entry, and **only** the exact
+`/dev/kvm:/dev/kvm` mapping (hardware acceleration). Any other device — or
+`/dev/kvm` remapped to a different container path — is rejected; this is not a
+general device passthrough.
+
+```yaml
+services:
+  emulator:
+    image: budtmo/docker-android:emulator_14   # or an AOSP emulator-webrtc image
+    devices: ["/dev/kvm:/dev/kvm"] # the ONLY permitted device mapping
+    ports: ["6080:6080"]           # the emulator's web UI → rendered in the preview pane
+    expose: ["5555"]               # adb, reached on the session network by service name
+    x-shipit-preview: auto         # show the web UI as the interactive preview
+```
+
+- **Requires KVM on the host.** `/dev/kvm` is a host capability; a basic cloud VM
+  may lack it (then the emulator is too slow — use a cloud device farm instead).
+- **Operator kill-switch.** A deployment can disable the `/dev/kvm` passthrough
+  entirely with `SESSION_ALLOW_DEV_KVM=0` (e.g. a shared/multi-tenant host). When
+  it's off, declaring the device fails validation with a clear message.
+- The agent reaches adb over the session network by service name
+  (`adb connect emulator:5555`); host ports aren't published.
+
 ## What not to do
 
 - **Don't mount the Docker socket** (`/var/run/docker.sock`) — ShipIt manages
   that through `shipit.yaml` when needed.
 - **Don't use `network_mode: host`** — use explicit port mappings.
 - **Don't set `privileged: true`** — not allowed for security.
+- **Don't request arbitrary `devices:`** — only `/dev/kvm:/dev/kvm` is permitted
+  (Android emulator; see above). Every other device is rejected.
 - **Don't use `build:`** — use pre-built public images. If you need custom
   setup, run commands in the `command` field or use multi-step entrypoints.
 - **Don't use absolute volume paths** — all paths must be relative to the
