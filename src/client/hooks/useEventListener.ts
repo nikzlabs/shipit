@@ -148,14 +148,21 @@ export function useEventListeners(specs: EventListenerSpec[]): void {
 
   // Derived key over the binding-identity fields only (NOT the handlers). When
   // this string is unchanged the effect does not re-run, so swapping handlers
-  // each render is free; adding/removing a spec or flipping any boolean option
-  // rebinds. `signal` is NOT in the key — it is add-time only and cannot be
-  // string-keyed by identity, so callers must pass a stable signal to the multi
-  // form (the single-event form does track signal identity).
+  // each render is free; adding/removing a spec, changing a target/signal by
+  // identity, or flipping any boolean option rebinds. Identity (not a label) is
+  // used for `target` and `signal` via a stable per-object id, so two different
+  // same-tag elements — or a fresh `AbortSignal` — are distinguished correctly.
   const key = specs
     .map((s) => {
       const o = normalizeOptions(s.options);
-      return `${describeTarget(s.target)}:${s.type}:${o.capture ? 1 : 0}:${o.once ? 1 : 0}:${o.passive ? 1 : 0}`;
+      return [
+        identityKey(s.target),
+        s.type,
+        o.capture ? 1 : 0,
+        o.once ? 1 : 0,
+        o.passive ? 1 : 0,
+        o.signal ? identityKey(o.signal) : "ns",
+      ].join(":");
     })
     .join("|");
 
@@ -199,11 +206,19 @@ function normalizeOptions(options?: boolean | AddEventListenerOptions): {
   };
 }
 
-/** Stable-ish label for a target, used only to build the rebind key. */
-function describeTarget(target: EventTargetLike): string {
-  if (!target) return "none";
-  if (typeof window !== "undefined" && target === window) return "window";
-  if (typeof document !== "undefined" && target === document) return "document";
-  if (target instanceof Element) return `el:${target.tagName}`;
-  return "target";
+// Stable per-object id for the multi-form rebind key. A WeakMap keeps it
+// identity-based (two distinct same-tag elements get distinct ids, so a target
+// swap rebinds) without retaining the objects. `window`/`document` get one fixed
+// id each on first use, so the common ambient-target case never spuriously
+// rebinds. The counter only ever increments, so ids are stable for a session.
+const objectIds = new WeakMap<object, number>();
+let nextObjectId = 0;
+function identityKey(obj: EventTargetLike | AbortSignal): string {
+  if (!obj) return "none";
+  let id = objectIds.get(obj);
+  if (id === undefined) {
+    id = (nextObjectId += 1);
+    objectIds.set(obj, id);
+  }
+  return `#${id}`;
 }

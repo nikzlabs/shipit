@@ -1,5 +1,5 @@
-// eslint-disable-next-line no-restricted-imports -- useEffect: document selectionchange listener, useLayoutEffect: position the floating button against the live selection rect
-import { useState, useRef, useCallback, useEffect, useLayoutEffect } from "react";
+import { useState, useRef, useCallback, useLayoutEffect } from "react";
+import { useEventListener } from "../hooks/useEventListener.js";
 import type { RefObject } from "react";
 import { QuotesIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
@@ -49,32 +49,27 @@ export function ChatQuoteReply({
   // "Reply" button near it. The selected text is captured on every change so
   // the click handler doesn't have to re-read `window.getSelection()` (which
   // can be collapsed or lost by the time the button is pressed).
-  // eslint-disable-next-line no-restricted-syntax -- selection event subscription on document
-  useEffect(() => {
-    const handler = () => {
-      const container = containerRef.current;
-      const sel = typeof window !== "undefined" ? window.getSelection() : null;
-      if (!container || !sel || sel.isCollapsed || sel.rangeCount === 0) {
-        setSnapshot(null);
-        return;
-      }
-      const range = sel.getRangeAt(0);
-      // Only fire for selections wholly inside the conversation container —
-      // not the composer, not other panels.
-      if (!container.contains(range.commonAncestorContainer)) {
-        setSnapshot(null);
-        return;
-      }
-      const text = sel.toString();
-      if (!text.trim()) {
-        setSnapshot(null);
-        return;
-      }
-      setSnapshot({ rect: range.getBoundingClientRect(), text });
-    };
-    document.addEventListener("selectionchange", handler);
-    return () => document.removeEventListener("selectionchange", handler);
-  }, [containerRef]);
+  useEventListener(document, "selectionchange", () => {
+    const container = containerRef.current;
+    const sel = typeof window !== "undefined" ? window.getSelection() : null;
+    if (!container || !sel || sel.isCollapsed || sel.rangeCount === 0) {
+      setSnapshot(null);
+      return;
+    }
+    const range = sel.getRangeAt(0);
+    // Only fire for selections wholly inside the conversation container —
+    // not the composer, not other panels.
+    if (!container.contains(range.commonAncestorContainer)) {
+      setSnapshot(null);
+      return;
+    }
+    const text = sel.toString();
+    if (!text.trim()) {
+      setSnapshot(null);
+      return;
+    }
+    setSnapshot({ rect: range.getBoundingClientRect(), text });
+  });
 
   // Position the button (fixed, viewport-relative) above the selection,
   // centred horizontally, clamped to the viewport. Falls back to below the

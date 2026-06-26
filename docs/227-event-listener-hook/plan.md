@@ -121,9 +121,9 @@ function useEventListeners(specs: EventListenerSpec[]): void;
   the three booleans by value and `signal` by identity, all read **by field** (not
   object identity), so an inline literal rebinds only when a value actually
   changes. An aborted `signal` detaches the listener natively, independent of
-  unmount. **Multi-form exception:** `useEventListeners` keys on the three booleans
-  but **not** `signal` (a string key can't encode signal identity) — pass a stable
-  signal to the multi form, or use the single-event form when the signal changes.
+  unmount. The multi-form (`useEventListeners`) tracks the same four — `target` and
+  `signal` by **object identity** (via a `WeakMap`-backed stable id in its rebind
+  key), so a different element or a fresh signal rebinds correctly there too.
 
 ### Single vs. multi-event — why both
 
@@ -142,17 +142,16 @@ each call site at its natural altitude. They share the same cleanup mechanics; t
 multi form snapshots the spec array at bind time and removes each listener with its
 own captured reference.
 
-**`useEventListeners` rebind key caveat.** The multi form derives its effect dep
-from a string key over each spec's *target description* + type + the three boolean
-options (`capture`/`once`/`passive`). Targets are described as `window` /
-`document` / `el:TAG` / `target`. This is exact for the ambient singletons
-(`window`/`document`) the real sites use, but two *different* element instances
-with the same tag name would hash equal and not trigger a rebind, and `signal`
-identity is not encoded (see options note above). The contract:
-**`useEventListeners` is for ambient/singleton targets with stable signals**; a
-listener on an element whose identity changes over time, or with a changing
-`signal`, should use the single-event `useEventListener` (whose deps are the actual
-target and signal references). Documented, not a silent footgun.
+**`useEventListeners` rebind key.** The multi form can't list `specs` directly in
+`useEffect` deps (a fresh array literal every render would rebind constantly), so it
+derives a string key per spec. The key is **identity-aware**: `target` and `signal`
+contribute a stable per-object id from a module `WeakMap` (assigned on first use,
+fixed for the session), alongside `type` and the three boolean options. So two
+*different* same-tag elements, a bare `EventTarget`, or a fresh `AbortSignal` each
+produce a distinct key and rebind correctly — while `window`/`document` keep one
+fixed id and never spuriously rebind. The handlers still ride `specsRef` (a handler
+swap never rebinds). This was hardened after review caught that an earlier
+*target-description* key (`el:TAG`) would collide for same-tag elements.
 
 ## Call sites
 
@@ -275,7 +274,7 @@ Hook + tests + the full priority-set migration shipped together.
 - `src/client/hooks/useEventListener.ts` — `useEventListener` (with typed
   Window/Document/HTMLElement overloads) + `useEventListeners` + `EventTargetLike`
   / `EventListenerSpec` types.
-- `src/client/hooks/useEventListener.test.ts` — 11 tests, all green, proving:
+- `src/client/hooks/useEventListener.test.ts` — 13 tests, all green, proving:
   - attaches on mount and fires the handler;
   - on unmount the **removed reference === the added reference** (the exact bug the
     sketch had) **and** the listener verifiably stops firing afterward;
@@ -290,7 +289,8 @@ Hook + tests + the full priority-set migration shipped together.
   - `null` target is a clean no-op;
   - the multi form binds across two targets, tears all down with matching refs,
     swaps handlers without rebinding, **and rebinds when a non-capture option
-    (`once`) changes** (the key tracks all three booleans, not just capture).
+    (`once`), the target identity (a different same-tag element), or the
+    `signal` identity changes** — i.e. the rebind key is identity-aware.
 - **Migrated** all 10 priority sites (table above), dropping their per-site
   listener `useEffect` disables. `usePreviewErrors.test.ts`'s cleanup test was
   upgraded to assert same-reference removal (the migration changed the
@@ -302,14 +302,50 @@ co-located tests for all migrated modules (`useEventListener`, `useNotification`
 `use-voice-input` — 88 tests green). (Full `npm test` is not run in-container — it
 OOMs the box; CI runs it.)
 
-## Follow-up (separate PRs)
+## Component-level sweep (done)
 
-The hook-level priority set is done. Remaining work is the **component-level**
-sweep — the same `window`/`document` add+cleanup pattern in
-`KeyboardShortcutsOverlay`, `FileAutoComplete`, `SkillAutoComplete`,
-`QuickCaptureOverlay`, `MobileRecordingOverlay`, `ui/dialog.tsx`, `PreviewFrame`,
-`ChatQuoteReply`, `MarkdownSelectionComments`, … — split into reviewable batches.
-See `checklist.md` for the live work list.
+The hook-level priority set plus the **component-level** sweep are both migrated.
+11 further sites moved onto the hook — same `window`/`document` add+cleanup pattern:
+
+| Site | Form | Note |
+|---|---|---|
+| `FileAutoComplete`, `SkillAutoComplete` | `useEventListener(window, "keydown", handleKeyDown)` | existing `useCallback` handler |
+| `KeyboardShortcutsOverlay` | `useEventListener(window, "keydown", …)` | reads latest chord via ref |
+| `MarkdownSelectionComments/CommentInput` | `useEventListener(window, "keydown", …)` | Escape → cancel |
+| `QuickCaptureOverlay` | `useEventListener(open ? window : null, …)` | gated |
+| `MobileRecordingOverlay` | `useEventListener(recording \|\| error ? window : null, …)` | gated |
+| `KeybindingCapture` | `useEventListener(recording ? window : null, "keydown", …, true)` | **capture phase**, gated |
+| `PresentPane` | `useEventListener(isActiveTab ? window : null, …)` | gated |
+| `ChatQuoteReply` | `useEventListener(document, "selectionchange", …)` | reads `containerRef` at fire time |
+| `PreviewFrame` | `useEventListener(window, "message", …)` | typed `MessageEvent` |
+| `MessageInput` | `useEventListener(document, "load", …, true)` | **capture phase** |
+
+Each dropped its listener `useEffect` disable (and, where `useEffect` left the
+import entirely, the now-stale `no-restricted-imports -- useEffect` directive).
+
+### Deliberately NOT migrated (out of scope)
+
+These match `addEventListener` textually but are a different lifecycle than this
+hook models — folding them in would be wrong, not an omission:
+
+- **`LogView`** / **`useMessageScroll`** — the target is an **element read from a
+  ref inside the effect** (`containerRef.current?.parentElement`, a scroll
+  container). The hook's `null`-target gate is for render-time values; a ref going
+  non-null does not re-render, so an element-ref target belongs in a hand-written
+  effect (or behind a callback ref). `useMessageScroll` also wires a
+  `ResizeObserver` in the same effect.
+- **`ui/dialog.tsx`** — a **module-level install-once-never-removed** global
+  `popstate` listener guarded by a module flag, not a React effect.
+- **`PreviewServicesDrawer`** — drag-gesture `mousemove`/`mouseup`/`touch*`
+  listeners added **inside a pointer handler** and removed on gesture end (the
+  drag lifecycle, not mount/unmount).
+- **`stores/mcp-store.ts`** — a `message` listener inside a **Promise/OAuth-popup**
+  flow with manual cleanup, not a React hook.
+- **`MarkdownSelectionComments/useMarkdownSelection`** — the effect **couples** the
+  `selectionchange` listener with a `setSnapshot(null)` derived-state reset on its
+  gate branch; not a pure listener effect, so migrating it would mean splitting
+  concerns (and risk) for little gain.
+- **`useMediaQuery`** — a `MediaQueryList` subscription with its own correct hook.
 
 ## Key files
 
@@ -318,6 +354,11 @@ See `checklist.md` for the live work list.
 - `src/client/hooks/useEventListener.test.ts` — cleanup-correctness + inference proof.
 - `eslint.config.js` — `RESTRICTED_USEEFFECT` / `no-restricted-imports` rules the
   hook centralizes the disable for.
-- Migrated sites: `useServerEvents.ts`, `useConnectionSync.ts`, `useNotification.ts`,
-  `useKeyboardShortcuts.ts`, `useQuickCaptureHotkey.ts`, `usePreviewErrors.ts`,
-  `useWebSocket.ts`, `voice/use-voice-input.ts`.
+- Migrated hook sites: `useServerEvents.ts`, `useConnectionSync.ts`,
+  `useNotification.ts`, `useKeyboardShortcuts.ts`, `useQuickCaptureHotkey.ts`,
+  `usePreviewErrors.ts`, `useWebSocket.ts`, `voice/use-voice-input.ts`.
+- Migrated component sites: `FileAutoComplete.tsx`, `SkillAutoComplete.tsx`,
+  `KeyboardShortcutsOverlay.tsx`, `MarkdownSelectionComments/CommentInput.tsx`,
+  `QuickCaptureOverlay.tsx`, `MobileRecordingOverlay.tsx`, `KeybindingCapture.tsx`,
+  `PresentPane.tsx`, `ChatQuoteReply.tsx`, `PreviewFrame/PreviewFrame.tsx`,
+  `MessageInput/MessageInput.tsx`.

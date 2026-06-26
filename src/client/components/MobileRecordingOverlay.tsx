@@ -38,8 +38,7 @@
  * would be wrong here, where dismissal depends on the recording state.
  */
 
-// eslint-disable-next-line no-restricted-imports -- Escape listener while the overlay is open
-import { useEffect } from "react";
+import { useEventListener } from "../hooks/useEventListener.js";
 import { createPortal } from "react-dom";
 import {
   StopIcon,
@@ -72,18 +71,12 @@ export function MobileRecordingOverlay({ voice }: { voice: VoiceInputApi }) {
   // Escape cancels an active recording or dismisses an error (no-op once
   // transcribing — the audio is already in flight). Harmless on mobile where
   // there's no keyboard; useful for desktop testing of this view.
-  // eslint-disable-next-line no-restricted-syntax -- Escape listener scoped to the open overlay
-  useEffect(() => {
-    if (!recording && !error) return undefined;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      e.preventDefault();
-      if (recording) voice.cancelRecording();
-      else voice.dismissError();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [recording, error, voice]);
+  useEventListener(recording || error ? window : null, "keydown", (e) => {
+    if (e.key !== "Escape") return;
+    e.preventDefault();
+    if (recording) voice.cancelRecording();
+    else voice.dismissError();
+  });
 
   if (!active) return null;
 

@@ -1,5 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- focus restoration, Escape listener
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useEventListener } from "../hooks/useEventListener.js";
 import { CircleNotchIcon, XIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { useSessionStore } from "../stores/session-store.js";
@@ -110,18 +111,12 @@ export function QuickCaptureOverlay({
     });
   };
 
-  // eslint-disable-next-line no-restricted-syntax -- Escape key listener while modal is open
-  useEffect(() => {
-    if (!open) return undefined;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        close();
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [open]);
+  useEventListener(open ? window : null, "keydown", (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      close();
+    }
+  });
 
   if (!open) return null;
 

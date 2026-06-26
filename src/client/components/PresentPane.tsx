@@ -23,6 +23,7 @@
 
 // eslint-disable-next-line no-restricted-imports -- useEffect: unseen badge, keyboard nav, lazy content fetch, view-mode reset, draft cleanup
 import { useEffect, useRef, useState } from "react";
+import { useEventListener } from "../hooks/useEventListener.js";
 import {
   CaretLeftIcon,
   CaretRightIcon,
@@ -111,37 +112,31 @@ export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview }: P
   // than depending on `safeIndex` so the listener doesn't re-install on every
   // navigation. Declared before the empty-state early return so the hook order
   // stays stable when `presentations` empties on session switch (React #300).
-  // eslint-disable-next-line no-restricted-syntax -- keyboard nav scoped to this pane
-  useEffect(() => {
-    if (!isActiveTab) return;
-    const onKey = (e: KeyboardEvent) => {
-      // Ignore keystrokes that belong to a text field — the listener is on
-      // `window`, and the chat composer is on screen alongside the Present tab,
-      // so without this guard pressing ◀ to move the text cursor while typing
-      // would also step the carousel back (the "it jumps to the previous one
-      // while I type" bug). Mirrors useKeyboardShortcuts' input check.
-      const target = e.target as HTMLElement | null;
-      const tag = target?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target?.isContentEditable) {
-        return;
-      }
-      if (e.key === "Escape") {
-        if (usePresentStore.getState().galleryOpen) usePresentStore.getState().setGalleryOpen(false);
-        return;
-      }
-      // While the gallery is open the arrows belong to it, not the carousel.
-      if (usePresentStore.getState().galleryOpen) return;
-      if (e.key === "ArrowLeft") {
-        const { activePresentIndex } = usePresentStore.getState();
-        usePresentStore.getState().setActiveIndex(activePresentIndex - 1);
-      } else if (e.key === "ArrowRight") {
-        const { activePresentIndex } = usePresentStore.getState();
-        usePresentStore.getState().setActiveIndex(activePresentIndex + 1);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [isActiveTab]);
+  useEventListener(isActiveTab ? window : null, "keydown", (e) => {
+    // Ignore keystrokes that belong to a text field — the listener is on
+    // `window`, and the chat composer is on screen alongside the Present tab,
+    // so without this guard pressing ◀ to move the text cursor while typing
+    // would also step the carousel back (the "it jumps to the previous one
+    // while I type" bug). Mirrors useKeyboardShortcuts' input check.
+    const target = e.target as HTMLElement | null;
+    const tag = target?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target?.isContentEditable) {
+      return;
+    }
+    if (e.key === "Escape") {
+      if (usePresentStore.getState().galleryOpen) usePresentStore.getState().setGalleryOpen(false);
+      return;
+    }
+    // While the gallery is open the arrows belong to it, not the carousel.
+    if (usePresentStore.getState().galleryOpen) return;
+    if (e.key === "ArrowLeft") {
+      const { activePresentIndex } = usePresentStore.getState();
+      usePresentStore.getState().setActiveIndex(activePresentIndex - 1);
+    } else if (e.key === "ArrowRight") {
+      const { activePresentIndex } = usePresentStore.getState();
+      usePresentStore.getState().setActiveIndex(activePresentIndex + 1);
+    }
+  });
 
   // Lazily fetch the active artifact's bytes from disk the first time it's
   // shown (and again after a reload, when the store holds metadata only). The

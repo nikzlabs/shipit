@@ -39,10 +39,39 @@
 - [x] Tests green for every migrated module (`useEventListener`, `useNotification`,
       `useConnectionSync`, `usePreviewErrors`, `useQuickCaptureHotkey`,
       `useWebSocket`, `use-voice-input`) + typecheck + lint clean
+- [x] Second-opinion review (Codex) on the migration PR + fix: made the
+      `useEventListeners` rebind key **identity-aware** (WeakMap-backed stable id
+      for `target` + `signal`) so a different same-tag element / fresh signal
+      rebinds — removing the documented footgun rather than relying on the caveat.
+      Added target-identity and signal-identity rebind tests.
 
-## Follow-up (later PRs)
+## Component-level sweep (done)
 
-- [ ] Component-level sites still on the raw pattern (`KeyboardShortcutsOverlay`,
-      `FileAutoComplete`, `SkillAutoComplete`, `QuickCaptureOverlay`,
-      `MobileRecordingOverlay`, `ui/dialog.tsx`, `PreviewFrame`, `ChatQuoteReply`,
-      `MarkdownSelectionComments`, …) — separate reviewable sweeps
+- [x] Migrated 11 component sites onto the hook: `FileAutoComplete`,
+      `SkillAutoComplete`, `KeyboardShortcutsOverlay`,
+      `MarkdownSelectionComments/CommentInput`, `QuickCaptureOverlay`,
+      `MobileRecordingOverlay`, `KeybindingCapture` (capture phase), `PresentPane`
+      (gated), `ChatQuoteReply` (document), `PreviewFrame` (message),
+      `MessageInput` (document `load`, capture phase)
+- [x] Dropped each site's listener `useEffect` eslint-disable, plus the now-stale
+      `no-restricted-imports -- useEffect` directives left when `useEffect` was
+      removed from the import
+- [x] Verified no behavioral change: typecheck + `eslint --report-unused-disable-directives`
+      clean; co-located component tests green (83)
+
+### Deliberately NOT migrated (out of scope — documented in plan.md)
+
+- [ ] `LogView` — listener target is `containerRef.current?.parentElement`, read
+      *inside* the effect (element-ref, not safe as a render-time `null` target)
+- [ ] `useMessageScroll` — element-ref `scroll` listener + a `ResizeObserver` in
+      the same effect (mixed concern, element ref)
+- [ ] `ui/dialog.tsx` — module-level install-once-never-removed global `popstate`
+      listener, not a React effect
+- [ ] `PreviewServicesDrawer` — drag-gesture listeners added inside a pointer
+      handler, removed on gesture end (not a mount/unmount effect)
+- [ ] `stores/mcp-store.ts` — `message` listener inside a Promise/OAuth-popup flow,
+      not a React hook
+- [ ] `MarkdownSelectionComments/useMarkdownSelection` — the effect couples the
+      listener with a `setSnapshot(null)` derived-state reset on the gate branch;
+      not a pure listener effect, so left as-is
+- [ ] `useMediaQuery` — `MediaQueryList` subscription, its own correct hook

@@ -1,5 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: consume prefill text from external store on mount
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
+import { useEventListener } from "../../hooks/useEventListener.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { useIsMobile } from "../../hooks/useMediaQuery.js";
@@ -359,17 +360,12 @@ export function MessageInput({
   // still sees it for any descendant iframe) and only reclaim if the blur lands
   // within a short window after that load.
   const lastIframeLoadRef = useRef(0);
-  // eslint-disable-next-line no-restricted-syntax -- global listener for iframe-load detection
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const target = e.target as Element | null;
-      if (target?.tagName === "IFRAME") {
-        lastIframeLoadRef.current = Date.now();
-      }
-    };
-    document.addEventListener("load", handler, true);
-    return () => document.removeEventListener("load", handler, true);
-  }, []);
+  useEventListener(document, "load", (e) => {
+    const target = e.target as Element | null;
+    if (target?.tagName === "IFRAME") {
+      lastIframeLoadRef.current = Date.now();
+    }
+  }, true);
 
   const handleBlur = useCallback((e: React.FocusEvent<HTMLTextAreaElement>) => {
     // relatedTarget is set when focus moves to another focusable element in the
