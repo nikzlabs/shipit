@@ -62,12 +62,24 @@ export function useServerEvents(): void {
     });
 
     es.addEventListener("session_agent_started", (e: MessageEvent) => {
-      const data = JSON.parse(e.data as string) as { sessionId: string };
-      useSessionStore.getState().setActiveRunnerSessions((prev) => {
+      const data = JSON.parse(e.data as string) as { sessionId: string; activity?: string };
+      const store = useSessionStore.getState();
+      store.setActiveRunnerSessions((prev) => {
         const next = new Set(prev);
         next.add(data.sessionId);
         return next;
       });
+      // Reflect the running state in the active session's chat. A system-initiated
+      // turn — a wake-up (e.g. resuming after a `shipit agent run` consult with
+      // Codex finishes), a child-session notify, Fix CI — has no client-side
+      // `send` to set `isLoading`, and a no-echo turn emits no `system_user_message`
+      // either, so without this the "Working…" indicator never appears even though
+      // the agent is running. Idempotent for user-initiated turns (already loading).
+      // Symmetric with the `session_agent_finished` handler that clears it.
+      if (data.sessionId === store.sessionId) {
+        store.setIsLoading(true);
+        if (data.activity) store.setActivity({ label: data.activity });
+      }
     });
 
     es.addEventListener("session_agent_finished", (e: MessageEvent) => {
