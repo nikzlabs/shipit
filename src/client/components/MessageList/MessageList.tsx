@@ -323,7 +323,18 @@ export function MessageList({
                 !useMarkdown && !hasCodeBlocks ? "whitespace-pre-wrap" : ""
               } ${
                 msg.role === "user"
-                  ? "max-w-full rounded-lg px-4 py-3 break-words min-w-0"
+                  ? `rounded-lg px-4 py-3 break-words min-w-0 ${
+                      // A user message with code blocks needs a reasonable
+                      // minimum width so the block isn't squeezed to nothing
+                      // (a code-only message would otherwise collapse, since
+                      // `CodeBlock` contributes ~0 to the bubble's intrinsic
+                      // width via `w-0`). `min(32rem,100%)` floors the width at
+                      // 32rem while the `100%` cap (relative to the full-width
+                      // row) guarantees it never exceeds the column — so long
+                      // lines scroll inside the block instead of widening the
+                      // whole chat into a horizontal scrollbar.
+                      hasCodeBlocks ? "w-[min(32rem,100%)]" : "max-w-full"
+                    }`
                   : "w-full min-w-0"
               } ${
                 msg.isError
