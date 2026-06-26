@@ -397,6 +397,86 @@ function parseSecretEntries(
 }
 
 /**
+ * The one device mapping ShipIt permits through to a Compose service:
+ * `/dev/kvm` → `/dev/kvm`, for Android-emulator hardware acceleration (docs/213).
+ * This is NOT a general devices passthrough — every other device is rejected.
+ */
+export const ALLOWED_DEVICE = "/dev/kvm";
+
+/**
+ * Operator kill-switch for the `/dev/kvm` passthrough. Default ON — the emulator
+ * tier needs it and the user opts in *per-service* by declaring the device, so
+ * the floor is "allowed". An operator sets `SESSION_ALLOW_DEV_KVM=0` (also
+ * `false`/`no`/`off`) to disable it deployment-wide — e.g. on a shared or
+ * multi-tenant host that shouldn't expose KVM. This is the deployment-level
+ * gate the design called for, NOT a per-repo `shipit.yaml` field.
+ */
+export function isDevKvmAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
+  const v = env.SESSION_ALLOW_DEV_KVM?.trim().toLowerCase();
+  return !(v === "0" || v === "false" || v === "no" || v === "off");
+}
+
+/**
+ * Parse one compose `devices` entry into its host/container device paths.
+ * Supports the short string form `HOST[:CONTAINER[:PERMS]]` and the long object
+ * form `{ source, target, permissions }`. Returns null for unparseable entries.
+ * Cgroup permissions are ignored — they scope r/w/m on the device, not which
+ * device, so they can't widen past the path check below.
+ */
+function parseDeviceEntry(dev: unknown): { host: string; container: string } | null {
+  if (typeof dev === "string") {
+    const parts = dev.split(":").map((p) => p.trim());
+    const host = parts[0];
+    if (!host) return null;
+    return { host, container: parts[1] || host };
+  }
+  if (dev && typeof dev === "object") {
+    const o = dev as Record<string, unknown>;
+    if (typeof o.source === "string" && o.source.trim()) {
+      const host = o.source.trim();
+      const target = typeof o.target === "string" && o.target.trim() ? o.target.trim() : host;
+      return { host, container: target };
+    }
+  }
+  return null;
+}
+
+/**
+ * Validate a service's `devices:`. ShipIt allows exactly ONE mapping —
+ * `/dev/kvm:/dev/kvm` (Android-emulator hardware acceleration, docs/213) — and
+ * rejects everything else; it is not a general device passthrough. The single
+ * allowed device is itself gated by the operator kill-switch ({@link isDevKvmAllowed}).
+ */
+export function validateDevices(
+  name: string,
+  svc: Record<string, unknown>,
+  allowDevKvm: boolean,
+): void {
+  if (svc.devices === undefined) return;
+  if (!Array.isArray(svc.devices)) {
+    throw new ComposeValidationError(`Service \`${name}\`: \`devices\` must be a list.`);
+  }
+  for (const dev of svc.devices) {
+    const parsed = parseDeviceEntry(dev);
+    // parsed === null (unparseable) → `undefined !== ALLOWED_DEVICE` is true → rejected.
+    if (parsed?.host !== ALLOWED_DEVICE || parsed?.container !== ALLOWED_DEVICE) {
+      const shown = typeof dev === "string" ? dev : JSON.stringify(dev);
+      throw new ComposeValidationError(
+        `Service \`${name}\`: device \`${shown}\` is not allowed. ShipIt only permits the ` +
+        `exact \`/dev/kvm:/dev/kvm\` mapping (Android-emulator hardware acceleration); ` +
+        `no other device passthrough is supported.`,
+      );
+    }
+    if (!allowDevKvm) {
+      throw new ComposeValidationError(
+        `Service \`${name}\`: \`/dev/kvm\` passthrough is disabled on this deployment ` +
+        `(SESSION_ALLOW_DEV_KVM=0). Ask the operator to enable it, or use a cloud device farm.`,
+      );
+    }
+  }
+}
+
+/**
  * Validate security constraints for a compose service definition.
  */
 function validateServiceSecurity(
@@ -419,6 +499,9 @@ function validateServiceSecurity(
       `Use explicit port mappings instead.`,
     );
   }
+
+  // Reject device passthrough except the exact /dev/kvm mapping (docs/213).
+  validateDevices(name, svc, isDevKvmAllowed());
 
   // Check volumes for Docker socket and path traversal
   if (Array.isArray(svc.volumes)) {
