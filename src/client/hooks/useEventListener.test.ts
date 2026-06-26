@@ -195,6 +195,50 @@ describe("useEventListeners", () => {
     expect(addSpy).toHaveBeenCalledTimes(2);
   });
 
+  it("rebinds when the target identity changes even for same-tag elements", () => {
+    const a = makeTarget();
+    const b = makeTarget();
+    const handler = vi.fn();
+
+    const { rerender } = renderHook(
+      ({ el }: { el: HTMLDivElement }) =>
+        useEventListeners([{ target: el, type: "ping", handler }]),
+      { initialProps: { el: a.el } },
+    );
+    expect(a.addSpy).toHaveBeenCalledTimes(1);
+
+    // Swap to a DIFFERENT element with the SAME tag name — a string label like
+    // "el:DIV" would collide and skip the rebind, stranding the listener on `a`.
+    rerender({ el: b.el });
+
+    expect(a.removeSpy.mock.calls[0]![1]).toBe(a.addSpy.mock.calls[0]![1]); // old detached
+    expect(b.addSpy).toHaveBeenCalledTimes(1); // new attached
+
+    // Events now fire on `b`, not `a`.
+    act(() => void a.el.dispatchEvent(new Event("ping")));
+    expect(handler).not.toHaveBeenCalled();
+    act(() => void b.el.dispatchEvent(new Event("ping")));
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("rebinds when an AbortSignal identity changes", () => {
+    const { el, addSpy, removeSpy } = makeTarget();
+    const handler = vi.fn();
+    const c1 = new AbortController();
+    const c2 = new AbortController();
+
+    const { rerender } = renderHook(
+      ({ signal }: { signal: AbortSignal }) =>
+        useEventListeners([{ target: el, type: "ping", handler, options: { signal } }]),
+      { initialProps: { signal: c1.signal } },
+    );
+    expect(addSpy).toHaveBeenCalledTimes(1);
+
+    rerender({ signal: c2.signal });
+    expect(removeSpy).toHaveBeenCalledTimes(1);
+    expect(addSpy).toHaveBeenCalledTimes(2);
+  });
+
   it("swaps handlers across renders without rebinding", () => {
     const { el, addSpy, removeSpy } = makeTarget();
     const first = vi.fn();

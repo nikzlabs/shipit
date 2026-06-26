@@ -1,5 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: focus the textarea on mount and subscribe to Escape keydown
 import { useState, useCallback, useEffect, useRef } from "react";
+import { useEventListener } from "../../hooks/useEventListener.js";
 import { Button } from "../ui/button.js";
 
 export function CommentInput({
@@ -25,17 +26,12 @@ export function CommentInput({
     textareaRef.current?.focus({ preventScroll: true });
   }, []);
 
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        onCancel();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onCancel]);
+  useEventListener(window, "keydown", (e) => {
+    if (e.key === "Escape") {
+      e.stopPropagation();
+      onCancel();
+    }
+  });
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {

@@ -1,5 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: auth-blocked detection + iframe refresh (external system sync)
 import { useState, useEffect, useRef, useMemo } from "react";
+import { useEventListener } from "../../hooks/useEventListener.js";
 import { WarningIcon, CircleNotchIcon, ArrowClockwiseIcon, ArrowSquareOutIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import { Button } from "../ui/button.js";
@@ -176,30 +177,25 @@ export function PreviewFrame({
   const MAX_AUTH_TIMEOUT_MS = 5000;
   const MAX_AUTH_RETRIES = 2;
 
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
-  useEffect(() => {
-    const handler = (event: MessageEvent) => {
-      const data = event.data as { source?: string; type?: string } | undefined;
-      if (data?.source !== "shipit-preview" || data?.type !== "loaded") return;
-      // Identify which pool slot the message came from by matching
-      // `event.source` against each iframe's contentWindow. We can't trust
-      // the message contents for this — the injected script doesn't know
-      // the slot key, and we wouldn't trust user-controllable content for
-      // it anyway.
-      for (const [key, el] of iframeRefs.current.entries()) {
-        if (el?.contentWindow && el.contentWindow === event.source) {
-          loadedSlotsRef.current.add(key);
-          if (key === activeSlotKeyRef.current) {
-            authRetryRef.current = 0;
-            setAuthBlocked(false);
-          }
-          return;
+  useEventListener(window, "message", (event) => {
+    const data = event.data as { source?: string; type?: string } | undefined;
+    if (data?.source !== "shipit-preview" || data?.type !== "loaded") return;
+    // Identify which pool slot the message came from by matching
+    // `event.source` against each iframe's contentWindow. We can't trust
+    // the message contents for this — the injected script doesn't know
+    // the slot key, and we wouldn't trust user-controllable content for
+    // it anyway.
+    for (const [key, el] of iframeRefs.current.entries()) {
+      if (el?.contentWindow && el.contentWindow === event.source) {
+        loadedSlotsRef.current.add(key);
+        if (key === activeSlotKeyRef.current) {
+          authRetryRef.current = 0;
+          setAuthBlocked(false);
         }
+        return;
       }
-    };
-    window.addEventListener("message", handler);
-    return () => window.removeEventListener("message", handler);
-  }, [iframeRefs]);
+    }
+  });
 
   const isLocalPreview = /^(localhost|127\.\d+\.\d+\.\d+|::1)(:|$)/i.test(apiHost);
   const previewSubdomainUrl = isContainerMode && sessionId ? buildSubdomainUrl(sessionId, activePort, apiHost, apiProtocol) : null;

@@ -1,5 +1,4 @@
-// eslint-disable-next-line no-restricted-imports -- useEffect: window keydown listener for ?/toggle with cleanup (browser API subscription)
-import { useEffect } from "react";
+import { useEventListener } from "../hooks/useEventListener.js";
 import { PencilSimpleIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
@@ -42,18 +41,13 @@ export function KeyboardShortcutsOverlay({ onClose, onEdit }: { onClose: () => v
   // The shared Dialog handles Escape, the backdrop, the close button, and the
   // Back button. This listener only adds the two app-specific toggles: "?" and
   // the (rebindable) toggle-shortcuts chord both close the open overlay.
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      const toggle = keybindings["toggle-shortcuts"] ?? "mod+/";
-      if (e.key === "?" || eventMatchesChord(e, toggle)) {
-        e.preventDefault();
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose, keybindings]);
+  useEventListener(window, "keydown", (e) => {
+    const toggle = keybindings["toggle-shortcuts"] ?? "mod+/";
+    if (e.key === "?" || eventMatchesChord(e, toggle)) {
+      e.preventDefault();
+      onClose();
+    }
+  });
 
   const groups = GROUP_ORDER.map((group) => ({
     group,
