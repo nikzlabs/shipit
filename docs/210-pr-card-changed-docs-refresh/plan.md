@@ -120,6 +120,47 @@ finished PR (no more turns) the doc chips never came back. That's the
    Docs panel re-derives from git on every `GET /docs`, the strip re-derives on
    every connect.
 
+## Follow-up 2: strip frozen until session-switch, while diff numbers update live (the fourth gap)
+
+A later report: after creating docs in an existing PR, the changed-docs strip
+didn't update until the user **switched sessions** — yet the diff stat updated
+immediately. Both should track the post-turn commit.
+
+### Root cause
+
+The post-turn `notableFiles` recompute lived **inside** the `if (prStatus)`
+branch of `emitPrLifecycleAfterCommit`, coupling the strip refresh to the
+PR-lifecycle state machine. The diff stat, by contrast, refreshes off the
+**unconditional** `git_committed` emit (`post-turn.ts`), which fires on every
+commit. So when a turn took a path *other* than the tracked-PR branch — most
+often the **PR-recovery early-return** (lines that `trackSession` +
+`forceRefreshSession` + `return` while the poller's `getStatus` is still null,
+right after the PR was created or after an orchestrator restart) — the commit
+landed with new docs but **no** `pr_notable_files` was emitted. The strip stayed
+frozen until the next qualifying turn or the `activateSession` re-seed that runs
+on session-switch/reload. That asymmetry is exactly "diff numbers update
+immediately, docs don't."
+
+### Fix
+
+Hoist the recompute **above** the lifecycle branching in
+`emitPrLifecycleAfterCommit`, so it fires for any remote, un-merged,
+non-renamed session on every post-turn commit — the same unconditional cadence
+as `git_committed`. Base resolution mirrors the session-switch re-seed
+(`getStatus()?.baseBranch ?? previousMergedPr?.baseBranch ?? "main"`), and the
+emit stays a notableFiles-only patch that merges into the live card. The
+`if (prStatus)` branch no longer carries its own emit; the auto-create/ready
+emits keep their inline `notableFiles` (atomic with card creation, idempotent
+with the hoisted patch). Guard: `services/pr-lifecycle.test.ts` asserts
+`pr_notable_files` fires in both the tracked-PR and the no-status path.
+
+### Key files (follow-up 2)
+
+- `src/server/orchestrator/services/pr-lifecycle.ts` — recompute hoisted above
+  the branching; emitted unconditionally per commit.
+- `src/server/orchestrator/services/pr-lifecycle.test.ts` (new) — pins the
+  unconditional emit.
+
 ### Key files (follow-up)
 
 - `src/server/orchestrator/route-registry.ts` — `activateSession` re-seed.
