@@ -775,4 +775,34 @@ describe("selfHealWorkspaceOwnership", () => {
     selfHealWorkspaceOwnership({ workspaceDir: undefined }, WS_VOLUME, handBack);
     expect(handBack).not.toHaveBeenCalled();
   });
+
+  // #1666 — also reconcile root-owned tool caches inside dep dirs, which the
+  // worktree handback excludes.
+  it("reconciles the workspace dep dirs on a non-overlay session", () => {
+    const handBack = vi.fn();
+    const reconcile = vi.fn();
+    selfHealWorkspaceOwnership({ workspaceDir: WS_DIR }, WS_VOLUME, handBack, reconcile);
+    // No shipit.yaml at WS_DIR → falls back to DEFAULT_DEP_DIRS (["node_modules"]).
+    expect(reconcile).toHaveBeenCalledWith(`${WS_DIR}/node_modules`);
+  });
+
+  it("reconciles each overlay upperdir (not the workspace dep dir) on an overlay session", () => {
+    const handBack = vi.fn();
+    const reconcile = vi.fn();
+    const overlaySpecs = [
+      { orchDirs: { lowerdir: "/o/lower", upperdir: "/o/upper", workdir: "/o/work" } },
+    ] as unknown as ContainerConfig["overlaySpecs"];
+    selfHealWorkspaceOwnership({ workspaceDir: WS_DIR, overlaySpecs }, WS_VOLUME, handBack, reconcile);
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(reconcile).toHaveBeenCalledWith("/o/upper");
+    // The plain workspace dep dir is NOT reconciled in overlay mode.
+    expect(reconcile).not.toHaveBeenCalledWith(`${WS_DIR}/node_modules`);
+  });
+
+  it("does not reconcile dep dirs in dev bind-mount mode (no workspaceVolume)", () => {
+    const handBack = vi.fn();
+    const reconcile = vi.fn();
+    selfHealWorkspaceOwnership({ workspaceDir: WS_DIR }, undefined, handBack, reconcile);
+    expect(reconcile).not.toHaveBeenCalled();
+  });
 });
