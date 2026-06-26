@@ -498,8 +498,15 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
    */
   startOAuthFlow(opts?: AgentAuthStartOptions): void {
     if (this.proc) {
-      console.log("[auth] startOAuthFlow() skipped — PTY process already running (pid %d)", this.proc.pid);
-      return;
+      // A prior flow left a PTY alive (a hung/incomplete attempt, or a stale
+      // `claude /login` that never exited). Don't silently no-op — that's the
+      // deadlock that forced users to click "Clear saved credentials" first:
+      // the only path that called kill() was signOut(), so a stale proc made
+      // every "Sign in" retry a no-op while the UI sat on "Starting…". Tear it
+      // down here so re-clicking "Sign in" always restarts from a clean slate,
+      // mirroring signOut()'s teardown.
+      console.log("[auth] startOAuthFlow() — tearing down stale PTY (pid %d) before restart", this.proc.pid);
+      this.kill();
     }
 
     console.log("[auth] Starting OAuth flow (node-pty)...");
@@ -548,6 +555,11 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
     const loginEnv: NodeJS.ProcessEnv = { ...process.env, HOME: home };
     delete loginEnv.ANTHROPIC_API_KEY;
     delete loginEnv.ANTHROPIC_AUTH_TOKEN;
+    // `CLAUDE_CODE_OAUTH_TOKEN` (set by `claude setup-token`) is a third
+    // subscription bearer the CLI honors over the interactive flow — strip it
+    // too so a forwarded token (e.g. dogfood secrets) can't short-circuit the
+    // code-paste flow into the same "Starting…" hang.
+    delete loginEnv.CLAUDE_CODE_OAUTH_TOKEN;
 
     // Use a wide terminal to minimize URL wrapping
     this.proc = pty.spawn("claude", ["/login"], {

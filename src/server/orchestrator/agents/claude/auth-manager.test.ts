@@ -457,16 +457,21 @@ describe("AuthManager / scoped spawn (docs/150)", () => {
     }
   });
 
-  it("strips ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN from the login subprocess env", () => {
+  it("strips ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / CLAUDE_CODE_OAUTH_TOKEN from the login subprocess env", () => {
     // Companion to the on-disk wipe: `claude /login` honors these env vars over
     // the interactive OAuth flow, so a stale key/token in the orchestrator's
     // environment makes the flow hang on "Starting…" no matter how clean the
-    // disk is. The login child must never inherit them — while the
-    // orchestrator's own `process.env` is left untouched.
+    // disk is. All three subscription-bearer vars must never be inherited by
+    // the login child — while the orchestrator's own `process.env` is left
+    // untouched. CLAUDE_CODE_OAUTH_TOKEN (set by `claude setup-token`) is the
+    // third such var and is easy to miss — a forwarded one (e.g. dogfood
+    // secrets) would re-introduce the hang.
     const origKey = process.env.ANTHROPIC_API_KEY;
     const origToken = process.env.ANTHROPIC_AUTH_TOKEN;
+    const origOauth = process.env.CLAUDE_CODE_OAUTH_TOKEN;
     process.env.ANTHROPIC_API_KEY = "sk-ant-stale";
     process.env.ANTHROPIC_AUTH_TOKEN = "stale-bearer";
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = "stale-oauth-token";
     try {
       const mgr = new AuthManager();
       mgr.startOAuthFlow();
@@ -474,17 +479,42 @@ describe("AuthManager / scoped spawn (docs/150)", () => {
       const env = ptyHoisted.calls[0].opts.env!;
       expect(env.ANTHROPIC_API_KEY).toBeUndefined();
       expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+      expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
       // The orchestrator's own env is unchanged — env-var auth still works for
       // agent turns / dogfooding.
       expect(process.env.ANTHROPIC_API_KEY).toBe("sk-ant-stale");
       expect(process.env.ANTHROPIC_AUTH_TOKEN).toBe("stale-bearer");
+      expect(process.env.CLAUDE_CODE_OAUTH_TOKEN).toBe("stale-oauth-token");
       mgr.kill();
     } finally {
       if (origKey !== undefined) process.env.ANTHROPIC_API_KEY = origKey;
       else delete process.env.ANTHROPIC_API_KEY;
       if (origToken !== undefined) process.env.ANTHROPIC_AUTH_TOKEN = origToken;
       else delete process.env.ANTHROPIC_AUTH_TOKEN;
+      if (origOauth !== undefined) process.env.CLAUDE_CODE_OAUTH_TOKEN = origOauth;
+      else delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
     }
+  });
+
+  it("tears down a stale PTY and restarts instead of silently no-oping", () => {
+    // The deadlock that forced users to click "Clear saved credentials" first:
+    // a hung first login left `this.proc` non-null, so every subsequent "Sign
+    // in" early-returned (no-op) and the UI sat on "Starting…" forever — the
+    // only escape was signOut()/kill() via "Clear credentials". Re-starting the
+    // flow must now kill the stale PTY and spawn a fresh one, making "Sign in"
+    // self-healing.
+    ptyHoisted.killed = 0;
+    const mgr = new AuthManager();
+
+    mgr.startOAuthFlow(); // first attempt — leaves a live PTY
+    expect(ptyHoisted.calls).toHaveLength(1);
+    expect(ptyHoisted.killed).toBe(0);
+
+    mgr.startOAuthFlow(); // retry while the first is still "running"
+    // The stale PTY was killed and a brand-new login was spawned (not a no-op).
+    expect(ptyHoisted.killed).toBe(1);
+    expect(ptyHoisted.calls).toHaveLength(2);
+    mgr.kill();
   });
 });
 
