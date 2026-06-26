@@ -18,6 +18,7 @@ import { AskUserQuestion, type AskQuestionItem } from "./AskUserQuestion.js";
 import { PlanApproval } from "./PlanApproval.js";
 import { ToolResult } from "./ToolResult.js";
 import { Dialog, DialogContent } from "./ui/dialog.js";
+import { Button } from "./ui/button.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import { sessionRelativePath } from "../path-utils.js";
 import { usePresentStore } from "../stores/present-store.js";
@@ -237,14 +238,16 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
           </span>
         ) : null}
         {hasResult && (
-          <button
+          <Button
+            variant="ghost"
+            size="icon"
             onClick={() => setShowModal(true)}
-            className="hidden group-hover/tool:inline-flex items-center gap-1 ml-1 text-(--color-text-tertiary) hover:text-(--color-text-primary) transition-colors cursor-pointer"
+            className="hidden group-hover/tool:inline-flex ml-1 cursor-pointer"
             aria-label="Show output"
           >
             <EyeIcon size={12} />
             <span className="whitespace-nowrap">Show output</span>
-          </button>
+          </Button>
         )}
       </div>
       {showModal && result && (
