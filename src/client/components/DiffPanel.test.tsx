@@ -224,13 +224,6 @@ describe("DiffPanel", () => {
   });
 
   describe("actions", () => {
-    it("calls onClose when close button is clicked", () => {
-      const props = defaultProps();
-      render(<DiffPanel {...props} />);
-      fireEvent.click(screen.getByLabelText("Close diff panel"));
-      expect(props.onClose).toHaveBeenCalledOnce();
-    });
-
     it("calls onClose when Close button in footer is clicked", () => {
       const props = defaultProps();
       render(<DiffPanel {...props} />);

@@ -2,7 +2,7 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import { DiffEditor } from "@monaco-editor/react";
 import type { DiffOnMount } from "@monaco-editor/react";
-import { XIcon, PaperPlaneTiltIcon, CaretRightIcon, CaretDownIcon, CaretLeftIcon } from "@phosphor-icons/react";
+import { PaperPlaneTiltIcon, CaretRightIcon, CaretDownIcon, CaretLeftIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import { useIsMobile } from "../hooks/useMediaQuery.js";
@@ -303,17 +303,8 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
   if (diff.files.length === 0) {
     return (
       <div className="flex flex-col h-full">
-        <div className="flex items-center justify-between px-4 py-2 border-b border-(--color-border-secondary) bg-(--color-bg-elevated)">
+        <div className="flex items-center px-4 py-2 border-b border-(--color-border-secondary) bg-(--color-bg-elevated)">
           <span className="text-sm text-(--color-text-secondary)">No changes</span>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onClose}
-            className="text-(--color-text-tertiary) h-7 w-7 p-0"
-            aria-label="Close diff panel"
-          >
-            <XIcon size={ICON_SIZE.SM} />
-          </Button>
         </div>
         <div className="flex-1 flex items-center justify-center text-(--color-text-secondary) text-sm">
           No file changes in this turn.
@@ -325,7 +316,8 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
   return (
     <div className="flex flex-col h-full bg-(--color-bg-primary)">
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-1.5 border-b border-(--color-border-secondary) bg-(--color-bg-elevated) shrink-0 gap-2">
+      {/* pr-10 clears the dialog's corner close button so the stats don't sit under it */}
+      <div className="flex items-center px-3 py-1.5 pr-10 border-b border-(--color-border-secondary) bg-(--color-bg-elevated) shrink-0 gap-2">
         <div className="flex items-center gap-2 text-sm min-w-0">
           {isMobile && mobileView === "detail" && (
             <Button
@@ -344,15 +336,6 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
           <span className="text-(--color-error) shrink-0">-{diff.stats.totalDeletions}</span>
           <span className="text-(--color-text-secondary) shrink-0">({diff.stats.filesChanged} file{diff.stats.filesChanged !== 1 ? "s" : ""})</span>
         </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onClose}
-          className="text-(--color-text-tertiary) h-7 w-7 p-0"
-          aria-label="Close diff panel"
-        >
-          <XIcon size={ICON_SIZE.SM} />
-        </Button>
       </div>
 
       {/* Main area: file tree sidebar + stacked diffs.
