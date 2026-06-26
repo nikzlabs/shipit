@@ -1,5 +1,3 @@
-// eslint-disable-next-line no-restricted-imports -- useEffect: window postMessage listener with cleanup (browser API subscription)
-import { useEffect } from "react";
 import {
   usePreviewStore,
   checkDuplicate,
@@ -7,6 +5,7 @@ import {
   type PreviewError,
 } from "../stores/preview-store.js";
 import { useSessionStore } from "../stores/session-store.js";
+import { useEventListener } from "./useEventListener.js";
 
 // Re-export for consumers that import the type from here.
 export type { PreviewError } from "../stores/preview-store.js";
@@ -59,61 +58,55 @@ export function usePreviewErrors(): UsePreviewErrorsReturn {
   const clearErrors = usePreviewStore((s) => s.clearErrors);
   const addError = usePreviewStore((s) => s.addError);
 
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
-  useEffect(() => {
-    const handler = (event: MessageEvent) => {
-      const data = event.data as PostMessageData | undefined;
-      if (data?.source !== "shipit-preview") return;
+  useEventListener(window, "message", (event) => {
+    const data = event.data as PostMessageData | undefined;
+    if (data?.source !== "shipit-preview") return;
 
-      // Filter out errors from background iframes (non-active sessions).
-      // Preview subdomains embed the sessionId: {sessionId}--{port}.hostname
-      const originSessionId = extractSessionIdFromOrigin(event.origin);
-      if (originSessionId) {
-        const activeSessionId = useSessionStore.getState().sessionId;
-        if (activeSessionId && originSessionId !== activeSessionId) return;
-      }
+    // Filter out errors from background iframes (non-active sessions).
+    // Preview subdomains embed the sessionId: {sessionId}--{port}.hostname
+    const originSessionId = extractSessionIdFromOrigin(event.origin);
+    if (originSessionId) {
+      const activeSessionId = useSessionStore.getState().sessionId;
+      if (activeSessionId && originSessionId !== activeSessionId) return;
+    }
 
-      let errorEntry: PreviewError | null = null;
+    let errorEntry: PreviewError | null = null;
 
-      if (data.type === "error") {
-        const msg = data.message ?? "Unknown error";
-        const fileSrc = data.fileSrc;
-        if (checkDuplicate("error", msg, fileSrc, data.line)) return;
+    if (data.type === "error") {
+      const msg = data.message ?? "Unknown error";
+      const fileSrc = data.fileSrc;
+      if (checkDuplicate("error", msg, fileSrc, data.line)) return;
 
-        errorEntry = {
-          id: nextErrorId(),
-          type: "error",
-          message: msg,
-          source: fileSrc,
-          line: data.line,
-          col: data.col,
-          stack: data.stack,
-          timestamp: new Date().toISOString(),
-        };
-      }
+      errorEntry = {
+        id: nextErrorId(),
+        type: "error",
+        message: msg,
+        source: fileSrc,
+        line: data.line,
+        col: data.col,
+        stack: data.stack,
+        timestamp: new Date().toISOString(),
+      };
+    }
 
-      if (data.type === "console" && (data.level === "error" || data.level === "warn")) {
-        const msg = data.args?.join(" ") ?? "";
-        if (!msg) return;
-        if (checkDuplicate("console", msg)) return;
+    if (data.type === "console" && (data.level === "error" || data.level === "warn")) {
+      const msg = data.args?.join(" ") ?? "";
+      if (!msg) return;
+      if (checkDuplicate("console", msg)) return;
 
-        errorEntry = {
-          id: nextErrorId(),
-          type: "console",
-          level: data.level,
-          message: msg,
-          timestamp: new Date().toISOString(),
-        };
-      }
+      errorEntry = {
+        id: nextErrorId(),
+        type: "console",
+        level: data.level,
+        message: msg,
+        timestamp: new Date().toISOString(),
+      };
+    }
 
-      if (errorEntry) {
-        addError(errorEntry);
-      }
-    };
-
-    window.addEventListener("message", handler);
-    return () => window.removeEventListener("message", handler);
-  }, [addError]);
+    if (errorEntry) {
+      addError(errorEntry);
+    }
+  });
 
   return {
     errors,

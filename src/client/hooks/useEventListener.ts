@@ -53,7 +53,36 @@ export type EventTargetLike = Window | Document | HTMLElement | EventTarget | nu
  *                by-field (and `signal` by identity), so unchanged values do not
  *                rebind. Note an aborted `signal` detaches the listener natively,
  *                independent of unmount.
+ *
+ * Typed overloads infer the event type per target — `useEventListener(window,
+ * "keydown", e => …)` gives `e: KeyboardEvent`, no cast at the call site. A `null`
+ * target keeps the inference (`enabled ? window : null` still infers from the
+ * window arm). The string/`EventTargetLike` fallback covers custom event names.
  */
+export function useEventListener<K extends keyof WindowEventMap>(
+  target: Window | null | undefined,
+  type: K,
+  handler: (event: WindowEventMap[K]) => void,
+  options?: boolean | AddEventListenerOptions,
+): void;
+export function useEventListener<K extends keyof DocumentEventMap>(
+  target: Document | null | undefined,
+  type: K,
+  handler: (event: DocumentEventMap[K]) => void,
+  options?: boolean | AddEventListenerOptions,
+): void;
+export function useEventListener<K extends keyof HTMLElementEventMap>(
+  target: HTMLElement | null | undefined,
+  type: K,
+  handler: (event: HTMLElementEventMap[K]) => void,
+  options?: boolean | AddEventListenerOptions,
+): void;
+export function useEventListener(
+  target: EventTargetLike,
+  type: string,
+  handler: (event: Event) => void,
+  options?: boolean | AddEventListenerOptions,
+): void;
 export function useEventListener(
   target: EventTargetLike,
   type: string,

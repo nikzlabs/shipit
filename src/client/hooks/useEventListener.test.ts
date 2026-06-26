@@ -115,6 +115,23 @@ describe("useEventListener", () => {
     expect(handler).toHaveBeenCalledTimes(1); // no further calls after abort
   });
 
+  it("infers the event type from the target (compile-time) and fires (runtime)", () => {
+    // These handlers read event-specific fields; if the overloads regressed to a
+    // bare `Event`, `.key` / `.data` would be a typecheck error. So this doubles
+    // as a compile-time assertion that inference still works.
+    const onKey = vi.fn((e: KeyboardEvent) => e.key);
+    const onMsg = vi.fn((e: MessageEvent) => e.data as unknown);
+    renderHook(() => {
+      useEventListener(window, "keydown", (e) => onKey(e));
+      useEventListener(window, "message", (e) => onMsg(e));
+    });
+
+    act(() => void window.dispatchEvent(new KeyboardEvent("keydown", { key: "a" })));
+    act(() => void window.dispatchEvent(new MessageEvent("message", { data: "hi" })));
+    expect(onKey).toHaveBeenCalledTimes(1);
+    expect(onMsg).toHaveBeenCalledTimes(1);
+  });
+
   it("is a clean no-op when the target is null", () => {
     const handler = vi.fn();
     // Should neither throw nor attach anything.

@@ -22,13 +22,27 @@
       out-of-scope classes); note non-listener (timer) cleanup in the
       `useConnectionSync` migration
 
-## Follow-up PRs — migrate call sites (NOT this PR)
+## Migration — priority call sites (done)
 
-- [ ] Batch 1 (single-event): `useServerEvents.ts` visibilitychange,
-      `useNotification.ts`, `useKeyboardShortcuts.ts` (both keydown effects)
-- [ ] Batch 2 (multi-event / gated): `useConnectionSync.ts`,
-      `voice/use-voice-input.ts` (PTT keydown/keyup; blur/visibility)
-- [ ] After each migration, drop the now-unneeded per-site
-      `no-restricted-imports` / `no-restricted-syntax` `useEffect` disable
-- [ ] Confirm no behavior change (mobile foreground SSE reconnect, PTT,
-      notifications) after migration
+- [x] Add typed overloads to `useEventListener` (Window/Document/HTMLElement) so
+      keyboard/message handlers infer their event type — no per-site casts
+- [x] Batch 1 (single-event): `useServerEvents.ts` visibilitychange,
+      `useNotification.ts`, `useKeyboardShortcuts.ts` (both keydown),
+      `useQuickCaptureHotkey.ts`, `usePreviewErrors.ts`
+- [x] Batch 2 (multi-event / gated): `useConnectionSync.ts`, `useWebSocket.ts`
+      (foreground listeners), `voice/use-voice-input.ts` (PTT keydown/keyup;
+      blur/visibility)
+- [x] Preserve non-listener cleanup where the old effect also cleared a timer
+      (`useConnectionSync`, `useWebSocket` — kept on the same cadence)
+- [x] Drop the now-unneeded per-site `no-restricted-imports` /
+      `no-restricted-syntax` listener `useEffect` disables
+- [x] Tests green for every migrated module (`useEventListener`, `useNotification`,
+      `useConnectionSync`, `usePreviewErrors`, `useQuickCaptureHotkey`,
+      `useWebSocket`, `use-voice-input`) + typecheck + lint clean
+
+## Follow-up (later PRs)
+
+- [ ] Component-level sites still on the raw pattern (`KeyboardShortcutsOverlay`,
+      `FileAutoComplete`, `SkillAutoComplete`, `QuickCaptureOverlay`,
+      `MobileRecordingOverlay`, `ui/dialog.tsx`, `PreviewFrame`, `ChatQuoteReply`,
+      `MarkdownSelectionComments`, …) — separate reviewable sweeps

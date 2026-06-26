@@ -167,29 +167,51 @@ cleanly replaces — and (b) the **out-of-scope / later-batch classes** that fol
 and are equally valid targets — they are deferred to later sweeps to keep each
 migration PR reviewable, not because they don't qualify.
 
-### Priority migration set (hooks)
+### Priority migration set (hooks) — **migrated in this PR**
 
-Read from the current tree (file:line at time of writing). Each is a candidate for
-a **follow-up** migration PR, not this one.
+All ten listener sites below now route through the hook. The "Migrated to" column
+records the form used; sites with a `null`-target gate or non-listener (timer)
+cleanup are noted.
 
-| # | Site | Target(s) | Event(s) | Handler stability | Migrates to |
-|---|---|---|---|---|---|
-| 1 | `src/client/hooks/useServerEvents.ts:453-463` | `document` | `visibilitychange` | stable (declared in effect) | `useEventListener` |
-| 2 | `src/client/hooks/useConnectionSync.ts:39-47` | `document` + `window` | `visibilitychange`, `pageshow`, `focus` | stable closures over refs | `useEventListeners` |
-| 3 | `src/client/hooks/useNotification.ts:69-82` | `document` | `visibilitychange` | stable (declared in effect) | `useEventListener` |
-| 4 | `src/client/voice/use-voice-input.ts:298-317` | `window` | `keydown`, `keyup` | `useCallback` deps `[enabled, hotkey, …]` | `useEventListeners` (gated on `enabled && hotkey`) |
-| 5 | `src/client/voice/use-voice-input.ts:322-345` | `window` + `document` | `blur`, `visibilitychange` | `useCallback` | `useEventListeners` (gated on `enabled`) |
-| 6 | `src/client/hooks/useKeyboardShortcuts.ts:22-36` | `window` | `keydown` (toggle overlay) | `useEffect` deps `[setShortcutsOpen, toggleChord]` | `useEventListener` |
-| 7 | `src/client/hooks/useKeyboardShortcuts.ts:41-50` | `window` | `keydown` (new session) | `useEffect` deps `[handleNewSession, newSessionChord]` | `useEventListener` |
-| 8 | `src/client/hooks/useQuickCaptureHotkey.ts:23` | `window` | `keydown` | stable | `useEventListener` |
-| 9 | `src/client/hooks/usePreviewErrors.ts:114` | `window` | `message` | stable | `useEventListener` |
-| 10 | `src/client/hooks/useWebSocket.ts:169-172` | `document` + `window` | `visibilitychange`, `pageshow`, `focus`, `online` | stable | `useEventListeners` |
+| # | Site | Target(s) | Event(s) | Migrated to |
+|---|---|---|---|---|
+| 1 | `useServerEvents.ts` | `document` | `visibilitychange` | `useEventListener` |
+| 2 | `useConnectionSync.ts` | `document` + `window` | `visibilitychange`, `pageshow`, `focus` | `useEventListeners` (+ timer-cleanup effect preserved) |
+| 3 | `useNotification.ts` | `document` | `visibilitychange` | `useEventListener` |
+| 4 | `voice/use-voice-input.ts` | `window` | `keydown`, `keyup` | two `useEventListener` calls, gated `enabled && hotkey ? window : null` (typed `KeyboardEvent`, keeps `e.preventDefault()`) |
+| 5 | `voice/use-voice-input.ts` | `window` + `document` | `blur`, `visibilitychange` | `useEventListeners`, gated `enabled ? … : null` |
+| 6 | `useKeyboardShortcuts.ts` | `window` | `keydown` (toggle overlay) | `useEventListener` |
+| 7 | `useKeyboardShortcuts.ts` | `window` | `keydown` (new session) | `useEventListener` |
+| 8 | `useQuickCaptureHotkey.ts` | `window` | `keydown` | `useEventListener`, gated `isValid ? window : null` |
+| 9 | `usePreviewErrors.ts` | `window` | `message` | `useEventListener` (typed `MessageEvent`) |
+| 10 | `useWebSocket.ts` | `document` + `window` | `visibilitychange`, `pageshow`, `focus`, `online` | `useEventListeners`, gated on `url` (+ retry-timer cleanup preserved on `[url]`) |
 
-All ten currently carry a per-site
+Each site dropped its per-site
 `// eslint-disable-next-line no-restricted-imports … useEffect …` justification
 (the repo restricts raw `useEffect` — see `eslint.config.js`,
-`RESTRICTED_USEEFFECT`). A secondary payoff of this hook: that disable lives in
-**one** audited place (the hook module), and migrated sites drop their own.
+`RESTRICTED_USEEFFECT`); the disable now lives in **one** audited place (the hook
+module). Sites 2 and 10 keep a *separate* small `useEffect` purely for their
+non-listener timer teardown, with a narrowly-scoped disable that says so — the
+listener-management disables are gone.
+
+**Single-event for keyboard pairs (sites 4, 8).** The doc originally sketched
+`useEventListeners` for the PTT pair; the migration uses two `useEventListener`
+calls instead. With the typed overloads (below) each call infers `KeyboardEvent`,
+so `e.repeat` / `e.preventDefault()` / `eventMatchesPtt(e, …)` need no cast — the
+multi-form's `(event: Event)` handler would. Same lifetime (both gated on the same
+target expression), better types.
+
+### Typed overloads (added with the migration)
+
+`useEventListener` carries `Window` / `Document` / `HTMLElement` overloads that
+infer the event type from the target, plus a `string`/`EventTargetLike` fallback
+for custom event names. `useEventListener(window, "keydown", e => …)` gives
+`e: KeyboardEvent` with no call-site cast; a `null` arm (`enabled ? window : null`)
+keeps the inference from the live arm. This is type-only — the runtime impl and its
+10 behavioral tests are unchanged. `useEventListeners` stays `(event: Event)` per
+spec (heterogeneous events in one array can't share a single inferred type); its
+handlers cast where they read event fields (none of the migrated multi-event
+handlers needed to).
 
 ### Out-of-scope classes (do NOT route through this hook)
 
@@ -200,28 +222,26 @@ All ten currently carry a per-site
 | **Imperative, non-React DOM wiring** | `components/MonacoCommentWidgets.ts`, `voice/capture.ts` (MediaRecorder), `register-service-worker.ts` | Not inside React render/effects — built imperatively against editor/recorder DOM. The hook is a React-effect tool and doesn't apply. |
 | **Drag-gesture listeners added inside an event handler** (not an effect) | `useResizablePanel.ts`, `useSidebarResize.ts` (mousemove/up added on mousedown) | Added/removed imperatively within a gesture, not on mount/unmount — a different lifecycle than this hook models. |
 
-### Migration nuances to respect (not done in this PR)
+### Migration nuances (how each was handled)
 
-- **Site 2 (`useConnectionSync`) has non-listener cleanup in the same effect.**
-  Its current effect cleanup also clears `foregroundTimerRef` (`clearTimeout`,
-  `useConnectionSync.ts:43`) before removing the listeners. `useEventListeners`
-  only owns the add/remove pairs — it does **not** run that `clearTimeout`. The
-  migration must keep the timer teardown alive: either leave a tiny dedicated
-  cleanup effect for the timer, or hang the `clearTimeout` off an unmount effect
-  beside the `useEventListeners` call. Dropping it would leak a pending timeout
-  across unmount. (Same caution applies to any other site whose listener effect
-  also tears down a timer/subscription — audit the *whole* cleanup, not just the
-  `removeEventListener` lines, before deleting the effect.)
-- **Sites 4/5 are gated** (`enabled`, `hotkey`). The `null`-target no-op covers
-  this: pass `enabled ? window : null`. Behavior (no listener when disabled) is
-  preserved without an `if` around the hook (which the rules of hooks forbid).
-- **Sites 6/7 read a chord that can change** (`toggleChord`, `newSessionChord`
-  from the keybindings registry). The handler closes over the latest chord via the
-  ref, so no rebind is needed when the chord changes — but the matcher must read
-  the chord at fire time. That's automatic with the latest-callback ref; just keep
-  the chord lookup inside the handler body.
-- **`use-voice-input` keydown/keyup `e.preventDefault()`** must keep working —
-  unaffected; the wrapper passes the native `Event` straight through.
+- **Sites 2 & 10 have non-listener cleanup.** The old effects also cleared a timer
+  in their cleanup (`useConnectionSync` `foregroundTimerRef`; `useWebSocket`
+  `clearForegroundRetryTimers()`). `useEventListeners` only owns add/remove pairs,
+  so each migration keeps a **separate tiny `useEffect`** for the timer teardown —
+  `useConnectionSync` on unmount (`[]`), `useWebSocket` on the original `[url]`
+  cadence so a stale retry can't fire after a session switch. The lesson generalizes:
+  audit the *whole* cleanup, not just the `removeEventListener` lines, before
+  deleting a listener effect.
+- **Gated sites (4/5/8/10)** use the `null`-target no-op instead of an `if` around
+  the hook (which the rules of hooks forbid): `enabled && hotkey ? window : null`,
+  `enabled ? document : null`, `isValid ? window : null`, `url ? window : null`.
+  Listener attaches only when the gate is open; flipping it rebinds.
+- **Sites 6/7 read a chord that can change** (`toggleChord`, `newSessionChord`).
+  The handler reads the latest chord through the latest-callback ref at fire time,
+  so no rebind is needed when the chord changes — the lookup just stays inside the
+  handler body.
+- **`use-voice-input` keydown/keyup `e.preventDefault()`** still works — the typed
+  `KeyboardEvent` overload passes the native event straight through.
 
 ## SSE `addEventListener` in `useServerEvents` — NOT this hook's job
 
@@ -248,13 +268,14 @@ So: the **DOM visibilitychange listener** in `useServerEvents` migrates; the
 **SSE event table** stays as-is. Decision recorded so a future sweep doesn't
 "helpfully" route the SSE handlers through this hook.
 
-## Prototype status (this PR)
+## Status (this PR)
 
-Shipped and validated:
+Hook + tests + the full priority-set migration shipped together.
 
-- `src/client/hooks/useEventListener.ts` — `useEventListener` + `useEventListeners`
-  + `EventTargetLike` / `EventListenerSpec` types.
-- `src/client/hooks/useEventListener.test.ts` — 10 tests, all green, proving:
+- `src/client/hooks/useEventListener.ts` — `useEventListener` (with typed
+  Window/Document/HTMLElement overloads) + `useEventListeners` + `EventTargetLike`
+  / `EventListenerSpec` types.
+- `src/client/hooks/useEventListener.test.ts` — 11 tests, all green, proving:
   - attaches on mount and fires the handler;
   - on unmount the **removed reference === the added reference** (the exact bug the
     sketch had) **and** the listener verifiably stops firing afterward;
@@ -264,30 +285,39 @@ Shipped and validated:
     reference matched);
   - `once` is honored (fires at most once) and an `AbortSignal` detaches the
     listener on abort — i.e. options are passed through, not dropped;
+  - the typed overloads infer `KeyboardEvent` / `MessageEvent` (compile-time) and
+    still fire (runtime);
   - `null` target is a clean no-op;
   - the multi form binds across two targets, tears all down with matching refs,
     swaps handlers without rebinding, **and rebinds when a non-capture option
     (`once`) changes** (the key tracks all three booleans, not just capture).
+- **Migrated** all 10 priority sites (table above), dropping their per-site
+  listener `useEffect` disables. `usePreviewErrors.test.ts`'s cleanup test was
+  upgraded to assert same-reference removal (the migration changed the
+  `removeEventListener` arity by passing an options object).
 
-Verified with `npx vitest run src/client/hooks/useEventListener.test.ts`,
-`npm run typecheck`, and `eslint` on the two new files. (Full `npm test` is not run
-in-container — it OOMs the box; CI runs it.)
+Verified with `npm run typecheck`, `eslint` on every touched file, and the
+co-located tests for all migrated modules (`useEventListener`, `useNotification`,
+`useConnectionSync`, `usePreviewErrors`, `useQuickCaptureHotkey`, `useWebSocket`,
+`use-voice-input` — 88 tests green). (Full `npm test` is not run in-container — it
+OOMs the box; CI runs it.)
 
 ## Follow-up (separate PRs)
 
-1. Migrate sites #1, #3, #6, #7 (single-event) — smallest, lowest-risk batch.
-2. Migrate sites #2, #4, #5 (multi-event / gated) — exercises `useEventListeners`
-   and the `null`-target gating.
-3. After migration, confirm each migrated file drops its per-site
-   `no-restricted-imports`/`no-restricted-syntax` `useEffect` disable.
-
+The hook-level priority set is done. Remaining work is the **component-level**
+sweep — the same `window`/`document` add+cleanup pattern in
+`KeyboardShortcutsOverlay`, `FileAutoComplete`, `SkillAutoComplete`,
+`QuickCaptureOverlay`, `MobileRecordingOverlay`, `ui/dialog.tsx`, `PreviewFrame`,
+`ChatQuoteReply`, `MarkdownSelectionComments`, … — split into reviewable batches.
 See `checklist.md` for the live work list.
 
 ## Key files
 
-- `src/client/hooks/useEventListener.ts` — the primitive (this PR).
-- `src/client/hooks/useEventListener.test.ts` — cleanup-correctness proof (this PR).
+- `src/client/hooks/useEventListener.ts` — the primitive (`useEventListener` +
+  typed overloads + `useEventListeners`).
+- `src/client/hooks/useEventListener.test.ts` — cleanup-correctness + inference proof.
 - `eslint.config.js` — `RESTRICTED_USEEFFECT` / `no-restricted-imports` rules the
   hook centralizes the disable for.
-- Migration targets: `useServerEvents.ts`, `useConnectionSync.ts`,
-  `useNotification.ts`, `voice/use-voice-input.ts`, `useKeyboardShortcuts.ts`.
+- Migrated sites: `useServerEvents.ts`, `useConnectionSync.ts`, `useNotification.ts`,
+  `useKeyboardShortcuts.ts`, `useQuickCaptureHotkey.ts`, `usePreviewErrors.ts`,
+  `useWebSocket.ts`, `voice/use-voice-input.ts`.
