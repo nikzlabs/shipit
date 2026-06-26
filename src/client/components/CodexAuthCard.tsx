@@ -1,6 +1,8 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect needed to clear the local "starting device auth" pending flag once SSE delivers deviceAuth/deviceAuthError
 import { useEffect, useState } from "react";
 import type { AgentOption } from "../agent-types.js";
+import { CopyButton } from "./ui/copy-button.js";
+import { ICON_SIZE } from "../design-tokens.js";
 
 /**
  * State for an in-flight `codex login --device-auth` flow. The orchestrator
@@ -80,7 +82,6 @@ export function CodexAuthCard({
   const [codexKeyError, setCodexKeyError] = useState("");
   const [codexKeyLoading, setCodexKeyLoading] = useState(false);
   const [showApiKeyPanel, setShowApiKeyPanel] = useState(false);
-  const [codeCopied, setCodeCopied] = useState(false);
   // Tracks the gap between clicking "Sign in" and the SSE-delivered
   // `agent_auth_pending` (codex / device-code) event arriving (or a failure).
   // Without this guard the button is clickable for ~hundreds of ms, letting
@@ -127,16 +128,6 @@ export function CodexAuthCard({
     }
   };
 
-  const copyUserCode = async () => {
-    if (!deviceAuth?.userCode) return;
-    try {
-      await navigator.clipboard.writeText(deviceAuth.userCode);
-      setCodeCopied(true);
-      setTimeout(() => setCodeCopied(false), 1500);
-    } catch {
-      // Clipboard API not available — user can still type the code manually.
-    }
-  };
 
   return (
     <div className="space-y-2" data-testid="codex-auth-card">
@@ -248,13 +239,14 @@ export function CodexAuthCard({
                 >
                   {deviceAuth.userCode}
                 </code>
-                <button
-                  onClick={copyUserCode}
-                  className="shrink-0 rounded-md border border-(--color-border-secondary) bg-(--color-bg-primary) px-3 py-2 text-xs text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors"
+                <CopyButton
+                  text={deviceAuth.userCode}
+                  timeout={1500}
+                  iconSize={ICON_SIZE.XS}
+                  variant="secondary"
+                  className="shrink-0 h-auto px-3 py-2 bg-(--color-bg-primary) text-(--color-text-secondary) hover:text-(--color-text-primary)"
                   data-testid="codex-copy-code"
-                >
-                  {codeCopied ? "Copied" : "Copy"}
-                </button>
+                />
               </div>
               <p className="text-xs text-(--color-text-tertiary)">
                 Waiting for approval...

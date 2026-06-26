@@ -1,11 +1,11 @@
-import { useState, useCallback, useMemo, memo } from "react";
+import { useMemo, memo } from "react";
 import hljs from "highlight.js";
-import { CopyIcon, CheckIcon } from "@phosphor-icons/react";
 import Markdown, { defaultUrlTransform, type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import type { Element as HastElement, Text as HastText } from "hast";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "./ui/tooltip.js";
+import { CopyButton } from "./ui/copy-button.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import type { MessageSegment } from "./MessageList.js";
 import type { OpenIssueRef } from "../stores/issues-store.js";
@@ -353,8 +353,6 @@ export function MarkdownTooltip({ content, children }: { content: string; childr
  * skips the render entirely when the block's content is unchanged.
  */
 export const CodeBlock = memo(({ code, language }: { code: string; language: string }) => {
-  const [copied, setCopied] = useState(false);
-
   const html = useMemo(() => {
     if (language && hljs.getLanguage(language)) {
       return hljs.highlight(code, { language }).value;
@@ -362,33 +360,19 @@ export const CodeBlock = memo(({ code, language }: { code: string; language: str
     return hljs.highlightAuto(code).value;
   }, [code, language]);
 
-  const handleCopy = useCallback(async () => {
-    try {
-      await navigator.clipboard.writeText(code);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // Browsers may deny clipboard access (insecure context, permission
-      // policy). Silently swallow so the chat doesn't crash — the user can
-      // still select-and-copy manually from the block.
-    }
-  }, [code]);
-
   return (
     <div className="not-prose my-2 rounded-md overflow-hidden bg-(--color-bg-secondary) w-0 min-w-full">
       <div className="flex items-center justify-between gap-2 px-3 py-1 border-b border-(--color-border-primary)">
         <span className="text-xs text-(--color-text-secondary) truncate">
           {language || "code"}
         </span>
-        <button
-          type="button"
-          onClick={() => void handleCopy()}
-          aria-label={copied ? "Copied" : "Copy code"}
-          className="inline-flex items-center gap-1 text-xs text-(--color-text-tertiary) hover:text-(--color-text-primary) transition-colors rounded px-1.5 py-0.5 shrink-0"
-        >
-          {copied ? <CheckIcon size={ICON_SIZE.XS} /> : <CopyIcon size={ICON_SIZE.XS} />}
-          <span>{copied ? "Copied" : "Copy"}</span>
-        </button>
+        <CopyButton
+          text={code}
+          timeout={1500}
+          iconSize={ICON_SIZE.XS}
+          aria-label="Copy code"
+          className="text-(--color-text-tertiary) hover:text-(--color-text-primary) px-1.5 shrink-0"
+        />
       </div>
       <pre className="px-3 py-1 overflow-x-auto text-xs leading-relaxed">
         <code
