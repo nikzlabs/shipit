@@ -7,6 +7,7 @@ platform capabilities.
 | File | Covers |
 |------|--------|
 | [environment.md](environment.md) | Container layout, paths, auto-git, hot reload |
+| [android.md](android.md) | Android — build/lint/test the baked toolchain, snapshot tests for visual checks, emulator-as-Compose-service for a live device |
 | [shipit-yaml.md](shipit-yaml.md) | Full `shipit.yaml` config reference |
 | [preview.md](preview.md) | Preview system — port detection, HMR, browser tools |
 | [secrets.md](secrets.md) | Per-service env var declaration via `x-shipit-secrets` |

@@ -131,6 +131,61 @@ RUN mkdir -p /opt/playwright-browsers \
  && HOME=/opt/playwright-browsers playwright-mcp install-browser chrome-for-testing \
  && chmod -R a+rX /opt/playwright-browsers
 
+# ---- Android build toolchain (docs/213) ----
+# Bake the JVM + Android SDK + Gradle so the agent can build, lint, and run
+# JVM/Robolectric and Paparazzi/Roborazzi snapshot tests for ANY Android/Gradle
+# repo with zero per-repo setup — the same "baked, ambient" model as the agent
+# CLIs and Playwright above. The toolchain is then present in every session, so a
+# repo declares nothing to get a working `./gradlew` (no `shipit.yaml` Android
+# fields). A repo's own Gradle/Maven deps still download per build; only the
+# platform toolchain is baked. No emulator/system-image lives here — the
+# running-app tier is a user-declared Compose service (docs/213), not this image.
+#
+# JDK 17 covers AGP 8.x (the current matrix; this repo is AGP 8.6.1 / Gradle 8.7).
+# JAVA_HOME is pinned via a stable /opt/java symlink so it's arch-independent (the
+# apt path is /usr/lib/jvm/java-17-openjdk-<arch>, which differs amd64 vs arm64).
+RUN apt-get update && apt-get install -y openjdk-17-jdk-headless \
+ && rm -rf /var/lib/apt/lists/* \
+ && ln -sfn "$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")" /opt/java
+ENV JAVA_HOME=/opt/java
+ENV PATH="${JAVA_HOME}/bin:${PATH}"
+
+# Android SDK: command-line tools (sdkmanager), platform-tools (adb), and a common
+# compileSdk/build-tools matrix with licenses pre-accepted. Off-matrix components
+# (an older platform, an NDK, CMake) are provisioned on demand via `sdkmanager`
+# — see /shipit-docs/android.md. The SDK dirs are made world-writable (single
+# tenant, no secrets) so those on-demand installs land under ANDROID_SDK_ROOT as
+# the unprivileged `shipit` runtime user (dirs only — keeps the layer small).
+ENV ANDROID_SDK_ROOT=/opt/android-sdk
+ENV ANDROID_HOME=/opt/android-sdk
+ENV ANDROID_CMDLINE_TOOLS_VERSION=11076708
+ENV ANDROID_COMPILE_SDK=35
+ENV ANDROID_BUILD_TOOLS=35.0.0
+RUN mkdir -p "${ANDROID_SDK_ROOT}/cmdline-tools" \
+ && curl -sSL -o /tmp/cmdline-tools.zip \
+      "https://dl.google.com/android/repository/commandline-tools-linux-${ANDROID_CMDLINE_TOOLS_VERSION}_latest.zip" \
+ && unzip -q /tmp/cmdline-tools.zip -d "${ANDROID_SDK_ROOT}/cmdline-tools" \
+ && mv "${ANDROID_SDK_ROOT}/cmdline-tools/cmdline-tools" "${ANDROID_SDK_ROOT}/cmdline-tools/latest" \
+ && rm /tmp/cmdline-tools.zip
+ENV PATH="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${PATH}"
+RUN yes | sdkmanager --licenses > /dev/null \
+ && sdkmanager --install "platform-tools" \
+      "platforms;android-34" "platforms;android-${ANDROID_COMPILE_SDK}" \
+      "build-tools;34.0.0" "build-tools;${ANDROID_BUILD_TOOLS}" > /dev/null \
+ && find "${ANDROID_SDK_ROOT}" -type d -exec chmod a+rwx {} +
+
+# A baked Gradle so a wrapperless repo still builds and the wrapper's first run
+# resolves 8.7 fast. A committed wrapper still self-fetches its pinned dist on the
+# first `./gradlew`; the agent can run the baked `gradle` to skip that one-time
+# download. See /shipit-docs/android.md.
+ENV GRADLE_VERSION=8.7
+RUN curl -sSL -o /tmp/gradle.zip "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" \
+ && unzip -q /tmp/gradle.zip -d /opt \
+ && ln -s "/opt/gradle-${GRADLE_VERSION}" /opt/gradle \
+ && rm /tmp/gradle.zip \
+ && chmod -R a+rX "/opt/gradle-${GRADLE_VERSION}"
+ENV PATH="/opt/gradle/bin:${PATH}"
+
 WORKDIR /app
 
 # Copy pre-built node_modules from build stage (devDependencies pruned)

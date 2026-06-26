@@ -383,6 +383,16 @@ describe("buildEnv", () => {
     expect(env).toContain("PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers");
   });
 
+  // docs/213 — the baked Android toolchain is ambient in every session. buildEnv
+  // mirrors the SDK/JDK paths at the launch boundary (like the Playwright path)
+  // so any Android/Gradle repo builds with no per-repo configuration.
+  it("docs/213: sets ANDROID_SDK_ROOT, ANDROID_HOME, and JAVA_HOME for the baked Android toolchain", () => {
+    const env = buildEnv(baseConfig(), "/workspace", 9100, undefined, undefined, {} as NodeJS.ProcessEnv);
+    expect(env).toContain("ANDROID_SDK_ROOT=/opt/android-sdk");
+    expect(env).toContain("ANDROID_HOME=/opt/android-sdk");
+    expect(env).toContain("JAVA_HOME=/opt/java");
+  });
+
   it("docs/150: resolves HOME/AGENT_HOME from the orchestrator's AGENT_HOME (local mode keeps /root)", () => {
     const prev = process.env.AGENT_HOME;
     process.env.AGENT_HOME = "/root";
