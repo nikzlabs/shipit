@@ -9,6 +9,7 @@ import {
   chownWorkspaceGitToSessionWorker,
   chownWorktreeToSessionWorker,
   handWorkspaceBackToWorker,
+  reconcileDepDirCacheOwnership,
 } from "./session-worker-uid.js";
 
 describe("session-worker-uid (docs/150 §7)", () => {
@@ -284,6 +285,89 @@ describe("session-worker-uid (docs/150 §7)", () => {
         expect(() => chownTreeToSessionWorker(tmpDir)).not.toThrow();
       } finally {
         fs.rmSync(outside, { recursive: true, force: true });
+      }
+    });
+  });
+
+  // #1666 — bounded dep-dir cache reconciliation. Repairs root-owned tool caches
+  // (e.g. `node_modules/.vite`) the worktree handback's dep-dir exclusion skips.
+  describe("reconcileDepDirCacheOwnership", () => {
+    // Build a node_modules with an installed package and a `.vite` cache subtree.
+    function seedNodeModules(): { nm: string; pkgFile: string; viteFile: string } {
+      const nm = path.join(tmpDir, "node_modules");
+      const pkgFile = path.join(nm, "left-pad", "index.js");
+      const viteFile = path.join(nm, ".vite", "deps", "chunk.js");
+      fs.mkdirSync(path.dirname(pkgFile), { recursive: true });
+      fs.mkdirSync(path.dirname(viteFile), { recursive: true });
+      fs.writeFileSync(pkgFile, "module.exports = 1;");
+      fs.writeFileSync(viteFile, "//");
+      return { nm, pkgFile, viteFile };
+    }
+
+    it("is a no-op when SHIPIT_SESSION_WORKER_UID is unset", () => {
+      delete process.env.SHIPIT_SESSION_WORKER_UID;
+      const { nm } = seedNodeModules();
+      const spy = vi.spyOn(fs, "lchownSync");
+      try {
+        reconcileDepDirCacheOwnership(nm);
+        expect(spy).not.toHaveBeenCalled();
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("never throws on a missing dep dir (no install yet)", () => {
+      process.env.SHIPIT_SESSION_WORKER_UID = String(process.getuid?.() ?? 0);
+      const spy = vi.spyOn(fs, "lchownSync");
+      try {
+        expect(() => reconcileDepDirCacheOwnership(path.join(tmpDir, "node_modules"))).not.toThrow();
+        expect(spy).not.toHaveBeenCalled();
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    // Common case: everything already worker-owned → a shallow scan that chowns
+    // nothing (the steady-state cost is just the direct-child lstats).
+    it("skips children already owned by the worker uid (zero chowns)", () => {
+      const myUid = process.getuid?.();
+      if (myUid === undefined) return; // not POSIX — skip
+      process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
+      const { nm } = seedNodeModules();
+      const spy = vi.spyOn(fs, "lchownSync");
+      try {
+        reconcileDepDirCacheOwnership(nm);
+        expect(spy).not.toHaveBeenCalled();
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    // Leak case: a direct child not owned by the worker is chowned wholesale,
+    // recursing into its subtree (so `.vite/deps/chunk.js` is repaired too).
+    it("recursively chowns a direct child not owned by the worker uid", () => {
+      const myUid = process.getuid?.();
+      if (myUid === undefined) return; // not POSIX — skip
+      // A uid we don't own → every real file lstats as "not worker-owned", so the
+      // reconcile treats each direct child as a leaked tree and walks it. The
+      // chown itself EPERMs (we lack CAP_CHOWN) and is swallowed; the spy records
+      // the attempted paths, proving the bounded recursion.
+      process.env.SHIPIT_SESSION_WORKER_UID = String(myUid + 1);
+      const { nm, pkgFile, viteFile } = seedNodeModules();
+      const spy = vi.spyOn(fs, "lchownSync");
+      try {
+        reconcileDepDirCacheOwnership(nm);
+        const chowned = new Set(spy.mock.calls.map((c) => c[0] as string));
+        // Direct children of node_modules are reconciled...
+        expect(chowned.has(path.join(nm, ".vite"))).toBe(true);
+        expect(chowned.has(path.join(nm, "left-pad"))).toBe(true);
+        // ...recursively, so nested cache files are repaired too.
+        expect(chowned.has(viteFile)).toBe(true);
+        expect(chowned.has(pkgFile)).toBe(true);
+        // node_modules itself is NOT chowned — only its children (bounded scan).
+        expect(chowned.has(nm)).toBe(false);
+      } finally {
+        spy.mockRestore();
       }
     });
   });

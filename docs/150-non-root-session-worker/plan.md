@@ -558,6 +558,29 @@ and now chowns the `.shipit` dir + marker to the worker uid, so the worker's
 uid-1000 `writeMarker` can later overwrite the marker when a HEAD change
 invalidates it (otherwise: EACCES, install fails).
 
+**Addendum — the dep-dir exclusion still stranded root-owned tool caches (#1666).**
+The handback above (and §7.1) deliberately **excludes** the declared dep dirs:
+re-walking a populated `node_modules` (tens of thousands of files) every boot is
+too expensive, and in overlay mode it would rewrite the shared read-only lowerdir
+(docs/183). But that left a gap — a root process that wrote a build-tool cache
+*inside* a dep dir (a Compose dev server's `node_modules/.vite` before §7.3/#1646
+ran services as the worker uid) leaves a root-owned subtree the handback never
+repairs. On the next `npm run build` the uid-1000 agent can't `rmdir` it
+(`EACCES … rmdir 'node_modules/.vite/deps'`) and has no `sudo` to recover. §7.3
+stops *new* such writes; this closes the residual *leftover*. `selfHealWorkspaceOwnership`
+now also runs a **bounded** dep-dir pass (`reconcileDepDirCacheOwnership`,
+`session-worker-uid.ts`): it only `lstat`s the **direct children** of each
+per-session dep-dir layer and `chownRecursive`s the rare child not already owned
+by the worker (a leaked cache tree a root process created whole), so the common
+case is a shallow scan with **zero** chowns and a leak costs work bounded by the
+leak, never the dep count. The layer it reconciles is always per-session and
+writable — the plain `workspaceDir/<depDir>` (non-overlay) or each overlay spec's
+`upperdir` (where a copied-up/new `.vite` lands) — **never** the shared overlay
+lowerdir, so it can't rewrite a base generation or trigger a copy-up storm. Tests:
+`session-worker-uid.test.ts` → "reconcileDepDirCacheOwnership", and
+`container-lifecycle.test.ts` → the overlay/non-overlay wiring in
+"selfHealWorkspaceOwnership".
+
 **Observability.** The failure used to surface only as a stale `install_ok=false`
 in the overlay-measure line, the real cause (`EACCES … permission denied`) lost in
 the emit-only `install_log` stream. Now the worker captures a bounded stderr tail

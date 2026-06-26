@@ -168,6 +168,61 @@ export function handWorkspaceBackToWorker(workspaceDir: string): void {
 }
 
 /**
+ * Reconcile worker ownership of a per-session **dep-dir** writable layer, cheaply
+ * — repairs root-owned tool caches a root process left inside it (e.g.
+ * `node_modules/.vite`, written by a Compose dev server before #1646 ran services
+ * as the worker uid). No-op when `SHIPIT_SESSION_WORKER_UID` is unset.
+ *
+ * The general {@link chownWorktreeToSessionWorker} self-heal deliberately
+ * **excludes** the declared dep dirs: a full recursive chown of a populated
+ * `node_modules` (tens of thousands of files) on every boot is too expensive, and
+ * in overlay mode it would also rewrite the shared read-only lowerdir (docs/183).
+ * So a root-owned cache that slipped *inside* a dep dir was never repaired and
+ * wedged the next `npm run build` with EACCES (#1666 — the agent, uid 1000, can't
+ * `rmdir` the root-owned `.vite/deps`, and has no `sudo` to recover).
+ *
+ * This pass is bounded and overlay-safe by construction:
+ *  - it only `lstat`s the **direct children** of `depDirPath` (one per installed
+ *    package + the dot-cache dirs), so the steady-state cost is a few hundred
+ *    `lstat`s and **zero** chowns — the common case (everything already
+ *    worker-owned from the worker-run install) is a shallow scan;
+ *  - a child NOT owned by the worker uid is a leaked cache tree (a root process
+ *    creates the whole `.vite/` subtree fresh), so it gets one wholesale
+ *    {@link chownRecursive} — work bounded by the *leak* size, not the dep count;
+ *  - `depDirPath` is always a **per-session** writable path — the plain
+ *    `workspaceDir/<depDir>` (non-overlay) or the per-session overlay `upperdir`
+ *    (where copy-ups/new dirs like `.vite` land) — never the shared overlay
+ *    lowerdir, so reconciling it can never rewrite a base generation or trigger a
+ *    copy-up storm.
+ *
+ * Idempotent: an already-worker-owned tree costs only the direct-child `lstat`s.
+ * Tolerant: a missing `depDirPath` (no install yet) is a no-op.
+ */
+export function reconcileDepDirCacheOwnership(depDirPath: string): void {
+  const uid = sessionWorkerUid();
+  if (uid === null) return;
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(depDirPath);
+  } catch {
+    return; // dep dir doesn't exist yet (no install) — nothing to reconcile
+  }
+  for (const entry of entries) {
+    const child = path.join(depDirPath, entry);
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(child);
+    } catch {
+      continue; // vanished mid-scan
+    }
+    if (stat.uid !== uid || stat.gid !== uid) {
+      // Leaked tree (root-owned cache a root process wrote here) — chown it whole.
+      chownRecursive(child, uid);
+    }
+  }
+}
+
+/**
  * Recursive worktree chown that skips `.git` + the declared dep dirs (matched by
  * path relative to the worktree root, so a nested `client/node_modules` is
  * skipped too). Mirrors {@link chownRecursive} otherwise: chown every node,

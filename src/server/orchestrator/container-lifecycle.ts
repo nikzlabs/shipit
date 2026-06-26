@@ -20,6 +20,7 @@ import {
 import { CONTAINER_WORKSPACE_DIR } from "../shared/fs-constants.js";
 import { agentHome } from "../shared/agent-home.js";
 import type { HostMount } from "../shared/shipit-config.js";
+import { DEFAULT_DEP_DIRS, resolveShipitConfig } from "../shared/shipit-config.js";
 import {
   ensureSessionCredentialsScaffold,
   perSessionCredentialsDir,
@@ -27,7 +28,11 @@ import {
 } from "./session-credentials.js";
 import { createOverlayVolume, removeOverlayVolume } from "./overlay-volume.js";
 import { preStampInstallMarker, type DepDirOverlaySpec } from "./overlay-session.js";
-import { chownToSessionWorker, handWorkspaceBackToWorker } from "./session-worker-uid.js";
+import {
+  chownToSessionWorker,
+  handWorkspaceBackToWorker,
+  reconcileDepDirCacheOwnership,
+} from "./session-worker-uid.js";
 import { buildTierAEgressInputs, installEgressFirewall } from "./egress-firewall-install.js";
 import {
   buildResolverConfigB64,
@@ -604,26 +609,61 @@ export function prepareOverlayDirs(specs: DepDirOverlaySpec[] | undefined): void
  * `node_modules` overlay) — and idempotent (an already-worker-owned tree costs a
  * no-op `lchown` per node), so the steady-state cost is negligible.
  *
+ * The dep-dir exclusion above left one gap (#1666): a root process that wrote a
+ * tool cache *inside* a dep dir — a Compose dev server's `node_modules/.vite`
+ * before #1646 ran services as the worker uid — leaves a root-owned subtree the
+ * worktree handback never repairs, and the next `npm run build` EACCESes trying
+ * to `rmdir` it (no `sudo` to recover). So we *also* run a **bounded** dep-dir
+ * reconciliation here ({@link reconcileDepDirCacheOwnership}): it only `lstat`s
+ * the direct children of each per-session dep-dir layer and chowns the rare
+ * non-worker-owned cache tree, never re-walking the whole `node_modules` or the
+ * shared overlay lowerdir. For an overlay session the per-session writable layer
+ * is each spec's `upperdir` (where a copied-up/new `.vite` lands); otherwise it's
+ * `workspaceDir/<depDir>`.
+ *
  * Gated twice:
- *  - `handWorkspaceBackToWorker` is a no-op when `SHIPIT_SESSION_WORKER_UID` is
- *    unset (legacy root runtime — byte-for-byte unchanged); and
+ *  - the chown helpers are a no-op when `SHIPIT_SESSION_WORKER_UID` is unset
+ *    (legacy root runtime — byte-for-byte unchanged); and
  *  - we skip entirely in dev/dogfood bind-mount mode (no `workspaceVolume`),
  *    where `/workspace` is the developer's host source tree and a recursive
  *    chown would rewrite host ownership (docs/150 §2/§9, mirrors the entrypoint's
  *    `SHIPIT_SKIP_WORKSPACE_CHOWN`).
  *
- * Exported + the chown injectable so the gating is unit-testable without root.
+ * Exported + the chown fns injectable so the gating is unit-testable without root.
  */
 export function selfHealWorkspaceOwnership(
-  config: Pick<ContainerConfig, "workspaceDir">,
+  config: Pick<ContainerConfig, "workspaceDir" | "overlaySpecs">,
   workspaceVolume: string | undefined,
   handBack: (workspaceDir: string) => void = handWorkspaceBackToWorker,
+  reconcileDepDir: (depDirPath: string) => void = reconcileDepDirCacheOwnership,
 ): void {
   // Dev/dogfood bind mount — never chown the host source tree.
   if (!workspaceVolume) return;
   const workspaceDir = config.workspaceDir;
   if (!workspaceDir) return;
   handBack(workspaceDir);
+
+  // #1666 — repair root-owned tool caches the handback's dep-dir exclusion skips.
+  const overlaySpecs = config.overlaySpecs;
+  if (overlaySpecs && overlaySpecs.length > 0) {
+    // Overlay session: reconcile each per-session upperdir (the writable layer
+    // where a root-leaked `node_modules/.vite` copy-up/new dir lands). Never the
+    // shared lowerdir.
+    for (const spec of overlaySpecs) {
+      if (spec.orchDirs) reconcileDepDir(spec.orchDirs.upperdir);
+    }
+  } else {
+    // Non-overlay session: the dep dir is a plain subtree of the workspace.
+    let depDirs: string[];
+    try {
+      depDirs = resolveShipitConfig(workspaceDir).agent.depDirs;
+    } catch {
+      depDirs = [...DEFAULT_DEP_DIRS];
+    }
+    for (const depDir of depDirs) {
+      reconcileDepDir(path.join(workspaceDir, depDir));
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
