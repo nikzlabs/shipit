@@ -174,6 +174,22 @@ and video. It's automated test execution, **not** a live interactive preview or
 an `adb connect` target — but it covers regression validation and instrumented
 tests (`connectedAndroidTest`, Espresso/UI Automator) where there's no local KVM.
 
+## Network / blocked repositories
+
+Session containers run behind a default-deny egress firewall. The common build
+repositories are on the allowlist, so a standard build resolves fine:
+**Maven Central** (`repo.maven.apache.org`, `repo1.maven.org`), **Google Maven**
+(`dl.google.com`, `maven.google.com`), the **Gradle** distribution + plugin
+portal (`*.gradle.org`), and **Sonatype** (`*.sonatype.org`).
+
+If a build pulls from a repo that *isn't* on that list — **JitPack**
+(`jitpack.io`), a private Nexus/Artifactory, a company mirror — Gradle fails at
+resolution with `UnknownHostException` / "Could not resolve host". That's an
+**egress** block, not a toolchain problem. The fix is to add the host to the
+session's egress allowlist (Settings → Network, or the durable allowlist) — tell
+the user which host is blocked and let them approve it; don't try to route around
+the firewall.
+
 ## Quick reference
 
 | Goal | Command |

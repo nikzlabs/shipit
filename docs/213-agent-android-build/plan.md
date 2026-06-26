@@ -264,7 +264,14 @@ Phases 1 and 2 are implemented. What landed and where:
   runtime user. The `.docker` worker variant inherits all of this (it `FROM`s the base).
 - **Env at the launch boundary** (`container-lifecycle.ts` `buildEnv`): `ANDROID_SDK_ROOT`, `ANDROID_HOME`,
   `JAVA_HOME` mirrored like `PLAYWRIGHT_BROWSERS_PATH`, with a guard test (`container-lifecycle.test.ts`).
+- **Egress allowlist** (`egress-allowlist.ts` `EGRESS_DEFAULT_ALLOWLIST`): added the JVM/Android artifact
+  registries — `.gradle.org`, `dl.google.com` (exact, *not* `.google.com`), `maven.google.com`,
+  `.maven.apache.org`, `.maven.org`, `.sonatype.org`. The default-deny firewall (SHI-90) otherwise blocks
+  Gradle dependency resolution (`UnknownHostException`), so the baked toolchain couldn't build without these
+  — discovered during end-to-end verification. Read-only artifact CDNs, same posture as the npm/pypi entries.
 - **Gradle wrapper** committed under `android/` (`gradlew`, `gradlew.bat`, `gradle/wrapper/*`) pinned to 8.7.
+  Inside the contained network the wrapper's first-run distribution fetch (`services.gradle.org`) now
+  resolves via the `.gradle.org` allowlist entry; the baked `gradle` avoids it entirely.
 - **Agent surfacing**: `src/server/shipit-docs/android.md` (baked into every image at `/shipit-docs/` — the
   platform-global reference that reaches *any* repo) + the `.claude/skills/android-build` skill (covers
   ShipIt's own `android/` dogfood; the SHI-205 template / a future platform-injection step distributes it to

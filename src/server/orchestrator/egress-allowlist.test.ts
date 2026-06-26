@@ -153,12 +153,38 @@ describe("buildEgressAllowlist", () => {
     expect(al.isAllowed("nodejs.org")).toBe(true);
   });
 
+  // docs/213 — the baked Android toolchain needs Gradle/Maven dependency repos
+  // reachable, or every build fails at resolution. These are read-only artifact
+  // registries (the JVM analog of npm/pypi).
+  it("allows JVM/Android build artifact registries by default", () => {
+    const al = buildEgressAllowlist();
+    expect(al.isAllowed("services.gradle.org")).toBe(true); // wrapper distributions
+    expect(al.isAllowed("plugins.gradle.org")).toBe(true); // plugin portal
+    expect(al.isAllowed("dl.google.com")).toBe(true); // Google Maven (AGP, AndroidX) + sdkmanager
+    expect(al.isAllowed("maven.google.com")).toBe(true);
+    expect(al.isAllowed("repo.maven.apache.org")).toBe(true); // Maven Central
+    expect(al.isAllowed("repo1.maven.org")).toBe(true); // Maven Central alias
+    expect(al.isAllowed("oss.sonatype.org")).toBe(true);
+  });
+
+  // The Google Maven entry MUST be exact (dl.google.com), never a ".google.com"
+  // suffix — the bare suffix would re-open Gmail/Drive/Forms as exfil channels.
+  it("does NOT open the rest of google.com via the Google Maven entry", () => {
+    const al = buildEgressAllowlist();
+    expect(al.isAllowed("mail.google.com")).toBe(false);
+    expect(al.isAllowed("drive.google.com")).toBe(false);
+    expect(al.isAllowed("docs.google.com")).toBe(false);
+    expect(al.isAllowed("google.com")).toBe(false);
+  });
+
   it("DENIES an arbitrary attacker host (the core acceptance criterion)", () => {
     const al = buildEgressAllowlist();
     expect(al.isAllowed("attacker.com")).toBe(false);
     expect(al.isAllowed("evil.example.com")).toBe(false);
     // look-alike that ends with an allowlisted suffix but isn't a subdomain
     expect(al.isAllowed("api.anthropic.com.attacker.com")).toBe(false);
+    // look-alike for the new Google Maven exact entry
+    expect(al.isAllowed("dl.google.com.attacker.com")).toBe(false);
   });
 
   it("honors operator-supplied extra hosts", () => {
