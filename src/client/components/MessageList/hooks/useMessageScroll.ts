@@ -4,6 +4,10 @@ import type { SearchMatch } from "../../../hooks/useSearch.js";
 import type { ChatMessage } from "../types.js";
 
 const BOTTOM_THRESHOLD_PX = 40;
+// Keep re-pinning to the bottom until the content height has been stable for
+// this many consecutive frames (layout settled), or until the safety cap.
+const STABLE_FRAMES = 3;
+const MAX_SCROLL_SETTLE_MS = 1000;
 
 function isNearBottom(container: HTMLElement): boolean {
   const { scrollTop, scrollHeight, clientHeight } = container;
@@ -14,27 +18,46 @@ function scrollToBottom(container: HTMLElement): void {
   container.scrollTop = container.scrollHeight;
 }
 
+function now(): number {
+  return typeof performance !== "undefined" ? performance.now() : 0;
+}
+
+/**
+ * Re-pin the container to the bottom across multiple frames until the content
+ * height settles. A tall, freshly-appended message renders with
+ * `content-visibility: auto` (see MessageList), so it first reports a small
+ * placeholder height and grows as it actually paints. A fixed frame budget can
+ * stop before the real bottom — leaving the view stranded mid-message — so we
+ * keep correcting until `scrollHeight` has been unchanged for a few frames
+ * (bounded by a safety cap so streaming never loops forever).
+ */
 function scheduleScrollToBottom(container: HTMLElement, shouldContinue: () => boolean): () => void {
-  let frame = 0;
   let cancelled = false;
+  let lastHeight = -1;
+  let stableFrames = 0;
+  const start = now();
 
   const tick = () => {
     if (cancelled || !shouldContinue()) return;
     scrollToBottom(container);
-    frame += 1;
-    if (frame < 3) {
+
+    const height = container.scrollHeight;
+    if (height === lastHeight) {
+      stableFrames += 1;
+    } else {
+      stableFrames = 0;
+      lastHeight = height;
+    }
+
+    if (stableFrames < STABLE_FRAMES && now() - start < MAX_SCROLL_SETTLE_MS) {
       window.requestAnimationFrame(tick);
     }
   };
 
   window.requestAnimationFrame(tick);
-  const timeout = window.setTimeout(() => {
-    if (!cancelled && shouldContinue()) scrollToBottom(container);
-  }, 100);
 
   return () => {
     cancelled = true;
-    window.clearTimeout(timeout);
   };
 }
 
@@ -57,19 +80,39 @@ export function useMessageScroll(
   const autoScrollRef = useRef(true);
   const previousMessageCountRef = useRef(0);
   const currentMatchRef = useRef<HTMLElement | null>(null);
+  // Canceller for the in-flight post-send settle loop, so a manual scroll can
+  // halt it the instant the user takes control (see the gesture listeners below).
+  const cancelSettleRef = useRef<(() => void) | null>(null);
 
-  // Track whether the user has scrolled away from the bottom
+  // Track whether the user has scrolled away from the bottom, and let any manual
+  // scroll take authoritative control — we must never fight a user's scroll.
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
 
     const handleScroll = () => {
-      autoScrollRef.current = isNearBottom(container);
+      const near = isNearBottom(container);
+      autoScrollRef.current = near;
+      // Moving away from the bottom (scrollbar drag, keyboard, momentum) cancels
+      // any forced scroll immediately. Our own programmatic scrolls always land
+      // at the bottom (`near` true), so they never cancel themselves.
+      if (!near) cancelSettleRef.current?.();
+    };
+
+    // `wheel`/`touchmove` fire only from genuine user input — never from a
+    // programmatic `scrollTop` write — so they are an unambiguous "user took
+    // control" signal. Halt the in-flight settle loop on the very first gesture,
+    // even before it crosses the near-bottom threshold, so a manual scroll is
+    // never overridden.
+    const handleManualScroll = () => {
+      cancelSettleRef.current?.();
     };
 
     handleScroll();
-    container.addEventListener("scroll", handleScroll);
+    container.addEventListener("scroll", handleScroll, { passive: true });
+    container.addEventListener("wheel", handleManualScroll, { passive: true });
+    container.addEventListener("touchmove", handleManualScroll, { passive: true });
 
     const observer = typeof ResizeObserver !== "undefined"
       ? new ResizeObserver(() => {
@@ -80,6 +123,8 @@ export function useMessageScroll(
 
     return () => {
       container.removeEventListener("scroll", handleScroll);
+      container.removeEventListener("wheel", handleManualScroll);
+      container.removeEventListener("touchmove", handleManualScroll);
       observer?.disconnect();
     };
   }, []);
@@ -114,10 +159,15 @@ export function useMessageScroll(
     scrollToBottom(container);
     autoScrollRef.current = true;
 
-    return scheduleScrollToBottom(container, () => {
+    const cancel = scheduleScrollToBottom(container, () => {
       const latestContainer = containerRef.current;
       return latestContainer === container && autoScrollRef.current;
     });
+    cancelSettleRef.current = cancel;
+    return () => {
+      cancel();
+      if (cancelSettleRef.current === cancel) cancelSettleRef.current = null;
+    };
   }, [messages, isLoading]);
 
   // Scroll to the current search match when it changes
