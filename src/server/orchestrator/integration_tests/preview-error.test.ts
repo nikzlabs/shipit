@@ -52,10 +52,20 @@ function makeFakeRegistry(runners: Record<string, SessionRunnerInterface>): Sess
 }
 
 describe("createPreviewErrorReporter (docs/124 §1.5)", () => {
-  it("emits preview_error + log_append on first error", () => {
+  it("emits preview_error + log_append once a failure persists past the grace window", () => {
     const { runner, emitted } = makeFakeRunner("sess-1");
-    const report = createPreviewErrorReporter(makeFakeRegistry({ "sess-1": runner }));
+    let nowMs = 1_000_000;
+    const report = createPreviewErrorReporter(
+      makeFakeRegistry({ "sess-1": runner }),
+      { now: () => nowMs, graceMs: 2_000 },
+    );
 
+    // First error only starts the streak clock — nothing surfaces yet.
+    report("sess-1", 5173, "Connection refused", false);
+    expect(emitted.length).toBe(0);
+
+    // A later error, still unresolved past the grace window, surfaces.
+    nowMs += 2_500;
     report("sess-1", 5173, "Connection refused", false);
 
     const types = emitted.map((m) => m.type);
@@ -81,10 +91,39 @@ describe("createPreviewErrorReporter (docs/124 §1.5)", () => {
     });
   });
 
+  it("suppresses a transient error that recovers within the grace window", () => {
+    const { runner, emitted } = makeFakeRunner("sess-tr");
+    let nowMs = 1_000_000;
+    const report = createPreviewErrorReporter(
+      makeFakeRegistry({ "sess-tr": runner }),
+      { now: () => nowMs, graceMs: 2_000 },
+    );
+
+    // EHOSTUNREACH during container bring-up — held back.
+    report("sess-tr", 3000, "connect EHOSTUNREACH 172.16.2.2:3000", false);
+    expect(emitted.length).toBe(0);
+
+    // The next request reaches the upstream — streak cleared.
+    nowMs += 500;
+    report.success("sess-tr", 3000);
+
+    // Even well past the grace window, a fresh lone error stays silent
+    // because the streak was reset.
+    nowMs += 5_000;
+    report("sess-tr", 3000, "connect EHOSTUNREACH 172.16.2.2:3000", false);
+    expect(emitted.length).toBe(0);
+  });
+
   it("formats HMR-upgrade failures distinctly", () => {
     const { runner, emitted } = makeFakeRunner("sess-2");
-    const report = createPreviewErrorReporter(makeFakeRegistry({ "sess-2": runner }));
+    let nowMs = 1_000_000;
+    const report = createPreviewErrorReporter(
+      makeFakeRegistry({ "sess-2": runner }),
+      { now: () => nowMs, graceMs: 2_000 },
+    );
 
+    report("sess-2", 5173, "ECONNRESET", true);
+    nowMs += 2_500;
     report("sess-2", 5173, "ECONNRESET", true);
 
     const logAppend = emitted.find((m) => m.type === "log_append");
@@ -100,9 +139,12 @@ describe("createPreviewErrorReporter (docs/124 §1.5)", () => {
     let nowMs = 1_000_000;
     const report = createPreviewErrorReporter(
       makeFakeRegistry({ "sess-3": runner }),
-      { now: () => nowMs, throttleMs: 5_000 },
+      { now: () => nowMs, throttleMs: 5_000, graceMs: 2_000 },
     );
 
+    // Start the streak, then push past the grace window so errors surface.
+    report("sess-3", 5173, "boom", false);
+    nowMs += 2_500;
     report("sess-3", 5173, "boom", false);
     expect(emitted.filter((m) => m.type === "preview_error").length).toBe(1);
 
@@ -111,11 +153,13 @@ describe("createPreviewErrorReporter (docs/124 §1.5)", () => {
     report("sess-3", 5173, "boom", false);
     expect(emitted.filter((m) => m.type === "preview_error").length).toBe(1);
 
-    // Different port — not throttled.
+    // Different port — needs its own streak past the grace window.
+    report("sess-3", 5174, "boom", false);
+    nowMs += 2_500;
     report("sess-3", 5174, "boom", false);
     expect(emitted.filter((m) => m.type === "preview_error").length).toBe(2);
 
-    // After the window — throttle releases.
+    // After the throttle window — releases for port 5173 (streak still open).
     nowMs += 6_000;
     report("sess-3", 5173, "boom", false);
     expect(emitted.filter((m) => m.type === "preview_error").length).toBe(3);
