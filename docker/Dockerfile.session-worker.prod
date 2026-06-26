@@ -161,9 +161,14 @@ ENV ANDROID_HOME=/opt/android-sdk
 ENV ANDROID_CMDLINE_TOOLS_VERSION=11076708
 ENV ANDROID_COMPILE_SDK=35
 ENV ANDROID_BUILD_TOOLS=35.0.0
+# NOTE: the archive is `commandlinetools-linux-…` (ONE word) — the hyphenated
+# `commandline-tools-linux-…` is a permanent 404. `-f` makes curl FAIL on a 404
+# instead of writing the HTML error page into the .zip (which then dies a step
+# later at `unzip` with a misleading "End-of-central-directory" error); --retry
+# rides out transient blips. Same hardening on every download below.
 RUN mkdir -p "${ANDROID_SDK_ROOT}/cmdline-tools" \
- && curl -sSL -o /tmp/cmdline-tools.zip \
-      "https://dl.google.com/android/repository/commandline-tools-linux-${ANDROID_CMDLINE_TOOLS_VERSION}_latest.zip" \
+ && curl -fsSL --retry 3 --retry-all-errors -o /tmp/cmdline-tools.zip \
+      "https://dl.google.com/android/repository/commandlinetools-linux-${ANDROID_CMDLINE_TOOLS_VERSION}_latest.zip" \
  && unzip -q /tmp/cmdline-tools.zip -d "${ANDROID_SDK_ROOT}/cmdline-tools" \
  && mv "${ANDROID_SDK_ROOT}/cmdline-tools/cmdline-tools" "${ANDROID_SDK_ROOT}/cmdline-tools/latest" \
  && rm /tmp/cmdline-tools.zip
@@ -179,7 +184,7 @@ RUN yes | sdkmanager --licenses > /dev/null \
 # first `./gradlew`; the agent can run the baked `gradle` to skip that one-time
 # download. See /shipit-docs/android.md.
 ENV GRADLE_VERSION=8.7
-RUN curl -sSL -o /tmp/gradle.zip "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" \
+RUN curl -fsSL --retry 3 --retry-all-errors -o /tmp/gradle.zip "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" \
  && unzip -q /tmp/gradle.zip -d /opt \
  && ln -s "/opt/gradle-${GRADLE_VERSION}" /opt/gradle \
  && rm /tmp/gradle.zip \

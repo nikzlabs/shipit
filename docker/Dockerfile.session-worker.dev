@@ -86,9 +86,11 @@ ENV ANDROID_HOME=/opt/android-sdk
 ENV ANDROID_CMDLINE_TOOLS_VERSION=11076708
 ENV ANDROID_COMPILE_SDK=35
 ENV ANDROID_BUILD_TOOLS=35.0.0
+# `commandlinetools-linux-…` is ONE word — the hyphenated form is a 404. `-f`
+# fails on it instead of poisoning the zip. See .session-worker.prod for detail.
 RUN mkdir -p "${ANDROID_SDK_ROOT}/cmdline-tools" \
- && curl -sSL -o /tmp/cmdline-tools.zip \
-      "https://dl.google.com/android/repository/commandline-tools-linux-${ANDROID_CMDLINE_TOOLS_VERSION}_latest.zip" \
+ && curl -fsSL --retry 3 --retry-all-errors -o /tmp/cmdline-tools.zip \
+      "https://dl.google.com/android/repository/commandlinetools-linux-${ANDROID_CMDLINE_TOOLS_VERSION}_latest.zip" \
  && unzip -q /tmp/cmdline-tools.zip -d "${ANDROID_SDK_ROOT}/cmdline-tools" \
  && mv "${ANDROID_SDK_ROOT}/cmdline-tools/cmdline-tools" "${ANDROID_SDK_ROOT}/cmdline-tools/latest" \
  && rm /tmp/cmdline-tools.zip
@@ -99,7 +101,7 @@ RUN yes | sdkmanager --licenses > /dev/null \
       "build-tools;34.0.0" "build-tools;${ANDROID_BUILD_TOOLS}" > /dev/null \
  && find "${ANDROID_SDK_ROOT}" -type d -exec chmod a+rwx {} +
 ENV GRADLE_VERSION=8.7
-RUN curl -sSL -o /tmp/gradle.zip "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" \
+RUN curl -fsSL --retry 3 --retry-all-errors -o /tmp/gradle.zip "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" \
  && unzip -q /tmp/gradle.zip -d /opt \
  && ln -s "/opt/gradle-${GRADLE_VERSION}" /opt/gradle \
  && rm /tmp/gradle.zip \
