@@ -140,6 +140,42 @@ describe("usePolling", () => {
     expect(result.current.data).toBeNull();
   });
 
+  it("drops an old scope's in-flight response on a truthy→truthy scopeKey switch", async () => {
+    vi.useFakeTimers();
+    const resolvers: ((v: string) => void)[] = [];
+    // Each poll hangs until resolved by hand, so we can resolve the FIRST
+    // scope's poll AFTER switching to the second scope.
+    const poll = vi.fn(() => new Promise<string>((resolve) => { resolvers.push(resolve); }));
+    const { result, rerender } = renderHook(
+      (props: { scopeKey: string }) => usePolling({ poll, intervalMs: 1000, scopeKey: props.scopeKey }),
+      { initialProps: { scopeKey: "session-a" } },
+    );
+
+    // Immediate poll for session-a is in flight (resolvers[0]).
+    expect(poll).toHaveBeenCalledTimes(1);
+
+    // Switch to a different truthy scope — enabled stays true. The effect
+    // re-arms and the epoch bumps; session-a's poll is now stale.
+    rerender({ scopeKey: "session-b" });
+    expect(poll).toHaveBeenCalledTimes(2); // immediate poll for session-b (resolvers[1])
+
+    // session-a resolves LATE — its write must be dropped.
+    await act(async () => {
+      resolvers[0]("from-session-a");
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(result.current.data).toBeNull();
+
+    // session-b resolving DOES write, proving the loop is live for the new scope.
+    await act(async () => {
+      resolvers[1]("from-session-b");
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(result.current.data).toBe("from-session-b");
+  });
+
   it("clears the interval on unmount (no polls fire afterward)", async () => {
     vi.useFakeTimers();
     const poll = vi.fn().mockResolvedValue("v");

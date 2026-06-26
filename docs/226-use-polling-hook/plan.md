@@ -124,6 +124,8 @@ axis (loop shape, no state) — it doesn't belong.
 interface UsePollingOptions<T> {
   poll: () => Promise<T>;        // one poll; may have side effects; returns the value
   intervalMs: number;           // changing it re-arms the loop (variable cadence)
+  scopeKey?: string | number | boolean | null; // identity of the polled resource;
+                                // change re-arms the loop + bumps the stale-guard epoch
   enabled?: boolean;            // default true — app-level gate
   immediate?: boolean;         // default true — fire once on (re)start
   pauseWhenHidden?: boolean;   // default false — also pause on document.hidden
@@ -155,6 +157,9 @@ sites that don't.
   `poll` closure decides. Raw-`fetch` and `useApi` sites both just return `T`.
 - **Variable interval** — the caller computes `intervalMs` (e.g.
   `isRestarting ? 1500 : 10000`) and passes it; the effect re-arms on change.
+- **Resource identity / session switch** — the caller passes `scopeKey:
+  sessionId`; a change re-arms the loop and bumps the stale-guard epoch (see
+  hard part #1). Sites with a single unchanging scope omit it.
 - **Site-specific success logic** — `onSuccess(data)` runs **under the
   stale-guard**, so `useContainerHealthPoll`'s store writes inherit the same
   protection they hand-roll today, without living inside `poll`.
@@ -163,18 +168,28 @@ sites that don't.
 
 ### The four hard parts, addressed
 
-1. **Stale-response guarding (unmount / fast re-poll / session switch).** A
+1. **Stale-response guarding (unmount / re-arm / session switch).** A
    monotonic `epochRef` is bumped on every effect cleanup (unmount, or any
-   dep change — `enabled`, `intervalMs`, `immediate`). Each `runPoll` captures
-   the epoch at start; after the `await` it bails before *any* `setState`/
-   `onSuccess`/`onError` if the epoch moved. This generalizes
-   `useContainerHealthPoll`'s `sessionIdRef` guard: there, the dep that changes
-   on a session switch is `sessionId`, which flows into the caller's `poll`
-   closure → the effect re-runs → cleanup bumps the epoch → the old session's
-   late fetch is dropped. The guard covers **both** success and error paths,
-   matching `61`/`124`. (It does **not** serialize two *same-config* overlapping
-   polls — last-write-wins — which matches today's behavior, since intervals are
-   far longer than fetch latency.)
+   dep change — `enabled`, `intervalMs`, `scopeKey`, `immediate`,
+   `pauseWhenHidden`, `resetOnDisable`). Each `runPoll` captures the epoch at
+   start; after the `await` it bails before *any* `setState`/`onSuccess`/
+   `onError` if the epoch moved. The guard covers **both** success and error
+   paths, matching `61`/`124`.
+
+   **`poll` is held in a ref and is deliberately NOT an effect dep** — a fresh
+   inline `poll` closure every render must not restart the loop. The
+   consequence: a `sessionId` change that only flows through the `poll` closure
+   is **invisible** to the effect, so a truthy→truthy session switch would
+   *not* re-arm and an old session's in-flight fetch could still write state.
+   This is exactly the race `useContainerHealthPoll` guards by hand
+   (`sessionIdRef`, `61`/`124`). The hook closes it with the explicit
+   **`scopeKey`** option: the caller passes `scopeKey: sessionId`, which **is**
+   an effect dep, so a session switch bumps the epoch and drops the old
+   session's late response. Note `useContainerHealthPoll` already keeps
+   `sessionId` as a *direct* effect dep (`140`) for the same reason — `scopeKey`
+   is the hook's generalization of that. (The guard does **not** serialize two
+   *same-scope* overlapping polls — last-write-wins — which matches today's
+   behavior, since intervals are far longer than fetch latency.)
 2. **Immediate first poll vs interval-only.** `immediate` (default `true`)
    matches all three migrating sites, which fire once before arming the
    interval. `immediate: false` is available for an interval-only loop.
@@ -238,24 +253,34 @@ The hand-rolled `setData(null)/setError(null)` on close becomes
 ### useContainerHealthPoll → **partial** migrate (mechanics only)
 
 ```ts
-const { data: health, error, refresh, setError } = usePolling<ContainerHealth>({
+const { data: health, error, refresh } = usePolling<ContainerHealth>({
   enabled: !!sessionId,
+  scopeKey: sessionId,                         // re-arm + drop stale on session switch
   intervalMs: isRestarting ? RESTART_POLL_INTERVAL_MS : POLL_INTERVAL_MS,
-  poll: () => api.get<ContainerHealth>(`/api/sessions/${sessionIdRef.current}/container/health`),
+  poll: () => api.get<ContainerHealth>(`/api/sessions/${sessionId}/container/health`),
   onSuccess: (data) => { /* rescue-finalize: setRescueState / setPauseNotice / … */ },
 });
 ```
 
 The fetch + interval + variable cadence + stale-guard collapse onto the hook.
-The **rescue-finalize logic stays caller-owned**, moved verbatim into
-`onSuccess` (where it inherits the epoch stale-guard, replacing the manual
-`sessionIdRef` check). The site keeps its hook wrapper (it still owns
-`UseContainerHealthPoll`'s extra surface: `setHealth`/`setError` re-exports and
-the separate 1 Hz elapsed-time tick effect). This is honestly a *partial*
-collapse — and that's the point: the hook takes the mechanics, the site keeps
-its semantics. (If `usePolling` doesn't expose a `setData` escape hatch, this
-site keeps a thin local mirror for the `setHealth` re-export; the prototype
-exposes `data` read-only and leaves that decision to the migration PR.)
+Passing `scopeKey: sessionId` replaces the hand-rolled `sessionIdRef` guard:
+the loop re-arms and the epoch bumps on switch, so an old session's in-flight
+fetch is dropped (covered by a dedicated test). The **rescue-finalize logic
+stays caller-owned**, moved verbatim into `onSuccess` (where it inherits the
+same epoch stale-guard). This is honestly a *partial* collapse — and that's the
+point: the hook takes the mechanics, the site keeps its semantics.
+
+**Unresolved escape-hatch decision (for the migration PR, not this one):**
+`UseContainerHealthPoll` today re-exports `setHealth`/`setError` so the strip
+can poke them directly. `UsePollingResult` exposes `data`/`error` **read-only**
+(no setters) — so the migration example above does *not* destructure any
+setter. The migration PR must pick one of:
+- keep a thin local `useState` mirror in the `useContainerHealthPoll` wrapper
+  for the `setHealth`/`setError` re-exports (no change to `usePolling`), **or**
+- add documented, tested `setData`/`setError` escape hatches to `usePolling`.
+
+The prototype intentionally leaves `usePolling` setter-free; the local-mirror
+option is the lower-risk default unless a second site also needs setters.
 
 ### usePreviewHealthPoller → **do NOT migrate**
 
@@ -286,8 +311,10 @@ It stays as a bespoke hook.
 - `src/client/hooks/usePolling.test.ts` — fake-timer tests proving: immediate +
   interval cadence, `immediate: false` skips the leading poll, `data`/`error`/
   `onError`/`onSuccess` plumbing, disabled = no polling, stop-on-disable,
-  `resetOnDisable`, **stale-response dropped after teardown**, **cleanup on
-  unmount**, `refresh()` off-cycle poll, and **re-arm on `intervalMs` change**.
+  `resetOnDisable`, **stale-response dropped after teardown**, **stale-response
+  dropped on a truthy→truthy `scopeKey` switch** (the session-switch race),
+  **cleanup on unmount**, `refresh()` off-cycle poll, and **re-arm on
+  `intervalMs` change**.
 
 Validated with `npm run typecheck` and ESLint (full `npm test` OOMs the session
 container — see CLAUDE.md; the co-located file runs green under `vitest run`).

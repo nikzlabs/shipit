@@ -34,6 +34,17 @@ export interface UsePollingOptions<T> {
   poll: () => Promise<T>;
   /** Interval between polls, in ms. Changing it re-arms the loop. */
   intervalMs: number;
+  /**
+   * Identity of the polled resource (e.g. the session id). When it changes,
+   * the loop re-arms AND the epoch bumps, so an in-flight poll from the old
+   * scope is dropped even when `enabled` stays true across the switch — the
+   * session-switch stale-response race. The `poll` closure is held in a ref
+   * and does NOT re-arm the loop on its own (a fresh inline closure every
+   * render must not restart polling), so a truthy→truthy scope change is
+   * invisible to the effect unless it flows through `scopeKey`. Default:
+   * undefined (single, unchanging scope).
+   */
+  scopeKey?: string | number | boolean | null;
   /** Gate the loop. When false, no polling happens. Default: true. */
   enabled?: boolean;
   /** Fire one poll immediately when the loop (re)starts. Default: true. */
@@ -67,6 +78,7 @@ export function usePolling<T>(options: UsePollingOptions<T>): UsePollingResult<T
   const {
     poll,
     intervalMs,
+    scopeKey,
     enabled = true,
     immediate = true,
     pauseWhenHidden = false,
@@ -81,7 +93,9 @@ export function usePolling<T>(options: UsePollingOptions<T>): UsePollingResult<T
 
   // Keep the latest caller closures in refs so passing fresh inline functions
   // each render does NOT re-arm the interval. Only the behavioral knobs
-  // (enabled / intervalMs / immediate / pauseWhenHidden) re-arm the loop.
+  // (enabled / intervalMs / scopeKey / immediate / pauseWhenHidden) re-arm the
+  // loop — a truthy→truthy session switch must travel through `scopeKey`, since
+  // a new `poll` closure alone is invisible to the effect.
   const pollRef = useRef(poll);
   pollRef.current = poll;
   const onSuccessRef = useRef(onSuccess);
@@ -89,12 +103,14 @@ export function usePolling<T>(options: UsePollingOptions<T>): UsePollingResult<T
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
 
-  // Monotonic epoch, bumped on every effect cleanup (unmount, dep change). A
-  // poll captures the epoch at its start; if the epoch has since moved, the
-  // poll's result belongs to a torn-down loop and must not write state. This
-  // is the stale-response guard — the same race useContainerHealthPoll guards
-  // by hand on session switch (an old session's in-flight fetch resolving
-  // after the new session's state is set).
+  // Monotonic epoch, bumped on every effect cleanup (unmount, dep change incl.
+  // `scopeKey`). A poll captures the epoch at its start; if the epoch has since
+  // moved, the poll's result belongs to a torn-down loop and must not write
+  // state. This is the stale-response guard — the same race
+  // useContainerHealthPoll guards by hand on session switch (an old session's
+  // in-flight fetch resolving after the new session's state is set). A session
+  // switch only invalidates the in-flight poll if it travels through
+  // `scopeKey`.
   const epochRef = useRef(0);
 
   const runPoll = useCallback(async () => {
@@ -161,7 +177,7 @@ export function usePolling<T>(options: UsePollingOptions<T>): UsePollingResult<T
       if (onVisibility) document.removeEventListener("visibilitychange", onVisibility);
       epochRef.current += 1; // invalidate any in-flight poll from this loop
     };
-  }, [enabled, intervalMs, immediate, pauseWhenHidden, resetOnDisable, runPoll]);
+  }, [enabled, intervalMs, scopeKey, immediate, pauseWhenHidden, resetOnDisable, runPoll]);
 
   return { data, error, loading, refresh };
 }
