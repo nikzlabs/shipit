@@ -13,6 +13,7 @@ import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { SessionManager } from "../sessions.js";
 import { parseGitHubRemote } from "../git-utils.js";
 import { ServiceError } from "./types.js";
+import { validateNonEmptyString } from "./validation.js";
 import { getErrorMessage } from "../validation.js";
 import type { GitHubStatus } from "./types.js";
 import { formatUnresolvedConflictNotice } from "./conflict-marker-notice.js";
@@ -1002,8 +1003,7 @@ export async function commentOnPullRequest(
   body: string,
   options: { number?: number; remoteUrl?: string } = {},
 ): Promise<{ number: number; commentUrl: string }> {
-  const trimmed = body.trim();
-  if (!trimmed) throw new ServiceError(400, "Comment body is required");
+  const trimmed = validateNonEmptyString(body, "Comment body").trim();
 
   const resolved = await resolveSessionPr(git, githubAuthManager, options.remoteUrl);
   let prNumber = options.number;

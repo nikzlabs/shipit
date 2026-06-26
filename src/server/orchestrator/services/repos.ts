@@ -7,6 +7,7 @@ import type { RepoStore } from "../repo-store.js";
 import type { RepoInfo } from "../../shared/types.js";
 import { canonicalRepoKey } from "../git-utils.js";
 import { ServiceError } from "./types.js";
+import { validateStringArray } from "./validation.js";
 
 /** List all repos. */
 export function listRepos(repoStore: RepoStore): RepoInfo[] {
@@ -99,15 +100,11 @@ export function reorderRepos(
   repoStore: RepoStore,
   urls: string[],
 ): RepoInfo[] {
-  if (!Array.isArray(urls)) {
-    throw new ServiceError(400, "urls must be an array");
-  }
-  // Reject non-string entries before touching the DB — protects against a
-  // bad client payload corrupting display_order with non-string url params.
-  for (const u of urls) {
-    if (typeof u !== "string" || !u.trim()) {
-      throw new ServiceError(400, "Each url must be a non-empty string");
-    }
+  // Reject non-string/empty entries before touching the DB — protects against
+  // a bad client payload corrupting display_order with non-string url params.
+  const list = validateStringArray(urls, "urls");
+  if (list.some((u) => !u.trim())) {
+    throw new ServiceError(400, "Each url must be a non-empty string");
   }
   repoStore.setOrder(urls);
   return repoStore.list();
