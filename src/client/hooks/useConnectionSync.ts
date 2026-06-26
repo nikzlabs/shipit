@@ -97,6 +97,16 @@ export function useConnectionSync(params: {
       // WS would process live events before HTTP history is loaded, causing
       // duplicated or lost messages.
       useSessionStore.getState().setHistoryLoaded(false);
+      // docs/178 — clear the transient "Compacting…" indicator on disconnect.
+      // It's emit-only (never persisted), driven live by `compaction_status`.
+      // A turn that ended while we were disconnected — or whose live
+      // `running:false` we missed because the container died mid-reconnect —
+      // would otherwise leave the spinner stuck on: the cleanly-ended turn's
+      // event buffer is already cleared, so nothing on reconnect clears the
+      // flag. Resetting here (strictly before any reconnect buffer replay) lets
+      // a genuinely in-flight compaction re-establish it via the replayed
+      // `compaction_status active:true`, while an ended turn stays cleared.
+      useSessionStore.getState().setCompacting(false);
     }
   }, [status, send]);
 

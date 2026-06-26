@@ -288,3 +288,35 @@ in flight, the spinner visually persisted into the switched-to session. Fix:
 `resumeSessionInternal()` now also calls `setCompacting(false)`. Covered by
 `session-actions.test.ts`. (Not a persistence bug — history reload never brings
 it back; purely a missing reset on the switch path.)
+
+## Fix (2026-06-26): "Compacting…" spinner stuck after the turn ended
+
+Symptom: the spinner persisted even after the matching "Context compacted" card
+had landed and the turn was over — most reliably after a `Session container
+exited unexpectedly` mid-turn.
+
+The flag is transient and emit-only (driven live by `compaction_status`), so it
+must be re-derived from the live stream, never assumed sticky. The stuck states
+all traced to a **WS reconnect** where nothing re-cleared it: a cleanly-ended
+turn already clears its turn-event buffer, so a reconnect replays no balancing
+event; and when the container dies mid-turn the client can miss the live
+`running:false` (the socket drops with the container) and then reconnect to a
+fresh idle runner that — by design — sends no `session_status` for a non-running
+runner. Either way the client kept its stale `compacting:true`.
+
+Fix (client-side, no server/connect-contract change):
+- **`useConnectionSync`** now clears `compacting` on every WS
+  disconnect (`status` → `closed`/`connecting`), alongside the existing
+  `historyLoaded` reset. This runs *strictly before* any reconnect buffer
+  replay, so a genuinely in-flight compaction re-establishes the spinner via the
+  replayed `compaction_status active:true`, while an ended turn stays cleared.
+  Race-free by construction. Test: `useConnectionSync.test.ts` ("clears the
+  transient compacting indicator on disconnect").
+- **`MessageList`** (defense in depth): the spinner renders only when
+  `compacting && isLoading`. A compaction only ever runs mid-turn, so the
+  indicator should never outlive the turn.
+
+(An earlier attempt made the reconnect handler always send `session_status` even
+for idle runners; that broke the "`preview_status` is the last synchronous
+connect message" sentinel contract several integration tests rely on, so the fix
+moved entirely client-side.)
