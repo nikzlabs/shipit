@@ -295,27 +295,28 @@ Symptom: the spinner persisted even after the matching "Context compacted" card
 had landed and the turn was over — most reliably after a `Session container
 exited unexpectedly` mid-turn.
 
-Root cause was in the **reconnect** path, not the compaction handlers. On WS
-(re)connect, `route-registry.ts` replays the runner's turn-event buffer, which
-can contain a transient `compaction_status active:true` (emit-only, buffered like
-any `emitMessage`). It then sent a corrective `session_status` **only** when
-`runner.running || queueLength > 0`. So a client that reconnected to an
-already-idle runner — e.g. the container died while the socket was mid-reconnect,
-dropping the live `running:false` broadcast, then a fresh idle runner was created
-— replayed `compacting:true` and was **never** told the turn had ended. The
-client backstop in `session-status.ts` (`running:false → setCompacting(false)`)
-never fired, so both `isLoading` and the spinner stuck.
+The flag is transient and emit-only (driven live by `compaction_status`), so it
+must be re-derived from the live stream, never assumed sticky. The stuck states
+all traced to a **WS reconnect** where nothing re-cleared it: a cleanly-ended
+turn already clears its turn-event buffer, so a reconnect replays no balancing
+event; and when the container dies mid-turn the client can miss the live
+`running:false` (the socket drops with the container) and then reconnect to a
+fresh idle runner that — by design — sends no `session_status` for a non-running
+runner. Either way the client kept its stale `compacting:true`.
 
-Fixes:
-- **Server (root cause):** the reconnect handler now **always** sends the
-  runner's true `session_status` (including `running:false`). Sending the real
-  state to an already-idle client is idempotent, and it drives the existing
-  client backstop that clears `isLoading`/`activity`/`compacting`. The buffer
-  replay is emitted *before* this `session_status`, so a replayed
-  `active:true` is immediately balanced by `running:false`. Guard test:
-  `persistent-runner.test.ts` ("reconnecting to an idle session sends
-  session_status running=false").
-- **Client (defense in depth):** the spinner now renders only when
+Fix (client-side, no server/connect-contract change):
+- **`useConnectionSync`** now clears `compacting` on every WS
+  disconnect (`status` → `closed`/`connecting`), alongside the existing
+  `historyLoaded` reset. This runs *strictly before* any reconnect buffer
+  replay, so a genuinely in-flight compaction re-establishes the spinner via the
+  replayed `compaction_status active:true`, while an ended turn stays cleared.
+  Race-free by construction. Test: `useConnectionSync.test.ts` ("clears the
+  transient compacting indicator on disconnect").
+- **`MessageList`** (defense in depth): the spinner renders only when
   `compacting && isLoading`. A compaction only ever runs mid-turn, so the
-  indicator should never outlive the turn — this backstops any future path that
-  leaves the global flag stuck true after the turn ended.
+  indicator should never outlive the turn.
+
+(An earlier attempt made the reconnect handler always send `session_status` even
+for idle runners; that broke the "`preview_status` is the last synchronous
+connect message" sentinel contract several integration tests rely on, so the fix
+moved entirely client-side.)

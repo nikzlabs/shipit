@@ -134,37 +134,6 @@ describe("Integration: persistent session runners", () => {
     client2.close();
   });
 
-  it("reconnecting to an idle session sends session_status running=false (clears stuck transients)", async () => {
-    // Regression: a client that missed the live turn-end (e.g. the container
-    // died, or the socket was mid-reconnect when the turn finished) must still
-    // learn the turn is over on reconnect. The old `running || queueLength`
-    // guard sent nothing for an idle runner, so the client kept its stale
-    // `isLoading` and left the transient "Compacting…" spinner stuck on. The
-    // reconnect now always conveys the true running state.
-    const client1 = await TestClient.connect(port);
-    await client1.receive(); // preview_status
-    const sessionId = client1.sessionId;
-
-    // Run a turn to completion so the runner exists but is idle.
-    client1.send({ type: "send_message", text: "Hello" });
-    const claude = await waitForClaude(() => lastClaude);
-    claude.emit("event", { type: "system", subtype: "init", session_id: "agent-idle-1" });
-    await drainUntil(client1, (m) => m.type === "session_started");
-    claude.finish("test-session-id");
-    await new Promise((r) => setTimeout(r, 50));
-    client1.close();
-    await new Promise((r) => setTimeout(r, 50));
-
-    // Reconnect — the idle runner must still report running=false.
-    const client2 = await TestClient.connect(port, sessionId);
-    const statusMsg = await drainUntil(client2, (m) => m.type === "session_status");
-    expect(statusMsg).toBeTruthy();
-    expect(statusMsg!.sessionId).toBe(sessionId);
-    expect(statusMsg!.running).toBe(false);
-
-    client2.close();
-  });
-
   it("reconnecting to same session sees running status", async () => {
     const client1 = await TestClient.connect(port);
     await client1.receive(); // preview_status

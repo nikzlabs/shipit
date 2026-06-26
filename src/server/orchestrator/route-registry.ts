@@ -582,17 +582,9 @@ export async function registerRoutes(
         if (runner.getQueueSnapshot().length > 0) {
           send({ type: "queue_updated", queue: runner.getQueueSnapshot() });
         }
-        // Always send the runner's true running state on (re)connect — even when
-        // it's idle. A reconnecting client that missed the live turn-end (e.g. the
-        // container died, or the socket was mid-reconnect when `agent_result`
-        // fired) otherwise never learns the turn finished: the old `running ||
-        // queueLength` guard sent nothing for an idle runner, so the client kept
-        // its stale `isLoading` AND — because the turn-event buffer can replay a
-        // transient `compaction_status active:true` — left the "Compacting…"
-        // spinner stuck on. `running:false` here drives the client backstop
-        // (session-status.ts) that clears isLoading/activity/compacting. Sending
-        // the true state to an already-idle client is an idempotent no-op.
-        send({ type: "session_status", sessionId: runner.sessionId, running: runner.running, queueLength: runner.queueLength });
+        if (runner.running || runner.queueLength > 0) {
+          send({ type: "session_status", sessionId: runner.sessionId, running: runner.running, queueLength: runner.queueLength });
+        }
         // Replay current service/compose state so the UI is correct after reload
         const mgr = serviceManagers.get(runner.sessionId);
         if (mgr) {
