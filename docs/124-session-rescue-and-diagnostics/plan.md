@@ -125,6 +125,20 @@ logged or emitted.
 overlay a "Preview unreachable on port 5173 — Rescue session?" banner
 and the Logs panel gets a record.
 
+**Refinement (grace window — suppress transient false alarms):** a
+*single* connect failure is almost always a transient bring-up race —
+`EHOSTUNREACH`/`ECONNREFUSED` while a Compose service container is still
+being wired into the Docker network — and recovers on the next request,
+so surfacing it instantly produces a false "Preview unreachable" banner
+on a preview that is in fact working. `createPreviewErrorReporter`
+(`preview-proxy.ts`) now holds an error back for `PREVIEW_ERROR_GRACE_MS`
+(2 s): the first failure only starts a per-`(sessionId, port)` streak
+clock. The proxy calls the companion `report.success(sessionId, port)`
+whenever a request reaches the upstream (HTTP response received or HMR
+socket upgraded), which clears the streak — so a blip that recovers
+never surfaces. Only a failure still unresolved past the grace window
+reaches the banner/Logs (then throttled at `PREVIEW_ERROR_THROTTLE_MS`).
+
 ### 1.6 Idle-disposal cleanup is a console.log only
 
 [app-lifecycle.ts:441](../../src/server/orchestrator/app-lifecycle.ts#L441)
