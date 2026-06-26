@@ -288,3 +288,34 @@ in flight, the spinner visually persisted into the switched-to session. Fix:
 `resumeSessionInternal()` now also calls `setCompacting(false)`. Covered by
 `session-actions.test.ts`. (Not a persistence bug — history reload never brings
 it back; purely a missing reset on the switch path.)
+
+## Fix (2026-06-26): "Compacting…" spinner stuck after the turn ended
+
+Symptom: the spinner persisted even after the matching "Context compacted" card
+had landed and the turn was over — most reliably after a `Session container
+exited unexpectedly` mid-turn.
+
+Root cause was in the **reconnect** path, not the compaction handlers. On WS
+(re)connect, `route-registry.ts` replays the runner's turn-event buffer, which
+can contain a transient `compaction_status active:true` (emit-only, buffered like
+any `emitMessage`). It then sent a corrective `session_status` **only** when
+`runner.running || queueLength > 0`. So a client that reconnected to an
+already-idle runner — e.g. the container died while the socket was mid-reconnect,
+dropping the live `running:false` broadcast, then a fresh idle runner was created
+— replayed `compacting:true` and was **never** told the turn had ended. The
+client backstop in `session-status.ts` (`running:false → setCompacting(false)`)
+never fired, so both `isLoading` and the spinner stuck.
+
+Fixes:
+- **Server (root cause):** the reconnect handler now **always** sends the
+  runner's true `session_status` (including `running:false`). Sending the real
+  state to an already-idle client is idempotent, and it drives the existing
+  client backstop that clears `isLoading`/`activity`/`compacting`. The buffer
+  replay is emitted *before* this `session_status`, so a replayed
+  `active:true` is immediately balanced by `running:false`. Guard test:
+  `persistent-runner.test.ts` ("reconnecting to an idle session sends
+  session_status running=false").
+- **Client (defense in depth):** the spinner now renders only when
+  `compacting && isLoading`. A compaction only ever runs mid-turn, so the
+  indicator should never outlive the turn — this backstops any future path that
+  leaves the global flag stuck true after the turn ended.

@@ -447,7 +447,12 @@ export function MessageList({
         );
       })}
 
-      {compacting && (
+      {/* Gate on isLoading: a compaction only ever runs mid-turn, so the
+          transient "Compacting…" indicator should never outlive the turn. This
+          backstops any path that leaves the global `compacting` flag stuck true
+          after the turn ended (e.g. a reconnect that replayed a buffered
+          `compaction_status active:true` without a balancing clear). */}
+      {compacting && isLoading && (
         <div className="flex justify-start" data-testid="compacting-indicator">
           <div className="flex items-center gap-2 rounded-lg border border-(--color-border-primary) bg-(--color-bg-tertiary) px-3 py-2 text-xs text-(--color-text-secondary)">
             <CircleNotchIcon size={14} className="animate-spin text-(--color-text-tertiary)" />
