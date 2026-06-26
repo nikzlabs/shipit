@@ -1,22 +1,23 @@
 # Checklist — component & helper de-duplication
 
-Each item is an independently shippable PR. Order follows the suggested sequencing in `plan.md`.
+Each item shipped as its own PR. All merged into `main`.
 
 ## Batch 1 — clean & self-contained
-- [ ] A. `<CopyButton>` primitive + adopt at 4 sites (message-markdown, SessionDiagnosticsPanel, CodexAuthCard, PrActionsMenu)
-- [ ] B. `<Avatar>` primitive + adopt at 3 sites (IssueDetail, PrConversationSection, IssuesFilterBar)
-- [ ] C. `attachWorkerResponseHandler()` in worker-http.ts (collapse POST/PUT/GET)
-- [ ] D. `getLocalStorageObject()` / `parseJsonWithFallback()` + adopt in local-storage.ts & stores
+- [x] A. `<CopyButton>` primitive + adopt at 4 sites (message-markdown, SessionDiagnosticsPanel, CodexAuthCard, PrActionsMenu)
+- [x] B. `<Avatar>` primitive + adopt at 3 sites (IssueDetail, PrConversationSection, IssuesFilterBar)
+- [x] C. `attachWorkerResponseHandler()` in worker-http.ts (collapse POST/PUT/GET)
+- [x] D. `getLocalStorageObject()` / `parseJsonWithFallback()` + adopt in local-storage.ts & stores
 
 ## Batch 2 — adopt/extend existing primitives
-- [ ] E. Route ad-hoc metric badges through `<Badge>` (UptimeBadge, DockerMemoryBadge, SubscriptionLimitsBadge)
-- [ ] G. Add `size="icon"` to `<Button>` + adopt at ~6 icon-button sites
-- [ ] F. Add inline/callout variant to `<Banner>` (or sibling `<Alert>`) + adopt at ~6 sites
+- [x] E. Route ad-hoc metric badges through `<Badge>` (UptimeBadge, DockerMemoryBadge, SubscriptionLimitsBadge)
+- [x] G. Add `size="icon"` to `<Button>` + adopt at icon-button sites
+- [x] F. Add inline/callout variant to `<Banner>` + adopt at 6 sites
 
 ## Batch 3 — server sweep
-- [ ] H. `validateString/Number/StringArray/NonEmptyString` helpers + adopt across services
+- [x] H. `validateString/Number/StringArray/NonEmptyString` helpers (`services/validation.ts`) + adopt across services
 
-## Deferred (see plan.md "Explicitly not doing")
-- [ ] handleServiceRoute wrapper — only if it emerges naturally
-- [ ] usePolling hook — pending a clean API
-- [ ] Generic event-listener hook — needs correct cleanup design
+## Deferred — not committed work
+The catalog's "Explicitly not doing" items (the `handleServiceRoute` wrapper, `usePolling`, a
+generic event-listener hook, and the intentional `store.getState()` cross-refs) are decisions,
+not pending tasks — they live in `plan.md` and are revisited only if a concrete need emerges.
+All planned refactors (A–H) are complete.
