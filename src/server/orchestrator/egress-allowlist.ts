@@ -63,6 +63,22 @@ export const EGRESS_DEFAULT_ALLOWLIST: readonly string[] = [
   ".pypi.org", // pypi.org
   ".pythonhosted.org", // files.pythonhosted.org (wheel downloads)
   ".nodejs.org", // nodejs.org — node-gyp downloads the Node headers tarball (npm `disturl`) here to compile native modules (node-pty, etc.)
+
+  // --- JVM / Android build artifact registries (docs/213) ---
+  // The JVM analog of the npm/pypi entries above: Gradle/Maven resolve build
+  // dependencies (AGP, Kotlin, AndroidX) from these. Required for the baked
+  // Android toolchain to actually build — without them every `./gradlew` fails
+  // at dependency resolution with UnknownHostException. All are read-only
+  // artifact CDNs (you GET jars/poms/dists), so they don't widen the exfil
+  // surface the way a content-host would — same posture as npm/pypi.
+  ".gradle.org", // services.gradle.org (wrapper distributions), plugins.gradle.org (plugin portal)
+  // EXACT, never ".google.com": the bare suffix would re-open Gmail/Drive/Forms
+  // (real exfil channels). dl.google.com is a download-only artifact host.
+  "dl.google.com", // Google Maven (AGP, AndroidX) + on-demand sdkmanager package downloads
+  "maven.google.com", // Google Maven index / redirects
+  ".maven.apache.org", // repo.maven.apache.org — Maven Central (Gradle's mavenCentral() default)
+  ".maven.org", // repo1.maven.org — Maven Central canonical / CDN alias
+  ".sonatype.org", // oss.sonatype.org, s01.oss.sonatype.org — common snapshot + transitive source
 ];
 
 /**
