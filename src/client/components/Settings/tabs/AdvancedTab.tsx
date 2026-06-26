@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ArrowSquareOutIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../../design-tokens.js";
 import { Button } from "../../ui/button.js";
+import { Alert } from "../../ui/banner.js";
 import { useUiStore } from "../../../stores/ui-store.js";
 import { useSettingsStore } from "../../../stores/settings-store.js";
 import { ToggleSwitch } from "../ToggleSwitch.js";
@@ -429,21 +430,24 @@ export function AdvancedTab({
             rolled back). Surfaced explicitly so it isn't mistaken for a
             UI glitch — see issue #1047. */}
         {updateStatus?.lastUpdateError && !updateApplying && (
-          <div
-            className="rounded-md border border-(--color-error) bg-(--color-error-subtle) px-3 py-2 text-sm text-(--color-error)"
+          <Alert
+            variant="error"
+            className="text-sm"
             data-testid="settings-update-failed"
           >
-            <p className="font-medium">Last update failed</p>
-            <p className="mt-0.5 text-(--color-text-secondary)">
-              The rebuild didn&apos;t complete, so ShipIt is still running the previous
-              version
-              {updateStatus.lastUpdateError.runningSha
-                ? ` (${updateStatus.lastUpdateError.runningSha.slice(0, 7)})`
-                : ""}
-              . The checkout was rolled back automatically. Free up disk space if needed,
-              then try Update Now again.
-            </p>
-          </div>
+            <div>
+              <p className="font-medium">Last update failed</p>
+              <p className="mt-0.5 text-(--color-text-secondary)">
+                The rebuild didn&apos;t complete, so ShipIt is still running the previous
+                version
+                {updateStatus.lastUpdateError.runningSha
+                  ? ` (${updateStatus.lastUpdateError.runningSha.slice(0, 7)})`
+                  : ""}
+                . The checkout was rolled back automatically. Free up disk space if needed,
+                then try Update Now again.
+              </p>
+            </div>
+          </Alert>
         )}
         {updateStatus && !updateApplying && (
           <div className="text-sm text-(--color-text-secondary)">

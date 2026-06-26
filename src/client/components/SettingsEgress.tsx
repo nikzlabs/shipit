@@ -4,6 +4,7 @@ import { TrashIcon, PencilSimpleIcon, ShieldCheckIcon, CheckIcon, XIcon, Warning
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import { Badge } from "./ui/badge.js";
+import { Alert } from "./ui/banner.js";
 import { useEgressStore } from "../stores/egress-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import type { EgressAllowlistEntry, EgressAllowlistSource } from "../../server/shared/types.js";
@@ -263,8 +264,8 @@ export function SettingsEgress() {
         </div>
 
         {showEnforcementWarning && (
-          <div
-            className="flex items-start gap-2 rounded-md border border-(--color-warning) bg-(--color-warning-subtle) px-3 py-2"
+          <Alert
+            variant="warning"
             data-testid="settings-egress-enforcement-warning"
           >
             <span className="mt-0.5 shrink-0 text-(--color-warning)"><WarningIcon size={ICON_SIZE.SM} weight="fill" /></span>
@@ -276,7 +277,7 @@ export function SettingsEgress() {
                 Until then, contained sessions fail to start (or run with open egress if containment is disabled).
               </p>
             </div>
-          </div>
+          </Alert>
         )}
 
         <p className="text-xs text-(--color-text-tertiary)">
