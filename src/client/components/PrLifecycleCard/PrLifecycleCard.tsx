@@ -14,6 +14,7 @@ import { collectPrCardIssueRefs } from "../../utils/pr-card-issue-refs.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import { useIsMobile } from "../../hooks/useMediaQuery.js";
 import { PrActionsMenu } from "../PrActionsMenu.js";
+import { Button } from "../ui/button.js";
 import { ChangedDocsStrip } from "../ChangedDocsStrip.js";
 import {
   getSavedChangedDocsExpanded,
@@ -208,14 +209,15 @@ export function PrLifecycleCard({
         </div>
         <div className="shrink-0 h-6 flex items-center gap-1">
           {onSearch && (
-            <button
+            <Button
+              variant="ghost"
+              size="icon"
               onClick={onSearch}
-              className="p-1 rounded text-(--color-text-tertiary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors"
               title="Search conversation"
               aria-label="Search conversation"
             >
               <MagnifyingGlassIcon size={ICON_SIZE.SM} weight="bold" />
-            </button>
+            </Button>
           )}
           {hasPanelContent && <ChangedDocsToggle expanded={docsExpanded} onToggle={toggleDocs} />}
           <PrActionsMenu sessionId={sessionId} />

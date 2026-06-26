@@ -292,8 +292,10 @@ export function IssueDetail({
                           />
                           {label.name}
                           {canEditLabels && (
-                            <button
+                            <Button
                               type="button"
+                              variant="ghost"
+                              size="icon"
                               aria-label={`Remove ${label.name}`}
                               onClick={() =>
                                 void onSetLabels(
@@ -302,10 +304,10 @@ export function IssueDetail({
                                     .filter((n) => n !== label.name),
                                 )
                               }
-                              className="ml-0.5 inline-flex size-3.5 items-center justify-center rounded-full text-(--color-text-tertiary) hover:bg-(--color-bg-active) hover:text-(--color-text-primary) cursor-pointer"
+                              className="ml-0.5 p-0 size-3.5 rounded-full hover:bg-(--color-bg-active) cursor-pointer"
                             >
                               <XIcon size={10} weight="bold" />
-                            </button>
+                            </Button>
                           )}
                         </span>
                       ))}

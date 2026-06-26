@@ -366,14 +366,15 @@ export function DocsViewer({ files: allFiles, onFileClick, onRefresh, onOpenIssu
             : `${allFiles.length} doc${allFiles.length !== 1 ? "s" : ""}`}
         </span>
         <div className="flex items-center gap-1 shrink-0 ml-2">
-          <button
+          <Button
+            variant="ghost"
+            size="icon"
             onClick={openSearch}
-            className="p-1 rounded text-(--color-text-tertiary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors"
             title="Search docs"
             aria-label="Search docs"
           >
             <MagnifyingGlassIcon size={ICON_SIZE.SM} weight="bold" />
-          </button>
+          </Button>
           <Button
             variant="ghost"
             size="md"
