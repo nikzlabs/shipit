@@ -246,7 +246,11 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
             variant="ghost"
             size="icon"
             onClick={() => setShowModal(true)}
-            className="hidden group-hover/tool:inline-flex ml-1 cursor-pointer"
+            // Pin to the row's text line-height (text-xs => 16px) with zero
+            // vertical padding so revealing it on hover never grows the row.
+            // Without this the icon button renders taller than the line and the
+            // whole row jumps when the cursor enters/leaves.
+            className="hidden group-hover/tool:inline-flex ml-1 cursor-pointer h-4 py-0"
             aria-label={hasResult ? "Show output" : "Show input"}
           >
             <EyeIcon size={12} />
