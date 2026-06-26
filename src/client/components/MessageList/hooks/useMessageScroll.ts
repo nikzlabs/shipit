@@ -4,6 +4,10 @@ import type { SearchMatch } from "../../../hooks/useSearch.js";
 import type { ChatMessage } from "../types.js";
 
 const BOTTOM_THRESHOLD_PX = 40;
+// Keep re-pinning to the bottom until the content height has been stable for
+// this many consecutive frames (layout settled), or until the safety cap.
+const STABLE_FRAMES = 3;
+const MAX_SCROLL_SETTLE_MS = 1000;
 
 function isNearBottom(container: HTMLElement): boolean {
   const { scrollTop, scrollHeight, clientHeight } = container;
@@ -14,27 +18,46 @@ function scrollToBottom(container: HTMLElement): void {
   container.scrollTop = container.scrollHeight;
 }
 
+function now(): number {
+  return typeof performance !== "undefined" ? performance.now() : 0;
+}
+
+/**
+ * Re-pin the container to the bottom across multiple frames until the content
+ * height settles. A tall, freshly-appended message renders with
+ * `content-visibility: auto` (see MessageList), so it first reports a small
+ * placeholder height and grows as it actually paints. A fixed frame budget can
+ * stop before the real bottom — leaving the view stranded mid-message — so we
+ * keep correcting until `scrollHeight` has been unchanged for a few frames
+ * (bounded by a safety cap so streaming never loops forever).
+ */
 function scheduleScrollToBottom(container: HTMLElement, shouldContinue: () => boolean): () => void {
-  let frame = 0;
   let cancelled = false;
+  let lastHeight = -1;
+  let stableFrames = 0;
+  const start = now();
 
   const tick = () => {
     if (cancelled || !shouldContinue()) return;
     scrollToBottom(container);
-    frame += 1;
-    if (frame < 3) {
+
+    const height = container.scrollHeight;
+    if (height === lastHeight) {
+      stableFrames += 1;
+    } else {
+      stableFrames = 0;
+      lastHeight = height;
+    }
+
+    if (stableFrames < STABLE_FRAMES && now() - start < MAX_SCROLL_SETTLE_MS) {
       window.requestAnimationFrame(tick);
     }
   };
 
   window.requestAnimationFrame(tick);
-  const timeout = window.setTimeout(() => {
-    if (!cancelled && shouldContinue()) scrollToBottom(container);
-  }, 100);
 
   return () => {
     cancelled = true;
-    window.clearTimeout(timeout);
   };
 }
 
