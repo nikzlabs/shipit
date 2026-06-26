@@ -70,6 +70,42 @@ RUN mkdir -p /opt/playwright-browsers \
  && HOME=/opt/playwright-browsers playwright-mcp install-browser chrome-for-testing \
  && chmod -R a+rX /opt/playwright-browsers
 
+# ---- Android build toolchain (docs/213) ----
+# Bake the JVM + Android SDK + Gradle so the agent can build/lint/test any
+# Android/Gradle repo with zero per-repo setup (the "baked, ambient" model — no
+# `shipit.yaml` Android fields). See Dockerfile.session-worker.prod for the full
+# rationale (JDK 17 / AGP 8.x matrix, on-demand `sdkmanager`, the /opt/java
+# arch-independent symlink, world-writable SDK dirs).
+RUN apt-get update && apt-get install -y openjdk-17-jdk-headless \
+ && rm -rf /var/lib/apt/lists/* \
+ && ln -sfn "$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")" /opt/java
+ENV JAVA_HOME=/opt/java
+ENV PATH="${JAVA_HOME}/bin:${PATH}"
+ENV ANDROID_SDK_ROOT=/opt/android-sdk
+ENV ANDROID_HOME=/opt/android-sdk
+ENV ANDROID_CMDLINE_TOOLS_VERSION=11076708
+ENV ANDROID_COMPILE_SDK=35
+ENV ANDROID_BUILD_TOOLS=35.0.0
+RUN mkdir -p "${ANDROID_SDK_ROOT}/cmdline-tools" \
+ && curl -sSL -o /tmp/cmdline-tools.zip \
+      "https://dl.google.com/android/repository/commandline-tools-linux-${ANDROID_CMDLINE_TOOLS_VERSION}_latest.zip" \
+ && unzip -q /tmp/cmdline-tools.zip -d "${ANDROID_SDK_ROOT}/cmdline-tools" \
+ && mv "${ANDROID_SDK_ROOT}/cmdline-tools/cmdline-tools" "${ANDROID_SDK_ROOT}/cmdline-tools/latest" \
+ && rm /tmp/cmdline-tools.zip
+ENV PATH="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${PATH}"
+RUN yes | sdkmanager --licenses > /dev/null \
+ && sdkmanager --install "platform-tools" \
+      "platforms;android-34" "platforms;android-${ANDROID_COMPILE_SDK}" \
+      "build-tools;34.0.0" "build-tools;${ANDROID_BUILD_TOOLS}" > /dev/null \
+ && find "${ANDROID_SDK_ROOT}" -type d -exec chmod a+rwx {} +
+ENV GRADLE_VERSION=8.7
+RUN curl -sSL -o /tmp/gradle.zip "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" \
+ && unzip -q /tmp/gradle.zip -d /opt \
+ && ln -s "/opt/gradle-${GRADLE_VERSION}" /opt/gradle \
+ && rm /tmp/gradle.zip \
+ && chmod -R a+rX "/opt/gradle-${GRADLE_VERSION}"
+ENV PATH="/opt/gradle/bin:${PATH}"
+
 WORKDIR /app
 
 COPY package.json package-lock.json ./

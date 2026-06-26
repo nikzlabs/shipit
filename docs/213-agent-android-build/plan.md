@@ -139,7 +139,7 @@ With that in place, all of this runs with **no device**:
   against committed goldens. **The test sets up the data it renders**, which is exactly why this — not a
   platform gallery — answers "did my inset/padding change render right?". The agent runs
   `verifyPaparazziDebug` (check) / `recordPaparazziDebug` (update goldens) and reads the diff PNGs. Pin the
-  snapshot lib to the repo's AGP (this repo: AGP 8.5.2 / Kotlin 1.9.24 / Gradle 8.7) and bump together.
+  snapshot lib to the repo's AGP (this repo: AGP 8.6.1 / Kotlin 1.9.24 / Gradle 8.7) and bump together.
   (Google's official Compose Preview Screenshot Testing runs its headless Gradle tasks on AGP 8.5+, but
   full IDE integration lands with AGP 9 — so Paparazzi/Roborazzi remain the mature headless choice for now.
   `layoutlib` can't render a `WebView`, so for `android/` snapshots cover the chrome/insets/settings screen;
@@ -251,6 +251,41 @@ Each phase is shippable on its own and ordered by value-per-effort.
   via `x-shipit-preview`. Optional polish: `browser_*`-style tool wrappers and/or Maestro.
 - **Phase 5 — instrumented / cloud.** Firebase Test Lab (or GMD on a KVM CI runner) for instrumented tests
   and real-device validation on no-KVM hosts, surfaced as inline PR artifacts.
+
+## Implementation status (Phases 1–2 shipped)
+
+Phases 1 and 2 are implemented. What landed and where:
+
+- **Baked toolchain** (`Dockerfile.session-worker.prod` + `.dev`, after the Playwright block): JDK 17
+  (`JAVA_HOME=/opt/java`, an arch-independent symlink), the Android SDK (`ANDROID_SDK_ROOT=/opt/android-sdk`
+  — `cmdline-tools/latest`, `platform-tools`, platforms `android-34`+`android-35`, build-tools
+  `34.0.0`+`35.0.0`, licenses pre-accepted), and Gradle 8.7 at `/opt/gradle`. SDK dirs are made
+  world-writable (dirs only — small layer) so on-demand `sdkmanager` installs work as the unprivileged
+  runtime user. The `.docker` worker variant inherits all of this (it `FROM`s the base).
+- **Env at the launch boundary** (`container-lifecycle.ts` `buildEnv`): `ANDROID_SDK_ROOT`, `ANDROID_HOME`,
+  `JAVA_HOME` mirrored like `PLAYWRIGHT_BROWSERS_PATH`, with a guard test (`container-lifecycle.test.ts`).
+- **Gradle wrapper** committed under `android/` (`gradlew`, `gradlew.bat`, `gradle/wrapper/*`) pinned to 8.7.
+- **Agent surfacing**: `src/server/shipit-docs/android.md` (baked into every image at `/shipit-docs/` — the
+  platform-global reference that reaches *any* repo) + the `.claude/skills/android-build` skill (covers
+  ShipIt's own `android/` dogfood; the SHI-205 template / a future platform-injection step distributes it to
+  user repos). `environment.md` + the docs `README.md` index updated.
+- **Phase 2** is documentation over the same baked toolchain: `android.md` + the skill carry the
+  `record`/`verify` snapshot loop and the **read-the-diff-PNG → `present` it** habit. No new orchestrator
+  code — `present` already exists.
+
+Two deliberate deviations from the design sketch above, both toward "the agent is the actor":
+
+- **JDK 17 only** (not 11 + 17). It covers AGP 8.x, the current matrix; an 11 bake is a one-line addition if
+  a repo needs it.
+- **No orchestrator-side staged version resolver.** The simplest realization of the "derived / on-demand"
+  principle is: the committed `./gradlew` self-resolves Gradle, the baked JDK 17 covers AGP 8.x, and a
+  missing SDK component is installed **on demand by the agent** via `sdkmanager` (guided by `android.md`) —
+  no build-interception code in the orchestrator. A persistent SDK overlay (so on-demand installs survive a
+  restart) remains future work; today they re-install on demand.
+
+**Not verifiable in-session** (needs the rebuilt image, which OOMs/`can't build` in a session container):
+the actual green `assembleDebug`/`lint`/snapshot run against the baked toolchain. That gate runs in CI /
+post-deploy on the new session-worker image.
 
 ## Relationship to other work
 

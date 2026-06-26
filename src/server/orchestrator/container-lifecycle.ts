@@ -178,6 +178,17 @@ export const DEP_CACHE_CONTAINER_PATH = "/dep-cache";
 export const PLAYWRIGHT_BROWSERS_PATH = "/opt/playwright-browsers";
 
 /**
+ * docs/213 — baked Android toolchain paths. The session-worker image installs
+ * the Android SDK and a JDK at these locations (a stable /opt/java symlink keeps
+ * JAVA_HOME arch-independent). Like PLAYWRIGHT_BROWSERS_PATH, they're set as ENV
+ * in the image AND mirrored at the launch boundary (buildEnv) so they're explicit
+ * even if the image ENV drifts. The toolchain is ambient — present in every
+ * session — so any Android/Gradle repo builds with no per-repo configuration.
+ */
+export const ANDROID_SDK_ROOT = "/opt/android-sdk";
+export const JAVA_HOME = "/opt/java";
+
+/**
  * docs/198 — container-internal mount point for the shared per-runtime pnpm
  * store. It must be **pnpm's own relocation target**, not an arbitrary path:
  * pnpm 11 ignores `npm_config_store_dir` (and `pnpm config set store-dir`) and,
@@ -399,6 +410,12 @@ export function buildEnv(
     // image sets this ENV too; mirror it here so it's explicit at the launch
     // boundary and survives an image whose ENV drifts.
     `PLAYWRIGHT_BROWSERS_PATH=${PLAYWRIGHT_BROWSERS_PATH}`,
+    // docs/213 — baked, ambient Android toolchain. Mirrored here like the
+    // Playwright path so any Android/Gradle repo builds with no per-repo setup.
+    // ANDROID_HOME is the legacy alias some tools still read; keep both.
+    `ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}`,
+    `ANDROID_HOME=${ANDROID_SDK_ROOT}`,
+    `JAVA_HOME=${JAVA_HOME}`,
     // Point git inside the container at the same global config the orchestrator
     // uses. The credentials directory is mounted at /credentials, and the
     // orchestrator writes user.name/user.email there via initGlobalGitConfig().

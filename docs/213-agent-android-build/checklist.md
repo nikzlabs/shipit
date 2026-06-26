@@ -19,10 +19,26 @@ phases are future work (the session brief said do not commit to a heavy implemen
 - [x] Linear tracker issue created + linked in `plan.md` frontmatter
 - [x] Open PR with the doc
 
-## Implementation (future work — not this session)
+## Implementation
 
-- [ ] Phase 1: bake SDK+JDK base into `Dockerfile.session-worker.*` + on-demand overlay + AGP→Gradle→JDK resolution; commit `android/` Gradle wrapper (8.7); green build/lint/test for a generic repo and a monorepo (zero repo config); `shipit-docs/android.md` + skill
-- [ ] Phase 2: confirm `layoutlib` runtime runs the repo's Paparazzi/Roborazzi tests headlessly; document record/verify; surface rendered/diff PNGs inline
-- [ ] Phase 3: narrowly-scoped `/dev/kvm` `devices:` allowance in `compose-generator.ts` + canonical emulator Compose recipe; confirm host KVM
+### Phase 1 — build toolchain (shipped)
+
+- [x] Bake SDK + JDK 17 + Gradle 8.7 into `Dockerfile.session-worker.prod` + `.dev` (after the Playwright block; `.docker` inherits via `FROM`)
+- [x] Wire `ANDROID_SDK_ROOT` / `ANDROID_HOME` / `JAVA_HOME` at the launch boundary (`container-lifecycle.ts` `buildEnv`) + guard test
+- [x] Commit the `android/` Gradle wrapper (8.7) — `gradlew`, `gradlew.bat`, `gradle/wrapper/*`
+- [x] On-demand SDK components via `sdkmanager` (agent-run, error-driven) instead of an orchestrator-side staged resolver — SDK dirs made writable for the runtime user
+- [x] `shipit-docs/android.md` (platform-global) + `.claude/skills/android-build` skill + `environment.md`/`README.md` updates
+- [ ] **CI/post-deploy only:** green `assembleDebug` + `lint` + a JVM test for (a) a generic repo and (b) a monorepo — needs the rebuilt session-worker image (can't build in-session)
+
+### Phase 2 — snapshot tests as the visual signal (shipped)
+
+- [x] Document the Paparazzi/Roborazzi `record`/`verify` loop in `android.md` + the skill
+- [x] Document the read-the-diff-PNG → `present` habit for inline visual feedback (no new code — `present` exists)
+- [ ] **CI/post-deploy only:** confirm the baked `layoutlib` runtime runs a repo's snapshot tests headlessly (needs the rebuilt image; a SHI-205 native test app exercises it end to end)
+
+### Phases 3–5 (future work — not this session)
+
+- [ ] Phase 3: narrowly-scoped `/dev/kvm` `devices:` allowlist in `compose-generator.ts` + canonical emulator Compose recipe; confirm host KVM
 - [ ] Phase 4: agent `adb` debug/drive loop (logcat + tap/screenshot/snapshot triad, optional Maestro) + interactive preview via `x-shipit-preview`
 - [ ] Phase 5: Firebase Test Lab / GMD-on-KVM for instrumented tests; results as inline PR artifacts
+- [ ] Persistent SDK overlay so on-demand `sdkmanager` installs survive a container restart
