@@ -46,15 +46,28 @@ Two structural problems follow:
 ```
 reserve     = max(2 GiB, totalRam × 0.10)          // orchestrator + OS working set
 usable      = totalRam − reserve
-perSession  = clamp( usable / TARGET_CONCURRENCY , FLOOR , CEILING )
+sized       = clamp( usable / TARGET_CONCURRENCY , FLOOR , CEILING )
+perSession  = max( min( sized , usable ) , BOOT_MIN ) // never exceed usable; never below boot minimum
 
-TARGET_CONCURRENCY = 8      // heavy sessions that should peak at once on a large host
-FLOOR              = 4 GiB  // a real test suite needs room
-CEILING            = 16 GiB // no single session should need more; bounds blast radius
+TARGET_CONCURRENCY = 8        // heavy sessions that should peak at once on a large host
+FLOOR              = 4 GiB    // a real test suite needs room
+CEILING            = 16 GiB   // no single session should need more; bounds blast radius
+BOOT_MIN           = 1536 MiB // AGENT_DEFAULTS.memory — least a session needs to function
 ```
 
-- **CPU:** no `CpuQuota` (optionally a soft `CpuShares` weight for fairness). Cores are scheduler-shared;
-  an over-busy session slows itself, not the host.
+The `min(sized, usable)` step matters because `FLOOR` (4 GiB) can exceed `usable` on a small host — a
+4 GB host has only ~2 GiB usable. There, `perSession` is pinned to `usable`: the session may use all
+usable memory, one at a time, and the protected reserve is never crossed. `BOOT_MIN` is the last clamp
+and the one exception to "never exceed usable": on a host so small that even `usable < BOOT_MIN`, the
+session still gets `BOOT_MIN` (it cannot function below it) and the operator is warned that the host is
+below the supported minimum and therefore oversubscribed.
+
+- **CPU:** no `CpuQuota` by default. The container path today *always* writes a numeric `CpuQuota` +
+  `CpuPeriod` into Docker `HostConfig` (`container-lifecycle.ts`, fed by `defaultCpuQuota` /
+  `DEFAULT_CPU_QUOTA` in `session-container.ts`). Dropping the quota means making `cpuQuota` optional and
+  **omitting** both `CpuQuota` and `CpuPeriod` from `HostConfig` when it is unset — leaving the field
+  `undefined`, not `0` (`CpuQuota: 0` is rejected by Docker). Optionally a soft `CpuShares` weight for
+  fairness instead. Cores are scheduler-shared; an over-busy session slows itself, not the host.
 - **PIDs:** fixed 8192 fork-bomb guard. A safety rail, not a capacity-derived budget.
 
 `reserve` is the orchestrator + OS working set — not reclaimable slack. It is never shaved to fit more
@@ -69,10 +82,12 @@ config. Operators who disagree use the override env below rather than tuning con
 `TARGET_CONCURRENCY` is a ceiling that only binds on large hosts. The division reaches the `FLOOR` once
 `usable / 8 ≥ 4 GiB`, i.e. `usable ≥ 32 GiB` (host ≈ 34 GB+). Below that the `FLOOR` governs and
 effective concurrency is `usable / FLOOR`, not 8 — which is correct: a small host should run fewer heavy
-sessions at once.
+sessions at once. On a host smaller than the `FLOOR` itself, `perSession` is pinned to `usable` (the
+`min(sized, usable)` step), so a single session fills the usable budget rather than overrunning it.
 
 | Host RAM | reserve | usable | per-session memory | heavy sessions that fit |
 |---|---|---|---|---|
+| 4 GB | 2 GiB | 2 GiB | 2 GiB (capped to usable) | ~1 |
 | 8 GB | 2 GiB | 6 GiB | 4 GiB (floored) | ~1 |
 | 16 GB | 2 GiB | 14 GiB | 4 GiB (floored) | ~3 |
 | 96 GB | 9.6 GiB | 86 GiB | ~10.8 GiB | ~8 |
@@ -99,26 +114,44 @@ warning, not an error, and boots auto-sized. The rest of the `agent` block (`ins
 `installInputs`, …) and `compose.docker-socket` are unaffected — those are genuine repo concerns.
 
 Removing the fields also removes the only real parser wrinkle: there is no "preserve unset" problem,
-because there is no field to parse. `AGENT_DEFAULTS.memory` (1536) survives only as the `FLOOR`'s library
-fallback for a tiny host.
+because there is no field to parse. `AGENT_DEFAULTS.memory` (1536 MiB) survives only as `BOOT_MIN` — the
+last-resort minimum a session needs to function.
+
+**Downstream surfaces that reference the removed fields must move too.** The diagnostics surface today
+renders declared-vs-effective `agent.*` (`services/diagnostics.ts` → `SessionDiagnosticsPanel.tsx`), and
+the OOM circuit breaker (`oom-circuit-breaker.ts`) tells the user the escape is to "bump memory in
+shipit.yaml." Both go stale when the fields are gone: diagnostics must show the auto-derived sizing
+(host RAM, reserve, derived `perSession`, any env override) instead of declared resources, and the OOM
+guidance must point at the deployment env override (`DEFAULT_SESSION_MEMORY_MB` / `MAX_SESSION_MEMORY_MB`)
+or the rescue flow — never `shipit.yaml`.
 
 ### Host-capacity source
 
 `os.totalmem()` reports the host/VM total RAM. For ShipIt's own deployment (orchestrator uncapped inside
 a 96 GB VM) that is exactly the real budget. As defensive code for portability, prefer a cgroup memory
-limit (`/sys/fs/cgroup/memory.max`) when one is set *below* host total, else fall back to
-`os.totalmem()` — this only matters for a deployment that runs the orchestrator inside a constrained
-container.
+limit when one is set *below* host total, else fall back to `os.totalmem()`. Read **cgroup v2 first**
+(`/sys/fs/cgroup/memory.max`), then **cgroup v1** (`/sys/fs/cgroup/memory/memory.limit_in_bytes`),
+ignoring the unlimited sentinels (`max` for v2, and v1's near-`Int64.MAX` value), and ignoring any value
+≥ host total. This only matters for a deployment that runs the orchestrator inside a constrained
+container; for the VM deployment it resolves straight to `os.totalmem()`.
 
 ## Key files
 
 - `src/server/orchestrator/container-config-builder.ts` — auto-derivation, env overrides, host-capacity
   reader. Replaces `hostMemoryCapMb` (75%-of-host single-session cap) and the fixed-default flow.
+- `src/server/orchestrator/container-lifecycle.ts` / `session-container.ts` — make `cpuQuota` optional so
+  `HostConfig` omits `CpuQuota` / `CpuPeriod` by default (no hard CPU quota).
 - `src/server/shared/shipit-config.ts` — remove `agent.memory` / `agent.cpu` / `agent.pids` from
   `AgentConfig` and the schema; route them through the warn-and-ignore deprecation path. Keep
-  `AGENT_DEFAULTS.memory` only as the `FLOOR` fallback.
+  `AGENT_DEFAULTS.memory` only as `BOOT_MIN`.
+- `src/server/orchestrator/services/diagnostics.ts` / `src/client/components/SessionDiagnosticsPanel.tsx`
+  — replace declared-vs-effective `agent.*` rows with auto-derived sizing metadata (host RAM, reserve,
+  derived `perSession`, env override if any).
+- `src/server/orchestrator/oom-circuit-breaker.ts` — update the user-facing OOM guidance to point at the
+  deployment env override / rescue flow, not "bump memory in shipit.yaml."
 - `src/server/orchestrator/resolve-agent-docker-limits.test.ts` — derived default, env override, clamp,
-  tiny-host floor, and deprecated-field-ignored-with-warning cases.
+  tiny-host (`usable`-capped) floor, `BOOT_MIN`, no-default-`CpuQuota`, and deprecated-field-ignored-with-warning
+  cases.
 - `src/server/shipit-docs/shipit-yaml.md` — remove the resource-field rows; document automatic sizing and
   the optional `DEFAULT_SESSION_MEMORY_MB` / `MAX_SESSION_MEMORY_MB` env.
 
