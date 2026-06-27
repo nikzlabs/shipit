@@ -68,6 +68,39 @@ host(s), and then just ask the agent in chat.
 
 ## Design
 
+### 0. The session shape — a repo-less, capability-gated sandbox session
+
+The natural home for "SSH to a remote host" is **not** an ordinary repo-backed session — it is
+a **repo-less session in the sandbox family** (docs/211). The remote-setup/debugging use case
+(including driving the ShipIt prod box) is fundamentally *not about a repo*: there is no
+`/workspace` project to clone, build, preview, or open PRs against. It is scratch/compute work
+where the agent's job is to run commands on a box, exactly the gap Sandbox sessions were
+created to fill ("repo-less scratch/compute work where no single repo should own the session").
+
+This reframing is load-bearing for the rest of the design:
+
+- **It picks the opt-in mechanism for us.** Sandbox sessions already carry a
+  **server-authoritative `capabilities` set** (`git`, `docker`, `network`), chosen at creation,
+  immutable, and impossible for the agent to self-grant. SSH becomes a **fourth capability**
+  (`ssh`, **default off**) on that same set — which *is* the "per-session opt-in, default off"
+  the Security model (#4) demands, with no new opt-in surface invented. The capability dialog
+  (the `+` advanced-session menu → `SandboxDialog`) gains an **"SSH access"** toggle alongside
+  GitHub/Docker/Network.
+- **It rules out Option A.** A Sandbox session has an **empty `/workspace` and deliberately
+  does not run `agent.install`** (no root `shipit.yaml`; docs/211 "the orchestrator stops …
+  running `agent.install`"). So the repo-local install snippet (§4 Option A) cannot fire in
+  the very session shape this feature targets. **Key materialization must be platform-owned**
+  (§4 Option B / `session-credentials.ts`), gated on the `ssh` capability — there is no
+  repo to carry a snippet, and nothing runs install to execute one.
+- **It aligns the network story.** Sandbox already owns egress as a capability (`network`,
+  tighten-only). The host allowlist that SSH rides on (§3) composes cleanly with that model:
+  a sealed (`network: off`) sandbox can still be granted SSH to a single named host the same
+  way `git` adds `github.com` to the lifeline set — SSH adds the allowlisted SSH host.
+
+A repo-backed session *could* still SSH out (the binary + a key materialized via Option A would
+work there), but that is the secondary path. The primary, recommended shape is a Sandbox
+session with the `ssh` capability granted — repo-less, opt-in, capability-scoped.
+
 ### 1. The `ssh` binary — the one hard image change
 
 `openssh-client` is absent from the session-worker image. `Dockerfile.session-worker.prod:55`
@@ -126,8 +159,8 @@ vanishes next session. The secret (SecretStore) and the allowlist entry (SQLite)
 but the `~/.ssh/` contents do not — so materializing the key file is the one piece that needs
 a **declarative** home. Two options, sequenced minimal-first:
 
-**Option A — `agent.install` snippet (quick, repo-local).** The target repo's `shipit.yaml`
-carries an install step that writes the file:
+**Option A — `agent.install` snippet (quick, repo-local — repo-backed sessions only).** The
+target repo's `shipit.yaml` carries an install step that writes the file:
 
 ```yaml
 agent:
@@ -138,20 +171,25 @@ agent:
 ```
 
 Pros: no platform change beyond the image. Cons: the snippet lives in every repo that wants
-it, and — **open question (§Open questions)** — `agent.install` (run by `install-controller.ts`
-before the first turn) may not see the `agent: true` secret, because the agent-env push
-happens just before `/agent/start`, *after* install runs. If install does not see it, Option A
-needs the install timing changed or the value delivered another way, which pushes toward B.
+it; and — decisively — **it does not apply to the recommended session shape at all**: a
+repo-less Sandbox session (§0) has no root `shipit.yaml` and the orchestrator deliberately does
+not run `agent.install` for it (docs/211), so there is nothing to carry or execute the snippet.
+Even for repo-backed sessions there is an **open question (§Open questions)**: `agent.install`
+(run by `install-controller.ts` before the first turn) may not see the `agent: true` secret,
+because the agent-env push happens just before `/agent/start`, *after* install runs. Between
+the repo-less mismatch and the timing risk, Option A is a repo-backed-only prototype crutch;
+the shipped feature uses Option B.
 
 **Option B — first-class credential provisioning (clean, platform-owned).** ShipIt provisions
 `~/.ssh/{id_ed25519,known_hosts,config}` the same way it already provisions agent credentials.
 `Dockerfile.session-worker.prod:248-253` symlinks `~/.claude`/`~/.claude.json`/`~/.codex` from
 a `/credentials` mount that `session-credentials.ts` populates per session. The natural
-extension: when an `SSH_PRIVATE_KEY` secret is present and the session has SSH enabled, write
-`/credentials/.ssh/` (key 0600, `known_hosts`, a generated `config`) and symlink `~/.ssh`. The
-key never touches the workspace, mirrors the established credential model, survives recreation,
-and needs no per-repo shell. This is the recommended end state; Option A is the prototype to
-prove the loop first.
+extension: when an `SSH_PRIVATE_KEY` secret is present and the session's **`ssh` capability**
+(§0) is granted, write `/credentials/.ssh/` (key 0600, `known_hosts`, a generated `config`) and
+symlink `~/.ssh`. The key never touches the workspace, mirrors the established credential model,
+survives recreation, needs no per-repo shell, and — crucially — works for a **repo-less Sandbox
+session**, which Option A cannot. This is the recommended end state; Option A is a
+repo-backed-only prototype to prove the loop first.
 
 A generated `~/.ssh/config` lets the agent use stable aliases and enforces safe defaults:
 
@@ -194,15 +232,20 @@ bounds *which* hosts; the rest of the boundary must be designed deliberately:
    the allowlist cannot MITM the session. `accept-new` is the weakest acceptable fallback for a
    throwaway host during prototyping, not for prod.
 
-4. **Per-session opt-in, default off.** SSH capability is not ambient. A session must be
-   explicitly enabled for remote SSH (e.g. a session/repo flag), so the key is provisioned only
-   where the user intends it. An untrusted repo opened casually gets no key.
+4. **Per-session opt-in, default off — as a Sandbox capability (§0).** SSH capability is not
+   ambient. It is the **`ssh` capability** on a Sandbox session's server-authoritative
+   `capabilities` set (docs/211): chosen at creation in the capability dialog, default off,
+   immutable, and impossible for the agent to self-grant. The key is provisioned (§4 Option B)
+   only when that capability is granted, so it lands only where the user intends it. An
+   untrusted repo opened casually is an ordinary session with no `ssh` capability and gets no
+   key. This reuses the existing opt-in machinery rather than inventing a new flag.
 
 5. **The ShipIt-prod-from-ShipIt loop deserves its own fence.** A contained agent reaching the
    host that runs the platform containing it is a genuine reflexive risk. Treat prod as the
    canonical case for the forced-command restriction (#2) and the narrowest possible key
-   scope, and consider gating it behind ops-session semantics (docs/128-ops-session,
-   docs/162-ops-remediation-sessions) rather than an ordinary session.
+   scope. The `ssh` capability lives in the same server-authoritative family as ops semantics
+   (docs/128-ops-session, docs/162-ops-remediation-sessions) — so the prod loop can be gated as
+   tightly as an ops/sandbox grant rather than handed to an ordinary session.
 
 6. **Auditability.** Remote actions should be reconstructable: the agent's `ssh` invocations
    are already in the chat transcript / tool log; the forced-command entry point (#2) should
@@ -213,12 +256,17 @@ with `accept-new` to prove the loop, but the **shipped** feature must carry item
 
 ## Implementation sequencing
 
-1. **Minimal enabler (prove the loop).** Add `openssh-client` to both Dockerfiles; document
-   the Option-A `agent.install` materialization (resolving the install-vs-secret timing open
-   question); rely on the existing egress allowlist UI. Verify end-to-end against a throwaway
-   host. No new platform surface.
-2. **First-class provisioning (Option B).** Move materialization into `session-credentials.ts`
-   + a `/credentials/.ssh` symlink; generate `~/.ssh/config`; add the per-session opt-in flag.
+1. **Minimal enabler (prove the loop).** Add `openssh-client` to both Dockerfiles; on a
+   **repo-backed** session, document the Option-A `agent.install` materialization (resolving the
+   install-vs-secret timing open question); rely on the existing egress allowlist UI. Verify
+   end-to-end against a throwaway host. No new platform surface. (This prototype path is
+   repo-backed only — a Sandbox session can't run `agent.install`, so the real shape waits for
+   step 2.)
+2. **First-class provisioning (Option B) on a Sandbox session.** Add the **`ssh` capability** to
+   the Sandbox `capabilities` set (data model + `SandboxDialog` toggle, mirroring git/docker/
+   network); move materialization into `session-credentials.ts` + a `/credentials/.ssh` symlink
+   gated on that capability; generate `~/.ssh/config`. This is the recommended end state and the
+   one that works for the repo-less session shape.
 3. **Remote-hosts config + security defaults.** A small "remote hosts" concept (host, user,
    key-secret name, pinned host key) that auto-allowlists the host and provisions the alias;
    ship with the forced-command guidance and prod fence.
@@ -231,7 +279,12 @@ with `accept-new` to prove the loop, but the **shipped** feature must carry item
 - `src/server/orchestrator/secret-resolver.ts` / `secret-store.ts` — `agent: true` →
   `process.env` path for the key; no change expected beyond reuse.
 - `src/server/orchestrator/session-credentials.ts` — home of Option B (provision
-  `/credentials/.ssh`, symlink `~/.ssh`).
+  `/credentials/.ssh`, symlink `~/.ssh`), gated on the session's `ssh` capability.
+- **Sandbox capability plumbing (§0)** — `src/server/shared/types/domain-types/session.ts`
+  (`SessionCapabilities` + `DEFAULT_SANDBOX_CAPABILITIES` + `normalizeCapabilities`),
+  `database.ts` (the `capabilities` column already exists; no new migration), and
+  `src/client/components/SandboxDialog.tsx` — add the `ssh` capability + the "SSH access"
+  toggle alongside git/docker/network.
 - `src/server/orchestrator/egress-allowlist.ts`, `api-routes-egress.ts`, `egress-reload.ts`,
   `egress-allowlist-store.ts` — the host-allowlist path SSH rides on (no change expected;
   confirm port-22 reachability needs no port-specific rule).
@@ -245,9 +298,11 @@ with `accept-new` to prove the loop, but the **shipped** feature must carry item
 - **Does `agent.install` see `agent: true` secrets?** The agent-env push runs just before
   `/agent/start`; install runs earlier. If not, Option A must change install timing or deliver
   the key differently — which is an argument for Option B. **Verify before relying on Option A.**
-- **Per-session opt-in mechanism.** A session flag, a repo `shipit.yaml` field, or an
-  account-level "remote hosts" registry? Leaning toward an explicit per-session/host enable so
-  the key is provisioned narrowly.
+- **Per-session opt-in mechanism — resolved (§0):** the **`ssh` capability** on a Sandbox
+  session, set server-authoritatively at creation, default off. This reuses the existing
+  `capabilities` machinery (docs/211) instead of inventing a session flag, `shipit.yaml` field,
+  or account-level registry. (A per-host "remote hosts" registry remains a *Phase 3* refinement
+  layered on top — it auto-allowlists the host and provisions the alias — not the opt-in gate.)
 - **Key format.** Standardize on `id_ed25519`; confirm older `id_rsa` keys are still supported
   for users who have them.
 - **`scp`/`sftp` scope.** In-scope for file transfer, but interacts with the forced-command
