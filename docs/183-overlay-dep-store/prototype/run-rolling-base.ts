@@ -52,7 +52,7 @@ function git(dir: string, ...args: string[]): string {
 function makeRepo(): { dir: string; commit: (msg: string) => string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ob-git-"));
   git(dir, "init", "-q", "-b", "main");
-  git(dir, "config", "user.email", "proto@shipit.dev");
+  git(dir, "config", "user.email", "proto@ship-it.ai");
   git(dir, "config", "user.name", "proto");
   let n = 0;
   const commit = (msg: string): string => {

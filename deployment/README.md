@@ -65,7 +65,7 @@ Self-host ShipIt on any Linux VPS with Cloudflare Tunnel plus required Zero Trus
 ## Prerequisites
 
 - A Linux VPS — Ubuntu 24.04 is what the setup script targets. Recommended sizing: 8 GB RAM minimum, 16 GB recommended (each active session runs its own container).
-- For Cloudflare: a domain on Cloudflare with **Advanced Certificate Manager** ($10/mo) if you need wildcard certs on nested subdomains (`*.shipit.example.com`). Alternatively, use a dedicated domain (e.g. `shipit.dev`) where the free plan's `*.shipit.dev` wildcard is sufficient.
+- For Cloudflare: a domain on Cloudflare with **Advanced Certificate Manager** ($10/mo) if you need wildcard certs on nested subdomains (`*.shipit.example.com`). Alternatively, use a dedicated domain (e.g. `ship-it.ai`) where the free plan's `*.ship-it.ai` wildcard is sufficient.
 - For Tailscale: access to a tailnet where you can authenticate this VPS.
 
 ## Step 1: Create server
