@@ -20,6 +20,7 @@ import { EventEmitter } from "node:events";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../index.js";
 import { GitManager } from "../../shared/git.js";
+import { deriveSessionMemorySizing } from "../session-container.js";
 import { SessionManager } from "../sessions.js";
 import { RepoStore } from "../repo-store.js";
 import {
@@ -535,16 +536,14 @@ describe("standby container pre-warming", () => {
 // Regression: warm-pool standby containers were created via
 // `containerManager.buildConfig(...)` without passing `memoryLimit` /
 // `cpuQuota` / `pidsLimit`, so they silently fell back to the manager's
-// defaults (1 GiB / 0.5 CPU / 4096 pids). A workspace declaring
-// `agent.memory: 3072` in shipit.yaml would still get a 1 GiB container
-// from the warm pool, OOMing on first turn (npm install + claude
-// competing inside the under-provisioned cgroup — see the field report
-// in docs/124-session-rescue-and-diagnostics follow-up). Fix:
-// `warmSessionForRepo` now reads shipit.yaml from the cloned workspace
-// before building the standby config.
+// compiled defaults instead of going through `resolveAgentDockerLimits`.
+// With automatic sizing (docs/229) the limits no longer come from shipit.yaml
+// — memory is host-derived — but the standby must still resolve them via
+// `resolveAgentDockerLimits` rather than the manager default, which this test
+// guards by comparing against the auto-derived sizing.
 // ---------------------------------------------------------------------------
 
-describe("standby container resources propagated from shipit.yaml", () => {
+describe("standby container resources are auto-sized", () => {
   let tmpDir: string;
   let app: FastifyInstance;
   let sessionManager: SessionManager;
@@ -574,9 +573,9 @@ describe("standby container resources propagated from shipit.yaml", () => {
 
     const credentialStore = createTestCredentialStore(tmpDir);
 
-    // Bare cache contains a shipit.yaml requesting 3 GiB / 2 CPU / 2048 pids.
-    // The helper also mirrors the cache as a local bare + sets `insteadOf`
-    // redirect so fetches stay on local I/O.
+    // Bare cache contains a shipit.yaml that still sets the removed resource
+    // fields — they must be warned-and-ignored, not honored. The helper also
+    // mirrors the cache as a local bare + sets `insteadOf` so fetches stay local.
     seedRepoCacheWithLocalBare({
       tmpDir,
       repoUrl: REPO_URL,
@@ -612,7 +611,7 @@ describe("standby container resources propagated from shipit.yaml", () => {
     } catch { /* ignore */ }
   });
 
-  it("standby container honors agent.memory/cpu/pids from shipit.yaml", async () => {
+  it("standby container is auto-sized, ignoring removed agent.memory/cpu/pids", async () => {
     await waitFor(
       () => !!repoStore.get(REPO_URL)?.warmSessionId,
       10000,
@@ -644,9 +643,12 @@ describe("standby container resources propagated from shipit.yaml", () => {
       (c) => c.labels[CONTAINER_SESSION_ID_LABEL] === standbySessionId,
     );
     expect(standbyDocker).toBeDefined();
-    expect(standbyDocker!.hostConfig.Memory).toBe(3072 * 1024 * 1024);
-    expect(standbyDocker!.hostConfig.PidsLimit).toBe(2048);
-    // cpuQuota = cpu * 100_000 → 2.0 * 100_000 = 200_000.
-    expect(standbyDocker!.hostConfig.CpuQuota).toBe(200_000);
+    // Auto-sized: memory is host-derived (not the shipit.yaml 3072), pids fixed,
+    // cpu = host cores. Compared against the live derivation so a regression to
+    // the manager's compiled default would still fail.
+    const expectedMem = deriveSessionMemorySizing().effectiveMb * 1024 * 1024;
+    expect(standbyDocker!.hostConfig.Memory).toBe(expectedMem);
+    expect(standbyDocker!.hostConfig.PidsLimit).toBe(8192);
+    expect(standbyDocker!.hostConfig.CpuQuota).toBe(Math.max(1, os.cpus().length) * 100_000);
   }, 25000);
 });

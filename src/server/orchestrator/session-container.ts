@@ -101,9 +101,9 @@ export {
 export {
   resolveAgentDockerLimits,
   readAgentConfig,
-  applyEnvCaps,
+  deriveSessionMemorySizing,
   type AgentDockerLimits,
-  type EffectiveAgentResources,
+  type SessionMemorySizing,
 } from "./container-config-builder.js";
 
 // ---------------------------------------------------------------------------

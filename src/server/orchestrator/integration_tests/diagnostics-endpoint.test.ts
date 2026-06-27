@@ -96,12 +96,13 @@ describe("GET /api/sessions/:id/diagnostics", () => {
     // No stack-start error in clean state.
     expect(body.stackStartError).toBeNull();
     // No shipit.yaml in the workspace → parsedConfig falls back to defaults
-    // (the same shape the parser returns for an empty file).
+    // (the same shape the parser returns for an empty file). Memory sizing is
+    // auto-derived from host capacity and always present.
     expect(body.parsedConfig).toMatchObject({
-      agent: { memory: 1536, cpu: 0.5, pids: 4096, install: [] },
-      effectiveAgent: { memory: 1536, cpu: 0.5, pids: 4096, dockerAccess: false },
+      agent: { install: [] },
       warnings: [],
     });
+    expect((body.parsedConfig as { sizing: { effectiveMb: number } }).sizing.effectiveMb).toBeGreaterThan(0);
   });
 
   it("surfaces the parsed shipit.yaml and migration warnings", async () => {
@@ -113,14 +114,11 @@ describe("GET /api/sessions/:id/diagnostics", () => {
       path.join(sessionDir, "shipit.yaml"),
       [
         "agent:",
-        "  memory: 3072",
-        "  cpu: 2.0",
-        "  pids: 2048",
+        "  install: npm install",
         "compose:",
         "  file: docker-compose.yml",
         "  docker-socket: true",
-        // Old-format key — should appear in `warnings` instead of overriding
-        // memory back down to a silent 1 GiB.
+        // Old-format key — should appear in `warnings`, not silently honored.
         "resources:",
         "  memory: 8192",
         "",
@@ -134,15 +132,15 @@ describe("GET /api/sessions/:id/diagnostics", () => {
     expect(res.statusCode).toBe(200);
     const body = res.json() as {
       parsedConfig: {
-        agent: { memory: number; cpu: number; pids: number; install: string[] };
+        agent: { install: string[] };
         compose?: { file: string; dockerSocket: boolean };
         warnings: string[];
         parseError?: string;
       };
     };
-    expect(body.parsedConfig.agent).toMatchObject({ memory: 3072, cpu: 2.0, pids: 2048 });
+    expect(body.parsedConfig.agent).toMatchObject({ install: ["npm install"] });
     expect(body.parsedConfig.compose).toEqual({ file: "docker-compose.yml", dockerSocket: true });
-    expect(body.parsedConfig.warnings.join("\n")).toMatch(/`resources` block has been replaced/);
+    expect(body.parsedConfig.warnings.join("\n")).toMatch(/`resources` block has been removed/);
     expect(body.parsedConfig.parseError).toBeUndefined();
   });
 

@@ -54,44 +54,29 @@ describe("parseShipitConfig", () => {
 
   // ---- agent ----
 
-  it("parses agent config with all fields", () => {
+  it("parses agent config fields", () => {
     const config = parseShipitConfig({
-      agent: { memory: 2048, cpu: 2.0, pids: 512, install: ["npm install"] },
+      agent: { install: ["npm install"] },
     });
     expect(config.agent).toEqual({
-      memory: 2048,
-      cpu: 2.0,
-      pids: 512,
       install: ["npm install"],
       depDirs: ["node_modules"],
       installInputs: null,
     });
   });
 
-  it("uses defaults for missing agent fields", () => {
+  it("warns-and-ignores removed resource fields (memory/cpu/pids — docs/229)", () => {
+    const config = parseShipitConfig({ agent: { memory: 2048, cpu: 2.0, pids: 512 } });
+    // Fields are not on AgentConfig anymore — sizing is automatic.
+    expect(config.agent).toEqual({ ...AGENT_DEFAULTS, install: [] });
+    expect(config.warnings).toContainEqual(expect.stringContaining("`agent.memory` is no longer used"));
+    expect(config.warnings).toContainEqual(expect.stringContaining("`agent.cpu` is no longer used"));
+    expect(config.warnings).toContainEqual(expect.stringContaining("`agent.pids` is no longer used"));
+  });
+
+  it("does not treat removed resource keys as generic unknown keys", () => {
     const config = parseShipitConfig({ agent: { memory: 2048 } });
-    expect(config.agent.memory).toBe(2048);
-    expect(config.agent.cpu).toBe(AGENT_DEFAULTS.cpu);
-    expect(config.agent.pids).toBe(AGENT_DEFAULTS.pids);
-    expect(config.agent.install).toEqual([]);
-  });
-
-  it("uses defaults for invalid resource values", () => {
-    const config = parseShipitConfig({ agent: { memory: "lots", cpu: -1, pids: 0 } });
-    expect(config.agent.memory).toBe(AGENT_DEFAULTS.memory);
-    expect(config.agent.cpu).toBe(AGENT_DEFAULTS.cpu);
-    expect(config.agent.pids).toBe(AGENT_DEFAULTS.pids);
-  });
-
-  it("floors fractional memory and pids", () => {
-    const config = parseShipitConfig({ agent: { memory: 2048.7, pids: 512.9 } });
-    expect(config.agent.memory).toBe(2048);
-    expect(config.agent.pids).toBe(512);
-  });
-
-  it("allows fractional cpu", () => {
-    const config = parseShipitConfig({ agent: { cpu: 1.5 } });
-    expect(config.agent.cpu).toBe(1.5);
+    expect(config.warnings).not.toContainEqual(expect.stringContaining("Unknown key `agent.memory`"));
   });
 
   it("throws for non-object agent", () => {
@@ -288,7 +273,7 @@ describe("parseShipitConfig", () => {
 
   it("warns for resources key", () => {
     const config = parseShipitConfig({ resources: { agent: { memory: 2048 } } });
-    expect(config.warnings).toContainEqual(expect.stringContaining("`resources` block has been replaced"));
+    expect(config.warnings).toContainEqual(expect.stringContaining("`resources` block has been removed"));
   });
 
   it("warns for capabilities key", () => {
@@ -322,9 +307,6 @@ describe("parseShipitConfig", () => {
     const config = parseShipitConfig({
       version: 1,
       agent: {
-        memory: 3072,
-        cpu: 2.0,
-        pids: 2048,
         install: ["npm install", "npx prisma generate"],
       },
       compose: {
@@ -334,9 +316,6 @@ describe("parseShipitConfig", () => {
     });
     expect(config.version).toBe(1);
     expect(config.agent).toEqual({
-      memory: 3072,
-      cpu: 2.0,
-      pids: 2048,
       install: ["npm install", "npx prisma generate"],
       depDirs: ["node_modules"],
       installInputs: null,
@@ -555,10 +534,9 @@ describe("resolveShipitConfig", () => {
     const dir = setup();
     fs.writeFileSync(
       path.join(dir, "shipit.yaml"),
-      "agent:\n  memory: 2048\n  install: npm install\ncompose: docker-compose.yml\n",
+      "agent:\n  install: npm install\ncompose: docker-compose.yml\n",
     );
     const config = resolveShipitConfig(dir);
-    expect(config.agent.memory).toBe(2048);
     expect(config.agent.install).toEqual(["npm install"]);
     expect(config.compose).toEqual({ file: "docker-compose.yml", dockerSocket: false });
   });
