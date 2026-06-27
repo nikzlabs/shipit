@@ -33,6 +33,110 @@ The user explicitly wants to do remote setup/debugging, including on the ShipIt 
 from the web UI. The natural ShipIt shape is: store the SSH key once, name the reachable
 host(s), and then just ask the agent in chat.
 
+## Two shapes — and the one we're actually building
+
+There are two distinct features hiding under "remote SSH," and they should not be conflated:
+
+- **SSH *from* a session (the lighter one).** A Sandbox session with a local `/workspace` that
+  can *also* `ssh host 'cmd'` for adjunct steps — deploy a build, run a remote test. The agent
+  has a local filesystem and occasionally reaches out. This is what §0–§4 below describe, and
+  it's cheap (binary + key + egress + the `ssh` capability).
+- **A *Remote session* (the target).** The session's **execution environment *is* the remote
+  host.** There is **no local filesystem**; the agent operates the box directly, the way you
+  would after `ssh`-ing in and running an agent there — except the agent, the model, and its
+  credentials **stay inside ShipIt's contained container** and only *commands* travel over SSH.
+  This is "ssh to the box and run an agent on it" done right: nothing is installed on the box,
+  no agent credentials are stored on it, and the work happens in ShipIt's chat surface instead
+  of a local terminal. **This is the shape the user wants** (confirmed in design discussion).
+
+The second is a new session **kind**, not just a capability toggle. Transparent remote execution
+is the *whole-session contract* (the agent is told "your shell is host X" once at creation), not
+a per-command decision — which is what keeps it coherent and avoids the local/remote split-brain
+that a hybrid would create. The lighter SSH-from-a-session feature is a useful stepping stone /
+lesser cousin; the mechanism sections (§1–§4) and the Security model apply to both.
+
+### Where it sits relative to ShipIt's principles
+
+A Remote session leans hard into being "the best remote-ops terminal" — it renders far less than
+a normal repo session (no PR card, no diff, the file tree is remote-backed or thin). That is in
+tension with §1–§4 ("ShipIt is the surface; render inline"), the same pill sandbox sessions
+already swallowed as "a deliberate, scoped product degradation… closer to a terminal than a
+project" (docs/211). It is nonetheless strongly aligned with **§1** (the user's own motivation is
+"I do this over a local terminal and want to do it through ShipIt") and **§5** (the agent is the
+actor operating the box). The conscious product call: *is ShipIt willing to be the best remote
+chat-driven ops surface for this mode?* — answered yes, within the bounds below.
+
+## Competitive landscape
+
+Surveyed June 2026. The axis that matters is **where the agent (and its model credentials / LLM
+egress) runs, and whether the remote box must host it.** Existing tools fall into four camps:
+
+1. **Agent installed *on* the remote box** — you SSH in and run the agent there.
+   [Warp](https://docs.warp.dev/agent-platform/cli-agents/claude-code) "Warpifies" an SSH
+   session and runs Claude Code on the remote (file tree needs Warp's SSH extension);
+   [Claude Code's Desktop app SSH hosts](https://code.claude.com/docs/en/desktop-quickstart)
+   **auto-install Claude Code on the remote machine** on first connect; the hand-rolled
+   `ssh box "claude -p …"` + `tmux` pattern is widely blogged. **Downside: the agent, its
+   credentials, and its LLM egress all live on the box** — exactly what a Remote session avoids.
+2. **Web/mobile UI that *remote-controls* a Claude session** — [Omnara](https://www.omnara.com/),
+   [Happy](https://happy.engineering/),
+   [CloudCLI / claude-code-ui](https://github.com/siteboon/claudecodeui) (8k★),
+   `claude-code-webui`. These nail the better-than-a-terminal *interface*, but the agent still
+   runs wherever it's installed (alongside its filesystem); they are remote *control*, not
+   remote *target* with containment.
+3. **Agent runs locally, executes on a remote box via an SSH tool (MCP)** — the closest
+   *mechanism* match: [tufantunc/ssh-mcp](https://github.com/tufantunc/ssh-mcp),
+   [AiondaDotCom/mcp-ssh](https://github.com/AiondaDotCom/mcp-ssh) (discovers hosts from
+   `~/.ssh/config`), "SSH Manager." No agent on the box — but desktop-bound, self-assembled, a
+   *hybrid* (the agent keeps a local FS beside the remote tool), and **zero containment / egress /
+   audit story** around it.
+4. **Agents operating a *provisioned* environment — cloud or self-hosted — not your existing
+   host.**
+   [Cursor background agents](https://www.buildfastwithai.com/blogs/cursor-remote-agents-any-device-2026)
+   and [Claude Code on the web](https://code.claude.com/docs/en/claude-code-on-the-web) spin up a
+   fresh cloud VM scoped to a repo. [Devin](https://cognition.com/blog/introducing-devin) runs in
+   its own cloud sandbox and "cannot access production databases unless you explicitly provide
+   credentials." [Coder Tasks](https://coder.com/docs/ai-coder/tasks) runs Claude Code/Goose
+   *inside Coder workspaces* on your own infra — the closest enterprise analog, but the agent
+   still lives **in** a provisioned workspace (with your repos/creds/internal network), and it
+   requires adopting Coder's whole workspace-provisioning platform. None of these operate your
+   **pre-existing, unmodified** host over SSH; they all provision the environment the agent runs
+   in.
+
+**The gap (the wedge).** No single product combines: the agent + its model credentials + its
+egress staying in a **contained box you run**, while it operates **your arbitrary existing host**
+over SSH with **nothing installed or credentialed on that host**, through a **chat web UI**,
+behind a **central egress allowlist + audit**. The nearest is "SSH-MCP + Claude Desktop," which
+the user assembles, keeps a local FS, and has no containment. **ShipIt's positioning is the
+security argument restated as product: your remote box never holds the agent, the model creds, or
+the LLM egress — it only ever sees brokered commands from a contained ShipIt session.**
+
+**Security precedents from the field** (reinforcing the Security model below): Sourcegraph **Amp**
+had an [arbitrary-command-execution-via-prompt-injection vuln](https://embracethered.com/blog/posts/2025/amp-agents-that-modify-system-configuration-and-escape/)
+— the exact "agent ingests a hostile instruction and runs it" class this feature must box;
+**Devin**'s "no prod access without explicitly provided credentials" mirrors our opt-in scoped-key
+posture; and **Cursor**'s silent-local-fallback bug is the basis for invariant #7.
+
+### Remote execution model — and why per-command vs. persistent matters for fail-closed
+
+The two popular SSH-MCP servers
+([tufantunc/ssh-mcp](https://github.com/tufantunc/ssh-mcp),
+[AiondaDotCom/mcp-ssh](https://github.com/AiondaDotCom/mcp-ssh)) are both **per-command and
+stateless** — they shell out to native `ssh`/`scp` per call, with no multiplexing, no persistent
+session, and no reconnection logic (tufantunc adds a `--timeout` + kill-hanging-process and a
+`--maxChars` command-length cap; neither does pattern allowlisting). That stateless shape **fails
+closed for free**: each command *is* an `ssh host 'cmd'` invocation, so an unreachable host makes
+`ssh` itself error — there is no notion of a "current target" that could silently revert to local.
+
+The catch: that model is *not* the transparent, live-feeling Remote session we want, and it pays
+connection setup on every command. The fix — a multiplexed `ControlMaster`/`ControlPersist`
+connection (§4's generated `~/.ssh/config`) — keeps persistence at the **transport** layer while
+each command stays a discrete `ssh` that still errors if the master is down. Critically, ssh
+itself **never** runs the command locally on a dead connection; Cursor's bug (invariant #7) was an
+**application-level** local fallback layered on top of a stateful router. So the rule is precise:
+keep per-command `ssh` semantics under a multiplexed transport, and **never** add an application
+layer that catches an ssh failure and re-runs anywhere else.
+
 ## What already exists (the ~80%)
 
 | Need | Existing subsystem | Status |
@@ -246,8 +350,21 @@ bounds *which* hosts; the rest of the boundary must be designed deliberately:
    are already in the chat transcript / tool log; the forced-command entry point (#2) should
    log on the host side too.
 
+7. **Fail closed on connection loss (Remote-session invariant).** In a Remote session, where
+   execution is transparently routed to the host, a dropped/degraded SSH connection must make
+   commands **error**, never silently fall back to running in ShipIt's local container. This is
+   not hypothetical: Cursor shipped exactly this bug — a background subagent
+   [silently fell back to local-machine execution when its SSH connection degraded](https://forum.cursor.com/t/security-background-subagent-silently-falls-back-to-local-machine-execution-when-ssh-remote-connection-degrades/160392).
+   A command the agent believes is running on the box but is actually running locally (with the
+   container's own credentials/egress) is both a correctness and a containment failure. The
+   managed connection — a multiplexed `ControlMaster`/`ControlPersist` connection set up from the
+   generated `~/.ssh/config` (§4), which also amortizes per-command setup so remote execution
+   feels live — must treat "no live connection to host X" as a hard error surfaced to the agent,
+   with an explicit, user-visible reconnect. There is no implicit local fallback.
+
 None of this blocks the feature — it shapes it. The minimal prototype may use a throwaway host
-with `accept-new` to prove the loop, but the **shipped** feature must carry items 1–5.
+with `accept-new` to prove the loop, but the **shipped** feature must carry items 1–5 (and a
+Remote session must also carry 7).
 
 ## Implementation sequencing
 
