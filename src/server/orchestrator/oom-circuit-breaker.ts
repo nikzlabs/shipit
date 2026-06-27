@@ -82,8 +82,9 @@ export interface SessionOomCircuitBreaker {
 
   /**
    * Clear all state for a session. Called when the user explicitly opts
-   * into another attempt (e.g. "Rescue session" / agent-container-restart)
-   * or bumps memory in shipit.yaml.
+   * into another attempt (e.g. "Rescue session" / agent-container-restart).
+   * Session memory is auto-sized from host capacity (docs/229); a deployment
+   * that needs more per session raises `DEFAULT_SESSION_MEMORY_MB`.
    */
   reset(sessionId: string): void;
 

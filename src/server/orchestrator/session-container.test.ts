@@ -1290,16 +1290,15 @@ describe("readAgentConfig (W4a)", () => {
     const config = readAgentConfig(tmpDir);
 
     // Fallback is preserved — a broken config must not block the session.
-    expect(config.agent.memory).toBe(1536);
-    expect(config.agent.cpu).toBe(0.5);
-    expect(config.agent.pids).toBe(4096);
+    expect(config.agent.install).toEqual([]);
+    expect(config.agent.depDirs).toEqual(["node_modules"]);
 
     // ...but it is NOT silent: the catch logs the workspace dir + the cause
     // so a default-sized container never appears with zero trace.
     expect(errSpy).toHaveBeenCalledTimes(1);
     const logged = String(errSpy.mock.calls[0]?.[0] ?? "");
     expect(logged).toContain(tmpDir);
-    expect(logged).toMatch(/default agent resources/i);
+    expect(logged).toMatch(/default agent config/i);
 
     errSpy.mockRestore();
   });
@@ -1309,7 +1308,7 @@ describe("readAgentConfig (W4a)", () => {
 
     const config = readAgentConfig(tmpDir); // no shipit.yaml written
 
-    expect(config.agent.memory).toBe(1536);
+    expect(config.agent.install).toEqual([]);
     // Absent file resolves to defaults *without* hitting the catch — only a
     // genuinely broken file is loud.
     expect(errSpy).not.toHaveBeenCalled();
@@ -1317,13 +1316,15 @@ describe("readAgentConfig (W4a)", () => {
     errSpy.mockRestore();
   });
 
-  it("returns the declared values for a valid new-format shipit.yaml", () => {
+  it("parses a valid new-format shipit.yaml and ignores removed resource fields", () => {
     fs.writeFileSync(
       path.join(tmpDir, "shipit.yaml"),
-      "agent:\n  memory: 3072\n  cpu: 2\n  pids: 2048\n",
+      "agent:\n  install: npm install\n  memory: 3072\n",
     );
     const config = readAgentConfig(tmpDir);
-    expect(config.agent).toMatchObject({ memory: 3072, cpu: 2, pids: 2048 });
+    expect(config.agent.install).toEqual(["npm install"]);
+    // Removed resource fields are warned-and-ignored, not surfaced on AgentConfig.
+    expect(config.warnings.join("\n")).toMatch(/`agent.memory` is no longer used/);
   });
 });
 

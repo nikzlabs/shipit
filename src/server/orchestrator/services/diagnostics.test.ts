@@ -223,42 +223,41 @@ describe("getSessionDiagnostics", () => {
       expect(result.parsedConfig).toBeNull();
     });
 
-    it("returns the parsed agent block from the new schema", async () => {
-      const dir = workspace("agent:\n  memory: 3072\n  cpu: 2.0\n  pids: 2048\ncompose: docker-compose.yml\n");
+    it("returns the parsed agent block and auto-derived sizing", async () => {
+      const dir = workspace("agent:\n  install: npm install\ncompose: docker-compose.yml\n");
       const result = await diagnose(dir);
-      expect(result.parsedConfig?.agent).toMatchObject({ memory: 3072, cpu: 2.0, pids: 2048 });
+      expect(result.parsedConfig?.agent).toMatchObject({ install: ["npm install"] });
       expect(result.parsedConfig?.compose).toEqual({ file: "docker-compose.yml", dockerSocket: false });
       expect(result.parsedConfig?.warnings).toEqual([]);
       expect(result.parsedConfig?.parseError).toBeUndefined();
-      // No env cap exceeded → effectiveAgent mirrors declared values.
-      expect(result.parsedConfig?.effectiveAgent).toMatchObject({ memory: 3072, cpu: 2.0, pids: 2048 });
+      // Memory sizing is host-derived and always present.
+      expect(result.parsedConfig?.sizing.effectiveMb).toBeGreaterThan(0);
+      expect(result.parsedConfig?.sizing.baselineSource).toBe("auto");
       // Breaker dep wasn't injected → payload reports null.
       expect(result.oomBreaker).toBeNull();
     });
 
-    it("surfaces warnings for legacy `resources:` keys instead of silently using their values", async () => {
-      // Regression: the old parser silently dropped `resources.memory: 3072`
-      // to the library default and the container OOM'd. Now the user sees
-      // both the warning AND the actual default the container booted on.
-      const dir = workspace("resources:\n  memory: 3072\n  cpu: 2.0\n  pids: 2048\n");
+    it("surfaces warnings for legacy `resources:` keys", async () => {
+      const dir = workspace("resources:\n  memory: 3072\n");
       const result = await diagnose(dir);
-      expect(result.parsedConfig?.agent.memory).toBe(1536); // library default
-      expect(result.parsedConfig?.warnings.join("\n")).toMatch(/`resources` block has been replaced/);
+      expect(result.parsedConfig?.warnings.join("\n")).toMatch(/`resources` block has been removed/);
     });
 
-    it("surfaces env-cap clamp warnings alongside the effective value", async () => {
-      // Sibling regression: even when shipit.yaml is new-schema and parses
-      // cleanly, a low MAX_SESSION_MEMORY_MB silently shrinks the declared
-      // memory. The diagnostics panel must show both the declared and the
-      // post-clamp value so the operator can spot the cap.
+    it("warns-and-ignores a removed `agent.memory` field (docs/229)", async () => {
+      const dir = workspace("agent:\n  memory: 3072\n");
+      const result = await diagnose(dir);
+      expect(result.parsedConfig?.warnings.join("\n")).toMatch(/`agent.memory` is no longer used/);
+    });
+
+    it("reflects MAX_SESSION_MEMORY_MB in the derived sizing", async () => {
       const prevCap = process.env.MAX_SESSION_MEMORY_MB;
       process.env.MAX_SESSION_MEMORY_MB = "1024";
       try {
-        const dir = workspace("agent:\n  memory: 3072\n");
+        const dir = workspace("agent:\n  install: npm install\n");
         const result = await diagnose(dir);
-        expect(result.parsedConfig?.agent.memory).toBe(3072);
-        expect(result.parsedConfig?.effectiveAgent.memory).toBe(1024);
-        expect(result.parsedConfig?.warnings.join("\n")).toMatch(/MAX_SESSION_MEMORY_MB/);
+        expect(result.parsedConfig?.sizing.effectiveMb).toBe(1024);
+        expect(result.parsedConfig?.sizing.capApplied).toBe(true);
+        expect(result.parsedConfig?.sizing.capSource).toBe("MAX_SESSION_MEMORY_MB");
       } finally {
         if (prevCap === undefined) delete process.env.MAX_SESSION_MEMORY_MB;
         else process.env.MAX_SESSION_MEMORY_MB = prevCap;
@@ -333,11 +332,13 @@ describe("getSessionDiagnostics", () => {
 
       const health = result.health as Extract<typeof result.health, { containerState: string }>;
       // Both values are present and distinct — the panel renders them side
-      // by side so the mismatch is visible without kernel-log inspection.
+      // by side so the mismatch is visible without kernel-log inspection. The
+      // booted limit (1 GiB) is frozen at create; the sizing is derived live
+      // and never below BOOT_MIN (1536 MiB), so they always differ here.
       expect(health.bootedLimits?.memoryLimit).toBe(1024 * 1024 * 1024); // booted
-      expect(result.parsedConfig?.effectiveAgent.memory).toBe(3072);     // parsed (MiB)
+      expect(result.parsedConfig?.sizing.effectiveMb).toBeGreaterThanOrEqual(1536);
       expect(health.bootedLimits!.memoryLimit / 1024 / 1024).not.toBe(
-        result.parsedConfig?.effectiveAgent.memory,
+        result.parsedConfig?.sizing.effectiveMb,
       );
     });
 

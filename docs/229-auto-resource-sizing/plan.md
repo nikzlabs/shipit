@@ -36,8 +36,9 @@ Two structural problems follow:
    statistical multiplexing — idle sessions cost nothing; the host is only at risk if many sessions peak
    *simultaneously*. One ceiling, derived once; no live rebalancing as sessions come and go.
 2. **Memory and CPU are not symmetric.** Memory is incompressible — overshoot invokes the OOM killer, so
-   it needs a firm limit. CPU is compressible — contention slows everyone down, nothing crashes. So
-   memory is limited firmly; CPU gets no quota by default.
+   it needs a firm derived limit. CPU is compressible — contention slows everyone down, nothing crashes —
+   so the quota is set to the host core count (effectively unlimited for a single session; the kernel
+   scheduler time-shares under contention), never a per-repo knob.
 
 ## Design
 
@@ -62,12 +63,12 @@ and the one exception to "never exceed usable": on a host so small that even `us
 session still gets `BOOT_MIN` (it cannot function below it) and the operator is warned that the host is
 below the supported minimum and therefore oversubscribed.
 
-- **CPU:** no `CpuQuota` by default. The container path today *always* writes a numeric `CpuQuota` +
-  `CpuPeriod` into Docker `HostConfig` (`container-lifecycle.ts`, fed by `defaultCpuQuota` /
-  `DEFAULT_CPU_QUOTA` in `session-container.ts`). Dropping the quota means making `cpuQuota` optional and
-  **omitting** both `CpuQuota` and `CpuPeriod` from `HostConfig` when it is unset — leaving the field
-  `undefined`, not `0` (`CpuQuota: 0` is rejected by Docker). Optionally a soft `CpuShares` weight for
-  fairness instead. Cores are scheduler-shared; an over-busy session slows itself, not the host.
+- **CPU:** `cpuQuota` = host core count × the 100 ms CFS period — effectively unlimited for a single
+  session, while still bounding any one container to the host's cores. This keeps `cpuQuota` a plain
+  number through the existing container plumbing (`bootedLimits`, `resourceLimits`, the child-container
+  sanitizer, `buildContainerConfig`, the `HostConfig` write) rather than threading an optional
+  `cpuQuota?: undefined` through all of it just to omit the field. Cores are scheduler-shared; an
+  over-busy session slows itself, not the host.
 - **PIDs:** fixed 8192 fork-bomb guard. A safety rail, not a capacity-derived budget.
 
 `reserve` is the orchestrator + OS working set — not reclaimable slack. It is never shaved to fit more
@@ -139,8 +140,6 @@ container; for the VM deployment it resolves straight to `os.totalmem()`.
 
 - `src/server/orchestrator/container-config-builder.ts` — auto-derivation, env overrides, host-capacity
   reader. Replaces `hostMemoryCapMb` (75%-of-host single-session cap) and the fixed-default flow.
-- `src/server/orchestrator/container-lifecycle.ts` / `session-container.ts` — make `cpuQuota` optional so
-  `HostConfig` omits `CpuQuota` / `CpuPeriod` by default (no hard CPU quota).
 - `src/server/shared/shipit-config.ts` — remove `agent.memory` / `agent.cpu` / `agent.pids` from
   `AgentConfig` and the schema; route them through the warn-and-ignore deprecation path. Keep
   `AGENT_DEFAULTS.memory` only as `BOOT_MIN`.

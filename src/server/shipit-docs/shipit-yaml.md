@@ -13,9 +13,6 @@ preview panel shows an onboarding UI.
 version: 1
 
 agent:
-  memory: 2048
-  cpu: 1.0
-  pids: 4096
   install:
     - npm install
     - npx prisma generate
@@ -40,9 +37,6 @@ Configures the agent container (runs the AI coding agent — Claude Code or Code
 
 ```yaml
 agent:
-  memory: 2048        # Memory in MB (default if omitted: 1536)
-  cpu: 1.0            # CPU cores as float (default if omitted: 0.5)
-  pids: 4096          # Max processes (default if omitted: 4096)
   install:            # Install commands, run sequentially
     - npm install
     - npx prisma generate
@@ -55,23 +49,26 @@ agent:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `memory` | integer | 1536 | Memory limit in MB |
-| `cpu` | float | 0.5 | CPU cores |
-| `pids` | integer | 4096 | Max processes |
 | `install` | string or string[] | none | Install commands, run sequentially |
 | `dep-dirs` | string or string[] | `[node_modules]` | Dependency directories eligible for the overlay store |
 | `install-inputs` | string or string[] | auto (from `install`) | Dependency input files whose content keys the install-skip (see below) |
 
-A declared resource value is honored up to a deployment-level ceiling. By
-default that ceiling tracks the host: memory is capped at ~75% of total host
-RAM (never below the 1536 MB library default), CPU at the host core count, and
-processes at a generous fork-bomb guard — so a session gets what it declares as
-long as the host can back it, while one runaway session still can't exhaust the
-box. An operator can override any ceiling with the `MAX_SESSION_MEMORY_MB`,
-`MAX_SESSION_CPU`, and `MAX_SESSION_PIDS` env vars (e.g. to enforce stricter
-per-session limits). When a declaration exceeds the active ceiling it is clamped
-and the reason is surfaced in the session diagnostics panel. Invalid or negative
-values fall back to defaults.
+#### Container sizing is automatic
+
+You do **not** configure container memory, CPU, or processes. Session memory is
+sized automatically from host capacity: a session gets a generous host-derived
+ceiling (a Docker memory limit is a ceiling, not a reservation, so idle sessions
+cost nothing), CPU is left unthrottled (the host scheduler shares cores under
+contention), and processes carry a fixed fork-bomb guard.
+
+The old `agent.memory` / `agent.cpu` / `agent.pids` fields are **removed**. A
+shipit.yaml that still sets them is accepted but the fields are ignored with a
+warning in the session diagnostics panel.
+
+Operators can override the automatic memory sizing with two optional
+deployment-level env vars: `DEFAULT_SESSION_MEMORY_MB` (the per-session
+baseline) and `MAX_SESSION_MEMORY_MB` (a hard ceiling). When neither is set,
+sizing is fully automatic.
 
 #### Install behavior
 
@@ -256,9 +253,10 @@ If you have a shipit.yaml with the old format (`preview`, `resources`,
 
 | Old | New |
 |-----|-----|
-| `resources.agent.memory` / `resources.memory` | `agent.memory` |
-| `resources.agent.cpu` | `agent.cpu` |
-| `resources.agent.pids` | `agent.pids` |
+| `resources.agent.memory` / `resources.memory` | _removed — sizing is automatic_ |
+| `resources.agent.cpu` | _removed — sizing is automatic_ |
+| `resources.agent.pids` | _removed — sizing is automatic_ |
+| `agent.memory` / `agent.cpu` / `agent.pids` | _removed — sizing is automatic_ |
 | `install: npm install` (top-level) | `agent.install: npm install` |
 | `capabilities.docker: true` | `compose.docker-socket: true` |
 | `preview.command` / `preview.html` | Compose `command` / static file service |

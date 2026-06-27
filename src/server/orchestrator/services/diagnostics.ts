@@ -17,7 +17,7 @@
  */
 
 import type { SessionContainerManager } from "../session-container.js";
-import { applyEnvCaps, type EffectiveAgentResources } from "../session-container.js";
+import { deriveSessionMemorySizing, type SessionMemorySizing } from "../session-container.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
 import type { ServiceManager, ManagedService } from "../service-manager.js";
 import type { LogRingEntry } from "../../shared/types.js";
@@ -66,14 +66,12 @@ export interface RunnerDiagnostic {
 /**
  * Snapshot of how the orchestrator parsed the session's `shipit.yaml` — the
  * agent block, compose block, schema version, and any warnings (e.g. for
- * legacy keys like `resources:` / `capabilities:` that no longer set
- * values). When the file is malformed, `parseError` carries the message
- * and the agent fields reflect the library defaults the container actually
- * booted on.
+ * legacy keys like `resources:` / `capabilities:`, or the removed
+ * `agent.memory` / `agent.cpu` / `agent.pids` resource fields). When the file
+ * is malformed, `parseError` carries the message.
  *
- * Surfaced in `SessionDiagnosticsPanel` so a misconfigured yaml — e.g. an
- * old-format file that silently drops memory to 1 GiB — is visible at a
- * glance rather than only manifesting later as an `npm install` OOM kill.
+ * Surfaced in `SessionDiagnosticsPanel` alongside `sizing` so the operator can
+ * see both how the yaml parsed and what memory the session was auto-sized to.
  */
 export interface ParsedShipitConfig {
   /** The values as written in shipit.yaml (after parsing). */
@@ -81,20 +79,19 @@ export interface ParsedShipitConfig {
   compose?: ComposeConfig;
   version?: number;
   /**
-   * Migration warnings from the parser (legacy keys like `resources:`)
-   * + clamp warnings from `applyEnvCaps` (`MAX_SESSION_MEMORY_MB`, etc.).
-   * Both kinds are user-visible problems with the same root: declared
-   * memory not matching the value the container actually booted on.
+   * Migration warnings from the parser — legacy keys (`resources:`) and the
+   * removed `agent.memory` / `agent.cpu` / `agent.pids` resource fields, which
+   * are warned-and-ignored now that sizing is automatic (docs/229).
    */
   warnings: string[];
   /** YAML parse error message, if shipit.yaml is malformed. */
   parseError?: string;
   /**
-   * What the container will actually boot with — declared values clamped
-   * by env caps. Diverges from `agent` when an env cap is smaller than
-   * the declared value; the matching `warnings` entry explains why.
+   * The automatic memory sizing the container booted with — host RAM, reserve,
+   * usable, the derived per-session ceiling, and any deployment env override
+   * (docs/229). Independent of `agent` (the repo no longer sets memory).
    */
-  effectiveAgent: EffectiveAgentResources;
+  sizing: SessionMemorySizing;
 }
 
 export interface SessionDiagnostics {
@@ -224,34 +221,29 @@ export async function getSessionDiagnostics(
  * always succeed so the user can actually see why their config is broken.
  */
 function readParsedConfig(workspaceDir: string): ParsedShipitConfig {
+  // Memory sizing is derived from host capacity, independent of the workspace
+  // config, so it's computed the same way whether or not the yaml parses.
+  const sizing = deriveSessionMemorySizing();
   try {
     const cfg = resolveShipitConfig(workspaceDir);
-    const { effective, warnings: clampWarnings } = applyEnvCaps(cfg);
     return {
       agent: cfg.agent,
       compose: cfg.compose,
       version: cfg.version,
-      warnings: [...cfg.warnings, ...clampWarnings],
-      effectiveAgent: effective,
+      warnings: cfg.warnings,
+      sizing,
     };
   } catch (err) {
-    // Capture the error message but still return a usable shape — the
-    // panel can render `parseError` alongside the (default) values the
-    // container actually booted on.
+    // Capture the error message but still return a usable shape — the panel
+    // can render `parseError` alongside the auto-derived sizing.
     const message = err instanceof ShipitConfigError || err instanceof Error
       ? err.message
       : String(err);
-    const defaultAgent = { ...AGENT_DEFAULTS, install: [] };
     return {
-      agent: defaultAgent,
+      agent: { ...AGENT_DEFAULTS, install: [] },
       warnings: [],
       parseError: message,
-      effectiveAgent: {
-        memory: defaultAgent.memory,
-        cpu: defaultAgent.cpu,
-        pids: defaultAgent.pids,
-        dockerAccess: false,
-      },
+      sizing,
     };
   }
 }
