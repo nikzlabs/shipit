@@ -128,6 +128,9 @@ too slow — fall back to a cloud device farm (below).
 services:
   emulator:
     image: budtmo/docker-android:emulator_14.0   # or an AOSP emulator-webrtc image
+    environment:
+      - WEB_VNC=true                       # REQUIRED — enables the noVNC web UI on 6080
+      - EMULATOR_DEVICE=Samsung Galaxy S10 # device profile
     devices: ["/dev/kvm:/dev/kvm"] # hardware accel (the platform allowlists exactly this mapping)
     ports: ["6080:6080"]           # the emulator's web UI — rendered in the preview pane
     expose: ["5555"]               # adb, reachable on the Compose network by service name

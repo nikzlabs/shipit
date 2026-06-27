@@ -50,5 +50,7 @@ phases are future work (the session brief said do not commit to a heavy implemen
 ### Phases 4–5 (future work — not this session)
 
 - [ ] Phase 4: agent `adb` debug/drive loop (logcat + tap/screenshot/snapshot triad, optional Maestro) + interactive preview via `x-shipit-preview`
+  - [x] **User preview root-cause fixed:** the shipped recipe never started the noVNC web UI — `budtmo` needs `WEB_VNC=true` (the boot test's `vnc_web` crash). Added `WEB_VNC=true` + `EMULATOR_DEVICE` to the recipe in `android.md`/`compose.md`/`plan.md`, and confirmed the preview proxy already forwards WebSocket upgrades generically (`preview-proxy.ts`) so noVNC streams through `x-shipit-preview`. Added the emulator as a **manual** dogfood service in the repo's `docker-compose.yml`.
+  - [ ] **Host verification (operator):** start the manual `emulator` service on a KVM host and confirm port 6080 serves noVNC and renders in the preview pane.
 - [ ] Phase 5: Firebase Test Lab / GMD-on-KVM for instrumented tests; results as inline PR artifacts
 - [ ] Persistent SDK overlay so on-demand `sdkmanager` installs survive a container restart

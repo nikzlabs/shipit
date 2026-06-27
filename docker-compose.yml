@@ -154,3 +154,35 @@ services:
       - { name: ANTHROPIC_API_KEY }
       - { name: ANTHROPIC_AUTH_TOKEN }
       - { name: GITHUB_TOKEN }
+
+  # Android emulator preview — dogfoods docs/213's interactive-preview tier on
+  # the ShipIt repo itself (we ship an `android/` app, so this is a real target).
+  # Marked `manual` like `dev`: it's heavy (~2–4 GiB + a booting Android OS) and
+  # needs host KVM, so it boots only when the user explicitly starts it, never on
+  # every session.
+  #
+  # Once started, the outer preview proxy routes `<sessionId>--6080.localhost` to
+  # the container's noVNC web UI and renders it in the preview pane. The agent
+  # reaches adb on the Compose network by service DNS: `adb connect emulator:5555`.
+  #
+  # Requires `/dev/kvm` on the outer host (verify with `kvm-ok`) and that the
+  # deployment hasn't disabled the device passthrough (`SESSION_ALLOW_DEV_KVM=0`).
+  # `/dev/kvm:/dev/kvm` is the only `devices:` mapping ShipIt's compose generator
+  # permits. No KVM → use a cloud device farm instead (the emulator is too slow).
+  emulator:
+    image: budtmo/docker-android:emulator_14.0
+    environment:
+      # REQUIRED — without WEB_VNC the image boots the emulator (adb works) but
+      # never starts the noVNC web server, so the preview pane stays blank.
+      - WEB_VNC=true
+      - EMULATOR_DEVICE=Samsung Galaxy S10
+    devices:
+      - "/dev/kvm:/dev/kvm"
+    ports:
+      # ports[0] is preview metadata — the container port x-shipit-preview renders
+      # (the noVNC web UI). Host bindings are stripped; routing is via the proxy.
+      - "6080:6080"
+    expose:
+      # adb, reachable on the Compose network by service name (not host-published).
+      - "5555"
+    x-shipit-preview: manual
