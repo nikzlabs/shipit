@@ -21,10 +21,6 @@ debugging. The user describes intent in chat ("restart the service", "tail the l
 it's 502-ing"); the agent operates the host; the output renders inline. It pulls a workflow that
 currently lives outside ShipIt back onto the surface.
 
-> **Scope note.** This doc supersedes the earlier "SSH *from* a session" framing (a Sandbox with a
-> local workspace that could *also* `ssh host 'cmd'`). That lighter shape is at most a lesser
-> cousin; the feature we are designing is the Remote session — the host *is* the workspace.
-
 ## Motivation
 
 Today the only way to drive a remote host from ShipIt is to leave it — a local terminal, `ssh` by
