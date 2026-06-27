@@ -42,11 +42,10 @@
 
 ## Guardrails (must hold)
 
-- [x] Resource limits never derived from a stale `shipit.yaml` — skipping the
-      fetch leaves HEAD untouched, so the standby's booted limits stay
-      consistent with the clone (no HEAD move ⇒ no re-provision needed). The
-      slow-path's `reprovisionStandbyIfLimitsChanged` still fires if a real
-      fetch ever does move HEAD.
+- [x] Resource limits are deployment-owned, not derived from `shipit.yaml` —
+      skipping the fetch leaves HEAD untouched, but
+      `reprovisionStandbyIfLimitsChanged` still compares the standby's booted
+      limits with current deployment settings on every claim path.
 - [x] Session clone HEAD is never fast-forwarded after branch cut — the
       pre-fetcher touches the **bare cache only**, never a live session clone;
       and the claim skip avoids the post-cut reset entirely.

@@ -95,7 +95,7 @@ export {
   type HealthMonitorState,
 } from "./container-health.js";
 
-// Agent resource-limit resolution (shipit.yaml → Docker units) lives in
+// Agent resource-limit resolution (deployment config → Docker units) lives in
 // container-config-builder.ts; re-exported here so existing import sites
 // (diagnostics, claim-session, app-lifecycle, index) keep their import path.
 export {
@@ -210,12 +210,11 @@ export interface SessionContainer {
    * `dockerAccess` — unlike `resourceLimits`, which is the child-container
    * budget set only for docker-access sessions.
    *
-   * The claim-time refresh compares this against
-   * `resolveAgentDockerLimits()` of the now-current workspace: when a
-   * warm→claim HEAD jump changed the declared `agent.memory`, the standby
-   * container booted with the wrong (stale) limit and must be re-provisioned
-   * — container memory is immutable at runtime. Absent on rediscovered /
-   * re-adopted containers, where the booted limits genuinely aren't known.
+   * The claim-time refresh compares this against `resolveAgentDockerLimits()`
+   * for the current deployment settings. If those changed after a standby
+   * booted, the standby must be re-provisioned because container memory is
+   * immutable at runtime. Absent on rediscovered / re-adopted containers, where
+   * the booted limits genuinely aren't known.
    */
   bootedLimits?: { memoryLimit: number; cpuQuota: number; pidsLimit: number };
   /**
@@ -1045,8 +1044,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    * Build a ContainerConfig with defaults applied. Low-level convenience for
    * callers that already know the limits they want. Most callers should use
    * `buildConfigForWorkspace` instead — it reads the workspace's shipit.yaml
-   * and applies the declared `agent.memory/cpu/pids` and `capabilities.docker`,
-   * which is the only way to honor the user's resource declarations.
+   * for repo-scoped capabilities and applies deployment-owned session limits.
    */
   buildConfig(opts: {
     sessionId: string;
@@ -1075,16 +1073,13 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   }
 
   /**
-   * Build a ContainerConfig from a workspace directory. Reads the workspace's
-   * shipit.yaml via `resolveAgentDockerLimits` and applies the declared agent
-   * resources (memory/cpu/pids) and compose.docker-socket capability —
-   * this is the only container-creation entry point that honors
-   * user-declared limits.
+   * Build a ContainerConfig from a workspace directory. Reads deployment-owned
+   * session limits via `resolveAgentDockerLimits` and reads the workspace's
+   * shipit.yaml for compose.docker-socket capability.
    *
-   * All real container creation flows (runner-factory fresh + standby
-   * fallback + warm-pool standby) must go through here so user-declared
-   * resources are propagated consistently. See `resolveAgentDockerLimits`
-   * for the underlying shipit.yaml → Docker-units translation.
+   * All real container creation flows (runner-factory fresh + standby fallback
+   * + warm-pool standby) must go through here so deployment limits and
+   * workspace capabilities are propagated consistently.
    */
   buildConfigForWorkspace(opts: {
     sessionId: string;

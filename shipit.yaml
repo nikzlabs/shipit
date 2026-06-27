@@ -1,12 +1,4 @@
 agent:
-  # 6 GiB absorbs spike load when lint/typecheck run alongside the agent and
-  # dev server. Peak RSS of `npm run lint` is ~2.85 GiB (full type-aware run
-  # across all 697 TS files); a concurrent `npm run typecheck` adds another
-  # whole-project TS program, and at 4 GiB the combined spike still risked
-  # OOM-killing one of them mid-run. The extra 2 GiB gives that headroom.
-  memory: 6144
-  cpu: 2.0
-  pids: 4096
   # Keep this as a bare package-manager command: the session worker tunes a
   # bare `npm install` with `--prefer-offline --no-audit --no-fund` so it lands
   # fast on the warm download cache (/dep-cache). Shell wrappers bypass that

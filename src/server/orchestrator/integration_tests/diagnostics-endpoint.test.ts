@@ -119,8 +119,8 @@ describe("GET /api/sessions/:id/diagnostics", () => {
         "compose:",
         "  file: docker-compose.yml",
         "  docker-socket: true",
-        // Old-format key — should appear in `warnings` instead of overriding
-        // memory back down to a silent 1 GiB.
+        // Old-format key — should appear in `warnings` instead of affecting
+        // deployment-owned session limits.
         "resources:",
         "  memory: 8192",
         "",
@@ -140,9 +140,10 @@ describe("GET /api/sessions/:id/diagnostics", () => {
         parseError?: string;
       };
     };
-    expect(body.parsedConfig.agent).toMatchObject({ memory: 3072, cpu: 2.0, pids: 2048 });
+    expect(body.parsedConfig.agent).toMatchObject({ memory: 1536, cpu: 0.5, pids: 4096 });
     expect(body.parsedConfig.compose).toEqual({ file: "docker-compose.yml", dockerSocket: true });
-    expect(body.parsedConfig.warnings.join("\n")).toMatch(/`resources` block has been replaced/);
+    expect(body.parsedConfig.warnings.join("\n")).toMatch(/`resources` block has been removed/);
+    expect(body.parsedConfig.warnings.join("\n")).toMatch(/agent\.memory.*deprecated and ignored/);
     expect(body.parsedConfig.parseError).toBeUndefined();
   });
 

@@ -1,4 +1,5 @@
 ---
+issue: https://linear.app/shipit-ai/issue/SHI-216
 description: Eliminate the synchronous claim-time git fetch (~650ms, ~95% of claim latency) by keeping repos pre-fetched in the background and skipping the fetch on the claim path.
 ---
 
@@ -70,11 +71,12 @@ the slightly-stale clone and let the fetch catch up concurrently.
 
 ### Guardrails
 
-- **Resource limits must not be derived from a stale `shipit.yaml`.** This is
-  the one thing that genuinely can't be wrong — a container booted with the old
-  `agent.memory` then OOMs (the W2 / `reprovisionStandbyIfLimitsChanged`
-  concern). If a deferred fetch moves HEAD and the limits changed, re-provision
-  the standby as today; until then the existing limits stand.
+- **Resource limits must not be coupled to repository config.** Session
+  container memory/CPU/PID limits are deployment-owned (`MAX_SESSION_*` env
+  vars), not `shipit.yaml` fields. A standby may still go stale when those
+  deployment limits change after it booted, so `reprovisionStandbyIfLimitsChanged`
+  now compares booted limits against the current deployment settings even when
+  claim skips the fetch or HEAD does not move.
 - **The session clone is never fast-forwarded after its branch is cut.** A
   session is just a normal feature branch cut from a snapshot of `main`. Once
   cut, it's expected to diverge — that's ordinary multi-change workflow, and
@@ -119,7 +121,8 @@ The two parts shipped together:
 `rollback` reset. Running it fire-and-forget would race the agent's first edits
 and could blow them away — violating "never fast-forward a live clone after
 start." Skipping leaves HEAD untouched, which also keeps the standby's booted
-resource limits consistent with the clone (no HEAD move ⇒ no re-provision).
+resource limits consistent with the deployment settings; a limit drift still
+triggers re-provision even when HEAD does not move.
 
 **Why bare-cache freshness gates the warm path too:** a warm clone is cut at
 warm time from a real-remote fetch, and every claim re-warms (cutting a fresh

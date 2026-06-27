@@ -1,7 +1,7 @@
 # shipit.yaml Reference
 
 Place `shipit.yaml` at the workspace root (`/workspace/shipit.yaml`) to
-configure the agent container, install commands, and compose file path.
+configure agent setup, install commands, and the compose file path.
 
 If no `shipit.yaml` exists, ShipIt auto-detects `docker-compose.yml` or
 `compose.yml` at the workspace root. If no compose file is found, the
@@ -13,9 +13,6 @@ preview panel shows an onboarding UI.
 version: 1
 
 agent:
-  memory: 2048
-  cpu: 1.0
-  pids: 4096
   install:
     - npm install
     - npx prisma generate
@@ -36,13 +33,10 @@ against that version's schema. When absent, the latest version is assumed.
 
 ### `agent` (optional)
 
-Configures the agent container (runs the AI coding agent — Claude Code or Codex, depending on the session's selected backend).
+Configures setup for the agent container (runs the AI coding agent — Claude Code or Codex, depending on the session's selected backend).
 
 ```yaml
 agent:
-  memory: 2048        # Memory in MB (default if omitted: 1536)
-  cpu: 1.0            # CPU cores as float (default if omitted: 0.5)
-  pids: 4096          # Max processes (default if omitted: 4096)
   install:            # Install commands, run sequentially
     - npm install
     - npx prisma generate
@@ -55,23 +49,19 @@ agent:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `memory` | integer | 1536 | Memory limit in MB |
-| `cpu` | float | 0.5 | CPU cores |
-| `pids` | integer | 4096 | Max processes |
 | `install` | string or string[] | none | Install commands, run sequentially |
 | `dep-dirs` | string or string[] | `[node_modules]` | Dependency directories eligible for the overlay store |
 | `install-inputs` | string or string[] | auto (from `install`) | Dependency input files whose content keys the install-skip (see below) |
 
-A declared resource value is honored up to a deployment-level ceiling. By
-default that ceiling tracks the host: memory is capped at ~75% of total host
-RAM (never below the 1536 MB library default), CPU at the host core count, and
-processes at a generous fork-bomb guard — so a session gets what it declares as
-long as the host can back it, while one runaway session still can't exhaust the
-box. An operator can override any ceiling with the `MAX_SESSION_MEMORY_MB`,
-`MAX_SESSION_CPU`, and `MAX_SESSION_PIDS` env vars (e.g. to enforce stricter
-per-session limits). When a declaration exceeds the active ceiling it is clamped
-and the reason is surfaced in the session diagnostics panel. Invalid or negative
-values fall back to defaults.
+Agent container memory, CPU, and PID limits are deployment settings, not
+repository settings. The orchestrator reads `MAX_SESSION_MEMORY_MB`,
+`MAX_SESSION_CPU`, and `MAX_SESSION_PIDS` from the ShipIt deployment and applies
+those values to every session container. When unset, ShipIt uses conservative
+defaults: 1536 MB memory, 0.5 CPU, and 4096 PIDs. Larger deployments can raise
+these values without changing any repository.
+
+Deprecated repo keys `agent.memory`, `agent.cpu`, and `agent.pids` are ignored
+and surfaced as warnings in session diagnostics.
 
 #### Install behavior
 
@@ -242,7 +232,8 @@ committed.
 - Editing `shipit.yaml` or the compose file triggers stack reconciliation
   (regenerate override, `docker compose up -d`).
 - Changes to lockfiles are debounced (30s cooldown) to avoid install loops.
-- Resource changes take effect on the next session container creation (not live).
+- Deployment resource changes take effect on the next session container creation
+  (not live).
 
 ## Services
 
@@ -256,9 +247,9 @@ If you have a shipit.yaml with the old format (`preview`, `resources`,
 
 | Old | New |
 |-----|-----|
-| `resources.agent.memory` / `resources.memory` | `agent.memory` |
-| `resources.agent.cpu` | `agent.cpu` |
-| `resources.agent.pids` | `agent.pids` |
+| `resources.agent.memory` / `resources.memory` | Deployment env `MAX_SESSION_MEMORY_MB` |
+| `resources.agent.cpu` | Deployment env `MAX_SESSION_CPU` |
+| `resources.agent.pids` | Deployment env `MAX_SESSION_PIDS` |
 | `install: npm install` (top-level) | `agent.install: npm install` |
 | `capabilities.docker: true` | `compose.docker-socket: true` |
 | `preview.command` / `preview.html` | Compose `command` / static file service |

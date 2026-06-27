@@ -81,18 +81,15 @@ export interface ParsedShipitConfig {
   compose?: ComposeConfig;
   version?: number;
   /**
-   * Migration warnings from the parser (legacy keys like `resources:`)
-   * + clamp warnings from `applyEnvCaps` (`MAX_SESSION_MEMORY_MB`, etc.).
-   * Both kinds are user-visible problems with the same root: declared
-   * memory not matching the value the container actually booted on.
+   * Migration warnings from the parser (legacy keys like `resources:` and
+   * deprecated repo resource keys). Resource sizing is deployment-owned.
    */
   warnings: string[];
   /** YAML parse error message, if shipit.yaml is malformed. */
   parseError?: string;
   /**
-   * What the container will actually boot with — declared values clamped
-   * by env caps. Diverges from `agent` when an env cap is smaller than
-   * the declared value; the matching `warnings` entry explains why.
+   * What the container will actually boot with, resolved from deployment env
+   * defaults plus repo-scoped docker access.
    */
   effectiveAgent: EffectiveAgentResources;
 }
@@ -226,12 +223,12 @@ export async function getSessionDiagnostics(
 function readParsedConfig(workspaceDir: string): ParsedShipitConfig {
   try {
     const cfg = resolveShipitConfig(workspaceDir);
-    const { effective, warnings: clampWarnings } = applyEnvCaps(cfg);
+    const { effective, warnings: resourceWarnings } = applyEnvCaps(cfg);
     return {
       agent: cfg.agent,
       compose: cfg.compose,
       version: cfg.version,
-      warnings: [...cfg.warnings, ...clampWarnings],
+      warnings: [...cfg.warnings, ...resourceWarnings],
       effectiveAgent: effective,
     };
   } catch (err) {
