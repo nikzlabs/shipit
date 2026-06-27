@@ -199,7 +199,7 @@ services:
     const p = writeCompose(dir, `
 services:
   emulator:
-    image: budtmo/docker-android:emulator_14
+    image: budtmo/docker-android:emulator_14.0
     devices: ["/dev/kvm:/dev/kvm"]
     expose: ["5555"]
 `);

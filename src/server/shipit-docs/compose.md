@@ -441,7 +441,7 @@ general device passthrough.
 ```yaml
 services:
   emulator:
-    image: budtmo/docker-android:emulator_14   # or an AOSP emulator-webrtc image
+    image: budtmo/docker-android:emulator_14.0   # or an AOSP emulator-webrtc image
     devices: ["/dev/kvm:/dev/kvm"] # the ONLY permitted device mapping
     ports: ["6080:6080"]           # the emulator's web UI → rendered in the preview pane
     expose: ["5555"]               # adb, reached on the session network by service name
