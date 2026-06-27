@@ -42,5 +42,11 @@ android-snapshot-test/build/
 android-snapshot-test/app/build/
 android-snapshot-test/local.properties
 android-snapshot-test/.idea/
+# Android overlay-test fixture (separate Gradle build — see android-overlay-test/)
+android-overlay-test/.gradle/
+android-overlay-test/build/
+android-overlay-test/app/build/
+android-overlay-test/local.properties
+android-overlay-test/.idea/
 *.keystore
 *.jks
