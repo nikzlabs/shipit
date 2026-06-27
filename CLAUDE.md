@@ -86,7 +86,7 @@ npm install
 - `npm run typecheck` — `tsc --noEmit`, incremental (warm ~5 s). Whole-project by design, no per-file variant.
 - `npm run build` — Vite client build. (`npm run dev` is the Vite/tsx dev server, but **don't start it in bash to preview** — ShipIt serves the preview via the `dev` Compose service in `docker-compose.yml`, which runs `npm run dev` itself; see [Dogfooding ShipIt in ShipIt](#dogfooding-shipit-in-shipit). A bash-started server is also reaped when the container goes idle.)
 
-**Inside a session container, the full suite (`npm test`) and integration tests OOM the box.** When developing ShipIt *in* ShipIt, verify with `npm run typecheck`, `npm run lint:dev`, and affected co-located unit tests only; leave the heavy suites to CI.
+**Session containers are sized automatically from host capacity (docs/229), so the full suite (`npm test`) and integration tests can run in-box when the session has enough memory** — the earlier blanket "they OOM the box" was a symptom of a fixed small container, not an inherent limit. For the fast inner loop, still prefer `npm run typecheck`, `npm run lint:dev`, and affected co-located unit tests; reach for the full suite when you suspect wide breakage or need to validate integration paths. If a run does OOM, the session's host is undersized — raise `DEFAULT_SESSION_MEMORY_MB` on the deployment rather than assuming the suite can't run locally.
 
 ## Debugging the UI
 

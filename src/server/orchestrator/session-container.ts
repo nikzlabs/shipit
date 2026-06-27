@@ -210,12 +210,13 @@ export interface SessionContainer {
    * `dockerAccess` — unlike `resourceLimits`, which is the child-container
    * budget set only for docker-access sessions.
    *
-   * The claim-time refresh compares this against
-   * `resolveAgentDockerLimits()` of the now-current workspace: when a
-   * warm→claim HEAD jump changed the declared `agent.memory`, the standby
-   * container booted with the wrong (stale) limit and must be re-provisioned
-   * — container memory is immutable at runtime. Absent on rediscovered /
-   * re-adopted containers, where the booted limits genuinely aren't known.
+   * Surfaced in diagnostics next to the live `deriveSessionMemorySizing()`
+   * value: the booted limit is frozen at create, so if host RAM or a
+   * `DEFAULT_SESSION_MEMORY_MB` / `MAX_SESSION_MEMORY_MB` override changed
+   * after this container booted, the two diverge and the panel flags it.
+   * (Since sizing is host-derived (docs/229), a shipit.yaml / HEAD change can
+   * no longer cause that drift — there is no claim-time reprovision.) Absent
+   * on rediscovered / re-adopted containers, where the booted limits aren't known.
    */
   bootedLimits?: { memoryLimit: number; cpuQuota: number; pidsLimit: number };
   /**
