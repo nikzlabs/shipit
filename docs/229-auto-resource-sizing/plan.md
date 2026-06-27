@@ -24,12 +24,14 @@ Two structural problems:
 
 2. **Absolute size in a committed repo file is the wrong layer.** `agent.memory: 2048` means something
    different on a laptop host and a 96 GB VM. How much a session *gets* is a budget decision the operator
-   owns (host RAM × target concurrency × cost), not a fact about the code. The only thing the repo
-   legitimately knows is its *workload requirement* — "my integration suite needs at least N GB" — which
-   is a **floor**, not an allocation.
+   owns (host RAM × target concurrency × cost), not a fact about the code. A repo's only honest signal is
+   "I'm heavy" — but on a generous auto baseline that's rare, and when it's real it's a host-capacity
+   question the operator answers, not something the repo can conjure. So the repo resource fields earn
+   their API surface in approximately no cases.
 
 The goal: **in the common case, nobody configures anything.** Session size is derived automatically from
-host capacity. Env vars and `shipit.yaml` remain as optional overrides for the rare cases that need them.
+host capacity. The repo resource fields (`agent.memory` / `agent.cpu` / `agent.pids`) are **removed**;
+the only override is deployment-level env, for the rare deployment that needs it.
 
 ## Two realizations that make auto-config simple
 
@@ -70,43 +72,37 @@ Worked example, 96 GB VM: reserve ≈ 9.6 GiB → usable ≈ 86 GiB → `86 / 8 
 config. They encode a sensible point on the size-vs-concurrency curve; operators who disagree use the
 override env below rather than tuning constants.
 
-### Layering — every layer above auto is optional
+### Layering — auto by default, one optional operator override
 
-1. **Auto (default, ~everyone):** the derived `perSession` above. No config.
+1. **Auto (default, ~everyone):** the derived `perSession` above. No config anywhere.
 2. **Operator override (rare):** `MAX_SESSION_MEMORY_MB` (hard ceiling) and a new
-   `DEFAULT_SESSION_MEMORY_MB` (baseline) still honored when set — for unusual concurrency targets or a
-   pinned size. Optional; unset means auto.
-3. **Repo floor (rare):** `shipit.yaml agent.memory` re-semanticized from *allocation* to *minimum* —
-   "this repo needs **at least** N." Used only when a repo's workload needs more than the auto baseline.
+   `DEFAULT_SESSION_MEMORY_MB` (baseline) honored when set — for unusual concurrency targets or a pinned
+   size. Optional; unset means auto.
 
 Resolution:
 
 ```
 baseline   = DEFAULT_SESSION_MEMORY_MB (if set) else auto-derived perSession
 cap        = MAX_SESSION_MEMORY_MB (if set) else auto-derived host ceiling
-effective  = clamp( baseline , repoFloor , cap )      // min(max(baseline, repoFloor), cap)
+effective  = min( baseline , cap )
 ```
 
-A repo that asks for *more* than `cap` is clamped and warned (existing behavior). A repo can only raise
-its floor, never shrink below the deployment baseline — shrinking to pack more sessions is an operator
-concern, not the repo's call, so the repo field deliberately can't do it.
+There is no repo layer. The repo cannot influence its own size — that is deliberate (allocation is the
+operator's budget call, see Problem #2).
 
-### Repo field semantics change (`agent.memory` → floor)
+### Remove the repo resource fields (`agent.memory` / `agent.cpu` / `agent.pids`)
 
-This is a behavior change for repos that set `agent.memory`. Previously `agent.memory: 2048` meant
-"boot at exactly 2 GB"; now it means "at least 2 GB." On a generous deployment that repo gets the larger
-of the two; on a stingy one it still gets its 2 GB floor. Most repos never set the field and are
-unaffected. CPU/PIDs repo fields follow the same floor semantics for consistency (CPU floor only applies
-if we set a quota at all).
+These fields are dropped from the schema. The deprecation path already exists: `resolveShipitConfig`
+**warns-and-ignores** unrecognized resource keys (it does this today for the old `resources:` /
+`capabilities:` blocks — emits a warning surfaced in the diagnostics panel, extracts no value). The three
+`agent.*` resource fields join that set: a shipit.yaml that still sets them gets a "no longer used —
+session sizing is automatic" warning, not an error, and boots auto-sized. The rest of the `agent` block
+(`install`, `depDirs`, `installInputs`, …) and `compose.docker-socket` are unaffected — those are
+genuine repo concerns.
 
-### Implementation note — preserve "unset"
-
-`parsePositiveNumber` in `shipit-config.ts` currently substitutes `AGENT_DEFAULTS.memory` (1536) at parse
-time, so downstream cannot distinguish "user wrote nothing" from "user wrote 1536". Auto-derivation must
-only fire when the field is genuinely **unset**, so the parser must preserve that — e.g. represent an
-unset `agent.memory` as `null` and resolve the number later, in `container-config-builder.ts`, where host
-capacity is known. The library default (1536) stops being the value a silent repo boots with; it survives
-only as the absolute floor for a tiny host where `usable / TARGET_CONCURRENCY` would round below it.
+Removing the fields also removes the only real code wrinkle: there is no "preserve unset" problem to
+solve in the parser, because there is no field to parse. `AGENT_DEFAULTS.memory` (1536) survives only as
+the absolute floor for a tiny host where `usable / TARGET_CONCURRENCY` would round below it.
 
 ### Host-capacity source — `os.totalmem()` with a cgroup fallback
 
@@ -121,20 +117,25 @@ hypothetical deployment that runs the orchestrator inside a constrained containe
 
 - `src/server/orchestrator/container-config-builder.ts` — auto-derivation, env overrides, clamp warnings.
   Replaces `hostMemoryCapMb` (75%-of-host single-session cap) and the fixed-default flow.
-- `src/server/shared/shipit-config.ts` — `AGENT_DEFAULTS`, `parsePositiveNumber`; preserve unset memory
-  (and cpu/pids) so auto-derivation can fire only when the repo is silent.
+- `src/server/shared/shipit-config.ts` — remove `agent.memory` / `agent.cpu` / `agent.pids` from the
+  schema and `AgentConfig`; route them through the warn-and-ignore deprecation path alongside the old
+  `resources:` / `capabilities:` blocks. Keep `AGENT_DEFAULTS.memory` only as the tiny-host floor.
 - `src/server/orchestrator/resolve-agent-docker-limits.test.ts` — update for derived defaults; add
-  host-capacity derivation + clamp + floor cases.
-- `src/server/shipit-docs/shipit-yaml.md` — document `agent.memory` as a *minimum*, the auto behavior,
-  and the optional `DEFAULT_SESSION_MEMORY_MB` / `MAX_SESSION_MEMORY_MB` env.
+  host-capacity derivation + env-override + clamp cases; add a "deprecated repo field is ignored with a
+  warning" case.
+- `src/server/shipit-docs/shipit-yaml.md` — remove the `agent.memory`/`cpu`/`pids` rows; document that
+  sizing is automatic and the optional `DEFAULT_SESSION_MEMORY_MB` / `MAX_SESSION_MEMORY_MB` env.
 
 ## Rejected alternatives
 
 - **Keep `agent.memory` as an allocation, just add `DEFAULT_SESSION_MEMORY_MB` (Model A).** Less churn,
-  but leaves the repo field doing the operator's job — the exact thing this change objects to. Rejected
-  in favor of the floor semantics.
-- **Drop the repo field entirely (purely deployment-level).** Over-corrects: loses the one legitimate
-  repo signal (a workload requirement floor) for repos whose suites genuinely exceed the auto baseline.
+  but leaves the repo field doing the operator's job — the exact thing this change objects to.
+- **Re-semantic the repo field to a *floor* / minimum (Model B).** Keeps the field but reads
+  `agent.memory: N` as "at least N", clamped by the deployment cap. Rejected: it preserves API surface
+  (schema field, unset-preservation in the parser, floor-clamp precedence, migration, docs, tests) to
+  serve a case the operator env already covers — a repo needing more than the generous auto baseline is
+  rare, soft (the host may not have it), and fundamentally a host-capacity decision. Removing the field
+  outright is simpler and loses nothing real.
 - **Live concurrency-aware rebalancing** (recompute and `docker update` limits as sessions join/leave).
   Unnecessary given limits-are-ceilings: idle sessions don't consume their ceiling, so a static derived
   ceiling already handles the common case. Revisit only if simultaneous-peak OOM proves real in practice.
