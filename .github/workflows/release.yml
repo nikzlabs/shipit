@@ -40,7 +40,7 @@ jobs:
   #     releases; rc's use the tag path.
   resolve:
     name: Resolve release tag
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     outputs:
       tag: ${{ steps.resolve.outputs.tag }}
       is_branch: ${{ steps.resolve.outputs.is_branch }}
@@ -112,10 +112,9 @@ jobs:
     name: Tag matches package.json
     needs: [resolve]
     if: needs.resolve.outputs.proceed == 'true' && needs.resolve.outputs.is_branch != 'true'
-    # Trivial job (one `node -p`): a 2vcpu runner is plenty. Blacksmith free
-    # minutes scale inversely with vcpu (2vcpu costs half the quota per wall-
-    # minute of 4vcpu), and a bigger machine gives no speedup here.
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    # Trivial job (one `node -p`). GitHub-hosted standard runner (free for
+    # public repos).
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -138,7 +137,7 @@ jobs:
     name: Lint, Type Check & Build
     needs: [resolve]
     if: needs.resolve.outputs.proceed == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -155,7 +154,7 @@ jobs:
     name: Test
     needs: [resolve]
     if: needs.resolve.outputs.proceed == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -182,8 +181,8 @@ jobs:
       (needs.version-guard.result == 'success' || needs.version-guard.result == 'skipped') &&
       needs.check.result == 'success' &&
       needs.test.result == 'success'
-    # Pure git + gh I/O, no compute — 2vcpu (see resolve note).
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    # Pure git + gh I/O, no compute.
+    runs-on: ubuntu-24.04
     concurrency:
       group: release-${{ needs.resolve.outputs.tag }}
       cancel-in-progress: false
@@ -260,7 +259,7 @@ jobs:
       needs.resolve.outputs.is_branch == 'true' &&
       needs.resolve.outputs.proceed == 'true' &&
       needs.publish.result == 'success'
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
       pull-requests: write
