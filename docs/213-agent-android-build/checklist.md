@@ -28,7 +28,10 @@ phases are future work (the session brief said do not commit to a heavy implemen
 - [x] Commit the `android/` Gradle wrapper (8.7) — `gradlew`, `gradlew.bat`, `gradle/wrapper/*`
 - [x] On-demand SDK components via `sdkmanager` (agent-run, error-driven) instead of an orchestrator-side staged resolver — SDK dirs made writable for the runtime user
 - [x] `shipit-docs/android.md` (platform-global) + `.claude/skills/android-build` skill + `environment.md`/`README.md` updates
-- [x] **(b) monorepo verified:** `cd android && ./gradlew assembleDebug lint` builds **green in a fresh session** on the rebuilt image (the `android/` wrapper built from its subdir inside the web monorepo, web side unaffected). **(a) still open:** a generic repo with off-matrix `compileSdk`/JDK (to exercise the per-session overlay) + a JVM test — `android/` uses baked `android-34/35` so it never hits the overlay; needs the SHI-205 native test app.
+- [x] **(b) monorepo verified:** `cd android && ./gradlew assembleDebug lint` builds **green in a fresh session** on the rebuilt image (the `android/` wrapper built from its subdir inside the web monorepo, web side unaffected).
+- [x] **(a) off-matrix `compileSdk` overlay verified:** added `android-overlay-test/`, a fixture targeting non-baked `compileSdk 33`. Two outcomes proven in-session: with AGP SDK auto-download (default) the build self-heals with **zero agent step** (AGP fetches `android-33`, licenses pre-accepted); with auto-download off the build fails (`Failed to find target with hash string 'android-33'`) and `sdkmanager "platforms;android-33"` fixes it → green APK. **Caveat:** installs land in the container's writable layer (non-persistent, re-fetched after restart) — the persistent overlay remains future work.
+- [x] **JVM test verified:** covered by `android-snapshot-test` (`GreetingTest`, a pure-logic JUnit test under `testDebugUnitTest`).
+- [ ] **Off-matrix JDK — needs a platform decision, not a fixture:** only JDK 17 is baked (deliberate). A project pinning a non-17 Gradle toolchain triggers Foojay auto-provisioning (`api.foojay.io`/Adoptium), which the egress allowlist blocks. Closing it means bake a 2nd JDK *or* allowlist Foojay + enable toolchain provisioning.
 
 ### Phase 2 — snapshot tests as the visual signal (shipped)
 
