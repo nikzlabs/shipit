@@ -36,5 +36,11 @@ android/local.properties
 android/.idea/
 android/captures/
 android/.cxx/
+# Android snapshot-test fixture (separate Gradle build — see android-snapshot-test/)
+android-snapshot-test/.gradle/
+android-snapshot-test/build/
+android-snapshot-test/app/build/
+android-snapshot-test/local.properties
+android-snapshot-test/.idea/
 *.keystore
 *.jks

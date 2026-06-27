@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- No Activity and no theme are declared: this module exists only to render
+         its Compose UI to PNG via Paparazzi in a JVM unit test. It is never
+         installed, so there is nothing to theme. -->
+    <application android:label="Snapshot Test" />
+</manifest>

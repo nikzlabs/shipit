@@ -34,7 +34,7 @@ phases are future work (the session brief said do not commit to a heavy implemen
 
 - [x] Document the Paparazzi/Roborazzi `record`/`verify` loop in `android.md` + the skill
 - [x] Document the read-the-diff-PNG → `present` habit for inline visual feedback (no new code — `present` exists)
-- [ ] **CI/post-deploy only:** confirm the baked `layoutlib` runtime runs a repo's snapshot tests headlessly (needs the rebuilt image; a SHI-205 native test app exercises it end to end)
+- [x] **Verified in-session:** the baked `layoutlib` runtime runs a repo's snapshot tests headlessly — added `android-snapshot-test/`, a standalone native Compose app with a Paparazzi test. `recordPaparazziDebug` rendered the golden PNG and `verifyPaparazziDebug` passes against it on the rebuilt image, no emulator. (Doesn't wait on the SHI-205 template — this in-repo fixture exercises the path end to end.)
 
 ### Phase 3 — running-app enabler (`/dev/kvm`) (shipped)
 
