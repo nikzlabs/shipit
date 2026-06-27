@@ -49,7 +49,7 @@ echo ""
 echo "Prerequisites (make sure these are done before continuing):"
 echo "  1. Your domain (e.g. shipit.example.com) is on Cloudflare"
 echo "  2. For preview subdomains (*.shipit.example.com), you need either:"
-echo "     - A dedicated domain (e.g. shipit.dev) where free-plan wildcards work"
+echo "     - A dedicated domain (e.g. ship-it.ai) where free-plan wildcards work"
 echo "     - OR Advanced Certificate Manager (\$10/mo) for nested wildcards"
 echo ""
 
