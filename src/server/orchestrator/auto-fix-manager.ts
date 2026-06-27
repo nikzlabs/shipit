@@ -24,7 +24,7 @@
 
 import type { PrStatusSummary } from "../shared/types/github-types.js";
 import type { GraphQLPrNode } from "./pr-status-parser.js";
-import { extractFailedCheckRuns, extractHeadSha } from "./pr-status-parser.js";
+import { extractFailedCheckRuns, extractHeadSha, extractCurrentHeadOid } from "./pr-status-parser.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import { getErrorMessage } from "./validation.js";
 import { AutoRemediationManager } from "./auto-remediation-manager.js";
@@ -72,6 +72,19 @@ interface CiSignal {
   owner: string;
   repo: string;
   failedChecks: FailedCheck[];
+  /**
+   * The commit the failed `statusCheckRollup` belongs to (`commits(last: 1)`).
+   * This is the SHA the failed checks ran against — it LAGS the branch ref's
+   * true tip during the consistency window after a push.
+   */
+  rollupHeadSha: string;
+  /**
+   * The PR branch ref's current tip (`headRefOid`). When this disagrees with
+   * `rollupHeadSha`, the failure verdict is for a superseded commit and must not
+   * be surfaced (defect A — SHI-62). Undefined when GitHub didn't return the
+   * field, in which case the superseded guard is inert.
+   */
+  currentHeadSha?: string;
 }
 
 export class AutoFixManager extends AutoRemediationManager<CiSignal> {
@@ -86,8 +99,9 @@ export class AutoFixManager extends AutoRemediationManager<CiSignal> {
    * the new head's checks register. Without this, the loop re-fired CI-fix with
    * the SAME stale logs the agent already saw (and, in the reported case,
    * already judged flaky). A genuinely fresh run always carries new databaseIds,
-   * so it is never a subset and fires normally. Cleared on session delete and
-   * when CI goes green (the base drops state → `onDelete`).
+   * so it is filtered down to only the not-yet-sent runs and fires with those.
+   * Cleared on session delete and when CI goes green (the base drops state →
+   * `onDelete`).
    */
   private dispatchedCheckIds = new Map<string, Set<number>>();
 
@@ -151,27 +165,63 @@ export class AutoFixManager extends AutoRemediationManager<CiSignal> {
   }
 
   /**
-   * A failure verdict whose every failing run we've already sent is stale — the
-   * previous run lingering in GitHub's API after a retrigger push, not a fresh
-   * result. Suppress the re-fire until a run we haven't sent (a new databaseId)
-   * appears. Empty `failedChecks` (legacy status contexts / no rollup) can't be
-   * deduped this way, so they fall back to the budget/cooldown gating.
+   * Decide whether a "fire" signal is stale and must be skipped. Two distinct
+   * defects, both observed in production (SHI-62, PR #1690):
+   *
+   * (A) **Superseded run.** The failed `statusCheckRollup` belongs to a commit
+   *     (`rollupHeadSha`) that is no longer the branch's current tip
+   *     (`currentHeadSha` / `headRefOid`). GitHub's `commits(last: 1)` lags
+   *     `headRefOid` in the window after a retrigger push, so a failure on the
+   *     OLD commit keeps being reported even though the head has already moved on
+   *     to a newer (queued/passing) run. A head-SHA-currency mismatch is stale by
+   *     definition — drop it. (The original dedup missed this because it assumed
+   *     the lagging head SHA was still the *current* one; it isn't — only the
+   *     rollup lags, the ref tip is already ahead.)
+   *
+   * (B) **Nothing new to send.** Every failing run in this signal has already
+   *     been dispatched. We compare against the not-yet-dispatched set rather
+   *     than `Array.every(dispatched)` so a PARTIAL re-fire — one already-sent
+   *     run bundled with a genuinely new sibling — is NOT treated as fresh-in-
+   *     full: the fire proceeds (the new run IS fresh) but `runAttempt` filters
+   *     the payload down to the new run only, so the already-seen log is not
+   *     re-injected. When the filtered set is empty, the whole fire is stale.
+   *
+   * Empty `failedChecks` (legacy status contexts / no rollup) can't be deduped by
+   * databaseId, so they fall back to the budget/cooldown gating.
    */
   protected override isStaleFire(sessionId: string, signal: CiSignal): boolean {
+    // (A) superseded run — the rollup commit is behind the ref's current tip.
+    if (
+      signal.currentHeadSha &&
+      signal.rollupHeadSha &&
+      signal.currentHeadSha !== signal.rollupHeadSha
+    ) {
+      return true;
+    }
+    // (B) nothing new to send.
     if (signal.failedChecks.length === 0) return false;
+    return this.notYetDispatched(sessionId, signal.failedChecks).length === 0;
+  }
+
+  /**
+   * The subset of `checks` whose databaseId hasn't been dispatched to the agent
+   * yet. Used both to gate a fire (empty ⇒ stale) and to trim the payload a fire
+   * actually sends, so a partial re-fire never re-includes an already-seen log.
+   */
+  private notYetDispatched(sessionId: string, checks: FailedCheck[]): FailedCheck[] {
     const dispatched = this.dispatchedCheckIds.get(sessionId);
-    if (!dispatched) return false;
-    return signal.failedChecks.every((c) => dispatched.has(c.databaseId));
+    if (!dispatched) return checks;
+    return checks.filter((c) => !dispatched.has(c.databaseId));
   }
 
   /** Record the check runs a just-fired attempt sent to the agent. */
-  private recordDispatched(sessionId: string, signal: CiSignal): void {
+  private recordDispatched(sessionId: string, checks: FailedCheck[]): void {
     let set = this.dispatchedCheckIds.get(sessionId);
     if (!set) {
       set = new Set<number>();
       this.dispatchedCheckIds.set(sessionId, set);
     }
-    for (const c of signal.failedChecks) set.add(c.databaseId);
+    for (const c of checks) set.add(c.databaseId);
   }
 
   // ---- Public entry point (poller auto-loop) ------------------------------
@@ -188,13 +238,17 @@ export class AutoFixManager extends AutoRemediationManager<CiSignal> {
     owner: string,
     repo: string,
   ): Promise<void> {
+    const rollupHeadSha = extractHeadSha(prNode) ?? "";
+    const currentHeadSha = extractCurrentHeadOid(prNode);
     const signal: CiSignal = {
       checksState: current.checks.state,
       owner,
       repo,
       failedChecks: current.checks.state === "failure" ? extractFailedCheckRuns(prNode) : [],
+      rollupHeadSha,
+      ...(currentHeadSha !== undefined ? { currentHeadSha } : {}),
     };
-    return this.runTransition(sessionId, signal, extractHeadSha(prNode) ?? "");
+    return this.runTransition(sessionId, signal, rollupHeadSha);
   }
 
   // A manual "Fix CI" no longer engages this state machine. It's a plain
@@ -220,11 +274,18 @@ export class AutoFixManager extends AutoRemediationManager<CiSignal> {
 
   private async runAttempt(sessionId: string, signal: CiSignal, cb: FetchAndFixCb): Promise<void> {
     try {
-      const result = await cb(sessionId, signal.owner, signal.repo, signal.failedChecks);
+      // Defect B — send logs ONLY for runs we haven't already dispatched, so a
+      // partial re-fire (a new sibling failure bundled with an already-sent one)
+      // re-injects just the new run's log, not the one the agent already saw.
+      // `isStaleFire` guarantees this is non-empty for a non-empty input (an
+      // all-already-sent set is suppressed upstream); an empty input (legacy
+      // status contexts) passes straight through.
+      const toSend = this.notYetDispatched(sessionId, signal.failedChecks);
+      const result = await cb(sessionId, signal.owner, signal.repo, toSend);
       // Record the dispatched runs only when a fix turn actually ran (the agent
       // saw these logs). A "noop" sent nothing — leave them un-recorded so the
       // next eligible poll retries.
-      if (result.outcome === "fixed") this.recordDispatched(sessionId, signal);
+      if (result.outcome === "fixed") this.recordDispatched(sessionId, toSend);
       this.completeTurn(sessionId, result);
     } catch (err: unknown) {
       // A throw from the callback is almost always pre-flight (log fetch

@@ -55,9 +55,15 @@ function makeNode(oid: string): GraphQLPrNode {
  * Build a node whose rollup carries failed CHECK RUNS with real databaseIds, so
  * `extractFailedCheckRuns` returns a non-empty set (the dedup discriminator).
  * Each id becomes one FAILURE check run.
+ *
+ * `headRefOid` defaults to `oid` (the steady state — the rollup commit IS the
+ * branch tip). Pass a distinct value to model the post-retrigger-push window
+ * where `commits(last: 1)` (the failing rollup commit) lags behind the ref's
+ * already-advanced tip (defect A — SHI-62).
  */
-function makeNodeWithChecks(oid: string, checkIds: number[]): GraphQLPrNode {
+function makeNodeWithChecks(oid: string, checkIds: number[], headRefOid = oid): GraphQLPrNode {
   return {
+    headRefOid,
     commits: {
       nodes: [{
         commit: {
@@ -81,12 +87,23 @@ function makeNodeWithChecks(oid: string, checkIds: number[]): GraphQLPrNode {
 
 interface RecordingCb extends FetchAndFixCb {
   count: () => number;
+  /** The `failedChecks` array passed to the most recent invocation. */
+  lastChecks: () => { databaseId: number }[];
+  /** Just the databaseIds of the most recent invocation, for terse assertions. */
+  lastIds: () => number[];
 }
 
 function recordingCb(outcome: () => AutoFixResult | Promise<AutoFixResult>): RecordingCb {
   let counter = 0;
-  const cb: FetchAndFixCb = async () => { counter++; return await outcome(); };
+  let last: { databaseId: number }[] = [];
+  const cb: FetchAndFixCb = async (_s, _o, _r, failedChecks) => {
+    counter++;
+    last = failedChecks;
+    return await outcome();
+  };
   (cb as RecordingCb).count = () => counter;
+  (cb as RecordingCb).lastChecks = () => last;
+  (cb as RecordingCb).lastIds = () => last.map((c) => c.databaseId);
   return cb as RecordingCb;
 }
 
@@ -115,8 +132,8 @@ function makeFixture(opts?: { enabled?: boolean; runner?: RunnerStub; cb?: Recor
     setRunner: (r: RunnerStub | undefined) => { runner = r; },
     advance: (ms: number) => { time += ms; },
     fail: (oid = "sha1") => manager.handleTransition("s1", makeSummary("failure"), makeNode(oid), "o", "r"),
-    failChecks: (checkIds: number[], oid = "sha1") =>
-      manager.handleTransition("s1", makeSummary("failure"), makeNodeWithChecks(oid, checkIds), "o", "r"),
+    failChecks: (checkIds: number[], oid = "sha1", headRefOid = oid) =>
+      manager.handleTransition("s1", makeSummary("failure"), makeNodeWithChecks(oid, checkIds, headRefOid), "o", "r"),
     transition: (state: PrStatusSummary["checks"]["state"], oid = "sha1") =>
       manager.handleTransition("s1", makeSummary(state), makeNode(oid), "o", "r"),
   };
@@ -300,16 +317,38 @@ describe("AutoFixManager", () => {
     expect(fx.cb.count()).toBe(2);
   });
 
-  it("fires when any run is new even if another was already sent", async () => {
+  it("fires when any run is new but re-injects ONLY the new run (defect B — partial re-fire)", async () => {
     await fx.failChecks([101], "sha1");
     await tick();
     expect(fx.cb.count()).toBe(1);
+    expect(fx.cb.lastIds()).toEqual([101]);
 
-    // {101} already sent but {102} is new → not a subset → fire.
+    // {101} already sent but {102} is new → the fire proceeds, but the payload is
+    // trimmed to {102} only — the agent must NOT see {101}'s log a second time.
     fx.advance(AUTO_FIX_COOLDOWN_MS + 1);
     await fx.failChecks([101, 102], "sha1");
     await tick();
     expect(fx.cb.count()).toBe(2);
+    expect(fx.cb.lastIds()).toEqual([102]);
+  });
+
+  it("does NOT fire a failure on a superseded run once the ref tip advances (defect A — SHI-62)", async () => {
+    // The current PR head has already advanced (headRefOid = sha2, e.g. an empty
+    // retrigger commit whose run is queued/passing), but GitHub's commits(last:1)
+    // still lags on the OLD failing commit (rollup oid = sha1) with its failed
+    // check runs. That failure is for a superseded commit — it must NOT inject.
+    await fx.failChecks([101, 102], "sha1", "sha2");
+    await tick();
+    expect(fx.cb.count()).toBe(0);
+    // No fire ⇒ no auto-fix state was even created (suppressed like an ignore).
+    expect(fx.manager.get("s1")).toBeUndefined();
+
+    // Once the rollup catches up to the current tip (sha2) with a genuine
+    // failure (rollup oid === headRefOid), the loop fires normally.
+    await fx.failChecks([201], "sha2", "sha2");
+    await tick();
+    expect(fx.cb.count()).toBe(1);
+    expect(fx.cb.lastIds()).toEqual([201]);
   });
 
   it("a noop attempt does NOT record check runs — the next poll retries them", async () => {

@@ -30,6 +30,7 @@ import {
   type GraphQLResponse,
   parsePrNode,
   extractHeadSha,
+  extractCurrentHeadOid,
   extractBaseSha,
   extractFailedCheckRuns,
   extractChangedFiles,
@@ -74,7 +75,7 @@ export interface PrTerminalStateInfo {
 // Re-export the pure parser helpers so existing callers
 // (`pr-status-poller.test.ts`, `services/github-ci-fix.ts`) keep working
 // without an import path change.
-export { parsePrNode, extractHeadSha, extractBaseSha, extractFailedCheckRuns, extractChangedFiles };
+export { parsePrNode, extractHeadSha, extractCurrentHeadOid, extractBaseSha, extractFailedCheckRuns, extractChangedFiles };
 
 export class PrStatusPoller {
   private githubAuth: GitHubAuthManager;

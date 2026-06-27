@@ -37,6 +37,7 @@ const PR_LIGHT_FIELDS = `
         reviewDecision
         autoMergeRequest { mergeMethod }
         headRefName
+        headRefOid
         baseRefName
         baseRefOid
         additions
@@ -206,6 +207,15 @@ export interface GraphQLPrNode {
   reviewDecision: string | null; // APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, or null
   autoMergeRequest: { mergeMethod: string } | null;
   headRefName: string;
+  /**
+   * The branch ref's current tip OID — the source of truth for "the PR's current
+   * head", distinct from `commits(last: 1)` below. GitHub advances `headRefOid`
+   * to a new commit immediately on push, but `commits(last: 1)` (and its
+   * `statusCheckRollup`) lag behind during the eventual-consistency window after
+   * a retrigger push. The auto-fix loop compares the two to drop a failure verdict
+   * whose rollup commit is no longer the current head (a superseded run). SHI-62.
+   */
+  headRefOid?: string;
   baseRefName: string;
   baseRefOid?: string;
   additions: number;
@@ -462,9 +472,28 @@ export function parsePrNode(
   };
 }
 
-/** Extract the head SHA from a GraphQL PR node. */
+/**
+ * Extract the head SHA from a GraphQL PR node.
+ *
+ * This is the OID of `commits(last: 1)` — the latest commit GitHub has *indexed
+ * into the PR's commit list*, and the commit its `statusCheckRollup` (CI verdict)
+ * belongs to. It LAGS the branch ref's true tip during the consistency window
+ * after a push; use {@link extractCurrentHeadOid} for "the PR's current head".
+ */
 export function extractHeadSha(node: GraphQLPrNode): string | undefined {
   return node.commits.nodes[0]?.commit?.oid;
+}
+
+/**
+ * Extract the PR branch ref's current tip OID (`headRefOid`).
+ *
+ * Unlike {@link extractHeadSha} (the rollup commit, which lags), `headRefOid`
+ * reflects the ref tip immediately on push. When the two disagree, the
+ * `commits(last: 1)` rollup is for a superseded commit and any failure it
+ * reports is stale (SHI-62). Undefined when the field wasn't selected.
+ */
+export function extractCurrentHeadOid(node: GraphQLPrNode): string | undefined {
+  return node.headRefOid;
 }
 
 /** Extract the base branch SHA from a GraphQL PR node. */

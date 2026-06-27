@@ -327,3 +327,31 @@ fetch-timestamp name): the dedup stops the stale re-send, and the stable filenam
 repeat that *does* slip through visibly the same file in chat history. Key files:
 `auto-remediation-manager.ts` (`isStaleFire` hook), `auto-fix-manager.ts` (dispatched-IDs set +
 override), `services/github-ci-fix.ts` (filename), `auto-fix-manager.test.ts` (dedup tests).
+
+### Re-break: superseded-run firing + partial re-fire (PR #1690)
+
+The follow-up above did not hold. PR #1690 (`nikzlabs/shipit`) injected `[ci-fix]` carrying an
+OLD run's logs after its head had already advanced to a newer, **passing** run. Two distinct
+defects, both downstream of the same flawed assumption:
+
+- **(A) Superseded-run firing.** The original dedup's premise was: "in the lag window the head
+  SHA GitHub returns is still the old one — so there's nothing for a head-SHA guard to catch."
+  That is false. GitHub's `headRefOid` (the branch ref's tip) advances to the new commit
+  *immediately* on push, while `commits(last: 1)` — and its `statusCheckRollup` — lags on the
+  OLD failing commit. So the **rollup commit ≠ the current head**, and a head-SHA-currency guard
+  *does* catch it. Fix: select `headRefOid` in the PR query (`pr-status-parser.ts`,
+  `extractCurrentHeadOid`) and drop any failure verdict whose `rollupHeadSha` (the rollup's
+  `commits(last:1)` oid) ≠ `currentHeadSha` (`headRefOid`). This is now the first arm of
+  `isStaleFire`.
+- **(B) Partial re-fire re-bundling already-sent logs.** The dedup used
+  `failedChecks.every(dispatched.has)` — so a fire containing *one* new databaseId alongside an
+  already-sent sibling was treated as fully fresh and re-sent **both** logs. Fix: gate and trim
+  on the *not-yet-dispatched* subset. `isStaleFire` is stale iff that subset is empty;
+  `runAttempt` sends only that subset to the agent (and records only it). A genuinely new sibling
+  still fires, but the agent never re-sees a log it already got.
+
+Both arms live in `auto-fix-manager.ts` (`isStaleFire` + `notYetDispatched` + payload trim in
+`runAttempt`) and the new `currentHeadSha` field on `CiSignal`. Regression coverage is in
+`auto-fix-manager.test.ts` ("does NOT fire a failure on a superseded run once the ref tip
+advances", "re-injects ONLY the new run"). Key files: `pr-status-parser.ts` (`headRefOid`
+selection + `extractCurrentHeadOid`), `auto-fix-manager.ts`, `auto-fix-manager.test.ts`.
