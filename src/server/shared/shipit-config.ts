@@ -4,10 +4,7 @@
  * The schema has three top-level keys:
  *
  *   version: 1          # optional schema version
- *   agent:              # optional agent container config
- *     memory: 2048
- *     cpu: 1.0
- *     pids: 4096
+ *   agent:              # optional agent setup config
  *     install:
  *       - npm install
  *       - npx prisma generate
@@ -29,11 +26,11 @@ import type { ReleaseMechanism } from "./types/release-types.js";
 // ---------------------------------------------------------------------------
 
 export interface AgentConfig {
-  /** Memory limit in MB. Default: 1024 */
+  /** Deployment-owned memory limit in MB, included for diagnostics. */
   memory: number;
-  /** CPU cores as float. Default: 0.5 */
+  /** Deployment-owned CPU cores as float, included for diagnostics. */
   cpu: number;
-  /** Max PIDs. Default: 4096 */
+  /** Deployment-owned max PIDs, included for diagnostics. */
   pids: number;
   /** Install commands, run sequentially before compose starts. Default: [] */
   install: string[];
@@ -205,7 +202,7 @@ export const ALLOWED_HOST_MOUNT_SOURCES: Readonly<Record<string, string>> = {
 /** Old-format keys that trigger migration warnings. */
 const OLD_FORMAT_KEYS: Record<string, string> = {
   preview: "The `preview` block has been removed. Define services in docker-compose.yml instead. See /shipit-docs/compose.md.",
-  resources: "The `resources` block has been replaced by `agent` (flat fields: memory, cpu, pids). Preview resources are now set per-service in docker-compose.yml.",
+  resources: "The `resources` block has been removed. Agent container resources are deployment settings (`MAX_SESSION_MEMORY_MB`, `MAX_SESSION_CPU`, `MAX_SESSION_PIDS`); preview resources are set per-service in docker-compose.yml.",
   capabilities: "The `capabilities` block has been replaced. Use `compose.docker-socket: true` instead of `capabilities.docker: true`.",
   services: "The `services` block has been removed. Define services in docker-compose.yml instead.",
   install: "The top-level `install` field has moved to `agent.install`.",
@@ -327,9 +324,19 @@ function parseAgentConfig(raw: unknown, warnings: string[]): AgentConfig {
     }
   }
 
-  const memory = parsePositiveNumber(obj.memory, AGENT_DEFAULTS.memory, true);
-  const cpu = parsePositiveNumber(obj.cpu, AGENT_DEFAULTS.cpu, false);
-  const pids = parsePositiveNumber(obj.pids, AGENT_DEFAULTS.pids, true);
+  if ("memory" in obj) {
+    warnings.push("`agent.memory` is deprecated and ignored. Set deployment env `MAX_SESSION_MEMORY_MB` to size session containers.");
+  }
+  if ("cpu" in obj) {
+    warnings.push("`agent.cpu` is deprecated and ignored. Set deployment env `MAX_SESSION_CPU` to size session containers.");
+  }
+  if ("pids" in obj) {
+    warnings.push("`agent.pids` is deprecated and ignored. Set deployment env `MAX_SESSION_PIDS` to size session containers.");
+  }
+
+  const memory = AGENT_DEFAULTS.memory;
+  const cpu = AGENT_DEFAULTS.cpu;
+  const pids = AGENT_DEFAULTS.pids;
   const install = parseInstallList(obj.install);
   const depDirs = parseDepDirs(obj["dep-dirs"], warnings);
   const installInputs = parseInstallInputs(obj["install-inputs"], warnings);
@@ -457,13 +464,6 @@ function normalizeLiteralRelPath(
   if (segments.length === 0) return drop("must not be the workspace root");
 
   return segments.join("/");
-}
-
-function parsePositiveNumber(val: unknown, fallback: number, floor: boolean): number {
-  if (typeof val !== "number" || !Number.isFinite(val) || val <= 0) {
-    return fallback;
-  }
-  return floor ? Math.floor(val) : val;
 }
 
 function parseInstallList(val: unknown): string[] {

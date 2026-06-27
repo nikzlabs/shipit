@@ -1,19 +1,15 @@
 /**
  * Integration tests for warm-pool / claim-time staleness (W2 + W3).
  *
- * Root cause being covered (session 90afd431): the bare cache could be
- * hundreds of commits behind the real remote, so the warm pool provisioned
- * the session container's memory limit off a frozen `shipit.yaml`. Two
- * fixes:
+ * Root causes covered:
  *
  *   W2 — the warm pool and claim slow-path now fetch the *real remote* in
  *        the workspace clone (`fetchAndResolveDefaultBranch`) before cutting
  *        the branch, so the session lands on the actual latest commit even
  *        when the bare cache is stale.
- *   W3 — the claim-time `refreshCloneToLatestMain` re-provisions the standby
- *        container when the HEAD jump changed the declared `agent.memory`
- *        (container memory is immutable at runtime, so the only fix is to
- *        destroy + rebuild).
+ *   W3 — claim-time refresh re-provisions the standby container when the
+ *        deployment-owned session limit changed after it booted (container
+ *        memory is immutable at runtime, so the only fix is destroy + rebuild).
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
@@ -148,6 +144,9 @@ describe("Integration: warm-pool / claim staleness (W2 + W3)", () => {
   let fakeDocker: ReturnType<typeof createFakeDocker>;
   let dbManager: DatabaseManager;
   let origGitTerminalPrompt: string | undefined;
+  let origMemoryLimit: string | undefined;
+  let origCpuLimit: string | undefined;
+  let origPidsLimit: string | undefined;
   let repoUrl: string;
 
   beforeEach(() => {
@@ -156,6 +155,9 @@ describe("Integration: warm-pool / claim staleness (W2 + W3)", () => {
     sessionManager = new SessionManager(dbManager);
     repoStore = new RepoStore(dbManager);
     origGitTerminalPrompt = process.env.GIT_TERMINAL_PROMPT;
+    origMemoryLimit = process.env.MAX_SESSION_MEMORY_MB;
+    origCpuLimit = process.env.MAX_SESSION_CPU;
+    origPidsLimit = process.env.MAX_SESSION_PIDS;
     process.env.GIT_TERMINAL_PROMPT = "0";
     fakeDocker = createFakeDocker();
     containerManager = new SessionContainerManager({
@@ -172,6 +174,12 @@ describe("Integration: warm-pool / claim staleness (W2 + W3)", () => {
     dbManager.close();
     if (origGitTerminalPrompt === undefined) delete process.env.GIT_TERMINAL_PROMPT;
     else process.env.GIT_TERMINAL_PROMPT = origGitTerminalPrompt;
+    if (origMemoryLimit === undefined) delete process.env.MAX_SESSION_MEMORY_MB;
+    else process.env.MAX_SESSION_MEMORY_MB = origMemoryLimit;
+    if (origCpuLimit === undefined) delete process.env.MAX_SESSION_CPU;
+    else process.env.MAX_SESSION_CPU = origCpuLimit;
+    if (origPidsLimit === undefined) delete process.env.MAX_SESSION_PIDS;
+    else process.env.MAX_SESSION_PIDS = origPidsLimit;
     await app?.close();
     await new Promise((r) => setTimeout(r, 50));
     try {
@@ -218,12 +226,15 @@ describe("Integration: warm-pool / claim staleness (W2 + W3)", () => {
     return { remoteDir };
   }
 
-  it("W2: warm standby boots at the real remote's latest agent.memory, not the stale cache's", async () => {
-    // Real remote: c1 has NO shipit.yaml; c2 declares 3 GiB. The bare cache
-    // is frozen at c1 — so the only way the standby boots at 3 GiB is if
-    // the warm path fetched the real remote in the workspace clone.
+  it("W2: warm standby uses deployment limits after fetching the real remote's latest config", async () => {
+    process.env.MAX_SESSION_MEMORY_MB = "3072";
+    process.env.MAX_SESSION_CPU = "2";
+    process.env.MAX_SESSION_PIDS = "2048";
+    // Real remote: c1 has NO shipit.yaml; c2 adds setup config. The bare cache
+    // is frozen at c1, so the warm path must fetch the real remote in the
+    // workspace clone before pre-install/config inspection.
     const { remoteDir } = await setup({ "README.md": "# test\n" });
-    advanceRemote(remoteDir, { "shipit.yaml": "agent:\n  memory: 3072\n  cpu: 2.0\n  pids: 2048\n" });
+    advanceRemote(remoteDir, { "shipit.yaml": "agent:\n  install: npm install\n" });
 
     // Startup warming creates warm #1 (no standby).
     await waitFor(() => !!repoStore.get(repoUrl)?.warmSessionId, 10000, "warm #1");
@@ -243,9 +254,7 @@ describe("Integration: warm-pool / claim staleness (W2 + W3)", () => {
     const standbyId = repoStore.get(repoUrl)!.warmSessionId!;
     await waitFor(() => containerManager.isStandby(standbyId), 10000, "standby ready");
 
-    // The standby's fake-docker container must carry the 3 GiB limit from
-    // c2's shipit.yaml — proving the workspace landed on the latest commit
-    // despite the bare cache being frozen at c1.
+    // The standby's fake-docker container must carry the deployment limits.
     const standbyDocker = [...fakeDocker._containers.values()].find(
       (c) => c.labels[CONTAINER_SESSION_ID_LABEL] === standbyId,
     );
@@ -262,27 +271,26 @@ describe("Integration: warm-pool / claim staleness (W2 + W3)", () => {
   }, 30000);
 
   it("W3: claim destroys a standby whose booted limits no longer match the refreshed workspace", async () => {
-    // Real remote starts at c1 with NO shipit.yaml → defaults (1.5 GiB).
+    // Real remote starts at c1 with default deployment limits (1.5 GiB).
     const { remoteDir } = await setup({ "README.md": "# test\n" });
 
     await waitFor(() => !!repoStore.get(repoUrl)?.warmSessionId, 10000, "warm #1");
     const warmId = repoStore.get(repoUrl)!.warmSessionId!;
     expect(sessionManager.get(warmId)!.workspaceDir).toBeDefined();
 
-    // Startup warming now boots the standby itself (docs/148). c1 has no
-    // shipit.yaml → defaults to 1.5 GiB, which is exactly the stale-limits
-    // baseline this test wants. Wait for it to land instead of building a
-    // duplicate by hand (which would now collide with the startup standby).
+    // Startup warming now boots the standby itself (docs/148) at defaults,
+    // which is exactly the stale-limits baseline this test wants. Wait for it
+    // to land instead of building a duplicate by hand.
     await waitFor(() => containerManager.isStandby(warmId), 10000, "startup standby");
     expect(containerManager.get(warmId)?.bootedLimits?.memoryLimit).toBe(1536 * 1024 * 1024);
 
-    // The remote advances: c2 declares 3 GiB. The standby is now stale.
-    advanceRemote(remoteDir, { "shipit.yaml": "agent:\n  memory: 3072\n" });
+    // The deployment advances to 3 GiB. The standby is now stale.
+    process.env.MAX_SESSION_MEMORY_MB = "3072";
+    advanceRemote(remoteDir, { "shipit.yaml": "agent:\n  install: npm install\n" });
 
     const destroySpy = vi.spyOn(containerManager, "destroy");
 
-    // Claim → warm path → refreshCloneToLatestMain fetches c2 → headChanged
-    // → reprovisionStandbyIfLimitsChanged sees 1 GiB booted vs 3 GiB declared
+    // Claim → warm path → refreshed limits see 1.5 GiB booted vs 3 GiB current
     // → destroys the standby so the runner factory rebuilds it correctly.
     const res = await app.inject({
       method: "POST",

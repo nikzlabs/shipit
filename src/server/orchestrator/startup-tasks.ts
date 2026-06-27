@@ -332,7 +332,7 @@ export function setupContainerHealthMonitoring(
     summary: string,
   ): void => {
     if (!trip.justTripped) return;
-    const msg = `Session disabled — ${summary}. Increase \`agent.memory\` in shipit.yaml and use "Rescue session" to retry.`;
+    const msg = `Session disabled — ${summary}. Increase deployment env MAX_SESSION_MEMORY_MB and use "Rescue session" to retry.`;
     console.error(`[oom-breaker] ${msg} (session=${sessionId})`);
     if (broadcastLog) broadcastLog(sessionId, "server", msg);
     const runner = runnerRegistry.get(sessionId);

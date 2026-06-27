@@ -59,18 +59,21 @@ describe("parseShipitConfig", () => {
       agent: { memory: 2048, cpu: 2.0, pids: 512, install: ["npm install"] },
     });
     expect(config.agent).toEqual({
-      memory: 2048,
-      cpu: 2.0,
-      pids: 512,
+      memory: AGENT_DEFAULTS.memory,
+      cpu: AGENT_DEFAULTS.cpu,
+      pids: AGENT_DEFAULTS.pids,
       install: ["npm install"],
       depDirs: ["node_modules"],
       installInputs: null,
     });
+    expect(config.warnings).toContainEqual(expect.stringContaining("`agent.memory` is deprecated and ignored"));
+    expect(config.warnings).toContainEqual(expect.stringContaining("`agent.cpu` is deprecated and ignored"));
+    expect(config.warnings).toContainEqual(expect.stringContaining("`agent.pids` is deprecated and ignored"));
   });
 
   it("uses defaults for missing agent fields", () => {
     const config = parseShipitConfig({ agent: { memory: 2048 } });
-    expect(config.agent.memory).toBe(2048);
+    expect(config.agent.memory).toBe(AGENT_DEFAULTS.memory);
     expect(config.agent.cpu).toBe(AGENT_DEFAULTS.cpu);
     expect(config.agent.pids).toBe(AGENT_DEFAULTS.pids);
     expect(config.agent.install).toEqual([]);
@@ -83,15 +86,15 @@ describe("parseShipitConfig", () => {
     expect(config.agent.pids).toBe(AGENT_DEFAULTS.pids);
   });
 
-  it("floors fractional memory and pids", () => {
+  it("ignores resource values regardless of numeric shape", () => {
     const config = parseShipitConfig({ agent: { memory: 2048.7, pids: 512.9 } });
-    expect(config.agent.memory).toBe(2048);
-    expect(config.agent.pids).toBe(512);
+    expect(config.agent.memory).toBe(AGENT_DEFAULTS.memory);
+    expect(config.agent.pids).toBe(AGENT_DEFAULTS.pids);
   });
 
-  it("allows fractional cpu", () => {
+  it("ignores fractional cpu", () => {
     const config = parseShipitConfig({ agent: { cpu: 1.5 } });
-    expect(config.agent.cpu).toBe(1.5);
+    expect(config.agent.cpu).toBe(AGENT_DEFAULTS.cpu);
   });
 
   it("throws for non-object agent", () => {
@@ -288,7 +291,7 @@ describe("parseShipitConfig", () => {
 
   it("warns for resources key", () => {
     const config = parseShipitConfig({ resources: { agent: { memory: 2048 } } });
-    expect(config.warnings).toContainEqual(expect.stringContaining("`resources` block has been replaced"));
+    expect(config.warnings).toContainEqual(expect.stringContaining("`resources` block has been removed"));
   });
 
   it("warns for capabilities key", () => {
@@ -334,9 +337,9 @@ describe("parseShipitConfig", () => {
     });
     expect(config.version).toBe(1);
     expect(config.agent).toEqual({
-      memory: 3072,
-      cpu: 2.0,
-      pids: 2048,
+      memory: AGENT_DEFAULTS.memory,
+      cpu: AGENT_DEFAULTS.cpu,
+      pids: AGENT_DEFAULTS.pids,
       install: ["npm install", "npx prisma generate"],
       depDirs: ["node_modules"],
       installInputs: null,
@@ -345,7 +348,9 @@ describe("parseShipitConfig", () => {
       file: "docker/local/dev/compose.yml",
       dockerSocket: true,
     });
-    expect(config.warnings).toEqual([]);
+    expect(config.warnings).toContainEqual(expect.stringContaining("`agent.memory` is deprecated and ignored"));
+    expect(config.warnings).toContainEqual(expect.stringContaining("`agent.cpu` is deprecated and ignored"));
+    expect(config.warnings).toContainEqual(expect.stringContaining("`agent.pids` is deprecated and ignored"));
   });
 
   // ---- x-shipit-host-mounts (docs/128) ----
@@ -558,8 +563,9 @@ describe("resolveShipitConfig", () => {
       "agent:\n  memory: 2048\n  install: npm install\ncompose: docker-compose.yml\n",
     );
     const config = resolveShipitConfig(dir);
-    expect(config.agent.memory).toBe(2048);
+    expect(config.agent.memory).toBe(AGENT_DEFAULTS.memory);
     expect(config.agent.install).toEqual(["npm install"]);
+    expect(config.warnings).toContainEqual(expect.stringContaining("`agent.memory` is deprecated and ignored"));
     expect(config.compose).toEqual({ file: "docker-compose.yml", dockerSocket: false });
   });
 

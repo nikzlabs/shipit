@@ -130,7 +130,8 @@ to ShipIt and dies on the next eviction. Move it into compose or
 
 ## Resource limits
 
-Agent containers have default limits (1536 MB memory, 0.5 CPU, 256 PIDs) that
-can be increased via the `agent` section in `shipit.yaml`. See
-[shipit-yaml.md](shipit-yaml.md) for details. Service containers have their
-own resource limits set in `docker-compose.yml`.
+Agent containers have deployment-owned default limits (1536 MB memory, 0.5 CPU,
+4096 PIDs). Operators can change them with `MAX_SESSION_MEMORY_MB`,
+`MAX_SESSION_CPU`, and `MAX_SESSION_PIDS` on the ShipIt deployment. These are
+not repository settings in `shipit.yaml`. Service containers have their own
+resource limits set in `docker-compose.yml`.

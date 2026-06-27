@@ -168,12 +168,10 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
   }
 
   /**
-   * After a claim-time clone refresh moved HEAD, the standby container may
-   * have booted with resource limits derived from a now-stale `shipit.yaml`
-   * — the irreducible warm→claim time gap (warm provisions from commit C1,
-   * claim refreshes to C2). Container memory is immutable at runtime, so the
-   * only fix is to destroy the standby: the runner factory's fresh-create
-   * path rebuilds it with the current limits on first attach.
+   * A standby container may have booted before the current deployment session
+   * limits were changed. Container memory is immutable at runtime, so the only
+   * fix is to destroy the standby: the runner factory's fresh-create path
+   * rebuilds it with the current limits on first attach.
    */
   async function reprovisionStandbyIfLimitsChanged(
     sessionId: string,
@@ -201,8 +199,8 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
     console.warn(
       `[claim-session] Standby container for ${sessionId} booted with stale resource limits ` +
         `(mem ${booted.memoryLimit} → ${fresh.memoryLimit}, cpu ${booted.cpuQuota} → ${fresh.cpuQuota}, ` +
-        `pids ${booted.pidsLimit} → ${fresh.pidsLimit}) after a HEAD change — destroying so it ` +
-        `rebuilds with the current shipit.yaml on first attach.`,
+        `pids ${booted.pidsLimit} → ${fresh.pidsLimit}) — destroying so it ` +
+        `rebuilds with the current deployment limits on first attach.`,
     );
     await cm.destroy(sessionId);
   }
@@ -263,7 +261,8 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
   /**
    * Shared tail of the reuse / warm / waiting sub-paths: refresh the claimed
    * session's clone to latest main, surface a stale-fetch warning, and
-   * re-provision the standby if a HEAD move invalidated its booted limits.
+   * re-provision the standby if deployment limits no longer match its booted
+   * limits.
    * Returns the fetch duration (for timing). Deliberately does NOT re-warm
    * the pool — that's the caller's concern.
    */
@@ -283,6 +282,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
       deps.shouldSkipClaimFetch?.(url) &&
       (await isWorkspaceCloneInSyncWithCache(workspaceDir, deps.getSharedRepoDir(url)))
     ) {
+      await reprovisionStandbyIfLimitsChanged(sessionId, workspaceDir);
       return 0;
     }
     try {
@@ -291,9 +291,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
         (err) => deps.githubAuthManager.markTokenInvalid(`claim-session refresh failed for ${url}: ${err.message}`),
       );
       warnIfStaleClaimFetch(r.fetched, url);
-      if (r.headChanged) {
-        await reprovisionStandbyIfLimitsChanged(sessionId, workspaceDir);
-      }
+      await reprovisionStandbyIfLimitsChanged(sessionId, workspaceDir);
       return r.fetchDurationMs;
     } catch (err) {
       console.error(`[claim-session] Failed to refresh clone to latest main:`, getErrorMessage(err));

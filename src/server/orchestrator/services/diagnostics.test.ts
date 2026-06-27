@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -7,17 +7,6 @@ import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-r
 import type { ServiceManager, ManagedService } from "../service-manager.js";
 import type { LogRingEntry, WsServerMessage } from "../../shared/types.js";
 import { getSessionDiagnostics } from "./diagnostics.js";
-
-// Pin host detection to a large host so the host-relative default resource
-// ceilings (used when no MAX_SESSION_* env var is set) don't clamp the
-// declared values these tests assert are mirrored through to effectiveAgent.
-beforeEach(() => {
-  vi.spyOn(os, "totalmem").mockReturnValue(64 * 1024 * 1024 * 1024);
-  vi.spyOn(os, "cpus").mockReturnValue(
-    new Array(16).fill({}) as ReturnType<typeof os.cpus>,
-  );
-});
-afterEach(() => vi.restoreAllMocks());
 
 // ---- Test doubles ----
 
@@ -223,15 +212,14 @@ describe("getSessionDiagnostics", () => {
       expect(result.parsedConfig).toBeNull();
     });
 
-    it("returns the parsed agent block from the new schema", async () => {
+    it("returns agent setup and deployment-owned effective limits", async () => {
       const dir = workspace("agent:\n  memory: 3072\n  cpu: 2.0\n  pids: 2048\ncompose: docker-compose.yml\n");
       const result = await diagnose(dir);
-      expect(result.parsedConfig?.agent).toMatchObject({ memory: 3072, cpu: 2.0, pids: 2048 });
+      expect(result.parsedConfig?.agent).toMatchObject({ memory: 1536, cpu: 0.5, pids: 4096 });
       expect(result.parsedConfig?.compose).toEqual({ file: "docker-compose.yml", dockerSocket: false });
-      expect(result.parsedConfig?.warnings).toEqual([]);
+      expect(result.parsedConfig?.warnings.join("\n")).toMatch(/agent\.memory.*deprecated and ignored/);
       expect(result.parsedConfig?.parseError).toBeUndefined();
-      // No env cap exceeded → effectiveAgent mirrors declared values.
-      expect(result.parsedConfig?.effectiveAgent).toMatchObject({ memory: 3072, cpu: 2.0, pids: 2048 });
+      expect(result.parsedConfig?.effectiveAgent).toMatchObject({ memory: 1536, cpu: 0.5, pids: 4096 });
       // Breaker dep wasn't injected → payload reports null.
       expect(result.oomBreaker).toBeNull();
     });
@@ -243,22 +231,18 @@ describe("getSessionDiagnostics", () => {
       const dir = workspace("resources:\n  memory: 3072\n  cpu: 2.0\n  pids: 2048\n");
       const result = await diagnose(dir);
       expect(result.parsedConfig?.agent.memory).toBe(1536); // library default
-      expect(result.parsedConfig?.warnings.join("\n")).toMatch(/`resources` block has been replaced/);
+      expect(result.parsedConfig?.warnings.join("\n")).toMatch(/`resources` block has been removed/);
     });
 
-    it("surfaces env-cap clamp warnings alongside the effective value", async () => {
-      // Sibling regression: even when shipit.yaml is new-schema and parses
-      // cleanly, a low MAX_SESSION_MEMORY_MB silently shrinks the declared
-      // memory. The diagnostics panel must show both the declared and the
-      // post-clamp value so the operator can spot the cap.
+    it("surfaces deployment env values as the effective value", async () => {
       const prevCap = process.env.MAX_SESSION_MEMORY_MB;
       process.env.MAX_SESSION_MEMORY_MB = "1024";
       try {
         const dir = workspace("agent:\n  memory: 3072\n");
         const result = await diagnose(dir);
-        expect(result.parsedConfig?.agent.memory).toBe(3072);
+        expect(result.parsedConfig?.agent.memory).toBe(1536);
         expect(result.parsedConfig?.effectiveAgent.memory).toBe(1024);
-        expect(result.parsedConfig?.warnings.join("\n")).toMatch(/MAX_SESSION_MEMORY_MB/);
+        expect(result.parsedConfig?.warnings.join("\n")).toMatch(/agent\.memory.*deprecated and ignored/);
       } finally {
         if (prevCap === undefined) delete process.env.MAX_SESSION_MEMORY_MB;
         else process.env.MAX_SESSION_MEMORY_MB = prevCap;
@@ -316,29 +300,34 @@ describe("getSessionDiagnostics", () => {
         status: "running",
         bootedLimits: { memoryLimit: 1024 * 1024 * 1024, cpuQuota: 50_000, pidsLimit: 256 },
       } as SessionContainer;
-      // ...while the workspace's shipit.yaml (read live) now declares 3 GiB.
+      // ...while the deployment limit (read live) now declares 3 GiB.
+      const prevCap = process.env.MAX_SESSION_MEMORY_MB;
+      process.env.MAX_SESSION_MEMORY_MB = "3072";
       tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "diagnostics-booted-"));
-      fs.writeFileSync(path.join(tmpDir, "shipit.yaml"), "agent:\n  memory: 3072\n");
+      try {
+        const result = await getSessionDiagnostics(
+          {
+            containerManager: fakeContainerManager({ container: sc }),
+            runnerRegistry: fakeRegistry(fakeRunner()),
+            serviceManagers: new Map(),
+            getLogBuffer: () => [],
+            getWorkspaceDir: () => tmpDir ?? null,
+          },
+          "sess-1",
+        );
 
-      const result = await getSessionDiagnostics(
-        {
-          containerManager: fakeContainerManager({ container: sc }),
-          runnerRegistry: fakeRegistry(fakeRunner()),
-          serviceManagers: new Map(),
-          getLogBuffer: () => [],
-          getWorkspaceDir: () => tmpDir ?? null,
-        },
-        "sess-1",
-      );
-
-      const health = result.health as Extract<typeof result.health, { containerState: string }>;
-      // Both values are present and distinct — the panel renders them side
-      // by side so the mismatch is visible without kernel-log inspection.
-      expect(health.bootedLimits?.memoryLimit).toBe(1024 * 1024 * 1024); // booted
-      expect(result.parsedConfig?.effectiveAgent.memory).toBe(3072);     // parsed (MiB)
-      expect(health.bootedLimits!.memoryLimit / 1024 / 1024).not.toBe(
-        result.parsedConfig?.effectiveAgent.memory,
-      );
+        const health = result.health as Extract<typeof result.health, { containerState: string }>;
+        // Both values are present and distinct — the panel renders them side
+        // by side so the mismatch is visible without kernel-log inspection.
+        expect(health.bootedLimits?.memoryLimit).toBe(1024 * 1024 * 1024); // booted
+        expect(result.parsedConfig?.effectiveAgent.memory).toBe(3072);     // live deployment setting (MiB)
+        expect(health.bootedLimits!.memoryLimit / 1024 / 1024).not.toBe(
+          result.parsedConfig?.effectiveAgent.memory,
+        );
+      } finally {
+        if (prevCap === undefined) delete process.env.MAX_SESSION_MEMORY_MB;
+        else process.env.MAX_SESSION_MEMORY_MB = prevCap;
+      }
     });
 
     it("reports bootedLimits: null when no container is tracked", async () => {

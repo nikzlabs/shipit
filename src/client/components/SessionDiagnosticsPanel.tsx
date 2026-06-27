@@ -78,7 +78,7 @@ interface ParsedShipitConfig {
   warnings: string[];
   /** YAML parse error message, if shipit.yaml is malformed. */
   parseError?: string;
-  /** Post-clamp values the container actually boots on. */
+  /** Deployment-owned values the container actually boots on. */
   effectiveAgent: { memory: number; cpu: number; pids: number; dockerAccess: boolean };
 }
 
@@ -358,20 +358,11 @@ function ParsedConfigRows({
   }
   const { agent, compose, warnings, version, parseError, effectiveAgent } = config;
 
-  // When env caps shrink a declared value, render "declared → effective"
-  // inline so the panel reads exactly the way someone debugging an OOM
-  // would want: the value they wrote, an arrow, the value the container
-  // actually booted on.
-  const memoryClamped = effectiveAgent.memory !== agent.memory;
-  const cpuClamped = effectiveAgent.cpu !== agent.cpu;
-  const pidsClamped = effectiveAgent.pids !== agent.pids;
-
   // What the container *actually* booted with (Docker units → human units).
   // The parsed config above is read live at request time; the booted
   // limits are frozen at container-create. They diverge exactly when a
-  // warm→claim HEAD jump changed agent.memory after the container booted —
-  // the incident where diagnostics showed memory: 3072 while the container
-  // ran on a 1 GiB cgroup. Showing both side by side surfaces that.
+  // deployment limit changed after the container booted. Showing both side by
+  // side surfaces that without implying the repository controls the budget.
   const bootedMemoryMiB = bootedLimits ? Math.round(bootedLimits.memoryLimit / 1024 / 1024) : null;
   const bootedCpu = bootedLimits ? bootedLimits.cpuQuota / 100_000 : null;
   const bootedPids = bootedLimits ? bootedLimits.pidsLimit : null;
@@ -389,25 +380,16 @@ function ParsedConfigRows({
         />
       )}
       <KvRow
-        label="agent.memory"
-        value={memoryClamped
-          ? `${agent.memory} MiB → ${effectiveAgent.memory} MiB (capped)`
-          : `${agent.memory} MiB`}
-        valueClass={memoryClamped ? "text-(--color-warning)" : undefined}
+        label="session memory"
+        value={`${effectiveAgent.memory} MiB`}
       />
       <KvRow
-        label="agent.cpu"
-        value={cpuClamped
-          ? `${agent.cpu} → ${effectiveAgent.cpu} (capped)`
-          : `${agent.cpu}`}
-        valueClass={cpuClamped ? "text-(--color-warning)" : undefined}
+        label="session cpu"
+        value={`${effectiveAgent.cpu}`}
       />
       <KvRow
-        label="agent.pids"
-        value={pidsClamped
-          ? `${agent.pids} → ${effectiveAgent.pids} (capped)`
-          : `${agent.pids}`}
-        valueClass={pidsClamped ? "text-(--color-warning)" : undefined}
+        label="session pids"
+        value={`${effectiveAgent.pids}`}
       />
       <KvRow
         label="booted memory"
@@ -494,8 +476,8 @@ function OomBreakerRows({ state }: { state: OomBreakerState | null }) {
       )}
       {state.tripped && (
         <p className="mt-1 text-(--color-text-secondary)">
-          The agent container hit its memory cap repeatedly. Increase
-          {" "}<code>agent.memory</code> in <code>shipit.yaml</code> and use
+          The agent container hit its memory cap repeatedly. Increase the
+          deployment's <code>MAX_SESSION_MEMORY_MB</code> setting and use
           {" "}<strong>Rescue session</strong> to retry — that clears the breaker.
         </p>
       )}

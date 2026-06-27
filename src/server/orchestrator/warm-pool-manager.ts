@@ -207,15 +207,9 @@ export function createWarmPool(
           const realCount = containerManager.size - containerManager.standbyCount;
           const maxIdle = credentialStore.getMaxIdleContainers();
           if (realCount < maxIdle) {
-            // `buildConfigForWorkspace` reads shipit.yaml so the standby
-            // container is provisioned with the user's declared agent
-            // resources (memory/cpu/pids) and docker-access capability.
-            // Without this entry point, plain `buildConfig` falls back to
-            // the manager's defaults (1.5 GB / 0.5 CPU / 4096 pids) — so a
-            // repo declaring `agent.memory: 3072` would get a 1.5 GB
-            // container from the warm pool, OOMing on first turn when
-            // npm install + claude both run inside the under-provisioned
-            // cgroup.
+            // `buildConfigForWorkspace` reads shipit.yaml for repo-scoped
+            // capabilities (not resource sizing) and applies deployment-owned
+            // session limits consistently to standby containers.
             // docs/183 Phase 7 — build the standby WITH the per-dep-dir overlay
             // specs so a warm-claimed session reuses an already-overlay-mounted
             // container. This is the one container-creation path that does NOT go

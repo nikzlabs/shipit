@@ -529,22 +529,17 @@ describe("standby container pre-warming", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Standby resources propagated from shipit.yaml
+// Standby resources propagated from deployment config
 // ---------------------------------------------------------------------------
 //
 // Regression: warm-pool standby containers were created via
 // `containerManager.buildConfig(...)` without passing `memoryLimit` /
 // `cpuQuota` / `pidsLimit`, so they silently fell back to the manager's
-// defaults (1 GiB / 0.5 CPU / 4096 pids). A workspace declaring
-// `agent.memory: 3072` in shipit.yaml would still get a 1 GiB container
-// from the warm pool, OOMing on first turn (npm install + claude
-// competing inside the under-provisioned cgroup — see the field report
-// in docs/124-session-rescue-and-diagnostics follow-up). Fix:
-// `warmSessionForRepo` now reads shipit.yaml from the cloned workspace
-// before building the standby config.
+// defaults (1.5 GiB / 0.5 CPU / 4096 pids). Deployment env limits must apply
+// to standby containers too, or they boot smaller than on-demand sessions.
 // ---------------------------------------------------------------------------
 
-describe("standby container resources propagated from shipit.yaml", () => {
+describe("standby container resources propagated from deployment config", () => {
   let tmpDir: string;
   let app: FastifyInstance;
   let sessionManager: SessionManager;
@@ -552,6 +547,9 @@ describe("standby container resources propagated from shipit.yaml", () => {
   let containerManager: SessionContainerManager;
   let fakeDocker: ReturnType<typeof createFakeDocker>;
   let origGitTerminalPrompt: string | undefined;
+  let origMemoryLimit: string | undefined;
+  let origCpuLimit: string | undefined;
+  let origPidsLimit: string | undefined;
   let dbManager: DatabaseManager;
 
   beforeEach(async () => {
@@ -560,7 +558,13 @@ describe("standby container resources propagated from shipit.yaml", () => {
     sessionManager = new SessionManager(dbManager);
     repoStore = new RepoStore(dbManager);
     origGitTerminalPrompt = process.env.GIT_TERMINAL_PROMPT;
+    origMemoryLimit = process.env.MAX_SESSION_MEMORY_MB;
+    origCpuLimit = process.env.MAX_SESSION_CPU;
+    origPidsLimit = process.env.MAX_SESSION_PIDS;
     process.env.GIT_TERMINAL_PROMPT = "0";
+    process.env.MAX_SESSION_MEMORY_MB = "3072";
+    process.env.MAX_SESSION_CPU = "2";
+    process.env.MAX_SESSION_PIDS = "2048";
 
     fakeDocker = createFakeDocker();
     containerManager = new SessionContainerManager({
@@ -574,13 +578,12 @@ describe("standby container resources propagated from shipit.yaml", () => {
 
     const credentialStore = createTestCredentialStore(tmpDir);
 
-    // Bare cache contains a shipit.yaml requesting 3 GiB / 2 CPU / 2048 pids.
-    // The helper also mirrors the cache as a local bare + sets `insteadOf`
-    // redirect so fetches stay on local I/O.
+    // The helper mirrors the cache as a local bare + sets `insteadOf` redirect
+    // so fetches stay on local I/O.
     seedRepoCacheWithLocalBare({
       tmpDir,
       repoUrl: REPO_URL,
-      seedFiles: { "shipit.yaml": "agent:\n  memory: 3072\n  cpu: 2.0\n  pids: 2048\n" },
+      seedFiles: { "shipit.yaml": "agent:\n  install: npm install\n" },
     });
     repoStore.add(REPO_URL);
     repoStore.setReady(REPO_URL);
@@ -605,6 +608,12 @@ describe("standby container resources propagated from shipit.yaml", () => {
     dbManager.close();
     if (origGitTerminalPrompt === undefined) delete process.env.GIT_TERMINAL_PROMPT;
     else process.env.GIT_TERMINAL_PROMPT = origGitTerminalPrompt;
+    if (origMemoryLimit === undefined) delete process.env.MAX_SESSION_MEMORY_MB;
+    else process.env.MAX_SESSION_MEMORY_MB = origMemoryLimit;
+    if (origCpuLimit === undefined) delete process.env.MAX_SESSION_CPU;
+    else process.env.MAX_SESSION_CPU = origCpuLimit;
+    if (origPidsLimit === undefined) delete process.env.MAX_SESSION_PIDS;
+    else process.env.MAX_SESSION_PIDS = origPidsLimit;
     await app.close();
     await new Promise((r) => setTimeout(r, 50));
     try {
@@ -612,7 +621,7 @@ describe("standby container resources propagated from shipit.yaml", () => {
     } catch { /* ignore */ }
   });
 
-  it("standby container honors agent.memory/cpu/pids from shipit.yaml", async () => {
+  it("standby container honors deployment-owned session limits", async () => {
     await waitFor(
       () => !!repoStore.get(REPO_URL)?.warmSessionId,
       10000,

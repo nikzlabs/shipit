@@ -64,7 +64,7 @@ const samplePayload = {
     { source: "server", text: "Session container paused after 60s.", timestamp: "2026-05-07T12:00:00.000Z" },
   ],
   parsedConfig: {
-    agent: { memory: 3072, cpu: 2.0, pids: 2048, install: ["npm install"] },
+    agent: { memory: 1536, cpu: 0.5, pids: 4096, install: ["npm install"] },
     compose: { file: "docker-compose.yml", dockerSocket: false },
     warnings: [],
     effectiveAgent: { memory: 3072, cpu: 2.0, pids: 2048, dockerAccess: false },
@@ -142,7 +142,7 @@ describe("SessionDiagnosticsPanel", () => {
     expect(firstCall).toBe("/api/sessions/sess-7/diagnostics");
   });
 
-  it("renders the parsed shipit.yaml values from the payload", async () => {
+  it("renders the parsed shipit.yaml setup and deployment limits from the payload", async () => {
     mockOk(samplePayload);
     render(
       <SessionDiagnosticsPanel sessionId="sess-1" open={true} onOpenChange={() => {}} />,
@@ -160,7 +160,7 @@ describe("SessionDiagnosticsPanel", () => {
       ...samplePayload,
       parsedConfig: {
         agent: { memory: 1024, cpu: 0.5, pids: 4096, install: [] },
-        warnings: ["The `resources` block has been replaced by `agent`."],
+        warnings: ["The `resources` block has been removed."],
         effectiveAgent: { memory: 1024, cpu: 0.5, pids: 4096, dockerAccess: false },
       },
     });
@@ -168,7 +168,7 @@ describe("SessionDiagnosticsPanel", () => {
       <SessionDiagnosticsPanel sessionId="sess-1" open={true} onOpenChange={() => {}} />,
     );
     await waitFor(() => {
-      expect(screen.getByText(/`resources` block has been replaced/)).toBeTruthy();
+      expect(screen.getByText(/`resources` block has been removed/)).toBeTruthy();
     });
     // memory falls through to the library default, which is the value the
     // container actually booted on — visible right next to the warning.
@@ -199,17 +199,17 @@ describe("SessionDiagnosticsPanel", () => {
       screen.getByText((_content, node) => {
         if (node?.tagName !== "P") return false;
         const text = node.textContent ?? "";
-        return text.includes("Increase") && text.includes("agent.memory") && text.includes("Rescue session");
+        return text.includes("Increase") && text.includes("MAX_SESSION_MEMORY_MB") && text.includes("Rescue session");
       }),
     ).toBeTruthy();
   });
 
-  it("renders declared → effective when an env cap clamps a value", async () => {
+  it("renders deployment limits and warnings", async () => {
     mockOk({
       ...samplePayload,
       parsedConfig: {
-        agent: { memory: 3072, cpu: 2.0, pids: 2048, install: [] },
-        warnings: ["agent.memory 3072 MiB clamped to 1024 MiB by MAX_SESSION_MEMORY_MB"],
+        agent: { memory: 1536, cpu: 0.5, pids: 4096, install: [] },
+        warnings: ["`agent.memory` is deprecated and ignored. Set deployment env `MAX_SESSION_MEMORY_MB` to size session containers."],
         effectiveAgent: { memory: 1024, cpu: 2.0, pids: 2048, dockerAccess: false },
       },
     });
@@ -217,7 +217,7 @@ describe("SessionDiagnosticsPanel", () => {
       <SessionDiagnosticsPanel sessionId="sess-1" open={true} onOpenChange={() => {}} />,
     );
     await waitFor(() => {
-      expect(screen.getByText(/3072 MiB → 1024 MiB \(capped\)/)).toBeTruthy();
+      expect(screen.getByText("1024 MiB")).toBeTruthy();
     });
     expect(screen.getByText(/MAX_SESSION_MEMORY_MB/)).toBeTruthy();
   });
