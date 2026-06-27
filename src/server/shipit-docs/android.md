@@ -127,7 +127,7 @@ too slow — fall back to a cloud device farm (below).
 # docker-compose.yml — add alongside any web preview services
 services:
   emulator:
-    image: budtmo/docker-android:emulator_14   # or an AOSP emulator-webrtc image
+    image: budtmo/docker-android:emulator_14.0   # or an AOSP emulator-webrtc image
     devices: ["/dev/kvm:/dev/kvm"] # hardware accel (the platform allowlists exactly this mapping)
     ports: ["6080:6080"]           # the emulator's web UI — rendered in the preview pane
     expose: ["5555"]               # adb, reachable on the Compose network by service name

@@ -28,7 +28,7 @@ phases are future work (the session brief said do not commit to a heavy implemen
 - [x] Commit the `android/` Gradle wrapper (8.7) — `gradlew`, `gradlew.bat`, `gradle/wrapper/*`
 - [x] On-demand SDK components via `sdkmanager` (agent-run, error-driven) instead of an orchestrator-side staged resolver — SDK dirs made writable for the runtime user
 - [x] `shipit-docs/android.md` (platform-global) + `.claude/skills/android-build` skill + `environment.md`/`README.md` updates
-- [ ] **CI/post-deploy only:** green `assembleDebug` + `lint` + a JVM test for (a) a generic repo and (b) a monorepo — needs the rebuilt session-worker image (can't build in-session)
+- [x] **(b) monorepo verified:** `cd android && ./gradlew assembleDebug lint` builds **green in a fresh session** on the rebuilt image (the `android/` wrapper built from its subdir inside the web monorepo, web side unaffected). **(a) still open:** a generic repo with off-matrix `compileSdk`/JDK (to exercise the per-session overlay) + a JVM test — `android/` uses baked `android-34/35` so it never hits the overlay; needs the SHI-205 native test app.
 
 ### Phase 2 — snapshot tests as the visual signal (shipped)
 
@@ -42,7 +42,7 @@ phases are future work (the session brief said do not commit to a heavy implemen
 - [x] Operator kill-switch `SESSION_ALLOW_DEV_KVM=0` (`isDevKvmAllowed`) — deployment-level disable, not a per-repo field
 - [x] Co-located unit tests (allow exact mapping in all forms; reject other devices/remaps/non-list; reject when kill-switch off; env parsing)
 - [x] Canonical emulator Compose recipe + constraints in `compose.md`; `android.md` + skill updated with the one-device rule + kill-switch
-- [ ] **Operator/post-deploy only:** confirm host KVM (`kvm-ok`) and that the budtmo emulator image boots + is `adb`-reachable on a real deployment (also check the seccomp profile permits KVM ioctls)
+- [x] **Operator/post-deploy only:** confirm host KVM (`kvm-ok`) and that the budtmo emulator image boots + is `adb`-reachable on a real deployment (also check the seccomp profile permits KVM ioctls) — verified on a deployment host: `kvm-ok` passes, `budtmo/docker-android:emulator_14.0` boots and `adb devices` shows `emulator-5554 device` under Docker's **default** seccomp profile (no custom profile needed). Recipe tag corrected `emulator_14`→`emulator_14.0`.
 
 ### Phases 4–5 (future work — not this session)
 

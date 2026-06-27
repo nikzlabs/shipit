@@ -163,7 +163,7 @@ and the `/dev/kvm` allowance described above:
 # alongside any web preview services (one compose file holds both)
 services:
   emulator:
-    image: budtmo/docker-android:emulator_14   # or an AOSP emulator-webrtc image
+    image: budtmo/docker-android:emulator_14.0   # or an AOSP emulator-webrtc image
     devices: ["/dev/kvm:/dev/kvm"] # hardware accel — the generator allowlists exactly this mapping
     ports: ["6080:6080"]           # preview metadata: x-shipit-preview proxies ports[0]'s container port (the web UI)
     expose: ["5555"]               # adb, reachable on the Compose network by service name
