@@ -28,7 +28,7 @@ phases are future work (the session brief said do not commit to a heavy implemen
 - [x] Commit the `android/` Gradle wrapper (8.7) — `gradlew`, `gradlew.bat`, `gradle/wrapper/*`
 - [x] On-demand SDK components via `sdkmanager` (agent-run, error-driven) instead of an orchestrator-side staged resolver — SDK dirs made writable for the runtime user
 - [x] `shipit-docs/android.md` (platform-global) + `.claude/skills/android-build` skill + `environment.md`/`README.md` updates
-- [ ] **CI/post-deploy only:** green `assembleDebug` + `lint` + a JVM test for (a) a generic repo and (b) a monorepo — needs the rebuilt session-worker image (can't build in-session)
+- [x] **(b) monorepo verified:** `cd android && ./gradlew assembleDebug lint` builds **green in a fresh session** on the rebuilt image (the `android/` wrapper built from its subdir inside the web monorepo, web side unaffected). **(a) still open:** a generic repo with off-matrix `compileSdk`/JDK (to exercise the per-session overlay) + a JVM test — `android/` uses baked `android-34/35` so it never hits the overlay; needs the SHI-205 native test app.
 
 ### Phase 2 — snapshot tests as the visual signal (shipped)
 
