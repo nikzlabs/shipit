@@ -32,7 +32,6 @@ import {
   isWorkspaceCloneInSyncWithCache,
   syncLocalDefaultBranchToOrigin,
 } from "../git-utils.js";
-import { resolveAgentDockerLimits } from "../session-container.js";
 import { ensureBareCache } from "../repo-git.js";
 import { getErrorMessage } from "../../shared/utils.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
@@ -168,46 +167,6 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
   }
 
   /**
-   * After a claim-time clone refresh moved HEAD, the standby container may
-   * have booted with resource limits derived from a now-stale `shipit.yaml`
-   * — the irreducible warm→claim time gap (warm provisions from commit C1,
-   * claim refreshes to C2). Container memory is immutable at runtime, so the
-   * only fix is to destroy the standby: the runner factory's fresh-create
-   * path rebuilds it with the current limits on first attach.
-   */
-  async function reprovisionStandbyIfLimitsChanged(
-    sessionId: string,
-    workspaceDir: string,
-  ): Promise<void> {
-    const cm = deps.containerManager;
-    if (!cm) return;
-    const container = cm.get(sessionId);
-    if (!container?.bootedLimits) return;
-    let fresh;
-    try {
-      fresh = resolveAgentDockerLimits(workspaceDir);
-    } catch (err) {
-      console.warn(`[claim-session] Cannot re-derive limits for ${sessionId}: ${getErrorMessage(err)}`);
-      return;
-    }
-    const booted = container.bootedLimits;
-    if (
-      fresh.memoryLimit === booted.memoryLimit &&
-      fresh.cpuQuota === booted.cpuQuota &&
-      fresh.pidsLimit === booted.pidsLimit
-    ) {
-      return;
-    }
-    console.warn(
-      `[claim-session] Standby container for ${sessionId} booted with stale resource limits ` +
-        `(mem ${booted.memoryLimit} → ${fresh.memoryLimit}, cpu ${booted.cpuQuota} → ${fresh.cpuQuota}, ` +
-        `pids ${booted.pidsLimit} → ${fresh.pidsLimit}) after a HEAD change — destroying so it ` +
-        `rebuilds with the current shipit.yaml on first attach.`,
-    );
-    await cm.destroy(sessionId);
-  }
-
-  /**
    * Surface a workspace-clone fetch that silently no-op'd during a claim —
    * the W2 root cause. When `fetched` is false the clone was *not* refreshed
    * against the real remote, so the claimed session may be on stale code.
@@ -262,14 +221,12 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
 
   /**
    * Shared tail of the reuse / warm / waiting sub-paths: refresh the claimed
-   * session's clone to latest main, surface a stale-fetch warning, and
-   * re-provision the standby if a HEAD move invalidated its booted limits.
-   * Returns the fetch duration (for timing). Deliberately does NOT re-warm
-   * the pool — that's the caller's concern.
+   * session's clone to latest main and surface a stale-fetch warning. Returns
+   * the fetch duration (for timing). Deliberately does NOT re-warm the pool —
+   * that's the caller's concern.
    */
   async function refreshClaimedSession(
     url: string,
-    sessionId: string,
     workspaceDir: string,
     forceFetch: boolean,
   ): Promise<number> {
@@ -291,9 +248,6 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
         (err) => deps.githubAuthManager.markTokenInvalid(`claim-session refresh failed for ${url}: ${err.message}`),
       );
       warnIfStaleClaimFetch(r.fetched, url);
-      if (r.headChanged) {
-        await reprovisionStandbyIfLimitsChanged(sessionId, workspaceDir);
-      }
       return r.fetchDurationMs;
     } catch (err) {
       console.error(`[claim-session] Failed to refresh clone to latest main:`, getErrorMessage(err));
@@ -347,7 +301,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
           existsSync(path.join(reusable.workspaceDir, ".git"))
         ) {
           claimPath = "reuse";
-          const fetchDurationMs = await refreshClaimedSession(url, reusable.id, reusable.workspaceDir, forceFetch);
+          const fetchDurationMs = await refreshClaimedSession(url, reusable.workspaceDir, forceFetch);
           return { sessionId: reusable.id, workspaceDir: reusable.workspaceDir, fetchDurationMs };
         }
 
@@ -359,7 +313,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
             claimPath = "warm";
             const sessionId = currentRepo.warmSessionId;
             deps.repoStore.setWarmSessionId(url, undefined);
-            const fetchDurationMs = await refreshClaimedSession(url, sessionId, warmSession.workspaceDir, forceFetch);
+            const fetchDurationMs = await refreshClaimedSession(url, warmSession.workspaceDir, forceFetch);
             rewarmPool(url);
             return { sessionId, workspaceDir: warmSession.workspaceDir, fetchDurationMs };
           }
@@ -376,7 +330,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
               claimPath = "waiting";
               const sessionId = freshRepo.warmSessionId;
               deps.repoStore.setWarmSessionId(url, undefined);
-              const fetchDurationMs = await refreshClaimedSession(url, sessionId, warmSession.workspaceDir, forceFetch);
+              const fetchDurationMs = await refreshClaimedSession(url, warmSession.workspaceDir, forceFetch);
               rewarmPool(url);
               return { sessionId, workspaceDir: warmSession.workspaceDir, fetchDurationMs };
             }

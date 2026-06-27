@@ -262,11 +262,11 @@ describe("Integration: warm-pool / claim staleness (W2 + W3)", () => {
     });
   }, 30000);
 
-  it("W3: auto-sizing keeps a standby's limits stable across a HEAD change, so claim does not reprovision it", async () => {
+  it("W3: a HEAD change does not destroy a standby (limits are host-stable under auto-sizing)", async () => {
     // Memory is host-derived (docs/229), so the booted limit no longer depends
     // on shipit.yaml. A HEAD jump that changes a (now-ignored) `agent.memory`
-    // can't make a standby's limits stale — `reprovisionStandbyIfLimitsChanged`
-    // re-derives the same host value and leaves the standby in place.
+    // can't make a standby's limits stale, so claim leaves the standby in place.
+    // (The old stale-limit reprovision path was removed once it became dead.)
     const { remoteDir } = await setup({ "README.md": "# test\n" });
 
     await waitFor(() => !!repoStore.get(repoUrl)?.warmSessionId, 10000, "warm #1");
@@ -282,9 +282,8 @@ describe("Integration: warm-pool / claim staleness (W2 + W3)", () => {
 
     const destroySpy = vi.spyOn(containerManager, "destroy");
 
-    // Claim → warm path → refreshCloneToLatestMain fetches c2 → headChanged →
-    // reprovisionStandbyIfLimitsChanged re-derives the SAME host-sized limits →
-    // no drift → the standby is NOT destroyed.
+    // Claim → warm path → refreshCloneToLatestMain fetches c2 → headChanged,
+    // but nothing reprovisions on limits anymore → the standby is NOT destroyed.
     const res = await app.inject({
       method: "POST",
       url: `/api/repos/${encodeURIComponent(repoUrl)}/claim-session`,

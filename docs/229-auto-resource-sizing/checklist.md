@@ -11,5 +11,5 @@
 - [x] Update tests: `resolve-agent-docker-limits`, `shipit-config`, `diagnostics`, `session-container`, client panel, `diagnostics-endpoint`
 - [x] Update warm-pool tests (`standby-container`, `warm-pool-staleness` W2/W3) — standby is auto-sized; limits can't go stale across a HEAD jump
 - [x] Update `src/server/shipit-docs/shipit-yaml.md`: remove the resource-field rows; document automatic sizing + optional env overrides
-- [ ] Follow-up: the stale-limit reprovision machinery (`reprovisionStandbyIfLimitsChanged`, `bootedLimits` comparison) is now vestigial for shipit.yaml changes (memory is host-stable); consider removing it in a later cleanup
-- [ ] Follow-up: remove the stale "full suite OOMs the box" framing in CLAUDE.md once the bigger host is the norm (separate change)
+- [x] Remove the now-dead stale-limit reprovision machinery (`reprovisionStandbyIfLimitsChanged` + its claim-time call); `bootedLimits` kept as diagnostics only (booted-vs-live-sizing display)
+- [x] Reframe the "full suite OOMs the box" guidance in CLAUDE.md — sizing is automatic, the suite runs in-box when the session has enough memory
