@@ -167,6 +167,39 @@ adb shell monkey -p com.shipit.wrapper -c android.intent.category.LAUNCHER 1   #
 
 Re-run install + launch after each rebuild to refresh what the preview pane shows.
 
+### Automatic build + hot reload (no agent, like the web dev server)
+
+To make the preview show the app **on start with no agent** — and refresh it as
+you edit — pair the emulator with a second **build service** that holds the
+SDK/Gradle, so the whole loop lives in Compose (just like a web `dev` service):
+
+```yaml
+services:
+  emulator:
+    image: budtmo/docker-android:emulator_14.0
+    environment: [WEB_VNC=true, EMULATOR_DEVICE=Samsung Galaxy S10]
+    devices: ["/dev/kvm:/dev/kvm"]
+    ports: ["6080:6080"]
+    expose: ["5555"]
+    depends_on: [android]        # starting the preview brings the builder up too
+    x-shipit-preview: manual
+  android:                       # the SDK/Gradle build + hot-reload worker
+    build: { context: ., dockerfile: docker/Dockerfile.android-dev }
+    working_dir: /workspace/android
+    volumes: [".:/workspace"]
+    command: ["bash", "/workspace/docker/android-hot-reload.sh"]
+```
+
+The `android` service builds the debug APK, `adb install`s it onto `emulator`,
+launches it, then **watches the source and rebuilds + reinstalls + relaunches on
+every change**. That is the "hot reload" loop. Note the honest limit: native
+Android has **no headless hot-swap** (Android Studio's Apply Changes / Compose
+Live Edit are IDE-only), so each change is a full rebuild + reinstall — seconds
+to a minute, coarser than web HMR, but agent-free and automatic. Put the APK
+build **here, not in `agent.install`**, so it runs only when the preview is
+opened rather than taxing every session. See `docker/android-hot-reload.sh` and
+ShipIt's own `docker-compose.yml` for the reference implementation.
+
 ### Debug a running app
 
 ```bash

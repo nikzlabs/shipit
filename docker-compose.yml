@@ -165,6 +165,14 @@ services:
   # the container's noVNC web UI and renders it in the preview pane. The agent
   # reaches adb on the Compose network by service DNS: `adb connect emulator:5555`.
   #
+  # The emulator boots a BLANK device — it doesn't know about our app. The
+  # `android` service below builds the APK, installs it, and hot-reloads it on
+  # change. `depends_on: [android]` makes starting this preview bring that builder
+  # up too (compose `up emulator` starts its dependencies), so the user clicks one
+  # thing and the app appears — like the web `dev` service. (The reverse edge —
+  # `android` needing the device — is handled by polling adb in the build script,
+  # not a depends_on, to avoid a dependency cycle.)
+  #
   # Requires `/dev/kvm` on the outer host (verify with `kvm-ok`) and that the
   # deployment hasn't disabled the device passthrough (`SESSION_ALLOW_DEV_KVM=0`).
   # `/dev/kvm:/dev/kvm` is the only `devices:` mapping ShipIt's compose generator
@@ -185,4 +193,31 @@ services:
     expose:
       # adb, reachable on the Compose network by service name (not host-published).
       - "5555"
+    depends_on:
+      - android
     x-shipit-preview: manual
+
+  # Android build + hot-reload service — the Android analog of the web `dev`
+  # service. Holds the SDK + Gradle (docker/Dockerfile.android-dev); it builds the
+  # `android/` debug APK, installs it onto the `emulator` service over adb, and
+  # then watches the source tree and rebuilds + reinstalls + relaunches on every
+  # change. That's the "hot reload" loop — coarser than web HMR (a full rebuild +
+  # reinstall, not a code hot-swap, because native Android has no headless
+  # hot-swap), but it keeps the preview reflecting the current code with no agent.
+  #
+  # No `x-shipit-preview` marker: this is a worker, not a previewable surface. It
+  # starts because `emulator` depends_on it (see above). The build runs only when
+  # the user opens the emulator preview — it does NOT tax normal web sessions
+  # (which is why the APK build lives here and not in `agent.install`).
+  android:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.android-dev
+    image: shipit-android-dev:local
+    working_dir: /workspace/android
+    init: true
+    volumes:
+      # Live source (the build reads it; the watch loop reacts to edits) + the
+      # APK output the install step reads. Shared with the outer workspace.
+      - .:/workspace
+    command: ["bash", "/workspace/docker/android-hot-reload.sh"]

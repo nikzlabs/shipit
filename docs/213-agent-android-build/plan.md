@@ -219,6 +219,30 @@ needing a new preview surface:
   `present` tool or as a PR-card artifact). For ShipIt's own `android/`, the "preview" is just the web
   preview pointed at a dev URL inside the WebView — the native emulator matters for general apps.
 
+### Agent-free preview + hot reload (the build belongs in Compose)
+
+The emulator is only a **blank device** — it doesn't build or load the app, and `budtmo` has no APK
+auto-install/boot hook. To make the preview show the app **on start with no agent** (the bar the web `dev`
+service sets), the build has to live in the **Compose stack**, not in `agent.install` — putting it in
+`agent.install` would either bypass the bare-`npm install` tuning or add the Android build to every session.
+So the stack is two services (see the repo's `docker-compose.yml`):
+
+- **`emulator`** — `budtmo` + `WEB_VNC=true`, serves noVNC on 6080 (the preview pane), `expose: 5555` for
+  adb, `x-shipit-preview: manual`, and `depends_on: [android]` so opening the preview starts the builder too
+  (`docker compose up emulator` pulls in its dependencies).
+- **`android`** — the SDK/Gradle build + hot-reload worker (`docker/Dockerfile.android-dev`, mirroring the
+  session-worker SDK bake). Its `docker/android-hot-reload.sh` polls adb for the device, then builds →
+  `adb install -r` → launches, and re-runs that on every source change. No `x-shipit-preview` marker (it's a
+  worker, not a surface); it polls `emulator:5555` rather than declaring a reverse `depends_on`, avoiding a
+  cycle.
+
+**"Hot reload" — honest scope.** Native Android has no headless hot-SWAP (Android Studio's Apply Changes /
+Compose Live Edit are IDE-bound). The Compose loop is therefore a full **rebuild + reinstall + relaunch** on
+change — seconds to a minute, coarser than web HMR, but agent-free and automatic. The watch is **polling**
+(bind-mounts drop inotify events — same reason the web `dev` service forces `CHOKIDAR_USEPOLLING`).
+**Not yet host-verified** (needs a KVM host + the built `android` image; also confirm Compose service
+containers have egress for Gradle dep resolution).
+
 ## Agent surfacing
 
 1. **`src/server/shipit-docs/android.md`** (baked into the session image at `/shipit-docs/`) — the headless
