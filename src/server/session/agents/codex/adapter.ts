@@ -158,15 +158,16 @@ export class CodexAdapter
     // file-change/apply-patch items, MCP/dynamic tools, subagent collaboration,
     // web/image/tool-discovery items, and ShipIt's ask bridge.
     toolNames: [...CODEX_TOOL_NAMES],
-    // Mirror of agent-registry.ts. Verified against the ChatGPT
-    // `/backend-api/codex/models` endpoint — every entry returned for a
-    // Plus plan with `visibility: list` and `supported_in_api: true`,
-    // including the codex-specialized `gpt-5.3-codex` variant. Keep in
-    // sync with the registry; both feed the same picker in the UI.
+    // Mirror of agent-registry.ts. GPT-5.6 is the current OpenAI frontier
+    // family; the unsuffixed alias routes to Sol. Keep in sync with the
+    // registry; both feed the same picker in the UI.
     models: [
-      "gpt-5.5",
+      "gpt-5.6",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
       "gpt-5.4",
       "gpt-5.4-mini",
+      "gpt-5.5",
       "gpt-5.3-codex",
       "gpt-5.2",
     ],

@@ -682,7 +682,7 @@ export class CodexEventHandler {
       type: "agent_init",
       agentId: "codex",
       sessionId: this.threadId ?? `codex-${Date.now()}`,
-      model: params.model ?? "gpt-5.5",
+      model: params.model ?? "gpt-5.6",
       tools: this.toolNames,
     });
 
