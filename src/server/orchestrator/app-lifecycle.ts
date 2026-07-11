@@ -34,6 +34,10 @@ import type { RepoGit } from "./repo-git.js";
 import type { GitManager } from "../shared/git.js";
 import type { AgentAuthManager, AgentAuthFailedPayload } from "./agent-auth-manager.js";
 import type { AgentAuthPendingDetails } from "../shared/types/ws-server-messages.js";
+import type {
+  AgentAuthLogPayload,
+  AgentAuthProgressPayload,
+} from "./agents/claude/auth-diagnostics.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { ProviderAccountManager } from "./provider-account-manager.js";
 import type { AgentRegistry } from "../shared/agent-registry.js";
@@ -1129,6 +1133,14 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
   // the concrete classes for back-compat with the unit tests and any
   // remaining direct listeners, but no SSE wiring depends on them.
   for (const [agentId, mgr] of authManagers) {
+    mgr.on("progress", (payload: AgentAuthProgressPayload) => {
+      sseBroadcast("agent_auth_progress", payload);
+    });
+
+    mgr.on("log", (payload: AgentAuthLogPayload) => {
+      sseBroadcast("agent_auth_log", payload);
+    });
+
     mgr.on("pending", (details: AgentAuthPendingDetails) => {
       // docs/150 — qualify the broadcast with the account being authenticated
       // (read synchronously here, while the flow is still active) so the

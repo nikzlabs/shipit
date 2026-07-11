@@ -170,6 +170,14 @@ export function useServerEvents(): void {
       // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
       if (data.agentId === "claude" && data.details.kind === "code-paste-url") {
         useSessionStore.getState().setAuthUrl(data.details.verificationUri);
+        const currentAttemptId = useSettingsStore.getState().claudeAuthDiagnostics.attemptId;
+        if (currentAttemptId) {
+          useSettingsStore.getState().setClaudeAuthProgress({
+            attemptId: currentAttemptId,
+            phase: "waiting_for_code",
+            message: "Authentication link received. Paste the authorization code after signing in.",
+          });
+        }
       // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
       } else if (data.agentId === "codex" && data.details.kind === "device-code") {
         useSettingsStore.getState().setCodexDeviceAuth({
@@ -186,6 +194,7 @@ export function useServerEvents(): void {
       // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
       if (data.agentId === "claude") {
         useSessionStore.getState().setAuthUrl(null);
+        useSettingsStore.getState().finishClaudeAuthDiagnostics("complete", "Claude sign-in completed.");
       // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
       } else if (data.agentId === "codex") {
         useSettingsStore.getState().setCodexDeviceAuth(null);
@@ -205,6 +214,10 @@ export function useServerEvents(): void {
         // the path the legacy `auth_required {}` broadcast took for
         // refresher-revoked accounts.
         useSessionStore.getState().setAuthUrl(null);
+        useSettingsStore.getState().finishClaudeAuthDiagnostics(
+          "failed",
+          data.message ?? "Claude sign-in failed. You can retry or copy the diagnostic details.",
+        );
         if (data.reason === "revoked") {
           useUiStore.getState().setToast({
             message: data.message ?? "Claude authentication expired. Sign in again.",
@@ -227,6 +240,46 @@ export function useServerEvents(): void {
             ? "Sign-in was denied."
             : "Sign-in failed. Try again.";
         useSettingsStore.getState().setCodexDeviceAuthError(data.message ?? fallback);
+      }
+    });
+
+    es.addEventListener("agent_auth_progress", (e: MessageEvent) => {
+      const data = JSON.parse(e.data as string) as {
+        agentId: AgentId;
+        attemptId: string;
+        phase: "starting" | "waiting_for_cli" | "skipping_setup" | "waiting_for_url" | "waiting_for_code" | "checking_credentials" | "complete" | "failed";
+        message: string;
+        elapsedMs?: number;
+      };
+      // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing for unified auth events.
+      if (data.agentId === "claude") {
+        useSettingsStore.getState().setClaudeAuthProgress({
+          attemptId: data.attemptId,
+          phase: data.phase,
+          message: data.message,
+          ...(data.elapsedMs !== undefined ? { elapsedMs: data.elapsedMs } : {}),
+        });
+      }
+    });
+
+    es.addEventListener("agent_auth_log", (e: MessageEvent) => {
+      const data = JSON.parse(e.data as string) as {
+        agentId: AgentId;
+        attemptId: string;
+        timestamp: string;
+        level: "debug" | "info" | "warn" | "error";
+        source: "shipit" | "claude_stdout" | "claude_stderr" | "claude_control";
+        message: string;
+      };
+      // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing for unified auth events.
+      if (data.agentId === "claude") {
+        useSettingsStore.getState().appendClaudeAuthLog({
+          attemptId: data.attemptId,
+          timestamp: data.timestamp,
+          level: data.level,
+          source: data.source,
+          message: data.message,
+        });
       }
     });
 

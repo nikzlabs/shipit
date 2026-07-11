@@ -86,6 +86,30 @@ feed only the Settings card's inline Step 1 / Step 2 view and onboarding. The
 but are no longer emitted by the server (left in place to avoid churning the
 discriminated server-message union).
 
+### Claude auth diagnostics
+
+The Claude Settings card also receives a progressive diagnostic stream for the
+current or most recent `claude /login` attempt. This is deliberately secondary
+UI: the card first renders structured progress (`starting`, `waiting_for_cli`,
+`waiting_for_url`, `waiting_for_code`, `checking_credentials`, `complete`,
+`failed`) and only then offers a collapsed **Claude CLI output** disclosure with
+sanitized, chronological ShipIt/CLI observations.
+
+Two SSE events carry the diagnostics:
+
+- `agent_auth_progress` — `{ agentId, accountId?, attemptId, phase, message, elapsedMs? }`
+- `agent_auth_log` — `{ agentId, accountId?, attemptId, timestamp, level, source, message }`
+
+`AuthManager` sanitizes diagnostic text before emitting either event. The
+sanitizer strips ANSI and redacts OAuth URL query strings, token/code-like
+assignments, bearer/API-key values, email addresses, and credential paths. The
+existing `agent_auth_pending` event still carries the full verification URL
+because the sign-in button needs it, but diagnostics never do.
+
+The client keeps a bounded 200-entry buffer in `settings-store` and preserves
+the last failed attempt so users can copy useful details after a failed or
+oddly-exited CLI run. A new auth attempt replaces the previous buffer.
+
 ## Key files
 
 - `src/server/orchestrator/ws-handlers/send-message.ts` — pre-flight auth gate
@@ -94,6 +118,9 @@ discriminated server-message union).
 - `src/client/AuthOverlay.tsx` — onboarding gate (modal removed)
 - `src/client/components/ModelAgentSelector.tsx` — disables unauthenticated agents
 - `src/client/components/ClaudeAuthCard.tsx` / `CodexAuthCard.tsx` — Settings auth flows
+- `src/server/orchestrator/agents/claude/auth-diagnostics.ts` — Claude auth diagnostic redaction/types
+- `src/client/stores/settings-store.ts` — bounded Claude auth diagnostic buffer
+- `src/client/hooks/useServerEvents.ts` — auth progress/log SSE handlers
 
 ## Tests
 
@@ -106,6 +133,9 @@ discriminated server-message union).
   error and never call `startOAuthFlow`.
 - `integration_tests/prompt-queuing.test.ts` — mid-turn `auth_required` still
   tears the turn down; the client now receives an `error`.
+- `agents/claude/auth-manager.test.ts` — diagnostic emission + sanitizer redaction.
+- `ClaudeAuthCard.test.tsx` / `useServerEvents.test.ts` — status rendering,
+  expandable diagnostics, copy action, and failed-attempt retry state.
 
 ## Known residual
 

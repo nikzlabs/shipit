@@ -17,6 +17,7 @@ import {
 } from "../utils/local-storage.js";
 import { isValidVoice, defaultVoiceFor, providerSpeeds } from "../../server/shared/voice-catalog.js";
 import { getKeybindingDef, type KeybindingId } from "../keybindings/registry.js";
+import type { AgentAuthPhase } from "../../server/shared/types/ws-server-messages/auth.js";
 
 /**
  * In-flight `codex login --device-auth` state. Server pushes this via SSE
@@ -31,6 +32,27 @@ export interface CodexDeviceAuth {
   userCode: string;
   expiresInSec: number;
 }
+
+export interface ClaudeAuthDiagnosticEntry {
+  id: string;
+  attemptId: string;
+  timestamp: string;
+  level: "debug" | "info" | "warn" | "error";
+  source: "shipit" | "claude_stdout" | "claude_stderr" | "claude_control";
+  message: string;
+}
+
+export interface ClaudeAuthDiagnostics {
+  attemptId: string | null;
+  active: boolean;
+  phase: AgentAuthPhase | null;
+  message: string | null;
+  elapsedMs?: number;
+  failedMessage?: string;
+  entries: ClaudeAuthDiagnosticEntry[];
+}
+
+const MAX_CLAUDE_AUTH_DIAGNOSTIC_ENTRIES = 200;
 
 interface SettingsState {
   hasSystemPrompt: boolean;
@@ -113,6 +135,7 @@ interface SettingsState {
   codexDeviceAuth: CodexDeviceAuth | null;
   /** Last device-auth failure message — `null` when no error. */
   codexDeviceAuthError: string | null;
+  claudeAuthDiagnostics: ClaudeAuthDiagnostics;
   providerAccounts: ProviderAccount[];
 
   setHasSystemPrompt: (has: boolean) => void;
@@ -149,6 +172,14 @@ interface SettingsState {
   setAgentSubAgentDefaults: (map: Record<string, SubAgentDefaults>) => void;
   setCodexDeviceAuth: (state: CodexDeviceAuth | null) => void;
   setCodexDeviceAuthError: (message: string | null) => void;
+  setClaudeAuthProgress: (progress: {
+    attemptId: string;
+    phase: AgentAuthPhase;
+    message: string;
+    elapsedMs?: number;
+  }) => void;
+  appendClaudeAuthLog: (entry: Omit<ClaudeAuthDiagnosticEntry, "id">) => void;
+  finishClaudeAuthDiagnostics: (status: "complete" | "failed", message?: string) => void;
   setProviderAccounts: (accounts: ProviderAccount[]) => void;
   /**
    * Update the permission mode. When `sessionId` is provided, the change is
@@ -213,6 +244,13 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   agentSubAgentDefaults: {},
   codexDeviceAuth: null,
   codexDeviceAuthError: null,
+  claudeAuthDiagnostics: {
+    attemptId: null,
+    active: false,
+    phase: null,
+    message: null,
+    entries: [],
+  },
   providerAccounts: [],
 
   setHasSystemPrompt: (has) => set({ hasSystemPrompt: has }),
@@ -329,6 +367,46 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setCodexDeviceAuth: (state) => set({ codexDeviceAuth: state }),
 
   setCodexDeviceAuthError: (message) => set({ codexDeviceAuthError: message }),
+  setClaudeAuthProgress: (progress) =>
+    set((state) => {
+      const isNewAttempt = state.claudeAuthDiagnostics.attemptId !== progress.attemptId;
+      return {
+        claudeAuthDiagnostics: {
+          attemptId: progress.attemptId,
+          active: progress.phase !== "complete" && progress.phase !== "failed",
+          phase: progress.phase,
+          message: progress.message,
+          ...(progress.elapsedMs !== undefined ? { elapsedMs: progress.elapsedMs } : {}),
+          entries: isNewAttempt ? [] : state.claudeAuthDiagnostics.entries,
+        },
+      };
+    }),
+  appendClaudeAuthLog: (entry) =>
+    set((state) => {
+      const isNewAttempt = state.claudeAuthDiagnostics.attemptId !== entry.attemptId;
+      const entries = [
+        ...(isNewAttempt ? [] : state.claudeAuthDiagnostics.entries),
+        { ...entry, id: `${entry.attemptId}:${entry.timestamp}:${state.claudeAuthDiagnostics.entries.length}` },
+      ].slice(-MAX_CLAUDE_AUTH_DIAGNOSTIC_ENTRIES);
+      return {
+        claudeAuthDiagnostics: {
+          ...state.claudeAuthDiagnostics,
+          attemptId: entry.attemptId,
+          active: isNewAttempt ? true : state.claudeAuthDiagnostics.active,
+          entries,
+        },
+      };
+    }),
+  finishClaudeAuthDiagnostics: (status, message) =>
+    set((state) => ({
+      claudeAuthDiagnostics: {
+        ...state.claudeAuthDiagnostics,
+        active: false,
+        phase: status,
+        message: message ?? (status === "complete" ? "Claude sign-in completed." : "Claude sign-in failed."),
+        ...(status === "failed" && message ? { failedMessage: message } : {}),
+      },
+    })),
   setProviderAccounts: (accounts) => set({ providerAccounts: accounts }),
 
   setPermissionMode: (sessionId, mode) => {

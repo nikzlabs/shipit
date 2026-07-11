@@ -91,3 +91,34 @@ export interface WsAgentAuthFailed {
   reason?: "timeout" | "denied" | "error" | "revoked";
   message?: string;
 }
+
+export type AgentAuthPhase =
+  | "starting"
+  | "waiting_for_cli"
+  | "skipping_setup"
+  | "waiting_for_url"
+  | "waiting_for_code"
+  | "checking_credentials"
+  | "complete"
+  | "failed";
+
+export interface WsAgentAuthProgress {
+  type: "agent_auth_progress";
+  agentId: AgentId;
+  accountId?: string;
+  attemptId: string;
+  phase: AgentAuthPhase;
+  message: string;
+  elapsedMs?: number;
+}
+
+export interface WsAgentAuthLog {
+  type: "agent_auth_log";
+  agentId: AgentId;
+  accountId?: string;
+  attemptId: string;
+  timestamp: string;
+  level: "debug" | "info" | "warn" | "error";
+  source: "shipit" | "claude_stdout" | "claude_stderr" | "claude_control";
+  message: string;
+}

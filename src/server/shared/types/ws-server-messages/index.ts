@@ -17,6 +17,8 @@ import type {
   WsAgentAuthPending,
   WsAgentAuthComplete,
   WsAgentAuthFailed,
+  WsAgentAuthProgress,
+  WsAgentAuthLog,
 } from "./auth.js";
 import type {
   WsAgentEvent,
@@ -154,6 +156,8 @@ export type WsServerMessage =
   | WsAgentAuthPending
   | WsAgentAuthComplete
   | WsAgentAuthFailed
+  | WsAgentAuthProgress
+  | WsAgentAuthLog
   | WsSessionList
   | WsSessionStarted
   | WsSessionRenamed
