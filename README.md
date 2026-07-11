@@ -10,10 +10,6 @@
 </p>
 
 <p align="center">
-  <a href="https://ship-it.ai/"><strong>ship-it.ai</strong></a>
-</p>
-
-<p align="center">
   <img src="docs/assets/hero.png" alt="ShipIt: chat, live preview, and the inline PR card in one screen" width="900">
 </p>
 
@@ -22,7 +18,7 @@
      (YouTube/Loom/asciinema or an mp4 in docs/assets/) and link it here as a "▶ Watch the demo" line
      or a clickable thumbnail right under the hero image. -->
 
-ShipIt is a self-hosted, chat-driven IDE for running coding agents through your **real engineering loop**.
+[ShipIt](https://ship-it.ai/) is a self-hosted, chat-driven IDE for running coding agents through your **real engineering loop**.
 
 - **Real app feedback** — every session runs its own instance of your full app stack, so the agent
   can build, run, and fix before you preview and merge.
@@ -261,3 +257,9 @@ Built and maintained by Nik Zherebtsov — [LinkedIn](https://www.linkedin.com/i
 Apache 2.0 — see [LICENSE](LICENSE) for details. ShipIt is open-core; when the project opens to
 outside pull requests, contributions will require a [Contributor License Agreement](CLA.md) so they
 can also ship in the proprietary enterprise edition.
+
+---
+
+<p align="center">
+  <a href="https://ship-it.ai/">ship-it.ai</a>
+</p>
