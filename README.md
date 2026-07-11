@@ -249,7 +249,7 @@ how ShipIt defends its trust boundaries (and the risks it has accepted), see
 
 ## Website
 
-[ship-it.ai](https://ship-it.ai/) — the product page. Everything technical lives in this README.
+[ship-it.ai](https://ship-it.ai/) — the product page.
 
 ## Author
 
