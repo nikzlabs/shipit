@@ -18,7 +18,7 @@
      (YouTube/Loom/asciinema or an mp4 in docs/assets/) and link it here as a "▶ Watch the demo" line
      or a clickable thumbnail right under the hero image. -->
 
-[ShipIt](https://ship-it.ai/) is a self-hosted, chat-driven IDE for running coding agents through your **real engineering loop**.
+ShipIt is a self-hosted, chat-driven IDE for running coding agents through your **real engineering loop**.
 
 - **Real app feedback** — every session runs its own instance of your full app stack, so the agent
   can build, run, and fix before you preview and merge.
