@@ -39,6 +39,7 @@ describe("useConnectionSync — pending message flush (docs/144 fix #2)", () => 
       messages: [],
       isLoading: false,
       activity: undefined,
+      subAgentSpawns: {},
     });
   });
 
@@ -142,6 +143,22 @@ describe("useConnectionSync — pending message flush (docs/144 fix #2)", () => 
     rerender({ status: "closed" });
 
     expect(useSessionStore.getState().compacting).toBe(false);
+  });
+
+  it("clears a stale sub-agent spinner on disconnect (docs/144)", () => {
+    useSessionStore.setState({
+      sessionId: "s1",
+      subAgentSpawns: { stale: { spawnId: "stale", subAgentId: "codex" } },
+    });
+
+    const { rerender } = renderHook(
+      ({ status }) => useConnectionSync({ status, send: vi.fn() }),
+      { initialProps: { status: "open" } },
+    );
+
+    rerender({ status: "closed" });
+
+    expect(useSessionStore.getState().subAgentSpawns).toEqual({});
   });
 
   it("still injects a connection-lost agent error for a visible non-foreground disconnect", () => {

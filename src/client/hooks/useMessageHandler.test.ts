@@ -56,6 +56,36 @@ describe("useMessageHandler", () => {
     });
   });
 
+  it("queues a replayed sub-agent spawn until HTTP history has loaded", async () => {
+    const event: WsServerMessage = {
+      type: "sub_agent_spawn",
+      spawnId: "spawn-1",
+      subAgentId: "codex",
+    };
+    const queued = [messageEvent(event)];
+
+    renderHook(() =>
+      useMessageHandler({
+        lastMessage: messageEvent(event),
+        drainMessages: vi.fn(() => queued.splice(0)),
+        send: vi.fn(),
+        terminalRef: { current: null },
+      })
+    );
+
+    expect(useSessionStore.getState().subAgentSpawns).toEqual({});
+
+    act(() => {
+      useSessionStore.getState().setHistoryLoaded(true);
+    });
+
+    await waitFor(() => {
+      expect(useSessionStore.getState().subAgentSpawns["spawn-1"]).toMatchObject({
+        subAgentId: "codex",
+      });
+    });
+  });
+
   it("syncs the session permission mode when the agent enters plan mode itself", async () => {
     const event: WsServerMessage = {
       type: "agent_event",

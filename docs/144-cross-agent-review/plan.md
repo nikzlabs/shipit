@@ -5,6 +5,13 @@ issue: https://linear.app/shipit-ai/issue/SHI-37
 
 # 144 — Sub-agent spawning (cross-agent delegation)
 
+> **Reconnect invariant:** the in-flight `sub_agent_spawn` chip is transient
+> client state. The client clears it whenever the session WebSocket disconnects,
+> then queues any replayed spawn marker until HTTP history has rehydrated. A
+> consult that finished while the browser was away therefore leaves only its
+> persisted, correctly interleaved terminal card; one still running restores
+> the chip against the current transcript instead of retaining a stale footer.
+
 ## Summary
 
 Today a session is locked to a single agent for life (docs/138). That gives
