@@ -127,6 +127,17 @@ describe("reasoning capability metadata (docs/217)", () => {
   });
 });
 
+describe("model capability metadata", () => {
+  it("offers the latest explicit Claude and Codex models first where applicable", () => {
+    const claudeModels = getAgentCapabilities("claude")?.models;
+    const codexModels = getAgentCapabilities("codex")?.models;
+
+    expect(claudeModels).toContain("claude-sonnet-5");
+    expect(codexModels?.slice(0, 3)).toEqual(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
+    expect(codexModels).not.toContain("gpt-5.6");
+  });
+});
+
 describe("isAllowedAgentEnvKey (docs/088)", () => {
   it("accepts literal allowlist entries", () => {
     for (const key of ALLOWED_ENV_KEYS) {

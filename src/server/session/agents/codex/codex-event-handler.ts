@@ -35,6 +35,7 @@ import {
   unwrapShellCommand,
   type CodexItem,
 } from "./codex-tool-normalizer.js";
+import { normalizeCodexModelId } from "../../../shared/agent-registry.js";
 
 /** Inbound request (app-server → client) — has BOTH an id and a method. */
 interface JsonRpcServerRequest {
@@ -677,12 +678,14 @@ export class CodexEventHandler {
       this.threadId = resolvedThreadId;
     }
 
+    const model = normalizeCodexModelId(params.model) ?? "gpt-5.6-sol";
+
     // Emit agent_init so the server can track the session
     this.ctx.emitEvent({
       type: "agent_init",
       agentId: "codex",
       sessionId: this.threadId ?? `codex-${Date.now()}`,
-      model: params.model ?? "gpt-5.5",
+      model,
       tools: this.toolNames,
     });
 
@@ -737,9 +740,7 @@ export class CodexEventHandler {
       turnParams.cwd = params.cwd;
     }
 
-    if (params.model) {
-      turnParams.model = params.model;
-    }
+    turnParams.model = model;
 
     // Step 4: Start the turn (this triggers streaming notifications).
     // TurnStartResponse carries the turn id — capture it as a fallback in

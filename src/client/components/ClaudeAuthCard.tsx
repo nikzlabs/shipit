@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { AgentOption } from "../agent-types.js";
+import { useSettingsStore } from "../stores/settings-store.js";
 
 export interface ClaudeAuthCardProps {
   agent: AgentOption | undefined;
@@ -67,9 +68,13 @@ export function ClaudeAuthCard({
   const [authPendingLocal, setAuthPendingLocal] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const [showApiKeyPanel, setShowApiKeyPanel] = useState(false);
+  const [diagnosticsCopied, setDiagnosticsCopied] = useState(false);
+  const diagnostics = useSettingsStore((s) => s.claudeAuthDiagnostics);
 
   // Derive effective authPending: auto-clears when authUrl arrives or agent becomes authenticated
-  const authPending = authPendingLocal && authUrl === null && !agent?.authConfigured;
+  const authPending = authUrl === null && !agent?.authConfigured && (
+    diagnostics.active || (authPendingLocal && diagnostics.phase !== "failed" && diagnostics.phase !== "complete")
+  );
 
   if (!agent) return null;
 
@@ -126,6 +131,29 @@ export function ClaudeAuthCard({
 
   const needsAuth = agent.installed && !agent.authConfigured;
   const isPending = needsAuth && !!authUrl;
+  const showAuthStatus = needsAuth && (authPending || isPending || diagnostics.attemptId !== null);
+  const statusMessage = diagnostics.message
+    ?? (isPending
+      ? "Authentication link received. Paste the authorization code after signing in."
+      : authPending
+        ? "Starting Claude sign-in."
+        : null);
+  const statusTone = diagnostics.phase === "failed"
+    ? "text-(--color-error)"
+    : diagnostics.phase === "complete"
+      ? "text-(--color-success)"
+      : "text-(--color-text-secondary)";
+
+  const diagnosticText = diagnostics.entries.map((entry) =>
+    `${entry.timestamp} ${entry.level.toUpperCase()} ${entry.source}: ${entry.message}`,
+  ).join("\n");
+
+  const handleCopyDiagnostics = async () => {
+    if (!diagnosticText) return;
+    await navigator.clipboard?.writeText(diagnosticText);
+    setDiagnosticsCopied(true);
+    window.setTimeout(() => setDiagnosticsCopied(false), 1500);
+  };
 
   return (
     <div className="space-y-2" data-testid="claude-auth-card">
@@ -179,6 +207,46 @@ export function ClaudeAuthCard({
           </button>
         )}
       </div>
+
+      {showAuthStatus && statusMessage && (
+        <div
+          className="space-y-2 rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary) p-3"
+          data-testid="claude-auth-status"
+        >
+          <div>
+            <p className={`text-sm font-medium ${statusTone}`}>
+              {statusMessage}
+            </p>
+            {diagnostics.phase && (
+              <p className="mt-0.5 text-xs text-(--color-text-tertiary)">
+                Phase: {diagnostics.phase.replaceAll("_", " ")}
+                {typeof diagnostics.elapsedMs === "number" ? ` · ${Math.round(diagnostics.elapsedMs / 1000)}s` : ""}
+              </p>
+            )}
+          </div>
+
+          {diagnostics.entries.length > 0 && (
+            <details className="group" data-testid="claude-auth-diagnostics">
+              <summary className="cursor-pointer select-none text-xs text-(--color-text-link) hover:text-(--color-accent) transition-colors">
+                Claude CLI output ({diagnostics.entries.length})
+              </summary>
+              <div className="mt-2 space-y-2">
+                <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-md bg-(--color-bg-primary) border border-(--color-border-secondary) p-2 font-mono text-[var(--font-size-code)] text-(--color-text-secondary)">
+                  {diagnosticText}
+                </pre>
+                <button
+                  type="button"
+                  onClick={() => void handleCopyDiagnostics()}
+                  className="text-xs text-(--color-text-link) hover:text-(--color-accent) transition-colors"
+                  data-testid="claude-copy-diagnostics"
+                >
+                  {diagnosticsCopied ? "Copied" : "Copy diagnostic details"}
+                </button>
+              </div>
+            </details>
+          )}
+        </div>
+      )}
 
       {/* Pending state: OAuth URL + auth-code paste field, expanded inline. */}
       {needsAuth && isPending && (

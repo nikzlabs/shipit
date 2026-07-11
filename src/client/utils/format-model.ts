@@ -1,12 +1,17 @@
 /** Human-readable display names for known model aliases/IDs. */
 const MODEL_DISPLAY_NAMES: Record<string, string> = {
   // Claude CLI aliases
-  sonnet: "Sonnet 4.7",
+  sonnet: "Sonnet 5",
   haiku: "Haiku 4.5",
   "claude-opus-4-8": "Opus 4.8",
+  "claude-sonnet-5": "Sonnet 5",
   "claude-fable-5": "Fable 5",
   // Codex model IDs. Display names normalize the ChatGPT backend's
   // inconsistent casing (e.g. "gpt-5.4" → "GPT-5.4").
+  "gpt-5.6": "GPT-5.6 Sol",
+  "gpt-5.6-sol": "GPT-5.6 Sol",
+  "gpt-5.6-terra": "GPT-5.6 Terra",
+  "gpt-5.6-luna": "GPT-5.6 Luna",
   "gpt-5.5": "GPT-5.5",
   "gpt-5.4": "GPT-5.4",
   "gpt-5.4-mini": "GPT-5.4 Mini",

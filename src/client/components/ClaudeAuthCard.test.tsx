@@ -2,8 +2,21 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
 import { ClaudeAuthCard } from "./ClaudeAuthCard.js";
 import type { AgentOption } from "../agent-types.js";
+import { useSettingsStore } from "../stores/settings-store.js";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  useSettingsStore.setState({
+    claudeAuthDiagnostics: {
+      attemptId: null,
+      active: false,
+      phase: null,
+      message: null,
+      entries: [],
+    },
+  });
+  vi.unstubAllGlobals();
+});
 
 const authedAgent: AgentOption = { id: "claude", name: "Claude CLI", installed: true, authConfigured: true, models: ["claude-sonnet"], supportsReview: true };
 const unauthedAgent: AgentOption = { id: "claude", name: "Claude CLI", installed: true, authConfigured: false, models: ["claude-sonnet"], supportsReview: true };
@@ -56,6 +69,76 @@ describe("ClaudeAuthCard / sign-in flow", () => {
     fireEvent.click(screen.getByTestId("claude-start-auth"));
     expect(onStartAuth).toHaveBeenCalled();
     expect(screen.getByTestId("claude-start-auth")).toHaveTextContent("Starting...");
+  });
+
+  it("shows structured auth progress and collapsed diagnostics", () => {
+    useSettingsStore.setState({
+      claudeAuthDiagnostics: {
+        attemptId: "attempt-1",
+        active: true,
+        phase: "waiting_for_url",
+        message: "Waiting for Claude CLI to print an authentication link.",
+        elapsedMs: 2100,
+        entries: [{
+          id: "entry-1",
+          attemptId: "attempt-1",
+          timestamp: "2026-07-11T00:00:00.000Z",
+          level: "info",
+          source: "claude_stdout",
+          message: "Browser did not open. Use the url below.",
+        }],
+      },
+    });
+
+    renderCard();
+
+    expect(screen.getByTestId("claude-auth-status")).toHaveTextContent("Waiting for Claude CLI");
+    expect(screen.getByTestId("claude-auth-diagnostics")).not.toHaveAttribute("open");
+    expect(screen.getByText("Claude CLI output (1)")).toBeInTheDocument();
+  });
+
+  it("copies diagnostic details", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    useSettingsStore.setState({
+      claudeAuthDiagnostics: {
+        attemptId: "attempt-1",
+        active: false,
+        phase: "failed",
+        message: "Claude sign-in failed.",
+        entries: [{
+          id: "entry-1",
+          attemptId: "attempt-1",
+          timestamp: "2026-07-11T00:00:00.000Z",
+          level: "error",
+          source: "shipit",
+          message: "No fresh credentials were written.",
+        }],
+      },
+    });
+
+    renderCard();
+    fireEvent.click(screen.getByText("Claude CLI output (1)"));
+    fireEvent.click(screen.getByTestId("claude-copy-diagnostics"));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(expect.stringContaining("No fresh credentials")));
+  });
+
+  it("reenables Sign in after an auth failure", () => {
+    useSettingsStore.setState({
+      claudeAuthDiagnostics: {
+        attemptId: "attempt-1",
+        active: false,
+        phase: "failed",
+        message: "Claude sign-in failed.",
+        entries: [],
+      },
+    });
+
+    renderCard();
+
+    expect(screen.getByTestId("claude-start-auth")).toHaveTextContent("Sign in");
+    expect(screen.getByTestId("claude-start-auth")).not.toBeDisabled();
   });
 
   it("hides login button when already authenticated", () => {

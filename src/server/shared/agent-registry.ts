@@ -29,13 +29,17 @@ const execFileAsync = promisify(execFile);
  *   model ships before the CLI's alias is bumped to point at it. The CLI
  *   forwards `--model` to the API as-is, so any API-recognized ID works even
  *   if the CLI's local alias table hasn't caught up.
- * - Bare family names (`sonnet`, `haiku`) are CLI aliases that always resolve
+ * - Bare family names (`haiku`) are CLI aliases that always resolve
  *   to the latest of that family on the installed CLI.
  *
  * No bare `opus` alias: on CLI ≤ 2.1.148 it resolves to Opus 4.7, which we no
  * longer surface. Once Anthropic ships a CLI release where `opus` resolves to
  * Opus 4.8 (or newer), we can swap the explicit versioned entry for the alias
  * the same way.
+ *
+ * `claude-sonnet-5` is explicit instead of the bare `sonnet` alias so the
+ * picker and first-frame context-window fallback are correct even before a
+ * freshly-bumped CLI's local alias table is trusted.
  *
  * `claude-fable-5` is listed LAST on purpose: it is Anthropic's most capable
  * public model but bills per token (usage-based) rather than against the
@@ -47,7 +51,7 @@ const execFileAsync = promisify(execFile);
  * Consumed by both the orchestrator-side `AGENT_DEFS` and the session-side
  * `ClaudeAdapter.capabilities` — keep this the only place to add a model.
  */
-export const CLAUDE_MODELS = ["claude-opus-4-8", "sonnet", "haiku", "claude-fable-5"];
+export const CLAUDE_MODELS = ["claude-opus-4-8", "claude-sonnet-5", "haiku", "claude-fable-5"];
 
 export const CLAUDE_TOOL_NAMES = [
   "Agent",
@@ -109,6 +113,34 @@ export const CODEX_TOOL_NAMES = [
   "AskUserQuestion",
 ] as const;
 
+/**
+ * Single source of truth for Codex models offered in the picker.
+ *
+ * Order matters: `models[0]` is the default model a fresh Codex session runs
+ * with. Codex CLI 0.144.1 lists the GPT-5.6 family as explicit Sol/Terra/Luna
+ * slugs; the historical unsuffixed `gpt-5.6` alias is rejected for ChatGPT
+ * account auth, so do not expose it as selectable.
+ */
+export const CODEX_MODELS = [
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+  "gpt-5.4",
+  "gpt-5.4-mini",
+  "gpt-5.5",
+  "gpt-5.3-codex",
+  "gpt-5.2",
+];
+
+/**
+ * Compatibility shim for rows/session state written before ShipIt stopped
+ * surfacing the invalid unsuffixed GPT-5.6 slug. Keep this at the boundary
+ * before Codex turns so legacy sessions run the intended Sol model.
+ */
+export function normalizeCodexModelId(model: string | undefined): string | undefined {
+  return model === "gpt-5.6" ? "gpt-5.6-sol" : model;
+}
+
 export interface AgentInfo {
   id: AgentId;
   name: string;
@@ -163,19 +195,10 @@ const AGENT_DEFS: { id: AgentId; name: string; binary: string; capabilities: Age
       supportsPermissionModes: false,
       supportedPermissionModes: [],
       toolNames: [...CODEX_TOOL_NAMES],
-      // Verified against the ChatGPT backend's `/backend-api/codex/models`
-      // endpoint (ChatGPT Plus plan, codex CLI 0.131.0): these are every
-      // model with `visibility: list` and `supported_in_api: true`. Ordering
-      // matches the backend listing — gpt-5.5 first (current frontier /
-      // default), with the codex-specialized gpt-5.3-codex preserved as its
-      // own entry. Update the list when codex publishes new models.
-      models: [
-        "gpt-5.5",
-        "gpt-5.4",
-        "gpt-5.4-mini",
-        "gpt-5.3-codex",
-        "gpt-5.2",
-      ],
+      // GPT-5.6 is the current OpenAI frontier family. Codex requires the
+      // explicit Sol slug; the old unsuffixed `gpt-5.6` alias is not accepted
+      // with ChatGPT account auth.
+      models: CODEX_MODELS,
       // Codex CLI config `model_reasoning_effort`. Verified valid values by
       // running `codex -c model_reasoning_effort=__bogus__`: "none, minimal,
       // low, medium, high, xhigh". Omitting the override uses Codex's own

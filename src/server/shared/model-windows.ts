@@ -34,19 +34,24 @@ export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   // Claude — 200K is the default. Specific keys override the substring
   // fallback so "claude-opus-4-8" resolves to its real 1M window even before
   // the first `result` event populates `modelUsage.contextWindow`.
-  "sonnet": 200_000,
+  "sonnet": 1_000_000,
   "claude-sonnet": 200_000,
+  "claude-sonnet-5": 1_000_000,
   "claude-opus-4-8": 1_000_000,
   "claude-fable-5": 1_000_000,
   "haiku": 200_000,
   "claude-haiku": 200_000,
   "opus-1m": 1_000_000,
-  // Codex / GPT-5 family (272K). Values verified against the ChatGPT
-  // `/backend-api/codex/models` endpoint — all currently-listed codex
-  // models advertise a `context_window` of 272000 tokens. Keep the bare
-  // `gpt-5` substring fallback for forward compatibility with future
-  // gpt-5.x.
+  // Codex / GPT-5 family. GPT-5.6 advertises a 1.05M context window; older
+  // Codex-listed GPT-5.x models remain at 272K. Longest-key matching keeps
+  // `gpt-5.6-*` on the larger window while preserving the `gpt-5` fallback.
+  // The legacy unsuffixed `gpt-5.6` key is retained for old session/history
+  // display only; Codex selection now uses the explicit `gpt-5.6-sol` slug.
   "gpt-5": 272_000,
+  "gpt-5.6": 1_050_000,
+  "gpt-5.6-sol": 1_050_000,
+  "gpt-5.6-terra": 1_050_000,
+  "gpt-5.6-luna": 1_050_000,
   "gpt-5.5": 272_000,
   "gpt-5.4": 272_000,
   "gpt-5.4-mini": 272_000,
