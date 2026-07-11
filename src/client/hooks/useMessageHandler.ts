@@ -64,7 +64,13 @@ export function useMessageHandler(params: {
       } catch {
         continue;
       }
-      if (data.type === "agent_event" && !useSessionStore.getState().historyLoaded) {
+      // Both streamed agent content and the transient consult marker depend on
+      // the HTTP history baseline. Queue them during reconnect hydration so an
+      // in-flight consult is restored only after the transcript is current.
+      if (
+        (data.type === "agent_event" || data.type === "sub_agent_spawn") &&
+        !useSessionStore.getState().historyLoaded
+      ) {
         pendingAgentEventsRef.current.push(data);
         continue;
       }

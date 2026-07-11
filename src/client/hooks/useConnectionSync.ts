@@ -107,6 +107,13 @@ export function useConnectionSync(params: {
       // a genuinely in-flight compaction re-establish it via the replayed
       // `compaction_status active:true`, while an ended turn stays cleared.
       useSessionStore.getState().setCompacting(false);
+      // A consult can finish while this browser is disconnected. Its terminal
+      // card is persisted, but the completion event is then behind the replay
+      // cursor, so a chip left in client memory would otherwise linger forever
+      // at the transcript footer. Clear live-only chips on disconnect. A consult
+      // that is genuinely still running is restored by its buffered spawn event
+      // after HTTP history hydration.
+      useSessionStore.setState({ subAgentSpawns: {} });
     }
   }, [status, send]);
 
