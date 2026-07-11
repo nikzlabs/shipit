@@ -73,8 +73,14 @@ export function handleSessionResume(
   sessionId: string,
   navigate: (path: string) => void,
 ) {
-  resumeSessionInternal(sessionId);
+  // Move the route first. App chrome is intentionally keyed to the URL so a
+  // late async store write cannot visually hijack the session being viewed.
+  // Updating the store first creates a transient split render: the selected
+  // session is new while the URL (and therefore the top chrome) still points
+  // at the previous session. This was visible when entering a Sandbox as the
+  // previous session's title bar flashing before the Sandbox banner.
   navigate(`/session/${sessionId}`);
+  resumeSessionInternal(sessionId);
 }
 
 /**
