@@ -318,8 +318,8 @@ describe("UsageModal", () => {
 
   it("shows model name when modelInfo is provided", () => {
     const modelInfo: ModelInfo = {
-      model: "claude-sonnet-4-20250514",
-      contextWindowTokens: 200000,
+      model: "claude-sonnet-5",
+      contextWindowTokens: 1_000_000,
     };
 
     render(
@@ -332,7 +332,7 @@ describe("UsageModal", () => {
       />
     );
 
-    expect(screen.getByTestId("usage-model-name")).toHaveTextContent("Sonnet 4");
+    expect(screen.getByTestId("usage-model-name")).toHaveTextContent("Sonnet 5");
   });
 
   it("shows context usage section when contextTokens > 0", () => {

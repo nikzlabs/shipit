@@ -29,13 +29,17 @@ const execFileAsync = promisify(execFile);
  *   model ships before the CLI's alias is bumped to point at it. The CLI
  *   forwards `--model` to the API as-is, so any API-recognized ID works even
  *   if the CLI's local alias table hasn't caught up.
- * - Bare family names (`sonnet`, `haiku`) are CLI aliases that always resolve
+ * - Bare family names (`haiku`) are CLI aliases that always resolve
  *   to the latest of that family on the installed CLI.
  *
  * No bare `opus` alias: on CLI ≤ 2.1.148 it resolves to Opus 4.7, which we no
  * longer surface. Once Anthropic ships a CLI release where `opus` resolves to
  * Opus 4.8 (or newer), we can swap the explicit versioned entry for the alias
  * the same way.
+ *
+ * `claude-sonnet-5` is explicit instead of the bare `sonnet` alias so the
+ * picker and first-frame context-window fallback are correct even before a
+ * freshly-bumped CLI's local alias table is trusted.
  *
  * `claude-fable-5` is listed LAST on purpose: it is Anthropic's most capable
  * public model but bills per token (usage-based) rather than against the
@@ -47,7 +51,7 @@ const execFileAsync = promisify(execFile);
  * Consumed by both the orchestrator-side `AGENT_DEFS` and the session-side
  * `ClaudeAdapter.capabilities` — keep this the only place to add a model.
  */
-export const CLAUDE_MODELS = ["claude-opus-4-8", "sonnet", "haiku", "claude-fable-5"];
+export const CLAUDE_MODELS = ["claude-opus-4-8", "claude-sonnet-5", "haiku", "claude-fable-5"];
 
 export const CLAUDE_TOOL_NAMES = [
   "Agent",
@@ -163,16 +167,16 @@ const AGENT_DEFS: { id: AgentId; name: string; binary: string; capabilities: Age
       supportsPermissionModes: false,
       supportedPermissionModes: [],
       toolNames: [...CODEX_TOOL_NAMES],
-      // Verified against the ChatGPT backend's `/backend-api/codex/models`
-      // endpoint (ChatGPT Plus plan, codex CLI 0.131.0): these are every
-      // model with `visibility: list` and `supported_in_api: true`. Ordering
-      // matches the backend listing — gpt-5.5 first (current frontier /
-      // default), with the codex-specialized gpt-5.3-codex preserved as its
-      // own entry. Update the list when codex publishes new models.
+      // GPT-5.6 is the current OpenAI frontier family. The unsuffixed
+      // `gpt-5.6` alias routes to Sol, followed by the lower-cost Terra/Luna
+      // variants. Older listed models remain selectable for continuity.
       models: [
-        "gpt-5.5",
+        "gpt-5.6",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
         "gpt-5.4",
         "gpt-5.4-mini",
+        "gpt-5.5",
         "gpt-5.3-codex",
         "gpt-5.2",
       ],

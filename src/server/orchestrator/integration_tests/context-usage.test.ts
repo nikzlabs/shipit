@@ -350,6 +350,8 @@ describe("Integration: Context window usage (105)", () => {
     // Substring match (real CLI model identifiers contain dates/versions)
     expect(getContextWindowForModel("claude-sonnet-4-20250514")).toBe(200_000);
     expect(getContextWindowForModel("gpt-5.4-mini-2025")).toBe(272_000);
+    expect(getContextWindowForModel("claude-sonnet-5")).toBe(1_000_000);
+    expect(getContextWindowForModel("gpt-5.6-terra")).toBe(1_050_000);
     // Opus 4.8 has a 1M window. This is the static fallback for the first
     // frame; the authoritative window comes from the CLI's
     // `result.modelUsage.contextWindow` on the first turn.

@@ -113,6 +113,7 @@ describe("AgentRegistry", () => {
 
     const codex = registry.get("codex")!;
     expect(codex.capabilities.supportsResume).toBe(true);
+    expect(codex.capabilities.models[0]).toBe("gpt-5.6");
     expect(codex.capabilities.models).toContain("gpt-5.4");
     expect(codex.capabilities.toolNames).toContain("shell");
   });
