@@ -10,6 +10,10 @@
 </p>
 
 <p align="center">
+  <a href="https://ship-it.ai/"><strong>ship-it.ai</strong></a>
+</p>
+
+<p align="center">
   <img src="docs/assets/hero.png" alt="ShipIt: chat, live preview, and the inline PR card in one screen" width="900">
 </p>
 
