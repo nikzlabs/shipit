@@ -162,28 +162,38 @@ export async function isOrphanedSidecar(docker: Docker, sidecarId: string): Prom
 }
 
 /**
- * Reap the egress sidecars belonging to `sessionId` **whose netns parent is
- * `deadParentId`** — the agent container that just died.
+ * Reap the egress sidecars belonging to `sessionId` whose netns parent is
+ * `deadParentId` **and whose namespace is genuinely dead**.
  *
  * This is the crash-site call (`container-health.ts`'s `die`/`oom` handler).
- * Scoped two ways, and BOTH matter:
+ * Three conditions, all of them load-bearing:
  *
- *   - **To the egress labels**, so the session's compose services, networks, and
+ *   - **The egress labels**, so the session's compose services, networks, and
  *     volumes survive an agent crash untouched. (This is why the crash path does
  *     not reuse `cleanupSessionDockerResources` — that sweeps every
  *     `shipit-parent-session` child, the user's database volume included.)
- *   - **To the dead parent's container id**, because the session id alone is NOT
+ *   - **The dead parent's container id**, because the session id alone is NOT
  *     enough. It is stable across container recreations, so a label-only reap
  *     races the session's own recovery: this function is called fire-and-forget,
  *     and if the session gets reactivated while our `listContainers` is still in
  *     flight (a busy daemon during an OOM storm is exactly when that happens),
  *     the list comes back holding the REPLACEMENT incarnation's sidecars and we
- *     would force-remove them — leaving a healthy, running agent with no DNS and
- *     no HTTPS. Filtering on the netns parent makes the reap idempotent and
- *     immune to that race: the new sidecars have a new parent id, so they can
- *     never match no matter how late we run.
+ *     would force-remove them. Matching on the parent id makes the reap
+ *     idempotent: the new sidecars have a new parent, so they can never match no
+ *     matter how late we land.
+ *   - **`isOrphanedSidecar` — the parent is actually not running.** We do NOT
+ *     take the event's word for it, and that distinction is the whole point: a
+ *     Docker **`oom` event does not mean the container died**. It fires when the
+ *     cgroup's OOM killer kills *a process*, and if that process wasn't PID 1 —
+ *     e.g. the agent CLI is killed but the session worker survives — the
+ *     container keeps running. Reaping on the event alone would tear the resolver
+ *     and proxy out from under a live worker, silently killing its DNS and HTTPS.
+ *     Checking liveness also disarms the `Actor.ID`-less event shape (older
+ *     daemons), where the incarnation guard cannot tell generations apart and
+ *     `deadParentId` may resolve to the *current*, healthy container.
  *
- * Never throws — it's called fire-and-forget from a Docker event handler.
+ * So: the id says *which* namespace we mean; liveness says whether it's actually
+ * gone. Never throws — it's called fire-and-forget from a Docker event handler.
  */
 export async function reapSessionEgressSidecars(
   docker: Docker,
@@ -195,6 +205,9 @@ export async function reapSessionEgressSidecars(
   let removed = 0;
   for (const id of ids) {
     if (!(await hasNetnsParent(docker, id, deadParentId))) continue;
+    // The event told us it died; confirm the namespace is actually gone before
+    // destroying anything. `isOrphanedSidecar` fails safe toward keeping.
+    if (!(await isOrphanedSidecar(docker, id))) continue;
     if (await removeContainer(docker, id)) removed++;
   }
   if (removed > 0) {

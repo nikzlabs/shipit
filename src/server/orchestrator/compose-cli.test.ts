@@ -27,12 +27,21 @@ interface World {
   /** Containers carrying an egress tier label for this session. */
   sidecars: { id: string; label: string; parent: string }[];
   /**
-   * Container id → running? Both "present but stopped" (`false`) and "gone from
-   * the daemon" (absent) are indistinguishable to a `ps --filter status=running`
-   * probe — which is fine, because both mean the same thing here: the netns is
-   * dead. That's exactly why the probe is `ps` and not `inspect`.
+   * Container id → its Docker list state.
+   *
+   * `"running"` and `"paused"` are BOTH listed by a bare `docker ps` (a paused
+   * container shows as `Up (Paused)`), because both still own a live network
+   * namespace. `"exited"` and absent-from-the-map ("gone from the daemon") are
+   * both invisible to `ps` — and both mean the same thing here: the netns is
+   * dead. That collapse is exactly why the probe is `ps` and not `inspect`.
    */
-  running: Record<string, boolean>;
+  state: Record<string, "running" | "paused" | "exited">;
+}
+
+/** What a bare `docker ps -q --filter id=<x>` would print for `x`. */
+function psListsIt(world: World, id: string): boolean {
+  const s = world.state[id];
+  return s === "running" || s === "paused";
 }
 
 /**
@@ -49,14 +58,22 @@ function makeCli(world: World) {
     if (cmd === "ps") {
       const filters = args.filter((_, i) => args[i - 1] === "--filter");
 
-      // Parent-liveness probe: `ps -q --no-trunc --filter id=<p> --filter status=running`.
-      // Exits 0 whether or not it matches — printing the id when the parent is
-      // running and nothing when it isn't. That's the whole point: "not running"
-      // is a VALUE, not an exception, so it can't be confused with a daemon error.
+      // Parent-liveness probe: bare `ps -q --no-trunc --filter id=<p>` (NO status
+      // filter). Exits 0 whether or not it matches — printing the id when the
+      // parent's namespace is alive (running OR paused) and nothing when it
+      // isn't. That's the point: "not up" is a VALUE, not an exception, so it
+      // can't be confused with a daemon error.
       const idFilter = filters.find(f => f.startsWith("id="));
       if (idFilter) {
         const parent = idFilter.slice("id=".length);
-        return world.running[parent] ? parent : "";
+        // Honour a `status=` filter if one is passed. The production code passes
+        // NONE — but the fake must model what Docker would do if it did, or the
+        // paused-parent test would pass for the wrong reason (it would go green
+        // even against a `--filter status=running` implementation, which is the
+        // very bug it exists to catch).
+        const statusFilter = filters.find(f => f.startsWith("status="))?.slice("status=".length);
+        if (statusFilter) return world.state[parent] === statusFilter ? parent : "";
+        return psListsIt(world, parent) ? parent : "";
       }
 
       const labels = filters.map(f => f.replace(/^label=/, ""));
@@ -100,7 +117,7 @@ describe("ComposeCli.killStaleContainers — egress sidecar keep-list (SHI-222)"
         { id: "res-new", label: EGRESS_RESOLVER_LABEL, parent: "agent-new" },
         { id: "proxy-new", label: EGRESS_PROXY_LABEL, parent: "agent-new" },
       ],
-      running: { "agent-new": true },
+      state: { "agent-new": "running" },
     });
 
     await cli.killStaleContainers();
@@ -117,7 +134,7 @@ describe("ComposeCli.killStaleContainers — egress sidecar keep-list (SHI-222)"
         { id: "res-old", label: EGRESS_RESOLVER_LABEL, parent: "agent-old" },
         { id: "proxy-old", label: EGRESS_PROXY_LABEL, parent: "agent-old" },
       ],
-      running: {}, // agent-old is gone from the daemon
+      state: {}, // agent-old is gone from the daemon
     });
 
     await cli.killStaleContainers();
@@ -132,7 +149,7 @@ describe("ComposeCli.killStaleContainers — egress sidecar keep-list (SHI-222)"
     const { cli, removed } = makeCli({
       children: ["res-old", "stale-web"],
       sidecars: [{ id: "res-old", label: EGRESS_RESOLVER_LABEL, parent: "agent-old" }],
-      running: { "agent-old": false },
+      state: { "agent-old": "exited" },
     });
 
     await cli.killStaleContainers();
@@ -151,7 +168,7 @@ describe("ComposeCli.killStaleContainers — egress sidecar keep-list (SHI-222)"
         { id: "res-new", label: EGRESS_RESOLVER_LABEL, parent: "agent-new" },
         { id: "proxy-new", label: EGRESS_PROXY_LABEL, parent: "agent-new" },
       ],
-      running: { "agent-old": false, "agent-new": true },
+      state: { "agent-old": "exited", "agent-new": "running" },
     });
 
     await cli.killStaleContainers();
@@ -159,8 +176,32 @@ describe("ComposeCli.killStaleContainers — egress sidecar keep-list (SHI-222)"
     expect([...removed].sort()).toEqual(["proxy-old", "res-old"]);
   });
 
+  it("SPARES sidecars whose parent is PAUSED — a paused container still owns a live netns", async () => {
+    // `docker pause` leaves `State.Running=true, State.Paused=true`, and the
+    // container still holds its network namespace — but its *list status* is
+    // `paused`, not `running`. A `--filter status=running` probe would therefore
+    // report the parent as dead and reap a perfectly good resolver and proxy,
+    // leaving the session with no DNS and no HTTPS on unpause. A bare `docker ps`
+    // lists paused containers, which is exactly the question we mean to ask:
+    // "is this namespace alive?", not "is this process scheduled?"
+    const { cli, removed } = makeCli({
+      children: ["res-1", "proxy-1", "stale-web"],
+      sidecars: [
+        { id: "res-1", label: EGRESS_RESOLVER_LABEL, parent: "agent-1" },
+        { id: "proxy-1", label: EGRESS_PROXY_LABEL, parent: "agent-1" },
+      ],
+      state: { "agent-1": "paused" },
+    });
+
+    await cli.killStaleContainers();
+
+    expect(removed).toEqual(["stale-web"]);
+    expect(removed).not.toContain("res-1");
+    expect(removed).not.toContain("proxy-1");
+  });
+
   it("is a no-op when the session has no stale containers at all", async () => {
-    const { cli, removed } = makeCli({ children: [], sidecars: [], running: {} });
+    const { cli, removed } = makeCli({ children: [], sidecars: [], state: {} });
 
     await cli.killStaleContainers();
 
@@ -183,7 +224,7 @@ describe("ComposeCli.killStaleContainers — egress sidecar keep-list (SHI-222)"
         const idFilter = filters.find(f => f.startsWith("id="));
         if (idFilter) {
           const parent = idFilter.slice("id=".length);
-          return world.running[parent] ? parent : "";
+          return psListsIt(world, parent) ? parent : "";
         }
         const labels = filters.map(f => f.replace(/^label=/, ""));
         const tier = labels.find(l => l.startsWith(EGRESS_RESOLVER_LABEL) || l.startsWith(EGRESS_PROXY_LABEL));
@@ -212,7 +253,7 @@ describe("ComposeCli.killStaleContainers — egress sidecar keep-list (SHI-222)"
     const world: World = {
       children: ["res-1", "stale-web"],
       sidecars: [{ id: "res-1", label: EGRESS_RESOLVER_LABEL, parent: "agent-1" }],
-      running: { "agent-1": true },
+      state: { "agent-1": "running" },
     };
     const { cli, removed } = makeCliWithFailingQuery(args => args[0] === "inspect", world);
 
@@ -234,7 +275,7 @@ describe("ComposeCli.killStaleContainers — egress sidecar keep-list (SHI-222)"
         { id: "res-1", label: EGRESS_RESOLVER_LABEL, parent: "agent-1" },
         { id: "proxy-1", label: EGRESS_PROXY_LABEL, parent: "agent-1" },
       ],
-      running: { "agent-1": true }, // the parent IS alive — the daemon just won't say so
+      state: { "agent-1": "running" }, // the parent IS alive — the daemon just won't say so
     };
     const { cli, removed } = makeCliWithFailingQuery(
       args => args[0] === "ps" && args.some(a => a.startsWith("id=")),

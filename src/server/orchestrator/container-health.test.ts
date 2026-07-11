@@ -156,24 +156,30 @@ describe("container-health: egress sidecar reap on die/oom (SHI-222)", () => {
   let removed: string[];
   let deps: HealthDeps;
 
-  interface FakeC { labels: Record<string, string>; parent?: string }
+  interface FakeC { labels: Record<string, string>; parent?: string; running?: boolean }
 
   /**
    * Docker fake carrying `sess-1`'s two sidecars (netns parent `b1`), plus a
-   * compose child. `extra` seeds additional containers — used to stage the
-   * REPLACEMENT incarnation for the recreate-race test.
+   * compose child and the agent container `b1` itself.
+   *
+   * `agentRunning` models the state the parent is ACTUALLY in when the reap
+   * inspects it — which is not the same thing as what the event said. A Docker
+   * `oom` event fires when the cgroup OOM-killer kills a process; if that process
+   * wasn't PID 1, the container is still running. `extra` seeds additional
+   * containers (used to stage the replacement incarnation).
    */
-  function makeDocker(extra: Record<string, FakeC> = {}) {
+  function makeDocker(opts: { agentRunning?: boolean; extra?: Record<string, FakeC> } = {}) {
     const store = new Map<string, FakeC>([
+      ["b1", { labels: {}, running: opts.agentRunning ?? false }],
       ["res-1", { labels: { [EGRESS_RESOLVER_LABEL]: "sess-1", "shipit-parent-session": "sess-1" }, parent: "b1" }],
       ["proxy-1", { labels: { [EGRESS_PROXY_LABEL]: "sess-1", "shipit-parent-session": "sess-1" }, parent: "b1" }],
       ["db-1", { labels: { "shipit-parent-session": "sess-1", "shipit-service-name": "db" } }],
-      ...Object.entries(extra),
+      ...Object.entries(opts.extra ?? {}),
     ]);
     return {
       getEvents: vi.fn(async () => eventStream),
-      listContainers: vi.fn(async (opts: { filters?: { label?: string[] } }) => {
-        const want = opts.filters?.label?.[0] ?? "";
+      listContainers: vi.fn(async (o: { filters?: { label?: string[] } }) => {
+        const want = o.filters?.label?.[0] ?? "";
         const [key, value] = want.split("=", 2);
         return [...store.entries()]
           .filter(([, c]) => c.labels[key!] === value)
@@ -183,36 +189,52 @@ describe("container-health: egress sidecar reap on die/oom (SHI-222)", () => {
         inspect: vi.fn(async () => {
           const c = store.get(id);
           if (!c) throw Object.assign(new Error("no such container"), { statusCode: 404 });
-          return { HostConfig: { NetworkMode: c.parent ? `container:${c.parent}` : "bridge" } };
+          return {
+            HostConfig: { NetworkMode: c.parent ? `container:${c.parent}` : "bridge" },
+            State: { Running: c.running ?? false },
+          };
         }),
         remove: vi.fn(async () => { removed.push(id); store.delete(id); }),
       })),
     } as unknown as HealthDeps["docker"];
   }
 
-  beforeEach(async () => {
+  beforeEach(() => {
     containers = new Map();
     emitter = new EventEmitter<SessionContainerManagerEvents>();
     eventStream = new EventEmitter();
     removed = [];
+  });
+
+  /**
+   * Start the monitor with a Docker fake shaped for this test. Each test calls
+   * this exactly once — starting a second monitor on the same `eventStream` would
+   * leave TWO `data` handlers attached, and the stale one (holding the previous
+   * fake) would answer the event too.
+   */
+  async function start(dockerOpts: { agentRunning?: boolean; extra?: Record<string, FakeC> } = {}) {
     deps = {
-      docker: makeDocker(),
+      docker: makeDocker(dockerOpts),
       containers,
       standbySessionIds: new Set<string>(),
       emitter,
       labelFilters: () => [],
     };
     await startHealthMonitor(deps, createHealthMonitorState());
-  });
+  }
 
-  function emit(action: "die" | "oom", sessionId: string, actorId: string) {
+  function emit(action: "die" | "oom", sessionId: string, actorId?: string) {
     eventStream.emit("data", Buffer.from(JSON.stringify({
       Action: action,
-      Actor: { ID: actorId, Attributes: { [CONTAINER_SESSION_ID_LABEL]: sessionId, exitCode: "137" } },
+      Actor: {
+        ...(actorId ? { ID: actorId } : {}),
+        Attributes: { [CONTAINER_SESSION_ID_LABEL]: sessionId, exitCode: "137" },
+      },
     })));
   }
 
   it("reaps both egress sidecars when the agent container dies", async () => {
+    await start();
     containers.set("sess-1", makeContainer("b1", "sess-1"));
 
     emit("die", "sess-1", "b1");
@@ -222,7 +244,8 @@ describe("container-health: egress sidecar reap on die/oom (SHI-222)", () => {
     expect([...removed].sort()).toEqual(["proxy-1", "res-1"]);
   });
 
-  it("reaps them on OOM too", async () => {
+  it("reaps them on OOM when the container actually died", async () => {
+    await start();
     containers.set("sess-1", makeContainer("b1", "sess-1"));
 
     emit("oom", "sess-1", "b1");
@@ -230,7 +253,39 @@ describe("container-health: egress sidecar reap on die/oom (SHI-222)", () => {
     await vi.waitFor(() => expect(removed).toHaveLength(2));
   });
 
+  it("does NOT reap on an OOM the container SURVIVED — the event is not proof of death", async () => {
+    // Docker's `oom` event fires when the cgroup's OOM-killer kills *a process*,
+    // not necessarily the container. If the victim wasn't PID 1 — e.g. the agent
+    // CLI is killed but the session worker survives — the container keeps running
+    // and its network namespace is perfectly alive. Reaping on the event alone
+    // would tear the resolver and proxy out from under a live worker, silently
+    // killing its DNS and HTTPS. The reap confirms the parent is actually down
+    // rather than taking the event's word for it.
+    await start({ agentRunning: true }); // b1 survived the OOM
+    containers.set("sess-1", makeContainer("b1", "sess-1"));
+
+    emit("oom", "sess-1", "b1");
+
+    await new Promise((r) => setTimeout(r, 30));
+    expect(removed).toEqual([]);
+  });
+
+  it("does NOT reap when an ID-less die event resolves to the CURRENT, running container", async () => {
+    // Older daemons omit `Actor.ID`, so the incarnation guard can't tell
+    // generations apart and `deadContainerId` falls back to the tracked `sc.id` —
+    // which may be the healthy REPLACEMENT. The liveness check is what stops that
+    // from reaping a live session's sidecars.
+    await start({ agentRunning: true });
+    containers.set("sess-1", makeContainer("b1", "sess-1"));
+
+    emit("die", "sess-1"); // no Actor.ID
+
+    await new Promise((r) => setTimeout(r, 30));
+    expect(removed).toEqual([]);
+  });
+
   it("does NOT touch the session's compose children — an OOM must not drop the user's database", async () => {
+    await start();
     containers.set("sess-1", makeContainer("b1", "sess-1"));
 
     emit("die", "sess-1", "b1");
@@ -243,6 +298,7 @@ describe("container-health: egress sidecar reap on die/oom (SHI-222)", () => {
     // The stale-incarnation guard drops the event before the reap — otherwise a
     // late `die` for the container Rescue just stopped would tear the *healthy*
     // new container's sidecars out from under it.
+    await start();
     containers.set("sess-1", makeContainer("b1", "sess-1"));
 
     emit("die", "sess-1", "a1"); // a1 = the OLD container
@@ -261,17 +317,13 @@ describe("container-health: egress sidecar reap on die/oom (SHI-222)", () => {
     //
     // Staged here as "the replacement is already up when the reap lists" — the
     // worst case, and the one a label-only reap fails.
-    deps = {
-      docker: makeDocker({
+    await start({
+      extra: {
+        "b2": { labels: {}, running: true }, // the replacement agent, up and healthy
         "res-2": { labels: { [EGRESS_RESOLVER_LABEL]: "sess-1", "shipit-parent-session": "sess-1" }, parent: "b2" },
         "proxy-2": { labels: { [EGRESS_PROXY_LABEL]: "sess-1", "shipit-parent-session": "sess-1" }, parent: "b2" },
-      }),
-      containers,
-      standbySessionIds: new Set<string>(),
-      emitter,
-      labelFilters: () => [],
-    };
-    await startHealthMonitor(deps, createHealthMonitorState());
+      },
+    });
     containers.set("sess-1", makeContainer("b1", "sess-1"));
 
     emit("die", "sess-1", "b1"); // the OLD container (b1) died

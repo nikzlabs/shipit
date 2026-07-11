@@ -180,6 +180,21 @@ describe("reapSessionEgressSidecars (crash-site reap)", () => {
     expect([...removed].sort()).toEqual(["proxy-1", "res-1"]);
   });
 
+  it("does NOT reap when the named parent is STILL RUNNING — an `oom` event is not proof of death", async () => {
+    // Docker's `oom` event fires when the cgroup OOM-killer kills *a process*, not
+    // necessarily the container: if the victim wasn't PID 1, the container keeps
+    // running and its namespace is alive. The id says WHICH namespace we mean;
+    // liveness says whether it's actually gone. Both are required.
+    const { docker, removed } = fakeDocker({
+      "agent-1": agent(true), // survived the OOM
+      "res-1": resolver("s1", "agent-1"),
+      "proxy-1": proxy("s1", "agent-1"),
+    });
+
+    expect(await reapSessionEgressSidecars(docker, "s1", "agent-1")).toBe(0);
+    expect(removed).toEqual([]);
+  });
+
   it("SPARES the replacement incarnation's sidecars — the fire-and-forget recreate race", async () => {
     // The reap is `void`-called from the Docker event handler, so it can still be
     // in flight when the session is reactivated and a new agent container comes
@@ -206,7 +221,9 @@ describe("reapSessionEgressSidecars (crash-site reap)", () => {
 
   it("leaves OTHER sessions' sidecars alone", async () => {
     const { docker, removed } = fakeDocker({
+      "agent-1": agent(false),
       "res-1": resolver("s1", "agent-1"),
+      "agent-2": agent(false),
       "res-2": resolver("s2", "agent-2"),
       "proxy-2": proxy("s2", "agent-2"),
     });
@@ -221,6 +238,7 @@ describe("reapSessionEgressSidecars (crash-site reap)", () => {
     // reusing `cleanupSessionDockerResources`: that sweeps every
     // `shipit-parent-session` child, database volumes included.
     const { docker, removed } = fakeDocker({
+      "agent-1": agent(false),
       "res-1": resolver("s1", "agent-1"),
       "db-1": { labels: { "shipit-parent-session": "s1", "shipit-service-name": "db" }, running: true },
       "web-1": { labels: { "shipit-parent-session": "s1", "shipit-service-name": "web" }, running: true },
@@ -233,6 +251,7 @@ describe("reapSessionEgressSidecars (crash-site reap)", () => {
 
   it("reaps nothing when the dead container's id is unknown, rather than falling back to an unscoped sweep", async () => {
     const { docker, removed } = fakeDocker({
+      "agent-1": agent(false),
       "res-1": resolver("s1", "agent-1"),
       "proxy-1": proxy("s1", "agent-1"),
     });

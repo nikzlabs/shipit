@@ -191,12 +191,24 @@ export class ComposeCli {
       // indistinguishable from the catch, so treating a rejection as "parent
       // gone" would let a transient daemon blip reap a LIVE session's resolver
       // and proxy. `ps` exits 0 either way: it prints the id when the parent is
-      // running and nothing when it isn't, so "not running" is a VALUE we read
-      // rather than an exception we guess at, and a genuine daemon failure still
-      // surfaces as a throw we can fail safe on.
+      // up and nothing when it isn't, so "not up" is a VALUE we read rather than
+      // an exception we guess at, and a genuine daemon failure still surfaces as
+      // a throw we can fail safe on.
+      //
+      // NO `--filter status=running`, deliberately. `docker ps` without `-a`
+      // already lists exactly the containers whose namespace is alive — and that
+      // set includes PAUSED ones (`Up (Paused)`), which `status=running` would
+      // exclude. A paused parent still owns a perfectly good netns; reaping its
+      // sidecars would leave the session with no DNS and no HTTPS on unpause. The
+      // question here is "is this namespace alive?", not "is this process
+      // scheduled?" — and bare `ps` is exactly that question.
+      //
+      // We pass the full 64-char id (Docker echoes back the id we launched the
+      // sidecar with in `NetworkMode`), so `--filter id=` — which matches on
+      // unique ID *prefix* — is an exact match in practice.
       const out = (
         await this.query(
-          ["ps", "-q", "--no-trunc", "--filter", `id=${parentId}`, "--filter", "status=running"],
+          ["ps", "-q", "--no-trunc", "--filter", `id=${parentId}`],
           this.workspaceDir,
         )
       ).trim();

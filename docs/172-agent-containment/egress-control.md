@@ -708,6 +708,18 @@ Three cleanup paths, one per way the parent can die:
      agent with no DNS and no HTTPS. Filtering on the netns parent makes the reap
      idempotent: the new sidecars have a new parent, so they can never match no
      matter how late it lands.
+   - **To a parent that is genuinely not running** — we do *not* take the event's
+     word for it. A Docker **`oom` event does not mean the container died**: it
+     fires when the cgroup's OOM-killer kills *a process*, and if that process
+     wasn't PID 1 (say the agent CLI is killed but the session worker survives),
+     the container keeps running with a perfectly good namespace. Reaping on the
+     event alone would tear the resolver and proxy out from under a live worker.
+     The liveness check also disarms the `Actor.ID`-less event shape (older
+     daemons), where the incarnation guard cannot tell generations apart and the
+     dead-container id can resolve to the *current*, healthy container.
+
+   So: the id says **which** namespace we mean; liveness says whether it is
+   **actually gone**. Both are required.
 3. **Crash-recovery backstop at boot** — `reapOrphanEgressSidecars`, run from
    `runDiskJanitor`, for the orphans a *previous* orchestrator process never got to
    (it died mid-cleanup, the Docker daemon restarted, the agent was `docker rm`'d
@@ -734,13 +746,22 @@ Everything nonetheless fails **safe toward keeping**: a false reap costs a
 *running* session its DNS and HTTPS, while a false keep costs one inert container
 that the next boot sweep collects anyway. So an unreadable sidecar, a
 structurally-incomplete inspect, a network mode that borrows no namespace, and a
-Docker daemon that won't answer all resolve to "keep". This is also why the
-keep-list probes the parent with **`ps --filter status=running`** rather than
-`inspect`: `docker inspect` exits non-zero *both* when a container is gone *and*
-when the daemon is merely unhappy (500, timeout, socket error), so a catch block
-cannot tell "parent gone" from "ask again later" — and guessing "gone" would let a
-transient blip reap a live session's sidecars. `ps` exits 0 either way, so
-"not running" arrives as a value to read rather than an exception to interpret.
+Docker daemon that won't answer all resolve to "keep".
+
+Two probe choices follow from that, and both are easy to "simplify" back into
+bugs:
+
+- **The keep-list probes the parent with `docker ps`, not `docker inspect`.**
+  `inspect` exits non-zero *both* when a container is gone *and* when the daemon is
+  merely unhappy (500, timeout, socket error) — a catch block cannot tell "parent
+  gone" from "ask again later", and guessing "gone" lets a transient blip reap a
+  live session's sidecars. `ps` exits 0 either way, so "not up" arrives as a value
+  to read rather than an exception to interpret.
+- **It passes no `--filter status=running`.** A bare `docker ps` (without `-a`)
+  already lists exactly the containers whose namespace is alive — and that set
+  includes **paused** ones (`Up (Paused)`), which `status=running` would exclude.
+  A paused parent still owns a perfectly good netns. The question is "is this
+  namespace alive?", not "is this process scheduled?"
 
 Note that an orphaned sidecar is a **resource leak, not a containment hole**: it's
 `Exited`, holds no live path to the network, and the recreated agent container gets
