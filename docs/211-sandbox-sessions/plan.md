@@ -245,10 +245,13 @@ story in one discoverable place and leaves the normal repo-claim flow untouched.
 ### Session-switch isolation
 
 Creating a Sandbox immediately resumes it through the normal per-session
-WebSocket path. WebSocket message queues are scoped to one connection
-generation and cleared when the URL changes, so an undrained event from the
-previous session cannot appear beneath the new Sandbox title during the switch.
-The regression contract lives in `useWebSocket.test.ts`.
+WebSocket path. The route is updated before the active-session store, preventing
+a split render where URL-keyed chrome briefly shows the previous session's title
+bar instead of the Sandbox banner. WebSocket message queues are also scoped to
+one connection generation and cleared when the URL changes, so an undrained
+event from the previous session cannot appear beneath the new Sandbox title
+during the switch. Regression contracts live in `session-actions.test.ts` and
+`useWebSocket.test.ts`.
 
 ## Security notes
 
