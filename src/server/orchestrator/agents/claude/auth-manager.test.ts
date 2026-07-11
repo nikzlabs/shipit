@@ -24,6 +24,7 @@ const ptyHoisted = vi.hoisted(() => ({
   // can drive the exit path and assert the PTY isn't SIGHUP'd prematurely.
   exitHandlers: [] as ((e: { exitCode: number }) => void)[],
   dataHandlers: [] as ((data: string) => void)[],
+  writes: [] as string[],
   killed: 0,
 }));
 vi.mock("node-pty", () => ({
@@ -33,7 +34,7 @@ vi.mock("node-pty", () => ({
       pid: 4242,
       onData: (cb: (data: string) => void) => { ptyHoisted.dataHandlers.push(cb); },
       onExit: (cb: (e: { exitCode: number }) => void) => { ptyHoisted.exitHandlers.push(cb); },
-      write: () => {},
+      write: (data: string) => { ptyHoisted.writes.push(data); },
       kill: () => { ptyHoisted.killed++; },
     };
   },
@@ -547,6 +548,7 @@ describe("AuthManager / auth diagnostics", () => {
     ptyHoisted.dataHandlers.length = 0;
     ptyHoisted.exitHandlers.length = 0;
     ptyHoisted.killed = 0;
+    ptyHoisted.writes.length = 0;
     vi.useFakeTimers();
   });
 
@@ -578,6 +580,22 @@ describe("AuthManager / auth diagnostics", () => {
     expect(cliLog?.message).toContain("https://claude.ai/oauth/authorize?[redacted]");
     expect(cliLog?.message).not.toContain("super-secret-state");
     expect(new Set(progress.map((p) => p.attemptId)).size).toBe(1);
+    mgr.kill();
+  });
+
+  it("does not submit an empty code when Claude collapses only some prompt spaces", () => {
+    const mgr = new AuthManager();
+    const pending: string[] = [];
+    mgr.on("pending", () => pending.push("pending"));
+
+    mgr.startOAuthFlow();
+    ptyHoisted.dataHandlers[0](
+      "Browser didn't open?\nhttps://claude.com/cai/oauth/authorize?code=true&state=secret\n\nPaste codehereifprompted >",
+    );
+
+    expect(pending).toHaveLength(1);
+    vi.advanceTimersByTime(10_000);
+    expect(ptyHoisted.writes).toEqual([]);
     mgr.kill();
   });
 
