@@ -169,6 +169,11 @@ export async function startHealthMonitor(
           if (sc.status === "stopping") return;
           const exitCode = Number(attrs.exitCode ?? 1);
           const error = action === "oom" ? "Out of memory" : undefined;
+          // Capture the dead container's id BEFORE dropping the map entry — the
+          // reap below is scoped to it. `containerId` is the event's Actor.ID;
+          // older daemons omit it, in which case the tracked `sc.id` is the same
+          // container (the guard above proved they agree when both are present).
+          const deadContainerId = sc.id || containerId;
           sc.status = "stopped";
           deps.containers.delete(sessionId);
           deps.standbySessionIds.delete(sessionId);
@@ -186,9 +191,17 @@ export async function startHealthMonitor(
           // the user's compose services, networks, and volumes (their database
           // included). An agent crash must not cost them that.
           //
+          // Scoped to `deadContainerId`, NOT just the session id: this call is
+          // fire-and-forget, and the session id is stable across recreations, so
+          // a label-only reap would race the session's own recovery — if the user
+          // reactivates while our `listContainers` is still in flight, we'd come
+          // back holding the REPLACEMENT incarnation's sidecars and force-remove
+          // them, leaving a healthy agent with no DNS and no HTTPS. Filtering on
+          // the netns parent makes the reap idempotent and immune to that race.
+          //
           // Fire-and-forget: we're inside the Docker event stream's handler, and
           // `reapSessionEgressSidecars` never rejects.
-          void reapSessionEgressSidecars(deps.docker, sessionId);
+          void reapSessionEgressSidecars(deps.docker, sessionId, deadContainerId);
           deps.emitter.emit("container_exited", sessionId, exitCode, error);
           return;
         }

@@ -26,7 +26,12 @@ interface World {
   children: string[];
   /** Containers carrying an egress tier label for this session. */
   sidecars: { id: string; label: string; parent: string }[];
-  /** Container id → running?  Absent from the map means "not in the daemon". */
+  /**
+   * Container id → running? Both "present but stopped" (`false`) and "gone from
+   * the daemon" (absent) are indistinguishable to a `ps --filter status=running`
+   * probe — which is fine, because both mean the same thing here: the netns is
+   * dead. That's exactly why the probe is `ps` and not `inspect`.
+   */
   running: Record<string, boolean>;
 }
 
@@ -42,7 +47,19 @@ function makeCli(world: World) {
     const [cmd] = args;
 
     if (cmd === "ps") {
-      const labels = args.filter((_, i) => args[i - 1] === "--filter").map(f => f.replace(/^label=/, ""));
+      const filters = args.filter((_, i) => args[i - 1] === "--filter");
+
+      // Parent-liveness probe: `ps -q --no-trunc --filter id=<p> --filter status=running`.
+      // Exits 0 whether or not it matches — printing the id when the parent is
+      // running and nothing when it isn't. That's the whole point: "not running"
+      // is a VALUE, not an exception, so it can't be confused with a daemon error.
+      const idFilter = filters.find(f => f.startsWith("id="));
+      if (idFilter) {
+        const parent = idFilter.slice("id=".length);
+        return world.running[parent] ? parent : "";
+      }
+
+      const labels = filters.map(f => f.replace(/^label=/, ""));
       const tier = labels.find(l => l.startsWith(EGRESS_RESOLVER_LABEL) || l.startsWith(EGRESS_PROXY_LABEL));
       if (!tier) return world.children.join("\n"); // parent-label query → every child
       const [label] = tier.split("=", 1);
@@ -50,16 +67,9 @@ function makeCli(world: World) {
     }
 
     if (cmd === "inspect") {
-      const fmt = args[2];
       const id = args[3]!;
-      if (fmt === "{{.HostConfig.NetworkMode}}") {
-        const sc = world.sidecars.find(s => s.id === id);
-        return sc ? `container:${sc.parent}` : "bridge";
-      }
-      if (fmt === "{{.State.Running}}") {
-        if (!(id in world.running)) throw new Error(`Error: No such object: ${id}`);
-        return String(world.running[id]);
-      }
+      const sc = world.sidecars.find(s => s.id === id);
+      return sc ? `container:${sc.parent}` : "bridge";
     }
 
     if (cmd === "rm") {
@@ -157,24 +167,33 @@ describe("ComposeCli.killStaleContainers — egress sidecar keep-list (SHI-222)"
     expect(removed).toEqual([]);
   });
 
-  it("fails SAFE toward keeping when the sidecar itself can't be inspected", async () => {
-    // A false reap costs a running session its DNS and HTTPS; a false keep costs
-    // one stale container the boot janitor reaps anyway. So an unreadable sidecar
-    // is kept, preserving the pre-SHI-222 behavior.
-    const world: World = {
-      children: ["res-1", "stale-web"],
-      sidecars: [{ id: "res-1", label: EGRESS_RESOLVER_LABEL, parent: "agent-1" }],
-      running: { "agent-1": true },
-    };
+  /**
+   * Both fail-safe tests below pin the SAME rule from opposite sides: when the
+   * Docker daemon won't give a straight answer, KEEP the sidecar. A false reap
+   * costs a *running* session its DNS and HTTPS; a false keep costs one inert
+   * container that the boot janitor's parent-liveness sweep collects anyway.
+   */
+  function makeCliWithFailingQuery(failOn: (args: string[]) => boolean, world: World) {
     const removed: string[] = [];
     const query = vi.fn(async (args: string[]): Promise<string> => {
+      if (failOn(args)) throw new Error("Cannot connect to the Docker daemon");
       const [cmd] = args;
-      if (cmd === "inspect") throw new Error("daemon on fire");
       if (cmd === "ps") {
-        const hasTier = args.some(a => a.includes(EGRESS_RESOLVER_LABEL) || a.includes(EGRESS_PROXY_LABEL));
-        if (!hasTier) return world.children.join("\n");
-        const isResolver = args.some(a => a.includes(EGRESS_RESOLVER_LABEL));
-        return isResolver ? "res-1" : "";
+        const filters = args.filter((_, i) => args[i - 1] === "--filter");
+        const idFilter = filters.find(f => f.startsWith("id="));
+        if (idFilter) {
+          const parent = idFilter.slice("id=".length);
+          return world.running[parent] ? parent : "";
+        }
+        const labels = filters.map(f => f.replace(/^label=/, ""));
+        const tier = labels.find(l => l.startsWith(EGRESS_RESOLVER_LABEL) || l.startsWith(EGRESS_PROXY_LABEL));
+        if (!tier) return world.children.join("\n");
+        const [label] = tier.split("=", 1);
+        return world.sidecars.filter(s => s.label === label).map(s => s.id).join("\n");
+      }
+      if (cmd === "inspect") {
+        const sc = world.sidecars.find(s => s.id === args[3]);
+        return sc ? `container:${sc.parent}` : "bridge";
       }
       if (cmd === "rm") { removed.push(...args.slice(2)); return ""; }
       return "";
@@ -186,9 +205,46 @@ describe("ComposeCli.killStaleContainers — egress sidecar keep-list (SHI-222)"
       composeQuery: query,
       composeRunner: vi.fn(async () => undefined),
     });
+    return { cli, removed };
+  }
+
+  it("fails SAFE toward keeping when the sidecar itself can't be inspected", async () => {
+    const world: World = {
+      children: ["res-1", "stale-web"],
+      sidecars: [{ id: "res-1", label: EGRESS_RESOLVER_LABEL, parent: "agent-1" }],
+      running: { "agent-1": true },
+    };
+    const { cli, removed } = makeCliWithFailingQuery(args => args[0] === "inspect", world);
 
     await cli.killStaleContainers();
 
     expect(removed).toEqual(["stale-web"]);
+  });
+
+  it("fails SAFE toward keeping when the daemon errors while probing a LIVE parent", async () => {
+    // The bug this guards: `docker inspect` exits non-zero BOTH when a container
+    // is gone AND when the daemon is merely unhappy (500 / timeout / socket
+    // error). An implementation that catches the rejection and concludes "parent
+    // gone" would let a transient blip reap a live session's resolver and proxy.
+    // Hence the `ps --filter status=running` probe — it exits 0 either way, so
+    // "not running" is a value we read, and a throw genuinely means "don't know".
+    const world: World = {
+      children: ["res-1", "proxy-1", "stale-web"],
+      sidecars: [
+        { id: "res-1", label: EGRESS_RESOLVER_LABEL, parent: "agent-1" },
+        { id: "proxy-1", label: EGRESS_PROXY_LABEL, parent: "agent-1" },
+      ],
+      running: { "agent-1": true }, // the parent IS alive — the daemon just won't say so
+    };
+    const { cli, removed } = makeCliWithFailingQuery(
+      args => args[0] === "ps" && args.some(a => a.startsWith("id=")),
+      world,
+    );
+
+    await cli.killStaleContainers();
+
+    expect(removed).toEqual(["stale-web"]);
+    expect(removed).not.toContain("res-1");
+    expect(removed).not.toContain("proxy-1");
   });
 });

@@ -27,10 +27,10 @@
  * Two entry points, matching the two clocks the leak runs on:
  *
  *   - {@link reapSessionEgressSidecars} — **at the crash site.** Called from the
- *     `die`/`oom` handler for one session. Deliberately targeted at the egress
- *     labels: an agent OOM must NOT take down the user's compose services,
- *     networks, or volumes, so this is emphatically *not*
- *     `cleanupSessionDockerResources`.
+ *     `die`/`oom` handler for one session, scoped to the id of the agent
+ *     container that just died. Deliberately targeted at the egress labels: an
+ *     agent OOM must NOT take down the user's compose services, networks, or
+ *     volumes, so this is emphatically *not* `cleanupSessionDockerResources`.
  *   - {@link reapOrphanEgressSidecars} — **crash-recovery backstop at boot.**
  *     A global parent-liveness sweep for the orphans a *previous* orchestrator
  *     process never got to reap (it died mid-cleanup, the Docker daemon
@@ -38,13 +38,23 @@
  *     CLAUDE.md's disk-cleanup rule: this leak grows on the crash clock, not the
  *     wall clock, so a periodic timer would mostly burn cycles finding nothing.
  *
- * The liveness test is what makes the sweep **incarnation-aware**, and that
- * matters beyond the crash path: the agent container's name and labels are
- * reused across recreations, so a label-only match ("is this a sidecar for
- * session X?") cannot tell this incarnation's resolver from the corpse of the
- * last one. Asking "is your netns parent actually running?" can. That's the same
- * question `compose-cli.ts`'s stale-sweep keep-list has to answer to avoid
- * sparing a dead sidecar it should be reaping.
+ * **Every path here keys on the netns parent, never on the session label alone**,
+ * and that is the load-bearing invariant of this module. The agent container's
+ * name and the session id are both reused across recreations, so a label-only
+ * match ("is this a sidecar for session X?") cannot tell this incarnation's
+ * resolver from the corpse of the last one. It cuts both ways: the boot sweep
+ * would SPARE a dead sidecar it should reap, and the crash-site reap — which is
+ * fire-and-forget — would RACE the session's own recovery and delete the
+ * replacement incarnation's live sidecars out from under a healthy agent.
+ * "Is your netns parent the container I mean, and is it running?" is immune to
+ * both. It's the same question `compose-cli.ts`'s stale-sweep keep-list has to
+ * answer, for the same reason.
+ *
+ * Everything fails **safe toward keeping**. A false reap costs a *running*
+ * session its DNS and HTTPS; a false keep costs one inert container that the next
+ * boot sweep collects anyway. So an unreadable sidecar, a parent inspect that
+ * fails with anything other than a 404, a structurally incomplete inspect, and a
+ * network mode that borrows no namespace all resolve to "keep".
  *
  * Safety: the agent container is created with **no `RestartPolicy`** (see
  * `container-lifecycle.ts`), so it never legitimately transitions
@@ -135,10 +145,15 @@ export async function isOrphanedSidecar(docker: Docker, sidecarId: string): Prom
 
   try {
     const parent = await docker.getContainer(parentId).inspect();
+    const running = parent.State?.Running;
+    // A structurally incomplete inspect (no `State`) is UNCERTAIN, not "stopped".
+    // Treating a missing field as a reap signal is how a schema surprise turns
+    // into a live session losing its DNS.
+    if (typeof running !== "boolean") return false;
     // Parent exists but isn't running (the crash case: the agent container is
     // still there, `Exited`, until the next create removes it by name). The
     // namespace died with the process — the sidecar is dead weight either way.
-    return !parent.State?.Running;
+    return !running;
   } catch (err) {
     // Parent container no longer exists at all → definitively orphaned.
     if (statusCode(err) === 404) return true;
@@ -147,26 +162,62 @@ export async function isOrphanedSidecar(docker: Docker, sidecarId: string): Prom
 }
 
 /**
- * Reap **every** egress sidecar belonging to `sessionId`, without asking about
- * parent liveness — the caller already knows the parent is dead.
+ * Reap the egress sidecars belonging to `sessionId` **whose netns parent is
+ * `deadParentId`** — the agent container that just died.
  *
- * This is the crash-site call (`container-health.ts`'s `die`/`oom` handler),
- * where the agent container we're being told about *is* the netns parent. It's
- * scoped to the egress labels on purpose: the session's compose services,
- * networks, and volumes must survive an agent crash untouched.
+ * This is the crash-site call (`container-health.ts`'s `die`/`oom` handler).
+ * Scoped two ways, and BOTH matter:
+ *
+ *   - **To the egress labels**, so the session's compose services, networks, and
+ *     volumes survive an agent crash untouched. (This is why the crash path does
+ *     not reuse `cleanupSessionDockerResources` — that sweeps every
+ *     `shipit-parent-session` child, the user's database volume included.)
+ *   - **To the dead parent's container id**, because the session id alone is NOT
+ *     enough. It is stable across container recreations, so a label-only reap
+ *     races the session's own recovery: this function is called fire-and-forget,
+ *     and if the session gets reactivated while our `listContainers` is still in
+ *     flight (a busy daemon during an OOM storm is exactly when that happens),
+ *     the list comes back holding the REPLACEMENT incarnation's sidecars and we
+ *     would force-remove them — leaving a healthy, running agent with no DNS and
+ *     no HTTPS. Filtering on the netns parent makes the reap idempotent and
+ *     immune to that race: the new sidecars have a new parent id, so they can
+ *     never match no matter how late we run.
  *
  * Never throws — it's called fire-and-forget from a Docker event handler.
  */
-export async function reapSessionEgressSidecars(docker: Docker, sessionId: string): Promise<number> {
+export async function reapSessionEgressSidecars(
+  docker: Docker,
+  sessionId: string,
+  deadParentId: string,
+): Promise<number> {
+  if (!deadParentId) return 0; // can't scope safely → reap nothing (the boot sweep will)
   const ids = await listEgressSidecars(docker, sessionId);
   let removed = 0;
   for (const id of ids) {
+    if (!(await hasNetnsParent(docker, id, deadParentId))) continue;
     if (await removeContainer(docker, id)) removed++;
   }
   if (removed > 0) {
-    console.log(`[egress-reaper] session ${sessionId}: removed ${removed} sidecar(s) after container exit`);
+    console.log(
+      `[egress-reaper] session ${sessionId}: removed ${removed} sidecar(s) of dead container ${deadParentId.slice(0, 12)}`,
+    );
   }
   return removed;
+}
+
+/**
+ * Does `sidecarId` borrow `parentId`'s network namespace?
+ *
+ * Fails **safe toward keeping** — an unreadable sidecar answers `false`, so a
+ * daemon hiccup can never widen a scoped reap into an unscoped one.
+ */
+async function hasNetnsParent(docker: Docker, sidecarId: string, parentId: string): Promise<boolean> {
+  try {
+    const info = await docker.getContainer(sidecarId).inspect();
+    return netnsParentId(info.HostConfig?.NetworkMode) === parentId;
+  } catch {
+    return false;
+  }
 }
 
 /**

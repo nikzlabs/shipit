@@ -169,8 +169,8 @@ export class ComposeCli {
    * and HTTPS; a false keep costs one stale container that the boot janitor's
    * parent-liveness sweep (`egress-orphan-reaper.ts`) reaps anyway. So anything
    * we can't positively establish — an unreadable sidecar, a non-netns network
-   * mode — resolves to "keep". Only an unambiguous answer (parent inspect says
-   * not-running, or the parent is simply gone) reaps.
+   * mode, a Docker daemon that won't answer — resolves to "keep". Only a
+   * positive read that the parent is absent from the running set reaps.
    */
   private async hasLiveNetnsParent(id: string): Promise<boolean> {
     let parentId: string;
@@ -185,14 +185,24 @@ export class ComposeCli {
       return true; // can't tell → keep (preserves the pre-SHI-222 behavior)
     }
     try {
-      const running = (
-        await this.query(["inspect", "-f", "{{.State.Running}}", parentId], this.workspaceDir)
+      // `ps --filter` rather than `inspect`, deliberately. `docker inspect` exits
+      // NON-ZERO both when the container is gone AND when the daemon is merely
+      // unhappy (500, timeout, socket error, permission denied) — the two are
+      // indistinguishable from the catch, so treating a rejection as "parent
+      // gone" would let a transient daemon blip reap a LIVE session's resolver
+      // and proxy. `ps` exits 0 either way: it prints the id when the parent is
+      // running and nothing when it isn't, so "not running" is a VALUE we read
+      // rather than an exception we guess at, and a genuine daemon failure still
+      // surfaces as a throw we can fail safe on.
+      const out = (
+        await this.query(
+          ["ps", "-q", "--no-trunc", "--filter", `id=${parentId}`, "--filter", "status=running"],
+          this.workspaceDir,
+        )
       ).trim();
-      return running === "true";
+      return out.length > 0;
     } catch {
-      // The parent container doesn't exist any more — this sidecar is an orphan
-      // from a previous incarnation. Let the sweep take it.
-      return false;
+      return true; // daemon problem → don't know → keep
     }
   }
 

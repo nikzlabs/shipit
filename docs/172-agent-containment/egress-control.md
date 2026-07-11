@@ -689,36 +689,58 @@ Three cleanup paths, one per way the parent can die:
    sweep, then removes the agent **last**. The ordering is load-bearing: sidecars
    must die before the namespace holder is removed.
 2. **The agent container dying on its own** (OOM, crash, host OOM-killer) — the
-   `die`/`oom` handler in `container-health.ts` calls `reapSessionEgressSidecars`.
-   This *has* to happen at the crash site: the handler also deletes the session's
-   container-map entry, which **latches** the leak, because every later
-   `destroyContainer(sessionId)` early-returns on `if (!sc) return`. Without the
-   reap here, archiving the crashed session afterwards would never sweep, and the
-   sidecars would outlive the session entirely. The reap is deliberately scoped to
-   the two egress labels rather than reusing `cleanupSessionDockerResources` —
-   that sweeps *every* `shipit-parent-session` child, so on an agent OOM it would
-   also drop the user's compose services, networks, and volumes.
+   `die`/`oom` handler in `container-health.ts` calls `reapSessionEgressSidecars`,
+   passing **the id of the container that just died**. This *has* to happen at the
+   crash site: the handler also deletes the session's container-map entry, which
+   **latches** the leak, because every later `destroyContainer(sessionId)`
+   early-returns on `if (!sc) return`. Without the reap here, archiving the crashed
+   session afterwards would never sweep, and the sidecars would outlive the session
+   entirely. Two scopings, both load-bearing:
+   - **To the egress labels**, rather than reusing `cleanupSessionDockerResources`
+     — that sweeps *every* `shipit-parent-session` child, so on an agent OOM it
+     would also drop the user's compose services, networks, and volumes.
+   - **To the dead container's id**, rather than the session id alone. The call is
+     fire-and-forget, and the session id is stable across recreations, so a
+     label-only reap races the session's own recovery: if the user reactivates
+     while `listContainers` is still in flight (a busy daemon during an OOM storm
+     is exactly when that happens), the list comes back holding the **replacement**
+     incarnation's sidecars and force-removes them — leaving a healthy, running
+     agent with no DNS and no HTTPS. Filtering on the netns parent makes the reap
+     idempotent: the new sidecars have a new parent, so they can never match no
+     matter how late it lands.
 3. **Crash-recovery backstop at boot** — `reapOrphanEgressSidecars`, run from
    `runDiskJanitor`, for the orphans a *previous* orchestrator process never got to
    (it died mid-cleanup, the Docker daemon restarted, the agent was `docker rm`'d
    out-of-band). Boot-only, per CLAUDE.md's disk-cleanup rule: this leak grows on
    the crash clock, not the wall clock.
 
-**Parent-liveness, not labels, is the test** — and that's what makes cleanup
-**incarnation-aware**. Both egress labels are keyed on the *session* id, which is
-stable across container recreations, so a label-only match cannot tell this
-incarnation's resolver from the corpse of the last one. Asking "is your netns
-parent still running?" can. `compose-cli.ts`'s `killStaleContainers` keep-list has
-to answer the same question: it spares live sidecars from the pre-start sweep (or
-they'd be SIGKILLed ~1s after the agent launches, leaving the session with no
-resolver and no HTTPS) — but it must **not** spare a dead incarnation's.
+**The netns parent, never the session label alone, is the key** — for every path
+above. That's the load-bearing invariant. The agent container's name and the
+session id are both reused across recreations, so a label-only match cannot tell
+this incarnation's resolver from the corpse of the last one, and it fails in *both*
+directions: a sweep would **spare** a dead sidecar it should reap, and a
+fire-and-forget crash reap would **delete** a live replacement's sidecars it should
+leave alone. `compose-cli.ts`'s `killStaleContainers` keep-list has to answer the
+same question — it spares live sidecars from the pre-start sweep (or they'd be
+SIGKILLed ~1s after the agent launches, leaving the session with no resolver and no
+HTTPS) — but it must **not** spare a dead incarnation's.
 
 The safety argument rests on the agent container carrying **no `RestartPolicy`**:
 it never legitimately goes running → stopped → running underneath a live sidecar,
 so "parent not running" always means "this sidecar is dead weight", never "wait a
-moment." Both the reaper and the keep-list nonetheless fail *safe toward keeping* —
-a false reap costs a running session its DNS and HTTPS, while a false keep costs
-one inert container that the next boot sweep collects anyway.
+moment."
+
+Everything nonetheless fails **safe toward keeping**: a false reap costs a
+*running* session its DNS and HTTPS, while a false keep costs one inert container
+that the next boot sweep collects anyway. So an unreadable sidecar, a
+structurally-incomplete inspect, a network mode that borrows no namespace, and a
+Docker daemon that won't answer all resolve to "keep". This is also why the
+keep-list probes the parent with **`ps --filter status=running`** rather than
+`inspect`: `docker inspect` exits non-zero *both* when a container is gone *and*
+when the daemon is merely unhappy (500, timeout, socket error), so a catch block
+cannot tell "parent gone" from "ask again later" — and guessing "gone" would let a
+transient blip reap a live session's sidecars. `ps` exits 0 either way, so
+"not running" arrives as a value to read rather than an exception to interpret.
 
 Note that an orphaned sidecar is a **resource leak, not a containment hole**: it's
 `Exited`, holds no live path to the network, and the recreated agent container gets

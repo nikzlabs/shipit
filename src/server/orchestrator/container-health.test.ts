@@ -156,12 +156,19 @@ describe("container-health: egress sidecar reap on die/oom (SHI-222)", () => {
   let removed: string[];
   let deps: HealthDeps;
 
-  /** Docker fake carrying the two sidecars of `sess-1`, plus a compose child. */
-  function makeDocker() {
-    const store = new Map<string, Record<string, string>>([
-      ["res-1", { [EGRESS_RESOLVER_LABEL]: "sess-1", "shipit-parent-session": "sess-1" }],
-      ["proxy-1", { [EGRESS_PROXY_LABEL]: "sess-1", "shipit-parent-session": "sess-1" }],
-      ["db-1", { "shipit-parent-session": "sess-1", "shipit-service-name": "db" }],
+  interface FakeC { labels: Record<string, string>; parent?: string }
+
+  /**
+   * Docker fake carrying `sess-1`'s two sidecars (netns parent `b1`), plus a
+   * compose child. `extra` seeds additional containers — used to stage the
+   * REPLACEMENT incarnation for the recreate-race test.
+   */
+  function makeDocker(extra: Record<string, FakeC> = {}) {
+    const store = new Map<string, FakeC>([
+      ["res-1", { labels: { [EGRESS_RESOLVER_LABEL]: "sess-1", "shipit-parent-session": "sess-1" }, parent: "b1" }],
+      ["proxy-1", { labels: { [EGRESS_PROXY_LABEL]: "sess-1", "shipit-parent-session": "sess-1" }, parent: "b1" }],
+      ["db-1", { labels: { "shipit-parent-session": "sess-1", "shipit-service-name": "db" } }],
+      ...Object.entries(extra),
     ]);
     return {
       getEvents: vi.fn(async () => eventStream),
@@ -169,10 +176,15 @@ describe("container-health: egress sidecar reap on die/oom (SHI-222)", () => {
         const want = opts.filters?.label?.[0] ?? "";
         const [key, value] = want.split("=", 2);
         return [...store.entries()]
-          .filter(([, labels]) => labels[key!] === value)
+          .filter(([, c]) => c.labels[key!] === value)
           .map(([Id]) => ({ Id }));
       }),
       getContainer: vi.fn((id: string) => ({
+        inspect: vi.fn(async () => {
+          const c = store.get(id);
+          if (!c) throw Object.assign(new Error("no such container"), { statusCode: 404 });
+          return { HostConfig: { NetworkMode: c.parent ? `container:${c.parent}` : "bridge" } };
+        }),
         remove: vi.fn(async () => { removed.push(id); store.delete(id); }),
       })),
     } as unknown as HealthDeps["docker"];
@@ -237,5 +249,36 @@ describe("container-health: egress sidecar reap on die/oom (SHI-222)", () => {
 
     await new Promise((r) => setTimeout(r, 20));
     expect(removed).toEqual([]);
+  });
+
+  it("SPARES a replacement incarnation's sidecars that appear while the reap is in flight", async () => {
+    // The reap is fire-and-forget, so the session can be reactivated — bringing up
+    // a NEW agent container and NEW sidecars under the SAME session id — before
+    // our `listContainers` resolves. A reap scoped to the session label alone
+    // would come back holding the replacement's sidecars and force-remove them,
+    // leaving a healthy running agent with no DNS and no HTTPS. Scoping to the
+    // dead container's id (`b1`) is what makes it idempotent.
+    //
+    // Staged here as "the replacement is already up when the reap lists" — the
+    // worst case, and the one a label-only reap fails.
+    deps = {
+      docker: makeDocker({
+        "res-2": { labels: { [EGRESS_RESOLVER_LABEL]: "sess-1", "shipit-parent-session": "sess-1" }, parent: "b2" },
+        "proxy-2": { labels: { [EGRESS_PROXY_LABEL]: "sess-1", "shipit-parent-session": "sess-1" }, parent: "b2" },
+      }),
+      containers,
+      standbySessionIds: new Set<string>(),
+      emitter,
+      labelFilters: () => [],
+    };
+    await startHealthMonitor(deps, createHealthMonitorState());
+    containers.set("sess-1", makeContainer("b1", "sess-1"));
+
+    emit("die", "sess-1", "b1"); // the OLD container (b1) died
+
+    await vi.waitFor(() => expect(removed).toHaveLength(2));
+    expect([...removed].sort()).toEqual(["proxy-1", "res-1"]); // b1's sidecars only
+    expect(removed).not.toContain("res-2");
+    expect(removed).not.toContain("proxy-2");
   });
 });

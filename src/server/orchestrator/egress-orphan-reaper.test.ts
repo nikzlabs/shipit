@@ -134,6 +134,22 @@ describe("isOrphanedSidecar", () => {
     expect(await isOrphanedSidecar(docker, "vanished")).toBe(false);
   });
 
+  it("fails safe (not orphaned) when the parent inspect comes back without a State", async () => {
+    // A structurally incomplete inspect is UNCERTAIN, not "stopped". Reading a
+    // missing field as a reap signal turns a schema surprise into a live session
+    // losing its DNS.
+    const { docker } = fakeDocker({ "res-1": resolver("s1", "agent-1") });
+    vi.mocked(docker.getContainer).mockImplementation(((id: string) => ({
+      inspect: async () =>
+        id === "res-1"
+          ? { HostConfig: { NetworkMode: "container:agent-1" }, State: { Running: true } }
+          : { HostConfig: {} }, // parent: no State at all
+      remove: async () => undefined,
+    })) as unknown as Docker["getContainer"]);
+
+    expect(await isOrphanedSidecar(docker, "res-1")).toBe(false);
+  });
+
   it("fails safe (not orphaned) when the parent inspect errors with a non-404", async () => {
     // A daemon hiccup must never be read as "parent gone" — a false reap costs a
     // LIVE session its DNS and HTTPS.
@@ -153,15 +169,39 @@ describe("isOrphanedSidecar", () => {
 // ---------------------------------------------------------------------------
 
 describe("reapSessionEgressSidecars (crash-site reap)", () => {
-  it("removes BOTH tiers for the session, without asking about parent liveness", async () => {
+  it("removes BOTH tiers of the dead agent container", async () => {
     const { docker, removed } = fakeDocker({
       "agent-1": agent(false),
       "res-1": resolver("s1", "agent-1"),
       "proxy-1": proxy("s1", "agent-1"),
     });
 
-    expect(await reapSessionEgressSidecars(docker, "s1")).toBe(2);
+    expect(await reapSessionEgressSidecars(docker, "s1", "agent-1")).toBe(2);
     expect([...removed].sort()).toEqual(["proxy-1", "res-1"]);
+  });
+
+  it("SPARES the replacement incarnation's sidecars — the fire-and-forget recreate race", async () => {
+    // The reap is `void`-called from the Docker event handler, so it can still be
+    // in flight when the session is reactivated and a new agent container comes
+    // up carrying the SAME session id. A label-only reap would come back holding
+    // the replacement's sidecars and force-remove them, leaving a healthy running
+    // agent with no DNS and no HTTPS. Scoping to the dead parent's id is what
+    // makes the reap idempotent no matter how late it lands.
+    const { docker, removed } = fakeDocker({
+      "agent-old": agent(false),
+      "res-old": resolver("s1", "agent-old"),
+      "proxy-old": proxy("s1", "agent-old"),
+      // …the replacement, already up by the time our listContainers resolves:
+      "agent-new": agent(true),
+      "res-new": resolver("s1", "agent-new"),
+      "proxy-new": proxy("s1", "agent-new"),
+    });
+
+    expect(await reapSessionEgressSidecars(docker, "s1", "agent-old")).toBe(2);
+
+    expect([...removed].sort()).toEqual(["proxy-old", "res-old"]);
+    expect(removed).not.toContain("res-new");
+    expect(removed).not.toContain("proxy-new");
   });
 
   it("leaves OTHER sessions' sidecars alone", async () => {
@@ -171,7 +211,7 @@ describe("reapSessionEgressSidecars (crash-site reap)", () => {
       "proxy-2": proxy("s2", "agent-2"),
     });
 
-    await reapSessionEgressSidecars(docker, "s1");
+    await reapSessionEgressSidecars(docker, "s1", "agent-1");
 
     expect(removed).toEqual(["res-1"]);
   });
@@ -186,14 +226,33 @@ describe("reapSessionEgressSidecars (crash-site reap)", () => {
       "web-1": { labels: { "shipit-parent-session": "s1", "shipit-service-name": "web" }, running: true },
     });
 
-    await reapSessionEgressSidecars(docker, "s1");
+    await reapSessionEgressSidecars(docker, "s1", "agent-1");
 
     expect(removed).toEqual(["res-1"]);
   });
 
+  it("reaps nothing when the dead container's id is unknown, rather than falling back to an unscoped sweep", async () => {
+    const { docker, removed } = fakeDocker({
+      "res-1": resolver("s1", "agent-1"),
+      "proxy-1": proxy("s1", "agent-1"),
+    });
+
+    expect(await reapSessionEgressSidecars(docker, "s1", "")).toBe(0);
+    expect(removed).toEqual([]);
+  });
+
+  it("skips a sidecar it cannot inspect rather than reaping it unscoped", async () => {
+    const { docker, removed } = fakeDocker({
+      "res-1": { labels: { [EGRESS_RESOLVER_LABEL]: "s1" } }, // no networkMode → unreadable parent
+    });
+
+    expect(await reapSessionEgressSidecars(docker, "s1", "agent-1")).toBe(0);
+    expect(removed).toEqual([]);
+  });
+
   it("is a no-op, and does not throw, when the session has no sidecars", async () => {
     const { docker, removed } = fakeDocker({ "agent-1": agent(true) });
-    expect(await reapSessionEgressSidecars(docker, "s1")).toBe(0);
+    expect(await reapSessionEgressSidecars(docker, "s1", "agent-1")).toBe(0);
     expect(removed).toEqual([]);
   });
 
@@ -203,7 +262,7 @@ describe("reapSessionEgressSidecars (crash-site reap)", () => {
       getContainer: vi.fn(),
     } as unknown as Docker;
 
-    await expect(reapSessionEgressSidecars(docker, "s1")).resolves.toBe(0);
+    await expect(reapSessionEgressSidecars(docker, "s1", "agent-1")).resolves.toBe(0);
   });
 });
 
