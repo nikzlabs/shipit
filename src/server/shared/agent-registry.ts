@@ -113,6 +113,34 @@ export const CODEX_TOOL_NAMES = [
   "AskUserQuestion",
 ] as const;
 
+/**
+ * Single source of truth for Codex models offered in the picker.
+ *
+ * Order matters: `models[0]` is the default model a fresh Codex session runs
+ * with. Codex CLI 0.144.1 lists the GPT-5.6 family as explicit Sol/Terra/Luna
+ * slugs; the historical unsuffixed `gpt-5.6` alias is rejected for ChatGPT
+ * account auth, so do not expose it as selectable.
+ */
+export const CODEX_MODELS = [
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+  "gpt-5.4",
+  "gpt-5.4-mini",
+  "gpt-5.5",
+  "gpt-5.3-codex",
+  "gpt-5.2",
+];
+
+/**
+ * Compatibility shim for rows/session state written before ShipIt stopped
+ * surfacing the invalid unsuffixed GPT-5.6 slug. Keep this at the boundary
+ * before Codex turns so legacy sessions run the intended Sol model.
+ */
+export function normalizeCodexModelId(model: string | undefined): string | undefined {
+  return model === "gpt-5.6" ? "gpt-5.6-sol" : model;
+}
+
 export interface AgentInfo {
   id: AgentId;
   name: string;
@@ -167,19 +195,10 @@ const AGENT_DEFS: { id: AgentId; name: string; binary: string; capabilities: Age
       supportsPermissionModes: false,
       supportedPermissionModes: [],
       toolNames: [...CODEX_TOOL_NAMES],
-      // GPT-5.6 is the current OpenAI frontier family. The unsuffixed
-      // `gpt-5.6` alias routes to Sol, followed by the lower-cost Terra/Luna
-      // variants. Older listed models remain selectable for continuity.
-      models: [
-        "gpt-5.6",
-        "gpt-5.6-terra",
-        "gpt-5.6-luna",
-        "gpt-5.4",
-        "gpt-5.4-mini",
-        "gpt-5.5",
-        "gpt-5.3-codex",
-        "gpt-5.2",
-      ],
+      // GPT-5.6 is the current OpenAI frontier family. Codex requires the
+      // explicit Sol slug; the old unsuffixed `gpt-5.6` alias is not accepted
+      // with ChatGPT account auth.
+      models: CODEX_MODELS,
       // Codex CLI config `model_reasoning_effort`. Verified valid values by
       // running `codex -c model_reasoning_effort=__bogus__`: "none, minimal,
       // low, medium, high, xhigh". Omitting the override uses Codex's own

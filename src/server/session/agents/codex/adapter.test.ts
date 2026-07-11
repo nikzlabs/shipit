@@ -100,7 +100,12 @@ describe("CodexAdapter", () => {
   });
 
   /** Helper: create adapter, run it, and complete the init handshake. */
-  async function createAndInit(prompt = "Hello", sessionId?: string, cwd = "/workspace"): Promise<void> {
+  async function createAndInit(
+    prompt = "Hello",
+    sessionId?: string,
+    cwd = "/workspace",
+    model?: string,
+  ): Promise<void> {
     adapter = new CodexAdapter(() => false);
     adapter.on("event", (e) => events.push(e));
 
@@ -108,6 +113,7 @@ describe("CodexAdapter", () => {
       prompt,
       sessionId,
       cwd,
+      ...(model !== undefined ? { model } : {}),
     });
 
     // Allow the microtask for initializeAndRun to start
@@ -177,6 +183,8 @@ describe("CodexAdapter", () => {
     expect(adapter.capabilities.toolNames).not.toContain("file_write");
     expect(adapter.capabilities.toolNames).not.toContain("file_read");
     expect(adapter.capabilities.toolNames).not.toContain("file_edit");
+    expect(adapter.capabilities.models[0]).toBe("gpt-5.6-sol");
+    expect(adapter.capabilities.models).not.toContain("gpt-5.6");
     expect(adapter.capabilities.models).toContain("gpt-5.4");
     // 125 — chat-native AI review requires a subagent primitive plus custom
     // MCP tool registration; Codex ships both (model-invoked `spawn_agent`
@@ -344,9 +352,19 @@ describe("CodexAdapter", () => {
       type: "agent_init",
       agentId: "codex",
       sessionId: "thread-abc-123",
-      model: "gpt-5.6",
+      model: "gpt-5.6-sol",
       tools: [...CODEX_TOOL_NAMES],
     });
+  });
+
+  it("normalizes legacy GPT-5.6 alias before reporting or starting a Codex turn", async () => {
+    await createAndInit("Hello", undefined, "/workspace", "gpt-5.6");
+
+    const initEvent = events.find((e) => e.type === "agent_init");
+    expect(initEvent).toMatchObject({ model: "gpt-5.6-sol" });
+
+    const turnStart = fakeProc.getRequests().find((r) => r.method === "turn/start");
+    expect((turnStart!.params as any).model).toBe("gpt-5.6-sol");
   });
 
   it("maps an agentMessage item to agent_assistant text", async () => {
