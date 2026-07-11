@@ -120,6 +120,13 @@ export class ComposeCli {
     // from this pre-start sweep, or we'd SIGKILL them ~1s after the agent launches
     // and leave the session with no resolver / no HTTPS. Docker `--filter` has no
     // label negation, so subtract a query per keep-label and union the results.
+    //
+    // SHI-222: the keep-list must be INCARNATION-aware. Both labels are keyed on
+    // the session id, which is stable across container recreations — so a naive
+    // label match also spares the sidecars of a PREVIOUS, dead agent container
+    // (the session OOM'd and was recreated). Those share a torn-down namespace
+    // and are pure garbage; sparing them is exactly the leak. Keep a sidecar only
+    // while its netns parent is still running.
     const keep = new Set<string>();
     for (const label of [EGRESS_RESOLVER_LABEL, EGRESS_PROXY_LABEL]) {
       const out = await this.query(
@@ -130,7 +137,9 @@ export class ComposeCli {
         ],
         this.workspaceDir,
       );
-      for (const id of out.split("\n").map(s => s.trim()).filter(Boolean)) keep.add(id);
+      for (const id of out.split("\n").map(s => s.trim()).filter(Boolean)) {
+        if (await this.hasLiveNetnsParent(id)) keep.add(id);
+      }
     }
     ids = ids.filter(id => !keep.has(id));
     if (ids.length === 0) return;
@@ -144,6 +153,46 @@ export class ComposeCli {
       );
     } catch {
       // Network may not exist or may be in use — that's fine
+    }
+  }
+
+  /**
+   * Is `id`'s netns parent (`HostConfig.NetworkMode: container:<parentId>`) still
+   * a running container? — the incarnation test for {@link killStaleContainers}'s
+   * egress-sidecar keep-list (SHI-222).
+   *
+   * The agent container carries no `RestartPolicy`, so it never legitimately goes
+   * running → stopped → running underneath a live sidecar: "parent not running"
+   * always means "this sidecar's namespace is gone", never "wait a moment."
+   *
+   * Fails **safe toward keeping**. A false reap costs a running session its DNS
+   * and HTTPS; a false keep costs one stale container that the boot janitor's
+   * parent-liveness sweep (`egress-orphan-reaper.ts`) reaps anyway. So anything
+   * we can't positively establish — an unreadable sidecar, a non-netns network
+   * mode — resolves to "keep". Only an unambiguous answer (parent inspect says
+   * not-running, or the parent is simply gone) reaps.
+   */
+  private async hasLiveNetnsParent(id: string): Promise<boolean> {
+    let parentId: string;
+    try {
+      const mode = (
+        await this.query(["inspect", "-f", "{{.HostConfig.NetworkMode}}", id], this.workspaceDir)
+      ).trim();
+      if (!mode.startsWith("container:")) return true; // not netns-sharing → not ours to judge
+      parentId = mode.slice("container:".length).trim();
+      if (!parentId) return true;
+    } catch {
+      return true; // can't tell → keep (preserves the pre-SHI-222 behavior)
+    }
+    try {
+      const running = (
+        await this.query(["inspect", "-f", "{{.State.Running}}", parentId], this.workspaceDir)
+      ).trim();
+      return running === "true";
+    } catch {
+      // The parent container doesn't exist any more — this sidecar is an orphan
+      // from a previous incarnation. Let the sweep take it.
+      return false;
     }
   }
 

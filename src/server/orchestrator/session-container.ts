@@ -443,6 +443,16 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   }
 
   /**
+   * The manager's configured Docker client (honours the `socketPath` option),
+   * exposed so boot-time sweeps that live OUTSIDE the manager — the disk
+   * janitor's orphan egress-sidecar reap (SHI-222) — talk to the same daemon
+   * rather than constructing a default-socket client of their own.
+   */
+  get dockerClient(): Docker {
+    return this.docker;
+  }
+
+  /**
    * docs/172 (SHI-90) — apply a newly-added durable allowlist host to a RUNNING,
    * contained session by relaunching the Tier B resolver + Tier C proxy with the
    * regenerated config, so the host resolves (DNS + ipset auto-pin) and its SNI

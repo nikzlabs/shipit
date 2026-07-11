@@ -666,6 +666,63 @@ as an operator default / fail-secure floor).
   `useServerEvents.ts`.
 - Blocked-egress card — persisted transcript card (see CLAUDE.md side-channel-card rule):
   `chat-card-persistence.ts`, `chat-history.ts`, client `visual-elements.ts`.
+- `egress-orphan-reaper.ts` (SHI-222) — sidecar orphan cleanup; see below.
+
+## Sidecar lifecycle and orphan cleanup (SHI-222)
+
+The Tier B resolver and Tier C proxy are launched with
+`NetworkMode: container:<agentContainerId>` — they have no network stack of their
+own, they borrow the agent container's. That makes the agent container their
+**netns parent** and makes their lifetime strictly dependent on it: when the
+parent stops, the shared namespace is torn down, the sidecar's process dies,
+Docker retries the start (`RestartPolicy: on-failure`, capped at 3), each retry
+fails to join a dead namespace, and the container settles in `Exited`. **Nothing
+self-removes it.** (Tier A is different — it's a one-shot installer that exits by
+design; its iptables/ipset rules persist because they live in the *namespace*, not
+the process.)
+
+Three cleanup paths, one per way the parent can die:
+
+1. **Orchestrator-initiated teardown** (destroy / archive / idle-evict / rescue /
+   restart-agent / graceful shutdown / create-failure) — `destroyContainer` stops
+   the agent, runs `cleanupSessionDockerResources`'s `shipit-parent-session` label
+   sweep, then removes the agent **last**. The ordering is load-bearing: sidecars
+   must die before the namespace holder is removed.
+2. **The agent container dying on its own** (OOM, crash, host OOM-killer) — the
+   `die`/`oom` handler in `container-health.ts` calls `reapSessionEgressSidecars`.
+   This *has* to happen at the crash site: the handler also deletes the session's
+   container-map entry, which **latches** the leak, because every later
+   `destroyContainer(sessionId)` early-returns on `if (!sc) return`. Without the
+   reap here, archiving the crashed session afterwards would never sweep, and the
+   sidecars would outlive the session entirely. The reap is deliberately scoped to
+   the two egress labels rather than reusing `cleanupSessionDockerResources` —
+   that sweeps *every* `shipit-parent-session` child, so on an agent OOM it would
+   also drop the user's compose services, networks, and volumes.
+3. **Crash-recovery backstop at boot** — `reapOrphanEgressSidecars`, run from
+   `runDiskJanitor`, for the orphans a *previous* orchestrator process never got to
+   (it died mid-cleanup, the Docker daemon restarted, the agent was `docker rm`'d
+   out-of-band). Boot-only, per CLAUDE.md's disk-cleanup rule: this leak grows on
+   the crash clock, not the wall clock.
+
+**Parent-liveness, not labels, is the test** — and that's what makes cleanup
+**incarnation-aware**. Both egress labels are keyed on the *session* id, which is
+stable across container recreations, so a label-only match cannot tell this
+incarnation's resolver from the corpse of the last one. Asking "is your netns
+parent still running?" can. `compose-cli.ts`'s `killStaleContainers` keep-list has
+to answer the same question: it spares live sidecars from the pre-start sweep (or
+they'd be SIGKILLed ~1s after the agent launches, leaving the session with no
+resolver and no HTTPS) — but it must **not** spare a dead incarnation's.
+
+The safety argument rests on the agent container carrying **no `RestartPolicy`**:
+it never legitimately goes running → stopped → running underneath a live sidecar,
+so "parent not running" always means "this sidecar is dead weight", never "wait a
+moment." Both the reaper and the keep-list nonetheless fail *safe toward keeping* —
+a false reap costs a running session its DNS and HTTPS, while a false keep costs
+one inert container that the next boot sweep collects anyway.
+
+Note that an orphaned sidecar is a **resource leak, not a containment hole**: it's
+`Exited`, holds no live path to the network, and the recreated agent container gets
+a fresh namespace and a fresh Tier A install.
 
 ## References
 

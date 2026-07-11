@@ -8,6 +8,8 @@ import { SessionManager } from "./sessions.js";
 import { RepoStore } from "./repo-store.js";
 import { runDiskJanitor } from "./startup-janitor.js";
 import { repoUrlToHash } from "./git-utils.js";
+import { EGRESS_RESOLVER_LABEL } from "./egress-dns-install.js";
+import { EGRESS_PROXY_LABEL } from "./egress-proxy-install.js";
 
 describe("runDiskJanitor", () => {
   let tmpDir: string;
@@ -1299,5 +1301,64 @@ describe("runDiskJanitor", () => {
     expect([...rmRequests].sort()).toEqual([...orphanVols].sort());
     for (const v of liveVols) expect(rmRequests).not.toContain(v);
     expect(result.orphanVolumesRemoved).toBe(2);
+  });
+
+  // -------------------------------------------------------------------------
+  // SHI-222 — orphan egress-sidecar sweep (backstop for the crash-site reap)
+  // -------------------------------------------------------------------------
+
+  it("reaps egress sidecars whose netns parent is gone, and spares the live ones", async () => {
+    // Note what this sweep does NOT do: cross-reference active sessions. Both
+    // sessions here are live; the test is purely "is your netns parent running?"
+    // — which is what makes it correct for a session that OOM'd and recreated.
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    interface FakeC { labels: Record<string, string>; networkMode?: string; running?: boolean }
+    const store = new Map<string, FakeC>([
+      ["agent-live", { labels: {}, networkMode: "bridge", running: true }],
+      ["res-live", { labels: { [EGRESS_RESOLVER_LABEL]: "s1" }, networkMode: "container:agent-live", running: true }],
+      ["res-orphan", { labels: { [EGRESS_RESOLVER_LABEL]: "s2" }, networkMode: "container:agent-dead", running: false }],
+      ["proxy-orphan", { labels: { [EGRESS_PROXY_LABEL]: "s2" }, networkMode: "container:agent-dead", running: false }],
+    ]);
+    const removed: string[] = [];
+    const docker = {
+      listContainers: async (opts: { filters?: { label?: string[] } }) => {
+        const key = opts.filters?.label?.[0] ?? "";
+        return [...store.entries()].filter(([, c]) => key in c.labels).map(([Id]) => ({ Id }));
+      },
+      getContainer: (id: string) => ({
+        inspect: async () => {
+          const c = store.get(id);
+          if (!c) throw Object.assign(new Error("no such container"), { statusCode: 404 });
+          return { HostConfig: { NetworkMode: c.networkMode }, State: { Running: c.running ?? false } };
+        },
+        remove: async () => { removed.push(id); store.delete(id); },
+      }),
+    } as unknown as Parameters<typeof runDiskJanitor>[0]["docker"];
+
+    const result = await runDiskJanitor({
+      sessionManager, repoStore, stateDir: tmpDir,
+      runDocker: () => Promise.resolve(""),
+      docker,
+    });
+
+    expect([...removed].sort()).toEqual(["proxy-orphan", "res-orphan"]);
+    expect(removed).not.toContain("res-live");
+    expect(result.orphanEgressSidecarsRemoved).toBe(2);
+  });
+
+  it("skips the egress-sidecar sweep entirely when no Docker client is wired", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const result = await runDiskJanitor({
+      sessionManager, repoStore, stateDir: tmpDir,
+      runDocker: () => Promise.resolve(""),
+    });
+
+    expect(result.orphanEgressSidecarsRemoved).toBe(0);
   });
 });

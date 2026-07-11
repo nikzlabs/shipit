@@ -11,6 +11,7 @@ import type {
   SessionContainerManagerEvents,
 } from "./session-container.js";
 import { CONTAINER_SESSION_ID_LABEL } from "./session-container.js";
+import { reapSessionEgressSidecars } from "./egress-orphan-reaper.js";
 
 /**
  * Label stamped on Compose-managed (user-service) containers by
@@ -171,6 +172,23 @@ export async function startHealthMonitor(
           sc.status = "stopped";
           deps.containers.delete(sessionId);
           deps.standbySessionIds.delete(sessionId);
+          // SHI-222 — the agent container is the netns PARENT of the Tier B/C
+          // egress sidecars (docs/172). It just died, so their shared namespace
+          // is gone and they are dead weight. Reap them HERE, at the crash site:
+          // deleting the map entry above LATCHES the leak, because every later
+          // `destroyContainer(sessionId)` early-returns on `if (!sc) return` —
+          // so archiving or deleting this session afterwards would never run the
+          // label sweep, and the sidecars would outlive the session entirely.
+          //
+          // Deliberately targeted at the egress labels, NOT
+          // `cleanupSessionDockerResources`: that sweeps every
+          // `shipit-parent-session` child, which on an agent OOM would also drop
+          // the user's compose services, networks, and volumes (their database
+          // included). An agent crash must not cost them that.
+          //
+          // Fire-and-forget: we're inside the Docker event stream's handler, and
+          // `reapSessionEgressSidecars` never rejects.
+          void reapSessionEgressSidecars(deps.docker, sessionId);
           deps.emitter.emit("container_exited", sessionId, exitCode, error);
           return;
         }

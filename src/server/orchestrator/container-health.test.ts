@@ -24,6 +24,8 @@ import {
   type SessionContainer,
   type SessionContainerManagerEvents,
 } from "./session-container.js";
+import { EGRESS_RESOLVER_LABEL } from "./egress-dns-install.js";
+import { EGRESS_PROXY_LABEL } from "./egress-proxy-install.js";
 
 function makeContainer(id: string, sessionId: string): SessionContainer {
   return {
@@ -133,5 +135,107 @@ describe("container-health: stale-incarnation guard", () => {
 
     expect(exited).not.toHaveBeenCalled();
     expect(containers.get("sess-1")).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SHI-222 — egress sidecar reap on the crash path
+// ---------------------------------------------------------------------------
+
+/**
+ * The agent container is the netns PARENT of the Tier B/C egress sidecars
+ * (docs/172). When it dies on its own, the handler below deletes the session's
+ * container-map entry — which LATCHES the leak, because every later
+ * `destroyContainer(sessionId)` early-returns on `if (!sc) return`. So the reap
+ * has to happen here, at the crash site, or it never happens at all.
+ */
+describe("container-health: egress sidecar reap on die/oom (SHI-222)", () => {
+  let containers: Map<string, SessionContainer>;
+  let emitter: EventEmitter<SessionContainerManagerEvents>;
+  let eventStream: EventEmitter;
+  let removed: string[];
+  let deps: HealthDeps;
+
+  /** Docker fake carrying the two sidecars of `sess-1`, plus a compose child. */
+  function makeDocker() {
+    const store = new Map<string, Record<string, string>>([
+      ["res-1", { [EGRESS_RESOLVER_LABEL]: "sess-1", "shipit-parent-session": "sess-1" }],
+      ["proxy-1", { [EGRESS_PROXY_LABEL]: "sess-1", "shipit-parent-session": "sess-1" }],
+      ["db-1", { "shipit-parent-session": "sess-1", "shipit-service-name": "db" }],
+    ]);
+    return {
+      getEvents: vi.fn(async () => eventStream),
+      listContainers: vi.fn(async (opts: { filters?: { label?: string[] } }) => {
+        const want = opts.filters?.label?.[0] ?? "";
+        const [key, value] = want.split("=", 2);
+        return [...store.entries()]
+          .filter(([, labels]) => labels[key!] === value)
+          .map(([Id]) => ({ Id }));
+      }),
+      getContainer: vi.fn((id: string) => ({
+        remove: vi.fn(async () => { removed.push(id); store.delete(id); }),
+      })),
+    } as unknown as HealthDeps["docker"];
+  }
+
+  beforeEach(async () => {
+    containers = new Map();
+    emitter = new EventEmitter<SessionContainerManagerEvents>();
+    eventStream = new EventEmitter();
+    removed = [];
+    deps = {
+      docker: makeDocker(),
+      containers,
+      standbySessionIds: new Set<string>(),
+      emitter,
+      labelFilters: () => [],
+    };
+    await startHealthMonitor(deps, createHealthMonitorState());
+  });
+
+  function emit(action: "die" | "oom", sessionId: string, actorId: string) {
+    eventStream.emit("data", Buffer.from(JSON.stringify({
+      Action: action,
+      Actor: { ID: actorId, Attributes: { [CONTAINER_SESSION_ID_LABEL]: sessionId, exitCode: "137" } },
+    })));
+  }
+
+  it("reaps both egress sidecars when the agent container dies", async () => {
+    containers.set("sess-1", makeContainer("b1", "sess-1"));
+
+    emit("die", "sess-1", "b1");
+
+    // The reap is fire-and-forget from inside the Docker event handler.
+    await vi.waitFor(() => expect(removed).toHaveLength(2));
+    expect([...removed].sort()).toEqual(["proxy-1", "res-1"]);
+  });
+
+  it("reaps them on OOM too", async () => {
+    containers.set("sess-1", makeContainer("b1", "sess-1"));
+
+    emit("oom", "sess-1", "b1");
+
+    await vi.waitFor(() => expect(removed).toHaveLength(2));
+  });
+
+  it("does NOT touch the session's compose children — an OOM must not drop the user's database", async () => {
+    containers.set("sess-1", makeContainer("b1", "sess-1"));
+
+    emit("die", "sess-1", "b1");
+
+    await vi.waitFor(() => expect(removed).toHaveLength(2));
+    expect(removed).not.toContain("db-1");
+  });
+
+  it("does not reap on a STALE die event for a previous incarnation", async () => {
+    // The stale-incarnation guard drops the event before the reap — otherwise a
+    // late `die` for the container Rescue just stopped would tear the *healthy*
+    // new container's sidecars out from under it.
+    containers.set("sess-1", makeContainer("b1", "sess-1"));
+
+    emit("die", "sess-1", "a1"); // a1 = the OLD container
+
+    await new Promise((r) => setTimeout(r, 20));
+    expect(removed).toEqual([]);
   });
 });

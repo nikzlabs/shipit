@@ -187,6 +187,10 @@ export async function startStartupMonitors(
       createRepoGit,
       getBareCacheDir,
       sweepOrphanBranches: process.env.DISK_JANITOR_ORPHAN_BRANCHES !== "false",
+      // SHI-222 — orphan egress-sidecar sweep. Reuses the container manager's
+      // OWN Docker client so we hit the same daemon/socket it was configured
+      // with; without a container manager there are no sidecars to reap.
+      ...(containerManager ? { docker: containerManager.dockerClient } : {}),
     });
   }
 

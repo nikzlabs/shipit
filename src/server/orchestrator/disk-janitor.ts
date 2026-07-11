@@ -5,7 +5,7 @@
  *
  *   - `startup-janitor.ts`       — boot-only **crash-recovery** sweeps
  *     (`runDiskJanitor`: orphan volumes/networks/workspaces/nm-store/credentials/
- *     logs/branches — leftovers a failed teardown stranded), plus
+ *     logs/branches/egress-sidecars — leftovers a failed teardown stranded), plus
  *     `pruneSessionVolumes`.
  *   - `steady-state-reclaim.ts`  — **steady-growth** sweeps that grow with the
  *     clock (`runSteadyStateReclaim`: repo/dep caches, `repo-memory/`, obsolete
