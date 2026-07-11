@@ -793,6 +793,40 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
     expect(pending?.data).toMatchObject({ agentId: "claude", accountId: account.id });
   });
 
+  it("rebroadcasts auth progress and log diagnostics", () => {
+    const { mgr, events, account } = setup();
+    mgr.activeAccountId = account.id;
+    mgr.emit("progress", {
+      agentId: "claude",
+      accountId: account.id,
+      attemptId: "attempt-1",
+      phase: "waiting_for_url",
+      message: "Waiting for Claude CLI.",
+    });
+    mgr.emit("log", {
+      agentId: "claude",
+      accountId: account.id,
+      attemptId: "attempt-1",
+      timestamp: "2026-07-11T00:00:00.000Z",
+      level: "info",
+      source: "shipit",
+      message: "Spawned claude /login.",
+    });
+
+    expect(events.find((e) => e.event === "agent_auth_progress")?.data).toMatchObject({
+      agentId: "claude",
+      accountId: account.id,
+      attemptId: "attempt-1",
+      phase: "waiting_for_url",
+    });
+    expect(events.find((e) => e.event === "agent_auth_log")?.data).toMatchObject({
+      agentId: "claude",
+      accountId: account.id,
+      attemptId: "attempt-1",
+      source: "shipit",
+    });
+  });
+
   it("singleton complete omits accountId", () => {
     const { mgr, events } = setup();
     mgr.activeAccountId = null;

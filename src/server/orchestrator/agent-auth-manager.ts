@@ -23,6 +23,10 @@
 import type { EventEmitter } from "node:events";
 import type { AgentId } from "../shared/types.js";
 import type { AgentAuthPendingDetails } from "../shared/types/ws-server-messages.js";
+import type {
+  AgentAuthLogPayload,
+  AgentAuthProgressPayload,
+} from "./agents/claude/auth-diagnostics.js";
 
 /** Optional payload accompanying the {@link AgentAuthManager} `failed` event. */
 export interface AgentAuthFailedPayload {
@@ -144,4 +148,6 @@ export interface AgentAuthManagerEvents {
   pending: [details: AgentAuthPendingDetails];
   complete: [];
   failed: [payload?: AgentAuthFailedPayload];
+  progress: [payload: AgentAuthProgressPayload];
+  log: [payload: AgentAuthLogPayload];
 }

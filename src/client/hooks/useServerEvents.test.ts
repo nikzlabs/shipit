@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { renderHook, cleanup, act } from "@testing-library/react";
 import { useServerEvents } from "./useServerEvents.js";
 import { useSessionStore } from "../stores/session-store.js";
+import { useSettingsStore } from "../stores/settings-store.js";
 
 /**
  * Minimal fake EventSource: captures `addEventListener` handlers so a test can
@@ -41,6 +42,15 @@ describe("useServerEvents — session_agent_started", () => {
       activity: undefined,
       activeRunnerSessions: new Set<string>(),
     });
+    useSettingsStore.setState({
+      claudeAuthDiagnostics: {
+        attemptId: null,
+        active: false,
+        phase: null,
+        message: null,
+        entries: [],
+      },
+    });
   });
 
   afterEach(() => {
@@ -75,5 +85,68 @@ describe("useServerEvents — session_agent_started", () => {
     expect(store.activity).toBeUndefined();
     // The sidebar "running" dot still tracks the background session.
     expect(store.activeRunnerSessions.has("other")).toBe(true);
+  });
+});
+
+describe("useServerEvents — Claude auth diagnostics", () => {
+  beforeEach(() => {
+    vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+    FakeEventSource.last = null;
+    useSessionStore.setState({ authUrl: null });
+    useSettingsStore.setState({
+      claudeAuthDiagnostics: {
+        attemptId: null,
+        active: false,
+        phase: null,
+        message: null,
+        entries: [],
+      },
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it("stores progress and log events, then keeps diagnostics when failure clears authUrl", () => {
+    renderHook(() => useServerEvents());
+    const es = FakeEventSource.last!;
+
+    act(() => {
+      es.emit("agent_auth_progress", {
+        agentId: "claude",
+        attemptId: "attempt-1",
+        phase: "waiting_for_url",
+        message: "Waiting for Claude CLI to print an authentication link.",
+        elapsedMs: 1200,
+      });
+      es.emit("agent_auth_log", {
+        agentId: "claude",
+        attemptId: "attempt-1",
+        timestamp: "2026-07-11T00:00:00.000Z",
+        level: "info",
+        source: "claude_stdout",
+        message: "Browser did not open.",
+      });
+      es.emit("agent_auth_pending", {
+        agentId: "claude",
+        details: { kind: "code-paste-url", verificationUri: "https://claude.ai/oauth/authorize?code=true" },
+      });
+      es.emit("agent_auth_failed", {
+        agentId: "claude",
+        reason: "error",
+        message: "Claude sign-in failed.",
+      });
+    });
+
+    expect(useSessionStore.getState().authUrl).toBeNull();
+    expect(useSettingsStore.getState().claudeAuthDiagnostics).toMatchObject({
+      attemptId: "attempt-1",
+      active: false,
+      phase: "failed",
+      message: "Claude sign-in failed.",
+    });
+    expect(useSettingsStore.getState().claudeAuthDiagnostics.entries).toHaveLength(1);
   });
 });
