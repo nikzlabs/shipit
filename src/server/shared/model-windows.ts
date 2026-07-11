@@ -45,8 +45,11 @@ export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   // Codex / GPT-5 family. GPT-5.6 advertises a 1.05M context window; older
   // Codex-listed GPT-5.x models remain at 272K. Longest-key matching keeps
   // `gpt-5.6-*` on the larger window while preserving the `gpt-5` fallback.
+  // The legacy unsuffixed `gpt-5.6` key is retained for old session/history
+  // display only; Codex selection now uses the explicit `gpt-5.6-sol` slug.
   "gpt-5": 272_000,
   "gpt-5.6": 1_050_000,
+  "gpt-5.6-sol": 1_050_000,
   "gpt-5.6-terra": 1_050_000,
   "gpt-5.6-luna": 1_050_000,
   "gpt-5.5": 272_000,

@@ -23,7 +23,7 @@ const agents: AgentOption[] = [
     name: "Codex",
     installed: true,
     authConfigured: true,
-    models: ["gpt-5.6", "gpt-5.4"],
+    models: ["gpt-5.6-sol", "gpt-5.4"],
     supportsReview: false,
     supportedPermissionModes: [],
   },
@@ -70,7 +70,7 @@ describe("ModelAgentSelector — mid-session model picking", () => {
     await user.click(screen.getByTestId("model-agent-trigger"));
     expect(screen.getByTestId("model-option-claude-sonnet-5")).toBeInTheDocument();
     expect(screen.getByTestId("model-option-opus")).toBeInTheDocument();
-    expect(screen.getByTestId("model-option-gpt-5.6")).toBeInTheDocument();
+    expect(screen.getByTestId("model-option-gpt-5.6-sol")).toBeInTheDocument();
   });
 
   it("still opens after the session is active (regression: used to be disabled)", async () => {
@@ -111,7 +111,7 @@ describe("ModelAgentSelector — mid-session model picking", () => {
     // aria-disabled attribute on enabled items rather than setting "false".
     expect(screen.getByTestId("model-option-opus")).not.toHaveAttribute("aria-disabled", "true");
     // Codex rows: disabled (other agent — locked).
-    expect(screen.getByTestId("model-option-gpt-5.6")).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByTestId("model-option-gpt-5.6-sol")).toHaveAttribute("aria-disabled", "true");
     expect(screen.getByTestId("model-option-gpt-5.4")).toHaveAttribute("aria-disabled", "true");
   });
 
@@ -134,7 +134,7 @@ describe("ModelAgentSelector — mid-session model picking", () => {
     );
     await user.click(screen.getByTestId("model-agent-trigger"));
     // Codex rows must be enabled — the overlay starts a fresh session.
-    expect(screen.getByTestId("model-option-gpt-5.6")).not.toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByTestId("model-option-gpt-5.6-sol")).not.toHaveAttribute("aria-disabled", "true");
     expect(screen.getByTestId("model-option-gpt-5.4")).not.toHaveAttribute("aria-disabled", "true");
   });
 
@@ -230,9 +230,9 @@ describe("ModelAgentSelector — mid-session model picking", () => {
       />,
     );
     await user.click(screen.getByTestId("model-agent-trigger"));
-    await user.click(screen.getByTestId("model-option-gpt-5.6"));
+    await user.click(screen.getByTestId("model-option-gpt-5.6-sol"));
     expect(onAgentChange).toHaveBeenCalledWith("codex");
-    expect(onModelChange).toHaveBeenCalledWith("gpt-5.6");
+    expect(onModelChange).toHaveBeenCalledWith("gpt-5.6-sol");
   });
 
   it("trigger reflects a freshly picked model immediately (pending wins over the last turn's report)", async () => {
@@ -292,7 +292,7 @@ describe("ModelAgentSelector — mid-session model picking", () => {
         activeAgentId="claude"
         onAgentChange={vi.fn()}
         onModelChange={vi.fn()}
-        modelInfo={{ model: "gpt-5.6", contextWindowTokens: 1_050_000 }}
+        modelInfo={{ model: "gpt-5.6-sol", contextWindowTokens: 1_050_000 }}
         hasActiveSession={true}
       />,
     );
@@ -302,7 +302,7 @@ describe("ModelAgentSelector — mid-session model picking", () => {
 
   it("does not carry an optimistic model pick into a different session", async () => {
     const user = userEvent.setup();
-    const codexSession = makeSession({ id: "s1", model: "gpt-5.6", agentId: "codex", agentPinned: true });
+    const codexSession = makeSession({ id: "s1", model: "gpt-5.6-sol", agentId: "codex", agentPinned: true });
     const claudeSession = makeSession({ id: "s2", model: "claude-sonnet-5", agentId: "claude", agentPinned: true });
     useSessionStore.setState({ sessionId: "s1", sessions: [codexSession, claudeSession] });
 

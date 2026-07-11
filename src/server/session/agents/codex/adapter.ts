@@ -40,7 +40,7 @@ import {
   PLAYWRIGHT_MCP_ARGS,
   PLAYWRIGHT_MCP_COMMAND,
 } from "../playwright-mcp.js";
-import { CODEX_TOOL_NAMES } from "../../../shared/agent-registry.js";
+import { CODEX_MODELS, CODEX_TOOL_NAMES } from "../../../shared/agent-registry.js";
 import { codexHome } from "../../../shared/agent-home.js";
 import { CodexRateLimits } from "./codex-rate-limits.js";
 import { CodexEventHandler } from "./codex-event-handler.js";
@@ -158,19 +158,9 @@ export class CodexAdapter
     // file-change/apply-patch items, MCP/dynamic tools, subagent collaboration,
     // web/image/tool-discovery items, and ShipIt's ask bridge.
     toolNames: [...CODEX_TOOL_NAMES],
-    // Mirror of agent-registry.ts. GPT-5.6 is the current OpenAI frontier
-    // family; the unsuffixed alias routes to Sol. Keep in sync with the
-    // registry; both feed the same picker in the UI.
-    models: [
-      "gpt-5.6",
-      "gpt-5.6-terra",
-      "gpt-5.6-luna",
-      "gpt-5.4",
-      "gpt-5.4-mini",
-      "gpt-5.5",
-      "gpt-5.3-codex",
-      "gpt-5.2",
-    ],
+    // Mirror of agent-registry.ts. Keep in sync with the registry; both feed
+    // the same picker in the UI.
+    models: CODEX_MODELS,
     // docs/125 — Codex satisfies both ingredients the chat-native review flow
     // needs: subagents (model spawns them via the `spawn_agent` collab tool on
     // explicit instruction — exactly what the composed review prompt asks for)
