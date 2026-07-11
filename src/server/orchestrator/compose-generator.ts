@@ -768,7 +768,14 @@ export function generateComposeOverride(
     // An explicit `user:` in the user's compose file is honored — we never
     // override a deliberate choice.
     const workerUid = sessionWorkerUid();
-    if (workerUid !== null && svc.user === undefined) {
+    // docs/128 — the ops docker-socket-proxy image must start as its image
+    // default user so its entrypoint can generate
+    // /usr/local/etc/haproxy/haproxy.cfg before haproxy drops privileges. The
+    // read-only Docker security boundary is enforced by the proxy's env
+    // allowlist and the read-only socket mount, not by forcing this service to
+    // the session worker UID.
+    const preservesImageStartupUser = svc.name === "docker-socket-proxy";
+    if (workerUid !== null && svc.user === undefined && !preservesImageStartupUser) {
       entry.user = `${workerUid}:${workerUid}`;
     }
 

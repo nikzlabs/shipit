@@ -521,6 +521,17 @@ describe("generateComposeOverride — session-worker UID (#1646)", () => {
     expect(doc.services.api.user).toBe("1000:1000");
   });
 
+  it("keeps the ops docker-socket-proxy image startup user so HAProxy config generation can run", () => {
+    process.env.SHIPIT_SESSION_WORKER_UID = "1000";
+    const override = generateComposeOverride(
+      [{ name: "docker-socket-proxy", shipitPreview: "auto" }],
+      { ...baseOpts, composeConfig: { file: "docker-compose.yml", dockerSocket: true } },
+    );
+    const doc = parseYaml(override) as { services: Record<string, { user?: string; cap_drop?: string[] }> };
+    expect(doc.services["docker-socket-proxy"].user).toBeUndefined();
+    expect(doc.services["docker-socket-proxy"].cap_drop).toEqual(["NET_RAW"]);
+  });
+
   it("honors an explicit user: from the compose file and never overrides it", () => {
     process.env.SHIPIT_SESSION_WORKER_UID = "1000";
     const override = generateComposeOverride(
