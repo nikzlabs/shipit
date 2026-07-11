@@ -187,8 +187,12 @@ const CLAUDE_USER_CONFIG = "/root/.claude.json";
  */
 const CLAUDE_CREDENTIAL_FILES = [".credentials.json", "credentials.json", "auth.json"];
 
-/** Trigger phrases that indicate the code-paste URL has been printed. */
-const CODE_PASTE_TRIGGERS = ["Paste code here", "Pastecodehereifprompted"];
+/**
+ * Prompt that indicates the code-paste URL has been printed. Ink can omit an
+ * arbitrary subset of spaces when its terminal output is flattened, so match
+ * each boundary independently instead of enumerating observed renderings.
+ */
+const CODE_PASTE_TRIGGER = /paste\s*code\s*here(?:\s*if\s*prompted)?/i;
 
 /**
  * Ensure the Claude CLI's onboarding wizard and workspace trust prompt
@@ -786,11 +790,7 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
 
   /** Find the position of the first trigger phrase in the output buffer. */
   private findTriggerPos(): number {
-    for (const trigger of CODE_PASTE_TRIGGERS) {
-      const pos = this.outputBuffer.indexOf(trigger);
-      if (pos !== -1) return pos;
-    }
-    return -1;
+    return this.outputBuffer.search(CODE_PASTE_TRIGGER);
   }
 
   /** Write an authorization code to the PTY (for the "Paste code here" prompt). */
