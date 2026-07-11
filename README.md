@@ -247,6 +247,10 @@ Found a security vulnerability? Don't open a public issue — follow [SECURITY.m
 how ShipIt defends its trust boundaries (and the risks it has accepted), see
 [SECURITY-MODEL.md](SECURITY-MODEL.md).
 
+## Website
+
+[ship-it.ai](https://ship-it.ai/) — the product page.
+
 ## Author
 
 Built and maintained by Nik Zherebtsov — [LinkedIn](https://www.linkedin.com/in/nikolayz/) ·
