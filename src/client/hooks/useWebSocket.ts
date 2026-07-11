@@ -53,6 +53,14 @@ export function useWebSocket(url: string | null): UseWebSocketReturn {
 
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
+    // A queued message belongs to the socket generation that received it.
+    // Session switches change `url`, but React may not run the consumer effect
+    // until after this hook has torn down the old socket. Never let an
+    // undrained event from the outgoing session cross that boundary and render
+    // in the incoming session's transcript.
+    messageQueueRef.current = [];
+    setLastMessage(null);
+
     if (!url) {
       setStatus("closed");
       return;
@@ -99,6 +107,7 @@ export function useWebSocket(url: string | null): UseWebSocketReturn {
 
     return () => {
       intentionalClose = true;
+      messageQueueRef.current = [];
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;

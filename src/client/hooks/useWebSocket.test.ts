@@ -131,6 +131,21 @@ describe("useWebSocket", () => {
     expect(second).toHaveLength(0);
   });
 
+  it("drops undrained messages when the connection URL changes", () => {
+    const { result, rerender } = renderHook(
+      ({ url }) => useWebSocket(url),
+      { initialProps: { url: "ws://session-a" } },
+    );
+    act(() => latestWs().simulateOpen());
+    act(() => latestWs().simulateMessage({ type: "agent_event", session: "a" }));
+
+    rerender({ url: "ws://session-b" });
+
+    expect(latestWs().url).toBe("ws://session-b");
+    expect(result.current.lastMessage).toBeNull();
+    expect(result.current.drainMessages()).toEqual([]);
+  });
+
   // --- Reconnection ---
 
   it("increments reconnectAttempt on close", () => {

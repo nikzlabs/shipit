@@ -242,6 +242,14 @@ story in one discoverable place and leaves the normal repo-claim flow untouched.
 - "Start a session from chat without choosing a repo" (SHI-161 acceptance) ⇒
   Sandbox with both toggles is a one-click empty session.
 
+### Session-switch isolation
+
+Creating a Sandbox immediately resumes it through the normal per-session
+WebSocket path. WebSocket message queues are scoped to one connection
+generation and cleared when the URL changes, so an undrained event from the
+previous session cannot appear beneath the new Sandbox title during the switch.
+The regression contract lives in `useWebSocket.test.ts`.
+
 ## Security notes
 
 - **GitHub access is a real trust expansion.** With `git` granted, the broker can
