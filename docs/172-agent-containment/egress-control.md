@@ -695,47 +695,66 @@ Three cleanup paths, one per way the parent can die:
    **latches** the leak, because every later `destroyContainer(sessionId)`
    early-returns on `if (!sc) return`. Without the reap here, archiving the crashed
    session afterwards would never sweep, and the sidecars would outlive the session
-   entirely. Two scopings, both load-bearing:
-   - **To the egress labels**, rather than reusing `cleanupSessionDockerResources`
-     — that sweeps *every* `shipit-parent-session` child, so on an agent OOM it
-     would also drop the user's compose services, networks, and volumes.
-   - **To the dead container's id**, rather than the session id alone. The call is
-     fire-and-forget, and the session id is stable across recreations, so a
-     label-only reap races the session's own recovery: if the user reactivates
-     while `listContainers` is still in flight (a busy daemon during an OOM storm
-     is exactly when that happens), the list comes back holding the **replacement**
-     incarnation's sidecars and force-removes them — leaving a healthy, running
-     agent with no DNS and no HTTPS. Filtering on the netns parent makes the reap
-     idempotent: the new sidecars have a new parent, so they can never match no
-     matter how late it lands.
-   - **To a parent that is genuinely not running** — we do *not* take the event's
-     word for it. A Docker **`oom` event does not mean the container died**: it
-     fires when the cgroup's OOM-killer kills *a process*, and if that process
-     wasn't PID 1 (say the agent CLI is killed but the session worker survives),
-     the container keeps running with a perfectly good namespace. Reaping on the
-     event alone would tear the resolver and proxy out from under a live worker.
-     The liveness check also disarms the `Actor.ID`-less event shape (older
-     daemons), where the incarnation guard cannot tell generations apart and the
-     dead-container id can resolve to the *current*, healthy container.
+   entirely. Three properties, each doing a different job:
+   - **Scoped to the egress labels**, rather than reusing
+     `cleanupSessionDockerResources` — that sweeps *every* `shipit-parent-session`
+     child, so on an agent OOM it would also drop the user's compose services,
+     networks, and volumes. An agent crash must not cost them their database.
+   - **Gated on the parent being genuinely not running** — this is the safety
+     guard, the one thing standing between the reap and a live session losing its
+     DNS and HTTPS. We do *not* take the event's word for it. A Docker **`oom`
+     event does not mean the container died**: it fires when the cgroup's
+     OOM-killer kills *a process*, and if that process wasn't PID 1 (say the agent
+     CLI is killed but the session worker survives), the container keeps running
+     with a perfectly good namespace. The same check disarms the `Actor.ID`-less
+     event shape (older daemons), where the dead-container id falls back to the
+     tracked `sc.id` and may name the *current*, healthy container.
+   - **Scoped to the dead container's id** — belt-and-braces rather than the
+     primary guard (liveness alone would already spare a replacement, whose parent
+     is running), but it makes the reap idempotent *by construction* instead of by
+     timing. The call is fire-and-forget and the session id is stable across
+     recreations, so a label-only reap that lands late — the user reactivates while
+     `listContainers` is still in flight, which a busy daemon during an OOM storm
+     makes likely — comes back holding the **replacement** incarnation's sidecars
+     and has to *reason* its way to sparing them. Matching the parent id means they
+     never enter the candidate set. Don't delete it because a test still passes
+     without it.
 
    So: the id says **which** namespace we mean; liveness says whether it is
    **actually gone**. Both are required.
+
+   **The reap runs *above* the handler's early-returns, and that ordering is
+   itself a fix.** A PID-1 OOM emits **two** events — `oom`, then `die` a few ms
+   later, once the daemon has processed the exit. The `oom` arrives while the
+   container still reports `Running`, so the liveness gate correctly *declines*.
+   But that same pass deletes the container-map entry — so when `die` lands (the
+   event that *is* proof of death), a reap sitting below `if (!sc) return` would
+   never execute. The leak survived in exactly the crash mode this issue is named
+   for. Calling the reap unconditionally on every agent `die`/`oom` is safe
+   precisely because it is id-scoped, liveness-gated, and idempotent — which is
+   what lets it be hoisted above the guards that exist to protect *session state*,
+   not sidecars. It also means a stale `die` (an old incarnation's corpse being
+   removed out-of-band) now collects that incarnation's orphans, which is the only
+   event we will ever get for them.
 3. **Crash-recovery backstop at boot** — `reapOrphanEgressSidecars`, run from
    `runDiskJanitor`, for the orphans a *previous* orchestrator process never got to
    (it died mid-cleanup, the Docker daemon restarted, the agent was `docker rm`'d
    out-of-band). Boot-only, per CLAUDE.md's disk-cleanup rule: this leak grows on
    the crash clock, not the wall clock.
 
-**The netns parent, never the session label alone, is the key** — for every path
-above. That's the load-bearing invariant. The agent container's name and the
-session id are both reused across recreations, so a label-only match cannot tell
-this incarnation's resolver from the corpse of the last one, and it fails in *both*
-directions: a sweep would **spare** a dead sidecar it should reap, and a
-fire-and-forget crash reap would **delete** a live replacement's sidecars it should
-leave alone. `compose-cli.ts`'s `killStaleContainers` keep-list has to answer the
-same question — it spares live sidecars from the pre-start sweep (or they'd be
-SIGKILLed ~1s after the agent launches, leaving the session with no resolver and no
-HTTPS) — but it must **not** spare a dead incarnation's.
+**The netns parent's liveness — never the session label, and never the event — is
+the key** for every path above. That's the load-bearing invariant, and two
+independent things conspire to make it so. First, the agent container's name and
+the session id are both reused across recreations, so a label-only match cannot
+tell this incarnation's resolver from the corpse of the last one; it fails in
+*both* directions (a sweep would **spare** a dead sidecar it should reap; a
+fire-and-forget crash reap would **delete** a live replacement's). Second, a Docker
+event is not proof of what it looks like — an `oom` may name a container that is
+still happily running. Only "is the namespace I mean actually gone?" is immune to
+both. `compose-cli.ts`'s `killStaleContainers` keep-list has to answer the same
+question — it spares live sidecars from the pre-start sweep (or they'd be SIGKILLed
+~1s after the agent launches, leaving the session with no resolver and no HTTPS) —
+but it must **not** spare a dead incarnation's.
 
 The safety argument rests on the agent container carrying **no `RestartPolicy`**:
 it never legitimately goes running → stopped → running underneath a live sidecar,

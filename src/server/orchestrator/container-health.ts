@@ -154,6 +154,49 @@ export async function startHealthMonitor(
         const sessionId = attrs[CONTAINER_SESSION_ID_LABEL];
         if (sessionId) {
           const sc = deps.containers.get(sessionId);
+
+          // SHI-222 — the agent container is the netns PARENT of the Tier B/C
+          // egress sidecars (docs/172). When it dies, their shared namespace dies
+          // with it and they are dead weight. Reap them HERE, at the crash site:
+          // the map-entry delete below LATCHES the leak, because every later
+          // `destroyContainer(sessionId)` early-returns on `if (!sc) return` — so
+          // archiving the session afterwards would never run the label sweep and
+          // the sidecars would outlive the session entirely.
+          //
+          // This sits ABOVE every early-return below, and that ordering is
+          // load-bearing. A PID-1 OOM emits TWO events: `oom`, then `die` a few ms
+          // later. The `oom` arrives while the daemon still reports the container
+          // `Running`, so the reap's liveness gate correctly DECLINES — an `oom`
+          // is not proof of death (the cgroup killer may have taken a non-PID-1
+          // process, leaving the container very much alive). By the time `die`
+          // lands — the event that IS proof — this handler has already dropped the
+          // map entry, so a reap placed below `if (!sc) return` would never run at
+          // all. That left the leak wide open in exactly the crash mode SHI-222 is
+          // named for.
+          //
+          // Calling it unconditionally is safe because the reap is (a) scoped to
+          // the id of the container that died, so it can never touch a REPLACEMENT
+          // incarnation's sidecars, (b) liveness-gated, so it declines while that
+          // container is still running, and (c) idempotent — a second call after
+          // the first already removed them finds nothing and does nothing.
+          //
+          // Prefer the event's `Actor.ID` over the tracked `sc.id`: it names the
+          // container that ACTUALLY died, which for a stale event is a previous
+          // incarnation whose sidecars are genuine orphans worth collecting. Fall
+          // back to `sc.id` only when the daemon omitted the ID (older event
+          // shapes) — the liveness gate is what keeps that fallback from reaping a
+          // healthy container's sidecars.
+          //
+          // Deliberately targeted at the egress labels, NOT
+          // `cleanupSessionDockerResources`: that sweeps every
+          // `shipit-parent-session` child, which on an agent OOM would also drop
+          // the user's compose services, networks, and volumes (their database
+          // included). An agent crash must not cost them that.
+          //
+          // Fire-and-forget: we're inside the Docker event stream's handler, and
+          // `reapSessionEgressSidecars` never rejects.
+          void reapSessionEgressSidecars(deps.docker, sessionId, containerId || sc?.id || "");
+
           if (!sc) return;
           // Stale-incarnation guard: the container name (`agent-<shortId>`)
           // and `shipit-session-id` label are reused across recreations. A
@@ -164,44 +207,19 @@ export async function startHealthMonitor(
           // Rescue-doesn't-work create/phantom-exit loop. An empty `sc.id`
           // means the new container is mid-create (id not yet assigned); a
           // non-matching id is unambiguously a stale event.
+          //
+          // Note this guards the SESSION-STATE mutation below, not the reap above:
+          // a stale event carries a real dead container id, and reaping that
+          // container's orphaned sidecars is correct precisely when its exit must
+          // NOT be attributed to the current one.
           if (containerId && containerId !== sc.id) return;
           // Skip if destroy() is already in-flight — it will handle cleanup
           if (sc.status === "stopping") return;
           const exitCode = Number(attrs.exitCode ?? 1);
           const error = action === "oom" ? "Out of memory" : undefined;
-          // Capture the dead container's id BEFORE dropping the map entry — the
-          // reap below is scoped to it. `containerId` is the event's Actor.ID;
-          // older daemons omit it, in which case the tracked `sc.id` is the same
-          // container (the guard above proved they agree when both are present).
-          const deadContainerId = sc.id || containerId;
           sc.status = "stopped";
           deps.containers.delete(sessionId);
           deps.standbySessionIds.delete(sessionId);
-          // SHI-222 — the agent container is the netns PARENT of the Tier B/C
-          // egress sidecars (docs/172). It just died, so their shared namespace
-          // is gone and they are dead weight. Reap them HERE, at the crash site:
-          // deleting the map entry above LATCHES the leak, because every later
-          // `destroyContainer(sessionId)` early-returns on `if (!sc) return` —
-          // so archiving or deleting this session afterwards would never run the
-          // label sweep, and the sidecars would outlive the session entirely.
-          //
-          // Deliberately targeted at the egress labels, NOT
-          // `cleanupSessionDockerResources`: that sweeps every
-          // `shipit-parent-session` child, which on an agent OOM would also drop
-          // the user's compose services, networks, and volumes (their database
-          // included). An agent crash must not cost them that.
-          //
-          // Scoped to `deadContainerId`, NOT just the session id: this call is
-          // fire-and-forget, and the session id is stable across recreations, so
-          // a label-only reap would race the session's own recovery — if the user
-          // reactivates while our `listContainers` is still in flight, we'd come
-          // back holding the REPLACEMENT incarnation's sidecars and force-remove
-          // them, leaving a healthy agent with no DNS and no HTTPS. Filtering on
-          // the netns parent makes the reap idempotent and immune to that race.
-          //
-          // Fire-and-forget: we're inside the Docker event stream's handler, and
-          // `reapSessionEgressSidecars` never rejects.
-          void reapSessionEgressSidecars(deps.docker, sessionId, deadContainerId);
           deps.emitter.emit("container_exited", sessionId, exitCode, error);
           return;
         }

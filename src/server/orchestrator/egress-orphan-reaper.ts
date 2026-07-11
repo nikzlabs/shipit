@@ -38,17 +38,25 @@
  *     CLAUDE.md's disk-cleanup rule: this leak grows on the crash clock, not the
  *     wall clock, so a periodic timer would mostly burn cycles finding nothing.
  *
- * **Every path here keys on the netns parent, never on the session label alone**,
- * and that is the load-bearing invariant of this module. The agent container's
- * name and the session id are both reused across recreations, so a label-only
- * match ("is this a sidecar for session X?") cannot tell this incarnation's
- * resolver from the corpse of the last one. It cuts both ways: the boot sweep
- * would SPARE a dead sidecar it should reap, and the crash-site reap — which is
- * fire-and-forget — would RACE the session's own recovery and delete the
- * replacement incarnation's live sidecars out from under a healthy agent.
- * "Is your netns parent the container I mean, and is it running?" is immune to
- * both. It's the same question `compose-cli.ts`'s stale-sweep keep-list has to
- * answer, for the same reason.
+ * **Parent liveness — not the session label, and not the event — is the load-
+ * bearing invariant of this module.** Two independent things conspire to make
+ * that so:
+ *
+ *   1. The agent container's name and the session id are both reused across
+ *      recreations, so a label-only match ("is this a sidecar for session X?")
+ *      cannot tell this incarnation's resolver from the corpse of the last one.
+ *      The boot sweep would SPARE a dead sidecar it should reap; a fire-and-forget
+ *      crash reap would RACE the session's recovery and delete the REPLACEMENT's
+ *      live sidecars out from under a healthy agent.
+ *   2. A Docker event is not proof of what it looks like. An `oom` fires when the
+ *      cgroup killer kills *a process* — not necessarily PID 1, not necessarily
+ *      the container. Trusting it reaps the resolver and proxy out from under a
+ *      worker that survived just fine.
+ *
+ * "Is the namespace I mean actually gone?" is immune to both, and it's the same
+ * question `compose-cli.ts`'s stale-sweep keep-list has to answer. The netns
+ * parent id names *which* namespace; liveness answers *whether it's gone*. Both
+ * appear in every path here, and neither is redundant.
  *
  * Everything fails **safe toward keeping**. A false reap costs a *running*
  * session its DNS and HTTPS; a false keep costs one inert container that the next
@@ -122,37 +130,41 @@ async function removeContainer(docker: Docker, id: string): Promise<boolean> {
 }
 
 /**
- * Is this sidecar's netns parent gone or not running — i.e. is the sidecar
- * sharing a namespace that no longer exists?
+ * The id of the container whose network namespace `sidecarId` borrows, or `null`
+ * if it borrows none (`bridge`, a named network, …) or we couldn't read it.
  *
- * Fails **safe** in both directions that matter. If we can't inspect the sidecar
- * at all (daemon hiccup), we say "not orphaned" and leave it alone — a false
- * *keep* costs a stale container, a false *reap* costs a running session its DNS
- * and HTTPS. Likewise an inspect of the parent that fails with anything other
- * than a 404 is treated as "don't know" rather than "gone".
+ * Both "no parent" and "couldn't tell" collapse to `null`, and both callers treat
+ * `null` as **keep** — so a daemon hiccup can never widen a scoped reap.
  */
-export async function isOrphanedSidecar(docker: Docker, sidecarId: string): Promise<boolean> {
-  let parentId: string | null;
+async function sidecarNetnsParent(docker: Docker, sidecarId: string): Promise<string | null> {
   try {
     const info = await docker.getContainer(sidecarId).inspect();
-    parentId = netnsParentId(info.HostConfig?.NetworkMode);
+    return netnsParentId(info.HostConfig?.NetworkMode);
   } catch {
-    return false; // can't tell → don't touch it
+    return null; // can't tell → don't touch it
   }
-  // Not a netns-sharing container. It carries an egress label but doesn't borrow
-  // anyone's namespace, so parent-liveness says nothing about it — leave it be.
-  if (!parentId) return false;
+}
 
+/**
+ * Is `parentId` gone, or present but not running — i.e. is its network namespace
+ * dead?
+ *
+ * Fails **safe toward keeping**: an inspect that fails with anything other than a
+ * 404 is "don't know", not "gone", and a structurally incomplete inspect (no
+ * `State`) is UNCERTAIN, not "stopped". Treating a missing field or a transient
+ * 500 as a reap signal is how a daemon blip turns into a live session losing its
+ * DNS and HTTPS.
+ */
+async function isParentDead(docker: Docker, parentId: string): Promise<boolean> {
   try {
     const parent = await docker.getContainer(parentId).inspect();
     const running = parent.State?.Running;
-    // A structurally incomplete inspect (no `State`) is UNCERTAIN, not "stopped".
-    // Treating a missing field as a reap signal is how a schema surprise turns
-    // into a live session losing its DNS.
     if (typeof running !== "boolean") return false;
     // Parent exists but isn't running (the crash case: the agent container is
     // still there, `Exited`, until the next create removes it by name). The
     // namespace died with the process — the sidecar is dead weight either way.
+    // Note a PAUSED container reports `Running: true` — correctly, since it still
+    // holds its namespace. See `compose-cli.ts` for the CLI-side counterpart.
     return !running;
   } catch (err) {
     // Parent container no longer exists at all → definitively orphaned.
@@ -162,35 +174,57 @@ export async function isOrphanedSidecar(docker: Docker, sidecarId: string): Prom
 }
 
 /**
+ * Is this sidecar sharing a namespace that no longer exists?
+ *
+ * A sidecar that borrows nobody's namespace answers `false` — it carries an
+ * egress label but parent-liveness says nothing about it, so leave it be.
+ */
+export async function isOrphanedSidecar(docker: Docker, sidecarId: string): Promise<boolean> {
+  const parentId = await sidecarNetnsParent(docker, sidecarId);
+  if (!parentId) return false;
+  return isParentDead(docker, parentId);
+}
+
+/**
  * Reap the egress sidecars belonging to `sessionId` whose netns parent is
- * `deadParentId` **and whose namespace is genuinely dead**.
+ * `deadParentId` — **once we've confirmed that parent is genuinely down**.
  *
- * This is the crash-site call (`container-health.ts`'s `die`/`oom` handler).
- * Three conditions, all of them load-bearing:
+ * This is the crash-site call (`container-health.ts`'s `die`/`oom` handler), and
+ * it is called **fire-and-forget on every agent `die`/`oom` event**, before that
+ * handler decides whether the event is one it wants to act on. Three conditions,
+ * each doing a different job:
  *
- *   - **The egress labels**, so the session's compose services, networks, and
- *     volumes survive an agent crash untouched. (This is why the crash path does
- *     not reuse `cleanupSessionDockerResources` — that sweeps every
- *     `shipit-parent-session` child, the user's database volume included.)
- *   - **The dead parent's container id**, because the session id alone is NOT
- *     enough. It is stable across container recreations, so a label-only reap
- *     races the session's own recovery: this function is called fire-and-forget,
- *     and if the session gets reactivated while our `listContainers` is still in
- *     flight (a busy daemon during an OOM storm is exactly when that happens),
- *     the list comes back holding the REPLACEMENT incarnation's sidecars and we
- *     would force-remove them. Matching on the parent id makes the reap
- *     idempotent: the new sidecars have a new parent, so they can never match no
- *     matter how late we land.
- *   - **`isOrphanedSidecar` — the parent is actually not running.** We do NOT
- *     take the event's word for it, and that distinction is the whole point: a
- *     Docker **`oom` event does not mean the container died**. It fires when the
- *     cgroup's OOM killer kills *a process*, and if that process wasn't PID 1 —
- *     e.g. the agent CLI is killed but the session worker survives — the
- *     container keeps running. Reaping on the event alone would tear the resolver
- *     and proxy out from under a live worker, silently killing its DNS and HTTPS.
- *     Checking liveness also disarms the `Actor.ID`-less event shape (older
- *     daemons), where the incarnation guard cannot tell generations apart and
- *     `deadParentId` may resolve to the *current*, healthy container.
+ *   - **The egress labels** bound the blast radius, so the session's compose
+ *     services, networks, and volumes survive an agent crash untouched. (This is
+ *     why the crash path does not reuse `cleanupSessionDockerResources` — that
+ *     sweeps every `shipit-parent-session` child, the user's database volume
+ *     included. An agent OOM must not cost them their data.)
+ *
+ *   - **Parent liveness is the safety guard** — the one thing standing between
+ *     this function and a live session losing its DNS and HTTPS. We do NOT take
+ *     the event's word for it, because a Docker **`oom` event does not mean the
+ *     container died**: it fires when the cgroup's OOM killer kills *a process*,
+ *     and if that process wasn't PID 1 — the agent CLI is killed, the session
+ *     worker survives — the container keeps running with a perfectly healthy
+ *     namespace. The same check disarms the `Actor.ID`-less event shape (older
+ *     daemons), where `deadParentId` falls back to the tracked `sc.id` and may
+ *     name the *current*, healthy container.
+ *
+ *     It is also what lets the caller invoke this unconditionally, which it must:
+ *     a PID-1 OOM emits `oom` (parent still `Running` → we decline) and then
+ *     `die` (parent down → we reap). Only the second event is proof, and by then
+ *     the session's container-map entry is gone — so the reap cannot live behind
+ *     the handler's `if (!sc) return`.
+ *
+ *   - **The dead parent's container id** scopes *which* namespace we mean.
+ *     Belt-and-braces rather than the primary guard — liveness alone would spare
+ *     a replacement incarnation, since its parent is running — but it makes the
+ *     reap idempotent by construction instead of by timing: the session id is
+ *     stable across recreations, so a label-only reap that lands late (a busy
+ *     daemon during an OOM storm) would come back holding the REPLACEMENT's
+ *     sidecars and have to *reason* its way to sparing them. Matching the parent
+ *     id means they never enter the candidate set at all. Don't remove it because
+ *     a test still passes without it.
  *
  * So: the id says *which* namespace we mean; liveness says whether it's actually
  * gone. Never throws — it's called fire-and-forget from a Docker event handler.
@@ -201,13 +235,20 @@ export async function reapSessionEgressSidecars(
   deadParentId: string,
 ): Promise<number> {
   if (!deadParentId) return 0; // can't scope safely → reap nothing (the boot sweep will)
+
   const ids = await listEgressSidecars(docker, sessionId);
-  let removed = 0;
+  const ours: string[] = [];
   for (const id of ids) {
-    if (!(await hasNetnsParent(docker, id, deadParentId))) continue;
-    // The event told us it died; confirm the namespace is actually gone before
-    // destroying anything. `isOrphanedSidecar` fails safe toward keeping.
-    if (!(await isOrphanedSidecar(docker, id))) continue;
+    if ((await sidecarNetnsParent(docker, id)) === deadParentId) ours.push(id);
+  }
+  if (ours.length === 0) return 0;
+
+  // Every candidate shares one parent, so this is a single probe. The event told
+  // us it died; confirm the namespace is actually gone before destroying anything.
+  if (!(await isParentDead(docker, deadParentId))) return 0;
+
+  let removed = 0;
+  for (const id of ours) {
     if (await removeContainer(docker, id)) removed++;
   }
   if (removed > 0) {
@@ -216,21 +257,6 @@ export async function reapSessionEgressSidecars(
     );
   }
   return removed;
-}
-
-/**
- * Does `sidecarId` borrow `parentId`'s network namespace?
- *
- * Fails **safe toward keeping** — an unreadable sidecar answers `false`, so a
- * daemon hiccup can never widen a scoped reap into an unscoped one.
- */
-async function hasNetnsParent(docker: Docker, sidecarId: string, parentId: string): Promise<boolean> {
-  try {
-    const info = await docker.getContainer(sidecarId).inspect();
-    return netnsParentId(info.HostConfig?.NetworkMode) === parentId;
-  } catch {
-    return false;
-  }
 }
 
 /**
