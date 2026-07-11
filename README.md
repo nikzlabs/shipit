@@ -247,6 +247,10 @@ Found a security vulnerability? Don't open a public issue — follow [SECURITY.m
 how ShipIt defends its trust boundaries (and the risks it has accepted), see
 [SECURITY-MODEL.md](SECURITY-MODEL.md).
 
+## Website
+
+[ship-it.ai](https://ship-it.ai/) — the product page. Everything technical lives in this README.
+
 ## Author
 
 Built and maintained by Nik Zherebtsov — [LinkedIn](https://www.linkedin.com/in/nikolayz/) ·
@@ -257,9 +261,3 @@ Built and maintained by Nik Zherebtsov — [LinkedIn](https://www.linkedin.com/i
 Apache 2.0 — see [LICENSE](LICENSE) for details. ShipIt is open-core; when the project opens to
 outside pull requests, contributions will require a [Contributor License Agreement](CLA.md) so they
 can also ship in the proprietary enterprise edition.
-
----
-
-<p align="center">
-  <a href="https://ship-it.ai/">ship-it.ai</a>
-</p>
