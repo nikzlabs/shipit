@@ -180,11 +180,20 @@ describe("container-health: egress sidecar reap on die/oom (SHI-222)", () => {
     ]);
     return {
       getEvents: vi.fn(async () => eventStream),
-      listContainers: vi.fn(async (o: { filters?: { label?: string[] } }) => {
+      // Models two things real `listContainers` does that the reaper depends on:
+      // the `all` option (without it Docker returns RUNNING containers only — and
+      // an orphaned sidecar has usually already exited, so dropping `all: true`
+      // would silently find nothing), and `label=key` vs `label=key=value`.
+      listContainers: vi.fn(async (o: { all?: boolean; filters?: { label?: string[] } }) => {
         const want = o.filters?.label?.[0] ?? "";
-        const [key, value] = want.split("=", 2);
+        const [key, value] = want.includes("=") ? want.split("=", 2) : [want, undefined];
         return [...store.entries()]
-          .filter(([, c]) => c.labels[key!] === value)
+          .filter(([, c]) => {
+            if (!o.all && !(c.running ?? false)) return false; // Docker's running-only default
+            const actual = c.labels[key!];
+            if (actual === undefined) return false;
+            return value === undefined || actual === value;
+          })
           .map(([Id]) => ({ Id }));
       }),
       getContainer: vi.fn((id: string) => ({
@@ -326,13 +335,52 @@ describe("container-health: egress sidecar reap on die/oom (SHI-222)", () => {
 
     emit("oom", "sess-1", "b1");
     await new Promise((r) => setTimeout(r, 20));
-    expect(removed).toEqual([]); // declined — correctly, b1 is still running
-    expect(containers.get("sess-1")).toBeUndefined(); // ...but the map entry is now GONE
+    expect(removed).toEqual([]); // reap declined — correctly, b1 is still running
+    expect(containers.get("sess-1")).toBeDefined(); // and the `oom` left the session alone
 
     kill("b1"); // the daemon finishes processing the exit...
-    emit("die", "sess-1", "b1"); // ...and emits `die`
+    emit("die", "sess-1", "b1"); // ...and emits `die`, the event that IS proof
 
     await vi.waitFor(() => expect([...removed].sort()).toEqual(["proxy-1", "res-1"]));
+    expect(containers.get("sess-1")).toBeUndefined();
+  });
+
+  it("reaps on an ID-LESS oom→die pair — the map entry is the only id we have", async () => {
+    // Older daemons omit `Actor.ID`, so the ONLY handle on the dead container is
+    // the tracked `sc.id`. That used to make this sequence leak: the `oom` pass
+    // deleted the map entry, so when `die` arrived it had neither an `Actor.ID` nor
+    // an `sc` to fall back to, the reap got an empty parent id, and it declined to
+    // scope — leaving the sidecars for the boot sweep, months away on a
+    // long-running box. Keeping the map entry until `die` is what closes it.
+    await start({ agentRunning: true });
+    containers.set("sess-1", makeContainer("b1", "sess-1"));
+
+    emit("oom", "sess-1"); // no Actor.ID
+    await new Promise((r) => setTimeout(r, 20));
+    expect(removed).toEqual([]);
+
+    kill("b1");
+    emit("die", "sess-1"); // no Actor.ID either — falls back to sc.id
+
+    await vi.waitFor(() => expect([...removed].sort()).toEqual(["proxy-1", "res-1"]));
+  });
+
+  it("leaves a session ALONE when it survived the OOM — no exit, no reap", async () => {
+    // The whole reason `oom` is no longer terminal. PID 1 is the session worker and
+    // the agent CLI is a child, so the likely OOM victim is the CLI — the container
+    // keeps running. Acting on the event would finalize the live turn as crashed,
+    // dispose the runner, and trip the OOM circuit breaker on a healthy container.
+    await start({ agentRunning: true });
+    containers.set("sess-1", makeContainer("b1", "sess-1"));
+    const exited = vi.fn();
+    emitter.on("container_exited", exited);
+
+    emit("oom", "sess-1", "b1");
+
+    await new Promise((r) => setTimeout(r, 30));
+    expect(removed).toEqual([]);
+    expect(exited).not.toHaveBeenCalled();
+    expect(containers.get("sess-1")?.id).toBe("b1");
   });
 
   it("reaps a PREVIOUS incarnation's orphans on a stale die, sparing the current one's", async () => {

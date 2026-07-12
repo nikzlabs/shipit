@@ -673,13 +673,26 @@ as an operator default / fail-secure floor).
 The Tier B resolver and Tier C proxy are launched with
 `NetworkMode: container:<agentContainerId>` — they have no network stack of their
 own, they borrow the agent container's. That makes the agent container their
-**netns parent** and makes their lifetime strictly dependent on it: when the
-parent stops, the shared namespace is torn down, the sidecar's process dies,
-Docker retries the start (`RestartPolicy: on-failure`, capped at 3), each retry
-fails to join a dead namespace, and the container settles in `Exited`. **Nothing
-self-removes it.** (Tier A is different — it's a one-shot installer that exits by
-design; its iptables/ipset rules persist because they live in the *namespace*, not
-the process.)
+**netns parent** and makes them useless the moment it dies — there is no longer
+anyone in that namespace to resolve DNS for or proxy TLS on behalf of.
+
+What Docker leaves behind is **not one tidy state**, and it's worth being precise
+because it's easy to assume otherwise. A sidecar whose process dies with the
+namespace gets restarted (`RestartPolicy: on-failure`, capped at 3), fails to join
+a dead namespace each time, and settles in `Exited`. But Docker does **not** stop a
+`container:`-mode joiner merely because its parent stopped, so a sidecar can just
+as well strand **`Running`**, listening on a namespace nobody is in. Either way
+it's **inert** — no agent remains to send it traffic, so this is a *resource leak,
+not a containment hole* — and either way **nothing self-removes it**.
+
+Two consequences follow, and both are load-bearing in the code: every reap path is
+gated on the **parent's** state and never on the sidecar's own, and
+`listEgressSidecars` passes **`all: true`** (`listContainers` returns *running*
+containers only by default, so without it the exited orphans — the common case —
+would be invisible and the whole feature would silently find nothing).
+
+(Tier A is different — it's a one-shot installer that exits by design; its
+iptables/ipset rules persist because they live in the *namespace*, not the process.)
 
 Three cleanup paths, one per way the parent can die:
 
@@ -781,10 +794,21 @@ bugs:
   includes **paused** ones (`Up (Paused)`), which `status=running` would exclude.
   A paused parent still owns a perfectly good netns. The question is "is this
   namespace alive?", not "is this process scheduled?"
+- **It passes no `-a`, and that is not an oversight.** The stale-container sweep 90
+  lines above legitimately uses `ps -aq`, so `-a` is a tempting copy-paste — but on
+  the *liveness probe* it inverts the answer. An exited agent-container corpse
+  lingers until the next create removes it by name, so `ps -a` would list it, the
+  probe would report the dead parent as alive, and the keep-list would spare
+  exactly the garbage it exists to collect. The test fake models `-a` so this
+  regression goes red.
 
-Note that an orphaned sidecar is a **resource leak, not a containment hole**: it's
-`Exited`, holds no live path to the network, and the recreated agent container gets
-a fresh namespace and a fresh Tier A install.
+Note that an orphaned sidecar is a **resource leak, not a containment hole** —
+whether it stranded `Exited` or `Running`. Its namespace has no agent in it, so
+there is nothing to serve and no live path to the network, and the recreated agent
+container gets a fresh namespace and a fresh Tier A install. The cost of a leaked
+one is disk (and, for a stranded-`Running` sidecar, a little memory) — never
+egress. That framing matters for triage: this is a janitorial bug, not a security
+escalation.
 
 ## References
 

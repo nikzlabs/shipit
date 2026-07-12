@@ -4,12 +4,19 @@
  * The Tier B resolver and Tier C SNI proxy (docs/172, SHI-90) are long-lived
  * sidecars launched with `NetworkMode: container:<agentContainerId>` — they have
  * no network stack of their own, they *borrow* the agent container's. That makes
- * the agent container their **netns parent**, and it makes their lifetime
- * strictly dependent on it: when the parent stops, the shared namespace is torn
- * down and the sidecar's process dies with it. Docker retries the start (their
- * `RestartPolicy` is `on-failure`, capped at 3), each retry fails to join a dead
- * namespace, and the container settles in `Exited` — inert, but *still there*.
- * Nothing self-removes it.
+ * the agent container their **netns parent**, and it makes them useless the moment
+ * it dies: there is no longer anyone in that namespace to resolve DNS for or proxy
+ * TLS on behalf of.
+ *
+ * What Docker leaves behind is not one tidy state. A sidecar whose process dies
+ * with the namespace gets restarted (`RestartPolicy: on-failure`, capped at 3),
+ * fails to join a dead namespace each time, and settles in `Exited`. But Docker
+ * does **not** stop a `container:`-mode joiner just because its parent stopped, so
+ * a sidecar can equally strand `Running`, listening on a namespace nobody is in.
+ * Either way it is **inert** — no agent remains to send it traffic, so this is a
+ * resource leak, not a containment hole — and either way nothing self-removes it.
+ * Which is why every reap path here is gated on the **parent's** state and never
+ * on the sidecar's own, and why `listEgressSidecars` passes `all: true`.
  *
  * On the orchestrator-initiated teardown paths that is handled:
  * `destroyContainer` stops the agent, runs `cleanupSessionDockerResources`'s
@@ -98,62 +105,74 @@ function statusCode(err: unknown): number {
 /**
  * List every egress sidecar container, optionally scoped to one session.
  *
- * Docker's `--filter label=` has no OR, so we query once per tier label and
- * union by container id. Returns `[]` (never throws) if Docker is unavailable.
+ * Docker's `--filter label=` has no OR, so we query once per tier label and union
+ * by container id.
+ *
+ * **`all: true` is load-bearing.** `listContainers` defaults to *running only*,
+ * and the orphans we are hunting are by definition the ones whose parent is gone —
+ * many of which have already given up and exited (their `RestartPolicy` is
+ * `on-failure`, capped at 3, and every retry fails to join a dead namespace).
+ * Drop `all` and this module silently finds nothing, forever.
+ *
+ * **Throws** if Docker is unavailable, and that is deliberate: an empty list and a
+ * failed query are the same value but opposite meanings, and conflating them is
+ * how a transient blip turns into a permanently leaked container. Callers decide —
+ * the crash site retries, the boot sweep gives up until next boot.
  */
 async function listEgressSidecars(docker: Docker, sessionId?: string): Promise<string[]> {
   const ids = new Set<string>();
   for (const label of EGRESS_SIDECAR_LABELS) {
     const filter = sessionId ? `${label}=${sessionId}` : label;
-    try {
-      const list = await docker.listContainers({ all: true, filters: { label: [filter] } });
-      for (const c of list) ids.add(c.Id);
-    } catch {
-      // Docker unavailable — nothing to reap, and definitely nothing to throw about.
-    }
+    const list = await docker.listContainers({ all: true, filters: { label: [filter] } });
+    for (const c of list) ids.add(c.Id);
   }
   return [...ids];
 }
 
-/** Force-remove one container. Returns whether it's gone. Never throws. */
+/**
+ * Force-remove one container. Returns whether it is **confirmed gone**. Never
+ * throws.
+ *
+ * A 404 is confirmation — the container does not exist, which is the postcondition
+ * we wanted, however it got there. A **409 is not**: Docker returns it for a
+ * removal *conflict* ("removal already in progress"), which says someone else
+ * started the job, not that they finished it. If that other removal then fails,
+ * counting the 409 as success would retire a sidecar that is still very much
+ * there. So 409 is reported as unconfirmed, which makes the crash-site caller
+ * retry — and the retry either finds it gone (404 → confirmed) or removes it.
+ */
 async function removeContainer(docker: Docker, id: string): Promise<boolean> {
   try {
     await docker.getContainer(id).remove({ force: true });
     return true;
   } catch (err) {
-    // 404 = already gone (the outcome we wanted); 409 = removal already in flight.
     const code = statusCode(err);
-    if (code === 404 || code === 409) return true;
-    console.warn(`[egress-reaper] failed to remove sidecar ${id.slice(0, 12)}:`, err);
-    return false;
+    if (code === 404) return true; // already gone — the outcome we wanted
+    if (code !== 409) console.warn(`[egress-reaper] failed to remove sidecar ${id.slice(0, 12)}:`, err);
+    return false; // 409 = in flight elsewhere, unconfirmed. Anything else = failed.
   }
 }
 
 /**
  * The id of the container whose network namespace `sidecarId` borrows, or `null`
- * if it borrows none (`bridge`, a named network, …) or we couldn't read it.
+ * if it borrows none (`bridge`, a named network, …).
  *
- * Both "no parent" and "couldn't tell" collapse to `null`, and both callers treat
- * `null` as **keep** — so a daemon hiccup can never widen a scoped reap.
+ * **Throws** if the sidecar can't be inspected — "no parent" and "couldn't ask"
+ * are different facts and the callers act on them differently.
  */
 async function sidecarNetnsParent(docker: Docker, sidecarId: string): Promise<string | null> {
-  try {
-    const info = await docker.getContainer(sidecarId).inspect();
-    return netnsParentId(info.HostConfig?.NetworkMode);
-  } catch {
-    return null; // can't tell → don't touch it
-  }
+  const info = await docker.getContainer(sidecarId).inspect();
+  return netnsParentId(info.HostConfig?.NetworkMode);
 }
 
 /**
  * Is `parentId` gone, or present but not running — i.e. is its network namespace
  * dead?
  *
- * Fails **safe toward keeping**: an inspect that fails with anything other than a
- * 404 is "don't know", not "gone", and a structurally incomplete inspect (no
- * `State`) is UNCERTAIN, not "stopped". Treating a missing field or a transient
- * 500 as a reap signal is how a daemon blip turns into a live session losing its
- * DNS and HTTPS.
+ * The two *answers* fail safe toward keeping: a structurally incomplete inspect
+ * (no `State`) is UNCERTAIN, not "stopped". A 404 is the one unambiguous "gone".
+ * Anything else **throws** — a transient 500 is not evidence of death, and the
+ * caller must not be able to mistake it for one.
  */
 async function isParentDead(docker: Docker, parentId: string): Promise<boolean> {
   try {
@@ -169,7 +188,7 @@ async function isParentDead(docker: Docker, parentId: string): Promise<boolean> 
   } catch (err) {
     // Parent container no longer exists at all → definitively orphaned.
     if (statusCode(err) === 404) return true;
-    return false; // any other error → don't know → fail safe
+    throw err; // any other error → we don't know → let the caller decide
   }
 }
 
@@ -178,11 +197,21 @@ async function isParentDead(docker: Docker, parentId: string): Promise<boolean> 
  *
  * A sidecar that borrows nobody's namespace answers `false` — it carries an
  * egress label but parent-liveness says nothing about it, so leave it be.
+ *
+ * This is the **per-sidecar fail-safe boundary** used by the boot sweep: any
+ * Docker error while deciding answers "not orphaned", so one unreadable container
+ * neither reaps something live nor aborts the sweep over the others. A false keep
+ * costs an inert container the next boot collects; a false reap costs a running
+ * session its DNS and HTTPS.
  */
 export async function isOrphanedSidecar(docker: Docker, sidecarId: string): Promise<boolean> {
-  const parentId = await sidecarNetnsParent(docker, sidecarId);
-  if (!parentId) return false;
-  return isParentDead(docker, parentId);
+  try {
+    const parentId = await sidecarNetnsParent(docker, sidecarId);
+    if (!parentId) return false;
+    return await isParentDead(docker, parentId);
+  } catch {
+    return false; // can't tell → don't touch it
+  }
 }
 
 /**
@@ -228,35 +257,107 @@ export async function isOrphanedSidecar(docker: Docker, sidecarId: string): Prom
  *
  * So: the id says *which* namespace we mean; liveness says whether it's actually
  * gone. Never throws — it's called fire-and-forget from a Docker event handler.
+ *
+ * **Retries on a Docker error**, because this is the crash path's only shot. The
+ * same handler pass that fires this reap deletes the session's container-map
+ * entry, which LATCHES the leak — after that, no `destroyContainer` will ever
+ * sweep. So a transient daemon blip here (an OOM storm is exactly when the daemon
+ * is least responsive) would strand the sidecars until the next orchestrator boot,
+ * which on a manually-deployed box may be a very long time. Retrying is safe
+ * precisely because the reap is id-scoped and liveness-gated: however late an
+ * attempt lands, it can only ever match the dead parent's own sidecars.
  */
+const REAP_ATTEMPTS = 3;
+const REAP_BACKOFF_MS = 2_000;
+
 export async function reapSessionEgressSidecars(
   docker: Docker,
   sessionId: string,
   deadParentId: string,
+  opts: { attempts?: number; backoffMs?: number } = {},
 ): Promise<number> {
   if (!deadParentId) return 0; // can't scope safely → reap nothing (the boot sweep will)
 
-  const ids = await listEgressSidecars(docker, sessionId);
-  const ours: string[] = [];
-  for (const id of ids) {
-    if ((await sidecarNetnsParent(docker, id)) === deadParentId) ours.push(id);
-  }
-  if (ours.length === 0) return 0;
+  const attempts = opts.attempts ?? REAP_ATTEMPTS;
+  const backoffMs = opts.backoffMs ?? REAP_BACKOFF_MS;
 
-  // Every candidate shares one parent, so this is a single probe. The event told
-  // us it died; confirm the namespace is actually gone before destroying anything.
-  if (!(await isParentDead(docker, deadParentId))) return 0;
+  let removed = 0;
+  let lastErr: unknown;
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    let unresolved: number;
+    try {
+      const pass = await reapOnce(docker, sessionId, deadParentId);
+      removed += pass.removed;
+      unresolved = pass.unresolved;
+      if (unresolved === 0) return removed; // everything accounted for
+    } catch (err) {
+      // Couldn't even list, or couldn't decide whether the parent is dead. We know
+      // nothing this pass — which is not the same as "there is nothing".
+      lastErr = err;
+      unresolved = -1;
+    }
+
+    if (attempt === attempts) {
+      console.warn(
+        `[egress-reaper] session ${sessionId}: gave up after ${attempt} attempts with sidecars of ${deadParentId.slice(0, 12)} unaccounted for; the boot sweep will collect them:`,
+        lastErr ?? `${unresolved} unresolved`,
+      );
+      return removed;
+    }
+    await new Promise((r) => setTimeout(r, backoffMs * attempt));
+  }
+  return removed;
+}
+
+/**
+ * One reap pass.
+ *
+ * Reports what it removed and how many sidecars it could NOT account for, rather
+ * than aborting on the first bad one. That matters: if inspecting the resolver
+ * 500s while the proxy is a clean orphan, an abort-on-first-error would bail
+ * before ever reaching the proxy — and since every retry re-lists in the same
+ * order, it would hit the same wall each time and remove *nothing*. One sick
+ * container must not starve its siblings.
+ *
+ * `unresolved > 0` is the caller's cue to retry. It throws only when it learned
+ * nothing at all (the list failed, or the parent's liveness is unknowable), which
+ * is different from "there is nothing here".
+ */
+async function reapOnce(
+  docker: Docker,
+  sessionId: string,
+  deadParentId: string,
+): Promise<{ removed: number; unresolved: number }> {
+  const ids = await listEgressSidecars(docker, sessionId); // throws → we know nothing → retry
+  const ours: string[] = [];
+  let unresolved = 0;
+
+  for (const id of ids) {
+    try {
+      if ((await sidecarNetnsParent(docker, id)) === deadParentId) ours.push(id);
+    } catch {
+      unresolved++; // can't tell whose namespace it borrows — look again next pass
+    }
+  }
+  if (ours.length === 0) return { removed: 0, unresolved };
+
+  // Every candidate shares one parent, so this is a single probe. The event told us
+  // it died; confirm the namespace is actually gone before destroying anything. A
+  // throw here means "don't know" — never "dead".
+  if (!(await isParentDead(docker, deadParentId))) return { removed: 0, unresolved };
 
   let removed = 0;
   for (const id of ours) {
     if (await removeContainer(docker, id)) removed++;
+    else unresolved++; // genuinely failed, or a 409 we can't confirm
   }
   if (removed > 0) {
     console.log(
       `[egress-reaper] session ${sessionId}: removed ${removed} sidecar(s) of dead container ${deadParentId.slice(0, 12)}`,
     );
   }
-  return removed;
+  return { removed, unresolved };
 }
 
 /**
@@ -276,7 +377,15 @@ export async function reapOrphanEgressSidecars(
   docker: Docker,
   opts: { paceMs?: number } = {},
 ): Promise<number> {
-  const ids = await listEgressSidecars(docker);
+  let ids: string[];
+  try {
+    ids = await listEgressSidecars(docker);
+  } catch (err) {
+    // Docker unavailable. Nothing to reap and nothing to panic about — this is the
+    // backstop, so the worst case is that the orphans wait for the next boot.
+    console.warn("[egress-reaper] could not list egress sidecars:", err);
+    return 0;
+  }
   let removed = 0;
   for (const id of ids) {
     if (!(await isOrphanedSidecar(docker, id))) continue;

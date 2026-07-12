@@ -57,10 +57,18 @@ function makeCli(world: World) {
 
     if (cmd === "ps") {
       const filters = args.filter((_, i) => args[i - 1] === "--filter");
+      // `-a` / `-aq` includes STOPPED containers. The liveness probe must NOT pass
+      // it — an exited parent corpse lingers until the next create removes it by
+      // name, so `ps -a` would list it and the probe would call a dead namespace
+      // alive, sparing the very garbage it exists to collect. The fake models this
+      // so that regression is caught: swap the probe to `-aq` (a natural
+      // copy-paste from the sweep query below, which legitimately uses it) and the
+      // exited-parent test goes red.
+      const all = args.some(a => a === "-a" || a === "-aq");
 
       // Parent-liveness probe: bare `ps -q --no-trunc --filter id=<p>` (NO status
-      // filter). Exits 0 whether or not it matches — printing the id when the
-      // parent's namespace is alive (running OR paused) and nothing when it
+      // filter, NO -a). Exits 0 whether or not it matches — printing the id when
+      // the parent's namespace is alive (running OR paused) and nothing when it
       // isn't. That's the point: "not up" is a VALUE, not an exception, so it
       // can't be confused with a daemon error.
       const idFilter = filters.find(f => f.startsWith("id="));
@@ -73,6 +81,7 @@ function makeCli(world: World) {
         // very bug it exists to catch).
         const statusFilter = filters.find(f => f.startsWith("status="))?.slice("status=".length);
         if (statusFilter) return world.state[parent] === statusFilter ? parent : "";
+        if (all) return world.state[parent] ? parent : ""; // -a also lists the exited corpse
         return psListsIt(world, parent) ? parent : "";
       }
 

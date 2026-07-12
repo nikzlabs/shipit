@@ -74,11 +74,68 @@ export interface HealthMonitorState {
    * have been missed.
    */
   lastLossAt: number | null;
+  /**
+   * Containers whose cgroup OOM-killer fired recently: id (or session id, when
+   * the daemon omitted `Actor.ID`) → `Date.now()` of the `oom` event.
+   *
+   * A Docker `oom` event is **not** a container death — it fires when the cgroup's
+   * killer kills *a process*. If that process wasn't PID 1 the container survives,
+   * and no `die` follows. So `oom` no longer mutates session state; it only
+   * records that an OOM happened, and the `die` that follows (if any) reads this
+   * to report "Out of memory" instead of a bare exit code.
+   *
+   * Entries are consumed by the matching `die` and pruned after
+   * {@link OOM_ATTRIBUTION_WINDOW_MS}, so a container that *survived* its OOM
+   * doesn't get a stale OOM label pinned on an unrelated death hours later.
+   */
+  recentOoms: Map<string, number>;
+}
+
+/**
+ * How long after an `oom` event a `die` is still attributed to it.
+ *
+ * Docker emits the pair back-to-back (milliseconds apart) when the OOM killer
+ * takes PID 1, so this is generous. It exists to bound the map and to stop a
+ * survived-OOM container from being labelled "Out of memory" when it eventually
+ * dies of something else entirely.
+ */
+const OOM_ATTRIBUTION_WINDOW_MS = 60_000;
+
+/** Drop OOM records too old to explain a `die` we're about to see. */
+function pruneRecentOoms(state: HealthMonitorState): void {
+  const cutoff = Date.now() - OOM_ATTRIBUTION_WINDOW_MS;
+  for (const [key, at] of state.recentOoms) {
+    if (at < cutoff) state.recentOoms.delete(key);
+  }
+}
+
+/**
+ * Did this container's cgroup OOM-killer fire recently? Consumes the record.
+ *
+ * Checks the container id first and falls back to the session id, mirroring how
+ * the `oom` event was keyed (daemons that omit `Actor.ID` leave us only the
+ * session).
+ */
+function takeRecentOom(state: HealthMonitorState, containerId: string, sessionId: string): boolean {
+  pruneRecentOoms(state);
+  for (const key of [containerId, sessionId]) {
+    if (key && state.recentOoms.has(key)) {
+      state.recentOoms.delete(key);
+      return true;
+    }
+  }
+  return false;
 }
 
 /** Default state for a fresh monitor. */
 export function createHealthMonitorState(): HealthMonitorState {
-  return { eventStream: null, stopped: false, restartTimer: null, lastLossAt: null };
+  return {
+    eventStream: null,
+    stopped: false,
+    restartTimer: null,
+    lastLossAt: null,
+    recentOoms: new Map(),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -197,11 +254,34 @@ export async function startHealthMonitor(
           // `reapSessionEgressSidecars` never rejects.
           void reapSessionEgressSidecars(deps.docker, sessionId, containerId || sc?.id || "");
 
+          // An `oom` is NOT a container death, and must not be treated as one.
+          //
+          // Docker fires it when the cgroup's OOM-killer kills *a process* in the
+          // container. In a session container PID 1 is the worker and the agent CLI
+          // is a child, so the common case is precisely the one where the container
+          // SURVIVES: the CLI gets killed, the worker keeps running. Acting on the
+          // event would then delete a healthy container's map entry, emit
+          // `container_exited`, finalize the live turn as crashed, dispose the
+          // runner, and trip the OOM circuit breaker — all against a container that
+          // is still up and serving.
+          //
+          // If PID 1 *was* the victim, Docker emits `die` a few milliseconds later,
+          // and that event IS proof. So we record the OOM and let `die` do the work
+          // — which also means the map entry survives until then, keeping `sc.id`
+          // available to scope the reap on daemons that omit `Actor.ID`. (Deleting
+          // it here used to strand the sidecars in exactly that case: the follow-up
+          // `die` had neither an `Actor.ID` nor an `sc` to fall back to.)
+          if (action === "oom") {
+            pruneRecentOoms(state);
+            state.recentOoms.set(containerId || sessionId, Date.now());
+            return;
+          }
+
           if (!sc) return;
           // Stale-incarnation guard: the container name (`agent-<shortId>`)
           // and `shipit-session-id` label are reused across recreations. A
-          // `die`/`oom` event for a PREVIOUS container (e.g. the one Rescue
-          // just stopped) must not be attributed to the current container —
+          // `die` event for a PREVIOUS container (e.g. the one Rescue just
+          // stopped) must not be attributed to the current container —
           // doing so deletes a healthy container's map entry and emits a
           // phantom `container_exited`, which is the root of the
           // Rescue-doesn't-work create/phantom-exit loop. An empty `sc.id`
@@ -216,7 +296,7 @@ export async function startHealthMonitor(
           // Skip if destroy() is already in-flight — it will handle cleanup
           if (sc.status === "stopping") return;
           const exitCode = Number(attrs.exitCode ?? 1);
-          const error = action === "oom" ? "Out of memory" : undefined;
+          const error = takeRecentOom(state, containerId, sessionId) ? "Out of memory" : undefined;
           sc.status = "stopped";
           deps.containers.delete(sessionId);
           deps.standbySessionIds.delete(sessionId);

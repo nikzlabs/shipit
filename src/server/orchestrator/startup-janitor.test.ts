@@ -1324,9 +1324,15 @@ describe("runDiskJanitor", () => {
     ]);
     const removed: string[] = [];
     const docker = {
-      listContainers: async (opts: { filters?: { label?: string[] } }) => {
+      // Honours `all` — real `listContainers` returns RUNNING containers only
+      // without it, and the orphans this sweep exists to collect have exited. A
+      // fake that ignores `all` lets someone delete `all: true` from the reaper and
+      // watch every test stay green while the feature finds nothing, forever.
+      listContainers: async (opts: { all?: boolean; filters?: { label?: string[] } }) => {
         const key = opts.filters?.label?.[0] ?? "";
-        return [...store.entries()].filter(([, c]) => key in c.labels).map(([Id]) => ({ Id }));
+        return [...store.entries()]
+          .filter(([, c]) => key in c.labels && (opts.all || (c.running ?? false)))
+          .map(([Id]) => ({ Id }));
       },
       getContainer: (id: string) => ({
         inspect: async () => {

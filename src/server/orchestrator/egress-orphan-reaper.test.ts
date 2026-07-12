@@ -31,19 +31,40 @@ function notFound(): Error & { statusCode: number } {
 }
 
 /**
- * Fake Docker over a map of id → container. `listContainers` honours a single
- * `label=` filter (with or without a `=value`), which is all the reaper uses.
+ * Fake Docker over a map of id → container.
+ *
+ * `listContainers` honours a single `label=` filter (with or without a `=value`)
+ * AND the `all` option — the latter matters more than it looks. Real
+ * `listContainers` returns **running containers only** unless `all: true`, and the
+ * orphans this module hunts are frequently *exited* (their `RestartPolicy` gives
+ * up after 3 failed attempts to join a dead namespace). A fake that ignores `all`
+ * would let someone delete `all: true` from `listEgressSidecars` and watch every
+ * test stay green while the feature silently found nothing, forever.
+ *
+ * `removeError` injects a failure from `remove()` so the never-rejects contract
+ * can actually be exercised.
  */
-function fakeDocker(containers: Record<string, FakeContainer>) {
+function fakeDocker(
+  containers: Record<string, FakeContainer>,
+  opts: {
+    removeError?: (id: string) => (Error & { statusCode?: number }) | undefined;
+    listError?: (call: number) => Error | undefined;
+    inspectError?: (id: string) => (Error & { statusCode?: number }) | undefined;
+  } = {},
+) {
   const removed: string[] = [];
   const store = new Map(Object.entries(containers));
+  let listCalls = 0;
 
   const docker = {
-    listContainers: vi.fn(async (opts: { filters?: { label?: string[] } }) => {
-      const want = opts.filters?.label?.[0] ?? "";
+    listContainers: vi.fn(async (o: { all?: boolean; filters?: { label?: string[] } }) => {
+      const listErr = opts.listError?.(++listCalls);
+      if (listErr) throw listErr;
+      const want = o.filters?.label?.[0] ?? "";
       const [key, value] = want.includes("=") ? want.split("=", 2) : [want, undefined];
       return [...store.entries()]
         .filter(([, c]) => {
+          if (!o.all && !(c.running ?? false)) return false; // Docker's running-only default
           const actual = c.labels?.[key!];
           if (actual === undefined) return false;
           return value === undefined || actual === value;
@@ -52,6 +73,8 @@ function fakeDocker(containers: Record<string, FakeContainer>) {
     }),
     getContainer: vi.fn((id: string) => ({
       inspect: vi.fn(async () => {
+        const inspectErr = opts.inspectError?.(id);
+        if (inspectErr) throw inspectErr;
         const c = store.get(id);
         if (!c) throw notFound();
         return {
@@ -60,6 +83,8 @@ function fakeDocker(containers: Record<string, FakeContainer>) {
         };
       }),
       remove: vi.fn(async () => {
+        const err = opts.removeError?.(id);
+        if (err) throw err;
         if (!store.has(id)) throw notFound();
         removed.push(id);
         store.delete(id);
@@ -281,7 +306,163 @@ describe("reapSessionEgressSidecars (crash-site reap)", () => {
       getContainer: vi.fn(),
     } as unknown as Docker;
 
-    await expect(reapSessionEgressSidecars(docker, "s1", "agent-1")).resolves.toBe(0);
+    await expect(
+      reapSessionEgressSidecars(docker, "s1", "agent-1", { backoffMs: 0 }),
+    ).resolves.toBe(0);
+  });
+
+  it("reaps an EXITED sidecar — the common orphan, and invisible without `all: true`", async () => {
+    // `listContainers` returns RUNNING containers only unless `all: true`. An
+    // orphaned sidecar has usually already exited: its `RestartPolicy` is
+    // `on-failure`/max-3, every retry fails to join the dead namespace, and it
+    // settles in `Exited`. Drop `all: true` and the reaper lists nothing, reaps
+    // nothing, and leaks everything — silently. This test is the tripwire.
+    const { docker, removed } = fakeDocker({
+      "agent-1": agent(false),
+      "res-1": resolver("s1", "agent-1", false), // gave up and exited
+      "proxy-1": proxy("s1", "agent-1", false),
+    });
+
+    expect(await reapSessionEgressSidecars(docker, "s1", "agent-1")).toBe(2);
+    expect([...removed].sort()).toEqual(["proxy-1", "res-1"]);
+  });
+
+  it("RETRIES a transient Docker failure — the crash path gets no second chance", async () => {
+    // The map-entry delete in the die/oom handler latches the leak: after it, no
+    // `destroyContainer` will ever sweep. So if a daemon blip (an OOM storm is
+    // exactly when the daemon is least responsive) makes this reap's list fail, a
+    // single-shot reap strands the sidecars until the next orchestrator boot —
+    // which on a manually-deployed box may be months. Retrying is safe because the
+    // reap is id-scoped and liveness-gated: however late an attempt lands, it can
+    // only ever match the dead parent's own sidecars.
+    const { docker, removed } = fakeDocker(
+      {
+        "agent-1": agent(false),
+        "res-1": resolver("s1", "agent-1", false),
+        "proxy-1": proxy("s1", "agent-1", false),
+      },
+      // Fail the first attempt's two tier-label queries, then recover.
+      { listError: (call) => (call <= 2 ? new Error("ECONNRESET") : undefined) },
+    );
+
+    expect(await reapSessionEgressSidecars(docker, "s1", "agent-1", { backoffMs: 0 })).toBe(2);
+    expect([...removed].sort()).toEqual(["proxy-1", "res-1"]);
+  });
+
+  it("gives up after the last attempt without rejecting, reaping nothing", async () => {
+    const docker = {
+      listContainers: vi.fn(async () => { throw new Error("ECONNREFUSED"); }),
+      getContainer: vi.fn(),
+    } as unknown as Docker;
+
+    await expect(
+      reapSessionEgressSidecars(docker, "s1", "agent-1", { attempts: 2, backoffMs: 0 }),
+    ).resolves.toBe(0);
+    // Two attempts × two tier labels, and it stopped there rather than spinning.
+    expect(docker.listContainers).toHaveBeenCalledTimes(2);
+  });
+
+  it("does NOT count a 409 as a removal — a conflict is not a completion", async () => {
+    // The crash reap races `destroyContainer`'s own label sweep on every routine
+    // teardown (stopping the agent fires a `die`). Whoever loses sees 409 or 404.
+    //
+    // 404 is confirmation: the container does not exist. 409 is NOT — Docker
+    // returns it for a removal *conflict* ("removal already in progress"), which
+    // says someone else STARTED the job, not that they finished it. If that other
+    // removal then fails, treating our 409 as success retires a sidecar that is
+    // still very much there. So it counts as unconfirmed and drives a retry.
+    //
+    // It must still RESOLVE, never reject: this is `void`-called from a Docker
+    // event handler, so a rejection is an unhandled rejection in the orchestrator.
+    const { docker } = fakeDocker(
+      {
+        "agent-1": agent(false),
+        "res-1": resolver("s1", "agent-1", false),
+      },
+      { removeError: () => Object.assign(new Error("removal in progress"), { statusCode: 409 }) },
+    );
+
+    await expect(
+      reapSessionEgressSidecars(docker, "s1", "agent-1", { attempts: 2, backoffMs: 0 }),
+    ).resolves.toBe(0);
+  });
+
+  it("counts a 404 as confirmed-gone — however it got there", async () => {
+    const { docker } = fakeDocker(
+      {
+        "agent-1": agent(false),
+        "res-1": resolver("s1", "agent-1", false),
+      },
+      { removeError: () => Object.assign(new Error("no such container"), { statusCode: 404 }) },
+    );
+
+    await expect(reapSessionEgressSidecars(docker, "s1", "agent-1")).resolves.toBe(1);
+  });
+
+  it("keeps reaping the other sidecars when ONE of them is unreadable", async () => {
+    // An abort-on-first-error would rethrow before ever reaching the proxy — and
+    // since every retry re-lists in the same order, it would hit the same wall each
+    // time and remove NOTHING. One sick container must not starve its siblings.
+    const { docker, removed } = fakeDocker(
+      {
+        "agent-1": agent(false),
+        "res-1": resolver("s1", "agent-1", false),
+        "proxy-1": proxy("s1", "agent-1", false),
+      },
+      {
+        inspectError: (id) =>
+          id === "res-1"
+            ? Object.assign(new Error("daemon on fire"), { statusCode: 500 })
+            : undefined,
+      },
+    );
+
+    // Resolves (never rejects); the healthy proxy IS collected despite the sick
+    // resolver, which stays unresolved and is left for the boot sweep.
+    await expect(
+      reapSessionEgressSidecars(docker, "s1", "agent-1", { attempts: 2, backoffMs: 0 }),
+    ).resolves.toBe(1);
+    expect(removed).toEqual(["proxy-1"]);
+  });
+
+  it("retries a genuinely failed removal, then gives up without rejecting", async () => {
+    // A 500 from `remove()` is not "already gone" — the sidecar is still there, on
+    // the one path that gets no second chance. So it drives a retry like any other
+    // Docker failure, and if it never succeeds we resolve (never reject) and leave
+    // it for the boot sweep.
+    const { docker } = fakeDocker(
+      {
+        "agent-1": agent(false),
+        "res-1": resolver("s1", "agent-1", false),
+      },
+      { removeError: () => Object.assign(new Error("daemon on fire"), { statusCode: 500 }) },
+    );
+
+    await expect(
+      reapSessionEgressSidecars(docker, "s1", "agent-1", { attempts: 2, backoffMs: 0 }),
+    ).resolves.toBe(0);
+    expect(docker.listContainers).toHaveBeenCalledTimes(4); // 2 attempts × 2 tier labels
+  });
+
+  it("succeeds on a retry after a transient removal failure", async () => {
+    let attempts = 0;
+    const { docker, removed } = fakeDocker(
+      {
+        "agent-1": agent(false),
+        "res-1": resolver("s1", "agent-1", false),
+      },
+      {
+        removeError: () => {
+          attempts++;
+          return attempts === 1
+            ? Object.assign(new Error("conflict"), { statusCode: 500 })
+            : undefined;
+        },
+      },
+    );
+
+    expect(await reapSessionEgressSidecars(docker, "s1", "agent-1", { backoffMs: 0 })).toBe(1);
+    expect(removed).toEqual(["res-1"]);
   });
 });
 

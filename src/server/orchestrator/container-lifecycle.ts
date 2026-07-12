@@ -1201,8 +1201,14 @@ export async function cleanupSessionDockerResources(
         await container.remove({ force: true });
       } catch (err) {
         const code = err && typeof err === "object" && "statusCode" in err ? (err as { statusCode: number }).statusCode : 0;
-        // 304 = container already stopped, 409 = removal already in progress — safe to ignore
-        if (code !== 304 && code !== 409) {
+        // 304 = already stopped, 409 = removal already in progress, 404 = already
+        // gone — all safe to ignore, they're the outcome we wanted.
+        //
+        // 404 is now *routine*, not exceptional (SHI-222): every orchestrator
+        // teardown stops the agent container, which fires a Docker `die`, which
+        // fires the crash-site egress reap — so the reaper and this sweep race for
+        // the same two sidecars on every healthy destroy. Whoever loses sees a 404.
+        if (code !== 304 && code !== 409 && code !== 404) {
           console.warn(`[containers] Failed to clean up child container ${ci.Id.slice(0, 12)} for session ${sessionId}:`, err);
         }
       }
