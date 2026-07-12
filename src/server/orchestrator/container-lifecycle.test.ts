@@ -617,12 +617,39 @@ describe("buildContainerConfig", () => {
 // ---------------------------------------------------------------------------
 
 describe("destroyContainer — overlay volume teardown", () => {
-  /** Minimal fake Docker that records every `volume rm` by name. */
-  function fakeDocker(removedVolumes: string[]): Docker {
+  /**
+   * Minimal fake Docker that records every `volume rm` by name, plus every
+   * child container removed by the `shipit-parent-session` sweep.
+   *
+   * `children` seeds `listContainers` — SHI-222: it used to return `[]`
+   * unconditionally, so the sweep in `cleanupSessionDockerResources` (the thing
+   * that reaps a session's egress sidecars on teardown) was never actually
+   * asserted by any test.
+   */
+  function fakeDocker(
+    removedVolumes: string[],
+    opts: {
+      children?: { Id: string; State?: string }[];
+      removedContainers?: string[];
+      listFilters?: unknown[];
+      /** id → error its `remove()` throws (models the reaper-vs-sweep race). */
+      removeErrors?: Record<string, Error>;
+    } = {},
+  ): Docker {
     const noop = async (): Promise<void> => {};
     return {
-      getContainer: () => ({ stop: noop, remove: noop }),
-      listContainers: async () => [],
+      getContainer: (id: string) => ({
+        stop: noop,
+        remove: async () => {
+          const err = opts.removeErrors?.[id];
+          if (err) throw err;
+          opts.removedContainers?.push(id);
+        },
+      }),
+      listContainers: async (o: { filters?: unknown }) => {
+        opts.listFilters?.push(o?.filters);
+        return opts.children ?? [];
+      },
       listNetworks: async () => [],
       getNetwork: () => ({ remove: noop }),
       listVolumes: async () => ({ Volumes: [] }),
@@ -630,10 +657,14 @@ describe("destroyContainer — overlay volume teardown", () => {
     } as unknown as Docker;
   }
 
-  function makeDeps(removedVolumes: string[], sc: SessionContainer): { deps: LifecycleDeps; emitter: EventEmitter } {
+  function makeDeps(
+    removedVolumes: string[],
+    sc: SessionContainer,
+    dockerOpts: Parameters<typeof fakeDocker>[1] = {},
+  ): { deps: LifecycleDeps; emitter: EventEmitter } {
     const emitter = new EventEmitter();
     const deps = {
-      docker: fakeDocker(removedVolumes),
+      docker: fakeDocker(removedVolumes, dockerOpts),
       containers: new Map([[sc.sessionId, sc]]),
       standbySessionIds: new Set<string>(),
       emitter,
@@ -680,6 +711,77 @@ describe("destroyContainer — overlay volume teardown", () => {
 
     expect(removed).toEqual([]);
     expect(deps.containers.has("sess-x")).toBe(false);
+  });
+
+  // SHI-222 — the parent-label sweep is what reaps a session's Tier B/C egress
+  // sidecars (docs/172) on teardown. It was previously untested here (the fake's
+  // `listContainers` returned `[]`), which is how the crash-path leak went
+  // unnoticed for so long: nothing pinned the behavior either way.
+  it("sweeps the session's child containers — egress sidecars included — before removing the agent", async () => {
+    const removedContainers: string[] = [];
+    const listFilters: unknown[] = [];
+    const { deps } = makeDeps([], makeContainer(undefined), {
+      children: [
+        { Id: "egress-resolver-1", State: "running" },
+        { Id: "egress-proxy-1", State: "running" },
+      ],
+      removedContainers,
+      listFilters,
+    });
+
+    await destroyContainer(deps, "sess-x");
+
+    expect(listFilters[0]).toEqual({ label: ["shipit-parent-session=sess-x"] });
+    expect(removedContainers).toContain("egress-resolver-1");
+    expect(removedContainers).toContain("egress-proxy-1");
+    // …and the agent container (the netns parent) is removed LAST, after its
+    // sidecars — the ordering that keeps us from orphaning them.
+    expect(removedContainers.at(-1)).toBe("cid-1");
+  });
+
+  // Round 5 (SHI-222) — with the crash-site reaper live, the die-triggered reap
+  // races this sweep for the same two sidecars on EVERY healthy destroy, so a 404
+  // on child remove is the routine "the reaper got there first" outcome. Warning
+  // on it would spam every clean shutdown. Mutation-verified: revert the
+  // 404-ignore in cleanupSessionDockerResources and this goes red.
+  it("does NOT warn when a child was already removed by the crash-site reaper (404)", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { deps } = makeDeps([], makeContainer(undefined), {
+        children: [{ Id: "egress-resolver-1", State: "running" }],
+        removedContainers: [],
+        removeErrors: {
+          "egress-resolver-1": Object.assign(new Error("no such container"), { statusCode: 404 }),
+        },
+      });
+
+      await destroyContainer(deps, "sess-x");
+
+      const childWarnings = warn.mock.calls.filter((c) => String(c[0]).includes("child container"));
+      expect(childWarnings).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("still warns when a child removal fails for a real reason (500)", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { deps } = makeDeps([], makeContainer(undefined), {
+        children: [{ Id: "egress-resolver-1", State: "running" }],
+        removedContainers: [],
+        removeErrors: {
+          "egress-resolver-1": Object.assign(new Error("daemon on fire"), { statusCode: 500 }),
+        },
+      });
+
+      await destroyContainer(deps, "sess-x");
+
+      const childWarnings = warn.mock.calls.filter((c) => String(c[0]).includes("child container"));
+      expect(childWarnings).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

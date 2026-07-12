@@ -41,13 +41,24 @@
  *     the worker never writes nm-store again, so later sweeps no-op — which is
  *     why this one-shot migration cleanup stays here rather than on the periodic
  *     pass (it neither accumulates with the clock nor recovers from a crash).
+ *   - **Orphan egress sidecars** (SHI-222) — the Tier B resolver / Tier C SNI
+ *     proxy (docs/172) share the agent container's network namespace, so when
+ *     the agent container dies theirs dies with it and they strand in `Exited`
+ *     with nothing to remove them. Identified by parent-liveness, NOT by the
+ *     active-sessions cross-reference the volume/network sweeps use: the test is
+ *     "does this sidecar's netns parent still exist and run?", which is what
+ *     makes it incarnation-aware (a session that OOM'd and was recreated is
+ *     still live, but its OLD sidecars are garbage). The crash site itself now
+ *     reaps them (`container-health.ts`); this is the backstop for the orphans a
+ *     previous orchestrator process never got to. See `egress-orphan-reaper.ts`.
  *
  * Why startup-only (no timer) for THESE sweeps: every item above is
  * recovering from a failure earlier in the lifecycle — orphan volumes only
  * exist if archive teardown crashed, orphan workspaces only exist if archive's
  * fs.rm failed, orphan credentials/logs only exist if the disposal/teardown path
  * didn't run, orphan branches only exist if the per-merge deletion hook didn't
- * fire. None of them accumulate steadily, so running periodically would mostly
+ * fire, orphan egress sidecars only exist if the crash-site reap didn't run.
+ * None of them accumulate steadily, so running periodically would mostly
  * burn cycles doing nothing. Startup is the natural "we just came back
  * from possibly-unclean shutdown — clean up after the previous run" moment.
  *
@@ -102,6 +113,8 @@
 
 import path from "node:path";
 import fs from "node:fs/promises";
+import type Docker from "dockerode";
+import { reapOrphanEgressSidecars } from "./egress-orphan-reaper.js";
 import type { SessionManager } from "./sessions.js";
 import type { RepoStore } from "./repo-store.js";
 import type { GitHubAuthManager } from "./github-auth.js";
@@ -162,6 +175,21 @@ export interface DiskJanitorDeps {
   /** Default true. Set false to disable the branch sweep entirely. */
   sweepOrphanBranches?: boolean;
   /**
+   * SHI-222 — Docker client for the orphan egress-sidecar sweep. The Tier B/C
+   * sidecars (docs/172) share the agent container's network namespace, so when
+   * the agent dies its sidecars are stranded in `Exited` with nothing to remove
+   * them. The crash site itself now reaps them (`container-health.ts`); this
+   * boot sweep is the backstop for the orphans a PREVIOUS orchestrator process
+   * never got to — it died mid-cleanup, the Docker daemon restarted, or the
+   * agent container was removed out-of-band.
+   *
+   * Uses dockerode rather than the `runDocker` shell-out hook because the sweep
+   * needs `inspect` (to read each sidecar's `HostConfig.NetworkMode` and then
+   * its parent's `State.Running`), not a prune. Omitted in tests and in
+   * runtimes with no container manager, which skips the sweep.
+   */
+  docker?: Docker;
+  /**
    * Throttle: milliseconds to pause between each destructive operation
    * (volume/network removal, branch delete, workspace/nm-store/credential/log rm).
    * The startup sweep is never urgent — every item is recovering from a past
@@ -187,6 +215,8 @@ export interface DiskJanitorResult {
   credentialDirsRemoved: number;
   /** docs/192 — per-session `logs/` dirs removed (archived or untracked sessions). */
   logDirsRemoved: number;
+  /** SHI-222 — egress sidecars (docs/172) whose netns parent is gone or stopped. */
+  orphanEgressSidecarsRemoved: number;
 }
 
 /**
@@ -213,6 +243,7 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     orphanBranchesRemoved: 0,
     credentialDirsRemoved: 0,
     logDirsRemoved: 0,
+    orphanEgressSidecarsRemoved: 0,
   };
   const runDocker = deps.runDocker ?? defaultRunDocker;
   const paceMs = deps.paceMs ?? 0;
@@ -273,6 +304,21 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     }
   }
 
+  // SHI-222 — egress sidecars whose netns parent (the agent container) is gone
+  // or stopped. Unlike every other sweep here, this one needs NO active-sessions
+  // cross-reference: parent-liveness is the entire test, so it correctly reaps
+  // orphans belonging to sessions that are still very much alive (the common
+  // case — a session whose container OOM'd and was recreated).
+  if (deps.docker) {
+    try {
+      result.orphanEgressSidecarsRemoved = await reapOrphanEgressSidecars(
+        deps.docker, { paceMs },
+      );
+    } catch (err) {
+      console.warn("[disk-janitor] orphan egress-sidecar sweep failed:", getMessage(err));
+    }
+  }
+
   if (
     deps.sweepOrphanBranches !== false
     && deps.githubAuthManager
@@ -300,7 +346,8 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     + `nm-stores=${result.nmStoresRemoved} `
     + `orphan-branches=${result.orphanBranchesRemoved} `
     + `credential-dirs=${result.credentialDirsRemoved} `
-    + `log-dirs=${result.logDirsRemoved}`,
+    + `log-dirs=${result.logDirsRemoved} `
+    + `orphan-egress-sidecars=${result.orphanEgressSidecarsRemoved}`,
   );
   return result;
 }

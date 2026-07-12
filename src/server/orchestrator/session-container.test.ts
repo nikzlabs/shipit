@@ -1098,7 +1098,14 @@ describe("SessionContainerManager", () => {
       expect(manager.get("test-session-1")).toBeUndefined();
     });
 
-    it("emits container_exited with OOM error on oom event", async () => {
+    it("does NOT treat a bare oom event as a container exit", async () => {
+      // Docker fires `oom` when the cgroup's OOM-killer kills *a process* — not
+      // necessarily the container. In a session container PID 1 is the worker and
+      // the agent CLI is a child, so the common case is the one where the container
+      // SURVIVES: the CLI is killed, the worker keeps serving. Emitting
+      // `container_exited` here would finalize the live turn as crashed, dispose
+      // the runner, and trip the OOM circuit breaker against a healthy container.
+      // If PID 1 really was the victim, a `die` follows — and that one is proof.
       await manager.create(buildConfig());
       await manager.startHealthMonitor();
 
@@ -1115,7 +1122,45 @@ describe("SessionContainerManager", () => {
         },
       })));
 
+      expect(exited).not.toHaveBeenCalled();
+      expect(manager.get("test-session-1")).toBeDefined(); // session left alone
+    });
+
+    it("reports 'Out of memory' on the die that FOLLOWS an oom", async () => {
+      // The PID-1 OOM: `oom` then `die`, milliseconds apart. The `oom` records why;
+      // the `die` is what actually ends the container, and it carries the reason
+      // through so the OOM circuit breaker and the crash breadcrumb still see it.
+      await manager.create(buildConfig());
+      await manager.startHealthMonitor();
+
+      const exited = vi.fn();
+      manager.on("container_exited", exited);
+
+      const attrs = { [CONTAINER_SESSION_ID_LABEL]: "test-session-1", exitCode: "137" };
+      mockDocker._eventEmitter.emit("data", Buffer.from(JSON.stringify({
+        Action: "oom", Actor: { Attributes: attrs },
+      })));
+      mockDocker._eventEmitter.emit("data", Buffer.from(JSON.stringify({
+        Action: "die", Actor: { Attributes: attrs },
+      })));
+
       expect(exited).toHaveBeenCalledWith("test-session-1", 137, "Out of memory");
+      expect(manager.get("test-session-1")).toBeUndefined();
+    });
+
+    it("reports no OOM reason on a plain die with no preceding oom", async () => {
+      await manager.create(buildConfig());
+      await manager.startHealthMonitor();
+
+      const exited = vi.fn();
+      manager.on("container_exited", exited);
+
+      mockDocker._eventEmitter.emit("data", Buffer.from(JSON.stringify({
+        Action: "die",
+        Actor: { Attributes: { [CONTAINER_SESSION_ID_LABEL]: "test-session-1", exitCode: "1" } },
+      })));
+
+      expect(exited).toHaveBeenCalledWith("test-session-1", 1, undefined);
     });
 
     it("ignores events for unknown sessions", async () => {
