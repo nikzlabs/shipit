@@ -291,6 +291,7 @@ export async function reapSessionEgressSidecars(
       removed += pass.removed;
       unresolved = pass.unresolved;
       if (unresolved === 0) return removed; // everything accounted for
+      lastErr = undefined; // this pass DID answer — attempt 1's error must not outlive it
     } catch (err) {
       // Couldn't even list, or couldn't decide whether the parent is dead. We know
       // nothing this pass — which is not the same as "there is nothing".
@@ -305,7 +306,12 @@ export async function reapSessionEgressSidecars(
       );
       return removed;
     }
-    await new Promise((r) => setTimeout(r, backoffMs * attempt));
+    // unref'd, like this codebase's other timers: a pending backoff must not hold
+    // the process open through shutdown. Racing a teardown is already safe
+    // (id-scoped, liveness-gated, 404/409-tolerant) — this is exit hygiene only.
+    await new Promise((r) => {
+      setTimeout(r, backoffMs * attempt).unref?.();
+    });
   }
   return removed;
 }

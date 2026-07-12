@@ -383,6 +383,60 @@ describe("container-health: egress sidecar reap on die/oom (SHI-222)", () => {
     expect(containers.get("sess-1")?.id).toBe("b1");
   });
 
+  it("attributes 'Out of memory' by INCARNATION id on an id-carrying oom→die pair", async () => {
+    // The modern-daemon common case: both events carry `Actor.ID`. The record must
+    // be stored AND consumed under that id — round 5 found that keying the store by
+    // session id survived every existing test (they all omitted `Actor.ID`), which
+    // left the cross-incarnation guard below completely untested.
+    await start({ agentRunning: true });
+    containers.set("sess-1", makeContainer("b1", "sess-1"));
+    const exited = vi.fn();
+    emitter.on("container_exited", exited);
+
+    emit("oom", "sess-1", "b1");
+    kill("b1");
+    emit("die", "sess-1", "b1");
+
+    expect(exited).toHaveBeenCalledWith("sess-1", 137, "Out of memory");
+  });
+
+  it("attributes 'Out of memory' when the oom carries an id but the die does not", async () => {
+    // Mixed event shapes: the record sits under `Actor.ID`, the id-less `die`
+    // falls back to the tracked `sc.id` — the same container, so the label must
+    // still land. (A lookup that tried the session id instead would also "work"
+    // here, which is why the cross-incarnation test below exists.)
+    await start({ agentRunning: true });
+    containers.set("sess-1", makeContainer("b1", "sess-1"));
+    const exited = vi.fn();
+    emitter.on("container_exited", exited);
+
+    emit("oom", "sess-1", "b1");
+    kill("b1");
+    emit("die", "sess-1"); // no Actor.ID — resolves via sc.id
+
+    expect(exited).toHaveBeenCalledWith("sess-1", 137, "Out of memory");
+  });
+
+  it("does NOT pin a stale incarnation's OOM on the current container's death", async () => {
+    // An `oom` naming a PREVIOUS incarnation (a1) whose `die` never consumed it —
+    // e.g. it was swallowed by the `status === "stopping"` guard. If the record
+    // were keyed (or looked up) by session id, the CURRENT container's unrelated
+    // death within the 60s window would be mislabelled "Out of memory" and counted
+    // by the OOM circuit breaker — enough of those trips session_memory_exhausted
+    // against a healthy session. Incarnation keying makes the record unmatchable
+    // by anything but a1's own death.
+    await start({ agentRunning: true });
+    containers.set("sess-1", makeContainer("b1", "sess-1"));
+    const exited = vi.fn();
+    emitter.on("container_exited", exited);
+
+    emit("oom", "sess-1", "a1"); // stale — a previous incarnation's OOM
+    kill("b1");
+    emit("die", "sess-1", "b1"); // the current container dies of something else
+
+    expect(exited).toHaveBeenCalledWith("sess-1", 137, undefined);
+  });
+
   it("reaps a PREVIOUS incarnation's orphans on a stale die, sparing the current one's", async () => {
     // A `die` naming a container that is NOT the tracked one — an external
     // `docker rm -f` of a corpse, or the container Rescue just stopped. The

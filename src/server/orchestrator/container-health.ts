@@ -75,8 +75,9 @@ export interface HealthMonitorState {
    */
   lastLossAt: number | null;
   /**
-   * Containers whose cgroup OOM-killer fired recently: id (or session id, when
-   * the daemon omitted `Actor.ID`) → `Date.now()` of the `oom` event.
+   * Containers whose cgroup OOM-killer fired recently: **concrete container id**
+   * (the event's `Actor.ID`, or the tracked `sc.id` when the daemon omitted it)
+   * → `Date.now()` of the `oom` event.
    *
    * A Docker `oom` event is **not** a container death — it fires when the cgroup's
    * killer kills *a process*. If that process wasn't PID 1 the container survives,
@@ -84,9 +85,19 @@ export interface HealthMonitorState {
    * records that an OOM happened, and the `die` that follows (if any) reads this
    * to report "Out of memory" instead of a bare exit code.
    *
+   * The key is NEVER the session id. Session ids are reused across container
+   * recreations, so a session-keyed record can outlive its incarnation — e.g. when
+   * the matching `die` is swallowed by the `status === "stopping"` guard — and get
+   * pinned on a REPLACEMENT container's unrelated death within the window, feeding
+   * a false count into the OOM circuit breaker. Keying by incarnation makes that
+   * structurally impossible: a record can only ever label the death of the exact
+   * container that OOMed. If neither the event nor the map names a container,
+   * nothing is recorded — an unattributable label is worse than none, and the
+   * breaker's `exitCode === 137` fallback still catches the real OOMs.
+   *
    * Entries are consumed by the matching `die` and pruned after
    * {@link OOM_ATTRIBUTION_WINDOW_MS}, so a container that *survived* its OOM
-   * doesn't get a stale OOM label pinned on an unrelated death hours later.
+   * doesn't leave the map growing forever.
    */
   recentOoms: Map<string, number>;
 }
@@ -110,19 +121,18 @@ function pruneRecentOoms(state: HealthMonitorState): void {
 }
 
 /**
- * Did this container's cgroup OOM-killer fire recently? Consumes the record.
+ * Did this exact container's cgroup OOM-killer fire recently? Consumes the record.
  *
- * Checks the container id first and falls back to the session id, mirroring how
- * the `oom` event was keyed (daemons that omit `Actor.ID` leave us only the
- * session).
+ * Takes a single concrete incarnation id — the same shape the `oom` handler keys
+ * by — so a hit is always same-incarnation by construction. No session-id
+ * fallback: that was the path by which a stale record labelled a *replacement*
+ * container's death "Out of memory" (see {@link HealthMonitorState.recentOoms}).
  */
-function takeRecentOom(state: HealthMonitorState, containerId: string, sessionId: string): boolean {
+function takeRecentOom(state: HealthMonitorState, incarnationId: string): boolean {
   pruneRecentOoms(state);
-  for (const key of [containerId, sessionId]) {
-    if (key && state.recentOoms.has(key)) {
-      state.recentOoms.delete(key);
-      return true;
-    }
+  if (incarnationId && state.recentOoms.has(incarnationId)) {
+    state.recentOoms.delete(incarnationId);
+    return true;
   }
   return false;
 }
@@ -272,8 +282,16 @@ export async function startHealthMonitor(
           // it here used to strand the sidecars in exactly that case: the follow-up
           // `die` had neither an `Actor.ID` nor an `sc` to fall back to.)
           if (action === "oom") {
-            pruneRecentOoms(state);
-            state.recentOoms.set(containerId || sessionId, Date.now());
+            // Key by incarnation, never by session (see the recentOoms doc). When
+            // the daemon omits `Actor.ID`, the tracked `sc.id` names the only
+            // container this session-labelled event can be about. If neither is
+            // known, record nothing — the 137 fallback in startup-tasks.ts still
+            // counts the real OOM if the container actually dies.
+            const oomContainerId = containerId || sc?.id || "";
+            if (oomContainerId) {
+              pruneRecentOoms(state);
+              state.recentOoms.set(oomContainerId, Date.now());
+            }
             return;
           }
 
@@ -296,7 +314,10 @@ export async function startHealthMonitor(
           // Skip if destroy() is already in-flight — it will handle cleanup
           if (sc.status === "stopping") return;
           const exitCode = Number(attrs.exitCode ?? 1);
-          const error = takeRecentOom(state, containerId, sessionId) ? "Out of memory" : undefined;
+          // The stale-incarnation guard above ensures `containerId`, when present,
+          // equals `sc.id` — so this lookup names the same incarnation the `oom`
+          // handler keyed, whichever of the two shapes each event arrived in.
+          const error = takeRecentOom(state, containerId || sc.id) ? "Out of memory" : undefined;
           sc.status = "stopped";
           deps.containers.delete(sessionId);
           deps.standbySessionIds.delete(sessionId);

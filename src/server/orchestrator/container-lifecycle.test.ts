@@ -628,13 +628,23 @@ describe("destroyContainer — overlay volume teardown", () => {
    */
   function fakeDocker(
     removedVolumes: string[],
-    opts: { children?: { Id: string; State?: string }[]; removedContainers?: string[]; listFilters?: unknown[] } = {},
+    opts: {
+      children?: { Id: string; State?: string }[];
+      removedContainers?: string[];
+      listFilters?: unknown[];
+      /** id → error its `remove()` throws (models the reaper-vs-sweep race). */
+      removeErrors?: Record<string, Error>;
+    } = {},
   ): Docker {
     const noop = async (): Promise<void> => {};
     return {
       getContainer: (id: string) => ({
         stop: noop,
-        remove: async () => { opts.removedContainers?.push(id); },
+        remove: async () => {
+          const err = opts.removeErrors?.[id];
+          if (err) throw err;
+          opts.removedContainers?.push(id);
+        },
       }),
       listContainers: async (o: { filters?: unknown }) => {
         opts.listFilters?.push(o?.filters);
@@ -727,6 +737,51 @@ describe("destroyContainer — overlay volume teardown", () => {
     // …and the agent container (the netns parent) is removed LAST, after its
     // sidecars — the ordering that keeps us from orphaning them.
     expect(removedContainers.at(-1)).toBe("cid-1");
+  });
+
+  // Round 5 (SHI-222) — with the crash-site reaper live, the die-triggered reap
+  // races this sweep for the same two sidecars on EVERY healthy destroy, so a 404
+  // on child remove is the routine "the reaper got there first" outcome. Warning
+  // on it would spam every clean shutdown. Mutation-verified: revert the
+  // 404-ignore in cleanupSessionDockerResources and this goes red.
+  it("does NOT warn when a child was already removed by the crash-site reaper (404)", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { deps } = makeDeps([], makeContainer(undefined), {
+        children: [{ Id: "egress-resolver-1", State: "running" }],
+        removedContainers: [],
+        removeErrors: {
+          "egress-resolver-1": Object.assign(new Error("no such container"), { statusCode: 404 }),
+        },
+      });
+
+      await destroyContainer(deps, "sess-x");
+
+      const childWarnings = warn.mock.calls.filter((c) => String(c[0]).includes("child container"));
+      expect(childWarnings).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("still warns when a child removal fails for a real reason (500)", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { deps } = makeDeps([], makeContainer(undefined), {
+        children: [{ Id: "egress-resolver-1", State: "running" }],
+        removedContainers: [],
+        removeErrors: {
+          "egress-resolver-1": Object.assign(new Error("daemon on fire"), { statusCode: 500 }),
+        },
+      });
+
+      await destroyContainer(deps, "sess-x");
+
+      const childWarnings = warn.mock.calls.filter((c) => String(c[0]).includes("child container"));
+      expect(childWarnings).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

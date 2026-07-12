@@ -352,17 +352,17 @@ export function setupContainerHealthMonitoring(
     //
     // Two signals trigger the OOM count, because Docker is unreliable
     // here:
-    //   1. error === "Out of memory" — `container-health.ts` set this
-    //      from a Docker `oom` event.
+    //   1. error === "Out of memory" — `container-health.ts` attributed
+    //      this `die` to a recent `oom` event on the SAME container
+    //      incarnation (the label is deliberately dropped when the OOM
+    //      can't be pinned to a concrete container).
     //   2. exitCode === 137 — the cgroup OOM-killer's SIGKILL signature.
-    //      Docker emits both `oom` and `die` on an OOM, but event
-    //      ordering is daemon-dependent; with cgroup v2 the `oom`
-    //      event is sometimes not emitted at all. When `die` arrives
-    //      first our handler deletes the container from the map and
-    //      the subsequent `oom` event hits the "container not found"
-    //      early-out, losing the OOM signal. 137 with no other emitter
-    //      means an external SIGKILL, which inside a memory-limited
-    //      cgroup is overwhelmingly the kernel OOM-killer.
+    //      The label alone can't be relied on: with cgroup v2 the `oom`
+    //      event is sometimes not emitted at all, and event ordering is
+    //      daemon-dependent — a `die` that arrives BEFORE its `oom` finds
+    //      no record to consume. 137 with no other emitter means an
+    //      external SIGKILL, which inside a memory-limited cgroup is
+    //      overwhelmingly the kernel OOM-killer.
     //
     // Compose-child OOMs go through the `service_exited` path and are
     // not the breaker's concern.
