@@ -1,10 +1,6 @@
 name: CI
 
 on:
-  push:
-    # Validate every commit that lands on the integration branch. This catches
-    # direct pushes as well as the merge commit produced by a pull request.
-    branches: [main]
   pull_request:
     # `main` is the integration branch; `stable` is the release maintenance
     # branch (docs/162/214). Run the gates on PRs into either so a release-bump
@@ -45,8 +41,8 @@ jobs:
   # Pure git — no third-party action — to keep the dependency surface pinned.
   changes:
     name: Detect code changes
-    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-24.04
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux, proxmox-ci]
     outputs:
       code: ${{ steps.filter.outputs.code }}
     steps:
@@ -56,15 +52,7 @@ jobs:
       - id: filter
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          EVENT_NAME: ${{ github.event_name }}
         run: |
-          # A push to main always runs the complete suite, including for
-          # documentation-only commits. The diff optimization is only for PRs.
-          if [ "$EVENT_NAME" = "push" ]; then
-            echo "code=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
           changed=$(git diff --name-only "$BASE_SHA"...HEAD)
           echo "Changed files:"
           echo "$changed"
@@ -82,8 +70,8 @@ jobs:
     # Only run for PRs whose branch lives in this repo (fork/external PRs have a
     # different head repo, so this skips them — no CI minutes on untrusted code),
     # and only when the PR touches build-affecting files (docs-only PRs skip).
-    if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-24.04
+    if: github.event.pull_request.head.repo.full_name == github.repository && needs.changes.outputs.code == 'true'
+    runs-on: [self-hosted, linux, proxmox-ci]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -113,8 +101,8 @@ jobs:
   test:
     name: Test
     needs: changes
-    if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-24.04
+    if: github.event.pull_request.head.repo.full_name == github.repository && needs.changes.outputs.code == 'true'
+    runs-on: [self-hosted, linux, proxmox-ci]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
