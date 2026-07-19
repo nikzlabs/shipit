@@ -4,6 +4,7 @@
 </h1>
 
 <p align="center">
+  <a href="https://github.com/nikzlabs/shipit/actions/workflows/main-ci.yml"><img src="https://github.com/nikzlabs/shipit/actions/workflows/main-ci.yml/badge.svg?branch=main" alt="Main CI status"></a>
   <img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License: Apache 2.0">
   <img src="https://img.shields.io/badge/status-early%20public%20release-orange" alt="Status: early public release">
   <img src="https://img.shields.io/badge/self--hosted-Docker-2496ED?logo=docker&logoColor=white" alt="Self-hosted via Docker">
