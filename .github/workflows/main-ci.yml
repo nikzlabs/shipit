@@ -1,0 +1,43 @@
+name: Main CI
+
+# Post-merge validation for every commit that lands on the integration branch.
+# Pull requests continue to use the self-hosted runners configured in ci.yml;
+# this workflow deliberately uses only native GitHub-hosted runners.
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: main-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  check:
+    name: Lint, Type Check & Build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run check-deps
+      - run: npm run build
+
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test
