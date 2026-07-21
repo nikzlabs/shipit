@@ -1,4 +1,5 @@
 ---
+issue: https://linear.app/shipit-ai/issue/SHI-223
 description: Move Claude OAuth refresh out of session CLIs into a single orchestrator-owned process to eliminate the multi-session refresh stampede that breaks every Claude session ~8h after auth.
 ---
 
@@ -162,6 +163,32 @@ In-process `Promise<RefreshResult>` mutex. Any caller — scheduled tick, on-dem
 `refreshNow()`, or the on-`auth_required` synchronous repair — awaits the in-flight
 promise if one exists, never starts a parallel attempt. Because there is only one
 orchestrator process per host, this fully serializes refresh.
+
+### Failure classification: only `invalid_grant` means revoked (2026-07 fix)
+
+The original implementation classified generic 401 phrases (`unauthorized`,
+`authentication_error`, `invalid authentication credentials`) as **revoked** — flip the
+account to "needs sign-in", broadcast `agent_auth_failed reason:revoked`, stop
+scheduling. That was wrong, and it was the cause of the "Claude logs out every day"
+symptom that persisted after this design shipped:
+
+- Once the access token is past expiry (a routine, recurring state — the tier-1-noop →
+  generic-backoff cadence regularly overshoots expiry by a few minutes), **every**
+  tier-2 run's first API attempt 401s, and `--debug api` captures that
+  `authentication_error` response verbatim *before* refresh-on-use fires.
+- If the refresh then fails *transiently* (OAuth endpoint 429, the 60s tier-2 timeout,
+  a network blip), the tick ends with no rotation and a combined output full of 401
+  phrases → misclassified as revoked → user signed out, schedule stopped.
+- The Codex refresher only ever matched `invalid_grant` / `invalid_refresh_token`,
+  which is why Codex never exhibited the daily logout.
+
+`TERMINAL_AUTH_FAILURE_PATTERNS` is now narrowed to the `invalid_grant` family — the
+only signal where the OAuth server actually evaluated and rejected the refresh token.
+A genuine revocation still surfaces it in the debug capture, so detection is not lost;
+everything else (including expired-token 401s) falls through to `rate_limited` or
+`unknown_failure`, which back off and retry until the transient clears. Regression
+tests: `oauth-refresher.test.ts` ("401 … unknown_failure (NOT revoked)",
+"expired-token 401 + refresh 429 as rate_limited").
 
 ### Detecting refresh outcomes
 

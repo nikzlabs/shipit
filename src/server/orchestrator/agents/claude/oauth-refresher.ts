@@ -91,19 +91,28 @@ const TIER2_TIMEOUT_MS = 60_000;
 const CLAUDE_CREDENTIALS_RELATIVE = path.join(".claude", ".credentials.json");
 
 /**
- * CLI phrases that mean the account cannot authenticate with its current
- * credential set. Keep this in sync with the session-side Claude auth
- * classifier without importing it: orchestrator code must not depend on
- * session agent internals.
+ * CLI phrases that mean the REFRESH token is dead — the OAuth server evaluated
+ * the grant and rejected it, so no amount of retrying will ever rotate again.
+ * Only these justify flipping the account to "needs sign-in" and stopping the
+ * schedule. Mirrors the Codex refresher's revoked classifier.
+ *
+ * Deliberately NARROW — this is NOT the session-side auth classifier's broad
+ * list. Generic 401 phrases ("unauthorized", "authentication_error",
+ * "invalid authentication credentials") describe a dead ACCESS token, which is
+ * the *routine pre-refresh state* of every tier-2 run once the token is past
+ * expiry: the CLI's first API attempt 401s (captured verbatim in the
+ * `--debug api` log), and only then does refresh-on-use fire. When that
+ * refresh is merely rate-limited (429), times out, or hits a network blip,
+ * the combined output contains those 401 phrases with a perfectly healthy
+ * refresh token. Matching them here misclassified every such tick as
+ * `revoked` — signing the user out roughly daily and stopping the schedule,
+ * while Codex (narrow patterns) never logged out. A genuine revocation always
+ * surfaces `invalid_grant` in the debug capture, so nothing is lost.
  */
 const TERMINAL_AUTH_FAILURE_PATTERNS = [
   "invalid_grant",
   "invalid_refresh_token",
   "invalid refresh token",
-  "401 invalid authentication credentials",
-  "invalid authentication credentials",
-  "authentication_error",
-  "unauthorized",
 ];
 
 /** Sentinel for "no credentials on disk" (file missing or unparseable). */
@@ -528,10 +537,14 @@ export class ClaudeOAuthRefresher extends EventEmitter {
   /**
    * Both tiers ran and neither rotated the token. Parse the CLI output for
    * known signals to classify the failure:
+   *   - `invalid_grant` / `invalid_refresh_token` → revoked, stop scheduling
+   *     and emit `claude_account_unauthenticated` (the ONLY terminal signal —
+   *     see {@link TERMINAL_AUTH_FAILURE_PATTERNS} for why generic 401
+   *     phrases must never be treated as revocation)
    *   - `429` / `rate_limit` / `rate limited` → rate_limited, backoff
-   *   - revoked/unauthorized/invalid credential signals → revoked, stop
-   *     scheduling and emit `claude_account_unauthenticated`
-   *   - otherwise → unknown_failure, short backoff
+   *   - otherwise (including a routine expired-access-token 401 whose refresh
+   *     didn't complete this tick) → unknown_failure, short backoff — the
+   *     next tick retries and rotates once the transient clears
    */
   private handleFailure(
     accountId: string,
