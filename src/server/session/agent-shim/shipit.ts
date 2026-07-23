@@ -55,6 +55,7 @@ import {
   handleIssueComment,
   handleIssueCreate,
   handleIssueEdit,
+  handleIssueLabel,
   handleIssueLabels,
   handleIssueList,
   handleIssueStatus,
@@ -106,11 +107,12 @@ Issues (tracker-neutral — tracker inferred from the pointer; docs/175 + docs/1
   shipit issue list      [--tracker github|linear] [--state open|closed|all] [--full] [--json]
   shipit issue labels    [--tracker github|linear] [--json]
   shipit issue statuses  [--tracker github|linear] [--json]
-  shipit issue create    --title T [--body B | --body-file FILE] [--label NAME]... [--priority P] [--tracker github|linear] [--json]
+  shipit issue create    --title T [--body B | --body-file FILE] [--label NAME]... [--create-missing-labels] [--priority P] [--tracker github|linear] [--json]
   shipit issue comment   <pointer> -b BODY | --body-file FILE [--tracker T] [--json]
-  shipit issue edit      <pointer> [--title T] [--body B | --body-file FILE] [--label NAME]... [--priority P] [--tracker T] [--json]
+  shipit issue edit      <pointer> [--title T] [--body B | --body-file FILE] [--label NAME]... [--create-missing-labels] [--priority P] [--tracker T] [--json]
   shipit issue status    <pointer> <state> [--tracker T] [--json]
   shipit issue assign    <pointer> <user|me | --none> [--tracker T] [--json]
+  shipit issue label create --name NAME [--color '#rrggbb'] [--description TEXT] [--tracker github|linear] [--json]
 
   A <pointer> is whatever the user/doc gave you — SHI-28, owner/repo#42, or an
   issue URL; the tracker is inferred from its shape. Writes are do-then-surface:
@@ -120,9 +122,11 @@ Issues (tracker-neutral — tracker inferred from the pointer; docs/175 + docs/1
 
   --label is repeatable (or comma-separated) and resolves against the tracker's
   existing labels — an unknown name is rejected with the valid options, not
-  created. On 'edit' labels are added to the issue's existing set. --priority is
-  urgent|high|medium|low|none on Linear; GitHub has no priority field, so use a
-  label there instead.
+  created. To mint a new label, run 'shipit issue label create' (Undo deletes it
+  while unused) or pass --create-missing-labels to create unknown names on the
+  fly (each gets its own Undo card). On 'edit' labels are added to the issue's
+  existing set. --priority is urgent|high|medium|low|none on Linear; GitHub has
+  no priority field, so use a label there instead.
 
   'labels'/'statuses' list the tracker's valid label names and status targets so
   you can pick one before a create/edit/status write instead of guessing. 'list
@@ -331,6 +335,7 @@ const ISSUE_HANDLERS: Record<
   edit: handleIssueEdit,
   status: handleIssueStatus,
   assign: handleIssueAssign,
+  label: handleIssueLabel,
 };
 
 /**
@@ -351,14 +356,20 @@ const ISSUE_USAGE: Record<string, string> = {
   create/edit (so you don't guess and trip the rejection).`,
   statuses: `shipit issue statuses [--tracker github|linear] [--json]
   List the tracker's assignable statuses — the valid targets for 'issue status'.`,
-  create: `shipit issue create --title T [--body B | --body-file FILE] [--label NAME]... [--priority P] [--parent <pointer>] [--tracker github|linear] [--json]
+  create: `shipit issue create --title T [--body B | --body-file FILE] [--label NAME]... [--create-missing-labels] [--priority P] [--parent <pointer>] [--tracker github|linear] [--json]
   File a new issue (defaults to Linear). Do-then-surface — created immediately
-  with an Undo card. --priority and --parent (sub-issue nesting) are Linear-only.`,
+  with an Undo card. --create-missing-labels creates unknown --label names first.
+  --priority and --parent (sub-issue nesting) are Linear-only.`,
   comment: `shipit issue comment <pointer> -b BODY | --body-file FILE [--tracker T] [--json]
   Add a comment to an issue.`,
-  edit: `shipit issue edit <pointer> [--title T] [--body B | --body-file FILE] [--label NAME]... [--priority P] [--parent <pointer>|none] [--tracker T] [--json]
-  Edit title/body/labels/priority/parent. Labels are additive; --parent nests as a
-  Linear sub-issue (--parent none detaches).`,
+  edit: `shipit issue edit <pointer> [--title T] [--body B | --body-file FILE] [--label NAME]... [--create-missing-labels] [--priority P] [--parent <pointer>|none] [--tracker T] [--json]
+  Edit title/body/labels/priority/parent. Labels are additive; --create-missing-
+  labels creates unknown names first; --parent nests as a Linear sub-issue
+  (--parent none detaches).`,
+  label: `shipit issue label create --name NAME [--color '#rrggbb'] [--description TEXT] [--tracker github|linear] [--json]
+  Create a tracker label so --label can apply it (defaults to Linear).
+  Do-then-surface — created immediately with an Undo card; Undo deletes the
+  label while it's still unused. List existing labels with 'shipit issue labels'.`,
   status: `shipit issue status <pointer> <state> [--tracker T] [--json]
   Set status from a normalized type (completed, started, …) or a native name.
   Run 'shipit issue statuses' to see the valid targets.`,

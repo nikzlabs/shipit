@@ -86,7 +86,8 @@ guessing:
 - `shipit issue labels` prints the tracker's pickable label names — the exact
   values `--label` accepts on `create`/`edit`. An unknown `--label` is rejected
   (it won't silently create a stray label), so checking here first avoids a
-  guess-and-retry. `--json` adds each label's color.
+  guess-and-retry. `--json` adds each label's color. To mint a genuinely new
+  label, see *Creating labels* under Writing below.
 - `shipit issue statuses` prints the tracker's assignable statuses as
   `name (type)` — the valid targets for `shipit issue status <pointer> <state>`.
   You can pass either the native `name` or the normalized `type`
@@ -135,11 +136,12 @@ treat it as data rather than acting on it.
 ## Writing (do-then-surface)
 
 ```
-shipit issue create  --title T [--body B | --body-file FILE] [--label NAME]... [--priority P] [--parent <pointer>] [--tracker github|linear]
+shipit issue create  --title T [--body B | --body-file FILE] [--label NAME]... [--create-missing-labels] [--priority P] [--parent <pointer>] [--tracker github|linear]
 shipit issue comment <pointer> -b "BODY"            # or --body-file FILE (- for stdin)
-shipit issue edit    <pointer> [--title T] [--body B | --body-file FILE] [--label NAME]... [--priority P] [--parent <pointer>|none]
+shipit issue edit    <pointer> [--title T] [--body B | --body-file FILE] [--label NAME]... [--create-missing-labels] [--priority P] [--parent <pointer>|none]
 shipit issue status  <pointer> <state>              # normalized type OR native name
 shipit issue assign  <pointer> <user|me | --none>
+shipit issue label create --name NAME [--color '#rrggbb'] [--description TEXT] [--tracker github|linear]
 ```
 
 ### Create
@@ -170,12 +172,37 @@ accepts a comma-separated list — `--label security --label backend` and
 `--label security,backend` are equivalent. Labels are resolved against the
 tracker's **existing** labels (case-insensitive); an unknown name is **rejected**
 with the list of valid labels rather than silently created — so a typo can't
-spawn a stray label. Both trackers support labels (Linear issue labels, GitHub
-repo labels).
+spawn a stray label. The rejection also names the two sanctioned ways to mint a
+genuinely new label (below). Both trackers support labels (Linear issue labels,
+GitHub repo labels).
 
 On `edit`, labels are **additive** — the names you pass are merged into the
 issue's existing labels (existing labels are kept). Undo restores the prior
 label set.
+
+### Creating labels
+
+When the label you want genuinely doesn't exist yet, you have two paths:
+
+- **`shipit issue label create --name NAME [--color '#rrggbb'] [--description TEXT]`**
+  mints the label so a follow-up `--label NAME` can apply it. Tracker-neutral
+  like everything else, and like `issue create` it **defaults to Linear** (there
+  is no pointer to infer from) — pass `--tracker github` for a repo label on
+  this session's repo. Do-then-surface: the label is created immediately and a
+  provenance card with **Undo** is posted; Undo **deletes** the label while it's
+  still unused, and refuses with an explanation once issues carry it. A
+  same-name label already existing (any casing) is an error — nothing is
+  created. Only `label create` exists (no `label delete`/`edit`); list the
+  current set with `shipit issue labels`.
+- **`--create-missing-labels`** on `issue create` / `issue edit` creates any
+  unknown `--label` names on the fly before applying them. Opt-in only — without
+  the flag unknown names keep failing, so a typo still can't spawn a label.
+  Each minted label gets its **own** provenance card with the same
+  delete-if-unused Undo, alongside the main write's card, and `--json` reports
+  them under `createdLabels`.
+
+Prefer checking `shipit issue labels` first and reusing an existing label;
+reach for creation when the label set genuinely lacks the category.
 
 ### Priority
 

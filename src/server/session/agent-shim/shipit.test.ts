@@ -1949,6 +1949,101 @@ describe("shipit issue", () => {
     expect(out.stdout).toContain("shipit issue labels");
     expect(out.calls).toHaveLength(0);
   });
+
+  // ---- label create (SHI-230) --------------------------------------------
+
+  it("label create posts to the broker and reports the summary", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["issue", "label", "create", "--name", "t3code", "--color", "#0ea5e9", "--description", "T3 code area"],
+      {
+        "POST /agent-ops/issue/label/create": {
+          status: 200,
+          body: { ok: true, summary: 'created label "t3code"', label: { name: "t3code", color: "#0ea5e9" } },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0]).toMatchObject({
+      method: "POST",
+      path: "/agent-ops/issue/label/create",
+      // Defaults to Linear — no pointer to infer a tracker from.
+      body: { tracker: "linear", name: "t3code", color: "#0ea5e9", description: "T3 code area" },
+    });
+    expect(out.stdout).toContain('created label "t3code"');
+  });
+
+  it("label create --tracker github targets the session repo", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "label", "create", "--name", "t3code", "--tracker", "github"], {
+      "POST /agent-ops/issue/label/create": { status: 200, body: { ok: true, summary: 'created label "t3code"' } },
+    });
+    expect(out.exitCode).toBe(0);
+    expect((out.calls[0].body as Record<string, unknown>).tracker).toBe("github");
+  });
+
+  it("label create requires --name and rejects a malformed --color before any call", async () => {
+    const { run } = makeRunner();
+    const missing = await run(["issue", "label", "create"]);
+    expect(missing.exitCode).not.toBe(0);
+    expect(missing.stderr).toContain("--name is required");
+    expect(missing.calls).toHaveLength(0);
+
+    const badColor = await run(["issue", "label", "create", "--name", "x", "--color", "blue"]);
+    expect(badColor.exitCode).not.toBe(0);
+    expect(badColor.stderr).toContain("--color must be a 6-digit hex");
+    expect(badColor.calls).toHaveLength(0);
+  });
+
+  it("label rejects verbs other than create", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "label", "delete", "t3code"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("only `label create` is supported");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("label create surfaces a duplicate (409) as exit 1", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "label", "create", "--name", "security"], {
+      "POST /agent-ops/issue/label/create": { status: 409, body: { error: 'Label "security" already exists on Linear — nothing to create.' } },
+    });
+    expect(out.exitCode).toBe(1);
+    expect(out.stderr).toContain("already exists");
+  });
+
+  it("create forwards --create-missing-labels (SHI-230)", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["issue", "create", "--title", "T", "--label", "t3code", "--create-missing-labels"],
+      {
+        "POST /agent-ops/issue/create": { status: 200, body: { ok: true, summary: "created SHI-9", identifier: "SHI-9" } },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toMatchObject({ labels: ["t3code"], createMissingLabels: true });
+  });
+
+  it("create omits createMissingLabels without the flag", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "create", "--title", "T", "--label", "t3code"], {
+      "POST /agent-ops/issue/create": { status: 200, body: { ok: true, summary: "created SHI-9" } },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body as Record<string, unknown>).not.toHaveProperty("createMissingLabels");
+  });
+
+  it("edit forwards --create-missing-labels (SHI-230)", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["issue", "edit", "SHI-9", "--label", "t3code", "--create-missing-labels"],
+      {
+        "POST /agent-ops/issue/edit": { status: 200, body: { ok: true, summary: "edited labels on SHI-9" } },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toMatchObject({ id: "SHI-9", labels: ["t3code"], createMissingLabels: true });
+  });
 });
 
 // ---------------------------------------------------------------------------

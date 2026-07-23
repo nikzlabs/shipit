@@ -24,6 +24,7 @@ import {
   userSetIssuePriority,
   userSetIssueLabels,
   createIssueForTracker,
+  createLabelForTracker,
   commentOnIssueForTracker,
   updateIssueForTracker,
   setIssueStatusForTracker,
@@ -913,5 +914,174 @@ describe("issue write services (docs/177)", () => {
     );
     const patch = fetchImpl.mock.calls.find(([, i]) => i?.method === "PATCH")!;
     expect(JSON.parse(patch[1]?.body as string)).toEqual({ assignees: ["alice"] });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Label creation (SHI-230): `shipit issue label create` + --create-missing-labels
+// ---------------------------------------------------------------------------
+
+/**
+ * A GitHub stub with a MUTABLE repo label set: `GET /labels` reflects labels
+ * added by `POST /labels`, so a create-missing-labels flow (mint, then resolve
+ * on the issue write) sees its own creations. `used` marks labels the
+ * usage-check endpoint reports as carried by an issue.
+ */
+function ghLabelStoreFetch(existing: string[], used: string[] = []) {
+  const labels = [...existing];
+  const issue = {
+    id: 1,
+    number: 42,
+    title: "Original title",
+    html_url: "https://github.com/octocat/hello-world/issues/42",
+    body: "original body",
+    state: "open",
+    labels: [],
+    assignee: { login: "alice" },
+  };
+  return vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    const u = url as string;
+    const method = init?.method ?? "GET";
+    if (method === "GET" && u.includes("/issues?labels=")) {
+      const name = decodeURIComponent(new URL(u).searchParams.get("labels") ?? "");
+      return ghResponse(used.includes(name) ? [{ number: 42 }] : []);
+    }
+    if (method === "GET" && u.includes("/labels")) return ghResponse(labels.map((name) => ({ name })));
+    if (method === "POST" && u.endsWith("/labels")) {
+      const body = JSON.parse(init?.body as string) as { name: string; color?: string };
+      labels.push(body.name);
+      return ghResponse({ name: body.name, color: body.color ?? "ededed" }, 201);
+    }
+    if (method === "DELETE" && u.includes("/labels/")) return ghResponse(null, 204);
+    if (method === "GET" && u.endsWith("/issues/42")) return ghResponse(issue);
+    if (method === "POST" && u.endsWith("/issues")) {
+      return ghResponse({ ...issue, number: 7, html_url: "https://github.com/octocat/hello-world/issues/7", ...JSON.parse(init?.body as string) });
+    }
+    if (method === "PATCH" && u.endsWith("/issues/42")) {
+      return ghResponse({ ...issue, ...JSON.parse(init?.body as string) });
+    }
+    throw new Error(`unexpected ${method} ${u}`);
+  });
+}
+
+describe("label creation (SHI-230)", () => {
+  let store: CredentialStore;
+  beforeEach(() => {
+    store = tmpStore();
+  });
+
+  it("createLabelForTracker mints the label and returns a delete-if-unused undo", async () => {
+    const fetchImpl = ghLabelStoreFetch(["security"]);
+    const out = await createLabelForTracker(store, "github", "t3code", { color: "#0ea5e9" }, fetchImpl, GH);
+    expect(out.summary).toBe('created label "t3code"');
+    expect(out.label).toEqual({ name: "t3code", color: "#0ea5e9" });
+    expect(out.undo).toEqual({ kind: "label", labelId: "t3code", labelName: "t3code" });
+    const post = fetchImpl.mock.calls.find(([u, i]) => i?.method === "POST" && (u as string).endsWith("/labels"))!;
+    // GitHub wants the hex without '#'.
+    expect(JSON.parse(post[1]?.body as string)).toEqual({ name: "t3code", color: "0ea5e9" });
+  });
+
+  it("createLabelForTracker 409s when a same-name label already exists (case-insensitive)", async () => {
+    const fetchImpl = ghLabelStoreFetch(["Security"]);
+    await expect(
+      createLabelForTracker(store, "github", "security", {}, fetchImpl, GH),
+    ).rejects.toMatchObject({ statusCode: 409 });
+    // Nothing was created.
+    expect(fetchImpl.mock.calls.every(([, i]) => (i?.method ?? "GET") === "GET")).toBe(true);
+  });
+
+  it("createLabelForTracker 400s on a blank name and 409s when unconnected", async () => {
+    await expect(createLabelForTracker(store, "github", "  ", {}, ghLabelStoreFetch([]), GH)).rejects.toMatchObject({
+      statusCode: 400,
+    });
+    await expect(
+      createLabelForTracker(store, "github", "x", {}, ghLabelStoreFetch([]), { token: null, repo: null }),
+    ).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  it("create: an unknown label without the flag still fails, with the label-create hint", async () => {
+    const fetchImpl = ghLabelStoreFetch(["security"]);
+    await expect(
+      createIssueForTracker(store, "github", "New", "", { labels: ["t3code"] }, fetchImpl, GH),
+    ).rejects.toMatchObject({
+      statusCode: 422,
+      message: expect.stringMatching(/shipit issue label create[\s\S]*--create-missing-labels/),
+    });
+  });
+
+  it("create: --create-missing-labels mints unknown labels first, then applies them", async () => {
+    const fetchImpl = ghLabelStoreFetch(["security"]);
+    const out = await createIssueForTracker(
+      store,
+      "github",
+      "New",
+      "",
+      { labels: ["security", "t3code"], createMissingLabels: true },
+      fetchImpl,
+      GH,
+    );
+    // Only the genuinely-missing label was minted, and it gets its own card data.
+    expect(out.labelCreations).toEqual([
+      { label: { name: "t3code", color: "#ededed" }, summary: 'created label "t3code"', undo: { kind: "label", labelId: "t3code", labelName: "t3code" } },
+    ]);
+    const post = fetchImpl.mock.calls.find(([u, i]) => i?.method === "POST" && (u as string).endsWith("/issues"))!;
+    expect(JSON.parse(post[1]?.body as string).labels).toEqual(["security", "t3code"]);
+  });
+
+  it("create: --create-missing-labels is a no-op when every label exists (no creations)", async () => {
+    const fetchImpl = ghLabelStoreFetch(["security"]);
+    const out = await createIssueForTracker(
+      store,
+      "github",
+      "New",
+      "",
+      { labels: ["Security"], createMissingLabels: true },
+      fetchImpl,
+      GH,
+    );
+    expect(out.labelCreations).toBeUndefined();
+    expect(fetchImpl.mock.calls.some(([u, i]) => i?.method === "POST" && (u as string).endsWith("/labels"))).toBe(false);
+  });
+
+  it("edit: --create-missing-labels mints unknown labels before the additive merge", async () => {
+    const fetchImpl = ghLabelStoreFetch(["security"]);
+    const out = await updateIssueForTracker(
+      store,
+      "github",
+      "42",
+      { labels: ["t3code"] },
+      fetchImpl,
+      GH,
+      { createMissingLabels: true },
+    );
+    expect(out.labelCreations).toHaveLength(1);
+    expect(out.labelCreations?.[0].undo).toEqual({ kind: "label", labelId: "t3code", labelName: "t3code" });
+    const patch = fetchImpl.mock.calls.find(([, i]) => i?.method === "PATCH")!;
+    expect(JSON.parse(patch[1]?.body as string).labels).toEqual(["t3code"]);
+  });
+
+  it("undo: label → deletes the label while unused", async () => {
+    const fetchImpl = ghLabelStoreFetch(["t3code"]);
+    await undoIssueWrite(
+      store,
+      { tracker: "github", issueId: "", undo: { kind: "label", labelId: "t3code", labelName: "t3code" } },
+      fetchImpl,
+      GH,
+    );
+    const del = fetchImpl.mock.calls.find(([, i]) => i?.method === "DELETE")!;
+    expect(del[0]).toContain("/labels/t3code");
+  });
+
+  it("undo: label → refuses with an explanation when issues now carry it", async () => {
+    const fetchImpl = ghLabelStoreFetch(["t3code"], ["t3code"]);
+    await expect(
+      undoIssueWrite(
+        store,
+        { tracker: "github", issueId: "", undo: { kind: "label", labelId: "t3code", labelName: "t3code" } },
+        fetchImpl,
+        GH,
+      ),
+    ).rejects.toMatchObject({ message: expect.stringContaining("in use") });
+    expect(fetchImpl.mock.calls.some(([, i]) => i?.method === "DELETE")).toBe(false);
   });
 });
