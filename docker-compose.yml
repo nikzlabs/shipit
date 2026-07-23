@@ -14,6 +14,52 @@
 #
 # See docs/118-shipit-ui-local/plan.md for the full design.
 services:
+  # Manual memory probe for diagnosing preview-container OOM behavior. It
+  # reports the service's real cgroup ceiling from inside the container and
+  # can commit a predictable amount of anonymous memory when PROBE_MEMORY_MB
+  # is set. Keeping it manual prevents the diagnostic from consuming resources
+  # during normal ShipIt development.
+  memory-probe:
+    image: node:24-slim
+    working_dir: /tmp
+    command:
+      - node
+      - -e
+      - |
+        const fs = require("node:fs");
+        const http = require("node:http");
+        const v8 = require("node:v8");
+        const requestedMb = Number(process.env.PROBE_MEMORY_MB || 0);
+        const chunks = [];
+        for (let i = 0; i < requestedMb; i += 16) {
+          const sizeMb = Math.min(16, requestedMb - i);
+          const chunk = Buffer.alloc(sizeMb * 1024 * 1024, 1);
+          chunks.push(chunk);
+        }
+        const read = (path) => {
+          try { return fs.readFileSync(path, "utf8").trim(); }
+          catch { return "unavailable"; }
+        };
+        const report = () => ({
+          requestedMb,
+          allocatedMb: chunks.reduce((sum, chunk) => sum + chunk.length, 0) / 1024 / 1024,
+          cgroupMemoryMax: read("/sys/fs/cgroup/memory.max"),
+          cgroupMemoryCurrent: read("/sys/fs/cgroup/memory.current"),
+          nodeHeapLimitBytes: v8.getHeapStatistics().heap_size_limit,
+          rssBytes: process.memoryUsage().rss,
+        });
+        console.log(JSON.stringify(report()));
+        http.createServer((_request, response) => {
+          response.setHeader("content-type", "application/json");
+          response.end(JSON.stringify(report(), null, 2));
+        }).listen(3099, "0.0.0.0");
+    environment:
+      PROBE_MEMORY_MB: "0"
+    ports:
+      - "3099:3099"
+    x-shipit-preview: manual
+    x-shipit-depends-on-install: false
+
   dev:
     # Built from docker/Dockerfile.dogfood — a thin node:24 + agent-CLIs image.
     # It no longer bakes node_modules: the `dev` service shares the agent
