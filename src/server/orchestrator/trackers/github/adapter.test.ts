@@ -314,6 +314,46 @@ describe("GitHubTracker writes (docs/177)", () => {
     expect(fetchImpl.mock.calls[0][0] as string).toContain("/repos/octocat/hello-world/labels");
   });
 
+  it("creates a repo label with a #-stripped color and name-as-id (SHI-230)", async () => {
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse({ name: "t3code", color: "0ea5e9" }),
+    );
+    const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+    const label = await tracker.createLabel({ name: "t3code", color: "#0ea5e9", description: "T3 code area" });
+    // GitHub deletes labels by name, so the name doubles as the undo id; the
+    // returned color is normalized back to CSS-ready `#rrggbb`.
+    expect(label).toEqual({ id: "t3code", name: "t3code", color: "#0ea5e9" });
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toContain("/repos/octocat/hello-world/labels");
+    expect(init?.method).toBe("POST");
+    // GitHub's API wants the hex WITHOUT '#'.
+    expect(JSON.parse(init?.body as string)).toEqual({ name: "t3code", color: "0ea5e9", description: "T3 code area" });
+  });
+
+  it("deletes an unused label on undo (SHI-230)", async () => {
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      if ((init?.method ?? "GET") === "GET") {
+        expect(url as string).toContain("issues?labels=t3code&state=all&per_page=1");
+        return jsonResponse([]);
+      }
+      return new Response(null, { status: 204 });
+    });
+    const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+    await tracker.deleteUnusedLabel("t3code", "t3code");
+    const del = fetchImpl.mock.calls.find((c) => c[1]?.method === "DELETE")!;
+    expect(del[0]).toContain("/labels/t3code");
+  });
+
+  it("refuses to delete a label that issues now carry, naming a carrier (SHI-230)", async () => {
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse([{ number: 42 }]),
+    );
+    const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+    await expect(tracker.deleteUnusedLabel("t3code", "t3code")).rejects.toThrow(/in use.*#42/);
+    // Only the usage check ran — no DELETE.
+    expect(fetchImpl.mock.calls.every((c) => (c[1]?.method ?? "GET") === "GET")).toBe(true);
+  });
+
   it("adds a comment and returns its id for undo", async () => {
     const fetchImpl = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
       jsonResponse({ id: 555, html_url: "https://github.com/octocat/hello-world/issues/42#c", body: "hi" }),

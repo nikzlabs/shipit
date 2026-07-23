@@ -257,6 +257,10 @@ const GOLDEN_CONTAINER_ROUTES = [
   "POST /api/sessions/:sessionId/issue/edit",
   "POST /api/sessions/:sessionId/issue/status",
   "POST /api/sessions/:sessionId/issue/assign",
+  // SHI-230 — `shipit issue label create` broker target; same posture as the
+  // issue writes above (own-session scoped, do-then-surface card with undo,
+  // tracker token stays orchestrator-side).
+  "POST /api/sessions/:sessionId/issue/label/create",
   // source — shipit source (ops sessions)
   "GET /api/sessions/:id/source/status",
   "GET /api/sessions/:id/source/tree",

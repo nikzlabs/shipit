@@ -146,6 +146,26 @@ export interface Tracker {
     parent?: string;
   }): Promise<TrackerIssue>;
 
+  /**
+   * Create a new label in the bound scope (Linear team / GitHub repo) so it can
+   * be applied via `--label` (SHI-230 — the agent's `shipit issue label create`).
+   * `color` is a CSS-ready `#rrggbb` (adapters renormalize per tracker API).
+   * Callers pre-check for an existing same-name label (case-insensitive) — the
+   * adapter does not dedupe. Returns the created label plus its tracker-internal
+   * `id` (Linear UUID; for GitHub the name IS the id), which the undo snapshot
+   * carries as the delete target.
+   */
+  createLabel(input: { name: string; color?: string; description?: string }): Promise<IssueLabel & { id: string }>;
+
+  /**
+   * Delete a label ONLY when no issues carry it — the reverse write behind a
+   * label-creation card's Undo (SHI-230). When the label is in use the adapter
+   * throws with an explanation (surfaced as the card's undo error) instead of
+   * stripping it off issues; `name` is for that message, `id` is the tracker-
+   * internal delete target from {@link createLabel}.
+   */
+  deleteUnusedLabel(id: string, name: string): Promise<void>;
+
   /** Add a comment to an issue. Returns the created comment (id used for undo). */
   addComment(id: string, body: string): Promise<TrackerComment>;
 

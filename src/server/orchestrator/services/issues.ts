@@ -18,6 +18,7 @@ import type {
   TrackerId,
   TrackerInfo,
   TrackerIssue,
+  IssueLabel,
   IssueWriteUndo,
   IssueWriteVerb,
   IssueWriteContent,
@@ -387,6 +388,25 @@ export interface IssueWriteOutcome {
    * onto `IssueWriteCard.content`. Absent for a `create` (no "before" state).
    */
   content?: IssueWriteContent;
+  /**
+   * SHI-230 — labels minted on the fly by `--create-missing-labels` before this
+   * write applied them. Each gets its OWN provenance card (verb `label`, undo =
+   * delete-if-unused) in addition to the main write card, so a flag-driven
+   * label creation is exactly as visible and reversible as an explicit
+   * `shipit issue label create`. Absent when no labels were created.
+   */
+  labelCreations?: LabelCreation[];
+}
+
+/**
+ * One label created as a do-then-surface write (SHI-230) — by the standalone
+ * `shipit issue label create` or by `--create-missing-labels` on create/edit.
+ * Carries everything the route needs to mint the provenance card.
+ */
+export interface LabelCreation {
+  label: IssueLabel;
+  summary: string;
+  undo: Extract<IssueWriteUndo, { kind: "label" }>;
 }
 
 /**
@@ -400,11 +420,20 @@ function clipComment(body: string): string {
   return collapsed.length > MAX ? `${collapsed.slice(0, MAX).trimEnd()}…` : collapsed;
 }
 
-/** Map a `TrackerResolutionError` to a 422 listing the valid options. */
-function toResolutionServiceError(err: unknown): never {
+/**
+ * Map a `TrackerResolutionError` to a 422 listing the valid options. On the
+ * agent's create/edit paths (`opts.labelHint`), an unknown-label rejection also
+ * points at the two sanctioned ways to mint the label (SHI-230) — before that,
+ * the dead end forced users to create labels by hand in the tracker UI.
+ */
+function toResolutionServiceError(err: unknown, opts?: { labelHint?: boolean }): never {
   if (err instanceof TrackerResolutionError) {
     const list = err.options.length > 0 ? `\nValid ${err.kind} options: ${err.options.join(", ")}` : "";
-    throw new ServiceError(422, `${err.message}${list}`);
+    const hint =
+      opts?.labelHint && err.kind === "label"
+        ? "\nTo create a new label, run `shipit issue label create --name <name>` first, or re-run with --create-missing-labels."
+        : "";
+    throw new ServiceError(422, `${err.message}${list}${hint}`);
   }
   throw new ServiceError(502, err instanceof Error ? err.message : String(err));
 }
@@ -436,6 +465,84 @@ async function loadIssueOr404(tracker: Tracker, id: string): Promise<TrackerIssu
 }
 
 /**
+ * Create a new tracker label so `--label` can apply it (SHI-230 — the
+ * `shipit issue label create` verb). Do-then-surface like the other writes:
+ * the label is created immediately and the route mints a provenance card whose
+ * undo deletes the label if it's still unused. A same-name label already
+ * existing (case-insensitive) is a 409 — nothing to create, and re-creating
+ * would silently fork casing.
+ */
+export async function createLabelForTracker(
+  credentialStore: CredentialStore,
+  trackerId: string,
+  name: string,
+  opts: { color?: string; description?: string } = {},
+  fetchImpl?: FetchImpl,
+  github?: GitHubTrackerContext,
+): Promise<LabelCreation> {
+  const trimmed = name.trim();
+  if (!trimmed) throw new ServiceError(400, "A label name is required");
+  const tracker = resolveConfiguredTracker(credentialStore, trackerId, fetchImpl, github);
+  let existing: IssueLabel[];
+  try {
+    existing = await tracker.listLabels();
+  } catch (err) {
+    throw new ServiceError(502, err instanceof Error ? err.message : String(err));
+  }
+  const clash = existing.find((l) => l.name.toLowerCase() === trimmed.toLowerCase());
+  if (clash) {
+    throw new ServiceError(409, `Label "${clash.name}" already exists on ${tracker.label} — nothing to create.`);
+  }
+  let created: IssueLabel & { id: string };
+  try {
+    created = await tracker.createLabel({ name: trimmed, ...opts });
+  } catch (err) {
+    toResolutionServiceError(err);
+  }
+  return {
+    label: { name: created!.name, ...(created!.color ? { color: created!.color } : {}) },
+    summary: `created label "${created!.name}"`,
+    undo: { kind: "label", labelId: created!.id, labelName: created!.name },
+  };
+}
+
+/**
+ * Create any requested label that doesn't exist yet — the `--create-missing-
+ * labels` opt-in on create/edit (SHI-230). Matching is case-insensitive against
+ * the tracker's existing set (the same contract label RESOLUTION uses), so a
+ * mere casing difference never forks a duplicate label. Returns one
+ * `LabelCreation` per label actually minted, for the per-label provenance
+ * cards. Without the flag this is never called and unknown labels keep failing.
+ */
+async function createMissingLabels(tracker: Tracker, names: string[]): Promise<LabelCreation[]> {
+  let existing: IssueLabel[];
+  try {
+    existing = await tracker.listLabels();
+  } catch (err) {
+    throw new ServiceError(502, err instanceof Error ? err.message : String(err));
+  }
+  const known = new Set(existing.map((l) => l.name.toLowerCase()));
+  const creations: LabelCreation[] = [];
+  for (const raw of names) {
+    const name = raw.trim();
+    if (!name || known.has(name.toLowerCase())) continue;
+    let created: IssueLabel & { id: string };
+    try {
+      created = await tracker.createLabel({ name });
+    } catch (err) {
+      toResolutionServiceError(err);
+    }
+    known.add(created!.name.toLowerCase());
+    creations.push({
+      label: { name: created!.name, ...(created!.color ? { color: created!.color } : {}) },
+      summary: `created label "${created!.name}"`,
+      undo: { kind: "label", labelId: created!.id, labelName: created!.name },
+    });
+  }
+  return creations;
+}
+
+/**
  * Create a new issue in the tracker's bound scope (docs/187). Unlike the other
  * writes there is no prior state to snapshot — the undo target is the new
  * issue's own id, and undo cancels/closes it. The route stamps `card.issueId`
@@ -446,11 +553,18 @@ export async function createIssueForTracker(
   trackerId: string,
   title: string,
   body: string,
-  opts: { labels?: string[]; priority?: string; parent?: string } = {},
+  opts: { labels?: string[]; priority?: string; parent?: string; createMissingLabels?: boolean } = {},
   fetchImpl?: FetchImpl,
   github?: GitHubTrackerContext,
 ): Promise<IssueWriteOutcome> {
   const tracker = resolveConfiguredTracker(credentialStore, trackerId, fetchImpl, github);
+  // Opt-in only (SHI-230): mint unknown labels BEFORE the create so label
+  // resolution can't reject them. Without the flag an unknown label still fails
+  // (with the label-create hint) — a typo must not silently spawn a label.
+  const labelCreations =
+    opts.createMissingLabels && opts.labels && opts.labels.length > 0
+      ? await createMissingLabels(tracker, opts.labels)
+      : [];
   let issue: TrackerIssue;
   try {
     issue = await tracker.createIssue({
@@ -461,13 +575,14 @@ export async function createIssueForTracker(
       ...(opts.parent !== undefined ? { parent: opts.parent } : {}),
     });
   } catch (err) {
-    toResolutionServiceError(err);
+    toResolutionServiceError(err, { labelHint: true });
   }
   return {
     issue: issue!,
     verb: "create",
     summary: `created ${issue!.identifier}${describeAttrs(issue!)}`,
     undo: { kind: "create" },
+    ...(labelCreations.length > 0 ? { labelCreations } : {}),
   };
 }
 
@@ -512,8 +627,14 @@ export async function updateIssueForTracker(
   patch: { title?: string; description?: string; labels?: string[]; priority?: string; parent?: string | null },
   fetchImpl?: FetchImpl,
   github?: GitHubTrackerContext,
+  opts: { createMissingLabels?: boolean } = {},
 ): Promise<IssueWriteOutcome> {
   const tracker = resolveConfiguredTracker(credentialStore, trackerId, fetchImpl, github);
+  // Opt-in only (SHI-230): mint unknown labels up front, mirroring create.
+  const labelCreations =
+    opts.createMissingLabels && patch.labels && patch.labels.length > 0
+      ? await createMissingLabels(tracker, patch.labels)
+      : [];
   const prior = await loadIssueOr404(tracker, id);
   // The prior label *names* (the read shape now carries colors; the write API
   // resolves names → ids, and undo restores by name).
@@ -533,7 +654,7 @@ export async function updateIssueForTracker(
       ...(patch.parent !== undefined ? { parent: patch.parent } : {}),
     });
   } catch (err) {
-    toResolutionServiceError(err);
+    toResolutionServiceError(err, { labelHint: true });
   }
   const undo: IssueWriteUndo = {
     kind: "edit",
@@ -574,6 +695,7 @@ export async function updateIssueForTracker(
     summary: `edited ${changed || "issue"} on ${updated!.identifier}${describeAttrs(updated!)}`,
     undo,
     content,
+    ...(labelCreations.length > 0 ? { labelCreations } : {}),
   };
 }
 
@@ -691,6 +813,11 @@ export async function undoIssueWrite(
             throw statusErr;
           }
         }
+        return;
+      case "label":
+        // Delete the created label only while nothing carries it; the adapter
+        // throws an explanation otherwise, which surfaces on the card (SHI-230).
+        await tracker.deleteUnusedLabel(card.undo.labelId, card.undo.labelName);
     }
   } catch (err) {
     toResolutionServiceError(err);

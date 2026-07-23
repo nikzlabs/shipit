@@ -385,4 +385,22 @@ describe("Integration: agent issue access (docs/175)", () => {
     // The 409 from the create route (no active runner) — proof it reached the broker.
     expect(stderr).toContain("Session is not active");
   });
+
+  it("accepts `issue label create` and brokers it to the label route (SHI-230)", async () => {
+    // Same reach-the-route proof as `issue create` above: this harness has no
+    // active runner, so the label route declines with 409 — the shim parsed the
+    // verb, defaulted nothing wrong, and relayed POST /agent-ops/issue/label/create.
+    const { stderr, exitCode } = await runIssueShim([
+      "issue", "label", "create", "--name", "t3code", "--tracker", "github",
+    ]);
+    expect(stderr).not.toContain("only `label create` is supported");
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("Session is not active");
+  });
+
+  it("rejects `issue label delete` at the shim (SHI-230 — create only)", async () => {
+    const { stderr, exitCode } = await runIssueShim(["issue", "label", "delete", "t3code"]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("only `label create` is supported");
+  });
 });
