@@ -23,6 +23,7 @@ import type { RepoStore } from "../repo-store.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import { generateBranchPrefix } from "../git-utils.js";
 import { chownTreeToSessionWorker } from "../session-worker-uid.js";
+import { materializeLfsWithWarning } from "../git-lfs.js";
 import { reclaimRegenerableSessionDirs } from "../disk-utils.js";
 import { ServiceError } from "./types.js";
 import { validateString, validateStringArray } from "./validation.js";
@@ -130,6 +131,29 @@ export function listAllSessions(
   return sessionManager.listAll();
 }
 
+/**
+ * docs/231 — pull Git LFS content into a freshly re-cloned workspace, then hand
+ * the (root-written) files back to the worker uid.
+ *
+ * The restore paths below re-materialize the worktree with `git checkout`, which
+ * writes LFS **pointer stubs**: the orchestrator deliberately runs with the
+ * smudge filter disabled (see `git-lfs.ts` for why turning it on would break
+ * `clone --local` outright), so content is always restored explicitly.
+ *
+ * These paths have no SSE broadcaster in scope, so a warning goes to the log
+ * rather than a toast — `materializeLfsWithWarning` already logs the failure
+ * detail; this sink adds the session's repo for correlation. Non-LFS repos exit
+ * on a single cheap grep, so this is safe to call unconditionally.
+ */
+async function materializeLfsAndChown(workspaceDir: string, repoUrl: string | undefined): Promise<void> {
+  const result = await materializeLfsWithWarning(workspaceDir, repoUrl ?? workspaceDir, (message) =>
+    console.warn(`[session] ${message}`),
+  );
+  // Only re-chown when the pull actually wrote files — a non-LFS repo shouldn't
+  // pay for a full-tree ownership walk on every restore.
+  if (result.status === "materialized") chownTreeToSessionWorker(workspaceDir);
+}
+
 /** Unarchive (restore) a session, recreating clone if needed. */
 export async function unarchiveSession(
   sessionManager: SessionManager,
@@ -225,6 +249,12 @@ export async function unarchiveSession(
     if (githubAuthManager.authenticated) {
       githubAuthManager.configureGitCredentials(session.workspaceDir);
     }
+
+    // docs/231 — the `checkout -b` above wrote LFS pointer stubs (the
+    // orchestrator's smudge filter is off by design), so restore real content.
+    // Runs after the credential helper is in place — a private repo's LFS
+    // endpoint needs it — and re-chowns because the pull writes as root.
+    await materializeLfsAndChown(session.workspaceDir, session.remoteUrl);
 
     sessionManager.setBranch(sessionId, newBranch);
   }
@@ -395,6 +425,10 @@ async function restoreSessionWorkspaceImpl(
   if (githubAuthManager.authenticated) {
     githubAuthManager.configureGitCredentials(session.workspaceDir);
   }
+
+  // docs/231 — same as the unarchive path: the `checkout` above re-materialized
+  // the worktree as LFS pointer stubs, so pull the real content back.
+  await materializeLfsAndChown(session.workspaceDir, session.remoteUrl);
 
   sessionManager.setDiskTier(sessionId, "hot");
   console.log(

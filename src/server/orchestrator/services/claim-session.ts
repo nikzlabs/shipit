@@ -35,6 +35,7 @@ import {
 import { ensureBareCache } from "../repo-git.js";
 import { getErrorMessage } from "../../shared/utils.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
+import { materializeLfsWithWarning } from "../git-lfs.js";
 
 export interface ClaimSessionDeps {
   sessionManager: SessionManager;
@@ -191,6 +192,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
    */
   async function refreshCloneToLatestMain(
     sessionDir: string,
+    repoLabel: string,
     onAuthError?: (err: Error) => void,
   ): Promise<{ headChanged: boolean; fetched: boolean; fetchDurationMs: number }> {
     const sessionGit = deps.createGitManager(sessionDir);
@@ -205,6 +207,15 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
     // Keep local `main` aligned with `origin/main` on warm/reuse hand-out too,
     // so the agent's `main..HEAD` PR review matches what the PR contains (docs/194).
     await syncLocalDefaultBranchToOrigin(sessionDir);
+    // docs/231 — the `rollback` above is a `git reset --hard`, and the
+    // orchestrator's git has the LFS *smudge* filter disabled (see git-lfs.ts),
+    // so that reset re-writes pointer stubs over any content a previous
+    // materialization put there. Re-pull before handing the clone out. Cheap on
+    // the warm-reuse hot path: the objects are already in `.git/lfs`, so this
+    // degenerates to a local checkout with no network transfer.
+    await materializeLfsWithWarning(sessionDir, repoLabel, (message) =>
+      deps.sseBroadcast("error", { message }),
+    );
     // docs/150 §7 addendum (SHI-145): the fetch/rollback/branch-realign git ops
     // above run as the root orchestrator against the (already-booted) warm
     // clone. The `rollback` is a `git reset --hard`, which re-materializes the
@@ -245,6 +256,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
     try {
       const r = await refreshCloneToLatestMain(
         workspaceDir,
+        url,
         (err) => deps.githubAuthManager.markTokenInvalid(`claim-session refresh failed for ${url}: ${err.message}`),
       );
       warnIfStaleClaimFetch(r.fetched, url);
@@ -396,6 +408,13 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
         // would make a later `main..HEAD` PR review include already-merged
         // commits (docs/194).
         await syncLocalDefaultBranchToOrigin(workspaceDir);
+        // docs/231 — pull Git LFS content after the `checkout -b` that
+        // materialized the worktree (as pointer stubs) and before the chown
+        // below. This is the one LFS path that IS on the user's critical path,
+        // which is why `materializeLfsContent` caps the pull with a timeout.
+        await materializeLfsWithWarning(workspaceDir, url, (message) =>
+          deps.sseBroadcast("error", { message }),
+        );
         // docs/150 §7 addendum (SHI-145): hand the workspace back to the worker
         // uid after the root orchestrator's fetch + `checkout -b` + ref
         // realignment. `checkout -b <resetTarget>` re-materializes the WORKTREE,
