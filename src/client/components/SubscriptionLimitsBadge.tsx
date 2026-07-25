@@ -1,5 +1,6 @@
 import { ArrowClockwiseIcon, CircleNotchIcon } from "@phosphor-icons/react";
-import { useCallback, useState } from "react";
+// eslint-disable-next-line no-restricted-imports -- useEffect: one-shot /api/oauth/usage fetch when the mobile status dropdown mounts it (external system sync)
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { useApi } from "../hooks/useApi.js";
 import { Badge } from "./ui/badge.js";
@@ -39,8 +40,40 @@ const STALE_AFTER_MS = 15 * 60_000;
 const SESSION_WINDOW_MS = 5 * 60 * 60_000; // 5h
 const WEEKLY_WINDOW_MS = 7 * 24 * 60 * 60_000; // 7d
 
+/**
+ * Minimum gap between two **automatic** refreshes (`autoRefresh`, i.e. opening
+ * the mobile status dropdown). Manual button presses are never throttled here.
+ *
+ * `/api/oauth/usage` allows only a handful of calls per ~30 min before a 429
+ * lockout (docs/161), so the on-open fetch is rate-limited client-side: at
+ * worst 6 automatic calls per 30 minutes, which stays inside the budget. A
+ * reading up to 5 minutes old is also well inside `STALE_AFTER_MS`, so a
+ * throttled open still shows a number the user reads as current.
+ */
+export const AUTO_REFRESH_MIN_INTERVAL_MS = 5 * 60_000;
+
+/**
+ * Last refresh attempt per provider, module-scoped so it survives the
+ * mount/unmount cycle of the popover that hosts the pill (Radix unmounts
+ * `PopoverContent` on close, so component state can't carry the throttle).
+ */
+const lastRefreshAttemptAt = new Map<AgentId, number>();
+
+/** Test seam — clears the module-level auto-refresh throttle between cases. */
+export function resetAutoRefreshThrottle(): void {
+  lastRefreshAttemptAt.clear();
+}
+
 interface SubscriptionLimitsBadgeProps {
   limits: SubscriptionLimitsMap;
+  /**
+   * Fetch fresh usage once when this badge mounts (throttled by
+   * `AUTO_REFRESH_MIN_INTERVAL_MS`). Set by the mobile status dropdown, whose
+   * `PopoverContent` mounts on open — opening it *is* the user asking for the
+   * number, so it spends a call the same way the refresh button does, without
+   * requiring a second tap on a surface that has no hover tooltip.
+   */
+  autoRefresh?: boolean;
 }
 
 /**
@@ -49,7 +82,7 @@ interface SubscriptionLimitsBadgeProps {
  * on-demand `/api/oauth/usage` path). See docs/161 and
  * docs/135-subscription-limits-badge/plan.md.
  */
-export function SubscriptionLimitsBadge({ limits }: SubscriptionLimitsBadgeProps) {
+export function SubscriptionLimitsBadge({ limits, autoRefresh }: SubscriptionLimitsBadgeProps) {
   const pills: { agentId: AgentId; snapshot: SubscriptionLimits }[] = [];
   for (const id of PILL_ORDER) {
     const snap = limits[id];
@@ -66,6 +99,7 @@ export function SubscriptionLimitsBadge({ limits }: SubscriptionLimitsBadgeProps
           snapshot={snapshot}
           // eslint-disable-next-line no-restricted-syntax -- Claude is the only agent with an on-demand /api/oauth/usage refresh endpoint
           showRefresh={agentId === "claude"}
+          autoRefresh={autoRefresh}
         />
       ))}
     </>
@@ -76,9 +110,11 @@ interface SubscriptionLimitPillProps {
   label: string;
   snapshot: SubscriptionLimits;
   showRefresh?: boolean;
+  /** See `SubscriptionLimitsBadgeProps.autoRefresh`. Only acts with `showRefresh`. */
+  autoRefresh?: boolean;
 }
 
-export function SubscriptionLimitPill({ label, snapshot, showRefresh }: SubscriptionLimitPillProps) {
+export function SubscriptionLimitPill({ label, snapshot, showRefresh, autoRefresh }: SubscriptionLimitPillProps) {
   const now = Date.now();
   const hasData = snapshot.session !== null || snapshot.weekly !== null;
 
@@ -112,7 +148,7 @@ export function SubscriptionLimitPill({ label, snapshot, showRefresh }: Subscrip
         />
       )}
       {!hasData && <span>—</span>}
-      {showRefresh && <LimitsRefreshButton snapshot={snapshot} />}
+      {showRefresh && <LimitsRefreshButton snapshot={snapshot} autoRefresh={autoRefresh} />}
     </Badge>
   );
 }
@@ -246,8 +282,20 @@ function Meter({ shortLabel, window, windowMs, fetchedAt, now }: MeterProps) {
  * and 429-lockout-guarded, and the result returns over the `subscription_limits`
  * SSE broadcast. While `lockedUntil` is in the future the button is disabled
  * with a countdown so it can't re-trip the upstream rate limit (docs/161).
+ *
+ * With `autoRefresh` the same fetch also fires once on mount — the mobile
+ * status dropdown opens straight into fresh numbers instead of requiring a tap
+ * on the glyph. The button stays for an explicit re-fetch (and so a throttled
+ * open still has an override), and shows its spinner for either trigger since
+ * both go through this component's state.
  */
-function LimitsRefreshButton({ snapshot }: { snapshot: SubscriptionLimits }) {
+function LimitsRefreshButton({
+  snapshot,
+  autoRefresh,
+}: {
+  snapshot: SubscriptionLimits;
+  autoRefresh?: boolean;
+}) {
   const api = useApi();
   const [refreshing, setRefreshing] = useState(false);
   const now = Date.now();
@@ -256,7 +304,8 @@ function LimitsRefreshButton({ snapshot }: { snapshot: SubscriptionLimits }) {
     ? formatResetCountdown(new Date(snapshot.lockedUntil!).toISOString(), now)
     : null;
 
-  const onClick = useCallback(async () => {
+  const refresh = useCallback(async () => {
+    lastRefreshAttemptAt.set(snapshot.agentId, Date.now());
     setRefreshing(true);
     try {
       await api.post("/api/limits/refresh", { agentId: snapshot.agentId });
@@ -268,6 +317,21 @@ function LimitsRefreshButton({ snapshot }: { snapshot: SubscriptionLimits }) {
     }
   }, [api, snapshot.agentId]);
 
+  // Fire-once-on-mount auto refresh. The ref (not the throttle map) is what
+  // makes it once-per-mount: the map only bounds how often *any* mount is
+  // allowed to spend a call, and a locked-out provider is skipped entirely
+  // rather than firing a request the server would no-op.
+  const autoFired = useRef(false);
+  // eslint-disable-next-line no-restricted-syntax -- mount IS the event here: Radix unmounts PopoverContent on close, so this component mounting is the dropdown opening, and the fetch is an external-system sync with no event-handler equivalent.
+  useEffect(() => {
+    if (!autoRefresh || autoFired.current) return;
+    autoFired.current = true;
+    if (locked) return;
+    const last = lastRefreshAttemptAt.get(snapshot.agentId) ?? 0;
+    if (Date.now() - last < AUTO_REFRESH_MIN_INTERVAL_MS) return;
+    void refresh();
+  }, [autoRefresh, locked, refresh, snapshot.agentId]);
+
   const title = locked
     ? `Usage refresh rate-limited — retry in ${lockCountdown}`
     : "Refresh usage from Anthropic";
@@ -275,7 +339,7 @@ function LimitsRefreshButton({ snapshot }: { snapshot: SubscriptionLimits }) {
   return (
     <button
       type="button"
-      onClick={onClick}
+      onClick={refresh}
       disabled={refreshing || locked}
       className="inline-flex items-center justify-center rounded-full -ml-1 p-1 translate-y-px text-(--color-text-secondary) transition-colors hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) disabled:cursor-not-allowed disabled:opacity-40"
       title={title}
