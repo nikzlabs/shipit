@@ -1028,7 +1028,18 @@ export async function registerGitHubRoutes(
           if (!prStatus) {
             return { success: false, message: "Waiting for CI checks to start" };
           }
-          if (prStatus.checks.state === "pending" && prStatus.checks.total === 0) {
+          // Case (a) only blocks while the grace window is still open. Past
+          // its deadline the empty check set is terminal ("no CI applies to
+          // this PR"), which is exactly when the client shows the merge
+          // button — so the two must agree or the button 400s forever.
+          // `graceUntil` is absent on summaries predating docs/230; treat
+          // those as still-in-grace, matching the old behavior.
+          const grace = prStatus.checks.graceUntil;
+          if (
+            prStatus.checks.state === "pending"
+            && prStatus.checks.total === 0
+            && (grace === undefined || Date.now() < grace)
+          ) {
             return { success: false, message: "Waiting for CI checks to start" };
           }
           // Block merge when the base branch requires a review that hasn't been

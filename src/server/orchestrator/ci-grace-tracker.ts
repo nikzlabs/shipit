@@ -9,11 +9,14 @@
  *
  * Two ways grace exits:
  *
- *   1. **Workflow filter short-circuit** (fast path) — if we've parsed the
- *      repo's workflow files and NONE of them would trigger for the PR's
- *      changed files (classic `paths-ignore: ['**.md']` + docs-only PR),
- *      we know upfront that GitHub won't ever register a check. Grace
- *      doesn't apply; the merge button shows immediately.
+ *   1. **Workflow trigger short-circuit** (fast path) — if we've parsed the
+ *      repo's workflow files and NONE of them would trigger for this PR, we
+ *      know upfront that GitHub won't ever register a check. Grace doesn't
+ *      apply; the terminal "no checks" state shows immediately. Two shapes
+ *      hit this: path filters (`paths-ignore: ['**.md']` + a docs-only PR)
+ *      and event/branch filters (a repo whose only workflow is
+ *      `on: { workflow_dispatch:, push: { branches: [release] } }`, so a PR
+ *      into `main` matches nothing at all — nikzlabs/shipit#1730).
  *
  *   2. **Time-based fallback** — if workflows haven't been parsed yet, or
  *      the repo signals CI via external check_runs only (Vercel, etc.),
@@ -21,13 +24,17 @@
  *      accept that no workflows apply and let state revert to `"none"`,
  *      which the client treats as "CI doesn't apply, mergeable."
  *
+ * The deadline is also published to the client (`checks.graceUntil`) so a
+ * forced-pending state can expire in the browser even if polling paused
+ * before the poller got to observe the expiry — see `graceDeadlineFor`.
+ *
  * This module also caches per-repo workflow parsing and the sticky
  * "observed checks on any PR" signal.
  */
 
 import {
   loadAndParseWorkflows,
-  workflowAppliesToFiles,
+  workflowAppliesToPr,
   type ParsedWorkflow,
 } from "./workflow-loader.js";
 
@@ -138,25 +145,37 @@ export class CiGraceTracker {
    * Called only when `summary.checks.state === "none"`. Also updates the
    * per-session grace timer as a side effect.
    *
-   * If `changedFiles` is provided AND we've parsed the repo's workflows,
-   * we short-circuit to `false` when no workflow's filters match — the
-   * grace window doesn't apply because GitHub won't be running anything.
+   * If we've parsed the repo's workflows, we short-circuit to `false` when
+   * none of them would trigger for this PR — the grace window doesn't apply
+   * because GitHub won't be running anything. The branch/event half of that
+   * decision needs no `changedFiles` (a workflow with no `pull_request`
+   * trigger and a `push` branch filter that excludes the head branch can
+   * never fire), so the short-circuit runs even when the changed-file list
+   * is unavailable; path filters stay conservative in that case.
    */
   shouldForcePending(args: {
     sessionId: string;
     repoKey: string;
     repoUrl: string | undefined;
     headSha: string;
+    headBranch?: string;
+    baseBranch?: string;
     changedFiles?: string[];
     now?: number;
   }): boolean {
     if (!this.repoRunsCi(args.repoKey)) return false;
 
-    // Fast path: if we have both the parsed workflow filters AND the
-    // changed-file list, and no workflow would trigger, no point waiting.
+    // Fast path: if we have the parsed workflow triggers and none of them
+    // would fire for this PR, no point waiting for a check that can't come.
     const parsed = this.parsedWorkflows.get(args.repoKey);
-    if (parsed && parsed.length > 0 && args.changedFiles && args.changedFiles.length > 0) {
-      const anyApplies = parsed.some((w) => workflowAppliesToFiles(w, args.changedFiles!));
+    if (parsed && parsed.length > 0) {
+      const anyApplies = parsed.some((w) =>
+        workflowAppliesToPr(w, {
+          headBranch: args.headBranch,
+          baseBranch: args.baseBranch,
+          changedFiles: args.changedFiles,
+        }),
+      );
       if (!anyApplies) return false;
     }
 
@@ -171,6 +190,23 @@ export class CiGraceTracker {
     }
     // Grace expired — leave state as "none" so the merge button appears.
     return false;
+  }
+
+  /**
+   * Wall-clock instant at which this session's current grace window expires,
+   * or `undefined` when no window is armed. Published to the client as
+   * `checks.graceUntil` so the browser can retire a forced-pending spinner on
+   * its own schedule.
+   *
+   * This matters because grace expiry is only *observed* on a poll, and
+   * polling pauses when the last viewer detaches (`PollingGlobalGate`). A
+   * forced-pending summary persisted just before the gate closed would
+   * otherwise be rehydrated as an indefinite spinner on the next page load —
+   * the reported "spins forever" symptom.
+   */
+  graceDeadlineFor(sessionId: string): number | undefined {
+    const tracker = this.firstObservedNoChecks.get(sessionId);
+    return tracker ? tracker.observedAt + NO_CHECKS_GRACE_MS : undefined;
   }
 
   /**

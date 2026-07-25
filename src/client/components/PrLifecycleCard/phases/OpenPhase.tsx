@@ -5,6 +5,7 @@ import { useUiStore } from "../../../stores/ui-store.js";
 import { useSettingsStore } from "../../../stores/settings-store.js";
 import { useGitStore } from "../../../stores/git-store.js";
 import { useCommentStore } from "../../../stores/comment-store.js";
+import { useCiDisplay } from "../../../hooks/useCiDisplay.js";
 import { Button } from "../../ui/button.js";
 import {
   AutoMergeToggle,
@@ -102,24 +103,27 @@ export function OpenPhase({
   const pendingReviewCount = useCommentStore((s) => s.getCommentCount(sessionId));
   const autoFixCi = useSettingsStore((s) => s.autoFixCi);
   const openDiff = useOpenPrDiff(pr?.baseBranch);
+  const ciDisplay = useCiDisplay(card.checks);
   if (!pr) return null;
 
   const autoFix = card.autoFix;
   const autoMerge = card.autoMerge;
   const isAutoFixRunning = autoFix?.status === "running";
   const isAutoFixExhausted = autoFix?.status === "exhausted";
-  const isCiFailed = card.checks?.state === "failure";
-  const isCiPassed = card.checks?.state === "success";
-  // "none" must come from the poller explicitly — undefined means we haven't
+  const isCiFailed = ciDisplay.kind === "failure";
+  const isCiPassed = ciDisplay.kind === "success";
+  // "none" must come from the poller explicitly — `"unknown"` means we haven't
   // heard from the poller yet, so we don't know whether CI exists. Treating
-  // undefined as "none" would let the merge button appear in the gap between
-  // PR creation and the first poll, before pending workflows have registered.
+  // that as "none" would let the merge button appear in the gap between PR
+  // creation and the first poll, before pending workflows have registered.
   // The poller also force-overrides "none" → "pending" for a grace window
   // when the repo runs CI but GitHub hasn't registered any checks for the
-  // current head SHA. Once that grace expires (e.g., docs-only PRs whose
-  // changed paths don't match any workflow's `paths:` filter), the state
-  // legitimately becomes "none" and the merge button appears.
-  const isCiNone = card.checks?.state === "none";
+  // current head SHA. Once that grace expires (docs-only PRs whose changed
+  // paths don't match any workflow's `paths:` filter, or a repo with no
+  // PR-triggered workflow at all), the state is legitimately "none" and the
+  // merge button appears. `useCiDisplay` also retires the override locally at
+  // its deadline, so a paused poller can't strand the button behind a spinner.
+  const isCiNone = ciDisplay.kind === "none";
   const isConflicting = mergeable === "conflicting";
   // docs/174 — also gate on GitHub's review decision. A base branch with a
   // required-review protection rule reports "review_required" until approved

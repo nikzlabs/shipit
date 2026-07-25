@@ -919,9 +919,17 @@ export class PrStatusPoller {
             repoKey,
             repoUrl: session.remoteUrl,
             headSha,
+            headBranch: summary.headBranch,
+            baseBranch: summary.baseBranch,
             changedFiles: extractChangedFiles(prNode),
           });
-          if (force) summary.checks.state = "pending";
+          if (force) {
+            summary.checks.state = "pending";
+            // Publish the deadline so the client can retire the spinner on its
+            // own even if polling pauses before we observe the expiry.
+            const until = this.graceTracker.graceDeadlineFor(session.id);
+            if (until !== undefined) summary.checks.graceUntil = until;
+          }
         } else {
           // Any non-"none" state means GitHub registered something — no need
           // to keep the grace timer running.
@@ -1133,14 +1141,16 @@ export class PrStatusPoller {
       // is expected to register, mirroring the GraphQL path's grace override. We
       // don't have the head SHA from REST, so grace falls back to its time-based
       // window; the next GraphQL poll supplies the real SHA and reconciles.
-      const checksState: PrStatusSummary["checks"]["state"] = this.graceTracker.shouldForcePending({
+      const forcePending = this.graceTracker.shouldForcePending({
         sessionId,
         repoKey: `${owner}/${repo}`,
         repoUrl: this.sessionManager.get(sessionId)?.remoteUrl,
         headSha: "",
-      })
-        ? "pending"
-        : "none";
+        headBranch: branch,
+        baseBranch: pr.base,
+      });
+      const checksState: PrStatusSummary["checks"]["state"] = forcePending ? "pending" : "none";
+      const graceUntil = forcePending ? this.graceTracker.graceDeadlineFor(sessionId) : undefined;
 
       const summary: PrStatusSummary = {
         sessionId,
@@ -1153,7 +1163,14 @@ export class PrStatusPoller {
         headBranch: branch,
         insertions: pr.additions,
         deletions: pr.deletions,
-        checks: { state: checksState, total: 0, passed: 0, failed: 0, pending: 0 },
+        checks: {
+          state: checksState,
+          total: 0,
+          passed: 0,
+          failed: 0,
+          pending: 0,
+          ...(graceUntil !== undefined ? { graceUntil } : {}),
+        },
         mergeable: "unknown",
         reviewDecision: "none",
         autoMergeEnabled: false,

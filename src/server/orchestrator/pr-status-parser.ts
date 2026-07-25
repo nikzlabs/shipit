@@ -594,6 +594,7 @@ export function prStatusEqual(a: PrStatusSummary, b: PrStatusSummary): boolean {
     a.checks.passed === b.checks.passed &&
     a.checks.failed === b.checks.failed &&
     a.checks.pending === b.checks.pending &&
+    a.checks.graceUntil === b.checks.graceUntil &&
     a.mergeable === b.mergeable &&
     a.reviewDecision === b.reviewDecision &&
     a.autoMergeEnabled === b.autoMergeEnabled &&
