@@ -22,12 +22,18 @@
       levels, and leaves a hardlinked object's ownership alone
 - [x] Pass `SHIPIT_GIT_LFS_SHARED_STORE` through the VPS compose orchestrator env
       so the flag is reachable (the trap docs/231 hit with `SHIPIT_GIT_LFS`)
-- [ ] **Canary soak** — verify the two assumptions that couldn't be exercised in a
-      session container (no `git-lfs` on PATH there): that `git lfs fetch`
-      populates `lfs/objects` in a *bare* repo, and that its endpoint authenticates
-      through the global credential helper. Both fail safe. See "Verification
-      status" in `plan.md`.
-- [ ] Default the flag on once the soak is clean
-- [ ] Cache-side `git lfs prune` with a chosen retention window (safe thanks to
-      refcounting, but bare-repo support is unverified)
+- [x] Flip `SHIPIT_GIT_LFS_SHARED_STORE` to on-by-default, with `off` as the escape
+      hatch — polarity matching `SHIPIT_GIT_LFS`, and an empty value (what a
+      `${VAR:-}` passthrough supplies) reading as the default rather than off
+- [x] Cache-side prune so default-on can't grow disk without bound: unlink an
+      object only when `nlink === 1` (no clone holds it) AND it is older than
+      `DISK_JANITOR_LFS_OBJECT_DAYS` (14). Rides the periodic disk-tier escalation
+      pass; ungated, since with sharing off the store is empty and the walk no-ops
+- [x] Prune tests: byte accounting, a hardlinked object surviving any age, a fresh
+      object surviving, emptied fanout dirs removed while ones with survivors stay,
+      all repo caches swept
+- [ ] Confirm from the first LFS repo to provision after the flip that
+      `git lfs fetch` populates `lfs/objects` in a *bare* repo and authenticates
+      via the global credential helper. Both fail safe, so this is confirmation,
+      not a gate. See "Verification status" in `plan.md`.
 - [ ] Seed on `refreshCloneToLatestMain` too, whose `reset --hard` re-pulls

@@ -364,4 +364,111 @@ describe("runSteadyStateReclaim", () => {
     expect(fs.existsSync(orphanBase)).toBe(false);
     expect(result.overlayBasesRemoved).toBe(1);
   });
+
+  describe("cache-side LFS object sweep (docs/232)", () => {
+    /**
+     * Register a repo as live and return its cache hash. Required: without a
+     * `repos` row the whole `repo-cache/<hash>` dir is an orphan and
+     * `sweepOrphanedCaches` removes it before the LFS sweep ever sees it — which
+     * is correct behavior, just not what these tests are exercising.
+     */
+    function liveRepoHash(repoStore: RepoStore, url: string): string {
+      repoStore.add(url);
+      repoStore.setReady(url);
+      return repoUrlToHash(url);
+    }
+
+    /** Write `<stateDir>/repo-cache/<hash>/lfs/objects/<ab>/<cd>/<oid>`, aged. */
+    function writeCacheLfsObject(hash: string, oid: string, ageDays: number, body = "asset-bytes"): string {
+      const p = path.join(tmpDir, "repo-cache", hash, "lfs", "objects", oid.slice(0, 2), oid.slice(2, 4), oid);
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      fs.writeFileSync(p, body);
+      const t = Date.now() / 1000 - ageDays * 86_400;
+      fs.utimesSync(p, t, t);
+      return p;
+    }
+
+    it("unlinks an old object no clone links, and reports the bytes freed", async () => {
+      setup();
+      const repoStore = new RepoStore(dbManager!);
+      const hash = liveRepoHash(repoStore, "https://github.com/example/assets.git");
+      const stale = writeCacheLfsObject(hash, "aabbccddeeff0011", 30, "0123456789");
+
+      const result = await runSteadyStateReclaim({ repoStore, stateDir: tmpDir, lfsObjectDays: 14 });
+
+      expect(fs.existsSync(stale)).toBe(false);
+      expect(result.lfsObjectsRemoved).toBe(1);
+      expect(result.lfsBytesFreed).toBe(10);
+    });
+
+    it("keeps an object a session clone still hardlinks, however old it is", async () => {
+      setup();
+      const repoStore = new RepoStore(dbManager!);
+      const hash = liveRepoHash(repoStore, "https://github.com/example/assets.git");
+      const cacheObj = writeCacheLfsObject(hash, "1122334455667788", 999);
+      // What `linkLfsObjectsIntoClone` does — this is the liveness signal the
+      // sweep reads, and it must beat any age cutoff.
+      const cloneObj = path.join(tmpDir, "sessions", "s1", ".git", "lfs", "objects", "11", "22", "1122334455667788");
+      fs.mkdirSync(path.dirname(cloneObj), { recursive: true });
+      fs.linkSync(cacheObj, cloneObj);
+
+      const result = await runSteadyStateReclaim({ repoStore, stateDir: tmpDir, lfsObjectDays: 1 });
+
+      expect(fs.existsSync(cacheObj)).toBe(true);
+      expect(fs.readFileSync(cloneObj, "utf8")).toBe("asset-bytes");
+      expect(result.lfsObjectsRemoved).toBe(0);
+    });
+
+    it("keeps a recently-touched object even with no clone linking it", async () => {
+      setup();
+      const repoStore = new RepoStore(dbManager!);
+      const hash = liveRepoHash(repoStore, "https://github.com/example/assets.git");
+      const fresh = writeCacheLfsObject(hash, "cafebabecafebabe", 2);
+
+      const result = await runSteadyStateReclaim({ repoStore, stateDir: tmpDir, lfsObjectDays: 14 });
+
+      expect(fs.existsSync(fresh)).toBe(true);
+      expect(result.lfsObjectsRemoved).toBe(0);
+    });
+
+    it("removes fanout dirs it empties but keeps ones with survivors", async () => {
+      setup();
+      const repoStore = new RepoStore(dbManager!);
+      const hash = liveRepoHash(repoStore, "https://github.com/example/assets.git");
+      // `ab/cd` goes fully empty; `ab/ef` keeps a fresh object.
+      writeCacheLfsObject(hash, "abcd000000000001", 30);
+      writeCacheLfsObject(hash, "abef000000000002", 1);
+      const objectsRoot = path.join(tmpDir, "repo-cache", hash, "lfs", "objects");
+
+      const result = await runSteadyStateReclaim({ repoStore, stateDir: tmpDir, lfsObjectDays: 14 });
+
+      expect(result.lfsObjectsRemoved).toBe(1);
+      expect(fs.existsSync(path.join(objectsRoot, "ab", "cd"))).toBe(false);
+      expect(fs.existsSync(path.join(objectsRoot, "ab", "ef"))).toBe(true);
+    });
+
+    it("sweeps every repo cache on the host", async () => {
+      setup();
+      const repoStore = new RepoStore(dbManager!);
+      const a = writeCacheLfsObject(liveRepoHash(repoStore, "https://github.com/example/a.git"), "aa00000000000001", 30);
+      const b = writeCacheLfsObject(liveRepoHash(repoStore, "https://github.com/example/b.git"), "bb00000000000002", 30);
+
+      const result = await runSteadyStateReclaim({ repoStore, stateDir: tmpDir, lfsObjectDays: 14 });
+
+      expect(fs.existsSync(a)).toBe(false);
+      expect(fs.existsSync(b)).toBe(false);
+      expect(result.lfsObjectsRemoved).toBe(2);
+    });
+
+    it("is a no-op on a host whose caches have no LFS store", async () => {
+      setup();
+      const repoStore = new RepoStore(dbManager!);
+      const hash = liveRepoHash(repoStore, "https://github.com/example/plain.git");
+      fs.mkdirSync(path.join(tmpDir, "repo-cache", hash, "objects"), { recursive: true });
+
+      const result = await runSteadyStateReclaim({ repoStore, stateDir: tmpDir, lfsObjectDays: 14 });
+
+      expect(result).toMatchObject({ lfsObjectsRemoved: 0, lfsBytesFreed: 0 });
+    });
+  });
 });

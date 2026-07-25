@@ -48,25 +48,43 @@ import { runGit, repoDeclaresLfs, isGitLfsAvailable } from "./git-lfs.js";
  *
  * ## Rollout
  *
- * Gated **off** by default behind `SHIPIT_GIT_LFS_SHARED_STORE=1`, following the
- * `OVERLAY_DEP_STORE` precedent for a shared-store change that wants a canary
- * soak. Every function here degrades to a no-op when the flag is unset, and each
- * one is best-effort even when it's on: a cache fetch that fails or a link that
- * can't be made just means the session's own `git lfs pull` downloads the object,
- * which is exactly today's behavior. Nothing here may fail provisioning.
+ * **On by default**, with `SHIPIT_GIT_LFS_SHARED_STORE=off` as the escape hatch.
+ * It shipped opt-in for one release as a canary, then flipped: the safety here
+ * doesn't come from the flag, it comes from the design. Every function is
+ * best-effort, and the seeding step is deliberately non-authoritative — a cache
+ * fetch that fails or a link that can't be made just means the session's own
+ * `git lfs pull` downloads the object, which is the pre-docs/232 behavior. So the
+ * failure mode of being wrong about LFS is "no speedup", not "broken session", and
+ * nothing here may fail provisioning.
+ *
+ * A repo that doesn't use LFS costs one `git grep` per background prefetch sweep
+ * (`repoDeclaresLfs` answers no) and one `existsSync` per clone — so turning this
+ * on is genuinely inert for non-LFS repos rather than merely cheap.
+ *
+ * What default-on *does* spend is **disk**: the cache-side store accumulates
+ * asset versions as refs advance and there is still no cache-side prune, so it's
+ * only reclaimed when the whole `repo-cache/<hash>` goes unreferenced. See
+ * `docs/232-shared-lfs-object-store` Known gaps.
  */
 
-/** Opt-in flag — see "Rollout" above. Off means every function here no-ops. */
+/** Opt-**out** flag — see "Rollout" above. Off means every function here no-ops. */
 const SHARED_STORE_ENV = "SHIPIT_GIT_LFS_SHARED_STORE";
 
 /** Ceiling on the cache-side `git lfs fetch`. Off the critical path, so generous. */
 const DEFAULT_CACHE_FETCH_TIMEOUT_MS = 900_000;
 const CACHE_FETCH_TIMEOUT_ENV = "SHIPIT_GIT_LFS_CACHE_FETCH_TIMEOUT_MS";
 
-/** Whether cross-session LFS object sharing is enabled on this deployment. */
+/**
+ * Whether cross-session LFS object sharing is enabled on this deployment.
+ *
+ * **On unless explicitly disabled.** The polarity matches `SHIPIT_GIT_LFS` in
+ * `git-lfs.ts` (unset = on, `off` = off) so the two LFS knobs read the same way,
+ * and an empty value — what a `${VAR:-}` compose passthrough supplies when the
+ * operator hasn't set anything — means "default", not "off".
+ */
 export function lfsSharedStoreEnabled(): boolean {
   const raw = (process.env[SHARED_STORE_ENV] ?? "").trim().toLowerCase();
-  return raw === "1" || raw === "true" || raw === "on";
+  return !(raw === "0" || raw === "off" || raw === "false" || raw === "no");
 }
 
 function cacheFetchTimeoutMs(): number {

@@ -39,19 +39,31 @@ describe("git-lfs-store", () => {
   });
 
   describe("lfsSharedStoreEnabled", () => {
-    it("is off when unset — the default rollout posture", () => {
+    it("is ON when unset — sharing is the default", () => {
       delete process.env.SHIPIT_GIT_LFS_SHARED_STORE;
+      expect(lfsSharedStoreEnabled()).toBe(true);
+    });
+
+    // An empty value is what a compose "VAR:-" passthrough supplies when the
+    // operator has set nothing, so it must read as the default, not as off.
+    it("is ON for an empty value", () => {
+      process.env.SHIPIT_GIT_LFS_SHARED_STORE = "";
+      expect(lfsSharedStoreEnabled()).toBe(true);
+    });
+
+    it.each(["0", "off", "OFF", " off ", "false", "no"])("is off for %j", (value) => {
+      process.env.SHIPIT_GIT_LFS_SHARED_STORE = value;
       expect(lfsSharedStoreEnabled()).toBe(false);
     });
 
-    it.each(["1", "true", "on", "ON", " true "])("is on for %j", (value) => {
+    it.each(["1", "true", "on", "ON", " true "])("stays on for the old opt-in value %j", (value) => {
       process.env.SHIPIT_GIT_LFS_SHARED_STORE = value;
       expect(lfsSharedStoreEnabled()).toBe(true);
     });
 
-    it.each(["", "0", "off", "yes", "enabled"])("is off for %j", (value) => {
+    it.each(["yes", "enabled", "please"])("treats an unrecognized value %j as the default (on)", (value) => {
       process.env.SHIPIT_GIT_LFS_SHARED_STORE = value;
-      expect(lfsSharedStoreEnabled()).toBe(false);
+      expect(lfsSharedStoreEnabled()).toBe(true);
     });
   });
 
@@ -126,8 +138,8 @@ describe("git-lfs-store", () => {
       expect(fs.readFileSync(dstPath, "utf8")).toBe("already-downloaded");
     });
 
-    it("is a no-op when the flag is off, even with a populated cache", () => {
-      delete process.env.SHIPIT_GIT_LFS_SHARED_STORE;
+    it("is a no-op when explicitly disabled, even with a populated cache", () => {
+      process.env.SHIPIT_GIT_LFS_SHARED_STORE = "off";
       const oid = "0000111122223333";
       writeCacheObject(cacheDir, oid, "x");
 
@@ -181,8 +193,8 @@ describe("git-lfs-store", () => {
   });
 
   describe("fetchLfsIntoCache", () => {
-    it("does not shell out at all when the flag is off", async () => {
-      delete process.env.SHIPIT_GIT_LFS_SHARED_STORE;
+    it("does not shell out at all when explicitly disabled", async () => {
+      process.env.SHIPIT_GIT_LFS_SHARED_STORE = "off";
       // No git repo here, so any real `git grep`/`git lfs fetch` would fail —
       // returning false without touching git is the observable contract.
       await expect(fetchLfsIntoCache(cacheDir)).resolves.toBe(false);

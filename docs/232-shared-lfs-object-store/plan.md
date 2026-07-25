@@ -119,24 +119,69 @@ chown every directory, never a regular file. Two differences from the
 This half is **not** flag-gated: it's a correctness fix (and a saving) for the
 plain docs/231 behavior that shipped in #1731, independent of any sharing.
 
-### Rollout — off by default
+### Rollout — on by default
 
-Sharing is gated behind `SHIPIT_GIT_LFS_SHARED_STORE=1`, following the
-`OVERLAY_DEP_STORE` precedent for a shared-store change that wants a canary soak.
-Every function no-ops when it's unset, and each is best-effort even when set: a
-failed cache fetch or an unmakeable link only means the session downloads its own
-objects, which is today's behavior. Nothing here may fail provisioning.
+Sharing shipped opt-in for one release as a canary, then flipped to **on**, with
+`SHIPIT_GIT_LFS_SHARED_STORE=off` as the escape hatch. The polarity now matches
+`SHIPIT_GIT_LFS` (unset = on, `off` = off) so the two LFS knobs read the same way,
+and an empty value — what a `${VAR:-}` compose passthrough supplies when the
+operator sets nothing — means "default", not "off".
+
+What makes default-on defensible isn't the soak, it's the failure mode. Every
+function is best-effort and the seeding step is non-authoritative, so being wrong
+about LFS degrades to "no speedup", never "broken session": a failed cache fetch
+or an unmakeable link just means the session's own `git lfs pull` downloads the
+object, exactly as before docs/232.
+
+For a repo that doesn't use LFS this is genuinely inert rather than merely cheap —
+one `git grep` per background prefetch sweep (`repoDeclaresLfs` answers no) and
+one `existsSync` per clone.
+
+What default-on *does* spend is **disk**, which is why the cache-side prune below
+landed in the same change rather than staying a follow-up: with sharing on for
+every LFS repo, an unpruned cache store grows with asset churn indefinitely.
 
 Note the flag needs a passthrough in `deployment/vps/docker-compose.yml` to be
 reachable at all — the orchestrator reads it from its own process env (the trap
 docs/231 hit with `SHIPIT_GIT_LFS`).
 
+### Cache-side prune — `nlink` as the liveness signal
+
+`steady-state-reclaim.ts` gained a sweep over `repo-cache/<hash>/lfs/objects`
+that unlinks an object when **both** hold: no session clone hardlinks it
+(`nlink === 1`) and nothing has touched it inside the retention window
+(`DISK_JANITOR_LFS_OBJECT_DAYS`, default 14). It rides the periodic disk-tier
+escalation pass, which per `CLAUDE.md` is where sweeps that grow with the clock
+belong — and this one does grow with the clock *inside a live cache*, which the
+existing whole-directory cache sweep can't help with (that only fires once the
+repo itself goes cold, which for an actively-used asset-heavy repo is never).
+
+Two properties make it safe with **no** coordination with live sessions, and
+neither needs a reachability computation:
+
+- **`nlink` is a free, exact liveness signal.** Seeding hardlinks the cache's
+  object, so `nlink > 1` means some clone still holds it. Only `nlink === 1`
+  objects are touched — so the unlink genuinely frees bytes *and* cannot affect a
+  live session. This is the hardlink choice paying off a second time: the kernel
+  already tracks what a shared `lfs.storage` would have forced us to compute, and
+  it can't be stale.
+- **Content-addressing makes deletion recoverable.** Dropping an object the cache
+  still wanted costs a re-download on the next `git lfs pull`, not a broken
+  checkout. That's what lets an age heuristic be good enough.
+
+Deliberately **not** `git lfs prune`: that needs the binary, its bare-repo support
+is unverified, and it prunes on a reachability view this doesn't need. An mtime +
+`nlink` sweep is testable with plain filesystem calls. It's also **ungated** — a
+deployment that turned sharing off still has objects to reclaim, and with sharing
+off the store is empty so the walk no-ops.
+
 ## Configuration
 
 | Env var | Default | Effect |
 |---|---|---|
-| `SHIPIT_GIT_LFS_SHARED_STORE` | unset (off) | `1`/`true`/`on` enables the cache-side fetch and the hardlink seeding. |
+| `SHIPIT_GIT_LFS_SHARED_STORE` | unset (**on**) | `off`/`0`/`false`/`no` disables the cache-side fetch and the hardlink seeding. Any other value, including empty, is the default (on). |
 | `SHIPIT_GIT_LFS_CACHE_FETCH_TIMEOUT_MS` | `900000` | Ceiling on the cache-side `git lfs fetch`. Generous because it runs in the background pre-fetcher, off the critical path. |
+| `DISK_JANITOR_LFS_OBJECT_DAYS` | `14` | Age at which an unreferenced (`nlink === 1`) cache-side LFS object is unlinked. Tighter than the 30-day cold-artifact window: these are superseded asset versions in a *live* repo, and a wrong delete costs only a re-download. |
 
 ## Verification status
 
@@ -144,11 +189,18 @@ The hardlink/seeding half is covered by unit tests that assert the property that
 matters — **shared inode**, survival of a cache-side unlink, symlink refusal,
 flag gating — because those are plain filesystem behavior.
 
+The prune sweep is likewise covered by filesystem-level tests: an old unlinked
+object is reclaimed with its byte count, an object a clone hardlinks survives any
+age, a recently-touched one survives, emptied fanout dirs are removed while ones
+with survivors stay, and every repo cache on the host is swept.
+
 The `git lfs fetch origin`-in-a-bare-repo half could **not** be exercised in a
 session container: the deployed session image predates #1729's merge, so
 `git lfs` isn't on PATH here (`git: 'lfs' is not a git command`). Two assumptions
-therefore remain unverified until the canary soak and must be checked before the
-flag is defaulted on:
+therefore remain unverified in production, and the default was flipped **before**
+they were confirmed — a deliberate call, because both fail safe (see below) and
+the deployment is single-user. They're still worth confirming from the first LFS
+repo that provisions after the flip:
 
 1. `git lfs fetch` populates `lfs/objects` in a **bare** repo.
 2. Its endpoint resolves credentials through the global helper. `repo-prefetch.ts`
@@ -174,13 +226,12 @@ finds nothing to link, and provisioning behaves exactly as it does today.
 
 ## Known gaps
 
-- **The cache's LFS store is not pruned while the repo stays referenced.** A
-  `repo-cache/<hash>` dir is reclaimed wholesale by `steady-state-reclaim.ts`
-  once unreferenced, so objects ride along — but a live cache's store grows with
-  every fetched version of every asset. A cache-side `git lfs prune` is the fix
-  and is *safe* here (session clones hold their own hardlinks, so the inodes
-  survive), but it wants its own pass: `git lfs prune` support in a bare repo is
-  unverified, and the retention window needs choosing.
+- **Prune is age-based, not reachability-based.** The sweep can drop an object
+  that no clone currently links but that the *next* session would have wanted,
+  costing it a re-download. Deliberate: reachability would mean either the
+  unverified `git lfs prune` or reimplementing its ref walk, to avoid a cost that
+  is bounded by one download of a superseded asset version. Revisit only if the
+  re-download rate turns out to matter.
 - **Only the clone path is seeded.** `refreshCloneToLatestMain`'s `reset --hard`
   re-materializes pointers and re-pulls; it could seed from the cache first for
   the same win. Left out to keep the first cut to one call site.
