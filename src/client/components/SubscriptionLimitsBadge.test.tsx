@@ -1,5 +1,5 @@
-import { describe, it, expect, afterEach } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
+import { render, screen, cleanup, waitFor } from "@testing-library/react";
 import {
   SubscriptionLimitsBadge,
   SubscriptionLimitPill,
@@ -9,10 +9,15 @@ import {
   formatAge,
   meterDisplay,
   timeElapsedPct,
+  resetAutoRefreshThrottle,
+  AUTO_REFRESH_MIN_INTERVAL_MS,
 } from "./SubscriptionLimitsBadge.js";
 import type { SubscriptionLimits, SubscriptionLimitsMap } from "../../server/shared/types.js";
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 // Reset timestamps live in the future relative to the test clock so the
 // meter doesn't collapse to 0 via the elapsed-reset rule (see
@@ -439,5 +444,102 @@ describe("SubscriptionLimitPill", () => {
     // The marker is a descendant of the dimmed wrapper, so the stale fade
     // cascades to it — no separate opacity handling needed.
     expect(meter?.querySelector("[data-time-marker]")).not.toBeNull();
+  });
+});
+
+describe("SubscriptionLimitsBadge auto refresh", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    resetAutoRefreshThrottle();
+    fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  function refreshCalls(): unknown[][] {
+    return fetchMock.mock.calls.filter((call) => call[0] === "/api/limits/refresh");
+  }
+
+  it("fetches fresh usage on mount when autoRefresh is set", async () => {
+    render(<SubscriptionLimitsBadge limits={{ claude: makeSnap() }} autoRefresh />);
+    await waitFor(() => expect(refreshCalls()).toHaveLength(1));
+    const init = refreshCalls()[0][1] as RequestInit;
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({ agentId: "claude" });
+  });
+
+  it("does not fetch on mount without autoRefresh (the desktop header)", async () => {
+    render(<SubscriptionLimitsBadge limits={{ claude: makeSnap() }} />);
+    await Promise.resolve();
+    expect(refreshCalls()).toHaveLength(0);
+  });
+
+  it("skips the fetch while the provider is locked out after a 429", async () => {
+    render(
+      <SubscriptionLimitsBadge
+        limits={{ claude: makeSnap({ lockedUntil: Date.now() + 10 * 60_000 }) }}
+        autoRefresh
+      />,
+    );
+    await Promise.resolve();
+    expect(refreshCalls()).toHaveLength(0);
+  });
+
+  it("does not fetch for a provider with no on-demand endpoint (Codex)", async () => {
+    render(
+      <SubscriptionLimitsBadge
+        limits={{ codex: makeSnap({ agentId: "codex", plan: "Plus" }) }}
+        autoRefresh
+      />,
+    );
+    await Promise.resolve();
+    expect(refreshCalls()).toHaveLength(0);
+  });
+
+  it("throttles repeated opens so re-opening the dropdown can't burn the budget", async () => {
+    render(<SubscriptionLimitsBadge limits={{ claude: makeSnap() }} autoRefresh />);
+    await waitFor(() => expect(refreshCalls()).toHaveLength(1));
+    // Closing the popover unmounts the badge; re-opening remounts it.
+    cleanup();
+    render(<SubscriptionLimitsBadge limits={{ claude: makeSnap() }} autoRefresh />);
+    await Promise.resolve();
+    expect(refreshCalls()).toHaveLength(1);
+  });
+
+  it("fetches again once the throttle interval has elapsed", async () => {
+    render(<SubscriptionLimitsBadge limits={{ claude: makeSnap() }} autoRefresh />);
+    await waitFor(() => expect(refreshCalls()).toHaveLength(1));
+    cleanup();
+
+    const realNow = Date.now();
+    const nowSpy = vi
+      .spyOn(Date, "now")
+      .mockReturnValue(realNow + AUTO_REFRESH_MIN_INTERVAL_MS + 1);
+    try {
+      render(<SubscriptionLimitsBadge limits={{ claude: makeSnap() }} autoRefresh />);
+      await waitFor(() => expect(refreshCalls()).toHaveLength(2));
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it("counts a manual button press against the auto-refresh throttle", async () => {
+    const { unmount } = render(
+      <SubscriptionLimitPill label="Claude" snapshot={makeSnap()} showRefresh />,
+    );
+    screen.getByLabelText("Refresh subscription usage").click();
+    await waitFor(() => expect(refreshCalls()).toHaveLength(1));
+    unmount();
+
+    // Opening the dropdown right after a manual refresh shouldn't spend a
+    // second call — the numbers are seconds old.
+    render(<SubscriptionLimitsBadge limits={{ claude: makeSnap() }} autoRefresh />);
+    await Promise.resolve();
+    expect(refreshCalls()).toHaveLength(1);
   });
 });

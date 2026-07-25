@@ -1,4 +1,5 @@
 ---
+issue: https://linear.app/shipit-ai/issue/SHI-235
 description: Show Claude subscription limits at low usage (where the CLI stream reports nothing) via a budget-aware manual refresh of /api/oauth/usage, without reintroducing the 429 lockout.
 ---
 
@@ -100,9 +101,24 @@ only by explicit triggers (below), and is:
   (or POST) → orchestrator runs the single-flight fetch → broadcasts the
   updated snapshot. Disabled with a countdown while `lockedUntil` is in the
   future, so spamming it can't trip (or re-trip) the 429.
-- **No automatic per-turn fetch.** This is the key departure from the old
-  design: auto-fetching on turns is exactly what burned the budget during active
-  use. Let the human decide when to spend a call.
+- **On opening the mobile status dropdown.** The mobile header has no room for
+  the pills, so they live behind a gauge button (`MobileStatusPanel`) — and
+  mobile has no hover, so the tooltip's age/plan detail is unreachable. Opening
+  that dropdown is an unambiguous "show me my usage", i.e. the same intent as a
+  refresh click, so it spends one call on open rather than making the user tap
+  the glyph as a second step. Still human-gated, still lockout-aware, and
+  additionally **throttled client-side** to one automatic call per
+  `AUTO_REFRESH_MIN_INTERVAL_MS` (5 min) so repeatedly opening the dropdown
+  can't burn the budget: worst case 6 calls per 30 min, and a ≤5-min-old
+  reading is well inside the 15-min staleness threshold. A manual press stamps
+  the same throttle, so open-then-tap doesn't double-spend. Radix unmounts
+  `PopoverContent` on close, so "the panel mounted" *is* "the dropdown opened";
+  the trigger is a mount effect on the refresh button, which also means the
+  existing spinner covers the automatic fetch.
+- **No automatic per-turn fetch, and no timer-based refresh.** This is the key
+  departure from the old design: auto-fetching on turns is exactly what burned
+  the budget during active use. Every spend traces to a deliberate user action
+  (sign-in, refresh click, opening the status dropdown) — never to the clock.
 
 ### Merge rule
 
@@ -177,7 +193,8 @@ have: it spends a call only on deliberate user intent.
 | `src/server/orchestrator/limits-registry.ts` | On-demand refresh entry point; cache + SSE broadcast (already present) |
 | `src/server/orchestrator/agents/types.ts` | Possibly extend `LimitsProvider` with `refreshNow()` / lockout reporting |
 | WS layer (`ws-client-messages.ts` + a handler) or an HTTP route | `refresh_subscription_limits` trigger from client |
-| `src/client/components/SubscriptionLimitsBadge.tsx` | Refresh glyph, disabled-with-countdown while locked, source/age in tooltip |
+| `src/client/components/SubscriptionLimitsBadge.tsx` | Refresh glyph, disabled-with-countdown while locked, source/age in tooltip; `autoRefresh` on-mount fetch + module-level throttle |
+| `src/client/components/MobileStatusPanel.tsx` | Mobile dropdown content — passes `autoRefresh` so opening it refreshes usage |
 | `src/server/shared/types/usage-limits-types.ts` | Add `source`/`lockedUntil` fields as needed |
 
 ## Reference

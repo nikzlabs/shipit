@@ -11,6 +11,8 @@
 - [x] One fetch on Claude `auth_complete` (sign-in baseline, `"seed"`)
 - [x] `POST /api/limits/refresh` route + `refreshSubscriptionLimits` dep → `refreshNow("manual")`
 - [x] Confirm NO automatic per-turn fetch is wired
+- [x] Refresh on opening the mobile status dropdown (`autoRefresh` → on-mount POST)
+- [x] Client-side throttle (5 min) shared by auto + manual triggers; skipped while locked out
 
 ## Client
 - [x] Refresh glyph on `SubscriptionLimitsBadge` pill group (Claude)
@@ -25,5 +27,6 @@
 ## Verify
 - [x] Provider unit tests: merge, 429 lockout, seed self-skip, event-wins
 - [x] Badge unit tests: unknown/reset/stale states, formatAge, meterDisplay
+- [x] Auto-refresh tests: fires on mount, skipped without `autoRefresh`/while locked/for Codex, throttled across re-opens, re-fires after the interval
 - [x] lint:dev + typecheck clean
 - [x] Manual browser check: low-usage click → percentage appears; locked button greys out

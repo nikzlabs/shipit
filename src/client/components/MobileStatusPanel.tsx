@@ -16,6 +16,12 @@ interface MobileStatusPanelProps {
  * (start date, memory percentage, plan name). Mobile has no hover,
  * so this panel surrounds each pill with a label header and an
  * explanatory caption so the popover is self-describing.
+ *
+ * Radix unmounts `PopoverContent` on close, so this component mounts exactly
+ * when the dropdown opens — which is what `autoRefresh` on the subscription
+ * badge hangs off. Opening the dropdown is the user asking for the number, so
+ * it spends one `/api/oauth/usage` call (throttled, lockout-aware) instead of
+ * making them tap the refresh glyph as a second step.
  */
 export function MobileStatusPanel({ subscriptionLimits, dockerMemory, processStartedAt }: MobileStatusPanelProps) {
   const hasSubscription = Object.values(subscriptionLimits).some((s) => s);
@@ -26,7 +32,7 @@ export function MobileStatusPanel({ subscriptionLimits, dockerMemory, processSta
       {hasSubscription && (
         <Section label="Subscription">
           <div className="flex flex-col items-start gap-1">
-            <SubscriptionLimitsBadge limits={subscriptionLimits} />
+            <SubscriptionLimitsBadge limits={subscriptionLimits} autoRefresh />
           </div>
         </Section>
       )}
