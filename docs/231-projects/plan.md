@@ -5,14 +5,15 @@ description: Multiple isolated Projects per deployment — each with its own rep
 
 # Projects — multiple isolated project spaces in one deployment
 
-> Revised 2026-07 after adversarial review by two independent agents (Codex + Opus)
-> against the actual codebase. The review verdict on the first draft was "phase 1 not
-> implementable as written"; this version incorporates every confirmed finding. The
-> major changes: blind switching is a page reload (not a store reset), per-project
-> GitHub identity is its own sub-phase (it's a git-config refactor), SSE scoping uses
-> per-scope payload builders (not delivery filtering), the credential migration copies
-> the blob verbatim (no field surgery), and agent credentials become a per-project
-> *binding* to existing provider accounts (not a blob split).
+> Twice revised (2026-07) after two rounds of adversarial review, each by two
+> independent agents (Codex + Opus) checking the doc against the actual code.
+> Round 1 killed the original phase 1 (SSE tagging, store-reset switching, "GitHub
+> identity is a manager move"). Round 2 verified the revision's claims and forced:
+> Default-project undeletability until phase 3, the in-container git *identity* fix
+> (the broker covers credentials, not authorship), a boot-fenced credential migration,
+> a project-vs-host git execution model, scoped bootstrap moved into 1a (the phases
+> weren't independent), a project-deletion quiescence protocol, and a pile of
+> verified call-site corrections now baked into the tables below.
 
 ## Motivation
 
@@ -45,57 +46,84 @@ are separation of *context*, not separation of *privilege*.
 - A Project is a named scope with a stable id (uuid). Every user-visible entity — repo,
   session, secret, tracker binding, MCP server, setting — belongs to exactly one Project.
 - The deployment boots with a **Default** Project (fixed well-known id) that adopts all
-  pre-existing data (see [Migration](#migration)). A deployment always has ≥ 1 Project;
-  the last remaining Project cannot be deleted.
-- The browser has one **active Project** at a time (localStorage). The sidebar, session
-  list, issues panel, settings, header pills — everything renders only the active
-  Project. **Switching = write `activeProjectId` + full page reload** (see
-  [Client](#client) for why a reload, not a store reset).
+  pre-existing data (see [Migration](#migration)). **Default is undeletable until phase
+  3**: the phase-1/2 intermediate has every Project aliasing Default's credential file
+  for not-yet-scoped surfaces (agent auth, and pre-1c GitHub), so deleting it would
+  strand the whole deployment. After phase 3 removes the alias, Default is an ordinary
+  Project; the last remaining Project is always undeletable.
+- The browser has one **active Project** at a time (localStorage). Everything renders
+  only the active Project. **Switching = write `activeProjectId` + reload** (see
+  [Client](#client)).
 - Server-side, nothing pauses on switch: sessions in other Projects keep running, their
   PRs keep polling, their containers idle out on the normal clock. Blindness is a client
   presentation rule, not a lifecycle rule.
-- The in-container agent is **project-unaware**. Every brokered surface it touches — git
-  credentials, `shipit issue`, secrets into compose services, MCP resolution — is
-  resolved orchestrator-side *through the session's Project*. The in-container git
-  credential broker already has the session row in hand (`api-routes-github.ts`,
-  `gitCredentialAllowed(session)`), so containers resolve per-project from day one.
-- **Child sessions inherit `project_id` from the parent's session row**, never from a
-  repo URL — ops and sandbox parents have no `remoteUrl` (`services/child-sessions.ts`
-  claims `opts.repoUrlOverride ?? parent.remoteUrl`), so URL-based inheritance would
-  400 or mis-scope. `shipit session create` therefore always spawns within the parent's
-  Project.
-- The **ShipIt source repo** used by ops `--shipit-fix` sessions
-  (`services/shipit-source.ts`) is a host-maintenance concern: it stays
-  deployment-global and attaches in whichever Project the ops session was created in.
+- The in-container agent is **project-unaware**. Brokered surfaces (`shipit issue`,
+  secrets, MCP) resolve orchestrator-side through the session's Project. Note the git
+  path is *not* free: the credential broker must resolve the session's Project manager
+  (today it uses the singleton), and the per-session container gitconfig copies author
+  identity from the process-global config — both are 1c work, not "no change" (see
+  [Per-project git](#per-project-git-identity--credentials)).
+- **Session creation-path matrix** — every path that creates a session row must carry a
+  Project, enforced by making the constructors require one:
+  - explicit Project: new-session, headless, template, sandbox, plugin-install
+    (`api-routes-marketplace.ts` creates sessions from a currently-global route)
+  - inherited from the **source session row**: child spawns (`shipit session create`),
+    fork, rewind (`session-fork-merge.ts` calls `track()` directly)
+  - composite `(projectId, canonicalRepoKey)`: warm creation and claim
+  - preserved immutably: graduation (standalone → repo-backed keeps its Project)
+- The **ShipIt source repo** used by ops `--shipit-fix` sessions stays
+  deployment-global (host-maintenance concern); it attaches in the invoking ops
+  session's Project.
+
+### Project deletion is a lifecycle operation, not a row delete
+
+Deletion must quiesce before it destroys, or fire-and-forget work races new state into
+the deleted Project (warm allocation stores uncancellable promises and creates its
+session row *after* async work starts; runner disposal refuses to kill running agents
+unless forced; PR/release pollers need explicit untracking). Protocol:
+
+1. Mark the Project `deleting` (durable) — all scoped routes reject new operations.
+2. Cancel + await warm/claim/prefetch work; force-dispose the Project's runners
+   (`{force: true}`), destroy containers/volumes/workspaces and session credential dirs.
+3. Untrack the Project's repos from all pollers/watchers; evict its `ProjectContext`.
+4. Delete rows across all session-owned tables (sessions, messages, usage, file/agent
+   reviews + comments, rewinds, presentations, egress rows), repos, secrets; delete the
+   Project credential dir and its `repo-memory/<projectId>/` tree; clear its TTS-cache
+   entries and any per-project browser namespaces on next load.
+5. Emit the targeted `project_deleted` event (see scoped delivery) so viewing browsers
+   fall back to Default and reload.
+
+Deleting the active Project switches the browser to another. Tests: deletion during a
+running turn, during warm creation, during a poll cycle.
 
 ## What is project-scoped vs global
 
-Ruling for every deployment-global surface found in the audit. Phase column refers to
+Ruling for every deployment-global surface found in the audits. Phase column refers to
 [Phasing](#phasing).
 
 | Surface | v1 scope | Phase | Notes |
 |---|---|---|---|
 | Repos (`repos` table) | **Project** | 1a | PK becomes `(project_id, url)`; display order, hidden flag follow. Same URL may be open in two Projects. |
-| Repo **trust** | **Project** | 1a | **Code-execution gate, not cosmetics**: `RepoStore.isTrusted`/`setTrusted` scan *all* rows and match via `canonicalRepoKey`, and the consumers (`service-manager-setup.ts` — gates repo-declared `agent.install` + compose auto-execution — and `warm-pool-manager.ts`) pass a bare URL. Unfixed, trusting `owner/repo` in Project A auto-runs its `docker-compose.yml` in Project B. Both call sites move to `(projectId, canonicalRepoKey)`. |
-| Sessions | **Project** | 1a | `project_id` on `sessions`; ops/sandbox pseudo-groups exist per Project. `SessionManager.list()` and `findAllByRemoteUrl` gain project-filtered variants that filter **before** resolved-session caps/ranking (the caps currently group by `remote_url` pre-filter). |
-| Warm pool | Per `(project, canonicalRepoKey)` | 1a | **Not** "follows the repos PK naturally": `WarmPoolManager` maps/locks and the claim chain (`services/claim-session.ts`) are keyed by URL alone, so Project B could claim Project A's warm session. All keys become `(projectId, canonicalRepoKey)`; a separate URL-global lock may still serialize shared-bare-cache fetches. Pool *sizing* limits stay global. |
-| Usage tracking | **Project** | 1a | `project_id` stamped at insert on `usage_turns`; `UsageManager.getStats()` and the session-usage route (`api-routes-session-spawn.ts`) currently return **deployment-wide** aggregates — scoped queries in phase 1a, or blindness leaks every project's spend. |
-| Per-Project reset / delete | **Project** | 1a | Delete is exposed in the phase-1a switcher, so the implementation ships with it: dispose only that Project's runners/containers/volumes/workspaces/session credential dirs; delete its rows across *all* session-owned tables (sessions, messages, usage, reviews, comments, rewinds, presentations, egress, secrets, repos) + its credential dir. Deleting the active Project switches to another; the last Project can't be deleted. Deployment-wide `clearAll()` remains the nuclear option. |
-| Linear binding | **Project** | 1a | Token + team move to the Project credential file. `TrackerRegistry` is already rebuilt per request because of scope differences — it binds Linear from the Project's store; only the ~10 `buildTrackerRegistry` call sites in `services/issues.ts` swap stores. `setLinearTeam` and friends take an explicit projectId (no session in hand). |
-| GitHub identity | **Project** | **1c** | Token / App-installation choice + git author per Project. **A git-config refactor, not a manager move** — see [Per-project git identity](#per-project-git-identity--credentials). GitHub *App registration* (app id, private key — `github-app-token.ts` env config) stays host-global; a Project selects its token/account/installation. |
-| PR / release polling, prefetch, auto-push, auto-merge, auto-fix-CI | Global machinery, per-project credentials | 1c | `PrStatusPoller`, `ReleaseStatusPoller`, `repo-prefetch.ts`, the auto-push closure in `route-registry.ts`, and `AutoMergeManager` all hold the singleton `GitHubAuthManager` and one rate-limit gate. Job keys become `(projectId, repo)` and every API call resolves credentials from the job's Project; rate-limit state is per Project's token. Without this, Project B's private-repo PRs 404 under A's token and one Project's rate limit pauses all. |
-| Agent credentials | **Project binding** | 3 | Each Project binds `{provider → accountId}` against the existing **global** provider-account roster (docs/150 already stores each account's credentials in its own dir `provider-accounts/<provider>/<accountId>/`). No credential duplication, no re-login per Project; `sessions.provider_route_kind/_id` and `agent_pinned` unchanged. Per-session credential isolation (docs/155) copies from the resolved account as today. |
-| Orchestrator-side agent invocations | **Project** | 3 | Session namer, `generateText`, token refresh currently run on `process.env` (+ `HOME=/root`), and `app-di.ts` copies `getAllAgentEnv()` into **`process.env`** at boot. That hydration is **removed**, not re-scoped (a process env can't be per-project); a resolver `(projectId, agentId) → env` feeds every call site. |
-| MCP servers | **Project** | 2 | Server configs + OAuth state, **including the `mcp__<server>__*` subtree of `agentEnv`** (MCP `$secret:` values live there — moving MCP without that subtree breaks phase ordering). OAuth flows persist `projectId` in server-side flow state; the callback resolves from that state, never from the current browser Project. Config-change refresh and the test route scope to the Project's runners. Built-in `playwright` + `shipit` bridge stay universal. |
-| Settings + system prompt | **Project** | 2 | Behavioral settings (`autoCreatePr`, `liveSteering`, `autoResolveConflicts`, `autoFixCi`, `autoResetMergedBranch`, `enableSubAgents`, `agentSubAgentDefaults`, `agentSystemInstructionsEnabled`, voice delivery/webhook/provider keys) and `system-prompt.md` move per Project. Host-resource knobs (`maxIdleContainers`, docker memory) stay global. |
-| Secrets | **Project** | 1a | Key becomes `(project_id, repo_url, key)` alongside the repos PK change. Cipher key (`SHIPIT_SECRET_KEY`) stays global; migration copies ciphertext without re-encryption. |
-| Egress allowlist | **Project tier** | 2 | The `scope` string (`'global'` \| session id) gains `project:<id>`. Note: `egress_settings` changes currently broadcast to every browser (`api-routes-egress.ts`) — scoped in 1b. |
-| Repo memory | **Project** | 4 | `repo-memory/<projectId>/<repoHash>/`. **Required companion edit**: `steady-state-reclaim.ts#sweepOrphanedRepoMemory` rm-rf's any top-level entry not matching a live repo hash — under the nested layout it would delete every Project's memory on the first hourly pass. Until phase 4, memory stays repo-hash-keyed and is shared across Projects holding the same repo (documented interim leak). |
-| Bare git cache / dep cache / overlay store | Global | — | Keyed by URL hash; content, not policy. Two caveats, stated precisely: (a) cached *content* fetched for Project A is served to Project B for the same URL; (b) until 1c, the *fetch* into the shared cache runs under whichever Project's token triggered it, and a fetch failure `markTokenInvalid`s that token — after 1c, fetches carry the requesting Project's credentials and only that Project's token can be invalidated. |
-| Templates, marketplaces/skills | Global (v1) | — | Hardcoded/catalog content; revisit if Projects want private skill sets. |
-| Resource budgets, janitors, idle enforcer, disk tiers | Global | — | One host, one budget. Projects contend; explicit and fine for trusted users. Janitors/prefetch/reset keep a deliberate `listAll()` view of stores (see below). |
-| Preview proxy | Unchanged | — | Session ids stay globally unique; `{sessionId}--{port}` routing needs no Project awareness. |
-| ShipIt source repo (ops fix flow) | Global | — | Host-maintenance concern; attaches in the invoking ops session's Project. |
+| Repo **trust** | **Project** | 1a | **Code-execution gate with three call sites.** `isTrusted`/`setTrusted` scan *all* rows via `canonicalRepoKey`; readers `service-manager-setup.ts` (gates repo-declared `agent.install`/compose auto-exec) and `warm-pool-manager.ts` pass a bare URL; and `POST /api/repos/trust` (`api-routes-session-repos.ts`) **fans out immediately** — it sweeps every live runner whose canonical key matches and calls `rerunServiceSetup()`, then warms the repo. Unscoped, trusting `owner/repo` in Project A re-runs its compose inside Project B's *already-open* sessions. All three sites move to `(projectId, canonicalRepoKey)`. |
+| Sessions | **Project** | 1a | `project_id` on `sessions`; ops/sandbox pseudo-groups per Project. `SessionManager.list()`/`findAllByRemoteUrl` gain project-filtered variants filtering **before** resolved-session caps (caps group by `remote_url` pre-filter today). One deliberate global lookup survives: `resolveProjectIdForSession(sessionId)` for deep links (see Client). |
+| Warm pool | Per `(project, canonicalRepoKey)` | 1a | Maps/locks and the claim chain are URL-keyed today (Project B could claim A's warm session) → composite keys. **Footprint multiplies**: boot warms every ready repo row lacking a warm session, and there is **no existing pool-size cap to "stay global"** — the same 5 repos in 2 Projects = 10 standby containers at boot. 1a adds a host-wide warm-session cap and warms most-recently-active Projects first. A URL-global lock may still serialize shared-bare-cache fetches. |
+| Usage tracking | **Project** | 1a | `project_id` stamped at insert; `UsageManager.getStats()` and the session-usage route return deployment-wide aggregates today — scoped in 1a or blindness leaks every Project's spend. |
+| Per-Project reset / delete | **Project** | 1a | See the deletion protocol above. Deployment-wide `clearAll()` remains the nuclear option (its table list is also the reset checklist's source; note it omits the dead pre-migration-7 `doc_reviews`/`review_comments` tables and global `marketplaces` — deliberately). |
+| Linear binding | **Project** | 1a | Token + team in the Project file. `TrackerRegistry` is already rebuilt per request — it binds Linear from the Project's store; ~10 `buildTrackerRegistry` call sites in `services/issues.ts` swap stores. `setLinearTeam` takes an explicit projectId. |
+| GitHub identity | **Project** | **1c** | Token / App-account choice + git author per Project. See [Per-project git](#per-project-git-identity--credentials). GitHub *App registration* (app id, private key — env config) stays host-global; App installation tokens are minted per repo, and the existing `owner/repo`-keyed installation-token cache stays correct because a repo's installation is repo-derived, not Project-chosen. |
+| PR / release polling, prefetch, auto-push, auto-merge, auto-fix-CI | Global machinery, per-project credentials | 1c | All hold the singleton `GitHubAuthManager` + one rate-limit gate. Job keys become `(projectId, repo)` and each call resolves the job's Project credentials; per-project rate-limit state. **Also re-key the bare-`repoKey` caches**: `release-status-poller.ts#releasedByKey` (A's release card would dedup B's), `pr-polling-supervisor.ts#lastPolledAt` (A's poll satisfies B's cadence), `ci-grace-tracker.ts` sticky observed-checks state (drives auto-fix-CI verdicts). |
+| Upstream bug reports | Invoking Project | 1c | `services/bug-report.ts` files issues under the user's GitHub identity via the singleton token — after 1c it uses the invoking session's Project token. |
+| Agent credentials | **Project binding** | 3 | Each Project binds `{provider → accountId}` against the **global** provider-account roster (docs/150: per-account credential dirs). No credential duplication or re-login; `sessions.provider_route_kind/_id` + `agent_pinned` unchanged; docs/155 per-session isolation copies from the resolved account. Phase 3 also: scope the `agent_auth_*` SSE event family + pending-device-code replay by account binding; **global sign-out of a bound account must repair or block on dangling Project bindings**. |
+| Orchestrator-side agent invocations | **Project** | 3 | Session namer, `generateText`, token refresh run on `process.env` today, and `app-di.ts` copies `getAllAgentEnv()` into **`process.env`** at boot (with an existing-env-wins guard). Hydration is **removed**; `AgentCredentialResolver(projectId, agentId) → env` feeds every call site. |
+| MCP servers | **Project** | 2 | Configs + OAuth state **including the `mcp__<server>__*` subtree of `agentEnv`** (`$secret:` values live there). `agentEnv` therefore needs **per-key** resolution between phases 2 and 3: `mcp__*` keys from the own Project, the rest (agent auth, `OPENAI_API_KEY`) from the Default alias until 3. OAuth flows persist `projectId` in flow state; the callback resolves from that state (its own resolution mode — see below). Config-refresh and the test route scope to the Project's runners. Built-in `playwright` + `shipit` bridge stay universal. |
+| Settings + system prompt | **Project** | 2 | Storage *and* consumers: a `ProjectSettingsResolver` sweep covers the PR-automation gates (`app-lifecycle.ts` closes over the singleton store), runner live-steering, WS agent-execution reads, branch reset, sub-agent defaults, and the voice stack (routes are sessionless today; the **TTS cache dir is global and keyed without project** — scope or partition it). Host-resource knobs (`maxIdleContainers`, docker memory) stay global. |
+| Secrets | **Project** | 1a | Key `(project_id, repo_url, key)`; ciphertext copied verbatim; cipher key stays global. |
+| Egress allowlist | **Project tier** | 2 | `scope` gains `project:<id>` — **including the fourth existing tier** `__suppressed_defaults__` (user-removed built-in hosts): unscoped, removing a default host in Project A changes Project B's firewall. Egress broadcasts scoped in 1b. |
+| Repo memory | **Project** | **1a** | `repo-memory/<projectId>/<repoHash>/`. Promoted from phase 4: memory is the closest thing to per-user knowledge ("how this user likes things done"), so two trusted users sharing a repo across Projects must not cross-pollinate it. Required companion: `sweepOrphanedRepoMemory` rm-rf's top-level entries not matching live hashes — needs nested per-Project traversal or it deletes every Project's memory. (`sweepOrphanedCaches` also lands in 1a for a different reason: repo/dep caches stay global, but its live-hash set comes from the repo list, which becomes project-keyed — the union must span all Projects or it deletes other Projects' caches.) Cost of the split: the same repo in two Projects builds memory twice. |
+| Bare git cache / dep cache / overlay store | Global | — | Content, not policy. Caveats: (a) cached content fetched for Project A serves Project B for the same URL; (b) until 1c the *workspace-clone* fetches (warm pool, claim) and auto-push run under the singleton token, and their failure paths `markTokenInvalid` the host-wide token — after 1c, per-Project tokens and per-Project invalidation. (Bare-cache `fetchCache` itself holds no auth manager; its failures are swallowed by callers.) |
+| Templates, marketplaces/skills | Global (v1) | — | Catalog content; revisit if Projects want private skill sets. |
+| Resource budgets, janitors, idle enforcer, disk tiers | Global | — | One host, one budget; Projects contend, explicitly. Janitors/prefetch/reset use explicit `listAllProjects()` store variants. |
+| Preview proxy | Unchanged | — | Session ids stay globally unique. |
 
 ## Data model & storage
 
@@ -103,323 +131,380 @@ Ruling for every deployment-global surface found in the audit. Phase column refe
 
 ```sql
 CREATE TABLE projects (
-  id            TEXT PRIMARY KEY,      -- uuid; Default project has a fixed well-known id
+  id            TEXT PRIMARY KEY,      -- uuid; Default has a fixed well-known id
   name          TEXT NOT NULL,
   display_order INTEGER NOT NULL,
-  created_at    TEXT NOT NULL
+  created_at    TEXT NOT NULL,
+  deleting      INTEGER NOT NULL DEFAULT 0
 );
 ```
 
-(No slug column — nothing consumes one: session URLs stay `/session/{id}` and storage
-dirs use the id.)
-
 **Existing tables:**
 
-- `sessions.project_id` — nullable-add → backfill to Default → validate → enforce.
-- `repos`: PK `url` → `(project_id, url)`. SQLite can't alter a PK → rebuild-and-copy
-  (`repos_v2`, copy **every** accumulated column — status, warm_session_id,
-  display_order, trusted, hidden — drop, rename).
-- `secrets`: same rebuild, key `(project_id, repo_url, key)`, ciphertext copied verbatim.
-- `usage_turns.project_id` — backfilled via each row's session; rows whose session no
-  longer exists (no FK today) go to Default.
-- `egress_allowlist` / `egress_settings`: no schema change; `scope` admits
-  `project:<id>`.
+- `sessions.project_id TEXT NOT NULL DEFAULT '<default-id>'` — a single atomic
+  `ALTER TABLE ADD COLUMN` with the default baked in (SQLite can't retro-fit `NOT NULL`
+  onto a nullable column without a full `sessions_v2` rebuild of ~40 accumulated
+  columns; the DEFAULT approach avoids that rebuild entirely).
+- `repos`: PK `url` → `(project_id, url)` — rebuild-and-copy (`repos_v2`, every
+  accumulated column: status, warm_session_id, display_order, trusted, hidden).
+- `secrets`: same rebuild, `(project_id, repo_url, key)`.
+- `usage_turns.project_id` — backfilled via session; orphans → Default.
+- `egress_allowlist`/`egress_settings`: `scope` admits `project:<id>` (and the
+  suppressed-defaults tier gains a project-scoped variant in phase 2).
 
-**The real rebuild hazards** (there are *no* FK references to `repos` or `secrets` —
-`warm_session_id` and `sessions.remote_url` are plain columns):
+**Rebuild hazards** (no FK references to `repos`/`secrets` exist — the risks are
+data-shape):
 
-1. `sessions.remote_url` is the only session→repo link and **nothing enforces** that
-   `(project_id, remote_url)` corresponds to a `(project_id, url)` row. The PR poller
-   docstring (`pr-status-poller.ts`) already documents that session `remoteUrl`, the
-   poller key, the RepoStore row, and the bare-cache hash must agree on one URL or the
-   client orphans sessions.
-2. `repos` rows are keyed by the **raw** URL first used; duplicate raw-URL rows for one
-   canonical repo exist in real deployments (which is exactly why `isTrusted` scans
-   canonically today).
-3. Sessions whose `remote_url` has no `repos` row are an existing, legal state
-   (`startup-tasks.ts` backfills them at boot).
+1. `sessions.remote_url` ↔ `repos.url` correspondence is unenforced, and un-rowed
+   `remote_url` sessions **persist indefinitely** (the boot backfill in
+   `startup-tasks.ts` runs only when the repo table is *empty* — a one-time legacy
+   migration, not an ongoing repair).
+2. Duplicate raw-URL rows for one canonical repo exist in real deployments (why
+   `isTrusted` scans canonically).
+3. **Live writers create late repo links with no project in hand**: `services/
+   session.ts#listSessions` lazily backfills `remote_url` from the workspace's `origin`
+   on *every* list; `setGitRemote` is the real standalone→repo-backed graduation;
+   `setRemoteUrl` has 7 call sites; `graduate-session.ts` calls `repoStore.touch`,
+   `startup-tasks.ts` calls `add`/`setReady`. All of these inherit the **session's**
+   `project_id` and create/touch the repos row in that Project.
 
-The migration test fixture must therefore include: duplicate raw-URL rows for one
-canonical repo, sessions with un-rowed `remote_url`s, warm rows with dangling
-`warm_session_id`, orphaned `usage_turns`, and an interrupted-migration replay.
+**Store APIs — reads *and* writes take `projectId`.** The non-test `repoStore.*`
+surface is ~60 calls across 18 files, half of them writes (`touch`, `setReady`, `add`,
+`setWarmSessionId`, `setTrusted`, `setOrder`, `setHidden`, `remove`); a read-only
+scoping leaves every write ambiguous. Host supervisors (janitors, prefetch, startup
+tasks, full reset) use explicitly-named `listAllProjects()` variants. There is no
+default-scoped access.
 
-**Store APIs**: `RepoStore`/`SecretStore`/`SessionManager` read methods take `projectId`
-and filter in SQL (before caps/ranking). Host supervisors that legitimately need the
-deployment-wide view — `startup-janitor.ts`, `steady-state-reclaim.ts`,
-`repo-prefetch.ts`, `startup-tasks.ts`, full reset — call explicitly-named
-`listAllProjects()` variants. There is no default-scoped read.
+Migration test fixture: duplicate raw-URL rows, un-rowed `remote_url` sessions,
+dangling `warm_session_id`, orphaned usage rows, a populated `sessions` table proving
+every accumulated column survives, and an interrupted-migration replay.
 
-**Credential storage** (see [Migration](#migration) for the protocol):
+**Credential storage.** The mechanism for the intermediate phases is a **re-point, not
+a fork**: at 1a the existing `CredentialStore` singleton is constructed against
+`projects/<default>/credentials.json` (a verbatim copy of the old blob — see
+Migration), and a small separate host store owns the host file. Every consumer that
+hasn't reached its owning phase keeps using the singleton — which now *is* the Default
+Project's store — so "aliasing Default" is the unmodified code path, not new code.
+Each later phase peels its surface off the singleton into `ProjectContext`.
 
 ```
 {credentialsDir}/
-  shipit-credentials.json                 # host file: maxIdleContainers (+ future
-                                          # host-resource knobs); provider-account
-                                          # roster stays in its existing store
-  provider-accounts/<provider>/<acct>/    # unchanged (docs/150) — global roster;
-                                          # Projects hold bindings, not copies
+  shipit-credentials.json                 # host store: maxIdleContainers (+ future
+                                          # host knobs); provider-account roster
+  provider-accounts/<provider>/<acct>/    # unchanged (docs/150) — global roster
   projects/<projectId>/
-    credentials.json                      # everything else: GitHub token, Linear,
-                                          # MCP (+ mcp__* env subtree), behavioral
-                                          # settings, voice, agentEnv, provider binding
-    system-prompt.md                      # replaces {workspaceDir}/.shipit/system-prompt.md
-    .gitconfig                            # per-project git identity (phase 1c)
-  sessions/<sessionId>/                   # unchanged per-session isolation subtree
-  repo-memory/<projectId>/<repoHash>/     # phase 4 (janitor edit required, see table)
+    credentials.json                      # everything else (field list below)
+    system-prompt.md                      # moved here in 1a — readers/writers
+                                          # (services/settings.ts, bootstrap-managers)
+                                          # follow the new path in the same phase
+    .gitconfig                            # per-project git identity (1c)
+  sessions/<sessionId>/                   # unchanged per-session isolation
+  repo-memory/<projectId>/<repoHash>/     # 1a (janitor edits land with it)
 ```
 
-**Field ownership is exhaustive** — every `CredentialData` field is assigned:
-host-owned: `maxIdleContainers`, `providerAccounts` (roster). Project-owned: everything
-else (`githubToken`, `linear`, `mcpServers`, `mcpOAuth`, `mcpOAuthClients`, `agentEnv`,
+**Field ownership** (exhaustive over the `CredentialData` type): host-owned —
+`maxIdleContainers`, `providerAccounts`. Project-owned — everything else
+(`githubToken`, `linear`, `mcpServers`, `mcpOAuth`, `mcpOAuthClients`, `agentEnv`,
 `voiceProviderKeys`, `voiceDeliveryMode`, `voiceWebhook`, `autoCreatePr`,
 `liveSteering`, `autoResolveConflicts`, `autoFixCi`, `autoResetMergedBranch`,
-`enableSubAgents`, `agentSubAgentDefaults`, `agentSystemInstructionsEnabled`). A new
-field must declare its owner in the same PR that adds it.
+`enableSubAgents`, `agentSubAgentDefaults`, `agentSystemInstructionsEnabled`). One
+stray exists *outside* the type: `git-config.ts` raw-reads a legacy `gitIdentity` key
+from the blob — it migrates into the per-project `.gitconfig` in 1c. A new field must
+declare its owner in the PR that adds it.
 
-**Intermediate-state contract**: field *storage* moves to the Project file at migration
-time (verbatim copy), but *reads* become per-project progressively by phase. Until phase
-3, agent-auth reads for **every** Project alias the Default Project's file — agent
-credentials are global-by-alias, which is the correct intermediate for the
-single-user-multiple-contexts case. A second Project created before phase 3 shares agent
-auth and has empty GitHub/Linear/MCP config until connected.
+**Per-phase field resolution** (the contract that makes intermediates correct): a
+project-owned field resolves from the **own** Project's store once its owning phase
+lands, and from the **Default alias** (the re-pointed singleton) before that. `agentEnv`
+splits per-key between phases 2 and 3 (`mcp__*` own, rest Default). A second Project
+therefore shares Default's GitHub/agent identity until 1c/3 respectively — correct for
+the single-user-multiple-contexts case — and gets genuinely empty config per surface
+only at that surface's phase.
 
 ## Orchestrator architecture
 
-**`ProjectRegistry`** (new, `orchestrator/projects.ts`): owns the `projects` table and a
-lazy map `projectId → ProjectContext` holding the per-project instances:
-per-project `CredentialStore` file accessor, `GitHubAuthManager` (1c), MCP config/OAuth
-state (2), settings + system prompt path (2), provider-account binding (3).
+**`ProjectRegistry`** (new, `orchestrator/projects.ts`): owns the `projects` table and
+a lazy `projectId → ProjectContext` map holding the per-project instances as phases
+land: credential store accessor (1a), `GitHubAuthManager` (1c), MCP state (2),
+settings resolver (2), provider binding (3).
 
-Singleton managers (docker, service manager, runner registry, pollers, janitors, preview
-proxy) stay singletons, but **any of them that consumes `githubAuth` or agent
-credentials resolves the owning Project per operation** — from the session row for
-session-driven work, from the `(projectId, repo)` job key for background work. "Managers
-keep taking the singletons as before" is exactly the assumption the review killed;
-353 `githubAuth` references across 48 files are the sweep.
+Singleton managers stay singletons, but any consumer of `githubAuth`, settings, or
+agent credentials resolves the owning Project **per operation** — from the session row
+for session-driven work, from the `(projectId, repo)` job key for background work.
 
-**Request → Project resolution.** Every route/WS handler declares one of three scope
-modes; a typed wrapper makes omission a compile error (the same discipline as
-`sseBroadcast` below):
+**Request → Project resolution.** Every route/WS handler declares exactly one scope
+mode via a typed wrapper (omission = compile error):
 
-1. **session-derived** — `sessionId` present (WS, per-session routes, worker relays):
-   the session row's `project_id` is authoritative. If the request *also* carries an
-   explicit `projectId` that disagrees → **400**, never silent precedence.
-2. **explicit-project** — repo list/add/hide/reorder, session create, settings, secrets,
-   MCP, tracker connect, `setLinearTeam`, github auth: `projectId` is a required param.
-   The many routes keyed today by bare repo URL fall here — with the same URL in two
-   Projects, the URL alone is ambiguous by design.
-3. **host-global** — janitors' listAll, docker memory, system info, update checks.
+1. **session-derived** — `sessionId` present: the session row's `project_id` is
+   authoritative. An accompanying explicit `projectId` that disagrees → 400. (The
+   container guard already forces every container-accessible route to be
+   own-session-scoped, which is why the in-container surface needs no new concept.)
+2. **explicit-project** — repo list/add/hide/reorder, session create, settings,
+   secrets, MCP config, tracker connect, github auth: `projectId` required. Bare repo
+   URLs are ambiguous by design once two Projects can hold one URL.
+3. **flow-state-derived** — OAuth callbacks (MCP, and any future redirect flow): no
+   session, no caller-supplied project; the `projectId` persisted in server-side flow
+   state at flow start is authoritative.
+4. **host-global** — janitors' listAll, docker memory, system info, update checks, and
+   one named exemption: `resolveProjectIdForSession(sessionId)` for deep links.
 
-Background jobs are outside request resolution entirely: they derive Project identity
-from durable rows (the session row, the `(projectId, repo)` job key), never from any
-notion of "the active project" — the server has none.
+Two hardening rules the modes don't cover on their own: **hybrid routes** (e.g.
+`/api/sessions/:id/template` where `id === "new"` flips it from session-derived to
+explicit; pin-reorder taking a repo URL plus arbitrary session ids; issue routes with
+optional sessions) are split or use a typed `oneOf` resolver; and every **secondary
+resource id** in a request (target sessions, review ids, repo URLs in bodies) passes an
+`assertBelongsToProject` check — scope resolution alone is not authorization of every
+entity the request touches.
+
+Background jobs derive Project identity from durable rows (session row, `(projectId,
+repo)` job key), never from any notion of an "active" project — the server has none.
 
 ### Per-project git identity & credentials
 
-The single hardest dependency, and why phase 1c exists. Today
-`GIT_CONFIG_GLOBAL` points every orchestrator-side git operation — auto-commit,
-auto-push, bare-cache fetch, rebase, branch graduation — at **one** process-global
-gitconfig (`git-config.ts`), which is the single source of truth for both author
-identity and the inline PAT credential helper. `GitManager.autoCommit` passes no author
-override.
+Today `GIT_CONFIG_GLOBAL` points every orchestrator-side git operation at one
+process-global gitconfig — the single source of truth for author identity
+(`setGitIdentity`), the credential helper (`setGlobalCredentialHelper`), *and*
+non-identity policy (`safe.directory`, GitHub URL rewrites). `GitManager.autoCommit`
+passes no author override, and `GitHubAuthManager.checkCredentials()` mutates the
+global helper as a side effect. The non-test `githubAuth` surface is ~400 references
+across ~54 files (~1000 including tests — tests are part of the sweep).
 
-The refactor: each Project gets `projects/<id>/.gitconfig`; every git `execFile` in
-`shared/git*.ts`, `repo-git.ts`, and the fetch paths threads
-`GIT_CONFIG_GLOBAL=<project gitconfig>` (or explicit `-c`/`GIT_AUTHOR_*` env) resolved
-from the operation's Project. `configureGitCredentials`/`setGitIdentity` write the
-Project file. The process-global file ceases to be a source of truth. The in-container
-path needs no change (the broker resolves per session already).
+The 1c design is a **git execution factory** with two lanes, and a prohibition on
+direct `simpleGit`/child-process git anywhere else:
 
-### Scoped delivery — four boundaries, payload builders
+- **`{projectId}` lane** — resolves `GIT_CONFIG_GLOBAL` to
+  `projects/<id>/.gitconfig`, which *inherits* a base config (safe.directory, URL
+  rewrites) and adds the Project's identity + credential helper. Used by auto-commit,
+  auto-push, clone/fetch for claim + warm pool, rebase, fork/merge
+  (`session-fork-merge.ts` runs git directly today), graduation.
+- **`{hostGlobal}` lane** — marketplace/skill cache git ops, ShipIt-source/update
+  operations, anything with no owning Project.
 
-Blindness has four server→client boundaries, each scoped independently:
+**The container path changes too** (round-2 correction): the credential broker
+resolves the *session's Project* `GitHubAuthManager` instead of the singleton, and
+`writeContainerGitConfig` — which today copies author identity from the process-global
+file into each session's mounted gitconfig — takes the Project identity. Existing
+session scaffolds re-provision when a Project's identity changes. The
+`git_identity_required` WS gate and the settings-service identity read also become
+per-project.
 
-1. **`GET /api/bootstrap`** (`api-routes-bootstrap.ts` → `services/misc.ts`
-   `getBootstrapData`) — the *primary* hydration path; gains a required `?project=`.
-   `sessions`, `repos`, `githubStatus`, `settings` filter to the Project.
-2. **SSE connect snapshot** (`route-registry.ts#registerSseEndpoint`) — sends
-   `active_runners`, `session_attention`, `pr_status`, `session_list`, `repo_list`, etc.;
-   the connection registers with `?project=` and the snapshot is built for that Project.
-3. **Live SSE events** — `sseBroadcast` today serializes **one** payload and fans it to
-   every client; but the collection events (`session_list` ×21 call sites,
-   `provider_accounts` ×12, `repo_list` ×5, `pr_status` batches) carry the *full*
-   deployment-wide set, and the client **replaces wholesale** on receipt. Tagging
-   delivery is therefore insufficient — a delivered payload still contains other
-   Projects' rows, and a poller batch spanning Projects either leaks or drops. The new
-   signature takes a **per-scope payload builder**: `sseBroadcast(event, {project:
-   (projectId) => data})` builds per-Project payloads for registered Projects only;
-   `{global: data}` is reserved for genuinely scalar infra events (`docker_memory`,
-   `system_info`, update-available). Cross-project batches (PR poller) split before
-   emitting. An unscoped emit is a type error.
-4. **WS reconnect replay** (turn-event log) — already session-scoped; sessions are
-   project-owned, nothing to do.
+Pollers/auto-push/prefetch/auto-merge resolve credentials per `(projectId, repo)` job
+with per-project rate-limit state, and the bare-`repoKey` caches listed in the scoping
+table re-key.
 
-Until 1b, blindness is best-effort (client-filtered); 1b makes the server stop shipping
-foreign rows. `agent_list`, `provider_accounts`, `subscription_limits` have nothing to
-scope by until phase 3 — they stay global through 1b and scope in 3.
+### Scoped delivery — four boundaries
+
+1. **`GET /api/bootstrap`** — the primary hydration path; gains a required
+   `?project=`. **Scoped in 1a** (round-2 correction: 1a's project-keyed store reads
+   and the wholesale-replacing client make unscoped bootstrap incoherent — the phases
+   weren't independent with this in 1b). An unknown/deleted `project` param resolves
+   to Default and tells the client, which rewrites localStorage — a second browser
+   holding a stale id must never hard-fail hydration.
+2. **SSE connect snapshot** — the connection registers `?project=`; the snapshot is
+   built for that Project **through the same payload builders as live events** (today
+   it hand-rolls `client.write`, which would silently bypass any wrapper-level type
+   guard). Scoped in 1a alongside bootstrap.
+3. **Live SSE events** (1b) — `sseBroadcast` today fans one payload to every client,
+   and the collection events carry the full deployment-wide set which clients replace
+   wholesale. The new API has **three typed forms**, and an unscoped emit is a compile
+   error:
+   - `broadcastProject(projectId, event, data)` — targeted single-entity events. This
+     is most of the ~28 event types, including the URL-keyed ones that are a
+     *correctness* bug unscoped, not just a leak (`repo_warm_ready` and `repo_status`
+     carry only a URL — with one repo in two Projects, A's ready-state would apply to
+     B's row), warm/claim `error` toasts, `session_*`, `gh_rate_limited`.
+   - `broadcastPerScope(event, (projectId) => data | undefined)` — per-Project
+     collection payloads (`session_list`, `repo_list`, `pr_status` batches split
+     before emit); `undefined` skips a Project.
+   - `broadcastGlobal(event, data)` — genuinely scalar infra (`docker_memory`,
+     `system_info`, update-available) plus a names-only `project_list` event, and the
+     targeted terminal `project_deleted` (EventSource auto-reconnects to its original
+     URL, so a deleted Project's viewers need an explicit signal to fall back and
+     reload rather than reconnect forever).
+4. **WS reconnect replay** — already session-scoped; sessions are project-owned.
+
+`agent_list`, `provider_accounts`, `subscription_limits`, and the `agent_auth_*` family
+have nothing to scope by until phase 3 and stay global through 1b. Honest blindness
+claim per phase: 1a = sessions/repos/usage scoped at the source; 1b = all
+session/repo/PR delivery server-enforced; identity- and settings-shaped surfaces
+remain Default-aliased until 1c/2/3.
 
 ## Client
 
-- **`useProjectStore`**: `projects: ProjectInfo[]`, `activeProjectId` (localStorage),
-  CRUD over `/api/projects`.
-- **Switcher**: top of the sidebar, above repo groups — current name + menu of Project
-  names, "New project…", "Rename", "Delete" (= per-Project reset, confirm-gated,
-  phase 1a). Names only; no badges or activity signals.
-- **Switching = write `activeProjectId` + `window.location.href = "/"`.** Reviewed
-  alternative (an exhaustive `resetProjectState()`) rejected: `resetSessionState()`
-  covers 8 of ~20 stores and the resets are deliberately partial; `repo-store.ts` has a
-  module-level `Map` outside any store; bootstrap applies truthy-only updates, so
-  Project A values survive where Project B is empty; and every async response in flight
-  would need a generation guard. A reload makes "fresh page load into the other
-  Project" literally true, is the mechanism the existing full-reset path already uses,
-  and costs one reload on an infrequent action.
-- **localStorage namespacing is phase 1a, not polish** — content-bearing keys leak
-  actual user content across Projects: the new-session **message draft** uses one
-  `"new"` key (Project A's draft text renders in Project B), `vibe-active-repo` is a
-  single URL, `shipit-collapsed-repos`/`-resolved` are URL sets shared across Projects
-  holding the same repo, and the issue-filter keys' code comments assume exactly the
-  workspace-scoping this feature breaks. All of these gain the project id in the key.
-  Only content-free physical prefs (theme, panel sizes) stay global. `issues-store`
-  keying by `trackerId` alone is fine post-reload (memory state), but its localStorage
-  filters are not.
-- **Routing**: session URLs stay `/session/{id}` (globally unique); deep-linking a
-  session in another Project sets `activeProjectId` and reloads. The
-  `/repo/{owner}/{repo}/new` route resolves its slug against the **project-filtered**
-  repo list (today `parseRepoLabel` collapses URL forms and `.find()` would silently
-  pick across Projects — the doc's own headline capability, same repo in two Projects,
-  breaks it otherwise). `activeRepoUrl` fallback recovery is likewise project-aware.
-- **Naming cleanup**: the existing per-repo settings modal is already called "project
-  settings" in code (`ui-store.ts#projectSettingsRepoUrl`) — renamed to *repo settings*
-  in phase 1a so "Project" means one thing in the codebase.
+- **`useProjectStore`**: `projects`, `activeProjectId` (localStorage), CRUD over
+  `/api/projects`.
+- **Switcher**: top of sidebar — names only, plus "New project…", "Rename", "Delete"
+  (runs the deletion protocol; Default and the last Project are undeletable).
+- **Switching = write `activeProjectId` + hard reload** — `location.reload()` when
+  already at `/`, else `window.location.href = "/"` (the existing full-reset precedent
+  navigates conditionally for exactly this reason). Review verified there is no other
+  client persistence surface: no IndexedDB, no sessionStorage, no cookies; the service
+  worker precaches nothing and wipes Cache Storage on activate. An installed PWA
+  shares origin storage with the tab, so both are always in the same Project. The
+  store-reset alternative stays rejected: `resetSessionState()` covers 8 of ~21
+  stores, `repo-store.ts` holds a module-level Map outside any store, and every
+  in-flight async response would need a generation guard.
+- **localStorage namespacing is 1a** for content-bearing keys: the new-session
+  message draft **and** `shipit-draft-uploads:` (both keyed by the same `"new"`
+  sentinel — Project A's draft text and attached files would render in Project B),
+  upload-deletion tombstones (one global key; a deletion in A can hide a same-named
+  `/uploads` file in B), `vibe-active-repo`, collapse sets (URL-keyed, shared across
+  Projects holding one repo), issue filters (their code comments assume exactly the
+  workspace-scoping this feature breaks). Phase 3 adds the agent/model/reasoning
+  new-session seeds. Content-free physical prefs (theme, panel sizes) stay global.
+- **Deep links**: `/session/{id}` stays. The session list is project-scoped, so an
+  out-of-project deep link can't resolve from hydrated state — a pre-bootstrap
+  `resolveProjectIdForSession(sessionId)` call answers "whose is it"; the client sets
+  `activeProjectId` and reloads. Unknown/deleted session → normal 404 handling in the
+  active Project. `/repo/{owner}/{repo}/new` resolves its slug against the
+  project-filtered list (today `parseRepoLabel` + `.find()` would silently pick across
+  Projects); `activeRepoUrl` fallback recovery is project-aware.
+- **Naming cleanup**: the existing per-repo settings modal is called "project
+  settings" in code (`ui-store.ts#projectSettingsRepoUrl`) — renamed to *repo
+  settings* in 1a.
 
 ## Migration
 
-Two independent, idempotent passes:
+Two idempotent passes, both **boot-fenced**: they run to completion before the HTTP
+server listens and before any credential store, manager, watcher, or background writer
+is constructed — otherwise an already-constructed legacy store can reserialize stale
+fields over the rewritten host file, and any write landing mid-pass is silently lost
+(the store is whole-document last-writer-wins).
 
-**DB pass** — in the standard `user_version` chain: create Default Project, backfill
-`project_id` (nullable-add → backfill → validate row counts → enforce), rebuild
-`repos`/`secrets` copying every column, backfill `usage_turns` (orphans → Default).
-Fixture requirements listed under [Data model](#data-model--storage).
+**DB pass** (standard `user_version` chain): create Default; add
+`sessions.project_id NOT NULL DEFAULT`; rebuild `repos`/`secrets`; backfill
+`usage_turns`. Fixture list under [Data model](#data-model--storage).
 
-**Credential-file pass** — *outside* the `user_version` chain (SQLite transactions
-can't cover filesystem writes), with its own completion marker (the validated existence
-of the project file):
+**Credential-file pass** (own state tracking — `user_version` can't cover filesystem
+writes, and "a valid project file exists" is *not* a completion marker, since a crash
+after step 1 leaves exactly that):
 
-1. **Copy `shipit-credentials.json` verbatim** to `projects/<default>/credentials.json`
-   via staged temp file + fsync + rename + decrypt-read-back validation. No field
-   surgery on a live encrypted blob — the store is one AES-256-GCM ciphertext and its
-   writes are in-place `writeFileSync`, so partial-edit crash states are unrecoverable;
-   a verbatim copy is not.
-2. Only after the copy validates, rewrite the host file to the host-owned fields (same
-   staged protocol). Crash between the steps leaves both files complete — reads resolve
-   per field-owner (project file wins for project-owned fields), duplication is
-   harmless, and the rewrite retries at next boot.
-3. Move `{workspaceDir}/.shipit/system-prompt.md` → the Default Project's dir.
+1. Copy `shipit-credentials.json` **verbatim** (staged temp + fsync + rename +
+   decrypt-read-back) to `projects/<default>/credentials.json`. Record state `copied`.
+2. Rewrite the host file to host-owned fields (same staged protocol). State
+   `host_rewritten`.
+3. Move `system-prompt.md` into Default's dir; its readers/writers follow the new path
+   in the same phase. State `prompt_moved`.
+4. Move each `repo-memory/<repoHash>/` → `repo-memory/<default>/<repoHash>/` (plain
+   renames within one filesystem). State `memory_moved`.
+
+Each state is re-checked and the remaining steps re-run on every boot until all four
+hold. Crash between 1 and 2 leaves both files complete — reads resolve per field-owner
+(project file wins for project-owned fields) and the rewrite retries. In the same PR:
+`CredentialStore.writeToDisk` becomes atomic (temp + rename — today it's an in-place
+`writeFileSync` whose errors are swallowed), because after 1a there are 1+N such files
+and the current fail-closed load would let **one** corrupt project file brick boot for
+every Project — a single unreadable project file instead degrades to "Project
+unavailable, surfaced in the switcher", never a failed boot.
 
 A deployment that never creates a second Project behaves exactly as today.
 
 ## Trust model
 
-Soft separation, stated plainly: **Projects hide, they do not protect.** There is no
-auth layer; any browser that can reach the deployment can switch to any Project and see
-its sessions, secret names, and settings. Scoped delivery prevents accidental
-cross-viewing, not adversarial access. This is the "trusted users" tier — housemates,
-close collaborators, your own two hats.
+Soft separation, stated plainly: **Projects hide, they do not protect.** No auth
+layer; any browser reaching the deployment can switch into any Project. Scoped
+delivery prevents accidental cross-viewing, not adversarial access. This is the
+"trusted users" tier — housemates, close collaborators, your own two hats.
 
-Two sharp edges said out loud:
+Sharp edges said out loud:
 
-- **An ops session in any Project is host-root-equivalent** — it mounts host journals
-  and gets the privileged Docker proxy (`container-lifecycle.ts`). Projects do nothing
-  to contain it; a trusted user who can create an ops session owns the box.
+- **An ops session in any Project is host-root-equivalent** (host journal mounts,
+  privileged Docker proxy). Projects do nothing to contain it.
 - The shared bare cache serves one Project's fetched repo content to another for the
-  same URL (see the scoping table caveat).
+  same URL.
+- Until phase 3, all Projects share Default's agent identity; until 1c, Default's
+  GitHub identity (the alias intermediate).
 
-For the future auth story, the honest claim is narrower than "one choke point": the
-typed request-resolution wrapper is the choke point for the *HTTP/WS surface*, and
-background flows (pollers, warm allocation, OAuth callbacks, auto-push) derive Project
-identity from durable rows — real authz later means gating the wrapper **and**
-attributing those flows to a user, which the `(projectId, …)` job keys make tractable.
-Untrusted multi-tenancy remains `docs/062-managed-shipit`.
+For future auth: the typed resolution wrapper is the choke point for the HTTP/WS
+surface; background flows are attributable via their `(projectId, …)` job keys. Real
+authz later gates the wrapper and attributes those flows to users. Untrusted
+multi-tenancy remains `docs/062-managed-shipit`.
 
 ## Phasing
 
-Re-cut after review (the original phase 1 bundled the DB core with two mechanisms whose
-stated designs didn't survive contact with the code):
+- **1a — Core scoping, blind switch, scoped hydration.** `projects` table + registry;
+  DB migrations + fixture; boot-fenced credential pass + atomic store writes +
+  re-pointed singleton; typed four-mode resolution wrapper + `assertBelongsToProject`;
+  project-keyed store **reads and writes** (+ `listAllProjects()` variants); late
+  `remote_url`/graduation paths inherit the session's Project; session creation-path
+  matrix; all three trust call sites; warm-pool composite keys + host-wide warm cap;
+  usage stamping + scoped stats; the deletion protocol (Default + last Project
+  undeletable); **scoped `/api/bootstrap` + SSE connect snapshot**; reload-based
+  switching + switcher; deep-link resolver; content-bearing localStorage namespacing;
+  "repo settings" rename; Linear per Project; system prompt moved + readers updated;
+  **repo-memory scoping** (`repo-memory/<projectId>/<repoHash>/` + the
+  `sweepOrphanedRepoMemory` nested traversal and `sweepOrphanedCaches` all-Projects
+  hash union — promoted from phase 4: memory is per-user knowledge and must not
+  cross-pollinate between trusted users sharing a repo).
+- **1b — Scoped live delivery.** The three typed broadcast forms; split cross-project
+  poller batches; project ids on URL-keyed single-entity events; `project_deleted` +
+  stale-project fallback; scoped egress broadcasts. Blindness now server-enforced for
+  session/repo/PR delivery (identity/settings surfaces still Default-aliased).
+- **1c — Per-project git & GitHub.** Git execution factory (`{projectId}` /
+  `{hostGlobal}` lanes, base-config inheritance, no direct git elsewhere); per-project
+  `.gitconfig` incl. the legacy `gitIdentity` key; container broker + container
+  gitconfig + scaffold re-provisioning + identity gates; `GitHubAuthManager` per
+  Project; pollers/auto-push/prefetch/auto-merge per `(projectId, repo)` with
+  per-project rate limits; bare-`repoKey` cache re-keying; bug-report token lane.
+- **2 — Config surfaces.** Settings + system prompt per Project **including the
+  consumer sweep** (`ProjectSettingsResolver` through PR-automation gates, steering,
+  agent-execution, voice incl. TTS cache); MCP per Project with per-key `agentEnv`
+  split + flow-state-derived OAuth; egress `project:<id>` + suppressed-defaults tier.
+- **3 — Agent credential binding.** Per-Project `{provider → accountId}` binding;
+  `AgentCredentialResolver` in provisioning, namer, `generateText`, refresh, limits;
+  remove the `process.env` hydration; scope `agent_list`/`provider_accounts`/
+  `subscription_limits` + the `agent_auth_*` event family + device-code replay;
+  sign-out repairs dangling bindings; per-project agent/model/reasoning seeds; **drop
+  the Default alias — Default becomes deletable**.
+- **4 — Residual polish.** (Repo-memory scoping and both janitor edits were promoted
+  into 1a.)
 
-- **1a — Core scoping & blind switch.** `projects` table + registry; DB migrations +
-  fixture; typed scope-mode resolution wrapper; project-keyed
-  `RepoStore`/`SecretStore`/`SessionManager` reads (+ explicit `listAllProjects()` for
-  janitors); **trust check project-scoping** (code-exec gate); **warm-pool/claim
-  composite keys**; child-session inheritance from parent row; usage stamping + scoped
-  usage queries; per-Project reset/delete; reload-based switching + switcher UI;
-  content-bearing localStorage namespacing; "project settings"→"repo settings" rename;
-  Linear per Project; credential-file copy migration. Blindness is client-best-effort.
-- **1b — Scoped delivery.** Per-scope payload builders in `sseBroadcast` (unscoped emit
-  = type error); split cross-project poller batches; scoped `/api/bootstrap` +
-  SSE connect snapshot; scoped egress broadcasts. (`agent_list`, `provider_accounts`,
-  `subscription_limits` stay global until 3.) Blindness is now server-enforced.
-- **1c — Per-project git & GitHub.** Per-project `.gitconfig`; thread
-  `GIT_CONFIG_GLOBAL` through every orchestrator git exec; `GitHubAuthManager` into
-  `ProjectContext`; pollers/auto-push/prefetch/auto-merge resolve credentials per
-  `(projectId, repo)` job; per-project rate-limit state; bare-cache fetches carry the
-  requesting Project's credentials.
-- **2 — Config surfaces.** Settings + system prompt per Project; MCP per Project
-  **including the `mcp__*` agentEnv subtree** and projectId-carrying OAuth flow state;
-  egress `project:<id>` tier.
-- **3 — Agent credential binding.** Per-Project `{provider → accountId}` binding over
-  the global roster; `AgentCredentialResolver(projectId, agentId)` feeding session
-  provisioning, namer, `generateText`, token refresh, limits; **remove** the boot-time
-  `agentEnv → process.env` hydration; scope `agent_list`/`provider_accounts`/
-  `subscription_limits` delivery; drop the Default-alias intermediate.
-- **4 — Remaining lifecycle.** Repo-memory scoping (+ the
-  `sweepOrphanedRepoMemory`/`sweepOrphanedCaches` keying edits — without them the
-  janitor deletes every Project's memory), residual polish.
-
-Each phase ships independently and leaves a documented-correct intermediate state.
+Each phase ships independently; the per-phase field-resolution matrix defines the
+correct intermediate at every point.
 
 ## Risks & caveats
 
-- **The `githubAuth` sweep (1c) is the big one**: ~353 references across 48 files, and
-  it changes background-flow semantics (per-project rate limits, per-job credential
-  resolution). Budget it as its own sub-phase; it is not incidental to phase 1.
-- **Repos PK rebuild**: hazards are data-shape, not FKs (none exist) — duplicate
-  raw-URL rows, unenforced `remote_url` correspondence, orphaned sessions/usage. The
-  fixture list above is the contract.
-- **Credential-file pass**: verbatim-copy protocol above; never field surgery on the
-  encrypted blob; own idempotency marker, not `user_version`.
-- **Shared git caches** leak repo content across Projects for the same URL. Accepted
-  under trusted users; called out so nobody mistakes Projects for tenancy.
-- **Naming**: "Project" collides mildly with Linear projects (UI copy: unqualified
-  "Project" = the ShipIt concept; Linear's is "Linear project") and collided with the
-  old per-repo "project settings" modal (renamed in 1a).
+- **1c is the big sub-project**: ~400 non-test `githubAuth` references (~54 files,
+  roughly double with tests), a git execution model, container re-provisioning, and
+  background-flow semantics changes (per-project rate limits). Budget accordingly.
+- **Repos PK rebuild**: data-shape hazards (duplicate raw URLs, unenforced
+  `remote_url` correspondence with *live* writers, orphans); fixture list is the
+  contract.
+- **Credential pass**: boot-fenced, three-state, verbatim-copy; never field surgery on
+  the encrypted blob; degraded single-file failure mode.
+- **Shared git caches** leak repo content across Projects for one URL — accepted
+  under trusted users.
+- **Warm-pool cost**: N Projects × M repos standby containers without the new cap.
+- **Naming**: "Project" vs Linear projects (UI copy rule) and the old per-repo
+  "project settings" modal (renamed in 1a).
 
 ## Key files
 
-Primary touch points (the review-verified list):
-
-- `src/server/shared/database.ts` — migrations; `src/server/shared/git.ts`,
-  `orchestrator/git-config.ts`, `repo-git.ts` — per-project git threading (1c)
-- `src/server/orchestrator/app-di.ts` — `ProjectContext`; removal of `agentEnv`
-  `process.env` hydration (3)
-- `credential-store.ts` — per-project files + verbatim-copy migration
-- `repo-store.ts` (incl. `isTrusted`/`setTrusted`), `secret-store.ts`, `sessions.ts` —
-  project-keyed reads + `listAllProjects()`
-- `warm-pool-manager.ts`, `services/claim-session.ts`, `services/child-sessions.ts` —
-  composite keys, parent-row inheritance
-- `trackers/registry.ts`, `services/issues.ts` — Linear from project store
-- `app-lifecycle.ts` (`sseBroadcast` payload builders), `route-registry.ts` (SSE
-  snapshot, auto-push), `api-routes-bootstrap.ts` + `services/misc.ts` (scoped
-  bootstrap)
-- `pr-status-poller.ts`, `release-status-poller.ts`, `repo-prefetch.ts` — per-job
-  credential resolution
-- `steady-state-reclaim.ts` — repo-memory sweep keying (4)
-- `src/client/stores/` — `project-store.ts`, reload-based switch, localStorage
-  namespacing (`utils/local-storage.ts`), switcher in `SessionSidebar/`
+- `src/server/shared/database.ts` — migrations; `shared/git.ts`, `orchestrator/
+  git-config.ts`, `repo-git.ts`, `services/session-fork-merge.ts` — git factory lanes
+  (1c)
+- `app-di.ts` — `ProjectContext`; boot fencing; `process.env` hydration removal (3)
+- `credential-store.ts` — re-pointed singleton, host store, atomic writes, migration
+- `repo-store.ts`, `secret-store.ts`, `sessions.ts` — project-keyed reads/writes +
+  `listAllProjects()`
+- `warm-pool-manager.ts`, `services/claim-session.ts`, `services/child-sessions.ts`,
+  `services/session-fork-merge.ts`, `services/templates.ts`,
+  `api-routes-marketplace.ts` — creation-path matrix, composite keys
+- `api-routes-session-repos.ts` (`/api/repos/trust` fan-out), `service-manager-setup.ts`
+  — trust gate sites
+- `trackers/registry.ts`, `services/issues.ts` — Linear per Project
+- `app-lifecycle.ts` (broadcast forms), `route-registry.ts` (snapshot, auto-push,
+  identity gate), `api-routes-bootstrap.ts` + `services/misc.ts` (scoped bootstrap)
+- `pr-status-poller.ts`, `release-status-poller.ts`, `pr-polling-supervisor.ts`,
+  `ci-grace-tracker.ts`, `repo-prefetch.ts`, `services/bug-report.ts` — per-job
+  credentials + cache re-keying (1c)
+- `steady-state-reclaim.ts` — sweep keying (1a)
+- `src/client/stores/` (`project-store.ts`, reload switch), `utils/local-storage.ts`,
+  `hooks/useSessionActivation.ts` + `App.tsx` (deep links), `SessionSidebar/`
 
 ## Related docs
 
 - `docs/092-multi-repo-workspace` — the sidebar repo-group tier Projects sit above
 - `docs/062-managed-shipit` — real (infra-level) multi-tenancy; explicitly not this
 - `docs/150` provider accounts (phase 3 binds to these), `docs/155` agent credential
-  isolation (unchanged, copies from the resolved account)
+  isolation (unchanged)
 - `docs/184-remove-platform-secret-forwarding` — secret flow Projects inherit
