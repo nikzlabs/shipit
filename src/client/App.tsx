@@ -570,6 +570,10 @@ export default function App() {
     if (!sid) return;
     const text = "The preview panel needs a Docker Compose configuration. Please add a `compose` key to `shipit.yaml` pointing to the project's compose file so that previews can be enabled.";
     requestPermission();
+    // On mobile the hint overlay lives in the preview panel, which has nothing
+    // to show until the agent finishes. Switch to chat so the dispatched turn
+    // is visible instead of leaving the user staring at the empty preview.
+    useUiStore.getState().setMobilePanel("chat");
     composeHintInFlight.current = true;
     void dispatchAgentMessage({ sessionId: sid, text, activity: "Setting up preview…", apiPost })
       .catch(() => { /* helper surfaces toast */ })
