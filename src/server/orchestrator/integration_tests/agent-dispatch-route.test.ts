@@ -204,6 +204,38 @@ describe("Integration: POST /api/sessions/:id/agent/dispatch", () => {
     client.close();
   });
 
+  it("warm session — dispatch graduates it (docs/156)", async () => {
+    // Regression test: the compose-hint / compose-error / Create PR buttons all
+    // POST here, and on a `/{repo}/new` route the session behind them is still
+    // warm. Before graduation was wired in, pressing one started a real turn but
+    // left `warm: 1` — the session never entered the session list, kept its
+    // placeholder title, and `findUngraduatedWarm` would hand it to the next
+    // "New Session" click for the repo, recycling it mid-turn.
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    sessionManager.setWarm(client.sessionId!, true);
+    expect(sessionManager.get(client.sessionId!)?.warm).toBe(true);
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${client.sessionId}/agent/dispatch`,
+      payload: { text: "Add a compose block to shipit.yaml", activity: "Setting up preview…" },
+    });
+    expect(res.statusCode).toBe(200);
+
+    const graduated = sessionManager.get(client.sessionId!);
+    expect(graduated?.warm).toBeFalsy();
+    // graduateSession sets the placeholder title from the dispatched text.
+    expect(graduated?.title).toBe("Add a compose block to shipit.yaml");
+
+    // The turn still runs — graduation is additive, not a replacement.
+    const claude = await waitForClaude(() => lastClaude);
+    expect(claude.lastPrompt).toBe("Add a compose block to shipit.yaml");
+
+    client.close();
+  });
+
   it("dispatch persists tool calls and splits assistant text at tool-result boundary", async () => {
     // Regression test for the "invisible tool calls + concatenated assistant
     // text" bug class. Before the unification refactor, runDispatchedTurn

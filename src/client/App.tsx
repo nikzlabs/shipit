@@ -558,11 +558,20 @@ export default function App() {
     if (!sid) return;
     const text = `Docker Compose failed to start:\n\n\`\`\`\n${composeError.trim()}\n\`\`\`\n\nPlease fix this error so the services can start successfully.`;
     requestPermission();
+    // On /{slug}/new route — graduate: transition URL to /session/{id}, same as
+    // handleSend. The dispatch makes the session real; without this the URL
+    // stays stuck on .../new and the next "New Session" recycles this one.
+    if (isNewSessionRoute) {
+      void navigate(`/session/${sid}`, { replace: true });
+    }
+    // Mobile: the error overlay lives in the preview panel, which shows nothing
+    // useful until the agent finishes. Switch to chat so the turn is visible.
+    useUiStore.getState().setMobilePanel("chat");
     composeErrorInFlight.current = true;
     void dispatchAgentMessage({ sessionId: sid, text, activity: "Fixing compose error…", apiPost })
       .catch(() => { /* helper surfaces toast */ })
       .finally(() => { composeErrorInFlight.current = false; });
-  }, [requestPermission, apiPost]);
+  }, [requestPermission, apiPost, isNewSessionRoute, navigate]);
 
   const handleSendComposeHintToAgent = useCallback(() => {
     if (composeHintInFlight.current) return;
@@ -570,11 +579,21 @@ export default function App() {
     if (!sid) return;
     const text = "The preview panel needs a Docker Compose configuration. Please add a `compose` key to `shipit.yaml` pointing to the project's compose file so that previews can be enabled.";
     requestPermission();
+    // On /{slug}/new route — graduate: transition URL to /session/{id}, same as
+    // handleSend. The dispatch makes the session real; without this the URL
+    // stays stuck on .../new and the next "New Session" recycles this one.
+    if (isNewSessionRoute) {
+      void navigate(`/session/${sid}`, { replace: true });
+    }
+    // Mobile: the hint overlay lives in the preview panel, which has nothing to
+    // show until the agent finishes. Switch to chat so the dispatched turn is
+    // visible instead of leaving the user staring at the empty preview.
+    useUiStore.getState().setMobilePanel("chat");
     composeHintInFlight.current = true;
     void dispatchAgentMessage({ sessionId: sid, text, activity: "Setting up preview…", apiPost })
       .catch(() => { /* helper surfaces toast */ })
       .finally(() => { composeHintInFlight.current = false; });
-  }, [requestPermission, apiPost]);
+  }, [requestPermission, apiPost, isNewSessionRoute, navigate]);
 
   const handleSendServiceLogsToAgent = useCallback((serviceName: string, status: string, logs: string) => {
     const sid = useSessionStore.getState().sessionId;
