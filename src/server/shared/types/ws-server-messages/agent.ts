@@ -16,6 +16,13 @@ export interface WsAgentEvent {
  */
 export interface WsSubAgentSpawn {
   type: "sub_agent_spawn";
+  /**
+   * The session whose transcript this spinner belongs to. Required so the
+   * client can drop it when it arrives for a session other than the one being
+   * viewed — without it the chip attached to whatever session happened to be
+   * active (see `TRANSCRIPT_SCOPED_MESSAGES` in the client's handler map).
+   */
+  sessionId: string;
   /** Correlates the spinner with the terminal consult card that clears it. */
   spawnId: string;
   /** The agent being consulted (display: "Asking Codex…"). */

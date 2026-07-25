@@ -165,7 +165,7 @@ export async function runSubAgent(
   const startedAtMs = Date.now();
   // §7 — transient "Asking Codex…" spinner (live activity only) while in flight.
   // The terminal record is the persisted consult card emitted below, not this.
-  runner.emitMessage({ type: "sub_agent_spawn", spawnId, subAgentId });
+  runner.emitMessage({ type: "sub_agent_spawn", sessionId, spawnId, subAgentId });
 
   // §7 — the persisted terminal card. Built for EVERY outcome (success, error,
   // timeout, cancel, or a thrown transport failure) so the spinner is always
