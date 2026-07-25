@@ -4,6 +4,7 @@ const MODEL_DISPLAY_NAMES: Record<string, string> = {
   sonnet: "Sonnet 5",
   haiku: "Haiku 4.5",
   "claude-opus-4-8": "Opus 4.8",
+  "claude-opus-5": "Opus 5",
   "claude-sonnet-5": "Sonnet 5",
   "claude-fable-5": "Fable 5",
   // Codex model IDs. Display names normalize the ChatGPT backend's

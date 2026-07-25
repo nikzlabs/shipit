@@ -32,10 +32,11 @@ const execFileAsync = promisify(execFile);
  * - Bare family names (`haiku`) are CLI aliases that always resolve
  *   to the latest of that family on the installed CLI.
  *
- * No bare `opus` alias: on CLI ≤ 2.1.148 it resolves to Opus 4.7, which we no
- * longer surface. Once Anthropic ships a CLI release where `opus` resolves to
- * Opus 4.8 (or newer), we can swap the explicit versioned entry for the alias
- * the same way.
+ * No bare `opus` alias: older CLIs resolve it to a previous Opus (≤ 2.1.148:
+ * Opus 4.7), and Opus 5 shipped (2026-07-24) the same day as the currently
+ * pinned CLI, so its alias table can't be trusted to resolve `opus` to Opus 5
+ * yet. Once a CLI release verifiably does, we can swap the explicit versioned
+ * entry for the alias the same way.
  *
  * `claude-sonnet-5` is explicit instead of the bare `sonnet` alias so the
  * picker and first-frame context-window fallback are correct even before a
@@ -51,7 +52,7 @@ const execFileAsync = promisify(execFile);
  * Consumed by both the orchestrator-side `AGENT_DEFS` and the session-side
  * `ClaudeAdapter.capabilities` — keep this the only place to add a model.
  */
-export const CLAUDE_MODELS = ["claude-opus-4-8", "claude-sonnet-5", "haiku", "claude-fable-5"];
+export const CLAUDE_MODELS = ["claude-opus-5", "claude-sonnet-5", "haiku", "claude-fable-5"];
 
 export const CLAUDE_TOOL_NAMES = [
   "Agent",

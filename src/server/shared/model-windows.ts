@@ -37,7 +37,9 @@ export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   "sonnet": 1_000_000,
   "claude-sonnet": 200_000,
   "claude-sonnet-5": 1_000_000,
+  // claude-opus-4-8 stays for sessions created before the Opus 5 default swap.
   "claude-opus-4-8": 1_000_000,
+  "claude-opus-5": 1_000_000,
   "claude-fable-5": 1_000_000,
   "haiku": 200_000,
   "claude-haiku": 200_000,
