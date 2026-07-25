@@ -84,7 +84,7 @@ export interface LfsResult {
   durationMs?: number;
 }
 
-interface RunResult {
+export interface RunResult {
   code: number | null;
   stdout: string;
   stderr: string;
@@ -99,7 +99,7 @@ interface RunResult {
  * failure. `GIT_TERMINAL_PROMPT=0` keeps a missing credential from blocking
  * session provisioning on an invisible prompt.
  */
-function runGit(args: string[], cwd: string, timeoutMs: number): Promise<RunResult> {
+export function runGit(args: string[], cwd: string, timeoutMs: number): Promise<RunResult> {
   return new Promise((resolve) => {
     let proc;
     try {

@@ -103,7 +103,7 @@ export function chownWorkspaceGitToSessionWorker(workspaceDir: string): void {
   const uid = sessionWorkerUid();
   if (uid === null) return;
   const gitDir = path.join(workspaceDir, ".git");
-  chownGitMetadataRecursive(gitDir, uid, path.join(gitDir, "objects"));
+  chownGitMetadataRecursive(gitDir, uid, path.join(gitDir, "objects"), path.join(gitDir, "lfs", "objects"));
 }
 
 /**
@@ -274,12 +274,29 @@ function lchownLogged(p: string, uid: number): void {
  * {@link chownWorkspaceGitToSessionWorker} for why skipping the data files is
  * safe.
  */
-function chownGitMetadataRecursive(p: string, uid: number, objectsDir: string): void {
+function chownGitMetadataRecursive(p: string, uid: number, objectsDir: string, lfsObjectsDir: string): void {
   let stat: fs.Stats;
   try {
     stat = fs.lstatSync(p);
   } catch {
     return; // gone — nothing to own
+  }
+
+  // `.git/lfs/objects/<ab>/<cd>/<oid>` — the Git LFS content store. Directories
+  // are chowned (the worker must be able to `mkdir` a new oid's fanout path when
+  // it commits a new asset), regular files never are. Skipping the data files is
+  // load-bearing for docs/232, not just a saving: a shared-store object is a
+  // HARDLINK into `repo-cache/<hash>/lfs/objects`, and an inode has exactly one
+  // owner across every link — so chowning it here would hand the *shared cache
+  // store* to the session uid and let one session's agent rewrite objects every
+  // other session reads. It's also safe on its own terms, by the same argument
+  // as `.git/objects` above: LFS objects are content-addressed and immutable, so
+  // the worker only ever reads an existing one or creates a new one, and
+  // `unlink` (what `git lfs prune` needs) is governed by the *directory's*
+  // permissions, which are worker-owned.
+  if (p === lfsObjectsDir && stat.isDirectory()) {
+    chownDirsOnlyRecursive(p, uid);
+    return;
   }
 
   if (p === objectsDir && stat.isDirectory()) {
@@ -313,8 +330,33 @@ function chownGitMetadataRecursive(p: string, uid: number, objectsDir: string): 
       return;
     }
     for (const entry of entries) {
-      chownGitMetadataRecursive(path.join(p, entry), uid, objectsDir);
+      chownGitMetadataRecursive(path.join(p, entry), uid, objectsDir, lfsObjectsDir);
     }
+  }
+}
+
+/**
+ * Chown every *directory* in a subtree, never a regular file — the traversal the
+ * Git LFS content store needs. See the `lfsObjectsDir` branch of
+ * {@link chownGitMetadataRecursive} for why files must be left alone.
+ *
+ * Unlike `.git/objects`, this can't stop at the immediate children: LFS uses a
+ * TWO-level fanout (`<ab>/<cd>/<oid>`), so a root-owned `<ab>/` would stop the
+ * worker from creating a new `<cd>/` inside it when it commits an asset whose oid
+ * shares that prefix. The walk is therefore O(fanout dirs), not O(1) — but it
+ * still never touches the (large, numerous) object files themselves.
+ */
+function chownDirsOnlyRecursive(p: string, uid: number): void {
+  lchownLogged(p, uid);
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(p, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    // `isDirectory()` on a Dirent is false for a symlink, so we never follow one.
+    if (entry.isDirectory()) chownDirsOnlyRecursive(path.join(p, entry.name), uid);
   }
 }
 
