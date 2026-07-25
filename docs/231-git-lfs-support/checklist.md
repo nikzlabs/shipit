@@ -16,6 +16,9 @@
 - [x] `SHIPIT_GIT_LFS=off` escape hatch — detect and warn without spending the
       bandwidth (the issue's minimum-acceptable fallback)
 - [x] Allow the GitHub LFS transfer host in the default and git-lifeline egress lists
+- [x] Pass `SHIPIT_GIT_LFS` / `SHIPIT_GIT_LFS_TIMEOUT_MS` through the VPS compose
+      orchestrator env, so the escape hatch is actually reachable on a deploy
+      instead of silently no-opping like an unplumbed `OVERLAY_DEP_STORE`
 - [x] Agent-facing guidance in `shipit-docs/environment.md`: check for the
       `git-lfs.github.com/spec/v1` header before blaming networking or codecs
 - [x] Unit tests for detection + the status/warning contract

@@ -138,6 +138,31 @@ suffix would open every S3 bucket on the internet as an exfil target.
 | `SHIPIT_GIT_LFS` | unset (on) | `off` → detect and warn, but skip the download. The issue's fallback position for deployments where the bandwidth/storage cost of asset-heavy repos isn't wanted. A manual `git lfs pull` still works. |
 | `SHIPIT_GIT_LFS_TIMEOUT_MS` | `300000` | Ceiling on a single `git lfs pull`. The claim slow-path is on the user's critical path, so an unbounded pull on a multi-gigabyte repo would look like a hung session. On expiry the result is `failed` with a warning naming the timeout. |
 
+Both are read from the **orchestrator's own process env**, so both need an
+explicit passthrough in `deployment/vps/docker-compose.yml` — without it,
+exporting them on the host silently no-ops (the same trap `OVERLAY_DEP_STORE`
+documents in that file). They're wired as `${VAR:-}`, and an empty value is
+inert for both: `"" !== "off"` leaves LFS on, and `Number("")` fails the `> 0`
+check so the timeout keeps its default.
+
+## Deployment
+
+No manual steps: a normal update rebuilds all five images, and `deploy.sh`
+already builds `session-worker`, `shipit`, `egress-sidecar`, and
+`session-worker-docker` from the current checkout. The changed `RUN` lines
+invalidate Docker's cache at that layer, so no `FORCE_REBUILD=1` is needed. The
+egress-allowlist addition ships with the orchestrator restart in the same
+deploy.
+
+One transitional caveat: sessions and warm-pool clones that were provisioned
+*before* the upgrade keep their stubs on disk. Materialization runs at
+provisioning, and `refreshClaimedSession`'s docs/145 fast-path can skip the
+refresh (hence the re-materialize) when a pre-fetched clone is already in sync
+with the bare cache — so a pre-upgrade warm session can be claimed without a
+pull. Sessions provisioned after the upgrade are unaffected, the pool self-heals
+as it cycles, and `git lfs pull` in the session fixes any straggler now that the
+binary is present.
+
 ## Known gaps
 
 - **No LFS object sharing via the bare cache.** Every session clone pays its own
