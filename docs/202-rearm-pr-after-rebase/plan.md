@@ -79,8 +79,43 @@ Why this is squash-safe with no squash-specific code:
   up other people's commits). The existing `diffStatVsBranch` uses **three-dot**,
   which is exactly the squash-breaking comparison — we must not reuse it here.
 
-The check is **local git only — no network.** It keys directly off the user's
-own action (the rebase).
+The comparison itself is **local git only — no GitHub API** — it keys directly
+off the user's own action (the rebase).
+
+### The base ref must be current (fix, SHI-238)
+
+Both clauses read `origin/<base>` **from the session's own clone**, and that
+remote-tracking ref moves only when *that clone* fetches. Nothing on the merge
+path does: the poller talks to the GitHub API, the post-merge hook prunes
+volumes, the post-turn flow commits and pushes. So by the time a merged session
+resumes, `origin/<base>` is typically still the commit the branch **forked
+from**.
+
+A stale ref doesn't weaken the detection — it **inverts** it. The merge-base of a
+branch and its own fork point *is* that fork point, so clause 1 ("rebased onto
+the current base") passes for a branch that was never rebased, and the two-dot
+diff is then just the branch's own already-merged work. The observed symptom: the
+first committing turn on a merged session **un-merged it** and left a gray
+"ready" card showing the stale full-branch diff plus a "Create PR" button, while
+the branch still carried nothing but shipped commits. And because `clearMerged`
+also drops `mergedHeadSha`, the docs/218 pre-turn auto-advance could never fire
+for that session again — the false re-arm *disabled* the very feature whose
+absence it looked like.
+
+So the shared helper freshens the ref before deciding
+(`pr-rearm.ts#freshenBaseRef` → `git fetch origin`), and **fails safe on a fetch
+failure** (stay merged rather than decide off a ref known to be stale). Two things
+keep that cheap:
+
+- The helper still early-returns for non-merged sessions before touching git, so
+  the fetch is scoped to merged sessions' turns.
+- A branch still sitting exactly on the docs/218 `mergedHeadSha` anchor cannot be
+  either "progressed" or "at base", so `unmovedSinceMerge` decides that locally
+  and skips the fetch — the common "user resumes a merged session" case stays
+  network-free.
+
+The docs/218 pre-turn reset fetches immediately before it moves the branch, so it
+passes `skipFetch: true` and doesn't pay for a second fetch in front of the turn.
 
 ## Turn-gated evaluation — no extra GitHub load
 
@@ -88,8 +123,11 @@ Detection and re-arm run **only from the post-turn flow**, once per assistant
 turn for that session. There is deliberately **no poller-tick sweep** over merged
 sessions:
 
-- The local check (merge-base + two-dot diff) is cheap and offline, so running
-  it per turn is free.
+- The local check (merge-base + two-dot diff) is cheap, and it runs only for
+  sessions that are actually merged. Its `git fetch` prerequisite (see "The base
+  ref must be current") is scoped the same way and skipped entirely when the
+  branch hasn't moved off the merged tip — so a merged session that isn't
+  progressing costs no GitHub API queries and, in the common case, no network.
 - GitHub polling only **resumes** for a merged session if that local check says
   the branch genuinely progressed — i.e. only when there's a real new PR to
   track. Merged sessions that aren't moving cost zero GitHub queries.
@@ -474,3 +512,33 @@ _None — see "Re-armed card presentation"._
   orchestrator images (`docker/Dockerfile.{prod,dev,dogfood}`) so git's
   `store`/`erase` calls to the broker are absorbed; the orchestrator still
   authenticates via its own global inline helper.
+
+- **Detection must fetch before comparing (bug fix, SHI-238).** The detection is
+  base-relative, and `origin/<base>` in a session clone only moves when that clone
+  fetches — nothing on the merge path does. Deciding off a stale ref inverted the
+  answer (a branch's merge-base with its own fork point *is* the fork point), so
+  the first committing turn on a merged session un-merged it and left a "ready"
+  card with the stale full-branch diff + "Create PR", with the branch still
+  carrying only shipped commits. `clearMerged` also drops `mergedHeadSha`, so the
+  false re-arm permanently disabled the docs/218 auto-advance for that session —
+  which is why the symptom read as "the branch-advance feature didn't work."
+  `pr-rearm.ts` now freshens the ref first (`freshenBaseRef`, fail-safe: a fetch
+  failure stays merged) in BOTH detectors, short-circuits network-free when HEAD
+  still sits on the `mergedHeadSha` anchor (`unmovedSinceMerge`), and accepts
+  `skipFetch` for the docs/218 pre-turn path that just fetched. The primitives'
+  docstrings (`advancedBeyondMergedBase`, `headIsAtBase`) now state the
+  caller-must-fetch precondition. Coverage: `pr-rearm.test.ts` ("base-ref
+  freshness" — fetch-before-decide ordering, fail-safe on fetch failure, anchor
+  short-circuit, no-anchor fallthrough, `skipFetch`) and
+  `git-rearm-detect.test.ts` ("stale origin/<base>" — the same repo state
+  answering differently before and after the fetch, which is what pins the
+  precondition down).
+
+  The same commit fixed the **reconnect seed** of the ready card
+  (`route-registry.ts`): it diffed against a hardcoded `"main"` and dropped the
+  `previousMergedPr` breadcrumb, so on session-switch / reload a re-armed session
+  showed diff numbers measured against the wrong base, lost its "previously
+  merged #N" note, and — lacking the breadcrumb — could no longer override a
+  viewer's stale terminal merged card. It now mirrors
+  `emitPrLifecycleAfterCommit`'s base resolution (`previousMergedPr?.baseBranch ??
+  "main"`) and threads the breadcrumb.

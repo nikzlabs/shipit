@@ -282,6 +282,20 @@ This feature's net addition is the **pre-turn reset + the explicit control + the
 agent prefix + the persisted user card**. The PR-card lifecycle (docs/202/216) is
 treated as corroborating, not as the user-facing signal of record.
 
+**A false docs/202 re-arm used to disable this feature (SHI-238).** The composition
+above runs in one direction, but there was a feedback edge in the other: docs/202's
+detection reads `origin/<base>` from the session clone, which nothing on the merge
+path fetches, and a stale base ref makes `advancedBeyondMergedBase` report progress
+for a branch that never moved. So on a session where the reset did *not* fire (the
+setting off, a per-send untick, no `mergedHeadSha`, a dirty tree, `/compact`), the
+next committing turn falsely re-armed — and `clearMerged` drops `mergedHeadSha`,
+which is this feature's load-bearing safety anchor. From then on
+`computeResetEligible` was permanently false: no composer control, no auto-advance,
+and a gray "ready" card showing the stale full-branch diff with a "Create PR"
+button. The user-visible read was "the branch-advance feature doesn't work."
+Fixed in docs/202 (`pr-rearm.ts#freshenBaseRef` + the `unmovedSinceMerge`
+anchor short-circuit); see that plan's "The base ref must be current".
+
 **Pre-turn PR-card re-arm (timing fix).** The post-turn `detectAndReArmResetSession`
 above only settles the PR card *after* the whole agent turn finishes, so the stale
 "merged" PR card lingered while the user already saw the branch-updated card — the

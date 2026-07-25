@@ -72,6 +72,11 @@ beforeEach(async () => {
           // docs/202 — stub the re-arm detection so a test can flip
           // "progressed" without constructing a real rebase against a remote.
           if (prop === "advancedBeyondMergedBase") return async () => reArmProgressed;
+          // The re-arm helper freshens `origin/<base>` before deciding (a stale
+          // remote-tracking ref inverts the detection — see
+          // `pr-rearm.ts#freshenBaseRef`). There's no real remote here, so a
+          // real fetch would throw and the helper would fail safe.
+          if (prop === "fetch") return async () => {};
           return (target as never)[prop as never];
         },
       });

@@ -409,6 +409,14 @@ export class GitManager {
    * squash, two-dot picks up other commits), so a merged session keeps showing
    * "merged" until the user rebases. A missing `origin/<base>` also returns
    * false (fail-safe — stay merged).
+   *
+   * **Precondition — the caller MUST have fetched.** This reads `origin/<base>`
+   * from the local clone, and that ref only moves when this clone fetches. On a
+   * STALE ref clause 1 is trivially satisfied (the merge-base of a branch and
+   * its own fork point *is* that fork point), so the check reports "progressed"
+   * for a branch that was never rebased and carries only already-merged work.
+   * Every caller therefore freshens the ref first — see
+   * `services/pr-rearm.ts#freshenBaseRef`.
    */
   async advancedBeyondMergedBase(baseBranch: string): Promise<boolean> {
     const baseRef = `origin/${baseBranch}`;
@@ -442,7 +450,10 @@ export class GitManager {
    * the user resets.
    *
    * Local git only (no network). Fail-safe false (stay merged) on any
-   * resolution error or a missing `origin/<base>`.
+   * resolution error or a missing `origin/<base>`. Like
+   * {@link advancedBeyondMergedBase} it reads a remote-tracking ref, so the
+   * caller must have fetched — against a stale `origin/<base>` this reads a
+   * branch reset onto an outdated base tip as "at base".
    */
   async headIsAtBase(baseBranch: string): Promise<boolean> {
     const baseRef = `origin/${baseBranch}`;
