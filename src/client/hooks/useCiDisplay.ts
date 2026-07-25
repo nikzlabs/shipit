@@ -23,6 +23,7 @@
  * left open across the transition flips without user interaction.
  */
 
+// eslint-disable-next-line no-restricted-imports -- useEffect: setTimeout subscription with cleanup, armed at the grace deadline so an open card retires its spinner on time (browser-timer escape hatch)
 import { useEffect, useState } from "react";
 import type { PrCardState } from "../stores/pr-store.js";
 
@@ -87,6 +88,7 @@ export function useCiDisplay(checks: Checks): CiDisplay {
     ? checks.graceUntil
     : undefined;
 
+  // eslint-disable-next-line no-restricted-syntax -- the deadline is wall-clock, not a render input: nothing re-renders this card at the instant grace expires, so a timer is the only way to flip the spinner without user interaction.
   useEffect(() => {
     if (graceUntil === undefined) return;
     const delay = graceUntil - Date.now();
