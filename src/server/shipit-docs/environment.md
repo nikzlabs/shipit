@@ -59,7 +59,7 @@ Note: your own memory under `~/.claude/projects/<cwd>/memory/` is **not** restri
 ## Installed tools
 
 - **Node.js 24** (with npm; `pnpm` and `yarn` are available via corepack — it reads the repo's `packageManager` field and fetches the pinned version)
-- **git**, **curl**
+- **git**, **git-lfs**, **curl** (see [Git LFS](#git-lfs) below)
 - **python3**, **make**, **g++** (for native npm addons)
 - **Agent CLIs** — both `claude` (Claude Code) and `codex` (Codex) are installed; ShipIt invokes whichever the user selected for the session
 
@@ -89,6 +89,34 @@ that added a dependency reinstalls and restarts the preview automatically.
 **Compose services**: Project services (dev servers, databases, caches) run as
 Docker Compose containers managed by ShipIt. Define them in
 `docker-compose.yml`. See [compose.md](compose.md) for details.
+
+## Git LFS
+
+`git-lfs` is installed and its filters are registered system-wide, so a repo that
+tracks assets with Git LFS works normally: `git checkout` materializes real
+content and committing a new tracked binary stores a pointer. ShipIt runs
+`git lfs pull` when it provisions the workspace, so LFS-tracked files should
+already hold their real bytes when your session starts.
+
+**When they don't, you will see pointer stubs, not an error.** An LFS pointer is
+a ~130-byte text file starting with `version https://git-lfs.github.com/spec/v1`.
+That failure mode is easy to misdiagnose — images render broken, audio fails with
+`Unable to decode audio data`, and the obvious suspects (sandbox networking,
+headless-browser codec support, a corrupt asset) all look plausible. **Before
+chasing any of those, check the file itself**:
+
+```bash
+head -c 120 path/to/asset.png     # a "git-lfs.github.com/spec/v1" header means it's a stub
+```
+
+If it is a stub, fetch the content rather than debugging the renderer:
+
+```bash
+git lfs pull
+```
+
+A deployment can disable automatic LFS downloads (`SHIPIT_GIT_LFS=off`) to avoid
+the bandwidth cost on asset-heavy repos; a manual `git lfs pull` still works.
 
 ## Session container lifecycle — idle containers are destroyed, not paused
 

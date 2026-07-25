@@ -9,6 +9,7 @@ import type { SessionContainerManager } from "./session-container.js";
 import type { SessionOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import { generateBranchPrefix, fetchAndResolveDefaultBranch, syncLocalDefaultBranchToOrigin } from "./git-utils.js";
 import { handWorkspaceBackToWorker } from "./session-worker-uid.js";
+import { materializeLfsWithWarning } from "./git-lfs.js";
 import { getErrorMessage } from "./validation.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { workerInstall, workerGet } from "./worker-http.js";
@@ -169,6 +170,14 @@ export function createWarmPool(
         // commits that are already on main but ahead of the stale bare-cache
         // snapshot this clone was cut from (docs/194).
         await syncLocalDefaultBranchToOrigin(workspaceDir);
+        // docs/231 — pull Git LFS content. Must come after the `checkout -b`
+        // above (which re-writes pointer stubs into the worktree) and before the
+        // chown below (the pull writes files as root). Warming happens off the
+        // user's critical path, so this is the cheapest place to absorb the
+        // transfer for asset-heavy repos.
+        await materializeLfsWithWarning(workspaceDir, repoUrl, (message) =>
+          sseBroadcast("error", { message }),
+        );
         // docs/150 §7 addendum (SHI-145): hand the workspace back to the worker
         // uid after the root orchestrator's fetch + `checkout -b` + ref
         // realignment. `checkout -b <resetTarget>` re-materializes the WORKTREE

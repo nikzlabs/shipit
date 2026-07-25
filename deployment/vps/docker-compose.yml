@@ -83,6 +83,16 @@ services:
       # no-ops. Empty (= off, the default) unless the operator exports
       # OVERLAY_DEP_STORE=1 before bringing the stack up.
       - OVERLAY_DEP_STORE=${OVERLAY_DEP_STORE:-}
+      # Git LFS (docs/231) — opt-out passthroughs. LFS materialization runs
+      # orchestrator-side (git-lfs.ts reads both from its OWN process env), so
+      # without these lines exporting them on the host silently no-ops, exactly
+      # like OVERLAY_DEP_STORE above. Both empty = the in-code defaults: LFS ON
+      # and a 5-minute per-pull ceiling. Set SHIPIT_GIT_LFS=off in the env file
+      # deploy.sh loads (/etc/shipit/shipit.env) to detect-and-warn without
+      # spending the transfer on asset-heavy repos; raise
+      # SHIPIT_GIT_LFS_TIMEOUT_MS for repos whose pull legitimately exceeds it.
+      - SHIPIT_GIT_LFS=${SHIPIT_GIT_LFS:-}
+      - SHIPIT_GIT_LFS_TIMEOUT_MS=${SHIPIT_GIT_LFS_TIMEOUT_MS:-}
       # docs/172 Gap 1 (SHI-90) — agent egress containment is ON by default for
       # all instances (fail-closed). The orchestrator runs the privileged
       # installer/resolver/proxy sidecars in the agent netns from this image;

@@ -16,7 +16,16 @@ ENV BASE_IMAGE_DIGEST=${BASE_IMAGE_DIGEST}
 # refused outside a venv, so a venv is the supported path.
 # `gosu` (docs/150): the entrypoint drops to the unprivileged `shipit` user
 # after prepping mounts. See Dockerfile.session-worker.prod for the full why.
-RUN apt-get update && apt-get install -y git curl python3 python3-pip python3-venv make g++ zip unzip ripgrep bubblewrap gosu && rm -rf /var/lib/apt/lists/*
+# `git-lfs` (docs/231) — see the canonical comment in
+# Dockerfile.session-worker.prod: without it, LFS-tracked assets check out as
+# pointer stubs and previews render broken with no error.
+RUN apt-get update && apt-get install -y git git-lfs curl python3 python3-pip python3-venv make g++ zip unzip ripgrep bubblewrap gosu && rm -rf /var/lib/apt/lists/*
+
+# docs/231 — register the LFS filters in /etc/gitconfig (GIT_CONFIG_GLOBAL points
+# at the read-only /credentials/.gitconfig, so this is the only writable place).
+# Full install inside session containers; the orchestrator images use
+# --skip-smudge. Canonical comment in Dockerfile.session-worker.prod.
+RUN git lfs install --system --skip-repo
 
 # docs/150 §1 — rename the upstream `node` user (UID/GID 1000) to `shipit`.
 RUN groupmod --new-name shipit node \

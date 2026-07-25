@@ -26,8 +26,16 @@ WORKDIR /workspace
 # orch's GitManager shells out to it for clone/commit/diff. The others keep the
 # inner orch's behavior at parity with a real session container.
 RUN apt-get update \
-    && apt-get install -y git curl python3 make g++ zip unzip ripgrep bubblewrap \
+    && apt-get install -y git git-lfs curl python3 make g++ zip unzip ripgrep bubblewrap \
     && rm -rf /var/lib/apt/lists/*
+
+# docs/231 — Git LFS for the inner orchestrator. `--skip-smudge` matches the
+# other orchestrator images (clean on so auto-commit writes pointers, smudge off
+# so `git clone --local` from the bare cache can't fail on a bogus LFS endpoint);
+# canonical comment in Dockerfile.prod. In RUNTIME_MODE=local this container is
+# also the agent's host, so a manual `git checkout` here writes pointer stubs —
+# run `git lfs pull` after one. Real session containers get the full install.
+RUN git lfs install --system --skip-repo --skip-smudge
 
 # Install the agent CLIs so the inner orchestrator (RUNTIME_MODE=local) can
 # spawn them in-process via claude-adapter / codex-adapter. The shared

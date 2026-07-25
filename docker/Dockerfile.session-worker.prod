@@ -52,7 +52,22 @@ ENV BASE_IMAGE_DIGEST=${BASE_IMAGE_DIGEST}
 # worker. gosu is the Debian-native, no-TTY privilege-drop tool (su-exec is
 # Alpine-only). It is intentionally NOT setuid — it relies on PID 1's
 # CAP_SETUID/CAP_SETGID, which composes with `no-new-privileges`.
-RUN apt-get update && apt-get install -y git curl python3 python3-pip python3-venv make g++ zip unzip ripgrep bubblewrap gosu && rm -rf /var/lib/apt/lists/*
+# `git-lfs` (docs/231): a repo that tracks assets with Git LFS checks its images,
+# audio and other binaries out as ~130-byte pointer stubs unless the LFS filters
+# are installed — broken previews with no error anywhere (nikzlabs/shipit#1729).
+RUN apt-get update && apt-get install -y git git-lfs curl python3 python3-pip python3-venv make g++ zip unzip ripgrep bubblewrap gosu && rm -rf /var/lib/apt/lists/*
+
+# docs/231 — register the LFS filters in /etc/gitconfig, which is the only
+# writable place for them: the container's GIT_CONFIG_GLOBAL points at
+# /credentials/.gitconfig, mounted READ-ONLY, so a runtime `git lfs install`
+# would fail. System config is still read alongside GIT_CONFIG_GLOBAL, so baking
+# it here is what makes LFS work at all inside a session.
+#
+# Full install (no --skip-smudge, unlike the orchestrator images): inside the
+# container the agent and the user expect ordinary LFS behaviour — `git checkout`
+# smudges real content, and committing a new asset cleans it into a pointer.
+# `--skip-repo` keeps it from touching the build context's own repo hooks.
+RUN git lfs install --system --skip-repo
 
 # docs/150 §1 — rename the upstream `node` user (UID/GID 1000 in node:*-slim) to
 # `shipit`. Reusing the existing 1000 account avoids a useradd collision and
