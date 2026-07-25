@@ -5,6 +5,7 @@ import path from "node:path";
 import simpleGit, { type SimpleGit } from "simple-git";
 import { ensurePnpmStoreGitExcluded } from "../shared/git.js";
 import { chownTreeToSessionWorker } from "./session-worker-uid.js";
+import { linkLfsObjectsIntoClone } from "./git-lfs-store.js";
 
 /**
  * Validate a bare cache directory and re-clone it from the remote if it's
@@ -203,6 +204,12 @@ export class RepoGit {
   async cloneFromCache(sessionDir: string, remoteUrl?: string): Promise<void> {
     // git clone --local creates hardlinks for objects on the same volume
     await simpleGit().raw(["clone", "--local", this.repoDir, sessionDir]);
+    // docs/232 — `clone --local` hardlinks `.git/objects` but does NOT carry
+    // `.git/lfs`, so an LFS repo's clone starts with an empty content store and
+    // re-downloads every asset. Extend the same hardlink trick to the LFS store.
+    // Best-effort and flag-gated (off by default): anything not seeded here is
+    // still fetched by the provisioning `git lfs pull`.
+    linkLfsObjectsIntoClone(this.repoDir, sessionDir);
     // Disable auto-gc in the session clone to prevent hardlink breakage
     const sessionGit = simpleGit(sessionDir);
     await sessionGit.raw(["config", "gc.auto", "0"]);

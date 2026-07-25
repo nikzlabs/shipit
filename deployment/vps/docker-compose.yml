@@ -93,6 +93,14 @@ services:
       # SHIPIT_GIT_LFS_TIMEOUT_MS for repos whose pull legitimately exceeds it.
       - SHIPIT_GIT_LFS=${SHIPIT_GIT_LFS:-}
       - SHIPIT_GIT_LFS_TIMEOUT_MS=${SHIPIT_GIT_LFS_TIMEOUT_MS:-}
+      # docs/232 (SHI-236) — cross-session LFS object sharing: fetch LFS into the
+      # bare cache and hardlink it into each session clone, so an asset-heavy repo
+      # downloads once per host instead of once per session. Opt-in for a canary
+      # soak (empty = off), because it can't be verified in-session: the deployed
+      # session image has no git-lfs on PATH. Fails safe — an empty cache store
+      # just means each session pulls its own objects, i.e. today's behavior.
+      - SHIPIT_GIT_LFS_SHARED_STORE=${SHIPIT_GIT_LFS_SHARED_STORE:-}
+      - SHIPIT_GIT_LFS_CACHE_FETCH_TIMEOUT_MS=${SHIPIT_GIT_LFS_CACHE_FETCH_TIMEOUT_MS:-}
       # docs/172 Gap 1 (SHI-90) — agent egress containment is ON by default for
       # all instances (fail-closed). The orchestrator runs the privileged
       # installer/resolver/proxy sidecars in the agent netns from this image;

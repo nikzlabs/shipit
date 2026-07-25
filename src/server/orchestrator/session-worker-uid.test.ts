@@ -128,6 +128,62 @@ describe("session-worker-uid (docs/150 §7)", () => {
       }
     });
 
+    it("chownWorkspaceGitToSessionWorker skips LFS object files but chowns their fanout dirs", () => {
+      const myUid = process.getuid?.();
+      if (myUid === undefined) return; // not POSIX — skip
+      process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
+      const gitDir = path.join(tmpDir, ".git");
+      // docs/232: LFS uses a TWO-level fanout, `<ab>/<cd>/<oid>`.
+      const lfsObjects = path.join(gitDir, "lfs", "objects");
+      const lfsObj = path.join(lfsObjects, "ab", "cd", "abcdef0123");
+      fs.mkdirSync(path.dirname(lfsObj), { recursive: true });
+      fs.writeFileSync(lfsObj, "asset-bytes");
+      // Non-object LFS metadata still gets chowned (it's rewritten in place).
+      fs.writeFileSync(path.join(gitDir, "lfs", "cache-meta"), "");
+
+      const spy = vi.spyOn(fs, "lchownSync");
+      try {
+        chownWorkspaceGitToSessionWorker(tmpDir);
+        const chowned = new Set(spy.mock.calls.map((c) => c[0] as string));
+        // The object file is a hardlink into the shared cache store — chowning it
+        // would hand that store to the session uid, since an inode has one owner
+        // across every link.
+        expect(chowned.has(lfsObj)).toBe(false);
+        // Every fanout dir IS chowned, at BOTH levels: a root-owned `ab/` would
+        // stop the worker creating a new `cd/` when it commits a new asset.
+        expect(chowned.has(lfsObjects)).toBe(true);
+        expect(chowned.has(path.join(lfsObjects, "ab"))).toBe(true);
+        expect(chowned.has(path.join(lfsObjects, "ab", "cd"))).toBe(true);
+        // Ordinary `.git/lfs` metadata is unaffected by the object-store branch.
+        expect(chowned.has(path.join(gitDir, "lfs", "cache-meta"))).toBe(true);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("chownWorkspaceGitToSessionWorker leaves a hardlinked LFS object owned as-is", () => {
+      const myUid = process.getuid?.();
+      if (myUid === undefined) return; // not POSIX — skip
+      process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
+      // The end-to-end property docs/232 depends on: a cache object hardlinked
+      // into a clone must not have its ownership rewritten by the handback.
+      const cacheObj = path.join(tmpDir, "cache", "lfs", "objects", "ab", "cd", "oid1");
+      fs.mkdirSync(path.dirname(cacheObj), { recursive: true });
+      fs.writeFileSync(cacheObj, "shared");
+      const cloneObj = path.join(tmpDir, ".git", "lfs", "objects", "ab", "cd", "oid1");
+      fs.mkdirSync(path.dirname(cloneObj), { recursive: true });
+      fs.linkSync(cacheObj, cloneObj);
+      expect(fs.statSync(cloneObj).ino).toBe(fs.statSync(cacheObj).ino);
+
+      const spy = vi.spyOn(fs, "lchownSync");
+      try {
+        chownWorkspaceGitToSessionWorker(tmpDir);
+        expect(new Set(spy.mock.calls.map((c) => c[0] as string)).has(cloneObj)).toBe(false);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
     it("chownWorkspaceGitToSessionWorker is a no-op when the flag is unset", () => {
       delete process.env.SHIPIT_SESSION_WORKER_UID;
       const gitDir = path.join(tmpDir, ".git");
