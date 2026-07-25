@@ -4,13 +4,16 @@
  * with a call to this function. The current call sites are:
  *
  *   - ws-handlers/send-message.ts   (warm-graduation on first message)
+ *   - services/agent.ts             (POST /api/sessions/:id/agent/dispatch —
+ *                                    warm-graduation on a system-initiated
+ *                                    button press, docs/150)
  *   - services/headless-sessions.ts (POST /api/sessions/headless)
  *   - services/child-sessions.ts    (POST /api/sessions/:parentId/spawn)
  *   - services/session-fork-merge.ts (POST /api/sessions/:id/fork +
  *                                     rollback-driven fork via
  *                                     handleRewindAtGap)
  *
- * If you are adding a fifth surface, it MUST end here too. If you find
+ * If you are adding a further surface, it MUST end here too. If you find
  * yourself calling any of the following directly outside this module:
  *
  *   sessionManager.setWarm(id, false)

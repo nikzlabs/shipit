@@ -18,6 +18,11 @@
 - [x] Update remaining doc-comments referencing `sendSystemMessage` / `runSystemTurn` in `services/rebase-driver.ts`, `services/pr-lifecycle.ts`, `session-agent-env.ts`, `session-agent-run-params.ts`, integration test comments.
 - [x] Tests: `session-runner.test.ts` extended for `dispatch`, queue drain round-trip, broadcast `message_queued`. New `integration_tests/agent-dispatch-route.test.ts` covers 400/401/404 + idle vs queued. New `system-user-message.test.ts` covers the dedupe.
 
+## Follow-up fixes
+
+- [x] `dispatchAgentMessage` calls `graduateSession` (docs/156) for a still-warm session, and refills the pool via `warmSessionForRepo` — the original design left graduation in the WS handler only, so a button press on `/{slug}/new` ran a turn against a session that stayed `warm: 1`. Registered `services/agent.ts` in the `graduate-session.ts` contract docblock; covered by "warm session — dispatch graduates it" in `agent-dispatch-route.test.ts`.
+- [x] Client: `handleSendComposeErrorToAgent` / `handleSendComposeHintToAgent` graduate the URL `/{slug}/new` → `/session/{id}` and switch `mobilePanel` to `"chat"`, matching `handleSend` / `handleAskAgentReview`.
+
 ## Out of scope (future work)
 
 - File-review send (`handleFileSendComments`, DiffPanel review), `/review` slash command, "Ask agent to review" — still WS `send_message` / `send_review_message`. Internally they reach the same `runner.dispatch` funnel via the WS handler delegation in this PR.

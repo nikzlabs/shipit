@@ -13,6 +13,7 @@
 import type { AgentRegistry } from "../../shared/agent-registry.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
+import type { SessionManager } from "../sessions.js";
 import type { AuthManager } from "../agents/claude/auth-manager.js";
 import type {
   PermissionMode,
@@ -26,6 +27,7 @@ import {
   resolveFileAttachments,
   resolveUploadRefs,
 } from "../validation.js";
+import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js";
 import { ServiceError } from "./types.js";
 
 const PERMISSION_MODES: ReadonlySet<PermissionMode> = new Set<PermissionMode>([
@@ -57,6 +59,20 @@ export interface DispatchAgentMessageDeps {
   agentRegistry: AgentRegistry;
   credentialStore: CredentialStore;
   authManager: AuthManager;
+  sessionManager: SessionManager;
+  /**
+   * Everything `graduateSession` needs, minus the `runnerRegistry` this
+   * service already has. Warm-graduation is not optional — a dispatch is a
+   * first message like any other (see step 5 below).
+   */
+  graduation: Omit<GraduateSessionDeps, "runnerRegistry" | "sessionManager">;
+  /**
+   * Refill the warm pool after a warm session is consumed. Like the WS
+   * `send_message` path, this surface reaches graduation without going through
+   * `claimSessionService.claim`, so nothing else re-warms. Optional — runtimes
+   * without a pool (tests, local mode) omit it.
+   */
+  warmSessionForRepo?: (repoUrl: string) => Promise<void>;
 }
 
 /**
@@ -67,7 +83,8 @@ export interface DispatchAgentMessageDeps {
  *   2. Runner resolution (404 if no runner is registered for this session).
  *   3. Auth gate (401 if the active agent isn't authenticated).
  *   4. Attachment resolution (read files / uploads from disk, validate sizes).
- *   5. `runner.dispatch(...)` — the funnel owns the send-vs-queue decision.
+ *   5. Warm-session graduation (docs/156) — a dispatch is a first message.
+ *   6. `runner.dispatch(...)` — the funnel owns the send-vs-queue decision.
  */
 export async function dispatchAgentMessage(
   deps: DispatchAgentMessageDeps,
@@ -159,7 +176,28 @@ export async function dispatchAgentMessage(
     }
   }
 
-  // 5. Dispatch — the funnel decides send vs enqueue and broadcasts
+  // 5. Graduate a warm session — a dispatched button press is a first message
+  //    like any other. Without this the session row stays `warm: true`: it
+  //    never appears in the session list, keeps its placeholder title and
+  //    `shipit/<random>` branch, and the next "New Session" for the repo
+  //    recycles it out from under the running turn (findUngraduatedWarm).
+  //    graduate-session.ts owns the whole warm → active transition (docs/156) —
+  //    do not inline setWarm / track / rename / repoStore.touch / sseBroadcast.
+  const session = deps.sessionManager.get(sessionId);
+  if (session?.warm) {
+    graduateSession(
+      { ...deps.graduation, sessionManager: deps.sessionManager, runnerRegistry: deps.runnerRegistry },
+      { sessionId, userText: text, agentId: session.agentId ?? activeAgentId },
+    );
+    // Same reasoning as ws-handlers/send-message.ts: warm-graduation is the one
+    // path that doesn't reach graduation via `claimSessionService.claim`, so
+    // the consumed warm clone would otherwise never be replaced.
+    if (session.remoteUrl && deps.warmSessionForRepo) {
+      void deps.warmSessionForRepo(session.remoteUrl);
+    }
+  }
+
+  // 6. Dispatch — the funnel decides send vs enqueue and broadcasts
   //    message_queued via the runner if it enqueued.
   const wasRunning = runner.running;
   runner.dispatch({

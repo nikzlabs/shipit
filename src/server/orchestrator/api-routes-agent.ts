@@ -48,6 +48,15 @@ export async function registerAgentRoutes(
             agentRegistry: deps.agentRegistry,
             credentialStore: deps.credentialStore,
             authManager: deps.authManager,
+            sessionManager: deps.sessionManager,
+            graduation: {
+              repoStore: deps.repoStore,
+              createGitManager: deps.createGitManager,
+              sseBroadcast: deps.sseBroadcast,
+              ...(deps.prStatusPoller ? { prStatusPoller: deps.prStatusPoller } : {}),
+              ...(deps.ensureAgentTokenFresh ? { ensureAgentTokenFresh: deps.ensureAgentTokenFresh } : {}),
+            },
+            ...(deps.warmSessionForRepo ? { warmSessionForRepo: deps.warmSessionForRepo } : {}),
           },
           request.params.id,
           {
