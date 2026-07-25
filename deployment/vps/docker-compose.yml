@@ -95,12 +95,16 @@ services:
       - SHIPIT_GIT_LFS_TIMEOUT_MS=${SHIPIT_GIT_LFS_TIMEOUT_MS:-}
       # docs/232 (SHI-236) — cross-session LFS object sharing: fetch LFS into the
       # bare cache and hardlink it into each session clone, so an asset-heavy repo
-      # downloads once per host instead of once per session. Opt-in for a canary
-      # soak (empty = off), because it can't be verified in-session: the deployed
-      # session image has no git-lfs on PATH. Fails safe — an empty cache store
-      # just means each session pulls its own objects, i.e. today's behavior.
+      # downloads once per host instead of once per session. **On by default** now
+      # (empty = on, matching SHIPIT_GIT_LFS's polarity); set
+      # SHIPIT_GIT_LFS_SHARED_STORE=off to disable. Safe as a default because it
+      # fails safe, not because it's verified: an empty cache store just means each
+      # session pulls its own objects, i.e. the pre-docs/232 behavior. Disk growth
+      # is bounded by the DISK_JANITOR_LFS_OBJECT_DAYS prune sweep (default 14d,
+      # only unlinks objects no session clone hardlinks).
       - SHIPIT_GIT_LFS_SHARED_STORE=${SHIPIT_GIT_LFS_SHARED_STORE:-}
       - SHIPIT_GIT_LFS_CACHE_FETCH_TIMEOUT_MS=${SHIPIT_GIT_LFS_CACHE_FETCH_TIMEOUT_MS:-}
+      - DISK_JANITOR_LFS_OBJECT_DAYS=${DISK_JANITOR_LFS_OBJECT_DAYS:-}
       # docs/172 Gap 1 (SHI-90) — agent egress containment is ON by default for
       # all instances (fail-closed). The orchestrator runs the privileged
       # installer/resolver/proxy sidecars in the agent netns from this image;
