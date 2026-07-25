@@ -88,8 +88,8 @@ unless forced; PR/release pollers need explicit untracking). Protocol:
 3. Untrack the Project's repos from all pollers/watchers; evict its `ProjectContext`.
 4. Delete rows across all session-owned tables (sessions, messages, usage, file/agent
    reviews + comments, rewinds, presentations, egress rows), repos, secrets; delete the
-   Project credential dir; clear its TTS-cache entries and any per-project browser
-   namespaces on next load.
+   Project credential dir and its `repo-memory/<projectId>/` tree; clear its TTS-cache
+   entries and any per-project browser namespaces on next load.
 5. Emit the targeted `project_deleted` event (see scoped delivery) so viewing browsers
    fall back to Default and reload.
 
@@ -119,7 +119,7 @@ Ruling for every deployment-global surface found in the audits. Phase column ref
 | Settings + system prompt | **Project** | 2 | Storage *and* consumers: a `ProjectSettingsResolver` sweep covers the PR-automation gates (`app-lifecycle.ts` closes over the singleton store), runner live-steering, WS agent-execution reads, branch reset, sub-agent defaults, and the voice stack (routes are sessionless today; the **TTS cache dir is global and keyed without project** — scope or partition it). Host-resource knobs (`maxIdleContainers`, docker memory) stay global. |
 | Secrets | **Project** | 1a | Key `(project_id, repo_url, key)`; ciphertext copied verbatim; cipher key stays global. |
 | Egress allowlist | **Project tier** | 2 | `scope` gains `project:<id>` — **including the fourth existing tier** `__suppressed_defaults__` (user-removed built-in hosts): unscoped, removing a default host in Project A changes Project B's firewall. Egress broadcasts scoped in 1b. |
-| Repo memory | **Project** | 4 | `repo-memory/<projectId>/<repoHash>/`. Required companion: `sweepOrphanedRepoMemory` rm-rf's top-level entries not matching live hashes — needs nested per-Project traversal or it deletes every Project's memory. (`sweepOrphanedCaches` is different: repo/dep caches stay global and merely need an all-Projects union of live hashes.) Until 4, memory stays repo-hash-keyed and shared (documented interim leak). |
+| Repo memory | **Project** | **1a** | `repo-memory/<projectId>/<repoHash>/`. Promoted from phase 4: memory is the closest thing to per-user knowledge ("how this user likes things done"), so two trusted users sharing a repo across Projects must not cross-pollinate it. Required companion: `sweepOrphanedRepoMemory` rm-rf's top-level entries not matching live hashes — needs nested per-Project traversal or it deletes every Project's memory. (`sweepOrphanedCaches` also lands in 1a for a different reason: repo/dep caches stay global, but its live-hash set comes from the repo list, which becomes project-keyed — the union must span all Projects or it deletes other Projects' caches.) Cost of the split: the same repo in two Projects builds memory twice. |
 | Bare git cache / dep cache / overlay store | Global | — | Content, not policy. Caveats: (a) cached content fetched for Project A serves Project B for the same URL; (b) until 1c the *workspace-clone* fetches (warm pool, claim) and auto-push run under the singleton token, and their failure paths `markTokenInvalid` the host-wide token — after 1c, per-Project tokens and per-Project invalidation. (Bare-cache `fetchCache` itself holds no auth manager; its failures are swallowed by callers.) |
 | Templates, marketplaces/skills | Global (v1) | — | Catalog content; revisit if Projects want private skill sets. |
 | Resource budgets, janitors, idle enforcer, disk tiers | Global | — | One host, one budget; Projects contend, explicitly. Janitors/prefetch/reset use explicit `listAllProjects()` store variants. |
@@ -199,7 +199,7 @@ Each later phase peels its surface off the singleton into `ProjectContext`.
                                           # follow the new path in the same phase
     .gitconfig                            # per-project git identity (1c)
   sessions/<sessionId>/                   # unchanged per-session isolation
-  repo-memory/<projectId>/<repoHash>/     # phase 4 (janitor edits required)
+  repo-memory/<projectId>/<repoHash>/     # 1a (janitor edits land with it)
 ```
 
 **Field ownership** (exhaustive over the `CredentialData` type): host-owned —
@@ -384,8 +384,10 @@ after step 1 leaves exactly that):
    `host_rewritten`.
 3. Move `system-prompt.md` into Default's dir; its readers/writers follow the new path
    in the same phase. State `prompt_moved`.
+4. Move each `repo-memory/<repoHash>/` → `repo-memory/<default>/<repoHash>/` (plain
+   renames within one filesystem). State `memory_moved`.
 
-Each state is re-checked and the remaining steps re-run on every boot until all three
+Each state is re-checked and the remaining steps re-run on every boot until all four
 hold. Crash between 1 and 2 leaves both files complete — reads resolve per field-owner
 (project file wins for project-owned fields) and the rewrite retries. In the same PR:
 `CredentialStore.writeToDisk` becomes atomic (temp + rename — today it's an in-place
@@ -428,7 +430,11 @@ multi-tenancy remains `docs/062-managed-shipit`.
   usage stamping + scoped stats; the deletion protocol (Default + last Project
   undeletable); **scoped `/api/bootstrap` + SSE connect snapshot**; reload-based
   switching + switcher; deep-link resolver; content-bearing localStorage namespacing;
-  "repo settings" rename; Linear per Project; system prompt moved + readers updated.
+  "repo settings" rename; Linear per Project; system prompt moved + readers updated;
+  **repo-memory scoping** (`repo-memory/<projectId>/<repoHash>/` + the
+  `sweepOrphanedRepoMemory` nested traversal and `sweepOrphanedCaches` all-Projects
+  hash union — promoted from phase 4: memory is per-user knowledge and must not
+  cross-pollinate between trusted users sharing a repo).
 - **1b — Scoped live delivery.** The three typed broadcast forms; split cross-project
   poller batches; project ids on URL-keyed single-entity events; `project_deleted` +
   stale-project fallback; scoped egress broadcasts. Blindness now server-enforced for
@@ -449,8 +455,8 @@ multi-tenancy remains `docs/062-managed-shipit`.
   `subscription_limits` + the `agent_auth_*` event family + device-code replay;
   sign-out repairs dangling bindings; per-project agent/model/reasoning seeds; **drop
   the Default alias — Default becomes deletable**.
-- **4 — Remaining lifecycle.** Repo-memory scoping + janitor edits (nested traversal
-  for the memory sweep; all-Projects hash union for the cache sweep); residual polish.
+- **4 — Residual polish.** (Repo-memory scoping and both janitor edits were promoted
+  into 1a.)
 
 Each phase ships independently; the per-phase field-resolution matrix defines the
 correct intermediate at every point.
@@ -491,7 +497,7 @@ correct intermediate at every point.
 - `pr-status-poller.ts`, `release-status-poller.ts`, `pr-polling-supervisor.ts`,
   `ci-grace-tracker.ts`, `repo-prefetch.ts`, `services/bug-report.ts` — per-job
   credentials + cache re-keying (1c)
-- `steady-state-reclaim.ts` — sweep keying (4)
+- `steady-state-reclaim.ts` — sweep keying (1a)
 - `src/client/stores/` (`project-store.ts`, reload switch), `utils/local-storage.ts`,
   `hooks/useSessionActivation.ts` + `App.tsx` (deep links), `SessionSidebar/`
 

@@ -23,6 +23,7 @@ Phasing from plan.md, twice re-cut after two rounds of adversarial review (Codex
 - [ ] Rename per-repo "project settings" modal → "repo settings"
 - [ ] Linear per project (`TrackerRegistry` from project store; `setLinearTeam` explicit projectId)
 - [ ] System prompt moved to Default's dir; readers/writers (`services/settings.ts`, `bootstrap-managers.ts`) follow in the same phase
+- [ ] Repo-memory scoping `repo-memory/<projectId>/<repoHash>/` (migration state `memory_moved`); `sweepOrphanedRepoMemory` nested per-project traversal (data-loss hazard) + `sweepOrphanedCaches` all-projects live-hash union; project deletion removes the tree
 
 ## Phase 1b — scoped live delivery
 
@@ -60,7 +61,6 @@ Phasing from plan.md, twice re-cut after two rounds of adversarial review (Codex
 - [ ] Per-project agent/model/reasoning new-session localStorage seeds
 - [ ] Drop the Default alias; Default becomes deletable
 
-## Phase 4 — remaining lifecycle
+## Phase 4 — residual polish
 
-- [ ] Repo-memory scoping `repo-memory/<projectId>/<repoHash>/` + `sweepOrphanedRepoMemory` nested traversal (data-loss hazard) + `sweepOrphanedCaches` all-projects hash union
-- [ ] Residual polish
+- [ ] Residual polish (repo-memory scoping and janitor edits promoted into 1a)
