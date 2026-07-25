@@ -56,7 +56,7 @@ const card = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
-const spawnEvent: WsSubAgentSpawn = { type: "sub_agent_spawn", spawnId: "sp-1", subAgentId: "codex" } as unknown as WsSubAgentSpawn;
+const spawnEvent: WsSubAgentSpawn = { type: "sub_agent_spawn", sessionId: "s1", spawnId: "sp-1", subAgentId: "codex" } as unknown as WsSubAgentSpawn;
 const consultCardEvent: WsSubAgentConsultCard = { type: "sub_agent_consult_card", sessionId: "s1", card: card() } as unknown as WsSubAgentConsultCard;
 
 /** The card is "visible" only if buildVisualElements emits a renderable element for it. */

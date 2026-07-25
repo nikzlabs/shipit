@@ -163,7 +163,9 @@ describe("runSubAgent — happy path", () => {
     // transient running spinner, then the live bill refresh, then the terminal
     // persisted consult card.
     const msgs = emitMessage.mock.calls.map((c) => c[0] as { type: string });
-    expect(msgs[0]).toMatchObject({ type: "sub_agent_spawn", subAgentId: "codex" });
+    // The spinner carries the OWNING session id so the client can drop it when
+    // it arrives for a session other than the one being viewed.
+    expect(msgs[0]).toMatchObject({ type: "sub_agent_spawn", sessionId: "s1", subAgentId: "codex" });
     // the bill update is flagged subAgent so it doesn't move the context dial
     expect(msgs[1]).toMatchObject({
       type: "usage_update",

@@ -1,4 +1,5 @@
 import type { WsServerMessage } from "../../../server/shared/types.js";
+import { useSessionStore } from "../../stores/session-store.js";
 import type { Handler, HandlerContext, QueuedMessageStash } from "./types.js";
 
 import { handleAgentEvent } from "./agent-event.js";
@@ -192,6 +193,67 @@ export const messageHandlers: MessageHandlerMap = {
 };
 
 /**
+ * Message types whose `sessionId` names the session that OWNS the chat
+ * transcript they belong to — cards, notices, and the transient chips that sit
+ * beside them. The client keeps exactly one transcript in memory (the active
+ * session's `messages` array), so applying one of these for any other session
+ * writes it into the wrong scrollback.
+ *
+ * That is not hypothetical: the per-session WS is keyed off the *route*
+ * (`urlSessionId`) while every handler writes through the *store*
+ * (`useSessionStore.sessionId`). Those two agree in the steady state but not
+ * across every switch/fork/claim transition, and a card arriving inside that
+ * window used to land in whichever session was active — the symptom this set
+ * exists to prevent. Cross-session messages that legitimately describe *other*
+ * sessions (`session_status` sidebar dots, `pr_lifecycle_update`,
+ * `reset_eligible`, `usage_update`, `session_forked`, `rewind_restored`, …) are
+ * deliberately absent — they are keyed by their own `sessionId` inside their
+ * stores and must keep flowing.
+ *
+ * Dropping (rather than re-routing) is correct: every one of these is either
+ * persisted in the owning session's chat history — so switching to that session
+ * rehydrates it — or transient live activity that is meaningless once stale.
+ */
+const TRANSCRIPT_SCOPED_MESSAGES: ReadonlySet<WsMessageType> = new Set<WsMessageType>([
+  "action_checklist_card",
+  "branch_auto_reset_card",
+  "branch_synced_card",
+  "bug_report_card",
+  "bug_report_failed",
+  "bug_report_filed",
+  "child_merged_card",
+  "compaction_card",
+  "compaction_status",
+  "egress_prompt_card",
+  "egress_prompt_resolved",
+  "issue_ref_card",
+  "issue_write_card",
+  "issue_write_update",
+  "permission_request_card",
+  "permission_resolved",
+  "release_card",
+  "session_spawn_failed",
+  "session_spawned",
+  "sub_agent_consult_card",
+  "sub_agent_spawn",
+  "system_notice",
+  "voice_note",
+]);
+
+/**
+ * True when a transcript-scoped message belongs to a session other than the one
+ * currently rendered. Lenient by construction: a message with no `sessionId`,
+ * or a store with no active session, is never dropped — the guard only fires on
+ * a positive mismatch.
+ */
+function isForeignTranscriptMessage(data: WsServerMessage): boolean {
+  if (!TRANSCRIPT_SCOPED_MESSAGES.has(data.type)) return false;
+  const msgSessionId = (data as { sessionId?: string }).sessionId;
+  const activeSessionId = useSessionStore.getState().sessionId;
+  return !!msgSessionId && !!activeSessionId && msgSessionId !== activeSessionId;
+}
+
+/**
  * Dispatch a single WS server message to its handler (if any).
  *
  * Performs the discriminated-union narrowing here so handlers can be
@@ -199,6 +261,7 @@ export const messageHandlers: MessageHandlerMap = {
  * having to know which key to index.
  */
 export function dispatchMessage(ctx: HandlerContext, data: WsServerMessage): void {
+  if (isForeignTranscriptMessage(data)) return;
   const handler = messageHandlers[data.type] as Handler | undefined;
   handler?.(ctx, data);
 }

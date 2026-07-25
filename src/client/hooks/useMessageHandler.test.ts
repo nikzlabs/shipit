@@ -59,6 +59,7 @@ describe("useMessageHandler", () => {
   it("queues a replayed sub-agent spawn until HTTP history has loaded", async () => {
     const event: WsServerMessage = {
       type: "sub_agent_spawn",
+      sessionId: "session-1",
       spawnId: "spawn-1",
       subAgentId: "codex",
     };

@@ -21,6 +21,10 @@
 - [x] Local/dogfood mode in-process spawn
 - [x] Agent-facing `shipit-docs/agent.md`
 - [x] Unit/service tests (shim, run-helper, service gates, credentials, registry, chip)
+- [x] Session-scoped chip + consult card (`sessionId` on `sub_agent_spawn`,
+      central `TRANSCRIPT_SCOPED_MESSAGES` drop in `dispatchMessage`) — a
+      sub-agent spawned by a background session no longer renders in whichever
+      session happens to be active
 
 ## Deferred / follow-up
 

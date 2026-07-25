@@ -481,6 +481,27 @@ draws:
   end of the transcript lands it right after the triggering tool call, and the
   persisted `afterGroupIndex` keeps it there on reload.
 
+**Both surfaces are session-scoped, and the client enforces that centrally.**
+The browser holds exactly one transcript in memory (the active session's
+`messages` array), while the per-session WebSocket is keyed off the *route*
+(`urlSessionId` in `App.tsx`) and every handler writes through the *store*
+(`useSessionStore.sessionId`). Those two agree in the steady state but not
+across every switch / fork / claim transition, so a card arriving inside that
+window landed in whichever session happened to be active — the reported "a
+sub-agent spawned by another session shows up in the one I'm looking at" bug.
+`sub_agent_spawn` couldn't even be filtered: it carried no `sessionId` at all.
+The fix is a single gate rather than a per-handler check — `sub_agent_spawn` now
+carries the owning `sessionId`, and `dispatchMessage`
+(`client/hooks/message-handlers/index.ts`) drops any message in
+`TRANSCRIPT_SCOPED_MESSAGES` whose `sessionId` doesn't match the active session.
+Dropping is the right disposition: every card in that set is either persisted in
+its owner's chat history (so switching there rehydrates it) or transient live
+activity that is meaningless once stale. Messages that legitimately describe
+*other* sessions (`session_status` sidebar dots, `pr_lifecycle_update`,
+`reset_eligible`, `usage_update`, `session_forked`, …) are deliberately outside
+the set and keep flowing. Guard test:
+`client/hooks/message-handlers/dispatch-session-scope.test.ts`.
+
 ### 8. Local / dogfood mode
 
 In `RUNTIME_MODE=local`, agents run in-process and credential provisioning is
