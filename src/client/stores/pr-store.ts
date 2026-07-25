@@ -53,6 +53,12 @@ export interface PrCardState {
     pending: number;
     /** Per-check failure details. */
     failedChecks?: { name: string; summary: string }[];
+    /**
+     * Epoch ms at which a poller-forced `pending` (the grace override for "CI
+     * hasn't registered yet") expires. Past it, an empty check set is the
+     * terminal "no checks" state — see `useCiDisplay`.
+     */
+    graceUntil?: number;
   };
   /** Auto-fix loop state (open phase). docs/169: toggle is now a global setting. */
   autoFix?: {

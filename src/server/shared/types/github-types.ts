@@ -323,6 +323,17 @@ export interface PrStatusSummary {
     pending: number;
     /** Per-check failure details (populated when state is "failure"). */
     failedChecks?: { name: string; summary: string }[];
+    /**
+     * Epoch ms at which a *forced* pending state expires. Set only when the
+     * poller rewrote a genuine `"none"` reading to `"pending"` because the
+     * repo runs CI but GitHub hasn't registered a check yet (`CiGraceTracker`).
+     *
+     * The client treats `pending` + `total === 0` past this instant as the
+     * terminal "no checks" state. Without it, a summary persisted moments
+     * before polling paused (last viewer detached) rehydrates as a spinner
+     * that never resolves — nikzlabs/shipit#1730.
+     */
+    graceUntil?: number;
   };
   mergeable: PrMergeableState;
   /**

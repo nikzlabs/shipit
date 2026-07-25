@@ -8,6 +8,7 @@ import {
 } from "./pr-status-parser.js";
 import type { PrStatusSummary } from "../shared/types/github-types.js";
 import * as workflowLoader from "./workflow-loader.js";
+import { NO_CHECKS_GRACE_MS } from "./ci-grace-tracker.js";
 import type { SessionManager } from "./sessions.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { GitManager } from "../shared/git.js";
@@ -2435,8 +2436,15 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
     // Workflow with paths-ignore that excludes the PR's changed files.
     mockLoadWorkflows.mockResolvedValue([
       {
-        alwaysApplies: false,
-        events: [{ pathsInclude: [], pathsIgnore: ["docs/**", "**.md"] }],
+        unparseable: false,
+        events: [{
+          event: "pull_request",
+          pathsInclude: [],
+          pathsIgnore: ["docs/**", "**.md"],
+          branchesInclude: [],
+          branchesIgnore: [],
+          tagsOnly: false,
+        }],
       },
     ]);
 
@@ -2480,8 +2488,15 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
 
     mockLoadWorkflows.mockResolvedValue([
       {
-        alwaysApplies: false,
-        events: [{ pathsInclude: ["src/**"], pathsIgnore: [] }],
+        unparseable: false,
+        events: [{
+          event: "pull_request",
+          pathsInclude: ["src/**"],
+          pathsIgnore: [],
+          branchesInclude: [],
+          branchesIgnore: [],
+          tagsOnly: false,
+        }],
       },
     ]);
 
@@ -2501,6 +2516,92 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
         checks: expect.objectContaining({ state: "pending" }),
       })],
     }));
+
+    poller.destroy();
+  });
+
+  it("skips grace when the repo's only workflow has no PR-relevant trigger (nikzlabs/shipit#1730)", async () => {
+    // The reported repro: one workflow, manual dispatch plus a push trigger
+    // scoped to a single non-default branch. A session-branch PR into main
+    // matches nothing, so GitHub creates zero check runs — permanently. Pre-
+    // fix this went through the time-based grace and rendered a spinner for a
+    // result that was never coming.
+    const noCiNode = makeGraphQLPrNode({
+      commits: { nodes: [{ commit: { oid: "sha-1", statusCheckRollup: null } }] },
+      files: { nodes: [{ path: "src/index.ts" }] },
+    });
+    const graphqlResult = {
+      data: { repository: { pullRequests: { nodes: [noCiNode] } } },
+    };
+
+    const githubAuth = makeGitHubAuth(graphqlResult);
+    const sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+    const sseBroadcast = vi.fn();
+
+    // Parsed from the real workflow YAML so the test exercises the same path
+    // production does, not a hand-built stub.
+    mockLoadWorkflows.mockResolvedValue([
+      workflowLoader.parseWorkflowContent(
+        "on:\n  workflow_dispatch:\n  push:\n    branches:\n      - deploy\njobs: {}\n",
+      ),
+    ]);
+
+    const poller = new PrStatusPoller({
+      githubAuth,
+      sessionManager,
+      sseBroadcast,
+      getSharedRepoDir: () => "/repos/owner/repo",
+    });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Terminal from the very first poll — no spinner, no grace window.
+    expect(sseBroadcast).toHaveBeenCalledWith("pr_status", expect.objectContaining({
+      updates: [expect.objectContaining({
+        sessionId: "s1",
+        checks: expect.objectContaining({ state: "none", total: 0 }),
+      })],
+    }));
+
+    poller.destroy();
+  });
+
+  it("publishes a grace deadline alongside a forced-pending state", async () => {
+    // The client uses `graceUntil` to retire the spinner on its own if polling
+    // pauses (last viewer detached) before the poller observes the expiry.
+    const noCiNode = makeGraphQLPrNode({
+      commits: { nodes: [{ commit: { oid: "sha-1", statusCheckRollup: null } }] },
+    });
+    const graphqlResult = {
+      data: { repository: { pullRequests: { nodes: [noCiNode] } } },
+    };
+
+    const githubAuth = makeGitHubAuth(graphqlResult);
+    const sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+    const sseBroadcast = vi.fn();
+
+    mockLoadWorkflows.mockResolvedValue([ALWAYS_APPLIES]);
+
+    const poller = new PrStatusPoller({
+      githubAuth,
+      sessionManager,
+      sseBroadcast,
+      getSharedRepoDir: () => "/repos/owner/repo",
+    });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    const update = sseBroadcast.mock.calls
+      .flatMap((call) => (call[1] as { updates?: PrStatusSummary[] }).updates ?? [])
+      .find((u) => u.sessionId === "s1");
+    expect(update?.checks.state).toBe("pending");
+    expect(update?.checks.graceUntil).toBe(Date.now() + NO_CHECKS_GRACE_MS);
 
     poller.destroy();
   });
