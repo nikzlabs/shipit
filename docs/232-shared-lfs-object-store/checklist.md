@@ -32,8 +32,17 @@
 - [x] Prune tests: byte accounting, a hardlinked object surviving any age, a fresh
       object surviving, emptied fanout dirs removed while ones with survivors stay,
       all repo caches swept
-- [ ] Confirm from the first LFS repo to provision after the flip that
-      `git lfs fetch` populates `lfs/objects` in a *bare* repo and authenticates
-      via the global credential helper. Both fail safe, so this is confirmation,
-      not a gate. See "Verification status" in `plan.md`.
+- [x] Confirm `git lfs fetch` populates `lfs/objects` in a *bare* repo — measured
+      against a synthetic LFS repo now that git-lfs 3.3.0 ships in the session
+      image. Confirmed **conditionally**: the no-ref form fails outright on a
+      dangling `HEAD`, the explicit-ref form always works
+- [x] Fix the two HEAD dependencies the measurement exposed — `resolveCacheFetchRef`
+      resolves a concrete branch, used for BOTH `repoDeclaresLfs` detection (which
+      greps `HEAD` by default and exits 128 on a dangling one) and the fetch itself
+- [x] Verify the rest of the chain against the production shape: a smudge-off
+      clone yields a 129-byte stub, seeding shares one inode, and `git lfs pull`
+      succeeds from the seeded object alone after the cache's copy is deleted
+- [ ] Confirm the LFS endpoint authenticates via the global credential helper
+      against a real **private** LFS repo. Still unmeasured: a `file://` remote
+      uses a local transfer adapter, so no HTTP auth is exercised. Fails safe.
 - [ ] Seed on `refreshCloneToLatestMain` too, whose `reset --hard` re-pulls
