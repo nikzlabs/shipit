@@ -326,6 +326,10 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
         sessionId: capturedSessionId,
         sessionDir: capturedSessionDir,
         emit: (msg) => runner.emitMessage(msg),
+        // The reset itself just fetched and moved the branch onto
+        // `origin/<base>`, so the base ref is current — skip the helper's own
+        // freshening fetch rather than pay for it in front of the user's turn.
+        skipFetch: true,
       });
       // docs/218 — the branch now sits at the fresh base (HEAD !== mergedHeadSha),
       // so the session is no longer reset-eligible. Push `reset_eligible: false`

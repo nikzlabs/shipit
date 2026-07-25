@@ -1018,7 +1018,17 @@ export async function registerRoutes(
               try {
                 const git = createGitManager(session.workspaceDir!);
                 const headBranch = session.branch || await git.getCurrentBranch();
-                const { insertions, deletions } = await git.diffStatVsBranch("main");
+                // docs/202 — a re-armed session (merged → advanced, no new PR
+                // yet) carries a `previousMergedPr` breadcrumb. Mirror
+                // `emitPrLifecycleAfterCommit`'s base resolution so the diff is
+                // measured against the prior PR's base rather than a hardcoded
+                // "main", and thread the breadcrumb through: it renders the
+                // "previously merged #N" note AND is what lets this card
+                // override a viewer's stale terminal merged card in
+                // `pr-store.updateCard`'s regress guard.
+                const previousMergedPr = session.previousMergedPr;
+                const readyBase = previousMergedPr?.baseBranch ?? "main";
+                const { insertions, deletions } = await git.diffStatVsBranch(readyBase);
                 send({
                   type: "pr_lifecycle_update",
                   sessionId,
@@ -1027,6 +1037,7 @@ export async function registerRoutes(
                   headBranch,
                   totalInsertions: insertions,
                   totalDeletions: deletions,
+                  ...(previousMergedPr ? { previousMergedPr } : {}),
                 });
               } catch (err) {
                 send({
