@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { runGit, repoDeclaresLfs, isGitLfsAvailable } from "./git-lfs.js";
+import { runGit, repoDeclaresLfs, isGitLfsAvailable, PROBE_TIMEOUT_MS } from "./git-lfs.js";
 
 /**
  * Cross-session Git LFS object sharing via the bare repo cache (docs/232, SHI-236).
@@ -109,6 +109,43 @@ export interface LinkStats {
 }
 
 /**
+ * Which ref to hand `git lfs fetch` in a bare cache, or `null` if the repo has no
+ * branches (nothing to fetch).
+ *
+ * **This exists because the bare-ref form is fragile.** `git lfs fetch origin`
+ * with no ref resolves `HEAD`, and in a bare repo whose `HEAD` doesn't resolve it
+ * fails outright — `Git can't resolve ref: "HEAD"`, zero objects fetched
+ * (verified against git-lfs 3.3.0). That isn't hypothetical for our cache:
+ * `RepoGit.readHead` already documents `HEAD` coming back unresolvable, and a
+ * remote that renames its default branch leaves the cache's `HEAD` symref
+ * pointing at a branch that the next `fetch --prune` (refspec
+ * `+refs/heads/*:refs/heads/*`) deletes. The repo would then never share an
+ * object again, quietly, for as long as the symref stayed dangling.
+ *
+ * Naming the ref explicitly sidesteps all of it: `git lfs fetch origin <branch>`
+ * works whether or not `HEAD` resolves.
+ */
+export async function resolveCacheFetchRef(bareRepoDir: string): Promise<string | null> {
+  // Prefer HEAD's own branch — that's the ref session clones are cut from, so
+  // its objects are the ones worth having in the cache.
+  const head = await runGit(["rev-parse", "--verify", "--quiet", "HEAD"], bareRepoDir, PROBE_TIMEOUT_MS);
+  if (head.code === 0 && head.stdout.trim()) {
+    const sym = await runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], bareRepoDir, PROBE_TIMEOUT_MS);
+    const branch = sym.stdout.trim();
+    if (sym.code === 0 && branch) return branch;
+  }
+  // HEAD is dangling or detached — fall back to any branch the cache does have,
+  // which still shares far more than fetching nothing.
+  const refs = await runGit(
+    ["for-each-ref", "--count=1", "--format=%(refname:short)", "refs/heads/"],
+    bareRepoDir,
+    PROBE_TIMEOUT_MS,
+  );
+  const first = refs.stdout.trim().split("\n")[0]?.trim();
+  return first || null;
+}
+
+/**
  * Fetch LFS objects into the **bare cache** so session clones can share them.
  *
  * Must be explicit: the orchestrator runs with `--skip-smudge`, and a mirror
@@ -118,7 +155,7 @@ export interface LinkStats {
  * whole point is to move the transfer off the claim slow-path, so this must never
  * be awaited from provisioning. Returns whether the cache store was populated;
  * `false` covers every "no thanks" case (flag off, not an LFS repo, no binary,
- * fetch failed) and is never an error the caller must handle.
+ * no branches, fetch failed) and is never an error the caller must handle.
  */
 export async function fetchLfsIntoCache(
   bareRepoDir: string,
@@ -126,17 +163,25 @@ export async function fetchLfsIntoCache(
 ): Promise<boolean> {
   if (!lfsSharedStoreEnabled()) return false;
   try {
-    if (!(await repoDeclaresLfs(bareRepoDir))) return false;
+    // Resolve the ref FIRST and use it for detection too. `repoDeclaresLfs`
+    // defaults to grepping `HEAD`, and `git grep … HEAD` exits 128 on a bare repo
+    // whose HEAD dangles — which reads as "not an LFS repo" and skips the fetch
+    // before the fetch's own HEAD-independence ever helps. Both HEAD dependencies
+    // have to go, or the dangling-HEAD cache still shares nothing.
+    const ref = await resolveCacheFetchRef(bareRepoDir);
+    if (!ref) return false; // no branches yet — nothing a session would check out
+    if (!(await repoDeclaresLfs(bareRepoDir, ref))) return false;
     if (!(await (opts?.isAvailable ?? isGitLfsAvailable)())) {
       console.warn(`[git-lfs-store] Skipping cache fetch for ${bareRepoDir} — git-lfs binary unavailable`);
       return false;
     }
     const startedAt = Date.now();
     // `--all` would pull every version of every asset ever committed, which on an
-    // asset-heavy repo is unboundedly larger than the working set. Plain `fetch`
-    // resolves the objects for the cache's current ref, which is what a session
-    // clone checks out.
-    const res = await runGit(["lfs", "fetch", "origin"], bareRepoDir, cacheFetchTimeoutMs());
+    // asset-heavy repo is unboundedly larger than the working set. Naming one ref
+    // fetches the objects for what a session clone actually checks out — and,
+    // unlike the no-ref form, doesn't fall over on an unresolvable `HEAD` (see
+    // `resolveCacheFetchRef`).
+    const res = await runGit(["lfs", "fetch", "origin", ref], bareRepoDir, cacheFetchTimeoutMs());
     const durationMs = Date.now() - startedAt;
     if (res.code !== 0) {
       const detail = (res.stderr || res.stdout).trim().split("\n").slice(-2).join(" ").slice(0, 200);

@@ -2,7 +2,14 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { lfsSharedStoreEnabled, lfsObjectsDir, linkLfsObjectsIntoClone, fetchLfsIntoCache } from "./git-lfs-store.js";
+import { spawnSync } from "node:child_process";
+import {
+  lfsSharedStoreEnabled,
+  lfsObjectsDir,
+  linkLfsObjectsIntoClone,
+  fetchLfsIntoCache,
+  resolveCacheFetchRef,
+} from "./git-lfs-store.js";
 
 /** `<ab>/<cd>/<oid>` — the two-level fanout git-lfs writes. */
 function writeCacheObject(cacheDir: string, oid: string, content: string): string {
@@ -189,6 +196,58 @@ describe("git-lfs-store", () => {
       let stats: ReturnType<typeof linkLfsObjectsIntoClone> | undefined;
       expect(() => (stats = linkLfsObjectsIntoClone(cacheDir, notADir))).not.toThrow();
       expect(stats).toMatchObject({ linked: 0, failed: 1 });
+    });
+  });
+
+  describe("resolveCacheFetchRef", () => {
+    /**
+     * A bare repo with one branch. `headRef` sets the HEAD symref — pass a
+     * nonexistent branch to reproduce the dangling-HEAD case that makes the
+     * no-ref `git lfs fetch origin` fail outright.
+     */
+    function makeBareRepo(name: string, branch: string | null, headRef?: string): string {
+      const bare = path.join(tmpDir, name);
+      const work = path.join(tmpDir, `${name}-work`);
+      run(["init", "--quiet", "--bare", bare]);
+      if (branch) {
+        run(["init", "--quiet", work]);
+        run(["-C", work, "config", "user.email", "t@t"]);
+        run(["-C", work, "config", "user.name", "t"]);
+        fs.writeFileSync(path.join(work, "f.txt"), "hi");
+        run(["-C", work, "add", "-A"]);
+        run(["-C", work, "commit", "--quiet", "-m", "init"]);
+        run(["-C", work, "push", "--quiet", bare, `HEAD:refs/heads/${branch}`]);
+      }
+      if (headRef) run(["-C", bare, "symbolic-ref", "HEAD", headRef]);
+      return bare;
+    }
+
+    function run(args: string[]): void {
+      const res = spawnSync("git", args, { encoding: "utf8" });
+      if (res.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${res.stderr}`);
+    }
+
+    it("returns HEAD's branch when HEAD resolves", async () => {
+      const bare = makeBareRepo("valid", "main", "refs/heads/main");
+      await expect(resolveCacheFetchRef(bare)).resolves.toBe("main");
+    });
+
+    it("falls back to an existing branch when HEAD dangles", async () => {
+      // The regression this guards: `git init --bare` leaves HEAD on
+      // refs/heads/master, and a repo whose only branch is `main` (or whose
+      // default branch was renamed and pruned) has an unresolvable HEAD. The
+      // no-ref `git lfs fetch origin` fails hard there and fetches nothing.
+      const bare = makeBareRepo("dangling", "main", "refs/heads/does-not-exist");
+      await expect(resolveCacheFetchRef(bare)).resolves.toBe("main");
+    });
+
+    it("returns null for a repo with no branches at all", async () => {
+      const bare = makeBareRepo("empty", null);
+      await expect(resolveCacheFetchRef(bare)).resolves.toBeNull();
+    });
+
+    it("returns null rather than throwing for a directory that isn't a repo", async () => {
+      await expect(resolveCacheFetchRef(cacheDir)).resolves.toBeNull();
     });
   });
 

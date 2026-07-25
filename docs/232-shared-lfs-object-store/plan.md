@@ -194,22 +194,58 @@ object is reclaimed with its byte count, an object a clone hardlinks survives an
 age, a recently-touched one survives, emptied fanout dirs are removed while ones
 with survivors stay, and every repo cache on the host is swept.
 
-The `git lfs fetch origin`-in-a-bare-repo half could **not** be exercised in a
-session container: the deployed session image predates #1729's merge, so
-`git lfs` isn't on PATH here (`git: 'lfs' is not a git command`). Two assumptions
-therefore remain unverified in production, and the default was flipped **before**
-they were confirmed — a deliberate call, because both fail safe (see below) and
-the deployment is single-user. They're still worth confirming from the first LFS
-repo that provisions after the flip:
+### The bare-repo fetch — measured, and it found a bug
 
-1. `git lfs fetch` populates `lfs/objects` in a **bare** repo.
-2. Its endpoint resolves credentials through the global helper. `repo-prefetch.ts`
-   normalizes the cache's `origin` to the plain URL for exactly this reason (no
-   embedded token), so LFS should authenticate the same way `git fetch` does —
-   but that's reasoning, not a measurement.
+Once the docs/231 image shipped, `git-lfs` (3.3.0) became available inside a
+session container and the deferred assumption could finally be tested against a
+synthetic LFS repo with a `file://` remote. Assumption 1 — *`git lfs fetch`
+populates `lfs/objects` in a bare repo* — is **confirmed, but only conditionally**,
+and the condition was not what the original design assumed:
 
-Both fail safe: a failed fetch leaves the cache store empty, the seeding step
-finds nothing to link, and provisioning behaves exactly as it does today.
+| Bare cache state | `git lfs fetch origin` (no ref) | `git lfs fetch origin <branch>` |
+|---|---|---|
+| `HEAD` resolves | works — objects land | works |
+| `HEAD` dangles | **fails**: `Git can't resolve ref: "HEAD"`, zero objects | works |
+
+The no-ref form is the one the first cut shipped, so a cache whose `HEAD` symref
+pointed at a missing branch would have silently shared nothing, forever. That's
+reachable in production: `RepoGit.readHead` already documents `HEAD` coming back
+unresolvable, and a remote that renames its default branch leaves the cache's
+symref pointing at a branch the next `fetch --prune` (refspec
+`+refs/heads/*:refs/heads/*`) deletes.
+
+Worse, there were **two** HEAD dependencies, and fixing only the visible one
+changed nothing: `repoDeclaresLfs` defaults to grepping `HEAD`, and
+`git grep … HEAD` exits 128 on a dangling HEAD — which reads as "not an LFS repo"
+and returns before the fetch runs at all. Both had to go.
+
+`resolveCacheFetchRef` now resolves a concrete branch (HEAD's own when it
+resolves, else any branch the cache has, else `null` for an empty repo) and that
+ref is used for **both** detection and the fetch. Verified end-to-end against a
+deliberately-dangling-HEAD bare repo: before, `fetchLfsIntoCache` returned `false`
+with an empty store; after, it returns `true` and the object is present. The
+valid-HEAD and non-LFS-repo paths still behave as before.
+
+The rest of the chain was verified the same way, against the production shape
+(orchestrator clone with smudge off):
+
+- `git clone --local` from the cache produces a **129-byte pointer stub** and an
+  empty `.git/lfs/objects` — cause #1, confirmed directly rather than inferred.
+- `linkLfsObjectsIntoClone` seeds it: cache and clone share one inode.
+- Deleting the **cache's** copy and then running `git lfs pull` in the clone still
+  materializes the real 4096 bytes, with a sha256 matching the oid — proving the
+  seeded hardlink alone satisfied the pull, with nothing fetched from the remote.
+
+**Assumption 2 remains unmeasured.** A `file://` remote makes git-lfs use a local
+transfer adapter (`AccessDownload=none` in its log), so no HTTP endpoint and no
+credential helper was exercised. Whether the LFS endpoint authenticates through
+the global helper still rests on the reasoning that `repo-prefetch.ts` normalizes
+the cache's `origin` to the plain URL (no embedded token) so LFS should resolve
+credentials exactly as `git fetch` does. Confirm it against a real private LFS
+repo.
+
+It fails safe: a failed fetch leaves the cache store empty, the seeding step finds
+nothing to link, and provisioning behaves as it did before docs/232.
 
 ## Key files
 

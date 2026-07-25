@@ -57,7 +57,7 @@ const DEFAULT_PULL_TIMEOUT_MS = 300_000;
 const PULL_TIMEOUT_ENV = "SHIPIT_GIT_LFS_TIMEOUT_MS";
 
 /** Cheap probes (`git lfs version`, `git grep`) still shouldn't hang forever. */
-const PROBE_TIMEOUT_MS = 15_000;
+export const PROBE_TIMEOUT_MS = 15_000;
 
 export type LfsStatus =
   /** No tracked `.gitattributes` declares `filter=lfs` — nothing to do. */
