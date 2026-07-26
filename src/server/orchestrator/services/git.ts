@@ -9,6 +9,7 @@ import type { RebaseConflictFile } from "../../shared/git.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { FileDiff } from "../../shared/types.js";
 import { scanFileTree } from "../../shared/file-tree.js";
+import { createLfsBlobResolver, parseLfsPointer, type LfsBlobResolver } from "../git-lfs-blob.js";
 import { ServiceError } from "./types.js";
 
 // ---- Image diff support ----
@@ -36,15 +37,40 @@ function diffImageMime(filePath: string): string | null {
   return `image/${ext}`;
 }
 
+/** SVG is text, so it never reaches the binary branch — but it can still be
+ *  LFS-tracked, in which case the "text" is a pointer stub. */
+function isSvgPath(filePath: string): boolean {
+  return filePath.split(".").pop()?.toLowerCase() === "svg";
+}
+
+/**
+ * Real bytes for one side of a diff, following an LFS pointer when the blob is
+ * one. Diff blobs are read from the object database, not the working tree, so in
+ * an LFS repo they are *always* pointer stubs no matter what provisioning pulled
+ * — see the `git-lfs-blob.ts` docstring.
+ */
+async function diffBlobBytes(
+  git: GitManager,
+  ref: string,
+  filePath: string,
+  resolveLfs: LfsBlobResolver,
+): Promise<Buffer | null> {
+  const buf = await git.getFileBufferAtCommit(ref, filePath);
+  if (!buf || buf.length === 0) return null;
+  if (!parseLfsPointer(buf)) return buf;
+  return resolveLfs(buf, filePath, MAX_DIFF_IMAGE_BYTES);
+}
+
 /** Load an image blob at a ref as a base64 `data:` URI, or "" if absent/too big. */
 async function imageDataUri(
   git: GitManager,
   ref: string,
   filePath: string,
+  resolveLfs: LfsBlobResolver,
 ): Promise<string> {
   const mime = diffImageMime(filePath);
   if (!mime) return "";
-  const buf = await git.getFileBufferAtCommit(ref, filePath);
+  const buf = await diffBlobBytes(git, ref, filePath, resolveLfs);
   if (!buf || buf.length === 0 || buf.length > MAX_DIFF_IMAGE_BYTES) return "";
   return `data:${mime};base64,${buf.toString("base64")}`;
 }
@@ -55,6 +81,13 @@ async function imageDataUri(
  * the content is the UTF-8 blob; for binary *images* it's base64 `data:` URIs
  * (and `image: true`); other binaries get empty content (`image: false`) and
  * render as the placeholder.
+ *
+ * LFS-tracked images arrive on the **text** branch, not the binary one: the
+ * conventional `.gitattributes` line leaves git sniffing an ASCII pointer stub,
+ * so git reports an ordinary +2/-2 text diff and the viewer would show a sha256
+ * where the picture should be. When either side is a pointer we swap in the real
+ * content — as a `data:` URI for rasters, as source text for SVG — and flag the
+ * file `lfs` so the viewer can say so on a side it couldn't fetch.
  */
 async function buildFileDiffContent(
   git: GitManager,
@@ -63,19 +96,69 @@ async function buildFileDiffContent(
   entry: { path: string; oldPath?: string },
   status: FileDiff["status"],
   isBinary: boolean,
-): Promise<{ oldContent: string; newContent: string; image: boolean }> {
+  resolveLfs: LfsBlobResolver,
+): Promise<{ oldContent: string; newContent: string; image: boolean; lfs?: boolean }> {
   const oldPath = status === "renamed" ? (entry.oldPath ?? entry.path) : entry.path;
 
   if (isBinary) {
     if (!diffImageMime(entry.path)) return { oldContent: "", newContent: "", image: false };
-    const oldContent = status === "added" ? "" : await imageDataUri(git, fromRef, oldPath);
-    const newContent = status === "deleted" ? "" : await imageDataUri(git, toRef, entry.path);
+    const oldContent = status === "added" ? "" : await imageDataUri(git, fromRef, oldPath, resolveLfs);
+    const newContent = status === "deleted" ? "" : await imageDataUri(git, toRef, entry.path, resolveLfs);
     return { oldContent, newContent, image: Boolean(oldContent || newContent) };
   }
 
-  const oldContent = status === "added" ? "" : await git.getFileAtCommit(fromRef, oldPath);
-  const newContent = status === "deleted" ? "" : await git.getFileAtCommit(toRef, entry.path);
-  return { oldContent, newContent, image: false };
+  const oldRaw = status === "added" ? "" : await git.getFileAtCommit(fromRef, oldPath);
+  const newRaw = status === "deleted" ? "" : await git.getFileAtCommit(toRef, entry.path);
+
+  const renderable = diffImageMime(entry.path) !== null || isSvgPath(entry.path);
+  if (renderable && (parseLfsPointer(oldRaw) || parseLfsPointer(newRaw))) {
+    const mime = diffImageMime(entry.path);
+    const [oldContent, newContent] = await Promise.all([
+      lfsMediaSide(git, fromRef, oldPath, oldRaw, mime, resolveLfs),
+      lfsMediaSide(git, toRef, entry.path, newRaw, mime, resolveLfs),
+    ]);
+    // `image` even when both sides failed to resolve: a raster gets image panes
+    // that say *why* they're empty, which beats an empty Monaco text diff — and
+    // the one thing we must never do here is fall back to diffing the pointers.
+    return { oldContent, newContent, image: mime !== null, lfs: true };
+  }
+
+  return { oldContent: oldRaw, newContent: newRaw, image: false };
+}
+
+/**
+ * One side of an LFS-tracked media file, as the viewer wants it: a `data:` URI
+ * for a raster, source text for an SVG.
+ *
+ * Handles the mixed case too — a file only *just* converted to LFS has a pointer
+ * on one side and a real blob on the other — by re-reading the non-pointer side
+ * as bytes. `oldRaw`/`newRaw` came from `git show`, which decoded them as UTF-8;
+ * that's fine for SVG and would corrupt a PNG.
+ *
+ * The two media kinds fail differently, on purpose. A raster that can't be
+ * fetched degrades to `""` and the viewer labels the pane "(Git LFS content
+ * unavailable)" — a `data:` URI built from a pointer would just be a broken
+ * image. An SVG keeps its pointer text, because SVG still has a working text
+ * diff to fall back to and an empty Monaco pane would explain nothing.
+ */
+async function lfsMediaSide(
+  git: GitManager,
+  ref: string,
+  filePath: string,
+  raw: string,
+  mime: string | null,
+  resolveLfs: LfsBlobResolver,
+): Promise<string> {
+  if (raw === "") return "";
+  const pointer = parseLfsPointer(raw);
+  if (!pointer && !mime) return raw; // real SVG source — already text
+  const bytes = pointer
+    ? await resolveLfs(raw, filePath, MAX_DIFF_IMAGE_BYTES)
+    : await git.getFileBufferAtCommit(ref, filePath);
+  if (!bytes || bytes.length === 0 || bytes.length > MAX_DIFF_IMAGE_BYTES) {
+    return mime ? "" : raw;
+  }
+  return mime ? `data:${mime};base64,${bytes.toString("base64")}` : bytes.toString("utf-8");
 }
 
 // ---- Rebase types ----
@@ -148,6 +231,9 @@ export async function getTurnDiff(
   const files: FileDiff[] = [];
   let totalInsertions = 0;
   let totalDeletions = 0;
+  // One resolver per diff request: its network-fetch budget is what bounds how
+  // long an LFS repo can hold this response open.
+  const resolveLfs = createLfsBlobResolver(git.dir);
 
   for (const entry of changedFiles) {
     const stats = statsMap.get(entry.path) ?? { insertions: 0, deletions: 0, binary: false };
@@ -161,8 +247,8 @@ export async function getTurnDiff(
       default: status = "modified"; break;
     }
 
-    const { oldContent, newContent, image } = await buildFileDiffContent(
-      git, fromCommit, toCommit, entry, status, isBinary,
+    const { oldContent, newContent, image, lfs } = await buildFileDiffContent(
+      git, fromCommit, toCommit, entry, status, isBinary, resolveLfs,
     );
 
     totalInsertions += stats.insertions;
@@ -176,6 +262,7 @@ export async function getTurnDiff(
       deletions: stats.deletions,
       binary: isBinary,
       image,
+      lfs,
       oldContent,
       newContent,
     });
@@ -268,6 +355,7 @@ export async function getDiffVsBranch(
   const files: FileDiff[] = [];
   let totalInsertions = 0;
   let totalDeletions = 0;
+  const resolveLfs = createLfsBlobResolver(git.dir);
 
   for (const entry of changedFiles) {
     const stats = statsMap.get(entry.path) ?? { insertions: 0, deletions: 0, binary: false };
@@ -281,8 +369,8 @@ export async function getDiffVsBranch(
       default: status = "modified"; break;
     }
 
-    const { oldContent, newContent, image } = await buildFileDiffContent(
-      git, mergeBaseHash, headHash, entry, status, isBinary,
+    const { oldContent, newContent, image, lfs } = await buildFileDiffContent(
+      git, mergeBaseHash, headHash, entry, status, isBinary, resolveLfs,
     );
 
     totalInsertions += stats.insertions;
@@ -296,6 +384,7 @@ export async function getDiffVsBranch(
       deletions: stats.deletions,
       binary: isBinary,
       image,
+      lfs,
       oldContent,
       newContent,
     });
