@@ -236,16 +236,57 @@ The rest of the chain was verified the same way, against the production shape
   materializes the real 4096 bytes, with a sha256 matching the oid — proving the
   seeded hardlink alone satisfied the pull, with nothing fetched from the remote.
 
-**Assumption 2 remains unmeasured.** A `file://` remote makes git-lfs use a local
-transfer adapter (`AccessDownload=none` in its log), so no HTTP endpoint and no
-credential helper was exercised. Whether the LFS endpoint authenticates through
-the global helper still rests on the reasoning that `repo-prefetch.ts` normalizes
-the cache's `origin` to the plain URL (no embedded token) so LFS should resolve
-credentials exactly as `git fetch` does. Confirm it against a real private LFS
-repo.
+### Assumption 2 — confirmed on a real private repo
 
-It fails safe: a failed fetch leaves the cache store empty, the seeding step finds
-nothing to link, and provisioning behaves as it did before docs/232.
+The synthetic probe could not test credentials at all: a `file://` remote makes
+git-lfs use a local transfer adapter (`AccessDownload=none` in its log), so no
+HTTP endpoint and no credential helper is exercised. Settled instead by
+provisioning an ordinary session on the private, asset-heavy
+`nicolasalt/delve` (~3,015 LFS-tracked files):
+
+| Measure | Result |
+|---|---|
+| Pointer stubs left in the worktree | **0** of 3,015 |
+| Distinct objects in `.git/lfs/objects` | 3,003 (files dedup by oid) |
+| Hardlink count, every object | **18** — no `nlink=1` stragglers |
+
+**Why `nlink` settles the credential question**, given nothing inside a session
+container can observe the orchestrator's fetch: `git clone --local` hardlinks
+`.git/objects` but never `.git/lfs`, so seeding is the only thing that can raise
+an LFS object's link count. Objects can only be in the cache to seed *from* if the
+cache-side `git lfs fetch` succeeded — and against a private repo that fetch
+cannot succeed unauthenticated. So `nlink > 1` here is proof the orchestrator
+authenticated to the private LFS endpoint through the global credential helper.
+
+**The uniformity is the load-bearing part, not the value 18.** A mixed
+distribution would mean partial seeding — some objects hardlinked, others
+downloaded by the session's own pull. Every object landing on the *same* count
+means each contributing store holds the complete set, i.e. the cache was fully
+populated before this session was cloned. (18 = one cache copy plus the session
+clones of this repo alive on that host.)
+
+`git lfs env` reporting `auth=none` / `AccessDownload=none` in the session is
+consistent with this rather than contradicting it: the session clone never
+negotiated LFS auth *itself*, because its objects arrived pre-seeded. That is the
+feature working.
+
+One honest limit: this is a sound inference from the seeded objects, not a direct
+observation of the HTTP auth handshake. The orchestrator's
+`[git-lfs-store] Fetched LFS objects into cache …` log line is the direct evidence
+if it is ever worth confirming a second way.
+
+It also fails safe, as designed: a failed fetch leaves the cache store empty, the
+seeding step finds nothing to link, and provisioning behaves as it did before
+docs/232.
+
+### Still unexercised: the session-side egress allowlist
+
+docs/231 added `github-cloud.s3.amazonaws.com` to `EGRESS_DEFAULT_ALLOWLIST` and
+`EGRESS_GITHUB_LIFELINE_HOSTS` for a **sandboxed** session running `git lfs
+pull`/`push` itself. The verification above doesn't touch it: the transfer
+happened orchestrator-side, and a sandbox session couldn't be used for this test
+because a sandbox has its own ShipIt-managed git directory rather than a clone of
+the target repo. Unverified, and independent of everything above.
 
 ## Key files
 
