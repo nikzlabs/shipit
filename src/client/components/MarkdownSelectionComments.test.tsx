@@ -487,6 +487,98 @@ Context body.
     });
   });
 
+  describe("onComposingChange (blocks Send while an editor is open)", () => {
+    const oneComment: SelectionCommentData[] = [
+      {
+        id: "c1",
+        quotedText: "Architecture body",
+        contextBefore: "",
+        contextAfter: "",
+        text: "old",
+        source: "human",
+      },
+    ];
+
+    function last(fn: ReturnType<typeof vi.fn>): unknown {
+      return fn.mock.calls.at(-1)?.[0];
+    }
+
+    it("reports false while idle", () => {
+      const onComposingChange = vi.fn();
+      render(
+        <MarkdownSelectionComments {...makeProps()} onComposingChange={onComposingChange} />,
+      );
+      expect(last(onComposingChange)).toBe(false);
+    });
+
+    it("reports true when the add-comment input opens, false once submitted", async () => {
+      const user = userEvent.setup();
+      const onComposingChange = vi.fn();
+      const { container } = render(
+        <MarkdownSelectionComments
+          {...makeProps({ onAddComment: () => ({ id: "c-new" }) })}
+          onComposingChange={onComposingChange}
+        />,
+      );
+
+      selectText(container, "Architecture body");
+      fireEvent.mouseDown(screen.getByTitle("Comment on this selection"));
+      expect(last(onComposingChange)).toBe(true);
+
+      await user.type(screen.getByPlaceholderText(/Add a comment/), "a note");
+      await user.click(screen.getByText("Add"));
+      expect(last(onComposingChange)).toBe(false);
+    });
+
+    it("reports false when the add-comment input is cancelled with Escape", () => {
+      const onComposingChange = vi.fn();
+      const { container } = render(
+        <MarkdownSelectionComments {...makeProps()} onComposingChange={onComposingChange} />,
+      );
+
+      selectText(container, "Architecture body");
+      fireEvent.mouseDown(screen.getByTitle("Comment on this selection"));
+      expect(last(onComposingChange)).toBe(true);
+
+      fireEvent.keyDown(window, { key: "Escape" });
+      expect(last(onComposingChange)).toBe(false);
+    });
+
+    it("reports true while an existing comment is being edited", async () => {
+      const user = userEvent.setup();
+      const onComposingChange = vi.fn();
+      render(
+        <MarkdownSelectionComments
+          {...makeProps({ comments: oneComment })}
+          onComposingChange={onComposingChange}
+        />,
+      );
+
+      await user.click(screen.getByTitle("Edit"));
+      expect(last(onComposingChange)).toBe(true);
+
+      fireEvent.keyDown(window, { key: "Escape" });
+      expect(last(onComposingChange)).toBe(false);
+    });
+
+    it("reports false on unmount so closing the viewer mid-compose can't strand it", async () => {
+      const user = userEvent.setup();
+      const onComposingChange = vi.fn();
+      const { unmount } = render(
+        <MarkdownSelectionComments
+          {...makeProps({ comments: oneComment })}
+          onComposingChange={onComposingChange}
+        />,
+      );
+
+      await user.click(screen.getByTitle("Edit"));
+      expect(last(onComposingChange)).toBe(true);
+
+      unmount();
+      expect(last(onComposingChange)).toBe(false);
+    });
+  });
+
   describe("heading rendering", () => {
     it("renders headings as plain elements without wrapping anchors", () => {
       const { container } = render(<MarkdownSelectionComments {...makeProps()} />);

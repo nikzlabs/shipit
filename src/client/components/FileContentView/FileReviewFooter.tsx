@@ -79,12 +79,16 @@ export function FileReviewFooter({
   commentCount,
   history,
   canSend,
+  composing = false,
   onSend,
   onCancel,
 }: {
   commentCount: number;
   history: FileReview[];
   canSend: boolean;
+  /** An unsaved comment editor is open — Send is held so the in-progress
+   *  comment isn't silently dropped. Renders the reason next to the button. */
+  composing?: boolean;
   onSend: () => void;
   onCancel?: () => void;
 }) {
@@ -99,12 +103,23 @@ export function FileReviewFooter({
         <PastReviews history={history} />
       </div>
       <div className="flex items-center gap-2 shrink-0">
+        {composing && (
+          <span className="text-xs text-(--color-text-tertiary) whitespace-nowrap">
+            Finish the open comment first
+          </span>
+        )}
         {onCancel && (
           <Button variant="ghost" size="md" onClick={onCancel}>
             Cancel
           </Button>
         )}
-        <Button variant="primary" size="md" onClick={onSend} disabled={!canSend}>
+        <Button
+          variant="primary"
+          size="md"
+          onClick={onSend}
+          disabled={!canSend}
+          title={composing ? "Save or cancel the open comment before sending" : undefined}
+        >
           <PaperPlaneTiltIcon size={ICON_SIZE.SM} className="mr-1" />
           Send {commentCount > 0 ? `${commentCount} comment${commentCount !== 1 ? "s" : ""}` : "Comments"}
         </Button>

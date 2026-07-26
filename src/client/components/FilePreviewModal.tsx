@@ -218,6 +218,7 @@ export function FilePreviewModal({
             commentCount={review.commentCount}
             history={review.history}
             canSend={review.canSend}
+            composing={review.composing}
             onSend={review.handleSend}
             onCancel={handleClose}
           />

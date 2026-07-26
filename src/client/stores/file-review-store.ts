@@ -58,9 +58,23 @@ interface FileReviewState {
   historyByKey: Record<string, FileReview[]>;
   /** True while the initial draft is being loaded for the given key. */
   loadingByKey: Record<string, boolean>;
+  /**
+   * True while an unsaved comment editor is open for the (session, file) —
+   * the add-comment input or an in-place edit of an existing comment. Purely
+   * client-side transient state (never round-trips to the server); it exists
+   * so the footer can disable "Send comments" and the user can't submit the
+   * review with a half-typed comment that would be silently dropped.
+   *
+   * The comment renderers own the flag and clear it on unmount, so closing the
+   * viewer mid-compose can't strand it at `true`.
+   */
+  composingByKey: Record<string, boolean>;
 
   /** Load (or create) the draft + history for a (session, file). */
   load: (sessionId: string, filePath: string) => Promise<FileReview | null>;
+
+  /** Flag/clear an open (unsaved) comment editor for a (session, file). */
+  setComposing: (sessionId: string, filePath: string, composing: boolean) => void;
 
   /** Add a line-anchored comment. Only valid for code reviews. */
   addLineComment: (
@@ -121,12 +135,22 @@ interface FileReviewState {
   /** Read helpers used by selectors / tests. */
   getDraft: (sessionId: string, filePath: string) => FileReview | null;
   getHistory: (sessionId: string, filePath: string) => FileReview[];
+  isComposing: (sessionId: string, filePath: string) => boolean;
 }
 
 export const useFileReviewStore = create<FileReviewState>((set, get) => ({
   draftByKey: {},
   historyByKey: {},
   loadingByKey: {},
+  composingByKey: {},
+
+  setComposing: (sessionId, filePath, composing) => {
+    const key = makeKey(sessionId, filePath);
+    // Bail when unchanged: the renderers re-assert the current value on every
+    // open/close transition, and a no-op `set` would re-render every subscriber.
+    if ((get().composingByKey[key] ?? false) === composing) return;
+    set((s) => ({ composingByKey: { ...s.composingByKey, [key]: composing } }));
+  },
 
   load: async (sessionId, filePath) => {
     const key = makeKey(sessionId, filePath);
@@ -297,6 +321,10 @@ export const useFileReviewStore = create<FileReviewState>((set, get) => ({
 
   getHistory: (sessionId, filePath) => {
     return get().historyByKey[makeKey(sessionId, filePath)] ?? [];
+  },
+
+  isComposing: (sessionId, filePath) => {
+    return get().composingByKey[makeKey(sessionId, filePath)] ?? false;
   },
 }));
 
