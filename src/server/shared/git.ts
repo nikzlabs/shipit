@@ -346,6 +346,34 @@ export class GitManager {
   }
 
   /**
+   * Every diff-stat surface (PR card, diff dialog, re-arm detection) funnels
+   * through this `--numstat` call so their numbers can never disagree.
+   *
+   * `--numstat` is load-bearing: simple-git's default `--stat` parsing derives
+   * per-file insertions/deletions by counting the `+`/`-` characters of git's
+   * histogram bar, which git SCALES DOWN to fit the stat width — on large
+   * diffs those per-file counts (and any total summed from them) are off by
+   * orders of magnitude. The numstat columns are exact.
+   */
+  private async numstatSummary(range: string): Promise<{
+    insertions: number;
+    deletions: number;
+    files: { file: string; insertions: number; deletions: number; binary: boolean }[];
+  }> {
+    const result = await this.git.diffSummary(["--numstat", range]);
+    return {
+      insertions: result.insertions,
+      deletions: result.deletions,
+      files: result.files.map((f) => ({
+        file: f.file,
+        insertions: (f as { insertions?: number }).insertions ?? 0,
+        deletions: (f as { deletions?: number }).deletions ?? 0,
+        binary: (f as { binary?: boolean }).binary === true,
+      })),
+    };
+  }
+
+  /**
    * Get total insertions/deletions between the current branch and a base branch.
    * Tries origin/<branch>, then local <branch>, then common fallbacks.
    */
@@ -357,7 +385,7 @@ export class GitManager {
     ];
     for (const ref of refs) {
       try {
-        const result = await this.git.diffSummary([`${ref}...HEAD`]);
+        const result = await this.numstatSummary(`${ref}...HEAD`);
         return {
           insertions: result.insertions,
           deletions: result.deletions,
@@ -384,7 +412,7 @@ export class GitManager {
    */
   async diffStatTwoDot(ref: string): Promise<{ insertions: number; deletions: number; files: number }> {
     try {
-      const result = await this.git.diffSummary([`${ref}..HEAD`]);
+      const result = await this.numstatSummary(`${ref}..HEAD`);
       return { insertions: result.insertions, deletions: result.deletions, files: result.files.length };
     } catch {
       return { insertions: 0, deletions: 0, files: 0 };
@@ -527,7 +555,8 @@ export class GitManager {
   }
 
   /**
-   * Get per-file diff summary (files changed with insertions/deletions).
+   * Get per-file diff summary (files changed with insertions/deletions),
+   * from `--numstat` (see {@link numstatSummary} for why not `--stat`).
    * `binary` is true when git reports `-\t-` in --numstat (the canonical
    * binary signal). It's NOT inferred from `insertions === 0 && deletions === 0`
    * because pure renames, mode-only changes, and empty files also produce 0/0.
@@ -535,13 +564,8 @@ export class GitManager {
    */
   async diffSummary(range?: string): Promise<{ file: string; insertions: number; deletions: number; binary: boolean }[]> {
     try {
-      const result = await this.git.diffSummary([range ?? "HEAD~1...HEAD"]);
-      return result.files.map((f) => ({
-        file: f.file,
-        insertions: (f as { insertions?: number }).insertions ?? 0,
-        deletions: (f as { deletions?: number }).deletions ?? 0,
-        binary: (f as { binary?: boolean }).binary === true,
-      }));
+      const result = await this.numstatSummary(range ?? "HEAD~1...HEAD");
+      return result.files;
     } catch {
       return [];
     }
