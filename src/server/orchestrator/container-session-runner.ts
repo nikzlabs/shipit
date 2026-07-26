@@ -34,7 +34,8 @@ import type { SubAgentSpawnRequest, SubAgentRunResult } from "../shared/sub-agen
 import { runDispatchedTurn, toQueuedMessage } from "./session-runner.js";
 import { trySteerDispatch } from "./dispatch-steering.js";
 import type { SSEEvent } from "./sse-client.js";
-import { workerPost, workerGet, workerInstall, workerPushAgentSecrets, workerPostMessage } from "./worker-http.js";
+import { workerPost, workerGet, workerInstall, workerPushAgentSecrets, workerPostMessage, type WorkerHttpOpts } from "./worker-http.js";
+import { WORKER_LIFECYCLE_SECRET_HEADER } from "../shared/worker-auth.js";
 import { ProxyAgentProcess } from "./proxy-agent-process.js";
 import type { ProxyAgentRunner } from "./proxy-agent-process.js";
 import type { ServiceManager, ManagedService, SecretsStatusInternalSnapshot } from "./service-manager.js";
@@ -72,6 +73,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   // Worker connection (session container)
   private workerUrl: string;
+  private workerSecret?: string;
   private _workerReady: Promise<void>;
   private _resolveWorkerReady!: () => void;
 
@@ -224,6 +226,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     sessionDir: string;
     defaultAgentId: AgentId;
     workerUrl: string;
+    /** Lifecycle secret of the container behind `workerUrl` (shared/worker-auth.ts). */
+    workerSecret?: string;
     presentStore?: PresentStore;
   }) {
     super();
@@ -231,6 +235,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this.sessionDir = opts.sessionDir;
     this._agentId = opts.defaultAgentId;
     this.workerUrl = opts.workerUrl;
+    this.workerSecret = opts.workerSecret;
     this._presentStore = opts.presentStore;
     // Seed the presentation cache from durable storage (docs/093) so a runner
     // created for a freshly restarted container replays the session's
@@ -260,10 +265,29 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     });
   }
 
-  /** Update the worker URL once the container is ready. */
-  setWorkerUrl(url: string): void {
+  /**
+   * Update the worker URL (and its container's lifecycle secret) once the
+   * container is ready. The secret travels with the URL — both identify the
+   * same container — so a runner re-pointed at a fresh container always
+   * authenticates against that container's worker.
+   */
+  setWorkerUrl(url: string, workerSecret?: string): void {
     this.workerUrl = url;
+    this.workerSecret = workerSecret;
     this._resolveWorkerReady();
+  }
+
+  /**
+   * Merge the container's lifecycle secret header into worker HTTP opts for
+   * the protected `/agent/*` routes (shared/worker-auth.ts). No-op when the
+   * secret is unknown (pre-guard containers accept unauthenticated calls).
+   */
+  private lifecycleOpts(opts?: WorkerHttpOpts): WorkerHttpOpts {
+    if (!this.workerSecret) return opts ?? {};
+    return {
+      ...opts,
+      headers: { ...opts?.headers, [WORKER_LIFECYCLE_SECRET_HEADER]: this.workerSecret },
+    };
   }
 
   /**
@@ -355,7 +379,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         ...(req.timeoutMs !== undefined ? { timeoutMs: req.timeoutMs } : {}),
         ...(req.maxOutputChars !== undefined ? { maxOutputChars: req.maxOutputChars } : {}),
       },
-      { timeoutMs: 0 },
+      this.lifecycleOpts({ timeoutMs: 0 }),
     );
     return result as SubAgentRunResult;
   }
@@ -803,7 +827,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     await this._waitForInstallBeforeAgent();
 
     try {
-      await workerPost(this.workerUrl, "/agent/start", { agentId, params, runToken }, { timeoutMs: 0 });
+      await workerPost(this.workerUrl, "/agent/start", { agentId, params, runToken }, this.lifecycleOpts({ timeoutMs: 0 }));
     } catch (err) {
       // Narrow race: the previous turn's `agent_done` SSE event reaches the
       // orchestrator and triggers the queue drain → new POST /agent/start —
@@ -823,11 +847,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       if (err instanceof Error && err.message === "Agent already running") {
         await new Promise((r) => setTimeout(r, 150));
         try {
-          await workerPost(this.workerUrl, "/agent/start", { agentId, params, runToken }, { timeoutMs: 0 });
+          await workerPost(this.workerUrl, "/agent/start", { agentId, params, runToken }, this.lifecycleOpts({ timeoutMs: 0 }));
         } catch (retryErr) {
           if (retryErr instanceof Error && retryErr.message === "Agent already running") {
-            await workerPost(this.workerUrl, "/agent/kill").catch(() => { /* may already be gone */ });
-            await workerPost(this.workerUrl, "/agent/start", { agentId, params, runToken }, { timeoutMs: 0 });
+            await workerPost(this.workerUrl, "/agent/kill", undefined, this.lifecycleOpts()).catch(() => { /* may already be gone */ });
+            await workerPost(this.workerUrl, "/agent/start", { agentId, params, runToken }, this.lifecycleOpts({ timeoutMs: 0 }));
           } else {
             throw retryErr;
           }
@@ -933,7 +957,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     const proxy = new ProxyAgentProcess(agentId, this);
     this._agent = proxy;
 
-    await workerPost(this.workerUrl, "/agent/start", { agentId, params, runToken: proxy.runToken }, { timeoutMs: 0 });
+    await workerPost(this.workerUrl, "/agent/start", { agentId, params, runToken: proxy.runToken }, this.lifecycleOpts({ timeoutMs: 0 }));
 
     return proxy;
   }
@@ -964,23 +988,23 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   /** Interrupt the agent running on the worker. */
   async interruptAgentOnWorker(): Promise<void> {
-    await workerPost(this.workerUrl, "/agent/interrupt");
+    await workerPost(this.workerUrl, "/agent/interrupt", undefined, this.lifecycleOpts());
   }
 
   /** Kill the agent running on the worker. */
   async killAgentOnWorker(opts?: { timeoutMs?: number }): Promise<void> {
-    await workerPost(this.workerUrl, "/agent/kill", undefined, opts);
+    await workerPost(this.workerUrl, "/agent/kill", undefined, this.lifecycleOpts(opts));
     this._agent = null;
   }
 
   /** Write to the agent's stdin on the worker. */
   async writeAgentStdin(data: string): Promise<void> {
-    await workerPost(this.workerUrl, "/agent/stdin", { data });
+    await workerPost(this.workerUrl, "/agent/stdin", { data }, this.lifecycleOpts());
   }
 
   /** Inject a user message into the running streaming agent (live steering, docs/140). */
   async sendAgentMessage(text: string): Promise<void> {
-    await workerPostMessage(this.workerUrl, text);
+    await workerPostMessage(this.workerUrl, text, this.lifecycleOpts());
   }
 
   /**
@@ -989,7 +1013,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * adapter maps to the CLI's `default` mode.
    */
   async setAgentPermissionModeOnWorker(mode: PermissionMode | undefined): Promise<void> {
-    await workerPost(this.workerUrl, "/agent/permission-mode", { mode: mode ?? null });
+    await workerPost(this.workerUrl, "/agent/permission-mode", { mode: mode ?? null }, this.lifecycleOpts());
   }
 
   /**
@@ -998,7 +1022,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * (streaming Claude → inject `/compact`; live Codex → `thread/compact/start`).
    */
   async compactAgentOnWorker(instructions?: string): Promise<void> {
-    await workerPost(this.workerUrl, "/agent/compact", instructions ? { instructions } : undefined);
+    await workerPost(this.workerUrl, "/agent/compact", instructions ? { instructions } : undefined, this.lifecycleOpts());
   }
 
   /**
@@ -1011,7 +1035,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       behavior: decision.behavior,
       ...(decision.remember ? { remember: true } : {}),
       ...(decision.message ? { message: decision.message } : {}),
-    });
+    }, this.lifecycleOpts());
   }
 
   // --- Worker communication: terminal ---
@@ -2009,7 +2033,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
     // Kill agent on worker (fire and forget)
     if (this._agent) {
-      workerPost(this.workerUrl, "/agent/kill").catch(() => {});
+      workerPost(this.workerUrl, "/agent/kill", undefined, this.lifecycleOpts()).catch(() => {});
       this._agent = null;
     }
 

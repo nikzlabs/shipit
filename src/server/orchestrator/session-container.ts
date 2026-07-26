@@ -190,6 +190,15 @@ export interface SessionContainer {
   workerUrl: string;
   /** Container lifecycle status. */
   status: "starting" | "running" | "stopping" | "stopped";
+  /**
+   * Per-container secret guarding the worker's lifecycle-mutating `/agent/*`
+   * routes (shared/worker-auth.ts). Generated at create, passed in the
+   * container env, recovered from `docker inspect` on rediscovery/adoption.
+   * The runner sends it as a header on protected worker calls. Absent only
+   * for containers predating the guard (their workers accept unauthenticated
+   * calls, so omitting the header still works).
+   */
+  lifecycleSecret?: string;
   /** Host-side workspace directory for bind mount validation. */
   hostWorkspaceDir: string;
   /** Whether this session has Docker access. */

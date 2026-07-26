@@ -11,6 +11,7 @@ import {
   CONTAINER_STANDBY_LABEL,
 } from "./session-container.js";
 import { cleanupSessionDockerResources } from "./container-lifecycle.js";
+import { parseLifecycleSecretFromContainerEnv } from "../shared/worker-auth.js";
 
 // ---------------------------------------------------------------------------
 // Internal types for dependency injection
@@ -73,6 +74,9 @@ export async function rediscoverContainers(
           containerIp: networkInfo.IPAddress,
           workerUrl: `http://${networkInfo.IPAddress}:${deps.workerPort}`,
           status: "running",
+          // Recover the worker's lifecycle secret from the boot env — the
+          // running worker still requires it on protected /agent/* routes.
+          lifecycleSecret: parseLifecycleSecretFromContainerEnv(info.Config?.Env),
           hostWorkspaceDir: resolved.workspaceDir,
           dockerAccess,
           sessionNetworkName: dockerAccess ? `shipit-session-${sessionId.slice(0, 12)}` : undefined,
@@ -142,6 +146,9 @@ export async function adoptRunningContainer(
           containerIp: networkInfo.IPAddress,
           workerUrl: `http://${networkInfo.IPAddress}:${deps.workerPort}`,
           status: "running",
+          // Same recovery as rediscoverContainers — the adopted worker still
+          // requires its boot-env secret on protected /agent/* routes.
+          lifecycleSecret: parseLifecycleSecretFromContainerEnv(info.Config?.Env),
           hostWorkspaceDir: resolved.workspaceDir,
           dockerAccess,
           sessionNetworkName: dockerAccess ? `shipit-session-${sessionId.slice(0, 12)}` : undefined,

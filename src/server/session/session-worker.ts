@@ -48,6 +48,12 @@ import {
   registerPresentFilesRoutes,
   inferPresentMimeType,
 } from "./present-view.js";
+import {
+  WORKER_LIFECYCLE_SECRET_HEADER,
+  isLifecycleProtectedPath,
+  lifecycleSecretMatches,
+  takeLifecycleSecretFromEnv,
+} from "../shared/worker-auth.js";
 import { McpConfigController } from "./mcp-config-controller.js";
 import { AgentController, type WorkerAgentFactory } from "./agent-controller.js";
 import { TerminalController } from "./terminal-controller.js";
@@ -76,6 +82,15 @@ export interface SessionWorkerDeps {
   createTerminal?: () => TerminalProcess;
   /** Factory for the worker→orchestrator client. Injectable so tests can stub the orchestrator. */
   createOrchestratorClient?: () => OrchestratorClient;
+  /**
+   * Orchestrator-issued shared secret guarding the lifecycle-mutating
+   * `/agent/*` routes (see shared/worker-auth.ts). When set, those routes
+   * reject requests without a matching `x-shipit-lifecycle-secret` header —
+   * so a stray in-container process (a test suite, the agent's own shell
+   * children) cannot start or kill the resident agent. Unset → no guard
+   * (subprocess/test mode, prior behavior).
+   */
+  lifecycleSecret?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -94,6 +109,7 @@ export class SessionWorker extends EventEmitter {
   private host: string;
   private workspaceDir: string;
   private _createOrchestratorClient?: () => OrchestratorClient;
+  private readonly lifecycleSecret?: string;
 
   // Per-concern controllers — each owns its endpoint group and the state behind
   // it. The worker wires them with a shared broadcast closure + the cross-cutting
@@ -130,6 +146,7 @@ export class SessionWorker extends EventEmitter {
     this.host = deps.host ?? "0.0.0.0";
     this.workspaceDir = deps.workspaceDir ?? "/workspace";
     this._createOrchestratorClient = deps.createOrchestratorClient;
+    this.lifecycleSecret = deps.lifecycleSecret;
 
     const broadcast = (event: WorkerSSEEvent): void => this.sse.broadcast(event);
 
@@ -174,6 +191,26 @@ export class SessionWorker extends EventEmitter {
 
   private buildApp(): FastifyInstance {
     const app = Fastify({ logger: false });
+
+    // Lifecycle-route guard (shared/worker-auth.ts) — with an
+    // orchestrator-issued secret configured, the agent-slot-mutating
+    // `/agent/*` routes require the matching header. Everything the agent's
+    // own children legitimately reach (`/agent-ops/*`, `/services/*`,
+    // present, SSE, health, GET /agent/status) is deliberately NOT in the
+    // protected set. This makes the prod self-kill class (an in-container
+    // process POSTing /agent/start → persistent-409 recovery → /agent/kill
+    // of the live agent) structurally impossible: only the orchestrator
+    // holds the secret.
+    const lifecycleSecret = this.lifecycleSecret;
+    if (lifecycleSecret) {
+      app.addHook("onRequest", async (request, reply) => {
+        if (!isLifecycleProtectedPath(request.url)) return;
+        const provided = request.headers[WORKER_LIFECYCLE_SECRET_HEADER];
+        if (!lifecycleSecretMatches(provided, lifecycleSecret)) {
+          return reply.code(401).send({ error: "Missing or invalid lifecycle secret" });
+        }
+      });
+    }
 
     app.get("/health", async () => ({ status: "ok" }));
 
@@ -690,10 +727,15 @@ export const createWorkerAgent: WorkerAgentFactory = (agentId: AgentId) =>
 
 // Only auto-start when run directly (not when imported for testing)
 if (process.argv[1] && import.meta.url.endsWith(process.argv[1])) {
+  // Capture-and-scrub BEFORE constructing the worker: takeLifecycleSecretFromEnv
+  // deletes the env var so no later child spawn (agent CLI, terminal PTY,
+  // install commands) inherits the secret into the agent's environment.
+  const lifecycleSecret = takeLifecycleSecretFromEnv(process.env);
   const worker = new SessionWorker({
     agentFactory: createWorkerAgent,
     port: Number(process.env.WORKER_PORT) || 9100,
     workspaceDir: process.env.WORKSPACE_DIR || CONTAINER_WORKSPACE_DIR,
+    ...(lifecycleSecret ? { lifecycleSecret } : {}),
   });
 
   const address = await worker.start();

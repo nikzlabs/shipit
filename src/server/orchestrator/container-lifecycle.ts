@@ -19,6 +19,7 @@ import {
 } from "./session-container.js";
 import { CONTAINER_WORKSPACE_DIR } from "../shared/fs-constants.js";
 import { agentHome } from "../shared/agent-home.js";
+import { WORKER_LIFECYCLE_SECRET_ENV, generateLifecycleSecret } from "../shared/worker-auth.js";
 import type { HostMount } from "../shared/shipit-config.js";
 import { DEFAULT_DEP_DIRS, resolveShipitConfig } from "../shared/shipit-config.js";
 import {
@@ -759,6 +760,15 @@ export async function createContainer(
   // Expose orchestrator API so the agent can query service status/logs
   env.push(...await buildOrchestratorCallbackEnv(config.sessionId));
 
+  // Per-container lifecycle secret (shared/worker-auth.ts) — the worker
+  // captures it at boot (scrubbing it from process.env before any child
+  // spawns) and requires it on the lifecycle-mutating /agent/* routes, so a
+  // stray in-container process cannot start or kill the resident agent. The
+  // orchestrator sends it back as a header on those calls; rediscovery reads
+  // it out of `docker inspect` Config.Env after a restart.
+  const lifecycleSecret = generateLifecycleSecret();
+  env.push(`${WORKER_LIFECYCLE_SECRET_ENV}=${lifecycleSecret}`);
+
   // Use the docker-capable image when Docker access is requested, or for ops
   // sessions (docs/128) — the agent runs `docker ps/logs/inspect` against a proxy
   // (and, for ops, `journalctl` over the journal mounts), so it needs the docker
@@ -802,6 +812,7 @@ export async function createContainer(
     containerIp: "",
     workerUrl: "",
     status: "starting",
+    lifecycleSecret,
     hostWorkspaceDir: config.sessionDir,
     dockerAccess: config.dockerAccess ?? false,
     // docs/128/172 — recorded so the live egress reload path (`reloadEgress`)

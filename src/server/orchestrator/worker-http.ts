@@ -29,6 +29,11 @@ export interface WorkerHttpOpts {
    * doesn't make the orchestrator hang on aggregation requests.
    */
   timeoutMs?: number;
+  /**
+   * Extra request headers. Used to carry the container's lifecycle secret
+   * (shared/worker-auth.ts) on the worker's protected `/agent/*` routes.
+   */
+  headers?: Record<string, string>;
 }
 
 /**
@@ -89,7 +94,7 @@ export async function workerPost(baseUrl: string, path: string, body?: unknown, 
   return new Promise((resolve, reject) => {
     const url = new URL(path, baseUrl);
     const payload = body !== undefined ? JSON.stringify(body) : undefined;
-    const headers: Record<string, string | number> = {};
+    const headers: Record<string, string | number> = { ...opts?.headers };
     if (payload) {
       headers["Content-Type"] = "application/json";
       headers["Content-Length"] = Buffer.byteLength(payload);
@@ -152,7 +157,7 @@ export async function workerPut(baseUrl: string, path: string, body?: unknown, o
   return new Promise((resolve, reject) => {
     const url = new URL(path, baseUrl);
     const payload = body !== undefined ? JSON.stringify(body) : undefined;
-    const headers: Record<string, string | number> = {};
+    const headers: Record<string, string | number> = { ...opts?.headers };
     if (payload) {
       headers["Content-Type"] = "application/json";
       headers["Content-Length"] = Buffer.byteLength(payload);
@@ -202,6 +207,7 @@ export async function workerGet(baseUrl: string, path: string, opts?: WorkerHttp
         port: url.port,
         path: url.pathname,
         method: "GET",
+        ...(opts?.headers ? { headers: opts.headers } : {}),
         ...(timeoutMs > 0 ? { timeout: timeoutMs } : {}),
       },
       (res) => attachWorkerResponseHandler(res, resolve, reject),

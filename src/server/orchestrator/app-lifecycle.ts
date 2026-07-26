@@ -407,7 +407,7 @@ async function createContainerForRunner(opts: {
     const sc = await mgr.create(config);
     console.log(`[timing] container.create for ${sessionId} took ${Date.now() - createStart}ms`);
     console.log(`[container] Container ready for ${sessionId} at ${sc.workerUrl}`);
-    runner.setWorkerUrl(sc.workerUrl);
+    runner.setWorkerUrl(sc.workerUrl, sc.lifecycleSecret);
     mgr.clearCreateError(sessionId);
   } catch (err) {
     const errMsg = getErrorMessage(err);
@@ -480,6 +480,7 @@ export function buildRunnerFactory(
         sessionDir: o.sessionDir,
         defaultAgentId: o.defaultAgentId,
         workerUrl: existing.workerUrl,
+        ...(existing.lifecycleSecret ? { workerSecret: existing.lifecycleSecret } : {}),
         ...(presentStore ? { presentStore } : {}),
       });
     }
@@ -507,7 +508,7 @@ export function buildRunnerFactory(
           if (sc?.status === "running") {
             mgr.claimStandby(o.sessionId);
             console.log(`[container] Standby container ready for ${o.sessionId} at ${sc.workerUrl}`);
-            runner.setWorkerUrl(sc.workerUrl);
+            runner.setWorkerUrl(sc.workerUrl, sc.lifecycleSecret);
             mgr.clearCreateError(o.sessionId);
             return;
           }
