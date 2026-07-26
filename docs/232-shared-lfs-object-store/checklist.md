@@ -42,7 +42,16 @@
 - [x] Verify the rest of the chain against the production shape: a smudge-off
       clone yields a 129-byte stub, seeding shares one inode, and `git lfs pull`
       succeeds from the seeded object alone after the cache's copy is deleted
-- [ ] Confirm the LFS endpoint authenticates via the global credential helper
-      against a real **private** LFS repo. Still unmeasured: a `file://` remote
-      uses a local transfer adapter, so no HTTP auth is exercised. Fails safe.
+- [x] Confirm the LFS endpoint authenticates via the global credential helper
+      against a real **private** LFS repo — settled on `nicolasalt/delve` (~3,015
+      LFS-tracked files): 0 pointer stubs, and all 3,003 distinct objects at
+      `nlink=18`. Since `clone --local` never hardlinks `.git/lfs`, `nlink > 1`
+      can only come from seeding, which requires an authenticated cache-side fetch
+      against a private remote. Uniform (not mixed) nlink also shows the cache
+      held the complete object set before the clone
+- [ ] Verify the session-side egress allowlist entry
+      (`github-cloud.s3.amazonaws.com`) with a **sandboxed** session running
+      `git lfs pull`/`push` itself. Not covered by the above — that transfer ran
+      orchestrator-side — and a sandbox couldn't be used for it, since a sandbox
+      has its own ShipIt-managed git dir rather than a clone of the target repo
 - [ ] Seed on `refreshCloneToLatestMain` too, whose `reset --hard` re-pulls
