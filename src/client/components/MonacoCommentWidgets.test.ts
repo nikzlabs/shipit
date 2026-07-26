@@ -432,6 +432,69 @@ describe("MonacoCommentWidgets", () => {
     expect(onEdit).toHaveBeenCalledWith("c1", "new text");
   });
 
+  describe("onInputOpenChange (blocks Send while an editor is open)", () => {
+    it("reports the add-comment input opening and closing", () => {
+      const onInputOpenChange = vi.fn();
+      const manager = createCommentWidgetManager(
+        fake.editor as never,
+        {
+          filePath: "src/a.ts",
+          onAddComment: vi.fn(),
+          onEditComment: vi.fn(),
+          onDeleteComment: vi.fn(),
+          onInputOpenChange,
+        },
+      );
+      manager.openCommentInput(3);
+      expect(onInputOpenChange).toHaveBeenLastCalledWith(true);
+
+      const zone = [...fake.zones.values()][0];
+      const cancelBtn = [...zone.domNode.querySelectorAll("button")].find((b) => b.textContent === "Cancel")!;
+      cancelBtn.click();
+      expect(onInputOpenChange).toHaveBeenLastCalledWith(false);
+    });
+
+    it("reports an in-card edit form opening, and closing on re-render", () => {
+      const onInputOpenChange = vi.fn();
+      const manager = createCommentWidgetManager(
+        fake.editor as never,
+        {
+          filePath: "src/a.ts",
+          onAddComment: vi.fn(),
+          onEditComment: vi.fn(),
+          onDeleteComment: vi.fn(),
+          onInputOpenChange,
+        },
+      );
+      manager.setComments([lineComment({ id: "c1", line: 7, text: "old" })]);
+      const zone = [...fake.zones.values()][0];
+      [...zone.domNode.querySelectorAll("button")].find((b) => b.textContent === "Edit")!.click();
+      expect(onInputOpenChange).toHaveBeenLastCalledWith(true);
+
+      // Cancelling re-renders the cards, which tears the edit form down.
+      manager.setComments([lineComment({ id: "c1", line: 7, text: "old" })]);
+      expect(onInputOpenChange).toHaveBeenLastCalledWith(false);
+    });
+
+    it("reports false on dispose so a torn-down editor can't strand Send", () => {
+      const onInputOpenChange = vi.fn();
+      const manager = createCommentWidgetManager(
+        fake.editor as never,
+        {
+          filePath: "src/a.ts",
+          onAddComment: vi.fn(),
+          onEditComment: vi.fn(),
+          onDeleteComment: vi.fn(),
+          onInputOpenChange,
+        },
+      );
+      manager.openCommentInput(3);
+      expect(onInputOpenChange).toHaveBeenLastCalledWith(true);
+      manager.dispose();
+      expect(onInputOpenChange).toHaveBeenLastCalledWith(false);
+    });
+  });
+
   it("dispose() removes all view zones and clears decorations", () => {
     const manager = createCommentWidgetManager(
       fake.editor as never,

@@ -121,6 +121,10 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
   // single file's diff, not both. Desktop ignores this state entirely.
   const [mobileView, setMobileView] = useState<"list" | "detail">("list");
   const isMobile = useIsMobile();
+  // Paths whose inline comment editor (add input or in-card edit) is open.
+  // Send is held while any is open so an accidental click can't submit the
+  // review and silently drop the half-typed comment.
+  const [composingPaths, setComposingPaths] = useState<ReadonlySet<string>>(() => new Set());
   const fileSectionRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const editorContainerRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const managersRef = useRef<Map<string, CommentWidgetManager>>(new Map());
@@ -184,6 +188,17 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
       fileSectionRefs.current.get(index)?.scrollIntoView({ behavior: "smooth", block: "start" });
     });
   }, []);
+
+  const setComposingForPath = useCallback((filePath: string, open: boolean) => {
+    setComposingPaths((prev) => {
+      if (prev.has(filePath) === open) return prev;
+      const next = new Set(prev);
+      if (open) next.add(filePath);
+      else next.delete(filePath);
+      return next;
+    });
+  }, []);
+  const composing = composingPaths.size > 0;
 
   const toggleFileCollapse = useCallback((index: number) => {
     setCollapsedFiles((prev) => {
@@ -251,16 +266,18 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
       onAddComment: (line, text) => addLineComment(sessionId, file.path, line, text),
       onEditComment: (id, text) => editComment(sessionId, id, text),
       onDeleteComment: (id) => deleteComment(sessionId, id),
+      onInputOpenChange: (open) => { setComposingForPath(file.path, open); },
       side: "modified",
     });
     manager.setComments(
       visibleComments.filter((c) => c.filePath === file.path),
     );
     managersRef.current.set(file.path, manager);
-  }, [diff.files, sessionId, addLineComment, editComment, deleteComment, visibleComments]);
+  }, [diff.files, sessionId, addLineComment, editComment, deleteComment, setComposingForPath, visibleComments]);
 
   const handleSendComments = useCallback(() => {
-    if (commentCount === 0 || !onSendComments) return;
+    // Mirrors the disabled button: never send out from under an open editor.
+    if (commentCount === 0 || !onSendComments || composing) return;
     const fileContents = new Map<string, string>();
     for (const file of diff.files) {
       fileContents.set(file.path, file.newContent);
@@ -298,7 +315,7 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
     const filePaths = Array.from(byFile.keys());
     onSendComments({ prompt, filePaths, commentCount });
     clearComments(sessionId);
-  }, [commentCount, onSendComments, allComments, diff.files, clearComments, sessionId]);
+  }, [commentCount, onSendComments, allComments, diff.files, clearComments, sessionId, composing]);
 
   if (diff.files.length === 0) {
     return (
@@ -449,7 +466,7 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
       </div>
 
       {/* Footer */}
-      <div className="flex items-center gap-2 px-3 py-1.5 border-t border-(--color-border-secondary) bg-(--color-bg-elevated) shrink-0">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-1.5 border-t border-(--color-border-secondary) bg-(--color-bg-elevated) shrink-0">
         <Button
           variant="secondary"
           size="md"
@@ -458,14 +475,29 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
           Close
         </Button>
         {onSendComments && commentCount > 0 && (
-          <Button variant="primary" size="md" onClick={handleSendComments}>
+          <Button
+            variant="primary"
+            size="md"
+            onClick={handleSendComments}
+            disabled={composing}
+            title={composing ? "Save or cancel the open comment before sending" : undefined}
+          >
             <PaperPlaneTiltIcon size={ICON_SIZE.SM} className="mr-1" />
             Send {commentCount} comment{commentCount !== 1 ? "s" : ""}
           </Button>
         )}
-        <span className="ml-auto text-[10px] text-(--color-text-tertiary) font-mono">
-          {diff.fromCommit.slice(0, 7)}..{diff.toCommit.slice(0, 7)}
-        </span>
+        {/* One trailing status slot: while a comment editor is open it explains
+            why Send is held, otherwise it shows the commit range. Reusing the
+            slot keeps the footer the same width on a phone either way. */}
+        {composing ? (
+          <span className="ml-auto text-xs text-(--color-text-tertiary) whitespace-nowrap">
+            Finish your comment first
+          </span>
+        ) : (
+          <span className="ml-auto text-[10px] text-(--color-text-tertiary) font-mono">
+            {diff.fromCommit.slice(0, 7)}..{diff.toCommit.slice(0, 7)}
+          </span>
+        )}
       </div>
     </div>
   );

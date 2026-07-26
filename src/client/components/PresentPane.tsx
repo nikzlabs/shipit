@@ -302,6 +302,7 @@ export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview }: P
           commentCount={review.commentCount}
           history={review.history}
           canSend={review.canSend}
+          composing={review.composing}
           onSend={review.handleSend}
         />
       )}
