@@ -210,9 +210,26 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
     // docs/231 — the `rollback` above is a `git reset --hard`, and the
     // orchestrator's git has the LFS *smudge* filter disabled (see git-lfs.ts),
     // so that reset re-writes pointer stubs over any content a previous
-    // materialization put there. Re-pull before handing the clone out. Cheap on
-    // the warm-reuse hot path: the objects are already in `.git/lfs`, so this
-    // degenerates to a local checkout with no network transfer.
+    // materialization put there. Re-pull before handing the clone out, or a
+    // warm-reuse hand-out gives the agent a tree of stubs — #1729, reintroduced
+    // on the hot path. (With smudge off, git even reads a *materialized* LFS
+    // worktree as dirty, so a reset to the same commit still rewrites it.)
+    //
+    // Cost, stated honestly because this IS the hot path: no network — the
+    // objects are already in `.git/lfs`, so `git lfs fetch` is a no-op — but
+    // `git lfs checkout` then rewrites every tracked LFS file from the local
+    // store, because the reset just turned all of them back into pointers. On an
+    // asset-heavy repo that is thousands of local file writes per claim. The
+    // earlier "degenerates to a local checkout" note undersold that: local I/O,
+    // not zero I/O.
+    //
+    // Kept UNCONDITIONAL deliberately, rather than gated on `resetTarget` being
+    // truthy. Gating would skip the pull on claims where the fetch found nothing
+    // to reset to (where it is indeed pure waste), but it would also give up the
+    // self-heal this provides: a clone left holding stubs by an earlier failed
+    // materialization is repaired on its next claim. Correctness on a path that
+    // silently produces stubs beats the saving until the latency is measured to
+    // matter. See docs/232 "Known gaps".
     await materializeLfsWithWarning(sessionDir, repoLabel, (message) =>
       deps.sseBroadcast("error", { message }),
     );

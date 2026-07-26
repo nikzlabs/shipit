@@ -54,4 +54,12 @@
       `git lfs pull`/`push` itself. Not covered by the above — that transfer ran
       orchestrator-side — and a sandbox couldn't be used for it, since a sandbox
       has its own ShipIt-managed git dir rather than a clone of the target repo
-- [ ] Seed on `refreshCloneToLatestMain` too, whose `reset --hard` re-pulls
+- [ ] Seed `refreshCloneToLatestMain` from the cache too. NOTE: this is a
+      *network* win only — it avoids downloading objects added to main since the
+      clone was cut. It does NOT make the warm-reuse path faster; the dominant
+      cost there is the worktree rewrite, which seeding can't touch (see
+      "Known gaps")
+- [ ] (Deferred by decision, not oversight) Gate the warm-reuse `git lfs pull` on
+      a reset having actually run. Kept unconditional for now: it doubles as a
+      self-heal for a clone left holding stubs. Revisit if claim latency on an
+      asset-heavy repo is measured to matter
