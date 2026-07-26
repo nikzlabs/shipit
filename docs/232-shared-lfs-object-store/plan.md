@@ -309,7 +309,32 @@ the target repo. Unverified, and independent of everything above.
   unverified `git lfs prune` or reimplementing its ref walk, to avoid a cost that
   is bounded by one download of a superseded asset version. Revisit only if the
   re-download rate turns out to matter.
-- **Only the clone path is seeded.** `refreshCloneToLatestMain`'s `reset --hard`
-  re-materializes pointers and re-pulls; it could seed from the cache first for
-  the same win. Left out to keep the first cut to one call site.
-- **The two unverified `git lfs fetch` assumptions** above.
+- **Only the clone path is seeded.** `refreshCloneToLatestMain` could seed from
+  the cache before its re-pull. Left out to keep the first cut to one call site —
+  but note what that would and wouldn't buy, because it's easy to read as a
+  latency fix and it isn't (see the next gap).
+- **Warm-reuse re-pull rewrites the whole worktree, on the claim hot path.**
+  `refreshCloneToLatestMain` is the shared tail of the reuse / warm / waiting
+  claim paths, so it runs on most "New Session" clicks that land on an existing
+  clone (the docs/145 fast-path skips it only when the clone already matches a
+  recently-pre-fetched cache). Its `reset --hard` runs orchestrator-side with
+  smudge off, turning every tracked LFS file back into a pointer — so the
+  following `git lfs pull` rewrites *all* of them from the local object store.
+  No network (the objects are already in `.git/lfs`), but on an asset-heavy repo
+  that is thousands of local file writes per claim. Two consequences worth
+  keeping straight:
+
+  - **Seeding does not fix this.** It only avoids *downloading* objects added to
+    main since the clone was cut. The worktree rewrite is inherent to resetting
+    with smudge off.
+  - **The pull is unconditional even when no reset ran** (`resetTarget` falsy),
+    where it is pure waste. Gating it is a one-line change, **deliberately not
+    taken**: the unconditional pull doubles as a self-heal for a clone left
+    holding stubs by an earlier failed materialization, and correctness on a path
+    whose failure mode is silent stubs beats the saving until the latency is
+    measured to matter.
+
+  Actually reducing the rewrite means not resetting when the target already
+  equals HEAD — a change to the refresh path generally, not to the LFS work.
+- **The session-side egress allowlist entry** is unexercised — see "Still
+  unexercised" above.
