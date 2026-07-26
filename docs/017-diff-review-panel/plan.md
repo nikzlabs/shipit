@@ -213,6 +213,38 @@ Binary files used to render a flat "Binary file — cannot display diff" placeho
 
 The content builder is shared by both diff producers via `buildFileDiffContent()` in `services/git.ts` (`getTurnDiff` and `getDiffVsBranch`), so the two surfaces can't drift.
 
+#### Git LFS images
+
+An LFS-tracked image rendered its **sha256 as text**, because the diff reads
+*committed blobs* and in an LFS repo the committed blob is always the ~130-byte
+pointer stub. docs/231's provisioning-time `git lfs pull` doesn't help: it
+materializes the **working tree**, which this panel never reads.
+
+The pointer also arrives on the **text** path, not the binary one — the
+conventional `*.png filter=lfs diff=lfs merge=lfs -text` leaves git's `diff`
+attribute *set* and `-text` only disables eol munging, so git sniffs ASCII and
+reports an ordinary +2/−2 text diff. Keying the fix off `binary` would have
+missed it entirely.
+
+`git-lfs-blob.ts` resolves a pointer to real bytes: first
+`.git/lfs/objects/<a>/<b>/<oid>` (a plain file read — this hits for the "after"
+side, which provisioning already pulled and docs/232 hardlinks in), then
+`git lfs smudge` over the network for the "before" side, which `git lfs pull`
+never fetched because it only covers the current checkout. Explicitly invoking
+`smudge` is unaffected by the orchestrator's `--skip-smudge` install, which
+writes a `--skip` *argument* into `filter.lfs.smudge` rather than a mode.
+
+Two bounds keep a slow or unreachable LFS remote from holding the panel open:
+15 s per smudge (`SHIPIT_GIT_LFS_DIFF_TIMEOUT_MS`) and 8 network fetches per
+diff request (`SHIPIT_GIT_LFS_DIFF_FETCH_BUDGET`). Anything not resolved renders
+as an **empty pane labelled "(Git LFS content unavailable)"** — `missingPaneLabel`
+distinguishes "this version doesn't exist" (added/deleted) from "we couldn't load
+it", so an unfetchable side no longer claims the file was just added. Rasters
+keep `image: true` even when *neither* side resolved, because two labelled panes
+beat an empty Monaco diff; SVGs keep their pointer text, since they still have a
+working text diff to fall back on. The one thing never done is diffing the
+pointers.
+
 ### Diff Badge in Chat
 
 After each Claude turn, add a small clickable badge to the assistant message in the chat:
@@ -262,9 +294,12 @@ When auto-fix sends errors to Claude, the resulting changes should also be revie
 | `src/client/components/DiffPanel.tsx` | New component; media-diff branch + per-file SVG render toggle |
 | `src/client/components/DiffMediaView.tsx` | `ImageDiffView` / `SvgDiffView` before/after renderers |
 | `src/client/components/DiffPanel.test.tsx` | Component tests |
-| `src/server/shared/git.ts` | `getFileBufferAtCommit()` (Buffer-safe blob read for images) |
-| `src/server/orchestrator/services/git.ts` | `buildFileDiffContent()` + image embedding for `getTurnDiff`/`getDiffVsBranch` |
-| `src/server/shared/types/domain-types/git.ts` | `FileDiff.image` flag |
+| `src/server/shared/git.ts` | `getFileBufferAtCommit()` (Buffer-safe blob read for images); `dir` accessor |
+| `src/server/orchestrator/services/git.ts` | `buildFileDiffContent()` + image embedding for `getTurnDiff`/`getDiffVsBranch`; `lfsMediaSide()` |
+| `src/server/orchestrator/git-lfs-blob.ts` | LFS pointer parsing + object-store/smudge resolution for diff rendering |
+| `src/server/orchestrator/git-lfs-blob.test.ts` | Pointer parsing, store layout, budget, "never return the echoed pointer" |
+| `src/server/orchestrator/services/git-lfs-diff.test.ts` | End-to-end: an LFS repo's diff yields data URIs, not checksums |
+| `src/server/shared/types/domain-types/git.ts` | `FileDiff.image` / `FileDiff.lfs` flags |
 | `src/client/App.tsx` | Add diff state, trigger on `git_committed`, wire up panel |
 | `src/server/integration_tests/diff-review.test.ts` | Integration tests |
 

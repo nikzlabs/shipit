@@ -174,6 +174,48 @@ describe("DiffPanel", () => {
       expect(screen.getAllByRole("img")).toHaveLength(1);
     });
 
+    it("renders an LFS-tracked image as images, not as its pointer text", () => {
+      // The server resolves the pointer, so `binary` is false here — git calls an
+      // LFS diff textual because the committed blob is an ASCII stub. The panel
+      // must key off `image`, not `binary`, or the checksum comes back.
+      const props = defaultProps();
+      props.diff = makeDiff({
+        files: [makeFile({
+          path: "logo.png",
+          status: "modified",
+          binary: false,
+          image: true,
+          lfs: true,
+          oldContent: "data:image/png;base64,AAAA",
+          newContent: "data:image/png;base64,BBBB",
+        })],
+      });
+      render(<DiffPanel {...props} />);
+      expect(screen.queryByTestId("mock-diff-editor")).not.toBeInTheDocument();
+      expect(screen.getAllByRole("img").map((i) => i.getAttribute("src"))).toEqual([
+        "data:image/png;base64,AAAA",
+        "data:image/png;base64,BBBB",
+      ]);
+    });
+
+    it("says LFS content is unavailable instead of claiming the version never existed", () => {
+      const props = defaultProps();
+      props.diff = makeDiff({
+        files: [makeFile({
+          path: "logo.png",
+          status: "modified",
+          binary: false,
+          image: true,
+          lfs: true,
+          oldContent: "",
+          newContent: "data:image/png;base64,BBBB",
+        })],
+      });
+      render(<DiffPanel {...props} />);
+      expect(screen.getByText(/Git LFS content unavailable/)).toBeInTheDocument();
+      expect(screen.queryByText(/added — no previous version/)).not.toBeInTheDocument();
+    });
+
     it("defaults SVG to the text diff and toggles to a rendered comparison", () => {
       const props = defaultProps();
       props.diff = makeDiff({

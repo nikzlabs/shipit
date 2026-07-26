@@ -113,6 +113,16 @@ export class GitManager {
     this.git = simpleGit(this.workspaceDir);
   }
 
+  /**
+   * The git working directory this manager operates on. Read-only: callers that
+   * need to run something git can't express through this class (the diff
+   * service's `git lfs smudge`, say) get the path, never the ability to retarget
+   * an existing manager.
+   */
+  get dir(): string {
+    return this.workspaceDir;
+  }
+
   /** Get the current HEAD commit hash. Returns null if no commits exist. */
   async getHeadHash(): Promise<string | null> {
     try {

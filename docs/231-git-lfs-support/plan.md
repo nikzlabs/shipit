@@ -176,6 +176,15 @@ binary is present.
   `SHIPIT_GIT_LFS_SHARED_STORE=1` — that doc resolves both concerns: kernel
   hardlink refcounting makes prune safe, and `.git/lfs/objects` data files are
   excluded from the ownership handback exactly as `.git/objects` already was.
+- **Surfaces that read committed blobs, not the working tree.** Materialization
+  fixes the *checkout*; anything reading `git show <ref>:<path>` still sees the
+  pointer stub, because that's genuinely what the commit contains. The diff
+  viewer hit this and is fixed separately in
+  `docs/017-diff-review-panel` (§ Git LFS images) via `git-lfs-blob.ts`, which
+  follows the pointer into `.git/lfs/objects` and falls back to `git lfs smudge`.
+  Any future blob-reading surface (a commit-history file preview, a PR-side
+  render) needs the same resolution step — it does **not** come for free from
+  provisioning.
 - **Local/dogfood mode degradation.** `RUNTIME_MODE=local` makes one container
   both orchestrator and agent host, so it inherits `--skip-smudge` and a manual
   `git checkout` there writes stubs. Provisioning-time materialization still runs;

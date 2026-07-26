@@ -23,3 +23,6 @@
       `git-lfs.github.com/spec/v1` header before blaming networking or codecs
 - [x] Unit tests for detection + the status/warning contract
 - [x] Dockerfile guard test for the per-role smudge asymmetry
+- [x] Resolve LFS pointers in the diff viewer, which reads committed blobs and so
+      is untouched by working-tree materialization (design + key files in
+      `docs/017-diff-review-panel` § Git LFS images)

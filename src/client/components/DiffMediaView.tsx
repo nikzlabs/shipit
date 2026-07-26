@@ -11,8 +11,13 @@
  *                       `RenderedFrame` used by the file viewer (docs/219).
  *
  * Both lay out old-on-the-left / new-on-the-right with red/green tinted labels
- * matching the diff gutter, and degrade to an "(added)" / "(deleted)" placeholder
- * for the side that doesn't exist.
+ * matching the diff gutter, and degrade to a placeholder for a side with nothing
+ * to show — see {@link missingPaneLabel}, which distinguishes "this version
+ * doesn't exist" from "we couldn't load it" (the Git LFS case).
+ *
+ * Git LFS images reach here the same way any other image does: the server
+ * follows the pointer stub and embeds the resolved bytes, so this component
+ * never has to know a file is LFS-tracked — except to explain an empty pane.
  */
 
 import { RenderedFrame } from "./FileContentView/RenderedFrame.js";
@@ -69,8 +74,21 @@ function MediaSplit({
   );
 }
 
+/**
+ * Why an empty pane is empty. A side is legitimately absent only when the file
+ * was added (no before) or deleted (no after); any *other* empty side means we
+ * had a version and couldn't render it — an oversized blob, or LFS content the
+ * server couldn't fetch. Saying "(added — no previous version)" there would be a
+ * confident lie about the file's history, which is worse than admitting the miss.
+ */
+export function missingPaneLabel(file: FileDiff, side: "old" | "new"): string {
+  if (side === "old" && file.status === "added") return "(added — no previous version)";
+  if (side === "new" && file.status === "deleted") return "(deleted)";
+  return file.lfs ? "(Git LFS content unavailable)" : "(preview unavailable)";
+}
+
 export function ImageDiffView({ file }: { file: FileDiff }) {
-  const imgPane = (src: string, alt: string, missing: string) =>
+  const imgPane = (src: string, alt: string, side: "old" | "new") =>
     src ? (
       <div
         className="flex-1 flex items-center justify-center p-4 min-h-[160px]"
@@ -79,31 +97,31 @@ export function ImageDiffView({ file }: { file: FileDiff }) {
         <img src={src} alt={alt} className="max-w-full max-h-[420px] object-contain" />
       </div>
     ) : (
-      <EmptyPane label={missing} />
+      <EmptyPane label={missingPaneLabel(file, side)} />
     );
 
   return (
     <MediaSplit
-      left={imgPane(file.oldContent, `${file.path} (before)`, "(added — no previous version)")}
-      right={imgPane(file.newContent, `${file.path} (after)`, "(deleted)")}
+      left={imgPane(file.oldContent, `${file.path} (before)`, "old")}
+      right={imgPane(file.newContent, `${file.path} (after)`, "new")}
     />
   );
 }
 
 export function SvgDiffView({ file }: { file: FileDiff }) {
-  const svgPane = (content: string, missing: string) =>
+  const svgPane = (content: string, side: "old" | "new") =>
     content ? (
       <div className="flex-1 min-h-[240px] h-[320px] bg-white">
         <RenderedFrame kind="svg" content={content} />
       </div>
     ) : (
-      <EmptyPane label={missing} />
+      <EmptyPane label={missingPaneLabel(file, side)} />
     );
 
   return (
     <MediaSplit
-      left={svgPane(file.oldContent, "(added — no previous version)")}
-      right={svgPane(file.newContent, "(deleted)")}
+      left={svgPane(file.oldContent, "old")}
+      right={svgPane(file.newContent, "new")}
     />
   );
 }
