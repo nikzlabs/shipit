@@ -87,27 +87,33 @@ export function FileReviewFooter({
   history: FileReview[];
   canSend: boolean;
   /** An unsaved comment editor is open — Send is held so the in-progress
-   *  comment isn't silently dropped. Renders the reason next to the button. */
+   *  comment isn't silently dropped. Takes over the status slot to say so. */
   composing?: boolean;
   onSend: () => void;
   onCancel?: () => void;
 }) {
   return (
-    <div className="flex items-center justify-between px-6 py-3 border-t border-(--color-border-secondary) bg-(--color-bg-elevated) shrink-0 gap-4">
-      <div className="flex items-center gap-3 min-w-0">
+    // Wraps rather than overflows: the Cancel + Send pair alone is ~220px, so
+    // at phone widths the status line drops to its own row instead of shoving
+    // the buttons off the edge. `ml-auto` on the controls keeps them
+    // right-aligned in both the one-row and two-row layouts.
+    <div className="flex flex-wrap items-center px-6 py-3 border-t border-(--color-border-secondary) bg-(--color-bg-elevated) shrink-0 gap-x-4 gap-y-2">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 min-w-0">
+        {/* The reason Send is held replaces the draft count rather than
+            sitting beside it — the composing state must not cost extra
+            horizontal space, and the count is still on the button itself.
+            Kept short enough (~153px) to sit beside "Past reviews" at 375px,
+            so opening an editor doesn't add a row and shift the footer. */}
         <span className="text-xs text-(--color-text-secondary) whitespace-nowrap">
-          {commentCount > 0
-            ? `${commentCount} comment${commentCount !== 1 ? "s" : ""} — draft`
-            : "no draft comments"}
+          {composing
+            ? "Finish your comment first"
+            : commentCount > 0
+              ? `${commentCount} comment${commentCount !== 1 ? "s" : ""} — draft`
+              : "no draft comments"}
         </span>
         <PastReviews history={history} />
       </div>
-      <div className="flex items-center gap-2 shrink-0">
-        {composing && (
-          <span className="text-xs text-(--color-text-tertiary) whitespace-nowrap">
-            Finish the open comment first
-          </span>
-        )}
+      <div className="flex items-center gap-2 shrink-0 ml-auto">
         {onCancel && (
           <Button variant="ghost" size="md" onClick={onCancel}>
             Cancel

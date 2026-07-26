@@ -229,7 +229,7 @@ the selection/line add-input, or an in-place edit of an existing comment
 — is not part of the draft yet, so sending would freeze the review and
 silently discard whatever is still in the textarea. While any editor is
 open the button is disabled with the reason spelled out beside it
-("Finish the open comment first"), and `handleSend` no-ops to match, so a
+("Finish your comment first"), and `handleSend` no-ops to match, so a
 keyboard path can't route around the disabled button.
 
 The flag is transient client state (`composingByKey` in

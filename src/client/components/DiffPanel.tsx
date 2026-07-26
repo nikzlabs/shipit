@@ -466,7 +466,7 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
       </div>
 
       {/* Footer */}
-      <div className="flex items-center gap-2 px-3 py-1.5 border-t border-(--color-border-secondary) bg-(--color-bg-elevated) shrink-0">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-1.5 border-t border-(--color-border-secondary) bg-(--color-bg-elevated) shrink-0">
         <Button
           variant="secondary"
           size="md"
@@ -475,27 +475,29 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
           Close
         </Button>
         {onSendComments && commentCount > 0 && (
-          <>
-            <Button
-              variant="primary"
-              size="md"
-              onClick={handleSendComments}
-              disabled={composing}
-              title={composing ? "Save or cancel the open comment before sending" : undefined}
-            >
-              <PaperPlaneTiltIcon size={ICON_SIZE.SM} className="mr-1" />
-              Send {commentCount} comment{commentCount !== 1 ? "s" : ""}
-            </Button>
-            {composing && (
-              <span className="text-xs text-(--color-text-tertiary) whitespace-nowrap">
-                Finish the open comment first
-              </span>
-            )}
-          </>
+          <Button
+            variant="primary"
+            size="md"
+            onClick={handleSendComments}
+            disabled={composing}
+            title={composing ? "Save or cancel the open comment before sending" : undefined}
+          >
+            <PaperPlaneTiltIcon size={ICON_SIZE.SM} className="mr-1" />
+            Send {commentCount} comment{commentCount !== 1 ? "s" : ""}
+          </Button>
         )}
-        <span className="ml-auto text-[10px] text-(--color-text-tertiary) font-mono">
-          {diff.fromCommit.slice(0, 7)}..{diff.toCommit.slice(0, 7)}
-        </span>
+        {/* One trailing status slot: while a comment editor is open it explains
+            why Send is held, otherwise it shows the commit range. Reusing the
+            slot keeps the footer the same width on a phone either way. */}
+        {composing ? (
+          <span className="ml-auto text-xs text-(--color-text-tertiary) whitespace-nowrap">
+            Finish your comment first
+          </span>
+        ) : (
+          <span className="ml-auto text-[10px] text-(--color-text-tertiary) font-mono">
+            {diff.fromCommit.slice(0, 7)}..{diff.toCommit.slice(0, 7)}
+          </span>
+        )}
       </div>
     </div>
   );
