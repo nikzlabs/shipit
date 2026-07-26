@@ -105,6 +105,49 @@ describe("pr-store", () => {
       expect(usePrStore.getState().cardBySession.s1?.phase).toBe("creating");
     });
 
+    // docs/202 — the re-armed card is ALSO the client's only cue that the poller
+    // silently dropped its snapshot (`reArm` broadcasts no `pr_status` removal —
+    // it would race this card across transports). Without mirroring that clear,
+    // `PrStateBadge` keeps reading the stale merged `statusBySession` entry ahead
+    // of the card phase and renders the purple merged icon on a "ready" card.
+    it("retires the stale poller status when a re-armed card lands", () => {
+      usePrStore.setState({ statusBySession: { s1: makePrStatus({ prState: "merged" }) } });
+      usePrStore.getState().updateCard("s1", makeCard("merged"));
+
+      usePrStore.getState().updateCard(
+        "s1",
+        makeCard("ready", {
+          previousMergedPr: { number: 1, url: "u", title: "Old PR", baseBranch: "main" },
+        }),
+      );
+
+      expect(usePrStore.getState().statusBySession.s1).toBeUndefined();
+      expect(usePrStore.getState().cardBySession.s1?.phase).toBe("ready");
+    });
+
+    it("leaves the poller status alone for an ordinary (non-re-armed) card", () => {
+      usePrStore.setState({ statusBySession: { s1: makePrStatus() } });
+
+      usePrStore.getState().updateCard("s1", makeCard("open"));
+
+      expect(usePrStore.getState().statusBySession.s1?.prNumber).toBe(1);
+    });
+
+    // A terminal card carrying the breadcrumb is the poller re-promoting the
+    // session after its NEW PR merged — that status is current, not stale.
+    it("keeps the poller status when a re-armed session reaches a terminal card", () => {
+      usePrStore.setState({ statusBySession: { s1: makePrStatus({ prState: "merged", prNumber: 2 }) } });
+
+      usePrStore.getState().updateCard(
+        "s1",
+        makeCard("merged", {
+          previousMergedPr: { number: 1, url: "u", title: "Old PR", baseBranch: "main" },
+        }),
+      );
+
+      expect(usePrStore.getState().statusBySession.s1?.prNumber).toBe(2);
+    });
+
     it("still blocks a non-re-armed regression from merged", () => {
       usePrStore.getState().updateCard("s1", makeCard("merged"));
       // No previousMergedPr → the guard holds.

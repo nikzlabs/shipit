@@ -321,6 +321,27 @@ purple. The two parts come from different places:
   (the per-row indicator returns `null` for a session with no live PR card /
   CI). So "gray like a new session" requires **no extra styling work** — it is
   the natural consequence of the un-merge.
+  - **…except for `PrStateBadge`, which needed the client to mirror the silent
+    clear (double-merge-icon report).** The badge resolves
+    `status?.prState ?? <card-phase fallback>` — the **poller status wins over
+    the card** — and it renders in both the card's ready phase and the sidebar
+    row. `reArm` clears the server's `lastKnown` *silently* (by design: a
+    `pr_status { removals }` broadcast would race the WS card across two
+    transports and could wipe it), and `updateCard` only replaced
+    `cardBySession`, so `statusBySession` kept the merged summary until a
+    reconnect snapshot pruned it. Symptom: the re-armed **ready** card rendered
+    the purple merged `GitMergeIcon` immediately left of the note's own
+    `GitMergeIcon` — two identical glyphs — and the Active sidebar row showed a
+    merged badge. Fix: `updateCard` deletes `statusBySession[sessionId]` when the
+    incoming card is **non-terminal AND carries `previousMergedPr`** — the same
+    signal that already overrides the terminal guard, so the client converges
+    exactly where the server did, still without the racy removal. A *terminal*
+    card carrying the breadcrumb is deliberately exempt: that is the poller
+    re-promoting the session after its **new** PR merged, so the status is
+    current. An `open` re-armed card also drops the stale status, but the badge
+    stays correct via the card-phase fallback (green `GitPullRequestIcon`) while
+    the next poll (≤5s) refills the poller-only fields (deployments, mergeable,
+    review decision) — showing none beats showing the *old merged PR's*.
 - **The breadcrumb needs a retained reference.** Because re-arm clears both
   `merged_at` and `pr_status`, the prior PR identity is gone. To still render
   "previously merged #N", retain a **lightweight breadcrumb** on the session —
@@ -384,7 +405,7 @@ once.
 | Re-arm orchestration | **shared helper** called by both `postTurnPrFlow` sites — `ws-handlers/agent-execution.ts` AND `runner-registry-factory.ts` (dispatch/system-turn) | Both have `sseBroadcast` + poller in scope: detect → `clearMerged` → `reArm` → `sseBroadcast("session_list")` → then card emit. Wiring only one drops re-arm for spawned/CI/programmatic turns |
 | Card | `src/client/components/PrLifecycleCard.tsx` | Render "Previously merged #N" note on the re-armed `ready`/`open` card |
 | Sidebar | `src/client/components/SessionSidebar.tsx` | No styling change — gray/Active is the natural result of cleared `merged_at`; requires the `session_list` SSE rebroadcast to regroup live, not just on reload |
-| Client store | `src/client/stores/pr-store.ts` | Amend `updateCard`'s terminal-regress guard (lines 311-314) to let a card carrying `previousMergedPr` replace a `merged`/`closed` card (order-independent override; no removal broadcast to race it) |
+| Client store | `src/client/stores/pr-store.ts` | Amend `updateCard`'s terminal-regress guard (lines 311-314) to let a card carrying `previousMergedPr` replace a `merged`/`closed` card (order-independent override; no removal broadcast to race it). Same call also retires `statusBySession[sessionId]` for a **non-terminal** re-armed card, mirroring the poller's silent `lastKnown` clear so `PrStateBadge` stops reading the stale merged state |
 
 ## Testing
 
@@ -472,6 +493,20 @@ _None — see "Re-armed card presentation"._
   "Previously merged #N" breadcrumb (linked to the prior PR) on the re-armed
   ready/open card; the gray/Active sidebar treatment is the natural result of the
   cleared `merged_at` (no sidebar styling change).
+- **`statusBySession` must be retired alongside the card (double-merge-icon
+  fix).** The card override above was necessary but not sufficient: it left the
+  poller-owned `statusBySession` entry in place, and `PrStateBadge` reads
+  `status?.prState` **ahead of** the card phase, so the re-armed ready card kept
+  a purple merged badge immediately left of the note's own `GitMergeIcon` (and
+  the Active sidebar row showed merged too) until a reconnect snapshot pruned
+  it. `updateCard` now deletes `statusBySession[sessionId]` when the incoming
+  card is non-terminal AND carries `previousMergedPr` — the client-side mirror of
+  `reArm`'s deliberately silent `lastKnown` clear, with none of the transport
+  race a `pr_status { removals }` broadcast would reintroduce. Rationale for the
+  narrowing in "Re-armed card presentation"; coverage in `pr-store.test.ts`
+  ("retires the stale poller status when a re-armed card lands", plus the
+  non-re-armed and terminal-card negatives) and `PrLifecycleCard.test.tsx`
+  ("falls back to the gray branch badge …").
 - **Not a chat-history card**: the breadcrumb lives on the *session* row (like
   `pr_status`), not the `messages` table, so the `CARD_MESSAGE_FIELDS` /
   chat-history round-trip machinery does not apply.

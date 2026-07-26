@@ -22,4 +22,6 @@
 - [x] Resolve open question: re-armed card wording → "previously merged" breadcrumb, gray fresh-session indicator
 - [x] `PrLifecycleCard.tsx`: render "Previously merged #N" note on the re-armed `ready` card
 - [x] Confirm sidebar row leaves "Recently resolved" → Active with gray (no merge icon) after re-arm (natural result of cleared `merged_at`; `clearMerged` test asserts the session returns to the visible Active set)
+- [x] `pr-store.ts`: `updateCard` also retires `statusBySession[sessionId]` for a **non-terminal** re-armed card — the client mirror of `reArm`'s silent `lastKnown` clear. Without it `PrStateBadge` (which prefers `status?.prState` over the card phase) kept the purple merged badge on the ready card next to the note's own `GitMergeIcon`, and on the Active sidebar row, until a reconnect snapshot pruned it
+- [x] Test: a re-armed card clears the stale poller status and the badge falls back to the gray `GitBranchIcon` (+ negatives: an ordinary card and a terminal re-armed card both leave the status intact)
 - [x] Update this plan with any subsystems/patterns discovered during implementation

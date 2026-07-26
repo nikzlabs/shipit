@@ -1255,6 +1255,46 @@ describe("PrStateBadge", () => {
     expect(screen.getByTitle("PR open")).toBeInTheDocument();
   });
 
+  // docs/202 — a re-armed session must read as a fresh branch: the badge is the
+  // gray GitBranch icon, and the "Previously merged #N" note is the only sign it
+  // shipped once. Regression guard for the stale merged badge (which also put
+  // two identical GitMerge glyphs side by side on the ready card).
+  it("falls back to the gray branch badge once a re-armed card retires the merged status", () => {
+    setStatus("s1", "merged");
+    usePrStore.getState().updateCard("s1", {
+      cardId: "pr-card-s1",
+      phase: "merged",
+      pr: {
+        number: 1,
+        title: "Test PR",
+        url: "https://github.com/o/r/pull/1",
+        baseBranch: "main",
+        headBranch: "feature",
+        insertions: 10,
+        deletions: 5,
+      },
+    });
+
+    usePrStore.getState().updateCard("s1", {
+      cardId: "pr-card-s1",
+      phase: "ready",
+      headBranch: "feature",
+      totalInsertions: 3,
+      totalDeletions: 1,
+      previousMergedPr: {
+        number: 1,
+        url: "https://github.com/o/r/pull/1",
+        title: "Old PR",
+        baseBranch: "main",
+      },
+    });
+
+    render(<PrStateBadge sessionId="s1" />);
+
+    expect(screen.getByTitle("Branch")).toBeInTheDocument();
+    expect(screen.queryByTitle("PR merged")).not.toBeInTheDocument();
+  });
+
   it("renders a distinct red closed badge for a closed PR (not the gray branch badge)", () => {
     usePrStore.setState({
       statusBySession: {

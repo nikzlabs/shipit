@@ -389,7 +389,26 @@ export const usePrStore = create<PrState>((set, get) => ({
           !card.previousMergedPr) {
         return state;
       }
+      // docs/202 — a re-armed, non-terminal card is also the client-side signal
+      // that the poller dropped its snapshot. `PrStatusPoller.reArm` clears
+      // `lastKnown` *silently* (broadcasting `pr_status { removals }` would race
+      // this card across two transports and could wipe it), so nothing else
+      // retires the stale merged summary here until a reconnect snapshot prunes
+      // it. Leaving it in place keeps `PrStateBadge` — which resolves
+      // `status?.prState` ahead of the card phase — rendering the purple merged
+      // icon on the ready card AND the Active sidebar row, contradicting this
+      // feature's "gray like a fresh session" indicator and doubling the merge
+      // glyph next to the "Previously merged #N" note. Mirroring the server's
+      // silent clear here converges without the racy removal.
+      const reArmed = Boolean(card.previousMergedPr) && card.phase !== "merged" && card.phase !== "closed";
+      let nextStatus = state.statusBySession;
+      if (reArmed && state.statusBySession[sessionId]) {
+        nextStatus = { ...state.statusBySession };
+        // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+        delete nextStatus[sessionId];
+      }
       return {
+        statusBySession: nextStatus,
         autoMergeBySession: card.autoMerge
           ? { ...state.autoMergeBySession, [sessionId]: card.autoMerge }
           : state.autoMergeBySession,
