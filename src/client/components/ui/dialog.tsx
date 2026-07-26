@@ -93,6 +93,16 @@ function useBackDismiss(
       // suppress the resulting popstate so it doesn't also close the dialog
       // beneath us.
       dismissStack.splice(idx, 1);
+      // …unless something NAVIGATED while the dialog was open (an action button
+      // that closes the dialog and routes — "Create sandbox" → /session/{id},
+      // "Create repository" → /{repo}/new). Then the top history entry is the
+      // new route, not our dummy, and history.back() would erase that
+      // navigation — the user would appear to stay on the previous page. Detect
+      // it via the __shipitDialog stamp: if the current entry isn't ours, leave
+      // history alone and let the dummy same-URL entry stay buried in the stack
+      // (crossing it later is a visual no-op).
+      const state = window.history.state as { __shipitDialog?: boolean } | null;
+      if (!state?.__shipitDialog) return;
       suppressPops++;
       window.history.back();
     };
