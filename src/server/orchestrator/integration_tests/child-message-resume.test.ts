@@ -46,6 +46,7 @@ import {
   createTestCredentialStore,
   createTestDatabaseManager,
 } from "./test-helpers.js";
+import { allocateDeadLoopbackPort } from "./container-test-helpers.js";
 
 // generateSessionName forks a real CLI; stub to a no-op (mirrors
 // agent-spawned-session.test.ts).
@@ -79,12 +80,13 @@ function createFakeDocker(opts: { failCreateAfter?: number } = {}) {
         throw new Error("simulated container boot failure");
       }
       const id = `fake-container-${containerCounter}`;
-      // Use a loopback IP so the worker URL (http://127.0.0.1:9100) refuses
-      // connections INSTANTLY. The env-prep agent-secrets push and SSE connect
-      // fire against this URL; a non-routable bridge IP (172.18.x) blackholes
-      // in some CI network namespaces and only resolves on the 12s fail-open
-      // timeout, blowing the per-test budget. 127.0.0.1 fails fast everywhere
-      // (nothing listens on 9100 here — the orchestrator binds a random port).
+      // Loopback IP + a dead ephemeral workerPort (allocateDeadLoopbackPort)
+      // so the worker URL refuses connections INSTANTLY and can never reach a
+      // real worker. NEVER use port 9100 here: inside a ShipIt session
+      // container that is the session's own live worker, and the test
+      // orchestrator's persistent-409 recovery would kill the real agent
+      // running vitest. See allocateDeadLoopbackPort in
+      // container-test-helpers.ts for the full rationale.
       const ip = "127.0.0.1";
       containers.set(id, { id, started: false, labels: createOpts.Labels ?? {}, ip });
       return {
@@ -122,7 +124,7 @@ describe("Integration: child-message container resume (Ops docs/162 follow-up)",
       docker: fakeDocker as any,
       imageName: "shipit-session-worker:test",
       networkName: "shipit-test",
-      workerPort: 9100,
+      workerPort: await allocateDeadLoopbackPort(),
       skipHealthCheck: true,
       stackName: "shipit-test",
     });

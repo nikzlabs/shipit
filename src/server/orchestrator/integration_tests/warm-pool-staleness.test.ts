@@ -36,6 +36,7 @@ import {
   createTestCredentialStore,
   createTestDatabaseManager,
 } from "./test-helpers.js";
+import { allocateDeadLoopbackPort } from "./container-test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
 import type { AuthManager } from "../agents/claude/auth-manager.js";
 import type { GitHubAuthManager } from "../github-auth.js";
@@ -61,7 +62,10 @@ function createFakeDocker() {
     createContainer: async (opts: any) => {
       containerCounter++;
       const id = `fake-container-${containerCounter}`;
-      const ip = `172.18.0.${containerCounter + 2}`;
+      // Distinct loopback IPs + a dead ephemeral workerPort: refuses
+      // instantly, can never be a real worker (see allocateDeadLoopbackPort
+      // in container-test-helpers.ts).
+      const ip = `127.0.0.${containerCounter + 2}`;
       containers.set(id, {
         id, started: false, labels: opts.Labels ?? {}, ip,
         hostConfig: opts.HostConfig ?? {},
@@ -151,7 +155,7 @@ describe("Integration: warm-pool / claim staleness (W2 + W3)", () => {
   let origGitTerminalPrompt: string | undefined;
   let repoUrl: string;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-warm-stale-"));
     sessionManager = new SessionManager(dbManager);
@@ -163,7 +167,7 @@ describe("Integration: warm-pool / claim staleness (W2 + W3)", () => {
       docker: fakeDocker as any,
       imageName: "shipit-session-worker:test",
       networkName: "shipit-test",
-      workerPort: 9100,
+      workerPort: await allocateDeadLoopbackPort(),
       skipHealthCheck: true,
       stackName: "shipit-test",
     });

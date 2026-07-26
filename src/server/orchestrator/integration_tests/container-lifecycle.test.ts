@@ -22,6 +22,7 @@ import {
   createTestCredentialStore,
   createTestDatabaseManager,
 } from "./test-helpers.js";
+import { allocateDeadLoopbackPort } from "./container-test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
 import type { AuthManager } from "../agents/claude/auth-manager.js";
 import type { FastifyInstance } from "fastify";
@@ -50,7 +51,10 @@ function createFakeDocker() {
     createContainer: async (opts: any) => {
       containerCounter++;
       const id = `fake-container-${containerCounter}`;
-      const ip = `172.18.0.${containerCounter + 2}`;
+      // Distinct loopback IPs + a dead ephemeral workerPort: refuses
+      // instantly, can never be a real worker (see allocateDeadLoopbackPort
+      // in container-test-helpers.ts).
+      const ip = `127.0.0.${containerCounter + 2}`;
       containers.set(id, { id, started: false, labels: opts.Labels ?? {}, ip });
 
       return {
@@ -126,7 +130,7 @@ describe("container lifecycle integration", () => {
       docker: fakeDocker as any,
       imageName: "shipit-session-worker:test",
       networkName: "shipit-test",
-      workerPort: 9100,
+      workerPort: await allocateDeadLoopbackPort(),
       skipHealthCheck: true,
       stackName: "shipit-test",
     });
@@ -173,8 +177,8 @@ describe("container lifecycle integration", () => {
     const sc = containerManager.get(sessionId);
     expect(sc).toBeDefined();
     expect(sc!.status).toBe("running");
-    expect(sc!.containerIp).toMatch(/^172\.18\.0\.\d+$/);
-    expect(sc!.workerUrl).toMatch(/^http:\/\/172\.18\.0\.\d+:9100$/);
+    expect(sc!.containerIp).toMatch(/^127\.0\.0\.\d+$/);
+    expect(sc!.workerUrl).toMatch(/^http:\/\/127\.0\.0\.\d+:\d+$/);
 
     // The Docker container should be started
     const dockerContainer = [...fakeDocker._containers.values()].find(
@@ -340,7 +344,7 @@ describe("container reconnect on re-activation", () => {
       docker: fakeDocker as any,
       imageName: "shipit-session-worker:test",
       networkName: "shipit-test",
-      workerPort: 9100,
+      workerPort: await allocateDeadLoopbackPort(),
       skipHealthCheck: true,
       stackName: "shipit-test",
     });
