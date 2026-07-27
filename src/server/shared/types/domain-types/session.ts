@@ -337,6 +337,49 @@ export interface ChildMergedCard {
   createdAt: string;
 }
 
+/**
+ * docs/233 (SHI-241) — how urgently a session report needs the recipient's
+ * attention. Shapes both the card's tone and the wake-turn's instruction:
+ *
+ * - `fyi`     — informational; the recipient probably needs no action.
+ * - `warn`    — factor this in; it may invalidate part of the recipient's work.
+ * - `blocker` — stop and reassess before continuing the current plan.
+ */
+export type SessionReportSeverity = "fyi" | "warn" | "blocker";
+
+/**
+ * docs/233 (SHI-241) — payload for the inline "session report" transcript card
+ * surfaced into a RECIPIENT session when another session in its cohort pushes a
+ * report upward (`shipit session report`).
+ *
+ * Static (no mutable lifecycle): persisted on the message row and rendered
+ * directly, no client store. Carries the reporter's identity plus the full
+ * report text so the card stands alone after a reload — the actionable wake-turn
+ * is enqueued separately and carries the same facts.
+ */
+export interface SessionReportCard {
+  /** Server-generated stable id — used for live-append idempotency on reconnect. */
+  cardId: string;
+  /** The reporting session's id (the card's "Open" target). */
+  fromSessionId: string;
+  /** Reporting session's title, for display. */
+  fromTitle: string;
+  /** Reporting session's branch, when it has one. */
+  fromBranch?: string;
+  /**
+   * How the recipient relates to the reporter:
+   * - `child`   — the reporter is this recipient's own spawned child.
+   * - `sibling` — the reporter shares this recipient's parent (cohort broadcast).
+   */
+  relation: "child" | "sibling";
+  severity: SessionReportSeverity;
+  /** Optional one-line subject the reporter supplied. */
+  subject?: string;
+  /** The report body, verbatim (capped server-side). */
+  body: string;
+  createdAt: string;
+}
+
 // ---- Repo types ----
 
 export interface RepoInfo {

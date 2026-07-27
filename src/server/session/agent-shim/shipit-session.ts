@@ -63,6 +63,21 @@ single-quoted heredoc, exactly like \`gh pr create --body-file -\`:
   Your prompt here, with \`backticks\` and $(literal) preserved verbatim.
   EOF`;
 
+/**
+ * Shared 404 copy for the parent→child routes. Deliberately does NOT
+ * disambiguate "wrong parent" from "not found" — that's the orchestrator's
+ * cross-tenancy contract, and the shim must not leak what the server withholds.
+ */
+const CHILD_NOT_FOUND = "Spawned session not found, or not a descendant of this parent.";
+
+/**
+ * docs/233 — the id form of `view`/`message`/`wait` is descendant-scoped, so
+ * passing your OWN id 404s. That dead end is exactly what SHI-241 reported, so
+ * every such 404 points at the command that does resolve self.
+ */
+const WHOAMI_HINT =
+  "To see THIS session (its parent, siblings, and children), run `shipit session whoami`.";
+
 export async function handleSessionCreate(args: string[], deps: RunDeps): Promise<void> {
   // Catch inline prompt flags before generic flag parsing so the agent gets a
   // targeted redirect to --prompt-file instead of a vague "unsupported flag".
@@ -244,8 +259,12 @@ export async function handleSessionView(args: string[], deps: RunDeps): Promise<
     fail(deps.io, `Unsupported flag for shipit session view: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
   }
   const id = parsed.positional[0];
+  // docs/233 — a bare `view` used to be an error, which left a session with no
+  // way to look at ITSELF (the id form is descendant-scoped, so passing your own
+  // id 404s). Treat it as `whoami`: describe this session and its cohort.
   if (!id) {
-    fail(deps.io, "shipit session view: child session id is required.");
+    await handleSessionWhoami(args, deps);
+    return;
   }
 
   const res = await deps.call(
@@ -255,7 +274,7 @@ export async function handleSessionView(args: string[], deps: RunDeps): Promise<
     deps.env,
   );
   if (res.status === 404) {
-    fail(deps.io, "Spawned session not found, or not a descendant of this parent.", 1);
+    fail(deps.io, `${CHILD_NOT_FOUND}\n${WHOAMI_HINT}`, 1);
   }
   if (res.status < 200 || res.status >= 300) {
     fail(deps.io, formatError(res, "Failed to view spawned session"), 1);
@@ -323,7 +342,7 @@ export async function handleSessionMessage(args: string[], deps: RunDeps): Promi
     deps.env,
   );
   if (res.status === 404) {
-    fail(deps.io, "Spawned session not found, or not a descendant of this parent.", 1);
+    fail(deps.io, `${CHILD_NOT_FOUND}\n${WHOAMI_HINT}`, 1);
   }
   if (res.status < 200 || res.status >= 300) {
     fail(deps.io, formatError(res, "Failed to send message to spawned session"), 1);
@@ -424,7 +443,7 @@ async function waitForChildOnce(
         outcome: "not-found",
         child: null,
         body: res.body,
-        errorMessage: "Spawned session not found, or not a descendant of this parent.",
+        errorMessage: `${CHILD_NOT_FOUND}\n${WHOAMI_HINT}`,
         ...(lastTransportError ? { lastTransportError } : {}),
       };
     }
@@ -687,7 +706,7 @@ export async function handleSessionArchive(args: string[], deps: RunDeps): Promi
     deps.env,
   );
   if (res.status === 404) {
-    fail(deps.io, "Spawned session not found, or not a descendant of this parent.", 1);
+    fail(deps.io, `${CHILD_NOT_FOUND}\n${WHOAMI_HINT}`, 1);
   }
   if (res.status < 200 || res.status >= 300) {
     fail(deps.io, formatError(res, "Failed to archive spawned session"), 1);
@@ -730,7 +749,7 @@ export async function handleSessionNotifyOnMerge(args: string[], deps: RunDeps):
     deps.env,
   );
   if (res.status === 404) {
-    fail(deps.io, "Spawned session not found, or not a descendant of this parent.", 1);
+    fail(deps.io, `${CHILD_NOT_FOUND}\n${WHOAMI_HINT}`, 1);
   }
   if (res.status < 200 || res.status >= 300) {
     fail(deps.io, formatError(res, "Failed to register merge watch"), 1);
@@ -746,4 +765,170 @@ export async function handleSessionNotifyOnMerge(args: string[], deps: RunDeps):
     deps.io,
     `session-id:      ${id}\nnotify-on-merge: ${already ? "already armed" : "armed"}`,
   );
+}
+
+// ---- Upward / lateral coordination (docs/233, SHI-241) ----
+
+/** Valid `--severity` values, mirrored from the orchestrator's service. */
+const REPORT_SEVERITIES = ["fyi", "warn", "blocker"];
+/** Valid `--to` targets. There is deliberately no `--to <session-id>`. */
+const REPORT_TARGETS = ["parent", "cohort"];
+/** Mirrors `MAX_REPORT_BODY_CHARS`; checked here to save a round-trip. */
+const MAX_REPORT_BODY_CHARS = 10_000;
+
+/**
+ * `shipit session whoami [--json]` (docs/233).
+ *
+ * Resolves the CALLING session — id, title, branch, status — plus its parent,
+ * its siblings (the cohort a `--to cohort` report reaches), and any children it
+ * spawned. Before this, a spawned session had no way to answer "who am I and
+ * who am I working alongside?": `view <own-id>` is descendant-scoped and 404s,
+ * and `list` only shows sessions the caller itself spawned.
+ */
+export async function handleSessionWhoami(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, { values: {}, booleans: { "--json": "json" } });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for shipit session whoami: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+
+  const res = await deps.call("GET", "/agent-ops/session/cohort", undefined, deps.env);
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to resolve this session"), 1);
+  }
+  if (parsed.booleans.has("json")) {
+    deps.io.stdout(`${JSON.stringify(res.body)}\n`);
+    deps.io.exit(0);
+    return;
+  }
+
+  const self = (res.body.self ?? {}) as Record<string, unknown>;
+  const parent = res.body.parent as Record<string, unknown> | undefined;
+  const siblings = (res.body.siblings as Record<string, unknown>[] | undefined) ?? [];
+  const children = (res.body.children as Record<string, unknown>[] | undefined) ?? [];
+
+  const lines = [
+    `session:  ${asString(self.title)} (${asString(self.id)})`,
+    `status:   ${asString(self.status) || "idle"}`,
+    `branch:   ${asString(self.branch) || "(no branch)"}`,
+  ];
+  lines.push(
+    parent
+      ? `parent:   ${asString(parent.title)} (${asString(parent.id)})`
+      : "parent:   (none — this session is top-level or was spawned --detached; `shipit session report` is unavailable)",
+  );
+  if (res.body.rootSessionId && res.body.rootSessionId !== (parent?.id ?? "")) {
+    lines.push(`root:     ${asString(res.body.rootSessionId)}`);
+  }
+  lines.push("", `siblings: ${siblings.length === 0 ? "(none)" : ""}`);
+  for (const s of siblings) lines.push(`  ${formatPeer(s)}`);
+  lines.push(`children: ${children.length === 0 ? "(none)" : ""}`);
+  for (const c of children) lines.push(`  ${formatPeer(c)}`);
+  success(deps.io, lines.join("\n"));
+}
+
+/** One `id  status  branch  title` peer row, shared by the sibling/child lists. */
+function formatPeer(peer: Record<string, unknown>): string {
+  return [
+    asString(peer.id),
+    asString(peer.status) || "idle",
+    asString(peer.branch) || "(no branch)",
+    asString(peer.title),
+  ].join("\t");
+}
+
+/**
+ * `shipit session report -b TEXT | --body-file FILE [--severity S] [--subject T]
+ * [--to parent|cohort] [--json]` (docs/233).
+ *
+ * The upward push channel. The report lands in each recipient's transcript as a
+ * persisted card AND as a queued system turn, so the recipient AGENT is woken
+ * rather than having to go and look. Recipients are derived server-side from
+ * this session's parent linkage — there is no `--to <session-id>`, so a report
+ * can only reach the cohort the parent already coordinates.
+ *
+ * Exits 1 when no recipient's agent could be woken (the card is still posted, so
+ * the human record survives); the per-recipient outcome is always printed.
+ */
+export async function handleSessionReport(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, {
+    values: {
+      "-b": "body", "--body": "body", "-m": "body", "--message": "body",
+      "-F": "bodyFile", "--body-file": "bodyFile",
+      "--subject": "subject", "-t": "subject", "--title": "subject",
+      "--severity": "severity", "-s": "severity",
+      "--to": "to",
+    },
+    booleans: { "--json": "json", "--cohort": "cohort" },
+  });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for shipit session report: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+
+  const body = parsed.values.bodyFile
+    ? await readBodyFromFileOrStdin(parsed.values.bodyFile, deps.io, "shipit session report", "report body")
+    : parsed.values.body;
+  if (!body?.trim()) {
+    fail(
+      deps.io,
+      "shipit session report: -b/--body (or --body-file -) is required — the report text to push to your parent.",
+    );
+  }
+  if (body.length > MAX_REPORT_BODY_CHARS) {
+    fail(
+      deps.io,
+      `shipit session report: the body exceeds ${MAX_REPORT_BODY_CHARS.toLocaleString()} characters. ` +
+        "A report is a note that has to travel; put the long form in your PR body and summarize it here.",
+    );
+  }
+
+  const severity = parsed.values.severity ?? "fyi";
+  if (!REPORT_SEVERITIES.includes(severity)) {
+    fail(
+      deps.io,
+      `shipit session report: unknown --severity '${severity}'. Valid: ${REPORT_SEVERITIES.join(", ")}.`,
+    );
+  }
+  // `--cohort` is the shorthand for `--to cohort`; both are accepted so the
+  // broadcast form is reachable without remembering the target vocabulary.
+  const to = parsed.booleans.has("cohort") ? "cohort" : (parsed.values.to ?? "parent");
+  if (!REPORT_TARGETS.includes(to)) {
+    fail(
+      deps.io,
+      `shipit session report: unknown --to '${to}'. Valid: ${REPORT_TARGETS.join(", ")}. ` +
+        "A report can only reach your own cohort — you cannot target an arbitrary session id.",
+    );
+  }
+
+  const payload: Record<string, unknown> = { body, severity, to };
+  if (parsed.values.subject) payload.subject = parsed.values.subject;
+
+  const res = await deps.call("POST", "/agent-ops/session/report", payload, deps.env);
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to deliver the report"), 1);
+  }
+
+  const recipients = (res.body.recipients as Record<string, unknown>[] | undefined) ?? [];
+  const wokenCount = recipients.filter((r) => r.woken === true).length;
+
+  if (parsed.booleans.has("json")) {
+    deps.io.stdout(`${JSON.stringify(res.body)}\n`);
+    deps.io.exit(wokenCount > 0 ? 0 : 1);
+    return;
+  }
+
+  const lines = [
+    `report-id: ${asString(res.body.reportId)}`,
+    `severity:  ${asString(res.body.severity)}`,
+    `to:        ${asString(res.body.to)}`,
+    `delivered: ${wokenCount}/${recipients.length} recipient(s) woken`,
+  ];
+  for (const r of recipients) {
+    const relation = r.relation === "sibling" ? "sibling" : "parent";
+    const outcome = r.woken === true
+      ? "woken"
+      : `NOT woken (${asString(r.error) || "unknown error"}) — the card was still posted in its chat`;
+    lines.push(`  ${relation} ${asString(r.title)} (${asString(r.sessionId)}): ${outcome}`);
+  }
+  deps.io.stdout(`${lines.join("\n")}\n`);
+  deps.io.exit(wokenCount > 0 ? 0 : 1);
 }

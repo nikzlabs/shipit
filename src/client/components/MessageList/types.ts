@@ -169,6 +169,24 @@ export interface ChatMessage {
     createdAt: string;
   };
   /**
+   * docs/233 (SHI-241) — when set, this message renders a `SessionReportCard`
+   * inline: another session in this session's cohort (a child, or a sibling on a
+   * `--to cohort` broadcast) pushed a report here with `shipit session report`.
+   * Populated from `session_report_card` WS events and from persisted history
+   * (static payload, no client store).
+   */
+  sessionReport?: {
+    cardId: string;
+    fromSessionId: string;
+    fromTitle: string;
+    fromBranch?: string;
+    relation: "child" | "sibling";
+    severity: "fyi" | "warn" | "blocker";
+    subject?: string;
+    body: string;
+    createdAt: string;
+  };
+  /**
    * docs/171 — when set, this message renders an inline `ReleaseLifecycleCard`.
    * Carries the full `ReleaseStatusSummary` snapshot; the `release_card` WS
    * handler upserts it by `cardId`, so every phase transition (propose → tagged

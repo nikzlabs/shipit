@@ -29,37 +29,20 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { SessionManager } from "./sessions.js";
-import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { ChatHistoryManager } from "./chat-history.js";
-import type { CredentialStore } from "./credential-store.js";
-import type { ProviderAccountManager } from "./provider-account-manager.js";
-import type { SessionContainerManager } from "./session-container.js";
-import type { AgentId, ChildMergedCard, SessionInfo, WsServerMessage } from "../shared/types.js";
+import type { ChildMergedCard, SessionInfo, WsServerMessage } from "../shared/types.js";
 import type { PrStatusSummary } from "../shared/types/github-types.js";
-import { ContainerSessionRunner } from "./container-session-runner.js";
-import { prepareSessionAgentEnvironment } from "./session-agent-env.js";
+import { wakeSessionWithTurn, type WakeSessionDeps } from "./wake-session.js";
 import type { PrTerminalStateInfo } from "./pr-status-poller.js";
 
-/** Collaborators the deliverer needs — all orchestrator-side. */
-export interface MergeWatchDeps {
-  sessionManager: SessionManager;
-  runnerRegistry: SessionRunnerRegistry;
-  chatHistoryManager: ChatHistoryManager;
-  defaultAgentId: AgentId;
-  credentialsDir?: string | undefined;
-  credentialStore?: CredentialStore | undefined;
-  providerAccountManager?: ProviderAccountManager | undefined;
-  containerManager?: SessionContainerManager | null | undefined;
-}
-
 /**
- * How long to wait for a freshly-booted parent container's worker before
- * dispatching the wake-turn anyway. Mirrors `sendChildMessage`'s backstop — the
- * dispatched turn's own startup also awaits readiness, so a slow boot isn't a
- * lost turn; the wait only makes a boot *failure* observable here.
+ * Collaborators the deliverer needs — all orchestrator-side. The wake-turn half
+ * is `WakeSessionDeps` (shared with the docs/233 report delivery); this adds the
+ * chat history the merge card is appended to.
  */
-const PARENT_WAKE_WORKER_READY_TIMEOUT_MS = 30_000;
+export interface MergeWatchDeps extends WakeSessionDeps {
+  chatHistoryManager: ChatHistoryManager;
+}
 
 export class MergeWatchManager {
   /**
@@ -284,56 +267,16 @@ export class MergeWatchManager {
     outcome: "merged" | "closed-unmerged",
     onExecuted?: () => void,
   ): Promise<void> {
-    if (!parent.workspaceDir) {
-      throw new Error(`parent ${parent.id} has no workspace`);
-    }
-    const { sessionManager, runnerRegistry, containerManager, credentialsDir, credentialStore, providerAccountManager, defaultAgentId } = this.deps;
-
-    // A runner lingering in the registry whose container has been reaped points
-    // at a dead worker — dispatching into it silently fails. Tear it down so the
-    // `getOrCreate` below boots a fresh container.
-    if (containerManager) {
-      const stale = runnerRegistry.get(parent.id);
-      const sc = containerManager.get(parent.id);
-      const live = !!sc && (sc.status === "running" || sc.status === "starting");
-      if (stale && !live) runnerRegistry.dispose(parent.id, { force: true });
-    }
-
-    const runner = runnerRegistry.getOrCreate(parent.id, parent.workspaceDir, parent.agentId ?? defaultAgentId);
-
-    // Refresh credentials/OAuth/MCP before the turn fires (idempotent). Skipped
-    // while the agent is already running — the next-starting turn's env-prep
-    // covers it, and we must not race a live turn's environment.
-    if (!runner.running && credentialsDir && credentialStore) {
-      await prepareSessionAgentEnvironment(runner, {
-        sessionId: parent.id,
-        agentId: runner.agentId,
-        deps: {
-          credentialsDir,
-          credentialStore,
-          sessionManager,
-          ...(providerAccountManager ? { providerAccountManager } : {}),
-        },
-      });
-    }
-
-    if (runner instanceof ContainerSessionRunner) {
-      await Promise.race([
-        runner.whenWorkerReady(),
-        new Promise<void>((resolve) => {
-          const t = setTimeout(resolve, PARENT_WAKE_WORKER_READY_TIMEOUT_MS);
-          t.unref?.();
-        }),
-      ]);
-    }
-    if (runner.disposed) {
-      throw new Error(`parent ${parent.id} container could not be resumed; wake-turn not delivered`);
-    }
-
     const text = buildWakeTurnPrompt(child, info, outcome);
     const activity =
       outcome === "merged" ? "Resuming after child PR merged…" : "Reassessing after child PR closed…";
 
+    // `wakeSessionWithTurn` owns the stale-runner teardown, container resume,
+    // credential refresh, and the truthful "did a live worker take it?" check —
+    // shared with the docs/233 report delivery so both paths resume a reaped
+    // container identically. It throws on a boot failure, which leaves the watch
+    // at `merge-observed` for the next poll / reconcile to retry.
+    //
     // Wire the completion callback on BOTH the busy and idle paths. `dispatch`
     // enqueues when the parent is mid-turn (drained post-turn, never preempting)
     // and starts the turn now when idle; `onTurnComplete` now rides the
@@ -349,11 +292,10 @@ export class MergeWatchManager {
     // reconcile re-fires ONLY when a restart happened before that turn ran (the
     // queue is in-memory, so the un-run turn was genuinely lost) — the real
     // in-flight recovery case the design intended.
-    runner.dispatch({
+    await wakeSessionWithTurn(this.deps, parent, {
       text,
       activity,
-      systemTurn: true,
-      ...(onExecuted ? { onTurnComplete: () => onExecuted() } : {}),
+      ...(onExecuted ? { onExecuted } : {}),
     });
   }
 }

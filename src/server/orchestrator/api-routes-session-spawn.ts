@@ -23,6 +23,8 @@ import {
   waitForChildIdle,
   assertArchivableChild,
   registerMergeWatch,
+  deliverSessionReport,
+  resolveSessionCohort,
   archiveSession,
   DEFAULT_WAIT_FOR_CHILD_IDLE_MS,
   MAX_WAIT_FOR_CHILD_IDLE_MS,
@@ -580,6 +582,83 @@ export async function registerSessionSpawnRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to register merge watch: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // ===========================================================================
+  // Upward / lateral session reports (docs/233, SHI-241)
+  //
+  // The counterpart to the parent→child routes above: these two are called with
+  // the REPORTING session's own id (the worker injects it), so a child can at
+  // last resolve its own cohort and push a finding to its parent + siblings.
+  // Every recipient is derived server-side from `parentSessionId` — there is no
+  // agent-supplied target — so a report can only travel inside the tree the
+  // parent already coordinates.
+  // ===========================================================================
+
+  // GET /api/sessions/:sessionId/cohort — self + parent + siblings + children.
+  // Backs `shipit session whoami`, and fixes the dead end where a child asking
+  // for its own id got "not a descendant of this parent" from the child routes.
+  app.get<{ Params: { sessionId: string } }>(
+    "/api/sessions/:sessionId/cohort",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      try {
+        return resolveSessionCohort(
+          sessionManager,
+          deps.runnerRegistry,
+          request.params.sessionId,
+          childProjections,
+        );
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to resolve session cohort: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/sessions/:sessionId/report — push a report up to the parent (or
+  // across the whole cohort). Each recipient gets a persisted card AND a queued
+  // system turn, so the report is pushed rather than waiting to be pulled.
+  app.post<{
+    Params: { sessionId: string };
+    Body: { body?: string; subject?: string; severity?: string; to?: string };
+  }>(
+    "/api/sessions/:sessionId/report",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      const payload = request.body ?? {};
+      try {
+        const result = await deliverSessionReport(
+          {
+            sessionManager,
+            runnerRegistry: deps.runnerRegistry,
+            chatHistoryManager: deps.chatHistoryManager,
+            defaultAgentId: deps.defaultAgentId,
+            credentialsDir: deps.credentialsDir,
+            credentialStore: deps.credentialStore,
+            providerAccountManager: deps.providerAccountManager,
+            containerManager: deps.containerManager,
+          },
+          request.params.sessionId,
+          {
+            body: payload.body ?? "",
+            ...(payload.subject !== undefined ? { subject: payload.subject } : {}),
+            ...(payload.severity !== undefined ? { severity: payload.severity } : {}),
+            ...(payload.to !== undefined ? { to: payload.to } : {}),
+          },
+        );
+        return result;
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to deliver session report: ${getErrorMessage(err)}` });
       }
     },
   );
