@@ -1,4 +1,4 @@
-import type { ChildMergedCard } from "../domain-types.js";
+import type { ChildMergedCard, SessionReportCard } from "../domain-types.js";
 
 /**
  * Server → Client: the parent agent successfully spawned a sibling session
@@ -122,4 +122,25 @@ export interface WsChildMergedCard {
   /** Parent session id — the runner this event is emitted on. */
   sessionId: string;
   card: ChildMergedCard;
+}
+
+/**
+ * Server → Client: another session in this session's cohort pushed a report to
+ * it via `shipit session report` (docs/233 / SHI-241).
+ *
+ * Emitted on the *recipient's* runner via `runner.emitMessage(...)` when a
+ * runner is attached, AND appended to the recipient's chat history — the report
+ * arrives over HTTP outside any of the recipient's turns, so it can't ride
+ * `emitChatCard`. Mirrors `WsChildMergedCard` exactly in that respect.
+ *
+ * The client renders a `SessionReportCard` inline: who reported, the severity,
+ * the report body, and an "Open" button that switches to the reporting session.
+ * The actionable wake-turn carrying the same facts is enqueued separately into
+ * the recipient's message queue; this card is the user-facing affordance.
+ */
+export interface WsSessionReportCard {
+  type: "session_report_card";
+  /** RECIPIENT session id — the runner this event is emitted on. */
+  sessionId: string;
+  card: SessionReportCard;
 }

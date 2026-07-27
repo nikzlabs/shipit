@@ -117,6 +117,17 @@ const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
     mergeSha: "abc123def456",
     createdAt: "2026-06-05T00:00:00.000Z",
   },
+  sessionReport: {
+    cardId: "session-report-1-0",
+    fromSessionId: "child-1",
+    fromTitle: "Elementalist catalog",
+    fromBranch: "shipit/child-1",
+    relation: "child",
+    severity: "blocker",
+    subject: "regen deletes every catalog",
+    body: "`npm run regen` clears data/catalogs/ before writing.",
+    createdAt: "2026-06-05T00:00:00.000Z",
+  },
   aiReview: {
     reviewId: "r1",
     filePath: "a.ts",

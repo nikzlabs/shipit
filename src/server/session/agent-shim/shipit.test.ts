@@ -509,11 +509,17 @@ describe("shipit session list", () => {
 // ---------------------------------------------------------------------------
 
 describe("shipit session view", () => {
-  it("requires a session id", async () => {
+  it("with no id, resolves THIS session instead of erroring (docs/233)", async () => {
     const { run } = makeRunner();
-    const out = await run(["session", "view"]);
-    expect(out.exitCode).not.toBe(0);
-    expect(out.stderr).toContain("child session id is required");
+    const out = await run(["session", "view"], {
+      "GET /agent-ops/session/cohort": {
+        status: 200,
+        body: { self: { id: "ses_self", title: "Me", status: "running" }, siblings: [], children: [] },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].path).toBe("/agent-ops/session/cohort");
+    expect(out.stdout).toContain("session:  Me (ses_self)");
   });
 
   it("prints the plain-text view for a child", async () => {
@@ -1059,6 +1065,184 @@ describe("shipit session archive", () => {
     );
     expect(out.exitCode).not.toBe(0);
     expect(out.stderr).toContain("not a descendant of this parent");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// shipit session whoami / report  (docs/233, SHI-241) — the upward channel
+// ---------------------------------------------------------------------------
+
+const COHORT_BODY = {
+  self: { id: "ses_me", title: "Elementalist catalog", branch: "shipit/elem", status: "running" },
+  parent: { id: "ses_parent", title: "Spell catalogs", branch: "shipit/plan", status: "idle" },
+  siblings: [{ id: "ses_druid", title: "Druid catalog", branch: "shipit/druid", status: "idle" }],
+  children: [],
+};
+
+describe("shipit session whoami", () => {
+  it("prints this session, its parent, and its cohort", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "whoami"], {
+      "GET /agent-ops/session/cohort": { status: 200, body: COHORT_BODY },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0]).toMatchObject({ method: "GET", path: "/agent-ops/session/cohort" });
+    expect(out.stdout).toContain("session:  Elementalist catalog (ses_me)");
+    expect(out.stdout).toContain("parent:   Spell catalogs (ses_parent)");
+    expect(out.stdout).toContain("ses_druid");
+    expect(out.stdout).toContain("children: (none)");
+  });
+
+  it("says so when this session has no parent (report is unavailable)", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "whoami"], {
+      "GET /agent-ops/session/cohort": {
+        status: 200,
+        body: { self: { id: "ses_solo", title: "Solo", status: "idle" }, siblings: [], children: [] },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("parent:   (none");
+    expect(out.stdout).toContain("shipit session report` is unavailable");
+  });
+
+  it("--json passes the broker response through verbatim", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "whoami", "--json"], {
+      "GET /agent-ops/session/cohort": { status: 200, body: COHORT_BODY },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(JSON.parse(out.stdout)).toEqual(COHORT_BODY);
+  });
+});
+
+describe("shipit session report", () => {
+  const DELIVERED = {
+    status: 200,
+    body: {
+      reportId: "r-1",
+      severity: "blocker",
+      to: "cohort",
+      recipients: [
+        { sessionId: "ses_parent", title: "Spell catalogs", relation: "child", woken: true },
+        { sessionId: "ses_druid", title: "Druid catalog", relation: "sibling", woken: true },
+      ],
+    },
+  };
+
+  it("requires a body", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "report"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("--body");
+  });
+
+  it("posts body/severity/target and prints per-recipient delivery", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["session", "report", "-b", "regen wipes every catalog", "--severity", "blocker", "--to", "cohort", "--subject", "regen"],
+      { "POST /agent-ops/session/report": DELIVERED },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0]).toMatchObject({ method: "POST", path: "/agent-ops/session/report" });
+    expect(out.calls[0].body).toEqual({
+      body: "regen wipes every catalog",
+      severity: "blocker",
+      to: "cohort",
+      subject: "regen",
+    });
+    expect(out.stdout).toContain("delivered: 2/2 recipient(s) woken");
+    expect(out.stdout).toContain("parent Spell catalogs (ses_parent): woken");
+    expect(out.stdout).toContain("sibling Druid catalog (ses_druid): woken");
+  });
+
+  it("defaults to severity fyi and the parent target", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "report", "-b", "fyi note"], {
+      "POST /agent-ops/session/report": {
+        status: 200,
+        body: { reportId: "r", severity: "fyi", to: "parent", recipients: [{ sessionId: "p", title: "P", relation: "child", woken: true }] },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toEqual({ body: "fyi note", severity: "fyi", to: "parent" });
+  });
+
+  it("--cohort is shorthand for --to cohort", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "report", "-b", "x", "--cohort"], {
+      "POST /agent-ops/session/report": DELIVERED,
+    });
+    expect((out.calls[0].body as { to: string }).to).toBe("cohort");
+  });
+
+  it("reads the body from --body-file - (stdin-style file path)", async () => {
+    const file = await promptFile("Long finding with `backticks` and $(literal) intact.\n");
+    const { run } = makeRunner();
+    const out = await run(["session", "report", "--body-file", file], {
+      "POST /agent-ops/session/report": {
+        status: 200,
+        body: { reportId: "r", severity: "fyi", to: "parent", recipients: [{ sessionId: "p", title: "P", relation: "child", woken: true }] },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect((out.calls[0].body as { body: string }).body).toContain("$(literal)");
+  });
+
+  it("rejects an unknown severity and an unknown target before calling the broker", async () => {
+    const { run } = makeRunner();
+    const bad = await run(["session", "report", "-b", "x", "--severity", "urgent"]);
+    expect(bad.exitCode).not.toBe(0);
+    expect(bad.stderr).toContain("unknown --severity");
+    expect(bad.calls).toHaveLength(0);
+
+    const { run: run2 } = makeRunner();
+    const badTarget = await run2(["session", "report", "-b", "x", "--to", "ses_someone_else"]);
+    expect(badTarget.exitCode).not.toBe(0);
+    expect(badTarget.stderr).toContain("cannot target an arbitrary session id");
+    expect(badTarget.calls).toHaveLength(0);
+  });
+
+  it("exits non-zero when no recipient's agent could be woken", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "report", "-b", "x"], {
+      "POST /agent-ops/session/report": {
+        status: 200,
+        body: {
+          reportId: "r",
+          severity: "fyi",
+          to: "parent",
+          recipients: [{ sessionId: "p", title: "P", relation: "child", woken: false, error: "container could not be resumed" }],
+        },
+      },
+    });
+    expect(out.exitCode).toBe(1);
+    expect(out.stdout).toContain("NOT woken (container could not be resumed)");
+    expect(out.stdout).toContain("the card was still posted");
+  });
+
+  it("surfaces a 400 'no parent' rejection from the orchestrator", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "report", "-b", "x"], {
+      "POST /agent-ops/session/report": {
+        status: 400,
+        body: { error: "This session has no parent to report to" },
+      },
+    });
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("no parent to report to");
+  });
+
+  it("surfaces the 429 rate limit", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "report", "-b", "x"], {
+      "POST /agent-ops/session/report": {
+        status: 429,
+        body: { error: "Report rate limit reached (5 per 10 minutes)." },
+      },
+    });
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("rate limit reached");
   });
 });
 

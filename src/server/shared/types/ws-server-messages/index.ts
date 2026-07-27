@@ -80,7 +80,12 @@ import type {
   WsSessionForked,
   WsForkBreadcrumb,
 } from "./rollback.js";
-import type { WsSessionSpawned, WsSessionSpawnFailed, WsChildMergedCard } from "./spawn.js";
+import type {
+  WsSessionSpawned,
+  WsSessionSpawnFailed,
+  WsChildMergedCard,
+  WsSessionReportCard,
+} from "./spawn.js";
 import type {
   WsPresentContentMessage,
   WsPresentClearedMessage,
@@ -215,6 +220,7 @@ export type WsServerMessage =
   | WsSessionSpawned
   | WsSessionSpawnFailed
   | WsChildMergedCard
+  | WsSessionReportCard
   | WsServiceStatus
   | WsServiceList
   | WsServiceOom

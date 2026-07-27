@@ -1,5 +1,6 @@
 import { SpawnedSessionCard } from "../../SpawnedSessionCard.js";
 import { ChildMergedCard } from "../../ChildMergedCard.js";
+import { SessionReportCard } from "../../SessionReportCard.js";
 import { SpawnFailedCard } from "../../SpawnFailedCard.js";
 import { ReviewCard } from "../../ReviewCard.js";
 import { UserReviewCard } from "../../UserReviewCard.js";
@@ -108,6 +109,28 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
             prUrl={msg.childMerged.prUrl}
             {...(msg.childMerged.prTitle ? { prTitle: msg.childMerged.prTitle } : {})}
             {...(msg.childMerged.mergeSha ? { mergeSha: msg.childMerged.mergeSha } : {})}
+            {...(cb.onResumeSession ? { onOpen: cb.onResumeSession } : {})}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  // docs/233 — a session report carries no chat text of its own; render the
+  // inline `SessionReportCard` and skip the bubble path. Static payload, no
+  // client store — renders identically live and after a reload.
+  if (msg.sessionReport) {
+    return (
+      <div className="flex justify-start">
+        <div className="max-w-2xl w-full">
+          <SessionReportCard
+            fromSessionId={msg.sessionReport.fromSessionId}
+            fromTitle={msg.sessionReport.fromTitle}
+            {...(msg.sessionReport.fromBranch ? { fromBranch: msg.sessionReport.fromBranch } : {})}
+            relation={msg.sessionReport.relation}
+            severity={msg.sessionReport.severity}
+            {...(msg.sessionReport.subject ? { subject: msg.sessionReport.subject } : {})}
+            body={msg.sessionReport.body}
             {...(cb.onResumeSession ? { onOpen: cb.onResumeSession } : {})}
           />
         </div>

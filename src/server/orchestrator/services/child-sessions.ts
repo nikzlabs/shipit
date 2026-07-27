@@ -550,7 +550,13 @@ function assertChildOfParent(
   return child;
 }
 
-function buildChildView(
+/**
+ * Project a session row + its live runner into the read-only `ChildSessionView`
+ * the shim renders. Exported so the cohort view (docs/233 `shipit session
+ * whoami`) describes a peer session in exactly the same shape a parent sees for
+ * its children — one projection, one set of status semantics.
+ */
+export function buildChildView(
   child: SessionInfo,
   runnerRegistry: SessionRunnerRegistry,
   projections: ChildViewProjections,

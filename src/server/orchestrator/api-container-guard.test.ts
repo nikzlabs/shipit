@@ -278,6 +278,13 @@ const GOLDEN_CONTAINER_ROUTES = [
   "POST /api/sessions/:parentId/children/:childId/message",
   "POST /api/sessions/:parentId/children/:childId/archive",
   "POST /api/sessions/:parentId/children/:childId/notify-on-merge",
+  // docs/233 (SHI-241) — the upward channel: `shipit session whoami` resolves
+  // the CALLING session's own cohort, and `shipit session report` pushes a
+  // report to its parent / siblings. Own-session scoped like every route above:
+  // the worker injects the caller's id and recipients are derived server-side
+  // from `parentSessionId`, so neither route accepts an agent-supplied target.
+  "GET /api/sessions/:sessionId/cohort",
+  "POST /api/sessions/:sessionId/report",
   // bridges — voice_note / report_shipit_bug
   "POST /api/sessions/:sessionId/voice-note",
   "POST /api/sessions/:sessionId/bug-report",

@@ -761,6 +761,15 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE repos ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0");
   },
+  // docs/233 (SHI-241) — persist the inline "session report" card so a report
+  // pushed from a child/sibling survives a session switch / full reload. The
+  // card is appended to the RECIPIENT's history from an HTTP relay that fires
+  // outside any of the recipient's turns, so without this column it would render
+  // live and then vanish on the next loadSessionHistory, which rebuilds the
+  // transcript from the DB. NULL = ordinary (non-card) message.
+  (db) => {
+    db.exec("ALTER TABLE messages ADD COLUMN session_report TEXT");
+  },
 ];
 
 export class DatabaseManager {

@@ -121,6 +121,8 @@ override the parent.
 | `shipit session wait <id...> [--timeout SECONDS] [--any\|--all] [--json]` | Wait until the child reaches a terminal state, or the timeout elapses. **Resilient**: it polls in short segments and absorbs connection resets / orchestrator redeploys beneath you, so a single call is the robust unit — you never script your own retry loop. Default 5 minutes, capped at 1 hour. Outcomes are distinguishable by exit code: `idle`/`archived` → `0`, child **error** → `3`, timed-out → `1`. Pass multiple ids with `--any` (resolve on the first finisher) or `--all` (resolve when every child finishes); the `--timeout` is shared across all of them. See *Coordinating* below. Note: `wait` blocks only until the child's *agent turn* goes idle (code written / PR opened) — it does **not** wait on a human **merge**. For that, use `notify-on-merge`. |
 | `shipit session notify-on-merge <id> [--json]` | **Async** — arm a watch and return immediately (exit `0`, "armed"); the turn ends. When the child's PR later **merges**, the orchestrator wakes *this* session with a queued, self-describing system turn (child id, branch, merged PR ref, merge SHA, and the intent: "proceed with the planned rebase unless the user has since redirected you") and surfaces a "Child PR merged" card in this chat. If the PR **closes without merging**, you get a *distinct* wake-turn telling you the work did **not** ship — don't proceed as if it had. Use this instead of blocking a turn on a human merge (which can take days). The child's PR need not exist yet — the watch fires once it appears and resolves. Fires once. Only the parent that spawned the child may watch it. |
 | `shipit session archive <id> [--json]` | Archive a child this parent spawned. Refuses with a clear error when the child is still running — use `shipit session wait` first. |
+| `shipit session whoami [--json]` | Resolve **this** session: id, title, branch, status, its parent, its cohort siblings, and any children it spawned. `view <id>` is descendant-scoped, so passing your own id doesn't work — use this. A bare `shipit session view` (no id) is the same thing. |
+| `shipit session report -b TEXT \| --body-file FILE [--severity fyi\|warn\|blocker] [--subject T] [--to parent\|cohort] [--json]` | Push a report **up** to the session that spawned you (and, with `--to cohort`, to every live sibling). Each recipient gets a card in its chat **and** a queued system turn, so the report is pushed, not waiting to be pulled. See *Reporting upward* below. |
 | `shipit session help` | Print the subcommand reference. |
 
 The prompt is passed via `--prompt-file` — a file path, or `-` to read from
@@ -210,9 +212,10 @@ file.
 
 ### Coordinating with a spawned session
 
-After spawning, you have three coordination levers — all read or write the
-child via the parent → child linkage; you cannot operate on sessions you
-didn't spawn.
+After spawning, you have four downward coordination levers — `wait`, `message`,
+`notify-on-merge`, `archive` — all reaching the child via the parent → child
+linkage; you cannot operate on sessions you didn't spawn. (The upward direction
+is `shipit session report`, below.)
 
 ```sh
 # Spawn a long-running task on its own branch (branch name is auto-generated).
@@ -259,6 +262,78 @@ shipit session archive ses_abc
 Be conservative with `message` — every prompt you push lands in the
 child's chat, visible to the user. Use it for coordination, not for
 chattering at the child agent.
+
+### Reporting upward (and to your cohort)
+
+Everything above is parent → child. `shipit session report` is the other
+direction: it is how a **spawned session** tells the session that spawned it —
+and, optionally, its siblings — something they need to know. Without it, a
+finding can only sit in your PR body or your final turn summary, where nobody
+learns about it until they go and look.
+
+First, know where you are:
+
+```sh
+shipit session whoami
+# session:  Elementalist catalog (ses_def)
+# status:   running
+# branch:   shipit/9fq2xa
+# parent:   Spell catalogs (ses_abc)
+#
+# siblings:
+#   ses_ghi  running  shipit/k1m4tz  Druid catalog
+#   ses_jkl  idle     shipit/p8w0rd  Necromancer catalog
+# children: (none)
+```
+
+Then push what travels:
+
+```sh
+shipit session report --severity blocker --to cohort \
+  --subject "regen command deletes every catalog" --body-file - <<'EOF'
+`npm run regen` clears data/catalogs/ before writing, so running it destroys the
+druid and necromancer catalogs too, not just mine. I can't fix it from here (it's
+shared machinery, outside my scope). Don't run it until this is fixed.
+EOF
+# report-id: 6f0b…
+# severity:  blocker
+# to:        cohort
+# delivered: 3/3 recipient(s) woken
+```
+
+**Reach.** `--to parent` (default) delivers to the session that spawned you.
+`--to cohort` (or `--cohort`) delivers to your parent **and** every live sibling
+under it. You cannot name an arbitrary session id: recipients are derived from
+your own parent linkage, so a report never leaves the tree your parent already
+coordinates. A session with no parent (top-level, or spawned `--detached`) has no
+cohort, and `report` exits non-zero telling you so — put the finding in your PR
+body or file an issue with `shipit issue create` instead.
+
+**Severity** shapes what the recipient is told to do with it:
+
+- `fyi` (default) — informational; probably no action needed.
+- `warn` — may invalidate or endanger part of the recipient's work.
+- `blocker` — stop and reassess before continuing the current plan.
+
+**When to use it.** When what you found reaches **beyond your own session**:
+
+- shared machinery, policy, or docs you are scoped **not** to touch but that is
+  broken (especially when it can damage a sibling's work);
+- a blocker that stops part of your assignment and changes what the cohort
+  should expect from you;
+- a finding that invalidates a sibling's approach.
+
+**When not to.** Routine progress, anything already visible in your PR, or a
+question for the *user* (that's `voice_note`). A report costs every recipient a
+real agent turn, so batch your findings into one report rather than sending a
+stream — the shim rate-limits a runaway sender (5 per 10 minutes).
+
+**What the recipient gets.** A persisted card in its chat (so the human sees it
+inline, and it survives a reload) plus a queued system turn carrying the report
+verbatim. A busy recipient's turn is queued and runs when its current turn ends —
+a report never interrupts a running agent. The recipient is told to treat your
+body as **information from a peer agent to judge**, not as an instruction to
+execute; write it that way, with the evidence a reader needs to verify it.
 
 ## What spawning a session does
 

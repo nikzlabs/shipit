@@ -47,8 +47,10 @@ import {
   handleSessionList,
   handleSessionMessage,
   handleSessionNotifyOnMerge,
+  handleSessionReport,
   handleSessionView,
   handleSessionWait,
+  handleSessionWhoami,
 } from "./shipit-session.js";
 import {
   handleIssueAssign,
@@ -100,6 +102,10 @@ Supported subcommands:
   shipit session wait    <id...> [--timeout SECONDS] [--any|--all] [--json]
   shipit session notify-on-merge <id> [--json]
   shipit session archive <id> [--json]
+  shipit session whoami  [--json]
+  shipit session report  -b TEXT | --body-file FILE
+                          [--severity fyi|warn|blocker] [--subject T]
+                          [--to parent|cohort] [--json]
   shipit session help
 
 Issues (tracker-neutral — tracker inferred from the pointer; docs/175 + docs/177 + docs/187):
@@ -213,6 +219,30 @@ bug). The test: if you'd ever want to wait on it, follow up, or be told it
 merged, it should be a child — omit \`--detached\`. \`--detached\` cannot be
 combined with \`--shipit-source\`.
 
+Coordination runs BOTH ways. Parent → child is \`list\`/\`view\`/\`wait\`/
+\`message\`/\`notify-on-merge\`. Child → parent (and siblings) is
+\`shipit session report\`: it posts a card into each recipient's chat AND wakes
+its agent with a queued turn, so a finding is pushed instead of sitting in a PR
+nobody has opened yet. Use it when what you found reaches beyond your own
+session — shared machinery you're scoped not to touch, a blocker, or something
+that invalidates a sibling's work:
+
+  shipit session report --severity blocker --to cohort \\
+    --subject "regen command deletes all catalogs" --body-file - <<'EOF'
+  \`npm run regen\` wipes data/catalogs/ before writing, so it destroys the other
+  catalogs too. Don't run it until #123 lands.
+  EOF
+
+\`--to parent\` (the default) reaches the session that spawned you; \`--to cohort\`
+(or \`--cohort\`) also reaches every live sibling. Severity is \`fyi\` (default),
+\`warn\`, or \`blocker\`. You cannot target an arbitrary session id — recipients are
+derived from your own parent linkage. A report costs each recipient a turn, so
+batch findings into one report rather than sending a stream of them.
+
+\`shipit session whoami\` resolves THIS session: its id, branch, parent, cohort
+siblings, and any children it spawned. (\`view <id>\` is descendant-scoped, so
+passing your own id doesn't work — use \`whoami\`.)
+
 In an Ops session, use \`shipit source *\` to read the ShipIt source code that
 runs this host, then \`shipit session create --shipit-source --title "..."\` to
 spawn a repo-backed fix session branched from the exact inspected commit.
@@ -320,6 +350,10 @@ const SESSION_HANDLERS: Record<
   wait: handleSessionWait,
   archive: handleSessionArchive,
   "notify-on-merge": handleSessionNotifyOnMerge,
+  // docs/233 (SHI-241) — the upward channel. Every subcommand above operates
+  // parent→child; these two are the only ones a child can point at itself.
+  report: handleSessionReport,
+  whoami: handleSessionWhoami,
 };
 
 const ISSUE_HANDLERS: Record<
