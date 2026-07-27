@@ -168,6 +168,14 @@ export function SessionTitleLabel({ sessionId }: { sessionId: string }) {
  * that already opens with `PrStateBadge`, and at this size a second
  * branch/merge icon reads as an accidental duplicate of the badge (user
  * report), not as extra information the text doesn't already carry.
+ *
+ * Truncation priority (same user report, phone widths): the note YIELDS width
+ * before the session title does — `shrink-[3]` against the title's default
+ * shrink-1, never `shrink-0`. As the row's only shrinkable element, the title
+ * used to absorb the entire squeeze and collapse to a few characters
+ * ("Desi…") while this note kept its full width; of the two, the note is the
+ * less informative once read, and its full text survives in the `title`
+ * tooltip either way.
  */
 export function PreviouslyMergedNote({
   previousMergedPr,
@@ -177,12 +185,12 @@ export function PreviouslyMergedNote({
   withReady?: boolean;
 }) {
   const label = (
-    <>
+    <span className="truncate">
       Previously merged #{previousMergedPr.number}
       {withReady && " · ready for a new PR"}
-    </>
+    </span>
   );
-  const className = "h-6 text-xs flex items-center gap-1 shrink-0 text-(--color-text-tertiary)";
+  const className = "h-6 text-xs flex items-center gap-1 min-w-0 overflow-hidden shrink-[3] text-(--color-text-tertiary)";
   if (previousMergedPr.url) {
     return (
       <a
