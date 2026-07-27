@@ -193,10 +193,11 @@ describe("PrLifecycleCard", () => {
 
     expect(screen.getByText(/Previously merged #42/)).toBeInTheDocument();
     // It links to the prior PR.
-    expect(screen.getByRole("link", { name: /Previously merged #42/ })).toHaveAttribute(
-      "href",
-      "https://github.com/o/r/pull/42",
-    );
+    const breadcrumb = screen.getByRole("link", { name: /Previously merged #42/ });
+    expect(breadcrumb).toHaveAttribute("href", "https://github.com/o/r/pull/42");
+    // Text-only: the row already opens with PrStateBadge's glyph, and a second
+    // 12px git icon here read as a doubled badge (user report).
+    expect(breadcrumb.querySelector("svg")).toBeNull();
   });
 
   it("renders the breadcrumb on a re-armed open card too (docs/202)", () => {

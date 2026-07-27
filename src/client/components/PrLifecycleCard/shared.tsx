@@ -9,7 +9,7 @@ import { useSessionStore } from "../../stores/session-store.js";
 import type { PrCardState } from "../../stores/pr-store.js";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "../ui/tooltip.js";
 import { MarkdownContent } from "../message-markdown.js";
-import { GitMergeIcon, CircleNotchIcon } from "@phosphor-icons/react";
+import { CircleNotchIcon } from "@phosphor-icons/react";
 
 // NB: block-level `flex` (not `inline-flex`) so the chip renders at exactly
 // h-6 regardless of its parent. As an inline-flex element it would be
@@ -163,6 +163,11 @@ export function SessionTitleLabel({ sessionId }: { sessionId: string }) {
  * the merged state). The session's status indicator is gray like a fresh
  * session; this note is the only sign it shipped once. `withReady` appends the
  * "· ready for a new PR" hint used on the ready card.
+ *
+ * Deliberately text-only — no leading git glyph. The note always sits in a row
+ * that already opens with `PrStateBadge`, and at this size a second
+ * branch/merge icon reads as an accidental duplicate of the badge (user
+ * report), not as extra information the text doesn't already carry.
  */
 export function PreviouslyMergedNote({
   previousMergedPr,
@@ -173,7 +178,6 @@ export function PreviouslyMergedNote({
 }) {
   const label = (
     <>
-      <GitMergeIcon size={12} className="shrink-0" />
       Previously merged #{previousMergedPr.number}
       {withReady && " · ready for a new PR"}
     </>

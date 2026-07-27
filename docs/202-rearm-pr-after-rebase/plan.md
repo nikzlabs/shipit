@@ -492,7 +492,11 @@ _None — see "Re-armed card presentation"._
   destructive removal to race it). `PrLifecycleCard` renders a subtle
   "Previously merged #N" breadcrumb (linked to the prior PR) on the re-armed
   ready/open card; the gray/Active sidebar treatment is the natural result of the
-  cleared `merged_at` (no sidebar styling change).
+  cleared `merged_at` (no sidebar styling change). The breadcrumb is **text-only**
+  — it originally led with its own 12px `GitMergeIcon`, but the note always sits
+  in a row that opens with `PrStateBadge`, and at that size a second git glyph
+  read as an accidental duplicate of the badge (user report, follow-up to the
+  stale-status fix below) rather than as information the text doesn't carry.
 - **`statusBySession` must be retired alongside the card (double-merge-icon
   fix).** The card override above was necessary but not sufficient: it left the
   poller-owned `statusBySession` entry in place, and `PrStateBadge` reads
