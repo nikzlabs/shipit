@@ -193,10 +193,35 @@ describe("PrLifecycleCard", () => {
 
     expect(screen.getByText(/Previously merged #42/)).toBeInTheDocument();
     // It links to the prior PR.
-    expect(screen.getByRole("link", { name: /Previously merged #42/ })).toHaveAttribute(
-      "href",
-      "https://github.com/o/r/pull/42",
-    );
+    const breadcrumb = screen.getByRole("link", { name: /Previously merged #42/ });
+    expect(breadcrumb).toHaveAttribute("href", "https://github.com/o/r/pull/42");
+    // Text-only: the row already opens with PrStateBadge's glyph, and a second
+    // 12px git icon here read as a doubled badge (user report).
+    expect(breadcrumb.querySelector("svg")).toBeNull();
+  });
+
+  // Truncation priority (docs/202, phone widths): the breadcrumb must YIELD
+  // width, not hold it. With `shrink-0` it kept its full width and the session
+  // title — the row's only shrinkable element — collapsed to a few characters.
+  it("breadcrumb yields width instead of crushing the session title", () => {
+    setCard("s1", {
+      cardId: "c1",
+      phase: "ready",
+      totalInsertions: 5,
+      totalDeletions: 1,
+      previousMergedPr: { number: 42, url: "https://github.com/o/r/pull/42", title: "Old PR", baseBranch: "main" },
+    });
+
+    render(<PrLifecycleCard sessionId="s1" onCreatePr={vi.fn()} />);
+
+    const breadcrumb = screen.getByRole("link", { name: /Previously merged #42/ });
+    expect(breadcrumb.className).not.toContain("shrink-0");
+    // Shrinkable + truncating: it gives up width faster than the title…
+    expect(breadcrumb.className).toContain("min-w-0");
+    expect(breadcrumb.className).toContain("shrink-[3]");
+    expect(breadcrumb.querySelector(".truncate")).not.toBeNull();
+    // …while the full text survives in the tooltip.
+    expect(breadcrumb).toHaveAttribute("title", "Previously merged: Old PR");
   });
 
   it("renders the breadcrumb on a re-armed open card too (docs/202)", () => {

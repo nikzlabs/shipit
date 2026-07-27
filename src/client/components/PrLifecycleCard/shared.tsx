@@ -9,7 +9,7 @@ import { useSessionStore } from "../../stores/session-store.js";
 import type { PrCardState } from "../../stores/pr-store.js";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "../ui/tooltip.js";
 import { MarkdownContent } from "../message-markdown.js";
-import { GitMergeIcon, CircleNotchIcon } from "@phosphor-icons/react";
+import { CircleNotchIcon } from "@phosphor-icons/react";
 
 // NB: block-level `flex` (not `inline-flex`) so the chip renders at exactly
 // h-6 regardless of its parent. As an inline-flex element it would be
@@ -163,6 +163,19 @@ export function SessionTitleLabel({ sessionId }: { sessionId: string }) {
  * the merged state). The session's status indicator is gray like a fresh
  * session; this note is the only sign it shipped once. `withReady` appends the
  * "· ready for a new PR" hint used on the ready card.
+ *
+ * Deliberately text-only — no leading git glyph. The note always sits in a row
+ * that already opens with `PrStateBadge`, and at this size a second
+ * branch/merge icon reads as an accidental duplicate of the badge (user
+ * report), not as extra information the text doesn't already carry.
+ *
+ * Truncation priority (same user report, phone widths): the note YIELDS width
+ * before the session title does — `shrink-[3]` against the title's default
+ * shrink-1, never `shrink-0`. As the row's only shrinkable element, the title
+ * used to absorb the entire squeeze and collapse to a few characters
+ * ("Desi…") while this note kept its full width; of the two, the note is the
+ * less informative once read, and its full text survives in the `title`
+ * tooltip either way.
  */
 export function PreviouslyMergedNote({
   previousMergedPr,
@@ -172,13 +185,12 @@ export function PreviouslyMergedNote({
   withReady?: boolean;
 }) {
   const label = (
-    <>
-      <GitMergeIcon size={12} className="shrink-0" />
+    <span className="truncate">
       Previously merged #{previousMergedPr.number}
       {withReady && " · ready for a new PR"}
-    </>
+    </span>
   );
-  const className = "h-6 text-xs flex items-center gap-1 shrink-0 text-(--color-text-tertiary)";
+  const className = "h-6 text-xs flex items-center gap-1 min-w-0 overflow-hidden shrink-[3] text-(--color-text-tertiary)";
   if (previousMergedPr.url) {
     return (
       <a

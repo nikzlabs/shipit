@@ -492,7 +492,19 @@ _None — see "Re-armed card presentation"._
   destructive removal to race it). `PrLifecycleCard` renders a subtle
   "Previously merged #N" breadcrumb (linked to the prior PR) on the re-armed
   ready/open card; the gray/Active sidebar treatment is the natural result of the
-  cleared `merged_at` (no sidebar styling change).
+  cleared `merged_at` (no sidebar styling change). The breadcrumb is **text-only**
+  — it originally led with its own 12px `GitMergeIcon`, but the note always sits
+  in a row that opens with `PrStateBadge`, and at that size a second git glyph
+  read as an accidental duplicate of the badge (user report, follow-up to the
+  stale-status fix below) rather than as information the text doesn't carry.
+  **Truncation priority** (same report, phone widths): the note *yields* width
+  before the session title does — `shrink-[3]` + `min-w-0` + a truncating
+  label, never `shrink-0`. As originally shipped the note was `shrink-0`, which
+  made the title the row's only shrinkable element; on a phone the note kept
+  its full "Previously merged #N · ready for a new PR" width and the title
+  collapsed to a few characters ("Desi…"). Of the two, the note is the less
+  informative once read, and its full text survives in the `title` tooltip, so
+  it absorbs the squeeze 3× faster than the title's default shrink-1.
 - **`statusBySession` must be retired alongside the card (double-merge-icon
   fix).** The card override above was necessary but not sufficient: it left the
   poller-owned `statusBySession` entry in place, and `PrStateBadge` reads
