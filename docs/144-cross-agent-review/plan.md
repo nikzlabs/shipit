@@ -398,10 +398,15 @@ the pinned agent's already-present credentials and provisions nothing).
   cap to compensate: there is no `--timeout` flag, the orchestrator route's body
   is typed `{ agentId, prompt, depth }` and never forwards a `timeoutMs`, and
   `SHIPIT_SUB_AGENT_TIMEOUT_MS` is read once at process boot (an operator knob,
-  not an agent-reachable one). The knob the agent *does* control is the shell
-  timeout, so `shipit-docs/agent.md` tells it to pass the maximum for
-  review-sized consults. The other half of the fix is cancellation-on-abandon
-  below — without it, hitting this ceiling paid for the consult twice.
+  not an agent-reachable one). Note the ceiling is **hard**, not merely a default
+  the agent forgot to raise: an agent that already passes the maximum still loses
+  a consult that overruns it. So `shipit-docs/agent.md` leads with *scope the
+  consult to fit* (targeted diff, or a broad audit split into several sequential
+  consults) and treats "pass an explicit long timeout" as the supporting habit —
+  it only rescues consults that would have fit anyway, since the default (~2 min)
+  is far below the maximum. The other half of the fix is cancellation-on-abandon
+  below: it can't recover the partial work, but it stops an overrun consult from
+  *also* burning tokens in the background after nobody is listening.
 - **Recursion cap.** Depth 1 (§3) — a best-effort guard that stops a
   well-behaved sub-agent from recursing; not forgery-resistant in v0 (the
   per-turn cap above is what bounds an adversarial sub-agent's fan-out).
