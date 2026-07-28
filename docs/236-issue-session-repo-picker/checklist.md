@@ -7,5 +7,7 @@
 - [x] `IssuesPanel`: select repos, drop hidden ones (keeping the current target), forward the pick
 - [x] `App.handleIssueStartSession(issue, pickedRepoUrl?)` — force a fresh session on a repo switch, update `activeRepoUrl`
 - [x] Component tests: picker gating, forwarded repo, cloning disabled, hidden-repo filter, unchanged default click
+- [x] Long-menu overflow: cap `DropdownMenuContent` at the Radix available height + scroll (also fixes `RepoSwitcher`)
+- [x] Verify in-browser across viewports/repo counts (12/18/25/40 × portrait, landscape, keyboard-up)
 - [x] `mockup.html` visual reference
 - [x] `npm run typecheck` + `npm run lint:dev` clean

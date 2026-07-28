@@ -113,6 +113,40 @@ thing the user reviews before dispatching.
 | `src/client/components/IssueDetail.tsx` | Same, for the detail footer's `primary`-variant button. |
 | `src/client/App.tsx` | `handleIssueStartSession(issue, pickedRepoUrl?)` — resolves the target, forces a fresh session on a repo switch, follows the pick in `activeRepoUrl`. |
 
+## Long menus on small screens
+
+A picker whose item count scales with "how many repos does this user have"
+outgrows a phone. Measured in a real browser (Radix positions the menu at
+runtime, so jsdom can't answer this), the **pre-fix** behavior was:
+
+| Case | Menu top edge | Result |
+|---|---|---|
+| 12 repos, portrait 390×667 | +198 | fits |
+| 18 repos, portrait | +6 | just fits |
+| 25 repos, portrait | **−218** | ~6 repos unreachable |
+| 12 repos, landscape 844×390 | **−79** | top clipped |
+| 12 repos, keyboard open 390×420 | **−49** | top clipped |
+
+Radix anchors the menu to its trigger and grows it **upward**, and
+`DropdownMenuContent` had `max-height: none` with `overflow: hidden`. So the
+overflow ran off the *top* of the screen with no scrollbar — the rows lost were
+the ones at the top of the list, which for this picker includes its own
+checkmarked current repo, and nothing on screen indicated they existed. Note
+this bites well before an exotic repo count: **12 repos in landscape, or with
+the keyboard up, already clips.**
+
+Fixed in the shared `ui/dropdown-menu.tsx` rather than in this picker, because
+the defect belongs to the menu primitive — `RepoSwitcher` renders the same repo
+list through the same component and had the identical flaw. `DropdownMenuContent`
+now caps at `--radix-dropdown-menu-content-available-height` (the space Radix
+measured on the side it chose) with `overflow-y-auto`, plus a small
+`collisionPadding` so it doesn't butt against the viewport edge. Menus that
+already fit are unaffected — a max-height never shrinks them — and every case
+above now lands inside the viewport with the full list reachable.
+
+`ui/dropdown-menu.test.tsx` guards the class contract; the geometry itself was
+verified in-browser and can't be re-asserted under jsdom.
+
 ## Styling note
 
 The two halves are separate `<Button>`s so the primary action keeps its
