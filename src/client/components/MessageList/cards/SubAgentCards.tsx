@@ -20,7 +20,7 @@ export function SubAgentSpawnChipRow({ chip }: { chip: SubAgentSpawnChip }) {
     <div className="flex justify-start" data-testid="sub-agent-spawn-chip">
       <div className="flex items-center gap-2 rounded-lg border border-(--color-border-primary) bg-(--color-bg-tertiary) px-3 py-2 text-xs text-(--color-text-secondary)">
         <CircleNotchIcon size={14} className="animate-spin text-(--color-text-tertiary)" />
-        Asking {name}… <span className="text-(--color-text-tertiary)">(typically 30–120s)</span>
+        Asking {name}… <span className="text-(--color-text-tertiary)">(often several minutes)</span>
       </div>
     </div>
   );

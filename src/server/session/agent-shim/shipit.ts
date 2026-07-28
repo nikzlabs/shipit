@@ -172,9 +172,10 @@ Sub-agents (docs/144 — spawn another agent for a one-shot sub-task):
   needs into the prompt (the task, any \`git diff\`, file references, focus
   hints). The spawned agent runs full-capability in this same workspace and its
   work is committed under your session's agent. Requires the "Multi-agent
-  sessions" setting to be enabled. Blocks until the sub-agent finishes (30–120s
-  typical, up to a 30-minute cap) — run it in the BACKGROUND if your shell tool
-  caps foreground commands. Example:
+  sessions" setting to be enabled. Blocks until the sub-agent finishes: a real
+  consult routinely runs for many minutes, up to a 30-minute cap, so run it in
+  the BACKGROUND — most shell tools cap foreground commands well below that. A
+  killed 'run' does not stop the spawn; recover it with 'result'. Example:
 
     shipit agent run --agent codex --prompt-file - <<'EOF'
     Review this diff for bugs. Report findings as file:line — comment.

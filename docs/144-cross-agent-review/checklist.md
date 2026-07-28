@@ -26,7 +26,29 @@
       sub-agent spawned by a background session no longer renders in whichever
       session happens to be active
 
+## Post-v0 — result delivery (SHI-245, docs/236)
+
+- [x] Whole-answer capture in `runAgentToCompletion` (join every completed
+      assistant message; dedupe an adapter's verbatim re-emit)
+- [x] `runSubAgent` returns its `spawnId`; `shipit agent run` prints the run id
+      on stderr (stdout stays the sub-agent's verbatim text)
+- [x] `shipit agent result [RUN-ID] [--json]` reading the persisted consult
+      card — broker leg, orchestrator route, `getSubAgentResult`
+- [x] Termination-signal handler on the in-flight `run` window — say the run
+      survives and where to read it, instead of exiting silently
+- [x] Survives-the-caller contract documented: a killed shim does NOT cancel
+      the spawn (explicit user cancel stays symmetric)
+- [x] Agent-facing guidance to background long consults — `shipit-docs/agent.md`
+      plus the always-loaded Claude and Codex system prompts
+- [x] Replace the pre-ship "30–120s for a review-sized task" estimate
+      everywhere (docs, shim help, code comments, the in-flight spinner) — the
+      cap was raised 5 → 30 min because real consults overran it
+
 ## Deferred / follow-up
+
+- [ ] Ground consult duration in real data rather than a characterisation: the
+      `usage` table already stores `duration_ms` per consult against
+      `sub_agent_id`, so a p50/p90 is a query away.
 
 - [ ] Docker-backed integration run asserting the two-CLI memory floor
       (+500MB–1GB RSS) and confirming container sizing before GA.

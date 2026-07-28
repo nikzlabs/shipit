@@ -103,8 +103,8 @@ export async function handleAgentRun(args: string[], deps: RunDeps): Promise<voi
     deps.io.exit(1);
   });
 
-  // Unbounded (`timeoutMs: 0`): the spawn blocks until the sub-agent exits
-  // (30–120s typical, up to the 30-minute sub-agent wall-clock cap). The
+  // Unbounded (`timeoutMs: 0`): the spawn blocks until the sub-agent exits —
+  // routinely many minutes, up to the 30-minute sub-agent wall-clock cap. The
   // orchestrator holds the request open the whole time. Passing `0` routes this
   // leg over Node's `http` instead of `fetch`, because undici's default 300s
   // `headersTimeout` would abort a longer consult with an opaque "fetch failed"
