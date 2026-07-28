@@ -22,6 +22,7 @@ import type {
 } from "./auth.js";
 import type {
   WsAgentEvent,
+  WsTurnSnapshot,
   WsSubAgentSpawn,
   WsModelInfo,
   WsMessageQueued,
@@ -135,6 +136,7 @@ export * from "./misc.js";
 
 export type WsServerMessage =
   | WsAgentEvent
+  | WsTurnSnapshot
   | WsVoiceNote
   | WsCompactionStatus
   | WsCompactionCard

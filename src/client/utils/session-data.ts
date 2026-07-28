@@ -115,6 +115,10 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
     return;
   }
   const session = useSessionStore.getState();
+  // `inProgress` rides through to the ChatMessage: it marks the rows that
+  // belong to a still-running turn, which is exactly the set an attach-time
+  // `turn_snapshot` replaces (see `turn-snapshot.ts`). `streaming` stays the
+  // narrower "this bubble is being written to" flag the renderer uses.
   session.setMessages(
     data.messages.map((m) => ({
       ...m,

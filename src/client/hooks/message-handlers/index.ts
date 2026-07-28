@@ -3,6 +3,7 @@ import { useSessionStore } from "../../stores/session-store.js";
 import type { Handler, HandlerContext, QueuedMessageStash } from "./types.js";
 
 import { handleAgentEvent } from "./agent-event.js";
+import { handleTurnSnapshot } from "./turn-snapshot.js";
 import { handleAgentInterrupted } from "./agent-interrupted.js";
 import { handleActionChecklistCard } from "./action-checklist-card.js";
 import { handleBranchAutoResetCard } from "./branch-auto-reset-card.js";
@@ -115,6 +116,7 @@ export const messageHandlers: MessageHandlerMap = {
   branch_auto_reset_card: handleBranchAutoResetCard,
   branch_synced_card: handleBranchSyncedCard,
   agent_event: handleAgentEvent,
+  turn_snapshot: handleTurnSnapshot,
   agent_interrupted: handleAgentInterrupted,
   auth_required: handleAuthRequired,
   bug_report_card: handleBugReportCard,
@@ -240,6 +242,7 @@ const TRANSCRIPT_SCOPED_MESSAGES: ReadonlySet<WsMessageType> = new Set<WsMessage
   "sub_agent_consult_card",
   "sub_agent_spawn",
   "system_notice",
+  "turn_snapshot",
   "voice_note",
 ]);
 

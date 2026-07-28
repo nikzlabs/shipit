@@ -25,6 +25,7 @@ import * as permissionHandlers from "./ws-handlers/permission-handlers.js";
 import * as issueWriteHandlers from "./ws-handlers/issue-write-handlers.js";
 import * as serviceHandlers from "./ws-handlers/service-handlers.js";
 import { registerApiRoutes } from "./api-routes.js";
+import { buildTurnMessages } from "./chat-card-persistence.js";
 import type { GitManager } from "../shared/git.js";
 import { readDockerMemoryStats } from "./docker-memory.js";
 import { pruneSessionVolumes } from "./disk-janitor.js";
@@ -562,12 +563,40 @@ export async function registerRoutes(
         // ticks. See docs/064 "Polling budget."
         prStatusPoller.notifyViewerAttached();
         releaseStatusPoller.notifyViewerAttached();
-        // Replay only the part of the turn buffer that has not already been
-        // folded into HTTP chat history. Codex can stream assistant text for a
-        // long stretch before a tool-result/final persistence boundary; when a
-        // backgrounded tab reconnects, HTTP history may therefore be stale. The
-        // client queues these early agent events until its history load
-        // completes, then applies them on top of that baseline.
+        // The running turn's transcript, as of THIS instant. Built in the same
+        // synchronous block that subscribed the socket above, so it covers
+        // exactly everything up to the attach and every later event arrives
+        // live on this socket — no gap, no overlap.
+        //
+        // This replaces reconstructing the turn from the `GET /history` DB
+        // snapshot plus a cursor-sliced `agent_event` replay. Those are sampled
+        // at two different times (the browser's history fetch is a round trip
+        // that lands before or after this attach, depending on latency), and a
+        // tool-result boundary landing between them either erased a slice of
+        // the turn from the transcript or duplicated it — the "switch away
+        // mid-turn and the earlier messages are gone" bug. The client applies
+        // this by REPLACING its in-progress rows, so either order self-corrects.
+        // See `WsTurnSnapshot`.
+        if (runner.running) {
+          send({
+            type: "turn_snapshot",
+            sessionId: runner.sessionId,
+            messages: buildTurnMessages(
+              runner.chatMessageGroups,
+              runner.steeredMessages,
+              runner.recordedCards,
+              { inProgress: true },
+            ),
+          });
+        }
+        // Replay the part of the turn buffer that has not already been folded
+        // into HTTP chat history — the non-transcript signals (compaction
+        // status, usage, spawn chips, …) that the snapshot above doesn't
+        // express.
+        //
+        // `agent_event` is deliberately skipped: the snapshot is now the
+        // authoritative rebuild of the turn's messages, and replaying the same
+        // events on top of it would double the assistant text and tool calls.
         //
         // `terminal_output` / `terminal_exit` / `terminal_reconnecting` are
         // deliberately skipped: xterm.js keeps its own scrollback across WS
@@ -578,6 +607,13 @@ export async function registerRoutes(
         // replay paths (`terminal_start` handler + `onSseOpen`) that prefix
         // with `\x1bc` to keep xterm.js renderer state coherent.
         for (const buffered of runner.getTurnEventBuffer().slice(runner.lastPersistedBufferIndex)) {
+          if (buffered.type === "agent_event") continue;
+          // A buffered snapshot belongs to the attach (or turn end) that
+          // produced it. Replaying one against a viewer that has since loaded
+          // history would append the turn a second time — its rows are no
+          // longer marked in-progress there, so the replace-filter has nothing
+          // to remove. This attach sent its own current snapshot above.
+          if (buffered.type === "turn_snapshot") continue;
           // Agent log lines are re-seeded by the `log_snapshot` above, so skip
           // the buffered `log_append`s here to avoid duplicating the backlog.
           if (buffered.type === "log_append") continue;

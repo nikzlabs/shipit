@@ -194,7 +194,12 @@ describe("Integration: WebSocket disconnect resilience", () => {
     client2.close();
   });
 
-  it("unpersisted streaming events emitted after WS close are replayed on reconnect", async () => {
+  // The invariant is that the content reaches a reattaching viewer, not the
+  // wire shape it arrives in. It used to arrive as a cursor-sliced `agent_event`
+  // replay; it now arrives inside the attach-time `turn_snapshot`, which is
+  // sampled at one instant instead of being stitched onto a separately-fetched
+  // history baseline. See `turn-reattach-snapshot.test.ts` for why.
+  it("unpersisted streaming events emitted after WS close reach a reconnecting viewer", async () => {
     const client1 = await TestClient.connect(port);
     await client1.receive();
     const sessionId = client1.sessionId;
@@ -217,9 +222,8 @@ describe("Integration: WebSocket disconnect resilience", () => {
     const replayed = await drainUntil(
       client2,
       (m) =>
-        m.type === "agent_event"
-        && m.event?.type === "agent_assistant"
-        && m.event.content?.some((b: AnyMsg) => b.type === "text" && b.text === "background chunk"),
+        m.type === "turn_snapshot"
+        && m.messages?.some((msg: AnyMsg) => msg.text === "background chunk"),
     );
 
     expect(replayed).toBeTruthy();

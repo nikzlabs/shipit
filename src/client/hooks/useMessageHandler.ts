@@ -64,11 +64,14 @@ export function useMessageHandler(params: {
       } catch {
         continue;
       }
-      // Both streamed agent content and the transient consult marker depend on
-      // the HTTP history baseline. Queue them during reconnect hydration so an
-      // in-flight consult is restored only after the transcript is current.
+      // Streamed agent content, the attach-time turn snapshot, and the
+      // transient consult marker all depend on the HTTP history baseline.
+      // Queue them during reconnect hydration so an in-flight consult is
+      // restored only after the transcript is current — and so the snapshot
+      // lands on top of history rather than being overwritten by it, with the
+      // live events that followed it on the wire applied after, in order.
       if (
-        (data.type === "agent_event" || data.type === "sub_agent_spawn") &&
+        (data.type === "agent_event" || data.type === "sub_agent_spawn" || data.type === "turn_snapshot") &&
         !useSessionStore.getState().historyLoaded
       ) {
         pendingAgentEventsRef.current.push(data);
