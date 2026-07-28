@@ -9,6 +9,9 @@
 - [x] Integration tests for both sampling orders + the no-running-turn case
 - [x] Client handler tests
 - [x] Retarget the `ws-disconnect-resilience` replay assertion to the invariant
+- [x] Gate the `agent_self_wake` reset on `!runner.running` so a mid-turn
+      background-task notification stops deleting the running turn's rows
+- [x] Integration test for the mid-turn notification + the genuine self-wake
 - [ ] Confirm with the reporter that the transcript survives a mid-turn switch on the deployment
 
 Deferred, tracked in `plan.md` → "Why not reconcile at turn end":

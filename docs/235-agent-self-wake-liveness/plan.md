@@ -354,6 +354,18 @@ before marking the runner running — the same reset `turn-executor` performs at
 start of a user-initiated turn. The wake turn gets a clean accumulator, so its
 output forms its own message group instead of re-persisting the previous turn's.
 
+**Gated on `!runner.running`** (docs/237). `agent_self_wake` rides on the CLI's
+`task_notification`, which fires whenever a `Bash(run_in_background)` job
+finishes — including a job started *earlier in the current turn*, which commonly
+reports back while that turn is still streaming. That is a mid-turn notification,
+not a wake, and resetting there destroyed the running turn: clearing
+`chatMessageGroups` makes the next tool-result boundary's `replaceInProgress`
+delete every `in_progress` row for the session and re-insert from the truncated
+accumulator. The live viewer never noticed (it doesn't re-read history), but the
+turn's opening was gone from the DB for good — a reload or session switch showed
+the turn missing its first half, permanently. Regression test:
+`integration_tests/self-wake-midturn.test.ts`.
+
 **Deliberately deferred:** re-arming the post-turn flow (defect 2 in "The second,
 quieter bug" above) so a self-woken turn's file changes get committed, pushed and
 surfaced on the PR card. That means resetting `turn-executor`'s first-wins guards

@@ -5,6 +5,16 @@ description: Rebuild a running turn from one atomic server snapshot at attach, i
 
 # Mid-turn reattach: one snapshot instead of two half-baselines
 
+Two independent bugs produced the same user-visible symptom. They are
+distinguished by one question: **after the turn ends, does a full page reload
+bring the messages back?**
+
+- **Yes** → the client's in-memory transcript diverged; the DB was fine. That is
+  the reattach race below.
+- **No** → the rows are gone from the DB. That is
+  [the mid-turn self-wake reset](#second-bug-a-mid-turn-background-task-notification-deletes-the-turn),
+  fixed here too and written up in `docs/235`.
+
 ## Symptom
 
 Switch to another session while a turn is running, then switch back: the
@@ -80,6 +90,32 @@ converges:
   `agent_event`, so it lands on top of the history baseline and ahead of the live
   events that followed it on the wire, in order.
 
+## Second bug: a mid-turn background-task notification deletes the turn
+
+The reattach race explains a transcript that a reload repairs. The reporter's
+did **not** — which means the rows were gone from the DB, not just from client
+memory.
+
+`agent_self_wake` (docs/235 §6) resets the runner's turn state so a turn the
+orchestrator never started gets a clean accumulator. But it rides on the CLI's
+`task_notification`, which fires whenever a `Bash(run_in_background)` job
+finishes — **including a job started earlier in the current turn**, which
+commonly reports back while that turn is still streaming. The handler reset
+unconditionally, so a mid-turn notification cleared `chatMessageGroups` of a
+*running* turn. The next tool-result boundary then called `replaceInProgress`,
+which deletes every `in_progress` row for the session and re-inserts from the
+now-truncated accumulator — erasing the turn's opening from chat history
+permanently. The live viewer never noticed (it doesn't re-read history); a reload
+or session switch showed the turn missing its first half, for good.
+
+Fix: `if (!runner.running) resetRunnerTurnState(runner)`. A notification arriving
+during an orchestrator-owned turn belongs to that turn; only a notification that
+arrives while nothing is in flight is a wake. docs/235's intent is preserved —
+`integration_tests/self-wake-midturn.test.ts` pins both halves.
+
+This one is the more destructive of the two: no client-side change can recover a
+deleted row.
+
 ## Why not reconcile at turn end
 
 A snapshot pushed at `agent_result` would look like a natural safety net ("the
@@ -106,6 +142,7 @@ the DB where the turn is complete.
 | `client/hooks/useMessageHandler.ts` | Queues the snapshot behind the history baseline |
 | `client/utils/session-data.ts` | Carries `inProgress` from history onto `ChatMessage` |
 | `client/components/MessageList/types.ts` | `inProgress` vs `streaming` |
+| `orchestrator/ws-handlers/agent-listeners.ts` | `agent_self_wake` — reset gated on `!runner.running` |
 
 ## Tests
 
@@ -118,3 +155,7 @@ the DB where the turn is complete.
 - `integration_tests/ws-disconnect-resilience.test.ts` — the existing
   "unpersisted streaming events reach a reconnecting viewer" contract, retargeted
   from the replay's wire shape to the invariant.
+- `integration_tests/self-wake-midturn.test.ts` — a mid-turn `task_notification`
+  leaves the running turn's rows in chat history (through turn end); a genuine
+  self-wake after the turn finished still gets a clean accumulator instead of
+  re-persisting the previous turn.
