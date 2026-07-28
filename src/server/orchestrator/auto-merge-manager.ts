@@ -116,7 +116,8 @@ export class AutoMergeManager {
     // observed the merged state yet. Don't re-attempt (GitHub rejects an
     // already-merged PR, which would set a spurious sticky error) and don't
     // touch the state: auto-merge stays "in charge" until `prState` flips to
-    // merged. Released by `untrackSession` when the PR reaches a terminal state.
+    // merged. Released by the poller's terminal-state branch (`verifyMissingPr`)
+    // the moment that merged state is observed.
     if (mergeState.completed) return;
 
     // Merge when CI passes, or when there are no required checks at all.
@@ -170,7 +171,9 @@ export class AutoMergeManager {
       // via this onChange, and an open+green+auto-merge-disabled summary reads
       // as "Waiting for your input" → an attention notification fires a beat
       // before the PR is observed merged. `completed` short-circuits further
-      // attempts; the state is released by untrackSession at the terminal state.
+      // attempts; the whole state is dropped by the poller's terminal-state
+      // branch as soon as the merged PR is observed, so `completed` can never
+      // outlive its PR and wedge auto-merge for the session's next one.
       mergeState.completed = true;
       delete mergeState.error;
       this.onChange(sessionId);

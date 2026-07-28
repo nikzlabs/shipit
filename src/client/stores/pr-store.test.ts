@@ -285,6 +285,25 @@ describe("pr-store", () => {
       expect(usePrStore.getState().cardBySession.s1?.autoMerge).toEqual(autoMerge);
     });
 
+    // The arming belongs to ONE pull request. The server drops its own state at
+    // the same transition, but its terminal summary carries no `autoMerge`
+    // field — and absent means "unchanged" everywhere else in this reducer — so
+    // the sticky entry has to be retired from `prState` here. Otherwise the
+    // merged card's overflow toggle keeps reading ON and `PrActionsMenu`
+    // (`autoMergeBySession[id] ?? card.autoMerge`) offers to disarm a PR that no
+    // longer exists.
+    it.each(["merged", "closed"] as const)("clears auto-merge arming when the PR goes %s", (prState) => {
+      usePrStore.getState().applyPrStatusUpdates([
+        makePrStatus({ autoMerge: { enabled: true, mergeMethod: "squash" } }),
+      ]);
+      expect(usePrStore.getState().autoMergeBySession.s1?.enabled).toBe(true);
+
+      usePrStore.getState().applyPrStatusUpdates([makePrStatus({ prState })]);
+
+      expect(usePrStore.getState().autoMergeBySession.s1).toBeUndefined();
+      expect(usePrStore.getState().cardBySession.s1?.autoMerge).toBeUndefined();
+    });
+
     describe("isSnapshot (authoritative reconnect snapshot)", () => {
       it("drops poller state for sessions absent from the snapshot", () => {
         // Two sessions known to the client...

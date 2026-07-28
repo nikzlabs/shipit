@@ -1249,6 +1249,20 @@ export class PrStatusPoller {
     this.autoConflictResolveManager?.delete(sessionId);
     this.autoFix.delete(sessionId);
     this.remediationArbiter.delete(sessionId);
+    // Auto-merge is armed per *task*, not per session (docs/175: "a sticky
+    // auto-merge is a footgun"). The PR it was armed for is now terminal, so
+    // this — not `untrackSession`, which nothing in production calls — is the
+    // release point. Leaving the state armed was actively wrong in both
+    // directions: `activatePendingAutoMergeForPr` reads a lingering `enabled`
+    // as "pre-armed" and would silently arm the session's NEXT PR (exactly the
+    // review-intended PR that docs/175 refuses to ship on a remembered
+    // toggle), while the docs/077 `completed` short-circuit — set when the
+    // managed REST merge succeeded and deliberately NOT cleared at the merge —
+    // rode along with it, so `handleManaged` returned early forever and the
+    // still-ON toggle never merged anything. Dropping the state fixes both.
+    // A re-arm (docs/202/216) therefore starts from OFF, and re-arming
+    // auto-merge for the next task is a fresh, conscious toggle.
+    this.autoMerge.delete(sessionId);
     this.sseBroadcast("pr_status", { updates: [summary] });
 
     // docs/196 — fire the notify-on-merge watch hook for BOTH terminal outcomes.

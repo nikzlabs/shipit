@@ -1528,6 +1528,64 @@ describe("PrStatusPoller", () => {
     );
   });
 
+  // Auto-merge is armed for ONE pull request, not for the session forever. When
+  // the PR it was armed for goes terminal the state must be released, or (a) the
+  // session's NEXT PR gets silently armed by `activatePendingAutoMergeForPr`
+  // reading the leftover `enabled`, and (b) the docs/077 `completed`
+  // short-circuit rides along and wedges the managed loop so the still-ON toggle
+  // never merges anything. Nothing calls `untrackSession` in production, so this
+  // terminal branch is the only release point.
+  describe("clears auto-merge arming when the PR goes terminal", () => {
+    async function pollUntilTerminal(restResult: unknown) {
+      const withPr = { data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } } };
+      githubAuth = makeGitHubAuth(withPr, restResult);
+      sessionManager = makeSessionManager([
+        { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+      ]);
+      poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+      poller.trackSession("s1", "https://github.com/owner/repo");
+      await vi.advanceTimersByTimeAsync(0);
+
+      // Arm auto-merge on the open PR, the way the toggle route does.
+      poller.setAutoMergeEnabled("s1", true);
+      poller.setAutoMergeManaged("s1", true, "https://github.com/owner/repo/settings", "Allow auto-merge is off");
+      expect(poller.getAutoMergeState("s1")?.enabled).toBe(true);
+
+      // The PR drops out of the OPEN bulk view → REST verify sees it terminal.
+      (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { repository: { pullRequests: { nodes: [] } } },
+      });
+      await vi.advanceTimersByTimeAsync(PR_STATUS_SLOW_INTERVAL_MS);
+      await vi.advanceTimersByTimeAsync(0);
+    }
+
+    it("drops the state on merge", async () => {
+      await pollUntilTerminal({
+        url: "https://github.com/owner/repo/pull/42",
+        number: 42, base: "main", title: "Add feature", body: "x",
+        state: "closed" as const, merged_at: "2026-05-19T12:00:00Z",
+        merge_commit_sha: "abc123", additions: 100, deletions: 20,
+      });
+
+      expect(poller.getStatus("s1")?.prState).toBe("merged");
+      // Not merely `enabled: false` — the whole entry is gone, so a stale
+      // `completed`/`managed` can't survive with it either.
+      expect(poller.getAutoMergeState("s1")).toBeUndefined();
+    });
+
+    it("drops the state on close-without-merge", async () => {
+      await pollUntilTerminal({
+        url: "https://github.com/owner/repo/pull/42",
+        number: 42, base: "main", title: "Add feature", body: "x",
+        state: "closed" as const, merged_at: null, merge_commit_sha: null,
+        additions: 100, deletions: 20,
+      });
+
+      expect(poller.getStatus("s1")?.prState).toBe("closed");
+      expect(poller.getAutoMergeState("s1")).toBeUndefined();
+    });
+  });
+
   it("does NOT promote to merged when REST verify reports the PR is still open (rate-limit poisoning)", async () => {
     // Scenario: GraphQL returns an empty PR list (e.g. due to a rate-limit
     // response that slipped past header detection, or a transient hiccup).
