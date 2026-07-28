@@ -106,7 +106,13 @@ export function createIdleEnforcer(
         idleSessionIds.push(sc.sessionId);
         continue;
       }
-      if (runner.running) continue;
+      // docs/235 — `agentBusy`, not `running`. `running` is only ever set by an
+      // orchestrator-initiated turn, so a session whose agent woke ITSELF (a
+      // background task finished and the CLI started a fresh turn) reads as
+      // idle here and gets its container destroyed mid-turn. `agentBusy` also
+      // covers the quieter case: a task still pending between turns, which is
+      // work that will resume and must not be reclaimed.
+      if (runner.agentBusy) continue;
       if (runner.viewerCount > 0) continue;
       // Skip runners whose last viewer detach was within the grace period —
       // a transient disconnect must never lead to disposal. Under memory
@@ -131,7 +137,7 @@ export function createIdleEnforcer(
         // if it is still safe to do so. `runner.dispose()` also enforces
         // this at the runner level (defense in depth).
         const runner = runnerRegistry.get(sid);
-        if (runner && (runner.running || runner.viewerCount > 0)) {
+        if (runner && (runner.agentBusy || runner.viewerCount > 0)) {
           continue;
         }
         const reason = underPressure ? "memory-pressure" : "idle-disposed";

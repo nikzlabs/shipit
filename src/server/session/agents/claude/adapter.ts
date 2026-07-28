@@ -186,6 +186,38 @@ export class ClaudeAdapter
             if (typeof meta?.duration_ms === "number") event.durationMs = meta.duration_ms;
             return event;
           }
+          case "background_tasks_changed":
+            // docs/235 — the LEVEL signal. `tasks` is the complete current list
+            // (empty = drained), so this one event fully re-states the runner's
+            // background-task state. Normalized to agent-neutral field names so
+            // a future backend with the same concept maps onto it.
+            return {
+              type: "agent_background_tasks",
+              tasks: (raw.tasks ?? []).map((t) => ({
+                id: t.task_id,
+                type: t.task_type,
+                description: t.description,
+              })),
+            };
+          case "task_notification":
+            // docs/235 — the EDGE signal: a background task finished and the CLI
+            // is waking itself. On the wire this is immediately followed by a
+            // fresh `init` and eventually a `result`, with no user message in
+            // between — i.e. a turn the orchestrator never started.
+            return {
+              type: "agent_self_wake",
+              taskId: raw.task_id,
+              summary: raw.summary,
+              status: raw.status,
+            };
+          case "task_started":
+          case "task_updated":
+            // docs/235 — deliberately dropped. Both are per-task deltas whose
+            // effect is already covered by the authoritative
+            // `background_tasks_changed` list that accompanies them; mapping
+            // them too would mean maintaining a second, weaker view of the same
+            // state.
+            return null;
           default:
             return null;
         }

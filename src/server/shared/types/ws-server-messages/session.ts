@@ -72,6 +72,18 @@ export interface WsSessionStatus {
   sessionId: string;
   running: boolean;
   queueLength?: number;
+  /**
+   * docs/235 — outstanding agent-initiated background tasks (a
+   * `Bash(run_in_background)` job, a scheduled wake-up). Present when the
+   * backend reported a change; absent means "no information in this message",
+   * NOT "none" — the client keeps its prior value rather than clearing on every
+   * unrelated status update.
+   *
+   * `count: 0` is the explicit drained signal. `descriptions` feeds the chat
+   * status line so it can name the work ("Waiting for: npm test") instead of
+   * showing a bare count.
+   */
+  backgroundTasks?: { count: number; descriptions: string[] };
   /** Present when the session encountered a fatal error (e.g. container crash). */
   error?: string;
   /**

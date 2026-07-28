@@ -450,6 +450,46 @@ export interface PermissionRequestInput {
  */
 export type PermissionRequester = (input: PermissionRequestInput) => Promise<PermissionDecision>;
 
+/**
+ * docs/235 — the agent backend's **complete current** background-task list
+ * (not a delta). An agent can start work that outlives its turn — a
+ * `Bash(run_in_background)` job, a scheduled wake-up — and finishing it makes
+ * the backend start a fresh turn on its own, with no user message. The
+ * orchestrator uses this as the *level* signal for `runner.agentBusy` so the
+ * idle enforcer and the disk-tier ladder stop reclaiming a container that still
+ * has work outstanding.
+ *
+ * Transient live state: emit-only, never persisted to chat history.
+ *
+ * - **Claude**: mapped from the CLI's `system`/`subtype:"background_tasks_changed"`.
+ * - **Codex**: no equivalent today, so its adapter never emits this and the
+ *   behavior degrades to the pre-docs/235 baseline.
+ */
+export interface AgentBackgroundTasksEvent {
+  type: "agent_background_tasks";
+  /** Empty array means drained — the authoritative current state, not a diff. */
+  tasks: { id: string; type?: string; description?: string }[];
+}
+
+/**
+ * docs/235 — the agent backend is starting a turn *on its own* because a
+ * background task finished. The *edge* counterpart to
+ * {@link AgentBackgroundTasksEvent}: the orchestrator marks the runner running
+ * so the session reads as busy for the self-woken turn, which the ordinary
+ * `agent_result` handler then clears.
+ *
+ * - **Claude**: mapped from the CLI's `system`/`subtype:"task_notification"`.
+ * - **Codex**: no equivalent today.
+ */
+export interface AgentSelfWakeEvent {
+  type: "agent_self_wake";
+  taskId?: string;
+  /** Backend's one-line description of what finished. */
+  summary?: string;
+  /** e.g. `"completed"`. */
+  status?: string;
+}
+
 export type AgentEvent =
   | AgentInitEvent
   | AgentAssistantEvent
@@ -461,7 +501,9 @@ export type AgentEvent =
   | AgentCompactionStartedEvent
   | AgentCompactedEvent
   | AgentPermissionRequestEvent
-  | AgentPermissionResolvedEvent;
+  | AgentPermissionResolvedEvent
+  | AgentBackgroundTasksEvent
+  | AgentSelfWakeEvent;
 
 /** Unified content blocks (text or tool use). */
 export type AgentContentBlock =

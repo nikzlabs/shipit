@@ -39,6 +39,7 @@ import { ProxyAgentProcess } from "./proxy-agent-process.js";
 import type { ProxyAgentRunner } from "./proxy-agent-process.js";
 import type { ServiceManager, ManagedService, SecretsStatusInternalSnapshot } from "./service-manager.js";
 import { SseConnectionManager } from "./sse-connection-manager.js";
+import { BackgroundTaskTracker, type BackgroundTaskInfo } from "./background-task-tracker.js";
 import { TurnAccumulator } from "./turn-accumulator.js";
 import { TerminalBufferManager } from "./terminal-buffer-manager.js";
 
@@ -93,6 +94,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _guardedUnavailable = false;
   readonly awaitingPermissionIds = new Set<string>();
   private _isStreamingActive = false;
+  private _backgroundTasks = new BackgroundTaskTracker();
   // docs/146 follow-up — the proxy of the live resident streaming process,
   // tracked SEPARATELY from `_agent` so it survives a stale/one-shot spawn
   // momentarily displacing or nulling the single `_agent` slot. The SSE relay
@@ -303,6 +305,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // drop the reference so genuinely-orphaned events stop being re-adopted.
     this._streamingProxy = v ? this._agent : null;
   }
+  // docs/235 — gated on `isStreamingActive` inside the tracker: a background
+  // task cannot outlive the CLI process, so without a resident streaming
+  // process the answer is definitionally zero.
+  get backgroundTaskCount(): number { return this._backgroundTasks.count(this._isStreamingActive); }
+  get backgroundTaskDescriptions(): string[] { return this._backgroundTasks.descriptions(this._isStreamingActive); }
+  get agentBusy(): boolean { return this._isRunning || this.backgroundTaskCount > 0; }
+  setBackgroundTasks(tasks: BackgroundTaskInfo[]): void { this._backgroundTasks.set(tasks); }
+  clearBackgroundTasks(): void { this._backgroundTasks.clear(); }
   get appliedPermissionMode(): PermissionMode | undefined { return this._appliedPermissionMode; }
   set appliedPermissionMode(v: PermissionMode | undefined) { this._appliedPermissionMode = v; }
 
@@ -2020,6 +2030,10 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this._isRunning = false;
     this._isStreamingActive = false;
     this._streamingProxy = null;
+    // docs/235 — the streaming process is gone, so its background tasks went
+    // with it. The count getter already gates on `isStreamingActive`; clearing
+    // here keeps the tracker from holding a stale list across a respawn.
+    this._backgroundTasks.clear();
     this._appliedPermissionMode = undefined;
     this._agent = null;
     this.emitMessage({
@@ -2090,6 +2104,10 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this._isRunning = false;
     this._isStreamingActive = false;
     this._streamingProxy = null;
+    // docs/235 — the streaming process is gone, so its background tasks went
+    // with it. The count getter already gates on `isStreamingActive`; clearing
+    // here keeps the tracker from holding a stale list across a respawn.
+    this._backgroundTasks.clear();
     this._appliedPermissionMode = undefined;
     this.termBuf.reset();
     this.emit("disposed");

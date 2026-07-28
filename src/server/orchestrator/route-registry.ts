@@ -103,13 +103,20 @@ export function registerSseEndpoint(app: FastifyInstance, rt: OrchestratorRuntim
     // the sidebar "needs your approval" attention signal is correct on first
     // paint and survives a reconnect (the worker keeps holding the request).
     const awaitingPermissionSessions: string[] = [];
+    // docs/235 — sessions holding outstanding background tasks. Snapshotted for
+    // the same reason as the permission set: the client cannot re-derive it
+    // after a reconnect (the backend reports the task list only on change, and
+    // a reload misses every prior event), so without this a page refresh during
+    // a long background task would show a session that looks finished.
+    const backgroundTaskSessions: string[] = [];
     for (const session of sessions) {
       const runner = runnerRegistry.get(session.id);
       if (runner?.running) activeRunnerSessions.push(session.id);
       if (runner && runner.awaitingPermissionIds.size > 0) awaitingPermissionSessions.push(session.id);
+      if (runner && runner.backgroundTaskCount > 0) backgroundTaskSessions.push(session.id);
     }
     client.write(`event: active_runners\ndata: ${JSON.stringify({ sessionIds: activeRunnerSessions })}\n\n`);
-    client.write(`event: session_attention\ndata: ${JSON.stringify({ awaitingPermissionSessionIds: awaitingPermissionSessions })}\n\n`);
+    client.write(`event: session_attention\ndata: ${JSON.stringify({ awaitingPermissionSessionIds: awaitingPermissionSessions, backgroundTaskSessionIds: backgroundTaskSessions })}\n\n`);
 
     // Current PR statuses so inline cards and sidebar icons are correct on
     // connect — must precede session_list to avoid a one-frame flash of the

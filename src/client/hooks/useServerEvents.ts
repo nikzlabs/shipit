@@ -111,12 +111,20 @@ export function useServerEvents(): void {
     es.addEventListener("session_attention", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as {
         awaitingPermissionSessionIds?: string[];
+        backgroundTaskSessionIds?: string[];
         sessionId?: string;
         awaitingPermission?: boolean;
       };
       const store = useSessionStore.getState();
       if (Array.isArray(data.awaitingPermissionSessionIds)) {
         store.setAwaitingPermissionSessions(() => new Set(data.awaitingPermissionSessionIds));
+        // docs/235 — the snapshot form carries both sets. Reconciled wholesale
+        // (not merged) for the same reason as the permission set: this event is
+        // authoritative on connect, so a session that drained its tasks while
+        // the tab was away must lose its marker rather than keep a stale one.
+        // Defaults to empty so an older orchestrator that omits the field
+        // clears rather than strands the set.
+        store.setBackgroundTaskSessions(() => new Set(data.backgroundTaskSessionIds ?? []));
         return;
       }
       if (data.sessionId) {

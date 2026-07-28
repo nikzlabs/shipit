@@ -2,6 +2,7 @@ import type { WsServerMessage, ClaudeContentBlockText, ClaudeContentBlockToolUse
 import type { AgentEvent, AgentProcess } from "../../shared/types.js";
 import type { AgentId, SubscriptionLimitsMap } from "../../shared/types.js";
 import type { SessionRunnerInterface, QueuedMessage } from "../session-runner.js";
+import { resetRunnerTurnState } from "../session-runner.js";
 import type { ChatHistoryManager, PersistedPermissionRequest } from "../chat-history.js";
 import type { SessionManager } from "../sessions.js";
 import type { UsageManager } from "../usage.js";
@@ -420,6 +421,63 @@ export function wireAgentListeners(
           active: true,
           ...(event.trigger ? { trigger: event.trigger } : {}),
         });
+      }
+      return;
+    }
+
+    // docs/235 — the LEVEL signal: the backend's complete current
+    // background-task list. Transient live state, so it is emit-only and
+    // deliberately NOT persisted — the tasks are gone by the time anyone
+    // reloads the transcript tomorrow. The durable consequence is the runner
+    // state, which keeps the idle enforcer and the disk-tier ladder from
+    // reclaiming a container that still has work outstanding.
+    if (event.type === "agent_background_tasks") {
+      const turnSessionId = opts.capturedSessionId;
+      if (runner) {
+        runner.setBackgroundTasks(event.tasks);
+        if (turnSessionId) {
+          emitToViewers({
+            type: "session_status",
+            sessionId: turnSessionId,
+            running: runner.running,
+            queueLength: runner.queueLength,
+            backgroundTasks: {
+              count: runner.backgroundTaskCount,
+              descriptions: runner.backgroundTaskDescriptions,
+            },
+          });
+        }
+      }
+      return;
+    }
+
+    // docs/235 — the EDGE signal: a background task finished and the CLI is
+    // starting a turn nobody asked it for. Mark the runner running so the
+    // session reads as busy for the duration; the ordinary `agent_result`
+    // handler below clears it exactly as it would for a user-initiated turn.
+    // Emit-only for the same reason as above: the spinner is live state, while
+    // the turn's actual output persists through the normal path.
+    if (event.type === "agent_self_wake") {
+      const turnSessionId = opts.capturedSessionId;
+      if (runner) {
+        // docs/235 §6 — give the wake turn a CLEAN accumulator, exactly as
+        // `turn-executor` does via `resetRunnerTurnState` at the start of a
+        // user-initiated turn. Nothing calls that for a turn the orchestrator
+        // never started, so without this the wake turn's output appends to the
+        // PREVIOUS turn's `chatMessageGroups` and its `agent_result` persists
+        // the combined set — duplicating the earlier turn in the transcript.
+        // Harmless while nobody rendered the wake turn; visible the moment we
+        // start surfacing it.
+        resetRunnerTurnState(runner);
+        runner.running = true;
+        if (turnSessionId) {
+          emitToViewers({
+            type: "session_status",
+            sessionId: turnSessionId,
+            running: true,
+            queueLength: runner.queueLength,
+          });
+        }
       }
       return;
     }
@@ -1192,6 +1250,12 @@ export function wireAgentListeners(
         runner.setAgent(null);
         // docs/140 — streaming process is gone; reset the gate.
         runner.isStreamingActive = false;
+        // docs/235 — and its background tasks died with it (the CLI reaps them
+        // on exit). Without this a crashed process would leave a non-zero count
+        // pinning `agentBusy` true, making the runner permanently
+        // unreclaimable — the same failure this whole block guards against for
+        // `running`.
+        runner.clearBackgroundTasks();
       }
       runner.running = false;
       // docs/182 — a process-level error is a terminal turn error: record it on
