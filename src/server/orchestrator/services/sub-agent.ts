@@ -83,6 +83,15 @@ export interface RunSubAgentInput {
 
 export interface RunSubAgentResult extends SubAgentRunResult {
   subAgentId: AgentId;
+  /**
+   * SHI-245 — the run's id, echoed back to the caller. The SAME id is on the
+   * consult card the UI renders, so the text the invoking agent acted on and the
+   * text the user read are provably one artifact, and either side can name the
+   * run when they disagree. It is also the handle for `shipit agent result <id>`,
+   * which re-reads the persisted card — the recovery path when the caller's copy
+   * was lost (a SIGTERMed shim, a foreground tool timeout).
+   */
+  spawnId: string;
 }
 
 /**
@@ -248,11 +257,16 @@ export async function runSubAgent(
       // docs/220 — carry the verbatim output so the brokered consult is visible,
       // not just attested. Already capped upstream (`maxOutputChars`), which is
       // also what flags `truncated`. Omitted when empty.
+      //
+      // SHI-245 — this is the SAME `result.text` returned below to the invoking
+      // agent, by construction: one string, written to both surfaces from one
+      // place. Never re-derive the card's copy from anything else — a second
+      // extraction is exactly how the two documents drift apart.
       ...(result.text ? { outputMarkdown: result.text } : {}),
       createdAt: new Date().toISOString(),
     });
 
-    return { ...result, subAgentId };
+    return { ...result, subAgentId, spawnId };
   } catch (err) {
     // A transport-level failure (e.g. worker unreachable) never produced a
     // result, so synthesize an error card — otherwise the spinner spins forever.
@@ -282,6 +296,57 @@ export async function runSubAgent(
       removeSubAgentCredentials(credentialsDir, sessionId, subAgentId);
     }
   }
+}
+
+/**
+ * Minimal chat-history surface the result lookup needs. Kept structural so
+ * tests and non-`ChatHistoryManager` callers can pass a stub.
+ */
+export interface ConsultCardReader {
+  listSubAgentConsultCards(sessionId: string): SubAgentConsultCard[];
+}
+
+export interface GetSubAgentResultDeps {
+  chatHistoryManager: ConsultCardReader;
+}
+
+/**
+ * SHI-245 — re-read a completed spawn's persisted consult card: the exact
+ * artifact rendered in the UI, output text included.
+ *
+ * Backs `shipit agent result [<runId>]`. Two things make this worth a route of
+ * its own rather than "the agent already got the text on stdout":
+ *
+ *  - **Parity is checkable.** The caller can prove its copy is the user's copy
+ *    instead of assuming it, and can name a run id when the two disagree.
+ *  - **The result outlives the call.** A `shipit agent run` whose shim dies —
+ *    the invoking agent's foreground tool timeout SIGTERMs it well before a long
+ *    consult finishes — does not stop the spawn; it finishes server-side and
+ *    persists its card. Without this, that output existed only in the UI and the
+ *    18 minutes of work were unrecoverable from the agent's side.
+ *
+ * Omit `spawnId` for the session's most recent run.
+ */
+export function getSubAgentResult(
+  deps: GetSubAgentResultDeps,
+  sessionId: string,
+  spawnId?: string,
+): SubAgentConsultCard {
+  const cards = deps.chatHistoryManager.listSubAgentConsultCards(sessionId);
+  if (cards.length === 0) {
+    throw new ServiceError(404, "No sub-agent runs in this session yet.");
+  }
+  if (!spawnId) return cards[cards.length - 1];
+  // Accept a unique prefix too: the id is printed as a short prefix in the run
+  // footer, and re-typing a full UUID from a log line is a needless failure mode.
+  const exact = cards.find((c) => c.spawnId === spawnId);
+  if (exact) return exact;
+  const prefixed = cards.filter((c) => c.spawnId.startsWith(spawnId));
+  if (prefixed.length === 1) return prefixed[0];
+  if (prefixed.length > 1) {
+    throw new ServiceError(400, `Ambiguous run id "${spawnId}" — it matches ${prefixed.length} runs.`);
+  }
+  throw new ServiceError(404, `No sub-agent run with id "${spawnId}" in this session.`);
 }
 
 /**

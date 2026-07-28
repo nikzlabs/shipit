@@ -353,6 +353,41 @@ describe("ChatHistoryManager", () => {
     });
   });
 
+  describe("listSubAgentConsultCards (SHI-245)", () => {
+    const consult = (spawnId: string, outputMarkdown: string): PersistedMessage => ({
+      role: "assistant",
+      text: "",
+      subAgentConsult: {
+        cardId: `card-${spawnId}`,
+        spawnId,
+        subAgentId: "codex",
+        status: "success",
+        outputMarkdown,
+        createdAt: "2026-07-28T00:00:00.000Z",
+      },
+    });
+
+    it("returns the session's consult cards oldest-first, output included", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", { role: "user", text: "review this with codex" });
+      mgr.append("sess-1", consult("spawn-a", "first report"));
+      mgr.append("sess-1", { role: "assistant", text: "acting on it" });
+      mgr.append("sess-1", consult("spawn-b", "second report"));
+
+      // A fresh manager — this is the read `shipit agent result` makes, and the
+      // reason a run whose caller died is still recoverable.
+      const cards = new ChatHistoryManager(dbManager).listSubAgentConsultCards("sess-1");
+      expect(cards.map((c) => c.spawnId)).toEqual(["spawn-a", "spawn-b"]);
+      expect(cards[1].outputMarkdown).toBe("second report");
+    });
+
+    it("is scoped to the session and empty when it has no runs", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", consult("spawn-a", "mine"));
+      expect(mgr.listSubAgentConsultCards("sess-2")).toEqual([]);
+    });
+  });
+
   describe("upsertReleaseCard (docs/171)", () => {
     const proposed = (cardId = "release:sess-1:v0.3.0") => ({
       sessionId: "sess-1",

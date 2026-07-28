@@ -157,9 +157,18 @@ export function runAgentToCompletion(
 
   // For Claude one-shot, each `agent_assistant` event carries a FULL message, so
   // the last one is the final answer. For Codex, deltas stream into individual
-  // events and the authoritative final text arrives once with `isStreamCompletion`.
-  // Prefer the stream-completion text; fall back to the last full message.
-  let streamCompletionText: string | null = null;
+  // events and each COMPLETED message is re-emitted once with
+  // `isStreamCompletion`. Prefer the stream-completion texts; fall back to the
+  // last full message.
+  //
+  // SHI-245 — a delta-streaming run can complete MORE THAN ONE message in a
+  // single turn (Codex routinely emits a long report and then a shorter wrap-up,
+  // and any preamble message is its own `agentMessage` item). Keeping only the
+  // last one silently handed the caller the tail of the answer — an artifact
+  // that reads complete but isn't. So collect every completed message in order
+  // and join them: the caller and the consult card both get the sub-agent's
+  // WHOLE assistant output, never a suffix of it.
+  const completedMessages: string[] = [];
   let lastFullText = "";
   let costUsd = 0;
   let reportedDurationMs: number | undefined;
@@ -187,7 +196,7 @@ export function runAgentToCompletion(
         settled = true;
         clearTimeout(timer);
 
-        let text = (streamCompletionText ?? lastFullText) || "";
+        let text = (completedMessages.length > 0 ? completedMessages.join("\n\n") : lastFullText) || "";
         let truncated = false;
         if (text.length > maxOutputChars) {
           text = text.slice(0, maxOutputChars);
@@ -228,7 +237,12 @@ export function runAgentToCompletion(
           if (event.parentToolUseId) return; // ignore nested sub-agent (Task tool) output
           const text = assistantText(event);
           if (event.isStreamCompletion) {
-            streamCompletionText = text;
+            // One entry per completed message. Deduped against the previous
+            // entry so an adapter that re-emits the same completion twice can't
+            // double it up.
+            if (text.length > 0 && completedMessages[completedMessages.length - 1] !== text) {
+              completedMessages.push(text);
+            }
           } else if (text.length > 0) {
             lastFullText = text;
           }

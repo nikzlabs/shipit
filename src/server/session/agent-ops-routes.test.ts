@@ -609,4 +609,22 @@ describe("agent-ops routes", () => {
     expect(res.statusCode).toBe(429);
     expect(res.json().error).toContain("rate limit reached");
   });
+
+  it("GET /agent-ops/agent/result forwards the run id as ?spawnId (SHI-245)", async () => {
+    client.setResponse("GET", "/agent/result", {
+      ok: true, status: 200,
+      body: { cardId: "c1", spawnId: "run-77", subAgentId: "codex", status: "success", outputMarkdown: "findings" },
+    });
+    const res = await app.inject({ method: "GET", url: "/agent-ops/agent/result?spawnId=run-77" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ spawnId: "run-77", outputMarkdown: "findings" });
+    expect(client.calls[0].path).toBe("/agent/result?spawnId=run-77");
+  });
+
+  it("GET /agent-ops/agent/result without an id asks for the latest run", async () => {
+    client.setResponse("GET", "/agent/result", { ok: true, status: 200, body: { spawnId: "run-88" } });
+    const res = await app.inject({ method: "GET", url: "/agent-ops/agent/result" });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0].path).toBe("/agent/result");
+  });
 });

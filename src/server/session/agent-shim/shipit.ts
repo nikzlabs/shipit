@@ -20,7 +20,8 @@
  * that dispatches to the per-domain handler modules:
  *   - `shipit-session.ts` — session create/list/view/message/wait/archive/notify
  *   - `shipit-issue.ts`   — tracker-neutral issue view/list/create/comment/edit/status/assign
- *   - `shipit-agent.ts`   — one-shot sub-agent spawn (`shipit agent run`)
+ *   - `shipit-agent.ts`   — one-shot sub-agent spawn + result re-read
+ *                           (`shipit agent run` / `shipit agent result`)
  *   - `shipit-source.ts`  — read-only ShipIt source browsing (Ops sessions)
  *
  * Output:
@@ -64,7 +65,7 @@ import {
   handleIssueStatuses,
   handleIssueView,
 } from "./shipit-issue.js";
-import { handleAgentRun } from "./shipit-agent.js";
+import { handleAgentRun, handleAgentResult } from "./shipit-agent.js";
 import { handleReleasePlan, handleReleasePrepare } from "./shipit-release.js";
 import {
   handleSourceBlame,
@@ -163,20 +164,27 @@ Releases (docs/214 — deterministic, merge-triggered; CI publishes):
 
 Sub-agents (docs/144 — spawn another agent for a one-shot sub-task):
   shipit agent run --agent claude|codex --prompt-file FILE [--model M] [--json]
+  shipit agent result [RUN-ID] [--json]
 
-  Spawns ANOTHER registered agent with the prompt from --prompt-file (or
+  'run' spawns ANOTHER registered agent with the prompt from --prompt-file (or
   --prompt-file - for stdin) and prints its final text on stdout. Use it for a
   second-opinion review or a bounded delegation: put ALL context the sub-agent
   needs into the prompt (the task, any \`git diff\`, file references, focus
   hints). The spawned agent runs full-capability in this same workspace and its
   work is committed under your session's agent. Requires the "Multi-agent
   sessions" setting to be enabled. Blocks until the sub-agent finishes (30–120s
-  typical). Example:
+  typical, up to a 30-minute cap) — run it in the BACKGROUND if your shell tool
+  caps foreground commands. Example:
 
     shipit agent run --agent codex --prompt-file - <<'EOF'
     Review this diff for bugs. Report findings as file:line — comment.
     $(git diff)
     EOF
+
+  'result' re-prints a finished run's output — the same artifact ShipIt renders
+  inline for the user. No RUN-ID ⇒ the most recent run in this session. Use it
+  to recover output when a 'run' call was killed before it printed: the spawn
+  keeps going server-side, so the answer is still there.
 
 Ops-only (read-only ShipIt source, docs/162):
   shipit source status   [--json]
@@ -416,6 +424,7 @@ const AGENT_HANDLERS: Record<
   (args: string[], deps: RunDeps) => Promise<void>
 > = {
   run: handleAgentRun,
+  result: handleAgentResult,
 };
 
 const RELEASE_HANDLERS: Record<
@@ -577,8 +586,9 @@ async function dispatchIssue(args: string[], deps: RunDeps, io: ShimIO): Promise
 }
 
 /**
- * Dispatch a `shipit agent <sub>` invocation (docs/144). Only `run` exists —
- * the one-shot sub-agent spawn primitive.
+ * Dispatch a `shipit agent <sub>` invocation (docs/144, SHI-245). `run` is the
+ * one-shot sub-agent spawn primitive; `result` re-reads a finished run's
+ * persisted output.
  */
 async function dispatchAgent(args: string[], deps: RunDeps, io: ShimIO): Promise<void> {
   const sub = args[0];
