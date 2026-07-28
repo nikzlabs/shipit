@@ -309,13 +309,25 @@ export const usePrStore = create<PrState>((set, get) => ({
 
       for (const update of updates) {
         nextStatus[update.sessionId] = update;
-        if (update.autoMerge) {
+        const isTerminal = update.prState === "merged" || update.prState === "closed";
+        if (isTerminal) {
+          // A terminal PR retires the auto-merge arming with it. The server
+          // drops its `AutoMergeManager` state at the same transition, but its
+          // terminal `pr_status` summary carries no `autoMerge` field — and an
+          // absent field means "unchanged" everywhere else in this reducer — so
+          // the sticky entry has to be cleared from the terminal `prState`
+          // instead. Without this the merged/closed card's overflow menu keeps
+          // showing the toggle ON for a PR that no longer exists, and the next
+          // PR on this session inherits an arming the user never gave it.
+          // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+          delete nextAutoMerge[update.sessionId];
+        } else if (update.autoMerge) {
           nextAutoMerge[update.sessionId] = update.autoMerge;
         }
 
         // Update the inline card to reflect poller data
         const existing = nextCards[update.sessionId];
-        if (update.prState === "merged" || update.prState === "closed") {
+        if (isTerminal) {
           nextCards[update.sessionId] = {
             cardId: existing?.cardId ?? `pr-card-${update.sessionId}`,
             phase: update.prState,
@@ -332,7 +344,10 @@ export const usePrStore = create<PrState>((set, get) => ({
               deletions: update.deletions,
               files: update.files,
             },
-            autoMerge: update.autoMerge ?? nextAutoMerge[update.sessionId],
+            // Deliberately not carried over: the arming died with the PR
+            // (see the clear above), so a terminal card must not resurrect it
+            // from `existing` or the by-session map.
+            autoMerge: undefined,
             // Preserve last-known conversation when an update omits it (light poll).
             issueComments: update.issueComments ?? existing?.issueComments,
             reviewThreads: update.reviewThreads ?? existing?.reviewThreads,
