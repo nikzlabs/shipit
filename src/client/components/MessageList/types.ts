@@ -72,6 +72,18 @@ export interface ChatMessage {
   images?: ChatMessageImage[];
   files?: ChatMessageFile[];
   streaming?: boolean;
+  /**
+   * True when this row belongs to a turn that is still running — i.e. it was
+   * rehydrated from an `in_progress` chat-history row, or delivered by the
+   * `turn_snapshot` a reattaching viewer receives.
+   *
+   * Distinct from `streaming`, which only marks the ONE bubble currently being
+   * written to (earlier bubbles of the same running turn are closed as new ones
+   * open). The flag exists so a `turn_snapshot` can replace exactly the
+   * running turn's rows and leave finalized history untouched — see
+   * `turn-snapshot.ts`.
+   */
+  inProgress?: boolean;
   /** When true, this message represents an error (CLI crash, WS drop, etc.) */
   isError?: boolean;
   /**

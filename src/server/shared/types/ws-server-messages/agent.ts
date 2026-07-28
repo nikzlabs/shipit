@@ -1,9 +1,68 @@
 import type { AgentId, AgentEvent, AgentReasoningCapability } from "../agent-types.js";
 import type { PermissionMode } from "../attachment-types.js";
+// Type-only edge into the orchestrator so the snapshot and `GET /history`
+// share ONE definition of a transcript row (the client renders both through
+// the same path). Erased at build time — no runtime coupling reaches the
+// client bundle.
+import type { PersistedMessage } from "../../../orchestrator/chat-history.js";
 
 export interface WsAgentEvent {
   type: "agent_event";
   event: AgentEvent;
+}
+
+/**
+ * Server → Client: the complete in-progress turn, as of the instant this
+ * viewer attached. Sent once per attach (WS connect / session switch back /
+ * reconnect) while a turn is running.
+ *
+ * Why this exists: a reattaching viewer used to rebuild the running turn from
+ * TWO independently-sampled sources — the `GET /history` DB snapshot plus a
+ * cursor-sliced replay of the runner's turn-event buffer
+ * (`lastPersistedBufferIndex`). The cursor only means "everything before this
+ * is already in the DB", which is true of a history snapshot taken *after* the
+ * persist that moved it. The two are sampled at different times, so a
+ * tool-result boundary landing between them either erased a whole slice of the
+ * turn from the transcript (history read first → the slice is in neither half)
+ * or duplicated it (attach first → the slice is in both). Nothing ever repaired
+ * it: the viewer sat on a wrong transcript until the next reload.
+ *
+ * The snapshot removes the stitching. It is built inside the same synchronous
+ * block that subscribes this socket to the runner, so it covers *exactly*
+ * everything up to the attach and every later event arrives live on this
+ * socket — no gap and no overlap, whichever order the history fetch resolves
+ * in. The client applies it by REPLACING the in-progress rows it got from
+ * history, so a stale-in-either-direction baseline self-corrects.
+ *
+ * Not transcript content in its own right (CLAUDE.md "Chat transcript content
+ * MUST be persisted"): every message here is rebuilt from the runner's live
+ * accumulator, which the tool-result boundary persists as `in_progress` rows
+ * and `agent_result` finalizes. It is a rehydration message, not a new card.
+ */
+export interface WsTurnSnapshot {
+  type: "turn_snapshot";
+  /** Scopes the snapshot so it can't land in another session's transcript. */
+  sessionId: string;
+  /**
+   * The turn's assistant groups, live-steered user messages, and recorded chat
+   * cards — the same shape `GET /history` returns for `in_progress` rows,
+   * interleaved at their true positions.
+   */
+  messages: PersistedMessage[];
+  /**
+   * Reserved for a snapshot that describes a turn that has already finished
+   * (rows persisted and finalized), which the client applies by CLEARING the
+   * in-progress marking instead of setting it.
+   *
+   * Nothing emits this yet. A finished turn is reconciled by the next attach —
+   * which reloads history from the DB, where the turn is complete — rather than
+   * by pushing a final snapshot mid-flight: the client marks only rows it got
+   * from history/snapshots as in-progress, so a push-based reconciliation would
+   * append a second copy of every live-streamed row, steered message, and card.
+   * Making that safe means tracking the running turn's start index client-side;
+   * the handler is ready for it.
+   */
+  final?: boolean;
 }
 
 /**

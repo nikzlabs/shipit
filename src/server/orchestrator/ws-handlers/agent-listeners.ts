@@ -470,9 +470,20 @@ export function wireAgentListeners(
         // never started, so without this the wake turn's output appends to the
         // PREVIOUS turn's `chatMessageGroups` and its `agent_result` persists
         // the combined set — duplicating the earlier turn in the transcript.
-        // Harmless while nobody rendered the wake turn; visible the moment we
-        // start surfacing it.
-        resetRunnerTurnState(runner);
+        //
+        // ONLY when no turn is in flight. This event rides on the CLI's
+        // `task_notification`, which fires whenever a `Bash(run_in_background)`
+        // job finishes — and a job started earlier in the CURRENT turn commonly
+        // reports back while that same turn is still streaming. That is not a
+        // wake; it is a mid-turn notification, and resetting there DESTROYS the
+        // running turn: `chatMessageGroups` is cleared, and the next
+        // tool-result boundary's `replaceInProgress` deletes every in_progress
+        // row for the session and re-inserts from the truncated accumulator.
+        // The live viewer never notices (it doesn't re-read), but the turn's
+        // opening is gone from chat history for good — a reload or a session
+        // switch shows the turn missing its first half, permanently. See
+        // `integration_tests/self-wake-midturn.test.ts`.
+        if (!runner.running) resetRunnerTurnState(runner);
         runner.running = true;
         if (turnSessionId) {
           emitToViewers({

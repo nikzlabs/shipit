@@ -38,6 +38,10 @@
       `IDLE_GRACE_PERIOD_MS`) so a dropped event can't strand a session
 - [x] Give a self-woken turn its own turn state (`resetRunnerTurnState` at the
       wake edge) so it doesn't re-persist the previous turn's message groups
+- [x] Gate that reset on `!runner.running` — `task_notification` also fires for a
+      background job started *earlier in the current turn*, and resetting there
+      deleted the running turn's already-persisted rows from chat history
+      (`integration_tests/self-wake-midturn.test.ts`, docs/237)
 - [x] Tests: adapter mapping, tracker gate + decay, enforcer refuses to reap a
       session with outstanding background tasks, tier escalation ditto
 - [x] Tests: `computeAttentionReason` stays silent on pending background tasks
