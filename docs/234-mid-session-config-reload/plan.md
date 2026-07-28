@@ -75,6 +75,10 @@ the delta:
   of rewrites coalesces into one trailing install). The worker's marker gate
   makes a no-op re-run cheap.
 - **`compose:` removed** → stop the stack and emit `compose_not_configured`.
+  Gated on a *trustworthy* read: `resolveShipitConfig` falls back to defaults
+  (which carry `compose: undefined`) for a file that is missing **or** merely
+  unreadable, and only the former is a real removal. A transient read failure
+  while git rewrites the tree keeps the running stack.
 - **otherwise** → `ServiceManager.updateComposeConfig()` (adopt the new file /
   docker-socket) then `reconcile()`.
 

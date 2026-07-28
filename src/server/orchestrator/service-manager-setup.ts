@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import type { SessionContainerManager } from "./session-container.js";
@@ -686,6 +688,33 @@ function sameCommands(a: readonly string[], b: readonly string[]): boolean {
 }
 
 /**
+ * Distinguish "the repo genuinely declares no `compose:`" from "we couldn't
+ * read `shipit.yaml` just now".
+ *
+ * `resolveShipitConfig` conflates the two: a missing OR unreadable file both
+ * fall back to defaults, which carry `compose: undefined`. For the initial
+ * setup that conflation is harmless (nothing is running yet), but the mid-
+ * session applier reads `compose: undefined` as "the block was removed — tear
+ * the stack down". A transient read failure while git is rewriting the working
+ * tree would then kill a perfectly good preview.
+ *
+ * So the teardown is gated on the file being genuinely absent, or present and
+ * readable. Anything else means "don't know" — keep the stack and let the next
+ * re-evaluation decide.
+ */
+function composeRemovalIsTrustworthy(workspaceDir: string): boolean {
+  const yamlPath = path.join(workspaceDir, "shipit.yaml");
+  try {
+    fs.readFileSync(yamlPath, "utf-8");
+    return true; // readable and parsed to no `compose:` — a real removal
+  } catch (err) {
+    // ENOENT is a real removal (no shipit.yaml at all ⇒ no compose declared).
+    // Any other errno (EACCES, EIO, …) is "can't tell right now".
+    return (err as NodeJS.ErrnoException).code === "ENOENT";
+  }
+}
+
+/**
  * Re-read `shipit.yaml` for a LIVE session and apply whatever changed.
  *
  * This is the single entry point for "the workspace's config may have moved
@@ -780,6 +809,12 @@ export function applyShipitConfigChange(
 
   // ---- compose delta ----
   if (!shipitConfig.compose) {
+    if (!composeRemovalIsTrustworthy(workspaceDir)) {
+      console.warn(
+        `[compose:${runner.sessionId}] shipit.yaml unreadable — keeping the running stack`,
+      );
+      return;
+    }
     // The `compose:` block was removed. Tear the stack down rather than leaving
     // orphaned containers running against a definition the repo no longer has.
     console.log(`[compose:${runner.sessionId}] compose config removed — stopping stack`);

@@ -2,6 +2,7 @@
 
 - [x] `ServiceManager.updateComposeConfig()` + `ComposeCli.setComposeFile()` — adopt a new `compose:` block
 - [x] `applyShipitConfigChange()` in `service-manager-setup.ts` (compose path/socket, install delta, compose added/removed, parse-error safety)
+- [x] Gate the compose-removal teardown on a trustworthy `shipit.yaml` read (missing ≠ unreadable)
 - [x] Extract `ServiceSetupDeps` so setup and the change applier share one dependency shape
 - [x] `ContainerSessionRunner.reevaluateWorkspaceConfig()` + `appliedInstallCommands` + `requestDepReinstall()`
 - [x] Record `agent.install` commands even when the list is empty (diff basis)

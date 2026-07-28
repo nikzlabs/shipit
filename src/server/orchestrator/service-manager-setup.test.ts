@@ -248,3 +248,64 @@ describe("applyShipitConfigChange", () => {
     runner.dispose({ force: true });
   });
 });
+
+/**
+ * `resolveShipitConfig` falls back to defaults — which carry `compose:
+ * undefined` — for a file that is MISSING *or* merely unreadable. The mid-
+ * session applier reads `compose: undefined` as "tear the stack down", so it
+ * has to tell those two apart: a transient read failure while git rewrites the
+ * working tree must not kill a running preview.
+ */
+describe("applyShipitConfigChange — compose-removal is gated on a trustworthy read", () => {
+  function makeFakeManager() {
+    return {
+      reconcile: vi.fn(async () => { /* no compose stack in tests */ }),
+      stop: vi.fn(async () => { /* no compose stack in tests */ }),
+      startError: null as string | null,
+      updateComposeConfig: vi.fn(() => false),
+    };
+  }
+
+  it("tears down when shipit.yaml is genuinely absent", () => {
+    const runner = makeRunner();
+    const deps = makeDeps("");
+    deps.serviceManagers.set("s1", makeFakeManager() as unknown as ServiceManager);
+    // No shipit.yaml written at all — ENOENT is a real "no compose declared".
+
+    applyShipitConfigChange(runner, deps);
+
+    expect(deps.serviceManagers.has("s1")).toBe(false);
+    expect(deps.composeNotConfigured.has("s1")).toBe(true);
+  });
+
+  it("keeps the stack when shipit.yaml exists but cannot be read", () => {
+    const runner = makeRunner();
+    const deps = makeDeps("");
+    const mgr = makeFakeManager();
+    deps.serviceManagers.set("s1", mgr as unknown as ServiceManager);
+
+    const yamlPath = path.join(tmpDir, "shipit.yaml");
+    fs.writeFileSync(yamlPath, "compose: docker-compose.yml\n");
+    const realReadFileSync = fs.readFileSync;
+    const spy = vi.spyOn(fs, "readFileSync").mockImplementation(((p: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
+      if (typeof p === "string" && p === yamlPath) {
+        const err = new Error("EACCES: permission denied") as NodeJS.ErrnoException;
+        err.code = "EACCES";
+        throw err;
+      }
+      return (realReadFileSync as unknown as (...a: unknown[]) => unknown)(p, ...rest);
+    }) as unknown as typeof fs.readFileSync);
+
+    try {
+      applyShipitConfigChange(runner, deps);
+    } finally {
+      spy.mockRestore();
+    }
+
+    // Unreadable ≠ removed: the running stack survives untouched.
+    expect(deps.serviceManagers.has("s1")).toBe(true);
+    expect(deps.composeNotConfigured.has("s1")).toBe(false);
+    expect(mgr.stop).not.toHaveBeenCalled();
+    expect(mgr.reconcile).not.toHaveBeenCalled();
+  });
+});
