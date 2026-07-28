@@ -344,6 +344,66 @@ describe("rebase-driver: runRebaseFlow", () => {
     }
   });
 
+  // A rebase rewrites the working tree from the orchestrator, so the incoming
+  // `shipit.yaml` / compose file can declare services the running session knows
+  // nothing about. The in-container inotify watcher is not a dependable signal
+  // for a cross-container write (and is started best-effort), so the driver
+  // tells the runner directly. Without this, "sync with main" silently leaves
+  // the session running the pre-rebase compose stack.
+  it("clean rebase — re-evaluates the session's shipit.yaml/compose config", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: workDir,
+      defaultAgentId: "claude",
+    });
+    const reevaluate = vi.fn();
+    (runner as unknown as { reevaluateWorkspaceConfig: () => void }).reevaluateWorkspaceConfig = reevaluate;
+
+    const result = await runFlow({
+      git,
+      githubAuthManager: makeStubAuth(false),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory([]),
+      agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      authManager: makeStubAuthManager(),
+      sseBroadcast: () => {},
+    }, "main");
+
+    expect(result.status).toBe("rebased");
+    expect(reevaluate).toHaveBeenCalledTimes(1);
+  });
+
+  it("up-to-date branch — does NOT re-evaluate config (the tree never changed)", async () => {
+    const { workDir, git } = setupRepoWithRemote(tmpDir);
+
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: workDir,
+      defaultAgentId: "claude",
+    });
+    const reevaluate = vi.fn();
+    (runner as unknown as { reevaluateWorkspaceConfig: () => void }).reevaluateWorkspaceConfig = reevaluate;
+
+    await runFlow({
+      git,
+      githubAuthManager: makeStubAuth(false),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory([]),
+      agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      authManager: makeStubAuthManager(),
+      sseBroadcast: () => {},
+    }, "main");
+
+    expect(reevaluate).not.toHaveBeenCalled();
+  });
+
   it("force push failure — surfaces github_push_result(success=false) + log_entry", async () => {
     const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
     createCleanDivergence(bareDir, workDir);

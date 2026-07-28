@@ -634,8 +634,24 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   waitForPreviewStatus(): Promise<void>;
 
   // Compose service management
-  /** Attach a ServiceManager for compose lifecycle events. Optional — not all runners have compose. */
-  setServiceManager?(mgr: ServiceManager): void;
+  /**
+   * Attach a ServiceManager for compose lifecycle events, or detach the current
+   * one by passing `null` (used when a config change removes the `compose:`
+   * block). Optional — not all runners have compose.
+   */
+  setServiceManager?(mgr: ServiceManager | null): void;
+
+  /**
+   * Re-read the workspace's `shipit.yaml` + compose file and apply any delta to
+   * the live session (see `applyShipitConfigChange`). Optional — implemented by
+   * container runners only.
+   *
+   * Called by the in-container config-file watcher and, critically, by
+   * orchestrator-side workspace rewrites that the watcher cannot be relied on
+   * to report — a rebase/sync onto the latest base can bring in a new
+   * `shipit.yaml` and compose file wholesale.
+   */
+  reevaluateWorkspaceConfig?(): void;
 
   // Dispatched turns (docs/150)
   /** Inject dependencies needed for server-initiated agent turns. */

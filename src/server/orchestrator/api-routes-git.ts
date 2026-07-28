@@ -128,6 +128,16 @@ export async function registerGitRoutes(
       try {
         const git = createGitManager(dir);
         const result = await gitRollback(git, request.body.commitHash);
+        // A rollback rewrites the working tree from the orchestrator, so the
+        // session's `shipit.yaml` / compose file may now describe a different
+        // stack. Re-read it rather than relying on the in-container file
+        // watcher to notice (same reasoning as the rebase path). Best-effort —
+        // never fail a completed rollback on a config re-read.
+        try {
+          deps.runnerRegistry.get(request.params.id)?.reevaluateWorkspaceConfig?.();
+        } catch (err) {
+          console.error("[rollback] config re-evaluation failed:", getErrorMessage(err));
+        }
         return result;
       } catch (err) {
         if (err instanceof ServiceError) {

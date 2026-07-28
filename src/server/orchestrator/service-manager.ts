@@ -242,7 +242,7 @@ export interface ServiceManagerEvents {
 export class ServiceManager extends EventEmitter {
   private readonly sessionId: string;
   private readonly workspaceDir: string;
-  private readonly composeConfig: ComposeConfig;
+  private composeConfig: ComposeConfig;
 
   private static readonly MAX_LOG_BUFFER = 80_000;
   /**
@@ -971,6 +971,29 @@ export class ServiceManager extends EventEmitter {
       proc.kill();
       this.logProcesses.delete(name);
     };
+  }
+
+  /**
+   * Adopt a freshly-resolved `compose:` block from `shipit.yaml`.
+   *
+   * `composeConfig` is read from `shipit.yaml` once, when the manager is
+   * constructed — but `shipit.yaml` itself is a workspace file that a git
+   * sync/rebase (or a plain edit) can rewrite mid-session. Without this,
+   * `reconcile()` would keep re-parsing the ORIGINAL compose path forever, so
+   * a repo that moves its compose file or flips `docker-socket` would silently
+   * keep running the old stack definition. Call this before `reconcile()`.
+   *
+   * Returns true when the config actually changed (the caller can skip work,
+   * and the reconcile is a plain compose-file re-read).
+   */
+  updateComposeConfig(next: ComposeConfig): boolean {
+    const changed =
+      next.file !== this.composeConfig.file ||
+      next.dockerSocket !== this.composeConfig.dockerSocket;
+    if (!changed) return false;
+    this.composeConfig = next;
+    this.compose.setComposeFile(next.file);
+    return true;
   }
 
   /**
