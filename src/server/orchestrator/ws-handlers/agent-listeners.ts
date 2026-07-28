@@ -436,15 +436,19 @@ export function wireAgentListeners(
       if (runner) {
         runner.setBackgroundTasks(event.tasks);
         if (turnSessionId) {
+          // Its OWN message type, never a `session_status`. This event fires at
+          // arbitrary moments relative to turn boundaries — in particular the CLI
+          // drains the list ~1ms BEFORE the `task_notification` that wakes it (see
+          // the wire trace in docs/235), and again while `handleSendMessage` is
+          // still setting up a turn it hasn't flagged `running` for yet. Riding on
+          // `session_status` meant filling in a `running` snapshot at exactly those
+          // moments, which the client reads as "the turn ended": indicator off,
+          // "needs attention" chime, then back on a frame later.
           emitToViewers({
-            type: "session_status",
+            type: "background_tasks",
             sessionId: turnSessionId,
-            running: runner.running,
-            queueLength: runner.queueLength,
-            backgroundTasks: {
-              count: runner.backgroundTaskCount,
-              descriptions: runner.backgroundTaskDescriptions,
-            },
+            count: runner.backgroundTaskCount,
+            descriptions: runner.backgroundTaskDescriptions,
           });
         }
       }

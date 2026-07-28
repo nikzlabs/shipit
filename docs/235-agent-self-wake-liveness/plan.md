@@ -199,11 +199,39 @@ must *look* like something is happening, or the user reads a silent session as
 finished. Four surfaces, all driven off the one `backgroundTaskCount` already
 added in §3.
 
-**5a. Live push.** Extend `WsSessionStatus` (`ws-server-messages/session.ts:70`)
-with `backgroundTasks?: { count: number; descriptions: string[] }`, emitted on
-each `agent_background_tasks`. `descriptions` comes straight from the CLI's task
-list and is what lets the chat line name the work instead of showing a bare
+**5a. Live push.** A dedicated `background_tasks` WS message
+(`ws-server-messages/session.ts`) — `{ sessionId, count, descriptions }`, emitted
+on each `agent_background_tasks`. `descriptions` comes straight from the CLI's
+task list and is what lets the chat line name the work instead of showing a bare
 count.
+
+> **Corrected after shipping.** This first rode along as an optional
+> `backgroundTasks` field on `WsSessionStatus`, which forced every task-list
+> update to also fill in a `running` value. `session_status` is a *turn
+> transition* on the client — it adds/removes the session from
+> `activeRunnerSessions` and drives the chat spinner — and the wire trace above
+> shows the CLI drains the task list at 14503ms, **1ms before** the
+> `task_notification` at 14504ms that marks the runner busy again. So that
+> message carried `running: false` at the exact moment a turn was starting: the
+> client dropped the running indicator and `useAttentionNotifications` fired the
+> "Waiting for your input" chime, then flipped back a frame later. The same hole
+> opened whenever a task-list change landed inside `handleSendMessage`'s setup
+> window, where the runner isn't flagged `running` yet. Splitting the level
+> signal onto its own message means a background-task update can no longer assert
+> anything about turn state — the client handler (`background-tasks.ts`) owns the
+> `backgroundTaskSessions` axis and nothing else, and only touches the chat
+> spinner/status line while no turn is running (mid-turn, the turn owns them).
+> The client stores the descriptions alongside the marker
+> (`backgroundTaskSessions: Map<string, string[]>`) because the status line is
+> restored at *turn end*, long after the message that carried them.
+>
+> Paired with it: `useAttentionNotifications` now requires an attention reason to
+> hold for a settle window before it notifies. Sub-second `null → "Waiting for
+> your input" → null` blips are structural (this drain/wake gap; a turn ending
+> with a queued message behind it, which goes idle until the drain starts the
+> next turn), and a chime for one of them tells the user their agent stopped
+> while it is visibly working. A session that genuinely stopped keeps its reason
+> and notifies a beat later.
 
 **5b. First paint and reconnect.** The live push alone is not enough — a page
 reload or a backgrounded mobile tab would show nothing while the task is still
@@ -386,5 +414,10 @@ shell work a supported persistence primitive.
 - `src/server/orchestrator/route-registry.ts:101` — authoritative reconnect
   snapshots (`active_runners`, `session_attention`)
 - `src/server/shared/types/ws-server-messages/session.ts` — `WsSessionStatus`
+  (turn transitions only) and `WsBackgroundTasks` (the task-list level signal)
+- `src/client/hooks/message-handlers/background-tasks.ts` — the task-list handler
+  and the status-line label
 - `src/client/components/SessionSidebar/SessionStatusIndicators.tsx` — status dot
 - `src/client/hooks/useAttentionInfo.ts` — `computeAttentionReason`
+- `src/client/hooks/useAttentionNotifications.ts` — the settle window before a
+  reason is worth interrupting the user for

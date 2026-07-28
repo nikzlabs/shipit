@@ -64,6 +64,7 @@ import type {
   WsContainerRestarting,
   WsFullResetComplete,
   WsSessionStatus,
+  WsBackgroundTasks,
   WsSessionMemoryExhausted,
   WsSessionAgentStarted,
   WsSessionAgentFinished,
@@ -200,6 +201,7 @@ export type WsServerMessage =
   | WsFullResetComplete
   | WsTurnDiff
   | WsSessionStatus
+  | WsBackgroundTasks
   | WsSessionAgentStarted
   | WsSessionAgentFinished
   | WsRepoStatus

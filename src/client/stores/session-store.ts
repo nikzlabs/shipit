@@ -73,15 +73,22 @@ interface SessionState {
   /** docs/193 (Thread C) — sessions blocked awaiting a permission answer. */
   awaitingPermissionSessions: Set<string>;
   /**
-   * docs/235 — sessions holding outstanding agent-initiated background tasks.
+   * docs/235 — sessions holding outstanding agent-initiated background tasks,
+   * mapped to those tasks' descriptions (empty when the descriptions aren't
+   * known — the SSE reconnect snapshot carries ids only).
    *
-   * Deliberately a SEPARATE set from `activeRunnerSessions` rather than folded
-   * into it: consumers of that set (`PrStatusControls`, `SpawnedSessionCard`,
+   * Deliberately SEPARATE from `activeRunnerSessions` rather than folded into
+   * it: consumers of that set (`PrStatusControls`, `SpawnedSessionCard`,
    * `useAttentionNotifications`) read it as "a turn is in flight", so widening
    * it would silently change PR-action gating as a side effect. Sites that
    * should treat the two alike OR them explicitly.
+   *
+   * A Map rather than a Set of ids because the chat status line names the work
+   * ("Waiting for: npm test"), and that line is restored at *turn end* — by
+   * which point the `background_tasks` message that carried the descriptions is
+   * long gone. Keeping them here means the marker and its label can't drift.
    */
-  backgroundTaskSessions: Set<string>;
+  backgroundTaskSessions: Map<string, string[]>;
   queuedMessages: { text: string; position: number }[];
   rewindPreviews: Record<string, WsRewindPreview>;
   rewindRecoveries: Record<string, RewindRecovery>;
@@ -195,7 +202,7 @@ interface SessionState {
     updater: (prev: Set<string>) => Set<string>,
   ) => void;
   setBackgroundTaskSessions: (
-    updater: (prev: Set<string>) => Set<string>,
+    updater: (prev: Map<string, string[]>) => Map<string, string[]>,
   ) => void;
   setQueuedMessages: (
     messages:
@@ -303,7 +310,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   authUrl: null,
   activeRunnerSessions: new Set<string>(),
   awaitingPermissionSessions: new Set<string>(),
-  backgroundTaskSessions: new Set<string>(),
+  backgroundTaskSessions: new Map<string, string[]>(),
   rewindRecoveries: {},
   turnUsage: initialTurnUsage,
   allSessions: [] as SessionInfo[],

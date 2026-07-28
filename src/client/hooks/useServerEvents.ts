@@ -124,7 +124,12 @@ export function useServerEvents(): void {
         // the tab was away must lose its marker rather than keep a stale one.
         // Defaults to empty so an older orchestrator that omits the field
         // clears rather than strands the set.
-        store.setBackgroundTaskSessions(() => new Set(data.backgroundTaskSessionIds ?? []));
+        // Ids only — the snapshot has no room for task descriptions, so the
+        // status line falls back to its unnamed label until the next live
+        // `background_tasks` message re-states them.
+        store.setBackgroundTaskSessions(
+          () => new Map((data.backgroundTaskSessionIds ?? []).map((id) => [id, []])),
+        );
         return;
       }
       if (data.sessionId) {
