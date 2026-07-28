@@ -17,8 +17,9 @@
  *   npm run release -- v0.2.0         # leading "v" is tolerated
  *   npm run release -- 0.2.0-rc.1     # prerelease (published as a GitHub prerelease)
  *
- * Android versions (versionCode / versionName in android/app/build.gradle.kts)
- * are intentionally NOT touched here yet — that sync is tracked in SHI-66.
+ * (The former android/ WebView wrapper had its own versionCode/versionName that
+ * this script deliberately did not sync; that project was removed — the PWA
+ * superseded it — so there is nothing Android-side to bump here.)
  *
  * Exits non-zero on any precondition failure so a botched bump never half-applies.
  */

@@ -129,8 +129,12 @@ src/
     App.tsx · AppLayout.tsx · main.tsx
     components/ · hooks/ · stores/ (+ actions/) · themes/ · utils/
     design-tokens.ts   Icon sizes, spacing, design constants
-android/           Standalone Android WebView wrapper (separate Gradle build).
-                   Node tooling ignores it. See android/README.md, docs/116.
+android-snapshot-test/  Native Compose test app — the canonical Android target
+                   (build, JVM tests, Paparazzi snapshots, emulator preview).
+android-overlay-test/   Fixture pinning an off-matrix compileSdk to exercise the
+                   on-demand SDK overlay. Both are separate Gradle builds that
+                   Node tooling ignores. See docs/213. (The android/ WebView
+                   wrapper was removed — the PWA superseded it, docs/222.)
 ```
 
 ## Architecture

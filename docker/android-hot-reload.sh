@@ -14,9 +14,11 @@
 set -uo pipefail
 
 ADB_TARGET="${ADB_TARGET:-emulator:5555}"
-APP_DIR="${APP_DIR:-/workspace/android}"
+# Defaults target the in-repo native test app (android-snapshot-test). Override
+# APP_DIR/APK/PKG in the Compose service to point the loop at any other Gradle app.
+APP_DIR="${APP_DIR:-/workspace/android-snapshot-test}"
 APK="${APK:-$APP_DIR/app/build/outputs/apk/debug/app-debug.apk}"
-PKG="${PKG:-com.shipit.wrapper.debug}"   # android/ debug applicationId (.debug suffix)
+PKG="${PKG:-com.shipit.snapshottest}"
 POLL_SECONDS="${POLL_SECONDS:-2}"
 
 cd "$APP_DIR" || { echo "[android] no $APP_DIR — nothing to build"; exec tail -f /dev/null; }

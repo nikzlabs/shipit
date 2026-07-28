@@ -1,13 +1,13 @@
 # android-snapshot-test
 
-A **standalone native Android app** whose only job is to validate ShipIt's
-headless Android test path in a real session — the part the `android/` WebView
-wrapper can't exercise.
+The **canonical native Android target** in this repo — a standalone Jetpack
+Compose app used to validate ShipIt's Android platform capability end to end.
 
-`android/` is a thin WebView shell: `layoutlib` cannot render a `WebView`, so it
-can never validate the **snapshot-test** path (render a screen to a PNG with no
-emulator). This module is a real Jetpack Compose UI, so it can. See
-`docs/213-agent-android-build/plan.md` (Phase 2).
+It replaced the old `android/` WebView wrapper, which was removed (superseded by
+the installable PWA — see `docs/222-pwa-installable/`). The wrapper was a thin
+WebView shell and `layoutlib` cannot render a `WebView`, so it could never
+exercise the snapshot, emulator, or interactive tiers. This module can. See
+`docs/213-agent-android-build/plan.md`.
 
 ## What it validates
 
@@ -16,6 +16,12 @@ emulator). This module is a real Jetpack Compose UI, so it can. See
 | Compile + package | `assembleDebug` | `./gradlew :app:assembleDebug` |
 | JVM unit tests (pure logic, no device) | `GreetingTest` | `./gradlew :app:testDebugUnitTest` |
 | **Snapshot tests** (Compose → PNG via `layoutlib`, no emulator) | `GreetingCardSnapshotTest` (Paparazzi) | see below |
+| **Running app** (install + launch on the emulator preview) | `MainActivity` | started automatically by the `android` Compose service |
+
+`MainActivity` renders the same `GreetingCard` the snapshot test renders, so the
+device view and the golden PNG stay in sync. The emulator preview stack
+(`docker-compose.yml` → `emulator` + `android` services) builds this app,
+installs it, and hot-reloads it on source changes.
 
 ### Snapshot loop
 
