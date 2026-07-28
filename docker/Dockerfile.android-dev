@@ -1,0 +1,51 @@
+# Android build + hot-reload service image (docs/213).
+#
+# This is the Android analog of docker/Dockerfile.dogfood: a self-contained image
+# that builds the repo's APK and redeploys it to the emulator service on every
+# source change — the "see your change run" loop, but for Android instead of the
+# web dev server. It is NOT the emulator (that's the budtmo `emulator` service);
+# it's the thing with the SDK/Gradle that produces and installs the APK.
+#
+# The SDK bake mirrors docker/Dockerfile.session-worker.prod EXACTLY (same
+# cmdline-tools build, platforms, build-tools, Gradle) so what builds green in a
+# session also builds green here. Keep the two in sync when bumping the matrix.
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl unzip git openjdk-17-jdk-headless \
+ && rm -rf /var/lib/apt/lists/*
+
+# JDK 17 covers AGP 8.x. Pin JAVA_HOME via a stable symlink (arch-independent).
+RUN ln -s "$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")" /opt/java
+ENV JAVA_HOME=/opt/java
+ENV PATH="${JAVA_HOME}/bin:${PATH}"
+
+# Android SDK — identical pins to the session-worker image.
+ENV ANDROID_SDK_ROOT=/opt/android-sdk
+ENV ANDROID_HOME=/opt/android-sdk
+ENV ANDROID_CMDLINE_TOOLS_VERSION=11076708
+ENV ANDROID_COMPILE_SDK=35
+ENV ANDROID_BUILD_TOOLS=35.0.0
+RUN mkdir -p "${ANDROID_SDK_ROOT}/cmdline-tools" \
+ && curl -fsSL --retry 3 --retry-all-errors -o /tmp/cmdline-tools.zip \
+      "https://dl.google.com/android/repository/commandlinetools-linux-${ANDROID_CMDLINE_TOOLS_VERSION}_latest.zip" \
+ && unzip -q /tmp/cmdline-tools.zip -d "${ANDROID_SDK_ROOT}/cmdline-tools" \
+ && mv "${ANDROID_SDK_ROOT}/cmdline-tools/cmdline-tools" "${ANDROID_SDK_ROOT}/cmdline-tools/latest" \
+ && rm /tmp/cmdline-tools.zip
+ENV PATH="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${PATH}"
+RUN yes | sdkmanager --licenses > /dev/null \
+ && sdkmanager --install "platform-tools" \
+      "platforms;android-34" "platforms;android-${ANDROID_COMPILE_SDK}" \
+      "build-tools;34.0.0" "build-tools;${ANDROID_BUILD_TOOLS}" > /dev/null \
+ && find "${ANDROID_SDK_ROOT}" -type d -exec chmod a+rwx {} +
+
+# Baked Gradle (the committed wrapper also pins 8.7; this is the fallback).
+ENV GRADLE_VERSION=8.7
+RUN curl -fsSL --retry 3 --retry-all-errors -o /tmp/gradle.zip "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" \
+ && unzip -q /tmp/gradle.zip -d /opt \
+ && ln -s "/opt/gradle-${GRADLE_VERSION}" /opt/gradle \
+ && rm /tmp/gradle.zip \
+ && chmod -R a+rX "/opt/gradle-${GRADLE_VERSION}"
+ENV PATH="/opt/gradle/bin:${PATH}"
+
+WORKDIR /workspace/android

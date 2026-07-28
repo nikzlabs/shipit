@@ -20,7 +20,10 @@ It comes down to two pieces:
    container.
 2. **The running app is a preview that lives in a service container.** An emulator declared as a Compose
    service — the same primitive as any web preview — reachable by the **agent** over `adb` (logs, taps,
-   screenshots) and by the **user** as its streamed web UI in the preview pane.
+   screenshots) and by the **user** as its streamed web UI in the preview pane. This is the **secondary**
+   loop: Android's fast iteration tools are all IDE-bound and unavailable to a container, so the emulator's
+   honest cycle is rebuild + reinstall + relaunch. Snapshot tests (piece 1) stay the primary visual loop —
+   see [How Android devs actually iterate](#how-android-devs-actually-iterate--and-why-snapshots-are-our-primary-loop).
 
 Today the `android/` wrapper builds only in GitHub Actions, and a session container has no Java, SDK,
 Gradle, or preview — so the agent edits Kotlin/XML blind and the user sees nothing run. The web side has a
@@ -164,6 +167,9 @@ and the `/dev/kvm` allowance described above:
 services:
   emulator:
     image: budtmo/docker-android:emulator_14.0   # or an AOSP emulator-webrtc image
+    environment:
+      - WEB_VNC=true                       # REQUIRED — enables the noVNC web UI (the user-facing preview)
+      - EMULATOR_DEVICE=Samsung Galaxy S10 # device profile
     devices: ["/dev/kvm:/dev/kvm"] # hardware accel — the generator allowlists exactly this mapping
     ports: ["6080:6080"]           # preview metadata: x-shipit-preview proxies ports[0]'s container port (the web UI)
     expose: ["5555"]               # adb, reachable on the Compose network by service name
@@ -201,10 +207,54 @@ Automator) and Gradle Managed Devices on a KVM CI runner.
 Out of scope: an interactive debugger / breakpoints (JDWP attach) and profiling (CPU/memory/jank) — heavy,
 device-bound, and not part of the agent loop.
 
+## How Android devs actually iterate — and why snapshots are our primary loop
+
+It's tempting to treat "web-style HMR on the emulator" as the goal and snapshot tests as a lesser static
+fallback. Research into real Android practice inverts that, and it's worth recording because it's the
+justification for recommendation 2 (and for *not* over-investing in the emulator loop).
+
+**The baseline loop is slow and everyone avoids it.** Edit → Gradle build → install → launch. At Cash App an
+*incremental* full build is ~2 minutes (10+ when cold). Serious teams treat rebuilding the whole app as the
+thing to avoid, not the daily loop.
+
+**The fast loops exist but are IDE-bound — structurally unavailable to us.** All of Android's hot paths live
+inside Android Studio, not the CLI:
+
+| Tool | What it does | Why ShipIt can't use it |
+|---|---|---|
+| **Compose `@Preview`** | Renders a composable in the IDE instantly, no device | IDE-only surface |
+| **Live Edit** | Hot-reloads composables onto a *running* device, preserves state | Android Studio drives it (API 30+, debuggable process); no CLI equivalent |
+| **Apply Changes** | Hot-swaps some method-body edits without reinstall | IDE-driven; often falls back to restart; no recomposition |
+| **Compose Hot Reload** (JetBrains, 2025) | True hot reload on the JetBrains Runtime | **Desktop / Compose-Multiplatform only — explicitly not Android on-device** |
+
+So no amount of effort gets a container to web-style on-device HMR. That is a property of the platform, not
+a gap in our implementation.
+
+**What practitioners actually rely on is a portfolio of fast feedback loops** — "hot reload isn't the goal,
+fast feedback is" (Saket Narayan, after Bret Victor). In order of daily use: **screenshot/snapshot tests
+(Paparazzi/Roborazzi) validating UI in ~7–10s and reviewable in PRs**; modularized demo/sandbox apps that
+build far faster than the whole app (Cash App keeps ~35); Compose Previews; runtime parameter tweaking; mock
+services; unit tests. The full build-install-launch is reserved for when you genuinely need the running app.
+
+**Therefore ShipIt's loop hierarchy is:**
+
+1. **Primary — snapshot tests.** Fully headless, no emulator, no KVM, seconds per iteration, works on every
+   host, and diffable in a PR. This is the *mainstream* technique, not a consolation prize. It is also the
+   only visual loop available on a no-KVM host.
+2. **Secondary — the emulator.** For what snapshots structurally cannot cover: runtime behavior, lifecycle,
+   crashes, real interaction. Its rebuild + reinstall + relaunch cycle matches Android's own baseline loop —
+   that's the honest ceiling, and it's why the emulator is a `manual` service rather than the default.
+
+Sources: [Iterative code development (Compose)](https://developer.android.com/develop/ui/compose/tooling/iterative-development),
+[Deep dive into Live Edit](https://android-developers.googleblog.com/2023/07/deep-dive-into-live-edit-for-jetpack-compose-ui.html),
+[Compose Hot Reload](https://kotlinlang.org/docs/multiplatform/compose-hot-reload.html),
+[The pursuit of fast feedback loops](https://saket.me/fast-feedback-loops/).
+
 ## Preview, end to end
 
 The web preview pane sets the bar: see your change run, inside ShipIt. Android reaches it two ways, neither
-needing a new preview surface:
+needing a new preview surface. Read these in the order above — **snapshots are the primary visual loop**,
+the emulator is the secondary one for behavior snapshots can't capture:
 
 - **Interactive — the emulator's web UI.** The Compose service above; its streamed UI renders in the
   existing preview pane via `x-shipit-preview`. This is the touchable, user-facing preview. Requires KVM on
@@ -215,6 +265,30 @@ needing a new preview surface:
   zero-device visual signal for both the agent (read the diff) and the user (surface the PNG inline via the
   `present` tool or as a PR-card artifact). For ShipIt's own `android/`, the "preview" is just the web
   preview pointed at a dev URL inside the WebView — the native emulator matters for general apps.
+
+### Agent-free preview + hot reload (the build belongs in Compose)
+
+The emulator is only a **blank device** — it doesn't build or load the app, and `budtmo` has no APK
+auto-install/boot hook. To make the preview show the app **on start with no agent** (the bar the web `dev`
+service sets), the build has to live in the **Compose stack**, not in `agent.install` — putting it in
+`agent.install` would either bypass the bare-`npm install` tuning or add the Android build to every session.
+So the stack is two services (see the repo's `docker-compose.yml`):
+
+- **`emulator`** — `budtmo` + `WEB_VNC=true`, serves noVNC on 6080 (the preview pane), `expose: 5555` for
+  adb, `x-shipit-preview: manual`, and `depends_on: [android]` so opening the preview starts the builder too
+  (`docker compose up emulator` pulls in its dependencies).
+- **`android`** — the SDK/Gradle build + hot-reload worker (`docker/Dockerfile.android-dev`, mirroring the
+  session-worker SDK bake). Its `docker/android-hot-reload.sh` polls adb for the device, then builds →
+  `adb install -r` → launches, and re-runs that on every source change. No `x-shipit-preview` marker (it's a
+  worker, not a surface); it polls `emulator:5555` rather than declaring a reverse `depends_on`, avoiding a
+  cycle.
+
+**"Hot reload" — honest scope.** Native Android has no headless hot-SWAP (Android Studio's Apply Changes /
+Compose Live Edit are IDE-bound). The Compose loop is therefore a full **rebuild + reinstall + relaunch** on
+change — seconds to a minute, coarser than web HMR, but agent-free and automatic. The watch is **polling**
+(bind-mounts drop inotify events — same reason the web `dev` service forces `CHOKIDAR_USEPOLLING`).
+**Not yet host-verified** (needs a KVM host + the built `android` image; also confirm Compose service
+containers have egress for Gradle dep resolution).
 
 ## Agent surfacing
 

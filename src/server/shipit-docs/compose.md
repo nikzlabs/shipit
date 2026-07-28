@@ -442,12 +442,19 @@ general device passthrough.
 services:
   emulator:
     image: budtmo/docker-android:emulator_14.0   # or an AOSP emulator-webrtc image
+    environment:
+      - WEB_VNC=true                       # REQUIRED — enables the noVNC web UI on 6080
+      - EMULATOR_DEVICE=Samsung Galaxy S10 # device profile
     devices: ["/dev/kvm:/dev/kvm"] # the ONLY permitted device mapping
     ports: ["6080:6080"]           # the emulator's web UI → rendered in the preview pane
     expose: ["5555"]               # adb, reached on the session network by service name
     x-shipit-preview: auto         # show the web UI as the interactive preview
 ```
 
+- **`WEB_VNC=true` is required for the user-facing preview.** Without it the
+  `budtmo` image boots the emulator (adb works for the agent) but never starts the
+  noVNC web server, so the preview pane stays blank. The agent's adb debug/drive
+  loop doesn't need it; the user's interactive preview does.
 - **Requires KVM on the host.** `/dev/kvm` is a host capability; a basic cloud VM
   may lack it (then the emulator is too slow — use a cloud device farm instead).
 - **Operator kill-switch.** A deployment can disable the `/dev/kvm` passthrough
