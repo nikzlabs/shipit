@@ -244,6 +244,25 @@ emitted three lines below — that event already carries
 re-derive after a reconnect), so it is the established precedent rather than a
 new mechanism.
 
+> **Corrected after shipping — the chat status line also needs a snapshot.** The
+> SSE snapshot restores the *sidebar* marker, but the chat's status line is
+> re-established from `GET /history`, and that payload only ever carried
+> `agentRunning`. Switching into a between-turns session with a job outstanding
+> showed the line for a beat (from a live or attach-replayed `background_tasks`)
+> and then blanked, because `loadSessionHistory` read `agentRunning: false` and
+> cleared `isLoading`/`activity` unconditionally — while the sidebar kept
+> correctly showing the session as working. `background_tasks` is emit-only live
+> state buffered into the turn-event log, which the next turn start clears, so
+> there was no message left to replay for a session that has been waiting a
+> while. Fix: the history payload carries `backgroundTasks: string[]` (the
+> runner's descriptions, `[]` with no runner), and hydration reconciles the
+> marker for **that session only** and applies the same rule `handleSessionStatus`
+> applies at turn end — waiting is not idle, so the bar stays up with the named
+> label and no `tool`. Being the payload rather than ids-only, it also upgrades
+> the SSE snapshot's unnamed fallback label ("Waiting for a background task to
+> finish") to the named one on switch. A running turn still wins: the turn owns
+> the status line, so hydration only sets a label when `agentRunning` is false.
+
 **5c. Sidebar — reuse the existing dot, add nothing.** No new indicator, no new
 visual state. `SessionStatusDot`
 (`SessionSidebar/SessionStatusIndicators.tsx`) already renders a pulsing green
@@ -427,6 +446,10 @@ shell work a supported persistence primitive.
   snapshots (`active_runners`, `session_attention`)
 - `src/server/shared/types/ws-server-messages/session.ts` — `WsSessionStatus`
   (turn transitions only) and `WsBackgroundTasks` (the task-list level signal)
+- `src/server/orchestrator/api-routes-session-spawn.ts` — `GET /history`, which
+  carries `backgroundTasks` alongside `agentRunning`
+- `src/client/utils/session-data.ts` — `loadSessionHistory`, where the status
+  line is re-established on switch / reload
 - `src/client/hooks/message-handlers/background-tasks.ts` — the task-list handler
   and the status-line label
 - `src/client/components/SessionSidebar/SessionStatusIndicators.tsx` — status dot

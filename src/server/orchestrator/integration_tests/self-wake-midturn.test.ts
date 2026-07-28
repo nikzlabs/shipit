@@ -206,4 +206,51 @@ describe("Integration: background-task notification mid-turn", () => {
       .toEqual(["Kick off the job", "TURN-ONE", "WAKE-TURN"]);
     client.close();
   });
+
+  /**
+   * The `background_tasks` WS message is emit-only live state buffered into the
+   * turn-event log, which the next turn start clears. A client that hydrates a
+   * between-turns session from `GET /history` therefore has no way to learn the
+   * session is *waiting* rather than idle — it cleared the status line a beat
+   * after the switch, while the sidebar (fed by the SSE attention snapshot)
+   * correctly kept showing the session as working.
+   */
+  it("reports outstanding background tasks in GET /history", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive();
+    const sessionId = client.sessionId;
+
+    client.send({ type: "send_message", text: "Kick off the job" });
+    await waitForClaude(() => lastClaude);
+    lastClaude.initSession("bg-history-session");
+    await client.receiveType("session_started");
+
+    // The tracker gates its count on a resident streaming process (a background
+    // task cannot outlive the CLI), and this fixture pins live steering off, so
+    // stand the flag up explicitly to model the production streaming path.
+    const runner = app.runnerRegistry.get(sessionId)!;
+    runner.isStreamingActive = true;
+
+    lastClaude.emit("event", {
+      type: "agent_background_tasks",
+      tasks: [{ id: "bg-1", type: "local_bash", description: "npm test" }],
+    });
+    // The user's turn ENDS with the job still outstanding — `result` only, no
+    // process exit: a resident streaming process is exactly the case where the
+    // tasks outlive the turn (a one-shot CLI reaps them on exit).
+    lastClaude.emit("event", { type: "result", subtype: "success", session_id: "bg-history-session" });
+    await settle(250);
+
+    const res = await fetch(`http://127.0.0.1:${port}/api/sessions/${sessionId}/history`);
+    const body = await res.json() as { agentRunning: boolean; backgroundTasks: string[] };
+    expect(body.agentRunning).toBe(false);
+    expect(body.backgroundTasks).toEqual(["npm test"]);
+
+    // Drained: the payload must stop claiming the session is waiting.
+    lastClaude.emit("event", { type: "agent_background_tasks", tasks: [] });
+    await settle();
+    const after = await fetch(`http://127.0.0.1:${port}/api/sessions/${sessionId}/history`);
+    expect(((await after.json()) as { backgroundTasks: string[] }).backgroundTasks).toEqual([]);
+    client.close();
+  });
 });

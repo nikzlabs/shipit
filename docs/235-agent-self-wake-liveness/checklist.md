@@ -24,6 +24,11 @@
       the state survives reload / reconnect
 - [x] Client store: `backgroundTaskSessions`, reconciled wholesale from the
       snapshot the way `activeRunnerSessions` is
+- [x] Return `backgroundTasks` from `GET /api/sessions/:id/history` and honor it
+      in `loadSessionHistory` — the SSE snapshot restores the sidebar marker, but
+      the chat status line is re-established from history, which read only
+      `agentRunning` and so blanked the line a beat after switching into a
+      between-turns session with work outstanding
 - [x] Sidebar `SessionStatusDot`: widen the existing `isAgentRunning` condition
       to include background-task sessions — reuse the green pulsing dot, add no
       new indicator

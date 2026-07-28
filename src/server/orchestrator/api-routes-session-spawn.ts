@@ -106,6 +106,13 @@ export async function registerSessionSpawnRoutes(
 
     const runner = deps.runnerRegistry.get(request.params.id);
     const agentRunning = runner?.running ?? false;
+    // docs/235 — the standing background-task list, so a session loaded purely
+    // from HTTP history (session switch, page reload) knows it is *waiting*
+    // rather than idle. `background_tasks` is emit-only live state: it is
+    // buffered into the turn-event log, which the next turn start clears, so a
+    // switch into a between-turns session with outstanding work has nothing to
+    // replay and would otherwise hydrate as finished.
+    const backgroundTasks = runner?.backgroundTaskDescriptions ?? [];
     const rewindSnapshot = deps.chatHistoryManager.latestRewindSnapshot(request.params.id);
 
     // Don't reconstruct in-progress messages from runner.chatMessageGroups here.
@@ -134,6 +141,7 @@ export async function registerSessionSpawnRoutes(
       commits,
       fileTree,
       agentRunning,
+      backgroundTasks,
       rewindSnapshot,
       turnUsage,
       sessionUsage,
