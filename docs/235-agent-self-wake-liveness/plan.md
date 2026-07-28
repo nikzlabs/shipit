@@ -308,13 +308,22 @@ alive is still possible. Treat the count as a bounded-lifetime *hint*: record
 of extra container lifetime and never a permanent leak. The decay deliberately
 errs toward *reclaimable*, which is the safe direction for a resource guard.
 
-An orchestrator restart loses the count entirely (it is in-memory runner state),
-making a session with genuinely pending work immediately reclaimable again. That
-is accepted, not fixed: reconstructing it would mean reading the CLI's
-undocumented per-session `tasks/` directory inside the container (observed at
-`/tmp/claude-<uid>/<cwd-slug>/<session-id>/tasks/<task-id>.output`), which is an
-internal path with no compatibility guarantee. Not worth the coupling for a
-window this narrow.
+An orchestrator restart loses the count entirely (it is in-memory runner state).
+On the **deploy path this cannot desync**: `deployment/vps/deploy.sh:26` force-
+removes every container labeled `shipit-stack=shipit` — which session containers
+carry (`session-container.ts:498`) — before the orchestrator comes back, so the
+CLI processes and their background tasks die with the containers. A zero count
+after the restart is then simply correct.
+
+The only residual case is a **crash restart**, where `rediscover`
+(`app-lifecycle.ts:201`) re-adopts surviving containers whose CLI process still
+holds tasks, while the rebuilt runner reports a zero count. Accepted, not fixed:
+reconstructing it would mean reading the CLI's undocumented per-session `tasks/`
+directory inside the container (observed at
+`/tmp/claude-<uid>/<cwd-slug>/<session-id>/tasks/<task-id>.output`), an internal
+path with no compatibility guarantee — not worth the coupling for a window this
+narrow, which additionally only bites if that session is among the excess idle
+set or the host is under memory pressure.
 
 ### 6. Fix the stale-listener attribution
 
