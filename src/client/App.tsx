@@ -906,15 +906,27 @@ export default function App() {
   // than firing a headless session that auto-sends, it seeds the chat input with
   // the issue's context so the user can edit/augment the prompt before sending.
   const handleIssueStartSession = useCallback(
-    async (issue: TrackerIssue) => {
+    async (issue: TrackerIssue, pickedRepoUrl?: string) => {
       const { messages, sessions, sessionId } = useSessionStore.getState();
-      const repoUrl =
+      const defaultRepoUrl =
         sessions.find((s) => s.id === sessionId)?.remoteUrl ??
         useRepoStore.getState().activeRepoUrl;
 
-      // If the current session already has messages, switch to a fresh session
-      // first so the prefilled prompt doesn't append to an unrelated thread.
-      if (messages.length > 0 && repoUrl) {
+      // docs/236: the Start-session split button can name an explicit repo, so
+      // an issue that belongs to another project doesn't have to be routed
+      // through "switch repo in the sidebar → new session → find the issue
+      // again". Absent a pick, this is the pre-existing implicit target.
+      const repoUrl = pickedRepoUrl ?? defaultRepoUrl;
+      const switchingRepo = Boolean(repoUrl) && repoUrl !== defaultRepoUrl;
+
+      // A fresh session is needed when the current one already has messages (so
+      // the prefilled prompt doesn't append to an unrelated thread) — and
+      // always when switching repos, since the current session is checked out
+      // on the wrong project no matter how empty it is.
+      if (repoUrl && (switchingRepo || messages.length > 0)) {
+        // Follow the pick in the sidebar too, so the app's notion of "the repo
+        // I'm working in" doesn't lag behind the session we're about to open.
+        if (switchingRepo) useRepoStore.getState().setActiveRepoUrl(repoUrl);
         await handleNewSessionForRepo(repoUrl);
       }
 

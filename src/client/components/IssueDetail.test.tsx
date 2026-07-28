@@ -3,7 +3,7 @@ import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/re
 import userEvent from "@testing-library/user-event";
 import { IssueDetail } from "./IssueDetail.js";
 import type { IssueSelection } from "../stores/issues-store.js";
-import type { TrackerComment, TrackerInfo, TrackerIssue } from "../../server/shared/types.js";
+import type { RepoInfo, TrackerComment, TrackerInfo, TrackerIssue } from "../../server/shared/types.js";
 
 /**
  * Tests for the inline single-issue detail view (docs/189): it paints the
@@ -44,6 +44,7 @@ function baseProps() {
     error: null as string | null,
     info: INFO,
     canStart: true,
+    repos: [] as RepoInfo[],
     comments: [] as TrackerComment[] | null,
     commentsLoading: false,
     commentsError: null as string | null,
