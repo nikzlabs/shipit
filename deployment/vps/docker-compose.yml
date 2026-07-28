@@ -76,6 +76,17 @@ services:
       # (24h) and DISK_IDLE_EVICT_MS (14d, unmerged WIP) left at their defaults.
       - DISK_IDLE_EVICT_MERGED_MS=172800000    # merged-PR sessions: evict 2d after last touch
       - SHIPIT_MANAGED_UPDATES=true
+      # Per-session memory sizing (docs/229). Auto-derived from host capacity by
+      # default — a session's ceiling is half the usable budget (host RAM minus
+      # the 10% orchestrator/OS reserve), clamped to [4 GiB, 48 GiB]. These two
+      # overrides are read from the orchestrator's OWN process env, so without
+      # these passthrough lines exporting them on the host silently no-ops —
+      # exactly like OVERLAY_DEP_STORE / SHIPIT_GIT_LFS above. Both empty = auto.
+      # Set in the env file deploy.sh loads (/etc/shipit/shipit.env):
+      #   DEFAULT_SESSION_MEMORY_MB — pin the per-session baseline (MiB)
+      #   MAX_SESSION_MEMORY_MB     — hard ceiling, clamps the baseline down
+      - DEFAULT_SESSION_MEMORY_MB=${DEFAULT_SESSION_MEMORY_MB:-}
+      - MAX_SESSION_MEMORY_MB=${MAX_SESSION_MEMORY_MB:-}
       # Overlay dep store (docs/183) — opt-in passthrough for the canary soak.
       # The orchestrator reads OVERLAY_DEP_STORE from its own process env;
       # without this line, exporting the flag on the host (per the runbook in

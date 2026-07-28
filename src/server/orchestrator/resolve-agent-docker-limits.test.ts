@@ -49,13 +49,13 @@ afterEach(() => {
 });
 
 describe("deriveSessionMemorySizing", () => {
-  it("derives ~10.8 GiB/session on a 96 GB host (division binds, under ceiling)", () => {
+  it("derives ~43 GiB/session on a 96 GB host (fraction binds, under ceiling)", () => {
     stubHost(96 * GIB);
     const s = deriveSessionMemorySizing();
     expect(s.hostMb).toBe(98304);
     expect(s.reserveMb).toBe(9830); // floor(98304 * 0.10)
     expect(s.usableMb).toBe(88474);
-    expect(s.effectiveMb).toBe(11059); // floor(88474 / 8), under the 16384 ceiling
+    expect(s.effectiveMb).toBe(44237); // floor(88474 * 0.5), under the 49152 ceiling
     expect(s.baselineSource).toBe("auto");
     expect(s.capApplied).toBe(false);
   });
@@ -65,9 +65,11 @@ describe("deriveSessionMemorySizing", () => {
     expect(deriveSessionMemorySizing().effectiveMb).toBe(4096);
   });
 
-  it("floors at 4 GiB on a 16 GB host (FLOOR still governs below ~34 GB)", () => {
+  it("gives half the usable budget on a 16 GB host (fraction clears the FLOOR)", () => {
     stubHost(16 * GIB);
-    expect(deriveSessionMemorySizing().effectiveMb).toBe(4096);
+    const s = deriveSessionMemorySizing();
+    expect(s.usableMb).toBe(14336);
+    expect(s.effectiveMb).toBe(7168);
   });
 
   it("pins to usable on a host smaller than the FLOOR (4 GB → 2 GiB usable)", () => {
@@ -84,9 +86,9 @@ describe("deriveSessionMemorySizing", () => {
     expect(s.effectiveMb).toBe(1536); // BOOT_MIN
   });
 
-  it("caps at the 16 GiB ceiling on a very large host", () => {
+  it("caps at the 48 GiB ceiling on a very large host", () => {
     stubHost(1024 * GIB);
-    expect(deriveSessionMemorySizing().effectiveMb).toBe(16384);
+    expect(deriveSessionMemorySizing().effectiveMb).toBe(49152);
   });
 
   it("DEFAULT_SESSION_MEMORY_MB overrides the auto baseline", () => {
@@ -157,7 +159,7 @@ describe("resolveAgentDockerLimits", () => {
     stubHost(96 * GIB, 16);
     const dir = setup();
     const limits = resolveAgentDockerLimits(dir);
-    expect(limits.memoryLimit).toBe(11059 * MIB);
+    expect(limits.memoryLimit).toBe(44237 * MIB);
     expect(limits.cpuQuota).toBe(16 * CPU_PERIOD);
     expect(limits.pidsLimit).toBe(PIDS_LIMIT);
     expect(limits.dockerAccess).toBe(false);
@@ -168,7 +170,7 @@ describe("resolveAgentDockerLimits", () => {
     const dir = setup();
     write(dir, "agent:\n  memory: 3072\n  cpu: 2.0\n  pids: 2048\n");
     const limits = resolveAgentDockerLimits(dir);
-    expect(limits.memoryLimit).toBe(11059 * MIB); // auto, NOT 3072
+    expect(limits.memoryLimit).toBe(44237 * MIB); // auto, NOT 3072
     expect(limits.pidsLimit).toBe(PIDS_LIMIT); // fixed, NOT 2048
   });
 
@@ -188,14 +190,14 @@ describe("resolveAgentDockerLimits", () => {
     stubHost(96 * GIB);
     const dir = setup();
     write(dir, "agent: not_a_mapping\n");
-    expect(resolveAgentDockerLimits(dir).memoryLimit).toBe(11059 * MIB);
+    expect(resolveAgentDockerLimits(dir).memoryLimit).toBe(44237 * MIB);
   });
 
   it("ignores old-format `resources:` block (auto-sizes regardless)", () => {
     stubHost(96 * GIB);
     const dir = setup();
     write(dir, "resources:\n  memory: 3072\n");
-    expect(resolveAgentDockerLimits(dir).memoryLimit).toBe(11059 * MIB);
+    expect(resolveAgentDockerLimits(dir).memoryLimit).toBe(44237 * MIB);
   });
 
   it("ignores old-format `capabilities.docker: true`", () => {
