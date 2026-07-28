@@ -731,6 +731,25 @@ export class ChatHistoryManager {
   }
 
   /**
+   * SHI-245 — the session's persisted sub-agent consult cards, oldest first.
+   * Backs `shipit agent result`: the card is the artifact the UI renders, so
+   * re-reading it here is what makes "the caller can always fetch exactly what
+   * the user sees" true by construction rather than by convention. The recovery
+   * path matters most when the caller's own copy never arrived — a shim killed
+   * by a foreground tool timeout leaves the spawn running server-side, and its
+   * output lands here and nowhere else.
+   */
+  listSubAgentConsultCards(sessionId: string): SubAgentConsultCard[] {
+    const rows = this.stmtLoadAll.all(sessionId) as MessageRow[];
+    const cards: SubAgentConsultCard[] = [];
+    for (const row of rows) {
+      if (!row.sub_agent_consult) continue;
+      cards.push(JSON.parse(row.sub_agent_consult) as SubAgentConsultCard);
+    }
+    return cards;
+  }
+
+  /**
    * docs/177 — find a persisted issue-write provenance card by `cardId`. The
    * undo WS handler reads it to recover the tracker + undo snapshot (the card
    * is the source of truth, not client-supplied state). Returns null if absent.

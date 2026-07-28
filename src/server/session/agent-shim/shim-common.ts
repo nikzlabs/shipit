@@ -359,6 +359,24 @@ export function success(io: ShimIO, message: string): void {
   io.exit(0);
 }
 
+/**
+ * Run `handler` if the shim is asked to terminate while a long call is in
+ * flight, and return a release function to call once it isn't (SHI-245).
+ *
+ * Node's default SIGTERM behavior is to die with no output, which is precisely
+ * wrong for a command whose work continues on the server after the process is
+ * gone: the caller is left with nothing, and nothing that says there is
+ * anything to go back for. Installing a listener replaces that default, so the
+ * handler is responsible for exiting.
+ */
+export function onTerminationSignal(handler: () => void): () => void {
+  const signals: NodeJS.Signals[] = ["SIGTERM", "SIGINT", "SIGHUP"];
+  for (const signal of signals) process.on(signal, handler);
+  return () => {
+    for (const signal of signals) process.off(signal, handler);
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Body-from-file/stdin resolution
 // ---------------------------------------------------------------------------

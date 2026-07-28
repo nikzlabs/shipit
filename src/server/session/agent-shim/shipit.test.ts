@@ -2337,4 +2337,102 @@ describe("runShim — agent run", () => {
     expect(out.exitCode).not.toBe(0);
     expect(out.stderr).toContain("Unsupported shipit agent subcommand");
   });
+
+  it("names the run and points at `agent result` so a copy can be re-read (SHI-245)", async () => {
+    const { run } = makeRunner();
+    const file = await promptFile("review");
+    const out = await run(["agent", "run", "--agent", "codex", "--prompt-file", file], {
+      "POST /agent-ops/agent/spawn": {
+        status: 200,
+        body: { status: "success", text: "findings", truncated: false, durationMs: 10, costUsd: 0, spawnId: "run-77" },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("findings");
+    expect(out.stderr).toContain("run-77");
+    expect(out.stderr).toContain("shipit agent result run-77");
+    // The id belongs on stderr — stdout stays the sub-agent's text, verbatim.
+    expect(out.stdout).not.toContain("run-77");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// shipit agent result (SHI-245 — re-read a finished run's persisted output)
+// ---------------------------------------------------------------------------
+
+describe("runShim — agent result", () => {
+  it("fetches the latest run when no id is given and prints its output", async () => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "result"], {
+      "GET /agent-ops/agent/result": {
+        status: 200,
+        body: {
+          cardId: "c1",
+          spawnId: "run-77",
+          subAgentId: "codex",
+          status: "success",
+          outputMarkdown: "## Findings\n\n1. digest excludes the envelope",
+          createdAt: "2026-07-28T00:00:00Z",
+        },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].path).toBe("/agent-ops/agent/result");
+    expect(out.stdout).toContain("digest excludes the envelope");
+    expect(out.stderr).toContain("run-77");
+  });
+
+  it("passes a run id through as ?spawnId", async () => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "result", "run-77"], {
+      "GET /agent-ops/agent/result": {
+        status: 200,
+        body: { cardId: "c1", spawnId: "run-77", subAgentId: "codex", status: "success", outputMarkdown: "text", createdAt: "x" },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].path).toBe("/agent-ops/agent/result?spawnId=run-77");
+  });
+
+  it("prints the whole card with --json", async () => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "result", "--json"], {
+      "GET /agent-ops/agent/result": {
+        status: 200,
+        body: { cardId: "c1", spawnId: "run-77", subAgentId: "codex", status: "success", outputMarkdown: "text", createdAt: "x" },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(JSON.parse(out.stdout)).toMatchObject({ spawnId: "run-77", outputMarkdown: "text" });
+  });
+
+  it("says so plainly when the run produced no output", async () => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "result"], {
+      "GET /agent-ops/agent/result": {
+        status: 200,
+        body: { cardId: "c1", spawnId: "run-77", subAgentId: "codex", status: "error", createdAt: "x" },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.stderr).toContain("no output");
+    expect(out.stdout).toBe("");
+  });
+
+  it("surfaces a not-found lookup with a non-zero exit", async () => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "result", "nope"], {
+      "GET /agent-ops/agent/result": { status: 404, body: { error: "No sub-agent runs in this session yet." } },
+    });
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("No sub-agent runs");
+  });
+
+  it("rejects more than one run id", async () => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "result", "a", "b"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("at most one run id");
+    expect(out.calls).toHaveLength(0);
+  });
 });

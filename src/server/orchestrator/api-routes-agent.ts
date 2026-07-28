@@ -17,7 +17,7 @@ import type {
   UploadRef,
   AgentId,
 } from "../shared/types.js";
-import { dispatchAgentMessage, runSubAgent, ServiceError } from "./services/index.js";
+import { dispatchAgentMessage, runSubAgent, getSubAgentResult, ServiceError } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
 
 export async function registerAgentRoutes(
@@ -124,6 +124,34 @@ export async function registerAgentRoutes(
           return;
         }
         reply.code(500).send({ error: `Sub-agent spawn failed: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // GET /api/sessions/:id/agent/result?spawnId=… — SHI-245. Re-read a completed
+  // spawn's persisted consult card (the artifact the UI renders) so the invoking
+  // agent can verify parity, or recover output whose delivery was lost when its
+  // `shipit agent run` was killed mid-flight. Reached via the worker's
+  // `/agent-ops/agent/result` broker, which injects the trusted SESSION_ID.
+  // No spawnId ⇒ the session's most recent run.
+  app.get<{ Params: { id: string }; Querystring: { spawnId?: string } }>(
+    "/api/sessions/:id/agent/result",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      try {
+        const spawnId = request.query.spawnId?.trim();
+        const card = getSubAgentResult(
+          { chatHistoryManager: deps.chatHistoryManager },
+          request.params.id,
+          spawnId || undefined,
+        );
+        reply.send(card);
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Sub-agent result lookup failed: ${getErrorMessage(err)}` });
       }
     },
   );

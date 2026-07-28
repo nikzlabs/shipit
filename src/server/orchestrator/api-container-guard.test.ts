@@ -269,8 +269,11 @@ const GOLDEN_CONTAINER_ROUTES = [
   "GET /api/sessions/:id/source/log",
   "GET /api/sessions/:id/source/blame",
   "GET /api/sessions/:id/source/show",
-  // agent — shipit agent run
+  // agent — shipit agent run / shipit agent result. The result read is
+  // own-session scoped like the spawn (the worker injects the caller's id), and
+  // returns only that session's own persisted consult cards (SHI-245).
   "POST /api/sessions/:id/agent/spawn",
+  "GET /api/sessions/:id/agent/result",
   // session — shipit session create/list/view/wait/message/archive + notify-on-merge
   "POST /api/sessions/:parentId/spawn",
   "GET /api/sessions/:parentId/children",

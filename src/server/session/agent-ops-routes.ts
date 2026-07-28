@@ -489,6 +489,19 @@ export function registerAgentOpsRoutes(
     async (request, reply) => relay("POST", "/agent/spawn", request.body ?? {}, reply, { timeoutMs: 0 }),
   );
 
+  // GET /agent-ops/agent/result[?spawnId=…] — SHI-245. Re-read a completed
+  // spawn's persisted consult card: the same artifact the UI renders, so the
+  // agent can verify its copy or recover one whose `shipit agent run` died
+  // before the text reached it. Cheap read; the default timeout applies.
+  app.get<{ Querystring: { spawnId?: string } }>(
+    "/agent-ops/agent/result",
+    async (request, reply) => {
+      const spawnId = request.query.spawnId;
+      const qs = spawnId ? `?spawnId=${encodeURIComponent(spawnId)}` : "";
+      return relay("GET", `/agent/result${qs}`, undefined, reply);
+    },
+  );
+
   // ---------------------------------------------------------------------------
   // Agent-spawned sibling sessions (docs/117)
   //

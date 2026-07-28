@@ -125,6 +125,34 @@ describe("runAgentToCompletion", () => {
     expect(res.text).toBe("Final streamed answer.");
   });
 
+  it("joins every completed message when a run answers across several (SHI-245)", async () => {
+    const agent = new FakeAgent();
+    const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w" }, Date.now());
+    // Codex shape: deltas, then the completed message re-emitted — twice, because
+    // the answer spanned a long report and a shorter wrap-up. Keeping only the
+    // last one handed the caller the tail of the answer and nothing said so.
+    agent.emit("event", assistant("The orphan branch is viab"));
+    agent.emit("event", assistant("The orphan branch is viable, but…\n\n1. digest excludes the envelope", true));
+    agent.emit("event", assistant("I found nine defi"));
+    agent.emit("event", assistant("I found nine definite problems.", true));
+    agent.emit("event", result(0.01, 1000));
+    agent.emit("done", 0);
+    const res = await handle.promise;
+    expect(res.text).toBe(
+      "The orphan branch is viable, but…\n\n1. digest excludes the envelope\n\nI found nine definite problems.",
+    );
+  });
+
+  it("does not double a completion an adapter re-emits verbatim", async () => {
+    const agent = new FakeAgent();
+    const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w" }, Date.now());
+    agent.emit("event", assistant("Final streamed answer.", true));
+    agent.emit("event", assistant("Final streamed answer.", true));
+    agent.emit("done", 0);
+    const res = await handle.promise;
+    expect(res.text).toBe("Final streamed answer.");
+  });
+
   it("ignores nested (Task tool) assistant events", async () => {
     const agent = new FakeAgent();
     const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w" }, Date.now());

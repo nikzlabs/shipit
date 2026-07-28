@@ -9,7 +9,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { runSubAgent, sweepSubAgentCredentialsOnSignOut, SUB_AGENT_PER_TURN_CAP } from "./sub-agent.js";
+import { getSubAgentResult, runSubAgent, sweepSubAgentCredentialsOnSignOut, SUB_AGENT_PER_TURN_CAP } from "./sub-agent.js";
 import { ServiceError } from "./types.js";
 import type { SubAgentRunResult } from "../../shared/sub-agent-run.js";
 import {
@@ -194,6 +194,29 @@ describe("runSubAgent — happy path", () => {
     expect(replaceInProgress).toHaveBeenCalled();
   });
 
+  it("returns the caller the SAME text it puts on the card, under one run id (SHI-245)", async () => {
+    const { deps, emitMessage } = makeDeps({
+      spawnResult: {
+        status: "success",
+        // A two-message answer — the exact shape that used to reach the caller
+        // as its tail only.
+        text: "The plan is viable, but…\n\nI found nine definite problems.",
+        truncated: false,
+        durationMs: 1102_000,
+        costUsd: 0,
+      },
+    });
+    const res = await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+
+    const card = emitMessage.mock.calls
+      .map((c) => c[0] as { type: string; card?: { spawnId: string; outputMarkdown?: string } })
+      .find((m) => m.type === "sub_agent_consult_card")?.card;
+    // What the agent acts on and what the user reads are one document, named by
+    // one id — divergence here is the SHI-245 failure, silent and undetectable.
+    expect(card?.outputMarkdown).toBe(res.text);
+    expect(res.spawnId).toBe(card?.spawnId);
+  });
+
   it("forwards the invoked agent's global reasoning + model defaults to the spawn (docs/217)", async () => {
     const { deps, runner } = makeDeps({ subAgentDefaults: { reasoningEffort: "high", model: "gpt-5.5" } });
     await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
@@ -288,6 +311,47 @@ describe("runSubAgent — happy path", () => {
     await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "c", depth: 0 });
     expect(runner.subAgentSpawnsThisTurn).toBe(3);
     await expectServiceError(runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "d", depth: 0 }), 429);
+  });
+});
+
+describe("getSubAgentResult (SHI-245)", () => {
+  const card = (spawnId: string, outputMarkdown: string) => ({
+    cardId: `c-${spawnId}`,
+    spawnId,
+    subAgentId: "codex" as const,
+    status: "success" as const,
+    outputMarkdown,
+    createdAt: "2026-07-28T00:00:00Z",
+  });
+
+  const reader = (cards: ReturnType<typeof card>[]) => ({
+    chatHistoryManager: { listSubAgentConsultCards: () => cards },
+  });
+
+  it("returns the most recent run when no id is given", () => {
+    const found = getSubAgentResult(reader([card("aaa1", "old"), card("bbb2", "newest")]), "s1");
+    expect(found.spawnId).toBe("bbb2");
+  });
+
+  it("returns the named run — this is the recovery path for a killed `agent run`", () => {
+    const found = getSubAgentResult(reader([card("aaa1", "first"), card("bbb2", "second")]), "s1", "aaa1");
+    expect(found.outputMarkdown).toBe("first");
+  });
+
+  it("accepts an unambiguous id prefix", () => {
+    const found = getSubAgentResult(reader([card("aaa1", "first"), card("bbb2", "second")]), "s1", "bb");
+    expect(found.spawnId).toBe("bbb2");
+  });
+
+  it("refuses an ambiguous prefix rather than guessing a run", () => {
+    expect(() => getSubAgentResult(reader([card("aaa1", "x"), card("aaa2", "y")]), "s1", "aaa")).toThrow(
+      ServiceError,
+    );
+  });
+
+  it("404s when the session has no runs, and when the id is unknown", () => {
+    expect(() => getSubAgentResult(reader([]), "s1")).toThrow(/No sub-agent runs/);
+    expect(() => getSubAgentResult(reader([card("aaa1", "x")]), "s1", "zzz")).toThrow(/No sub-agent run with id/);
   });
 });
 
