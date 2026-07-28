@@ -28,13 +28,25 @@ type DropdownMenuContentProps = ComponentPropsWithoutRef<typeof DropdownMenuPrim
 const DropdownMenuContent = forwardRef<
   ComponentRef<typeof DropdownMenuPrimitive.Content>,
   DropdownMenuContentProps
->(({ className, sideOffset = 4, portaled = true, ...props }, ref) => {
+>(({ className, sideOffset = 4, collisionPadding = 8, portaled = true, ...props }, ref) => {
   const content: ReactNode = (
     <DropdownMenuPrimitive.Content
       ref={ref}
       sideOffset={sideOffset}
+      collisionPadding={collisionPadding}
       className={cn(
-        "z-50 min-w-32 overflow-hidden rounded-lg border border-(--color-border-primary) bg-(--color-bg-elevated) py-1 shadow-xl",
+        "z-50 min-w-32 rounded-lg border border-(--color-border-primary) bg-(--color-bg-elevated) py-1 shadow-xl",
+        // A menu with more items than the viewport can hold used to grow off
+        // the top of the screen: Radix anchors it to the trigger and expands
+        // upward, and with no cap the overflowing rows were simply unreachable
+        // — silently, because `overflow-hidden` shows no scrollbar. The rows
+        // lost are the ones at the TOP of the list, so e.g. a repo picker would
+        // hide its own checkmarked current repo. Cap at the space Radix
+        // measured on the chosen side and scroll the remainder; menus that
+        // already fit are unaffected (a max-height never shrinks them).
+        // `overflow-x-hidden` preserves the horizontal clip the rounded
+        // corners rely on.
+        "max-h-(--radix-dropdown-menu-content-available-height) overflow-y-auto overflow-x-hidden",
         "data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
         "data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95",
         "data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2",

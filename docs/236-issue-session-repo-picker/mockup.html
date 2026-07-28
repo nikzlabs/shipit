@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>docs/236 — Start-session repo picker</title>
+<style>
+  :root {
+    --color-bg-primary: #030712;
+    --color-bg-secondary: #111827;
+    --color-bg-elevated: #1f2937;
+    --color-bg-hover: rgba(255, 255, 255, 0.05);
+    --color-text-primary: #f3f4f6;
+    --color-text-secondary: #9ca3af;
+    --color-text-tertiary: #6b7280;
+    --color-text-link: #60a5fa;
+    --color-border-primary: #1f2937;
+    --color-border-secondary: #374151;
+    --color-accent: #3b82f6;
+    --color-accent-text: #ffffff;
+    --color-accent-subtle: rgba(59, 130, 246, 0.15);
+    --color-success: #22c55e;
+    --color-warning: #f59e0b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 32px;
+    background: var(--color-bg-primary);
+    color: var(--color-text-primary);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  h1 { font-size: 15px; font-weight: 600; margin: 0 0 4px; }
+  p.sub { margin: 0 0 24px; color: var(--color-text-tertiary); font-size: 12px; }
+  h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+       color: var(--color-text-tertiary); margin: 28px 0 10px; font-weight: 600; }
+
+  /* ---- The split button ---- */
+  .split { display: inline-flex; align-items: stretch; }
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    height: 32px; padding: 0 12px; border-radius: 6px; border: 1px solid transparent;
+    font-size: 14px; font-weight: 500; white-space: nowrap; cursor: pointer;
+    font-family: inherit; transition: background-color .15s, color .15s, border-color .15s;
+  }
+  .cta {
+    background: var(--color-accent-subtle); color: var(--color-text-link);
+    border-color: color-mix(in oklab, var(--color-accent) 35%, transparent);
+  }
+  .cta:hover { background: var(--color-accent); color: var(--color-accent-text); border-color: var(--color-accent); }
+  .primary { background: var(--color-accent); color: var(--color-accent-text); }
+  .primary:hover { background: #2563eb; }
+  .split .main { flex: 1; border-top-right-radius: 0; border-bottom-right-radius: 0; }
+  .split .caret {
+    border-top-left-radius: 0; border-bottom-left-radius: 0;
+    margin-left: -1px; padding: 0 6px;
+    box-shadow: inset 1px 0 0 0 color-mix(in oklab, currentColor 25%, transparent);
+  }
+
+  /* ---- The menu ---- */
+  .menu {
+    margin-top: 4px; width: 224px; border-radius: 8px; padding: 4px 0;
+    border: 1px solid var(--color-border-primary); background: var(--color-bg-elevated);
+    box-shadow: 0 20px 25px -5px rgba(0,0,0,.5), 0 8px 10px -6px rgba(0,0,0,.5);
+  }
+  .menu-label {
+    padding: 6px 12px; font-size: 10px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .08em; color: var(--color-text-tertiary);
+  }
+  .menu-item {
+    display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+    font-size: 12px; color: var(--color-text-secondary); cursor: pointer;
+  }
+  .menu-item:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
+  .menu-item.current { color: var(--color-text-primary); }
+  .menu-item.disabled { opacity: .5; pointer-events: none; }
+  .check { width: 12px; text-align: center; color: var(--color-success); }
+  .check.blank { opacity: 0; }
+  .name { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  .cloning { font-size: 9px; color: var(--color-warning); }
+
+  /* ---- Issue row context ---- */
+  .list { border: 1px solid var(--color-border-primary); border-radius: 8px;
+          background: var(--color-bg-primary); max-width: 860px; }
+  .thead { border-radius: 7px 7px 0 0; }
+  .thead, .row {
+    display: grid; grid-template-columns: 64px 1fr 84px 120px 110px 168px;
+    gap: 12px; align-items: center; padding: 8px 12px;
+  }
+  .thead {
+    background: var(--color-bg-secondary); border-bottom: 1px solid var(--color-border-secondary);
+    font-size: 10px; text-transform: uppercase; letter-spacing: .05em; font-weight: 600;
+    color: var(--color-text-tertiary);
+  }
+  .thead .act { justify-self: center; }
+  .row { border-bottom: 1px solid var(--color-border-primary); padding: 12px; }
+  .row:last-child { border-bottom: 0; }
+  .row .id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--color-text-tertiary); }
+  .row .title { font-size: 13px; }
+  .row .meta { font-size: 11px; color: var(--color-text-secondary); }
+  .row .act { display: flex; justify-content: center; }
+  .row .act .split { width: 100%; }
+  /* The real menu renders through a Radix portal, so it floats above the list
+     rather than being clipped by it. Mirrored here with an absolute overlay. */
+  .anchored { position: relative; max-width: 860px; }
+  .anchored .menu { position: absolute; right: 13px; top: 78px; z-index: 5; }
+
+  .footer {
+    display: flex; justify-content: flex-end; padding: 10px 16px; max-width: 860px;
+    border: 1px solid var(--color-border-primary); border-radius: 8px;
+    background: var(--color-bg-secondary);
+  }
+  .note { max-width: 860px; margin: 10px 0 0; font-size: 12px; color: var(--color-text-tertiary); }
+</style>
+</head>
+<body>
+
+<h1>Start-session repo picker (docs/236)</h1>
+<p class="sub">The Issues-tab call to action becomes a split control: the main half keeps its one-click default, the caret picks a different repository.</p>
+
+<h2>Issues list — caret menu open</h2>
+<div class="anchored">
+<div class="list">
+  <div class="thead">
+    <div>Issue</div><div>Title</div><div>Priority</div><div>Status</div><div>Assignee</div><div class="act">Action</div>
+  </div>
+  <div class="row">
+    <div class="id">SHI-241</div>
+    <div class="title">Repo picker when starting a session from an issue</div>
+    <div class="meta">Urgent</div>
+    <div class="meta">● Todo</div>
+    <div class="meta">Nik</div>
+    <div class="act">
+      <div class="split">
+        <button class="btn cta main">🚀 Start session</button>
+        <button class="btn cta caret" aria-label="Start session in another repository">▾</button>
+      </div>
+    </div>
+  </div>
+  <div class="row">
+    <div class="id">SHI-198</div>
+    <div class="title">Marketing site: pricing page copy</div>
+    <div class="meta">High</div>
+    <div class="meta">● In Progress</div>
+    <div class="meta">Ana</div>
+    <div class="act">
+      <div class="split">
+        <button class="btn cta main">🚀 Start session</button>
+        <button class="btn cta caret" aria-label="Start session in another repository">▾</button>
+      </div>
+    </div>
+  </div>
+</div>
+  <div class="menu" role="menu">
+    <div class="menu-label">Start session in</div>
+    <div class="menu-item current" role="menuitem"><span class="check">✓</span><span class="name">shipit</span></div>
+    <div class="menu-item" role="menuitem"><span class="check blank">✓</span><span class="name">website</span></div>
+    <div class="menu-item" role="menuitem"><span class="check blank">✓</span><span class="name">infra</span></div>
+    <div class="menu-item disabled" role="menuitem"><span class="check blank">✓</span><span class="name">fresh-clone</span><span class="cloning">cloning</span></div>
+  </div>
+</div>
+<p class="note">The checkmark marks the implicit target — the repo the plain click would use (the current session's remote, else the active sidebar repo). Repos still cloning render but can't be picked: a claim against them 400s server-side.</p>
+
+<h2>Issue detail footer — solid <code>primary</code> variant</h2>
+<div class="footer">
+  <div class="split">
+    <button class="btn primary main">🚀 Start session from this issue</button>
+    <button class="btn primary caret" aria-label="Start session in another repository">▾</button>
+  </div>
+</div>
+<p class="note">The <code>cta</code> variant's two borders collapse into one shared edge via <code>-ml-px</code>; the borderless <code>primary</code> variant gets its divider from an inset <code>currentColor</code> shadow, so both variants read as one control.</p>
+
+<h2>Single repo — nothing to choose, so no caret</h2>
+<div class="footer">
+  <button class="btn cta">🚀 Start session</button>
+</div>
+
+</body>
+</html>

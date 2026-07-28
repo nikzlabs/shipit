@@ -10,7 +10,7 @@ import {
   type IssueFilters,
 } from "./issues-filter.js";
 import { DEFAULT_SORT_PREFS, buildSections, collapsePredicate } from "./issues-sort.js";
-import type { IssuePriorityLevel, TrackerInfo, TrackerIssue } from "../../server/shared/types.js";
+import type { IssuePriorityLevel, RepoInfo, TrackerInfo, TrackerIssue } from "../../server/shared/types.js";
 
 // Force the container-width signal so we can exercise both layouts deterministically
 // (jsdom has no layout, so the real ResizeObserver path always reads 0/desktop).
@@ -78,6 +78,7 @@ function defaultProps(overrides?: Partial<IssuesViewerProps>): IssuesViewerProps
     loading: false,
     error: null,
     canStart: true,
+    repos: [] as RepoInfo[],
     includeDone: false,
     availableStatuses: [],
     canEditPriority: true,

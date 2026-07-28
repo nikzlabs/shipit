@@ -30,6 +30,7 @@ import { ICON_SIZE } from "../design-tokens.js";
 import type {
   IssueLabel,
   IssuePriorityLevel,
+  RepoInfo,
   TrackerId,
   TrackerInfo,
   TrackerIssue,
@@ -64,6 +65,14 @@ export interface IssuesViewerProps {
   error: string | null;
   /** Whether a repo is available to start a session on. */
   canStart: boolean;
+  /**
+   * Repos offered by the Start-session repo picker (docs/236). Two or more
+   * turns the button into a split control whose caret starts the issue in an
+   * explicitly chosen repo.
+   */
+  repos: RepoInfo[];
+  /** Repo a plain Start-session click lands in — checkmarked in the picker. */
+  targetRepoUrl?: string;
   /** Whether the loaded list includes done/completed issues (fetch-scope). */
   includeDone: boolean;
   /** The active tracker's assignable statuses, for the inline status editor (docs/191). */
@@ -90,7 +99,8 @@ export interface IssuesViewerProps {
   onSetStatus: (issue: TrackerIssue, status: string) => Promise<string | null>;
   /** Set a row's priority inline (Linear-only); resolves to an error, or null. */
   onSetPriority: (issue: TrackerIssue, level: IssuePriorityLevel) => Promise<string | null>;
-  onStartSession: (issue: TrackerIssue) => void;
+  /** Seed a session from an issue; `repoUrl` overrides the default target repo. */
+  onStartSession: (issue: TrackerIssue, repoUrl?: string) => void;
   /** Open Settings → Trackers so the user can connect/bind Linear. */
   onConnect: () => void;
   onSetQuery: (query: string) => void;
@@ -228,6 +238,8 @@ const MOBILE_INDENT_MAX_DEPTH = 3;
 function IssueRow({
   row,
   canStart,
+  repos,
+  targetRepoUrl,
   availableStatuses,
   canEditPriority,
   surfaceLum,
@@ -239,6 +251,8 @@ function IssueRow({
 }: {
   row: IssueRowItem;
   canStart: boolean;
+  repos: RepoInfo[];
+  targetRepoUrl?: string;
   availableStatuses: IssueStatusRef[];
   canEditPriority: boolean;
   /** Luminance of the row surface, for contrast-adapting the status dot. */
@@ -247,7 +261,7 @@ function IssueRow({
   onSetCollapsed: (issueId: string, collapsed: boolean) => void;
   onSetStatus: (issue: TrackerIssue, status: string) => Promise<string | null>;
   onSetPriority: (issue: TrackerIssue, level: IssuePriorityLevel) => Promise<string | null>;
-  onStartSession: (issue: TrackerIssue) => void;
+  onStartSession: (issue: TrackerIssue, repoUrl?: string) => void;
 }) {
   const { issue, depth, hasChildren, childCount, collapsed, orphan } = row;
   // Both layouts indent the whole row by depth via the row's own left padding —
@@ -446,6 +460,9 @@ function IssueRow({
             e.stopPropagation();
             onStartSession(issue);
           }}
+          repos={repos}
+          {...(targetRepoUrl ? { targetRepoUrl } : {})}
+          onStartInRepo={(repoUrl) => onStartSession(issue, repoUrl)}
           className="w-full @md:w-auto"
         />
       </div>
@@ -486,6 +503,8 @@ export function IssuesViewer({
   loading,
   error,
   canStart,
+  repos,
+  targetRepoUrl,
   includeDone,
   availableStatuses,
   canEditPriority,
@@ -728,6 +747,8 @@ export function IssuesViewer({
                         key={row.issue.id}
                         row={row}
                         canStart={canStart}
+                        repos={repos}
+                        {...(targetRepoUrl ? { targetRepoUrl } : {})}
                         availableStatuses={availableStatuses}
                         canEditPriority={canEditPriority}
                         surfaceLum={rowSurfaceLum}
