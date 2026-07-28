@@ -174,6 +174,7 @@ out of the box.
 |--------|--------|
 | Source file edit | Hot reload (no restart) |
 | `shipit.yaml` or compose file edit | Stack reconciliation (restart services) |
+| `shipit.yaml`/compose file changed by a sync/rebase or rollback | Same reconciliation — services added by the incoming config appear without a session restart |
 | Lockfile/manifest change (edit **or** git reset/checkout/rebase) | Install + restart (30s cooldown) |
 
 ## Browser tools

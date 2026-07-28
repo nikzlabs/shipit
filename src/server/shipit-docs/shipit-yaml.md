@@ -237,7 +237,17 @@ committed.
 ## Config changes at runtime
 
 - Editing `shipit.yaml` or the compose file triggers stack reconciliation
-  (regenerate override, `docker compose up -d`).
+  (re-read `shipit.yaml`, regenerate override, `docker compose up -d`).
+- The same re-read happens after a git operation that rewrites the working tree
+  from outside the container — **syncing/rebasing onto the base branch, or
+  rolling back to an earlier commit**. So a rebase that brings in a
+  `shipit.yaml` declaring a new `compose:` path, new services, or a different
+  `agent.install` is applied to the live session; you do not need to restart it.
+- A changed `agent.install` re-runs (subject to the same 30s cooldown as a
+  lockfile change). Removing the `compose:` block stops the stack.
+- An invalid `shipit.yaml` (YAML syntax error, bad `compose:` shape) leaves the
+  running stack alone and reports the error rather than tearing the preview down
+  mid-edit.
 - Changes to lockfiles are debounced (30s cooldown) to avoid install loops.
 - Resource changes take effect on the next session container creation (not live).
 

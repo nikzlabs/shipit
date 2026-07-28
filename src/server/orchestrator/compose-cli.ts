@@ -45,7 +45,7 @@ export interface ComposeCliOptions {
 export class ComposeCli {
   private readonly sessionId: string;
   private readonly workspaceDir: string;
-  private readonly composeFile: string;
+  private composeFile: string;
   private readonly runner: ComposeRunner;
   /** Exposed so the poller / direct-spawn callers can run their own queries. */
   readonly query: ComposeQuery;
@@ -56,6 +56,15 @@ export class ComposeCli {
     this.composeFile = opts.composeFile;
     this.runner = opts.composeRunner ?? defaultComposeRunner;
     this.query = opts.composeQuery ?? defaultComposeQuery;
+  }
+
+  /**
+   * Point subsequent commands at a different compose file. Used when the
+   * session's `shipit.yaml` changes its `compose:` path mid-session (a git
+   * sync/rebase can rewrite it) — see `ServiceManager.updateComposeConfig`.
+   */
+  setComposeFile(file: string): void {
+    this.composeFile = file;
   }
 
   /** Build common compose CLI args with the user file and override. */

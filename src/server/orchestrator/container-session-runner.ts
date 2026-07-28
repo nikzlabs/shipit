@@ -479,9 +479,13 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * Attach a ServiceManager and wire its events to WS messages.
    * The ServiceManager's service_status and service_log events are relayed
    * to all connected viewers via emitMessage().
+   *
+   * Passing `null` detaches the current manager without attaching a new one —
+   * used when a `shipit.yaml` change drops the `compose:` block entirely.
    */
-  setServiceManager(mgr: ServiceManager): void {
+  setServiceManager(mgr: ServiceManager | null): void {
     this.clearServiceManager();
+    if (!mgr) return;
     this._serviceManager = mgr;
 
     const onStatus = (svc: ManagedService) => {
@@ -1110,17 +1114,21 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   // --- Worker resource lifecycle ---
 
-  /** Start file watcher on session worker. */
+  /**
+   * Start the file watcher on the session worker. Idempotent on both sides —
+   * the worker returns `{ existing: true }` when it is already watching — so
+   * this is re-issued on every SSE (re)open as a self-heal (see `onSseOpen`).
+   */
   private async startWorkerResources(): Promise<void> {
-    console.log(`[container-runner:${this.sessionId}] Waiting for worker to be ready...`);
     await this._workerReady;
     if (this._disposed) { console.log(`[container-runner:${this.sessionId}] Disposed before worker ready`); return; }
-    console.log(`[container-runner:${this.sessionId}] Starting worker resources at ${this.workerUrl}`);
 
     // Start file watcher on session worker
     try {
-      await workerPost(this.workerUrl, "/files/watch");
-      console.log(`[container-runner:${this.sessionId}] File watcher started on worker`);
+      const res = await workerPost(this.workerUrl, "/files/watch") as { existing?: boolean };
+      if (!res?.existing) {
+        console.log(`[container-runner:${this.sessionId}] File watcher started on worker`);
+      }
     } catch (err) {
       console.error(`[container-runner:${this.sessionId}] Failed to start file watcher:`, err);
     }
@@ -1283,6 +1291,52 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   setDepReinstallInputs(commands: string[], inputs: string[]): void {
     this._depReinstallCommands = commands;
     this._depReinstallInputs = inputs;
+  }
+
+  /**
+   * The `agent.install` command list currently applied to this session — i.e.
+   * what `shipit.yaml` said the last time the config was read. Compared against
+   * a freshly-resolved config so a rebase that changes `agent.install` actually
+   * re-runs it (see `applyShipitConfigChange`).
+   */
+  get appliedInstallCommands(): readonly string[] {
+    return this._depReinstallCommands;
+  }
+
+  /**
+   * Ask for a re-run of the recorded `agent.install`, subject to the same
+   * cooldown + install-gate bracketing as the dependency-input-driven
+   * reinstall. Used when `shipit.yaml`'s `agent.install` itself changes.
+   */
+  requestDepReinstall(): void {
+    this.maybeReinstallForDepChange();
+  }
+
+  /**
+   * Re-read the workspace's `shipit.yaml` + compose file and apply whatever
+   * changed to this live session.
+   *
+   * Two callers: the in-container file watcher (a config file was edited), and
+   * orchestrator-side workspace rewrites — a rebase/sync replaces the whole
+   * working tree from outside the container, and the inotify-based watcher is
+   * not a signal we can depend on there (it is started best-effort, and a
+   * cross-mount event can be missed entirely). The orchestrator knows exactly
+   * when it rewrote the tree, so it says so directly.
+   *
+   * `onComposeConfigChanged` is wired by the runner registry to
+   * `applyShipitConfigChange`, which owns the full delta (compose path,
+   * docker-socket, `agent.install`, compose added/removed). The reconcile-only
+   * fallback keeps runners built without that wiring (unit tests) working.
+   */
+  reevaluateWorkspaceConfig(): void {
+    if (this._disposed) return;
+    if (this.onComposeConfigChanged) {
+      this.onComposeConfigChanged();
+      return;
+    }
+    this._serviceManager?.reconcile().catch((err: unknown) => {
+      this.logReconcileError("Compose reconcile failed", err);
+    });
   }
 
   /**
@@ -1508,6 +1562,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     if (this._installInFlight) {
       void this.resyncInstallStateAfterReconnect();
     }
+    // Re-arm the worker's file watcher on every stream open. `/files/watch` is
+    // otherwise a single best-effort POST fired once per runner
+    // (`startWorkerResources`): if it fails, or the worker restarts under a
+    // live runner, the watcher stays dead for the rest of the session — no file
+    // tree updates AND no compose reconcile on a config-file change, silently.
+    // The worker endpoint is idempotent (an already-running watcher answers
+    // `existing: true`), so re-posting here is free and self-healing.
+    void this.startWorkerResources();
   }
 
   /**
@@ -1783,30 +1845,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           const paths = (data.paths as string[]) ?? [];
           this.emitMessage({ type: "files_changed", paths });
 
-          // Detect config file changes and trigger compose reconciliation
+          // Detect config file changes and re-evaluate the session's config
           const hasConfigChange = paths.some(p =>
             ContainerSessionRunner.CONFIG_FILES.has(p) ||
             ContainerSessionRunner.CONFIG_FILES.has(p.replace(/^\.\//, "")),
           );
           if (hasConfigChange) {
-            if (this._serviceManager?.started) {
-              console.log(`[container-runner:${this.sessionId}] Config file changed, reconciling compose stack`);
-              this._serviceManager.reconcile().catch((err: unknown) => {
-                this.logReconcileError("Compose reconcile failed", err);
-              });
-            } else if (this._serviceManager && !this._serviceManager.started) {
-              // ServiceManager exists but start() failed (e.g. compose file
-              // was missing when shipit.yaml was written first) — retry
-              console.log(`[container-runner:${this.sessionId}] Config file changed, retrying compose start`);
-              this._serviceManager.reconcile().catch((err: unknown) => {
-                this.logReconcileError("Compose retry failed", err);
-              });
-            } else if (!this._serviceManager && this.onComposeConfigChanged) {
-              // No ServiceManager yet (e.g. old-format config was just migrated)
-              // — re-evaluate the config and set up compose if now available
-              console.log(`[container-runner:${this.sessionId}] Config file changed, attempting compose setup`);
-              this.onComposeConfigChanged();
-            }
+            console.log(`[container-runner:${this.sessionId}] Config file changed, re-evaluating session config`);
+            this.reevaluateWorkspaceConfig();
           }
 
           // #1622 — a dependency input file (lockfile/manifest) changed. This

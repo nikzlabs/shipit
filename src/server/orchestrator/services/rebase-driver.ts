@@ -189,6 +189,30 @@ function emitSyncCard(
 }
 
 /**
+ * A rebase rewrites the whole working tree from the ORCHESTRATOR, outside the
+ * session container — so the newly-checked-out `shipit.yaml` / compose file can
+ * declare services, an install step, or a compose path the running session
+ * knows nothing about.
+ *
+ * The session's compose stack is otherwise re-evaluated only when the
+ * in-container inotify watcher reports a config file changed, which is the
+ * wrong signal for this: it is started best-effort (a single fire-and-forget
+ * POST per runner) and watches a bind mount the orchestrator wrote to from
+ * another container. When it misses the write — or was never started — the
+ * user rebases onto the latest base and the new service simply never appears.
+ *
+ * The orchestrator knows exactly when it rewrote the tree, so it says so
+ * directly. Best-effort: a config re-read must never fail a completed rebase.
+ */
+function reevaluateSessionConfig(runner: SessionRunnerInterface): void {
+  try {
+    runner.reevaluateWorkspaceConfig?.();
+  } catch (err) {
+    console.error("[rebase] config re-evaluation failed:", getErrorMessage(err));
+  }
+}
+
+/**
  * Run the full rebase flow. Emits WS events through the runner so the client
  * can update its UI as the flow progresses.
  *
@@ -245,6 +269,7 @@ export async function runRebaseFlow(
 
     // 5. Clean rebase — go straight to force push.
     if (result.status === "clean") {
+      reevaluateSessionConfig(runner);
       const forcePushed = await tryForcePush(git, githubAuthManager, runner);
       if (recordSync) {
         emitSyncCard(deps, { baseBranch, headFrom: headBefore, headTo: await git.getHeadHash(), baseMove, forcePushed });
@@ -297,6 +322,7 @@ export async function runRebaseFlow(
     }
 
     // 7. Force push after successful resolution.
+    reevaluateSessionConfig(runner);
     const forcePushed = await tryForcePush(git, githubAuthManager, runner);
     if (recordSync) {
       emitSyncCard(deps, { baseBranch, headFrom: headBefore, headTo: await git.getHeadHash(), baseMove, forcePushed });

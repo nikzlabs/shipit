@@ -24,7 +24,7 @@ import type { PrepareRunParamsFn } from "./agent-run-params-prep.js";
 import { pushToOrigin } from "./git-utils.js";
 import { isNonFastForwardError } from "./services/git.js";
 import { getErrorMessage } from "./validation.js";
-import { setupServiceManager } from "./service-manager-setup.js";
+import { applyShipitConfigChange, setupServiceManager } from "./service-manager-setup.js";
 import { buildAgentRunParams } from "./session-agent-run-params.js";
 import { finalizeSessionAgentEnvironment, prepareSessionAgentEnvironment } from "./session-agent-env.js";
 import { emitPrLifecycleAfterCommit } from "./services/pr-lifecycle.js";
@@ -509,10 +509,14 @@ export function createRunnerRegistry(
         };
         setupServiceManager(runner, setupDeps);
 
-        // Allow re-setup when config files change (e.g. old-format migrated to new)
+        // Re-evaluate the session's config when it changes on disk — an edit
+        // the file watcher reports, or an orchestrator-side workspace rewrite
+        // (rebase/sync) that calls `runner.reevaluateWorkspaceConfig()`.
+        // `applyShipitConfigChange` handles the full delta, including the
+        // no-manager-yet case (which delegates back to `setupServiceManager`).
         if ("onComposeConfigChanged" in runner) {
           (runner as { onComposeConfigChanged?: () => void }).onComposeConfigChanged = () => {
-            setupServiceManager(runner, setupDeps);
+            applyShipitConfigChange(runner, setupDeps);
           };
         }
 

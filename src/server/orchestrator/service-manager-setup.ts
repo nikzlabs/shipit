@@ -230,53 +230,61 @@ export async function awaitComposeStop(
 }
 
 /**
+ * Everything `setupServiceManager` (and the incremental
+ * {@link applyShipitConfigChange}) needs to stand a session's compose stack up.
+ * Extracted so both entry points share one dependency shape — the change
+ * applier must be callable with the exact deps the initial setup was wired with.
+ */
+export interface ServiceSetupDeps {
+  sessionManager: SessionManager;
+  /**
+   * docs/178 — repo trust store. A repo-backed session whose remote has not
+   * been trusted defers all repo-declared auto-execution (agent.install +
+   * compose command:/build:). Required so the gate has an authority to
+   * consult; tests pass a store whose `isTrusted` returns true.
+   */
+  repoStore: RepoStore;
+  serviceManagers: Map<string, ServiceManager>;
+  composeStopPromises: Map<string, Promise<void>>;
+  composeWarnings: Map<string, string>;
+  composeNotConfigured: Set<string>;
+  containerManager: SessionContainerManager | null;
+  secretStore?: SecretStore;
+  dockerSecretsConfig?: { internalDir: string; hostDir?: string; entrypointSourcePath: string };
+  /**
+   * docs/183 — orchestrator-private root for per-service compose env files,
+   * outside the agent's workspace mount. Passed to `ServiceManager`.
+   */
+  serviceEnvDir?: string;
+  /** docs/192 — durable log store, forwarded to `ServiceManager` for service-log persistence. */
+  logStore?: LogStore;
+  broadcastLog?: (sessionId: string, source: LogSource, text: string) => void;
+  /** docs/088 — account-level MCP secrets store. */
+  credentialStore?: CredentialStore;
+  /**
+   * docs/183 Phase 4b — publish-after-install hook. Called once after this
+   * session's `agent.install` resolves to publish each declared dep dir's
+   * merged snapshot as the next rolling overlay base. Optional; the store is ON
+   * by default, so the hook is inert only when the `OVERLAY_DEP_STORE=0`/`false`
+   * kill switch is set or the session is overlay-ineligible.
+   */
+  publishOverlayBases?: (args: {
+    runner: ContainerSessionRunner;
+    session: SessionInfo;
+    installOk: boolean;
+    /** The exact `agent.install` commands the install ran — recorded on the
+     *  base pointer for the base-hit marker pre-stamp (docs/183). */
+    installCommands?: string[];
+  }) => Promise<DepDirPublishOutcome[]>;
+}
+
+/**
  * Create and wire a ServiceManager for a runner's session if compose config
  * is detected. Fire-and-forget — compose stack start is async.
  */
 export function setupServiceManager(
   runner: SessionRunnerInterface,
-  deps: {
-    sessionManager: SessionManager;
-    /**
-     * docs/178 — repo trust store. A repo-backed session whose remote has not
-     * been trusted defers all repo-declared auto-execution (agent.install +
-     * compose command:/build:). Required so the gate has an authority to
-     * consult; tests pass a store whose `isTrusted` returns true.
-     */
-    repoStore: RepoStore;
-    serviceManagers: Map<string, ServiceManager>;
-    composeStopPromises: Map<string, Promise<void>>;
-    composeWarnings: Map<string, string>;
-    composeNotConfigured: Set<string>;
-    containerManager: SessionContainerManager | null;
-    secretStore?: SecretStore;
-    dockerSecretsConfig?: { internalDir: string; hostDir?: string; entrypointSourcePath: string };
-    /**
-     * docs/183 — orchestrator-private root for per-service compose env files,
-     * outside the agent's workspace mount. Passed to `ServiceManager`.
-     */
-    serviceEnvDir?: string;
-    /** docs/192 — durable log store, forwarded to `ServiceManager` for service-log persistence. */
-    logStore?: LogStore;
-    broadcastLog?: (sessionId: string, source: LogSource, text: string) => void;
-    /** docs/088 — account-level MCP secrets store. */
-    credentialStore?: CredentialStore;
-    /**
-     * docs/183 Phase 4b — publish-after-install hook. Called once after this
-     * session's `agent.install` resolves to publish each declared dep dir's
-     * merged snapshot as the next rolling overlay base. Optional; the store is ON
-     * by default, so the hook is inert only when the `OVERLAY_DEP_STORE=0`/`false`
-     * kill switch is set or the session is overlay-ineligible.
-     */
-    publishOverlayBases?: (args: {
-      runner: ContainerSessionRunner;
-      session: SessionInfo;
-      installOk: boolean;
-      /** The exact `agent.install` commands the install ran — recorded on the
-       *  base pointer for the base-hit marker pre-stamp (docs/183). */
-      installCommands?: string[];
-    }) => Promise<DepDirPublishOutcome[]>;
-  },
+  deps: ServiceSetupDeps,
 ): void {
   const {
     sessionManager,
@@ -347,16 +355,23 @@ export function setupServiceManager(
   // measurement line below. Captured at kickoff; a marker-skip resolves in ~ms,
   // a real install in seconds, so duration classifies the warm-vs-cold scenario.
   const installStartedAt = Date.now();
-  if (installCommands.length > 0 && runner instanceof ContainerSessionRunner) {
+  if (runner instanceof ContainerSessionRunner) {
     // #1622 — record the install commands + the dependency input files
     // (lockfiles/manifests) so the runner can auto-reinstall when one of them
     // changes mid-session (e.g. a git reset that pulls in new deps). A
     // non-content-keyable install resolves to `null` → empty set → no
     // auto-reinstall, the safe default.
+    //
+    // Recorded even for an EMPTY command list: it is also the record of which
+    // `agent.install` this session is currently running, which
+    // `applyShipitConfigChange` diffs against when `shipit.yaml` changes. An
+    // empty list still means "no auto-reinstall", exactly as before.
     runner.setDepReinstallInputs(
       installCommands,
       resolveDepsHashInputs(installCommands, shipitConfig.agent.installInputs) ?? [],
     );
+  }
+  if (installCommands.length > 0 && runner instanceof ContainerSessionRunner) {
     installPromise = runner.runInstall(installCommands).catch((err: unknown) => {
       console.error(`[install:${runner.sessionId}] Install failed:`, getErrorMessage(err));
       return { ok: false };
@@ -663,4 +678,130 @@ export function setupServiceManager(
       }
     }
   })();
+}
+
+/** Order-insensitive-free list comparison for `agent.install` command lists. */
+function sameCommands(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((cmd, i) => cmd === b[i]);
+}
+
+/**
+ * Re-read `shipit.yaml` for a LIVE session and apply whatever changed.
+ *
+ * This is the single entry point for "the workspace's config may have moved
+ * under us" — invoked from the config-file watcher AND from orchestrator-side
+ * workspace rewrites (a rebase/sync onto the latest base can bring in a whole
+ * new `shipit.yaml` and compose file; see `runRebaseFlow`).
+ *
+ * Why not just `mgr.reconcile()`? Because `reconcile()` only re-parses the
+ * COMPOSE file. Everything `shipit.yaml` contributes — which compose file to
+ * read, whether services get the Docker socket, what `agent.install` runs — is
+ * captured once at session setup and was then frozen for the session's whole
+ * life. A session created before the repo declared `compose:` (or before it
+ * added an install step) would never pick it up short of a container restart,
+ * which is exactly the "I rebased onto main and the new service never showed
+ * up" report this closes.
+ *
+ * Deltas handled, in order:
+ *  - **No manager yet** → delegate to `setupServiceManager`, which re-reads the
+ *    config from scratch and does everything (including firing install). This
+ *    is the compose-was-just-added case.
+ *  - **Parse error** → surface it and keep the running stack. A half-written
+ *    `shipit.yaml` (mid-edit, or conflict markers from a merge) must not tear
+ *    down a working preview.
+ *  - **`agent.install` changed** → re-record the dep-reinstall inputs and run
+ *    the new commands, bracketed by the install gate. The worker's marker gate
+ *    makes a no-op re-run cheap.
+ *  - **`compose:` removed** → stop the stack and report not-configured.
+ *  - **`compose:` changed / unchanged** → adopt the new block (if any) and
+ *    reconcile, which re-parses the compose file and brings up new services.
+ */
+export function applyShipitConfigChange(
+  runner: SessionRunnerInterface,
+  deps: ServiceSetupDeps,
+): void {
+  const {
+    sessionManager,
+    serviceManagers,
+    composeStopPromises,
+    composeWarnings,
+    composeNotConfigured,
+  } = deps;
+
+  const mgr = serviceManagers.get(runner.sessionId);
+  if (!mgr) {
+    // Compose was never configured for this session (or the trust gate deferred
+    // setup). The full setup path re-reads everything and owns install too.
+    setupServiceManager(runner, deps);
+    return;
+  }
+
+  const session = sessionManager.get(runner.sessionId);
+  const workspaceDir = session?.workspaceDir ?? runner.sessionDir;
+
+  let shipitConfig;
+  try {
+    shipitConfig = resolveShipitConfig(workspaceDir);
+  } catch (err) {
+    const message = `shipit.yaml is invalid — keeping the previous configuration:\n${getErrorMessage(err)}`;
+    composeWarnings.set(runner.sessionId, message);
+    runner.emitMessage({ type: "compose_error", sessionId: runner.sessionId, message });
+    return;
+  }
+
+  // Mirror `setupServiceManager`'s warning handling so a migration hint added
+  // (or fixed) by the incoming config lands in the preview panel either way.
+  if (shipitConfig.warnings.length > 0) {
+    const text = `shipit.yaml needs migration:\n${shipitConfig.warnings.map(w => `• ${w}`).join("\n")}`;
+    composeWarnings.set(runner.sessionId, text);
+    runner.emitMessage({ type: "compose_error", sessionId: runner.sessionId, message: text });
+  } else if (composeWarnings.has(runner.sessionId)) {
+    composeWarnings.delete(runner.sessionId);
+    runner.emitMessage({ type: "compose_error", sessionId: runner.sessionId, message: "" });
+  }
+
+  // ---- agent.install delta ----
+  if (runner instanceof ContainerSessionRunner) {
+    const nextCommands = shipitConfig.agent.install;
+    if (!sameCommands(runner.appliedInstallCommands, nextCommands)) {
+      console.log(
+        `[install:${runner.sessionId}] agent.install changed — re-running (${nextCommands.length} command(s))`,
+      );
+      runner.setDepReinstallInputs(
+        nextCommands,
+        resolveDepsHashInputs(nextCommands, shipitConfig.agent.installInputs) ?? [],
+      );
+      // Bracketed by the install gate + the shared reinstall cooldown, so a
+      // burst of config rewrites (a rebase touching several files) coalesces
+      // into one trailing install rather than a storm.
+      runner.requestDepReinstall();
+    }
+  }
+
+  // ---- compose delta ----
+  if (!shipitConfig.compose) {
+    // The `compose:` block was removed. Tear the stack down rather than leaving
+    // orphaned containers running against a definition the repo no longer has.
+    console.log(`[compose:${runner.sessionId}] compose config removed — stopping stack`);
+    serviceManagers.delete(runner.sessionId);
+    runner.setServiceManager?.(null);
+    trackComposeStop(composeStopPromises, runner.sessionId, mgr);
+    composeNotConfigured.add(runner.sessionId);
+    runner.emitMessage({ type: "compose_not_configured", sessionId: runner.sessionId });
+    return;
+  }
+
+  composeNotConfigured.delete(runner.sessionId);
+  if (mgr.updateComposeConfig(shipitConfig.compose)) {
+    console.log(
+      `[compose:${runner.sessionId}] compose config changed — reconciling against ${shipitConfig.compose.file}`,
+    );
+  }
+  void mgr.reconcile().catch((err: unknown) => {
+    const errMsg = getErrorMessage(err);
+    console.error(`[compose:${runner.sessionId}] Reconcile after config change failed:`, errMsg);
+    mgr.startError = errMsg;
+    runner.emitMessage({ type: "compose_error", sessionId: runner.sessionId, message: errMsg });
+    deps.broadcastLog?.(runner.sessionId, "server", `[compose] Reconcile failed: ${errMsg}`);
+  });
 }
