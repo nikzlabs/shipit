@@ -66,24 +66,23 @@ export interface WsFullResetComplete {
 
 // ---- Session runner messages (server → client) ----
 
-/** Server → Client: current runtime state of a session. */
+/**
+ * Server → Client: current runtime state of a session.
+ *
+ * `running` is a **turn transition**, not a poll: every emitter sends this
+ * message because a turn just started or just ended. The client treats it as
+ * authoritative on "is a turn in flight" — it adds/removes the session from
+ * `activeRunnerSessions` and drives the chat spinner off it. Anything that
+ * merely wants to report some *other* piece of session state must therefore get
+ * its own message rather than piggy-backing here with a `running` snapshot: a
+ * snapshot taken at an arbitrary moment reads as "the turn ended" and produces a
+ * spurious idle blip (the docs/235 regression — see {@link WsBackgroundTasks}).
+ */
 export interface WsSessionStatus {
   type: "session_status";
   sessionId: string;
   running: boolean;
   queueLength?: number;
-  /**
-   * docs/235 — outstanding agent-initiated background tasks (a
-   * `Bash(run_in_background)` job, a scheduled wake-up). Present when the
-   * backend reported a change; absent means "no information in this message",
-   * NOT "none" — the client keeps its prior value rather than clearing on every
-   * unrelated status update.
-   *
-   * `count: 0` is the explicit drained signal. `descriptions` feeds the chat
-   * status line so it can name the work ("Waiting for: npm test") instead of
-   * showing a bare count.
-   */
-  backgroundTasks?: { count: number; descriptions: string[] };
   /** Present when the session encountered a fatal error (e.g. container crash). */
   error?: string;
   /**
@@ -110,6 +109,32 @@ export interface WsSessionStatus {
    * See docs/124-session-rescue-and-diagnostics §1.4.
    */
   lastInterruptError?: string;
+}
+
+/**
+ * Server → Client: the session's outstanding agent-initiated background tasks
+ * (docs/235) — a `Bash(run_in_background)` job, a scheduled wake-up. Carries the
+ * **complete current list** every time (`count: 0` is the explicit drained
+ * signal), so one message fully re-states the truth.
+ *
+ * Deliberately its own message type rather than a field on
+ * {@link WsSessionStatus}. The first implementation rode along on
+ * `session_status` and had to fill in a `running` value; the CLI drains the task
+ * list ~1ms *before* it emits the self-wake that marks the runner busy again, so
+ * that message carried `running: false` and the client read a turn that was
+ * about to start as a session going idle — clearing the running indicator and
+ * firing the "needs attention" chime, then flipping back a frame later. Splitting
+ * the level signal off means a background-task update can never assert anything
+ * about turn state.
+ *
+ * `descriptions` feeds the chat status line so it can name the work ("Waiting
+ * for: npm test") instead of showing a bare count.
+ */
+export interface WsBackgroundTasks {
+  type: "background_tasks";
+  sessionId: string;
+  count: number;
+  descriptions: string[];
 }
 
 /**

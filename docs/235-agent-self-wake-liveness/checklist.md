@@ -11,8 +11,15 @@
 - [x] Set the state in `agent-listeners.ts`; clear it on agent `done`/`error`
 - [x] Guard `idle-enforcer.ts` (scan + TOCTOU re-check) on `agentBusy`
 - [x] Guard `canAutoDescend` in `tier-escalation.ts` on `agentBusy`
-- [x] Add `backgroundTasks: { count, descriptions }` to `WsSessionStatus`; emit
-      on each `agent_background_tasks`
+- [x] Emit the task list on each `agent_background_tasks`. Shipped as a field on
+      `WsSessionStatus`; **corrected** to its own `background_tasks` message —
+      riding on a turn-transition message forced a `running` snapshot at the one
+      moment the CLI has drained the list but not yet self-woken, so the client
+      read a starting turn as an idle session (indicator off + chime, back on a
+      frame later)
+- [x] Require an attention reason to hold for a settle window before
+      `useAttentionNotifications` fires, so structural sub-second idle blips
+      (drain→wake, turn-end→queue-drain) can't chime
 - [x] Add `backgroundTaskSessionIds` to the `session_attention` SSE snapshot so
       the state survives reload / reconnect
 - [x] Client store: `backgroundTaskSessions`, reconciled wholesale from the
@@ -34,9 +41,13 @@
 - [x] Tests: adapter mapping, tracker gate + decay, enforcer refuses to reap a
       session with outstanding background tasks, tier escalation ditto
 - [x] Tests: `computeAttentionReason` stays silent on pending background tasks
-      but still reports a blocked permission prompt; `session_status` handler
-      sets/clears the marker, keeps the label across a turn-end status that
-      omits the field, and never widens `activeRunnerSessions`
+      but still reports a blocked permission prompt; the `background_tasks`
+      handler sets/clears the marker, never touches `activeRunnerSessions` in
+      either direction, leaves the chat surfaces alone mid-turn, and hands the
+      turn-end `session_status` a named label to restore
+- [x] Tests: an attention reason that reverts inside the settle window never
+      notifies; one that outlives it still does, announcing the reason it
+      settled on
 
 ## Deferred — tracked separately as [SHI-247](https://linear.app/shipit-ai/issue/SHI-247)
 

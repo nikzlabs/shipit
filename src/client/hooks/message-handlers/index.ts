@@ -8,6 +8,7 @@ import { handleActionChecklistCard } from "./action-checklist-card.js";
 import { handleBranchAutoResetCard } from "./branch-auto-reset-card.js";
 import { handleBranchSyncedCard } from "./branch-synced-card.js";
 import { handleAuthRequired } from "./auth-required.js";
+import { handleBackgroundTasks } from "./background-tasks.js";
 import { handleBugReportCard } from "./bug-report-card.js";
 import { handleBugReportFailed } from "./bug-report-failed.js";
 import { handleBugReportFiled } from "./bug-report-filed.js";
@@ -117,6 +118,7 @@ export const messageHandlers: MessageHandlerMap = {
   agent_event: handleAgentEvent,
   agent_interrupted: handleAgentInterrupted,
   auth_required: handleAuthRequired,
+  background_tasks: handleBackgroundTasks,
   bug_report_card: handleBugReportCard,
   bug_report_failed: handleBugReportFailed,
   bug_report_filed: handleBugReportFiled,
