@@ -8,7 +8,15 @@ import { useRepoStore } from "../stores/repo-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { startQuickSessionInBackground } from "../stores/actions/session-actions.js";
-import { getSavedAgentId, getSavedModelId, getSavedReasoning, saveAgentId, saveModelId } from "../utils/local-storage.js";
+import {
+  getSavedAgentId,
+  getSavedModelId,
+  getSavedQuickSessionRepo,
+  getSavedReasoning,
+  saveAgentId,
+  saveModelId,
+  saveQuickSessionRepo,
+} from "../utils/local-storage.js";
 import { agentIdForModel } from "../utils/agent-for-model.js";
 import { parseRepoLabel } from "../utils/repo-label.js";
 import { MessageInput, type SendPayload } from "./MessageInput.js";
@@ -72,7 +80,23 @@ export function QuickCaptureOverlay({
     () => sessions.find((s) => s.id === sessionId)?.remoteUrl,
     [sessions, sessionId],
   );
-  const defaultRepoUrl = activeSessionRepo ?? activeRepoUrl ?? repos[0]?.url;
+  // The last quick session's repo wins over the repo the user is currently
+  // sitting in. Quick capture is the "I just spotted a gap" surface, and that
+  // gap is usually in a *different* repo than the one being worked in (the
+  // canonical case: working in a product repo, filing work into ShipIt itself).
+  // Re-targeting to the current session every time meant re-picking the same
+  // repo on every capture. The remembered value is validated against the loaded
+  // repo list so a removed/renamed repo silently falls back instead of
+  // selecting nothing. Only when there's no remembered quick session do we fall
+  // back to the current context. See docs/145 "Repo / target context".
+  // `open` is in the deps so the value is re-read from localStorage on every
+  // opening — a send earlier in this page session must be reflected without a
+  // reload.
+  const lastQuickSessionRepo = useMemo(() => {
+    const saved = getSavedQuickSessionRepo();
+    return saved && repos.some((r) => r.url === saved) ? saved : undefined;
+  }, [repos, open]);
+  const defaultRepoUrl = lastQuickSessionRepo ?? activeSessionRepo ?? activeRepoUrl ?? repos[0]?.url;
   const effectiveRepoUrl = selectedRepoUrl ?? defaultRepoUrl;
   const selectedRepo = repos.find((r) => r.url === effectiveRepoUrl);
 
@@ -147,6 +171,10 @@ export function QuickCaptureOverlay({
       ...(armAutoMerge ? { armAutoMerge: true } : {}),
       ...(payload.deferredFiles.length > 0 ? { files: payload.deferredFiles } : {}),
     };
+    // Remember the target so the next quick capture defaults to it (see
+    // `lastQuickSessionRepo`). Written on send, not on picker change, so an
+    // abandoned overlay can't move the default.
+    saveQuickSessionRepo(selectedRepo.url);
     setPendingFiles([]);
     close();
     // Let the app graduate the URL when the server reused the session the user

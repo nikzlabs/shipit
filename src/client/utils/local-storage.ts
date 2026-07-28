@@ -167,6 +167,34 @@ export function saveReasoning(agentId: string, effort: string | null): void {
   }
 }
 
+// The repo of the most recent quick session (docs/145). Quick capture defaults
+// to this rather than the repo the user is *currently* sitting in: the overlay's
+// dominant use is "I'm working in repo A and just spotted a gap in repo B" —
+// the same B, over and over. Remembering the last quick-session target makes
+// that a zero-click path, and the picker is still one click away for the
+// occasional switch. Falls back to the current session's repo when unset.
+const LAST_QUICK_SESSION_REPO_KEY = "shipit-last-quick-session-repo";
+
+export function getSavedQuickSessionRepo(): string | undefined {
+  try {
+    return localStorage.getItem(LAST_QUICK_SESSION_REPO_KEY) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function saveQuickSessionRepo(url: string | undefined): void {
+  try {
+    if (url) {
+      localStorage.setItem(LAST_QUICK_SESSION_REPO_KEY, url);
+    } else {
+      localStorage.removeItem(LAST_QUICK_SESSION_REPO_KEY);
+    }
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
 export function getSavedActiveRepo(): string | undefined {
   try {
     return localStorage.getItem(ACTIVE_REPO_KEY) ?? undefined;
@@ -812,4 +840,4 @@ export function saveIncludeDone(includeDone: boolean): void {
   }
 }
 
-export { SIDEBAR_COLLAPSED_KEY, RIGHT_TAB_KEY, AGENT_PREFERENCE_KEY, MODEL_PREFERENCE_KEY, ACTIVE_REPO_KEY, NOTIFY_ON_FINISH_KEY, SOUND_ON_FINISH_KEY, COLLAPSED_REPOS_KEY, COLLAPSED_PARENTS_KEY, ISSUE_FILTERS_KEY, ISSUE_INCLUDE_DONE_KEY };
+export { SIDEBAR_COLLAPSED_KEY, RIGHT_TAB_KEY, AGENT_PREFERENCE_KEY, MODEL_PREFERENCE_KEY, ACTIVE_REPO_KEY, LAST_QUICK_SESSION_REPO_KEY, NOTIFY_ON_FINISH_KEY, SOUND_ON_FINISH_KEY, COLLAPSED_REPOS_KEY, COLLAPSED_PARENTS_KEY, ISSUE_FILTERS_KEY, ISSUE_INCLUDE_DONE_KEY };
