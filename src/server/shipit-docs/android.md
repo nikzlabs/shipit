@@ -58,6 +58,14 @@ screen to a PNG on the JVM with **no device**, and the test itself sets up the
 data it renders (realistic state, specific window insets, locale, theme), then
 diffs against a committed golden image.
 
+**This is your primary visual loop — reach for it first.** It's seconds per
+iteration, needs no emulator or KVM, works on every host, and diffs in a PR. It's
+also what real Android teams lean on most: the platform's fast paths (Live Edit,
+Apply Changes, Compose Preview) are all Android-Studio-bound and unavailable from
+a CLI, so snapshot tests are the mainstream headless technique, not a fallback.
+Use the emulator (below) only for what snapshots can't capture — runtime
+behavior, lifecycle, crashes, real interaction.
+
 Two mature libraries, both headless on the baked toolchain:
 
 - **Paparazzi** — renders Views and Compose `@Preview`s via `layoutlib`.
