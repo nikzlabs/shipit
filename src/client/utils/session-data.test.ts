@@ -237,3 +237,107 @@ describe("loadSessionHistory — modelInfo seeding", () => {
     expect(card?.path).toBe(".npmrc");
   });
 });
+
+/**
+ * docs/235 — switching into a session that is between turns with a background
+ * job outstanding showed "Waiting for a background task to finish" for a beat
+ * and then went blank, while the sidebar kept showing the session as working.
+ * The status line came from a live/replayed `background_tasks` message and the
+ * blank came from this hydration, which read only `agentRunning` and cleared
+ * the bar unconditionally.
+ */
+describe("loadSessionHistory — background-task hydration", () => {
+  let fetchSpy: ReturnType<typeof vi.fn>;
+
+  const historyWith = (backgroundTasks?: string[], agentRunning = false) => {
+    fetchSpy.mockImplementation((url: string) => {
+      if (url.includes("/history")) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            messages: [],
+            commits: [],
+            fileTree: [],
+            agentRunning,
+            ...(backgroundTasks ? { backgroundTasks } : {}),
+          }),
+        });
+      }
+      return Promise.resolve({ ok: false, status: 404 });
+    });
+  };
+
+  beforeEach(() => {
+    useUiStore.getState().reset();
+    useSessionStore.getState().reset();
+    useGitStore.getState().reset();
+    useFileStore.getState().reset();
+    fetchSpy = vi.fn();
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("keeps the status line up for a between-turns session with outstanding work", async () => {
+    useSessionStore.getState().setSessionId("bg-sess");
+    historyWith(["npm test"]);
+
+    await loadSessionHistory("bg-sess");
+
+    const state = useSessionStore.getState();
+    expect(state.isLoading).toBe(true);
+    expect(state.activity?.label).toBe("Waiting for: npm test");
+    // No tool call is running, so the tool spinner would be a lie.
+    expect(state.activity?.tool).toBeUndefined();
+    expect(state.backgroundTaskSessions.get("bg-sess")).toEqual(["npm test"]);
+  });
+
+  it("upgrades the unnamed SSE-snapshot marker to the named label", async () => {
+    useSessionStore.getState().setSessionId("bg-sess");
+    // The `session_attention` snapshot carries ids only — no descriptions.
+    useSessionStore.getState().setBackgroundTaskSessions(() => new Map([["bg-sess", []]]));
+    historyWith(["build the docs site"]);
+
+    await loadSessionHistory("bg-sess");
+
+    expect(useSessionStore.getState().activity?.label).toBe("Waiting for: build the docs site");
+  });
+
+  it("clears the marker and the status line when nothing is outstanding", async () => {
+    useSessionStore.getState().setSessionId("bg-sess");
+    useSessionStore.getState().setBackgroundTaskSessions(() => new Map([["bg-sess", ["stale"]]]));
+    historyWith([]);
+
+    await loadSessionHistory("bg-sess");
+
+    const state = useSessionStore.getState();
+    expect(state.isLoading).toBe(false);
+    expect(state.activity).toBeUndefined();
+    expect(state.backgroundTaskSessions.has("bg-sess")).toBe(false);
+  });
+
+  it("leaves other sessions' markers alone", async () => {
+    useSessionStore.getState().setSessionId("bg-sess");
+    useSessionStore.getState().setBackgroundTaskSessions(() => new Map([["other-sess", ["theirs"]]]));
+    historyWith([]);
+
+    await loadSessionHistory("bg-sess");
+
+    expect(useSessionStore.getState().backgroundTaskSessions.get("other-sess")).toEqual(["theirs"]);
+  });
+
+  it("a running turn still wins — the turn owns the status line", async () => {
+    useSessionStore.getState().setSessionId("bg-sess");
+    historyWith(["npm test"], true);
+
+    await loadSessionHistory("bg-sess");
+
+    const state = useSessionStore.getState();
+    expect(state.isLoading).toBe(true);
+    // Not overwritten with a "Waiting for…" label: live tool activity owns it.
+    expect(state.activity).toBeUndefined();
+    expect(state.backgroundTaskSessions.get("bg-sess")).toEqual(["npm test"]);
+  });
+});

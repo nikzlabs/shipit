@@ -17,6 +17,7 @@ import { useEgressPromptStore, type EgressPromptCardState } from "../stores/egre
 import { usePermissionStore, type PermissionCardState } from "../stores/permission-store.js";
 import { useIssueWriteStore } from "../stores/issue-write-store.js";
 import { usePresentStore } from "../stores/present-store.js";
+import { backgroundTaskLabel } from "../hooks/message-handlers/background-tasks.js";
 import type { IssueWriteCard } from "../../server/shared/types.js";
 
 interface PreviewStatusResponse {
@@ -43,6 +44,12 @@ interface HistoryResponse {
   commits: GitCommit[];
   fileTree: FileTreeNode[];
   agentRunning?: boolean;
+  /**
+   * docs/235 — descriptions of the outstanding agent-initiated background tasks.
+   * A session can be between turns (`agentRunning: false`) and still be waiting
+   * on work; this is the authoritative snapshot of that state at load time.
+   */
+  backgroundTasks?: string[];
   /**
    * Per-turn usage series for this session — sourced from `usage_turns` so
    * the ContextDial popover sees a complete history (not just turns observed
@@ -181,8 +188,29 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
   // empty) so a now-cleared session drops a stale tab.
   usePresentStore.getState().hydrate(data.presentations ?? []);
 
+  // docs/235 — reconcile the standing background-task marker from the payload
+  // before deciding the chat status line. This load is authoritative for THIS
+  // session (and only this session): it carries the descriptions the SSE
+  // `session_attention` snapshot has no room for, so switching in upgrades the
+  // unnamed fallback label to the named one.
+  const backgroundTasks = data.backgroundTasks ?? [];
+  session.setBackgroundTaskSessions((prev) => {
+    const next = new Map(prev);
+    if (backgroundTasks.length > 0) { next.set(sessionId, backgroundTasks); } else { next.delete(sessionId); }
+    return next;
+  });
+
   if (data.agentRunning) {
     session.setIsLoading(true);
+  } else if (backgroundTasks.length > 0) {
+    // Between turns with work outstanding the session is not idle, it is
+    // waiting — clearing the bar here reads as "finished". This is the same
+    // rule `handleSessionStatus` applies at turn end; without it, hydration
+    // raced the live/replayed `background_tasks` message and wiped the status
+    // line a moment after the switch. `tool` is deliberately left unset — no
+    // tool call is running, so the tool spinner would be a lie.
+    session.setIsLoading(true);
+    session.setActivity({ label: backgroundTaskLabel(backgroundTasks) });
   } else {
     session.setIsLoading(false);
     session.setActivity(undefined);
