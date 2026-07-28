@@ -68,8 +68,8 @@ const samplePayload = {
     compose: { file: "docker-compose.yml", dockerSocket: false },
     warnings: [],
     sizing: {
-      effectiveMb: 11059,
-      autoMb: 11059,
+      effectiveMb: 44237,
+      autoMb: 44237,
       hostMb: 98304,
       reserveMb: 9830,
       usableMb: 88474,
@@ -159,8 +159,8 @@ describe("SessionDiagnosticsPanel", () => {
     await waitFor(() => {
       expect(screen.getByText("Parsed shipit.yaml")).toBeTruthy();
     });
-    // Auto-derived session memory is shown (11059 MiB on the sample 96 GB host).
-    expect(screen.getByText(/11059 MiB — auto/)).toBeTruthy();
+    // Auto-derived session memory is shown (44237 MiB on the sample 96 GB host).
+    expect(screen.getByText(/44237 MiB — auto/)).toBeTruthy();
     expect(screen.getByText("npm install")).toBeTruthy();
     expect(screen.getByText("docker-compose.yml")).toBeTruthy();
   });
@@ -219,7 +219,7 @@ describe("SessionDiagnosticsPanel", () => {
         warnings: [],
         sizing: {
           effectiveMb: 1024,
-          autoMb: 11059,
+          autoMb: 44237,
           hostMb: 98304,
           reserveMb: 9830,
           usableMb: 88474,

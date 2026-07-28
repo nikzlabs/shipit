@@ -47,14 +47,25 @@ Two structural problems follow:
 ```
 reserve     = max(2 GiB, totalRam × 0.10)          // orchestrator + OS working set
 usable      = totalRam − reserve
-sized       = clamp( usable / TARGET_CONCURRENCY , FLOOR , CEILING )
+sized       = clamp( usable × PER_SESSION_USABLE_FRACTION , FLOOR , CEILING )
 perSession  = max( min( sized , usable ) , BOOT_MIN ) // never exceed usable; never below boot minimum
 
-TARGET_CONCURRENCY = 8        // heavy sessions that should peak at once on a large host
-FLOOR              = 4 GiB    // a real test suite needs room
-CEILING            = 16 GiB   // no single session should need more; bounds blast radius
-BOOT_MIN           = 1536 MiB // AGENT_DEFAULTS.memory — least a session needs to function
+PER_SESSION_USABLE_FRACTION = 0.5      // one session may hold up to half the usable budget
+FLOOR                       = 4 GiB    // a real test suite needs room
+CEILING                     = 48 GiB   // no single session should need more; bounds blast radius
+BOOT_MIN                    = 1536 MiB // AGENT_DEFAULTS.memory — least a session needs to function
 ```
+
+**Why a fraction of usable, not `usable / expectedConcurrency`.** The first cut of this design divided
+`usable` by a `TARGET_CONCURRENCY = 8` — which quietly reintroduced the reservation model Principle 1
+rejects. It priced *every* session as though all eight peaked simultaneously, so on a 96 GB host each
+session got ~10.8 GiB while the host sat mostly idle. The real workload is the opposite shape: many
+sessions parked at a few hundred MB and **one** doing something heavy (a full test suite, a native
+build, an inner orchestrator). The session that actually needs the machine is exactly the one the
+division starved. Sizing to a fraction of `usable` restores the ceiling semantics: one heavy session
+can use half the host, and two simultaneous heavy peaks still fit inside `usable`. Beyond two, the OOM
+circuit breaker and the rescue flow are the backstop — the same tradeoff the doc already accepted, now
+priced honestly.
 
 The `min(sized, usable)` step matters because `FLOOR` (4 GiB) can exceed `usable` on a small host — a
 4 GB host has only ~2 GiB usable. There, `perSession` is pinned to `usable`: the session may use all
@@ -75,23 +86,27 @@ below the supported minimum and therefore oversubscribed.
 sessions: a session that OOMs kills one container, but an orchestrator that OOMs takes down the whole
 host, so its headroom is protected first.
 
-`TARGET_CONCURRENCY`, `FLOOR`, `CEILING`, and the reserve fraction are **internal constants**, not user
-config. Operators who disagree use the override env below rather than tuning constants.
+`PER_SESSION_USABLE_FRACTION`, `FLOOR`, `CEILING`, and the reserve fraction are **internal constants**,
+not user config. Operators who disagree use the override env below rather than tuning constants.
 
 ### How the constants behave across host sizes
 
-`TARGET_CONCURRENCY` is a ceiling that only binds on large hosts. The division reaches the `FLOOR` once
-`usable / 8 ≥ 4 GiB`, i.e. `usable ≥ 32 GiB` (host ≈ 34 GB+). Below that the `FLOOR` governs and
-effective concurrency is `usable / FLOOR`, not 8 — which is correct: a small host should run fewer heavy
-sessions at once. On a host smaller than the `FLOOR` itself, `perSession` is pinned to `usable` (the
-`min(sized, usable)` step), so a single session fills the usable budget rather than overrunning it.
+The fraction governs the middle of the range. The `FLOOR` binds only below ~8 GiB usable (host ≈ 10 GB),
+where half the budget is less than a test suite needs; there `perSession` is pinned to `min(FLOOR,
+usable)` so a single session fills what's available rather than overrunning it. The `CEILING` binds only
+above ~96 GiB usable (host ≈ 107 GB), where half the host is more than any one session has a use for.
 
-| Host RAM | reserve | usable | per-session memory | heavy sessions that fit |
+| Host RAM | reserve | usable | per-session ceiling | simultaneous heavy peaks that fit |
 |---|---|---|---|---|
-| 4 GB | 2 GiB | 2 GiB | 2 GiB (capped to usable) | ~1 |
-| 8 GB | 2 GiB | 6 GiB | 4 GiB (floored) | ~1 |
-| 16 GB | 2 GiB | 14 GiB | 4 GiB (floored) | ~3 |
-| 96 GB | 9.6 GiB | 86 GiB | ~10.8 GiB | ~8 |
+| 4 GB | 2 GiB | 2 GiB | 2 GiB (capped to usable) | 1 |
+| 8 GB | 2 GiB | 6 GiB | 4 GiB (floored) | 1 |
+| 16 GB | 2 GiB | 14 GiB | 7 GiB | 2 |
+| 32 GB | 3.2 GiB | 28.8 GiB | ~14.4 GiB | 2 |
+| 96 GB | 9.6 GiB | 86.4 GiB | ~43.2 GiB | 2 |
+| 1 TB | 102 GiB | 921 GiB | 48 GiB (ceiling) | 19 |
+
+"Simultaneous heavy peaks" is the worst case, not the expected one — every session below its ceiling
+costs only what it touches, so the practical concurrency is far higher.
 
 ### Operator override (the only override)
 
@@ -104,6 +119,11 @@ effective  = min( baseline , cap )
 `DEFAULT_SESSION_MEMORY_MB` (baseline) and `MAX_SESSION_MEMORY_MB` (hard ceiling) are honored when set —
 for an unusual concurrency target or a pinned size. Unset means auto. There is no repo layer: the repo
 cannot influence its own size, by design.
+
+Both are read from the **orchestrator's own process env**, so the VPS deployment must pass them into the
+`shipit` container explicitly (`deployment/vps/docker-compose.yml`) — otherwise exporting them in
+`/etc/shipit/shipit.env` silently no-ops, the same failure mode `OVERLAY_DEP_STORE` and `SHIPIT_GIT_LFS`
+carry warnings about in that file. The passthroughs default to empty (= auto).
 
 ### Repo resource fields are removed
 
@@ -153,6 +173,8 @@ container; for the VM deployment it resolves straight to `os.totalmem()`.
   cases.
 - `src/server/shipit-docs/shipit-yaml.md` — remove the resource-field rows; document automatic sizing and
   the optional `DEFAULT_SESSION_MEMORY_MB` / `MAX_SESSION_MEMORY_MB` env.
+- `deployment/vps/docker-compose.yml` — passes both override env vars into the orchestrator container so
+  they can be set from `/etc/shipit/shipit.env`.
 
 ## Rejected alternatives
 

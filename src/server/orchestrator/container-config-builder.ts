@@ -29,12 +29,22 @@ import { resolveShipitConfig, type ShipitConfig } from "../shared/shipit-config.
 // Sizing constants (all memory values in MiB)
 // ---------------------------------------------------------------------------
 
-/** Heavy sessions that should be able to peak at once on a large host. */
-const TARGET_CONCURRENCY = 8;
+/**
+ * Share of the usable budget one session's ceiling may reach.
+ *
+ * This is deliberately NOT `1 / expectedConcurrency`. A cgroup limit is a
+ * ceiling, not a reservation, and the observed workload is "many idle sessions,
+ * one doing something heavy" — so dividing the host by a concurrency target
+ * priced every session as if all of them peaked at once, and the single session
+ * that actually needed room got a fraction of a host that was mostly free.
+ * Half the usable budget lets one heavy session use the machine while still
+ * leaving two simultaneous heavy peaks inside `usable`.
+ */
+const PER_SESSION_USABLE_FRACTION = 0.5;
 /** A real test suite needs room — the smallest per-session ceiling on a roomy host. */
 const FLOOR_MB = 4096;
-/** No single session should need more; bounds blast radius. */
-const CEILING_MB = 16384;
+/** No single session should need more; bounds blast radius on very large hosts. */
+const CEILING_MB = 49152;
 /** Least a session needs to function — the last-resort minimum on a tiny host. */
 const BOOT_MIN_MB = 1536;
 /** Floor for the orchestrator + OS reserve. */
@@ -137,7 +147,7 @@ export interface SessionMemorySizing {
  *
  *   reserve     = max(2 GiB, hostRam × 0.10)              // orchestrator + OS
  *   usable      = hostRam − reserve
- *   sized       = clamp(usable / TARGET_CONCURRENCY, FLOOR, CEILING)
+ *   sized       = clamp(usable × PER_SESSION_USABLE_FRACTION, FLOOR, CEILING)
  *   auto        = max(min(sized, usable), BOOT_MIN)       // never exceed usable; never below boot min
  *   baseline    = DEFAULT_SESSION_MEMORY_MB ?? auto
  *   cap         = MAX_SESSION_MEMORY_MB ?? max(usable, BOOT_MIN)
@@ -153,7 +163,7 @@ export function deriveSessionMemorySizing(): SessionMemorySizing {
   const reserveMb = Math.max(RESERVE_MIN_MB, Math.floor(hostMb * RESERVE_FRACTION));
   const usableMb = Math.max(0, hostMb - reserveMb);
 
-  const sized = clamp(Math.floor(usableMb / TARGET_CONCURRENCY), FLOOR_MB, CEILING_MB);
+  const sized = clamp(Math.floor(usableMb * PER_SESSION_USABLE_FRACTION), FLOOR_MB, CEILING_MB);
   const autoMb = Math.max(Math.min(sized, usableMb), BOOT_MIN_MB);
 
   const defaultEnv = readEnvPositiveInt("DEFAULT_SESSION_MEMORY_MB");

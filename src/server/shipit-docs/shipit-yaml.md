@@ -56,9 +56,11 @@ agent:
 #### Container sizing is automatic
 
 You do **not** configure container memory, CPU, or processes. Session memory is
-sized automatically from host capacity: a session gets a generous host-derived
-ceiling (a Docker memory limit is a ceiling, not a reservation, so idle sessions
-cost nothing), CPU is left unthrottled (the host scheduler shares cores under
+sized automatically from host capacity: a session's ceiling is half the usable
+budget (host RAM minus a 10% orchestrator/OS reserve), clamped to a 4 GiB floor
+and a 48 GiB cap. A Docker memory limit is a ceiling, not a reservation, so idle
+sessions cost nothing and a single heavy session can use a large share of the
+host. CPU is left unthrottled (the host scheduler shares cores under
 contention), and processes carry a fixed fork-bomb guard.
 
 The old `agent.memory` / `agent.cpu` / `agent.pids` fields are **removed**. A
