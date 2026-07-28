@@ -478,9 +478,9 @@ export function registerAgentOpsRoutes(
   // the setting gate, auth/pin/recursion/per-turn-cap guards, credential
   // provisioning, and the synchronous run. `depth` rides the body (the shim
   // forwards its inherited SHIPIT_AGENT_DEPTH) — the orchestrator's recursion
-  // guard reads it. Unbounded timeout: a sub-agent run is long (30–120s typical,
-  // up to the worker's wall-clock cap), and the orchestrator holds the request
-  // open until the subprocess exits.
+  // guard reads it. Unbounded timeout: a sub-agent run routinely takes many
+  // minutes (up to the worker's wall-clock cap), and the orchestrator holds the
+  // request open until the subprocess exits.
   // ---------------------------------------------------------------------------
 
   // POST /agent-ops/agent/spawn { agentId, prompt, depth }

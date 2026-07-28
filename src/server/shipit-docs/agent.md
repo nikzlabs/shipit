@@ -99,10 +99,14 @@ lost result, or to double-check that what you acted on is what was rendered.
 
 ## What to expect
 
-- **It blocks.** The command runs until the sub-agent finishes — typically
-  30–120s for a review-sized task, up to a 30-minute cap. That's normal; wait
-  for it like any long shell command (in the background if it may exceed your
-  tool's foreground limit).
+- **It blocks, and how long is not predictable.** The command runs until the
+  sub-agent finishes. A narrow question can come back in well under a minute,
+  but a real consult — an audit, a review of a large diff, a generation task —
+  routinely runs for many minutes, up to the 30-minute cap. (That cap started
+  at 5 minutes and was raised precisely because real consults kept overrunning
+  it.) So assume "long" unless the prompt is small, and wait for it like any
+  long shell command — in the background if it may exceed your tool's
+  foreground limit.
 - **You get the sub-agent's whole answer**, not just its last message. A run
   that produces several messages (a long report, then a wrap-up) returns all of
   them, in order.
