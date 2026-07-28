@@ -14,7 +14,7 @@ import type { ServiceManager } from "./service-manager.js";
 import type { AgentListenerDeps } from "./ws-handlers/agent-listeners.js";
 import type { PersistedMessage } from "./chat-history.js";
 import type { SecretFinding } from "../shared/secret-scan.js";
-import type { SubAgentSpawnRequest, SubAgentRunResult, SubAgentRunHandle } from "../shared/sub-agent-run.js";
+import type { SubAgentSpawnRequest, SubAgentRunResult, SubAgentRunHandle, SubAgentSpawnOptions } from "../shared/sub-agent-run.js";
 import { runAgentToCompletion, buildSubAgentRunParams } from "../shared/sub-agent-run.js";
 
 // `runDispatchedTurn` lives in a separate module because it depends on
@@ -569,8 +569,12 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    * adapter directly. Never touches the runner's pinned `_agent` or the SSE
    * stream. Authorization, credentials, and the per-turn cap are enforced by the
    * caller (`services/sub-agent.ts`) before this is invoked.
+   *
+   * `opts.signal` cancels the sub-agent when the caller goes away mid-consult,
+   * so an abandoned consult stops burning tokens instead of running on to its
+   * wall-clock cap.
    */
-  spawnSubAgent(req: SubAgentSpawnRequest): Promise<SubAgentRunResult>;
+  spawnSubAgent(req: SubAgentSpawnRequest, opts?: SubAgentSpawnOptions): Promise<SubAgentRunResult>;
 
   getAgent(): AgentProcess | null;
   setAgent(a: AgentProcess | null): void;
@@ -836,7 +840,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
    * and return the accumulated text — without touching the runner's pinned
    * `agent` slot. Credentials are a no-op in local mode (docs/138).
    */
-  async spawnSubAgent(req: SubAgentSpawnRequest): Promise<SubAgentRunResult> {
+  async spawnSubAgent(req: SubAgentSpawnRequest, opts?: SubAgentSpawnOptions): Promise<SubAgentRunResult> {
     const factory = this._systemTurnDeps?.agentFactory;
     if (!factory) {
       return { status: "error", text: "", truncated: false, durationMs: 0, costUsd: 0, error: "Sub-agent factory unavailable" };
@@ -852,6 +856,13 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     };
     const handle = runAgentToCompletion(agent, runOpts, Date.now());
     this._subAgentHandles.add(handle);
+    // Caller went away mid-consult (see SubAgentSpawnOptions) — SIGTERM the
+    // sub-agent rather than let it run to its wall-clock cap unread. Unlike the
+    // container path, the result never crossed a socket, so whatever text it had
+    // produced still comes back, flagged `cancelled`.
+    const onAbort = () => handle.cancel();
+    if (opts?.signal?.aborted) onAbort();
+    else opts?.signal?.addEventListener("abort", onAbort, { once: true });
     const prev = process.env.SHIPIT_AGENT_DEPTH;
     try {
       process.env.SHIPIT_AGENT_DEPTH = String(req.depth + 1);
@@ -860,6 +871,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
       else process.env.SHIPIT_AGENT_DEPTH = prev;
       return await handle.promise;
     } finally {
+      opts?.signal?.removeEventListener("abort", onAbort);
       this._subAgentHandles.delete(handle);
       try { agent.kill(); } catch { /* already exited */ }
     }

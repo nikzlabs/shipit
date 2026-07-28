@@ -30,11 +30,11 @@ import type { WsServerMessage, ClaudeContentBlockToolUse, SkillInfo, PermissionM
 import type { PresentStateEntry } from "../shared/types/ws-server-messages.js";
 import type { PresentStore } from "./present-store.js";
 import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps, ChatMessageGroup, SteeredMessage, RecordedChatCard, AgentDispatchOptions } from "./session-runner.js";
-import type { SubAgentSpawnRequest, SubAgentRunResult } from "../shared/sub-agent-run.js";
+import type { SubAgentSpawnRequest, SubAgentRunResult, SubAgentSpawnOptions } from "../shared/sub-agent-run.js";
 import { runDispatchedTurn, toQueuedMessage } from "./session-runner.js";
 import { trySteerDispatch } from "./dispatch-steering.js";
 import type { SSEEvent } from "./sse-client.js";
-import { workerPost, workerGet, workerInstall, workerPushAgentSecrets, workerPostMessage } from "./worker-http.js";
+import { workerPost, workerGet, workerInstall, workerPushAgentSecrets, workerPostMessage, WorkerAbortError } from "./worker-http.js";
 import { ProxyAgentProcess } from "./proxy-agent-process.js";
 import type { ProxyAgentRunner } from "./proxy-agent-process.js";
 import type { ServiceManager, ManagedService, SecretsStatusInternalSnapshot } from "./service-manager.js";
@@ -350,24 +350,45 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * accumulators are untouched. The request is unbounded (`timeoutMs: 0`); the
    * worker's own wall-clock cap bounds the run, and a primary-turn interrupt
    * (which hits the worker's `/agent/interrupt`) cancels it.
+   *
+   * `opts.signal` carries the caller-went-away case: aborting destroys this
+   * socket, which aborts the worker's `/agent/spawn` request and makes the
+   * worker SIGTERM the sub-agent. The answer dies with the socket, so there is
+   * no text to return — report `cancelled` (the same outcome an explicit
+   * interrupt produces) rather than letting the transport rejection surface as
+   * an error card for a consult that was simply abandoned.
    */
-  async spawnSubAgent(req: SubAgentSpawnRequest): Promise<SubAgentRunResult> {
-    const result = await workerPost(
-      this.workerUrl,
-      "/agent/spawn",
-      {
-        agentId: req.agentId,
-        prompt: req.prompt,
-        spawnId: req.spawnId,
-        depth: req.depth,
-        ...(req.model !== undefined ? { model: req.model } : {}),
-        ...(req.reasoningEffort !== undefined ? { reasoningEffort: req.reasoningEffort } : {}),
-        ...(req.timeoutMs !== undefined ? { timeoutMs: req.timeoutMs } : {}),
-        ...(req.maxOutputChars !== undefined ? { maxOutputChars: req.maxOutputChars } : {}),
-      },
-      { timeoutMs: 0 },
-    );
-    return result as SubAgentRunResult;
+  async spawnSubAgent(req: SubAgentSpawnRequest, opts?: SubAgentSpawnOptions): Promise<SubAgentRunResult> {
+    const startedAtMs = Date.now();
+    try {
+      const result = await workerPost(
+        this.workerUrl,
+        "/agent/spawn",
+        {
+          agentId: req.agentId,
+          prompt: req.prompt,
+          spawnId: req.spawnId,
+          depth: req.depth,
+          ...(req.model !== undefined ? { model: req.model } : {}),
+          ...(req.reasoningEffort !== undefined ? { reasoningEffort: req.reasoningEffort } : {}),
+          ...(req.timeoutMs !== undefined ? { timeoutMs: req.timeoutMs } : {}),
+          ...(req.maxOutputChars !== undefined ? { maxOutputChars: req.maxOutputChars } : {}),
+        },
+        { timeoutMs: 0, ...(opts?.signal ? { signal: opts.signal } : {}) },
+      );
+      return result as SubAgentRunResult;
+    } catch (err) {
+      if (err instanceof WorkerAbortError) {
+        return {
+          status: "cancelled",
+          text: "",
+          truncated: false,
+          durationMs: Math.max(0, Date.now() - startedAtMs),
+          costUsd: 0,
+        };
+      }
+      throw err;
+    }
   }
 
   getAgent(): AgentProcess | null { return this._agent; }

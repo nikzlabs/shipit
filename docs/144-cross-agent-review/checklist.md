@@ -18,6 +18,11 @@
 - [x] Usage attribution to `subAgentId` (+ `sub_agent_id` column)
 - [x] Transient spawn chip (WS message + client store + MessageList row)
 - [x] Symmetric cancel (interrupt/kill cancels in-flight spawns)
+- [x] Cancel-on-abandon: a caller disconnect propagates as an abort down all
+      three relay legs and SIGTERMs the sub-agent, so an abandoned consult stops
+      instead of running to its wall-clock cap and being paid for twice
+- [x] Document the caller-side ceiling (the calling agent's `Bash` timeout is
+      shorter than the 30-min sub-agent cap) in `shipit-docs/agent.md`
 - [x] Local/dogfood mode in-process spawn
 - [x] Agent-facing `shipit-docs/agent.md`
 - [x] Unit/service tests (shim, run-helper, service gates, credentials, registry, chip)

@@ -92,6 +92,21 @@ export async function registerAgentRoutes(
     "/api/sessions/:id/agent/spawn",
     { config: { containerAccessible: true } },
     async (request, reply) => {
+      // The requester is the primary agent's blocking `shipit agent run` shell
+      // call, relayed through the worker. When that call is killed — most often
+      // by the calling agent's own Bash wall-clock cap, which is shorter than
+      // the sub-agent's — the relay chain tears down and this request aborts.
+      // Turn that into a cancel so the sub-agent stops immediately instead of
+      // running on with nobody to return its answer to.
+      //
+      // Watch the RESPONSE stream: the request stream closes as soon as its
+      // body is read (immediately), while `close` on the response fires once —
+      // for a completed reply or a hang-up — with `writableFinished` telling
+      // the two apart.
+      const abandoned = new AbortController();
+      reply.raw.on("close", () => {
+        if (!reply.raw.writableFinished) abandoned.abort();
+      });
       try {
         const body = request.body ?? {};
         if (!body.agentId) {
@@ -115,6 +130,7 @@ export async function registerAgentRoutes(
             subAgentId: body.agentId,
             prompt: body.prompt ?? "",
             depth: typeof body.depth === "number" ? body.depth : 0,
+            signal: abandoned.signal,
           },
         );
         reply.send(result);

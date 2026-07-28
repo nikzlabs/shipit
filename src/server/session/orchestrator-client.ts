@@ -127,12 +127,17 @@ export class OrchestratorClient {
    *
    * Either transport preserves the multi-baseUrl fallback: a transport error on
    * one candidate is collected and the next is tried.
+   *
+   * `opts.signal` aborts the request in flight. The spawn relay passes the
+   * shim's own connection state, so an agent whose blocking `shipit agent run`
+   * call was killed propagates the abort to the orchestrator instead of leaving
+   * a sub-agent running for nobody.
    */
   async request(
     method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
     suffix: string,
     body?: unknown,
-    opts?: { timeoutMs?: number },
+    opts?: { timeoutMs?: number; signal?: AbortSignal },
   ): Promise<OrchestratorResponse> {
     const payload = body !== undefined && method !== "GET" ? JSON.stringify(body) : undefined;
     const unbounded = opts?.timeoutMs === 0;
@@ -141,9 +146,15 @@ export class OrchestratorClient {
       const url = this.url(baseUrl, suffix);
       try {
         return unbounded
-          ? await this.requestNodeHttp(method, url, payload)
-          : await this.requestFetch(method, url, payload, opts?.timeoutMs);
+          ? await this.requestNodeHttp(method, url, payload, opts?.signal)
+          : await this.requestFetch(method, url, payload, opts?.timeoutMs, opts?.signal);
       } catch (err) {
+        // An abort is not a failed candidate — retrying it on the next baseUrl
+        // would spawn a SECOND sub-agent for a caller that has already gone
+        // away. Stop the fallback loop and report the abort.
+        if (opts?.signal?.aborted) {
+          return { ok: false, status: 0, body: { error: "Request aborted by caller" } };
+        }
         failures.push(`${baseUrl}: ${getErrorMessage(err)}`);
         continue;
       }
@@ -169,12 +180,16 @@ export class OrchestratorClient {
     url: string,
     payload: string | undefined,
     timeoutMs: number | undefined,
+    signal?: AbortSignal,
   ): Promise<OrchestratorResponse> {
     const init: RequestInit = { method, headers: { "Content-Type": "application/json" } };
     if (payload !== undefined) init.body = payload;
-    const controller = timeoutMs ? new AbortController() : undefined;
-    const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
+    const controller = timeoutMs || signal ? new AbortController() : undefined;
+    const timer = timeoutMs && controller ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
     timer?.unref?.();
+    const onAbort = () => controller?.abort();
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener("abort", onAbort, { once: true });
     try {
       const res = await fetch(url, { ...init, ...(controller ? { signal: controller.signal } : {}) });
       let parsed: unknown;
@@ -186,6 +201,7 @@ export class OrchestratorClient {
       return { ok: res.ok, status: res.status, body: parsed };
     } finally {
       if (timer) clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
     }
   }
 
@@ -199,6 +215,7 @@ export class OrchestratorClient {
     method: string,
     url: string,
     payload: string | undefined,
+    signal?: AbortSignal,
   ): Promise<OrchestratorResponse> {
     return new Promise((resolve, reject) => {
       const u = new URL(url);
@@ -224,6 +241,12 @@ export class OrchestratorClient {
         },
       );
       req.on("error", reject);
+      if (signal) {
+        const onAbort = () => req.destroy(new Error("Request aborted by caller"));
+        if (signal.aborted) onAbort();
+        else signal.addEventListener("abort", onAbort, { once: true });
+        req.on("close", () => signal.removeEventListener("abort", onAbort));
+      }
       if (payload !== undefined) req.write(payload);
       req.end();
     });

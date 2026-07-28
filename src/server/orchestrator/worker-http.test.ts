@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import http from "node:http";
-import { workerGet, workerPost, workerPut } from "./worker-http.js";
+import type net from "node:net";
+import { workerGet, workerPost, workerPut, WorkerAbortError } from "./worker-http.js";
 
 /**
  * Spin up a throwaway HTTP server that responds to every request with the
@@ -68,4 +69,81 @@ describe("worker HTTP response handling", () => {
       });
     });
   }
+});
+
+/**
+ * docs/144 — the unbounded sub-agent spawn leg is bounded by nothing but the
+ * sub-agent's own 30-minute cap, so the caller-went-away case has to travel as
+ * an abort. These cover the transport half: a fired signal tears the socket
+ * down with a distinguishable error, and an already-aborted signal never opens
+ * one (which would spawn a sub-agent nobody is waiting for).
+ */
+describe("workerPost abort signal", () => {
+  let close: (() => Promise<void>) | undefined;
+  afterEach(async () => {
+    if (close) await close();
+    close = undefined;
+  });
+
+  /** A worker that accepts the request and then never answers. */
+  async function startHangingWorker(): Promise<{
+    baseUrl: string;
+    received: Promise<void>;
+    close: () => Promise<void>;
+  }> {
+    let onReceived: () => void = () => {};
+    const received = new Promise<void>((resolve) => { onReceived = resolve; });
+    const sockets: net.Socket[] = [];
+    const server = http.createServer((req) => {
+      req.resume();
+      onReceived();
+      // Deliberately no response — the caller must abort to get out.
+    });
+    server.on("connection", (socket) => { sockets.push(socket); });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const addr = server.address();
+    if (typeof addr === "string" || !addr) throw new Error("no server address");
+    return {
+      baseUrl: `http://127.0.0.1:${addr.port}`,
+      received,
+      close: () => new Promise<void>((resolve) => {
+        for (const s of sockets) s.destroy();
+        server.close(() => resolve());
+      }),
+    };
+  }
+
+  it("rejects with WorkerAbortError when the signal fires mid-request", async () => {
+    const worker = await startHangingWorker();
+    close = worker.close;
+    const controller = new AbortController();
+    const pending = workerPost(worker.baseUrl, "/agent/spawn", { a: 1 }, {
+      timeoutMs: 0,
+      signal: controller.signal,
+    });
+    // Only abort once the worker has the request in hand — that's the real
+    // scenario (a sub-agent already running), not a race before connect.
+    await worker.received;
+    controller.abort();
+    await expect(pending).rejects.toBeInstanceOf(WorkerAbortError);
+  });
+
+  it("rejects immediately when the signal is already aborted", async () => {
+    const worker = await startHangingWorker();
+    close = worker.close;
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      workerPost(worker.baseUrl, "/agent/spawn", { a: 1 }, { timeoutMs: 0, signal: controller.signal }),
+    ).rejects.toBeInstanceOf(WorkerAbortError);
+  });
+
+  it("resolves normally when the signal never fires", async () => {
+    const worker = await startWorker(200, JSON.stringify({ status: "success" }));
+    close = worker.close;
+    const controller = new AbortController();
+    await expect(
+      workerPost(worker.baseUrl, "/agent/spawn", { a: 1 }, { timeoutMs: 0, signal: controller.signal }),
+    ).resolves.toEqual({ status: "success" });
+  });
 });

@@ -159,6 +159,23 @@ export class AgentController {
         };
         const handle = runAgentToCompletion(agent, runOpts, Date.now());
         this.spawnedAgents.set(spawnId, handle);
+
+        // The caller of `shipit agent run` can die mid-consult — the primary's
+        // blocking shell call hits its own wall-clock cap and the shim is
+        // killed, which tears down the relay chain and aborts THIS request. Only
+        // an explicit `/agent/cancel` used to stop a spawn, so the sub-agent
+        // carried on to the 30-minute cap, spent the tokens, and had its answer
+        // thrown away into a socket nobody was reading. Cancel on hang-up.
+        //
+        // Listen on the RESPONSE, not the request: a request stream closes as
+        // soon as its body has been read, which for this route is immediately —
+        // watching it would cancel every spawn on arrival. `close` on the
+        // response covers both outcomes, and `writableFinished` is what tells
+        // them apart (true only when the full response actually went out).
+        reply.raw.on("close", () => {
+          if (!reply.raw.writableFinished) handle.cancel();
+        });
+
         try {
           // Stamp SHIPIT_AGENT_DEPTH = caller depth + 1 on the subprocess env so
           // the sub-agent's own `shipit agent` calls forward a non-zero depth and

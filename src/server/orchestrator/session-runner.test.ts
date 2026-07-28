@@ -757,3 +757,82 @@ describe("SessionRunnerRegistry", () => {
     expect(registry.get("s1")).toBeUndefined();
   });
 });
+
+/**
+ * docs/144 — the in-process (RUNTIME_MODE=local / dogfood) spawn path. Same
+ * contract as the container path: when the caller abandons the consult the
+ * sub-agent is SIGTERM'd rather than left running to its wall-clock cap. Here
+ * the result never crossed a socket, so partial output still comes back.
+ */
+describe("SessionRunner.spawnSubAgent — caller abort", () => {
+  /** An adapter that never finishes on its own; kill() ends the run. */
+  class FakeAgent extends EventEmitter {
+    agentId = "codex";
+    run = vi.fn();
+    kill = vi.fn(() => {
+      queueMicrotask(() => this.emit("done", 0));
+    });
+  }
+
+  function makeRunner(agent: FakeAgent): SessionRunner {
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    runner.setSystemTurnDeps({ agentFactory: () => agent } as never);
+    return runner;
+  }
+
+  it("cancels the sub-agent when the signal fires mid-run", async () => {
+    const agent = new FakeAgent();
+    const runner = makeRunner(agent);
+    const controller = new AbortController();
+
+    const pending = runner.spawnSubAgent(
+      { agentId: "codex" as AgentId, prompt: "review", spawnId: "sp1", depth: 0 },
+      { signal: controller.signal },
+    );
+    agent.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "partial finding" }] });
+    controller.abort();
+
+    const result = await pending;
+    expect(agent.kill).toHaveBeenCalled();
+    expect(result.status).toBe("cancelled");
+    expect(result.text).toBe("partial finding");
+    runner.dispose({ force: true });
+  });
+
+  it("cancels immediately when handed an already-aborted signal", async () => {
+    const agent = new FakeAgent();
+    const runner = makeRunner(agent);
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await runner.spawnSubAgent(
+      { agentId: "codex" as AgentId, prompt: "review", spawnId: "sp2", depth: 0 },
+      { signal: controller.signal },
+    );
+    expect(result.status).toBe("cancelled");
+    runner.dispose({ force: true });
+  });
+
+  it("runs to completion when no signal is passed", async () => {
+    const agent = new FakeAgent();
+    const runner = makeRunner(agent);
+
+    const pending = runner.spawnSubAgent({
+      agentId: "codex" as AgentId,
+      prompt: "review",
+      spawnId: "sp3",
+      depth: 0,
+    });
+    agent.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "no bugs" }] });
+    agent.emit("done", 0);
+
+    const result = await pending;
+    expect(result.status).toBe("success");
+    expect(result.text).toBe("no bugs");
+    runner.dispose({ force: true });
+  });
+});

@@ -82,7 +82,7 @@ export function registerAgentOpsRoutes(
     suffix: string,
     body: unknown,
     reply: FastifyReply,
-    opts?: { timeoutMs?: number },
+    opts?: { timeoutMs?: number; signal?: AbortSignal },
   ): Promise<unknown> {
     const client = getClient();
     if ("error" in client) {
@@ -484,9 +484,27 @@ export function registerAgentOpsRoutes(
   // ---------------------------------------------------------------------------
 
   // POST /agent-ops/agent/spawn { agentId, prompt, depth }
+  //
+  // This is the one relay whose caller routinely dies before the response: the
+  // shim blocks in the calling agent's shell, and that shell call has its own
+  // (shorter) wall-clock cap. Forward the disconnect as an abort so the
+  // orchestrator can cancel the sub-agent — without it the run continued to its
+  // own cap, spending tokens on an answer that had nowhere to go.
   app.post<{ Body: { agentId?: string; prompt?: string; depth?: number } }>(
     "/agent-ops/agent/spawn",
-    async (request, reply) => relay("POST", "/agent/spawn", request.body ?? {}, reply, { timeoutMs: 0 }),
+    async (request, reply) => {
+      // Watch the RESPONSE stream, not the request: the request closes as soon
+      // as its body is read. `writableFinished` separates "reply delivered"
+      // from "the shim hung up".
+      const abandoned = new AbortController();
+      reply.raw.on("close", () => {
+        if (!reply.raw.writableFinished) abandoned.abort();
+      });
+      return relay("POST", "/agent/spawn", request.body ?? {}, reply, {
+        timeoutMs: 0,
+        signal: abandoned.signal,
+      });
+    },
   );
 
   // GET /agent-ops/agent/result[?spawnId=…] — SHI-245. Re-read a completed

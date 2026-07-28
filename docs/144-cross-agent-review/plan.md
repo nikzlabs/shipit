@@ -390,6 +390,18 @@ the pinned agent's already-present credentials and provisions nothing).
   output-token cap via the sub-agent CLI's natural settings (initial: 8K).
   Hitting either truncates, with the result flagged truncated and a note the
   primary can surface.
+- **The caller's own timeout is the *effective* ceiling — and it is shorter.**
+  `shipit agent run` blocks inside the calling agent's `Bash` tool call, which
+  has its own wall-clock cap (~2 min default, 10 min maximum for the Claude Code
+  harness). So a consult is cut off from the *caller's* side long before the
+  30-minute sub-agent cap is reachable, and the agent cannot raise the sub-agent
+  cap to compensate: there is no `--timeout` flag, the orchestrator route's body
+  is typed `{ agentId, prompt, depth }` and never forwards a `timeoutMs`, and
+  `SHIPIT_SUB_AGENT_TIMEOUT_MS` is read once at process boot (an operator knob,
+  not an agent-reachable one). The knob the agent *does* control is the shell
+  timeout, so `shipit-docs/agent.md` tells it to pass the maximum for
+  review-sized consults. The other half of the fix is cancellation-on-abandon
+  below — without it, hitting this ceiling paid for the consult twice.
 - **Recursion cap.** Depth 1 (§3) — a best-effort guard that stops a
   well-behaved sub-agent from recursing; not forgery-resistant in v0 (the
   per-turn cap above is what bounds an adversarial sub-agent's fan-out).
@@ -718,6 +730,31 @@ v0 is implemented end-to-end behind the `enableSubAgents` global setting
   already used `worker-http.ts`. Short/bounded calls keep the `fetch` path.
   Tests: `agent-shim/shim-common.test.ts` (`callBroker`),
   `orchestrator-client.test.ts` (unbounded relay).
+- **Cancel-on-abandon across the whole chain** — the flip side of that unbounded
+  transport. The caller routinely dies before the response (its `Bash` cap is
+  shorter than the sub-agent's, see §5), and cancellation used to fire only from
+  an explicit `/agent/cancel` or `cancelAllSpawns` on a primary interrupt/kill.
+  Nothing watched for the *requester* going away, so an abandoned consult ran on
+  to the 30-minute cap, spent the tokens, and wrote its answer into a socket
+  nobody was reading — then the primary re-ran the same review. A disconnect now
+  propagates down all three legs as an abort: shim hang-up → `agent-ops-routes.ts`
+  (`/agent-ops/agent/spawn`) → `OrchestratorClient.request({ signal })` →
+  `api-routes-agent.ts` → `runSubAgent({ signal })` → `runner.spawnSubAgent(req,
+  { signal })` → `workerPost({ signal })` → the worker's `/agent/spawn`, which
+  SIGTERMs the run via `handle.cancel()`. Three details are load-bearing:
+  (a) every Fastify hop watches **`reply.raw`**, not `request.raw` — a request
+  stream closes as soon as its body is read, so watching it cancels every spawn
+  on arrival — and uses `writableFinished` to tell a delivered reply from a
+  hang-up; (b) `OrchestratorClient`'s multi-baseUrl fallback must **not** retry
+  an aborted attempt, or the abort spawns a *second* sub-agent; (c) the container
+  path maps `WorkerAbortError` to a `cancelled` **result** rather than letting
+  the transport rejection surface as an error card — an abandoned consult is not
+  a broken worker. Tests: `agent-controller.test.ts` (real client disconnect →
+  sub-agent killed; normal completion unaffected), `worker-http.test.ts`
+  (`WorkerAbortError`), `orchestrator-client.test.ts` (abort + no-retry),
+  `container-session-runner.test.ts` (abort → `cancelled`, transport failure
+  still throws), `session-runner.test.ts` (local mode), `services/sub-agent.test.ts`
+  (signal forwarded, cancelled card).
 - **Orchestrator route + service** — `api-routes-agent.ts`
   (`POST /api/sessions/:id/agent/spawn`) → `services/sub-agent.ts` (`runSubAgent`
   with the setting/auth/pin/recursion/per-turn-cap gates, lazy account-correct

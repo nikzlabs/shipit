@@ -5,6 +5,8 @@
  * integration test (CI-run; integration tests OOM a session container).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import http from "node:http";
+import type net from "node:net";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 
 function makeRunner(): ContainerSessionRunner {
@@ -79,5 +81,75 @@ describe("ContainerSessionRunner — dependency-change reinstall throttle (#1622
     const install = vi.spyOn(runner, "runInstall").mockResolvedValue({ ok: true });
     priv(runner).maybeReinstallForDepChange();
     expect(install).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * docs/144 — an abandoned consult (the calling agent's blocking shell call was
+ * killed, so the relay chain tore down) must come back as `cancelled`, not as a
+ * transport error. The distinction is user-visible: the consult card says the
+ * consult was cancelled instead of reporting a broken worker for something that
+ * was simply walked away from.
+ */
+describe("ContainerSessionRunner.spawnSubAgent — caller abort", () => {
+  let server: http.Server | undefined;
+  const sockets: net.Socket[] = [];
+
+  afterEach(async () => {
+    for (const s of sockets) s.destroy();
+    sockets.length = 0;
+    if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
+    server = undefined;
+  });
+
+  /** A worker that takes the spawn and never answers, like a live sub-agent. */
+  async function startHangingWorker(onReceived: () => void): Promise<string> {
+    server = http.createServer((req) => {
+      req.resume();
+      req.on("end", onReceived);
+    });
+    server.on("connection", (socket) => { sockets.push(socket); });
+    await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
+    const addr = server.address();
+    if (typeof addr === "string" || !addr) throw new Error("no server address");
+    return `http://127.0.0.1:${addr.port}`;
+  }
+
+  it("resolves as cancelled when the caller's signal aborts mid-spawn", async () => {
+    let received = () => {};
+    const gotRequest = new Promise<void>((resolve) => { received = resolve; });
+    const workerUrl = await startHangingWorker(() => received());
+    const runner = new ContainerSessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude",
+      workerUrl,
+    });
+
+    const controller = new AbortController();
+    const pending = runner.spawnSubAgent(
+      { agentId: "codex", prompt: "review this", spawnId: "sp1", depth: 0 },
+      { signal: controller.signal },
+    );
+    await gotRequest;
+    controller.abort();
+
+    const result = await pending;
+    expect(result.status).toBe("cancelled");
+    expect(result.text).toBe("");
+    expect(result.costUsd).toBe(0);
+  });
+
+  it("still throws on a genuine transport failure (not mistaken for a cancel)", async () => {
+    const runner = new ContainerSessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      // Nothing is listening here — a real unreachable worker.
+      workerUrl: "http://127.0.0.1:1",
+      defaultAgentId: "claude",
+    });
+    await expect(
+      runner.spawnSubAgent({ agentId: "codex", prompt: "p", spawnId: "sp2", depth: 0 }),
+    ).rejects.toThrow();
   });
 });

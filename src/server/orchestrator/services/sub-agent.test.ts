@@ -153,6 +153,7 @@ describe("runSubAgent — happy path", () => {
     expect(runner.subAgentSpawnsThisTurn).toBe(1);
     expect(runner.spawnSubAgent).toHaveBeenCalledWith(
       expect.objectContaining({ agentId: "codex", prompt: "review this", depth: 0 }),
+      expect.anything(),
     );
     // usage attributed to the sub-agent, not the pinned agent — now WITH the
     // sub-agent's token breakdown (docs/144), not undefined/undefined.
@@ -222,7 +223,41 @@ describe("runSubAgent — happy path", () => {
     await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
     expect(runner.spawnSubAgent).toHaveBeenCalledWith(
       expect.objectContaining({ agentId: "codex", reasoningEffort: "high", model: "gpt-5.5" }),
+      expect.anything(),
     );
+  });
+
+  // docs/144 — the caller's disconnect has to reach the runner, which is the
+  // only layer that can actually stop the sub-agent. The signal rides a second
+  // argument rather than the request object, which is serialized onto the wire.
+  it("forwards the caller's abort signal to the runner as a spawn option", async () => {
+    const { deps, runner } = makeDeps({});
+    const controller = new AbortController();
+    await runSubAgent(deps, "s1", {
+      subAgentId: "codex",
+      prompt: "review",
+      depth: 0,
+      signal: controller.signal,
+    });
+    expect(runner.spawnSubAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: "codex" }),
+      { signal: controller.signal },
+    );
+  });
+
+  it("emits a cancelled consult card — not an error card — for an abandoned consult", async () => {
+    // What a container runner returns once the caller has hung up: the answer
+    // died with the socket, so there is no text, only the outcome.
+    const { deps, emitMessage } = makeDeps({
+      spawnResult: { status: "cancelled", text: "", truncated: false, durationMs: 1200, costUsd: 0 },
+    });
+    const res = await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+
+    expect(res.status).toBe("cancelled");
+    const card = emitMessage.mock.calls
+      .map((c) => c[0] as { type: string; card?: { status: string } })
+      .find((m) => m.type === "sub_agent_consult_card");
+    expect(card?.card?.status).toBe("cancelled");
   });
 
   it("omits reasoningEffort + model when no defaults are set — backend uses its own default", async () => {

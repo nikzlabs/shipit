@@ -127,6 +127,21 @@ export interface SubAgentSpawnRequest {
   maxOutputChars?: number;
 }
 
+/**
+ * Transport-level options for a spawn. Deliberately NOT part of
+ * {@link SubAgentSpawnRequest}, which is JSON-serialized onto the wire — an
+ * `AbortSignal` is a live object that only makes sense in the calling process.
+ */
+export interface SubAgentSpawnOptions {
+  /**
+   * Fires when the caller of `shipit agent run` goes away mid-consult (its
+   * blocking shell call was killed, so the whole relay chain tore down). Every
+   * runner treats it as "cancel this sub-agent now" rather than letting an
+   * orphan run to its wall-clock cap with nobody left to read the answer.
+   */
+  signal?: AbortSignal;
+}
+
 export interface SubAgentRunHandle {
   promise: Promise<SubAgentRunResult>;
   /** SIGTERM the underlying process; resolves the run with status "cancelled". */

@@ -125,5 +125,78 @@ describe("OrchestratorClient", () => {
       expect(res.status).toBe(0);
       expect((res.body as { error: string }).error).toContain("Could not reach orchestrator");
     });
+
+    // docs/144 — the relay forwards the shim's disconnect as an abort so the
+    // orchestrator can cancel an abandoned consult.
+    it("aborts the in-flight request when the caller's signal fires", async () => {
+      let sawRequest = () => {};
+      const gotRequest = new Promise<void>((r) => { sawRequest = r; });
+      // Accepts the spawn and never answers — like a sub-agent mid-run.
+      const server = http.createServer((req) => {
+        req.resume();
+        req.on("end", () => sawRequest());
+      });
+      await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+      const port = (server.address() as AddressInfo).port;
+
+      try {
+        process.env.SESSION_ID = "sess-1";
+        const client = new OrchestratorClient({ baseUrl: `http://127.0.0.1:${port}` });
+        const controller = new AbortController();
+        const pending = client.request("POST", "/agent/spawn", { prompt: "x" }, {
+          timeoutMs: 0,
+          signal: controller.signal,
+        });
+        await gotRequest;
+        controller.abort();
+
+        const res = await pending;
+        expect(res.ok).toBe(false);
+        expect((res.body as { error: string }).error).toBe("Request aborted by caller");
+      } finally {
+        server.closeAllConnections?.();
+        await new Promise<void>((r) => server.close(() => r()));
+      }
+    });
+
+    // The fallback loop exists for a stale stamped hostname — but an abort is
+    // not a dead candidate. Retrying it would spawn a SECOND sub-agent for a
+    // caller that has already hung up, doubling the cost of the very consult
+    // the abort was meant to stop.
+    it("does not retry the next baseUrl after an abort", async () => {
+      let hits = 0;
+      let sawRequest = () => {};
+      const gotRequest = new Promise<void>((r) => { sawRequest = r; });
+      const server = http.createServer((req) => {
+        hits += 1;
+        req.resume();
+        req.on("end", () => sawRequest());
+      });
+      await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+      const port = (server.address() as AddressInfo).port;
+
+      try {
+        process.env.SHIPIT_HOST = "127.0.0.1";
+        process.env.SHIPIT_PORT = String(port);
+        process.env.SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS = "127.0.0.1";
+        process.env.SESSION_ID = "sess-1";
+        // Two candidate baseUrls, both reachable: without the abort guard the
+        // loop would treat the aborted first attempt as a failure and re-send.
+        const client = new OrchestratorClient();
+        const controller = new AbortController();
+        const pending = client.request("POST", "/agent/spawn", { prompt: "x" }, {
+          timeoutMs: 0,
+          signal: controller.signal,
+        });
+        await gotRequest;
+        controller.abort();
+        await pending;
+
+        expect(hits).toBe(1);
+      } finally {
+        server.closeAllConnections?.();
+        await new Promise<void>((r) => server.close(() => r()));
+      }
+    });
   });
 });

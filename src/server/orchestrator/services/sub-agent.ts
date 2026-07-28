@@ -79,6 +79,12 @@ export interface RunSubAgentInput {
    * recursion guard.
    */
   depth: number;
+  /**
+   * Fires when the requester abandons the consult — the shim's blocking call
+   * died, so the abort travelled back down the relay chain to the route. The
+   * spawn is cancelled rather than orphaned; see {@link SubAgentSpawnOptions}.
+   */
+  signal?: AbortSignal;
 }
 
 export interface RunSubAgentResult extends SubAgentRunResult {
@@ -105,7 +111,7 @@ export async function runSubAgent(
   sessionId: string,
   input: RunSubAgentInput,
 ): Promise<RunSubAgentResult> {
-  const { subAgentId, prompt, depth } = input;
+  const { subAgentId, prompt, depth, signal } = input;
 
   const session = deps.sessionManager.get(sessionId);
   if (!session) throw new ServiceError(404, "Session not found");
@@ -198,14 +204,17 @@ export async function runSubAgent(
   const { reasoningEffort, model } = deps.credentialStore.getAgentSubAgentDefaults(subAgentId);
 
   try {
-    const result = await runner.spawnSubAgent({
-      agentId: subAgentId,
-      prompt,
-      spawnId,
-      depth,
-      ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
-      ...(model !== undefined ? { model } : {}),
-    });
+    const result = await runner.spawnSubAgent(
+      {
+        agentId: subAgentId,
+        prompt,
+        spawnId,
+        depth,
+        ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+        ...(model !== undefined ? { model } : {}),
+      },
+      { ...(signal ? { signal } : {}) },
+    );
 
     // §5 — attribute the sub-agent's cost AND token usage to subAgentId, not the
     // pinned agentId. A subscription backend (Codex) reports tokens but $0 cost,

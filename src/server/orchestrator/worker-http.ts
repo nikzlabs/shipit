@@ -29,6 +29,14 @@ export interface WorkerHttpOpts {
    * doesn't make the orchestrator hang on aggregation requests.
    */
   timeoutMs?: number;
+  /**
+   * Aborts the request: the socket is destroyed and the promise rejects with a
+   * {@link WorkerAbortError}. Complements `timeoutMs` — a timeout bounds a
+   * request nobody is waiting on yet, a signal cancels one whose *caller* has
+   * gone away. Used by the unbounded sub-agent spawn leg (docs/144), where the
+   * only other bound is the sub-agent's own 30-minute wall-clock cap.
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -45,6 +53,38 @@ export class WorkerTimeoutError extends Error {
     this.path = path;
     this.timeoutMs = timeoutMs;
   }
+}
+
+/**
+ * Thrown when a worker HTTP call was aborted via {@link WorkerHttpOpts.signal}.
+ * Distinct from a transport failure so a caller can tell "the requester walked
+ * away" from "the worker broke" — the sub-agent spawn leg maps it to a
+ * `cancelled` result rather than an error card.
+ */
+export class WorkerAbortError extends Error {
+  readonly path: string;
+  constructor(path: string) {
+    super(`Worker request aborted by caller: ${path}`);
+    this.name = "WorkerAbortError";
+    this.path = path;
+  }
+}
+
+/**
+ * Wire an optional {@link WorkerHttpOpts.signal} onto an in-flight request:
+ * destroy the socket with a {@link WorkerAbortError} when it fires (or when it
+ * has already fired), and drop the listener once the request settles so a
+ * long-lived signal doesn't accumulate handlers.
+ */
+function attachAbortSignal(req: http.ClientRequest, path: string, signal?: AbortSignal): void {
+  if (!signal) return;
+  if (signal.aborted) {
+    req.destroy(new WorkerAbortError(path));
+    return;
+  }
+  const onAbort = () => req.destroy(new WorkerAbortError(path));
+  signal.addEventListener("abort", onAbort, { once: true });
+  req.on("close", () => signal.removeEventListener("abort", onAbort));
 }
 
 function resolveTimeout(opts?: WorkerHttpOpts): number {
@@ -113,6 +153,7 @@ export async function workerPost(baseUrl: string, path: string, body?: unknown, 
         req.destroy(new WorkerTimeoutError(path, timeoutMs));
       });
     }
+    attachAbortSignal(req, path, opts?.signal);
 
     req.on("error", reject);
     if (payload) req.write(payload);
