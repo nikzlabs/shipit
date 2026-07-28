@@ -67,8 +67,13 @@ function openOverlay() {
   useUiStore.setState({ quickCaptureOpen: true, bootstrapLoaded: true });
 }
 
+const LAST_QUICK_SESSION_REPO_KEY = "shipit-last-quick-session-repo";
+
 describe("QuickCaptureOverlay", () => {
   beforeEach(() => {
+    // Sending now records the target repo, so clear it between tests to keep
+    // the "no remembered repo" default path deterministic.
+    localStorage.removeItem(LAST_QUICK_SESSION_REPO_KEY);
     startQuickSessionMock.mockReset();
     lastMessageInputProps = undefined;
     useUiStore.setState({
@@ -101,13 +106,14 @@ describe("QuickCaptureOverlay", () => {
 
   afterEach(() => {
     cleanup();
+    localStorage.removeItem(LAST_QUICK_SESSION_REPO_KEY);
     vi.restoreAllMocks();
     useUiStore.setState({ quickCaptureOpen: false, bootstrapLoaded: false, toast: null });
     useRepoStore.setState({ repos: [], activeRepoUrl: undefined });
     useSessionStore.setState({ sessionId: undefined, sessions: [] });
   });
 
-  it("renders MessageInput with the overlay surface and defaults to the active session repo", () => {
+  it("renders MessageInput with the overlay surface and falls back to the active session repo when no quick session has run", () => {
     const activeUrl = "https://github.com/acme/active.git";
     useRepoStore.setState({
       repos: [
@@ -129,6 +135,58 @@ describe("QuickCaptureOverlay", () => {
     expect(screen.getByRole("combobox")).toHaveValue(activeUrl);
     expect(lastMessageInputProps?.surface).toBe("overlay");
     expect(lastMessageInputProps?.hasActiveSession).toBe(false);
+  });
+
+  it("defaults to the last quick session's repo, not the repo of the current session", () => {
+    // The motivating case: the user is working in a product repo but keeps
+    // firing quick captures at a different repo (a gap they noticed in the tool
+    // itself). The remembered target wins over the current context.
+    const currentUrl = "https://github.com/acme/product.git";
+    const lastQuickUrl = "https://github.com/acme/shipit.git";
+    localStorage.setItem(LAST_QUICK_SESSION_REPO_KEY, lastQuickUrl);
+    useRepoStore.setState({
+      repos: [repo(currentUrl), repo(lastQuickUrl)],
+      activeRepoUrl: currentUrl,
+    });
+    useSessionStore.setState({ sessionId: "s1", sessions: [session("s1", currentUrl)] });
+    openOverlay();
+
+    render(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
+
+    expect(screen.getByRole("combobox")).toHaveValue(lastQuickUrl);
+    fireEvent.click(screen.getByRole("button", { name: "Send mock" }));
+    expect(startQuickSessionMock.mock.calls[0][0]).toMatchObject({ repoUrl: lastQuickUrl });
+  });
+
+  it("falls back to the current context when the remembered repo is no longer available", () => {
+    const currentUrl = "https://github.com/acme/product.git";
+    localStorage.setItem(LAST_QUICK_SESSION_REPO_KEY, "https://github.com/acme/removed.git");
+    useRepoStore.setState({ repos: [repo(currentUrl)], activeRepoUrl: currentUrl });
+    useSessionStore.setState({ sessionId: "s1", sessions: [session("s1", currentUrl)] });
+    openOverlay();
+
+    render(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
+
+    expect(screen.getByRole("combobox")).toHaveValue(currentUrl);
+  });
+
+  it("remembers the repo it sent to, so the next capture opens on it", () => {
+    const currentUrl = "https://github.com/acme/product.git";
+    const otherUrl = "https://github.com/acme/shipit.git";
+    useRepoStore.setState({ repos: [repo(currentUrl), repo(otherUrl)], activeRepoUrl: currentUrl });
+    useSessionStore.setState({ sessionId: "s1", sessions: [session("s1", currentUrl)] });
+    openOverlay();
+
+    const { rerender } = render(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: otherUrl } });
+    fireEvent.click(screen.getByRole("button", { name: "Send mock" }));
+
+    expect(localStorage.getItem(LAST_QUICK_SESSION_REPO_KEY)).toBe(otherUrl);
+
+    // Reopening (no reload) picks the remembered target up immediately.
+    openOverlay();
+    rerender(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
+    expect(screen.getByRole("combobox")).toHaveValue(otherUrl);
   });
 
   it("resets the repo selector to the current session repo each time the overlay opens", () => {

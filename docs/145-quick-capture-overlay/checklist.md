@@ -14,3 +14,8 @@
       session's `uploads/` before `runner.dispatch({ text, uploads })`. Both
       parents now share the same upload UX — the previous split-parent
       wiring is what caused the "+" button to silently no-op in the overlay.
+- [x] Default the repo selector to the last quick session's repo (remembered in
+      localStorage, validated against the loaded repo list) instead of the
+      current session's repo, which stays as the fallback. Covers both the
+      typed and the voice (Mode B) entry points, since all triggers open the
+      same overlay.

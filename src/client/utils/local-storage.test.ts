@@ -10,6 +10,9 @@ import {
   removeDraftUploads,
   parseJsonWithFallback,
   getLocalStorageObject,
+  getSavedQuickSessionRepo,
+  saveQuickSessionRepo,
+  LAST_QUICK_SESSION_REPO_KEY,
 } from "./local-storage.js";
 
 beforeEach(() => {
@@ -158,6 +161,22 @@ describe("changed-docs strip collapse state (docs/205)", () => {
   it("ignores a corrupt stored blob", () => {
     localStorage.setItem("shipit-changed-docs-expanded-by-session", "not json");
     expect(getSavedChangedDocsExpanded("s1")).toBe(false);
+  });
+});
+
+describe("last quick-session repo (docs/145)", () => {
+  it("round-trips the remembered repo", () => {
+    expect(getSavedQuickSessionRepo()).toBeUndefined();
+    saveQuickSessionRepo("https://github.com/acme/shipit.git");
+    expect(localStorage.getItem(LAST_QUICK_SESSION_REPO_KEY)).toBe("https://github.com/acme/shipit.git");
+    expect(getSavedQuickSessionRepo()).toBe("https://github.com/acme/shipit.git");
+  });
+
+  it("clears the key when saving undefined", () => {
+    saveQuickSessionRepo("https://github.com/acme/shipit.git");
+    saveQuickSessionRepo(undefined);
+    expect(localStorage.getItem(LAST_QUICK_SESSION_REPO_KEY)).toBeNull();
+    expect(getSavedQuickSessionRepo()).toBeUndefined();
   });
 });
 
