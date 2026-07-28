@@ -106,6 +106,25 @@ without anything marking the runner busy.
 Keep `running` meaning what it means (an orchestrator-owned turn is in flight)
 and add a separate, additive liveness axis. Reclaim paths consult the union.
 
+### Why `running` cannot simply be set true
+
+There are two distinct states, and only one of them is a turn:
+
+| State | Agent | Today | Wanted |
+|---|---|---|---|
+| Self-woken turn in flight | thinking | invisible | busy + spinner |
+| Background task pending, between turns | idle, will wake later | invisible | **not idle**, and visibly pending |
+
+The tempting shortcut — set `running = true` whenever a background task exists —
+breaks message dispatch. `ws-handlers/send-message.ts:124` branches on
+`runnerForQueue?.running`: a user message arriving while the flag is true is
+**queued behind the in-flight turn, or steered into it mid-turn** rather than
+starting a fresh one. In the second row above there is no turn to queue behind
+and no live CLI read loop to steer into, so a user who types during a pending
+background task would have their message parked until something else happened to
+start a turn. `running` must keep meaning "a turn is in flight"; pending
+background work is a second, orthogonal axis.
+
 ### 1. Type and map the events
 
 `claude-types.ts` — add `ClaudeTaskStartedEvent`, `ClaudeTaskUpdatedEvent`,
@@ -158,7 +177,58 @@ A session with outstanding background work is real work, the same as a running
 agent. If the host genuinely has no headroom the OOM breaker is the correct
 backstop, not silent eviction.
 
-### 5. Fix the stale-listener attribution
+### 5. Surface the pending state in the UI
+
+Not-idle is necessary but not sufficient: a session with background work pending
+must *look* like something is happening, or the user reads a silent session as
+finished. Four surfaces, all driven off the one `backgroundTaskCount` already
+added in §3.
+
+**5a. Live push.** Extend `WsSessionStatus` (`ws-server-messages/session.ts:70`)
+with `backgroundTasks?: { count: number; descriptions: string[] }`, emitted on
+each `agent_background_tasks`. `descriptions` comes straight from the CLI's task
+list and is what makes the tooltip specific ("`npm test` running") instead of a
+bare count.
+
+**5b. First paint and reconnect.** The live push alone is not enough — a page
+reload or a backgrounded mobile tab would show nothing while the task is still
+running. The sidebar's running dots are reconciled wholesale from the
+authoritative `active_runners` SSE snapshot (`route-registry.ts:101-112`), which
+is derived from `runner.running` and therefore blind to this state. Add a
+parallel `backgroundTaskSessionIds` to the adjacent `session_attention` snapshot
+emitted three lines below — that event already carries
+`awaitingPermissionSessionIds` for exactly this reason (a state the client cannot
+re-derive after a reconnect), so it is the established precedent rather than a
+new mechanism.
+
+**5c. Sidebar.** `SessionStatusDot`
+(`SessionSidebar/SessionStatusIndicators.tsx`) gains a rung between "agent
+running" (priority 2) and "CI failed" (priority 3). It must **not** reuse the
+pulsing green `bg-(--color-success)` dot: that means "the agent is thinking," and
+here the agent is specifically *not* thinking — it is waiting on a task that will
+wake it. A distinct Phosphor glyph at `ICON_SIZE.XS` in the neutral/secondary
+color, `title={`${count} background task${count === 1 ? "" : "s"} running`}`,
+reads as "work outstanding" without claiming the agent is live.
+
+**5d. Attention.** `computeAttentionReason` (`useAttentionInfo.ts`) currently
+falls through to `"Waiting for your input"` for an idle session, which is
+actively wrong here — the session is going to speak again on its own. Add
+`hasBackgroundTasks` to `AttentionInputs` and extend the existing short-circuit
+to `if (isAgentRunning || hasBackgroundTasks) return null;`. Placement matters:
+it goes **after** the `awaitingPermission` check, so a session that is both
+blocked on a permission prompt and holding a background task still surfaces
+"Needs your approval to continue" — the block is the user's to clear regardless
+of what else is pending. The same input flows into `useAttentionNotifications`,
+so a pending background task also stops firing a spurious "waiting for you" push
+notification.
+
+**Persistence:** this is transient live state, so it is emit-only + snapshot
+reconcile — deliberately **not** a persisted transcript card. Per the
+`CLAUDE.md` rule, spinners and live activity correctly disappear; only transcript
+content persists. The wake turn's own output is ordinary agent output and
+persists through the normal path.
+
+### 6. Fix the stale-listener attribution
 
 Independently of the liveness fix: detach the turn's listeners on `result` for a
 resident streaming process, and re-wire per turn, so a self-woken turn is not
@@ -184,3 +254,10 @@ shell work a supported persistence primitive.
 - `src/server/shared/types/claude-types.ts` — `ClaudeSystemEvent`
 - `src/server/orchestrator/ws-handlers/agent-listeners.ts` — runner state writes
 - `src/server/orchestrator/session-runner.ts` — runner interface
+- `src/server/orchestrator/ws-handlers/send-message.ts:124` — the queue/steer
+  branch that forbids overloading `running`
+- `src/server/orchestrator/route-registry.ts:101` — authoritative reconnect
+  snapshots (`active_runners`, `session_attention`)
+- `src/server/shared/types/ws-server-messages/session.ts` — `WsSessionStatus`
+- `src/client/components/SessionSidebar/SessionStatusIndicators.tsx` — status dot
+- `src/client/hooks/useAttentionInfo.ts` — `computeAttentionReason`

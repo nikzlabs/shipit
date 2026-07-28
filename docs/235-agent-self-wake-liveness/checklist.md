@@ -11,7 +11,20 @@
 - [ ] Set the state in `agent-listeners.ts`; clear it on agent `done`/`error`
 - [ ] Guard `idle-enforcer.ts` (scan + TOCTOU re-check) on `agentBusy`
 - [ ] Guard `canAutoDescend` in `tier-escalation.ts` on `agentBusy`
+- [ ] Add `backgroundTasks: { count, descriptions }` to `WsSessionStatus`; emit
+      on each `agent_background_tasks`
+- [ ] Add `backgroundTaskSessionIds` to the `session_attention` SSE snapshot so
+      the state survives reload / reconnect
+- [ ] Client store: `backgroundTaskSessions`, reconciled wholesale from the
+      snapshot the way `activeRunnerSessions` is
+- [ ] Sidebar `SessionStatusDot`: new rung below "agent running", distinct glyph
+      (not the pulsing green dot) with a task-count tooltip
+- [ ] `computeAttentionReason`: add `hasBackgroundTasks`, short-circuit with
+      `isAgentRunning`, kept *below* the `awaitingPermission` check
 - [ ] Detach turn listeners on `result` for a resident streaming process so a
       self-woken turn is not attributed to the prior turn's captured context
 - [ ] Tests: adapter mapping, enforcer refuses to reap a session with
       outstanding background tasks, tier escalation ditto
+- [ ] Tests: `computeAttentionReason` stays silent on pending background tasks
+      but still reports a blocked permission prompt; sidebar dot renders the
+      pending rung; snapshot reconcile restores state after a simulated reload
