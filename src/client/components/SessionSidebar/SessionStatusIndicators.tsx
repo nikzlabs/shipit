@@ -8,7 +8,15 @@ import type { SessionInfo } from "../../../server/shared/types.js";
 /** Consolidated status dot replacing separate AgentDot + CiDot. */
 export function SessionStatusDot({ sessionId }: { sessionId: string }) {
   const card = usePrStore((s) => s.cardBySession[sessionId]);
-  const isAgentRunning = useSessionStore((s) => s.activeRunnerSessions.has(sessionId));
+  // docs/235 — background work counts as "working" here. From the sidebar's
+  // altitude the useful fact is binary — this session is busy, don't read it as
+  // done — and the existing green dot already says exactly that. A second glyph
+  // would introduce a distinction in the surface least able to explain it; the
+  // nuance (thinking vs. waiting on a task) belongs in the chat status bar,
+  // where there is room for words.
+  const isAgentRunning = useSessionStore(
+    (s) => s.activeRunnerSessions.has(sessionId) || s.backgroundTaskSessions.has(sessionId),
+  );
 
   const ci = useCiDisplay(card?.checks);
   const autoFix = card?.autoFix;

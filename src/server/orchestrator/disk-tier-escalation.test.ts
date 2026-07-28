@@ -64,14 +64,29 @@ describe("escalateDiskTiers", () => {
 
   /** Minimal runner-registry fake: only `get`/`dispose` are exercised. */
   function fakeRegistry(
-    runners: Record<string, { running?: boolean; viewerCount?: number }> = {},
+    runners: Record<string, {
+      running?: boolean;
+      viewerCount?: number;
+      /** docs/235 — outstanding agent-initiated background tasks. */
+      backgroundTaskCount?: number;
+    }> = {},
   ): { registry: SessionRunnerRegistry; disposed: string[] } {
     const disposed: string[] = [];
     const registry = {
-      get: (id: string) =>
-        runners[id]
-          ? { running: runners[id].running ?? false, viewerCount: runners[id].viewerCount ?? 0 }
-          : undefined,
+      get: (id: string) => {
+        const r = runners[id];
+        if (!r) return undefined;
+        const running = r.running ?? false;
+        const backgroundTaskCount = r.backgroundTaskCount ?? 0;
+        return {
+          running,
+          viewerCount: r.viewerCount ?? 0,
+          backgroundTaskCount,
+          // Mirrors the real runner's derivation so the guard under test sees
+          // the same union the production code does.
+          agentBusy: running || backgroundTaskCount > 0,
+        };
+      },
       dispose: (id: string) => { disposed.push(id); },
     } as unknown as SessionRunnerRegistry;
     return { registry, disposed };
@@ -124,6 +139,31 @@ describe("escalateDiskTiers", () => {
     expect(disposed).toContain("old-hot");
     // light NEVER wipes the checkout.
     expect(fs.existsSync(path.join(wsDir, "keep.txt"))).toBe(true);
+  });
+
+  // docs/235 — `hot → light` destroys the container. A session whose agent is
+  // waiting on (or was woken by) background work has `running === false`, so
+  // the old `running`-only guard would tear it down mid-work.
+  it("docs/235: never descends a session holding outstanding background tasks", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-bg");
+    fs.mkdirSync(wsDir, { recursive: true });
+    insertSession({
+      id: "bg-old",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.lightAfterMs / 86_400_000 + 1),
+      diskTier: "hot",
+      workspaceDir: wsDir,
+    });
+
+    const { registry, disposed } = fakeRegistry({
+      "bg-old": { running: false, backgroundTaskCount: 1 },
+    });
+    const result = await escalateDiskTiers(baseDeps(sm, registry));
+
+    expect(result.toLight).toBe(0);
+    expect(sm.get("bg-old")?.diskTier).toBe("hot");
+    expect(disposed).not.toContain("bg-old");
   });
 
   it("docs/110: NEVER descends a pinned session, even when ancient and idle", async () => {

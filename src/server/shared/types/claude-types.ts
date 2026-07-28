@@ -77,16 +77,88 @@ export interface ClaudeCompactBoundaryEvent {
 }
 
 /**
+ * docs/235 — one entry in the CLI's background-task list. `task_type` is the
+ * CLI's own discriminator (e.g. `"local_bash"` for a `Bash(run_in_background)`
+ * job); `description` is the command or label the CLI shows for it.
+ */
+export interface ClaudeBackgroundTask {
+  task_id: string;
+  task_type?: string;
+  description?: string;
+}
+
+/**
+ * docs/235 — the CLI's `system`/`subtype:"background_tasks_changed"` event. The
+ * `tasks` array is the **complete current list**, not a delta, so any single
+ * event fully re-states the truth (empty array = drained). It is emitted only on
+ * change: neither a new turn nor a fresh `init` re-states an outstanding list,
+ * and there is no heartbeat — see the reliability section of docs/235 for why
+ * the orchestrator therefore decays its copy rather than trusting it forever.
+ */
+export interface ClaudeBackgroundTasksChangedEvent {
+  type: "system";
+  subtype: "background_tasks_changed";
+  session_id?: string;
+  tasks?: ClaudeBackgroundTask[];
+}
+
+/** docs/235 — a background task started. Edge signal; the level lives in {@link ClaudeBackgroundTasksChangedEvent}. */
+export interface ClaudeTaskStartedEvent {
+  type: "system";
+  subtype: "task_started";
+  session_id?: string;
+  task_id?: string;
+  tool_use_id?: string;
+  task_type?: string;
+  description?: string;
+}
+
+/** docs/235 — a background task changed state (`patch.status` e.g. `"completed"`). */
+export interface ClaudeTaskUpdatedEvent {
+  type: "system";
+  subtype: "task_updated";
+  session_id?: string;
+  task_id?: string;
+  patch?: { status?: string; end_time?: number };
+}
+
+/**
+ * docs/235 — a background task finished and the CLI is waking itself to react.
+ * This is the edge that opens a **self-woken turn**: on the wire it is
+ * immediately followed by a fresh `system/init` and, later, a `result`, with no
+ * user message in between.
+ */
+export interface ClaudeTaskNotificationEvent {
+  type: "system";
+  subtype: "task_notification";
+  session_id?: string;
+  task_id?: string;
+  tool_use_id?: string;
+  /** e.g. `"completed"`. */
+  status?: string;
+  /** Path (inside the container) the CLI wrote the task's output to. */
+  output_file?: string;
+  /** Human-readable one-liner, e.g. `Background command "npm test" completed (exit code 0)`. */
+  summary?: string;
+}
+
+/**
  * The CLI's `system` events, discriminated by `subtype`. `init` is the
  * once-per-session handshake; `status` / `compact_boundary` carry the docs/178
- * compaction signals. A mid-stream second `init` (the CLI re-inits after a
- * compaction) is the same shape as the first — the orchestrator, not the type,
- * is responsible for not resetting session/permission state on it.
+ * compaction signals; the `task_*` / `background_tasks_changed` family carries
+ * the docs/235 background-task liveness signals. A mid-stream second `init` (the
+ * CLI re-inits after a compaction, and again when a background task wakes it) is
+ * the same shape as the first — the orchestrator, not the type, is responsible
+ * for not resetting session/permission state on it.
  */
 export type ClaudeSystemEvent =
   | ClaudeSystemInitEvent
   | ClaudeSystemStatusEvent
-  | ClaudeCompactBoundaryEvent;
+  | ClaudeCompactBoundaryEvent
+  | ClaudeBackgroundTasksChangedEvent
+  | ClaudeTaskStartedEvent
+  | ClaudeTaskUpdatedEvent
+  | ClaudeTaskNotificationEvent;
 
 export interface ClaudeContentBlockText {
   type: "text";

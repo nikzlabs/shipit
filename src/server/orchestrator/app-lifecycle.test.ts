@@ -119,6 +119,82 @@ describe("createIdleEnforcer", () => {
     }
   });
 
+  // docs/235 — the reclaim guard reads `agentBusy`, not `running`. A session
+  // whose agent woke ITSELF (a background task finished and the CLI started a
+  // fresh turn), or that is merely holding pending background work between
+  // turns, has `running === false` and would otherwise be reaped mid-work.
+  it("never disposes a runner holding outstanding background tasks", () => {
+    const containers = [
+      { sessionId: "a" }, { sessionId: "b" }, { sessionId: "c" },
+    ];
+    const destroy = vi.fn().mockResolvedValue(undefined);
+    const cm = makeContainerManager({ containers, destroy });
+
+    for (const c of containers) {
+      const r = registry.getOrCreate(c.sessionId, `/tmp/${c.sessionId}`, "claude" as AgentId);
+      // No viewer, no running turn — idle by the old definition.
+      r.isStreamingActive = true;
+      r.setBackgroundTasks([{ id: `task-${c.sessionId}`, description: "npm test" }]);
+      expect(r.running).toBe(false);
+      expect(r.agentBusy).toBe(true);
+    }
+
+    createIdleEnforcer({
+      containerManager: cm,
+      credentialStore: makeCredentialStore(1),
+      runnerRegistry: registry,
+    })();
+
+    expect(destroy).not.toHaveBeenCalled();
+    for (const c of containers) {
+      expect(registry.get(c.sessionId)?.disposed).toBe(false);
+    }
+  });
+
+  it("reaps a runner once its background tasks drain", () => {
+    const containers = [{ sessionId: "a" }, { sessionId: "b" }];
+    const destroy = vi.fn().mockResolvedValue(undefined);
+    const cm = makeContainerManager({ containers, destroy });
+
+    for (const c of containers) {
+      const r = registry.getOrCreate(c.sessionId, `/tmp/${c.sessionId}`, "claude" as AgentId);
+      r.isStreamingActive = true;
+      r.setBackgroundTasks([{ id: "t1" }]);
+    }
+    // The backend reports an empty list — drained.
+    for (const c of containers) registry.get(c.sessionId)!.setBackgroundTasks([]);
+
+    createIdleEnforcer({
+      containerManager: cm,
+      credentialStore: makeCredentialStore(0),
+      runnerRegistry: registry,
+    })();
+
+    expect(destroy).toHaveBeenCalledTimes(2);
+  });
+
+  // The count is only meaningful while a streaming process is resident: the CLI
+  // reaps background work when it exits, so a stale list must not keep the
+  // container alive after the process is gone.
+  it("ignores background tasks when no streaming process is resident", () => {
+    const containers = [{ sessionId: "a" }];
+    const destroy = vi.fn().mockResolvedValue(undefined);
+    const cm = makeContainerManager({ containers, destroy });
+
+    const r = registry.getOrCreate("a", "/tmp/a", "claude" as AgentId);
+    r.setBackgroundTasks([{ id: "t1" }]);
+    r.isStreamingActive = false;
+    expect(r.agentBusy).toBe(false);
+
+    createIdleEnforcer({
+      containerManager: cm,
+      credentialStore: makeCredentialStore(0),
+      runnerRegistry: registry,
+    })();
+
+    expect(destroy).toHaveBeenCalledWith("a");
+  });
+
   it("skips runners whose viewer just detached (within grace period)", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));

@@ -22,6 +22,7 @@ import { runAgentToCompletion, buildSubAgentRunParams } from "../shared/sub-agen
 // cycle through `ws-handlers/agent-listeners.ts` ↔ `session-runner.ts`.
 // Re-exported here so container-session-runner.ts (and the runner classes
 // in this file) can keep their existing import path.
+import { BackgroundTaskTracker, type BackgroundTaskInfo } from "./background-task-tracker.js";
 import { runDispatchedTurn } from "./dispatched-turn.js";
 export { runDispatchedTurn };
 
@@ -458,6 +459,35 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    */
   readonly awaitingPermissionIds: Set<string>;
   /**
+   * docs/235 — outstanding agent-initiated background tasks (a
+   * `Bash(run_in_background)` job, a scheduled wake-up). Already gated on
+   * process liveness and decayed, so callers can read it directly; see
+   * {@link BackgroundTaskTracker} for why it is a bounded hint rather than a
+   * fact. Zero for backends that don't report background work (Codex today).
+   */
+  readonly backgroundTaskCount: number;
+  /** docs/235 — descriptions of the outstanding background tasks, for the chat status line. */
+  readonly backgroundTaskDescriptions: string[];
+  /**
+   * docs/235 — the union liveness axis every container-reclaim path must
+   * consult: `running || backgroundTaskCount > 0`.
+   *
+   * `running` alone is NOT sufficient — it is only ever set by an
+   * orchestrator-initiated turn, so a session whose agent woke itself (or is
+   * waiting on background work that will wake it) reads as idle and gets its
+   * container destroyed underneath it.
+   *
+   * Conversely `running` must NOT be widened to cover background tasks:
+   * `send-message.ts` branches on it to decide whether an incoming user message
+   * is queued/steered into an in-flight turn or starts a fresh one, and there is
+   * no turn to queue behind while a task is merely pending.
+   */
+  readonly agentBusy: boolean;
+  /** docs/235 — replace the background-task list wholesale (the backend reports a complete set). */
+  setBackgroundTasks(tasks: BackgroundTaskInfo[]): void;
+  /** docs/235 — drop all background-task state (agent process died; its tasks died with it). */
+  clearBackgroundTasks(): void;
+  /**
    * docs/140 — true when the orchestrator believes the *currently-resident*
    * agent process was spawned with `useStreaming: true` (Claude
    * `StreamingClaudeProcess`, or any future adapter whose `run({ useStreaming })`
@@ -720,6 +750,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _lastTurnErrored = false;
   private _guardedUnavailable = false;
   readonly awaitingPermissionIds = new Set<string>();
+  private _backgroundTasks = new BackgroundTaskTracker();
   private _isStreamingActive = false;
   private _appliedPermissionMode: PermissionMode | undefined = undefined;
   private _accumulatedText = "";
@@ -769,6 +800,14 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   set guardedUnavailable(v: boolean) { this._guardedUnavailable = v; }
   get isStreamingActive(): boolean { return this._isStreamingActive; }
   set isStreamingActive(v: boolean) { this._isStreamingActive = v; }
+  // docs/235 — the count is gated on `isStreamingActive` inside the tracker: a
+  // background task cannot outlive the CLI process, so without a resident
+  // streaming process the answer is definitionally zero.
+  get backgroundTaskCount(): number { return this._backgroundTasks.count(this._isStreamingActive); }
+  get backgroundTaskDescriptions(): string[] { return this._backgroundTasks.descriptions(this._isStreamingActive); }
+  get agentBusy(): boolean { return this._isRunning || this.backgroundTaskCount > 0; }
+  setBackgroundTasks(tasks: BackgroundTaskInfo[]): void { this._backgroundTasks.set(tasks); }
+  clearBackgroundTasks(): void { this._backgroundTasks.clear(); }
   get appliedPermissionMode(): PermissionMode | undefined { return this._appliedPermissionMode; }
   set appliedPermissionMode(v: PermissionMode | undefined) { this._appliedPermissionMode = v; }
   get accumulatedText(): string { return this._accumulatedText; }
@@ -1020,6 +1059,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     this._turnEventBuffer = [];
     this._isRunning = false;
     this._isStreamingActive = false;
+    this._backgroundTasks.clear();
     this._appliedPermissionMode = undefined;
     this.emit("disposed");
     this.removeAllListeners();

@@ -516,6 +516,10 @@ export async function executeAgentTurn(
         // docs/140 — the resident streaming process has actually exited; the next
         // mid-turn send must not be routed through `sendUserMessage` (closed stdin).
         if (useStreaming) runner.isStreamingActive = false;
+        // docs/235 — the CLI reaps its background tasks when it exits, so drop
+        // our copy rather than leaving a stale count pinning `agentBusy` true
+        // and blocking idle reclaim forever.
+        runner.clearBackgroundTasks();
       }
     }
 

@@ -72,6 +72,16 @@ interface SessionState {
   activeRunnerSessions: Set<string>;
   /** docs/193 (Thread C) — sessions blocked awaiting a permission answer. */
   awaitingPermissionSessions: Set<string>;
+  /**
+   * docs/235 — sessions holding outstanding agent-initiated background tasks.
+   *
+   * Deliberately a SEPARATE set from `activeRunnerSessions` rather than folded
+   * into it: consumers of that set (`PrStatusControls`, `SpawnedSessionCard`,
+   * `useAttentionNotifications`) read it as "a turn is in flight", so widening
+   * it would silently change PR-action gating as a side effect. Sites that
+   * should treat the two alike OR them explicitly.
+   */
+  backgroundTaskSessions: Set<string>;
   queuedMessages: { text: string; position: number }[];
   rewindPreviews: Record<string, WsRewindPreview>;
   rewindRecoveries: Record<string, RewindRecovery>;
@@ -184,6 +194,9 @@ interface SessionState {
   setAwaitingPermissionSessions: (
     updater: (prev: Set<string>) => Set<string>,
   ) => void;
+  setBackgroundTaskSessions: (
+    updater: (prev: Set<string>) => Set<string>,
+  ) => void;
   setQueuedMessages: (
     messages:
       | { text: string; position: number }[]
@@ -290,6 +303,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   authUrl: null,
   activeRunnerSessions: new Set<string>(),
   awaitingPermissionSessions: new Set<string>(),
+  backgroundTaskSessions: new Set<string>(),
   rewindRecoveries: {},
   turnUsage: initialTurnUsage,
   allSessions: [] as SessionInfo[],
@@ -453,6 +467,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setAwaitingPermissionSessions: (updater) =>
     set((state) => ({
       awaitingPermissionSessions: updater(state.awaitingPermissionSessions),
+    })),
+
+  setBackgroundTaskSessions: (updater) =>
+    set((state) => ({
+      backgroundTaskSessions: updater(state.backgroundTaskSessions),
     })),
 
   setQueuedMessages: (messages) =>

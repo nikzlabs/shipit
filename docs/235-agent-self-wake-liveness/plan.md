@@ -44,11 +44,26 @@ Two aggravating details make the window wider than it looks:
 Agent listeners are removed only at the *start* of the next turn
 (`agent-execution.ts:246`, `dispatched-turn.ts:207`) — never on `result`. For a
 resident streaming process the previous turn's listener closure is therefore
-still attached when the self-wake fires. The wake turn's `agent_assistant` /
-`agent_result` events run through a closure holding the **prior** turn's captured
-`capturedSessionId` / turn state, and the terminal `agent_result` re-runs the
-post-turn flow (`postTurnCommit` → `scheduleAutoPush` → PR card) attributed to
-that stale turn. So the events are not merely unnoticed — they are mis-filed.
+still attached when the self-wake fires, and the wake turn's events run through
+it. **Corrected during implementation** — the original draft claimed this
+re-runs the post-turn flow under a stale session id. Tracing the code shows the
+opposite, and the real defects are these two:
+
+1. **Turn state is never reset.** `resetRunnerTurnState` is called only from
+   `turn-executor.ts:190`, at the start of a turn the orchestrator *starts*.
+   Nothing calls it for a turn the CLI starts on its own, so the wake turn's
+   output accumulates on top of the previous turn's `chatMessageGroups` and its
+   `agent_result` persists the combined set — **duplicating the earlier turn in
+   the transcript**. Latent while nothing rendered the wake turn; visible the
+   moment we surface it. Fixed here (§6).
+2. **The post-turn flow does not fire at all.** `turn-executor` guards it with
+   first-wins flags scoped to one `runTurn` invocation (`streamingPostTurnFired`,
+   `drainFired`, `tokenSyncFired`), so the wake turn's `agent_result` returns
+   early. A self-woken turn that edits files therefore gets **no auto-commit, no
+   push, and no PR card** until the next user turn. Not fixed here — see §6.
+
+`capturedSessionId` is *not* stale, which is why persistence still lands in the
+right session: it is the ShipIt session id, constant for the runner's lifetime.
 
 ## Can the CLI actually report it? Yes — verified
 
@@ -325,13 +340,28 @@ path with no compatibility guarantee — not worth the coupling for a window thi
 narrow, which additionally only bites if that session is among the excess idle
 set or the host is under memory pressure.
 
-### 6. Fix the stale-listener attribution
+### 6. Give the self-woken turn its own turn state
 
-Independently of the liveness fix: detach the turn's listeners on `result` for a
-resident streaming process, and re-wire per turn, so a self-woken turn is not
-attributed to the previous turn's captured context. Without this, marking the
-runner busy keeps the container alive to do post-turn work under the wrong
-session id.
+The original plan here — "detach the turn's listeners on `result` and re-wire per
+turn" — **cannot be implemented as written**: the listener that stays attached
+past `result` is exactly what delivers `agent_background_tasks` and
+`agent_self_wake`. Detaching on `result` would blind §1–5 to the very events they
+depend on. The goal (a self-woken turn is not attributed to the previous turn's
+context) is met instead at the wake *edge*:
+
+**Implemented.** The `agent_self_wake` handler calls `resetRunnerTurnState(runner)`
+before marking the runner running — the same reset `turn-executor` performs at the
+start of a user-initiated turn. The wake turn gets a clean accumulator, so its
+output forms its own message group instead of re-persisting the previous turn's.
+
+**Deliberately deferred:** re-arming the post-turn flow (defect 2 in "The second,
+quieter bug" above) so a self-woken turn's file changes get committed, pushed and
+surfaced on the PR card. That means resetting `turn-executor`'s first-wins guards
+for a resident streaming process, which touches auto-commit and PR creation —
+outward-facing behavior that deserves its own change and its own tests rather
+than riding along with a liveness fix. Tracked separately; until it lands, a
+self-woken turn's edits are picked up by the *next* user turn's commit (the work
+is not lost, only its timing changes).
 
 ## Bounds — what this does not do
 

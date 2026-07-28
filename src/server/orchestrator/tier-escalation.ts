@@ -106,7 +106,11 @@ function canAutoDescend(s: SessionInfo, runnerRegistry: SessionRunnerRegistry): 
   // but archive clears the pin first — see SessionManager.archive.)
   if (s.pinnedAt) return false;
   const runner = runnerRegistry.get(s.id);
-  if (runner?.running) return false;
+  // docs/235 — `agentBusy` covers both an orchestrator-started turn and a
+  // self-woken one (background task finished → the CLI started its own turn),
+  // plus a task still pending between turns. `running` alone would let the
+  // `hot → light` rung destroy the container of a session that is mid-work.
+  if (runner?.agentBusy) return false;
   if (runner && runner.viewerCount > 0) return false;
   return true;
 }

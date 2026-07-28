@@ -135,6 +135,88 @@ describe("ClaudeAdapter", () => {
 
   // docs/178 — native compaction signals. Before this, the `case "system"`
   // mapped EVERY system subtype to a bogus agent_init; now it discriminates.
+  // docs/235 — the CLI can start a turn on its own when a backgrounded job
+  // finishes. These four `system` subtypes were previously dropped by the
+  // adapter's `default: return null`, which is why the orchestrator never knew.
+  describe("background tasks / self-wake (docs/235)", () => {
+    function harness() {
+      const inner = new FakeInnerProcess();
+      const adapter = new ClaudeAdapter(inner as any);
+      const events: any[] = [];
+      adapter.on("event", (e) => events.push(e));
+      return { inner, events };
+    }
+
+    it("maps background_tasks_changed to the normalized task list", () => {
+      const { inner, events } = harness();
+
+      inner.emit("event", {
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [
+          { task_id: "bqmczrwsu", task_type: "local_bash", description: "npm test" },
+          { task_id: "other" },
+        ],
+      } as ClaudeEvent);
+
+      expect(events).toEqual([{
+        type: "agent_background_tasks",
+        tasks: [
+          { id: "bqmczrwsu", type: "local_bash", description: "npm test" },
+          { id: "other", type: undefined, description: undefined },
+        ],
+      }]);
+    });
+
+    it("maps an empty task list to an explicit drained signal", () => {
+      // `tasks: []` is how the CLI says "nothing outstanding" — it must reach
+      // the runner, otherwise the count never falls back to zero.
+      const { inner, events } = harness();
+      inner.emit("event", { type: "system", subtype: "background_tasks_changed", tasks: [] } as ClaudeEvent);
+      expect(events).toEqual([{ type: "agent_background_tasks", tasks: [] }]);
+    });
+
+    it("tolerates a background_tasks_changed with no tasks field", () => {
+      const { inner, events } = harness();
+      inner.emit("event", { type: "system", subtype: "background_tasks_changed" } as ClaudeEvent);
+      expect(events).toEqual([{ type: "agent_background_tasks", tasks: [] }]);
+    });
+
+    it("maps task_notification to agent_self_wake", () => {
+      const { inner, events } = harness();
+
+      inner.emit("event", {
+        type: "system",
+        subtype: "task_notification",
+        task_id: "bqmczrwsu",
+        status: "completed",
+        summary: 'Background command "npm test" completed (exit code 0)',
+        output_file: "/tmp/claude-1000/x/tasks/bqmczrwsu.output",
+      } as ClaudeEvent);
+
+      expect(events).toEqual([{
+        type: "agent_self_wake",
+        taskId: "bqmczrwsu",
+        status: "completed",
+        summary: 'Background command "npm test" completed (exit code 0)',
+      }]);
+    });
+
+    it("drops task_started / task_updated as redundant per-task deltas", () => {
+      // Their effect is already covered by the authoritative
+      // `background_tasks_changed` list emitted alongside them.
+      const { inner, events } = harness();
+      inner.emit("event", { type: "system", subtype: "task_started", task_id: "a" } as ClaudeEvent);
+      inner.emit("event", {
+        type: "system",
+        subtype: "task_updated",
+        task_id: "a",
+        patch: { status: "completed" },
+      } as ClaudeEvent);
+      expect(events).toHaveLength(0);
+    });
+  });
+
   describe("compaction (docs/178)", () => {
     it("maps system/status status:'compacting' to agent_compaction_started", () => {
       const inner = new FakeInnerProcess();
