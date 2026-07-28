@@ -17,8 +17,16 @@
       the state survives reload / reconnect
 - [ ] Client store: `backgroundTaskSessions`, reconciled wholesale from the
       snapshot the way `activeRunnerSessions` is
-- [ ] Sidebar `SessionStatusDot`: new rung below "agent running", distinct glyph
-      (not the pulsing green dot) with a task-count tooltip
+- [ ] Sidebar `SessionStatusDot`: widen the existing `isAgentRunning` condition
+      to include background-task sessions — reuse the green pulsing dot, add no
+      new indicator
+- [ ] Chat `AgentStatusBar`: widen the `isLoading` gate and set the label to
+      "Waiting for a background task to finish" (naming the task when there is
+      exactly one); suppress the `tool` field
+- [ ] Gate `backgroundTaskCount` on `isStreamingActive` — a task cannot outlive
+      the CLI process, so the count is definitionally 0 without one
+- [ ] Decay the count with `backgroundTasksSeenAt` (honored for at most one
+      `IDLE_GRACE_PERIOD_MS`) so a dropped event can't strand a session
 - [ ] `computeAttentionReason`: add `hasBackgroundTasks`, short-circuit with
       `isAgentRunning`, kept *below* the `awaitingPermission` check
 - [ ] Detach turn listeners on `result` for a resident streaming process so a

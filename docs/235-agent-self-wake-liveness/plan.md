@@ -187,8 +187,8 @@ added in §3.
 **5a. Live push.** Extend `WsSessionStatus` (`ws-server-messages/session.ts:70`)
 with `backgroundTasks?: { count: number; descriptions: string[] }`, emitted on
 each `agent_background_tasks`. `descriptions` comes straight from the CLI's task
-list and is what makes the tooltip specific ("`npm test` running") instead of a
-bare count.
+list and is what lets the chat line name the work instead of showing a bare
+count.
 
 **5b. First paint and reconnect.** The live push alone is not enough — a page
 reload or a backgrounded mobile tab would show nothing while the task is still
@@ -201,16 +201,36 @@ emitted three lines below — that event already carries
 re-derive after a reconnect), so it is the established precedent rather than a
 new mechanism.
 
-**5c. Sidebar.** `SessionStatusDot`
-(`SessionSidebar/SessionStatusIndicators.tsx`) gains a rung between "agent
-running" (priority 2) and "CI failed" (priority 3). It must **not** reuse the
-pulsing green `bg-(--color-success)` dot: that means "the agent is thinking," and
-here the agent is specifically *not* thinking — it is waiting on a task that will
-wake it. A distinct Phosphor glyph at `ICON_SIZE.XS` in the neutral/secondary
-color, `title={`${count} background task${count === 1 ? "" : "s"} running`}`,
-reads as "work outstanding" without claiming the agent is live.
+**5c. Sidebar — reuse the existing dot, add nothing.** No new indicator, no new
+visual state. `SessionStatusDot`
+(`SessionSidebar/SessionStatusIndicators.tsx`) already renders a pulsing green
+dot at priority 2 for `isAgentRunning`; widen that one condition to
+`activeRunnerSessions.has(id) || backgroundTaskSessions.has(id)`. From the
+sidebar's altitude the useful fact is binary — *this session is working, don't
+treat it as done* — and that is exactly what the green dot already says. A
+second glyph would add a distinction the user has to learn in the surface least
+able to explain it. The nuance belongs in the chat, where there is room for
+words (5e).
 
-**5d. Attention.** `computeAttentionReason` (`useAttentionInfo.ts`) currently
+Keep the two client sets separate rather than folding background-task sessions
+into `activeRunnerSessions`: other consumers of that set
+(`PrStatusControls`, `SpawnedSessionCard`, `useAttentionNotifications`) read it
+as "a turn is in flight," and silently widening it would change gating on the PR
+action buttons as a side effect. OR the two together at each site that should
+treat them alike — here and in 5f.
+
+**5d. Chat — replace the label, not the component.** `AgentStatusBar`
+(rendered at `App.tsx:1255` behind the `isLoading` gate) already displays a
+`StreamingActivity { label, tool? }`. Widen the gate to include pending
+background tasks and set the label to
+`"Waiting for a background task to finish"` — or, with one task and a
+description available, `"Waiting for: sleep 40 && echo LATE"`. Same bar, same
+spinner, different words: the user sees the session is alive *and* learns it is
+blocked on a task rather than mid-thought, which is precisely the distinction
+the sidebar cannot carry. Suppress the `tool` field so the tool-execution
+spinner doesn't imply a live tool call.
+
+**5e. Attention.** `computeAttentionReason` (`useAttentionInfo.ts`) currently
 falls through to `"Waiting for your input"` for an idle session, which is
 actively wrong here — the session is going to speak again on its own. Add
 `hasBackgroundTasks` to `AttentionInputs` and extend the existing short-circuit
@@ -227,6 +247,74 @@ reconcile — deliberately **not** a persisted transcript card. Per the
 `CLAUDE.md` rule, spinners and live activity correctly disappear; only transcript
 content persists. The wake turn's own output is ordinary agent output and
 persists through the normal path.
+
+## How reliable is the signal? Partially — and the gaps are bounded
+
+The level signal's payload is a **complete list, not a delta** (probe: `tasks:[{…}]`
+on start, `tasks:[]` on drain), so any single event fully re-states the truth.
+That is the good half. Two probes mapped the limits.
+
+**It is emitted only on change — there is no re-sync.** Probe B started a second
+turn while a 40s task was still pending:
+
+```
+ 3672ms  background_tasks_changed tasks=[{task_id:"bvycb6dbf", …}]
+ 5727ms  result/success                  <- turn 1 ends
+ 9752ms  system/init                     <- turn 2 starts, task STILL pending
+11106ms  result/success                  <- turn 2 ends
+                                         ^ no re-statement of the task list
+35036ms  background_tasks_changed tasks=[]
+```
+
+A new turn and a fresh `init` do **not** re-emit the outstanding list, and there
+is no heartbeat. There is also no pull API: the `TaskList` / `TaskGet` /
+`TaskOutput` / `TaskStop` tools in the CLI's tool set are *model*-facing, not
+callable by the orchestrator over the control protocol. So ShipIt's copy is only
+as good as its event delivery, and a dropped event cannot self-heal from the
+stream. A stuck non-zero count would make a session permanently unreclaimable —
+the same failure class the existing `running = false` reset in
+`agent-listeners.ts:1187` exists to prevent.
+
+**But background tasks cannot outlive the CLI process, which bounds the damage.**
+Probe A ran the one-shot `-p` PTY path with a backgrounded `sleep 12 && touch
+MARKER`. The CLI held ~5s past its `result`, emitted
+`background_tasks_changed` / `task_updated` / `task_notification`, exited at
+16.8s — and the marker never appeared, at 12s or ever:
+
+```
+11473ms  result/success
+16495ms  background_tasks_changed / task_updated / task_notification
+16787ms  CLI PROCESS EXITED code=0
+19791ms→43813ms  marker exists? false   (the 12s sleep never completed)
+```
+
+Two consequences, both load-bearing:
+
+1. **This is a streaming-mode-only problem.** With live steering off, ShipIt
+   spawns `ClaudeProcess` (one-shot PTY) and the CLI reaps background work at
+   turn end. Nothing survives for the container to protect, so today's eviction
+   behavior is already correct there. The fix only needs to hold when
+   `runner.isStreamingActive`.
+2. **Gate the count on process liveness.** Because a task cannot outlive the
+   process, `backgroundTaskCount > 0` is only meaningful while the streaming
+   process is alive. Make the getter return 0 unless `isStreamingActive` — that
+   is free, and it collapses the largest drift window (process died, drain event
+   never arrived) into a correct answer.
+
+**Residual gap, handled by decay.** A dropped SSE frame while the process stays
+alive is still possible. Treat the count as a bounded-lifetime *hint*: record
+`backgroundTasksSeenAt` alongside it and honor a non-zero count for at most one
+`IDLE_GRACE_PERIOD_MS` window. A missed drain event then costs one grace period
+of extra container lifetime and never a permanent leak. The decay deliberately
+errs toward *reclaimable*, which is the safe direction for a resource guard.
+
+An orchestrator restart loses the count entirely (it is in-memory runner state),
+making a session with genuinely pending work immediately reclaimable again. That
+is accepted, not fixed: reconstructing it would mean reading the CLI's
+undocumented per-session `tasks/` directory inside the container (observed at
+`/tmp/claude-<uid>/<cwd-slug>/<session-id>/tasks/<task-id>.output`), which is an
+internal path with no compatibility guarantee. Not worth the coupling for a
+window this narrow.
 
 ### 6. Fix the stale-listener attribution
 
