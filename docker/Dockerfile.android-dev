@@ -48,4 +48,4 @@ RUN curl -fsSL --retry 3 --retry-all-errors -o /tmp/gradle.zip "https://services
  && chmod -R a+rX "/opt/gradle-${GRADLE_VERSION}"
 ENV PATH="/opt/gradle/bin:${PATH}"
 
-WORKDIR /workspace/android
+WORKDIR /workspace/android-snapshot-test

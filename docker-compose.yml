@@ -156,7 +156,9 @@ services:
       - { name: GITHUB_TOKEN }
 
   # Android emulator preview — dogfoods docs/213's interactive-preview tier on
-  # the ShipIt repo itself (we ship an `android/` app, so this is a real target).
+  # the in-repo native test app (`android-snapshot-test/`). The old `android/`
+  # WebView wrapper was removed (superseded by the PWA, docs/222); the test app
+  # is now the canonical Android target for build, snapshot, and preview.
   # Marked `manual` like `dev`: it's heavy (~2–4 GiB + a booting Android OS) and
   # needs host KVM, so it boots only when the user explicitly starts it, never on
   # every session.
@@ -199,7 +201,7 @@ services:
 
   # Android build + hot-reload service — the Android analog of the web `dev`
   # service. Holds the SDK + Gradle (docker/Dockerfile.android-dev); it builds the
-  # `android/` debug APK, installs it onto the `emulator` service over adb, and
+  # `android-snapshot-test/` debug APK, installs it onto `emulator` over adb, and
   # then watches the source tree and rebuilds + reinstalls + relaunches on every
   # change. That's the "hot reload" loop — coarser than web HMR (a full rebuild +
   # reinstall, not a code hot-swap, because native Android has no headless
@@ -214,7 +216,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile.android-dev
     image: shipit-android-dev:local
-    working_dir: /workspace/android
+    working_dir: /workspace/android-snapshot-test
     init: true
     volumes:
       # Live source (the build reads it; the watch loop reacts to edits) + the

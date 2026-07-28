@@ -170,7 +170,7 @@ SDK/Gradle) and **push** it over adb:
 cd android && ./gradlew assembleDebug                       # build the APK here
 adb connect emulator:5555                                   # reach the service by DNS
 adb install -r app/build/outputs/apk/debug/app-debug.apk    # install onto the device
-adb shell monkey -p com.shipit.wrapper -c android.intent.category.LAUNCHER 1   # launch it
+adb shell monkey -p <your.application.id> -c android.intent.category.LAUNCHER 1  # launch it
 ```
 
 Re-run install + launch after each rebuild to refresh what the preview pane shows.

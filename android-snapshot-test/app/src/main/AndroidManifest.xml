@@ -1,7 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- No Activity and no theme are declared: this module exists only to render
-         its Compose UI to PNG via Paparazzi in a JVM unit test. It is never
-         installed, so there is nothing to theme. -->
-    <application android:label="Snapshot Test" />
+    <!-- MainActivity makes this module launchable on the emulator (docs/213
+         running-app tier) in addition to being rendered headlessly by Paparazzi.
+         The Material3 theme comes from the Compose dependency, so no XML theme
+         resource is needed. -->
+    <application android:label="ShipIt Test App">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.Material.NoActionBar">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
 </manifest>

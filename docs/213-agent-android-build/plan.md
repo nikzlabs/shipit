@@ -25,14 +25,20 @@ It comes down to two pieces:
    honest cycle is rebuild + reinstall + relaunch. Snapshot tests (piece 1) stay the primary visual loop —
    see [How Android devs actually iterate](#how-android-devs-actually-iterate--and-why-snapshots-are-our-primary-loop).
 
-Today the `android/` wrapper builds only in GitHub Actions, and a session container has no Java, SDK,
-Gradle, or preview — so the agent edits Kotlin/XML blind and the user sees nothing run. The web side has a
-tight loop (preview pane + Playwright); the Android side has none.
+*(Historical framing: when this doc was written, the repo's only Android code was the `android/` WebView
+wrapper, which built solely in GitHub Actions while a session container had no Java, SDK, Gradle, or
+preview — the agent edited Kotlin/XML blind. The web side had a tight loop (preview pane + Playwright); the
+Android side had none.)*
 
-`android/` exercises the build/lint path, but it's a thin **WebView shell** — `layoutlib` can't render it
-and it has no native UI, so it can't validate the snapshot, emulator, or interactive-control parts of the
-loop. The proper dogfood/validation target is a **real native test app**, which the new-repo Android
-template (**SHI-205**) will produce; set it up once that template exists.
+**Dogfood target — now `android-snapshot-test/`.** The `android/` wrapper was a thin **WebView shell**:
+`layoutlib` can't render a `WebView` and it had no native UI, so it could never validate the snapshot,
+emulator, or interactive-control parts of the loop. It has since been **removed entirely** (superseded by
+the installable PWA — [docs/222](../222-pwa-installable/plan.md), SHI-208; see
+[docs/116](../116-android-webview-app/plan.md)). The canonical Android target in this repo is now
+**`android-snapshot-test/`**, a real native Compose app that exercises every tier — `assembleDebug`, JVM
+unit tests, Paparazzi snapshots, and (via a launchable `MainActivity`) install + launch on the emulator.
+`android-overlay-test/` covers the off-matrix SDK overlay. A future SHI-205 template can adopt these as its
+starting fixtures.
 
 ## Recommendation
 
@@ -382,12 +388,16 @@ post-deploy on the new session-worker image.
 
 ## Relationship to other work
 
-- **Unblocks the API-35 edge-to-edge bump (sibling session).** Phase 1 lets it compile + lint the
-  `targetSdk`/`compileSdk` 35 change; Phase 2 lets it verify the insets visually via a snapshot test.
-  High-leverage to land Phase 1 + a minimal snapshot golden alongside that bump.
-- **SHI-53** tracks the WebView wrapper feature (doc 116). This doc is the platform build/test/preview
-  capability — distinct lifecycle, its own tracker item (**SHI-170**, under umbrella **SHI-204**; sibling
-  **SHI-205** = an Android project template for new repos).
+- **SHI-53 / doc 116 (the WebView wrapper) is retired.** The wrapper and its release pipeline were removed;
+  the installable **PWA** ([docs/222](../222-pwa-installable/plan.md), SHI-208) supersedes it. That removal
+  does **not** affect this capability: this doc is the *platform* build/test/preview capability for **any**
+  Android repo, and it never depended on the wrapper — the wrapper was only a convenient (and, being a
+  WebView shell, quite limited) dogfood target. `android-snapshot-test/` replaces it in that role, and is
+  strictly better: it can exercise snapshots and the emulator, which the wrapper never could.
+- Tracked by **SHI-170**, under umbrella **SHI-204**; sibling **SHI-205** = an Android project template for
+  new repos (which can adopt the in-repo fixtures as its starting point).
+- The API-35 edge-to-edge work that originally motivated Phase 1/2 applied to the wrapper and is moot now
+  that it's removed; the capability itself stands on its own.
 
 ## Risks / open questions
 

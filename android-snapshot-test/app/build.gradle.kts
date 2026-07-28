@@ -37,5 +37,8 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.ui:ui-tooling-preview")
+    // Launchable Activity (MainActivity) so the app can be installed + started on
+    // the emulator, not just rendered headlessly by Paparazzi.
+    implementation("androidx.activity:activity-compose:1.9.0")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
