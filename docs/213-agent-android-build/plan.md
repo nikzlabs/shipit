@@ -173,6 +173,7 @@ and the `/dev/kvm` allowance described above:
 services:
   emulator:
     image: budtmo/docker-android:emulator_14.0   # or an AOSP emulator-webrtc image
+    user: androidusr               # REQUIRED — image ships its own user; see below
     environment:
       - WEB_VNC=true                       # REQUIRED — enables the noVNC web UI (the user-facing preview)
       - EMULATOR_DEVICE=Samsung Galaxy S10 # device profile
