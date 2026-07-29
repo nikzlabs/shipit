@@ -542,6 +542,22 @@ describe("generateComposeOverride — session-worker UID (#1646)", () => {
     // The override omits `user:` so compose merge keeps the user's `root`.
     expect(doc.services.web.user).toBeUndefined();
   });
+
+  // docs/213 — the Android emulator image (budtmo) runs as its own baked-in user
+  // and keeps startup scripts under /home/androidusr. Forcing the session-worker
+  // UID onto it fails at boot with:
+  //   sh: /home/androidusr/docker-android/mixins/scripts/run.sh: Permission denied
+  // The canonical recipe declares `user: androidusr`; this pins that a *named*
+  // (non-numeric) user survives the override, not just a numeric one.
+  it("preserves a named user: so images with their own baked-in user still boot", () => {
+    process.env.SHIPIT_SESSION_WORKER_UID = "1000";
+    const override = generateComposeOverride(
+      [{ name: "emulator", ports: ["6080:6080"], user: "androidusr" }],
+      baseOpts,
+    );
+    const doc = parseYaml(override) as { services: Record<string, { user?: string }> };
+    expect(doc.services.emulator.user).toBeUndefined();
+  });
 });
 
 describe("writeComposeOverride", () => {

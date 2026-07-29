@@ -28,6 +28,10 @@ dist/
 sessions/
 .inner-shipit/
 
+# Android service caches (Gradle/adb HOME for the `android` compose service)
+.gradle-android/
+.android-home/
+
 # Android — separate Gradle builds, not part of the Node project. (The old
 # android/ WebView wrapper was removed; the PWA superseded it. See docs/222.)
 # Android test app (separate Gradle build — see android-snapshot-test/)

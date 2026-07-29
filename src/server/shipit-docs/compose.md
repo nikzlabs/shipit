@@ -442,6 +442,7 @@ general device passthrough.
 services:
   emulator:
     image: budtmo/docker-android:emulator_14.0   # or an AOSP emulator-webrtc image
+    user: androidusr               # REQUIRED — the image's own user (see below)
     environment:
       - WEB_VNC=true                       # REQUIRED — enables the noVNC web UI on 6080
       - EMULATOR_DEVICE=Samsung Galaxy S10 # device profile
@@ -451,6 +452,16 @@ services:
     x-shipit-preview: auto         # show the web UI as the interactive preview
 ```
 
+- **`user: androidusr` is required — images that ship their own user need an
+  explicit `user:`.** By default ShipIt runs compose services as the session-worker
+  UID so files a dev server writes into the *shared workspace* stay agent-owned.
+  Images that run as their own baked-in user and keep startup scripts in that
+  user's home break under a foreign UID — the emulator fails with
+  `sh: /home/androidusr/docker-android/mixins/scripts/run.sh: Permission denied`.
+  An explicit `user:` is always honored verbatim (ShipIt never overrides a
+  deliberate choice), so declaring the image's own user fixes it. Safe here
+  because the emulator writes nothing to the shared workspace. Apply the same rule
+  to any image with this shape.
 - **`WEB_VNC=true` is required for the user-facing preview.** Without it the
   `budtmo` image boots the emulator (adb works for the agent) but never starts the
   noVNC web server, so the preview pane stays blank. The agent's adb debug/drive

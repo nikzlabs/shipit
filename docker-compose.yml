@@ -181,6 +181,16 @@ services:
   # permits. No KVM → use a cloud device farm instead (the emulator is too slow).
   emulator:
     image: budtmo/docker-android:emulator_14.0
+    # REQUIRED. ShipIt otherwise runs every compose service as the session-worker
+    # UID (docs/150 §7) so dev-server writes into the shared workspace stay
+    # agent-owned. This image ships its own unprivileged user and keeps its
+    # startup scripts under /home/androidusr, which that UID cannot execute:
+    #   sh: /home/androidusr/docker-android/mixins/scripts/run.sh: Permission denied
+    # Declaring `user:` explicitly is honored verbatim by the compose generator
+    # (it never overrides a deliberate choice), so the image starts as intended.
+    # Nothing here writes to the shared workspace, so the UID-matching rationale
+    # doesn't apply.
+    user: androidusr
     environment:
       # REQUIRED — without WEB_VNC the image boots the emulator (adb works) but
       # never starts the noVNC web server, so the preview pane stays blank.
@@ -218,6 +228,15 @@ services:
     image: shipit-android-dev:local
     working_dir: /workspace/android-snapshot-test
     init: true
+    # Unlike `emulator` above, this service deliberately KEEPS ShipIt's
+    # session-worker UID: it writes Gradle build output into the shared workspace,
+    # so matching the agent's UID is exactly what we want (docs/150 §7). But that
+    # UID has no home directory inside this image, and both Gradle and adb need a
+    # writable HOME for their caches/keys — so point them at the (UID-owned)
+    # workspace instead of a root-owned `/`. Both dirs are gitignored.
+    environment:
+      HOME: /workspace/.android-home
+      GRADLE_USER_HOME: /workspace/.gradle-android
     volumes:
       # Live source (the build reads it; the watch loop reacts to edits) + the
       # APK output the install step reads. Shared with the outer workspace.
