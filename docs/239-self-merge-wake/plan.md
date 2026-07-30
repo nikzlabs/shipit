@@ -103,21 +103,42 @@ in-memory `inFlight` set plus a persisted `deliveryAttempts` / `lastAttemptAt`
 exponential backoff, capped, terminating in a `delivery-failed` state with a
 persisted failure card.
 
-**P4 — turn adoption re-narrows queued entries. ❌ Open (SHI-259).** After P2
-merged, turn adoption added a *fourth* drain: `adoptInFlightTurn`'s `drainNext`
-(`turn-adoption.ts`) rebuilds `AgentDispatchOptions` by hand and calls
-`runner.dispatch` directly, dropping `execution`, `systemTurn`, `onTurnComplete`, and
-`postTurn`. A wake-turn queued behind an adopted turn is P2 all over again. The same
-issue covers a startup ordering race — reconciliation and the adoption sweep are two
-fire-and-forget calls with reconciliation first, so reconcile can redispatch while
-the original turn still runs inside a surviving worker.
+**P4 — turn adoption re-narrowed queued entries. ✅ Fixed (SHI-259).** After P2
+merged, turn adoption added a *fourth* hand-rolled drain, dropping `execution`,
+`systemTurn`, `onTurnComplete`, and `postTurn`. Fixed structurally rather than
+pointwise — see docs/240 below. The startup ordering race it also covered (reconcile
+racing the adoption sweep) is fixed too: the sweep is now awaited first.
 
-**P5 — `onTurnComplete` never fires on a no-result retry. ❌ Open (SHI-260).**
-`runDispatchedTurn` passes the callback only to attempt zero, guarding against a
-double-fire; when attempt zero exits with no result the recursive retry means the
-callback fires **zero** times. Under P3's supervisor this is worse than before: the
-runner is still live so the `inFlight` marker stays valid indefinitely, and the watch
-is stuck in a state that looks healthy.
+**P5 — `onTurnComplete` never fired on a no-result retry. ✅ Fixed (SHI-260).**
+The callback reached only attempt zero, so a no-result retry fired it zero times.
+Also fixed structurally: retries are now attempts inside one settlement, and the
+attempt-zero guard is deleted rather than corrected.
+
+### docs/240 — the class, not the instances
+
+P1, P2, P4, and P5 were four instances of one bug: a dispatched turn losing its
+semantics between "dispatch requested" and "the turn ran and signalled completion".
+`docs/240-unlosable-turn-dispatch` (SHI-261) closed the class rather than the fifth
+instance, and this design inherits the result:
+
+- **`dispatch` / `runDispatchedTurn` take a branded `PreparedDispatch`**, mintable
+  only by `prepareDispatch` or the queue converter (the brand key is a module-private
+  `unique symbol` in `prepared-dispatch.ts`, so no other module can synthesize one).
+  `toQueuedMessage` is narrowed too, so enqueueing is not a back door. A future drain
+  that hand-rolls options **does not compile**. This design's delivery path must go
+  through `prepareDispatch`.
+- **Completion is a settlement, not a callback.** `dispatch` returns a handle whose
+  `settled: Promise<TurnOutcome>` resolves exactly once, in a `finally`, with
+  `status: "completed" | "errored" | "no-result" | "steered" | "dropped"`.
+
+That last point **retires one of this design's own requirements**: the "truthful
+terminal states" section below was written because `onTurnComplete` fired on error
+and `wakeSessionWithTurn` discarded the outcome, so a watch could read `delivered`
+for a turn that crashed. `merge-watch` now marks `delivered` only on
+`outcome.status === "completed"` and records the failure detail otherwise. A
+self-watch's `completed` / `failed` split therefore comes free; only
+`completed-without-pr` remains this design's own work, since a successful turn need
+not have produced a PR.
 
 ### What P3's fix does and does not give this design
 
@@ -377,10 +398,10 @@ CAS verifying the active attempt id. Reusing SHI-258's `inFlight` set for this d
 not work — see the correction above; it is a retry suppressor, not a lease, and its
 ownership test is by session id rather than by the runner that accepted the turn.
 
-**Terminal states must be truthful.** `completed` is not "a PR exists":
-`onTurnComplete` fires on agent **error** too, and `wakeSessionWithTurn` currently
-discards the `errored` outcome — so a naive `delivered` would claim success for a
-turn that crashed. Auto-create-PR is also user-controlled and **off** by default, so
+**Terminal states must be truthful.** *(Half of this is now supplied by docs/240:
+`wakeSessionWithTurn` passes the whole `TurnOutcome` through, and a watch advances
+only on `status === "completed"`. What remains below is the PR half.)* `completed` is
+not "a PR exists". Auto-create-PR is user-controlled and **off** by default, so
 a successful turn need not produce a PR. Hence `completed` / `failed` /
 `completed-without-pr`, with the outcome preserved through the wake path.
 
@@ -676,8 +697,10 @@ It then falsified two of this doc's reuse claims — `inFlight` is a retry suppr
 not a delivery lease, and `isTerminalWatchState` controls neither the pending list
 nor the polling gate — and found **two live bugs the merged fixes did not cover**:
 turn adoption added a fourth narrowing drain (SHI-259, re-breaking SHI-255), and
-`onTurnComplete` fires zero times on a no-result retry (SHI-260). Both are now
-prerequisites P4 and P5.
+`onTurnComplete` fires zero times on a no-result retry (SHI-260). Both were
+prerequisites P4 and P5, and both are now fixed — structurally, by
+`docs/240-unlosable-turn-dispatch` (SHI-261), which closed the class rather than the
+fifth instance.
 
 Also folded in: the session-level preparation lease (a runner-level reservation is
 not expressible), write-ahead reset stages, non-best-effort remote healing, the
@@ -686,7 +709,13 @@ callback-signature change generation-checking actually requires, identity checki
 the `expired` path too, and the card/watch atomicity and runner-less
 `persistCardTransition` gaps.
 
+**Round 3 (no review — status only).** docs/240 landed, closing P4 and P5 and
+retiring the `errored`-outcome half of "truthful terminal states". The dispatch path
+is now compiler-enforced: hand-rolled options don't typecheck, and completion is a
+settlement that resolves exactly once.
+
 Net: the reset coordinator, CAS watch storage, generation-checked delivery, the
-preparation lease, and the arm card remain genuinely new work. The subsystem has now
-needed five separate repairs to deliver a system turn reliably, which is itself worth
-weighing before committing to build on it.
+preparation lease, and the arm card remain genuinely new work. The subsystem needed
+five separate repairs to deliver a system turn reliably — but the fifth was a
+structural fix rather than a sixth patch, so the trend the earlier draft flagged has
+been addressed rather than merely noted.

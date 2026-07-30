@@ -5,8 +5,8 @@
 - [x] **P1** `trySteerDispatch` returns false for `systemTurn` / callback-carrying dispatches — SHI-254
 - [x] **P2** interactive queue drain preserves `systemTurn` + `onTurnComplete` — SHI-255
 - [x] **P3** retry path for a failed delivery that doesn't require an orchestrator restart — SHI-258
-- [ ] **P4** turn adoption drain re-narrows queued entries — SHI-259
-- [ ] **P5** `onTurnComplete` never fires on a no-result retry — SHI-260
+- [x] **P4** turn adoption drain re-narrows queued entries — SHI-259 (fixed structurally, docs/240)
+- [x] **P5** `onTurnComplete` never fires on a no-result retry — SHI-260 (fixed structurally, docs/240)
 
 ## Watch state
 
@@ -28,6 +28,7 @@
 ## Delivery
 
 - [ ] `handleSelfMerge` called from `onMergeDetectedCb` after `markMergedAndPruneExcess`, with PR identity
+- [ ] Delivery dispatch goes through `prepareDispatch` (docs/240 brand); consume `handle.settled`
 - [ ] Carry `{prNumber, headSha}` into the merge callback (signature change)
 - [ ] Identity check on BOTH the merged and `expired` paths
 - [ ] Closed outcomes fan out from `onPrTerminalState` → `expireSelfWatch`
@@ -39,8 +40,8 @@
 - [ ] Remote healing classified (network = retryable, lease conflict = blocked), not best-effort
 - [ ] Fail closed on a safety-gate failure (`blocked`, no turn)
 - [ ] `self` branch in `buildWakeTurnPrompt`
-- [ ] Preserve the `errored` outcome through `wakeSessionWithTurn`
-- [ ] Terminal states: `completed` / `failed` / `completed-without-pr`
+- [x] Preserve the `errored` outcome through `wakeSessionWithTurn` — done by docs/240
+- [ ] `completed-without-pr` (the `completed`/`failed` split now comes from docs/240's `TurnOutcome`)
 - [ ] Woken turn's `--self` re-arm refused server-side
 - [ ] `reconcilePending` + `PollingGlobalGate` cover self-watches
 
