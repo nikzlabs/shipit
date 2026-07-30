@@ -362,6 +362,12 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   // the bare-cache git oracle, so `publishDepDirOverlayBases` stays runner- and
   // HTTP-agnostic. Cheap flag gate first so a kill-switched session never awaits
   // worker readiness. Default ON; inert when `OVERLAY_DEP_STORE=0`/`false`.
+  //
+  // This is also where the pull's lifetime is bound to the runner's: the snapshot
+  // producer is the session container, so `dispose()` (archive / full reset) means
+  // the worker is about to be SIGKILLed and the multi-hundred-MB stream we are
+  // reading is about to die under us. Aborting on `"disposed"` turns that into a
+  // prompt cancellation instead of a mid-stream socket kill.
   const publishOverlayBases = async ({ runner, session, installOk, installCommands }: {
     runner: ContainerSessionRunner;
     session: SessionInfo;
@@ -370,10 +376,21 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   }): Promise<DepDirPublishOutcome[]> => {
     if (!isOverlayEnabled() || !session.remoteUrl) return [];
     await runner.whenWorkerReady();
-    return publishDepDirOverlayBases(
-      { session, workerUrl: runner.getWorkerUrl(), installOk, installCommands },
-      { stateDir, createRepoGit, getBareCacheDir },
-    );
+    // `dispose()` resolves `whenWorkerReady()` so no awaiter leaks — which means
+    // reaching here says nothing about the runner still being alive. Re-check.
+    if (runner.disposed) return [];
+
+    const controller = new AbortController();
+    const onDisposed = (): void => controller.abort(new Error("session runner disposed"));
+    runner.on("disposed", onDisposed);
+    try {
+      return await publishDepDirOverlayBases(
+        { session, workerUrl: runner.getWorkerUrl(), installOk, installCommands, signal: controller.signal },
+        { stateDir, createRepoGit, getBareCacheDir },
+      );
+    } finally {
+      runner.off("disposed", onDisposed);
+    }
   };
 
   const runnerRegistry = createRunnerRegistry({
