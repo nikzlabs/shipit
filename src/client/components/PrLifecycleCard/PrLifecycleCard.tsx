@@ -27,6 +27,7 @@ import {
 } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import { isDefaultBranch } from "./shared.js";
+import { useSessionDefaultBranch } from "../../utils/default-branch.js";
 import { ReadyPhase, OpenPhase, TerminalPhase, ErrorPhase } from "./phases/index.js";
 import type { NotableFileChange } from "../../../server/shared/types/github-types.js";
 
@@ -102,6 +103,9 @@ export function PrLifecycleCard({
   // client: the PR body (poller `prBody`, falling back to the lifecycle card's
   // `pr.body`) for Closes/Refs, and the session's first user message for the
   // issue it was started from. No server round-trip.
+  // The repo's real default branch, so "Merged: … into <base>" only annotates a
+  // genuinely non-default base (a `master` repo shouldn't read "into master").
+  const repoDefaultBranch = useSessionDefaultBranch(sessionId);
   const prBody = usePrStore((s) => s.statusBySession[sessionId]?.prBody) ?? card?.pr?.body;
   const firstUserText = useSessionStore((s) => s.messages.find((m) => m.role === "user")?.text);
   const issueRefs = useMemo(
@@ -181,7 +185,7 @@ export function PrLifecycleCard({
       {card.phase === "open" && <OpenPhase card={card} sessionId={sessionId} canAutoMerge={canAutoMerge} />}
       {card.phase === "merged" && (
         <TerminalPhase card={card} sessionId={sessionId}
-          text={`Merged: ${card.pr?.title ?? `PR #${card.pr?.number}`}${card.pr?.baseBranch && !isDefaultBranch(card.pr.baseBranch) ? ` into ${card.pr.baseBranch}` : ""}`}
+          text={`Merged: ${card.pr?.title ?? `PR #${card.pr?.number}`}${card.pr?.baseBranch && !isDefaultBranch(card.pr.baseBranch, repoDefaultBranch) ? ` into ${card.pr.baseBranch}` : ""}`}
         />
       )}
       {card.phase === "closed" && (

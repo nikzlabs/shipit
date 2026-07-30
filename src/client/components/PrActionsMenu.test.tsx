@@ -6,7 +6,8 @@ import { usePrStore, type PrCardState } from "../stores/pr-store.js";
 import { useGitStore } from "../stores/git-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
-import type { SessionInfo } from "../../server/shared/types.js";
+import { useRepoStore } from "../stores/repo-store.js";
+import type { RepoInfo, SessionInfo } from "../../server/shared/types.js";
 
 function makeSession(overrides: Partial<SessionInfo> & { id: string }): SessionInfo {
   return {
@@ -32,11 +33,17 @@ const openCard: PrCardState = {
   },
 };
 
+// `useGitStore.reset()` only clears data, not actions — capture the real
+// `startRebase` so a test that stubs it can't leak the stub into the next one.
+const realStartRebase = useGitStore.getState().startRebase;
+
 beforeEach(() => {
   usePrStore.setState({ statusBySession: {}, cardBySession: {}, autoMergeBySession: {} });
   useGitStore.getState().reset();
+  useGitStore.setState({ startRebase: realStartRebase });
   useSessionStore.setState({ activeRunnerSessions: new Set<string>(), sessions: [] });
   useSettingsStore.setState({ autoFixCi: false });
+  useRepoStore.setState({ repos: [] });
 });
 
 afterEach(() => {
@@ -138,5 +145,55 @@ describe("PrActionsMenu", () => {
 
     await user.click(screen.getByLabelText("Pull request actions"));
     expect(screen.queryByRole("menuitem", { name: "Close pull request" })).toBeNull();
+  });
+
+  describe("base branch (no hard-coded 'main')", () => {
+    const masterRepo: RepoInfo = {
+      url: "https://github.com/o/r.git",
+      addedAt: "2026-01-01T00:00:00.000Z",
+      lastUsedAt: "2026-01-01T00:00:00.000Z",
+      status: "ready",
+      defaultBranch: "master",
+    };
+
+    it("pre-PR, syncs with the repo's real default branch", async () => {
+      const user = userEvent.setup();
+      useSessionStore.setState({ sessions: [makeSession({ id: "s1" })] });
+      useRepoStore.setState({ repos: [masterRepo] });
+      // Ready phase — no `pr.baseBranch` to read, which is where "main" was assumed.
+      usePrStore.setState({ cardBySession: { s1: { cardId: "c1", phase: "ready" } } });
+      const startRebase = vi.fn();
+      useGitStore.setState({ startRebase });
+      render(<PrActionsMenu sessionId="s1" />);
+
+      await user.click(screen.getByLabelText("Pull request actions"));
+      const item = screen.getByRole("menuitem", { name: "Sync with master" });
+      expect(item).toHaveAttribute("title", "Rebase onto master and push");
+      await user.click(item);
+      expect(startRebase).toHaveBeenCalledWith("s1", "master");
+    });
+
+    it("an open PR's own base still wins over the repo default", async () => {
+      const user = userEvent.setup();
+      useSessionStore.setState({ sessions: [makeSession({ id: "s1" })] });
+      useRepoStore.setState({ repos: [masterRepo] });
+      usePrStore.setState({
+        cardBySession: { s1: { ...openCard, pr: { ...openCard.pr!, baseBranch: "release/2.0" } } },
+      });
+      render(<PrActionsMenu sessionId="s1" />);
+
+      await user.click(screen.getByLabelText("Pull request actions"));
+      expect(screen.getByRole("menuitem", { name: "Sync with release/2.0" })).toBeInTheDocument();
+    });
+
+    it("falls back to main while the repo list is still empty", async () => {
+      const user = userEvent.setup();
+      useSessionStore.setState({ sessions: [makeSession({ id: "s1" })] });
+      usePrStore.setState({ cardBySession: { s1: { cardId: "c1", phase: "ready" } } });
+      render(<PrActionsMenu sessionId="s1" />);
+
+      await user.click(screen.getByLabelText("Pull request actions"));
+      expect(screen.getByRole("menuitem", { name: "Sync with main" })).toBeInTheDocument();
+    });
   });
 });

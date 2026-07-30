@@ -277,6 +277,30 @@ export async function getTurnDiff(
 }
 
 /**
+ * The branch a new PR should target — the remote's actual default branch.
+ *
+ * Prefers {@link GitManager.getDefaultBranch} (reads `origin/HEAD`, so it knows
+ * `trunk` and `develop`, not just `main`/`master`), but only accepts the answer
+ * when that branch genuinely exists on the remote: `origin/HEAD` can be stale or
+ * point at a branch since deleted, and opening a PR against a nonexistent base
+ * is a hard GitHub error. Otherwise it falls back to the historical heuristic —
+ * `main`, then `master`, then whatever the remote's first branch is.
+ *
+ * `remoteBranches` is passed in rather than fetched because every caller has
+ * already listed them for its own checks.
+ */
+export async function resolvePrBaseBranch(
+  git: GitManager,
+  remoteBranches: string[],
+): Promise<string> {
+  const detected = await git.getDefaultBranch();
+  if (remoteBranches.includes(detected)) return detected;
+  return remoteBranches.includes("main") ? "main"
+    : remoteBranches.includes("master") ? "master"
+    : remoteBranches[0] ?? "main";
+}
+
+/**
  * Committed name-status changes for `merge-base(base, HEAD)..HEAD` — i.e.
  * exactly what this branch changed vs its base (the symmetric three-dot diff,
  * not a two-dot `base..HEAD` that would pull in files moved on the base since
@@ -315,7 +339,7 @@ export async function committedChangesVsBase(
  */
 export async function getSessionChangedPaths(
   git: GitManager,
-  baseBranch = "main",
+  baseBranch: string,
 ): Promise<Set<string>> {
   const paths = new Set<string>();
   for (const entry of await committedChangesVsBase(git, baseBranch)) {

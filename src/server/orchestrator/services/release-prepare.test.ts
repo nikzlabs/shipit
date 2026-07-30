@@ -51,6 +51,7 @@ function makeGit(over: GitOverrides = {}) {
     fetch: vi.fn(async () => {}),
     isClean: vi.fn(async () => over.isClean ?? true),
     listRemoteBranches: vi.fn(async () => over.remoteBranches ?? ["main", "stable"]),
+    getDefaultBranch: vi.fn(async () => "main"),
     listTags: vi.fn(async () => [] as string[]),
     tipCommitMessage: vi.fn(async () => null),
     createAndPushTag: vi.fn(async () => {}),

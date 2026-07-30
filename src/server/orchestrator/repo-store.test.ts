@@ -274,4 +274,30 @@ describe("RepoStore", () => {
       ]);
     });
   });
+
+  describe("defaultBranch", () => {
+    const url = "https://github.com/owner/repo.git";
+
+    it("is undefined until resolved, so callers fall back to main", () => {
+      store.add(url);
+      expect(store.get(url)?.defaultBranch).toBeUndefined();
+    });
+
+    it("round-trips a non-main default branch", () => {
+      store.add(url);
+      expect(store.setDefaultBranch(url, "master")).toBe(true);
+      expect(store.get(url)?.defaultBranch).toBe("master");
+      expect(store.list()[0].defaultBranch).toBe("master");
+    });
+
+    it("reports no update for an unknown repo", () => {
+      expect(store.setDefaultBranch("https://github.com/nope/nope.git", "trunk")).toBe(false);
+    });
+
+    it("survives a store re-open (persisted, not in-memory)", () => {
+      store.add(url);
+      store.setDefaultBranch(url, "trunk");
+      expect(new RepoStore(dbManager).get(url)?.defaultBranch).toBe("trunk");
+    });
+  });
 });

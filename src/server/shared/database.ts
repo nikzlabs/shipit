@@ -770,6 +770,14 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE messages ADD COLUMN session_report TEXT");
   },
+  // The repo's real default branch (main / master / trunk / …), resolved from
+  // the bare cache's HEAD. Backs the UI surfaces that need a base branch before
+  // a PR exists (rebase banner, "Sync with <base>", "Changes vs <base>"), which
+  // previously hard-coded "main". NULL = not resolved yet; callers fall back to
+  // "main", so existing rows keep the old behavior until the refresh sweep runs.
+  (db) => {
+    db.exec("ALTER TABLE repos ADD COLUMN default_branch TEXT");
+  },
 ];
 
 export class DatabaseManager {

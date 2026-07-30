@@ -225,7 +225,10 @@ function scheduleSessionNaming(deps: ScheduleSessionNamingDeps, opts: ScheduleSe
       try {
         const git = createGitManager(s.workspaceDir);
         const headBranch = s.branch || await git.getCurrentBranch();
-        const { insertions, deletions } = await git.diffStatVsBranch("main");
+        // The repo's own default branch, not a hard-coded "main" — on a
+        // `master`/`trunk` repo the latter has no ref to diff against, so the
+        // ready card reported +0/-0 for a branch full of changes.
+        const { insertions, deletions } = await git.diffStatVsBranch(await git.getDefaultBranch());
         const runner = runnerRegistry.get(sessionId);
         runner?.emitMessage({
           type: "pr_lifecycle_update",

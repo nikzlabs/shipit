@@ -111,8 +111,12 @@ export const useGitStore = create<GitState>((set) => ({
     set({ turnDiff: data });
   },
 
-  fetchDiffVsBranch: async (sessionId, baseBranch = "main") => {
-    const res = await fetch(`/api/sessions/${sessionId}/git/diff-vs-branch?base=${encodeURIComponent(baseBranch)}`);
+  // Omitting `baseBranch` lets the server resolve the repo's own default branch
+  // (main / master / trunk / …). The old client-side `= "main"` default silently
+  // produced an unresolvable base — and a 400 — on any non-`main` repo.
+  fetchDiffVsBranch: async (sessionId, baseBranch) => {
+    const query = baseBranch ? `?base=${encodeURIComponent(baseBranch)}` : "";
+    const res = await fetch(`/api/sessions/${sessionId}/git/diff-vs-branch${query}`);
     if (!res.ok) {
       throw new Error(`Failed to fetch diff: ${res.status}`);
     }
