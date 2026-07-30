@@ -296,19 +296,40 @@ export interface SessionMergeWatch {
    * - `armed` — registered, waiting for the child's PR to reach a terminal state
    *   (the PR need not exist yet).
    * - `merge-observed` — the poller saw the merge and surfaced the card, but the
-   *   actionable wake-turn hasn't been enqueued into the parent yet (a transient
-   *   step; re-tried on the next poll if enqueue couldn't complete).
-   * - `delivered` — the merge wake-turn was enqueued. Terminal, fire-once.
+   *   actionable wake-turn has not RUN to completion yet. Covers both "queued
+   *   behind a busy parent" and "the last delivery attempt threw"; the retry
+   *   supervisor tells those apart (SHI-258, see `merge-watch.ts`).
+   * - `delivered` — the merge wake-turn actually ran. Terminal, fire-once.
    * - `closed-unmerged` — the PR closed without merging; a distinct wake-turn was
    *   enqueued so the parent doesn't proceed as if the work shipped. Terminal.
+   * - `delivery-failed` — delivery threw `MAX_DELIVERY_ATTEMPTS` times; the watch
+   *   gives up and surfaces a failure card into the parent instead of retrying
+   *   forever (SHI-258). Terminal.
    */
-  state: "armed" | "merge-observed" | "delivered" | "closed-unmerged";
+  state: "armed" | "merge-observed" | "delivered" | "closed-unmerged" | "delivery-failed";
   /** ISO instant the watch was armed. */
   registeredAt: string;
   /** ISO instant the terminal PR state was first observed. */
   observedAt?: string;
   /** ISO instant the wake-turn was enqueued into the parent. */
   deliveredAt?: string;
+  /**
+   * SHI-258 — how many times `deliverWakeTurn` has been *invoked* for this watch
+   * (not how many times it failed). Persisted so the attempt budget survives an
+   * orchestrator restart; drives both the retry backoff and the
+   * `delivery-failed` cap.
+   */
+  deliveryAttempts?: number;
+  /**
+   * SHI-258 — ISO instant of the most recent delivery attempt. The retry
+   * supervisor's backoff anchor: a stalled watch is only re-attempted once the
+   * backoff window since this instant has elapsed.
+   */
+  lastAttemptAt?: string;
+  /** SHI-258 — message from the most recent failed delivery attempt, if any. */
+  lastDeliveryError?: string;
+  /** SHI-258 — ISO instant the watch gave up (`delivery-failed`). */
+  failedAt?: string;
 }
 
 /**
@@ -334,6 +355,21 @@ export interface ChildMergedCard {
   prTitle?: string;
   /** Merge commit SHA, when known (merged outcome only). */
   mergeSha?: string;
+  /**
+   * SHI-258 — when set, this card is the *delivery-failure* variant: the merge
+   * (or close) was observed and the first card already told the user, but the
+   * actionable wake-turn could never be delivered into this session (the
+   * container wouldn't boot, credentials wouldn't refresh, …) and the watch has
+   * given up after `attempts` tries. Rendered warning-toned with a "reply to
+   * continue manually" hint, so a permanently-failed watch is visible in the
+   * transcript rather than vanishing into a server log.
+   */
+  deliveryFailure?: {
+    /** How many delivery attempts were made before giving up. */
+    attempts: number;
+    /** Message from the last failed attempt, when available. */
+    error?: string;
+  };
   createdAt: string;
 }
 

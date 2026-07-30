@@ -109,6 +109,7 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
             prUrl={msg.childMerged.prUrl}
             {...(msg.childMerged.prTitle ? { prTitle: msg.childMerged.prTitle } : {})}
             {...(msg.childMerged.mergeSha ? { mergeSha: msg.childMerged.mergeSha } : {})}
+            {...(msg.childMerged.deliveryFailure ? { deliveryFailure: msg.childMerged.deliveryFailure } : {})}
             {...(cb.onResumeSession ? { onOpen: cb.onResumeSession } : {})}
           />
         </div>
