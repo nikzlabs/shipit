@@ -18,35 +18,29 @@
  * `startQueuedMessage` here. A `"dispatched"` entry is converted by
  * `queuedMessageToDispatchOptions` — which carries the full option set — and
  * handed to `runner.runDispatchedTurn`; only a `"interactive"` entry ever
- * reaches a transport's own narrower re-entry. A third drain added later cannot
- * reintroduce the bug without deliberately bypassing this module.
+ * reaches a transport's own narrower re-entry.
+ *
+ * SHI-259 then proved that "cannot reintroduce the bug without deliberately
+ * bypassing this module" was wishful thinking: turn adoption added a FOURTH
+ * hand-rolled drain days later, by an author reasonably following the code
+ * around them. So docs/240 moved the rule into the type system —
+ * `queuedMessageToDispatchOptions` (now in `prepared-dispatch.ts`, re-exported
+ * here for its historical import path) returns a BRANDED `PreparedDispatch`, and
+ * `dispatch` / `runDispatchedTurn` accept nothing else. A drain that builds an
+ * object literal no longer compiles.
  */
 
 import type {
-  AgentDispatchOptions,
   QueuedMessage,
   SessionRunnerInterface,
 } from "./session-runner.js";
+import { queuedMessageToDispatchOptions } from "./prepared-dispatch.js";
 
-/**
- * Full `QueuedMessage` → `AgentDispatchOptions` conversion. Every per-turn field
- * a queued entry can carry is restored, including the two the interactive drain
- * used to drop (`systemTurn`, `onTurnComplete`).
- */
-export function queuedMessageToDispatchOptions(next: QueuedMessage): AgentDispatchOptions {
-  const nextOpts: AgentDispatchOptions = { text: next.text, execution: next.execution };
-  if (next.activity !== undefined) nextOpts.activity = next.activity;
-  if (next.images !== undefined) nextOpts.images = next.images;
-  if (next.files !== undefined) nextOpts.files = next.files;
-  if (next.uploads !== undefined) nextOpts.uploads = next.uploads;
-  if (next.permissionMode !== undefined) nextOpts.permissionMode = next.permissionMode;
-  if (next.postTurn !== undefined) nextOpts.postTurn = next.postTurn;
-  if (next.systemTurn !== undefined) nextOpts.systemTurn = next.systemTurn;
-  // docs/196 — carry the completion callback so an enqueued turn signals
-  // completion when it drains (the merge-watch busy path depends on this).
-  if (next.onTurnComplete !== undefined) nextOpts.onTurnComplete = next.onTurnComplete;
-  return nextOpts;
-}
+// The converter itself lives with the brand it produces (`prepared-dispatch.ts`
+// owns the module-private symbol, so it is the only file that can mint one).
+// Re-exported here so every existing `from "./queue-drain.js"` import keeps
+// working and the drain story stays readable from this module.
+export { queuedMessageToDispatchOptions };
 
 /**
  * Run a dequeued message on the executor it was tagged for.

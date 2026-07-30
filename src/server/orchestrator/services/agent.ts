@@ -29,6 +29,7 @@ import {
 } from "../validation.js";
 import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js";
 import { ServiceError } from "./types.js";
+import { prepareDispatch } from "../prepared-dispatch.js";
 
 const PERMISSION_MODES: ReadonlySet<PermissionMode> = new Set<PermissionMode>([
   "auto",
@@ -200,14 +201,18 @@ export async function dispatchAgentMessage(
   // 6. Dispatch — the funnel decides send vs enqueue and broadcasts
   //    message_queued via the runner if it enqueued.
   const wasRunning = runner.running;
-  runner.dispatch({
+  runner.dispatch(prepareDispatch({
     text,
-    ...(input.activity !== undefined ? { activity: input.activity } : {}),
-    ...(allImages !== undefined ? { images: allImages } : {}),
-    ...(validatedFiles.length > 0 ? { files: validatedFiles.map(asFileContextRef) } : {}),
-    ...(input.uploads !== undefined ? { uploads: input.uploads } : {}),
-    ...(input.permissionMode !== undefined ? { permissionMode: input.permissionMode } : {}),
-  });
+    activity: input.activity,
+    images: allImages,
+    files: validatedFiles.length > 0 ? validatedFiles.map(asFileContextRef) : undefined,
+    uploads: input.uploads,
+    permissionMode: input.permissionMode,
+    execution: undefined,
+    postTurn: undefined,
+    systemTurn: undefined,
+    onTurnComplete: undefined,
+  }));
 
   return { ok: true, queued: wasRunning };
 }

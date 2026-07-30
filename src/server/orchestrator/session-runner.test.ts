@@ -7,6 +7,8 @@ import {
   PUSH_AGENT_SECRETS_TIMEOUT_MS,
 } from "./session-agent-env.js";
 import type { AgentId } from "../shared/types.js";
+import { testDispatch } from "./integration_tests/dispatch-test-helpers.js";
+import { TURN_COMPLETED } from "./turn-settlement.js";
 
 describe("SessionRunner", () => {
   afterEach(() => {
@@ -133,7 +135,7 @@ describe("SessionRunner", () => {
       defaultAgentId: "claude" as AgentId,
     });
     runner.running = true;
-    runner.dispatch({ text: "fix ci" });
+    runner.dispatch(testDispatch({ text: "fix ci" }));
     expect(runner.queueLength).toBe(1);
     expect(runner.dequeue()?.text).toBe("fix ci");
     runner.dispose({ force: true });
@@ -151,7 +153,7 @@ describe("SessionRunner", () => {
     const received: any[] = [];
     runner.on("message", (msg) => received.push(msg));
     runner.running = true;
-    runner.dispatch({ text: "fix ci" });
+    runner.dispatch(testDispatch({ text: "fix ci" }));
     const queued = received.find((m) => m.type === "message_queued");
     expect(queued).toMatchObject({ type: "message_queued", text: "fix ci", position: 1 });
     runner.dispose({ force: true });
@@ -202,7 +204,7 @@ describe("SessionRunner", () => {
     const received: any[] = [];
     runner.on("message", (msg) => received.push(msg));
 
-    runner.dispatch({ text: "actually use a worktree" });
+    runner.dispatch(testDispatch({ text: "actually use a worktree" }));
 
     // Injected into the running turn — NOT queued.
     expect(sent).toEqual(["actually use a worktree"]);
@@ -233,11 +235,11 @@ describe("SessionRunner", () => {
     expect(runner.systemTurnInProgress).toBe(false); // the RUNNING turn is a user turn
 
     const completions: { errored: boolean }[] = [];
-    runner.dispatch({
+    runner.dispatch(testDispatch({
       text: "child PR merged — resume the rebase",
       systemTurn: true,
       onTurnComplete: (o) => completions.push(o),
-    });
+    }));
 
     // Not injected into the user's turn; queued as its own turn instead.
     expect(sent).toEqual([]);
@@ -249,8 +251,8 @@ describe("SessionRunner", () => {
     expect(queued.systemTurn).toBe(true);
     expect(queued.execution).toBe("dispatched");
     expect(queued.onTurnComplete).toBeTypeOf("function");
-    queued.onTurnComplete!({ errored: false });
-    expect(completions).toEqual([{ errored: false }]);
+    queued.onTurnComplete!(TURN_COMPLETED);
+    expect(completions).toEqual([TURN_COMPLETED]);
 
     runner.dispose({ force: true });
   });
@@ -267,7 +269,7 @@ describe("SessionRunner", () => {
     runner.running = true;
     runner.isStreamingActive = true;
 
-    runner.dispatch({ text: "awaited follow-up", onTurnComplete: () => {} });
+    runner.dispatch(testDispatch({ text: "awaited follow-up", onTurnComplete: () => {} }));
 
     expect(sent).toEqual([]);
     expect(runner.queueLength).toBe(1);
@@ -292,7 +294,7 @@ describe("SessionRunner", () => {
     const received: any[] = [];
     runner.on("message", (msg) => received.push(msg));
 
-    runner.dispatch({ text: "queue me" });
+    runner.dispatch(testDispatch({ text: "queue me" }));
 
     expect(sent).toEqual([]);
     expect(runner.queueLength).toBe(1);
@@ -318,7 +320,7 @@ describe("SessionRunner", () => {
     const received: any[] = [];
     runner.on("message", (msg) => received.push(msg));
 
-    runner.dispatch({ text: "queue me" });
+    runner.dispatch(testDispatch({ text: "queue me" }));
 
     expect(sent).toEqual([]);
     expect(runner.queueLength).toBe(1);
@@ -343,7 +345,7 @@ describe("SessionRunner", () => {
     // A dispatch during a system turn queues rather than steers, giving us a
     // buffered-but-unsent message to assert the teardown drop semantics on.
     runner.systemTurnInProgress = true;
-    runner.dispatch({ text: "buffered note" });
+    runner.dispatch(testDispatch({ text: "buffered note" }));
     expect(runner.queueLength).toBe(1);
 
     runner.dispose({ force: true });
@@ -390,7 +392,7 @@ describe("SessionRunner", () => {
       }),
     });
 
-    runner.dispatch({ text: "fix ci" });
+    runner.dispatch(testDispatch({ text: "fix ci" }));
     // runDispatchedTurn awaits buildRunParams; flush microtasks so the run call lands.
     await new Promise((r) => setImmediate(r));
     // Should start a turn directly — not enqueue
@@ -442,7 +444,7 @@ describe("SessionRunner", () => {
       }),
     });
 
-    runner.dispatch({ text: "fix ci" });
+    runner.dispatch(testDispatch({ text: "fix ci" }));
     await new Promise((r) => setImmediate(r));
     await new Promise((r) => setTimeout(r, 0));
     expect(callOrder).toEqual(["prepareAgentEnv", "buildRunParams"]);
@@ -520,7 +522,7 @@ describe("SessionRunner", () => {
 
     vi.useFakeTimers();
     try {
-      runner.dispatch({ text: "fix ci" });
+      runner.dispatch(testDispatch({ text: "fix ci" }));
       // Advance past the worker-secrets-push fail-open timeout, flushing
       // microtasks between timers so the turn proceeds to the spawn.
       await vi.advanceTimersByTimeAsync(PUSH_AGENT_SECRETS_TIMEOUT_MS + 1_000);
@@ -564,7 +566,7 @@ describe("SessionRunner", () => {
       buildRunParams: vi.fn().mockRejectedValue(new Error("run params failed")),
     });
 
-    runner.dispatch({ text: "fix ci" });
+    runner.dispatch(testDispatch({ text: "fix ci" }));
     await new Promise((r) => setImmediate(r));
     await new Promise((r) => setTimeout(r, 0));
 
@@ -592,7 +594,7 @@ describe("SessionRunner", () => {
       defaultAgentId: "claude" as AgentId,
     });
     // No system turn deps set
-    runner.dispatch({ text: "fix ci" });
+    runner.dispatch(testDispatch({ text: "fix ci" }));
     expect(runner.queueLength).toBe(1);
     runner.dispose();
   });
@@ -608,14 +610,14 @@ describe("SessionRunner", () => {
       defaultAgentId: "claude" as AgentId,
     });
     runner.running = true;
-    runner.dispatch({
+    runner.dispatch(testDispatch({
       text: "review please",
       activity: "Reviewing…",
       images: [{ data: "AAA=", mediaType: "image/png" }],
       files: [{ path: "src/foo.ts" }],
       uploads: [{ path: "/uploads/screen.png", type: "upload" as const }],
       permissionMode: "guarded",
-    });
+    }));
     const queued = runner.dequeue();
     expect(queued).toMatchObject({
       text: "review please",

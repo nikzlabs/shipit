@@ -29,10 +29,11 @@ import type { AgentProcess, AgentId, AgentEvent, AgentRunParams, TerminalProcess
 import type { WsServerMessage, ClaudeContentBlockToolUse, SkillInfo, PermissionMode, PermissionDecision } from "../shared/types.js";
 import type { PresentStateEntry } from "../shared/types/ws-server-messages.js";
 import type { PresentStore } from "./present-store.js";
-import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps, ChatMessageGroup, SteeredMessage, RecordedChatCard, AgentDispatchOptions } from "./session-runner.js";
+import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps, ChatMessageGroup, SteeredMessage, RecordedChatCard } from "./session-runner.js";
 import type { SubAgentSpawnRequest, SubAgentRunResult } from "../shared/sub-agent-run.js";
-import { runDispatchedTurn, toQueuedMessage } from "./session-runner.js";
-import { trySteerDispatch } from "./dispatch-steering.js";
+import { runDispatchedTurn, dispatchOnRunner } from "./session-runner.js";
+import type { PreparedDispatch } from "./prepared-dispatch.js";
+import type { TurnHandle } from "./turn-settlement.js";
 import type { SSEEvent } from "./sse-client.js";
 import { workerPost, workerGet, workerInstall, workerPushAgentSecrets, workerPostMessage } from "./worker-http.js";
 import { ProxyAgentProcess } from "./proxy-agent-process.js";
@@ -2109,46 +2110,20 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this._systemTurnDeps = deps;
   }
 
-  dispatch(opts: AgentDispatchOptions): void {
-    if (this._isRunning) {
-      // docs/163 — honor live steering on the dispatch path too: when the
-      // running turn is steerable+streaming and live steering is on, inject
-      // the message via `sendUserMessage` instead of queuing it. Shares the
-      // `shouldSteerMessage` predicate with the WS handler so the two paths
-      // can't diverge.
-      if (this._systemTurnDeps && trySteerDispatch(this, opts, this._systemTurnDeps)) return;
-      // docs/150 — broadcast message_queued via emitMessage so every attached
-      // viewer (and any other HTTP-originated caller in this session) sees the
-      // update. Previously the WS handler emitted this on a single socket.
-      const position = this.enqueue(toQueuedMessage(opts));
-      this.emitMessage({ type: "message_queued", text: opts.text, position });
-      return;
-    }
-    if (!this._systemTurnDeps) {
-      const position = this.enqueue(toQueuedMessage(opts));
-      this.emitMessage({ type: "message_queued", text: opts.text, position });
-      return;
-    }
-    // Flip running=true synchronously BEFORE the async dispatched turn runs.
-    // Without this, the microtask gap between `void _runDispatchedTurn` and
-    // `runDispatchedTurn`'s own `runner.running = true` is a window where a
-    // concurrent WS `send_message` (user typing while clicking Fix CI) sees
-    // `running=false`, falls through to `runAgentWithMessage`, and races
-    // with this dispatched turn for the `_agent` slot — silently dropping
-    // one turn's SSE events.
-    //
-    // docs/169 — set `systemTurnInProgress` in the SAME synchronous tick as
-    // `_isRunning` for a system turn (rebase resolution, CI fix) so a
-    // `send_message` arriving in the gap queues instead of steering into it.
-    if (opts.systemTurn) this._systemTurnInProgress = true;
-    this._isRunning = true;
-    void this.runDispatchedTurn(opts);
+  /**
+   * docs/240 — the send-or-queue rule lives in ONE place (`dispatchOnRunner`)
+   * that both runner implementations delegate to, rather than being copied
+   * field-for-field into each. Takes a branded `PreparedDispatch` and returns a
+   * `TurnHandle`.
+   */
+  dispatch(opts: PreparedDispatch): TurnHandle {
+    return dispatchOnRunner(this, this._systemTurnDeps, opts);
   }
 
   get canRunDispatchedTurn(): boolean { return this._systemTurnDeps !== null; }
 
   /** SHI-255 — the queue-drain re-entry for `execution: "dispatched"` entries. */
-  async runDispatchedTurn(opts: AgentDispatchOptions): Promise<void> {
+  async runDispatchedTurn(opts: PreparedDispatch): Promise<void> {
     await runDispatchedTurn(this, this._systemTurnDeps!, this._agentId, opts, (agentId) => {
       return this.createAgent(agentId);
     });

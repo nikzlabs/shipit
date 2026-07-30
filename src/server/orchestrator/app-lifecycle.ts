@@ -44,6 +44,7 @@ import type { AgentRegistry } from "../shared/agent-registry.js";
 import type { AgentId, AgentProcess, LogSource, LogRingEntry } from "../shared/types.js";
 import type { AppDeps, RuntimeMode } from "./app-di.js";
 import { SessionRunner } from "./session-runner.js";
+import { prepareDispatch } from "./prepared-dispatch.js";
 import { listAgents } from "./services/settings.js";
 import { sweepSubAgentCredentialsOnSignOut } from "./services/sub-agent.js";
 
@@ -842,12 +843,18 @@ export function createPrStatusPoller(
       const prompt = buildCIFixPrompt(logs);
 
       await new Promise<void>((resolve) => {
-        runner.dispatch({
+        runner.dispatch(prepareDispatch({
           text: prompt,
           activity: "Auto-fixing CI...",
           systemTurn: true,
           onTurnComplete: () => resolve(),
-        });
+          execution: undefined,
+          images: undefined,
+          files: undefined,
+          uploads: undefined,
+          permissionMode: undefined,
+          postTurn: undefined,
+        }));
       });
       return { outcome: "fixed" };
     },

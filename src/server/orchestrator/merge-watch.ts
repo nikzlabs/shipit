@@ -73,6 +73,7 @@ import type { ChildMergedCard, SessionInfo, SessionMergeWatch, WsServerMessage }
 import type { PrStatusSummary } from "../shared/types/github-types.js";
 import { wakeSessionWithTurn, type WakeSessionDeps } from "./wake-session.js";
 import type { PrTerminalStateInfo } from "./pr-status-poller.js";
+import type { TurnOutcome } from "./turn-settlement.js";
 
 /**
  * SHI-258 — how many times a merge wake-turn delivery is attempted before the
@@ -235,8 +236,10 @@ export class MergeWatchManager {
         this.surfaceCard(parent.id, child, info, cardOutcome);
       }
       // Deliver the wake-turn, advancing to `delivered` ONLY once the turn has
-      // actually RUN to completion — surfaced via the `onTurnComplete`-backed
-      // `markDelivered` callback, NOT the instant the turn is enqueued. The
+      // actually RUN TO A CLEAN COMPLETION — surfaced via the settlement-backed
+      // `markDelivered` callback, NOT the instant the turn is enqueued, and NOT
+      // (docs/240) for a turn that reached a terminal state by crashing, exiting
+      // without a result, or being dropped from the queue. The
       // callback now rides the in-memory queue (docs/196 fix), so it fires when
       // the turn genuinely runs on BOTH paths:
       //   • idle parent → the turn starts now → it completes → `delivered`.
@@ -327,8 +330,24 @@ export class MergeWatchManager {
     this.ensureRetryLoop();
 
     try {
-      await this.deliverWakeTurn(parent, child, info, "merged", () => {
-        this.markDelivered(childId, observedAt);
+      await this.deliverWakeTurn(parent, child, info, "merged", (outcome) => {
+        // docs/240 — `delivered` means the turn RAN CLEANLY, not merely that it
+        // reached a terminal state. The pre-docs/240 callback discarded the
+        // outcome, so a wake-turn that crashed, exited without ever producing a
+        // result (SHI-260), or was dropped when the parent's queue was cleared
+        // still stamped `delivered` — a watch that looked healthy and was not.
+        // Anything but `completed` releases the in-flight marker so SHI-258's
+        // supervisor re-attempts it on a backoff (or fails it once the budget
+        // is spent).
+        if (outcome.status === "completed") {
+          this.markDelivered(childId, observedAt);
+          return;
+        }
+        this.recordDeliveryOutcomeFailure(
+          childId,
+          attempts,
+          outcome.detail ?? `wake-turn ended as "${outcome.status}"`,
+        );
       });
     } catch (err) {
       // The dispatch never landed, so nothing is queued in the parent — drop the
@@ -537,9 +556,11 @@ export class MergeWatchManager {
 
   /**
    * Advance a merge-watch from `merge-observed` to the terminal `delivered`
-   * state. Fired from the wake-turn's `onTurnComplete`, so it runs only after
-   * the turn has genuinely executed — that is the whole point of the fix
-   * (`delivered` must mean "ran", not "queued"). Idempotent and fire-once: a
+   * state. Fired from the wake-turn's SETTLEMENT and only for a `completed`
+   * outcome (docs/240), so it runs only after the turn has genuinely executed
+   * and finished cleanly — that is the whole point of the fix (`delivered` must
+   * mean "ran", not "queued", and not "ended somehow"). Idempotent and
+   * fire-once: a
    * watch that is already terminal (`delivered` / `closed-unmerged` /
    * `delivery-failed`) or has since been cleared (parent archived) is left
    * untouched, so a re-delivery or a late callback can never double-stamp or
@@ -548,6 +569,29 @@ export class MergeWatchManager {
    * Also the retry supervisor's exit: the watch is terminal, so the in-flight
    * marker is dropped and the supervisor stops once nothing else is pending.
    */
+  /**
+   * docs/240 — the wake-turn reached a terminal outcome that is NOT a clean
+   * completion. The turn is over, so nothing is in flight any more; record why
+   * and let the retry supervisor re-attempt on a backoff, or fail the watch
+   * terminally (surfacing a card) once the attempt budget is spent.
+   *
+   * Mirrors the `catch` in `attemptDelivery` — the difference is only *when* the
+   * failure became visible: that one is "the dispatch never landed", this one is
+   * "the dispatch landed and the turn then failed".
+   */
+  private recordDeliveryOutcomeFailure(childSessionId: string, attempts: number, reason: string): void {
+    this.inFlight.delete(childSessionId);
+    console.error(
+      `[merge-watch] wake-turn for ${childSessionId} did not complete `
+      + `(attempt ${attempts}/${MAX_DELIVERY_ATTEMPTS}): ${reason}`,
+    );
+    const current = this.deps.sessionManager.getMergeWatch(childSessionId);
+    if (current?.state !== "merge-observed") return;
+    this.deps.sessionManager.setMergeWatch(childSessionId, { ...current, lastDeliveryError: reason });
+    if (attempts >= MAX_DELIVERY_ATTEMPTS) this.failWatch(childSessionId, reason);
+    else this.ensureRetryLoop();
+  }
+
   private markDelivered(childSessionId: string, fallbackObservedAt: string): void {
     const watch = this.deps.sessionManager.getMergeWatch(childSessionId);
     this.inFlight.delete(childSessionId);
@@ -615,14 +659,17 @@ export class MergeWatchManager {
    * preempts a running turn — exactly the "poller events must not kill running
    * agents" invariant.
    *
-   * `onExecuted` (when supplied) fires only once the turn has actually RUN to
-   * completion — wired through `onTurnComplete`, which `dispatch` honors on the
-   * idle path (it starts the turn now) AND, since the docs/196 fix, on the busy
-   * path: the callback rides the in-memory queue and fires when the enqueued
-   * turn later drains and runs. The watch therefore reaches `delivered`
-   * in-process in both cases; it stays `merge-observed` only while the turn is
-   * still queued, across a restart that loses that queued turn (re-fired by
-   * `reconcilePending`), or after a delivery that threw (re-fired by
+   * `onSettled` (when supplied) fires once the turn reaches a TERMINAL OUTCOME —
+   * wired through the dispatch settlement, which `dispatch` honors on the idle
+   * path (it starts the turn now) AND, since the docs/196 fix, on the busy path:
+   * the signal rides the in-memory queue and fires when the enqueued turn later
+   * drains and runs. docs/240 passes the OUTCOME through rather than flattening
+   * it, so the caller can distinguish a clean `completed` (⇒ `delivered`) from
+   * `errored` / `no-result` / `dropped` (⇒ a recorded failed attempt for the
+   * retry supervisor). The watch therefore reaches `delivered` in-process on
+   * both paths; it stays `merge-observed` while the turn is still queued, across
+   * a restart that loses that queued turn (re-fired by `reconcilePending`), or
+   * after a delivery that threw or ended badly (re-fired by
    * `retryStalledDeliveries`).
    *
    * Throws on a boot failure rather than reporting a wake that will never
@@ -633,7 +680,7 @@ export class MergeWatchManager {
     child: SessionInfo,
     info: PrTerminalStateInfo,
     outcome: "merged" | "closed-unmerged",
-    onExecuted?: () => void,
+    onSettled?: (turnOutcome: TurnOutcome) => void,
   ): Promise<void> {
     const text = buildWakeTurnPrompt(child, info, outcome);
     const activity =
@@ -648,13 +695,14 @@ export class MergeWatchManager {
     //
     // Wire the completion callback on BOTH the busy and idle paths. `dispatch`
     // enqueues when the parent is mid-turn (drained post-turn, never preempting)
-    // and starts the turn now when idle; `onTurnComplete` now rides the
+    // and starts the turn now when idle; the completion settlement now rides the
     // in-memory queue (docs/196 fix), so it fires when the wake-turn ACTUALLY
-    // runs to completion in either case. `markDelivered` is therefore reached
-    // in-process for a busy parent too — no restart required.
+    // reaches a terminal outcome in either case. `markDelivered` is therefore
+    // reached in-process for a busy parent too — no restart required — and, since
+    // docs/240, only when that outcome is a clean `completed`.
     //
     // This closes the duplicate-notification bug: previously the busy path left
-    // `onExecuted` unwired, so a busy-parent watch stayed `merge-observed`
+    // the completion signal unwired, so a busy-parent watch stayed `merge-observed`
     // forever (the queue dropped the callback at enqueue), and
     // `reconcilePending` re-fired the wake-turn on EVERY orchestrator restart.
     // Now the watch advances to `delivered` once the enqueued turn drains, and
@@ -664,7 +712,7 @@ export class MergeWatchManager {
     await wakeSessionWithTurn(this.deps, parent, {
       text,
       activity,
-      ...(onExecuted ? { onExecuted } : {}),
+      ...(onSettled ? { onSettled } : {}),
     });
   }
 }

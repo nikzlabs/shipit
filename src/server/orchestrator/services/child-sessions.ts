@@ -21,6 +21,7 @@ import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js
 import { ServiceError } from "./types.js";
 import type { ClaimSessionService } from "./claim-session.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
+import { prepareDispatch } from "../prepared-dispatch.js";
 
 /**
  * Read a positive-integer env var override. Returns `undefined` when the var
@@ -426,7 +427,18 @@ export async function spawnChildSession(
     sessionManager.setAgentPinned(newSessionId);
   }
 
-  runner.dispatch({ text: trimmedPrompt });
+  runner.dispatch(prepareDispatch({
+    text: trimmedPrompt,
+    execution: undefined,
+    activity: undefined,
+    images: undefined,
+    files: undefined,
+    uploads: undefined,
+    permissionMode: undefined,
+    postTurn: undefined,
+    systemTurn: undefined,
+    onTurnComplete: undefined,
+  }));
 
   console.log(
     `[spawn-child] Spawned session ${newSessionId} under parent ${parentSessionId}: branch=${branchName} title="${child.title}"`,
@@ -749,7 +761,18 @@ export async function sendChildMessage(
     throw new ServiceError(503, "Could not resume the session container; the message was not delivered.");
   }
 
-  runner.dispatch({ text: trimmed });
+  runner.dispatch(prepareDispatch({
+    text: trimmed,
+    execution: undefined,
+    activity: undefined,
+    images: undefined,
+    files: undefined,
+    uploads: undefined,
+    permissionMode: undefined,
+    postTurn: undefined,
+    systemTurn: undefined,
+    onTurnComplete: undefined,
+  }));
   return {
     queuePosition: wasRunning ? runner.queueLength : 0,
     enqueued: wasRunning,

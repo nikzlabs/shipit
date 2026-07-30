@@ -78,7 +78,16 @@ persisted watch already read `delivered`. `reconcilePending` only re-fires
 forever: the card persists and rehydrates on reload, but the parent agent never
 runs ("notification visually there, agent didn't start"). The fix advances to
 `delivered` **only from the wake-turn's `onTurnComplete`** (the same
-turn-completion signal the CI auto-fix loop awaits in `app-lifecycle.ts`):
+turn-completion signal the CI auto-fix loop awaits in `app-lifecycle.ts`).
+
+> **Updated by docs/240 (SHI-261).** That signal is now a *settlement* carrying a
+> `TurnOutcome`, and `delivered` is stamped **only** when the outcome is a clean
+> `completed`. A wake-turn that errored, exited without ever producing a result
+> (SHI-260), or was dropped when the parent's queue was cleared records a failed
+> attempt and releases the SHI-258 in-flight marker instead — so the retry
+> supervisor re-attempts it rather than the watch looking healthy while stranded.
+> The two bullets below still describe *when* the signal fires.
+
 - **idle parent** → `dispatch` starts the turn now → it completes → `delivered`.
 - **mid-turn parent** → `dispatch` enqueues (never preempting). `onTurnComplete`
   rides the **in-memory queue** (carried by `toQueuedMessage` /
@@ -140,6 +149,13 @@ busy parent still lost it. Both are fixed; the mechanism now honors
   `"interactive"` entry reaches a transport's narrower re-entry. A third drain
   added later cannot re-narrow an entry without deliberately bypassing that
   module.
+
+  > **Falsified, then fixed properly (SHI-259 → docs/240).** That last sentence
+  > was wrong: turn adoption added a *fourth* hand-rolled drain days later, by an
+  > author reasonably following the surrounding code. The rule is no longer a
+  > convention — `dispatch` / `runDispatchedTurn` / `toQueuedMessage` accept only
+  > a branded `PreparedDispatch` that only `prepared-dispatch.ts` can mint, so a
+  > drain that builds an object literal does not compile.
 - **A drained system turn runs as a system turn.** `dispatch` sets
   `systemTurnInProgress` synchronously only for a turn it starts from idle, so an
   *enqueued* system turn used to run steerable. `executeAgentTurn` now sets the

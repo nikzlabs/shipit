@@ -28,6 +28,7 @@ import { EventEmitter } from "node:events";
 import { SessionRunner } from "./session-runner.js";
 import type { SystemTurnDeps } from "./session-runner.js";
 import type { AgentId } from "../shared/types.js";
+import { testDispatch } from "./integration_tests/dispatch-test-helpers.js";
 
 interface FakeAgent extends EventEmitter {
   run: ReturnType<typeof vi.fn>;
@@ -108,7 +109,7 @@ describe("turn completion broadcast ordering", () => {
     };
     runner.setSystemTurnDeps(deps);
 
-    runner.dispatch({ text: "do work" });
+    runner.dispatch(testDispatch({ text: "do work" }));
     await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "agent run");
 
     // Non-streaming turn end: agent_result flips running=false (agent-listeners),

@@ -45,6 +45,8 @@ import {
   createTestDatabaseManager,
 } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
+import { testDispatch } from "./dispatch-test-helpers.js";
+import { TURN_COMPLETED } from "../turn-settlement.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyMsg = any;
@@ -134,12 +136,12 @@ describe("Integration: a dispatched system turn behind a real turn (SHI-254/SHI-
 
     // The wake-turn arrives mid-turn.
     const completions: { errored: boolean }[] = [];
-    runner.dispatch({
+    runner.dispatch(testDispatch({
       text: WAKE_TEXT,
       activity: "Resuming after child PR merged…",
       systemTurn: true,
       onTurnComplete: (outcome) => completions.push(outcome),
-    });
+    }));
 
     // It must QUEUE. Before the fix it was steered into the user's turn:
     // `sendUserMessage` (captured by the fake as stdin) carried the wake text
@@ -159,7 +161,7 @@ describe("Integration: a dispatched system turn behind a real turn (SHI-254/SHI-
     // …and only when it completes does the callback fire — exactly once.
     wakeTurn.finish("wake-turn-session");
     await waitUntil(() => completions.length > 0, "onTurnComplete fired");
-    expect(completions).toEqual([{ errored: false }]);
+    expect(completions).toEqual([TURN_COMPLETED]);
 
     client.close();
   });
@@ -177,12 +179,12 @@ describe("Integration: a dispatched system turn behind a real turn (SHI-254/SHI-
     await waitUntil(() => runner.running, "user turn running");
 
     const completions: { errored: boolean }[] = [];
-    runner.dispatch({
+    runner.dispatch(testDispatch({
       text: WAKE_TEXT,
       activity: "Resuming after child PR merged…",
       systemTurn: true,
       onTurnComplete: (outcome) => completions.push(outcome),
-    });
+    }));
     await drainUntil(client, (m) => m.type === "message_queued");
     expect(runner.queueLength).toBe(1);
 
@@ -204,7 +206,7 @@ describe("Integration: a dispatched system turn behind a real turn (SHI-254/SHI-
     // restart. The system-turn flag is cleared on teardown.
     wakeTurn.finish("wake-turn-session");
     await waitUntil(() => completions.length > 0, "onTurnComplete fired");
-    expect(completions).toEqual([{ errored: false }]);
+    expect(completions).toEqual([TURN_COMPLETED]);
     await waitUntil(() => !runner.systemTurnInProgress, "system-turn flag cleared");
 
     client.close();

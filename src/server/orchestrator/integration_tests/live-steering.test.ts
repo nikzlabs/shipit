@@ -33,6 +33,7 @@ import {
 } from "./test-helpers.js";
 import type { CredentialStore } from "../credential-store.js";
 import { DatabaseManager } from "../../shared/database.js";
+import { testDispatch } from "./dispatch-test-helpers.js";
 
 type AnyMsg = any;
 
@@ -851,7 +852,7 @@ describe("Integration: live steering (docs/140)", () => {
       check();
     });
 
-    runner.dispatch({ text: "Programmatic steer" });
+    runner.dispatch(testDispatch({ text: "Programmatic steer" }));
 
     const steered = await drainUntil(client, (m) => m.type === "message_steered");
     expect(steered).toMatchObject({ type: "message_steered", text: "Programmatic steer" });
@@ -887,7 +888,7 @@ describe("Integration: live steering (docs/140)", () => {
       check();
     });
 
-    runner.dispatch({ text: "Build the initial thing" });
+    runner.dispatch(testDispatch({ text: "Build the initial thing" }));
     const claude = await waitForClaude(() => lastClaude);
     // The FIX: a dispatched first turn streams when steering is on + supported.
     // Before this change `lastUseStreaming` was falsy and the steer below queued.
@@ -906,7 +907,7 @@ describe("Integration: live steering (docs/140)", () => {
     });
 
     // Follow-up programmatic message arrives mid-turn — must STEER, not queue.
-    runner.dispatch({ text: "Also handle the edge case" });
+    runner.dispatch(testDispatch({ text: "Also handle the edge case" }));
 
     const steered = await drainUntil(client, (m) => m.type === "message_steered");
     expect(steered).toMatchObject({ type: "message_steered", text: "Also handle the edge case" });
@@ -970,7 +971,7 @@ describe("Integration: live steering (docs/140)", () => {
 
     // Dispatch a fresh turn (e.g. `shipit session message`). It must REUSE the
     // resident process via sendUserMessage, NOT spawn a second FakeClaudeProcess.
-    runner.dispatch({ text: "Second turn instruction" });
+    runner.dispatch(testDispatch({ text: "Second turn instruction" }));
 
     // Give the dispatch path time to run. The reused process records the prompt
     // under stdinData (sendUserMessage); no new agent is created.
@@ -1023,7 +1024,7 @@ describe("Integration: live steering (docs/140)", () => {
     // Turn steering OFF so the dispatched message is QUEUED (not steered),
     // reproducing the "message sits in the queue" precondition.
     credentialStore.setLiveSteering(false);
-    runner.dispatch({ text: "Queued during turn" });
+    runner.dispatch(testDispatch({ text: "Queued during turn" }));
     const queued = await drainUntil(client, (m) => m.type === "message_queued");
     expect(queued).toMatchObject({ type: "message_queued", text: "Queued during turn" });
 

@@ -491,9 +491,9 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   // the orchestrator was down (loadPersisted, run inside createPrStatusPoller,
   // has already seeded the snapshots this reads). Best-effort, off the boot path.
   mergeWatchManager.setPrStatusLookup((id) => prStatusPoller.getStatus(id));
-  void mergeWatchManager.reconcilePending().catch((err: unknown) => {
-    console.error("[merge-watch] startup reconcile failed:", err);
-  });
+  // SHI-259 (second half) — the reconcile itself is deliberately NOT started
+  // here. It must run AFTER the docs/240 turn-adoption sweep (see the
+  // `reattachInFlightTurns` block below), which is what chains it.
 
   // ---- Release Status Poller (docs/171) ----
   // Reflects the inline release lifecycle card: gate/CI status + the published
@@ -704,11 +704,33 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   // running and its post-turn commit / push / PR flow still fires, instead of
   // the turn silently evaporating until the user types "continue". Off the boot
   // path and best-effort: probes are per-container and independently guarded.
-  void reattachInFlightTurns({
-    containerManager, runnerRegistry, sessionManager, defaultAgentId,
-  }).catch((err: unknown) => {
-    console.error("[turn-reattach] startup sweep failed:", err);
-  });
+  //
+  // SHI-259 (second half) — the notify-on-merge reconcile is CHAINED off this
+  // sweep rather than launched independently. Both used to be fire-and-forget
+  // with reconcile going first, so `reconcilePending` could redispatch a
+  // wake-turn for a watch still at `merge-observed` while the ORIGINAL turn was
+  // still running inside a surviving worker: the fresh `/agent/start` meets the
+  // live agent, retries, and can ultimately kill it as stale. Adopting first
+  // makes those runners report `running`, so a reconcile-issued wake-turn
+  // enqueues behind the surviving turn — or is skipped entirely, because the
+  // adopted turn's own completion advanced the watch.
+  void (async () => {
+    try {
+      await reattachInFlightTurns({
+        containerManager, runnerRegistry, sessionManager, defaultAgentId,
+      });
+    } catch (err: unknown) {
+      console.error("[turn-reattach] startup sweep failed:", err);
+    }
+    // docs/196 — re-derive any watch whose child PR reached a terminal state
+    // while the orchestrator was down. Ordered AFTER the sweep above, on
+    // purpose (SHI-259).
+    try {
+      await mergeWatchManager.reconcilePending();
+    } catch (err: unknown) {
+      console.error("[merge-watch] startup reconcile failed:", err);
+    }
+  })();
 
   // ---- Resolve each repo's real default branch (main / master / trunk / …) ----
   // Reads the bare cache's HEAD — local, no network — so the UI can name the
