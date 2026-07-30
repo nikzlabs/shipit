@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { DatabaseManager } from "../shared/database.js";
 import { SessionManager } from "./sessions.js";
 import { ChatHistoryManager } from "./chat-history.js";
-import { MergeWatchManager } from "./merge-watch.js";
+import { MergeWatchManager, MAX_DELIVERY_ATTEMPTS } from "./merge-watch.js";
 import { isSteerableDispatch } from "./dispatch-steering.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry, AgentDispatchOptions } from "./session-runner.js";
 import type { PrTerminalStateInfo } from "./pr-status-poller.js";
@@ -58,25 +58,36 @@ class FakeRunner {
   emitMessage(msg: unknown): void { this.emitted.push(msg); }
 }
 
-function makeFakeRegistry(): { registry: SessionRunnerRegistry; runners: Map<string, FakeRunner> } {
+/**
+ * `control.failWake` models the SHI-258 failure: the parent's container can't be
+ * resumed. `wakeSessionWithTurn` detects that as a disposed runner and throws,
+ * which is exactly what a boot failure / credential-refresh failure surfaces as.
+ */
+function makeFakeRegistry(): {
+  registry: SessionRunnerRegistry;
+  runners: Map<string, FakeRunner>;
+  control: { failWake: boolean };
+} {
   const runners = new Map<string, FakeRunner>();
+  const control = { failWake: false };
   const registry = {
     get: (id: string) => runners.get(id) as unknown as SessionRunnerInterface | undefined,
     getOrCreate: (id: string, dir: string) => {
       let r = runners.get(id);
       if (!r) { r = new FakeRunner(dir); runners.set(id, r); }
+      r.disposed = control.failWake;
       return r as unknown as SessionRunnerInterface;
     },
     dispose: (id: string) => { runners.delete(id); },
   } as unknown as SessionRunnerRegistry;
-  return { registry, runners };
+  return { registry, runners, control };
 }
 
 function makeManager() {
   const db = new DatabaseManager(":memory:");
   const sessionManager = new SessionManager(db);
   const chatHistoryManager = new ChatHistoryManager(db);
-  const { registry, runners } = makeFakeRegistry();
+  const { registry, runners, control } = makeFakeRegistry();
   const manager = new MergeWatchManager({
     sessionManager,
     runnerRegistry: registry,
@@ -87,7 +98,7 @@ function makeManager() {
   sessionManager.track("parent", "Parent", "/ws/parent");
   sessionManager.track("child", "Child API", "/ws/child");
   sessionManager.setParentSession("child", "parent");
-  return { sessionManager, chatHistoryManager, registry, runners, manager };
+  return { sessionManager, chatHistoryManager, registry, runners, control, manager };
 }
 
 const MERGED: PrTerminalStateInfo = {
@@ -325,5 +336,231 @@ describe("MergeWatchManager (docs/196)", () => {
     ctx.manager.setPrStatusLookup(() => status);
     await ctx.manager.checkAndFireNow("child");
     expect(ctx.sessionManager.getMergeWatch("child")?.state).toBe("delivered");
+  });
+
+  // ---- SHI-258: a FAILED delivery is retried without an orchestrator restart ----
+  //
+  // The pre-fix behavior: `deliverWakeTurn` throws (parent container won't
+  // resume), the watch is left at `merge-observed`, and because the poller's
+  // terminal callbacks fire only once per terminal transition and
+  // `reconcilePending` has a bootstrap-only call site, nothing ever re-enters
+  // delivery. The merge card sits in the parent's transcript and the agent never
+  // starts, until someone restarts the orchestrator.
+  describe("failed-delivery retry (SHI-258)", () => {
+    afterEach(() => {
+      ctx.manager.stopRetryLoop();
+      vi.useRealTimers();
+    });
+
+    /** Backdate the watch's attempt anchor so the backoff window has elapsed. */
+    function rewindLastAttempt(ms = 60 * 60 * 1000): void {
+      const watch = ctx.sessionManager.getMergeWatch("child");
+      if (!watch) throw new Error("no watch to rewind");
+      ctx.sessionManager.setMergeWatch("child", {
+        ...watch,
+        lastAttemptAt: new Date(Date.now() - ms).toISOString(),
+      });
+    }
+
+    it("records the failed attempt and leaves the watch retryable instead of throwing", async () => {
+      arm(ctx.sessionManager);
+      ctx.control.failWake = true;
+
+      // The poller's hook is fire-and-forget; a handled failure must not surface
+      // as a rejection, or the failure bookkeeping would be indistinguishable
+      // from an unrelated crash.
+      await expect(ctx.manager.handleChildPrTerminal(MERGED)).resolves.toBeUndefined();
+
+      const watch = ctx.sessionManager.getMergeWatch("child");
+      expect(watch?.state).toBe("merge-observed");
+      expect(watch?.deliveryAttempts).toBe(1);
+      expect(watch?.lastAttemptAt).toBeTypeOf("string");
+      expect(watch?.lastDeliveryError).toContain("could not be resumed");
+      // The card DID surface (the human sees the merge) — that's the reported
+      // symptom: notification present, agent never started.
+      expect(ctx.chatHistoryManager.load("parent").filter((m) => m.childMerged)).toHaveLength(1);
+      expect(ctx.runners.get("parent")?.dispatched).toHaveLength(0);
+    });
+
+    it("retries in-process and reaches delivered once an attempt succeeds — no restart", async () => {
+      arm(ctx.sessionManager);
+      ctx.control.failWake = true;
+      await ctx.manager.handleChildPrTerminal(MERGED);
+      expect(ctx.sessionManager.getMergeWatch("child")?.state).toBe("merge-observed");
+
+      // The parent's container comes back. Same manager instance, no reconcile,
+      // no restart — the retry pass alone must recover the watch.
+      ctx.control.failWake = false;
+      rewindLastAttempt();
+      await ctx.manager.retryStalledDeliveries();
+
+      expect(ctx.sessionManager.getMergeWatch("child")?.state).toBe("delivered");
+      expect(ctx.runners.get("parent")?.dispatched).toHaveLength(1);
+      expect(ctx.runners.get("parent")?.dispatched[0].systemTurn).toBe(true);
+      // Still exactly one card — the re-entry skips the card guard.
+      expect(ctx.chatHistoryManager.load("parent").filter((m) => m.childMerged)).toHaveLength(1);
+    });
+
+    it("the retry supervisor's own timer drives the recovery (no external caller)", async () => {
+      vi.useFakeTimers();
+      arm(ctx.sessionManager);
+      ctx.control.failWake = true;
+      await ctx.manager.handleChildPrTerminal(MERGED);
+      expect(ctx.sessionManager.getMergeWatch("child")?.state).toBe("merge-observed");
+
+      ctx.control.failWake = false;
+      // First backoff window is 60s; the supervisor ticks every 30s.
+      await vi.advanceTimersByTimeAsync(61_000);
+
+      expect(ctx.sessionManager.getMergeWatch("child")?.state).toBe("delivered");
+      expect(ctx.runners.get("parent")?.dispatched).toHaveLength(1);
+    });
+
+    it("honors the backoff: a just-failed delivery is not re-attempted immediately", async () => {
+      arm(ctx.sessionManager);
+      ctx.control.failWake = true;
+      await ctx.manager.handleChildPrTerminal(MERGED);
+
+      ctx.control.failWake = false;
+      // No rewind — the attempt is seconds old, well inside the 60s window.
+      await ctx.manager.retryStalledDeliveries();
+
+      expect(ctx.sessionManager.getMergeWatch("child")?.state).toBe("merge-observed");
+      expect(ctx.sessionManager.getMergeWatch("child")?.deliveryAttempts).toBe(1);
+      expect(ctx.runners.get("parent")?.dispatched).toHaveLength(0);
+    });
+
+    it("REGRESSION: a wake-turn queued behind a busy parent is never re-fired by the retry pass", async () => {
+      arm(ctx.sessionManager);
+      // Mid-turn parent → the dispatch ENQUEUES. `merge-observed` is the correct
+      // state for the whole time it waits, which is exactly why a naive
+      // "reconcile on every poll" reintroduced duplicate wake-turns: it would
+      // re-fire at precisely the busiest parents.
+      const parentRunner = ctx.registry.getOrCreate("parent", "/ws/parent", "claude") as unknown as FakeRunner;
+      parentRunner.running = true;
+
+      await ctx.manager.handleChildPrTerminal(MERGED);
+      expect(parentRunner.dispatched).toHaveLength(1);
+      expect(ctx.sessionManager.getMergeWatch("child")?.state).toBe("merge-observed");
+
+      // A parent turn can run for far longer than any backoff window. Pretend it
+      // has, and hammer the retry pass.
+      for (let i = 0; i < 5; i++) {
+        rewindLastAttempt();
+        await ctx.manager.retryStalledDeliveries();
+      }
+
+      expect(parentRunner.dispatched).toHaveLength(1); // no duplicate wake-turn
+      expect(ctx.sessionManager.getMergeWatch("child")?.state).toBe("merge-observed");
+      expect(ctx.chatHistoryManager.load("parent").filter((m) => m.childMerged)).toHaveLength(1);
+      // The budget is untouched too — a queued turn must never burn attempts.
+      expect(ctx.sessionManager.getMergeWatch("child")?.deliveryAttempts).toBe(1);
+
+      // The parent's turn finishes and the queued wake-turn drains: still one.
+      parentRunner.running = false;
+      parentRunner.completeTurn();
+      expect(ctx.sessionManager.getMergeWatch("child")?.state).toBe("delivered");
+      expect(parentRunner.dispatched).toHaveLength(1);
+    });
+
+    it("re-delivers a queued wake-turn whose parent runner was disposed under it", async () => {
+      arm(ctx.sessionManager);
+      const parentRunner = ctx.registry.getOrCreate("parent", "/ws/parent", "claude") as unknown as FakeRunner;
+      parentRunner.running = true;
+      await ctx.manager.handleChildPrTerminal(MERGED);
+      expect(parentRunner.dispatched).toHaveLength(1);
+
+      // The runner (and its in-memory queue, and the completion callback riding
+      // it) is gone — the turn will never run, so "in flight" no longer holds.
+      ctx.registry.dispose("parent");
+      rewindLastAttempt();
+      await ctx.manager.retryStalledDeliveries();
+
+      expect(ctx.sessionManager.getMergeWatch("child")?.state).toBe("delivered");
+      expect(ctx.runners.get("parent")?.dispatched).toHaveLength(1);
+      expect(ctx.chatHistoryManager.load("parent").filter((m) => m.childMerged)).toHaveLength(1);
+    });
+
+    it("caps attempts: the watch reaches delivery-failed and surfaces a persisted failure card", async () => {
+      arm(ctx.sessionManager);
+      ctx.control.failWake = true;
+      await ctx.manager.handleChildPrTerminal(MERGED);
+
+      // Burn the remaining budget.
+      for (let i = 1; i < MAX_DELIVERY_ATTEMPTS; i++) {
+        rewindLastAttempt();
+        await ctx.manager.retryStalledDeliveries();
+      }
+
+      const watch = ctx.sessionManager.getMergeWatch("child");
+      expect(watch?.state).toBe("delivery-failed");
+      expect(watch?.deliveryAttempts).toBe(MAX_DELIVERY_ATTEMPTS);
+      expect(watch?.failedAt).toBeTypeOf("string");
+
+      // The failure is SURFACED, not swallowed: a second, persisted card in the
+      // parent's transcript (it rehydrates on reload like the first one).
+      const cards = ctx.chatHistoryManager.load("parent")
+        .map((m) => m.childMerged)
+        .filter((c): c is NonNullable<typeof c> => !!c);
+      expect(cards).toHaveLength(2);
+      expect(cards[0].deliveryFailure).toBeUndefined();
+      expect(cards[1].deliveryFailure?.attempts).toBe(MAX_DELIVERY_ATTEMPTS);
+      expect(cards[1].deliveryFailure?.error).toContain("could not be resumed");
+      expect(cards[1].prNumber).toBe(7);
+
+      // Terminal ⇒ it drops out of the pending list, so it stops holding the PR
+      // polling gate open for a wake that will never happen.
+      expect(ctx.sessionManager.listPendingMergeWatches()).toHaveLength(0);
+    });
+
+    it("a delivery-failed watch is terminal: no further retries, no resurrection by reconcile", async () => {
+      arm(ctx.sessionManager);
+      ctx.control.failWake = true;
+      await ctx.manager.handleChildPrTerminal(MERGED);
+      for (let i = 1; i < MAX_DELIVERY_ATTEMPTS; i++) {
+        rewindLastAttempt();
+        await ctx.manager.retryStalledDeliveries();
+      }
+      expect(ctx.sessionManager.getMergeWatch("child")?.state).toBe("delivery-failed");
+
+      // Everything recovers — but the watch already told the human it gave up,
+      // so re-arming is the user's call, not an automatic resurrection.
+      ctx.control.failWake = false;
+      await ctx.manager.retryStalledDeliveries();
+      ctx.manager.setPrStatusLookup((id) => (id === "child" ? mergedStatus() : undefined));
+      await ctx.manager.reconcilePending();
+      await ctx.manager.handleChildPrTerminal(MERGED);
+
+      expect(ctx.sessionManager.getMergeWatch("child")?.state).toBe("delivery-failed");
+      expect(ctx.runners.get("parent")?.dispatched ?? []).toHaveLength(0);
+      expect(ctx.chatHistoryManager.load("parent").filter((m) => m.childMerged)).toHaveLength(2);
+    });
+
+    it("drops the watch (no retry) when the parent is archived between attempts", async () => {
+      arm(ctx.sessionManager);
+      ctx.control.failWake = true;
+      await ctx.manager.handleChildPrTerminal(MERGED);
+
+      ctx.sessionManager.archive("parent");
+      ctx.control.failWake = false;
+      rewindLastAttempt();
+      await ctx.manager.retryStalledDeliveries();
+
+      expect(ctx.sessionManager.getMergeWatch("child")).toBeUndefined();
+    });
+
+    it("closed-unmerged: a failed wake-turn surfaces a failure card (terminal, not retried)", async () => {
+      arm(ctx.sessionManager);
+      ctx.control.failWake = true;
+      await ctx.manager.handleChildPrTerminal(CLOSED);
+
+      expect(ctx.sessionManager.getMergeWatch("child")?.state).toBe("closed-unmerged");
+      const cards = ctx.chatHistoryManager.load("parent")
+        .map((m) => m.childMerged)
+        .filter((c): c is NonNullable<typeof c> => !!c);
+      expect(cards).toHaveLength(2);
+      expect(cards[1].outcome).toBe("closed-unmerged");
+      expect(cards[1].deliveryFailure?.attempts).toBe(1);
+    });
   });
 });

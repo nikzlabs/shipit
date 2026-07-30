@@ -152,6 +152,17 @@ export interface TurnInput {
    * abort) and false on a clean completion.
    */
   onTurnComplete?: (outcome: { errored: boolean }) => void;
+  /**
+   * docs/240 — ADOPT a turn that is already running on the worker rather than
+   * starting one. Set only by the post-restart reattach path
+   * (`turn-adoption.ts`): the CLI is mid-turn inside a session container that
+   * outlived the orchestrator process, so there is nothing to spawn and no user
+   * row to persist (the pre-restart orchestrator already wrote it). Everything
+   * else is identical to a normal turn — the listeners are wired the same way,
+   * so the replayed events accumulate into chat history and the post-turn
+   * commit / push / PR flow fires off the replayed `agent_result`.
+   */
+  adopt?: boolean;
 }
 
 /**
@@ -610,6 +621,12 @@ export async function executeAgentTurn(
     // clear the system-turn flag, after all post-turn work has settled.
     finishTurn();
   });
+
+  // docs/240 — an ADOPTED turn is already running inside the container: the
+  // listeners above are the whole job. Skip env-prep and the spawn entirely
+  // (re-running `/agent/start` would 409 against the live process, and a
+  // `sendUserMessage` would inject a phantom message into the user's turn).
+  if (input.adopt) return;
 
   try {
     // Sync the freshest OAuth token (and provision/pin on the first turn)

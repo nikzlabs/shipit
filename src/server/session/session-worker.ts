@@ -152,6 +152,7 @@ export class SessionWorker extends EventEmitter {
       permissionBroker: this.permissionBroker,
       mcpConfig: this.mcpConfig,
       latestSseSeq: () => this.sse.latestSeq,
+      oldestSseSeq: () => this.sse.oldestSeq,
     });
     this.terminalController = new TerminalController({
       createTerminal: deps.createTerminal ?? (() => new TerminalProcess()),

@@ -756,3 +756,44 @@ export interface AgentProcess extends EventEmitter<AgentProcessEvents> {
    */
   writeMcpConfig(ctx: AgentMcpWriteContext): AgentMcpWriteResult;
 }
+
+// ---- Worker agent status (docs/240) ----
+
+/**
+ * What the session worker's `GET /agent/status` reports about the agent slot
+ * and any turn currently in flight on it.
+ *
+ * Shared because both layers depend on the shape: the worker
+ * (`session/agent-controller.ts`) produces it, and the orchestrator
+ * (`orchestrator/container-session-runner.ts`) consumes it before its first SSE
+ * connect to decide whether to skip a completed turn's replay or ADOPT a turn
+ * that outlived an orchestrator restart.
+ *
+ * Every field beyond `running` / `latestSseSeq` is optional on the wire: a
+ * container started by an older orchestrator build runs an older worker, and the
+ * consumer treats a missing `turnActive` as "unknown" and keeps the pre-docs/240
+ * conservative behavior.
+ */
+export interface WorkerAgentStatus {
+  /** A backend process occupies the single agent slot (may be idle-resident). */
+  running: boolean;
+  /** Highest SSE seq broadcast so far. */
+  latestSseSeq: number;
+  /** Oldest SSE seq still replayable from the ring buffer (0 when empty). */
+  oldestSseSeq?: number;
+  /**
+   * A turn is genuinely mid-flight: started via `/agent/start` or
+   * `/agent/message` and not yet ended by `agent_result` / process exit.
+   * Distinct from `running`, which stays true for a resident streaming process
+   * sitting idle between turns.
+   */
+  turnActive?: boolean;
+  /** SSE seq at the instant the in-flight turn started (0 when none). */
+  turnStartSseSeq?: number;
+  /** The spawning proxy's run token, so a re-created proxy can keep the epoch. */
+  runToken?: string;
+  /** Which backend occupies the slot. */
+  agentId?: AgentId;
+  /** The spawn was started in live-steering (streaming) mode. */
+  streaming?: boolean;
+}
