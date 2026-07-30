@@ -61,12 +61,13 @@ nothing to act on.
 The agent arms this **only** when the user has stated a follow-up. It is never
 armed by default, and never inferred from the mere existence of a PR.
 
-## Prerequisites — two fixed, one still open
+## Prerequisites — all three fixed
 
 Cross-agent review (see *Review notes*) found that three mechanisms this design
 intended to reuse were **already broken for docs/196**, in ways that would have
-reproduced the exact duplicate-wake bug that doc believed it had closed. Two are now
-fixed; one remains and is this feature's only hard blocker.
+reproduced the exact duplicate-wake bug that doc believed it had closed. All three
+are now fixed and merged, and the third one's fix supplies machinery this design had
+planned to build itself — see *What P3's fix changes here*.
 
 **P1 — a system turn could be live-steered into a running user turn.
 ✅ Fixed (SHI-254).** `dispatch` consulted `trySteerDispatch` before enqueueing even
@@ -92,21 +93,48 @@ What this buys the self-wake: a delivery dispatch now reliably enqueues behind a
 busy session, runs as a genuine system turn, and fires `onTurnComplete` in-process —
 which is what the `completed` / `failed` transitions below depend on.
 
-**P3 — delivery failure has no retry before restart. ❌ Still open.** The design
-originally said a failed delivery is retried "on the next poll". False: the terminal
-callbacks fire only when `alreadyTerminal` is false (`pr-status-poller.ts`), so once
-the terminal snapshot is persisted no later poll re-enters delivery; and
-`reconcilePending` is invoked from exactly one place, bootstrap
-(`bootstrap-managers.ts`). A wake / boot / reset exception therefore strands the
-watch until the orchestrator restarts, while `PollingGlobalGate` politely keeps
-polling forever. Fix: an in-process retry supervisor with bounded backoff, or
-per-poll reconciliation of pending watches independent of the terminal edge.
+**P3 — delivery failure had no retry before restart. ✅ Fixed (SHI-258).** The
+design originally said a failed delivery is retried "on the next poll". False: the
+terminal callbacks fire only when `alreadyTerminal` is false, and `reconcilePending`
+had exactly one call site, bootstrap. A wake / boot / reset exception stranded the
+watch until the orchestrator restarted. `MergeWatchManager` now carries a retry
+supervisor: a self-stopping 30s timer re-attempts stalled deliveries, gated on an
+in-memory `inFlight` set plus a persisted `deliveryAttempts` / `lastAttemptAt`
+exponential backoff, capped, terminating in a `delivery-failed` state with a
+persisted failure card.
 
-This matters more for a self-wake than for a child watch, because the failure modes
-this design adds — workspace restoration, the reset coordinator, container boot for
-an idle-reaped session — are exactly the ones that throw. Building on P3 as-is means
-a self-wake that fails at any of those steps sits dead until someone restarts the
-orchestrator.
+### What P3's fix changes here
+
+It mattered more for a self-wake than for a child watch, because the failure modes
+*this* design adds — workspace restoration, the reset coordinator, container boot for
+an idle-reaped session — are exactly the ones that throw. That risk is now retired,
+and three pieces this design planned to build itself already exist:
+
+- **The delivery lease is built.** The state machine below called for a per-watch
+  in-flight lease so `checkAndFireNow` and the poller couldn't both enqueue. That is
+  what the `inFlight` set is, with a subtlety worth inheriting rather than
+  re-deriving: it is deliberately **not persisted**, because the queued turn and its
+  callback are in-memory too, so a restart correctly empties it and hands recovery
+  back to `reconcilePending`. It also drops the marker when the parent's runner has
+  been disposed, since the queued turn went with it.
+- **The fire-once guard is centralized.** `isTerminalWatchState` is the single
+  terminal check; a self-watch's extra terminal states (`expired`, `cancelled`,
+  `delivery-failed`) must join it rather than adding a parallel predicate.
+- **Terminal watches release the polling gate.** A terminal watch drops out of the
+  pending list, so it stops holding `PollingGlobalGate` open for a wake that will
+  never happen. The self-watch's `expired` / `cancelled` / `blocked` states need the
+  same treatment or they leak a permanently-open poll gate.
+
+The open question this raises is **whether the retry supervisor should be generalized
+over both watch kinds or duplicated**. It is currently written against
+`SessionMergeWatch` and the child-delivery path. Duplicating it for self-watches
+would be a second copy of the trickiest logic in the subsystem — the in-flight/backoff
+split that keeps a merely-queued turn from being re-fired. Generalizing it is the
+better end state, and it partially cuts against the "distinct `SelfMergeWatch` type"
+decision below: the two watch kinds want different *identity* fields but the same
+*delivery* fields. Likely shape: a shared `WatchDelivery` sub-record (attempts,
+lastAttemptAt, lastError, failedAt) embedded in both types, with the supervisor
+generic over "things that have a delivery record and a deliver() function".
 
 ## Why the firing point is `onMergeDetectedCb`, not `onPrTerminalState`
 
@@ -293,6 +321,16 @@ So: **arm via `emitChatCard`** (atomic emit + in-band record anchored by
 proposing turn is still live and falls back to a finalized-row patch otherwise —
 the race it exists for.
 
+**A distinct card type is still right here, despite the SHI-258 precedent.** That fix
+added its delivery-failure state as an optional `deliveryFailure` block on the
+existing `ChildMergedCard` rather than a new type + migration, on the grounds that the
+failure concerns the same child and PR and so reuses the same identity fields and
+persistence wiring. The test it implies is "same identity?", not "fewer card types" —
+and an armed self-watch is a different subject (a pending intent on *this* session's
+own PR, with a Cancel affordance and a follow-up instruction to render), so it earns
+its own type. Its *terminal* states, however, should follow the precedent and ride
+the same card as additional blocks rather than spawning sibling types.
+
 Full at-rest contract: typed `selfMergeWatch` field on `PersistedMessage`,
 `self_merge_watch_card` column + `toRow`/`fromRow` + `database.ts` migration,
 rehydrate in `loadSessionHistory`, register in `CARD_MESSAGE_FIELDS` +
@@ -375,9 +413,10 @@ PR poller: verifyMissingPr, closed-unmerged
 
 | Area | File | Change |
 |---|---|---|
-| **P3** (blocker) | `src/server/orchestrator/merge-watch.ts`, `pr-status-poller.ts` | In-process retry supervisor / per-poll reconcile of pending watches |
 | ~~P1~~ ✅ | `src/server/orchestrator/dispatch-steering.ts` | Done (SHI-254) — `isSteerableDispatch` |
 | ~~P2~~ ✅ | `src/server/orchestrator/queue-drain.ts` | Done (SHI-255) — `QueuedMessage.execution` + `startQueuedMessage` |
+| ~~P3~~ ✅ | `src/server/orchestrator/merge-watch.ts` | Done (SHI-258) — retry supervisor, `inFlight` set, `isTerminalWatchState`, `delivery-failed` |
+| Retry reuse | `src/server/orchestrator/merge-watch.ts` | Generalize the SHI-258 supervisor over both watch kinds (shared delivery record) rather than duplicating it |
 | Watch state | `src/server/orchestrator/sessions.ts` | `self_merge_watch` column, CAS transitions, `listPendingSelfMergeWatches` |
 | Persist | `src/server/shared/database.ts` | `self_merge_watch` + `self_merge_watch_card` columns + migrations |
 | Type | `src/server/shared/types/domain-types/session.ts` | Distinct `SelfMergeWatch` (watchId, generation, `followUp`, full state set) |
@@ -396,10 +435,13 @@ PR poller: verifyMissingPr, closed-unmerged
 
 ## Testing
 
-- **P3** — recovery from a failed delivery **without** restarting the process.
-  (P1 and P2 already carry their regressions in `system-turn-queue.test.ts` and
-  `queue-drain.test.ts`; this design's delivery tests should assert against those
-  guarantees rather than re-proving them.)
+- P1–P3 already carry their regressions (`system-turn-queue.test.ts`,
+  `queue-drain.test.ts`, and the `failed-delivery retry (SHI-258)` block in
+  `merge-watch.test.ts`). This design's tests should assert **against** those
+  guarantees rather than re-prove them — but if the retry supervisor is generalized
+  over both watch kinds, its "a turn queued behind a busy parent is never re-fired"
+  regression must be re-run for the self-watch path, since that is the duplicate-wake
+  trap and a generalization is exactly where it would be lost.
 - `merge-watch.test.ts` — fire-once; terminal-means-ran; `expired` with no dispatch;
   `blocked` on a failed gate with no dispatch; cancel-vs-merge CAS both orderings;
   `checkAndFireNow`-vs-poller double-enqueue; archived drop; reconcile without a
@@ -478,8 +520,15 @@ The review's headline effect is on **cost**, not direction: this was scoped as
 composition of docs/196 + docs/218 with "no new card and no new machinery". It is
 not. It needs a reset coordinator, CAS watch storage, and a retry supervisor.
 
-**Update — P1 and P2 are fixed** (SHI-254 / SHI-255, merged). The dispatch path now
-honors "`delivered` means the turn ran" on every drain, so this design can rely on a
-dispatched wake-turn enqueueing behind a busy session and firing `onTurnComplete`
-in-process. P3 (no retry before an orchestrator restart) remains open and is the
-one hard blocker left.
+**Update — all three prerequisites are fixed and merged** (SHI-254, SHI-255,
+SHI-258). The dispatch path now honors "`delivered` means the turn ran" on every
+drain, and a failed delivery retries in-process on a backoff instead of stranding
+until a restart.
+
+That materially reduces this design's remaining cost. The delivery lease it specified
+now exists as SHI-258's `inFlight` set, the fire-once guard is centralized in
+`isTerminalWatchState`, and terminal watches already release the polling gate — three
+things this doc had planned to build. What remains genuinely new: the reset
+coordinator, CAS watch storage, generation-checked delivery, and the arm card. The
+main open engineering question is whether to generalize SHI-258's retry supervisor
+over both watch kinds or duplicate it (see *What P3's fix changes here*).

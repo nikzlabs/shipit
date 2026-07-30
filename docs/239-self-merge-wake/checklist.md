@@ -4,7 +4,7 @@
 
 - [x] **P1** `trySteerDispatch` returns false for `systemTurn` / callback-carrying dispatches — SHI-254
 - [x] **P2** interactive queue drain preserves `systemTurn` + `onTurnComplete` — SHI-255
-- [ ] **P3** retry path for a failed delivery that doesn't require an orchestrator restart
+- [x] **P3** retry path for a failed delivery that doesn't require an orchestrator restart — SHI-258
 
 ## Watch state
 
@@ -12,7 +12,9 @@
 - [ ] `self_merge_watch` column + migration
 - [ ] CAS transitions in `sessions.ts` (`armed → merge-observed` vs `armed → cancelled`)
 - [ ] `listPendingSelfMergeWatches` (separate from the child list)
-- [ ] Per-watch delivery lease keyed on `watchId`
+- [ ] Reuse SHI-258's `inFlight` lease rather than a second one; join `isTerminalWatchState`
+- [ ] Terminal self-watch states drop out of the pending list (don't leak an open polling gate)
+- [ ] Decide: generalize the SHI-258 retry supervisor over both watch kinds, or duplicate
 
 ## Arm surface
 
