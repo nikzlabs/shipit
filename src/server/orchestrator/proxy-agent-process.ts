@@ -78,8 +78,13 @@ export class ProxyAgentProcess extends EventEmitter<{
    * SIGTERM `143`) was emitted onto the freshly-spawned agent, whose own
    * object-identity-guarded done handler then nulled `_agent`, stranding
    * the entire resolution turn's event stream. See docs/146 follow-up.
+   *
+   * docs/240 — a proxy re-created to ADOPT a turn that outlived an orchestrator
+   * restart inherits the worker's recorded token (via the constructor's
+   * `runToken` option) rather than minting a new one, so the adopted turn's
+   * `agent_done` / `agent_error` still correlate and aren't ignored as stale.
    */
-  readonly runToken: string = randomUUID();
+  readonly runToken: string;
   readonly capabilities = {
     supportsResume: true,
     supportsImages: true,
@@ -100,10 +105,11 @@ export class ProxyAgentProcess extends EventEmitter<{
 
   private runner: ProxyAgentRunner;
 
-  constructor(agentId: AgentId, runner: ProxyAgentRunner) {
+  constructor(agentId: AgentId, runner: ProxyAgentRunner, opts?: { runToken?: string }) {
     super();
     this.agentId = agentId;
     this.runner = runner;
+    this.runToken = opts?.runToken ?? randomUUID();
   }
 
   /** Fire-and-forget POST to worker /agent/start. Errors emitted as events. */

@@ -34,6 +34,7 @@ import {
   scheduleStartupTasks,
 } from "./app-lifecycle.js";
 import { refreshAllRepoDefaultBranches } from "./services/repo-default-branch.js";
+import { reattachInFlightTurns } from "./restart-turn-reattach.js";
 import { createOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import { MergeWatchManager } from "./merge-watch.js";
 import { createSessionLoopDetector } from "./loop-detector.js";
@@ -695,6 +696,19 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     repoStore, sessionManager, chatHistoryManager, usageManager,
     containerManager, getBareCacheDir, warmSessionForRepo, credentialStore,
   }, migratedRepoUrls);
+
+  // ---- docs/240: adopt agent turns that outlived the previous orchestrator ----
+  // Session containers survive an orchestrator crash/redeploy with their CLI
+  // still mid-turn. Reattach those turns now — rebuilding the agent proxy +
+  // listeners and replaying the turn's events — so the session comes back as
+  // running and its post-turn commit / push / PR flow still fires, instead of
+  // the turn silently evaporating until the user types "continue". Off the boot
+  // path and best-effort: probes are per-container and independently guarded.
+  void reattachInFlightTurns({
+    containerManager, runnerRegistry, sessionManager, defaultAgentId,
+  }).catch((err: unknown) => {
+    console.error("[turn-reattach] startup sweep failed:", err);
+  });
 
   // ---- Resolve each repo's real default branch (main / master / trunk / …) ----
   // Reads the bare cache's HEAD — local, no network — so the UI can name the
