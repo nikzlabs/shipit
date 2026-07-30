@@ -73,8 +73,15 @@ export interface ServicePollerOptions {
   /**
    * Service exited non-zero. The manager decides the branch (install-window
    * retry / OOM retry / terminal error) — the poller just dispatches.
+   *
+   * `oomKilled` is the container's authoritative `State.OOMKilled`, harvested
+   * from the `docker inspect` this poll already runs for IP resolution:
+   * `true`/`false` when the inspect answered, `undefined` when it didn't (or
+   * the daemon omitted the field). Exit 137 alone does NOT mean OOM — our own
+   * re-install teardown SIGKILLs a service that ignores SIGTERM, and that
+   * exits 137 with `OOMKilled: false`.
    */
-  onExitedWithError: (name: string, exitCode: number) => void;
+  onExitedWithError: (name: string, exitCode: number, oomKilled?: boolean) => void;
   /**
    * Optional hook invoked at the end of each successful poll. Used to run the
    * agent network-attachment self-heal on the poll heartbeat (docs/128 —
@@ -98,7 +105,7 @@ export class ServicePoller {
   private readonly onRunning: (name: string) => void;
   private readonly onLeftRunning: (name: string) => void;
   private readonly onExitedCleanly: (name: string) => void;
-  private readonly onExitedWithError: (name: string, exitCode: number) => void;
+  private readonly onExitedWithError: (name: string, exitCode: number, oomKilled?: boolean) => void;
   private readonly afterPoll?: () => void | Promise<void>;
 
   private pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -168,8 +175,11 @@ export class ServicePoller {
 
     // Resolve container IPs *before* emitting status events so the preview
     // proxy can route requests as soon as the client learns a service is running.
+    // The same inspect answers "was this container OOM-killed?", which the
+    // non-zero-exit branch below needs to tell a real OOM from a plain SIGKILL.
+    let oomFlags = new Map<string, boolean>();
     if (containerNames.size > 0) {
-      await this.resolveContainerIps(containerNames);
+      oomFlags = await this.resolveContainerIps(containerNames);
     }
 
     // Now emit status updates
@@ -193,8 +203,10 @@ export class ServicePoller {
           if (prev !== "stopped") this.updateServiceStatus(name, "stopped");
         } else {
           // Branch between install-window retry / OOM auto-retry / terminal
-          // error is the manager's call — see `handleNonZeroExit` there.
-          this.onExitedWithError(name, exitCode);
+          // error is the manager's call — see `handleNonZeroExit` there. Pass
+          // the inspected `State.OOMKilled` so exit 137 can be classified
+          // rather than assumed.
+          this.onExitedWithError(name, exitCode, oomFlags.get(name));
         }
       } else if (state === "restarting") {
         if (prev !== "starting") this.updateServiceStatus(name, "starting");
@@ -239,11 +251,19 @@ export class ServicePoller {
   /**
    * Resolve container IPs via `docker inspect` on each container.
    * Prefers the session network IP, falls back to any available IP.
+   *
+   * Also harvests each container's `State.OOMKilled` from the same inspect —
+   * the authoritative answer to "was this an OOM kill?", which the exit-137
+   * classification needs and which `docker compose ps` does not report. Free
+   * here: this inspect already runs on every poll. Returns a map keyed by
+   * SERVICE name; a service is absent when its inspect failed or the daemon
+   * omitted `State`, which the caller treats as "unknown", not "not an OOM".
    */
   private async resolveContainerIps(
     containerNames: Map<string, string>,
-  ): Promise<void> {
+  ): Promise<Map<string, boolean>> {
     const networkName = `shipit-session-${this.sessionId}`;
+    const oomFlags = new Map<string, boolean>();
 
     for (const [containerName, serviceName] of containerNames) {
       try {
@@ -251,7 +271,11 @@ export class ServicePoller {
           ["inspect", containerName],
           this.workspaceDir,
         );
-        const parsed = JSON.parse(stdout) as { NetworkSettings?: { IPAddress?: string; Networks?: Record<string, { IPAddress?: string }> } }[];
+        const parsed = JSON.parse(stdout) as { State?: { OOMKilled?: boolean }; NetworkSettings?: { IPAddress?: string; Networks?: Record<string, { IPAddress?: string }> } }[];
+        // Record before the network bail-outs below — an exited container often
+        // has no networks left, and that is exactly the case we need the flag for.
+        const oomKilled = parsed[0]?.State?.OOMKilled;
+        if (typeof oomKilled === "boolean") oomFlags.set(serviceName, oomKilled);
         const netSettings = parsed[0]?.NetworkSettings;
         let nets = netSettings?.Networks;
 
@@ -289,5 +313,7 @@ export class ServicePoller {
         console.warn(`[compose:${this.sessionId}] docker inspect ${containerName} failed:`, (err as Error).message);
       }
     }
+
+    return oomFlags;
   }
 }
