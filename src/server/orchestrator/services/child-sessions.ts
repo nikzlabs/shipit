@@ -777,8 +777,10 @@ export interface RegisterMergeWatchResult {
  * yet — the watch arms and fires once a terminal state is observed.
  *
  * Idempotent: re-arming an already-armed (or mid-delivery) watch is a no-op that
- * reports the current state. Re-arming after a previous watch already delivered
- * (terminal) starts a fresh `armed` watch — useful if the child opens a new PR.
+ * reports the current state. Re-arming after a previous watch reached a terminal
+ * state starts a fresh `armed` watch — useful if the child opens a new PR, and
+ * the sanctioned recovery for a `delivery-failed` watch (SHI-258), which
+ * deliberately never resurrects itself.
  */
 export function registerMergeWatch(
   sessionManager: SessionManager,

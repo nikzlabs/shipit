@@ -178,6 +178,8 @@ export interface ChatMessage {
     prUrl: string;
     prTitle?: string;
     mergeSha?: string;
+    /** SHI-258 — set on the "couldn't wake this session" follow-up card. */
+    deliveryFailure?: { attempts: number; error?: string };
     createdAt: string;
   };
   /**

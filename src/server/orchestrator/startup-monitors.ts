@@ -47,6 +47,7 @@ export async function startStartupMonitors(
     loopDetector, oomBreaker, chatHistoryManager,
     repoPrefetcher, claudeOAuthRefresherRef, codexOAuthRefresherRef,
     startupTimer, authManagers, dockerProxyServer, databaseManager,
+    mergeWatchManager,
   } = rt;
 
   // ---- Docker memory stats broadcast (every 10s) ----
@@ -349,6 +350,9 @@ export async function startStartupMonitors(
     if (repoPrefetcher) repoPrefetcher.stop();
     claudeOAuthRefresherRef.ref?.stop();
     codexOAuthRefresherRef.ref?.stop();
+    // SHI-258 — the notify-on-merge retry supervisor. Unref'd, so it never held
+    // the process open, but stopping it keeps shutdown free of a stray pass.
+    mergeWatchManager?.stopRetryLoop();
   });
   registerShutdownHook(app, {
     startupTimer, authManagers, runnerRegistry,

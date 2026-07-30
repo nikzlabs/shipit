@@ -951,8 +951,14 @@ export class SessionManager {
    * docs/196 — every session that carries a merge-watch in a non-terminal state
    * (`armed` or `merge-observed`). Used by the startup reconcile to re-fire any
    * watch whose child PR already reached a terminal state while the orchestrator
-   * was down. Includes archived rows (a merged child is archived by the
-   * post-merge path, but its un-delivered watch must still fire).
+   * was down, by the retry supervisor to find stalled deliveries (SHI-258), and
+   * by `PollingGlobalGate` to keep the PR poll loop alive for a viewerless child
+   * awaiting a human merge. Includes archived rows (a merged child is archived
+   * by the post-merge path, but its un-delivered watch must still fire).
+   *
+   * The terminal states — `delivered`, `closed-unmerged`, and `delivery-failed`
+   * — are excluded, which is what stops a watch that has given up from holding
+   * the polling gate open forever.
    */
   listPendingMergeWatches(): { childSessionId: string; watch: SessionMergeWatch }[] {
     const rows = this.db.prepare(

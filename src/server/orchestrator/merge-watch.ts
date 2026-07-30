@@ -16,10 +16,49 @@
  *
  * The watch is persisted on the CHILD session row (`SessionMergeWatch`) with a
  * fire-once state machine (`armed → merge-observed → delivered`, or terminal
- * `closed-unmerged`). Persistence is what makes the firing survive an
- * orchestrator restart: `reconcilePending` re-derives "child PR terminal + watch
- * un-delivered → fire" from the persisted PR snapshot on startup, so a crash
- * between merge-detection and delivery doesn't strand the parent.
+ * `closed-unmerged` / `delivery-failed`). Persistence is what makes the firing
+ * survive an orchestrator restart: `reconcilePending` re-derives "child PR
+ * terminal + watch un-delivered → fire" from the persisted PR snapshot on
+ * startup, so a crash between merge-detection and delivery doesn't strand the
+ * parent.
+ *
+ * ## Retrying a failed delivery (SHI-258)
+ *
+ * `deliverWakeTurn` can throw — the parent's container won't resume, its
+ * credential refresh fails, the worker is unreachable. The design always claimed
+ * such a watch was retried, but the only retry that existed was
+ * `reconcilePending`, whose sole call site is bootstrap: the PR poller's terminal
+ * callbacks fire behind an `alreadyTerminal` guard, so once the terminal PR
+ * snapshot is persisted no later poll re-enters delivery. A failed delivery
+ * therefore sat at `merge-observed` until an orchestrator restart — the merge
+ * card visible in the parent's transcript, the agent never starting — while the
+ * polling gate kept the loop alive precisely *because* the watch was pending.
+ *
+ * The fix is a self-managing retry loop in this manager
+ * (`retryStalledDeliveries`, driven by an interval that exists only while some
+ * watch sits at `merge-observed`). Its whole difficulty is that `merge-observed`
+ * is ALSO the legitimate state of a wake-turn that is **enqueued behind a busy
+ * parent** — re-firing those would resurrect the duplicate-wake bug docs/196
+ * already fought twice. So the retry distinguishes in-flight from failed on two
+ * independent axes:
+ *
+ *   1. **In-memory `inFlight` set** — the precise signal. A dispatch that
+ *      returned without throwing is genuinely pending *in this process*: its
+ *      completion callback rides the runner's in-memory queue and will fire when
+ *      the turn runs, however long the parent stays busy. That fact cannot be
+ *      persisted (the queue itself is in-memory), which is exactly why the
+ *      restart case needs `reconcilePending` and the same-process case needs
+ *      this set. A watch in `inFlight` is never re-fired — unless the parent's
+ *      runner has since disappeared, which means the queued turn went with it.
+ *   2. **Persisted `deliveryAttempts` + `lastAttemptAt` backoff** — the safety
+ *      net. Even an eligible watch is only re-attempted once an exponential
+ *      backoff window has elapsed, so a failing container boot is retried on a
+ *      sane cadence rather than every tick.
+ *
+ * The attempt budget is capped: after `MAX_DELIVERY_ATTEMPTS` the watch moves to
+ * the terminal `delivery-failed` state and surfaces a persisted failure card
+ * into the parent, so a permanently-undeliverable wake is visible to the human
+ * instead of retried forever (and stops holding the polling gate open).
  *
  * The card-surfacing + wake-turn delivery mirror `issue-lifecycle.ts`: both fire
  * **outside any turn**, so the card is appended directly to chat history
@@ -30,10 +69,41 @@
 
 import { randomUUID } from "node:crypto";
 import type { ChatHistoryManager } from "./chat-history.js";
-import type { ChildMergedCard, SessionInfo, WsServerMessage } from "../shared/types.js";
+import type { ChildMergedCard, SessionInfo, SessionMergeWatch, WsServerMessage } from "../shared/types.js";
 import type { PrStatusSummary } from "../shared/types/github-types.js";
 import { wakeSessionWithTurn, type WakeSessionDeps } from "./wake-session.js";
 import type { PrTerminalStateInfo } from "./pr-status-poller.js";
+
+/**
+ * SHI-258 — how many times a merge wake-turn delivery is attempted before the
+ * watch gives up and moves to the terminal `delivery-failed` state. Counts every
+ * `deliverWakeTurn` invocation, not only the failing ones, so a watch can never
+ * loop indefinitely however the attempts are spread across restarts.
+ */
+export const MAX_DELIVERY_ATTEMPTS = 5;
+
+/**
+ * How often the retry supervisor wakes while at least one watch sits at
+ * `merge-observed`. The tick is cheap (one indexed read of the rare merge-watch
+ * rows) and the timer exists only while such a watch exists — the steady state
+ * is no timer at all.
+ */
+const RETRY_TICK_MS = 30_000;
+/** First retry lands this long after the failed attempt. */
+const RETRY_BASE_BACKOFF_MS = 60_000;
+/** Backoff ceiling — a persistently-failing parent is probed at most this often. */
+const RETRY_MAX_BACKOFF_MS = 10 * 60_000;
+
+/**
+ * Exponential backoff between delivery attempts: 1m, 2m, 4m, 8m, capped at
+ * {@link RETRY_MAX_BACKOFF_MS}. Deliberately generous — each attempt may boot a
+ * container and refresh credentials, and the failure modes it recovers from
+ * (host restart, Docker hiccup, token rotation) resolve on a minutes scale, not
+ * a seconds one.
+ */
+function retryBackoffMs(attempts: number): number {
+  return Math.min(RETRY_BASE_BACKOFF_MS * 2 ** Math.max(0, attempts - 1), RETRY_MAX_BACKOFF_MS);
+}
 
 /**
  * Collaborators the deliverer needs — all orchestrator-side. The wake-turn half
@@ -53,11 +123,46 @@ export class MergeWatchManager {
    */
   private prStatusLookup?: (sessionId: string) => PrStatusSummary | undefined;
 
+  /**
+   * SHI-258 — child session ids whose wake-turn dispatch succeeded **in this
+   * process** and whose turn has not yet run. This is the one signal that tells
+   * "queued behind a busy parent" (never re-fire) apart from "delivery threw"
+   * (retry), and it is deliberately in-memory: the thing it tracks — the
+   * runner's queued turn plus its completion callback — is in-memory too, so a
+   * restart correctly empties it and hands recovery back to
+   * `reconcilePending`.
+   */
+  private readonly inFlight = new Set<string>();
+
+  /**
+   * SHI-258 — the terminal PR facts a watch was fired with, kept so a retry can
+   * rebuild the identical self-describing prompt. The persisted PR snapshot
+   * (`prStatusLookup`) is the restart-safe fallback, but it carries no merge
+   * SHA, so preferring the observed info keeps a same-process retry's prompt
+   * byte-identical to the first attempt's.
+   */
+  private readonly lastTerminalInfo = new Map<string, PrTerminalStateInfo>();
+
+  /**
+   * The retry supervisor's interval. Armed on the first delivery attempt and
+   * cleared as soon as no watch sits at `merge-observed`, so an instance with
+   * nothing to retry holds no timer. Unref'd — it must never keep the process
+   * alive on its own.
+   */
+  private retryTimer: ReturnType<typeof setInterval> | null = null;
+
   constructor(private readonly deps: MergeWatchDeps) {}
 
   /** Bind the PR-status lookup (the poller's `getStatus`). Called once at wiring. */
   setPrStatusLookup(fn: (sessionId: string) => PrStatusSummary | undefined): void {
     this.prStatusLookup = fn;
+  }
+
+  /** Stop the retry supervisor. Called from the orchestrator's shutdown hook. */
+  stopRetryLoop(): void {
+    if (!this.retryTimer) return;
+    clearInterval(this.retryTimer);
+    this.retryTimer = null;
   }
 
   /**
@@ -68,36 +173,49 @@ export class MergeWatchManager {
    * No-op (and harmless) for the common case where the PR is still open / absent.
    */
   async checkAndFireNow(childSessionId: string): Promise<void> {
+    const info = this.infoFromPersistedStatus(childSessionId);
+    if (!info) return;
+    await this.handleChildPrTerminal(info);
+  }
+
+  /**
+   * Re-derive `PrTerminalStateInfo` from the child's last-known (persisted) PR
+   * snapshot. Returns undefined while the PR is absent or still open. Shared by
+   * the register-time check, the startup reconcile, and the retry supervisor —
+   * all three need the same "what did this child's PR resolve to?" question
+   * answered from durable state rather than a live poll event.
+   */
+  private infoFromPersistedStatus(childSessionId: string): PrTerminalStateInfo | undefined {
     const status = this.prStatusLookup?.(childSessionId);
-    if (!status || (status.prState !== "merged" && status.prState !== "closed")) return;
-    await this.handleChildPrTerminal({
+    if (!status || (status.prState !== "merged" && status.prState !== "closed")) return undefined;
+    return {
       sessionId: childSessionId,
       outcome: status.prState === "merged" ? "merged" : "closed",
       prNumber: status.prNumber ?? 0,
       prUrl: status.prUrl ?? "",
       prTitle: status.prTitle ?? "",
       branch: status.headBranch ?? "",
-    });
+    };
   }
 
   /**
    * PR-poller hook: a tracked session's PR reached a terminal state. No-ops
    * unless THIS session carries an armed merge-watch. Idempotent — a watch that
-   * is already `delivered` / `closed-unmerged` is skipped (fire-once), so a
-   * re-poll or a restart re-observation never double-fires.
+   * is already `delivered` / `closed-unmerged` / `delivery-failed` is skipped
+   * (fire-once), so a re-poll or a restart re-observation never double-fires.
    */
   async handleChildPrTerminal(info: PrTerminalStateInfo): Promise<void> {
     const child = this.deps.sessionManager.get(info.sessionId);
     const watch = child?.mergeWatch;
     if (!child || !watch) return;
     // Fire-once: terminal states are never re-delivered.
-    if (watch.state === "delivered" || watch.state === "closed-unmerged") return;
+    if (isTerminalWatchState(watch.state)) return;
 
     const parent = this.deps.sessionManager.get(watch.parentSessionId);
     // Parent archived/gone before the merge → drop the watch silently (docs/196
     // edge case). userArchived implies archived via `fromRow`, but check both.
     if (!parent || parent.archived || parent.userArchived) {
-      this.deps.sessionManager.setMergeWatch(info.sessionId, null);
+      this.clearWatch(info.sessionId);
       return;
     }
 
@@ -132,18 +250,22 @@ export class MergeWatchManager {
       // at enqueue stranded the parent when a restart lost the queued turn
       // before it ran; (2) leaving the busy path's callback unwired left the
       // watch at `merge-observed` FOREVER, so reconcile re-fired a DUPLICATE
-      // wake-turn on every restart. `deliverWakeTurn` still throws on a parent
-      // container boot failure — that too leaves the watch at `merge-observed`
-      // for the next poll / reconcile to retry.
-      await this.deliverWakeTurn(parent, child, info, cardOutcome, () => {
-        this.markDelivered(info.sessionId, now);
-      });
+      // wake-turn on every restart. A `deliverWakeTurn` that THROWS (parent
+      // container boot failure, credential refresh failure, unreachable worker)
+      // also leaves the watch at `merge-observed` — `attemptDelivery` records
+      // the attempt and hands it to the retry supervisor, which re-attempts it
+      // in-process on a backoff (SHI-258); before that fix only a restart could
+      // recover it.
+      await this.attemptDelivery(parent, child, info);
       return;
     }
 
     // Closed-without-merge — terminal in one step. Surface the (distinct) card
-    // and mark the watch terminal before delivering so a re-poll can't re-fire;
-    // the wake-turn is best-effort (a boot failure here is logged, not retried).
+    // and mark the watch terminal before delivering so a re-poll can't re-fire.
+    // The wake-turn is best-effort and deliberately NOT retried: the watch is
+    // already terminal, which is what makes the close path fire-once. A failure
+    // is surfaced as a delivery-failure card instead of vanishing into a log, so
+    // the human still learns the session wasn't woken (SHI-258).
     this.surfaceCard(parent.id, child, info, cardOutcome);
     this.deps.sessionManager.setMergeWatch(info.sessionId, {
       parentSessionId: watch.parentSessionId,
@@ -151,8 +273,235 @@ export class MergeWatchManager {
       registeredAt: watch.registeredAt,
       observedAt: now,
       deliveredAt: now,
+      deliveryAttempts: 1,
+      lastAttemptAt: now,
     });
-    await this.deliverWakeTurn(parent, child, info, cardOutcome);
+    try {
+      await this.deliverWakeTurn(parent, child, info, cardOutcome);
+    } catch (err) {
+      const message = errorMessage(err);
+      console.error(`[merge-watch] closed-unmerged wake-turn delivery failed for ${info.sessionId}:`, err);
+      const current = this.deps.sessionManager.getMergeWatch(info.sessionId);
+      if (current) {
+        this.deps.sessionManager.setMergeWatch(info.sessionId, { ...current, lastDeliveryError: message });
+      }
+      this.surfaceCard(parent.id, child, info, cardOutcome, { attempts: 1, error: message });
+    }
+  }
+
+  /**
+   * One wake-turn delivery attempt for a `merge-observed` watch, with the
+   * bookkeeping the retry supervisor reads.
+   *
+   * Order matters: the attempt is *recorded before it runs*, so a delivery that
+   * throws — or a process that dies mid-attempt — still leaves a durable
+   * `deliveryAttempts` / `lastAttemptAt` trail. The in-memory `inFlight` marker
+   * is set for the same reason in reverse: it exists only while this process
+   * holds a dispatch that hasn't run, and it is cleared the instant the dispatch
+   * throws, so `retryStalledDeliveries` sees "failed" rather than "pending".
+   *
+   * A throw is handled, not propagated: the failure is recorded, the retry loop
+   * is armed, and the caller (the PR poller's fire-and-forget hook, the register
+   * route, the startup reconcile) sees an ordinary return. Reaching the attempt
+   * cap here fails the watch immediately rather than waiting a full backoff for
+   * the supervisor to notice.
+   */
+  private async attemptDelivery(
+    parent: SessionInfo,
+    child: SessionInfo,
+    info: PrTerminalStateInfo,
+  ): Promise<void> {
+    const childId = child.id;
+    const watch = this.deps.sessionManager.getMergeWatch(childId);
+    if (watch?.state !== "merge-observed") return;
+
+    const attempts = (watch.deliveryAttempts ?? 0) + 1;
+    const observedAt = watch.observedAt ?? new Date().toISOString();
+    this.deps.sessionManager.setMergeWatch(childId, {
+      ...watch,
+      deliveryAttempts: attempts,
+      lastAttemptAt: new Date().toISOString(),
+    });
+    this.lastTerminalInfo.set(childId, info);
+    this.inFlight.add(childId);
+    this.ensureRetryLoop();
+
+    try {
+      await this.deliverWakeTurn(parent, child, info, "merged", () => {
+        this.markDelivered(childId, observedAt);
+      });
+    } catch (err) {
+      // The dispatch never landed, so nothing is queued in the parent — drop the
+      // in-flight marker so the supervisor treats this watch as retryable.
+      this.inFlight.delete(childId);
+      const message = errorMessage(err);
+      console.error(
+        `[merge-watch] wake-turn delivery failed for ${childId} `
+        + `(attempt ${attempts}/${MAX_DELIVERY_ATTEMPTS}):`,
+        err,
+      );
+      const current = this.deps.sessionManager.getMergeWatch(childId);
+      if (current?.state !== "merge-observed") return;
+      this.deps.sessionManager.setMergeWatch(childId, { ...current, lastDeliveryError: message });
+      if (attempts >= MAX_DELIVERY_ATTEMPTS) this.failWatch(childId, message);
+    }
+  }
+
+  /**
+   * The retry supervisor's pass: re-attempt every `merge-observed` watch whose
+   * delivery is genuinely stalled, and give up on the ones that have exhausted
+   * their attempt budget.
+   *
+   * Every `continue` below is a duplicate-wake guard, in increasing order of
+   * cost:
+   *   1. **In-flight** — a dispatch from this process is still pending in the
+   *      parent's queue (or running). Never re-fired, however long the parent
+   *      stays busy. This is the guard that makes "retry on a timer" safe at
+   *      all; a naive per-poll reconcile without it spams duplicate turns at
+   *      exactly the busiest parents.
+   *   2. **Backoff** — the last attempt is too recent. Spaces out retries
+   *      against a parent whose container keeps failing to boot.
+   *   3. **Budget** — the attempt cap is spent, so the watch fails terminally
+   *      (surfacing a card) instead of being retried forever.
+   *
+   * Public so tests — and any future caller that wants an immediate pass — can
+   * drive it without waiting on the interval.
+   */
+  async retryStalledDeliveries(): Promise<void> {
+    const stalled = this.deps.sessionManager
+      .listPendingMergeWatches()
+      .filter(({ watch }) => watch.state === "merge-observed");
+    if (stalled.length === 0) {
+      this.stopRetryLoop();
+      return;
+    }
+
+    const now = Date.now();
+    for (const { childSessionId, watch } of stalled) {
+      if (this.isDeliveryInFlight(childSessionId, watch.parentSessionId)) continue;
+
+      const attempts = watch.deliveryAttempts ?? 0;
+      const lastAt = Date.parse(watch.lastAttemptAt ?? watch.observedAt ?? watch.registeredAt);
+      if (Number.isFinite(lastAt) && now - lastAt < retryBackoffMs(attempts)) continue;
+
+      if (attempts >= MAX_DELIVERY_ATTEMPTS) {
+        this.failWatch(childSessionId, watch.lastDeliveryError ?? "wake-turn never ran");
+        continue;
+      }
+
+      try {
+        await this.retryDelivery(childSessionId, watch);
+      } catch (err) {
+        console.error(`[merge-watch] retry pass failed for ${childSessionId}:`, err);
+      }
+    }
+    this.stopRetryLoopIfIdle();
+  }
+
+  /**
+   * True while a dispatch issued by THIS process is still pending for the watch.
+   *
+   * The marker alone isn't enough: if the parent's runner has since been
+   * disposed (idle reap, container death, an explicit teardown), the queued turn
+   * and its completion callback went with it, so the delivery is lost rather
+   * than pending. Detecting that here is what lets a wake-turn stranded by a
+   * vanished runner be re-delivered without waiting for a restart.
+   */
+  private isDeliveryInFlight(childSessionId: string, parentSessionId: string): boolean {
+    if (!this.inFlight.has(childSessionId)) return false;
+    const runner = this.deps.runnerRegistry.get(parentSessionId);
+    if (runner && !runner.disposed) return true;
+    this.inFlight.delete(childSessionId);
+    return false;
+  }
+
+  /**
+   * Re-attempt one stalled watch. Rebuilds the terminal PR facts from the
+   * observation that fired it (preferred — it carries the merge SHA) or from the
+   * persisted PR snapshot. With neither there is nothing to build a
+   * self-describing prompt from, so the pass leaves the watch alone rather than
+   * dispatching a turn that can't say what merged.
+   */
+  private async retryDelivery(childSessionId: string, watch: SessionMergeWatch): Promise<void> {
+    const child = this.deps.sessionManager.get(childSessionId);
+    if (!child) return;
+    const parent = this.deps.sessionManager.get(watch.parentSessionId);
+    if (!parent || parent.archived || parent.userArchived) {
+      // Same invariant as the fire path: an archived parent receives nothing.
+      this.clearWatch(childSessionId);
+      return;
+    }
+    const info = this.lastTerminalInfo.get(childSessionId)
+      ?? this.infoFromPersistedStatus(childSessionId);
+    if (info?.outcome !== "merged") return;
+    await this.attemptDelivery(parent, child, info);
+  }
+
+  /**
+   * Give up on a watch whose delivery exhausted its attempt budget: stamp the
+   * terminal `delivery-failed` state and surface a persisted failure card into
+   * the parent's transcript.
+   *
+   * Terminal matters twice over — it stops the retry loop, and it drops the
+   * watch out of `listPendingMergeWatches`, which is what the polling global
+   * gate reads. Without that, a permanently-failed watch would hold the PR poll
+   * loop open forever burning polls on a wake that will never happen.
+   */
+  private failWatch(childSessionId: string, error: string): void {
+    const watch = this.deps.sessionManager.getMergeWatch(childSessionId);
+    if (watch?.state !== "merge-observed") return;
+    this.deps.sessionManager.setMergeWatch(childSessionId, {
+      ...watch,
+      state: "delivery-failed",
+      failedAt: new Date().toISOString(),
+      lastDeliveryError: error,
+    });
+    this.inFlight.delete(childSessionId);
+    const info = this.lastTerminalInfo.get(childSessionId)
+      ?? this.infoFromPersistedStatus(childSessionId);
+    this.lastTerminalInfo.delete(childSessionId);
+
+    const child = this.deps.sessionManager.get(childSessionId);
+    const parent = this.deps.sessionManager.get(watch.parentSessionId);
+    if (child && parent && !parent.archived && !parent.userArchived && info) {
+      this.surfaceCard(parent.id, child, info, "merged", {
+        attempts: watch.deliveryAttempts ?? MAX_DELIVERY_ATTEMPTS,
+        error,
+      });
+    }
+    console.error(
+      `[merge-watch] giving up on the wake-turn for ${childSessionId} after `
+      + `${watch.deliveryAttempts ?? MAX_DELIVERY_ATTEMPTS} attempts: ${error}`,
+    );
+    this.stopRetryLoopIfIdle();
+  }
+
+  /** Drop a watch entirely (parent archived / gone) and forget its retry state. */
+  private clearWatch(childSessionId: string): void {
+    this.deps.sessionManager.setMergeWatch(childSessionId, null);
+    this.inFlight.delete(childSessionId);
+    this.lastTerminalInfo.delete(childSessionId);
+    this.stopRetryLoopIfIdle();
+  }
+
+  /** Arm the retry supervisor if it isn't already running. */
+  private ensureRetryLoop(): void {
+    if (this.retryTimer) return;
+    this.retryTimer = setInterval(() => {
+      void this.retryStalledDeliveries().catch((err: unknown) => {
+        console.error("[merge-watch] retry pass errored:", err);
+      });
+    }, RETRY_TICK_MS);
+    this.retryTimer.unref?.();
+  }
+
+  /** Stop the supervisor once no watch is in the retryable `merge-observed` state. */
+  private stopRetryLoopIfIdle(): void {
+    if (!this.retryTimer) return;
+    const anyPending = this.deps.sessionManager
+      .listPendingMergeWatches()
+      .some(({ watch }) => watch.state === "merge-observed");
+    if (!anyPending) this.stopRetryLoop();
   }
 
   /**
@@ -164,23 +513,20 @@ export class MergeWatchManager {
    * from durable state rather than relying on the live poll re-observing it.
    *
    * Best-effort: one watch failing doesn't block the rest.
+   *
+   * Clears the in-memory in-flight set first. This runs at bootstrap, where by
+   * definition no dispatch from this process can be pending — and the whole
+   * point of the reconcile is that the *previous* process's queued turns died
+   * with it. (Tests that simulate a restart by re-running the reconcile on the
+   * same instance get the same semantics for free.)
    */
   async reconcilePending(): Promise<void> {
-    const getStatus = this.prStatusLookup;
-    if (!getStatus) return;
+    if (!this.prStatusLookup) return;
+    this.inFlight.clear();
     const pending = this.deps.sessionManager.listPendingMergeWatches();
     for (const { childSessionId } of pending) {
-      const status = getStatus(childSessionId);
-      if (!status) continue;
-      if (status.prState !== "merged" && status.prState !== "closed") continue;
-      const info: PrTerminalStateInfo = {
-        sessionId: childSessionId,
-        outcome: status.prState === "merged" ? "merged" : "closed",
-        prNumber: status.prNumber ?? 0,
-        prUrl: status.prUrl ?? "",
-        prTitle: status.prTitle ?? "",
-        branch: status.headBranch ?? "",
-      };
+      const info = this.infoFromPersistedStatus(childSessionId);
+      if (!info) continue;
       try {
         await this.handleChildPrTerminal(info);
       } catch (err) {
@@ -194,32 +540,48 @@ export class MergeWatchManager {
    * state. Fired from the wake-turn's `onTurnComplete`, so it runs only after
    * the turn has genuinely executed — that is the whole point of the fix
    * (`delivered` must mean "ran", not "queued"). Idempotent and fire-once: a
-   * watch that is already terminal (`delivered` / `closed-unmerged`) or has
-   * since been cleared (parent archived) is left untouched, so a re-delivery or
-   * a late callback can never double-stamp or resurrect a dropped watch.
+   * watch that is already terminal (`delivered` / `closed-unmerged` /
+   * `delivery-failed`) or has since been cleared (parent archived) is left
+   * untouched, so a re-delivery or a late callback can never double-stamp or
+   * resurrect a dropped watch.
+   *
+   * Also the retry supervisor's exit: the watch is terminal, so the in-flight
+   * marker is dropped and the supervisor stops once nothing else is pending.
    */
   private markDelivered(childSessionId: string, fallbackObservedAt: string): void {
     const watch = this.deps.sessionManager.getMergeWatch(childSessionId);
-    if (!watch || watch.state === "delivered" || watch.state === "closed-unmerged") return;
+    this.inFlight.delete(childSessionId);
+    this.lastTerminalInfo.delete(childSessionId);
+    if (!watch || isTerminalWatchState(watch.state)) return;
     this.deps.sessionManager.setMergeWatch(childSessionId, {
       parentSessionId: watch.parentSessionId,
       state: "delivered",
       registeredAt: watch.registeredAt,
       observedAt: watch.observedAt ?? fallbackObservedAt,
       deliveredAt: new Date().toISOString(),
+      ...(watch.deliveryAttempts !== undefined ? { deliveryAttempts: watch.deliveryAttempts } : {}),
+      ...(watch.lastAttemptAt !== undefined ? { lastAttemptAt: watch.lastAttemptAt } : {}),
     });
+    this.stopRetryLoopIfIdle();
   }
 
   /**
    * Append the persisted merge card to the parent's chat history and broadcast
    * it live to any attached viewer. Fires outside any turn, so it's an `append`
    * (durable, sorts at the current end of history) rather than `emitChatCard`.
+   *
+   * With `deliveryFailure` set this surfaces the SHI-258 failure variant instead
+   * — a *second* card, appended when the watch gives up, telling the human the
+   * merge they were already shown could not wake this session. It goes through
+   * the same persisted-append path for the same reason: a card the user expects
+   * to still be there tomorrow must live in chat history, not only on the wire.
    */
   private surfaceCard(
     parentId: string,
     child: SessionInfo,
     info: PrTerminalStateInfo,
     outcome: "merged" | "closed-unmerged",
+    deliveryFailure?: { attempts: number; error?: string },
   ): void {
     const card: ChildMergedCard = {
       cardId: `child-merged-${randomUUID()}`,
@@ -231,6 +593,7 @@ export class MergeWatchManager {
       prUrl: info.prUrl,
       ...(info.prTitle ? { prTitle: info.prTitle } : {}),
       ...(info.mergeSha ? { mergeSha: info.mergeSha } : {}),
+      ...(deliveryFailure ? { deliveryFailure } : {}),
       createdAt: new Date().toISOString(),
     };
     this.deps.chatHistoryManager.append(parentId, { role: "assistant", text: "", childMerged: card });
@@ -257,8 +620,13 @@ export class MergeWatchManager {
    * idle path (it starts the turn now) AND, since the docs/196 fix, on the busy
    * path: the callback rides the in-memory queue and fires when the enqueued
    * turn later drains and runs. The watch therefore reaches `delivered`
-   * in-process in both cases; it stays `merge-observed` only across a restart
-   * that loses the still-queued turn, which `reconcilePending` re-fires.
+   * in-process in both cases; it stays `merge-observed` only while the turn is
+   * still queued, across a restart that loses that queued turn (re-fired by
+   * `reconcilePending`), or after a delivery that threw (re-fired by
+   * `retryStalledDeliveries`).
+   *
+   * Throws on a boot failure rather than reporting a wake that will never
+   * happen — `attemptDelivery` owns what that means for the watch.
    */
   private async deliverWakeTurn(
     parent: SessionInfo,
@@ -274,8 +642,9 @@ export class MergeWatchManager {
     // `wakeSessionWithTurn` owns the stale-runner teardown, container resume,
     // credential refresh, and the truthful "did a live worker take it?" check —
     // shared with the docs/233 report delivery so both paths resume a reaped
-    // container identically. It throws on a boot failure, which leaves the watch
-    // at `merge-observed` for the next poll / reconcile to retry.
+    // container identically. It throws on a boot failure; the caller
+    // (`attemptDelivery`) records the failed attempt and leaves the watch at
+    // `merge-observed` for the retry supervisor to re-attempt on a backoff.
     //
     // Wire the completion callback on BOTH the busy and idle paths. `dispatch`
     // enqueues when the parent is mid-turn (drained post-turn, never preempting)
@@ -298,6 +667,19 @@ export class MergeWatchManager {
       ...(onExecuted ? { onExecuted } : {}),
     });
   }
+}
+
+/**
+ * The fire-once guard, in one place. `delivery-failed` joins the terminal set
+ * (SHI-258): the watch gave up and told the human, so a later re-observation
+ * must not silently resurrect it — re-arming is the user's / agent's call.
+ */
+function isTerminalWatchState(state: SessionMergeWatch["state"]): boolean {
+  return state === "delivered" || state === "closed-unmerged" || state === "delivery-failed";
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 /** The self-describing wake-turn prompt — carries everything; depends on no in-memory state. */

@@ -35,6 +35,7 @@ import { RepoStore } from "../repo-store.js";
 import { AuthManager } from "../agents/claude/auth-manager.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import { DatabaseManager } from "../../shared/database.js";
+import { MAX_DELIVERY_ATTEMPTS } from "../merge-watch.js";
 import {
   TestClient,
   StubAuthManager,
@@ -134,10 +135,21 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
     });
   }
 
-  async function parentCardOutcomes(parentId: string): Promise<string[]> {
+  interface HistoryCard {
+    outcome: string;
+    prNumber: number;
+    deliveryFailure?: { attempts: number; error?: string };
+  }
+
+  /** The parent's `childMerged` cards, read back through the HTTP history route. */
+  async function parentCards(parentId: string): Promise<HistoryCard[]> {
     const res = await app.inject({ method: "GET", url: `/api/sessions/${parentId}/history` });
-    const messages = (res.json() as { messages: { childMerged?: { outcome: string } }[] }).messages;
-    return messages.filter((m) => m.childMerged).map((m) => m.childMerged!.outcome);
+    const messages = (res.json() as { messages: { childMerged?: HistoryCard }[] }).messages;
+    return messages.filter((m) => m.childMerged).map((m) => m.childMerged!);
+  }
+
+  async function parentCardOutcomes(parentId: string): Promise<string[]> {
+    return (await parentCards(parentId)).map((c) => c.outcome);
   }
 
   it("arms a watch via the register route", { timeout: 15_000 }, async () => {
@@ -353,6 +365,104 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
     await app.mergeWatchManager!.handleChildPrTerminal(info);
 
     expect(await parentCardOutcomes(parentId)).toEqual(["merged"]);
+  });
+
+  it("merged: a delivery that THROWS is retried in-process and recovers (SHI-258)", { timeout: 20_000 }, async () => {
+    const parentId = await createParent();
+    const childId = await spawnChild(parentId);
+    await armWatch(parentId, childId);
+
+    // The parent's container can't be resumed on the first attempt. Before this
+    // fix the watch sat at `merge-observed` until an orchestrator restart: the
+    // poller's terminal callback fires once per transition, and `reconcilePending`
+    // only runs at bootstrap.
+    const getOrCreate = vi
+      .spyOn(app.runnerRegistry, "getOrCreate")
+      .mockImplementationOnce(() => { throw new Error("container could not be resumed"); });
+
+    await app.mergeWatchManager!.handleChildPrTerminal({
+      sessionId: childId,
+      outcome: "merged",
+      prNumber: 7,
+      prUrl: "https://github.com/owner/notify-on-merge-test/pull/7",
+      prTitle: "Foundation",
+      branch: sessionManager.get(childId)!.branch!,
+      mergeSha: "deadbeefcafe1234",
+    });
+
+    // Card surfaced (the human sees the merge) but no wake-turn ran, and the
+    // failure is recorded on the persisted watch.
+    expect(await parentCardOutcomes(parentId)).toEqual(["merged"]);
+    const failed = sessionManager.getMergeWatch(childId);
+    expect(failed?.state).toBe("merge-observed");
+    expect(failed?.deliveryAttempts).toBe(1);
+    expect(failed?.lastDeliveryError).toContain("could not be resumed");
+    expect(spawnedAgents.some((a) => a.lastPrompt?.includes("MERGED"))).toBe(false);
+
+    // Container comes back. Backdate the attempt anchor past the backoff and let
+    // the retry supervisor's pass run — the SAME process, no restart, no reconcile.
+    getOrCreate.mockRestore();
+    sessionManager.setMergeWatch(childId, {
+      ...sessionManager.getMergeWatch(childId)!,
+      lastAttemptAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+    });
+    await app.mergeWatchManager!.retryStalledDeliveries();
+
+    await waitFor(
+      () => spawnedAgents.some((a) => a.runCalled && a.lastPrompt?.includes("MERGED")),
+      10_000,
+      "wake-turn dispatched by the retry pass",
+    );
+    spawnedAgents.find((a) => a.lastPrompt?.includes("MERGED"))!.finish();
+    await waitFor(
+      () => sessionManager.getMergeWatch(childId)?.state === "delivered",
+      10_000,
+      "watch delivered after the in-process retry",
+    );
+    // Still exactly one card — the retry re-enters at `merge-observed`, which
+    // skips the card guard.
+    expect(await parentCardOutcomes(parentId)).toEqual(["merged"]);
+  });
+
+  it("merged: a permanently-failing delivery gives up and persists a failure card (SHI-258)", { timeout: 20_000 }, async () => {
+    const parentId = await createParent();
+    const childId = await spawnChild(parentId);
+    await armWatch(parentId, childId);
+
+    // Every attempt fails — a parent whose container will never come back.
+    const getOrCreate = vi
+      .spyOn(app.runnerRegistry, "getOrCreate")
+      .mockImplementation(() => { throw new Error("container could not be resumed"); });
+
+    await app.mergeWatchManager!.handleChildPrTerminal({
+      sessionId: childId,
+      outcome: "merged",
+      prNumber: 7,
+      prUrl: "https://github.com/owner/notify-on-merge-test/pull/7",
+      prTitle: "Foundation",
+      branch: sessionManager.get(childId)!.branch!,
+    });
+    for (let i = 1; i < MAX_DELIVERY_ATTEMPTS; i++) {
+      sessionManager.setMergeWatch(childId, {
+        ...sessionManager.getMergeWatch(childId)!,
+        lastAttemptAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+      });
+      await app.mergeWatchManager!.retryStalledDeliveries();
+    }
+    getOrCreate.mockRestore();
+
+    expect(sessionManager.getMergeWatch(childId)?.state).toBe("delivery-failed");
+    // A terminal watch drops out of the pending list, so it stops holding the PR
+    // polling gate open for a wake that will never happen.
+    expect(sessionManager.listPendingMergeWatches()).toHaveLength(0);
+
+    // The failure is transcript content, so it must come back over the HTTP
+    // history route (not merely have been emitted on the wire).
+    const cards = await parentCards(parentId);
+    expect(cards).toHaveLength(2);
+    expect(cards[0].deliveryFailure).toBeUndefined();
+    expect(cards[1].deliveryFailure?.attempts).toBe(MAX_DELIVERY_ATTEMPTS);
+    expect(cards[1].deliveryFailure?.error).toContain("could not be resumed");
   });
 
   it("closed-unmerged: surfaces a distinct card and a terminal watch state", { timeout: 15_000 }, async () => {
