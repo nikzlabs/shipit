@@ -341,3 +341,92 @@ describe("loadSessionHistory — background-task hydration", () => {
     expect(state.backgroundTaskSessions.get("bg-sess")).toEqual(["npm test"]);
   });
 });
+
+/**
+ * The reported bug: switch away from the browser window, come back, and part
+ * of the transcript is gone — but a full page reload brings it back, so the
+ * rows were only missing from client memory (docs/237 tells the two causes
+ * apart by exactly that question).
+ *
+ * `useWebSocket` force-reconnects on foreground, so a history load issued for
+ * the outgoing socket can still be in flight when the incoming socket opens
+ * and issues its own. Nothing cancelled the first one, and its `setMessages`
+ * lands whenever it lands — so a response read BEFORE the running turn's
+ * latest persist boundary could overwrite a fresher transcript and take the
+ * turn's tail with it. Live events only append after that, so the hole never
+ * healed.
+ */
+describe("loadSessionHistory — a superseded load must not clobber the transcript", () => {
+  let resolvers: ((value: unknown) => void)[];
+
+  const historyPayload = (texts: string[]) => ({
+    ok: true,
+    json: () => Promise.resolve({
+      messages: texts.map((text) => ({ role: "assistant", text, inProgress: true })),
+      commits: [],
+      fileTree: [],
+      agentRunning: true,
+    }),
+  });
+
+  beforeEach(() => {
+    useUiStore.getState().reset();
+    useSessionStore.getState().reset();
+    useGitStore.getState().reset();
+    useFileStore.getState().reset();
+    useSessionStore.getState().setSessionId("s1");
+    resolvers = [];
+    globalThis.fetch = vi.fn((url: string) => {
+      if (url.includes("/history")) {
+        return new Promise((resolve) => resolvers.push(resolve));
+      }
+      return Promise.resolve({ ok: false, status: 404 });
+    }) as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("ignores the older response when two loads for the same session overlap", async () => {
+    // Load A: issued for the socket the foreground handler is about to replace.
+    const first = loadSessionHistory("s1");
+    // Load B: issued when the fresh socket opened, a moment later.
+    const second = loadSessionHistory("s1");
+    await vi.waitFor(() => expect(resolvers.length).toBe(2));
+
+    // B answers first — it read the DB after the turn's latest persist.
+    resolvers[1](historyPayload(["GROUP-ONE", "GROUP-TWO"]));
+    await second;
+    expect(useSessionStore.getState().messages.map((m) => m.text))
+      .toEqual(["GROUP-ONE", "GROUP-TWO"]);
+
+    // A answers late, carrying the older snapshot. It must be discarded: this
+    // is the write that used to erase GROUP-TWO for the rest of the session.
+    resolvers[0](historyPayload(["GROUP-ONE"]));
+    await first;
+    expect(useSessionStore.getState().messages.map((m) => m.text))
+      .toEqual(["GROUP-ONE", "GROUP-TWO"]);
+  });
+
+  it("does not let a superseded load flip historyLoaded mid-reconnect", async () => {
+    const first = loadSessionHistory("s1");
+    await vi.waitFor(() => expect(resolvers.length).toBe(1));
+
+    // The socket dropped again: useConnectionSync clears the flag and issues a
+    // new load. `turn_snapshot` is queued behind this flag (useMessageHandler),
+    // so a stale load raising it would let the snapshot apply against an
+    // arbitrary transcript instead of on top of the history baseline.
+    useSessionStore.getState().setHistoryLoaded(false);
+    const second = loadSessionHistory("s1");
+    await vi.waitFor(() => expect(resolvers.length).toBe(2));
+
+    resolvers[0](historyPayload(["GROUP-ONE"]));
+    await first;
+    expect(useSessionStore.getState().historyLoaded).toBe(false);
+
+    resolvers[1](historyPayload(["GROUP-ONE", "GROUP-TWO"]));
+    await second;
+    expect(useSessionStore.getState().historyLoaded).toBe(true);
+  });
+});

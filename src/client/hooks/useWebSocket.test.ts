@@ -282,6 +282,42 @@ describe("useWebSocket", () => {
     expect(FakeWebSocket.instances.length).toBe(countBefore + 1);
   });
 
+  it("coalesces the visibilitychange + focus burst one reactivation fires into a single reconnect", () => {
+    renderHook(() => useWebSocket("ws://test"));
+    act(() => latestWs().simulateOpen());
+
+    const countBefore = FakeWebSocket.instances.length;
+    // A window reactivation fires these back to back. Each one used to tear the
+    // socket down and open another, so a single reactivation produced several
+    // server attaches and several overlapping history loads — the window in
+    // which a stale load clobbers a fresh transcript.
+    // Separate `act()` calls on purpose: the browser delivers these in
+    // separate event-loop turns, so React commits (and the socket effect runs)
+    // between them. Batching them into one act would hide the bug.
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    act(() => { window.dispatchEvent(new Event("focus")); });
+    act(() => { window.dispatchEvent(new Event("pageshow")); });
+
+    expect(FakeWebSocket.instances.length).toBe(countBefore + 1);
+  });
+
+  it("reconnects again once the coalescing window has passed", () => {
+    renderHook(() => useWebSocket("ws://test"));
+    act(() => latestWs().simulateOpen());
+
+    const countBefore = FakeWebSocket.instances.length;
+    act(() => { window.dispatchEvent(new Event("focus")); });
+    act(() => latestWs().simulateOpen());
+    expect(FakeWebSocket.instances.length).toBe(countBefore + 1);
+
+    // A later, genuinely separate reactivation is not swallowed.
+    void act(() => vi.advanceTimersByTime(5000));
+    act(() => latestWs().simulateOpen());
+    const countAfterRetries = FakeWebSocket.instances.length;
+    act(() => { window.dispatchEvent(new Event("focus")); });
+    expect(FakeWebSocket.instances.length).toBe(countAfterRetries + 1);
+  });
+
   it("foreground reconnect retries quickly before normal backoff if the socket is not open", () => {
     renderHook(() => useWebSocket("ws://test"));
     act(() => latestWs().simulateOpen());

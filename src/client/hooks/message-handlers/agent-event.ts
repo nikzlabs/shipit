@@ -157,9 +157,22 @@ export const handleAgentEvent: Handler<WsAgentEvent> = (_ctx, data) => {
     session.setIsLoading(false);
     session.setActivity(undefined);
     session.setMessages((prev) =>
-      prev.map((m) =>
-        m.role === "assistant" && m.streaming ? { ...m, streaming: false } : m
-      )
+      prev.map((m) => {
+        const closeStreaming = m.role === "assistant" && m.streaming;
+        // Mirror the server: `agent_result` runs `finalizeInProgress`, which
+        // drops the `in_progress` flag from every row of the turn. The client
+        // must drop it too. `inProgress` is set by `loadSessionHistory` and by
+        // `turn_snapshot`, and until now nothing ever cleared it — so rows of a
+        // turn the viewer happened to be attached to kept the marking for the
+        // rest of the session's life. A LATER `turn_snapshot` (any attach
+        // during a subsequent turn) applies
+        // `prev.filter((m) => !m.inProgress)`, which then deletes those
+        // finished turns from the transcript along with the running one it
+        // means to replace. Clearing here bounds the replace-filter to the turn
+        // that is actually in flight.
+        if (!closeStreaming && !m.inProgress) return m;
+        return { ...m, ...(closeStreaming ? { streaming: false } : {}), inProgress: false };
+      })
     );
   }
 };
