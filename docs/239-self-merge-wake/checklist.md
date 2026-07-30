@@ -5,6 +5,8 @@
 - [x] **P1** `trySteerDispatch` returns false for `systemTurn` / callback-carrying dispatches — SHI-254
 - [x] **P2** interactive queue drain preserves `systemTurn` + `onTurnComplete` — SHI-255
 - [x] **P3** retry path for a failed delivery that doesn't require an orchestrator restart — SHI-258
+- [ ] **P4** turn adoption drain re-narrows queued entries — SHI-259
+- [ ] **P5** `onTurnComplete` never fires on a no-result retry — SHI-260
 
 ## Watch state
 
@@ -12,9 +14,10 @@
 - [ ] `self_merge_watch` column + migration
 - [ ] CAS transitions in `sessions.ts` (`armed → merge-observed` vs `armed → cancelled`)
 - [ ] `listPendingSelfMergeWatches` (separate from the child list)
-- [ ] Reuse SHI-258's `inFlight` lease rather than a second one; join `isTerminalWatchState`
-- [ ] Terminal self-watch states drop out of the pending list (don't leak an open polling gate)
-- [ ] Decide: generalize the SHI-258 retry supervisor over both watch kinds, or duplicate
+- [ ] Own delivery lease keyed on `watchId + attemptId` (SHI-258's `inFlight` is not one)
+- [ ] Shared exhaustive `isPending*WatchState` driving list query + supervisor + polling gate
+- [ ] Generalize supervisor scheduling only; delivery returns `accepted`/`blocked`/`retryable-failure`
+- [ ] `blocked` is paused, with an explicit transition back to `merge-observed`
 
 ## Arm surface
 
@@ -25,11 +28,15 @@
 ## Delivery
 
 - [ ] `handleSelfMerge` called from `onMergeDetectedCb` after `markMergedAndPruneExcess`, with PR identity
-- [ ] Generation check — stale terminal event can't consume a newer watch
+- [ ] Carry `{prNumber, headSha}` into the merge callback (signature change)
+- [ ] Identity check on BOTH the merged and `expired` paths
 - [ ] Closed outcomes fan out from `onPrTerminalState` → `expireSelfWatch`
 - [ ] Restore an evicted workspace before the reset
-- [ ] Reserve the system-turn slot before the first await
-- [ ] Reset coordinator: consent policy, workspace mutex, auto-push coordination, re-arm, `reset_eligible`, persisted card, durable `reset-complete`
+- [ ] Session-level preparation lease (not a runner flag); counts as `agentBusy`, exempt from `verifyRunningState`
+- [ ] Await any in-flight auto-push before mutating the workspace
+- [ ] Reset coordinator: consent policy, workspace mutex, re-arm, `reset_eligible`, persisted card
+- [ ] Write-ahead stages: `reset-started → local-reset-applied → remote-healed → reset-complete`
+- [ ] Remote healing classified (network = retryable, lease conflict = blocked), not best-effort
 - [ ] Fail closed on a safety-gate failure (`blocked`, no turn)
 - [ ] `self` branch in `buildWakeTurnPrompt`
 - [ ] Preserve the `errored` outcome through `wakeSessionWithTurn`
@@ -40,6 +47,8 @@
 ## Arm card
 
 - [ ] Arm via `emitChatCard`; transitions via `persistCardTransition`
+- [ ] Stable `cardId` on the watch; reconcile/history repair the card idempotently
+- [ ] Runner-less `persistCardTransition` (the `expired` path starts no turn)
 - [ ] `selfMergeWatch` field + `self_merge_watch_card` column + migration + `toRow`/`fromRow`
 - [ ] Rehydrate in `loadSessionHistory`; `CARD_MESSAGE_FIELDS` + `EVERY_OPTIONAL_FIELD_MESSAGE`
 - [ ] WS type in `TRANSCRIPT_SCOPED_MESSAGES`

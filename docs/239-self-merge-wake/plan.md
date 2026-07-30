@@ -61,7 +61,7 @@ nothing to act on.
 The agent arms this **only** when the user has stated a follow-up. It is never
 armed by default, and never inferred from the mere existence of a PR.
 
-## Prerequisites — all three fixed
+## Prerequisites — three fixed, two reopened
 
 Cross-agent review (see *Review notes*) found that three mechanisms this design
 intended to reuse were **already broken for docs/196**, in ways that would have
@@ -103,38 +103,71 @@ in-memory `inFlight` set plus a persisted `deliveryAttempts` / `lastAttemptAt`
 exponential backoff, capped, terminating in a `delivery-failed` state with a
 persisted failure card.
 
-### What P3's fix changes here
+**P4 — turn adoption re-narrows queued entries. ❌ Open (SHI-259).** After P2
+merged, turn adoption added a *fourth* drain: `adoptInFlightTurn`'s `drainNext`
+(`turn-adoption.ts`) rebuilds `AgentDispatchOptions` by hand and calls
+`runner.dispatch` directly, dropping `execution`, `systemTurn`, `onTurnComplete`, and
+`postTurn`. A wake-turn queued behind an adopted turn is P2 all over again. The same
+issue covers a startup ordering race — reconciliation and the adoption sweep are two
+fire-and-forget calls with reconciliation first, so reconcile can redispatch while
+the original turn still runs inside a surviving worker.
 
-It mattered more for a self-wake than for a child watch, because the failure modes
+**P5 — `onTurnComplete` never fires on a no-result retry. ❌ Open (SHI-260).**
+`runDispatchedTurn` passes the callback only to attempt zero, guarding against a
+double-fire; when attempt zero exits with no result the recursive retry means the
+callback fires **zero** times. Under P3's supervisor this is worse than before: the
+runner is still live so the `inFlight` marker stays valid indefinitely, and the watch
+is stuck in a state that looks healthy.
+
+### What P3's fix does and does not give this design
+
+P3 mattered more for a self-wake than for a child watch, because the failure modes
 *this* design adds — workspace restoration, the reset coordinator, container boot for
-an idle-reaped session — are exactly the ones that throw. That risk is now retired,
-and three pieces this design planned to build itself already exist:
+an idle-reaped session — are exactly the ones that throw. That risk is largely
+retired. But two things this doc previously claimed to inherit are **not** actually
+there:
 
-- **The delivery lease is built.** The state machine below called for a per-watch
-  in-flight lease so `checkAndFireNow` and the poller couldn't both enqueue. That is
-  what the `inFlight` set is, with a subtlety worth inheriting rather than
-  re-deriving: it is deliberately **not persisted**, because the queued turn and its
-  callback are in-memory too, so a restart correctly empties it and hands recovery
-  back to `reconcilePending`. It also drops the marker when the parent's runner has
-  been disposed, since the queued turn went with it.
-- **The fire-once guard is centralized.** `isTerminalWatchState` is the single
-  terminal check; a self-watch's extra terminal states (`expired`, `cancelled`,
-  `delivery-failed`) must join it rather than adding a parallel predicate.
-- **Terminal watches release the polling gate.** A terminal watch drops out of the
-  pending list, so it stops holding `PollingGlobalGate` open for a wake that will
-  never happen. The self-watch's `expired` / `cancelled` / `blocked` states need the
-  same treatment or they leak a permanently-open poll gate.
+- **`inFlight` is NOT a delivery lease.** This doc claimed it prevents
+  `checkAndFireNow` and the poller from both entering delivery. It does not:
+  `attemptDelivery` never consults the set — it checks the watch state, increments
+  attempts, and *then* adds the key. Two callers can both pass the state check and
+  both dispatch. The set is read only by the periodic retry pass, so it suppresses
+  *retries*, not *concurrent first attempts*. Its disposed-runner test is also not
+  ownership: it asks whether *any* current runner exists for the id, so if runner A
+  loses the queue and runner B is created before the retry tick, the marker sticks
+  forever. **This design still needs its own atomic acquisition**, taken before any
+  await or attempt write, keyed on `watchId + attemptId`, with the settling CAS
+  verifying the active attempt id.
+- **`isTerminalWatchState` does not control the pending list or the gate.** It is
+  private and child-specific; `listPendingMergeWatches` independently hard-codes
+  `armed || merge-observed`, and the polling gate only sees a closure over that list.
+  Child terminal watches release the gate because the list *excludes* them, not
+  because the predicate is centralized. So "add the self states to
+  `isTerminalWatchState`" would not release the gate. What's needed is a shared,
+  **exhaustive** `isPending*WatchState` predicate used by the list query, the retry
+  supervisor, and the gate, explicitly classifying every state including `blocked`,
+  `expired`, `cancelled`, `delivery-failed`, `completed`, `failed`, and
+  `completed-without-pr`.
 
-The open question this raises is **whether the retry supervisor should be generalized
-over both watch kinds or duplicated**. It is currently written against
-`SessionMergeWatch` and the child-delivery path. Duplicating it for self-watches
-would be a second copy of the trickiest logic in the subsystem — the in-flight/backoff
-split that keeps a merely-queued turn from being re-fired. Generalizing it is the
-better end state, and it partially cuts against the "distinct `SelfMergeWatch` type"
-decision below: the two watch kinds want different *identity* fields but the same
-*delivery* fields. Likely shape: a shared `WatchDelivery` sub-record (attempts,
-lastAttemptAt, lastError, failedAt) embedded in both types, with the supervisor
-generic over "things that have a delivery record and a deliver() function".
+What P3 *does* give: the backoff/attempt-accounting shape, the self-stopping
+supervisor, the `delivery-failed` terminal state, and the precedent of carrying a
+failure as a block on an existing card.
+
+### Generalize the supervisor's scheduling only (decided)
+
+Duplicating the supervisor would mean a second copy of the trickiest logic in the
+subsystem. But a fully generic `deliver(): void` is the wrong cut: child delivery
+either dispatches or throws, whereas self delivery can restore a workspace, run a
+reset, return **`blocked` without dispatching at all**, resume from a partially
+applied reset, or fail during remote healing. Feeding a non-throwing `blocked` return
+into the child-shaped supervisor would leave an in-flight marker waiting on a
+callback that will never exist.
+
+So: generalize **scheduling, backoff, and attempt accounting** over a shared
+`WatchDelivery` sub-record (attempts, lastAttemptAt, lastError, failedAt) embedded in
+both watch types, and keep delivery itself kind-specific behind a **typed outcome** —
+`accepted` / `blocked` / `retryable-failure` — rather than "returned or threw". The
+supervisor schedules; it does not interpret.
 
 ## Why the firing point is `onMergeDetectedCb`, not `onPrTerminalState`
 
@@ -170,6 +203,22 @@ the merged head SHA into the delivery, and CAS-revalidate that the session still
 represents *that* merge before claiming the watch. A terminal event for an old PR
 must never consume a watch that is now waiting on a newer one.
 
+Two mechanics this requires, neither of which is free:
+
+- **The callback signature must change.** `onMergeDetectedCb` receives only
+  `sessionId`; the PR number and head SHA exist only at the poller call site. Editing
+  `app-lifecycle.ts` alone cannot carry immutable event identity — the poller must
+  pass `{ prNumber, headSha }` captured from the observed PR.
+- **Who rebinds the generation must be defined.** docs/202's re-arm (`pr-rearm.ts`,
+  which this doc's key-file list previously omitted) is what invalidates it. Either a
+  transactional monotonic PR generation updated by every re-arm, or explicit CAS
+  expectations on `watchId + expectedPrNumber + expectedHeadSha`. The latter is
+  simpler and needs no new counter.
+
+**The same identity check applies to `expired`.** A delayed closed-outcome event can
+consume a newer arm exactly as a delayed merge event can; the fan-out below must
+revalidate identity too, not just the merged path.
+
 ### Closed-without-merge needs its own fan-out
 
 `onMergeDetectedCb` fires only for `isMerged`. Closed-without-merge is exposed
@@ -196,9 +245,32 @@ post-turn commit), does not coordinate with a pending debounced auto-push, and a
 pending watch counts as neither `agentBusy` nor a viewer, so disk-tier descent can
 evict the workspace mid-operation.
 
-So: **reserve the system-turn slot first** (runner marked busy before the first
-await), then run the reset preflight inside it, under the workspace mutex, with any
-pending push timer cancelled or serialized.
+So the reset must run inside a reserved slot. **That reservation is not expressible
+through the current runner API**, which offers `dispatch` and an immediate
+`runDispatchedTurn` but no asynchronous preflight: an idle dispatch marks the runner
+busy and starts the agent path at once, and a queued entry cannot carry a pre-start
+reset. Hand-setting `running = true` is unsafe — a concurrent user send invokes
+`verifyRunningState`, finds no worker agent during the fetch/reset, clears the flag,
+and declares the runner idle.
+
+What's needed is a **session-level preparation lease**, independent of runner and
+container existence, plus a first-class queued "prepared system turn" whose preflight
+runs when it reaches the queue head. That state must: make user dispatches queue;
+count as `agentBusy` for idle reaping and disk-tier descent; be exempt from worker
+running-state verification; and release the lease and drain the next entry when the
+reset returns `blocked` or fails.
+
+Note the ordering constraint this creates with workspace restoration: runner creation
+requires a restored workspace, so an evicted checkout must be restored *before* the
+runner exists — which means the lease has to be session-level, not runner-level. The
+Flow section reflects this order.
+
+**Pending auto-pushes cannot simply be cancelled.** The push timer clears its handle
+*before* awaiting `pushToOrigin`, so once a push is in flight `clearPushTimer` can
+neither cancel nor await it, and it does not participate in the reset's workspace
+mutex. Scheduled and active pushes need to sit behind the same per-workspace
+git-mutation coordinator, exposing an observable active-push promise the reset can
+await.
 
 ### A reset coordinator, not the raw helper
 
@@ -215,11 +287,29 @@ pending push timer cancelled or serialized.
    call skips all three.
 
 Extract a **reset coordinator** owning: gate → fetch → re-gate → reset → force-push
-heal → re-arm → `reset_eligible` → persisted card → a durable **`reset-complete`**
-substate recorded *before* the turn is enqueued. Without that substate, a crash
-between the force-push and dispatch is unrecoverable-by-inspection: on restart the
-gate reports "not moved" because HEAD already sits at the base, so neither the
-transcript nor the wake prompt can truthfully say what happened.
+heal → re-arm → `reset_eligible` → persisted card → the turn.
+
+**A single `reset-complete` flag written at the end is not enough.** Every step after
+`reset --hard` is a crash window that the safety gate cannot reconstruct: once HEAD
+no longer equals `mergedHeadSha`, replaying the gate fails closed, and after the
+docs/202 re-arm it is worse — `clearMerged` deletes both `mergedAt` and
+`mergedHeadSha`, destroying the evidence needed to recognize an already-applied
+reset. So the coordinator needs **write-ahead stages**:
+
+```
+reset-started → local-reset-applied → remote-healed → reset-complete
+```
+
+persisting the expected old head, base, branch, PR identity, and attempt id **before**
+each mutation, so recovery can inspect local and live remote state and advance
+idempotently. Crash injection belongs after *every* external await, not only between
+force-push and dispatch.
+
+**Remote healing cannot stay best-effort here.** docs/218's reset catches a
+force-push failure and still reports success, which is tolerable when a human is
+watching. For an autonomous wake it would start new work on a locally reset branch
+whose remote is still divergent. Classify it: a network failure is
+`retryable-failure`; a lease conflict or an unexpectedly moved remote is `blocked`.
 
 ### Consent, and why the gate now fails **closed**
 
@@ -253,17 +343,27 @@ generation is the fix (the generation is also what finding "generation-safe" abo
 needs).
 
 ```
-armed ──CAS claim──▶ merge-observed ──reset ok──▶ reset-complete ──turn RAN──▶ completed
-  │                        │                                          └──▶ failed
-  │                        └──gate failed──▶ blocked  (terminal until user acts)
+armed ──CAS claim──▶ merge-observed ──reset staged──▶ reset-complete ─┬▶ completed
+  │                        │                                          ├▶ completed-without-pr
+  │                        │                                          └▶ failed
+  │                        ├──gate failed──▶ blocked ──user/agent re-arm──▶ merge-observed
+  │                        └──attempts exhausted──▶ delivery-failed
   ├──PR closed unmerged──▶ expired    (terminal, NO turn)
   └──CAS cancel──▶ cancelled          (terminal)
 ```
 
+**`blocked` is paused, not terminal.** It is excluded from automatic retry and from
+the polling gate, but it must have an explicit way back — a card action or an agent
+re-arm that transitions `blocked → merge-observed` — otherwise the retained
+instruction is unreachable and the state is terminal in all but name. It also can't
+be treated as terminal by the re-arm refusal, or a fresh arm would overwrite the
+single stored watch and orphan the existing card.
+
 `armed → merge-observed → …` reuses docs/196's machine including its load-bearing
 rule that a delivered state means **the turn ran**, not that it was enqueued —
 stamped from `onTurnComplete`. Getting that wrong produced docs/196's two historical
-bugs, and P1/P2 above show the mechanism it depends on is not yet trustworthy.
+bugs, and P1–P5 show the mechanism it depends on has needed five separate repairs —
+so this design should assert the guarantee in its own tests rather than assume it.
 
 **Every transition is a DB-level CAS**, not a read-then-write. The existing manager
 reads a watch and later writes unconditionally, which here would let a Cancel that
@@ -271,9 +371,11 @@ has already read `armed` be overwritten by delivery — producing a "cancelled" 
 followed by a reset and a turn. `armed → merge-observed` claims delivery;
 `armed → cancelled` claims cancellation; the loser gets a conflict result (Cancel
 reports "too late"). `merge-observed` is a *retryable* state, not an exclusive lease,
-so delivery additionally needs a per-watch in-flight lease keyed on `watchId` —
-otherwise `checkAndFireNow` and the poller callback can both enter it and enqueue
-twice.
+so delivery additionally needs an atomic in-process acquisition keyed on
+`watchId + attemptId`, taken **before any await or attempt write**, with the settling
+CAS verifying the active attempt id. Reusing SHI-258's `inFlight` set for this does
+not work — see the correction above; it is a retry suppressor, not a lease, and its
+ownership test is by session id rather than by the runner that accepted the turn.
 
 **Terminal states must be truthful.** `completed` is not "a PR exists":
 `onTurnComplete` fires on agent **error** too, and `wakeSessionWithTurn` currently
@@ -338,6 +440,21 @@ rehydrate in `loadSessionHistory`, register in `CARD_MESSAGE_FIELDS` +
 Cancel follows the bug-report / egress precedent: a WS message → handler → CAS the
 watch → patch the card.
 
+**Two crash windows the card/watch pair has to close.** `emitChatCard` persists an
+in-progress card, but it emits *before* recording and persisting it, and it is not
+atomic with creating the watch — so a crash can leave an armed watch with no card, or
+a visible card with no watch. And CAS-terminalizing the watch before patching the
+card can strand a permanently stale card, because terminal watches drop out of
+reconciliation. Fix both by storing a stable `cardId` **on the watch**, persisting
+watch and card together where the storage layer allows, and having reconciliation and
+history load idempotently repair the card from watch state.
+
+`persistCardTransition` also **requires a runner**, which the `expired` path
+deliberately never creates (it starts no turn). That primitive needs to support a
+missing runner by patching finalized DB state directly, or `expired` cannot record
+itself — which would silently reintroduce the "expiry is not silent" guarantee's
+failure mode.
+
 ## One turn, one PR, then stop (decided)
 
 The woken turn does the follow-up and stops. It must **not** arm another self-watch,
@@ -399,14 +516,19 @@ shipit session notify-on-merge --self --then "<instruction>"   (agent-shim/shipi
 PR poller: verifyMissingPr, merged
   → setMergedHeadSha → onMergeDetectedCb → await markMergedAndPruneExcess
       → handleSelfMerge(sessionId, { prNumber, headSha })      (merge-watch.ts)
-           ├─ CAS claim armed → merge-observed (generation-checked)
-           ├─ restore workspace if evicted
-           ├─ reserve system-turn slot (runner busy)
-           ├─ reset coordinator → reset-complete   (or → blocked, stop)
+           ├─ acquire delivery lease (watchId + attemptId)
+           ├─ CAS claim armed → merge-observed (identity-checked)
+           ├─ take the session-level preparation lease   ← before any runner exists
+           ├─ restore workspace if evicted               ← runner creation needs it
+           ├─ await any in-flight auto-push
+           ├─ reset coordinator: reset-started → local-reset-applied
+           │                   → remote-healed → reset-complete
+           │                   (blocked → release lease, drain queue, stop)
            └─ run the turn → onTurnComplete → completed / failed / completed-without-pr
 
 PR poller: verifyMissingPr, closed-unmerged
-  → onPrTerminalState → expireSelfWatch  (CAS → expired, card patched, no turn)
+  → onPrTerminalState → expireSelfWatch
+       (identity-checked CAS → expired, card patched, no turn, no runner)
 ```
 
 ## Key files
@@ -416,7 +538,14 @@ PR poller: verifyMissingPr, closed-unmerged
 | ~~P1~~ ✅ | `src/server/orchestrator/dispatch-steering.ts` | Done (SHI-254) — `isSteerableDispatch` |
 | ~~P2~~ ✅ | `src/server/orchestrator/queue-drain.ts` | Done (SHI-255) — `QueuedMessage.execution` + `startQueuedMessage` |
 | ~~P3~~ ✅ | `src/server/orchestrator/merge-watch.ts` | Done (SHI-258) — retry supervisor, `inFlight` set, `isTerminalWatchState`, `delivery-failed` |
-| Retry reuse | `src/server/orchestrator/merge-watch.ts` | Generalize the SHI-258 supervisor over both watch kinds (shared delivery record) rather than duplicating it |
+| **P4** (blocker) | `src/server/orchestrator/turn-adoption.ts` | SHI-259 — route the adoption drain through `startQueuedMessage`; order the adoption sweep before watch reconcile |
+| **P5** (blocker) | `src/server/orchestrator/dispatched-turn.ts`, `turn-executor.ts` | SHI-260 — fire `onTurnComplete` once from the final no-result-retry attempt |
+| Retry reuse | `src/server/orchestrator/merge-watch.ts` | Generalize scheduling/backoff/accounting only; kind-specific delivery returns `accepted`/`blocked`/`retryable-failure` |
+| Pending predicate | `src/server/orchestrator/sessions.ts`, `polling-global-gate.ts` | Shared exhaustive `isPending*WatchState` driving the list query, supervisor, and gate |
+| Turn reservation | `src/server/orchestrator/session-runner.ts`, `container-session-runner.ts` | Session-level preparation lease + queued "prepared system turn"; counts as `agentBusy`, exempt from `verifyRunningState` |
+| Push coordination | `src/server/orchestrator/route-registry.ts`, `runner-registry-factory.ts` | Per-workspace git-mutation coordinator with an observable active-push promise |
+| Generation | `src/server/orchestrator/pr-status-poller.ts`, `services/pr-rearm.ts` | Carry `{prNumber, headSha}` into the merge callback; define what rebinds identity on re-arm |
+| Card primitive | `src/server/orchestrator/chat-card-persistence.ts` | Support a runner-less `persistCardTransition` (the `expired` path starts no turn) |
 | Watch state | `src/server/orchestrator/sessions.ts` | `self_merge_watch` column, CAS transitions, `listPendingSelfMergeWatches` |
 | Persist | `src/server/shared/database.ts` | `self_merge_watch` + `self_merge_watch_card` columns + migrations |
 | Type | `src/server/shared/types/domain-types/session.ts` | Distinct `SelfMergeWatch` (watchId, generation, `followUp`, full state set) |
@@ -469,13 +598,28 @@ PR poller: verifyMissingPr, closed-unmerged
   them).
 - **Distinct `SelfMergeWatch` type + column + list**, so docs/196 is genuinely
   untouched rather than nominally so.
-- **Reset runs inside the reserved turn slot**, under the workspace mutex, via a
-  reset coordinator with an explicit consent policy — not the raw helper before
-  dispatch.
+- **Reset runs inside a reserved slot**, under the workspace mutex, via a reset
+  coordinator with an explicit consent policy — not the raw helper before dispatch.
+  The reservation is a **session-level preparation lease**, not a runner flag: the
+  runner API has no async preflight, and hand-setting `running` is cleared by
+  `verifyRunningState`.
+- **The reset coordinator uses write-ahead stages**, not one terminal flag — the
+  docs/202 re-arm destroys `mergedHeadSha`, so a late crash is otherwise
+  unrecoverable. Remote healing is not best-effort here.
+- **Generalize only the supervisor's scheduling/backoff/accounting**; kind-specific
+  delivery returns a typed `accepted` / `blocked` / `retryable-failure` outcome,
+  because self delivery can decline to dispatch at all.
+- **`blocked` is paused, not terminal** — excluded from retry and the polling gate,
+  with an explicit transition back to `merge-observed`.
 - **The safety gate fails closed** (`blocked`, no turn). This reverses the original
   fail-open decision: docs/218's fail-open is licensed by a human having just typed,
   which a days-old arm does not supply.
-- **Every watch transition is a CAS**, with a delivery lease keyed on `watchId`.
+- **Every watch transition is a CAS**, with a delivery lease keyed on
+  `watchId + attemptId` taken before any await. SHI-258's `inFlight` set does **not**
+  serve as this lease — it suppresses retries, not concurrent first attempts.
+- **Pending-state classification is one shared exhaustive predicate** driving the
+  list query, the retry supervisor, and the polling gate — not `isTerminalWatchState`,
+  which controls none of them.
 - **Closed-without-merge → `expired`, no wake-turn**; recorded on the card.
 - **Arm card via `emitChatCard` + `persistCardTransition`** (the arm happens
   mid-turn), not the `upsertReleaseCard` append pattern.
@@ -498,14 +642,17 @@ PR poller: verifyMissingPr, closed-unmerged
 
 ## Open questions
 
-_None — see "Resolved decisions"._
+_None — see "Resolved decisions"._ (The generalize-vs-duplicate question raised by
+the first round is now decided: generalize scheduling only.)
 
 ## Review notes
 
-Reviewed by Codex (cross-agent), pre-implementation. Both load-bearing source claims
-were independently confirmed: the `verifyMissingPr` callback ordering (with two
-corrections now folded in — `setMergedHeadSha` is a synchronous write, and the remote
-branch deletion is best-effort so only the *attempt* completes), and that
+Reviewed by Codex (cross-agent) twice, pre-implementation.
+
+**Round 1.** Both load-bearing source claims were independently confirmed: the
+`verifyMissingPr` callback ordering (with two corrections folded in —
+`setMergedHeadSha` is a synchronous write, and the remote branch deletion is
+best-effort so only the *attempt* completes), and that
 `autoResetMergedBranchOnContinue` has exactly one production caller.
 
 Accepted and folded in: the P1/P2/P3 prerequisites; the generation race across
@@ -520,15 +667,26 @@ The review's headline effect is on **cost**, not direction: this was scoped as
 composition of docs/196 + docs/218 with "no new card and no new machinery". It is
 not. It needs a reset coordinator, CAS watch storage, and a retry supervisor.
 
-**Update — all three prerequisites are fixed and merged** (SHI-254, SHI-255,
-SHI-258). The dispatch path now honors "`delivered` means the turn ran" on every
-drain, and a failed delivery retries in-process on a backoff instead of stranding
-until a restart.
+**Round 2** (after SHI-254 / SHI-255 / SHI-258 merged). Confirmed: SHI-254's
+non-steerable dispatch, the two standard drains preserving the full option set,
+`executeAgentTurn` restoring `systemTurnInProgress`, the merge firing point's
+ordering safety, and that docs/218's reset remains interactive-only.
 
-That materially reduces this design's remaining cost. The delivery lease it specified
-now exists as SHI-258's `inFlight` set, the fire-once guard is centralized in
-`isTerminalWatchState`, and terminal watches already release the polling gate — three
-things this doc had planned to build. What remains genuinely new: the reset
-coordinator, CAS watch storage, generation-checked delivery, and the arm card. The
-main open engineering question is whether to generalize SHI-258's retry supervisor
-over both watch kinds or duplicate it (see *What P3's fix changes here*).
+It then falsified two of this doc's reuse claims — `inFlight` is a retry suppressor,
+not a delivery lease, and `isTerminalWatchState` controls neither the pending list
+nor the polling gate — and found **two live bugs the merged fixes did not cover**:
+turn adoption added a fourth narrowing drain (SHI-259, re-breaking SHI-255), and
+`onTurnComplete` fires zero times on a no-result retry (SHI-260). Both are now
+prerequisites P4 and P5.
+
+Also folded in: the session-level preparation lease (a runner-level reservation is
+not expressible), write-ahead reset stages, non-best-effort remote healing, the
+typed-outcome delivery boundary, `blocked` as paused-with-a-way-back, the
+callback-signature change generation-checking actually requires, identity checking on
+the `expired` path too, and the card/watch atomicity and runner-less
+`persistCardTransition` gaps.
+
+Net: the reset coordinator, CAS watch storage, generation-checked delivery, the
+preparation lease, and the arm card remain genuinely new work. The subsystem has now
+needed five separate repairs to deliver a system turn reliably, which is itself worth
+weighing before committing to build on it.
