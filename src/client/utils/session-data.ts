@@ -111,13 +111,46 @@ interface BootstrapResponse {
 }
 
 /**
+ * Monotonic id of the most recently *issued* history load. A response may only
+ * be applied if no later load has been issued since — "last request wins",
+ * not "last response wins".
+ *
+ * Without this, more than one load can be in flight at once and the responses
+ * can land out of order, because nothing cancels a load when the connection it
+ * was issued for is replaced. A window reactivation is the common way in:
+ * `useWebSocket` force-reconnects on foreground, so a load issued for the
+ * outgoing socket is still in flight when the incoming socket opens and issues
+ * its own. When the stale one lands last it does two destructive things:
+ *
+ *   1. `setMessages` rewinds the transcript to the DB snapshot it read. For a
+ *      running turn the DB only holds rows up to the last tool-result boundary,
+ *      so everything the turn produced since — text, tool calls, cards — is
+ *      wiped. Live events only append after that, so the hole never heals; a
+ *      reload repairs it because the DB itself was fine. That is the reported
+ *      "messages disappeared on reactivation, reload brought them back".
+ *   2. `setHistoryLoaded(true)` fires mid-reconnect, which breaks the ordering
+ *      invariant `turn_snapshot` depends on (`useMessageHandler` queues the
+ *      snapshot only while history is *not* loaded, so it lands on top of the
+ *      baseline). A snapshot dispatched immediately instead applies its
+ *      replace-filter against whatever the transcript happens to hold.
+ *
+ * Scoping by session id alone doesn't catch either — both loads are for the
+ * same session.
+ */
+let historyLoadSeq = 0;
+
+/**
  * Fetch session history via HTTP and populate stores.
  * Shared between useConnectionSync (WS reconnect) and session-actions (session resume).
  */
 export async function loadSessionHistory(sessionId: string): Promise<void> {
+  const seq = ++historyLoadSeq;
   const res = await fetch(`/api/sessions/${sessionId}/history`);
   const data = await res.json() as HistoryResponse;
-  const isStillActiveSession = () => useSessionStore.getState().sessionId === sessionId;
+  // Still the newest load for this session? A superseded response must not
+  // write anything — see `historyLoadSeq`.
+  const isStillActiveSession = () =>
+    historyLoadSeq === seq && useSessionStore.getState().sessionId === sessionId;
   if (!isStillActiveSession()) {
     return;
   }

@@ -95,3 +95,82 @@ describe("turn_snapshot handler", () => {
     expect(texts()).toEqual(["Do the thing"]);
   });
 });
+
+/**
+ * The reported regression: reactivate the browser window and part of the
+ * transcript vanishes, but a page reload brings it back.
+ *
+ * `inProgress` is the replace-filter's scope marker, and only two paths ever
+ * set it — a history load of a running turn, and this snapshot. Nothing used to
+ * clear it, so once a viewer had been attached mid-turn those rows carried the
+ * marking for the rest of the session. Any later attach (a foreground
+ * reconnect is one) sends a snapshot of whatever turn is running NOW, and its
+ * `prev.filter((m) => !m.inProgress)` deleted the older, finished turns along
+ * with the running one it means to replace. The DB was fine, so a reload
+ * repaired it — matching the report exactly.
+ */
+describe("turn_snapshot — the replace-filter is scoped to the running turn", () => {
+  it("does not delete a finished turn whose rows came from a history load", () => {
+    // Turn 1, hydrated from `GET /history` while it was still running: its rows
+    // arrive marked in-progress.
+    useSessionStore.setState({
+      messages: [
+        { role: "user", text: "first question" },
+        { role: "assistant", text: "FIRST-ANSWER", inProgress: true, streaming: true },
+      ] as ChatMessage[],
+    });
+
+    // Turn 1 ends. The server drops `in_progress` from these rows in the DB
+    // (`finalizeInProgress`); the client must drop it too.
+    handleAgentEvent(ctx, {
+      type: "agent_event",
+      event: { type: "agent_result" },
+    } as never);
+    expect(useSessionStore.getState().messages.some((m) => m.inProgress)).toBe(false);
+
+    // Turn 2 starts and the user reactivates the window: the reattach snapshot
+    // covers turn 2 only.
+    useSessionStore.setState({
+      messages: [
+        ...useSessionStore.getState().messages,
+        { role: "user", text: "second question" } as ChatMessage,
+      ],
+    });
+    handleTurnSnapshot(ctx, snapshot([{ role: "assistant", text: "SECOND-ANSWER" }]));
+
+    expect(texts()).toEqual([
+      "first question",
+      "FIRST-ANSWER",
+      "second question",
+      "SECOND-ANSWER",
+    ]);
+  });
+
+  it("still replaces the running turn's rows after an earlier turn finished", () => {
+    useSessionStore.setState({
+      messages: [
+        { role: "assistant", text: "FIRST-ANSWER", inProgress: true, streaming: true },
+      ] as ChatMessage[],
+    });
+    handleAgentEvent(ctx, { type: "agent_event", event: { type: "agent_result" } } as never);
+
+    // Turn 2's own stale in-progress rows (a history load of the running turn)
+    // are still the snapshot's business to replace.
+    useSessionStore.setState({
+      messages: [
+        ...useSessionStore.getState().messages,
+        { role: "assistant", text: "SECOND-ANSWER", inProgress: true, streaming: true } as ChatMessage,
+      ],
+    });
+    handleTurnSnapshot(ctx, snapshot([
+      { role: "assistant", text: "SECOND-ANSWER" },
+      { role: "assistant", text: "SECOND-ANSWER-CONTINUED" },
+    ]));
+
+    expect(texts()).toEqual([
+      "FIRST-ANSWER",
+      "SECOND-ANSWER",
+      "SECOND-ANSWER-CONTINUED",
+    ]);
+  });
+});
