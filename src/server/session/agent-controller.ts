@@ -16,7 +16,7 @@ import type {
   AgentEvent,
   AgentId,
 } from "./agents/agent-process.js";
-import type { PermissionMode } from "../shared/types.js";
+import type { PermissionMode, WorkerAgentStatus } from "../shared/types.js";
 import type { PermissionBroker } from "./permission-broker.js";
 import type { WorkerSSEEvent } from "./sse-broadcaster.js";
 import type { McpConfigController } from "./mcp-config-controller.js";
@@ -38,10 +38,34 @@ export interface AgentControllerDeps {
   mcpConfig: McpConfigController;
   /** Reports the latest SSE sequence for `/agent/status`. */
   latestSseSeq: () => number;
+  /**
+   * docs/240 — reports the OLDEST sequence still in the SSE replay buffer.
+   * `/agent/status` publishes it so an orchestrator adopting a turn that was
+   * in flight across its restart can tell whether the buffer still covers the
+   * whole turn (complete replay) or only its tail (partial). Optional so
+   * existing constructions without the getter keep working.
+   */
+  oldestSseSeq?: () => number;
 }
 
 export class AgentController {
   private agent: AgentProcess | null = null;
+
+  /**
+   * docs/240 — metadata about the spawn occupying the slot, published via
+   * `/agent/status` so an orchestrator that restarted mid-turn can re-create a
+   * proxy with the SAME run token (keeping `isStaleSpawnEvent` correlation
+   * intact) and in the right streaming mode.
+   */
+  private residentSpawn: { runToken?: string; streaming: boolean } | null = null;
+
+  /**
+   * docs/240 — whether a turn is genuinely in flight on the resident process.
+   * Set when a turn starts (`/agent/start`, or `/agent/message` into an idle
+   * resident streaming process); cleared on `agent_result` and on process exit.
+   */
+  private turnActive = false;
+  private turnStartSseSeq = 0;
 
   // docs/144 — in-flight sub-agent spawns, keyed by orchestrator-supplied
   // spawnId. These run OUTSIDE the single-occupant `this.agent` slot as plain
@@ -69,6 +93,12 @@ export class AgentController {
       }
 
       try {
+        // docs/240 — mark the turn in flight BEFORE the adapter can emit
+        // anything, and record the seq the turn starts at. A restarted
+        // orchestrator replays from exactly here, so the live turn's events are
+        // re-delivered while the previous (already-persisted) turn's are not.
+        this.beginTurn();
+        this.residentSpawn = { runToken, streaming: params.useStreaming === true };
         // docs/155 hair 10 — each adapter knows its own MCP wire format
         // (Claude: per-turn `--mcp-config` JSON; Codex: `config.toml` block;
         // Cursor: `mcp.json`). The worker hands over the cross-cutting
@@ -100,6 +130,7 @@ export class AgentController {
         return { started: true };
       } catch (err) {
         this.agent = null;
+        this.endTurn();
         return reply.code(500).send({ error: getErrorMessage(err) });
       }
     });
@@ -123,6 +154,7 @@ export class AgentController {
       }
       this.agent.kill();
       this.agent = null;
+      this.endTurn();
       return { killed: true };
     });
 
@@ -256,6 +288,12 @@ export class AgentController {
         console.log(
           `[steer-worker] /agent/message → agent.sendUserMessage (bytes=${text.length}, text=${snippet})`,
         );
+        // docs/240 — a message into an IDLE resident streaming process starts a
+        // new turn (this is how every turn after the first runs under live
+        // steering), so it must mark the turn in flight and anchor the replay
+        // cursor. A message into a turn already in flight is a mid-turn steer:
+        // leave the existing anchor alone so the whole turn stays replayable.
+        if (!this.turnActive) this.beginTurn();
         this.agent.sendUserMessage(text);
         return { success: true };
       },
@@ -278,10 +316,34 @@ export class AgentController {
       return { success: true };
     });
 
-    app.get("/agent/status", async () => ({
+    app.get("/agent/status", async (): Promise<WorkerAgentStatus> => ({
       running: this.agent !== null,
       latestSseSeq: this.deps.latestSseSeq(),
+      oldestSseSeq: this.deps.oldestSseSeq?.() ?? 0,
+      turnActive: this.turnActive,
+      turnStartSseSeq: this.turnStartSseSeq,
+      ...(this.residentSpawn?.runToken !== undefined ? { runToken: this.residentSpawn.runToken } : {}),
+      ...(this.agent ? { agentId: this.agent.agentId } : {}),
+      ...(this.residentSpawn
+        ? { streaming: this.residentSpawn.streaming || this.agent?.isStreaming === true }
+        : {}),
     }));
+  }
+
+  /**
+   * docs/240 — mark a turn as in flight and anchor the SSE replay cursor at the
+   * seq the turn starts from. Called before anything the turn emits, so a
+   * restarted orchestrator replaying from `turnStartSseSeq` sees the whole turn
+   * and none of the previous (already-persisted) one.
+   */
+  private beginTurn(): void {
+    this.turnActive = true;
+    this.turnStartSseSeq = this.deps.latestSseSeq();
+  }
+
+  /** docs/240 — the turn ended (result, process exit, or kill). */
+  private endTurn(): void {
+    this.turnActive = false;
   }
 
   /** Kill the resident agent and cancel all sub-agent spawns (worker shutdown). */
@@ -290,6 +352,8 @@ export class AgentController {
     if (this.agent) {
       this.agent.kill();
       this.agent = null;
+      this.residentSpawn = null;
+      this.endTurn();
     }
   }
 
@@ -330,6 +394,11 @@ export class AgentController {
   private wireAgentEvents(agent: AgentProcess, runToken?: string): void {
     agent.on("event", (event: AgentEvent) => {
       this.deps.broadcast({ type: "agent_event", data: event });
+      // docs/240 — `agent_result` is the canonical turn-ended signal (the same
+      // one the orchestrator keys its post-turn flow off). A resident streaming
+      // process stays in the slot afterwards, so `running` alone can't tell an
+      // in-flight turn from an idle-resident one — this can.
+      if (event.type === "agent_result" && this.agent === agent) this.endTurn();
     });
 
     // Capture `agent` in the closure so the done/error handlers compare against
@@ -352,6 +421,8 @@ export class AgentController {
       this.deps.broadcast({ type: "agent_done", data: { exitCode, runToken } });
       if (this.agent === agent) {
         this.agent = null;
+        this.residentSpawn = null;
+        this.endTurn();
       }
     });
 
@@ -360,6 +431,8 @@ export class AgentController {
       this.deps.broadcast({ type: "agent_error", data: { message: err.message, runToken } });
       if (this.agent === agent) {
         this.agent = null;
+        this.residentSpawn = null;
+        this.endTurn();
       }
     });
 

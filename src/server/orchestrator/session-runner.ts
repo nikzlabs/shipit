@@ -683,6 +683,18 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    */
   reevaluateWorkspaceConfig?(): void;
 
+  /**
+   * docs/240 — connect to the session worker and, if it still has a turn in
+   * flight (the orchestrator restarted mid-turn), adopt it: rebuild the agent
+   * proxy + listeners, replay the turn's events from its start, and let the
+   * normal post-turn commit / push / PR flow run off the replayed
+   * `agent_result`. Resolves to whether this runner now owns a running turn.
+   *
+   * Optional — implemented by container runners only (an in-process runner
+   * cannot outlive the orchestrator, so there is nothing to adopt).
+   */
+  resumeInFlightTurn?(): Promise<boolean>;
+
   // Dispatched turns (docs/150)
   /** Inject dependencies needed for server-initiated agent turns. */
   setSystemTurnDeps(deps: SystemTurnDeps): void;

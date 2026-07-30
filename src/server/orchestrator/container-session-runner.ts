@@ -25,7 +25,7 @@
  */
 
 import { EventEmitter } from "node:events";
-import type { AgentProcess, AgentId, AgentEvent, AgentRunParams, TerminalProcess } from "../shared/types.js";
+import type { AgentProcess, AgentId, AgentEvent, AgentRunParams, TerminalProcess, WorkerAgentStatus } from "../shared/types.js";
 import type { WsServerMessage, ClaudeContentBlockToolUse, SkillInfo, PermissionMode, PermissionDecision } from "../shared/types.js";
 import type { PresentStateEntry } from "../shared/types/ws-server-messages.js";
 import type { PresentStore } from "./present-store.js";
@@ -37,6 +37,7 @@ import type { SSEEvent } from "./sse-client.js";
 import { workerPost, workerGet, workerInstall, workerPushAgentSecrets, workerPostMessage } from "./worker-http.js";
 import { ProxyAgentProcess } from "./proxy-agent-process.js";
 import type { ProxyAgentRunner } from "./proxy-agent-process.js";
+import { adoptInFlightTurn } from "./turn-adoption.js";
 import type { ServiceManager, ManagedService, SecretsStatusInternalSnapshot } from "./service-manager.js";
 import { stripAnsi } from "../shared/strip-ansi.js";
 import { SseConnectionManager } from "./sse-connection-manager.js";
@@ -221,6 +222,13 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   pendingCommitLink: { commitHash: string; parentCommitHash: string } | null = null;
   private _subAgentSpawnsThisTurn = 0;
   private _workerResourcesStarted = false;
+  /**
+   * docs/240 — in-flight one-time worker-resource start. Concurrent callers
+   * (the post-restart reattach sweep and a viewer attaching at the same moment)
+   * await this instead of connecting SSE themselves, so the probe-and-adopt step
+   * always completes before the stream opens.
+   */
+  private _workerStartInFlight: Promise<void> | null = null;
 
   constructor(opts: {
     sessionId: string;
@@ -760,8 +768,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * kill()/writeStdin() methods delegate to the worker via HTTP. Called by the
    * dynamic agentFactory when this runner is attached.
    */
-  createAgent(agentId: AgentId): ProxyAgentProcess {
-    const proxy = new ProxyAgentProcess(agentId, this);
+  createAgent(agentId: AgentId, opts?: { runToken?: string }): ProxyAgentProcess {
+    const proxy = new ProxyAgentProcess(agentId, this, opts);
     this._agent = proxy;
     return proxy;
   }
@@ -856,9 +864,12 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private async fastForwardStaleWorkerEventsBeforeFreshStart(): Promise<void> {
     if (this._workerResourcesStarted || this.sse.isConnected) return;
     try {
-      const status = await workerGet(this.workerUrl, "/agent/status", { timeoutMs: 3000 }) as {
-        latestSseSeq?: number;
-      };
+      const status = await workerGet(this.workerUrl, "/agent/status", { timeoutMs: 3000 }) as WorkerAgentStatus;
+      // docs/240 — never fast-forward past a turn that is still in flight. This
+      // probe can land after our own `/agent/start` (it is fired without an
+      // await from the start path), and skipping a live turn's already-emitted
+      // events would silently truncate the turn.
+      if (status.turnActive === true) return;
       this.sse.fastForwardLastSeenSeq(status.latestSseSeq ?? 0);
     } catch {
       // Best-effort only. If the probe fails, keep the existing since=0 path
@@ -886,28 +897,110 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * method closes that gap by fast-forwarding on the viewer-driven first
    * connect too.
    *
-   * Gated on the worker being IDLE (`running !== true`): if a turn is genuinely
-   * still streaming, a viewer attaching mid-turn MUST still replay the live
-   * turn's un-persisted events, so we leave the cursor at `since=0`. We only
+   * Gated on there being no LIVE turn: if a turn is genuinely still in flight,
+   * a viewer attaching mid-turn MUST still replay it, so we anchor the cursor
+   * at the turn's own start seq instead (docs/240) and adopt the turn. We only
    * skip the replay of a turn that already finished.
    *
    * No-op once SSE is connected (advancing the cursor after connect would skip
    * live events) and best-effort on probe failure (keep the `since=0` path so
    * a slow/unreachable worker still prefers replay over event loss).
    */
-  private async fastForwardCompletedTurnBeforeFirstConnect(): Promise<void> {
+  private async reconcileWorkerTurnBeforeFirstConnect(): Promise<void> {
     if (this.sse.isConnected) return;
+    let status: WorkerAgentStatus;
     try {
-      const status = await workerGet(this.workerUrl, "/agent/status", { timeoutMs: 3000 }) as {
-        running?: boolean;
-        latestSseSeq?: number;
-      };
-      // A live turn must still be replayed to a mid-turn viewer — don't skip it.
-      if (status.running === true) return;
-      this.sse.fastForwardLastSeenSeq(status.latestSseSeq ?? 0);
+      status = await workerGet(this.workerUrl, "/agent/status", { timeoutMs: 3000 }) as WorkerAgentStatus;
     } catch {
       // Best-effort only — preserve the since=0 replay path on probe failure.
+      return;
     }
+
+    // docs/240 — a turn is STILL RUNNING inside the container while this runner
+    // has no agent object for it: the orchestrator restarted mid-turn (or the
+    // runner was recreated after an idle eviction that the running agent should
+    // have blocked). Adopt it — rebuild the proxy + listeners and replay from
+    // the turn's first event — instead of letting the replay drop `(no _agent)`.
+    if (status.turnActive === true && !this._agent && !this._isRunning) {
+      if (await this.adoptWorkerTurn(status)) return;
+      // Adoption unavailable (no system-turn deps wired). Fall through: leave
+      // the cursor at since=0 so the events are at least replayed to whatever
+      // takes the slot next, matching the pre-docs/240 behavior.
+      return;
+    }
+
+    // A live turn on a runner that already knows about it — leave the cursor
+    // alone so the mid-turn viewer catches up (the docs/237 snapshot path).
+    if (status.turnActive === true) return;
+    // Legacy worker (no `turnActive` field) with a resident process: can't tell
+    // in-flight from idle-resident, so keep the conservative full replay.
+    if (status.turnActive === undefined && status.running) return;
+
+    this.sse.fastForwardLastSeenSeq(status.latestSseSeq ?? 0);
+  }
+
+  /**
+   * docs/240 — adopt a turn the worker still has in flight. Fills the `_agent`
+   * slot with a proxy carrying the WORKER's run token (so the turn's eventual
+   * `agent_done` correlates instead of being ignored as a stale spawn), anchors
+   * the SSE replay cursor at the turn's first event, and wires the standard
+   * listener + post-turn flow through `adoptInFlightTurn`.
+   *
+   * Must complete BEFORE the SSE stream connects — the slot has to be occupied
+   * when the replay lands. Returns false when the runner has no system-turn deps
+   * (the registry always wires them in production; a bare test runner may not).
+   */
+  private async adoptWorkerTurn(status: WorkerAgentStatus): Promise<boolean> {
+    const deps = this._systemTurnDeps;
+    if (!deps) {
+      console.warn(
+        `[container-runner:${this.sessionId}] worker reports a live turn but no system-turn deps are wired — not adopting`,
+      );
+      return false;
+    }
+    const agentId = status.agentId ?? this._agentId;
+    const turnStartSeq = status.turnStartSseSeq ?? 0;
+    // The ring buffer is bounded (5000 events), so a very long turn can outrun
+    // it. We still adopt — the tail is worth far more than nothing — but say so,
+    // because the turn's earliest rows are then unrecoverable.
+    const oldest = status.oldestSseSeq ?? 0;
+    const truncated = oldest > turnStartSeq + 1;
+    console.log(
+      `[container-runner:${this.sessionId}] adopting in-flight worker turn ` +
+        `(agent=${agentId}, streaming=${status.streaming === true}, sinceSeq=${turnStartSeq}` +
+        `${truncated ? `, PARTIAL replay — buffer starts at ${oldest}` : ""})`,
+    );
+    this.sse.fastForwardLastSeenSeq(turnStartSeq);
+    this._agentId = agentId;
+    const proxy = this.createAgent(agentId, status.runToken ? { runToken: status.runToken } : undefined);
+    await adoptInFlightTurn(this, deps, proxy, {
+      agentId,
+      ...(status.runToken !== undefined ? { runToken: status.runToken } : {}),
+      streaming: status.streaming === true,
+    });
+    this.emitMessage({
+      type: "session_status",
+      sessionId: this.sessionId,
+      running: true,
+      queueLength: this.queueLength,
+    });
+    return true;
+  }
+
+  /**
+   * docs/240 — public entry point for the post-restart reattach sweep
+   * (`restart-turn-reattach.ts`). Connects worker resources (which probes the
+   * worker and adopts any in-flight turn — see
+   * `reconcileWorkerTurnBeforeFirstConnect`) and reports whether this runner
+   * ended up owning a running turn.
+   *
+   * Idempotent and safe to call on an idle session: it does exactly what a
+   * viewer attach would do, minus the viewer count.
+   */
+  async resumeInFlightTurn(): Promise<boolean> {
+    if (this._disposed) return false;
+    await this.ensureWorkerResourcesStarted();
+    return this._isRunning;
   }
 
   /**
@@ -919,16 +1012,36 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private async ensureWorkerResourcesStarted(): Promise<void> {
     if (this._disposed) return;
     if (this._workerResourcesStarted) {
+      // docs/240 — a start is still in flight: await IT rather than racing
+      // ahead to `connectEventStream`. The first start may be mid-probe,
+      // about to adopt an in-flight worker turn, and adoption must fill the
+      // `_agent` slot BEFORE the stream opens or the replay is dropped.
+      if (this._workerStartInFlight) {
+        await this._workerStartInFlight;
+        return;
+      }
       if (!this.sse.isConnected) {
         await this.connectEventStream();
       }
       return;
     }
     this._workerResourcesStarted = true;
-    // Skip the worker's ring-buffer replay of an already-completed turn before
-    // the very first connect (post-restart double-render bug) — but only when
-    // no turn is live, so a mid-turn viewer still catches up. See the method.
-    await this.fastForwardCompletedTurnBeforeFirstConnect();
+    const start = this._doStartWorkerResources();
+    this._workerStartInFlight = start;
+    try {
+      await start;
+    } finally {
+      this._workerStartInFlight = null;
+    }
+  }
+
+  /** The one-time body of {@link ensureWorkerResourcesStarted}. */
+  private async _doStartWorkerResources(): Promise<void> {
+    // Reconcile against the worker's turn state before the very first connect:
+    // skip the ring-buffer replay of an already-completed turn (the post-restart
+    // double-render bug), or ADOPT a turn still in flight (docs/240) so its
+    // replay lands in a live agent instead of being dropped. See the method.
+    await this.reconcileWorkerTurnBeforeFirstConnect();
     await this.connectEventStream();
     if (!this._disposed) void this.startWorkerResources();
   }
