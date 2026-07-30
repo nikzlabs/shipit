@@ -154,6 +154,17 @@ cost signal from the compose author (this is heavy, do not pay for it on every
 boot). Making it implicit would spend minutes of the user's session on a guess.
 An explicit verb keeps the decision in the transcript.
 
+**Deploy order: worker image before orchestrator.** The two halves of the fix
+ship on different clocks — the prompt section is rendered by the *orchestrator*
+at module load, while the `shipit` binary and `/shipit-docs/` are baked into the
+*session worker image*. The skew is not symmetric. Orchestrator-first means the
+agent reads "use `shipit service start`" and the old baked shim answers
+`Unknown shipit subcommand: service`, pointing at `sessions.md` — a dead end that
+cannot be fixed from this change, because the message comes from the old binary.
+Worker-image-first is harmless: the verb works and the agent merely may not think
+to reach for it. (`serviceError`'s 404 branch covers only the narrower
+new-shim/old-worker case, where `/services/logs` doesn't exist yet.)
+
 **What is deliberately not exposed.** `create`, `delete`, `build`, `exec`, `up`,
 and `down` are rejected with a pointer at `docker-compose.yml`. The stack's shape
 is declared in the repo and reconciled by ShipIt; the agent edits the file and
