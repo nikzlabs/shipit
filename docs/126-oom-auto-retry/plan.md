@@ -28,15 +28,26 @@ install completes, the gate closes and any subsequent non-zero exit
 goes straight to `error` with no retry.
 
 That's the right policy for a generic exit (the build is genuinely
-broken, retrying won't help), but exit 137 specifically is almost
+broken, retrying won't help), but an OOM kill specifically is almost
 always transient host pressure: a brief memory spike, another session
 spinning up, a heavy build, a Vite watcher snapshot. The right move
 is to retry the service a small number of times before giving up.
 
+> **Superseded trigger (docs/239).** This feature originally keyed off
+> `exitCode === 137` alone. That was wrong: 137 is SIGKILL, and inside
+> ShipIt the most frequent sender is our own mid-session re-install
+> teardown (`compose stop` → SIGTERM → 10s grace → SIGKILL) against a
+> service that doesn't forward SIGTERM. The retry now requires the
+> container's inspected `State.OOMKilled` to confirm it, threaded from
+> the poller. Everything below — the budget, the stable-uptime reset,
+> the user-initiated reset, the counter persistence after latch — is
+> unchanged; only the entry condition is narrower.
+
 ## Design
 
-Add a parallel **OOM retry** path in `pollStatus` that fires only for
-exit code 137 on `preview: auto` services. It mirrors the
+Add a parallel **OOM retry** path in `pollStatus` that fires only for a
+**confirmed** OOM kill (exit code 137 *and* `State.OOMKilled` — see the
+docs/239 note above) on `preview: auto` services. It mirrors the
 install-window retry but with three guards:
 
 1. **Bounded retry budget.** Max 3 consecutive OOM retries (constant
@@ -83,10 +94,12 @@ OOM never escalates that far in the first place.
 - `src/server/orchestrator/service-manager.ts` — adds
   `oomRetryAttempts` / `oomStableTimers` state, `scheduleOomRetry()`,
   `armOomStableResetIfNeeded()`, `cancelOomStableTimer()`. The
-  `pollStatus` exited branch routes exit-137 + `preview: auto` to the
-  new retry path; `startService` / `restartService` reset the counter
+  `pollStatus` exited branch routes a confirmed OOM + `preview: auto` to
+  the new retry path; `startService` / `restartService` reset the counter
   on user action; `cancelAllRetries` clears the new state alongside
-  the install-window state.
+  the install-window state. (The retry state itself moved to
+  `service-retry-manager.ts`; the confirmation flag arrives from
+  `service-poller.ts` — docs/239.)
 - `src/server/orchestrator/service-manager.test.ts` — 5 new tests
   covering: retry on first OOM, latch after MAX consecutive OOMs,
   manual services excluded, user `startService` resets the budget,
@@ -105,7 +118,9 @@ OOM never escalates that far in the first place.
   retries exhaust explicitly names the actionable fix ("increase the
   service's memory limit or close other sessions to free host
   memory") so the user doesn't have to dig through Docker docs or
-  open a host monitor tab.
+  open a host monitor tab. That advice is only sound because the path
+  now requires a confirmed OOM — docs/239 is the incident where it
+  wasn't, and the user chased a memory limit that never bound.
 
 ## Out of scope
 

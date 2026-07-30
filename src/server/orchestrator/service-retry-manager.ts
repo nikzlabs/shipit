@@ -158,7 +158,7 @@ export class ServiceRetryManager {
    * so the user can investigate.
    *
    * PRECONDITION: the caller has CONFIRMED the OOM against the container's
-   * `State.OOMKilled` — bare exit 137 is not enough (docs/230). Both the log
+   * `State.OOMKilled` — bare exit 137 is not enough (docs/239). Both the log
    * line and the budget-exhausted error below state OOMKilled as fact and tell
    * the user to raise a memory limit, which is actively misleading advice for
    * an ordinary SIGKILL. `ServiceManager.handleNonZeroExit` is the only caller

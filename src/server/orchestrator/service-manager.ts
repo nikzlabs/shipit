@@ -337,7 +337,7 @@ export class ServiceManager extends EventEmitter {
    * `null`. The gate-open path awaits it before releasing gated services so the
    * teardown's own SIGKILL is still observed while the service is gated — and
    * is therefore swallowed by the existing gated guards instead of being
-   * reported to the user as a crash. See `releaseInstallGate` (docs/230).
+   * reported to the user as a crash. See `releaseInstallGate` (docs/239).
    */
   private _gatedTeardown: Promise<void> | null = null;
 
@@ -505,7 +505,7 @@ export class ServiceManager extends EventEmitter {
       // system is US: `stopGatedForReinstall` runs `docker compose stop`, and a
       // `command: sh -c "npm install && npm run dev"` service never forwards
       // SIGTERM, so the 10s grace period always expires into a SIGKILL. Field
-      // report (docs/230): a cached ~35ms re-install looping every 30s produced
+      // report (docs/239): a cached ~35ms re-install looping every 30s produced
       // an exit-137 every cycle with `OOMKilled: false` on a service using
       // 110 MiB of a 3 GiB limit — auto-"OOM"-retried, budget drained, then
       // latched to `error` advising the user to raise a memory limit that was
@@ -603,7 +603,7 @@ export class ServiceManager extends EventEmitter {
    * when the 10s grace period expires — and a `command: sh -c "npm install &&
    * npm run dev"` service never forwards SIGTERM, so the grace period always
    * expires. If the gate reopens before that SIGKILL lands (observed at +35ms
-   * on a cached no-op install, ~10s before the kill — docs/230), the service is
+   * on a cached no-op install, ~10s before the kill — docs/239), the service is
    * no longer in `gatedServices`, so the poller's `isGated` skip and
    * `handleNonZeroExit`'s gated early-return — both written for exactly this
    * exit — miss it, and our own teardown surfaces to the user as a service
@@ -634,7 +634,12 @@ export class ServiceManager extends EventEmitter {
       open();
       return;
     }
-    void teardown.then(open);
+    // Fire-and-forget from a sync caller (`setInstallRunning`): the gate opens
+    // once the teardown lands. `stopGatedForReinstall` never rejects.
+    void (async () => {
+      await teardown;
+      open();
+    })();
   }
 
   /** Whether the install-running gate is currently active. */
@@ -1353,7 +1358,7 @@ export class ServiceManager extends EventEmitter {
       // earlier OOM count. Without this, a repeating re-install (the dep-change
       // cooldown is 30s) tears the service down before it can bank the 60s of
       // continuous uptime that clears the counter, so the budget only ever
-      // drains — monotonically, to a permanent latch. See docs/230.
+      // drains — monotonically, to a permanent latch. See docs/239.
       this.retry.resetOomBudget(svc.name);
     }
     // Retained so the gate-open path can await it — see `releaseInstallGate`.
@@ -1444,7 +1449,7 @@ export class ServiceManager extends EventEmitter {
  * container's inspected `State.OOMKilled` backs it up, hedge when we couldn't
  * ask, and say plainly that it wasn't an OOM when the daemon told us so —
  * because "raise your memory limit" is inert advice for a plain SIGKILL and
- * sends the user chasing a limit that was never binding. See docs/230.
+ * sends the user chasing a limit that was never binding. See docs/239.
  */
 function describeExit(exitCode: number, oomKilled?: boolean): string {
   if (exitCode !== 137) return `Exited with code ${exitCode}`;

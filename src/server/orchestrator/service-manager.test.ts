@@ -1338,7 +1338,7 @@ describe("ServiceManager install-running retry gate", () => {
     let psResponse = "";
     // What `docker inspect` reports for `State.OOMKilled`. `undefined` models a
     // daemon that omits the field (the manager treats that as "unknown", not
-    // "not an OOM"). Exit 137 alone no longer implies OOM — see docs/230.
+    // "not an OOM"). Exit 137 alone no longer implies OOM — see docs/239.
     let oomKilled: boolean | undefined = false;
 
     const composeRunner: ComposeRunner = (args) => {
@@ -1660,7 +1660,7 @@ services:
     expect(mgr.getService("web")?.status).toBe("starting");
   });
 
-  // --- Exit 137 is SIGKILL, not proof of OOM (docs/230) ---
+  // --- Exit 137 is SIGKILL, not proof of OOM (docs/239) ---
   //
   // Production incident: a cached ~35ms re-install looping every 30s SIGKILLed
   // the `dev` service via our own `compose stop` teardown. Every cycle exited
@@ -1716,7 +1716,7 @@ services:
     await mgr.start();
 
     // Gate opens; the service crashes with 137 inside its first-boot window.
-    // Before docs/230 the `exitCode === 137` branch sat above the post-gate
+    // Before docs/239 the `exitCode === 137` branch sat above the post-gate
     // check and short-circuited it — the recovery path built for exactly this
     // ("crashed right after the gate opened") never ran. Confirming the OOM
     // first makes the ordering moot: an unconfirmed 137 now falls through.
@@ -2185,7 +2185,7 @@ services:
   });
 
   it("holds gated services until the re-install teardown's SIGKILL has landed", async () => {
-    // Regression for docs/230. `compose stop` SIGTERMs and then SIGKILLs when
+    // Regression for docs/239. `compose stop` SIGTERMs and then SIGKILLs when
     // the 10s grace period expires — and a `command: sh -c "npm install && npm
     // run dev"` service never forwards SIGTERM, so the kill always lands. The
     // gate used to reopen ~35ms after the hold (a cached no-op re-install),
