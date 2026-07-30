@@ -32,6 +32,7 @@ import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js
 import { formatUnresolvedConflictNotice } from "./services/conflict-marker-notice.js";
 import { formatSecretScanNotice } from "./services/secret-scan-notice.js";
 import { emitNoticePostTurn } from "./chat-card-persistence.js";
+import { TURN_COMPLETED, turnErrored, turnNoResult, type TurnOutcome } from "./turn-settlement.js";
 
 /**
  * Normalized, transport-agnostic description of one turn. The adapters
@@ -147,11 +148,17 @@ export interface TurnInput {
    */
   systemTurn?: boolean;
   /**
-   * docs/169 — fired exactly once on terminal teardown. `errored` is true when
-   * the turn ended via an agent process error (so a multi-turn driver can
-   * abort) and false on a clean completion.
+   * docs/169 — fired exactly once on terminal teardown, with the turn's
+   * {@link TurnOutcome}. `errored` is true when the turn ended via an agent
+   * process error (so a multi-turn driver can abort); `status` additionally
+   * distinguishes a clean `completed` from a `no-result` exit.
+   *
+   * docs/240 — this is the settlement hook: `dispatch` chains the handle's
+   * `settle` onto it, and the `done` handler fires it from a `finally` so a turn
+   * cannot exit without signalling completion. `runDispatchedTurn` owns "exactly
+   * once across no-result retries" on top of it (SHI-260).
    */
-  onTurnComplete?: (outcome: { errored: boolean }) => void;
+  onTurnComplete?: (outcome: TurnOutcome) => void;
   /**
    * docs/240 — ADOPT a turn that is already running on the worker rather than
    * starting one. Set only by the post-restart reattach path
@@ -186,13 +193,33 @@ export async function executeAgentTurn(
   // docs/169 — terminal completion signal. Fires exactly once (guarded) on the
   // clean `done` path or the agent-error path: clears the system-turn flag this
   // turn set and hands control back to a multi-turn driver (the rebase loop).
-  let turnErrored = false;
+  //
+  // docs/240 splits it in two. `settleTurn` is the SETTLEMENT half and nothing
+  // else, so the `done` handler's `finally` can guarantee "a turn cannot exit
+  // without settling" without also clearing `systemTurnInProgress` — which would
+  // be wrong on the no-result-retry path, where the retry has already re-armed
+  // that flag by the time the superseded attempt unwinds.
+  let agentErrored = false;
   let turnCompleteFired = false;
-  const finishTurn = (): void => {
+  const settleTurn = (outcome: TurnOutcome): void => {
     if (turnCompleteFired) return;
     turnCompleteFired = true;
+    input.onTurnComplete?.(outcome);
+  };
+  const finishTurn = (): void => {
+    if (turnCompleteFired) return;
     if (input.systemTurn && runner) runner.systemTurnInProgress = false;
-    input.onTurnComplete?.({ errored: turnErrored });
+    // `errored` keeps its pre-docs/240 meaning ("ended via an agent process
+    // error") so the existing `{ errored }` consumers — the rebase driver, the
+    // CI auto-fix loop — are unaffected; `status` carries the finer distinction
+    // for consumers that opt into it.
+    settleTurn(
+      agentErrored
+        ? turnErrored()
+        : receivedResult
+          ? TURN_COMPLETED
+          : turnNoResult("agent process exited without producing a turn result"),
+    );
   };
 
   if (runner) {
@@ -302,7 +329,7 @@ export async function executeAgentTurn(
     // docs/169 — mark the turn errored and fire the completion signal here too,
     // so a multi-turn driver (rebase loop) unblocks-and-aborts even when the
     // process errors without a subsequent `done` event.
-    onError: () => { turnErrored = true; finishTurn(); return tryDrain(); },
+    onError: () => { agentErrored = true; finishTurn(); return tryDrain(); },
     ...(input.useStreaming !== undefined ? { useStreaming: input.useStreaming } : {}),
   });
 
@@ -524,102 +551,116 @@ export async function executeAgentTurn(
     // / finished). Stand down so we don't double-drain, emit a spurious error,
     // or finalize a turn that's about to be retried.
     if (authRecoveryInProgress) return;
-    // Identity-guard: only clear the runner's agent ref if it still points at
-    // *this* turn's agent. A later turn (started by the drain above) already
-    // called `setAgent(NEW)`; clobbering to null would strand it and the SSE
-    // relay would log `[sse-drop] ... dropped (no _agent)` for every event.
-    if (runner) {
-      if (runner.getAgent() === agent) {
-        runner.setAgent(null);
-        // docs/140 — the resident streaming process has actually exited; the next
-        // mid-turn send must not be routed through `sendUserMessage` (closed stdin).
-        if (useStreaming) runner.isStreamingActive = false;
-        // docs/235 — the CLI reaps its background tasks when it exits, so drop
-        // our copy rather than leaving a stale count pinning `agentBusy` true
-        // and blocking idle reclaim forever.
-        runner.clearBackgroundTasks();
+    // docs/240 — everything below is wrapped so the turn SETTLES on every exit
+    // path, including the early `return`s. The one that mattered is the
+    // no-result hand-off near the bottom: it returns without calling
+    // `finishTurn`, which is exactly how SHI-260's callback ended up firing zero
+    // times. Settling here is the structural version of that fix — a branch
+    // added later that forgets to finish the turn still settles it, and
+    // `runDispatchedTurn`'s attempt filter discards the settlement of an attempt
+    // a retry has already superseded.
+    try {
+      // Identity-guard: only clear the runner's agent ref if it still points at
+      // *this* turn's agent. A later turn (started by the drain above) already
+      // called `setAgent(NEW)`; clobbering to null would strand it and the SSE
+      // relay would log `[sse-drop] ... dropped (no _agent)` for every event.
+      if (runner) {
+        if (runner.getAgent() === agent) {
+          runner.setAgent(null);
+          // docs/140 — the resident streaming process has actually exited; the next
+          // mid-turn send must not be routed through `sendUserMessage` (closed stdin).
+          if (useStreaming) runner.isStreamingActive = false;
+          // docs/235 — the CLI reaps its background tasks when it exits, so drop
+          // our copy rather than leaving a stale count pinning `agentBusy` true
+          // and blocking idle reclaim forever.
+          runner.clearBackgroundTasks();
+        }
       }
-    }
 
-    // Non-streaming captures the token here too (fallback if agent_result was
-    // lost); streaming already synced in the agent_result block.
-    if (!useStreaming) trySyncToken();
+      // Non-streaming captures the token here too (fallback if agent_result was
+      // lost); streaming already synced in the agent_result block.
+      if (!useStreaming) trySyncToken();
 
-    // Process exited without a result event — let the client clear its loading
-    // state instead of hanging. WS-only; dispatch surfaces failures via the
-    // listener's error rows.
-    if (input.emitErrorOnNoResult && !receivedResult && !(runner?.wasInterrupted ?? false)) {
-      emit({
-        type: "error",
-        message: code !== 0 ? `Agent process exited with code ${code}` : "Agent process ended without a response",
-      });
-    }
-    // Preserve the partial turn whenever the process ended without an
-    // `agent_result` — whether the user interrupted (the "first turn erased
-    // from history" bug, docs/156) OR the process exited abnormally, e.g.
-    // SIGTERM / "exited with code 143" from an idle-kill, container restart, or
-    // crash. The streamed assistant rows were written as `in_progress=1` at each
-    // tool-result boundary; without finalizing them here they stay in-progress,
-    // and the NEXT user message's turn calls `replaceInProgress()`, which
-    // deletes every `in_progress=1` row — erasing the previous turn from the UI
-    // on reload. `onInterruptedTurn` flips those rows to finalized (and clears
-    // the replay buffer). Skipped on the auth-required path, where the listener
-    // already owns the visible row. WS-only: dispatch leaves `onInterruptedTurn`
-    // unset and surfaces no-result exits via `onNoResultExit` instead.
-    if (!receivedResult && !sawAuthRequired) {
-      input.onInterruptedTurn?.();
-    }
+      // Process exited without a result event — let the client clear its loading
+      // state instead of hanging. WS-only; dispatch surfaces failures via the
+      // listener's error rows.
+      if (input.emitErrorOnNoResult && !receivedResult && !(runner?.wasInterrupted ?? false)) {
+        emit({
+          type: "error",
+          message: code !== 0 ? `Agent process exited with code ${code}` : "Agent process ended without a response",
+        });
+      }
+      // Preserve the partial turn whenever the process ended without an
+      // `agent_result` — whether the user interrupted (the "first turn erased
+      // from history" bug, docs/156) OR the process exited abnormally, e.g.
+      // SIGTERM / "exited with code 143" from an idle-kill, container restart, or
+      // crash. The streamed assistant rows were written as `in_progress=1` at each
+      // tool-result boundary; without finalizing them here they stay in-progress,
+      // and the NEXT user message's turn calls `replaceInProgress()`, which
+      // deletes every `in_progress=1` row — erasing the previous turn from the UI
+      // on reload. `onInterruptedTurn` flips those rows to finalized (and clears
+      // the replay buffer). Skipped on the auth-required path, where the listener
+      // already owns the visible row. WS-only: dispatch leaves `onInterruptedTurn`
+      // unset and surfaces no-result exits via `onNoResultExit` instead.
+      if (!receivedResult && !sawAuthRequired) {
+        input.onInterruptedTurn?.();
+      }
 
-    // Process exited without ever producing a turn result (the dispatched
-    // "first turn never ran" bug, docs/163). Hand off to the dispatch
-    // retry/surface hook BEFORE the normal teardown — for BOTH streaming and
-    // non-streaming dispatched turns. A child/quick session now runs its first
-    // turn as a streaming process (so a follow-up `shipit session message` can
-    // steer it, docs/163), and a streaming process can still exit with no
-    // result (crash / hook-abort); without firing the hook here the streaming
-    // branch below would silently report a *completed* turn, re-masking the bug
-    // docs/163 fixed. If the hook claims the turn (retry dispatched or error
-    // surfaced) we stop here; the new turn / error path owns drain + commit +
-    // finished. WS leaves `onNoResultExit` unset and is unaffected.
-    if (
-      input.onNoResultExit &&
-      !receivedResult &&
-      !sawAuthRequired &&
-      !(runner?.wasInterrupted ?? false)
-    ) {
-      const handled = await input.onNoResultExit(code);
-      if (handled) return;
-    }
+      // Process exited without ever producing a turn result (the dispatched
+      // "first turn never ran" bug, docs/163). Hand off to the dispatch
+      // retry/surface hook BEFORE the normal teardown — for BOTH streaming and
+      // non-streaming dispatched turns. A child/quick session now runs its first
+      // turn as a streaming process (so a follow-up `shipit session message` can
+      // steer it, docs/163), and a streaming process can still exit with no
+      // result (crash / hook-abort); without firing the hook here the streaming
+      // branch below would silently report a *completed* turn, re-masking the bug
+      // docs/163 fixed. If the hook claims the turn (retry dispatched or error
+      // surfaced) we stop here; the new turn / error path owns drain + commit +
+      // finished. WS leaves `onNoResultExit` unset and is unaffected.
+      if (
+        input.onNoResultExit &&
+        !receivedResult &&
+        !sawAuthRequired &&
+        !(runner?.wasInterrupted ?? false)
+      ) {
+        const handled = await input.onNoResultExit(code);
+        if (handled) return;
+      }
 
-    if (useStreaming) {
-      // Streaming post-turn (commit/PR) ran on agent_result when the turn ended
-      // cleanly; done is normally process-exit cleanup only. BUT a streaming
-      // process can exit WITHOUT an `agent_result` (crash, hook-induced abort,
-      // failed-PR/hook-retry state) — in which case agent_result never drained
-      // the queue and a message enqueued via the dispatch path would be
-      // stranded forever ("queued, then never delivered"). `tryDrain` is
-      // guarded by `drainFired`, so it's a no-op when agent_result already
-      // drained and only fires here on the abnormal-exit path. The done handler
-      // above already cleared the resident ref + `isStreamingActive`, so the
-      // drained turn spawns a fresh agent rather than writing to dead stdin.
-      if (runner) runner.running = false;
+      if (useStreaming) {
+        // Streaming post-turn (commit/PR) ran on agent_result when the turn ended
+        // cleanly; done is normally process-exit cleanup only. BUT a streaming
+        // process can exit WITHOUT an `agent_result` (crash, hook-induced abort,
+        // failed-PR/hook-retry state) — in which case agent_result never drained
+        // the queue and a message enqueued via the dispatch path would be
+        // stranded forever ("queued, then never delivered"). `tryDrain` is
+        // guarded by `drainFired`, so it's a no-op when agent_result already
+        // drained and only fires here on the abnormal-exit path. The done handler
+        // above already cleared the resident ref + `isStreamingActive`, so the
+        // drained turn spawns a fresh agent rather than writing to dead stdin.
+        if (runner) runner.running = false;
+        await tryDrain();
+        emitFinishedIfIdle();
+        finishTurn();
+        return;
+      }
+
+      // Non-streaming: drain first (clears queued visual state before the slow
+      // commit), broadcast the finished SSE so other tabs update promptly, then
+      // commit/PR, then signal idle (remediation) last. All guarded so a prior
+      // agent_result that already drained/synced makes these no-ops.
       await tryDrain();
-      emitFinishedIfIdle();
+      broadcastFinishedIfIdle();
+      await runCommitAndPr();
+      signalIdleIfIdle();
+      // docs/169 — hand control back to a multi-turn driver (rebase loop) and
+      // clear the system-turn flag, after all post-turn work has settled.
       finishTurn();
-      return;
+    } finally {
+      // No-op whenever a branch above already called `finishTurn()`; the
+      // backstop for the ones that returned early.
+      settleTurn(turnNoResult(`agent process exited (code ${code}) without settling the turn`));
     }
-
-    // Non-streaming: drain first (clears queued visual state before the slow
-    // commit), broadcast the finished SSE so other tabs update promptly, then
-    // commit/PR, then signal idle (remediation) last. All guarded so a prior
-    // agent_result that already drained/synced makes these no-ops.
-    await tryDrain();
-    broadcastFinishedIfIdle();
-    await runCommitAndPr();
-    signalIdleIfIdle();
-    // docs/169 — hand control back to a multi-turn driver (rebase loop) and
-    // clear the system-turn flag, after all post-turn work has settled.
-    finishTurn();
   });
 
   // docs/240 — an ADOPTED turn is already running inside the container: the

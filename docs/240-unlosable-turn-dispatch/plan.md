@@ -51,68 +51,120 @@ paper over it.
 
 ## Fix A — brand the prepared options so hand-construction doesn't compile
 
+Implemented in `src/server/orchestrator/prepared-dispatch.ts`, which owns the
+module-private brand key and is therefore the only file that can mint one:
+
 ```ts
-declare const PREPARED: unique symbol;
+declare const PREPARED: unique symbol;                 // not exported
 export type PreparedDispatch = AgentDispatchOptions & { readonly [PREPARED]: true };
 ```
 
-`runner.dispatch` / `runDispatchedTurn` accept **only** `PreparedDispatch`. The only
-producers are:
+`runner.dispatch` / `runner.runDispatchedTurn` accept **only** `PreparedDispatch`,
+on both runner implementations. The only producers are:
 
 - `queuedMessageToDispatchOptions(next: QueuedMessage): PreparedDispatch` — the
-  existing full conversion (`queue-drain.ts`), and
+  full drain conversion (re-exported from `queue-drain.ts`, whose historical
+  import path every drain still uses), and
 - `prepareDispatch(init: AgentDispatchInit): PreparedDispatch` — the explicit
-  entry point for a dispatch that does **not** come off the queue (the poller's wake
-  turn, the CI auto-fix loop, `sendChildMessage`).
+  entry point for a dispatch that does **not** come off the queue (the wake turn,
+  the CI auto-fix loop, the rebase driver, `sendChildMessage`, quick sessions,
+  the WS handler's not-steering fall-through).
 
-A drain site that builds an object literal now fails to typecheck. `turn-adoption.ts`'s
-hand-rolled `drainNext` becomes a **compile error** rather than something a reviewer
-has to notice.
+`toQueuedMessage` was narrowed to `PreparedDispatch` too, so
+`enqueue(toQueuedMessage(…))` is not a back door: every path *into* the queue
+starts at a producer, exactly like every path out of it.
+
+A drain site that builds an object literal now fails to typecheck.
+`turn-adoption.ts`'s hand-rolled `drainNext` was a **compile error** after this
+change and is now routed through `startQueuedMessage`.
 
 **Plus an exhaustive field mapping**, so adding a field to `AgentDispatchOptions`
-breaks the converter until it is handled — a `Record<keyof AgentDispatchOptions, …>`
-or an explicit destructure with no rest element. SHI-255 shipped a round-trip test
-that guards the *converter*; branding guards the *call sites*, which is where both
-regressions actually happened. Both are wanted: the test catches a field dropped
-inside the converter, the brand catches a converter that was bypassed.
+breaks the producer until it is handled. Three independent checks, all in
+`prepared-dispatch.ts`:
+
+1. `AgentDispatchInit` — a *complete* init interface (every field required,
+   `undefined` allowed) whose key set is asserted equal to
+   `keyof AgentDispatchOptions` via `AssertNever<Exclude<…>>` in both directions.
+   A new field errors with `Type '"yourNewField"' does not satisfy the constraint
+   'never'`, naming it.
+2. `DISPATCH_FIELDS: Record<keyof AgentDispatchOptions, true>` — the runtime copy
+   iterates exactly this, so the mapping cannot go stale.
+3. Because the init is complete, **every `prepareDispatch` call site** also fails
+   to compile until the new field is considered there.
+
+(The init is deliberately *not* a `Partial` with defaults: that would re-open the
+identical hole one level up — a drain could call `prepareDispatch({ text })` and
+lose the rest with the compiler's blessing. Tests use a test-only
+`testDispatch()` shim under `integration_tests/`, never importable in anger from
+production without it reading as exactly what it is.)
+
+SHI-255's round-trip test is kept: it guards a different surface (a field dropped
+*inside* the converter) than the brand does (the converter bypassed entirely).
 
 ## Fix B — settlement as an object, not a callback
 
-`dispatch` returns a handle:
+Implemented in `src/server/orchestrator/turn-settlement.ts`. `dispatch` returns a
+handle:
 
 ```ts
 interface TurnHandle {
   /** Resolves exactly once, when the turn reaches a terminal outcome. */
-  readonly settled: Promise<TurnOutcome>;   // { status: "completed" | "errored" | "no-result", … }
+  readonly settled: Promise<TurnOutcome>;
 }
+
+type TurnOutcomeStatus = "completed" | "errored" | "no-result" | "steered" | "dropped";
+interface TurnOutcome { status: TurnOutcomeStatus; errored: boolean; detail?: string }
 ```
 
-The executor resolves it in a `finally`, so a turn cannot exit without settling.
+`completed` is the only success. `steered` covers a message injected into an
+already-running turn (there is no separate turn to wait for); `dropped` covers a
+queue entry discarded by `clearQueue` / runner disposal, which used to eat the
+signal silently. `errored` keeps its pre-docs/240 meaning — "ended via an agent
+process error" — so the existing `{ errored }` consumers (the rebase driver, the
+CI auto-fix loop) are behaviourally untouched; `status` is the axis new consumers
+branch on.
+
+Where the settlement is resolved, and why it can't be skipped:
+
+- `executeAgentTurn`'s `done` handler wraps its whole body in `try { … } finally {
+  settleTurn(…) }`. Every terminal branch already calls `finishTurn()` (which
+  computes the real outcome), so the `finally` is a no-op on the healthy paths —
+  it exists to catch the branches that `return` early, which is exactly how
+  SHI-260 fired zero times. A branch added later that forgets to finish the turn
+  still settles it. (The `finally` deliberately does *not* clear
+  `systemTurnInProgress`: on the retry path the superseded attempt unwinds
+  **after** the retry has re-armed that flag.)
+- `runDispatchedTurn` owns "exactly once across attempts": one `settled` latch
+  plus a `currentAttempt` filter, so a retry supersedes its predecessor and the
+  outcome the caller sees is the LAST attempt's.
+
 Consequences that fall out:
 
-- **SHI-260 dissolves.** No-result retries become attempts *within* one settlement.
-  The "fire only on attempt zero" guard exists to prevent a double-fire; with a
-  single settlement resolved once at the end, a double-fire is not expressible and
-  the guard is deleted rather than corrected.
-- **Dropping completion stops being silent.** You can't drop a settlement — you can
-  only fail to resolve one, which is detectable (an unresolved handle at teardown is
-  an assertable bug, and a consumer awaiting it sees a hang rather than a permanent
-  "pending").
-- **The consumer can tell pending from lost.** Which is what SHI-258's `inFlight` set
-  was approximating.
+- **SHI-260 dissolves.** The "fire only on attempt zero" guard is **deleted**;
+  every attempt reports, and the double fire it was protecting against is no
+  longer expressible.
+- **Dropping completion stops being silent.** A discarded queue entry settles as
+  `dropped` instead of stranding its consumer at "pending forever".
+- **The consumer can tell pending from lost.** Which is what SHI-258's `inFlight`
+  set was approximating — `merge-watch` now releases the marker and re-attempts
+  on any non-`completed` outcome.
 
 ### Migration
 
-The ~15 dispatch call sites don't move at once. Keep `onTurnComplete` as a thin
-adapter over the settlement:
+The ~15 dispatch call sites don't move at once: `onTurnComplete` stays as a thin
+adapter over the settlement. `dispatch` chains the handle's `settle` onto it
+(`withSettlement`), and because `onTurnComplete` already rides the in-memory
+queue, a turn enqueued behind a running turn still settles its handle when it
+later drains.
 
-```ts
-const handle = runner.dispatch(prepared);
-if (opts.onTurnComplete) void handle.settled.then(opts.onTurnComplete);
-```
-
-so callers migrate incrementally and the risky path — the hottest in the
-orchestrator — changes shape in one place rather than in fifteen commits.
+`wakeSessionWithTurn` is migrated in the sense that matters — it passes the whole
+`TurnOutcome` through (`onSettled`) instead of flattening it to "delivered",
+which is the defect docs/239 flagged. It reads that outcome via the
+`onTurnComplete` adapter rather than `await handle.settled`, on purpose: the
+handle resolves a microtask later, and the notify-on-merge state machine (plus
+its regression suite) is written against a synchronous "the turn finished" edge.
+Nothing is lost by that choice — a wake turn is always `systemTurn: true`, hence
+never steerable, and the `dropped` case reaches `onTurnComplete` too.
 
 ## Why not just more tests
 
@@ -138,42 +190,77 @@ reconstruct a watch's completion settlement, because the worker's reported turn
 identity carries no delivery metadata. With a `deliveryId` it can re-settle a
 surviving delivery instead of the orchestrator redispatching over the top of it.
 
-## Risks
+## SHI-259's second half — startup ordering
 
-- **This is the orchestrator's hottest path.** Fix A is mechanical and independently
-  landable. Fix B changes a signature every dispatch caller touches; the adapter
-  above is what keeps it from being a big-bang change.
-- **A brand is only as good as its producers.** If `prepareDispatch` accepts a
-  partial and fills defaults, it re-opens the same hole one level up. It must take a
-  complete init object with the exhaustive mapping applied.
-- **`TurnOutcome` must carry the error case.** `wakeSessionWithTurn` currently
-  discards the `errored` outcome, so a consumer can conclude "delivered" for a turn
-  that crashed (noted in docs/239). The settlement must not repeat that.
+Startup used to launch watch reconciliation and the turn-adoption sweep as two
+independent fire-and-forget calls, reconciliation **first**. So `reconcilePending`
+could redispatch a wake-turn for a watch still at `merge-observed` while the
+original turn was still running inside a worker that outlived the restart: the
+fresh `/agent/start` meets the live agent, retries, and can ultimately kill it as
+stale.
+
+`bootstrap-managers.ts` now runs both inside one `void (async () => …)()`, with
+the adoption sweep **awaited first**. Adopting first makes those runners report
+`running`, so a reconcile-issued wake-turn enqueues behind the surviving turn —
+or is skipped entirely, because the adopted turn's own completion advanced the
+watch. Still off the boot path; each half keeps its own `try/catch` so one
+failing doesn't skip the other.
+
+## Risks — and how each was handled
+
+- **This is the orchestrator's hottest path.** Fix A is mechanical: it moved the
+  entire dispatch caller set in one pass, but every change is "wrap the literal
+  in `prepareDispatch`" and the compiler found all of them. Fix B changes
+  behavior only inside the turn executor, and `onTurnComplete` stayed as the
+  adapter so no caller had to move at once.
+- **A brand is only as good as its producers.** `prepareDispatch` takes a
+  **complete** `AgentDispatchInit` (every field required, `undefined` allowed) —
+  never a partial with defaults, which would re-open the hole one level up. The
+  test-only `testDispatch()` shim that does accept a partial lives under
+  `integration_tests/` and is documented as unusable from production.
+- **`TurnOutcome` must carry the error case.** `wakeSessionWithTurn`'s
+  `onExecuted(): void` became `onSettled(outcome: TurnOutcome)`, and
+  `merge-watch` now stamps `delivered` **only** on `status === "completed"`.
+  Anything else (`errored`, `no-result`, `dropped`) releases the SHI-258
+  in-flight marker and records a failed attempt, so the retry supervisor
+  re-attempts on a backoff instead of the watch looking healthy while stranded.
 
 ## Key files
 
 | Area | File | Change |
 |---|---|---|
-| Brand + producers | `src/server/orchestrator/session-runner.ts` | `PreparedDispatch`, `prepareDispatch`, narrowed `dispatch` / `runDispatchedTurn` signatures |
-| Converter | `src/server/orchestrator/queue-drain.ts` | Return `PreparedDispatch`; exhaustive field mapping |
-| The regression | `src/server/orchestrator/turn-adoption.ts` | Hand-rolled `drainNext` becomes a compile error; route through `startQueuedMessage` |
-| Settlement | `src/server/orchestrator/dispatched-turn.ts`, `turn-executor.ts` | `TurnHandle` / `TurnOutcome`; resolve once in `finally`; delete the attempt-zero guard |
-| Runner impls | `src/server/orchestrator/container-session-runner.ts` | Same signatures on the container runner |
-| Callers | `wake-session.ts`, `merge-watch.ts`, CI auto-fix, `sendChildMessage`, `bootstrap-managers.ts` | Adapter first, then migrate to `settled` |
-| Ordering | `src/server/orchestrator/bootstrap-managers.ts` | Await the adoption sweep before watch reconciliation (SHI-259's second half) |
+| Brand + producers | `src/server/orchestrator/prepared-dispatch.ts` *(new)* | Module-private `PREPARED` symbol, `PreparedDispatch`, `AgentDispatchInit`, `prepareDispatch`, `queuedMessageToDispatchOptions`, `withSettlement`, the exhaustiveness assertions |
+| Settlement primitive | `src/server/orchestrator/turn-settlement.ts` *(new)* | `TurnHandle` / `TurnOutcome` / `createTurnSettlement` / `settleDroppedQueueEntries` |
+| Runner contract | `src/server/orchestrator/session-runner.ts` | `dispatch(PreparedDispatch): TurnHandle`; `runDispatchedTurn(PreparedDispatch)`; `toQueuedMessage` narrowed; ONE shared `dispatchOnRunner` both runners delegate to; `clearQueue` / `dispose` settle dropped entries |
+| Converter home | `src/server/orchestrator/queue-drain.ts` | Re-exports the converter (historical import path); `startQueuedMessage` unchanged |
+| The regression | `src/server/orchestrator/turn-adoption.ts` | Hand-rolled `drainNext` deleted — it no longer compiles; routed through `startQueuedMessage` |
+| Settlement wiring | `src/server/orchestrator/dispatched-turn.ts`, `turn-executor.ts` | One settlement per logical turn across retries; attempt-zero guard **deleted**; `done` handler settles from a `finally` |
+| Runner impls | `src/server/orchestrator/container-session-runner.ts`, `turn-accumulator.ts` | Same narrowed signatures; queue teardown settles what it discards |
+| Callers | `wake-session.ts`, `merge-watch.ts`, `app-lifecycle.ts` (CI auto-fix), `services/rebase-driver.ts`, `services/child-sessions.ts`, `services/github-ci-fix.ts`, `services/headless-sessions.ts`, `services/agent.ts`, `ws-handlers/send-message.ts` | Migrated to `prepareDispatch`; merge-watch consumes the OUTCOME instead of assuming delivery |
+| Ordering | `src/server/orchestrator/bootstrap-managers.ts` | The adoption sweep is awaited before watch reconciliation (SHI-259's second half) |
 
 ## Testing
 
-- A hand-built `AgentDispatchOptions` passed to `dispatch` **fails to compile** —
-  asserted as a type-level test, since a runtime test cannot express it.
-- Adding a field to `AgentDispatchOptions` without updating the converter fails the
-  exhaustiveness check.
-- A callback-bearing system turn queued behind an **adopted** turn runs as a system
-  turn and settles (the SHI-259 regression).
-- A no-result retry that **succeeds** settles once with success; one whose retries are
-  **exhausted** settles once with failure (the SHI-260 regression).
-- An `errored` turn settles with the error outcome, not a success.
-- The existing SHI-254/255/258 regressions still pass unchanged.
+- `prepared-dispatch.test.ts` — **type-level** (`@ts-expect-error`, compiled by
+  `npm run typecheck`, which fails on an *unused* directive, so the guard bites
+  the moment the brand is removed): a hand-built `AgentDispatchOptions` and an
+  inline literal cannot be passed to `dispatch` or `runDispatchedTurn`, and an
+  incomplete `prepareDispatch` init does not compile. Plus the converter's
+  runtime field coverage and `withSettlement`'s settle-even-if-the-consumer-throws
+  behavior.
+- `queue-drain.test.ts` — SHI-255's round-trip guard, kept: it covers a field
+  dropped *inside* the converter, which the brand does not.
+- Exhaustiveness — adding a field to `AgentDispatchOptions` without updating
+  `AgentDispatchInit` / `DISPATCH_FIELDS` fails to compile, naming the field.
+- `integration_tests/turn-settlement.test.ts` — driven through the real
+  `dispatch → runDispatchedTurn → executeAgentTurn` path with a fake agent:
+  a no-result retry that **succeeds** settles once with success; one whose
+  retries are **exhausted** settles once with failure (SHI-260); an **errored**
+  turn settles with the error outcome, not a success; a discarded queue entry
+  settles as `dropped`; and a callback-bearing system turn queued behind an
+  **ADOPTED** turn runs as a system turn and settles (SHI-259).
+- The existing SHI-254 / SHI-255 / SHI-258 regressions pass unchanged — only the
+  outcome literal in two assertions grew a `status` field.
 
 ## Resolved decisions
 

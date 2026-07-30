@@ -7,6 +7,7 @@ import { isSteerableDispatch } from "./dispatch-steering.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry, AgentDispatchOptions } from "./session-runner.js";
 import type { PrTerminalStateInfo } from "./pr-status-poller.js";
 import type { PrStatusSummary } from "../shared/types/github-types.js";
+import { createTurnSettlement, TURN_COMPLETED, type TurnHandle, type TurnOutcome } from "./turn-settlement.js";
 
 /**
  * Fake runner that records dispatches + emitted WS messages. Deliberately NOT a
@@ -38,16 +39,20 @@ class FakeRunner {
   dispatched: AgentDispatchOptions[] = [];
   emitted: unknown[] = [];
   autoCompleteTurn = true;
+  /** Outcome the simulated turn settles with — docs/240: only `completed` delivers. */
+  turnOutcome: TurnOutcome = TURN_COMPLETED;
   private pendingComplete: (() => void)[] = [];
   constructor(public sessionDir: string) {}
-  dispatch(opts: AgentDispatchOptions): void {
+  dispatch(opts: AgentDispatchOptions): TurnHandle {
     this.dispatched.push(opts);
-    if (!opts.onTurnComplete) return;
-    const fire = () => opts.onTurnComplete!({ errored: false });
+    const settlement = createTurnSettlement();
+    if (!opts.onTurnComplete) return settlement;
+    const fire = () => opts.onTurnComplete!(this.turnOutcome);
     // Busy parent → enqueued, runs (and completes) only on drain. Idle parent →
     // starts now (unless the test holds it via `autoCompleteTurn = false`).
-    if (this.running || !this.autoCompleteTurn) { this.pendingComplete.push(fire); return; }
+    if (this.running || !this.autoCompleteTurn) { this.pendingComplete.push(fire); return settlement; }
     fire();
+    return settlement;
   }
   /** Simulate held/queued wake-turns draining to completion. */
   completeTurn(): void {

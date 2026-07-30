@@ -28,6 +28,7 @@ import { EventEmitter } from "node:events";
 import { SessionRunner } from "../session-runner.js";
 import type { SystemTurnDeps } from "../session-runner.js";
 import type { AgentId } from "../../shared/types.js";
+import { testDispatch } from "./dispatch-test-helpers.js";
 
 interface FakeAgent extends EventEmitter {
   run: ReturnType<typeof vi.fn>;
@@ -126,7 +127,7 @@ describe("runtime-401 auto-retry (docs/179)", () => {
     const { deps, startOAuthFlow } = makeDeps(agents, ensureAgentTokenFresh);
     runner.setSystemTurnDeps(deps);
 
-    runner.dispatch({ text: "do work" });
+    runner.dispatch(testDispatch({ text: "do work" }));
     await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first agent run");
 
     // The stale-token 401: the CLI demands auth, then the worker process exits.
@@ -162,7 +163,7 @@ describe("runtime-401 auto-retry (docs/179)", () => {
     const { deps, sseBroadcast, startOAuthFlow } = makeDeps(agents, ensureAgentTokenFresh);
     runner.setSystemTurnDeps(deps);
 
-    runner.dispatch({ text: "do work" });
+    runner.dispatch(testDispatch({ text: "do work" }));
     await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first agent run");
 
     agents[0]!.emit("auth_required");
@@ -190,7 +191,7 @@ describe("runtime-401 auto-retry (docs/179)", () => {
     const { deps, startOAuthFlow } = makeDeps(agents, ensureAgentTokenFresh);
     runner.setSystemTurnDeps(deps);
 
-    runner.dispatch({ text: "do work" });
+    runner.dispatch(testDispatch({ text: "do work" }));
     await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first agent run");
 
     // First 401 → heal succeeds → re-dispatch.

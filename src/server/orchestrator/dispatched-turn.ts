@@ -30,9 +30,10 @@ import { saveImagesToUploadsDir, assembleAgentPrompt } from "./prompt-assembly.j
 import type {
   SessionRunnerInterface,
   SystemTurnDeps,
-  AgentDispatchOptions,
 } from "./session-runner.js";
+import type { PreparedDispatch } from "./prepared-dispatch.js";
 import { queuedMessageToDispatchOptions } from "./queue-drain.js";
+import type { TurnOutcome } from "./turn-settlement.js";
 
 /**
  * How many times a dispatched first turn that exited WITHOUT producing a result
@@ -47,7 +48,7 @@ export async function runDispatchedTurn(
   runner: SessionRunnerInterface,
   deps: SystemTurnDeps,
   agentId: AgentId,
-  opts: AgentDispatchOptions,
+  opts: PreparedDispatch,
   createAgent: (agentId: AgentId) => AgentProcess,
 ): Promise<void> {
   const { text, activity } = opts;
@@ -156,6 +157,34 @@ export async function runDispatchedTurn(
   // its own fresh counter — each message is retried independently).
   let noResultRetries = 0;
 
+  // SHI-260 — ONE settlement for the whole logical turn, spanning every
+  // no-result attempt.
+  //
+  // The old code passed `onTurnComplete` only to attempt zero, reasoning that a
+  // retry re-enters `runOnce` and would otherwise fire it twice. The guard did
+  // prevent a double fire — by firing it ZERO times: when attempt zero exits
+  // with no result and no partial work, the executor returns through its
+  // "handled" branch WITHOUT calling `finishTurn`, so neither the retry's
+  // success nor its failure ever reached the caller. A notify-on-merge wake-turn
+  // that no-result-retried therefore never settled its watch, and (worse, under
+  // SHI-258's supervisor) the runner stayed live so the `inFlight` marker looked
+  // healthy forever.
+  //
+  // Retries are attempts WITHIN one settlement instead. Every attempt is wired
+  // to `settleAttempt`, and a double fire is not expressible: `settled` latches,
+  // and an attempt superseded by a retry is filtered by `currentAttempt`, so the
+  // outcome that reaches the caller is the LAST attempt's — including `errored`.
+  let currentAttempt = 0;
+  let settled = false;
+  const settleAttempt = (attempt: number, outcome: TurnOutcome): void => {
+    // A retry took over this logical turn; the superseded attempt's terminal
+    // teardown must not settle it.
+    if (attempt !== currentAttempt) return;
+    if (settled) return;
+    settled = true;
+    opts.onTurnComplete?.(outcome);
+  };
+
   const runOnce = async (attempt: number): Promise<void> => {
     // docs/140 + docs/163 — when a resident streaming process from a previous
     // turn is still alive, REUSE it (carry the message in via `sendUserMessage`)
@@ -216,11 +245,10 @@ export async function runDispatchedTurn(
       // docs/169 — post-turn policy + system-turn marker + completion signal.
       ...(opts.postTurn !== undefined ? { postTurn: opts.postTurn } : {}),
       ...(opts.systemTurn !== undefined ? { systemTurn: opts.systemTurn } : {}),
-      // The completion callback only fires on the FIRST attempt's turn — a
-      // no-result retry re-enters runOnce and would otherwise fire it twice.
-      // (The rebase loop never sets onNoResultExit, so retries don't apply to
-      // it; this guard keeps the contract clean regardless.)
-      ...(attempt === 0 && opts.onTurnComplete !== undefined ? { onTurnComplete: opts.onTurnComplete } : {}),
+      // SHI-260 — EVERY attempt reports its terminal outcome; `settleAttempt`
+      // owns "exactly once" and discards superseded attempts. The old
+      // "attempt zero only" guard is deleted, not corrected.
+      onTurnComplete: (outcome) => settleAttempt(attempt, outcome),
       // Server-initiated message → emit a bubble (no client-side optimistic
       // one). A retry must NOT re-echo the bubble or re-append the user row —
       // both already happened on the first attempt — so only the first run does.
@@ -274,6 +302,9 @@ export async function runDispatchedTurn(
 
         if (!producedPartialWork && noResultRetries < MAX_NO_RESULT_RETRIES) {
           noResultRetries++;
+          // Claim the logical turn for the next attempt BEFORE it starts, so
+          // this (now superseded) attempt's terminal teardown can't settle it.
+          currentAttempt = attempt + 1;
           console.warn(
             `[turn] dispatched turn for ${runner.sessionId} exited (code ${code}) with no result — ` +
               `retrying (attempt ${noResultRetries}/${MAX_NO_RESULT_RETRIES})`,

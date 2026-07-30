@@ -39,9 +39,10 @@
  */
 
 import type { AgentId, AgentProcess } from "../shared/types.js";
-import type { SessionRunnerInterface, SystemTurnDeps, AgentDispatchOptions } from "./session-runner.js";
+import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js";
 import { executeAgentTurn } from "./turn-executor.js";
 import { buildTurnMessages } from "./chat-card-persistence.js";
+import { startQueuedMessage, queuedMessageToDispatchOptions } from "./queue-drain.js";
 
 /** What the worker reported about the turn it still has in flight. */
 export interface InFlightTurnInfo {
@@ -71,20 +72,30 @@ export async function adoptInFlightTurn(
   // Queue drain re-entry. The in-memory queue died with the previous process,
   // so this is normally a no-op — but a message enqueued WHILE the adopted turn
   // runs must still drain when it ends, exactly as it would on any other turn.
-  // `runner.dispatch` is the shared send-or-queue entry point; `tryDrain` has
-  // already cleared `running` by the time this fires, so it starts a real turn.
+  // `tryDrain` has already cleared `running` by the time this fires, so it
+  // starts a real turn.
+  //
+  // SHI-259 — this used to rebuild `AgentDispatchOptions` by hand (text +
+  // activity + images + files + uploads + permissionMode), dropping `execution`,
+  // `systemTurn`, `postTurn`, and `onTurnComplete`. A notify-on-merge wake-turn
+  // queued behind an ADOPTED turn therefore ran as an ordinary turn and never
+  // signalled completion — the exact failure SHI-255 had just fixed for the
+  // other three drains, reachable again through this path. It now routes through
+  // the shared `startQueuedMessage`, and (docs/240) `dispatch` /
+  // `runDispatchedTurn` take a branded `PreparedDispatch`, so the hand-rolled
+  // version does not compile any more.
   const drainNext = async (): Promise<void> => {
     const next = runner.dequeue();
     if (!next) return;
     runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
-    const opts: AgentDispatchOptions = { text: next.text };
-    if (next.activity !== undefined) opts.activity = next.activity;
-    if (next.images !== undefined) opts.images = next.images;
-    if (next.files !== undefined) opts.files = next.files;
-    if (next.uploads !== undefined) opts.uploads = next.uploads;
-    if (next.permissionMode !== undefined) opts.permissionMode = next.permissionMode;
-    runner.dispatch(opts);
-    await Promise.resolve();
+    await startQueuedMessage(runner, next, (queued) => {
+      // The adoption sweep runs at startup with no WS connection behind it, so
+      // there is no interactive re-entry to fall back to. Hand the entry to the
+      // shared send-or-queue funnel with the FULL converted option set — never a
+      // narrowed literal.
+      runner.dispatch(queuedMessageToDispatchOptions(queued));
+      return Promise.resolve();
+    });
   };
 
   await executeAgentTurn(runner, deps, agent, {

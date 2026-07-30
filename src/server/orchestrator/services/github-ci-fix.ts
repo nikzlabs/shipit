@@ -18,6 +18,7 @@ import { extractFailedCheckRuns } from "../pr-status-poller.js";
 import { prepareSessionAgentEnvironment } from "../session-agent-env.js";
 import { ServiceError } from "./types.js";
 import { chownToSessionWorker, chownTreeToSessionWorker } from "../session-worker-uid.js";
+import { prepareDispatch } from "../prepared-dispatch.js";
 
 // ---- CI fix operations ----
 
@@ -314,7 +315,18 @@ export async function triggerCIFix(
   // "Fixing CI…" (the auto-loop path uses "Auto-fixing CI..." in app-lifecycle's
   // fetchAndFixCb).
   const queued = runner.running;
-  runner.dispatch({ text: prompt, activity: "Fixing CI…" });
+  runner.dispatch(prepareDispatch({
+    text: prompt,
+    activity: "Fixing CI…",
+    execution: undefined,
+    images: undefined,
+    files: undefined,
+    uploads: undefined,
+    permissionMode: undefined,
+    postTurn: undefined,
+    systemTurn: undefined,
+    onTurnComplete: undefined,
+  }));
   // attemptNumber is vestigial (the client ignores it); a manual fix is always a
   // single one-shot, so report 1.
   return { status: queued ? "queued" : "sent", attemptNumber: 1 };

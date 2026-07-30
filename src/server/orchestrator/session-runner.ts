@@ -33,6 +33,25 @@ export { runDispatchedTurn };
 import { trySteerDispatch } from "./dispatch-steering.js";
 import { resetVoiceNoteTurnState } from "./voice/voice-note-router.js";
 
+// docs/240 — the branded prepared-dispatch producers and the turn settlement.
+// `prepared-dispatch.ts` imports only TYPES from this module, so the runtime
+// edge is one-way and the import graph stays acyclic.
+import { withSettlement, type PreparedDispatch } from "./prepared-dispatch.js";
+import {
+  createTurnSettlement,
+  settleDroppedQueueEntries,
+  TURN_STEERED,
+  type TurnHandle,
+  type TurnOutcome,
+} from "./turn-settlement.js";
+export {
+  prepareDispatch,
+  queuedMessageToDispatchOptions,
+  type PreparedDispatch,
+  type AgentDispatchInit,
+} from "./prepared-dispatch.js";
+export type { TurnHandle, TurnOutcome, TurnOutcomeStatus } from "./turn-settlement.js";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -191,8 +210,12 @@ export interface QueuedMessage {
    * never serialized (`getQueueSnapshot` projects to `{text,position}`), so a
    * function field is safe; a restart drops the queue (and this callback) along
    * with the un-run turn, which is exactly the in-flight case reconcile recovers.
+   *
+   * docs/240 — this is also what carries a `dispatch` handle's SETTLEMENT across
+   * the queue (see `withSettlement`), and `clearQueue` / `dispose` now settle
+   * every entry they throw away as `dropped` rather than eating the signal.
    */
-  onTurnComplete?: (outcome: { errored: boolean }) => void;
+  onTurnComplete?: (outcome: TurnOutcome) => void;
 }
 
 /**
@@ -247,17 +270,98 @@ export interface AgentDispatchOptions {
    * ended via an agent process error. Carried through the in-memory queue
    * (docs/196 fix), so it also fires for a turn enqueued behind a running turn
    * once that turn drains and runs — not only on the idle/start-now path.
+   *
+   * docs/240 — kept as a thin ADAPTER over the settlement `dispatch` returns, so
+   * the ~15 existing call sites migrate to `handle.settled` incrementally
+   * instead of in one big-bang commit. New code should prefer the handle: it is
+   * owned, resolves exactly once from a `finally`, and lets the consumer tell
+   * *pending* from *lost*.
    */
-  onTurnComplete?: (outcome: { errored: boolean }) => void;
+  onTurnComplete?: (outcome: TurnOutcome) => void;
 }
 
 /**
- * Convert an AgentDispatchOptions payload into a QueuedMessage. Both shapes
- * carry the same per-turn fields; this helper exists so `dispatch`'s enqueue
- * branch doesn't open-code the field-by-field copy (and silently miss new
- * fields the next time the shape grows).
+ * The shared send-or-queue implementation behind BOTH runners' `dispatch`
+ * (docs/240). Previously duplicated field-for-field in `SessionRunner` and
+ * `ContainerSessionRunner` — precisely the copy-the-logic pattern this doc
+ * exists to eliminate — so it lives in one place and both delegate.
+ *
+ * Every branch returns a settled-or-settleable handle, so `dispatch` never
+ * hands back a promise nothing can resolve:
+ *
+ *   - **steered** — the message was injected into the running turn, so there is
+ *     no separate turn to complete; settle immediately as `steered`. (Only
+ *     reachable for a dispatch carrying neither `systemTurn` nor a completion
+ *     callback — SHI-254's guard in `isSteerableDispatch`.)
+ *   - **enqueued** — the settlement is chained onto the entry's
+ *     `onTurnComplete`, which rides the in-memory queue, so it resolves when the
+ *     entry later drains and runs (or `dropped` if the queue is cleared).
+ *   - **started now** — chained the same way onto the running turn.
  */
-export function toQueuedMessage(opts: AgentDispatchOptions): QueuedMessage {
+export function dispatchOnRunner(
+  runner: SessionRunnerInterface,
+  deps: SystemTurnDeps | null,
+  opts: PreparedDispatch,
+): TurnHandle {
+  const settlement = createTurnSettlement();
+
+  const enqueueAndReport = (): TurnHandle => {
+    // docs/150 — the enqueue branch broadcasts `message_queued` via emitMessage
+    // so every attached viewer (and any other HTTP-originated caller in this
+    // session) sees the update, rather than one socket.
+    const position = runner.enqueue(toQueuedMessage(withSettlement(opts, settlement)));
+    runner.emitMessage({ type: "message_queued", text: opts.text, position });
+    return settlement;
+  };
+
+  if (runner.running) {
+    // docs/163 — honor live steering on the dispatch path too: when the running
+    // turn is steerable+streaming and live steering is on, inject the message
+    // via `sendUserMessage` instead of queuing it. Shares the
+    // `shouldSteerMessage` predicate with the WS handler so the two paths can't
+    // diverge. NOTE: the *unchained* `opts` is what the steer gate sees, so
+    // attaching a settlement can never make a previously-steerable dispatch
+    // unsteerable (`isSteerableDispatch` refuses anything with `onTurnComplete`).
+    if (deps && trySteerDispatch(runner, opts, deps)) {
+      settlement.settle(TURN_STEERED);
+      return settlement;
+    }
+    return enqueueAndReport();
+  }
+  // No system-turn deps — fall back to enqueue (drains on the next WS-initiated
+  // turn).
+  if (!deps) return enqueueAndReport();
+
+  // Flip running=true synchronously BEFORE scheduling the async dispatched
+  // turn. Without this, the microtask gap between `void runDispatchedTurn(...)`
+  // and the executor's own `runner.running = true` is a window where a
+  // concurrent WS `send_message` (e.g. the user typing while clicking Fix CI)
+  // sees `running=false`, falls through to `runAgentWithMessage`, and races this
+  // dispatched turn for the `_agent` slot — silently dropping one turn's SSE
+  // events.
+  //
+  // docs/169 — set `systemTurnInProgress` in the SAME synchronous tick as
+  // `running` for a system turn (rebase resolution, CI fix), so a `send_message`
+  // arriving in the gap sees the flag and queues instead of steering into the
+  // system turn. Cleared by `executeAgentTurn` on completion.
+  if (opts.systemTurn) runner.systemTurnInProgress = true;
+  runner.running = true;
+  void runner.runDispatchedTurn(withSettlement(opts, settlement));
+  return settlement;
+}
+
+/**
+ * Convert a prepared dispatch into a QueuedMessage. Both shapes carry the same
+ * per-turn fields; this helper exists so `dispatch`'s enqueue branch doesn't
+ * open-code the field-by-field copy (and silently miss new fields the next time
+ * the shape grows).
+ *
+ * docs/240 — takes a `PreparedDispatch`, not a bare `AgentDispatchOptions`, so
+ * `enqueue(toQueuedMessage(...))` can't be used as a back door around the brand:
+ * every path INTO the queue starts at one of `prepared-dispatch.ts`'s two
+ * producers, exactly like every path out of it.
+ */
+export function toQueuedMessage(opts: PreparedDispatch): QueuedMessage {
   // SHI-255 — default to the dispatched executor: it is the superset path (it
   // restores `systemTurn` / `onTurnComplete` / `postTurn` / `activity`), so an
   // untagged dispatch can never be narrowed away by the interactive drain.
@@ -743,8 +847,14 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    * docs/150 — `dispatch` is the only writer to `runner.running` /
    * `runner.messageQueue` from a turn-start path; WS handlers delegate here
    * rather than reimplementing the queueing rule inline.
+   *
+   * docs/240 — takes a {@link PreparedDispatch}, never a bare
+   * `AgentDispatchOptions`: a hand-built literal cannot be dispatched, which is
+   * what makes a re-narrowing drain site (SHI-255, SHI-259) a compile error
+   * instead of a review catch. Returns a {@link TurnHandle} whose `settled`
+   * promise resolves exactly once with the turn's {@link TurnOutcome}.
    */
-  dispatch(opts: AgentDispatchOptions): void;
+  dispatch(opts: PreparedDispatch): TurnHandle;
   /**
    * SHI-255 — run `opts` as a server-dispatched turn NOW, bypassing the
    * send-or-queue decision. This is the queue-drain re-entry for entries tagged
@@ -754,7 +864,7 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    *
    * Only valid when `canRunDispatchedTurn` is true (system-turn deps wired).
    */
-  runDispatchedTurn(opts: AgentDispatchOptions): Promise<void>;
+  runDispatchedTurn(opts: PreparedDispatch): Promise<void>;
   /** True once `setSystemTurnDeps` has been called — i.e. `runDispatchedTurn` is usable. */
   readonly canRunDispatchedTurn: boolean;
 
@@ -946,7 +1056,12 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     return this._messageQueue.length;
   }
   dequeue(): QueuedMessage | undefined { return this._messageQueue.shift(); }
-  clearQueue(): void { this._messageQueue.length = 0; }
+  clearQueue(): void {
+    // docs/240 — a discarded entry SETTLES rather than silently eating its
+    // completion signal (see `settleDroppedQueueEntries`).
+    settleDroppedQueueEntries(this._messageQueue, "queue cleared");
+    this._messageQueue.length = 0;
+  }
   getQueueSnapshot(): { text: string; position: number }[] {
     return this._messageQueue.map((item, idx) => ({ text: item.text, position: idx + 1 }));
   }
@@ -1024,49 +1139,14 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     this._systemTurnDeps = deps;
   }
 
-  dispatch(opts: AgentDispatchOptions): void {
-    if (this._isRunning) {
-      // docs/163 — honor live steering on the dispatch path too: when the
-      // running turn is steerable+streaming and live steering is on, inject
-      // the message via `sendUserMessage` instead of queuing it. Shares the
-      // `shouldSteerMessage` predicate with the WS handler so the two paths
-      // can't diverge.
-      if (this._systemTurnDeps && trySteerDispatch(this, opts, this._systemTurnDeps)) return;
-      // docs/150 — enqueue branch broadcasts message_queued via emitMessage
-      // so every attached viewer (and any other HTTP-originated caller in
-      // this session) sees the update. Previously the WS handler did this
-      // emit on a single socket.
-      const position = this.enqueue(toQueuedMessage(opts));
-      this.emitMessage({ type: "message_queued", text: opts.text, position });
-      return;
-    }
-    if (!this._systemTurnDeps) {
-      // No deps — fall back to enqueue (will drain on next WS-initiated turn).
-      const position = this.enqueue(toQueuedMessage(opts));
-      this.emitMessage({ type: "message_queued", text: opts.text, position });
-      return;
-    }
-    // Flip running=true synchronously BEFORE scheduling the async dispatched
-    // turn. Without this, the microtask gap between `void _runDispatchedTurn`
-    // and `runDispatchedTurn`'s own `runner.running = true` is a window where
-    // a concurrent WS `send_message` (e.g. user typing while clicking Fix CI)
-    // sees `running=false`, falls through to `runAgentWithMessage`, and
-    // races with this dispatched turn for the `_agent` slot — silently
-    // dropping one turn's SSE events.
-    //
-    // docs/169 — set `systemTurnInProgress` in the SAME synchronous tick as
-    // `_isRunning` for a system turn (rebase resolution, CI fix), so a
-    // `send_message` arriving in the gap sees the flag and queues instead of
-    // steering into the system turn. Cleared by `executeAgentTurn` on
-    // completion.
-    if (opts.systemTurn) this._systemTurnInProgress = true;
-    this._isRunning = true;
-    void this.runDispatchedTurn(opts);
+  /** docs/240 — one shared send-or-queue implementation for both runners. */
+  dispatch(opts: PreparedDispatch): TurnHandle {
+    return dispatchOnRunner(this, this._systemTurnDeps, opts);
   }
 
   get canRunDispatchedTurn(): boolean { return this._systemTurnDeps !== null; }
 
-  async runDispatchedTurn(opts: AgentDispatchOptions): Promise<void> {
+  async runDispatchedTurn(opts: PreparedDispatch): Promise<void> {
     const deps = this._systemTurnDeps!;
     await runDispatchedTurn(this, deps, this._agentId, opts, (agentId) => {
       const agent = deps.agentFactory(agentId);
@@ -1112,6 +1192,9 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     if (this.agent) { this.agent.kill(); this.agent = null; }
     if (this._terminal) { this._terminal.kill(); this._terminal = null; }
     this.clearPushTimer();
+    // docs/240 — settle anything the teardown throws away, so a consumer
+    // awaiting a queued turn learns it was dropped instead of hanging forever.
+    settleDroppedQueueEntries(this._messageQueue, "runner disposed");
     this._messageQueue.length = 0;
     this._turnEventBuffer = [];
     this._isRunning = false;

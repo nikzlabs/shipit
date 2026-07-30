@@ -16,6 +16,7 @@
  */
 import type { WsServerMessage, ClaudeContentBlockToolUse } from "../shared/types.js";
 import type { QueuedMessage, ChatMessageGroup, SteeredMessage, RecordedChatCard } from "./session-runner.js";
+import { settleDroppedQueueEntries } from "./turn-settlement.js";
 
 const MAX_QUEUE_SIZE = 50;
 const MAX_TURN_BUFFER = 1000;
@@ -55,6 +56,11 @@ export class TurnAccumulator {
   }
 
   clearQueue(): void {
+    // docs/240 — settle what we throw away. A queued turn someone is awaiting
+    // (a notify-on-merge wake-turn, a rebase resolution step) used to have its
+    // completion signal silently eaten here, leaving the consumer permanently
+    // "pending" with no way to tell that from "lost".
+    settleDroppedQueueEntries(this._messageQueue, "queue cleared");
     this._messageQueue.length = 0;
   }
 
@@ -108,6 +114,8 @@ export class TurnAccumulator {
    * for any in-flight consumer is intentional.
    */
   reset(): void {
+    // docs/240 — same settle-what-you-drop rule as `clearQueue`.
+    settleDroppedQueueEntries(this._messageQueue, "runner disposed");
     this._messageQueue.length = 0;
     this._turnEventBuffer = [];
   }

@@ -34,6 +34,7 @@ import { isNonFastForwardError } from "./git.js";
 import { getErrorMessage } from "../validation.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 import type { AutoResolveResult } from "../auto-conflict-resolve-manager.js";
+import { prepareDispatch } from "../prepared-dispatch.js";
 
 // Hand the whole session workspace (worktree + `.git`) back to the worker uid
 // after the rebase driver's root git ops (SHI-144). A rebase rewrites BOTH as
@@ -425,7 +426,7 @@ function runRebaseResolutionTurn(
     // boundary IS the spawn boundary.
     deps.onAgentSpawned?.();
 
-    runner.dispatch({
+    runner.dispatch(prepareDispatch({
       text: prompt,
       activity: "Resolving conflicts...",
       // Elide the post-turn commit/push/PR/drain — the rebase owns committing.
@@ -434,6 +435,11 @@ function runRebaseResolutionTurn(
       // is queued (and drained after the flow) rather than injected into the
       // resolution turn and derailing it.
       systemTurn: true,
+      execution: undefined,
+      images: undefined,
+      files: undefined,
+      uploads: undefined,
+      permissionMode: undefined,
       onTurnComplete: ({ errored }) => {
         if (errored) {
           // The shared listener already wrote the error row + reset runner
@@ -444,7 +450,7 @@ function runRebaseResolutionTurn(
           resolve();
         }
       },
-    });
+    }));
   });
 }
 

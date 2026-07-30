@@ -15,6 +15,7 @@ import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js
 import { ServiceError } from "./types.js";
 import { saveUploadedFile, MAX_UPLOAD_FILES_PER_REQUEST } from "./files.js";
 import type { ClaimSessionService } from "./claim-session.js";
+import { prepareDispatch } from "../prepared-dispatch.js";
 
 function assertValidBranchName(name: string): void {
   if (/[\s~^:?*[\\]/.test(name) || name.includes("..")) {
@@ -222,10 +223,18 @@ export async function createHeadlessSession(
     }
   }
 
-  runner.dispatch({
+  runner.dispatch(prepareDispatch({
     text: trimmedPrompt,
-    ...(uploadRefs.length > 0 ? { uploads: uploadRefs } : {}),
-  });
+    uploads: uploadRefs.length > 0 ? uploadRefs : undefined,
+    execution: undefined,
+    activity: undefined,
+    images: undefined,
+    files: undefined,
+    permissionMode: undefined,
+    postTurn: undefined,
+    systemTurn: undefined,
+    onTurnComplete: undefined,
+  }));
 
   // graduate-session.ts owns the warm → active transition (docs/156).
   // Do not inline setWarm / track / setBranchRenamed / scheduleSessionNaming /

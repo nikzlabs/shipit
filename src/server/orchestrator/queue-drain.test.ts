@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { queuedMessageToDispatchOptions, startQueuedMessage } from "./queue-drain.js";
 import { toQueuedMessage } from "./session-runner.js";
 import type { AgentDispatchOptions, QueuedMessage, SessionRunnerInterface } from "./session-runner.js";
+import { testDispatch } from "./integration_tests/dispatch-test-helpers.js";
 
 /** Minimal runner surface `startQueuedMessage` touches. */
 function fakeRunner(opts: { canRunDispatchedTurn?: boolean } = {}) {
@@ -78,7 +79,11 @@ describe("queue drain routing (SHI-255)", () => {
       onTurnComplete,
     };
 
-    const restored = queuedMessageToDispatchOptions(toQueuedMessage(opts));
+    // docs/240 — `toQueuedMessage` now takes a branded `PreparedDispatch` (so
+    // the queue can't be entered around the brand either); `testDispatch` is the
+    // test-only shim that mints one from a partial literal. The property under
+    // test is unchanged: nothing may be lost on the way in or out.
+    const restored = queuedMessageToDispatchOptions(toQueuedMessage(testDispatch(opts)));
 
     // Every key the caller set is still set after the queue round-trip. This is
     // the guard: adding a field to AgentDispatchOptions without teaching

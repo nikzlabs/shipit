@@ -27,85 +27,15 @@
  * turn finishes with no error.
  */
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { EventEmitter } from "node:events";
 import { SessionRunner } from "../session-runner.js";
-import type { SystemTurnDeps } from "../session-runner.js";
 import type { AgentId } from "../../shared/types.js";
-
-interface FakeAgent extends EventEmitter {
-  run: ReturnType<typeof vi.fn>;
-  kill: ReturnType<typeof vi.fn>;
-  removeAllListeners: () => this;
-  setPermissionMode: ReturnType<typeof vi.fn>;
-}
-
-function makeFakeAgent(): FakeAgent {
-  const agent = new EventEmitter() as FakeAgent;
-  agent.run = vi.fn();
-  agent.kill = vi.fn();
-  agent.setPermissionMode = vi.fn();
-  return agent;
-}
-
-/** A minimal listenerDeps + turn deps wiring usable by executeAgentTurn. */
-function makeDeps(agents: FakeAgent[], appended: unknown[]): {
-  deps: SystemTurnDeps;
-  sseBroadcast: ReturnType<typeof vi.fn>;
-} {
-  const sseBroadcast = vi.fn();
-  const deps: SystemTurnDeps = {
-    agentFactory: () => {
-      const a = makeFakeAgent();
-      agents.push(a);
-      return a as unknown as ReturnType<SystemTurnDeps["agentFactory"]>;
-    },
-    autoCommit: vi.fn().mockResolvedValue({
-      commitHash: null,
-      parentHash: null,
-      conflictedFiles: [],
-      rebaseInProgress: false,
-      secretFindings: [],
-    }),
-    scheduleAutoPush: vi.fn(),
-    listenerDeps: {
-      sessionManager: {
-        setAgentSessionId: vi.fn(),
-        setLastTurnErrored: vi.fn(),
-        get: vi.fn(),
-        track: vi.fn(),
-        list: vi.fn().mockReturnValue([]),
-      } as never,
-      chatHistoryManager: {
-        replaceInProgress: vi.fn(),
-        finalizeInProgress: vi.fn(),
-        append: (_sid: string, msg: unknown) => { appended.push(msg); },
-        updateLastMessage: vi.fn().mockReturnValue(null),
-        indexOfMessageId: vi.fn().mockReturnValue(-1),
-      } as never,
-      usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as never,
-      authManager: { startOAuthFlow: vi.fn() } as never,
-      sseBroadcast,
-      broadcastLog: vi.fn(),
-      getSelectedModel: () => undefined,
-    },
-    buildRunParams: vi.fn().mockResolvedValue({ prompt: "do work", cwd: "/tmp/s1" }),
-  };
-  return { deps, sseBroadcast };
-}
-
-async function flush(): Promise<void> {
-  await new Promise((r) => setImmediate(r));
-  await new Promise((r) => setTimeout(r, 0));
-}
-
-async function waitFor(fn: () => boolean, label = "condition", timeoutMs = 2000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (fn()) return;
-    await flush();
-  }
-  throw new Error(`Timed out waiting for ${label}`);
-}
+import {
+  testDispatch,
+  makeDispatchTurnDeps as makeDeps,
+  flushTurn as flush,
+  waitForTurn as waitFor,
+  type FakeAgent,
+} from "./dispatch-test-helpers.js";
 
 describe("quick-session first-turn exit-0 (docs/163)", () => {
   afterEach(() => vi.restoreAllMocks());
@@ -119,7 +49,7 @@ describe("quick-session first-turn exit-0 (docs/163)", () => {
     const { deps } = makeDeps(agents, appended);
     runner.setSystemTurnDeps(deps);
 
-    runner.dispatch({ text: "do work" });
+    runner.dispatch(testDispatch({ text: "do work" }));
 
     // First agent spawns.
     await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first agent run");
@@ -145,7 +75,7 @@ describe("quick-session first-turn exit-0 (docs/163)", () => {
     const { deps, sseBroadcast } = makeDeps(agents, appended as unknown[]);
     runner.setSystemTurnDeps(deps);
 
-    runner.dispatch({ text: "do work" });
+    runner.dispatch(testDispatch({ text: "do work" }));
     await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first agent run");
 
     agents[0]!.emit("done", 0); // no result → retry
@@ -188,7 +118,7 @@ describe("quick-session first-turn exit-0 (docs/163)", () => {
       finalizeInProgress: ReturnType<typeof vi.fn>;
     };
 
-    runner.dispatch({ text: "do work" });
+    runner.dispatch(testDispatch({ text: "do work" }));
     await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first agent run");
 
     // The turn streams a visible assistant message (populates chatMessageGroups)…
@@ -233,7 +163,7 @@ describe("quick-session first-turn exit-0 (docs/163)", () => {
     const { deps, sseBroadcast } = makeDeps(agents, appended as unknown[]);
     runner.setSystemTurnDeps(deps);
 
-    runner.dispatch({ text: "do work" });
+    runner.dispatch(testDispatch({ text: "do work" }));
     await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first agent run");
 
     // Healthy turn: a result, then the process exits.
@@ -257,7 +187,7 @@ describe("quick-session first-turn exit-0 (docs/163)", () => {
     const { deps } = makeDeps(agents, appended);
     runner.setSystemTurnDeps(deps);
 
-    runner.dispatch({ text: "do work" });
+    runner.dispatch(testDispatch({ text: "do work" }));
     await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first agent run");
 
     agents[0]!.emit("auth_required");

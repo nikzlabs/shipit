@@ -7,6 +7,7 @@ import { recordSteeredMessage, persistTurnInProgress } from "./agent-listeners.j
 import { runAgentWithMessage, saveImagesToUploadsDir, assembleAgentPrompt } from "./agent-execution.js";
 import { resolveRunner } from "./resolve-runner.js";
 import { shouldSteerMessage } from "../dispatch-steering.js";
+import { prepareDispatch } from "../prepared-dispatch.js";
 
 // Re-export all public symbols from sub-modules for backwards compatibility
 export { CONTEXT_WINDOW_TOKENS, wireAgentListeners, extractToolResults } from "./agent-listeners.js";
@@ -308,18 +309,22 @@ export async function handleSendMessage(
       // the "running" branch so dispatch will enqueue and broadcast
       // message_queued via runner.emitMessage (every attached viewer sees
       // it, not just this socket).
-      runnerForQueue.dispatch({
+      runnerForQueue.dispatch(prepareDispatch({
         text: msg.text,
         // SHI-255 — a user-typed message: when this queues behind the running
         // turn, the drain must reproduce an INTERACTIVE turn (the client already
         // rendered an optimistic bubble, so the dispatched executor's
         // `system_user_message` echo would double it).
         execution: "interactive",
-        ...(msg.images !== undefined ? { images: msg.images } : {}),
-        ...(msg.files !== undefined ? { files: msg.files } : {}),
-        ...(msg.uploads !== undefined ? { uploads: msg.uploads } : {}),
-        ...(msg.permissionMode !== undefined ? { permissionMode: msg.permissionMode } : {}),
-      });
+        images: msg.images,
+        files: msg.files,
+        uploads: msg.uploads,
+        permissionMode: msg.permissionMode,
+        activity: undefined,
+        postTurn: undefined,
+        systemTurn: undefined,
+        onTurnComplete: undefined,
+      }));
       return;
     }
     // Worker reports no agent — verifyRunningState already reset the flag

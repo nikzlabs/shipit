@@ -26,6 +26,8 @@
 
 import type { SessionManager } from "./sessions.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
+import { prepareDispatch } from "./prepared-dispatch.js";
+import type { TurnOutcome } from "./turn-settlement.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { ProviderAccountManager } from "./provider-account-manager.js";
 import type { SessionContainerManager } from "./session-container.js";
@@ -50,12 +52,18 @@ export interface WakeTurnOptions {
   /** Activity label shown while the woken turn runs. */
   activity?: string;
   /**
-   * Fires only once the turn has actually RUN to completion (wired through
-   * `onTurnComplete`, which `dispatch` honors on both the idle path — it starts
-   * the turn now — and the busy path, where the callback rides the in-memory
-   * queue and fires when the enqueued turn later drains).
+   * Fires once the wake-turn reaches a TERMINAL outcome — on both the idle path
+   * (the turn starts now) and the busy path (the settlement rides the in-memory
+   * queue and resolves when the enqueued turn later drains and runs).
+   *
+   * docs/240 — the outcome is passed through rather than discarded. The previous
+   * `onExecuted(): void` shape threw away the `errored` case, so a consumer
+   * concluded "delivered" for a turn that crashed, never ran (`no-result`), or
+   * was dropped when the queue was cleared. `TurnOutcome.status === "completed"`
+   * is the only success; everything else means the wake did not land and the
+   * caller should treat it as a failed attempt.
    */
-  onExecuted?: () => void;
+  onSettled?: (outcome: TurnOutcome) => void;
 }
 
 /**
@@ -134,10 +142,37 @@ export async function wakeSessionWithTurn(
     throw new Error(`session ${session.id} container could not be resumed; wake-turn not delivered`);
   }
 
-  runner.dispatch({
+  // docs/240 — `dispatch` also returns a `TurnHandle` whose `settled` promise
+  // resolves exactly once with this outcome. We read the settlement through the
+  // `onTurnComplete` ADAPTER rather than awaiting the handle, per the doc's
+  // incremental-migration plan: the handle resolves a microtask later, and the
+  // notify-on-merge state machine (and its regression suite) is written against
+  // a synchronous "the turn finished" edge. The property that actually mattered
+  // — the OUTCOME is passed through instead of being flattened to "delivered" —
+  // holds either way, and "exactly once, including the retry and no-result
+  // paths" is now enforced upstream by `runDispatchedTurn` + the executor's
+  // `finally`, not by this call site.
+  const onSettled = opts.onSettled;
+  runner.dispatch(prepareDispatch({
     text: opts.text,
-    ...(opts.activity ? { activity: opts.activity } : {}),
+    activity: opts.activity,
     systemTurn: true,
-    ...(opts.onExecuted ? { onTurnComplete: () => opts.onExecuted!() } : {}),
-  });
+    ...(onSettled
+      ? {
+          onTurnComplete: (outcome: TurnOutcome) => {
+            try {
+              onSettled(outcome);
+            } catch (err) {
+              console.error(`[wake-session] settlement handler for ${session.id} threw:`, err);
+            }
+          },
+        }
+      : { onTurnComplete: undefined }),
+    execution: undefined,
+    images: undefined,
+    files: undefined,
+    uploads: undefined,
+    permissionMode: undefined,
+    postTurn: undefined,
+  }));
 }
