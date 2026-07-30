@@ -1,5 +1,12 @@
 name: CI
 
+# One CI workflow for every code path into the repo — PRs and the branches they
+# land on. There used to be a second workflow (`main-ci.yml`) that existed only
+# because PRs ran on self-hosted runners while post-merge validation ran on
+# GitHub-hosted ones. This repository is public, so GitHub-hosted runners are
+# free and unmetered; the self-hosted fleet bought nothing and cost a second
+# copy of the gates that could silently drift from this one. Everything now runs
+# on `ubuntu-24.04`, so one workflow covers both triggers.
 on:
   pull_request:
     # `main` is the integration branch; `stable` is the release maintenance
@@ -14,14 +21,19 @@ on:
     # contrast, reports "success" and satisfies the requirement. So docs-only
     # changes are short-circuited at the job level (see the `changes` job +
     # `needs: changes` gating below), not by filtering the trigger.
+  # Post-merge validation for every commit that lands on the integration branch.
+  # A PR is tested against its merge base; this catches semantic conflicts
+  # between two PRs that were each green on their own.
+  push:
+    branches: [main]
 
 # Cancel superseded runs. When a PR branch is pushed again before its CI
 # finishes, the in-flight run is now wasted work — every new push used to start
 # a fresh full run while the old one kept burning minutes to completion. Keying
-# the group on the PR ref (head_ref on a pull_request) and cancelling in
-# progress means only the latest commit's run survives. This is the largest
-# Actions-minutes saving for an active repo. The release/tag workflow has no
-# such group — a published tag's run must never be cancelled.
+# the group on the PR ref (head_ref on a pull_request, the branch ref on a push)
+# and cancelling in progress means only the latest commit's run survives. The
+# release/tag workflow has no such group — a published tag's run must never be
+# cancelled.
 concurrency:
   group: ci-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
@@ -39,10 +51,12 @@ jobs:
   # docs-only PR mergeable under branch protection). A release-bump PR touches
   # package.json / package-lock.json (not docs), so it always runs the gates.
   # Pure git — no third-party action — to keep the dependency surface pinned.
+  #
+  # On a `push` (post-merge) there is no PR base to diff against and the run is
+  # the last word on what landed, so the gates always run.
   changes:
     name: Detect code changes
-    if: github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, linux, proxmox-ci]
+    runs-on: ubuntu-24.04
     outputs:
       code: ${{ steps.filter.outputs.code }}
     steps:
@@ -53,6 +67,11 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
+          if [ -z "$BASE_SHA" ]; then
+            echo "Not a pull request — running the full gates."
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           changed=$(git diff --name-only "$BASE_SHA"...HEAD)
           echo "Changed files:"
           echo "$changed"
@@ -67,11 +86,9 @@ jobs:
   check:
     name: Lint, Type Check & Build
     needs: changes
-    # Only run for PRs whose branch lives in this repo (fork/external PRs have a
-    # different head repo, so this skips them — no CI minutes on untrusted code),
-    # and only when the PR touches build-affecting files (docs-only PRs skip).
-    if: github.event.pull_request.head.repo.full_name == github.repository && needs.changes.outputs.code == 'true'
-    runs-on: [self-hosted, linux, proxmox-ci]
+    # Only when the change touches build-affecting files (docs-only PRs skip).
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -81,16 +98,14 @@ jobs:
       # Cache node_modules itself, keyed on the lockfile. On a hit we skip the
       # extract/link work `npm ci` does even with a warm ~/.npm download cache
       # (setup-node's `cache: npm` only caches the tarballs, not the installed
-      # tree). The key includes the Node major so a runtime bump busts it.
-      #
-      # actions/cache and setup-node's `cache: npm` use GitHub's standard
-      # Actions Cache service over the network — portable to any runner,
-      # including this self-hosted one.
+      # tree). The key includes the runner image and the Node major so either
+      # bump busts it — installed trees contain native binaries and platform
+      # specific optional deps, so they are only portable within one image.
       - uses: actions/cache@v5
         id: node-modules-cache
         with:
           path: node_modules
-          key: node-modules-node24-${{ hashFiles('package-lock.json') }}
+          key: node-modules-ubuntu24-node24-${{ hashFiles('package-lock.json') }}
       - if: steps.node-modules-cache.outputs.cache-hit != 'true'
         run: npm ci
       - run: npm run lint
@@ -101,8 +116,8 @@ jobs:
   test:
     name: Test
     needs: changes
-    if: github.event.pull_request.head.repo.full_name == github.repository && needs.changes.outputs.code == 'true'
-    runs-on: [self-hosted, linux, proxmox-ci]
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -113,7 +128,7 @@ jobs:
         id: node-modules-cache
         with:
           path: node_modules
-          key: node-modules-node24-${{ hashFiles('package-lock.json') }}
+          key: node-modules-ubuntu24-node24-${{ hashFiles('package-lock.json') }}
       - if: steps.node-modules-cache.outputs.cache-hit != 'true'
         run: npm ci
       - run: npm test
