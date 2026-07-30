@@ -53,7 +53,11 @@ describe("dispatched-turn settlement (docs/240 Fix B)", () => {
       text: "do work",
       onTurnComplete: (o) => outcomes.push(o),
     }));
-    void handle.settled.then((o) => outcomes.push({ ...o, detail: "via-handle" }));
+    // Collected in the background — the handle resolves partway through the
+    // turn below, so we can't await it here.
+    void (async () => {
+      outcomes.push({ ...(await handle.settled), detail: "via-handle" });
+    })();
 
     await waitForTurn(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first agent run");
     // Attempt zero exits with no result — the executor retries.
