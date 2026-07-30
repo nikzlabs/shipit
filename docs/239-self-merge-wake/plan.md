@@ -215,8 +215,7 @@ that goes stale.
   refuse at arm time, mirroring docs/196's both-ends enforcement of "an archived
   session receives nothing".
 - **User keeps working in the session while armed** → the watch survives; the
-  escape clause covers redirection. Auto-disarming on a redirect is an open question
-  below, not a v1 behavior.
+  escape clause covers redirection (see "No auto-disarm" under Resolved decisions).
 - **docs/202 re-arm before the merge** (branch rebased and gains new work, clearing
   `mergedAt`) → the watch stays armed against the *new* PR, which is the intuitive
   reading; the fire-once machine still guarantees one delivery.
@@ -291,12 +290,21 @@ PR poller: verifyMissingPr detects merged
   `upsertReleaseCard` pattern.
 - **One turn, one PR, then stop** — the woken turn must not arm another self-watch.
 - **Staleness mitigation shared with docs/196** via one `buildWakeTurnPrompt`.
+- **No auto-disarm on user redirect.** There is no reliable "the user changed their
+  mind" signal — any implementation is a heuristic over message content or commit
+  shape, and a wrong guess drops work the user explicitly asked for *silently*,
+  which is the worst available failure mode. The two escape hatches are both
+  explicit: the arm card's Cancel, and the prompt's escape clause, which puts the
+  judgment in the woken turn where the whole transcript is in scope.
+  **Revisit if** watches are observed firing against abandoned plans often enough
+  that the silent-drop risk becomes the lesser one.
+- **No global setting.** `autoFixCi` / `autoResetMergedBranch` need global switches
+  because they fire **without** per-use consent; this fires only from an explicit
+  arm and can be cancelled from the card, so a third opt-out is speculative.
+  **Revisit if** someone asks for a blanket "never run unattended turns" switch
+  spanning all of these behaviors — that is a cross-feature setting, not this
+  feature's.
 
 ## Open questions
 
-- **Should a user redirect auto-disarm the watch?** v1 keeps it armed and relies on
-  the prompt's escape clause. If armed watches turn out to fire against abandoned
-  plans in practice, disarming on an explicit redirect is the fix.
-- **Global setting?** The per-use arming is already explicit, so v1 ships without a
-  sibling of `autoFixCi` / `autoResetMergedBranch`. Worth revisiting if users want a
-  blanket "never run unattended turns" switch.
+_None — see "Resolved decisions"._
