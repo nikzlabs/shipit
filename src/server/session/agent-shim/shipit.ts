@@ -22,6 +22,7 @@
  *   - `shipit-issue.ts`   — tracker-neutral issue view/list/create/comment/edit/status/assign
  *   - `shipit-agent.ts`   — one-shot sub-agent spawn + result re-read
  *                           (`shipit agent run` / `shipit agent result`)
+ *   - `shipit-service.ts` — Compose service control (list/start/stop/restart/logs)
  *   - `shipit-source.ts`  — read-only ShipIt source browsing (Ops sessions)
  *
  * Output:
@@ -66,6 +67,13 @@ import {
   handleIssueView,
 } from "./shipit-issue.js";
 import { handleAgentRun, handleAgentResult } from "./shipit-agent.js";
+import {
+  handleServiceList,
+  handleServiceLogs,
+  handleServiceRestart,
+  handleServiceStart,
+  handleServiceStop,
+} from "./shipit-service.js";
 import { handleReleasePlan, handleReleasePrepare } from "./shipit-release.js";
 import {
   handleSourceBlame,
@@ -161,6 +169,30 @@ Releases (docs/214 — deterministic, merge-triggered; CI publishes):
   proposes the rc; re-run with --confirm to cut + push the vX.Y.Z-rc.N tag
   (a tag push is always confirmation-gated). There is no 'release tag',
   'release publish', or 'release push' — publishing is CI's job.
+
+Compose services (docs/238 — start the services declared in docker-compose.yml):
+  shipit service list    [--json]
+  shipit service start   <name> [--timeout SECONDS] [--json]
+  shipit service stop    <name> [--json]
+  shipit service restart <name> [--timeout SECONDS] [--json]
+  shipit service logs    <name> [--lines N] [--json]
+
+  Services marked \`x-shipit-preview: manual\` (the default for any service with
+  no \`ports\`) do NOT start on their own — a database, a cache, a worker, an
+  emulator. START THEM YOURSELF when you need them; don't ask the user to click
+  Start. \`list\` shows every service with its status and its agent-reachable
+  \`url\` (the container IP — the address for your own curl / browser_navigate,
+  not the user's preview origin).
+
+  A manual service is manual because it's HEAVY: the first start may pull a
+  large image or run a \`build:\`, taking minutes. \`start\`/\`restart\` wait up to
+  10 minutes, so run them in the BACKGROUND if your shell caps foreground
+  commands below that. If a start does time out it is still running — re-check
+  with \`list\` and follow progress with \`logs\`.
+
+  The stack's SHAPE is declared in docker-compose.yml, not issued imperatively:
+  there is no \`service create\`/\`delete\`/\`build\`/\`exec\`/\`up\`/\`down\`. Edit the
+  compose file and ShipIt reconciles it.
 
 Sub-agents (docs/144 — spawn another agent for a one-shot sub-task):
   shipit agent run --agent claude|codex --prompt-file FILE [--model M] [--json]
@@ -428,6 +460,33 @@ const AGENT_HANDLERS: Record<
   result: handleAgentResult,
 };
 
+/**
+ * Compose verbs the agent might reach for that the shim refuses (docs/238). The
+ * stack's shape is DECLARED in `docker-compose.yml` and reconciled by ShipIt;
+ * the agent edits that file rather than issuing imperative stack commands. Same
+ * shape as `shipit release`'s refusal to hand-push a tag.
+ */
+const REJECTED_SERVICE_SUBCOMMANDS = new Set([
+  "create", // declare it in docker-compose.yml instead.
+  "delete", // remove it from docker-compose.yml instead.
+  "remove",
+  "build",  // `start`/`restart` already run `up -d --build`.
+  "exec",   // use the terminal / bash tool.
+  "up",     // ShipIt owns stack lifecycle; per-service `start` is the surface.
+  "down",
+]);
+
+const SERVICE_HANDLERS: Record<
+  string,
+  (args: string[], deps: RunDeps) => Promise<void>
+> = {
+  list: handleServiceList,
+  start: handleServiceStart,
+  stop: handleServiceStop,
+  restart: handleServiceRestart,
+  logs: handleServiceLogs,
+};
+
 const RELEASE_HANDLERS: Record<
   string,
   (args: string[], deps: RunDeps) => Promise<void>
@@ -498,6 +557,11 @@ export async function runShim(
 
   if (command === "release") {
     await dispatchRelease(args.slice(1), deps, io);
+    return;
+  }
+
+  if (command === "service" || command === "services") {
+    await dispatchService(args.slice(1), deps, io);
     return;
   }
 
@@ -600,6 +664,33 @@ async function dispatchAgent(args: string[], deps: RunDeps, io: ShimIO): Promise
   const handler = AGENT_HANDLERS[sub];
   if (!handler) {
     fail(io, `Unsupported shipit agent subcommand: ${sub}\n${REJECTED_HELP}`);
+  }
+  await handler(args.slice(1), deps);
+}
+
+/**
+ * Dispatch a `shipit service <sub>` invocation (docs/238). Also reached via the
+ * `services` alias — the plural is the word the compose file uses, so it's the
+ * likely typo, and rejecting it would be pure friction.
+ */
+async function dispatchService(args: string[], deps: RunDeps, io: ShimIO): Promise<void> {
+  const sub = args[0];
+  if (!sub || sub === "--help" || sub === "-h" || sub === "help") {
+    success(io, HELP);
+    return;
+  }
+  if (REJECTED_SERVICE_SUBCOMMANDS.has(sub)) {
+    fail(
+      io,
+      `${SHIM_NAME} does not support \`shipit service ${sub}\` — the stack's shape is declared, not commanded.\n` +
+        "Add, change, or remove services by editing docker-compose.yml; ShipIt reconciles the stack from the file.\n" +
+        "To bring an existing service up or down, use `shipit service start|stop|restart <name>`.\n" +
+        "See /shipit-docs/compose.md.",
+    );
+  }
+  const handler = SERVICE_HANDLERS[sub];
+  if (!handler) {
+    fail(io, `Unsupported shipit service subcommand: ${sub}\n${REJECTED_HELP}`);
   }
   await handler(args.slice(1), deps);
 }
