@@ -171,6 +171,89 @@ describe("Worker Service Endpoints", () => {
     sse.close();
   });
 
+  // docs/238 — `logs` joined the bridge so the whole service verb set lives
+  // behind one interface (previously logs were only on the orchestrator route,
+  // a different host and port from every other service call).
+  it("returns 400 for /services/logs without name", async () => {
+    const res = await worker.getApp().inject({ method: "GET", url: "/services/logs" });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ error: "name is required" });
+  });
+
+  it("emits a service_request SSE event for /services/logs, carrying --lines", async () => {
+    const events: { type: string; data: unknown }[] = [];
+    const address = worker.getApp().addresses()[0];
+    const workerUrl = `http://${address.address}:${address.port}`;
+
+    const sse = collectSSE(workerUrl, (type, data) => {
+      events.push({ type, data });
+    });
+
+    await new Promise(r => setTimeout(r, 100));
+
+    const logsPromise = worker.getApp().inject({
+      method: "GET",
+      url: "/services/logs?name=web&lines=50",
+    });
+
+    await waitFor(() => events.some(e => e.type === "service_request"), 3000, "service_request SSE event");
+
+    const svcEvent = events.find(e => e.type === "service_request");
+    const eventData = svcEvent!.data as { requestId: string; action: string; name: string; lines?: number };
+    expect(eventData.action).toBe("logs");
+    expect(eventData.name).toBe("web");
+    expect(eventData.lines).toBe(50);
+
+    await worker.getApp().inject({
+      method: "POST",
+      url: "/services/_callback",
+      payload: { requestId: eventData.requestId, result: { name: "web", logs: "boot line" } },
+    });
+
+    const res = await logsPromise;
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ name: "web", logs: "boot line" });
+
+    sse.close();
+  });
+
+  // A caller-supplied `timeoutMs` must not leak into the SSE payload — it
+  // configures the worker's own callback deadline, not anything the
+  // orchestrator acts on.
+  it("consumes timeoutMs locally rather than forwarding it to the orchestrator", async () => {
+    const events: { type: string; data: unknown }[] = [];
+    const address = worker.getApp().addresses()[0];
+    const workerUrl = `http://${address.address}:${address.port}`;
+
+    const sse = collectSSE(workerUrl, (type, data) => {
+      events.push({ type, data });
+    });
+
+    await new Promise(r => setTimeout(r, 100));
+
+    const startPromise = worker.getApp().inject({
+      method: "POST",
+      url: "/services/start",
+      payload: { name: "db", timeoutMs: 30_000 },
+    });
+
+    await waitFor(() => events.some(e => e.type === "service_request"), 3000, "service_request SSE event");
+
+    const eventData = events.find(e => e.type === "service_request")!.data as Record<string, unknown>;
+    expect(eventData.action).toBe("start");
+    expect(eventData.name).toBe("db");
+    expect(eventData.timeoutMs).toBeUndefined();
+
+    await worker.getApp().inject({
+      method: "POST",
+      url: "/services/_callback",
+      payload: { requestId: eventData.requestId as string, result: { name: "db", status: "running" } },
+    });
+    await startPromise;
+
+    sse.close();
+  });
+
   it("resolves with error when callback contains error", async () => {
     const events: { type: string; data: unknown }[] = [];
     const address = worker.getApp().addresses()[0];

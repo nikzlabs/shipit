@@ -103,7 +103,22 @@ the broken tree, dev server fails with `vite: not found`, container exits
 | `x-shipit-preview` | Behavior |
 |---------------------|----------|
 | `auto` (default for services with ports) | Starts automatically, shown in preview |
-| `manual` (default for services without ports) | User clicks "Start" in UI |
+| `manual` (default for services without ports) | Started on demand — `shipit service start <name>`, or the user clicks "Start" in the UI |
+
+Start a `manual` service yourself whenever your task needs it — a database to
+migrate against, a cache to flush, an emulator to drive. Don't tell the user to
+click Start:
+
+```bash
+shipit service list           # what exists, what's running, each service's url
+shipit service start db
+shipit service logs db --lines 200
+```
+
+The first start may pull a large image or run a `build:`, so it can take
+minutes; `start` waits up to 10 minutes and a timeout means it's still going,
+not that it failed. Full reference: [compose.md](compose.md) →
+"Controlling services".
 
 ## Install gate (`x-shipit-depends-on-install`)
 

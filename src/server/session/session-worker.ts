@@ -41,6 +41,7 @@ import { registerAgentOpsRoutes } from "./agent-ops-routes.js";
 import { normalizeAskQuestions } from "./ask-question.js";
 import type { OrchestratorClient } from "./orchestrator-client.js";
 import { ServiceRequestQueue } from "./service-request-queue.js";
+import { serviceRequestTimeoutMs, serviceTimeoutMessage } from "./service-request-timeouts.js";
 import { SseBroadcaster } from "./sse-broadcaster.js";
 import type { SseClient, WorkerSSEEvent } from "./sse-broadcaster.js";
 import { PresentRegistry, derivePresentId } from "./present-registry.js";
@@ -204,12 +205,27 @@ export class SessionWorker extends EventEmitter {
       return this.sendServiceRequest("list");
     });
 
-    app.post<{ Body: { name: string } }>("/services/start", async (request, reply) => {
-      const { name } = request.body ?? {};
+    // docs/238 — `logs` joins the bridge so the whole service verb set lives
+    // behind one interface. Previously logs were only on the orchestrator route
+    // (GET /api/sessions/:id/services/:name/logs), a different host and port
+    // from every other service call; that route still works and is unchanged.
+    app.get<{ Querystring: { name?: string; lines?: string } }>("/services/logs", async (request, reply) => {
+      const { name, lines } = request.query ?? {};
       if (typeof name !== "string" || !name) {
         return reply.code(400).send({ error: "name is required" });
       }
-      return this.sendServiceRequest("start", name);
+      const parsed = parseInt(lines ?? "", 10);
+      return this.sendServiceRequest("logs", name, {
+        lines: Number.isFinite(parsed) && parsed > 0 ? parsed : undefined,
+      });
+    });
+
+    app.post<{ Body: { name: string; timeoutMs?: number } }>("/services/start", async (request, reply) => {
+      const { name, timeoutMs } = request.body ?? {};
+      if (typeof name !== "string" || !name) {
+        return reply.code(400).send({ error: "name is required" });
+      }
+      return this.sendServiceRequest("start", name, { timeoutMs });
     });
 
     app.post<{ Body: { name: string } }>("/services/stop", async (request, reply) => {
@@ -220,12 +236,12 @@ export class SessionWorker extends EventEmitter {
       return this.sendServiceRequest("stop", name);
     });
 
-    app.post<{ Body: { name: string } }>("/services/restart", async (request, reply) => {
-      const { name } = request.body ?? {};
+    app.post<{ Body: { name: string; timeoutMs?: number } }>("/services/restart", async (request, reply) => {
+      const { name, timeoutMs } = request.body ?? {};
       if (typeof name !== "string" || !name) {
         return reply.code(400).send({ error: "name is required" });
       }
-      return this.sendServiceRequest("restart", name);
+      return this.sendServiceRequest("restart", name, { timeoutMs });
     });
 
     // --- Service callback endpoint (called by orchestrator with results) ---
@@ -558,11 +574,21 @@ export class SessionWorker extends EventEmitter {
    * for the callback response. The orchestrator handles the request via
    * ServiceManager and POSTs the result back to /services/_callback.
    */
-  private sendServiceRequest(action: string, name?: string): Promise<unknown> {
-    const { requestId, promise } = this.serviceRequests.enqueue(action);
+  private sendServiceRequest(
+    action: string,
+    name?: string,
+    opts: { timeoutMs?: number; lines?: number } = {},
+  ): Promise<unknown> {
+    // docs/238 — the deadline is chosen per action. A caller may lower it
+    // (`shipit service start --timeout`) but never raise it past the ceiling.
+    const timeoutMs = serviceRequestTimeoutMs(action, opts.timeoutMs);
+    const { requestId, promise } = this.serviceRequests.enqueue(action, {
+      timeoutMs,
+      timeoutMessage: serviceTimeoutMessage,
+    });
     this.broadcastSSE({
       type: "service_request",
-      data: { requestId, action, name },
+      data: { requestId, action, name, lines: opts.lines },
     });
     return promise;
   }

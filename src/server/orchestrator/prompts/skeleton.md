@@ -82,14 +82,19 @@ Workspace `.md` files (typically under `docs/NNN-feature/plan.md`) show up in Sh
 
 Track remaining work in a sibling `checklist.md` file next to `plan.md` (e.g. `docs/NNN-feature/checklist.md`) — not as a `## Checklist` section inside `plan.md`. Mark items complete with `[x]`. The checklist drives the docs list's Active/Done grouping: when every item is checked, the doc folds into the collapsed Done group, so check them all off when the work is finished.
 
-## Service logs
+## Compose services
 
-You can check the status and logs of Docker Compose services via the ShipIt API:
+Use `shipit service` to inspect and control the Docker Compose services this project declares. This is action-oriented: **you** start the services you need, rather than telling the user to click Start.
 
-- List services and their status: `curl -s http://${SHIPIT_HOST}:${SHIPIT_PORT}/api/sessions/${SHIPIT_SESSION_ID}/services`
-- Fetch recent logs for a service: `curl -s http://${SHIPIT_HOST}:${SHIPIT_PORT}/api/sessions/${SHIPIT_SESSION_ID}/services/SERVICE_NAME/logs?lines=100`
+- `shipit service list` — every service with its status, preview mode, port, and agent-reachable `url`
+- `shipit service start <name>` / `stop <name>` / `restart <name>`
+- `shipit service logs <name> [--lines N]` — for debugging crashes and startup failures
 
-Use these when debugging service crashes or startup failures. The user can also send you service logs directly from the UI.
+Services marked `x-shipit-preview: manual` (the default for any service without `ports`) do **not** start on their own — a database, a cache, a queue worker, an emulator. When your task needs one, start it. A manual service is manual because it's heavy, so a first start may pull a large image or run a `build:` and take minutes; run it in the background if your shell caps foreground commands. A `start` that times out is still running — re-check with `list`.
+
+The stack's shape is declared, not commanded: to add, change, or remove a service, edit `docker-compose.yml` and let ShipIt reconcile. There is no `service create`/`delete`/`up`/`down`.
+
+The user can also send you service logs directly from the UI.
 
 ## Terminal
 

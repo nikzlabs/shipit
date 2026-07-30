@@ -10,10 +10,10 @@ platform capabilities.
 | [android.md](android.md) | Android — build/lint/test the baked toolchain, snapshot tests for visual checks, emulator-as-Compose-service for a live device |
 | [shipit-yaml.md](shipit-yaml.md) | Full `shipit.yaml` config reference |
 | [preview.md](preview.md) | Preview system — port detection, HMR, browser tools |
+| [compose.md](compose.md) | Writing `docker-compose.yml` for ShipIt, and controlling the services in it — `shipit service list/start/stop/restart/logs` |
 | [secrets.md](secrets.md) | Per-service env var declaration via `x-shipit-secrets` |
 | [deployment.md](deployment.md) | Deploy targets (Vercel, Cloudflare) |
 | [github.md](github.md) | Branches, PRs, auto-push, CI |
-| [issues.md](issues.md) | Read issues (GitHub + Linear) via the tracker-neutral `shipit issue view`/`list` |
 | [sessions.md](sessions.md) | Agent-spawned sibling sessions — `shipit session create`, when to use it |
 | [sandbox-session.md](sandbox-session.md) | Sandbox session — empty `/workspace`, the git/docker/network capabilities, how to clone & open PRs per-repo, persistence |
 | [issues.md](issues.md) | Tracker-neutral issue access — `shipit issue view/list/comment/edit/status/assign` (GitHub + Linear), do-then-surface writes with Undo |

@@ -38,6 +38,7 @@ import { workerPost, workerGet, workerInstall, workerPushAgentSecrets, workerPos
 import { ProxyAgentProcess } from "./proxy-agent-process.js";
 import type { ProxyAgentRunner } from "./proxy-agent-process.js";
 import type { ServiceManager, ManagedService, SecretsStatusInternalSnapshot } from "./service-manager.js";
+import { stripAnsi } from "../shared/strip-ansi.js";
 import { SseConnectionManager } from "./sse-connection-manager.js";
 import { BackgroundTaskTracker, type BackgroundTaskInfo } from "./background-task-tracker.js";
 import { TurnAccumulator } from "./turn-accumulator.js";
@@ -1713,8 +1714,9 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           const requestId = data.requestId as string;
           const action = data.action as string;
           const name = data.name as string | undefined;
+          const lines = data.lines as number | undefined;
           // Handle asynchronously — don't block SSE processing
-          void this.handleServiceRequest(requestId, action, name);
+          void this.handleServiceRequest(requestId, action, name, lines);
           break;
         }
 
@@ -1887,7 +1889,12 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * Handle a service control request from the agent (received via SSE from the worker).
    * Performs the action via ServiceManager and POSTs the result back to the worker.
    */
-  private async handleServiceRequest(requestId: string, action: string, name?: string): Promise<void> {
+  private async handleServiceRequest(
+    requestId: string,
+    action: string,
+    name?: string,
+    lines?: number,
+  ): Promise<void> {
     let result: unknown;
     let error: string | undefined;
 
@@ -1897,6 +1904,29 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         throw new Error("No compose stack configured for this session");
       }
 
+      /**
+       * Read a service back out of the manager AFTER the mutation + `pollOnce`.
+       *
+       * docs/238 — start/restart used to return a hardcoded
+       * `{ status: "running" }`, throwing away the fresh poll they had just
+       * performed. A container that started and immediately exited (a dev server
+       * with no `node_modules`, exit 127) still reported `running`, so the agent
+       * proceeded against a dead service. Reporting the polled status makes a
+       * failed start legible as a failed start.
+       */
+      const describe = (svcName: string) => {
+        const svc = mgr.getServices().find(s => s.name === svcName);
+        return {
+          ok: svc?.status !== "error",
+          name: svcName,
+          status: svc?.status ?? "stopped",
+          port: svc?.port,
+          preview: svc?.preview,
+          url: svc?.url,
+          error: svc?.error,
+        };
+      };
+
       switch (action) {
         case "list":
           result = {
@@ -1905,25 +1935,44 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
               status: s.status,
               port: s.port,
               preview: s.preview,
+              url: s.url,
               error: s.error,
             })),
           };
           break;
-        case "start":
+        case "start": {
           if (!name) throw new Error("Service name is required");
+          // Report an already-running service as a no-op rather than silently
+          // re-`up`ing it, so the agent doesn't have to guess whether its start
+          // was the thing that brought the service up.
+          const before = mgr.getServices().find(s => s.name === name);
+          if (before?.status === "running") {
+            result = { ...describe(name), alreadyRunning: true };
+            break;
+          }
           await mgr.startService(name);
-          result = { ok: true, name, status: "running" };
+          result = describe(name);
           break;
+        }
         case "stop":
           if (!name) throw new Error("Service name is required");
           await mgr.stopService(name);
-          result = { ok: true, name, status: "stopped" };
+          result = describe(name);
           break;
         case "restart":
           if (!name) throw new Error("Service name is required");
           await mgr.restartService(name);
-          result = { ok: true, name, status: "running" };
+          result = describe(name);
           break;
+        case "logs": {
+          if (!name) throw new Error("Service name is required");
+          if (!mgr.getService(name)) throw new Error(`Unknown service: ${name}`);
+          // Same source as the orchestrator's logs route: the durable log store
+          // when it has been seeded, else a fresh `docker compose logs --tail`.
+          const logs = stripAnsi(await mgr.snapshotLogs(name, lines ?? 2000));
+          result = { name, logs };
+          break;
+        }
         default:
           throw new Error(`Unknown service action: ${action}`);
       }

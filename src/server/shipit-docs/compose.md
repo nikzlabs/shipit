@@ -107,7 +107,7 @@ Controls how ShipIt treats each service:
 | Value | Behavior |
 |-------|----------|
 | `auto` | Starts automatically, preview shown when ready. Default for services with `ports`. |
-| `manual` | User clicks "Start" in UI. Default for services without `ports`. |
+| `manual` | Started on demand — by you via `shipit service start <name>`, or by the user clicking "Start" in the UI. Default for services without `ports`. |
 
 ```yaml
 services:
@@ -337,55 +337,64 @@ cannot `import` them in an ad-hoc `python -c '...'`. The agent edits source and
 the running app reflects the change via the mounted volume, but it can't execute
 the project's Python directly. This is expected for now.
 
-## Service control API
+## Controlling services — `shipit service`
 
-You can manage compose services programmatically via HTTP endpoints on
-`localhost:9100`. This is useful for starting/stopping services as part of
-a workflow without asking the user to do it manually in the UI.
-
-### List services
-
-```bash
-curl http://localhost:9100/services/list
-```
-
-Returns:
-```json
-{
-  "services": [
-    { "name": "web", "status": "running", "port": 5173, "preview": "auto" },
-    { "name": "db", "status": "stopped", "port": 5432, "preview": "manual" }
-  ]
-}
-```
-
-### Start a service
+You start the services this project declares. A `manual` service — a database, a
+cache, a queue worker, an emulator — does not come up on its own, and the answer
+is **not** "ask the user to click Start in the UI": when your task needs the
+service, bring it up yourself.
 
 ```bash
-curl -X POST http://localhost:9100/services/start \
-  -H 'Content-Type: application/json' \
-  -d '{"name": "db"}'
+shipit service list                       # every service: status, preview mode, port, url
+shipit service start db                   # bring up a manual service
+shipit service logs db --lines 200        # what it printed
+shipit service restart web                # pick up a config change
+shipit service stop db
 ```
 
-### Stop a service
+`list` prints an aligned table:
 
-```bash
-curl -X POST http://localhost:9100/services/stop \
-  -H 'Content-Type: application/json' \
-  -d '{"name": "db"}'
+```
+NAME  STATUS   PREVIEW  PORT  URL
+web   running  auto     5173  http://172.20.0.3:5173/
+db    stopped  manual   5432
 ```
 
-### Restart a service
+The `url` column is the **agent-reachable** address (the service's container IP),
+which is what your own `curl` and `browser_navigate` should use. It is not the
+user's preview origin (`{sessionId}--{port}.<host>`), which doesn't resolve from
+inside your container. It is populated only while the service is running.
 
-```bash
-curl -X POST http://localhost:9100/services/restart \
-  -H 'Content-Type: application/json' \
-  -d '{"name": "web"}'
-```
+Add `--json` to any subcommand for a machine-readable object.
 
-All mutation endpoints return `{ "ok": true, "name": "...", "status": "..." }`
-on success or an error with an HTTP 500 status if the operation fails. Service
-names must match those defined in docker-compose.yml.
+### Starts can take minutes
+
+A service is `manual` precisely because it's heavy. The first `start` runs
+`docker compose up -d --build`, so it may pull a multi-gigabyte image or run a
+`build:`. `start` and `restart` wait up to **10 minutes** — if your shell caps
+foreground commands below that, run them in the background.
+
+If a start does hit the timeout, it is **still running**: the message says so.
+Re-check with `shipit service list` and follow progress with `shipit service
+logs <name>` rather than retrying the start.
+
+A service that comes up and immediately dies is reported as `error` (with the
+reason) and exits non-zero — `shipit service logs <name>` has the output.
+
+### The stack's shape is declared, not commanded
+
+There is no `shipit service create`, `delete`, `build`, `exec`, `up`, or `down`.
+To add, change, or remove a service, **edit `docker-compose.yml`** — ShipIt
+reconciles the running stack against the file. `start`/`stop`/`restart` operate
+on services that already exist there.
+
+### Raw HTTP
+
+The same operations are available on the session worker at `localhost:9100`
+(`GET /services/list`, `GET /services/logs?name=X&lines=N`, and
+`POST /services/{start,stop,restart}` with `{"name": "..."}`). Prefer the CLI:
+it handles the long-running start correctly, reports the real post-start status,
+and gives actionable errors.
 
 ## Where to put `npm install`
 
