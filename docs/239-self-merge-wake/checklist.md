@@ -1,50 +1,61 @@
 # Self-merge wake — checklist
 
+## Prerequisites (bugs in shipped code — fix before building on them)
+
+- [x] **P1** `trySteerDispatch` returns false for `systemTurn` / callback-carrying dispatches — SHI-254
+- [x] **P2** interactive queue drain preserves `systemTurn` + `onTurnComplete` — SHI-255
+- [ ] **P3** retry path for a failed delivery that doesn't require an orchestrator restart
+
 ## Watch state
 
-- [ ] `self_merge_watch` column + migration (`database.ts`)
-- [ ] `SessionInfo.selfMergeWatch`; `followUp` + `expired` / `cancelled` states on the watch type
-- [ ] `setSelfMergeWatch` / `getSelfMergeWatch` in `sessions.ts`
-- [ ] `listPendingMergeWatches` also returns pending self-watches
+- [ ] Distinct `SelfMergeWatch` type (watchId, generation, `followUp`, full state set)
+- [ ] `self_merge_watch` column + migration
+- [ ] CAS transitions in `sessions.ts` (`armed → merge-observed` vs `armed → cancelled`)
+- [ ] `listPendingSelfMergeWatches` (separate from the child list)
+- [ ] Per-watch delivery lease keyed on `watchId`
 
 ## Arm surface
 
-- [ ] `--self` + `--then` on the `notify-on-merge` subcommand (`agent-shim/shipit-session.ts`)
-- [ ] Worker relay (`agent-ops-routes.ts`)
-- [ ] `POST /api/sessions/:id/self-merge-watch` — arms, refuses an archived session, fires `checkAndFireNow`
+- [ ] `--self` + `--then` on `notify-on-merge` (`agent-shim/shipit-session.ts`) + worker relay
+- [ ] `POST /api/sessions/:id/self-merge-watch` — arms, refuses archived, refuses while a watch is non-terminal, fires `checkAndFireNow` under the lease
+- [ ] Container-accessible route golden test
 
 ## Delivery
 
-- [ ] `handleSelfMerge` in `merge-watch.ts` (reuses the docs/196 machine)
-- [ ] Call it from `onMergeDetectedCb` **after** `markMergedAndPruneExcess`, beside `emitResetEligibleSignal`
-- [ ] Call `autoResetMergedBranchOnContinue` before `dispatch`; failed gate still dispatches
-- [ ] `self` branch in `buildWakeTurnPrompt` (shared escape clause)
-- [ ] `delivered` stamped only from `onTurnComplete`
-- [ ] Closed-without-merge → `expired`, no dispatch
-- [ ] Woken turn must not arm another self-watch
-- [ ] `reconcilePending` covers self-watches
-- [ ] Pending self-watch keeps `PollingGlobalGate` open
+- [ ] `handleSelfMerge` called from `onMergeDetectedCb` after `markMergedAndPruneExcess`, with PR identity
+- [ ] Generation check — stale terminal event can't consume a newer watch
+- [ ] Closed outcomes fan out from `onPrTerminalState` → `expireSelfWatch`
+- [ ] Restore an evicted workspace before the reset
+- [ ] Reserve the system-turn slot before the first await
+- [ ] Reset coordinator: consent policy, workspace mutex, auto-push coordination, re-arm, `reset_eligible`, persisted card, durable `reset-complete`
+- [ ] Fail closed on a safety-gate failure (`blocked`, no turn)
+- [ ] `self` branch in `buildWakeTurnPrompt`
+- [ ] Preserve the `errored` outcome through `wakeSessionWithTurn`
+- [ ] Terminal states: `completed` / `failed` / `completed-without-pr`
+- [ ] Woken turn's `--self` re-arm refused server-side
+- [ ] `reconcilePending` + `PollingGlobalGate` cover self-watches
 
 ## Arm card
 
-- [ ] `selfMergeWatch` `PersistedMessage` field + `self_merge_watch_card` column + migration
-- [ ] `toRow` / `fromRow` + rehydrate in `loadSessionHistory`
-- [ ] `upsertSelfMergeWatchCard` (the `upsertReleaseCard` pattern)
-- [ ] Register in `CARD_MESSAGE_FIELDS` + `EVERY_OPTIONAL_FIELD_MESSAGE`
+- [ ] Arm via `emitChatCard`; transitions via `persistCardTransition`
+- [ ] `selfMergeWatch` field + `self_merge_watch_card` column + migration + `toRow`/`fromRow`
+- [ ] Rehydrate in `loadSessionHistory`; `CARD_MESSAGE_FIELDS` + `EVERY_OPTIONAL_FIELD_MESSAGE`
 - [ ] WS type in `TRANSCRIPT_SCOPED_MESSAGES`
-- [ ] Client card component + message handler
-- [ ] `cancel_self_merge_watch` WS handler → clear watch + patch card
+- [ ] Client card component + handler; `cancel_self_merge_watch` WS handler
 
 ## Tests
 
-- [ ] `merge-watch.test.ts` — fire-once, delivered-means-ran, busy drain, expired, cancelled, archived, reconcile
-- [ ] Delivery — reset before dispatch; failed gate still dispatches; wake throw leaves `merge-observed`
-- [ ] Ordering regression — `mergedAt` + `mergedHeadSha` set when the self-watch fires
+- [x] P1 / P2 regressions — `system-turn-queue.test.ts`, `queue-drain.test.ts`
+- [ ] P3 — recovery without a process restart
+- [ ] `merge-watch.test.ts` — fire-once, terminal-means-ran, expired, blocked, cancel-vs-merge both orderings, check-now-vs-poller, archived, reconcile
+- [ ] Generation — docs/202-superseded PR event doesn't consume the new watch
+- [ ] Reset — reserved slot, mutex, pending auto-push, crash after force-push
+- [ ] Workspace — evicted checkout restored (distinct from idle-reaped container)
 - [ ] `polling-global-gate.test.ts` — pending self-watch keeps the gate open
-- [ ] Integration — arm → merge → reset + one turn + new PR; no chained watch
-- [ ] `chat-history.test.ts` / `visual-elements.test.ts` — card guard contract
+- [ ] Card — arm + transition within the same running turn, then switch/reload
+- [ ] Integration — arm → merge → reset + one turn + new PR; re-arm refused; WS disconnect during delivery
 
 ## Docs
 
-- [ ] `src/server/shipit-docs/sessions.md` — `--self --then`, one-turn-one-PR
-- [ ] Update `docs/196-session-notify-on-merge/plan.md` to cross-reference the self variant
+- [ ] `src/server/shipit-docs/sessions.md` — `--self --then`, one-attempt rule
+- [ ] `docs/196-session-notify-on-merge/plan.md` — cross-reference the self variant; correct its "next poll retries" and "rides the in-memory queue" claims
