@@ -79,7 +79,9 @@ turn-completion signal the CI auto-fix loop awaits in `app-lifecycle.ts`):
   runs it advances the watch to `delivered` **in-process** — no restart needed.
   The watch sits at `merge-observed` only for the window between enqueue and the
   turn actually running; a restart inside that window drops the queued turn and
-  leaves the watch recoverable for `reconcilePending`.
+  leaves the watch recoverable for `reconcilePending`. This holds on **both**
+  drains — the dispatched turn's own and the interactive (WS) turn's — see
+  *How a queued wake-turn survives the drain* below.
 
 A restart at any point before the turn completes therefore leaves the watch
 recoverable, and re-delivery never surfaces a second card.
@@ -96,13 +98,62 @@ of duplicate "Child PR merged" wake-turns on each restart/reconnect. Carrying
 `delivered` once the turn drains, so reconcile re-fires **only** the genuine
 "restart lost the still-queued turn" case.
 
+### How a queued wake-turn survives the drain (SHI-254 / SHI-255)
+
+Carrying `onTurnComplete` on the queue is necessary but wasn't sufficient: two
+defects in the shared dispatch path meant a wake-turn arriving at a *genuinely*
+busy parent still lost it. Both are fixed; the mechanism now honors
+"`delivered` means the turn ran" instead of quietly breaking it.
+
+- **The wake-turn is never live-steered (SHI-254).** `dispatch` consults
+  `trySteerDispatch` before enqueueing, and `shouldSteerMessage` only asks
+  whether the **currently running** turn is a system turn — nothing about the
+  incoming one. With live steering on, a wake-turn arriving during an ordinary
+  streaming *user* turn was therefore injected into that turn via
+  `sendUserMessage`: the system instruction landed mid-context in someone else's
+  turn (contradicting "never preempts a running turn"), and because the steer
+  branch returns **before** any enqueue, `onTurnComplete` was dropped outright —
+  the watch could never leave `merge-observed`. `isSteerableDispatch`
+  (`dispatch-steering.ts`) now refuses to steer any dispatch carrying
+  `systemTurn` **or** a completion callback, so such a turn always enqueues and
+  always runs as its own turn.
+- **Both queue drains preserve the full option set (SHI-255).** A session has one
+  queue but two drains: the dispatched turn's (`dispatched-turn.ts`) and the
+  interactive WS turn's (`ws-handlers/agent-execution.ts`). Only the first
+  restored `systemTurn` / `onTurnComplete`; the interactive one re-entered
+  `runAgentWithMessage` with just text, attachments, and the agent session id. So
+  a wake-turn queued behind a **user** turn — the common case, since a busy
+  parent is busy precisely because a user turn is running — ran as an ordinary
+  interactive turn and never signalled completion. Every queued entry is now
+  **tagged** with the executor that must run it (`QueuedMessage.execution`:
+  `"interactive"` for a user-typed WS message, `"dispatched"` for everything
+  server-originated, which is also the default), and both drains route through
+  `startQueuedMessage` (`queue-drain.ts`): a `"dispatched"` entry goes back
+  through `runner.runDispatchedTurn` with the full option set, and only an
+  `"interactive"` entry reaches a transport's narrower re-entry. A third drain
+  added later cannot re-narrow an entry without deliberately bypassing that
+  module.
+- **A drained system turn runs as a system turn.** `dispatch` sets
+  `systemTurnInProgress` synchronously only for a turn it starts from idle, so an
+  *enqueued* system turn used to run steerable. `executeAgentTurn` now sets the
+  flag from `input.systemTurn` as well (and clears it on teardown), so a
+  wake-turn suppresses live steering for its whole duration however it started.
+
+**Still open (not fixed here).** A wake-turn delivery that *fails* has no retry
+before an orchestrator restart: `reconcilePending` has only a bootstrap call
+site, so a `deliverWakeTurn` throw (parent container couldn't be resumed) leaves
+the watch at `merge-observed` until the next startup. That is a design gap
+needing a retry supervisor, not a narrow bug fix.
+
 ## Correctness requirements (and how they're met)
 
 - **Never preempt a running parent turn.** Delivery is a single
   `runner.dispatch({ systemTurn: true })`, which enqueues when the parent is
   mid-turn (drained post-turn) and starts a turn when idle. The poller event
   never calls `agent.kill()` / `dispose()` — same invariant as the rest of the
-  poller-driven automations.
+  poller-driven automations. "Enqueues when mid-turn" is unconditional: a
+  `systemTurn` dispatch is never live-steered into the running turn, whatever the
+  steering settings say (SHI-254, above).
 - **Survives an orchestrator restart.** The watch is persisted; on startup
   `MergeWatchManager.reconcilePending()` re-derives "child PR terminal + watch
   un-delivered → fire" from the persisted PR snapshot (`loadPersisted` seeds it),
@@ -200,7 +251,18 @@ PR poller detects terminal PR state (verifyMissingPr)
   `src/server/orchestrator/dispatched-turn.ts` — `onTurnComplete` is carried
   through the in-memory queue (`QueuedMessage` / `toQueuedMessage` /
   `queuedMessageToDispatchOptions`) so an enqueued wake-turn signals completion
-  when it drains (the busy-parent `delivered` path / duplicate-fire fix).
+  when it drains (the busy-parent `delivered` path / duplicate-fire fix), plus
+  the `QueuedMessage.execution` tag and `runner.runDispatchedTurn` drain re-entry.
+- `src/server/orchestrator/queue-drain.ts` — `startQueuedMessage`: the single
+  router both drains use, so a queued entry always runs on the executor it was
+  tagged for (SHI-255).
+- `src/server/orchestrator/dispatch-steering.ts` — `isSteerableDispatch`: a
+  `systemTurn` / completion-callback dispatch is never steered (SHI-254).
+- `src/server/orchestrator/ws-handlers/agent-execution.ts` — the interactive
+  drain routes through `startQueuedMessage`; `runQueuedInteractiveMessage` is
+  reached only by `"interactive"` entries.
+- `src/server/orchestrator/turn-executor.ts` — sets `systemTurnInProgress` from
+  `input.systemTurn`, so a *drained* system turn also suppresses live steering.
 - `src/server/orchestrator/api-routes-session.ts` — register route.
 - `src/server/session/agent-ops-routes.ts` — worker relay.
 - `src/server/session/agent-shim/shipit.ts` — `notify-on-merge` subcommand.
@@ -233,6 +295,22 @@ PR poller detects terminal PR state (verifyMissingPr)
   cross-tenancy 404) → merge → persisted parent card + dispatched wake-turn →
   `delivered` only after the real turn completes → fire-once → closed-unmerged,
   plus a restart-before-the-turn-runs case recovered by `reconcilePending`
-  (no second card), through a fully-wired `buildApp`.
+  (no second card), through a fully-wired `buildApp`. Includes the busy-parent
+  case against a **real interactive turn** (SHI-255): the wake-turn queues behind
+  it, drains, runs as a system turn, and reaches `delivered` in-process.
+- `integration_tests/system-turn-queue.test.ts` — the two dispatch-path
+  regressions against a real turn (the fake busy runner in `merge-watch.test.ts`
+  cannot reproduce either): with live steering on a `systemTurn` dispatch queues
+  instead of being steered and its `onTurnComplete` still fires (SHI-254); a
+  wake-turn queued behind a real interactive turn runs as a system turn and fires
+  its callback (SHI-255); and an ordinary user message queued behind a running
+  turn still drains on the interactive path (no duplicate echo bubble).
+- `queue-drain.test.ts` — the drain router: a `"dispatched"` entry never reaches
+  the interactive re-entry, an `"interactive"` one always does, the deps-less
+  fallback, and a round-trip guard that fails if a new `AgentDispatchOptions`
+  field is not carried through the queue.
+- `session-runner.test.ts` — a `systemTurn` (or completion-callback) dispatch
+  enqueues rather than steering, even with live steering on and a streaming turn
+  in flight, and the queued entry keeps its callback.
 - `chat-history.test.ts` + `visual-elements.test.ts` — the at-rest-card guard
   contract (round-trip + empty-text carrier).

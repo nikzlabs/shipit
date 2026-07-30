@@ -32,8 +32,8 @@ describe("SessionRunner", () => {
       defaultAgentId: "claude" as AgentId,
     });
     expect(runner.queueLength).toBe(0);
-    runner.enqueue({ text: "msg1" });
-    runner.enqueue({ text: "msg2" });
+    runner.enqueue({ text: "msg1", execution: "interactive" });
+    runner.enqueue({ text: "msg2", execution: "interactive" });
     expect(runner.queueLength).toBe(2);
 
     const snapshot = runner.getQueueSnapshot();
@@ -119,7 +119,7 @@ describe("SessionRunner", () => {
     const idleSpy = vi.fn();
     runner.on("idle", idleSpy);
 
-    runner.enqueue({ text: "pending" });
+    runner.enqueue({ text: "pending", execution: "interactive" });
     runner.running = false;
     runner.onAgentFinished();
     expect(idleSpy).not.toHaveBeenCalled();
@@ -212,6 +212,66 @@ describe("SessionRunner", () => {
     expect(received.find((m) => m.type === "message_queued")).toBeUndefined();
     // Persisted at its true transcript position so it survives a reload.
     expect(persisted.length).toBe(1);
+
+    runner.dispose({ force: true });
+  });
+
+  it("SHI-254: a systemTurn dispatch is NEVER steered into a running user turn — it enqueues, keeping its onTurnComplete", () => {
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    // Live steering on + a steerable, streaming user turn in flight: every
+    // condition `shouldSteerMessage` looks at says "steer". The only thing that
+    // must stop it is the INCOMING dispatch being a system turn.
+    runner.setSystemTurnDeps(steerDeps({ liveSteering: true }));
+    const sent: string[] = [];
+    runner.setAgent({ sendUserMessage: (t: string) => sent.push(t), kill: () => {} } as any);
+    runner.running = true;
+    runner.isStreamingActive = true;
+    expect(runner.systemTurnInProgress).toBe(false); // the RUNNING turn is a user turn
+
+    const completions: { errored: boolean }[] = [];
+    runner.dispatch({
+      text: "child PR merged — resume the rebase",
+      systemTurn: true,
+      onTurnComplete: (o) => completions.push(o),
+    });
+
+    // Not injected into the user's turn; queued as its own turn instead.
+    expect(sent).toEqual([]);
+    expect(runner.queueLength).toBe(1);
+    // …and the completion callback rode the queue rather than being dropped by
+    // the steer path's early return (which is what stranded docs/196 watches at
+    // `merge-observed` and re-fired them on every restart).
+    const queued = runner.messageQueue[0]!;
+    expect(queued.systemTurn).toBe(true);
+    expect(queued.execution).toBe("dispatched");
+    expect(queued.onTurnComplete).toBeTypeOf("function");
+    queued.onTurnComplete!({ errored: false });
+    expect(completions).toEqual([{ errored: false }]);
+
+    runner.dispose({ force: true });
+  });
+
+  it("SHI-254: a dispatch carrying only onTurnComplete is also unsteerable (the callback can't survive a steer)", () => {
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    runner.setSystemTurnDeps(steerDeps({ liveSteering: true }));
+    const sent: string[] = [];
+    runner.setAgent({ sendUserMessage: (t: string) => sent.push(t), kill: () => {} } as any);
+    runner.running = true;
+    runner.isStreamingActive = true;
+
+    runner.dispatch({ text: "awaited follow-up", onTurnComplete: () => {} });
+
+    expect(sent).toEqual([]);
+    expect(runner.queueLength).toBe(1);
+    expect(runner.messageQueue[0]!.onTurnComplete).toBeTypeOf("function");
 
     runner.dispose({ force: true });
   });
@@ -576,16 +636,16 @@ describe("SessionRunner", () => {
     });
 
     for (let i = 0; i < 50; i++) {
-      runner.enqueue({ text: `msg${i}` });
+      runner.enqueue({ text: `msg${i}`, execution: "interactive" });
     }
     expect(runner.queueLength).toBe(50);
 
-    expect(() => runner.enqueue({ text: "overflow" })).toThrow("Message queue is full");
+    expect(() => runner.enqueue({ text: "overflow", execution: "interactive" })).toThrow("Message queue is full");
     expect(runner.queueLength).toBe(50);
 
     runner.dequeue();
     expect(runner.queueLength).toBe(49);
-    runner.enqueue({ text: "fits now" });
+    runner.enqueue({ text: "fits now", execution: "interactive" });
     expect(runner.queueLength).toBe(50);
 
     runner.dispose();

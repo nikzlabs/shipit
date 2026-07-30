@@ -3,6 +3,7 @@ import { DatabaseManager } from "../shared/database.js";
 import { SessionManager } from "./sessions.js";
 import { ChatHistoryManager } from "./chat-history.js";
 import { MergeWatchManager } from "./merge-watch.js";
+import { isSteerableDispatch } from "./dispatch-steering.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry, AgentDispatchOptions } from "./session-runner.js";
 import type { PrTerminalStateInfo } from "./pr-status-poller.js";
 import type { PrStatusSummary } from "../shared/types/github-types.js";
@@ -21,6 +22,14 @@ import type { PrStatusSummary } from "../shared/types/github-types.js";
  *     held (it rides the in-memory queue, docs/196 fix) and fires only when the
  *     current turn finishes and the queue drains, simulated by `completeTurn()`.
  * In both cases a held callback is flushed by `completeTurn()`.
+ *
+ * The fake models the CONTRACT, not the machinery: it can't reproduce a message
+ * being live-steered into a running turn (SHI-254) or a queue drain narrowing the
+ * entry it shifts (SHI-255), because both live in the real turn path. Those are
+ * covered against a real turn in `integration_tests/system-turn-queue.test.ts` and
+ * the busy-parent case of `integration_tests/session-notify-on-merge.test.ts`; the
+ * checks here pin the dispatch SHAPE those fixes depend on (`systemTurn` set, a
+ * completion callback attached, and therefore unsteerable).
  */
 class FakeRunner {
   running = false;
@@ -248,6 +257,11 @@ describe("MergeWatchManager (docs/196)", () => {
     // watch is recoverable: NOT delivered while it sits in the queue.
     expect(parentRunner.dispatched).toHaveLength(1);
     expect(parentRunner.dispatched[0].systemTurn).toBe(true);
+    // SHI-254 — the wake-turn carries both markers that make it unsteerable, so
+    // a real runner enqueues it instead of injecting it into the running user
+    // turn (which would return before the enqueue and drop the callback below).
+    expect(parentRunner.dispatched[0].onTurnComplete).toBeTypeOf("function");
+    expect(isSteerableDispatch(parentRunner.dispatched[0])).toBe(false);
     expect(ctx.sessionManager.getMergeWatch("child")?.state).toBe("merge-observed");
     expect(ctx.chatHistoryManager.load("parent").filter((m) => m.childMerged)).toHaveLength(1);
 

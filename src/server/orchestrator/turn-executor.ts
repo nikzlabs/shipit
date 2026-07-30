@@ -186,6 +186,13 @@ export async function executeAgentTurn(
 
   if (runner) {
     runner.running = true;
+    // docs/169 + SHI-255 — a system turn suppresses live steering for its whole
+    // duration. `dispatch` sets the flag synchronously for a turn it starts from
+    // idle; a system turn that was ENQUEUED and drains later never went through
+    // that branch, so set it here too (idempotent) — otherwise a wake-turn
+    // drained behind a user turn would run steerable, and a message arriving
+    // mid-turn would be injected into it. `finishTurn` clears it.
+    if (input.systemTurn) runner.systemTurnInProgress = true;
     runner.isStreamingActive = useStreaming;
     resetRunnerTurnState(runner);
   }

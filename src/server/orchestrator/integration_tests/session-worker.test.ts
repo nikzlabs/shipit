@@ -724,7 +724,7 @@ describe("Integration: Session Worker IPC", () => {
 
     // Message queue
     expect(runner.queueLength).toBe(0);
-    runner.enqueue({ text: "msg1" });
+    runner.enqueue({ text: "msg1", execution: "interactive" });
     expect(runner.queueLength).toBe(1);
     expect(runner.getQueueSnapshot()).toEqual([{ text: "msg1", position: 1 }]);
 
