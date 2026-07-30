@@ -157,6 +157,39 @@ An entry is **skipped** (that dir runs plain install; the session is unaffected)
 An empty / missing / all-invalid list → no overlay → plain install everywhere. Misconfiguration only
 forfeits speedup; it never corrupts a session or the shared base.
 
+### Publish-pull crash safety (prod orchestrator crash, 2026-07-30)
+
+The publish pull is the one place in this feature where the orchestrator reads a **large stream from a
+process it is simultaneously allowed to kill**. `publishDepDirOverlayBases` runs fire-and-forget after
+install (`service-manager-setup.ts`), while `archiveSession` → `dispose({force:true})` →
+`destroyContainer` can SIGKILL the worker at any moment. On 2026-07-30 those raced: a ~295 MB
+dep-snapshot pull was in flight when its session was archived, undici raised
+`TypeError: terminated` (`UND_ERR_SOCKET`) as an **`'error'` event** on the body stream rather than a
+rejection, the publish flow's `try/catch` never saw it, and — there being deliberately no
+process-level `uncaughtException` handler (`app-lifecycle.ts`) — the orchestrator died and Docker
+restarted it.
+
+**A mid-transfer death is normal here, not exceptional.** Two invariants encode that:
+
+1. **Every failure surfaces as a rejection, never an emitted event.** `fetchDepSnapshotStream` latches
+   a listener on the body stream *before returning it*, closing the `await`-tick window in which the
+   stream has no consumer. `extractTarStream` swallows errors on `tar`'s stdin (`pipe()`'s own
+   `onerror` removes itself and re-emits on a listener-less destination — an unhandled throw), carries
+   the true cause out through its `done` promise, and **replays** an error that landed before `pipe()`
+   (otherwise nothing ends tar's stdin and the extract hangs forever). Worst case is one
+   `[overlay-publish:<id>] publish failed` log line.
+2. **The pull's lifetime is bound to the runner's.** `bootstrap-managers.ts` creates an
+   `AbortController`, aborts it on the runner's `"disposed"` event, and threads the signal through
+   `OverlayPublishArgs.signal` → `fetchWorkspaceHeadInfo` / `fetchDepSnapshotStream`. Remaining dep
+   dirs are skipped once aborted, so archiving a session cancels its publish instead of racing the
+   container's SIGKILL. (`dispose()` resolves `whenWorkerReady()` so awaiters don't leak, so the hook
+   also re-checks `runner.disposed` after that await.)
+
+Regression coverage: `overlay-snapshot.test.ts` drives a local HTTP server that streams a real tar body
+and then destroys the TCP socket mid-archive, asserting a clean rejection and an empty
+`uncaughtException` log; `overlay-publish.test.ts` asserts the signal is threaded, a mid-stream death
+becomes an `"error"` outcome, and an abort stops the remaining dirs.
+
 ### Reused vs dropped vs changed (relative to the whole-workspace implementation already on the branch)
 
 - **Reused as-is:** the rolling-base publish CAS + depth-cap flatten + force-push lineage reset
@@ -1005,6 +1038,8 @@ archive/restore (re-derive on unarchive), bad-base (exit-0 gate).*
 | Default-branch creation paths | [warm-pool-manager.ts](../../src/server/orchestrator/warm-pool-manager.ts#L147-L164), [claim-session.ts](../../src/server/orchestrator/services/claim-session.ts#L361-L374), [session.ts](../../src/server/orchestrator/services/session.ts#L202-L216) |
 | Generic spawned sessions + internal Ops source pin | [child-sessions.ts](../../src/server/orchestrator/services/child-sessions.ts#L70-L81) |
 | Cache cleanup | [disk-janitor.ts](../../src/server/orchestrator/disk-janitor.ts#L568-L676) |
+| Publish pull + tar extraction (crash-safety contract) | [overlay-snapshot.ts](../../src/server/orchestrator/overlay-snapshot.ts) |
+| Publish-after-install orchestration + abort-on-dispose wiring | [overlay-publish.ts](../../src/server/orchestrator/overlay-publish.ts), [bootstrap-managers.ts](../../src/server/orchestrator/bootstrap-managers.ts) |
 
 ---
 
