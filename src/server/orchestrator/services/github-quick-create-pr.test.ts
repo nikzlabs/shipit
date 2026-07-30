@@ -22,6 +22,7 @@ function makeGit(over: Partial<Record<keyof GitManager, unknown>> = {}): GitMana
     push: vi.fn(async () => "pushed"),
     forcePush: vi.fn(async () => "force pushed"),
     listRemoteBranches: vi.fn(async () => ["main", "release/v2"]),
+    getDefaultBranch: vi.fn(async () => "main"),
     log: vi.fn(async () => [{ message: "c1", hash: "h", date: "", author: "", refs: [] }]),
     diffSummary: vi.fn(async () => []),
     diffStatVsBranch: vi.fn(async () => ({ insertions: 3, deletions: 1 })),

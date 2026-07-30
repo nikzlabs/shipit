@@ -12,5 +12,11 @@
 - [x] `git-store.fetchDiffVsBranch` — omit `?base=`, let the server resolve
 - [x] Server fallbacks: `diff-vs-branch` route, `pr-lifecycle`, `route-registry`
       re-seed, `api-routes-files` docs flags, `graduate-session` ready stats
+- [x] `resolvePrBaseBranch` — the base a new PR targets (`services/github.ts`
+      quick-create + create paths), replacing the main → master → first ladder
+- [x] `release-prepare --bootstrap` resolves the real default instead of
+      accepting only main/master
 - [x] Tests: repo-store, repo-default-branch service, `GitManager.getDefaultBranch`,
-      client resolver + hook, RebaseBanner, PrActionsMenu
+      `resolvePrBaseBranch`, client resolver + hook, RebaseBanner, PrActionsMenu
+- [x] Audit the remaining `"main"` literals; confirm each is a documented
+      fallback, a probe pair, or not a repo-default-branch concern

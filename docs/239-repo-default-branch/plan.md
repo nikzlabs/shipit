@@ -81,10 +81,30 @@ they agree because they read the same underlying HEAD.
 | `src/server/orchestrator/api-routes-session-repos.ts` | Post-clone resolution + `repo_list` broadcast. |
 | `src/server/orchestrator/api-routes-git.ts` | `diff-vs-branch` resolves the base when the query param is absent. |
 | `src/client/utils/default-branch.ts` | `useSessionDefaultBranch(sessionId)` and the pure resolvers. |
+| `src/server/orchestrator/services/git.ts` | `resolvePrBaseBranch(git, remoteBranches)` — the base a new PR targets. |
 
 Client call sites now reading the real branch: `RebaseBanner`, `PrActionsMenu`,
 `PrLifecycleCard` (+ `PrLifecycleCard/shared`: `useOpenPrDiff`, `BranchLabel`,
 `isDefaultBranch`), `pr-detail/PrFilesSection`, `stores/git-store`.
+
+## The remaining `"main"` literals are deliberate
+
+A grep still finds `"main"` in production code. Every surviving instance is one
+of three things, and none of them is the bug above:
+
+1. **Last-resort fallbacks** — `GitManager.getDefaultBranch`, `RepoGit.getDefaultBranch`,
+   `FALLBACK_DEFAULT_BRANCH` (both layers), and `CONVENTIONAL_DEFAULT_BRANCHES`.
+   These are the end of a resolution chain that has already failed, and `"main"`
+   is the least-bad guess. Removing them would mean throwing instead, which
+   turns a cosmetically-wrong label into a broken render.
+2. **`{main, master}` probe pairs** — `GitManager.getDefaultBranch` and
+   `syncLocalDefaultBranchToOrigin` both try `origin/HEAD` first and only probe
+   the two conventional names when the symbolic ref is missing. The probe is the
+   fallback, not the primary path.
+3. **Not the repo's default branch at all** — `release-channel.ts` names the
+   *ShipIt repo's own* `main` for the edge update channel; `services/templates.ts`
+   pushes `main` for a repo ShipIt itself just created with
+   `git init --initial-branch=main`. Both are self-consistent by construction.
 
 ## Notes
 

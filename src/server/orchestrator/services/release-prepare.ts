@@ -426,8 +426,12 @@ async function prepareFinalRelease(
           "Re-run with --bootstrap to create it from the current base for the first release.",
       );
     }
-    const base = remoteBranches.includes("main") ? "main" : remoteBranches.includes("master") ? "master" : null;
-    if (!base) throw new ServiceError(400, "Could not resolve a base branch (main/master) to bootstrap from.");
+    // The remote's actual default branch — a repo defaulting to `trunk` or
+    // `develop` must be able to bootstrap its maintenance branch too, not just
+    // main/master repos (which is all the old literal check accepted).
+    const detected = await git.getDefaultBranch();
+    const base = remoteBranches.includes(detected) ? detected : null;
+    if (!base) throw new ServiceError(400, "Could not resolve the repository's default branch to bootstrap from.");
     // Create the maintenance branch on the remote off the base tip.
     await git.createBranchFrom(releaseBranch, `origin/${base}`);
     await git.push("origin", releaseBranch);
