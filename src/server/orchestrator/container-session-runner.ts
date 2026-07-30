@@ -2029,10 +2029,13 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // `send_message` arriving in the gap queues instead of steering into it.
     if (opts.systemTurn) this._systemTurnInProgress = true;
     this._isRunning = true;
-    void this._runDispatchedTurn(opts);
+    void this.runDispatchedTurn(opts);
   }
 
-  private async _runDispatchedTurn(opts: AgentDispatchOptions): Promise<void> {
+  get canRunDispatchedTurn(): boolean { return this._systemTurnDeps !== null; }
+
+  /** SHI-255 — the queue-drain re-entry for `execution: "dispatched"` entries. */
+  async runDispatchedTurn(opts: AgentDispatchOptions): Promise<void> {
     await runDispatchedTurn(this, this._systemTurnDeps!, this._agentId, opts, (agentId) => {
       return this.createAgent(agentId);
     });

@@ -366,7 +366,9 @@ export function wireAgentListeners(
         // drain feeds it as the next turn once the current (non-steerable) turn
         // ends. Fall back to the adapter-echoed text if there's no record.
         const requeueText = dropped?.text ?? event.text;
-        const queued: QueuedMessage = { text: requeueText };
+        // A rejected user steer — re-queued as the interactive turn it always
+        // was (SHI-255).
+        const queued: QueuedMessage = { text: requeueText, execution: "interactive" };
         if (dropped?.images && dropped.images.length > 0) queued.images = dropped.images;
         if (dropped?.files && dropped.files.length > 0) {
           queued.files = dropped.files.map((f) => ({ path: f.path }));

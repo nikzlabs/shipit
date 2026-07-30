@@ -310,6 +310,11 @@ export async function handleSendMessage(
       // it, not just this socket).
       runnerForQueue.dispatch({
         text: msg.text,
+        // SHI-255 — a user-typed message: when this queues behind the running
+        // turn, the drain must reproduce an INTERACTIVE turn (the client already
+        // rendered an optimistic bubble, so the dispatched executor's
+        // `system_user_message` echo would double it).
+        execution: "interactive",
         ...(msg.images !== undefined ? { images: msg.images } : {}),
         ...(msg.files !== undefined ? { files: msg.files } : {}),
         ...(msg.uploads !== undefined ? { uploads: msg.uploads } : {}),

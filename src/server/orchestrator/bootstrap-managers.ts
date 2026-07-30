@@ -7,6 +7,7 @@ import { LogStore } from "./log-store.js";
 import type { PrStatusPoller } from "./pr-status-poller.js";
 import { ReleaseStatusPoller } from "./release-status-poller.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
+import { queuedMessageToDispatchOptions } from "./queue-drain.js";
 import type { ServiceManager } from "./service-manager.js";
 import type { ResolvedEgressConfig } from "./egress-allowlist.js";
 import type { AppCtx } from "./ws-handlers/types.js";
@@ -417,14 +418,11 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     const next = runner.dequeue();
     if (!next) return;
     runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
-    runner.dispatch({
-      text: next.text,
-      ...(next.activity !== undefined ? { activity: next.activity } : {}),
-      ...(next.images !== undefined ? { images: next.images } : {}),
-      ...(next.files !== undefined ? { files: next.files } : {}),
-      ...(next.uploads !== undefined ? { uploads: next.uploads } : {}),
-      ...(next.permissionMode !== undefined ? { permissionMode: next.permissionMode } : {}),
-    });
+    // SHI-255 — use the shared full conversion, never a hand-rolled field copy:
+    // this drain (post auto-conflict-resolve) previously dropped `systemTurn`,
+    // `postTurn`, and `onTurnComplete`, so a docs/196 wake-turn that queued
+    // during a rebase ran as an ordinary turn and never signalled completion.
+    runner.dispatch(queuedMessageToDispatchOptions(next));
   };
 
   // ---- Notify-on-merge watches (docs/196) ----
