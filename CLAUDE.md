@@ -78,10 +78,10 @@ npm install
 
 ## Commands
 
-- **`npm run test:dev`** — **dev default.** Only tests affected by uncommitted changes + smoke tests (`-- --list` to dry-run). Use while iterating.
+- **`npm run test:dev`** — **dev default.** Only tests affected by uncommitted, staged, and untracked (newly created) changes + smoke tests (`-- --list` to dry-run). Use while iterating.
 - `npm run test:smoke` — smoke tests only (core connectivity, HTTP bootstrap, git, one client component).
 - `npm test` — full suite. Sparingly — CI runs it on every PR; run locally only if you suspect wide breakage. Single file: `npx vitest run <file>.test.ts`.
-- **`npm run lint:dev`** — **dev default.** ESLint over files changed vs `origin/main` + uncommitted (`-- --list` to dry-run). The full lint loads all ~700 TS files (~50 s, ~2.85 GiB); CI runs it, so this is the inner loop.
+- **`npm run lint:dev`** — **dev default.** ESLint over files changed vs `origin/main` + uncommitted + untracked (newly created) (`-- --list` to dry-run). The full lint loads all ~700 TS files (~50 s, ~2.85 GiB); CI runs it, so this is the inner loop.
 - `npm run lint` — full ESLint on `src/` (cached; warm re-run near-instant). Sparingly — when you suspect a cross-file rule (e.g. `no-deprecated`) tripped elsewhere.
 - `npm run typecheck` — `tsc --noEmit`, incremental (warm ~5 s). Whole-project by design, no per-file variant.
 - `npm run build` — Vite client build. (`npm run dev` is the Vite/tsx dev server, but **don't start it in bash to preview** — ShipIt serves the preview via the `dev` Compose service in `docker-compose.yml`, which runs `npm run dev` itself; see [Dogfooding ShipIt in ShipIt](#dogfooding-shipit-in-shipit). A bash-started server is also reaped when the container goes idle.)

@@ -30,6 +30,16 @@ export default defineConfig({
         },
       },
       {
+        // Dev-loop tooling (scripts/): lives outside src/, so it needs its own
+        // project or `npm test` would never see its tests.
+        test: {
+          name: "tooling",
+          include: ["scripts/**/*.test.ts"],
+          environment: "node",
+          setupFiles: ["./server-test-setup.ts"],
+        },
+      },
+      {
         plugins: [react()],
         test: {
           name: "client",
