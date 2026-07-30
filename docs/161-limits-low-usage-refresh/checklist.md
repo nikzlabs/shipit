@@ -30,3 +30,9 @@
 - [x] Auto-refresh tests: fires on mount, skipped without `autoRefresh`/while locked/for Codex, throttled across re-opens, re-fires after the interval
 - [x] lint:dev + typecheck clean
 - [x] Manual browser check: low-usage click → percentage appears; locked button greys out
+
+## Follow-up: scale mismatch between the two sources
+- [x] Scale the CLI event's 0–1 `utilization` fraction to 0–100 in `parseRateLimitWindow` (a real 92% rendered as `5h 1%`)
+- [x] Passthrough guard for `utilization > 1` so an upstream switch to 0–100 doesn't pin the badge at 100%
+- [x] Correct the scale claim in `ClaudeRateLimitEvent`'s doc comment (`claude-types.ts`)
+- [x] Adapter tests cover both scales

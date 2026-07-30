@@ -577,7 +577,7 @@ describe("ClaudeAdapter", () => {
       rate_limit_info: {
         status: "allowed",
         rateLimitType: "five_hour",
-        utilization: 42,
+        utilization: 0.42,
         resetsAt: 1_800_000_000,
       },
     } satisfies ClaudeEvent);
@@ -590,6 +590,45 @@ describe("ClaudeAdapter", () => {
     });
   });
 
+  it("scales the CLI's 0–1 utilization fraction to a 0–100 percentage", () => {
+    // The CLI forwards `anthropic-ratelimit-unified-*-utilization` verbatim and
+    // that header is a FRACTION: one account read `0.06`/`0.66` in the headers
+    // while /api/oauth/usage reported `6.0`/`67.0` for the same windows.
+    // Treating it as a percentage rendered a real 92% session as "5h 1%".
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+    const events: any[] = [];
+    adapter.on("event", (e) => events.push(e));
+
+    inner.emit("event", {
+      type: "rate_limit_event",
+      rate_limit_info: { rateLimitType: "five_hour", utilization: 0.92, resetsAt: 1_800_000_000 },
+    } satisfies ClaudeEvent);
+    inner.emit("event", {
+      type: "rate_limit_event",
+      rate_limit_info: { rateLimitType: "seven_day", utilization: 0.06, resetsAt: 1_900_000_000 },
+    } satisfies ClaudeEvent);
+
+    expect(events[1].session?.usedPct).toBeCloseTo(92, 6);
+    expect(events[1].weekly?.usedPct).toBeCloseTo(6, 6);
+  });
+
+  it("passes through a utilization above 1 as an already-0–100 percentage", () => {
+    // Defensive: a fraction can't exceed 1 for a capped window, so >1 means the
+    // upstream scale changed. Better to render 42% than to multiply it to 100%.
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+    const events: any[] = [];
+    adapter.on("event", (e) => events.push(e));
+
+    inner.emit("event", {
+      type: "rate_limit_event",
+      rate_limit_info: { rateLimitType: "five_hour", utilization: 42, resetsAt: 1_800_000_000 },
+    } satisfies ClaudeEvent);
+
+    expect(events[0].session?.usedPct).toBe(42);
+  });
+
   it("accumulates five_hour + seven_day across separate events and re-emits both", () => {
     const inner = new FakeInnerProcess();
     const adapter = new ClaudeAdapter(inner as any);
@@ -598,17 +637,17 @@ describe("ClaudeAdapter", () => {
 
     inner.emit("event", {
       type: "rate_limit_event",
-      rate_limit_info: { rateLimitType: "five_hour", utilization: 12, resetsAt: 1_800_000_000 },
+      rate_limit_info: { rateLimitType: "five_hour", utilization: 0.12, resetsAt: 1_800_000_000 },
     } satisfies ClaudeEvent);
     inner.emit("event", {
       type: "rate_limit_event",
-      rate_limit_info: { rateLimitType: "seven_day", utilization: 80, resetsAt: 1_900_000_000 },
+      rate_limit_info: { rateLimitType: "seven_day", utilization: 0.8, resetsAt: 1_900_000_000 },
     } satisfies ClaudeEvent);
 
     expect(events).toHaveLength(2);
     // Second event carries BOTH windows now that the adapter has seen each.
-    expect(events[1].session?.usedPct).toBe(12);
-    expect(events[1].weekly?.usedPct).toBe(80);
+    expect(events[1].session?.usedPct).toBeCloseTo(12, 6);
+    expect(events[1].weekly?.usedPct).toBeCloseTo(80, 6);
   });
 
   it("ignores rate_limit_event for sub-quotas (opus / sonnet / overage)", () => {
