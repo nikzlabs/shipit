@@ -184,6 +184,35 @@ have: it spends a call only on deliberate user intent.
   that's still wall-clock polling, which the upstream bug punishes; and 30 min is
   too stale for the user's stated need anyway.
 
+## Follow-up: the two sources report utilization on different scales
+
+Merging the two sources exposed a scale mismatch that made the badge *worse*
+than blank: a refresh showed the true `5h 92%`, then the next turn's
+`rate_limit_event` overwrote it with `5h 1%`.
+
+The two sources do not agree on units, verified on one account at one moment:
+
+| Source | 5h | 7d |
+|---|---|---|
+| `GET /api/oauth/usage` (the refresh button) | `6.0` | `67.0` |
+| `anthropic-ratelimit-unified-{5h,7d}-utilization` header → CLI `rate_limit_event` | `0.06` | `0.66` |
+
+The CLI forwards the header verbatim, so its `utilization` is a **0–1
+fraction** while the usage endpoint's is a **0–100 percentage**.
+`parseRateLimitWindow` read the fraction as a percentage, storing `0.92` for a
+92% window; the badge rounds that to `1%`, draws a ~1%-wide meter, and drops
+the `resets in …` countdown (which only renders above 90%). The weekly meter
+kept its correct 65% purely by accident — at 65% the CLI is below its warning
+threshold, so it sent no `utilization` at all and the merge kept the API's
+number. The fix scales the event value by 100, with a passthrough for values
+`> 1` so an upstream switch to 0–100 degrades to correct numbers rather than a
+badge pinned at 100%.
+
+Note also that the header's `resetsAt` is bucketed to the hour (`20:00Z`) where
+`/api/oauth/usage` returns the true reset (`21:20Z`), so the countdown can be
+up to an hour early depending on which source last won the merge. Cosmetic;
+not addressed.
+
 ## Key files
 
 | File | Role / change |
@@ -196,6 +225,7 @@ have: it spends a call only on deliberate user intent.
 | `src/client/components/SubscriptionLimitsBadge.tsx` | Refresh glyph, disabled-with-countdown while locked, source/age in tooltip; `autoRefresh` on-mount fetch + module-level throttle |
 | `src/client/components/MobileStatusPanel.tsx` | Mobile dropdown content — passes `autoRefresh` so opening it refreshes usage |
 | `src/server/shared/types/usage-limits-types.ts` | Add `source`/`lockedUntil` fields as needed |
+| `src/server/session/agents/claude/adapter.ts` | `parseRateLimitWindow` — scale the CLI's 0–1 `utilization` fraction to 0–100 (see follow-up above) |
 
 ## Reference
 

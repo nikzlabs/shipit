@@ -301,7 +301,12 @@ export interface ClaudeRateLimitEvent {
     status?: "allowed" | "allowed_warning" | "rejected";
     resetsAt?: number;
     rateLimitType?: "five_hour" | "seven_day" | "seven_day_opus" | "seven_day_sonnet" | "overage";
-    /** 0–100 (percentage of the window consumed). */
+    /**
+     * 0–1 **fraction** of the window consumed — forwarded verbatim from the
+     * upstream `anthropic-ratelimit-unified-{5h,7d}-utilization` header, which
+     * reads e.g. `0.06` where `/api/oauth/usage` reports `6.0`. Scale by 100
+     * before rendering (`parseRateLimitWindow` in the Claude adapter).
+     */
     utilization?: number;
   };
   session_id?: string;
