@@ -156,6 +156,13 @@ export class ServiceRetryManager {
    * is bounded by `MAX_OOM_AUTO_RETRIES` — after that many consecutive
    * OOMs without a stable-uptime window in between, we latch to `error`
    * so the user can investigate.
+   *
+   * PRECONDITION: the caller has CONFIRMED the OOM against the container's
+   * `State.OOMKilled` — bare exit 137 is not enough (docs/230). Both the log
+   * line and the budget-exhausted error below state OOMKilled as fact and tell
+   * the user to raise a memory limit, which is actively misleading advice for
+   * an ordinary SIGKILL. `ServiceManager.handleNonZeroExit` is the only caller
+   * and enforces this; keep it that way.
    */
   scheduleOomRetry(name: string): void {
     if (this.isDisposed()) return;
