@@ -3,17 +3,22 @@
  * Progressive test runner for development.
  *
  * Instead of running all 145+ test files, this script runs:
- * 1. Tests affected by current changes (uncommitted + staged)
+ * 1. Tests affected by current changes (uncommitted + staged + untracked)
  * 2. A small set of smoke tests (critical-path sanity checks)
+ *
+ * Untracked files count as changed (see `changed-files.ts`): an agent's newly
+ * created file is untracked for its whole turn, so leaving it out meant a new
+ * test file never ran in the turn that wrote it.
  *
  * Usage:
  *   npx tsx scripts/test-dev.ts          # affected + smoke
  *   npx tsx scripts/test-dev.ts --smoke  # smoke tests only
  *   npx tsx scripts/test-dev.ts --list   # show which tests would run (dry run)
  */
-import { execSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
+import { listChangedFiles, listUntrackedFiles } from "./changed-files.js";
 
 // ---------------------------------------------------------------------------
 // Smoke tests — critical-path tests that always run regardless of changes.
@@ -32,20 +37,29 @@ const SMOKE_TESTS = [
 // ---------------------------------------------------------------------------
 const ROOT = path.resolve(import.meta.dirname, "..");
 
-function git(cmd: string): string {
-  try {
-    return execSync(`git ${cmd}`, { cwd: ROOT, encoding: "utf-8" }).trim();
-  } catch {
-    return "";
-  }
+function isSourceFile(file: string): boolean {
+  return /\.tsx?$/.test(file) && !/\.test\.tsx?$/.test(file);
 }
 
-/** Return de-duplicated list of files changed in the working tree + index. */
-function getChangedFiles(): string[] {
-  const unstaged = git("diff --name-only");
-  const staged = git("diff --staged --name-only");
-  const all = `${unstaged}\n${staged}`.split("\n").filter(Boolean);
-  return [...new Set(all)];
+/** Co-located test candidates for a source file (foo.ts → foo.test.ts / .tsx). */
+function coLocatedTests(file: string): string[] {
+  const base = file.replace(/\.(ts|tsx)$/, "");
+  return [`${base}.test.ts`, `${base}.test.tsx`];
+}
+
+/**
+ * New source files that no test file covers.
+ *
+ * A brand-new source file with no co-located test contributes nothing to the
+ * affected-test set, so the run is green without having exercised it at all.
+ * That's the correct *selection* (there is nothing to run), but reporting it
+ * as an unqualified pass is what made the gap invisible — so we surface it and
+ * let the always-on smoke tests stand as the only coverage.
+ */
+function findUncoveredNewSources(): string[] {
+  return listUntrackedFiles(ROOT)
+    .filter(isSourceFile)
+    .filter((file) => !coLocatedTests(file).some((t) => existsSync(path.resolve(ROOT, t))));
 }
 
 /**
@@ -73,9 +87,7 @@ function getAffectedTests(changedFiles: string[]): string[] {
     }
 
     // Look for co-located test file (foo.ts → foo.test.ts)
-    const base = file.replace(/\.(ts|tsx)$/, "");
-    for (const ext of [".test.ts", ".test.tsx"]) {
-      const testFile = base + ext;
+    for (const testFile of coLocatedTests(file)) {
       if (existsSync(path.resolve(ROOT, testFile))) {
         tests.add(testFile);
       }
@@ -103,8 +115,10 @@ const listOnly = args.includes("--list");
 // Collect test files to run
 const testsToRun = new Set<string>();
 
+const uncoveredNewSources = smokeOnly ? [] : findUncoveredNewSources();
+
 if (!smokeOnly) {
-  const changed = getChangedFiles();
+  const changed = listChangedFiles(ROOT);
   if (changed.length > 0) {
     const affected = getAffectedTests(changed);
     for (const t of affected) testsToRun.add(t);
@@ -120,19 +134,29 @@ for (const smoke of SMOKE_TESTS) {
 
 const testFiles = [...testsToRun].sort();
 
+/** Warn that new source files are covered by smoke tests only, not by a test of their own. */
+function reportUncovered(): void {
+  if (uncoveredNewSources.length === 0) return;
+  console.log(`\nNote: ${uncoveredNewSources.length} new file(s) have no co-located test — only smoke tests cover them:`);
+  for (const f of uncoveredNewSources) console.log(`  ${f}`);
+}
+
 if (testFiles.length === 0) {
   console.log("No test files to run.");
+  reportUncovered();
   process.exit(0);
 }
 
 if (listOnly) {
   console.log(`Would run ${testFiles.length} test file(s):\n`);
   for (const f of testFiles) console.log(`  ${f}`);
+  reportUncovered();
   process.exit(0);
 }
 
 console.log(`Running ${testFiles.length} test file(s) (progressive mode):\n`);
 for (const f of testFiles) console.log(`  ${f}`);
+reportUncovered();
 console.log();
 
 // Run vitest with the selected files
