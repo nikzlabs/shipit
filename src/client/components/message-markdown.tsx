@@ -86,7 +86,16 @@ function IssueBadge({ issueKey, children }: { issueKey: string; children?: React
  *     be misread by `parseRepoFileLink` as the path `owner/repo` at line 42.
  *  3. **Repo file links** (relative paths, optionally `:line` suffixed) open the
  *     in-app file preview modal — a bare `target="_blank"` would resolve the
- *     relative href against `/sessions/<id>` and 404.
+ *     relative href against `/sessions/<id>` and 404. This branch renders an
+ *     anchor with **no `href` at all**: the click handler is the whole
+ *     behaviour, and a repo file has no URL of its own (the preview is modal
+ *     state, not a route). Keeping a relative `href` for styling made the
+ *     browser advertise a URL that doesn't exist — `/session/src/foo.ts` in the
+ *     status bar on hover, and a real 404 navigation via middle-click,
+ *     ⌘/Ctrl-click, or "Open link in new tab". `role="button"` + `tabIndex`
+ *     restore the keyboard affordance the missing `href` takes away, and the
+ *     `a` *element* still picks up prose link styling (Tailwind Typography
+ *     targets the bare `a` selector, which does not require `href`).
  *  4. **Everything else** keeps the default new-tab behaviour.
  *
  * Store reads happen inside the click handler via `getState()` (not a hook
@@ -140,14 +149,26 @@ function MarkdownLink({
 
   const repoLink = parseRepoFileLink(href);
   if (repoLink) {
-    const openPreview = (e: React.MouseEvent) => {
-      e.preventDefault();
+    const openPreview = () => {
       const sessionId = useSessionStore.getState().sessionId;
       if (!sessionId) return;
       void useFileStore.getState().openPreview(sessionId, repoLink.path, { line: repoLink.line });
     };
+    const onKeyDown = (e: React.KeyboardEvent) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      openPreview();
+    };
     return (
-      <a href={href} title={title} onClick={openPreview} className="cursor-pointer">
+      <a
+        // No `href` — see branch 3 in the doc comment above.
+        role="button"
+        tabIndex={0}
+        title={title ?? `Open ${href}`}
+        onClick={openPreview}
+        onKeyDown={onKeyDown}
+        className="cursor-pointer"
+      >
         {children}
       </a>
     );
