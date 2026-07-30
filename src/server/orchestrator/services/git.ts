@@ -315,7 +315,7 @@ export async function committedChangesVsBase(
  */
 export async function getSessionChangedPaths(
   git: GitManager,
-  baseBranch = "main",
+  baseBranch: string,
 ): Promise<Set<string>> {
   const paths = new Set<string>();
   for (const entry of await committedChangesVsBase(git, baseBranch)) {

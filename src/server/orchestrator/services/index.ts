@@ -26,6 +26,7 @@ export * from "./mcp-oauth.js";
 export * from "./templates.js";
 export * from "./misc.js";
 export * from "./repos.js";
+export * from "./repo-default-branch.js";
 export * from "./reviews.js";
 export * from "./rebase-driver.js";
 export * from "./health.js";

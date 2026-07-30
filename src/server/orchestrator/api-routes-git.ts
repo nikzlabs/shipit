@@ -21,6 +21,7 @@ import {
   mergeSession,
   rebaseAbort,
   runRebaseFlow,
+  repoDefaultBranch,
   ServiceError,
 } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
@@ -69,7 +70,10 @@ export async function registerGitRoutes(
     async (request, reply) => {
       const dir = resolveSessionDir(sessionManager, request.params.id, reply);
       if (!dir) return;
-      const baseBranch = request.query.base || "main";
+      // No explicit base → the repo's own default branch, not a hard-coded
+      // "main" (which is simply unresolvable on a `master`/`trunk` repo).
+      const baseBranch = request.query.base
+        || repoDefaultBranch(deps.repoStore, sessionManager.get(request.params.id)?.remoteUrl);
       try {
         const git = createGitManager(dir);
         return await getDiffVsBranch(git, baseBranch);

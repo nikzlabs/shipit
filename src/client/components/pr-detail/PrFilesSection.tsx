@@ -12,6 +12,7 @@ import { GitDiffIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import { Button } from "../ui/button.js";
 import { useGitStore } from "../../stores/git-store.js";
+import { useSessionDefaultBranch } from "../../utils/default-branch.js";
 import type { PrFileStat } from "../../../server/shared/types/github-types.js";
 
 function statusLabel(status: string): string {
@@ -35,11 +36,14 @@ export function PrFilesSection({
   files?: PrFileStat[];
 }) {
   const [loading, setLoading] = useState(false);
+  // `baseBranch` is empty before the PR status lands; fall back to the repo's
+  // real default rather than "main", which would 400 on a `master` repo.
+  const repoDefaultBranch = useSessionDefaultBranch(sessionId);
 
   const handleViewDiff = async () => {
     if (loading) return;
     setLoading(true);
-    const base = baseBranch || "main";
+    const base = baseBranch || repoDefaultBranch;
     try {
       await useGitStore.getState().fetchDiffVsBranch(sessionId, base);
       useGitStore.getState().openDiffDialog(`Changes vs ${base}`);

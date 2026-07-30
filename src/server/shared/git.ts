@@ -595,6 +595,40 @@ export class GitManager {
   }
 
   /**
+   * The repo's default branch as this clone understands it — `main`, `master`,
+   * `trunk`, whatever the remote's HEAD points at.
+   *
+   * Read from `refs/remotes/origin/HEAD`, which `git clone` writes at clone time
+   * (and which the bare cache propagates to per-session clones), so this costs
+   * one local ref read: no network, no credential prompt. Falls back to probing
+   * for `origin/main` then `origin/master`, and finally to the literal "main" —
+   * the same guess every caller made before this method existed, so the worst
+   * case is exactly the old behavior.
+   *
+   * Exists because "the base branch" was previously hard-coded to "main" in a
+   * dozen places (ready-card diff stats, changed-file lists, the diff route),
+   * each of which silently produced wrong or empty results on a `master` repo.
+   */
+  async getDefaultBranch(): Promise<string> {
+    try {
+      const head = await this.git.raw(["symbolic-ref", "refs/remotes/origin/HEAD"]);
+      const match = /refs\/remotes\/[^/]+\/(.+)/.exec(head.trim());
+      if (match) return match[1];
+    } catch {
+      // origin/HEAD not set (older clone, or a repo with no remote) — probe.
+    }
+    for (const candidate of ["main", "master"]) {
+      try {
+        await this.git.revparse(["--verify", `origin/${candidate}`]);
+        return candidate;
+      } catch {
+        // try next candidate
+      }
+    }
+    return "main";
+  }
+
+  /**
    * Resolve a base branch to a valid ref, trying origin/<branch>, then local <branch>,
    * then common fallbacks. Returns null if no valid ref found.
    */

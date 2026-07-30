@@ -19,6 +19,7 @@ import { useUiStore } from "../stores/ui-store.js";
 import { useGitStore } from "../stores/git-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
+import { useSessionDefaultBranch } from "../utils/default-branch.js";
 import { OverflowMenu } from "./ui/overflow-menu.js";
 import { DropdownMenuItem, DropdownMenuSeparator } from "./ui/dropdown-menu.js";
 import { AutoFixPauseToggle, AutoMergeToggle, ClosePrDropdownItem, useClosePr } from "./PrStatusControls.js";
@@ -35,6 +36,7 @@ export function PrActionsMenu({ sessionId }: { sessionId: string }) {
   // auto-fix-CI setting is on, so the toggle is gated on it (pausing an
   // already-off loop would be a no-op the user can't reason about).
   const globalAutoFixCi = useSettingsStore((s) => s.autoFixCi);
+  const repoDefaultBranch = useSessionDefaultBranch(sessionId);
   const closeState = useClosePr(sessionId);
 
   // Whether the session has a GitHub remote — gates the remote-only actions
@@ -43,7 +45,10 @@ export function PrActionsMenu({ sessionId }: { sessionId: string }) {
   // Prefer card-derived branches because they update mid-turn (e.g. branch
   // rename on graduation), then fall back to the session record.
   const headBranch = card?.pr?.headBranch ?? card?.headBranch ?? session?.branch;
-  const syncBaseBranch = card?.pr?.baseBranch ?? "main";
+  // Pre-PR there's no `pr.baseBranch` to read, so fall back to the repo's real
+  // default branch rather than assuming "main" — "Sync with master" on a
+  // master repo, and a rebase onto a ref that actually exists.
+  const syncBaseBranch = card?.pr?.baseBranch ?? repoDefaultBranch;
   const syncDisabled = isAgentRunning || rebaseStatus !== "idle";
   const isOpen = card?.phase === "open";
 

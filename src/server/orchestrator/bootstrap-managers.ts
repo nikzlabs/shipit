@@ -32,6 +32,7 @@ import {
   runRepoMigration,
   scheduleStartupTasks,
 } from "./app-lifecycle.js";
+import { refreshAllRepoDefaultBranches } from "./services/repo-default-branch.js";
 import { createOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import { MergeWatchManager } from "./merge-watch.js";
 import { createSessionLoopDetector } from "./loop-detector.js";
@@ -679,6 +680,16 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     repoStore, sessionManager, chatHistoryManager, usageManager,
     containerManager, getBareCacheDir, warmSessionForRepo, credentialStore,
   }, migratedRepoUrls);
+
+  // ---- Resolve each repo's real default branch (main / master / trunk / …) ----
+  // Reads the bare cache's HEAD — local, no network — so the UI can name the
+  // actual base branch instead of hard-coding "main". Off the boot path and
+  // best-effort: repos it can't resolve keep falling back to "main".
+  void refreshAllRepoDefaultBranches({
+    repoStore, createRepoGit, getBareCacheDir, sseBroadcast,
+  }).catch((err: unknown) => {
+    console.error("[repo-default-branch] startup sweep failed:", err);
+  });
 
   return {
     // ---- Static metadata (threaded from index.ts) ----

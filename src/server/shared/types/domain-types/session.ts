@@ -409,4 +409,18 @@ export interface RepoInfo {
    * Remove, which archives sessions and reclaims disk. Defaults to visible.
    */
   hidden?: boolean;
+  /**
+   * The repo's real default branch — `main`, `master`, `trunk`, whatever the
+   * remote's `HEAD` points at. Resolved from the bare cache after clone (and at
+   * boot for already-cloned repos) by `refreshRepoDefaultBranch`, and shipped to
+   * the browser on the existing `repo_list` SSE.
+   *
+   * Exists so the UI stops hard-coding `"main"` in the surfaces that need a base
+   * branch before a PR exists (the rebase banner's "Branch is behind <base>",
+   * "Sync with <base>", the "Changes vs <base>" diff). `undefined` means "not
+   * resolved yet" — callers fall back to `"main"` exactly as before, so a repo
+   * added by an older build degrades to the previous behavior rather than
+   * breaking.
+   */
+  defaultBranch?: string;
 }
