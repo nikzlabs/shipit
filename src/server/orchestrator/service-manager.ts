@@ -332,6 +332,15 @@ export class ServiceManager extends EventEmitter {
    */
   private postGateServices = new Set<string>();
 
+  /**
+   * In-flight `docker compose stop` for a mid-session re-install teardown, or
+   * `null`. The gate-open path awaits it before releasing gated services so the
+   * teardown's own SIGKILL is still observed while the service is gated — and
+   * is therefore swallowed by the existing gated guards instead of being
+   * reported to the user as a crash. See `releaseInstallGate` (docs/239).
+   */
+  private _gatedTeardown: Promise<void> | null = null;
+
   constructor(opts: ServiceManagerOptions) {
     super();
     this.sessionId = opts.sessionId;
@@ -422,8 +431,8 @@ export class ServiceManager extends EventEmitter {
         this.retry.clearRetryState(name);
         this.retry.clearOomBudget(name);
       },
-      onExitedWithError: (name, exitCode) => {
-        this.handleNonZeroExit(name, exitCode);
+      onExitedWithError: (name, exitCode, oomKilled) => {
+        this.handleNonZeroExit(name, exitCode, oomKilled);
       },
       afterPoll: () => this.healSessionNetwork(),
     });
@@ -462,8 +471,12 @@ export class ServiceManager extends EventEmitter {
    * Branching for a non-zero exit. See the original inline pollStatus for
    * the rationale on each branch — preserved verbatim here so the retry
    * paths behave identically.
+   *
+   * @param oomKilled The container's inspected `State.OOMKilled` (from the
+   *   poller), or `undefined` when the inspect couldn't answer. Exit 137 is
+   *   SIGKILL, not "OOM" — see the exit-137 branch below.
    */
-  private handleNonZeroExit(name: string, exitCode: number): void {
+  private handleNonZeroExit(name: string, exitCode: number, oomKilled?: boolean): void {
     const svc = this.services.get(name);
     if (!svc) return;
 
@@ -483,12 +496,23 @@ export class ServiceManager extends EventEmitter {
       return;
     }
 
-    if (exitCode === 137 && svc.preview === "auto") {
-      // 137 = SIGKILL, the most common cause of which inside a
-      // memory-limited container is the OOM killer. The authoritative
-      // signal comes from the Docker event subscriber in
-      // container-health.ts (which checks State.OOMKilled), but if that
-      // event was missed we still want to handle it correctly here.
+    if (exitCode === 137 && oomKilled === true && svc.preview === "auto") {
+      // CONFIRMED OOM kill: 137 (SIGKILL) *and* the container's inspected
+      // `State.OOMKilled` says the kernel's cgroup OOM killer did it.
+      //
+      // The `oomKilled` conjunct is load-bearing, not defensive. 137 alone
+      // means "somebody sent SIGKILL", and the most frequent sender in this
+      // system is US: `stopGatedForReinstall` runs `docker compose stop`, and a
+      // `command: sh -c "npm install && npm run dev"` service never forwards
+      // SIGTERM, so the 10s grace period always expires into a SIGKILL. Field
+      // report (docs/239): a cached ~35ms re-install looping every 30s produced
+      // an exit-137 every cycle with `OOMKilled: false` on a service using
+      // 110 MiB of a 3 GiB limit — auto-"OOM"-retried, budget drained, then
+      // latched to `error` advising the user to raise a memory limit that was
+      // never the problem. An unconfirmed 137 now falls through: inside the
+      // post-gate window it lands on the docs/137 recovery path built for
+      // exactly "crashed right after the gate opened", and outside it, on the
+      // terminal branch with an honest message.
       //
       // We auto-retry up to MAX_OOM_AUTO_RETRIES times with the same
       // backoff schedule the install-window path uses. Without this,
@@ -514,10 +538,7 @@ export class ServiceManager extends EventEmitter {
       this.postGateServices.delete(name);
     }
 
-    const message = exitCode === 137
-      ? "Exited with code 137 (likely OOMKilled)"
-      : `Exited with code ${exitCode}`;
-    this.updateServiceStatus(name, "error", message);
+    this.updateServiceStatus(name, "error", describeExit(exitCode, oomKilled));
   }
 
   /**
@@ -566,15 +587,59 @@ export class ServiceManager extends EventEmitter {
 
     if (wasRunning && !running) {
       this._installFailed = opts.failed ?? false;
+      this.releaseInstallGate();
+      // Legacy safety net for opted-out / non-gated services that crashed
+      // during the install window. Excludes gated services (handled above).
+      this.flushPostInstallRetries();
+    }
+  }
+
+  /**
+   * Install finished — hand the gated services back to their normal lifecycle.
+   *
+   * Deliberately waits for any in-flight mid-session teardown
+   * (`stopGatedForReinstall`) to finish first. `holdGatedServicesForReinstall`
+   * issues `docker compose stop`, which SIGTERMs the container and SIGKILLs it
+   * when the 10s grace period expires — and a `command: sh -c "npm install &&
+   * npm run dev"` service never forwards SIGTERM, so the grace period always
+   * expires. If the gate reopens before that SIGKILL lands (observed at +35ms
+   * on a cached no-op install, ~10s before the kill — docs/239), the service is
+   * no longer in `gatedServices`, so the poller's `isGated` skip and
+   * `handleNonZeroExit`'s gated early-return — both written for exactly this
+   * exit — miss it, and our own teardown surfaces to the user as a service
+   * crash. Waiting is what lets those existing guards do their job.
+   *
+   * Sequencing it also stops the reopening `compose up` from racing the
+   * `compose stop` it just issued against the same container.
+   */
+  private releaseInstallGate(): void {
+    const teardown = this._gatedTeardown;
+    this._gatedTeardown = null;
+
+    const open = (): void => {
+      if (this._disposed) return;
+      // A new install may have started while we waited for the teardown; that
+      // re-held the services, and its own completion owns the next gate open.
+      if (this._installRunning) return;
       if (this._installFailed) {
         this.latchGatedServicesToError();
       } else {
         this.startGatedServices();
       }
-      // Legacy safety net for opted-out / non-gated services that crashed
-      // during the install window. Excludes gated services (handled above).
-      this.flushPostInstallRetries();
+    };
+
+    if (!teardown) {
+      // No mid-session teardown in flight (the common first-install path) —
+      // open synchronously, exactly as before.
+      open();
+      return;
     }
+    // Fire-and-forget from a sync caller (`setInstallRunning`): the gate opens
+    // once the teardown lands. `stopGatedForReinstall` never rejects.
+    void (async () => {
+      await teardown;
+      open();
+    })();
   }
 
   /** Whether the install-running gate is currently active. */
@@ -769,6 +834,9 @@ export class ServiceManager extends EventEmitter {
     // have fired before this start() ran). Non-gated services start now.
     this.gatedServices.clear();
     this.postGateServices.clear();
+    // A full (re)start supersedes any pending mid-session teardown — the stack
+    // is being brought up from scratch, so the gate must not wait on it.
+    this._gatedTeardown = null;
     const gateOpen = !this._installRunning && !this._installFailed;
     const startNow: ManagedService[] = [];
     for (const svc of autoServices) {
@@ -1029,6 +1097,7 @@ export class ServiceManager extends EventEmitter {
     this.poller.stop();
     this.retry.cancelAll();
     this.postGateServices.clear();
+    this._gatedTeardown = null;
 
     // Kill all log streaming processes
     for (const [name, proc] of this.logProcesses) {
@@ -1284,13 +1353,30 @@ export class ServiceManager extends EventEmitter {
       this.postGateServices.delete(svc.name);
       this.retry.clearPostGateState(svc.name);
       this.retry.cancelPostGateStableTimer(svc.name);
+      // Same reasoning for the OOM budget: this teardown+relaunch is a fresh
+      // start against a new dependency tree, so it should not inherit an
+      // earlier OOM count. Without this, a repeating re-install (the dep-change
+      // cooldown is 30s) tears the service down before it can bank the 60s of
+      // continuous uptime that clears the counter, so the budget only ever
+      // drains — monotonically, to a permanent latch. See docs/239.
+      this.retry.resetOomBudget(svc.name);
     }
-    void this.stopGatedForReinstall([...this.gatedServices]);
+    // Retained so the gate-open path can await it — see `releaseInstallGate`.
+    this._gatedTeardown = this.stopGatedForReinstall([...this.gatedServices]);
   }
 
-  /** Stop gated containers so they relaunch fresh after re-install completes. */
+  /**
+   * Stop gated containers so they relaunch fresh after re-install completes.
+   *
+   * Concurrent, not sequential: `releaseInstallGate` now waits for this, and
+   * each `compose stop` can burn the full 10s SIGTERM grace period, so a
+   * sequential loop would add 10s of preview downtime *per gated service* to
+   * every re-install bracket. Stopping them together caps the added wait at one
+   * grace period for the whole stack. Never rejects — a stop failure is logged
+   * and swallowed so it can't wedge the gate closed.
+   */
   private async stopGatedForReinstall(names: string[]): Promise<void> {
-    for (const name of names) {
+    await Promise.all(names.map(async (name) => {
       if (this._disposed) return;
       try {
         await this.compose.stop(name);
@@ -1300,7 +1386,7 @@ export class ServiceManager extends EventEmitter {
           (err as Error).message,
         );
       }
-    }
+    }));
   }
 
   /**
@@ -1353,6 +1439,24 @@ export class ServiceManager extends EventEmitter {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * User-facing message for a service that exited non-zero.
+ *
+ * Exit 137 is SIGKILL — an OOM kill is only ONE of its causes, and inside
+ * ShipIt it is not even the most common one (our own re-install teardown
+ * SIGKILLs services that don't forward SIGTERM). So we only name OOM when the
+ * container's inspected `State.OOMKilled` backs it up, hedge when we couldn't
+ * ask, and say plainly that it wasn't an OOM when the daemon told us so —
+ * because "raise your memory limit" is inert advice for a plain SIGKILL and
+ * sends the user chasing a limit that was never binding. See docs/239.
+ */
+function describeExit(exitCode: number, oomKilled?: boolean): string {
+  if (exitCode !== 137) return `Exited with code ${exitCode}`;
+  if (oomKilled === true) return "Exited with code 137 (OOMKilled)";
+  if (oomKilled === false) return "Exited with code 137 (SIGKILL — not an OOM kill)";
+  return "Exited with code 137 (likely OOMKilled)";
+}
 
 /**
  * Extract the host port from a port mapping string.

@@ -12,6 +12,7 @@ import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { SessionManager } from "../sessions.js";
 import { parseGitHubRemote } from "../git-utils.js";
+import { resolvePrBaseBranch } from "./git.js";
 import { ServiceError } from "./types.js";
 import { validateNonEmptyString } from "./validation.js";
 import { getErrorMessage } from "../validation.js";
@@ -485,13 +486,10 @@ export async function quickCreatePr(
   }
 
   // Base branch: for a re-armed branch use the prior PR's base (re-arm knows
-  // it); otherwise auto-detect main/master from the remote.
+  // it); otherwise the remote's actual default branch.
   let baseBranch = reArm?.baseBranch?.trim();
   if (!baseBranch) {
-    const remoteBranches = await git.listRemoteBranches();
-    baseBranch = remoteBranches.includes("main") ? "main" :
-      remoteBranches.includes("master") ? "master" :
-      remoteBranches[0] ?? "main";
+    baseBranch = await resolvePrBaseBranch(git, await git.listRemoteBranches());
   }
 
   // Generate title from session title
@@ -864,10 +862,7 @@ export async function agentCreatePr(
   // caller passed an explicit one.
   let baseBranch = options.base?.trim() || reArmBase;
   if (!baseBranch) {
-    const remoteBranches = await git.listRemoteBranches();
-    baseBranch = remoteBranches.includes("main") ? "main" :
-      remoteBranches.includes("master") ? "master" :
-      remoteBranches[0] ?? "main";
+    baseBranch = await resolvePrBaseBranch(git, await git.listRemoteBranches());
   }
 
   // Resolve title — fall back to session title or branch name.

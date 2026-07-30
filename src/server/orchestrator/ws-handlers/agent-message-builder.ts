@@ -224,7 +224,9 @@ export function requeueUndeliveredSteers(
   // double-render the bubble on reload (same reasoning as steer-rejected).
   runner.steeredMessages = steers.filter((s) => !isUndelivered(s));
   for (const s of undelivered) {
-    const queued: QueuedMessage = { text: s.text };
+    // A user-typed steer that fell into the turn-end gap — re-queued as the
+    // interactive turn it always was (SHI-255).
+    const queued: QueuedMessage = { text: s.text, execution: "interactive" };
     if (s.images && s.images.length > 0) queued.images = s.images;
     if (s.files && s.files.length > 0) queued.files = s.files.map((f) => ({ path: f.path }));
     const position = runner.enqueue(queued);

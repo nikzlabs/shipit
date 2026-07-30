@@ -151,6 +151,26 @@ export interface RecordedChatCard {
 
 export interface QueuedMessage {
   text: string;
+  /**
+   * SHI-255 — which executor must run this entry when it drains.
+   *
+   * `"interactive"` — a user-typed WS message (the client already rendered an
+   * optimistic bubble, so the drain must NOT echo one). Carries only text +
+   * attachments + permission mode; the WS drain
+   * (`ws-handlers/agent-execution.ts`) runs it.
+   *
+   * `"dispatched"` — a server-originated turn (wake-turn, CI auto-fix, rebase
+   * resolution, child message, quick session). It may carry turn-execution
+   * semantics the interactive re-entry cannot express — `systemTurn`,
+   * `onTurnComplete`, `postTurn`, `activity` — so it MUST run through
+   * `runDispatchedTurn`, which restores all of them.
+   *
+   * Required (not optional) so every enqueue site has to declare which it is;
+   * `toQueuedMessage` defaults a dispatch to `"dispatched"`, the superset path,
+   * so a caller that forgets can only over-deliver (an extra echo bubble), never
+   * silently drop a field.
+   */
+  execution: "interactive" | "dispatched";
   /** Spinner label shown in the chat bubble (e.g. "Creating PR…"). Carried through queue drain. */
   activity?: string;
   images?: ImageAttachment[];
@@ -184,6 +204,14 @@ export interface QueuedMessage {
  */
 export interface AgentDispatchOptions {
   text: string;
+  /**
+   * SHI-255 — which executor must run this turn if it ends up queued behind a
+   * running turn. Defaults to `"dispatched"` (this IS the dispatch path). The
+   * WS send handler passes `"interactive"` for a user-typed message it delegates
+   * here, so the drain reproduces the interactive turn (no server echo bubble on
+   * top of the client's optimistic one). See `QueuedMessage.execution`.
+   */
+  execution?: "interactive" | "dispatched";
   /** Spinner label shown in the chat bubble (e.g. "Creating PR…", "Auto-fixing CI…"). */
   activity?: string;
   /** Optional inline image attachments (already validated by the caller). */
@@ -230,7 +258,10 @@ export interface AgentDispatchOptions {
  * fields the next time the shape grows).
  */
 export function toQueuedMessage(opts: AgentDispatchOptions): QueuedMessage {
-  const queued: QueuedMessage = { text: opts.text };
+  // SHI-255 — default to the dispatched executor: it is the superset path (it
+  // restores `systemTurn` / `onTurnComplete` / `postTurn` / `activity`), so an
+  // untagged dispatch can never be narrowed away by the interactive drain.
+  const queued: QueuedMessage = { text: opts.text, execution: opts.execution ?? "dispatched" };
   if (opts.activity !== undefined) queued.activity = opts.activity;
   if (opts.images !== undefined) queued.images = opts.images;
   if (opts.files !== undefined) queued.files = opts.files;
@@ -702,6 +733,18 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    * rather than reimplementing the queueing rule inline.
    */
   dispatch(opts: AgentDispatchOptions): void;
+  /**
+   * SHI-255 — run `opts` as a server-dispatched turn NOW, bypassing the
+   * send-or-queue decision. This is the queue-drain re-entry for entries tagged
+   * `execution: "dispatched"`: whichever drain shifts them (the dispatched one or
+   * the WS interactive one) hands them back to `runDispatchedTurn`, so the full
+   * option set survives instead of being narrowed to text + attachments.
+   *
+   * Only valid when `canRunDispatchedTurn` is true (system-turn deps wired).
+   */
+  runDispatchedTurn(opts: AgentDispatchOptions): Promise<void>;
+  /** True once `setSystemTurnDeps` has been called — i.e. `runDispatchedTurn` is usable. */
+  readonly canRunDispatchedTurn: boolean;
 
   // Lifecycle
   onAgentFinished(): void;
@@ -1006,10 +1049,12 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     // completion.
     if (opts.systemTurn) this._systemTurnInProgress = true;
     this._isRunning = true;
-    void this._runDispatchedTurn(opts);
+    void this.runDispatchedTurn(opts);
   }
 
-  private async _runDispatchedTurn(opts: AgentDispatchOptions): Promise<void> {
+  get canRunDispatchedTurn(): boolean { return this._systemTurnDeps !== null; }
+
+  async runDispatchedTurn(opts: AgentDispatchOptions): Promise<void> {
     const deps = this._systemTurnDeps!;
     await runDispatchedTurn(this, deps, this._agentId, opts, (agentId) => {
       const agent = deps.agentFactory(agentId);

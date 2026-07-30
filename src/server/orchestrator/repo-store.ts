@@ -10,6 +10,7 @@ interface RepoRow {
   warm_session_id: string | null;
   trusted: number;
   hidden: number;
+  default_branch: string | null;
 }
 
 export class RepoStore {
@@ -29,6 +30,7 @@ export class RepoStore {
     if (row.warm_session_id) info.warmSessionId = row.warm_session_id;
     info.trusted = row.trusted === 1;
     info.hidden = row.hidden === 1;
+    if (row.default_branch) info.defaultBranch = row.default_branch;
     return info;
   }
 
@@ -54,6 +56,19 @@ export class RepoStore {
   /** Flip status to "ready" after clone completes. */
   setReady(url: string): void {
     this.db.prepare("UPDATE repos SET status = 'ready' WHERE url = ?").run(url);
+  }
+
+  /**
+   * Record the repo's real default branch (`main` / `master` / `trunk` / …).
+   * Written by `refreshRepoDefaultBranch` from the bare cache's HEAD; read by
+   * every surface that needs a base branch before a PR exists. Returns true
+   * when a row was updated, so the caller can skip a redundant SSE broadcast.
+   */
+  setDefaultBranch(url: string, branch: string): boolean {
+    const result = this.db
+      .prepare("UPDATE repos SET default_branch = ? WHERE url = ?")
+      .run(branch, url);
+    return result.changes > 0;
   }
 
   /** Store the warm session's ID. */

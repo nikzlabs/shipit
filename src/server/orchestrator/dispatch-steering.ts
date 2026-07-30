@@ -68,6 +68,34 @@ export function shouldSteerMessage(i: SteerDecisionInputs): boolean {
 }
 
 /**
+ * A dispatch that MUST run as its own turn can never be steered into someone
+ * else's, no matter what the running turn looks like (SHI-254).
+ *
+ * Two markers make a dispatch unsteerable:
+ *
+ *   - `systemTurn` — the incoming turn is system-driven (a notify-on-merge
+ *     wake-turn, a rebase resolution, a CI auto-fix). `shouldSteerMessage` only
+ *     consults `systemTurnInProgress`, i.e. whether the CURRENTLY RUNNING turn
+ *     is a system turn — it says nothing about the incoming one. Without this
+ *     guard a wake-turn arriving during an ordinary streaming user turn was
+ *     injected into that turn: the system instruction landed mid-context in
+ *     someone else's turn, violating docs/196's "delivery never preempts a
+ *     running turn" invariant.
+ *   - `onTurnComplete` — a completion callback only fires from a real turn's
+ *     teardown (`executeAgentTurn`). The steer path returns `true` BEFORE any
+ *     enqueue, so a steered dispatch drops the callback entirely: docs/196's
+ *     merge watch then never advanced past `merge-observed` and `reconcilePending`
+ *     re-fired it on every orchestrator restart (the duplicate-notification bug).
+ *
+ * No production caller relies on either being steerable: every `systemTurn`
+ * dispatch (wake-session, rebase-driver, CI auto-fix) either awaits
+ * `onTurnComplete` or explicitly wants steering suppressed for its duration.
+ */
+export function isSteerableDispatch(opts: AgentDispatchOptions): boolean {
+  return !opts.systemTurn && !opts.onTurnComplete;
+}
+
+/**
  * Dispatch-path steer attempt. Returns `true` when the message was injected
  * into the running turn (so the caller must NOT enqueue), `false` when the
  * caller should fall back to enqueuing.
@@ -84,6 +112,10 @@ export function trySteerDispatch(
   opts: AgentDispatchOptions,
   deps: SystemTurnDeps,
 ): boolean {
+  // SHI-254 — a system turn / a turn someone is awaiting is never steerable,
+  // regardless of the running turn's shape. Checked FIRST so no steer-policy
+  // wiring can talk us out of it.
+  if (!isSteerableDispatch(opts)) return false;
   // No steer policy wired (minimal test setups) ⇒ legacy enqueue behavior.
   if (!deps.steerInputs) return false;
   const { liveSteering, steeringCapable } = deps.steerInputs();

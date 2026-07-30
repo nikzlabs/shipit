@@ -31,23 +31,8 @@ import type {
   SessionRunnerInterface,
   SystemTurnDeps,
   AgentDispatchOptions,
-  QueuedMessage,
 } from "./session-runner.js";
-
-function queuedMessageToDispatchOptions(next: QueuedMessage): AgentDispatchOptions {
-  const nextOpts: AgentDispatchOptions = { text: next.text };
-  if (next.activity !== undefined) nextOpts.activity = next.activity;
-  if (next.images !== undefined) nextOpts.images = next.images;
-  if (next.files !== undefined) nextOpts.files = next.files;
-  if (next.uploads !== undefined) nextOpts.uploads = next.uploads;
-  if (next.permissionMode !== undefined) nextOpts.permissionMode = next.permissionMode;
-  if (next.postTurn !== undefined) nextOpts.postTurn = next.postTurn;
-  if (next.systemTurn !== undefined) nextOpts.systemTurn = next.systemTurn;
-  // docs/196 fix — carry the completion callback so an enqueued turn signals
-  // completion when it drains (the merge-watch busy path depends on this).
-  if (next.onTurnComplete !== undefined) nextOpts.onTurnComplete = next.onTurnComplete;
-  return nextOpts;
-}
+import { queuedMessageToDispatchOptions } from "./queue-drain.js";
 
 /**
  * How many times a dispatched first turn that exited WITHOUT producing a result
@@ -153,6 +138,11 @@ export async function runDispatchedTurn(
         }))
       : undefined;
 
+  // SHI-255 — this drain runs EVERY entry (interactive or dispatched) on the
+  // dispatched executor via the shared `queuedMessageToDispatchOptions`, which
+  // is the superset conversion: nothing can be narrowed away here. The WS drain
+  // (`ws-handlers/agent-execution.ts`), whose re-entry is narrower, routes
+  // through `startQueuedMessage` instead so a dispatched entry lands back here.
   const drainNext = async (): Promise<void> => {
     if (runner.queueLength === 0) return;
     const next = runner.dequeue();

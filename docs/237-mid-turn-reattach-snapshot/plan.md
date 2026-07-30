@@ -5,12 +5,14 @@ description: Rebuild a running turn from one atomic server snapshot at attach, i
 
 # Mid-turn reattach: one snapshot instead of two half-baselines
 
-Two independent bugs produced the same user-visible symptom. They are
+Three independent bugs produced the same user-visible symptom. They are
 distinguished by one question: **after the turn ends, does a full page reload
 bring the messages back?**
 
 - **Yes** → the client's in-memory transcript diverged; the DB was fine. That is
-  the reattach race below.
+  the reattach race below, and also
+  [the foreground-reconnect race](#third-bug-window-reactivation-loses-the-transcript-anyway)
+  found afterwards.
 - **No** → the rows are gone from the DB. That is
   [the mid-turn self-wake reset](#second-bug-a-mid-turn-background-task-notification-deletes-the-turn),
   fixed here too and written up in `docs/235`.
@@ -131,6 +133,72 @@ handler already implements the clear-instead-of-set behavior; nothing emits it.
 Today a finished turn reconciles at the next attach, which reloads history from
 the DB where the turn is complete.
 
+## Third bug: window reactivation loses the transcript anyway
+
+Reported after the two fixes above shipped: reactivating the *browser window*
+(not a session switch) still dropped messages and tool calls, and a page reload
+still brought them back — so, by the question at the top, another client-side
+divergence.
+
+The snapshot is correct; what was wrong is that **two of its preconditions were
+not actually guaranteed on a foreground reconnect**.
+
+### 1. One reactivation opened several sockets
+
+`useWebSocket.handleForeground` is wired to `visibilitychange`, `focus`,
+`pageshow` and `online`. A single window reactivation fires two or three of
+them in separate event-loop turns, and each called `reconnectForForeground()`
+unconditionally — even on a socket that was already OPEN. React commits between
+those turns, so the socket effect re-ran each time: one reactivation, up to
+three teardown/create cycles, three server-side attaches, three
+`loadSessionHistory` calls.
+
+Now the burst is coalesced (`FOREGROUND_COALESCE_MS`, 1s): the first event
+reconnects, the rest are no-ops. A connect that doesn't take is still covered by
+the existing 300/1200/3000ms retries and then normal backoff.
+
+### 2. A superseded history load still wrote its result
+
+`loadSessionHistory` guarded only on `useSessionStore.sessionId` still matching.
+Nothing cancels a load when the connection it was issued for is replaced, and
+two loads for the *same* session pass that guard, so overlapping loads could
+land out of order. When the older one landed last it did two destructive things:
+
+- `setMessages` rewound the transcript to the DB snapshot it had read. For a
+  running turn the DB only holds rows up to the last tool-result boundary, so
+  everything the turn produced since — text, tool calls, cards — was wiped, and
+  live events only append after that, so the hole never healed. **This is the
+  reported symptom.**
+- `setHistoryLoaded(true)` fired mid-reconnect, breaking the ordering invariant
+  the snapshot depends on: `useMessageHandler` queues `turn_snapshot` only while
+  history is *not* loaded, so that it lands **on top of** the baseline. With the
+  flag spuriously raised, the snapshot was dispatched immediately and applied
+  its replace-filter against an arbitrary transcript.
+
+Fix: `historyLoadSeq` — a monotonic id of the most recently *issued* load. A
+response may only be applied if no later load has been issued since. Last
+request wins, not last response.
+
+### 3. `inProgress` was never cleared on the client
+
+The replace-filter's scope marker is `ChatMessage.inProgress`, and only two
+paths set it: a history load of a running turn, and the snapshot itself.
+**Nothing cleared it.** The server drops `in_progress` from every row at
+`agent_result` (`finalizeInProgress`); the client did not, so rows of a turn the
+viewer happened to be attached to kept the marking for the rest of the session's
+life. Any later attach sends a snapshot of whatever turn is running *now*, and
+`prev.filter((m) => !m.inProgress)` then deleted those finished turns along with
+the running one it meant to replace.
+
+Fix: the `agent_result` branch of `handleAgentEvent` clears `inProgress`
+alongside `streaming`, mirroring the server. That bounds the replace-filter to
+the turn actually in flight — which is what the snapshot's contract always
+assumed.
+
+The three compose: (1) creates the overlapping loads, (2) lets a stale one win
+and mis-orders the snapshot, (3) turns a mis-ordered snapshot from a harmless
+no-op into a deletion.
+
 ## Key files
 
 | File | Role |
@@ -140,7 +208,9 @@ the DB where the turn is complete.
 | `orchestrator/chat-card-persistence.ts` | `buildTurnMessages` — one rebuild shared by persist and snapshot |
 | `client/hooks/message-handlers/turn-snapshot.ts` | Replace-not-append application |
 | `client/hooks/useMessageHandler.ts` | Queues the snapshot behind the history baseline |
-| `client/utils/session-data.ts` | Carries `inProgress` from history onto `ChatMessage` |
+| `client/utils/session-data.ts` | Carries `inProgress` from history onto `ChatMessage`; `historyLoadSeq` — only the newest issued load may write |
+| `client/hooks/message-handlers/agent-event.ts` | `agent_result` clears `inProgress`, mirroring `finalizeInProgress` |
+| `client/hooks/useWebSocket.ts` | `handleForeground` — coalesces the reactivation burst into one reconnect |
 | `client/components/MessageList/types.ts` | `inProgress` vs `streaming` |
 | `orchestrator/ws-handlers/agent-listeners.ts` | `agent_self_wake` — reset gated on `!runner.running` |
 
@@ -159,3 +229,13 @@ the DB where the turn is complete.
   leaves the running turn's rows in chat history (through turn end); a genuine
   self-wake after the turn finished still gets a clean accumulator instead of
   re-persisting the previous turn.
+- `client/utils/session-data.test.ts` — two overlapping loads for the same
+  session: the older response neither overwrites the transcript nor flips
+  `historyLoaded`.
+- `client/hooks/message-handlers/turn-snapshot.test.ts` — a snapshot for the
+  running turn leaves a *finished* turn's rows alone once `agent_result` has
+  cleared their `inProgress`, and still replaces the running turn's own stale
+  rows.
+- `client/hooks/useWebSocket.test.ts` — a reactivation burst
+  (`visibilitychange` + `focus` + `pageshow`, each in its own event-loop turn)
+  opens one socket, not three; a genuinely later reactivation still reconnects.

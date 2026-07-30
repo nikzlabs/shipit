@@ -11,6 +11,7 @@ import {
   type OverlayPublishDeps,
   type AncestryOracle,
 } from "./overlay-publish.js";
+import { extractTarStream } from "./overlay-snapshot.js";
 import { readBasePointer, type OverlayScope } from "./overlay-base.js";
 import { overlayRuntimeKey } from "./overlay-session.js";
 import { overlayScopeHash } from "./overlay-volume.js";
@@ -357,6 +358,80 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
     // The failing dir wrote no base; the healthy dir did.
     expect(pointerFor("node_modules")).toBeNull();
     expect(baseContentFor("packages/app/node_modules")).toBe("packages/app/node_modules");
+  });
+
+  // --- abort on session disposal (prod crash 2026-07-30) ---------------------
+
+  it("threads the abort signal into the worker pull and head fetch", async () => {
+    const controller = new AbortController();
+    const seen: (AbortSignal | undefined)[] = [];
+    await publishDepDirOverlayBases(
+      {
+        session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir },
+        workerUrl: "http://w",
+        installOk: true,
+        signal: controller.signal,
+      },
+      depsWith({
+        fetchHeadInfo: (_url, signal) => {
+          seen.push(signal);
+          return Promise.resolve({ commit: HEAD, runtimeKey: "img|x64|glibc|node24" });
+        },
+        fetchSnapshot: (_url, depDir, signal) => {
+          seen.push(signal);
+          return Promise.resolve(Readable.from([Buffer.from(depDir)]));
+        },
+      }),
+    );
+    expect(seen).toEqual([controller.signal, controller.signal]);
+  });
+
+  it("records an error (never throws) when the pull dies mid-stream", async () => {
+    // The archive-during-publish race: the container is SIGKILLed and the
+    // snapshot stream dies half-way. Worst case is a logged per-dir error.
+    const out = await publishDepDirOverlayBases(
+      { session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir }, workerUrl: "http://w", installOk: true },
+      depsWith({
+        fetchSnapshot: () => {
+          const s = new Readable({ read() {} });
+          s.push(Buffer.alloc(4096));
+          setTimeout(() => s.destroy(new Error("terminated")), 5);
+          return Promise.resolve(s);
+        },
+        extract: extractTarStream,
+      }),
+    );
+    expect(out).toEqual([
+      { depDir: "node_modules", outcome: "error", error: expect.stringContaining("terminated") },
+    ]);
+    expect(pointerFor("node_modules")).toBeNull();
+  });
+
+  it("stops pulling remaining dep dirs once the signal aborts", async () => {
+    workspaceDir = makeWorkspace(["node_modules", "packages/app/node_modules"], {
+      shipitDepDirs: ["node_modules", "packages/app/node_modules"],
+    });
+    const controller = new AbortController();
+    const pulled: string[] = [];
+    const out = await publishDepDirOverlayBases(
+      {
+        session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir },
+        workerUrl: "http://w",
+        installOk: true,
+        signal: controller.signal,
+      },
+      depsWith({
+        fetchSnapshot: (_url, depDir) => {
+          pulled.push(depDir);
+          // The runner is disposed while the first dir is streaming.
+          controller.abort(new Error("session runner disposed"));
+          return Promise.resolve(Readable.from([Buffer.from(depDir)]));
+        },
+      }),
+    );
+    expect(pulled).toEqual(["node_modules"]);
+    expect(out[1]).toMatchObject({ depDir: "packages/app/node_modules", outcome: "error" });
+    expect(pointerFor("packages/app/node_modules")).toBeNull();
   });
 });
 

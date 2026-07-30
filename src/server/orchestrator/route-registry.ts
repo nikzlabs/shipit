@@ -880,9 +880,11 @@ export async function registerRoutes(
             const seedDir = dir;
             void (async () => {
               try {
-                const base =
-                  prStatusPoller.getStatus(sid)?.baseBranch ?? s.previousMergedPr?.baseBranch ?? "main";
                 const git = createGitManager(seedDir);
+                const base =
+                  prStatusPoller.getStatus(sid)?.baseBranch
+                  ?? s.previousMergedPr?.baseBranch
+                  ?? await git.getDefaultBranch();
                 const notableFiles = await notableFilesForBranch(git, seedDir, base);
                 send({
                   type: "pr_notable_files",
@@ -1070,7 +1072,7 @@ export async function registerRoutes(
                 // override a viewer's stale terminal merged card in
                 // `pr-store.updateCard`'s regress guard.
                 const previousMergedPr = session.previousMergedPr;
-                const readyBase = previousMergedPr?.baseBranch ?? "main";
+                const readyBase = previousMergedPr?.baseBranch ?? await git.getDefaultBranch();
                 const { insertions, deletions } = await git.diffStatVsBranch(readyBase);
                 send({
                   type: "pr_lifecycle_update",

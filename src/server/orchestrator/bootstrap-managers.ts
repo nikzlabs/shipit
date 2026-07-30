@@ -7,6 +7,7 @@ import { LogStore } from "./log-store.js";
 import type { PrStatusPoller } from "./pr-status-poller.js";
 import { ReleaseStatusPoller } from "./release-status-poller.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
+import { queuedMessageToDispatchOptions } from "./queue-drain.js";
 import type { ServiceManager } from "./service-manager.js";
 import type { ResolvedEgressConfig } from "./egress-allowlist.js";
 import type { AppCtx } from "./ws-handlers/types.js";
@@ -32,6 +33,7 @@ import {
   runRepoMigration,
   scheduleStartupTasks,
 } from "./app-lifecycle.js";
+import { refreshAllRepoDefaultBranches } from "./services/repo-default-branch.js";
 import { createOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import { MergeWatchManager } from "./merge-watch.js";
 import { createSessionLoopDetector } from "./loop-detector.js";
@@ -361,6 +363,12 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   // the bare-cache git oracle, so `publishDepDirOverlayBases` stays runner- and
   // HTTP-agnostic. Cheap flag gate first so a kill-switched session never awaits
   // worker readiness. Default ON; inert when `OVERLAY_DEP_STORE=0`/`false`.
+  //
+  // This is also where the pull's lifetime is bound to the runner's: the snapshot
+  // producer is the session container, so `dispose()` (archive / full reset) means
+  // the worker is about to be SIGKILLed and the multi-hundred-MB stream we are
+  // reading is about to die under us. Aborting on `"disposed"` turns that into a
+  // prompt cancellation instead of a mid-stream socket kill.
   const publishOverlayBases = async ({ runner, session, installOk, installCommands }: {
     runner: ContainerSessionRunner;
     session: SessionInfo;
@@ -369,10 +377,21 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   }): Promise<DepDirPublishOutcome[]> => {
     if (!isOverlayEnabled() || !session.remoteUrl) return [];
     await runner.whenWorkerReady();
-    return publishDepDirOverlayBases(
-      { session, workerUrl: runner.getWorkerUrl(), installOk, installCommands },
-      { stateDir, createRepoGit, getBareCacheDir },
-    );
+    // `dispose()` resolves `whenWorkerReady()` so no awaiter leaks — which means
+    // reaching here says nothing about the runner still being alive. Re-check.
+    if (runner.disposed) return [];
+
+    const controller = new AbortController();
+    const onDisposed = (): void => controller.abort(new Error("session runner disposed"));
+    runner.on("disposed", onDisposed);
+    try {
+      return await publishDepDirOverlayBases(
+        { session, workerUrl: runner.getWorkerUrl(), installOk, installCommands, signal: controller.signal },
+        { stateDir, createRepoGit, getBareCacheDir },
+      );
+    } finally {
+      runner.off("disposed", onDisposed);
+    }
   };
 
   const runnerRegistry = createRunnerRegistry({
@@ -416,14 +435,11 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     const next = runner.dequeue();
     if (!next) return;
     runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
-    runner.dispatch({
-      text: next.text,
-      ...(next.activity !== undefined ? { activity: next.activity } : {}),
-      ...(next.images !== undefined ? { images: next.images } : {}),
-      ...(next.files !== undefined ? { files: next.files } : {}),
-      ...(next.uploads !== undefined ? { uploads: next.uploads } : {}),
-      ...(next.permissionMode !== undefined ? { permissionMode: next.permissionMode } : {}),
-    });
+    // SHI-255 — use the shared full conversion, never a hand-rolled field copy:
+    // this drain (post auto-conflict-resolve) previously dropped `systemTurn`,
+    // `postTurn`, and `onTurnComplete`, so a docs/196 wake-turn that queued
+    // during a rebase ran as an ordinary turn and never signalled completion.
+    runner.dispatch(queuedMessageToDispatchOptions(next));
   };
 
   // ---- Notify-on-merge watches (docs/196) ----
@@ -679,6 +695,16 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     repoStore, sessionManager, chatHistoryManager, usageManager,
     containerManager, getBareCacheDir, warmSessionForRepo, credentialStore,
   }, migratedRepoUrls);
+
+  // ---- Resolve each repo's real default branch (main / master / trunk / …) ----
+  // Reads the bare cache's HEAD — local, no network — so the UI can name the
+  // actual base branch instead of hard-coding "main". Off the boot path and
+  // best-effort: repos it can't resolve keep falling back to "main".
+  void refreshAllRepoDefaultBranches({
+    repoStore, createRepoGit, getBareCacheDir, sseBroadcast,
+  }).catch((err: unknown) => {
+    console.error("[repo-default-branch] startup sweep failed:", err);
+  });
 
   return {
     // ---- Static metadata (threaded from index.ts) ----

@@ -12,7 +12,22 @@
 - [x] Gate the `agent_self_wake` reset on `!runner.running` so a mid-turn
       background-task notification stops deleting the running turn's rows
 - [x] Integration test for the mid-turn notification + the genuine self-wake
-- [ ] Confirm with the reporter that the transcript survives a mid-turn switch on the deployment
+- [x] Confirm with the reporter that the transcript survives a mid-turn switch on the
+      deployment — it did not on *window reactivation*, which surfaced the third bug below
+
+Follow-up — window reactivation, `plan.md` → "Third bug":
+
+- [x] Coalesce the `visibilitychange`/`focus`/`pageshow` reactivation burst into
+      one reconnect (`FOREGROUND_COALESCE_MS`)
+- [x] `historyLoadSeq` — a superseded `loadSessionHistory` writes nothing (not
+      the transcript, not `historyLoaded`)
+- [x] `agent_result` clears `inProgress` on the client, mirroring the server's
+      `finalizeInProgress`, so the snapshot's replace-filter can only touch the
+      running turn
+- [x] Tests for all three (overlapping loads, finished-turn rows surviving a
+      later snapshot, one socket per reactivation)
+- [ ] Confirm on the deployment that reactivating the browser window mid-turn no
+      longer drops messages
 
 Deferred, tracked in `plan.md` → "Why not reconcile at turn end":
 

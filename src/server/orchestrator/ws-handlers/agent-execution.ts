@@ -8,7 +8,8 @@ import { postTurnCommit } from "./post-turn.js";
 import { resolveRunner } from "./resolve-runner.js";
 import { autoResetMergedBranchOnContinue, isResetEligible } from "../services/pre-turn-reset.js";
 import { routeVoiceNote } from "../voice/voice-note-router.js";
-import type { SessionRunnerInterface, SystemTurnDeps } from "../session-runner.js";
+import type { SessionRunnerInterface, SystemTurnDeps, QueuedMessage } from "../session-runner.js";
+import { startQueuedMessage } from "../queue-drain.js";
 import {
   prepareSessionAgentEnvironment,
   finalizeSessionAgentEnvironment,
@@ -73,8 +74,16 @@ function persistInterruptedTurn(
  *
  * Callers must have already cleared the runner's `_agent` reference and set
  * `running = false`. This helper sets `running = true` again when it shifts
- * a message off, and recursively calls `runAgentWithMessage` to drive the
- * new turn.
+ * a message off, and starts the new turn via `startQueuedMessage`.
+ *
+ * SHI-255 — the re-entry below (`runAgentWithMessage`) can only express an
+ * INTERACTIVE turn: text, attachments, permission mode. A server-dispatched
+ * entry also carries `systemTurn`, `onTurnComplete`, `postTurn`, and `activity`,
+ * which this path used to drop on the floor — a docs/196 wake-turn queued behind
+ * a user turn ran as an ordinary turn and its merge watch never advanced. So the
+ * dequeued entry is routed by `startQueuedMessage`: dispatched entries go back
+ * through `runner.runDispatchedTurn` with the full option set, and only
+ * interactive ones reach the narrower re-entry here.
  */
 export async function drainNextQueuedMessage(
   ctx: FullCtx,
@@ -103,6 +112,28 @@ export async function drainNextQueuedMessage(
   });
   runner.running = true;
 
+  await startQueuedMessage(runner, next, (queued) =>
+    runQueuedInteractiveMessage(ctx, runner, capturedSessionId, capturedSessionDir, emit, queued),
+  ).catch((err: unknown) => {
+    console.error("[queue] Error processing queued message:", getErrorMessage(err));
+    runner.running = false;
+  });
+}
+
+/**
+ * The WS transport's own queue re-entry: resolve the entry's attachments and
+ * start an interactive turn. Reached ONLY for `execution: "interactive"` entries
+ * (see `startQueuedMessage`) — a server-dispatched entry would lose its
+ * `systemTurn` / `onTurnComplete` here.
+ */
+async function runQueuedInteractiveMessage(
+  ctx: FullCtx,
+  runner: SessionRunnerInterface,
+  capturedSessionId: string | undefined,
+  capturedSessionDir: string | null | undefined,
+  emit: (msg: WsServerMessage) => void,
+  next: QueuedMessage,
+): Promise<void> {
   const nextImages = next.images && next.images.length > 0 ? next.images : undefined;
   const nextFileRefs = next.files && next.files.length > 0 ? next.files : undefined;
   let nextValidatedFiles: FileAttachment[] = [];

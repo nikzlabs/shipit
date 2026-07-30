@@ -36,6 +36,7 @@ import { AuthManager } from "../agents/claude/auth-manager.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import { DatabaseManager } from "../../shared/database.js";
 import {
+  TestClient,
   StubAuthManager,
   StubGitHubAuthManager,
   FakeClaudeProcess,
@@ -56,6 +57,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 10000, label = "con
 
 describe("Integration: notify-on-merge watch (docs/196)", () => {
   let app: FastifyInstance;
+  let port: number;
   let tmpDir: string;
   let sessionManager: SessionManager;
   let repoStore: RepoStore;
@@ -92,7 +94,8 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
       workspaceDir: tmpDir,
       serveStatic: false,
     });
-    await app.listen({ port: 0, host: "127.0.0.1" });
+    const address = await app.listen({ port: 0, host: "127.0.0.1" });
+    port = Number(/:(\d+)$/.exec(address)?.[1] ?? 0);
   });
 
   afterEach(async () => {
@@ -206,6 +209,63 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
 
     // Delivery is fire-once: the card was surfaced exactly once.
     expect(await parentCardOutcomes(parentId)).toEqual(["merged"]);
+  });
+
+  it("merged: a wake-turn queued behind a REAL interactive parent turn reaches delivered in-process (SHI-255)", { timeout: 20_000 }, async () => {
+    const parentId = await createParent();
+    const childId = await spawnChild(parentId);
+    await armWatch(parentId, childId);
+
+    // The parent is busy with a REAL user turn — the common case, and the one
+    // the fake busy runner in merge-watch.test.ts couldn't reproduce: the
+    // interactive drain (not the dispatched one) is what picks the wake-turn up.
+    const client = await TestClient.connect(port, parentId);
+    client.send({ type: "send_message", text: "Keep working on the integration" });
+    await waitFor(
+      () => spawnedAgents.some((a) => a.runCalled && a.lastPrompt?.includes("Keep working on the integration")),
+      10_000,
+      "parent user turn started",
+    );
+    const userTurn = spawnedAgents.find((a) => a.lastPrompt?.includes("Keep working on the integration"))!;
+    const runner = app.runnerRegistry.get(parentId)!;
+    expect(runner.running).toBe(true);
+
+    await app.mergeWatchManager!.handleChildPrTerminal({
+      sessionId: childId,
+      outcome: "merged",
+      prNumber: 7,
+      prUrl: "https://github.com/owner/notify-on-merge-test/pull/7",
+      prTitle: "Foundation",
+      branch: sessionManager.get(childId)!.branch!,
+      mergeSha: "deadbeefcafe1234",
+    });
+
+    // Card now; wake-turn QUEUED behind the running user turn (never preempting).
+    expect(await parentCardOutcomes(parentId)).toEqual(["merged"]);
+    await waitFor(() => runner.queueLength === 1, 10_000, "wake-turn queued behind the user turn");
+    expect(sessionManager.getMergeWatch(childId)?.state).toBe("merge-observed");
+
+    // The user turn ends → the interactive drain starts the wake-turn. Before
+    // the fix it re-entered with text only, so the turn ran as an ordinary
+    // interactive one, `onTurnComplete` never fired, and the watch sat at
+    // `merge-observed` until a restart re-fired it (duplicate notification).
+    userTurn.finish("parent-user-turn");
+    await waitFor(
+      () => spawnedAgents.some((a) => a.runCalled && a.lastPrompt?.includes("MERGED")),
+      10_000,
+      "wake-turn started from the interactive drain",
+    );
+    expect(runner.systemTurnInProgress).toBe(true);
+
+    spawnedAgents.find((a) => a.lastPrompt?.includes("MERGED"))!.finish("parent-wake-turn");
+    await waitFor(
+      () => sessionManager.getMergeWatch(childId)?.state === "delivered",
+      10_000,
+      "watch delivered in-process (no restart)",
+    );
+    expect(await parentCardOutcomes(parentId)).toEqual(["merged"]);
+
+    client.close();
   });
 
   it("merged: a restart before the wake-turn runs is recovered by reconcile (no second card)", { timeout: 15_000 }, async () => {

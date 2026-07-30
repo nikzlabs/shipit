@@ -86,25 +86,25 @@ export async function emitPrLifecycleAfterCommit(args: {
     // from which lifecycle path runs, so it tracks the branch turn-by-turn.
     //
     // Base resolution mirrors the session-switch re-seed: the tracked PR's base,
-    // else a re-armed session's prior base, else "main". A notableFiles-only patch
-    // merges into the live card without touching the poller-owned fields.
-    {
+    // else a re-armed session's prior base, else the repo's own default branch
+    // (main / master / trunk — read from the clone, not assumed). A
+    // notableFiles-only patch merges into the live card without touching the
+    // poller-owned fields.
+    try {
+      const stripGit = deps.createGitManager(sessionDir);
       const base =
         deps.prStatusPoller.getStatus(sessionId)?.baseBranch
         ?? previousMergedPr?.baseBranch
-        ?? "main";
-      try {
-        const git = deps.createGitManager(sessionDir);
-        const notableFiles = await notableFilesForBranch(git, sessionDir, base);
-        emit({
-          type: "pr_notable_files",
-          sessionId,
-          cardId: `pr-card-${sessionId}`,
-          notableFiles,
-        });
-      } catch {
-        // Best-effort — a git error just leaves the last-known strip in place.
-      }
+        ?? await stripGit.getDefaultBranch();
+      const notableFiles = await notableFilesForBranch(stripGit, sessionDir, base);
+      emit({
+        type: "pr_notable_files",
+        sessionId,
+        cardId: `pr-card-${sessionId}`,
+        notableFiles,
+      });
+    } catch {
+      // Best-effort — a git error just leaves the last-known strip in place.
     }
 
     const prStatus = deps.prStatusPoller.getStatus(sessionId);
@@ -222,9 +222,11 @@ export async function emitPrLifecycleAfterCommit(args: {
 
     // Ready card: diff stats vs. the base branch so the user can click "open
     // PR". For a re-armed session use the prior PR's base (re-arm knows it);
-    // otherwise default to "main" (the generic cold-session limitation).
+    // otherwise the repo's own default branch. Hard-coding "main" here made the
+    // ready card report 0 changed files on any `master`/`trunk` repo, because
+    // `diffStatVsBranch` had no ref to diff against.
     const headBranch = session.branch || await git.getCurrentBranch();
-    const readyBase = previousMergedPr?.baseBranch ?? "main";
+    const readyBase = previousMergedPr?.baseBranch ?? await git.getDefaultBranch();
     const { insertions: totalInsertions, deletions: totalDeletions } = await git.diffStatVsBranch(readyBase);
     // docs/205 — notable files (docs + config) changed vs the base, for the
     // card's collapsible changed-docs strip.

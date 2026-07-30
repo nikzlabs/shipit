@@ -1334,7 +1334,12 @@ describe("ServiceManager install-running retry gate", () => {
    */
   function makeManager(dir: string) {
     const composeUpCalls: string[][] = [];
+    const composeStopCalls: string[] = [];
     let psResponse = "";
+    // What `docker inspect` reports for `State.OOMKilled`. `undefined` models a
+    // daemon that omits the field (the manager treats that as "unknown", not
+    // "not an OOM"). Exit 137 alone no longer implies OOM — see docs/239.
+    let oomKilled: boolean | undefined = false;
 
     const composeRunner: ComposeRunner = (args) => {
       // Track which `up` calls happen (startup vs retry vs post-install)
@@ -1342,13 +1347,20 @@ describe("ServiceManager install-running retry gate", () => {
       if (upIdx >= 0) {
         composeUpCalls.push(args.slice(upIdx));
       }
+      const stopIdx = args.indexOf("stop");
+      if (stopIdx >= 0) composeStopCalls.push(args.slice(stopIdx + 1).join(" "));
       return Promise.resolve();
     };
 
     const composeQuery: ComposeQuery = (args) => {
       const key = args.find(a => a === "ps" || a === "inspect" || a === "rm" || a === "network") ?? args[0];
       if (key === "ps") return Promise.resolve(psResponse);
-      if (key === "inspect") return Promise.resolve(JSON.stringify([{ NetworkSettings: { Networks: {} } }]));
+      if (key === "inspect") {
+        return Promise.resolve(JSON.stringify([{
+          ...(oomKilled === undefined ? {} : { State: { OOMKilled: oomKilled } }),
+          NetworkSettings: { Networks: {} },
+        }]));
+      }
       return Promise.resolve("");
     };
 
@@ -1364,7 +1376,9 @@ describe("ServiceManager install-running retry gate", () => {
     return {
       mgr,
       composeUpCalls,
+      composeStopCalls,
       setPsResponse: (s: string) => { psResponse = s; },
+      setOomKilled: (v: boolean | undefined) => { oomKilled = v; },
     };
   }
 
@@ -1545,9 +1559,10 @@ services:
     vi.useFakeTimers();
     const dir = setup();
     writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
-    const { mgr, composeUpCalls, setPsResponse } = makeManager(dir);
+    const { mgr, composeUpCalls, setPsResponse, setOomKilled } = makeManager(dir);
 
     setPsResponse(exitedPs(137));
+    setOomKilled(true); // the daemon confirms the kernel OOM-killer did it
     // Install gate is closed — this exercises the post-install OOM path.
     await mgr.start();
 
@@ -1569,9 +1584,10 @@ services:
     vi.useFakeTimers();
     const dir = setup();
     writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
-    const { mgr, setPsResponse } = makeManager(dir);
+    const { mgr, setPsResponse, setOomKilled } = makeManager(dir);
 
     setPsResponse(exitedPs(137));
+    setOomKilled(true);
     await mgr.start();
     expect(mgr.getService("web")?.status).toBe("starting"); // retry #1 pending
 
@@ -1598,7 +1614,7 @@ services:
     image: node:20
     x-shipit-preview: manual
 `);
-    const { mgr, setPsResponse } = makeManager(dir);
+    const { mgr, setPsResponse, setOomKilled } = makeManager(dir);
 
     // Manual services aren't started by mgr.start(), so the OOM exit path is
     // reached via an explicit startService + pollStatus.
@@ -1608,6 +1624,7 @@ services:
     setPsResponse(JSON.stringify({
       Service: "worker", ID: "abc", State: "exited", ExitCode: 137,
     }));
+    setOomKilled(true);
     // Simulate a poll where the manual service shows as exited 137.
     // composeRunner just resolves, so the "up" succeeds but the next ps
     // still says exited.
@@ -1616,17 +1633,18 @@ services:
     const worker = mgr.getService("worker");
     // Manual service path is "error" with the bare OOM hint, no auto-retry.
     expect(worker?.status).toBe("error");
-    expect(worker?.error).toContain("Exited with code 137 (likely OOMKilled)");
+    expect(worker?.error).toContain("Exited with code 137 (OOMKilled)");
   });
 
   it("resets OOM counter when user explicitly calls startService", async () => {
     vi.useFakeTimers();
     const dir = setup();
     writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
-    const { mgr, setPsResponse } = makeManager(dir);
+    const { mgr, setPsResponse, setOomKilled } = makeManager(dir);
 
     // Burn through the retry budget.
     setPsResponse(exitedPs(137));
+    setOomKilled(true);
     await mgr.start();
     for (const delay of [1_000, 2_000, 4_000]) {
       await vi.advanceTimersByTimeAsync(delay);
@@ -1640,6 +1658,83 @@ services:
     // "gave up" latch — proving the counter was reset.
     await mgr.startService("web");
     expect(mgr.getService("web")?.status).toBe("starting");
+  });
+
+  // --- Exit 137 is SIGKILL, not proof of OOM (docs/239) ---
+  //
+  // Production incident: a cached ~35ms re-install looping every 30s SIGKILLed
+  // the `dev` service via our own `compose stop` teardown. Every cycle exited
+  // 137 with `OOMKilled: false` on a service using 110 MiB of a 3 GiB limit,
+  // was auto-"OOM"-retried until the budget drained, and then latched to
+  // `error` telling the user to raise a memory limit that was never binding.
+
+  it("does not treat exit 137 as OOM when the daemon reports OOMKilled: false", async () => {
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n    x-shipit-depends-on-install: false\n");
+    const { mgr, composeUpCalls, setPsResponse, setOomKilled } = makeManager(dir);
+
+    setPsResponse(exitedPs(137));
+    setOomKilled(false); // authoritative: this was a plain SIGKILL
+    await mgr.start();
+
+    // No OOM auto-retry — latches immediately with an honest message that does
+    // NOT advise raising a memory limit.
+    const web = mgr.getService("web");
+    expect(web?.status).toBe("error");
+    expect(web?.error).toBe("Exited with code 137 (SIGKILL — not an OOM kill)");
+    expect(web?.error).not.toContain("memory");
+
+    const upCallsBefore = composeUpCalls.length;
+    await vi.advanceTimersByTimeAsync(30_000);
+    await vi.runAllTimersAsync();
+    expect(composeUpCalls.length).toBe(upCallsBefore);
+  });
+
+  it("keeps the hedged 137 message when OOMKilled is unknown", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n    x-shipit-depends-on-install: false\n");
+    const { mgr, setPsResponse, setOomKilled } = makeManager(dir);
+
+    setPsResponse(exitedPs(137));
+    setOomKilled(undefined); // daemon omitted State.OOMKilled
+    await mgr.start();
+
+    // Unconfirmed — we neither auto-retry as an OOM nor assert it happened.
+    const web = mgr.getService("web");
+    expect(web?.status).toBe("error");
+    expect(web?.error).toBe("Exited with code 137 (likely OOMKilled)");
+  });
+
+  it("an unconfirmed 137 inside the post-gate window takes the docs/137 recovery path", async () => {
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+    const { mgr, setPsResponse, setOomKilled } = makeManager(dir);
+
+    mgr.setInstallRunning(true);
+    await mgr.start();
+
+    // Gate opens; the service crashes with 137 inside its first-boot window.
+    // Before docs/239 the `exitCode === 137` branch sat above the post-gate
+    // check and short-circuited it — the recovery path built for exactly this
+    // ("crashed right after the gate opened") never ran. Confirming the OOM
+    // first makes the ordering moot: an unconfirmed 137 now falls through.
+    setPsResponse(exitedPs(137));
+    setOomKilled(false);
+    mgr.setInstallRunning(false);
+    for (let i = 0; i < 20; i++) await vi.advanceTimersByTimeAsync(0);
+
+    // Held in `starting` by the bounded post-gate retry, not latched to error.
+    expect(mgr.getService("web")?.status).toBe("starting");
+
+    // Drain the post-gate budget. The terminal message names which path owned
+    // the crash: the OOM path would have said "gave up after 3 auto-retries"
+    // and told the user to raise a memory limit.
+    await vi.runAllTimersAsync();
+    const web = mgr.getService("web");
+    expect(web?.status).toBe("error");
+    expect(web?.error).toBe("Exited with code 137 (SIGKILL — not an OOM kill)");
   });
 
   it("non-137 exits still latch to error post-install (no auto-retry)", async () => {
@@ -2087,6 +2182,83 @@ services:
     const lastUp = upCalls[upCalls.length - 1];
     expect(lastUp).toContain("a");
     expect(lastUp).toContain("b");
+  });
+
+  it("holds gated services until the re-install teardown's SIGKILL has landed", async () => {
+    // Regression for docs/239. `compose stop` SIGTERMs and then SIGKILLs when
+    // the 10s grace period expires — and a `command: sh -c "npm install && npm
+    // run dev"` service never forwards SIGTERM, so the kill always lands. The
+    // gate used to reopen ~35ms after the hold (a cached no-op re-install),
+    // i.e. ~10s BEFORE that kill, so the poller saw the exit with the service
+    // no longer gated and reported OUR teardown to the user as an OOM crash.
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+
+    let releaseStop = (): void => {};
+    const stopLanded = new Promise<void>((resolve) => { releaseStop = resolve; });
+    const upCalls: string[][] = [];
+    let psResponse = JSON.stringify({ Service: "web", ID: "abc", State: "running", ExitCode: 0 });
+
+    const composeRunner: ComposeRunner = async (args) => {
+      const upIdx = args.indexOf("up");
+      if (upIdx >= 0) upCalls.push(args.slice(upIdx));
+      // Model the grace period: the stop only resolves when the test says the
+      // container has actually died.
+      if (args.includes("stop")) await stopLanded;
+    };
+    const composeQuery: ComposeQuery = (args) => {
+      const key = args.find(a => a === "ps" || a === "inspect" || a === "rm" || a === "network") ?? args[0];
+      if (key === "ps") return Promise.resolve(psResponse);
+      if (key === "inspect") {
+        return Promise.resolve(JSON.stringify([{
+          State: { OOMKilled: false },
+          NetworkSettings: { Networks: {} },
+        }]));
+      }
+      return Promise.resolve("");
+    };
+
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
+      composeQuery,
+      pollIntervalMs: 0,
+    });
+    const poll = () => (mgr as unknown as { poller: { pollOnce(): Promise<void> } }).poller.pollOnce();
+    const webUps = () => upNames(upCalls).filter(n => n === "web").length;
+
+    mgr.setInstallRunning(true);
+    await mgr.start();
+    mgr.setInstallRunning(false);
+    await flushMicrotasks();
+    expect(mgr.getService("web")?.status).toBe("running");
+    const upsBefore = webUps();
+
+    // Mid-session re-install: hold + tear down, then the (cached, instant)
+    // install completes while the container is still shutting down.
+    mgr.setInstallRunning(true);
+    psResponse = JSON.stringify({ Service: "web", ID: "abc", State: "exited", ExitCode: 137 });
+    mgr.setInstallRunning(false);
+    await flushMicrotasks();
+
+    // Gate still closed — nothing was relaunched into a container we're still
+    // killing, and the poll that sees the 137 is skipped as gated, so the
+    // service stays held in `starting` instead of surfacing as a crash.
+    expect(webUps()).toBe(upsBefore);
+    await poll();
+    expect(mgr.getService("web")?.status).toBe("starting");
+    expect(mgr.getService("web")?.error).toBeUndefined();
+
+    // Teardown lands → gate opens → the service relaunches exactly once.
+    releaseStop();
+    await flushMicrotasks();
+    expect(webUps()).toBe(upsBefore + 1);
+
+    // The gate-open `up` scheduled a post-gate backoff retry (ps still says
+    // exited) — dispose so that timer can't leak into later tests.
+    await mgr.stop();
   });
 
   // -------------------------------------------------------------------------

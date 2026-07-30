@@ -561,8 +561,16 @@ export class ClaudeAdapter
  */
 /**
  * Normalize the Claude CLI's `rate_limit_info` payload (one window) into the
- * shared `SubscriptionLimitsWindow` shape. The CLI reports `utilization` as
- * 0–100 and `resetsAt` as Unix epoch seconds.
+ * shared `SubscriptionLimitsWindow` shape. `resetsAt` is Unix epoch seconds.
+ *
+ * **`utilization` is a 0–1 FRACTION here, not a percentage.** The CLI forwards
+ * the upstream `anthropic-ratelimit-unified-{5h,7d}-utilization` response
+ * header verbatim, and that header is a fraction. Verified against one account
+ * at one moment: the headers read `0.06` / `0.66` while `/api/oauth/usage`
+ * reported `6.0` / `67.0` for the same two windows. So we scale by 100 — the
+ * opposite convention from `ClaudeLimitsProvider`'s `/api/oauth/usage` parse,
+ * which is already 0–100 and must NOT be scaled. Reading this one as a
+ * percentage is what made a real 92% session render as "5h 1%".
  *
  * `resetsAt` is required — without a reset time there's nothing to render. But
  * `utilization` is optional: Claude CLI 2.1.140 only includes it once a
@@ -585,7 +593,11 @@ function parseRateLimitWindow(
   if (typeof utilization !== "number" || !Number.isFinite(utilization)) {
     return { usedPct: null, resetAt };
   }
-  const usedPct = Math.min(100, Math.max(0, utilization));
+  // A fraction can't exceed 1 for a capped window, so a value above 1 means the
+  // upstream scale changed to 0–100 — pass it through rather than multiplying a
+  // real 42% into a pinned-at-100% false alarm.
+  const pct = utilization > 1 ? utilization : utilization * 100;
+  const usedPct = Math.min(100, Math.max(0, pct));
   return { usedPct, resetAt };
 }
 

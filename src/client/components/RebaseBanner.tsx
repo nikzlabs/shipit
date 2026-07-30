@@ -8,6 +8,7 @@
  */
 
 import { useGitStore } from "../stores/git-store.js";
+import { useSessionDefaultBranch } from "../utils/default-branch.js";
 import { Button } from "./ui/button.js";
 import {
   ArrowsClockwiseIcon,
@@ -33,7 +34,10 @@ export function RebaseBanner({ sessionId }: { sessionId: string }) {
   const startRebase = useGitStore((s) => s.startRebase);
   const abortRebase = useGitStore((s) => s.abortRebase);
 
-  const baseBranch = "main";
+  // The repo's real default branch — a `master` repo must not be told its
+  // branch is behind "main" (and must not be rebased onto a ref that
+  // doesn't exist). Falls back to "main" until the repo list hydrates.
+  const baseBranch = useSessionDefaultBranch(sessionId);
 
   // Error state takes priority over the push-rejected / idle branches: a
   // failed rebase was just attempted, so surface the reason even if a
