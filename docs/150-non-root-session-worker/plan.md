@@ -569,6 +569,24 @@ an existing sentinel only when `stat` reports the configured worker UID as its
 owner. A root-owned restored sentinel forces one recursive chown; ordinary warm
 restarts retain the fast path.
 
+**Addendum — ownership validation must not run on read-only mounts.** The
+sentinel check above treats a *missing* marker as "handoff not done" and falls
+through to `chown -R`. `/uploads` is mounted `:ro`, so its marker can never be
+created and is therefore always missing — every boot took that fallthrough, hit
+`EROFS`, and, under `set -eu`, aborted the entrypoint with exit 1. Session
+containers stopped being creatable instance-wide; the orchestrator's retry loop
+then reported the *sidecars'* downstream `cannot join network namespace of a non
+running container` / `lstat /proc/<pid>/ns/net` errors, which describe the agent
+container's death rather than its cause. Before the ownership check, the loop
+now skips any mount it cannot write (`[ -w "$d" ] || continue`) — a read-only
+mount has no handoff to perform. `test -w` is the correct probe even though the
+entrypoint is still root at that point: `access(2)` reports `EROFS` for `W_OK`
+regardless of privilege. The prior code survived only because a failed
+`mkdir` short-circuited the condition; that accident is now an explicit rule.
+The regression test executes the entrypoint against a non-writable mount instead
+of pattern-matching its source — the source-regex-only guard shipped green while
+this was broken in production.
+
 **Addendum — the dep-dir exclusion still stranded root-owned tool caches (#1666).**
 The handback above (and §7.1) deliberately **excludes** the declared dep dirs:
 re-walking a populated `node_modules` (tens of thousands of files) every boot is

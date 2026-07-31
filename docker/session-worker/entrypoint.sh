@@ -33,8 +33,8 @@ fi
 # which they are by default).
 # /persist (docs/217) is the agent's writable persistent scratch mount; it needs
 # the same worker-UID handoff as the other writable mounts or the non-root worker
-# can't write to it. (/uploads is :ro — its sentinel mkdir fails on the read-only
-# mount, so the chown self-skips; /persist is :rw, so it runs.)
+# can't write to it. (/uploads is :ro — the writability probe below skips it;
+# /persist is :rw, so it runs.)
 for d in /workspace /uploads /persist /dep-cache /credentials /home/shipit; do
   case "$d" in
     # Skip the workspace chown when the orchestrator bind-mounted the host source
@@ -44,6 +44,15 @@ for d in /workspace /uploads /persist /dep-cache /credentials /home/shipit; do
     /workspace) [ "${SHIPIT_SKIP_WORKSPACE_CHOWN:-0}" = "1" ] && continue ;;
   esac
   mkdir -p "$d"
+  # A read-only mount (/uploads) can neither hold the sentinel nor be chowned, so
+  # there is nothing to hand off — skip it before the sentinel logic runs. This
+  # MUST stay ahead of the ownership check below: that check treats a missing
+  # sentinel as "handoff not done" and falls through to `chown -R`, which then
+  # fails EROFS and, under `set -e`, kills the entrypoint. The sentinel can never
+  # exist on a :ro mount, so every boot would take that path. `test -w` is the
+  # right probe even though we are still root here: access(2) reports EROFS for
+  # W_OK regardless of privilege, so a read-only mount reads as non-writable.
+  [ -w "$d" ] || continue
   # Atomic-claim the chown via `mkdir` of a UID-stamped sentinel: on warm reuse
   # the walk is skipped (large node_modules trees), and for the shared /dep-cache
   # only the winner of a concurrent-boot race performs the walk. A UID change
