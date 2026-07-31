@@ -139,7 +139,14 @@ CodexAdapter                          codex app-server
     │──── SIGTERM ─────────────────────────►│  (process killed)
 ```
 
-For session resume, `thread/resume { threadId }` replaces `thread/start`. If resume fails (thread not found), the adapter falls back to creating a new thread.
+For session resume, `thread/resume { threadId }` replaces `thread/start`. Resume
+is fail-closed: if the persisted rollout cannot be loaded, the adapter surfaces
+the rejection and does not send the user's follow-up. It must never silently
+fall back to `thread/start`, because that produces a successful-looking answer
+without any of the preceding conversational context. ShipIt's persisted chat
+history rehydrates the visible transcript; Codex's thread rollout is the
+independent source of model context for the next turn, so one cannot substitute
+for the other implicitly.
 
 ---
 

@@ -246,6 +246,37 @@ describe("CodexAdapter", () => {
     expect((threadResume!.params as any).threadId).toBe("existing-thread-id");
   });
 
+  it("fails closed instead of starting a contextless thread when resume is rejected", async () => {
+    adapter = new CodexAdapter(() => false);
+    const errors: Error[] = [];
+    const logs: string[] = [];
+    adapter.on("error", (error) => errors.push(error));
+    adapter.on("log", (_source, text) => logs.push(text));
+    adapter.run({
+      prompt: "Is it the Codex only issue or Claude also has this?",
+      cwd: "/workspace",
+      sessionId: "existing-thread-id",
+    });
+
+    await vi.waitFor(() => expect(fakeProc.getRequests().length).toBeGreaterThanOrEqual(1));
+    fakeProc.sendResponse(1, { serverInfo: { name: "codex-app-server" } });
+    await vi.waitFor(() => {
+      expect(fakeProc.getRequests().some((request) => request.method === "thread/resume")).toBe(true);
+    });
+
+    fakeProc.sendErrorResponse(2, -32600, "thread rollout not found");
+
+    await vi.waitFor(() => expect(errors).toHaveLength(1));
+    expect(errors[0].message).toContain("Couldn't resume the previous Codex conversation");
+    expect(errors[0].message).toContain("contextless thread");
+    expect(logs.some((line) =>
+      line.includes("thread/resume failed for existing-thread-id")
+      && line.includes("thread rollout not found")
+    )).toBe(true);
+    expect(fakeProc.getRequests().some((request) => request.method === "thread/start")).toBe(false);
+    expect(fakeProc.getRequests().some((request) => request.method === "turn/start")).toBe(false);
+  });
+
   it("passes systemPrompt as developerInstructions on thread/start", async () => {
     // ShipIt's environment instructions reach Claude via `--append-system-prompt`;
     // Codex's equivalent is `developerInstructions` on thread/start. Without

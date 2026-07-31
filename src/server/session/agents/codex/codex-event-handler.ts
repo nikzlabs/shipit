@@ -666,15 +666,27 @@ export class CodexEventHandler {
 
     let threadResult: unknown;
     if (params.sessionId) {
-      // Resume existing thread
+      // Resume the existing thread. This MUST fail closed: the persisted
+      // `sessionId` is the only link between ShipIt's visible chat history and
+      // the context Codex sends to the model. The old fallback caught every
+      // resume error and silently called `thread/start`; the follow-up then ran
+      // successfully in an empty thread and produced a plausible but
+      // contextless answer (most visible when the user referred to "the issue
+      // you just fixed"). A missing/corrupt rollout and a transient/protocol
+      // rejection are not permission to discard the conversation.
       try {
         threadResult = await this.ctx.sendRequest("thread/resume", {
           ...threadBase,
           threadId: params.sessionId,
         });
-      } catch {
-        // If resume fails, start a new thread
-        threadResult = await this.ctx.sendRequest("thread/start", { ...threadBase });
+      } catch (err: unknown) {
+        const reason = err instanceof Error ? err.message : String(err);
+        this.ctx.emitLog("codex", `thread/resume failed for ${params.sessionId}: ${reason}`);
+        throw new Error(
+          `Couldn't resume the previous Codex conversation (${reason}). ` +
+            "The follow-up was not sent in a new, contextless thread.",
+          { cause: err },
+        );
       }
     } else {
       threadResult = await this.ctx.sendRequest("thread/start", { ...threadBase });
