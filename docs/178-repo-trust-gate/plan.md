@@ -138,6 +138,11 @@ foreign code once. The decision persists, so it does not recur per session.
 
 ## Relationship to adjacent work
 
+> **Forward reference:** `docs/243-agent-messaging-trust-gate` supersedes this
+> document's shipped decision to allow agent chat while a remote is untrusted.
+> The historical install/Compose design here remains intact; the newer package
+> designs the separate, fail-closed agent-message boundary.
+
 - **`docs/172-agent-containment` Gap 3** — parent threat model; this doc is its mitigation.
   Gaps 1/2 (credential exfil via injection) and Gap 4 (read-only mounts) are complementary,
   not substitutes: the trust gate stops *auto* execution; egress/credential isolation stops
