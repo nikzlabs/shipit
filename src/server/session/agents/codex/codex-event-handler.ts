@@ -689,7 +689,18 @@ export class CodexEventHandler {
         );
       }
     } else {
-      threadResult = await this.ctx.sendRequest("thread/start", { ...threadBase });
+      // ShipIt tears down the app-server after each turn and starts a fresh
+      // process for the next message, so the returned thread id is useful only
+      // when Codex also materializes its rollout on disk. Do not inherit the
+      // app-server's default here: that default has varied across CLI releases
+      // and an ephemeral thread still returns a perfectly valid id, which
+      // ShipIt then persists before the next `thread/resume` fails with
+      // "no rollout found". Pinning this false makes the thread-id persistence
+      // contract explicit at the boundary where the thread is created.
+      threadResult = await this.ctx.sendRequest("thread/start", {
+        ...threadBase,
+        ephemeral: false,
+      });
     }
 
     // Extract thread ID from the response.

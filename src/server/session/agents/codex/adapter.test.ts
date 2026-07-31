@@ -246,6 +246,14 @@ describe("CodexAdapter", () => {
     expect((threadResume!.params as any).threadId).toBe("existing-thread-id");
   });
 
+  it("starts a durable thread so the next turn can resume its rollout", async () => {
+    await createAndInit("hello");
+
+    const threadStart = fakeProc.getRequests().find((request) => request.method === "thread/start");
+    expect(threadStart).toBeDefined();
+    expect((threadStart!.params as any).ephemeral).toBe(false);
+  });
+
   it("fails closed instead of starting a contextless thread when resume is rejected", async () => {
     adapter = new CodexAdapter(() => false);
     const errors: Error[] = [];
