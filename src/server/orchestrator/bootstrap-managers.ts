@@ -34,6 +34,7 @@ import {
   scheduleStartupTasks,
 } from "./app-lifecycle.js";
 import { refreshAllRepoDefaultBranches } from "./services/repo-default-branch.js";
+import { restoreSessionWorkspace } from "./services/session.js";
 import { reattachInFlightTurns } from "./restart-turn-reattach.js";
 import { createOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import { MergeWatchManager } from "./merge-watch.js";
@@ -455,6 +456,13 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     credentialStore,
     providerAccountManager,
     containerManager,
+    // docs/239 — a watch can outlive its session's checkout (disk reclaim during
+    // a long human review), so the wake re-materializes it rather than the
+    // reclaim tiers exempting pending watches.
+    restoreWorkspace: (sessionId: string) =>
+      restoreSessionWorkspace(
+        sessionManager, createRepoGit, getBareCacheDir, githubAuthManager, repoStore, sessionId,
+      ),
   });
 
   // ---- PR Status Poller ----

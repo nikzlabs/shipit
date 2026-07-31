@@ -120,6 +120,7 @@ override the parent.
 | `shipit session message <id> -m "TEXT" [--json]` | Send a follow-up prompt to a child this parent spawned. The orchestrator either starts a turn immediately (if the child is idle) or enqueues the prompt; exit is `0` either way and the response prints the queue position. |
 | `shipit session wait <id...> [--timeout SECONDS] [--any\|--all] [--json]` | Wait until the child reaches a terminal state, or the timeout elapses. **Resilient**: it polls in short segments and absorbs connection resets / orchestrator redeploys beneath you, so a single call is the robust unit — you never script your own retry loop. Default 5 minutes, capped at 1 hour. Outcomes are distinguishable by exit code: `idle`/`archived` → `0`, child **error** → `3`, timed-out → `1`. Pass multiple ids with `--any` (resolve on the first finisher) or `--all` (resolve when every child finishes); the `--timeout` is shared across all of them. See *Coordinating* below. Note: `wait` blocks only until the child's *agent turn* goes idle (code written / PR opened) — it does **not** wait on a human **merge**. For that, use `notify-on-merge`. |
 | `shipit session notify-on-merge <id> [--json]` | **Async** — arm a watch and return immediately (exit `0`, "armed"); the turn ends. When the child's PR later **merges**, the orchestrator wakes *this* session with a queued, self-describing system turn (child id, branch, merged PR ref, merge SHA, and the intent: "proceed with the planned rebase unless the user has since redirected you") and surfaces a "Child PR merged" card in this chat. If the PR **closes without merging**, you get a *distinct* wake-turn telling you the work did **not** ship — don't proceed as if it had. Use this instead of blocking a turn on a human merge (which can take days). The child's PR need not exist yet — the watch fires once it appears and resolves. Fires once. Only the parent that spawned the child may watch it. If the wake-turn itself can't be delivered (this session's container won't resume, for instance) the orchestrator retries it on a backoff; after repeated failures it gives up and posts a "Couldn't resume this session" card in this chat naming the merged PR, so the merge is never silently dropped — send a message here to continue by hand. |
+| `shipit session notify-on-merge --self [--json]` | **Async, and about YOUR own PR.** Arm a watch on this session's currently-open PR and return immediately; the turn ends. When that PR merges — by hand, from ShipIt or GitHub, or via auto-merge — the orchestrator wakes **this** session with a turn telling you to run `shipit branch reset-to-base` and then continue the work you were already asked for. Use it when the user asked for several PRs in a row and the next step can only start after this one lands. Refuses if the branch has no open PR (open one first; if your PR has *already* merged, just keep going in this turn). Arming always **replaces** any previous self-watch, so re-arming mid-chain is normal. **Nothing re-arms on your behalf** — after you open the next PR, run it again if more work remains. See *Chaining several PRs* below. |
 | `shipit session archive <id> [--json]` | Archive a child this parent spawned. Refuses with a clear error when the child is still running — use `shipit session wait` first. |
 | `shipit session whoami [--json]` | Resolve **this** session: id, title, branch, status, its parent, its cohort siblings, and any children it spawned. `view <id>` is descendant-scoped, so passing your own id doesn't work — use this. A bare `shipit session view` (no id) is the same thing. |
 | `shipit session report -b TEXT \| --body-file FILE [--severity fyi\|warn\|blocker] [--subject T] [--to parent\|cohort] [--json]` | Push a report **up** to the session that spawned you (and, with `--to cohort`, to every live sibling). Each recipient gets a card in its chat **and** a queued system turn, so the report is pushed, not waiting to be pulled. See *Reporting upward* below. |
@@ -334,6 +335,49 @@ verbatim. A busy recipient's turn is queued and runs when its current turn ends 
 a report never interrupts a running agent. The recipient is told to treat your
 body as **information from a peer agent to judge**, not as an instruction to
 execute; write it that way, with the evidence a reader needs to verify it.
+
+## Chaining several PRs from one session
+
+When the user asks for several changes in a row and each one must land before the
+next can start, you don't have to stop at the first PR and wait to be nudged:
+
+```sh
+gh pr create -t "Step one" --body-file - <<'EOF'
+...
+EOF
+shipit session notify-on-merge --self     # arm, then end your turn
+```
+
+When that PR merges, ShipIt starts a new turn in this session. That turn's first
+action is:
+
+```sh
+shipit branch reset-to-base
+```
+
+which moves this branch to the base your merged PR shipped into and force-updates
+the remote branch to match. **Exit 0** (`reset` or `already at base`) means the
+branch is ready — build the next step on it, and do not re-apply anything the
+merged PR already shipped. **Nonzero means STOP**: it refused because a reset
+would have destroyed something (uncommitted edits, commits that were never
+merged, a rebase in progress). Report what it said and let the user decide. Do
+**not** hand-roll `git reset --hard` / `git checkout -f` / `git push --force`
+instead — that is precisely the data loss the check exists to prevent.
+
+Then continue the work, open the next PR, and — if more remains after it — run
+`shipit session notify-on-merge --self` again. Each link re-arms itself; ShipIt
+models no chain, so a link you don't arm is where the chain ends. If the user
+cancels the watch (there's a Cancel on the card the arm posts), no wake fires and
+nothing re-arms.
+
+Notes:
+- Only arm it when work genuinely remains. A session that is done should just
+  finish — an armed watch on a finished session wakes it up for nothing.
+- If the PR is **closed without merging**, no turn runs: the watch is cleared and
+  a note explains why (the commits were rejected, so there is nothing to build
+  on).
+- A session cannot be self-watching *and* watched by its parent at the same time
+  (one watch per session); `--self` is refused in that case and says so.
 
 ## What spawning a session does
 

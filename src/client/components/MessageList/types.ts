@@ -6,6 +6,7 @@ import type {
   ActionChecklistCard as ActionChecklistCardData,
   BranchAutoResetCard as BranchAutoResetCardData,
   BranchSyncedCard as BranchSyncedCardData,
+  SelfMergeWatchCard as SelfMergeWatchCardData,
   AiReviewCard,
 } from "../../../server/shared/types.js";
 import type { ReleaseStatusSummary } from "../../../server/shared/types/release-types.js";
@@ -182,6 +183,14 @@ export interface ChatMessage {
     deliveryFailure?: { attempts: number; error?: string };
     createdAt: string;
   };
+  /**
+   * docs/239 — when set, this message renders a `SelfMergeWatchCard`: this
+   * session armed a watch on its OWN pull request and will be woken with a turn
+   * when it merges. Populated from `self_merge_watch_card` WS events and from
+   * persisted history (static payload, no client store — Cancel's result is
+   * component-local).
+   */
+  selfMergeWatch?: SelfMergeWatchCardData;
   /**
    * docs/233 (SHI-241) — when set, this message renders a `SessionReportCard`
    * inline: another session in this session's cohort (a child, or a sibling on a

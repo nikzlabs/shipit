@@ -58,6 +58,7 @@ export const CARD_MESSAGE_FIELDS = [
   "spawnFailed",
   "forkChild",
   "childMerged",
+  "selfMergeWatch",
   "sessionReport",
 ] as const satisfies readonly (keyof ChatMessage)[];
 

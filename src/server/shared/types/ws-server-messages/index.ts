@@ -86,6 +86,7 @@ import type {
   WsSessionSpawned,
   WsSessionSpawnFailed,
   WsChildMergedCard,
+  WsSelfMergeWatchCard,
   WsSessionReportCard,
 } from "./spawn.js";
 import type {
@@ -224,6 +225,7 @@ export type WsServerMessage =
   | WsSessionSpawned
   | WsSessionSpawnFailed
   | WsChildMergedCard
+  | WsSelfMergeWatchCard
   | WsSessionReportCard
   | WsServiceStatus
   | WsServiceList

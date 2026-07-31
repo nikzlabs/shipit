@@ -44,6 +44,19 @@ export interface WakeSessionDeps {
   credentialStore?: CredentialStore | undefined;
   providerAccountManager?: ProviderAccountManager | undefined;
   containerManager?: SessionContainerManager | null | undefined;
+  /**
+   * docs/239 — re-materialize an evicted session's checkout before the wake
+   * turn runs (`restoreSessionWorkspace`, already de-duped and a fast no-op when
+   * the checkout is present).
+   *
+   * A watch can sit armed for the whole span of human review, which is long
+   * enough for the disk-reclaim tiers to evict the workspace. Restoring at
+   * delivery is strictly better than exempting a pending watch from reclaim,
+   * which would hold disk for that unbounded duration. Optional — a setup
+   * without it simply skips the restore, which is the pre-docs/239 behavior for
+   * docs/196 too (this closes the same latent gap for it).
+   */
+  restoreWorkspace?: ((sessionId: string) => Promise<boolean>) | undefined;
 }
 
 export interface WakeTurnOptions {
@@ -96,6 +109,13 @@ export async function wakeSessionWithTurn(
     providerAccountManager,
     defaultAgentId,
   } = deps;
+
+  // docs/239 — the checkout may have been reclaimed while the watch waited (a
+  // merge can be days after the arm). Restore it BEFORE the runner is created,
+  // so the container boots against a workspace that exists. Throws when recovery
+  // is genuinely impossible (no remote, no bare cache), which the caller records
+  // as a failed attempt exactly like a boot failure.
+  if (deps.restoreWorkspace) await deps.restoreWorkspace(session.id);
 
   // A runner lingering in the registry whose container has been reaped points at
   // a dead worker — dispatching into it silently fails. Tear it down so the

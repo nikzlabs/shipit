@@ -60,6 +60,29 @@
  * into the parent, so a permanently-undeliverable wake is visible to the human
  * instead of retried forever (and stops holding the polling gate open).
  *
+ * ## The self variant (docs/239)
+ *
+ * `shipit session notify-on-merge --self` is this same machine pointed back at
+ * the same session: the same row with `kind: "self"` and `parentSessionId ===`
+ * its own id, so the state machine, the retry supervisor above, the polling gate
+ * and `reconcilePending` are inherited rather than reimplemented. Everything
+ * that differs lives on a `kind` branch:
+ *
+ *   - it fires from the poller's `onMergeDetectedCb` (`handleSelfMerge`), AFTER
+ *     `markMergedAndPruneExcess` — `onPrTerminalState` runs before
+ *     `setMergedHeadSha` and before the remote head branch is deleted, so a wake
+ *     from there races its own preconditions;
+ *   - the merged PR is compared to the watch's anchor (`prNumber`), because a
+ *     docs/202 re-arm can replace the work before the merge lands;
+ *   - arming always REPLACES (the wake turn re-arms for the next PR mid-turn, so
+ *     an idempotent arm would make chaining impossible), which is why every
+ *     asynchronous settlement checks an expected `watchId`;
+ *   - terminal outcomes append plain notes instead of a card — the self flow
+ *     surfaces exactly one card, at arm time.
+ *
+ * One row means one watch, so a session cannot be parent-watched and
+ * self-watching at once; the arm service refuses that collision explicitly.
+ *
  * The card-surfacing + wake-turn delivery mirror `issue-lifecycle.ts`: both fire
  * **outside any turn**, so the card is appended directly to chat history
  * (durable, rehydrates on reload) and broadcast live only when a runner is still
@@ -74,6 +97,14 @@ import type { PrStatusSummary } from "../shared/types/github-types.js";
 import { wakeSessionWithTurn, type WakeSessionDeps } from "./wake-session.js";
 import type { PrTerminalStateInfo } from "./pr-status-poller.js";
 import type { TurnOutcome } from "./turn-settlement.js";
+import { emitNoticePostTurn } from "./chat-card-persistence.js";
+import { loadPrompt, fillPromptTokens } from "./load-prompt.js";
+
+/**
+ * docs/239 — the self-merge wake prompt template, read ONCE at module load (a
+ * missing file then fails at boot, not mid-delivery). See CLAUDE.md › Prompts.
+ */
+const SELF_MERGE_WAKE_PROMPT = loadPrompt(import.meta.url, "./prompts/self-merge-wake.md");
 
 /**
  * SHI-258 — how many times a merge wake-turn delivery is attempted before the
@@ -212,6 +243,20 @@ export class MergeWatchManager {
     // Fire-once: terminal states are never re-delivered.
     if (isTerminalWatchState(watch.state)) return;
 
+    // docs/239 — a SELF watch takes a different route for the merged case. The
+    // hook fires from `onPrTerminalState`, which in `verifyMissingPr` runs
+    // BEFORE `setMergedHeadSha` and before `markMergedAndPruneExcess` (which
+    // deletes the remote head branch). Waking there would hand the agent a
+    // branch whose reset anchor isn't recorded yet and whose remote is about to
+    // vanish, so the merged case is driven from `onMergeDetectedCb` instead —
+    // see `handleSelfMerge`. Only the CLOSE case belongs here: the merge
+    // callback never fires for it.
+    if (watch.kind === "self") {
+      if (info.outcome === "merged") return;
+      this.handleSelfPrClosed(info, watch);
+      return;
+    }
+
     const parent = this.deps.sessionManager.get(watch.parentSessionId);
     // Parent archived/gone before the merge → drop the watch silently (docs/196
     // edge case). userArchived implies archived via `fromRow`, but check both.
@@ -293,6 +338,123 @@ export class MergeWatchManager {
   }
 
   /**
+   * docs/239 — the SELF-merge entry point, fired from the poller's
+   * `onMergeDetectedCb` **after `markMergedAndPruneExcess` has resolved**.
+   *
+   * That position is the whole point. The earlier hook (`onPrTerminalState`)
+   * runs before `setMergedHeadSha` and before the merged session's remote head
+   * branch is deleted, so a wake dispatched from there races its own
+   * preconditions: the agent could reset and push a branch that is about to be
+   * removed, and the reset's safety anchor might not be recorded yet. By the
+   * time this runs, both `setPrStatus` and `setMergedHeadSha` have already been
+   * written — which is why the PR facts are read back from the persisted
+   * snapshot here rather than widening the sessionId-only callback signature.
+   *
+   * Three outcomes:
+   *   - **anchor mismatch** — the merged PR is not the one this watch was armed
+   *     for, i.e. a docs/202 re-arm replaced the work before the merge landed.
+   *     Append a note, clear the watch, wake nothing. (This one comparison
+   *     replaces both a `superseded` watch state and an eager hook in
+   *     `pr-rearm.ts`.)
+   *   - **archived** — the user deliberately froze this transcript; clear the
+   *     watch silently, exactly as the parent→child path does.
+   *   - **match** — advance to `merge-observed` and deliver, inheriting the
+   *     retry supervisor, the attempt budget and the restart reconcile whole.
+   *
+   * No card here: the wake turn itself is the visible signal.
+   */
+  async handleSelfMerge(sessionId: string): Promise<void> {
+    const session = this.deps.sessionManager.get(sessionId);
+    const watch = session?.mergeWatch;
+    if (!session || watch?.kind !== "self") return;
+    if (isTerminalWatchState(watch.state)) return;
+
+    if (session.archived || session.userArchived) {
+      this.clearWatch(sessionId);
+      return;
+    }
+
+    const info = this.infoFromPersistedStatus(sessionId);
+    // Not (yet) visible as merged in the persisted snapshot — nothing to act on.
+    // The startup reconcile and the retry supervisor both re-ask this question.
+    if (info?.outcome !== "merged") return;
+
+    if (watch.prNumber !== undefined && info.prNumber !== watch.prNumber) {
+      this.appendNote(
+        sessionId,
+        `PR #${info.prNumber} merged, but this session was waiting on PR #${watch.prNumber}. `
+        + "The watch was armed for different work, so nothing was resumed automatically — "
+        + "send a message to continue.",
+        "warn",
+      );
+      this.clearWatch(sessionId);
+      return;
+    }
+
+    if (watch.state === "armed") {
+      this.deps.sessionManager.setMergeWatch(sessionId, {
+        ...watch,
+        state: "merge-observed",
+        observedAt: new Date().toISOString(),
+      });
+    }
+    // parent === child === this session: the watch points back at its own row,
+    // which is what lets every downstream piece stay unchanged.
+    await this.attemptDelivery(session, session, info);
+  }
+
+  /**
+   * docs/239 — a self-watched PR closed WITHOUT merging. Terminal in one step
+   * and deliberately quiet: a note, the watch cleared, no turn. There is nothing
+   * to reset to (the commits were rejected, not shipped), so a follow-up turn
+   * would stack work on a branch the user just abandoned.
+   */
+  private handleSelfPrClosed(info: PrTerminalStateInfo, watch: SessionMergeWatch): void {
+    const sessionId = info.sessionId;
+    if (watch.prNumber !== undefined && info.prNumber !== watch.prNumber) {
+      // A different PR closed; the watch's own PR is still open.
+      return;
+    }
+    this.appendNote(
+      sessionId,
+      `PR #${info.prNumber} was closed without merging, so this session was not resumed. `
+      + "The merge-watch has been cleared — send a message to decide what to do next.",
+      "warn",
+    );
+    this.clearWatch(sessionId);
+  }
+
+  /**
+   * docs/239 — a plain persisted note for a self-watch's terminal outcomes
+   * (closed-without-merge, anchor mismatch, delivery failure). Deliberately a
+   * note and not a card family: nothing here has a lifecycle to render.
+   *
+   * Fires outside any turn, so the live emit is best-effort (no runner attached
+   * ⇒ nobody to broadcast to) while the `append` is what makes it survive.
+   */
+  private appendNote(sessionId: string, text: string, level: "info" | "warn"): void {
+    const runner = this.deps.runnerRegistry.get(sessionId);
+    emitNoticePostTurn(
+      (m) => runner?.emitMessage(m),
+      this.deps.chatHistoryManager,
+      sessionId,
+      text,
+      level,
+    );
+  }
+
+  /**
+   * Drop a watch and every trace of it, including the in-memory retry state.
+   * Public counterpart of {@link clearWatch} for the arm/cancel service
+   * (docs/239): cancelling from the card, and re-arming (which replaces the row),
+   * must not leave a stale in-flight marker keyed by this session id — it would
+   * suppress the NEW watch's first retry.
+   */
+  forgetWatch(sessionId: string): void {
+    this.clearWatch(sessionId);
+  }
+
+  /**
    * One wake-turn delivery attempt for a `merge-observed` watch, with the
    * bookkeeping the retry supervisor reads.
    *
@@ -329,8 +491,22 @@ export class MergeWatchManager {
     this.inFlight.add(childId);
     this.ensureRetryLoop();
 
+    // docs/239 — the identity this attempt belongs to. A self-watch is re-armed
+    // by the wake turn ITSELF, i.e. before that turn settles, so without this
+    // check the OLD turn's settlement would mark the NEW watch delivered (or
+    // record a failed attempt against it). Deliberately one expected-identity
+    // check on settlement rather than a full compare-and-set. Undefined for a
+    // docs/196 parent→child watch, where re-arming is a human act between
+    // deliveries and the check is a no-op.
+    const expectedWatchId = watch.watchId;
+    const isCurrentWatch = (): boolean => {
+      if (expectedWatchId === undefined) return true;
+      return this.deps.sessionManager.getMergeWatch(childId)?.watchId === expectedWatchId;
+    };
+
     try {
       await this.deliverWakeTurn(parent, child, info, "merged", (outcome) => {
+        if (!isCurrentWatch()) return;
         // docs/240 — `delivered` means the turn RAN CLEANLY, not merely that it
         // reached a terminal state. The pre-docs/240 callback discarded the
         // outcome, so a wake-turn that crashed, exited without ever producing a
@@ -359,6 +535,7 @@ export class MergeWatchManager {
         + `(attempt ${attempts}/${MAX_DELIVERY_ATTEMPTS}):`,
         err,
       );
+      if (!isCurrentWatch()) return;
       const current = this.deps.sessionManager.getMergeWatch(childId);
       if (current?.state !== "merge-observed") return;
       this.deps.sessionManager.setMergeWatch(childId, { ...current, lastDeliveryError: message });
@@ -482,11 +659,20 @@ export class MergeWatchManager {
 
     const child = this.deps.sessionManager.get(childSessionId);
     const parent = this.deps.sessionManager.get(watch.parentSessionId);
-    if (child && parent && !parent.archived && !parent.userArchived && info) {
-      this.surfaceCard(parent.id, child, info, "merged", {
-        attempts: watch.deliveryAttempts ?? MAX_DELIVERY_ATTEMPTS,
-        error,
-      });
+    const attempts = watch.deliveryAttempts ?? MAX_DELIVERY_ATTEMPTS;
+    if (watch.kind === "self") {
+      // docs/239 — a note, not a card. The self flow surfaces exactly one card
+      // (the arm); its terminal outcomes are plain persisted notes.
+      if (child && !child.archived && !child.userArchived) {
+        this.appendNote(
+          childSessionId,
+          `Your PR merged, but this session could not be resumed automatically after ${attempts} `
+          + `attempts (${error}). The merge-watch has given up — send a message to continue.`,
+          "warn",
+        );
+      }
+    } else if (child && parent && !parent.archived && !parent.userArchived && info) {
+      this.surfaceCard(parent.id, child, info, "merged", { attempts, error });
     }
     console.error(
       `[merge-watch] giving up on the wake-turn for ${childSessionId} after `
@@ -543,10 +729,19 @@ export class MergeWatchManager {
     if (!this.prStatusLookup) return;
     this.inFlight.clear();
     const pending = this.deps.sessionManager.listPendingMergeWatches();
-    for (const { childSessionId } of pending) {
-      const info = this.infoFromPersistedStatus(childSessionId);
-      if (!info) continue;
+    for (const { childSessionId, watch } of pending) {
       try {
+        // docs/239 — a self-watch re-derives from the same persisted snapshot,
+        // just through its own entry point: `handleChildPrTerminal` deliberately
+        // ignores the merged case for a self-watch (it belongs after the merge
+        // bookkeeping), so routing a reconcile through it would silently
+        // resurrect nothing.
+        if (watch.kind === "self") {
+          await this.handleSelfMerge(childSessionId);
+          continue;
+        }
+        const info = this.infoFromPersistedStatus(childSessionId);
+        if (!info) continue;
         await this.handleChildPrTerminal(info);
       } catch (err) {
         console.error(`[merge-watch] reconcile delivery failed for ${childSessionId}:`, err);
@@ -682,9 +877,14 @@ export class MergeWatchManager {
     outcome: "merged" | "closed-unmerged",
     onSettled?: (turnOutcome: TurnOutcome) => void,
   ): Promise<void> {
-    const text = buildWakeTurnPrompt(child, info, outcome);
-    const activity =
-      outcome === "merged" ? "Resuming after child PR merged…" : "Reassessing after child PR closed…";
+    // docs/239 — a self-wake is the same delivery with a different prompt: the
+    // session is being told about its OWN merge, so it must reset its branch
+    // before it does anything else. `parent === child` identifies it.
+    const isSelf = parent.id === child.id;
+    const text = isSelf ? buildSelfWakeTurnPrompt(info) : buildWakeTurnPrompt(child, info, outcome);
+    const activity = isSelf
+      ? "Resuming after your PR merged…"
+      : outcome === "merged" ? "Resuming after child PR merged…" : "Reassessing after child PR closed…";
 
     // `wakeSessionWithTurn` owns the stale-runner teardown, container resume,
     // credential refresh, and the truthful "did a live worker take it?" check —
@@ -763,4 +963,21 @@ function buildWakeTurnPrompt(
     );
   }
   return lines.join("\n");
+}
+
+/**
+ * docs/239 — the SELF-merge wake prompt. Prose lives in the co-located
+ * `prompts/self-merge-wake.md` (CLAUDE.md › Prompts: text is data, composition
+ * is code); only the PR facts are filled in here.
+ *
+ * Self-describing like its parent→child sibling: it may run many turns — or a
+ * restart — after the merge, so every fact it needs is in the text.
+ */
+function buildSelfWakeTurnPrompt(info: PrTerminalStateInfo): string {
+  return fillPromptTokens(SELF_MERGE_WAKE_PROMPT, {
+    PR_NUMBER: String(info.prNumber),
+    PR_TITLE_SUFFIX: info.prTitle ? ` — ${info.prTitle}` : "",
+    PR_URL: info.prUrl,
+    BRANCH_LINE: info.branch ? `\nBranch:        ${info.branch}` : "",
+  });
 }

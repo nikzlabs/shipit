@@ -38,6 +38,20 @@ by the child id; the registering parent is recorded in `parentSessionId`). Store
 on the child because PR-terminal detection is keyed by the child's session id, so
 the poller has the child in scope at fire time.
 
+> **See also — the SELF variant (docs/239).** `shipit session notify-on-merge
+> --self` reuses this exact row, manager, state machine, retry supervisor,
+> polling gate and startup reconcile, with `kind: "self"` and
+> `parentSessionId === ` the watched session's own id. Only three things differ,
+> and each lives on a `kind` branch rather than in a parallel path: it fires from
+> the poller's `onMergeDetectedCb` (after `markMergedAndPruneExcess`, so the wake
+> can't race the remote-branch deletion) instead of `onPrTerminalState`; arming
+> always replaces (an idempotent "already armed" would make chaining impossible),
+> so settlements carry an expected `watchId`; and terminal outcomes append plain
+> notes instead of a card. **Accepted limitation:** one row means one watch, so a
+> session cannot be parent-watched and self-watching at once — a self-arm is
+> refused while a genuine parent→child watch is live. Changes here must keep both
+> working; `merge-watch.test.ts` and `self-merge-watch.test.ts` cover the pair.
+
 ```
 armed ──merge observed──▶ merge-observed ──wake-turn RAN──▶ delivered      (terminal)
   │                          ▲     │

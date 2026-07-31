@@ -36,10 +36,15 @@ import { resetVoiceNoteTurnState } from "./voice/voice-note-router.js";
 // docs/240 — the branded prepared-dispatch producers and the turn settlement.
 // `prepared-dispatch.ts` imports only TYPES from this module, so the runtime
 // edge is one-way and the import graph stays acyclic.
-import { withSettlement, type PreparedDispatch } from "./prepared-dispatch.js";
+import {
+  withSettlement,
+  queuedMessageToDispatchOptions,
+  type PreparedDispatch,
+} from "./prepared-dispatch.js";
 import {
   createTurnSettlement,
   settleDroppedQueueEntries,
+  turnErrored,
   TURN_STEERED,
   type TurnHandle,
   type TurnOutcome,
@@ -346,7 +351,55 @@ export function dispatchOnRunner(
   // system turn. Cleared by `executeAgentTurn` on completion.
   if (opts.systemTurn) runner.systemTurnInProgress = true;
   runner.running = true;
-  void runner.runDispatchedTurn(withSettlement(opts, settlement));
+  const chained = withSettlement(opts, settlement);
+  void runner.runDispatchedTurn(chained).catch((err: unknown) => {
+    // SHI-263 — the setup half of a dispatched turn (attachment preparation,
+    // `createAgent`, run-param assembly) runs BEFORE `executeAgentTurn` owns the
+    // turn, so a throw there never reaches the executor's settling `finally`.
+    // Left uncaught it produced three simultaneous bad states: the handle never
+    // resolved (an awaiting caller hung forever), `running` /
+    // `systemTurnInProgress` stayed true so the session looked busy with no turn
+    // running, and — worst — SHI-258's `isDeliveryInFlight` saw a live runner and
+    // read the dead attempt as *indefinitely in flight*, so the watch was never
+    // retried and never reached `delivery-failed` short of a restart. That is
+    // exactly the stranding class docs/240's settlement exists to end, reached
+    // through the one path it did not cover.
+    //
+    // Owned HERE rather than at each `dispatch` call site for the same reason
+    // completion is: there is one place a dispatched turn starts, so there is one
+    // place it can fail to start.
+    const detail = err instanceof Error ? err.message : String(err);
+    console.error(
+      `[dispatch] dispatched turn for ${runner.sessionId} failed during setup:`,
+      err,
+    );
+    if (opts.systemTurn) runner.systemTurnInProgress = false;
+    runner.running = false;
+    // Report through the CHAINED callback, not `settlement.settle` directly:
+    // the settlement is implemented on top of `onTurnComplete`, and the
+    // pre-docs/240 consumers that still read the adapter (`wakeSessionWithTurn`,
+    // and through it the whole notify-on-merge state machine) would otherwise
+    // never hear about the failure. `isSettled` is the guard against a double
+    // fire when the throw happened AFTER the executor already reported — e.g. a
+    // nested queue-drain re-entry whose own setup threw, which rejects the outer
+    // promise too. In that case the outer turn keeps its real outcome and only
+    // the runner state is restored here.
+    if (!settlement.isSettled) {
+      chained.onTurnComplete?.(turnErrored(`dispatched turn failed to start: ${detail}`));
+    }
+    // Release the queue: the turn that was holding the runner never ran, so
+    // whatever is queued behind it would otherwise sit there until the next
+    // user-initiated turn. Re-entering `dispatchOnRunner` (rather than
+    // hand-rolling a drain) keeps the entry on the branded, settlement-carrying
+    // path — the SHI-255 / SHI-259 rule.
+    if (runner.queueLength > 0) {
+      const next = runner.dequeue();
+      if (next) {
+        runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
+        dispatchOnRunner(runner, deps, queuedMessageToDispatchOptions(next));
+      }
+    }
+  });
   return settlement;
 }
 

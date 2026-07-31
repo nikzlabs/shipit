@@ -617,6 +617,23 @@ export function registerAgentOpsRoutes(
       ),
   );
 
+  // POST /agent-ops/session/notify-on-merge-self — docs/239. Arm a watch that
+  // wakes THIS session when its OWN PR merges. No childId and no payload: the
+  // worker injects the caller's session id, and the follow-up work is already in
+  // this session's transcript.
+  app.post(
+    "/agent-ops/session/notify-on-merge-self",
+    async (_request, reply) => relay("POST", "/notify-on-merge-self", {}, reply),
+  );
+
+  // POST /agent-ops/branch/reset-to-base — docs/239. The explicit branch reset
+  // the self-merge wake turn runs first. Destructive-looking but gated: the
+  // orchestrator refuses unless the branch provably carries nothing unmerged.
+  app.post(
+    "/agent-ops/branch/reset-to-base",
+    async (_request, reply) => relay("POST", "/branch/reset-to-base", {}, reply),
+  );
+
   // ---------------------------------------------------------------------------
   // Upward / lateral session reports (docs/233, SHI-241)
   //

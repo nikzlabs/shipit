@@ -110,6 +110,9 @@ export function MessageList({
 
   const voicePlaybackEnabled = useSettingsStore((s) => s.voicePlaybackEnabled);
   // docs/178 — transient "Compacting…" indicator (emit-only; not persisted).
+  // docs/239 — the transcript's owning session; the self merge-watch card's
+  // Cancel targets it.
+  const activeSessionId = useSessionStore((s) => s.sessionId);
   const compacting = useSessionStore((s) => s.compacting);
   // docs/144 — transient sub-agent spawn chips (emit-only; not persisted).
   const subAgentSpawns = useSessionStore((s) => s.subAgentSpawns);
@@ -283,6 +286,7 @@ export function MessageList({
         // own — render the card and skip the bubble path. Order is preserved
         // verbatim inside `renderMessageCard`.
         const card = renderMessageCard(msg, {
+          ...(activeSessionId ? { sessionId: activeSessionId } : {}),
           onResumeSession,
           onSubmitBugReport,
           onEgressDecision,

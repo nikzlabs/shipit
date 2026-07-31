@@ -1,5 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
-import { computeResetEligible, autoResetMergedBranchOnContinue, isResetEligible, emitResetEligibleSignal, type PreTurnResetDeps } from "./pre-turn-reset.js";
+import { computeResetEligible, autoResetMergedBranchOnContinue, isResetEligible, emitResetEligibleSignal, resetBranchToBaseExplicit, RESET_REFUSAL_GUIDANCE, type PreTurnResetDeps } from "./pre-turn-reset.js";
+import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
+
+vi.mock("../session-worker-uid.js", () => ({ handWorkspaceBackToWorker: vi.fn() }));
 import type { GitManager } from "../../shared/git.js";
 import type { SessionInfo } from "../../shared/types.js";
 import type { PrStatusSummary } from "../../shared/types/github-types.js";
@@ -267,5 +270,148 @@ describe("emitResetEligibleSignal (merge-while-viewing push)", () => {
     const git = makeGit({ getHeadHash: vi.fn().mockResolvedValue("deadbeef0000000000000000000000000000beef") });
     await emitResetEligibleSignal(makeDeps({ createGitManager: () => git }), { sessionDir: "/ws", emitMessage }, "s1");
     expect(emitMessage).toHaveBeenCalledWith({ type: "reset_eligible", sessionId: "s1", eligible: false });
+  });
+});
+
+/**
+ * docs/239 — the EXPLICIT mode (`shipit branch reset-to-base`). Same core, five
+ * deliberate differences from the docs/218 auto path; each test below pins one.
+ */
+describe("resetBranchToBaseExplicit (docs/239)", () => {
+  function makeDeps(over: Partial<PreTurnResetDeps> = {}) {
+    return {
+      getSession: () => makeSession(),
+      getPrStatus: () => makePrStatus(),
+      createGitManager: () => makeGit(),
+      ...over,
+    };
+  }
+  /** `getRefHash("origin/<base>")` — absent from the shared fake, added per test. */
+  function gitWith(over: Partial<Record<keyof GitManager, unknown>> = {}): GitManager {
+    return makeGit({ getRefHash: vi.fn().mockResolvedValue(BASE_TIP), ...over });
+  }
+
+  it("resets and force-updates the remote, ignoring the docs/218 setting entirely", async () => {
+    const git = gitWith();
+    // The auto path reads `getAutoResetMergedBranch`; this mode must not — a
+    // command the agent deliberately invoked cannot silently no-op on a
+    // composer preference. `PreTurnResetDeps`'s getter isn't even passed here.
+    const result = await resetBranchToBaseExplicit(
+      makeDeps({ createGitManager: () => git }), "s1", "/ws",
+    );
+    expect(result.outcome).toBe("reset");
+    expect(result.base).toBe("main");
+    expect(result.fromSha).toBe(MERGED_SHA);
+    expect(result.toSha).toBe(BASE_TIP);
+    expect(git.resetHardToRemoteBase).toHaveBeenCalledWith("main");
+    expect(git.forcePush).toHaveBeenCalled();
+  });
+
+  it("is idempotent: a second invocation reports already-at-base, not a refusal", async () => {
+    // After the first reset HEAD === the base tip and no longer equals
+    // `mergedHeadSha`, so the docs/218 gate would refuse. The already-at-base
+    // check runs FIRST precisely so a duplicate wake / retry doesn't end a chain.
+    const git = gitWith({ getHeadHash: vi.fn().mockResolvedValue(BASE_TIP) });
+    const result = await resetBranchToBaseExplicit(
+      makeDeps({ createGitManager: () => git }), "s1", "/ws",
+    );
+    expect(result.outcome).toBe("already-at-base");
+    expect(git.resetHardToRemoteBase).not.toHaveBeenCalled();
+  });
+
+  it("still reports already-at-base when a docs/218 reset already cleared mergedHeadSha", async () => {
+    const session = makeSession();
+    delete session.mergedHeadSha;
+    const git = gitWith({ getHeadHash: vi.fn().mockResolvedValue(BASE_TIP) });
+    const result = await resetBranchToBaseExplicit(
+      makeDeps({ getSession: () => session, createGitManager: () => git }), "s1", "/ws",
+    );
+    expect(result.outcome).toBe("already-at-base");
+  });
+
+  it("refuses on a dirty working tree", async () => {
+    const git = gitWith({ isClean: vi.fn().mockResolvedValue(false) });
+    const result = await resetBranchToBaseExplicit(
+      makeDeps({ createGitManager: () => git }), "s1", "/ws",
+    );
+    expect(result.outcome).toBe("refused");
+    expect(result.reason).toMatch(/uncommitted/i);
+    expect(git.resetHardToRemoteBase).not.toHaveBeenCalled();
+  });
+
+  it("refuses when HEAD moved off the merged tip (unmerged work)", async () => {
+    const git = gitWith({
+      getHeadHash: vi.fn().mockResolvedValue("cafe0000000000000000000000000000000000cc"),
+      getRefHash: vi.fn().mockResolvedValue(BASE_TIP),
+    });
+    const result = await resetBranchToBaseExplicit(
+      makeDeps({ createGitManager: () => git }), "s1", "/ws",
+    );
+    expect(result.outcome).toBe("refused");
+    expect(git.resetHardToRemoteBase).not.toHaveBeenCalled();
+  });
+
+  it("refuses on a detached HEAD", async () => {
+    const git = gitWith({ currentBranchOrNull: vi.fn().mockResolvedValue(null) });
+    const result = await resetBranchToBaseExplicit(
+      makeDeps({ createGitManager: () => git }), "s1", "/ws",
+    );
+    expect(result.outcome).toBe("refused");
+    expect(result.reason).toMatch(/detached/i);
+  });
+
+  it("refuses while a sequencer (merge / cherry-pick / revert) is in progress", async () => {
+    const git = gitWith({ isMergeOrSequencerInProgress: vi.fn().mockResolvedValue(true) });
+    const result = await resetBranchToBaseExplicit(
+      makeDeps({ createGitManager: () => git }), "s1", "/ws",
+    );
+    expect(result.outcome).toBe("refused");
+    expect(git.resetHardToRemoteBase).not.toHaveBeenCalled();
+  });
+
+  it("reports a failed force-push as FAILURE, not success", async () => {
+    // docs/218's heal is best-effort and still returns `moved: true`. Here the
+    // remote is left diverged, so every later push is a silently-dropped
+    // non-fast-forward and the chain's next PR never updates.
+    const git = gitWith({ forcePush: vi.fn().mockRejectedValue(new Error("stale info")) });
+    const result = await resetBranchToBaseExplicit(
+      makeDeps({ createGitManager: () => git }), "s1", "/ws",
+    );
+    expect(result.outcome).toBe("refused");
+    expect(result.reason).toMatch(/stale info/);
+  });
+
+  it("hands workspace ownership back to the worker on EVERY path", async () => {
+    // The orchestrator did this git work as root; without the handback the agent
+    // hits EACCES on its first edit — inside the very turn the wake enables. In a
+    // `finally`, so a refusal is covered too.
+    vi.mocked(handWorkspaceBackToWorker).mockClear();
+    await resetBranchToBaseExplicit(makeDeps({ createGitManager: () => gitWith() }), "s1", "/ws");
+    expect(handWorkspaceBackToWorker).toHaveBeenCalledWith("/ws");
+
+    vi.mocked(handWorkspaceBackToWorker).mockClear();
+    await resetBranchToBaseExplicit(
+      makeDeps({ createGitManager: () => gitWith({ isClean: vi.fn().mockResolvedValue(false) }) }),
+      "s1",
+      "/ws",
+    );
+    expect(handWorkspaceBackToWorker).toHaveBeenCalledWith("/ws");
+
+    vi.mocked(handWorkspaceBackToWorker).mockClear();
+    await resetBranchToBaseExplicit(
+      makeDeps({ createGitManager: () => { throw new Error("git exploded"); } }),
+      "s1",
+      "/ws",
+    );
+    expect(handWorkspaceBackToWorker).toHaveBeenCalledWith("/ws");
+  });
+
+  it("the refusal guidance says WHY and forbids a hand-rolled reset", () => {
+    // Load-bearing copy: the gate is prompt-mediated, so a refused agent that is
+    // not told to stop can simply `git reset --hard` and cause the exact loss the
+    // gate exists to prevent. Structural assertions, not prose matching.
+    expect(RESET_REFUSAL_GUIDANCE).toMatch(/git reset --hard/);
+    expect(RESET_REFUSAL_GUIDANCE).toMatch(/do not|Do NOT/);
+    expect(RESET_REFUSAL_GUIDANCE).toMatch(/destroy|recover/i);
   });
 });

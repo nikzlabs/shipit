@@ -721,25 +721,43 @@ export async function handleSessionArchive(args: string[], deps: RunDeps): Promi
 }
 
 /**
- * `shipit session notify-on-merge <child-id> [--json]` (docs/196).
+ * `shipit session notify-on-merge <child-id> [--json]` (docs/196) —
+ * or `shipit session notify-on-merge --self [--json]` (docs/239).
  *
- * Arms an async watch: when the child's PR merges (or closes without merging),
- * the orchestrator wakes THIS session with a queued, self-describing system turn
- * and surfaces a merge card — no blocking wait. Returns immediately ("armed").
- * Unlike `wait`, this does NOT hold the turn open; the turn ends here and the
- * parent resumes event-driven, possibly days later.
+ * Arms an async watch: when the PR merges (or closes without merging), the
+ * orchestrator wakes a session with a queued, self-describing system turn — no
+ * blocking wait. Returns immediately ("armed"); the turn ends here and the woken
+ * session resumes event-driven, possibly days later.
+ *
+ * With `--self` the watched PR is THIS session's own, and this session is what
+ * gets woken. There is deliberately no follow-up payload: the transcript already
+ * holds the plan, and the wake prompt says to continue it. Re-arming after the
+ * next PR opens is how a multi-PR chain continues — nothing re-arms on the
+ * agent's behalf.
  */
 export async function handleSessionNotifyOnMerge(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
     values: {},
-    booleans: { "--json": "json" },
+    booleans: { "--json": "json", "--self": "self" },
   });
   if (parsed.unsupported.length > 0) {
     fail(deps.io, `Unsupported flag for shipit session notify-on-merge: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
   }
+
+  if (parsed.booleans.has("self")) {
+    if (parsed.positional[0]) {
+      fail(
+        deps.io,
+        "shipit session notify-on-merge --self takes no session id — it always watches this session's own PR.",
+      );
+    }
+    await armSelfMergeWatch(parsed.booleans.has("json"), deps);
+    return;
+  }
+
   const id = parsed.positional[0];
   if (!id) {
-    fail(deps.io, "shipit session notify-on-merge: child session id is required.");
+    fail(deps.io, "shipit session notify-on-merge: child session id is required (or use --self).");
   }
 
   const res = await deps.call(
@@ -764,6 +782,33 @@ export async function handleSessionNotifyOnMerge(args: string[], deps: RunDeps):
   success(
     deps.io,
     `session-id:      ${id}\nnotify-on-merge: ${already ? "already armed" : "armed"}`,
+  );
+}
+
+/**
+ * docs/239 — the `--self` half of `notify-on-merge`. Always REPLACES any
+ * previous self-watch, so a re-arm mid-chain is the normal case, not an error.
+ * The one refusal is "no open PR for this branch", which the orchestrator
+ * phrases (including the "if it already merged, just keep going" hint).
+ */
+async function armSelfMergeWatch(json: boolean, deps: RunDeps): Promise<void> {
+  const res = await deps.call("POST", "/agent-ops/session/notify-on-merge-self", {}, deps.env);
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to arm self merge-watch"), 1);
+  }
+  if (json) {
+    deps.io.stdout(`${JSON.stringify(res.body)}\n`);
+    deps.io.exit(0);
+    return;
+  }
+  const prNumber = res.body.prNumber as number | undefined;
+  const replaced = res.body.replaced === true;
+  success(
+    deps.io,
+    `notify-on-merge: ${replaced ? "re-armed" : "armed"} (self)\n`
+    + `watching:        PR #${prNumber ?? "?"}\n`
+    + "on merge:        this session is woken with a turn. Run `shipit branch reset-to-base` first,\n"
+    + "                 then continue; re-arm after opening the next PR if more work remains.",
   );
 }
 
