@@ -40,8 +40,8 @@ export class CodexRateLimits {
 
   /** Latest subscription rate-limit snapshot pushed by the app-server. */
   private lastRateLimits: {
-    session: { usedPct: number; resetAt: string } | null;
-    weekly: { usedPct: number; resetAt: string } | null;
+    session: { usedPct: number; resetAt: string; startedAt?: string } | null;
+    weekly: { usedPct: number; resetAt: string; startedAt?: string } | null;
   } = { session: null, weekly: null };
 
   get lastTokenUsage(): CodexTokenUsage | null {
@@ -76,10 +76,10 @@ export class CodexRateLimits {
     return { type: "agent_rate_limits", session, weekly };
   }
 
-  /** Normalize one Codex rate-limit window into `{ usedPct, resetAt }`. */
+  /** Normalize one Codex rate-limit window into the shared window shape. */
   private parseRateWindow(
     raw: unknown,
-  ): { usedPct: number; resetAt: string } | null {
+  ): { usedPct: number; resetAt: string; startedAt?: string } | null {
     if (!raw || typeof raw !== "object") return null;
     const w = raw as CodexRateLimitWindow;
     if (typeof w.usedPercent !== "number" || !Number.isFinite(w.usedPercent)) return null;
@@ -87,7 +87,16 @@ export class CodexRateLimits {
     const usedPct = Math.min(100, Math.max(0, w.usedPercent));
     // resetsAt is epoch seconds; tolerate a ms value defensively.
     const ms = w.resetsAt < 10_000_000_000 ? w.resetsAt * 1000 : w.resetsAt;
-    return { usedPct, resetAt: new Date(ms).toISOString() };
+    const resetAt = new Date(ms).toISOString();
+    const durationMs =
+      typeof w.windowDurationMins === "number" && Number.isFinite(w.windowDurationMins) && w.windowDurationMins > 0
+        ? w.windowDurationMins * 60_000
+        : null;
+    return {
+      usedPct,
+      resetAt,
+      ...(durationMs === null ? {} : { startedAt: new Date(ms - durationMs).toISOString() }),
+    };
   }
 
   /**

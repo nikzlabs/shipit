@@ -70,6 +70,15 @@ describe("formatAge", () => {
   });
 });
 
+describe("timeElapsedPct", () => {
+  it("uses a stable explicit anchor when a rolling reset moves forward", () => {
+    const now = Date.parse("2026-05-19T14:00:00Z");
+    expect(
+      timeElapsedPct("2026-05-19T19:00:00Z", 5 * 60 * 60_000, now, "2026-05-19T12:00:00Z"),
+    ).toBe(40);
+  });
+});
+
 describe("meterDisplay", () => {
   const now = Date.parse("2026-05-19T12:00:00Z");
   const future = "2026-05-19T17:00:00Z";

@@ -21,6 +21,8 @@ export interface SubscriptionLimitsWindow {
   usedPct: number | null;
   /** ISO timestamp of when the window resets. */
   resetAt: string;
+  /** Stable beginning of the displayed window, when the provider supplies it. */
+  startedAt?: string;
   /**
    * Where this window's number came from. `"event"` = the CLI's
    * `rate_limit_event` stream (free, live near the limit, but `usedPct` is

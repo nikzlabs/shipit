@@ -51,4 +51,19 @@ describe("CodexLimitsProvider (event-fed)", () => {
     const snap = await provider.fetch();
     expect(snap).toMatchObject({ session: newer, weekly: null });
   });
+
+  it("preserves the current window anchor when Codex moves its rolling reset forward", async () => {
+    const auth = makeAuthStub({ token: "tok", source: "file", expiresAt: null, plan: "Plus" });
+    const now = Date.parse("2026-05-20T10:00:00Z");
+    const provider = new CodexLimitsProvider({ codexAuthManager: auth, now: () => now });
+    provider.setRateLimits(
+      { usedPct: 10, resetAt: "2026-05-20T15:00:00Z", startedAt: "2026-05-20T10:00:00Z" },
+      null,
+    );
+    provider.setRateLimits(
+      { usedPct: 16, resetAt: "2026-05-20T16:00:00Z", startedAt: "2026-05-20T11:00:00Z" },
+      null,
+    );
+    expect((await provider.fetch())?.session?.startedAt).toBe("2026-05-20T10:00:00Z");
+  });
 });

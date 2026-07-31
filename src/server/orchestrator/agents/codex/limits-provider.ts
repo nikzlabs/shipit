@@ -58,7 +58,12 @@ export class CodexLimitsProvider implements LimitsProvider {
     session: SubscriptionLimitsWindow | null,
     weekly: SubscriptionLimitsWindow | null,
   ): void {
-    this.latest = { session, weekly, at: this.now() };
+    const now = this.now();
+    this.latest = {
+      session: preserveWindowAnchor(this.latest?.session ?? null, session, now),
+      weekly: preserveWindowAnchor(this.latest?.weekly ?? null, weekly, now),
+      at: now,
+    };
   }
 
   canFetch(): boolean {
@@ -88,4 +93,16 @@ export class CodexLimitsProvider implements LimitsProvider {
       fetchedAt: this.latest.at,
     };
   }
+}
+
+/** Keep Codex's rolling reset updates from moving the time marker back to zero. */
+function preserveWindowAnchor(
+  previous: SubscriptionLimitsWindow | null,
+  incoming: SubscriptionLimitsWindow | null,
+  now: number,
+): SubscriptionLimitsWindow | null {
+  if (!incoming || !previous?.startedAt) return incoming;
+  const previousReset = Date.parse(previous.resetAt);
+  if (!Number.isFinite(previousReset) || previousReset <= now) return incoming;
+  return { ...incoming, startedAt: previous.startedAt };
 }

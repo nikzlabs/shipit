@@ -174,10 +174,15 @@ interface MeterProps {
  * marker means you're under pace, fill past it means you're burning quota
  * faster than the window is elapsing.
  */
-export function timeElapsedPct(resetAt: string, windowMs: number, now: number): number | null {
-  const resetMs = Date.parse(resetAt);
-  if (Number.isNaN(resetMs)) return null;
-  const pct = ((now - (resetMs - windowMs)) / windowMs) * 100;
+export function timeElapsedPct(
+  resetAt: string,
+  windowMs: number,
+  now: number,
+  startedAt?: string,
+): number | null {
+  const startMs = startedAt === undefined ? Date.parse(resetAt) - windowMs : Date.parse(startedAt);
+  if (!Number.isFinite(startMs)) return null;
+  const pct = ((now - startMs) / windowMs) * 100;
   if (!Number.isFinite(pct)) return null;
   return Math.max(0, Math.min(100, pct));
 }
@@ -244,7 +249,7 @@ function Meter({ shortLabel, window, windowMs, fetchedAt, now }: MeterProps) {
   const fillWidth = `${Math.max(0, Math.min(100, pct))}%`;
   const color = tierColor(pct);
   const countdown = pct > 90 ? formatResetCountdown(window.resetAt, now) : null;
-  const elapsedPct = timeElapsedPct(window.resetAt, windowMs, now);
+  const elapsedPct = timeElapsedPct(window.resetAt, windowMs, now, window.startedAt);
   // The marker lives INSIDE this wrapper, so the `opacity-50` stale dimming
   // above cascades to it automatically — a stale meter fades the time marker
   // along with its number and fill.
