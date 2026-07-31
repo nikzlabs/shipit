@@ -8,7 +8,11 @@ import type { SessionManager } from "../sessions.js";
 import type { UsageManager } from "../usage.js";
 import type { AuthManager } from "../agents/claude/auth-manager.js";
 import type { AgentAuthManager } from "../agent-auth-manager.js";
-import { getContextWindowForModel, DEFAULT_CONTEXT_WINDOW_TOKENS } from "../../shared/agent-registry.js";
+import {
+  getContextWindowForModel,
+  reconcileReportedContextWindow,
+  DEFAULT_CONTEXT_WINDOW_TOKENS,
+} from "../../shared/agent-registry.js";
 import type { VoiceNotePayload, VoiceNoteSource } from "../../shared/types/voice-note-types.js";
 import { emitChatCard, emitNoticeInTurn, buildTurnMessages, persistTurnInProgress, updateRecordedCard } from "../chat-card-persistence.js";
 import type { CompactionCard } from "../../shared/types.js";
@@ -1055,7 +1059,7 @@ export function wireAgentListeners(
         emitToViewers({
           type: "model_info",
           model: turnModel,
-          contextWindowTokens: event.contextWindow,
+          contextWindowTokens: reconcileReportedContextWindow(turnModel, event.contextWindow),
         });
       }
 

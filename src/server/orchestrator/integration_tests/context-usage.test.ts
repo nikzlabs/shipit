@@ -13,6 +13,7 @@ import {
   MODEL_CONTEXT_WINDOWS,
   DEFAULT_CONTEXT_WINDOW_TOKENS,
   getContextWindowForModel,
+  reconcileReportedContextWindow,
 } from "../../shared/agent-registry.js";
 import type { FastifyInstance } from "fastify";
 import type { WsTurnUsageUpdate, AgentProcess, AgentId } from "../../shared/types.js";
@@ -360,5 +361,12 @@ describe("Integration: Context window usage (105)", () => {
     // Unknown
     expect(getContextWindowForModel("unknown-model-xyz")).toBe(DEFAULT_CONTEXT_WINDOW_TOKENS);
     expect(getContextWindowForModel(undefined)).toBe(DEFAULT_CONTEXT_WINDOW_TOKENS);
+  });
+
+  it("does not let legacy Codex telemetry shrink GPT-5.6 between turns", () => {
+    expect(reconcileReportedContextWindow("gpt-5.6-sol", 258_400)).toBe(1_050_000);
+    expect(reconcileReportedContextWindow("gpt-5.6-terra", 1_000_000)).toBe(1_050_000);
+    expect(reconcileReportedContextWindow("gpt-5.4", 258_400)).toBe(258_400);
+    expect(reconcileReportedContextWindow("claude-opus-5", 200_000)).toBe(200_000);
   });
 });

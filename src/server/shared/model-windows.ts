@@ -82,3 +82,20 @@ export function getContextWindowForModel(model: string | undefined): number {
   }
   return bestKey ? MODEL_CONTEXT_WINDOWS[bestKey] : DEFAULT_CONTEXT_WINDOW_TOKENS;
 }
+
+/**
+ * Reconcile a context window reported by the backend with model-specific
+ * knowledge ShipIt needs for display.
+ *
+ * Codex app-server can report the legacy GPT-5 context window for GPT-5.6
+ * variants at turn completion. That late value would otherwise replace the
+ * correct 1.05M fallback and make the dial shrink between turns. Keep the
+ * larger known window for this explicit family; all other models continue to
+ * trust backend telemetry as authoritative.
+ */
+export function reconcileReportedContextWindow(model: string, reported: number): number {
+  if (model === "gpt-5.6" || model.startsWith("gpt-5.6-")) {
+    return Math.max(reported, getContextWindowForModel(model));
+  }
+  return reported;
+}

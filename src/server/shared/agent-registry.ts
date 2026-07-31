@@ -322,6 +322,7 @@ export {
   DEFAULT_CONTEXT_WINDOW_TOKENS,
   MODEL_CONTEXT_WINDOWS,
   getContextWindowForModel,
+  reconcileReportedContextWindow,
 } from "./model-windows.js";
 
 /** Events emitted by {@link AgentRegistry}. */
