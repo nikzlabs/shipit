@@ -1,72 +1,67 @@
 # Self-merge wake — checklist
 
-## Prerequisites (bugs in shipped code — fix before building on them)
+The existing merge-watch pointed back at the same session. No new column, no parallel
+manager, no chain object, no card lifecycle. If an item here looks like a subsystem,
+it has been cut — see the plan's "Resolved decisions".
 
-- [x] **P1** `trySteerDispatch` returns false for `systemTurn` / callback-carrying dispatches — SHI-254
-- [x] **P2** interactive queue drain preserves `systemTurn` + `onTurnComplete` — SHI-255
-- [x] **P3** retry path for a failed delivery that doesn't require an orchestrator restart — SHI-258
-- [ ] **P4** turn adoption drain re-narrows queued entries — SHI-259
-- [ ] **P5** `onTurnComplete` never fires on a no-result retry — SHI-260
+## Prerequisite
 
-## Watch state
+- [x] **SHI-262** — the finished turn's commit completes before a queued turn starts ✅ merged
 
-- [ ] Distinct `SelfMergeWatch` type (watchId, generation, `followUp`, full state set)
-- [ ] `self_merge_watch` column + migration
-- [ ] CAS transitions in `sessions.ts` (`armed → merge-observed` vs `armed → cancelled`)
-- [ ] `listPendingSelfMergeWatches` (separate from the child list)
-- [ ] Own delivery lease keyed on `watchId + attemptId` (SHI-258's `inFlight` is not one)
-- [ ] Shared exhaustive `isPending*WatchState` driving list query + supervisor + polling gate
-- [ ] Generalize supervisor scheduling only; delivery returns `accepted`/`blocked`/`retryable-failure`
-- [ ] `blocked` is paused, with an explicit transition back to `merge-observed`
+## Watch
 
-## Arm surface
+- [ ] Optional `{ kind: "self", watchId, prNumber }` on `SessionMergeWatch`; `parentSessionId === sessionId`
+- [ ] Self-arm refused when the row holds a genuine parent→child watch
+- [ ] Arming always replaces an existing self-watch, including one delivering
 
-- [ ] `--self` + `--then` on `notify-on-merge` (`agent-shim/shipit-session.ts`) + worker relay
-- [ ] `POST /api/sessions/:id/self-merge-watch` — arms, refuses archived, refuses while a watch is non-terminal, fires `checkAndFireNow` under the lease
+## Arm / cancel
+
+- [ ] `shipit session notify-on-merge --self` — no payload
+- [ ] Live open-PR lookup (`findPullRequest`); store the PR number
+- [ ] One refusal: no open PR for the current branch
+- [ ] Cancel carries `watchId`; clears the watch and acknowledges
 - [ ] Container-accessible route golden test
 
 ## Delivery
 
-- [ ] `handleSelfMerge` called from `onMergeDetectedCb` after `markMergedAndPruneExcess`, with PR identity
-- [ ] Carry `{prNumber, headSha}` into the merge callback (signature change)
-- [ ] Identity check on BOTH the merged and `expired` paths
-- [ ] Closed outcomes fan out from `onPrTerminalState` → `expireSelfWatch`
-- [ ] Restore an evicted workspace before the reset
-- [ ] Session-level preparation lease (not a runner flag); counts as `agentBusy`, exempt from `verifyRunningState`
-- [ ] Await any in-flight auto-push before mutating the workspace
-- [ ] Reset coordinator: consent policy, workspace mutex, re-arm, `reset_eligible`, persisted card
-- [ ] Write-ahead stages: `reset-started → local-reset-applied → remote-healed → reset-complete`
-- [ ] Remote healing classified (network = retryable, lease conflict = blocked), not best-effort
-- [ ] Fail closed on a safety-gate failure (`blocked`, no turn)
-- [ ] `self` branch in `buildWakeTurnPrompt`
-- [ ] Preserve the `errored` outcome through `wakeSessionWithTurn`
-- [ ] Terminal states: `completed` / `failed` / `completed-without-pr`
-- [ ] Woken turn's `--self` re-arm refused server-side
-- [ ] `reconcilePending` + `PollingGlobalGate` cover self-watches
+- [ ] Fire from `onMergeDetectedCb` after `markMergedAndPruneExcess` resolves
+- [ ] Read PR facts from the persisted snapshot — no callback signature change
+- [ ] Merged PR number ≠ anchor → append a note, clear the watch, no turn
+- [ ] Closed-without-merge from `onPrTerminalState` → note, clear, no turn
+- [ ] `watchId` checked on asynchronous settlement
+- [ ] `reconcilePending` branches on `kind`
+- [ ] `wakeSessionWithTurn` restores the checkout when missing
 
-## Arm card
+## Reset command
 
-- [ ] Arm via `emitChatCard`; transitions via `persistCardTransition`
-- [ ] Stable `cardId` on the watch; reconcile/history repair the card idempotently
-- [ ] Runner-less `persistCardTransition` (the `expired` path starts no turn)
-- [ ] `selfMergeWatch` field + `self_merge_watch_card` column + migration + `toRow`/`fromRow`
-- [ ] Rehydrate in `loadSessionHistory`; `CARD_MESSAGE_FIELDS` + `EVERY_OPTIONAL_FIELD_MESSAGE`
-- [ ] WS type in `TRANSCRIPT_SCOPED_MESSAGES`
-- [ ] Client card component + handler; `cancel_self_merge_watch` WS handler
+- [ ] `shipit branch reset-to-base` — explicit mode over the existing reset core
+- [ ] Ignores `getAutoResetMergedBranch()`
+- [ ] Idempotent: already-at-base → exit 0 "proceed", checked **before** the `mergedHeadSha` gate
+- [ ] Force-push failure reported as failure
+- [ ] `handWorkspaceBackToWorker` in a `finally`
+- [ ] Exit 0 for reset/already-at-base; nonzero with a reason otherwise
+- [ ] Refusal copy says why and forbids a hand-rolled reset
+
+## Prompt + card
+
+- [ ] `orchestrator/prompts/self-merge-wake.md`: merged; run reset first; stop if it refuses; continue the earlier request unless redirected; re-arm if work remains
+- [ ] Arm card via `emitChatCard`, with Cancel
+- [ ] Notes (not cards) for closed / mismatch / delivery failure
 
 ## Tests
 
-- [x] P1 / P2 regressions — `system-turn-queue.test.ts`, `queue-drain.test.ts`
-- [ ] P3 — recovery without a process restart
-- [ ] `merge-watch.test.ts` — fire-once, terminal-means-ran, expired, blocked, cancel-vs-merge both orderings, check-now-vs-poller, archived, reconcile
-- [ ] Generation — docs/202-superseded PR event doesn't consume the new watch
-- [ ] Reset — reserved slot, mutex, pending auto-push, crash after force-push
-- [ ] Workspace — evicted checkout restored (distinct from idle-reaped container)
-- [ ] `polling-global-gate.test.ts` — pending self-watch keeps the gate open
-- [ ] Card — arm + transition within the same running turn, then switch/reload
-- [ ] Integration — arm → merge → reset + one turn + new PR; re-arm refused; WS disconnect during delivery
+- [ ] Arm refused with no open PR; live lookup after `gh pr create` anchors to the new PR
+- [ ] Arm card persists and round-trips; stale-`watchId` Cancel doesn't cancel a newer watch
+- [ ] Fires after merge bookkeeping
+- [ ] Anchor mismatch → note, no turn
+- [ ] Closed-without-merge → note, no turn
+- [ ] Old settlement doesn't mark a newly-armed watch delivered
+- [ ] Wake against a missing checkout restores it
+- [ ] Reset: refuses on dirty tree / moved HEAD / detached / sequencer
+- [ ] Reset: second invocation → already-at-base; runs with the docs/218 setting off
+- [ ] Reset: force-push failure is not success; agent can edit files afterwards
 
 ## Docs
 
-- [ ] `src/server/shipit-docs/sessions.md` — `--self --then`, one-attempt rule
-- [ ] `docs/196-session-notify-on-merge/plan.md` — cross-reference the self variant; correct its "next poll retries" and "rides the in-memory queue" claims
+- [ ] `shipit-docs/sessions.md` — `--self`, re-arming, the reset command
+- [ ] `docs/196-session-notify-on-merge/plan.md` — cross-reference the self variant
