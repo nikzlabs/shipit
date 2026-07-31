@@ -71,6 +71,7 @@ function makeFakeSessionManager(opts: {
     agentSessionId: string | undefined;
     setAgentSessionIdCalls: { id: string; value: string }[];
     clearAgentSessionIdCalls: string[];
+    conversationReplay: string | undefined;
   };
 } {
   const state = {
@@ -80,6 +81,7 @@ function makeFakeSessionManager(opts: {
     agentSessionId: opts.agentSessionId,
     setAgentSessionIdCalls: [] as { id: string; value: string }[],
     clearAgentSessionIdCalls: [] as string[],
+    conversationReplay: undefined as string | undefined,
   };
   const sm = {
     get: () => ({
@@ -102,6 +104,9 @@ function makeFakeSessionManager(opts: {
     clearAgentSessionId: (id: string) => {
       state.clearAgentSessionIdCalls.push(id);
       state.agentSessionId = undefined;
+    },
+    setConversationReplay: (_id: string, replay: string) => {
+      state.conversationReplay = replay;
     },
     setProviderRoute: () => { /* no-op */ },
   } as unknown as SessionManager;
@@ -346,11 +351,17 @@ describe("prepareSessionAgentEnvironment", () => {
     expect(state.agentSessionId).toBeUndefined();
   });
 
-  it("does not clear Codex agentSessionId when .codex symlink repair finds no Claude jsonl", async () => {
-    // Production regression: a Codex session had a provider-account .codex
-    // symlink repaired. The repair path found no Claude-style
-    // .claude/projects jsonl and incorrectly cleared the generic
-    // agent_session_id, so the next Codex turn started without thread/resume.
+  const codexThreadId = "019e8956-beff-7300-b553-6eff4f9e3ee6";
+  const codexRolloutRel = path.join(
+    "sessions", "2026", "06", "02", `rollout-2026-06-02T00-00-00-${codexThreadId}.jsonl`,
+  );
+
+  /**
+   * Seed a Codex session whose `.codex` is a live leaked symlink, with the
+   * orphan tree the CLI wrote through it. `withRollout` decides whether that
+   * orphan carries the thread's durable rollout jsonl.
+   */
+  function seedLeakedCodexSession(withRollout: boolean): string {
     const account = path.join(tmpDir, "provider-accounts", "codex", "codex-default");
     fs.mkdirSync(path.join(account, ".codex"), { recursive: true });
     fs.writeFileSync(
@@ -361,20 +372,34 @@ describe("prepareSessionAgentEnvironment", () => {
     const sessionDir = path.join(tmpDir, "sessions", "s1");
     fs.mkdirSync(sessionDir, { recursive: true });
     fs.symlinkSync(path.join(account, ".codex"), path.join(sessionDir, ".codex"));
-    fs.mkdirSync(path.join(sessionDir, "provider-accounts", "codex", "codex-default", ".codex"), {
-      recursive: true,
-    });
+    const orphan = path.join(sessionDir, "provider-accounts", "codex", "codex-default", ".codex");
+    fs.mkdirSync(orphan, { recursive: true });
     fs.writeFileSync(
-      path.join(sessionDir, "provider-accounts", "codex", "codex-default", ".codex", "auth.json"),
+      path.join(orphan, "auth.json"),
       JSON.stringify({ last_refresh: "2026-06-01T00:00:00.000Z" }),
     );
+    if (withRollout) {
+      fs.mkdirSync(path.dirname(path.join(orphan, codexRolloutRel)), { recursive: true });
+      fs.writeFileSync(path.join(orphan, codexRolloutRel), `${JSON.stringify({ id: codexThreadId })}\n`);
+    }
+    return sessionDir;
+  }
+
+  it("does not clear Codex agentSessionId when the repair preserves its rollout", async () => {
+    // Production regression: a Codex session had a provider-account .codex
+    // symlink repaired. The repair path found no Claude-style
+    // .claude/projects jsonl and incorrectly cleared the generic
+    // agent_session_id, so the next Codex turn started without thread/resume.
+    // The Claude-shaped absence still must not speak for Codex — and now that
+    // the repair actually preserves `.codex/sessions/**`, the thread's rollout
+    // survives, so the pointer stays put.
+    const sessionDir = seedLeakedCodexSession(true);
 
     const runner = new FakeContainerRunner();
     const credentialStore = makeFakeCredentialStore();
-    const existingThreadId = "019e8956-beff-7300-b553-6eff4f9e3ee6";
     const { sm, state } = makeFakeSessionManager({
       agentPinned: true,
-      agentSessionId: existingThreadId,
+      agentSessionId: codexThreadId,
       providerRouteKind: "account",
       providerRouteId: "codex-default",
     });
@@ -388,8 +413,71 @@ describe("prepareSessionAgentEnvironment", () => {
     expect(result.overrideAgentSessionId).toBeUndefined();
     expect(state.clearAgentSessionIdCalls).toHaveLength(0);
     expect(state.setAgentSessionIdCalls).toHaveLength(0);
-    expect(state.agentSessionId).toBe(existingThreadId);
+    expect(state.agentSessionId).toBe(codexThreadId);
     expect(fs.lstatSync(path.join(sessionDir, ".codex")).isSymbolicLink()).toBe(false);
+    // The rollout landed where the app-server reads it for `thread/resume`.
+    expect(fs.existsSync(path.join(sessionDir, ".codex", codexRolloutRel))).toBe(true);
+  });
+
+  it("clears an unresumable Codex thread and arms a visible-history replay", async () => {
+    // The recovery half: a session whose rollout was already destroyed would
+    // otherwise `thread/resume` → -32600 "no rollout found" on every turn
+    // forever (the adapter fails closed, by design). Detecting the missing
+    // rollout before the spawn converts that permanent loop into one explicit
+    // recovery — and the fresh thread is seeded from ShipIt's own transcript
+    // rather than starting contextless.
+    seedLeakedCodexSession(false);
+
+    const runner = new FakeContainerRunner();
+    const credentialStore = makeFakeCredentialStore();
+    const { sm, state } = makeFakeSessionManager({
+      agentPinned: true,
+      agentSessionId: codexThreadId,
+      providerRouteKind: "account",
+      providerRouteId: "codex-default",
+    });
+    const chatHistoryManager = {
+      load: () => [
+        { role: "user" as const, text: "fix the flaky test" },
+        { role: "assistant" as const, text: "Fixed it in foo.test.ts." },
+      ],
+    };
+
+    const result = await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+      sessionId: "s1",
+      agentId: "codex",
+      deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm, chatHistoryManager },
+    });
+
+    expect(result.overrideAgentSessionId).toBeNull();
+    expect(state.clearAgentSessionIdCalls).toEqual(["s1"]);
+    expect(state.conversationReplay).toContain("fix the flaky test");
+    expect(state.conversationReplay).toContain("Fixed it in foo.test.ts.");
+  });
+
+  it("still clears an unresumable Codex thread when no chat history is wired", async () => {
+    // Without the optional dep the replay is skipped, but the loop-breaking
+    // clear must still happen — a session can never get stuck resume-looping.
+    seedLeakedCodexSession(false);
+
+    const runner = new FakeContainerRunner();
+    const credentialStore = makeFakeCredentialStore();
+    const { sm, state } = makeFakeSessionManager({
+      agentPinned: true,
+      agentSessionId: codexThreadId,
+      providerRouteKind: "account",
+      providerRouteId: "codex-default",
+    });
+
+    const result = await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+      sessionId: "s1",
+      agentId: "codex",
+      deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
+    });
+
+    expect(result.overrideAgentSessionId).toBeNull();
+    expect(state.clearAgentSessionIdCalls).toEqual(["s1"]);
+    expect(state.conversationReplay).toBeUndefined();
   });
 
   // Warm-pool quick-session hang (docs/162 follow-up): the install gate

@@ -338,6 +338,57 @@ const CLAUDE_SESSION_STATE_SUBPATHS: readonly string[] = [
   "history.jsonl",
 ];
 
+/**
+ * The `.codex/` equivalent. Codex's resume is **rollout-file-backed**: a
+ * durable (`ephemeral: false`) thread materializes
+ * `sessions/<YYYY>/<MM>/<DD>/rollout-<ts>-<threadId>.jsonl`, and
+ * `thread/resume` reads that file. Lose it and the app-server answers
+ * `-32600 no rollout found for thread id …` forever, because
+ * `sessions.agent_session_id` still points at the vanished thread.
+ *
+ * Deliberately an allowlist of *state* paths, not the whole subtree: `.codex/`
+ * also holds `auth.json` and `config.toml`, which are the **shared
+ * authentication/config baseline** the repair just cpSync'd in from the
+ * source root. Merging is `force: false` (shared wins on conflict), so even a
+ * same-named orphan copy can't clobber the fresh credentials — but keeping
+ * them out of the allowlist makes that guarantee structural rather than
+ * incidental.
+ */
+const CODEX_SESSION_STATE_SUBPATHS: readonly string[] = [
+  "sessions",
+  "archived_sessions",
+  "history.jsonl",
+];
+
+/**
+ * Per-subtree conversation-state allowlist, keyed by the credential-subtree
+ * `rel` from {@link AGENT_CREDENTIAL_PATHS}.
+ *
+ * A `rel` that is a directory and is **absent** from this map is treated as
+ * unpreservable by {@link mergeOrphanState}, which fails the merge and so
+ * keeps the orphan root on disk. That fail-safe default is the fix for the
+ * `.codex` data loss: the repair used to iterate every agent's subtree but
+ * only knew how to merge Claude's, so a `.codex` orphan was silently
+ * "merged" (a no-op) and then recursively deleted, taking the session's
+ * rollouts with it. A future agent's subtree now leaks an orphan dir rather
+ * than losing the user's conversation.
+ */
+const SUBTREE_STATE_SUBPATHS: Readonly<Record<string, readonly string[]>> = {
+  ".claude": CLAUDE_SESSION_STATE_SUBPATHS,
+  ".codex": CODEX_SESSION_STATE_SUBPATHS,
+};
+
+/** Subtrees under a Codex home that can hold a thread's rollout jsonl. */
+const CODEX_ROLLOUT_ROOTS: readonly string[] = ["sessions", "archived_sessions"];
+
+/**
+ * Depth bound for the rollout scan. The real layout is
+ * `sessions/<YYYY>/<MM>/<DD>/rollout-*.jsonl` (depth 3); the slack absorbs a
+ * CLI layout change without letting a pathological tree turn a per-turn check
+ * into an unbounded walk.
+ */
+const CODEX_ROLLOUT_SCAN_MAX_DEPTH = 5;
+
 /** Anchor for symlink targets authored to point at the volume root. */
 const CREDENTIALS_MOUNT_PREFIX = "/credentials/";
 
@@ -348,12 +399,14 @@ const CREDENTIALS_MOUNT_PREFIX = "/credentials/";
  *   - `outcome: "no-action"` — no Case fired; caller leaves DB alone.
  *   - `outcome: "recovered"` — a Case fired and a resumable conversation
  *     jsonl was found; `recoveredAgentSessionId` is the id to set.
- *   - `outcome: "clear"` — a Case fired but no resumable conversation
- *     jsonl exists (the on-disk state is just stub metadata from the
- *     post-turn flow). Caller must clear the DB pointer and drop the
- *     `--resume` arg on the next spawn so the CLI starts a fresh
- *     conversation instead of `--resume <known-bad-id>`-looping. The
- *     orchestrator-side chat history is unaffected; only the CLI-side
+ *   - `outcome: "clear"` — the session's persisted agent conversation is
+ *     not resumable from disk. For Claude that means no resumable
+ *     `projects/*\/*.jsonl` (the on-disk state is just stub metadata from
+ *     the post-turn flow); for Codex it means no rollout jsonl for the
+ *     persisted thread id. Caller must clear the DB pointer so the next
+ *     spawn starts a fresh conversation instead of looping on a known-bad
+ *     id — and should re-seed it from ShipIt's own transcript
+ *     (`buildConversationReplay`), which is unaffected. Only the CLI-side
  *     resume continuity is lost.
  */
 type LeakRepairResult =
@@ -385,11 +438,21 @@ type LeakRepairResult =
  *
  *   Case 2 (true no-op) — `.claude/` is a real dir AND no orphan exists.
  *
+ *   Case 5 — CODEX STALE THREAD (`.codex/` is a real dir, but the DB's
+ *     thread id has no rollout jsonl under `.codex/sessions`). Read-only
+ *     detection; see the block near the end of this function.
+ *
  * For both repair cases the order is critical: read latest jsonl mtime
  * from the orphan BEFORE any cpSync/merge, since cpSync doesn't preserve
- * mtimes. Then merge with shared-wins-on-conflict for `.claude/`'s state
- * subpaths and orphan-wins for `.claude.json` (session-specific CLI
- * config; the shared one is a generic baseline).
+ * mtimes. Then merge with shared-wins-on-conflict for the subtree state
+ * paths in {@link SUBTREE_STATE_SUBPATHS} (`.claude/`, `.codex/`) and
+ * orphan-wins for `.claude.json` (session-specific CLI config; the shared
+ * one is a generic baseline).
+ *
+ * The orphan root is dropped ONLY after every merge under it succeeded —
+ * the orphan is the only copy of the session's conversation state, so a
+ * failed or impossible merge leaves it on disk for a later pass (or a
+ * human) to rescue.
  *
  * Idempotent. The repaired session converges to a single physical
  * `.claude/` tree containing both the fresh shared credentials and the
@@ -409,6 +472,12 @@ function materializeLeakedSubtreeSymlinks(
   let aCaseFired = false;
   let recoveredAgentSessionId: string | null = null;
   const orphanRootsToRemove = new Set<string>();
+  // Orphan roots whose content could not be fully preserved. Removal is
+  // opt-out rather than opt-in: a root lands here the moment any merge under
+  // it fails, and roots in this set survive the cleanup pass below. The
+  // orphan is the ONLY copy of the session's conversation state, so a failed
+  // preservation must never be followed by a recursive delete.
+  const unsafeOrphanRoots = new Set<string>();
 
   // For the post-destructive-repair case below (no symlink, but orphan still
   // present): the orphan lives at the "<sessionDir>/<sourceRoot relative to
@@ -436,6 +505,7 @@ function materializeLeakedSubtreeSymlinks(
     }
 
     let orphanPath: string | null = null;
+    let orphanRootForRel: string | null = null;
     let isSymlinkLeak = false;
 
     if (dstStat.isSymbolicLink()) {
@@ -460,7 +530,10 @@ function materializeLeakedSubtreeSymlinks(
       if (relativeFromVolume) {
         orphanPath = path.join(sessionDir, relativeFromVolume);
         const orphanRoot = path.join(sessionDir, relativeFromVolume.split(path.sep)[0] ?? "");
-        if (orphanRoot && orphanRoot !== sessionDir) orphanRootsToRemove.add(orphanRoot);
+        if (orphanRoot && orphanRoot !== sessionDir) {
+          orphanRootsToRemove.add(orphanRoot);
+          orphanRootForRel = orphanRoot;
+        }
       }
     } else if (expectedOrphanBase) {
       // ---- Case 3: real dir + orphan still present ----
@@ -478,7 +551,10 @@ function materializeLeakedSubtreeSymlinks(
       if (fs.existsSync(candidateOrphan)) {
         orphanPath = candidateOrphan;
         const orphanRoot = path.join(sessionDir, expectedOrphanBase.split(path.sep)[0] ?? "");
-        if (orphanRoot && orphanRoot !== sessionDir) orphanRootsToRemove.add(orphanRoot);
+        if (orphanRoot && orphanRoot !== sessionDir) {
+          orphanRootsToRemove.add(orphanRoot);
+          orphanRootForRel = orphanRoot;
+        }
       }
     }
 
@@ -509,17 +585,25 @@ function materializeLeakedSubtreeSymlinks(
       if (fs.existsSync(src)) {
         fs.cpSync(src, dst, { recursive: true, force: true, dereference: true });
       }
+      let merge: OrphanMergeResult = { preserved: false, failed: false };
       if (orphanPath && fs.existsSync(orphanPath)) {
-        mergeOrphanState(orphanPath, dst, rel);
+        merge = mergeOrphanState(orphanPath, dst, rel);
       }
-      const mergeNote = orphanPath ? ` (orphan merged from ${orphanPath})` : "";
-      console.log(`[session-credentials] repaired leaked symlink in ${sessionDir}: ${rel}${mergeNote}`);
+      if (merge.failed && orphanRootForRel) unsafeOrphanRoots.add(orphanRootForRel);
+      // Only claim a merge when one actually happened. The unconditional
+      // "(orphan merged from …)" note was actively misleading: for `.codex`
+      // the merge was a silent no-op, so the log asserted preservation on the
+      // very pass that deleted the rollout.
+      console.log(
+        `[session-credentials] repaired leaked symlink in ${sessionDir}: ${rel}${describeMerge(merge, orphanPath)}`,
+      );
     } else {
       // Case 3 — orphan-only recovery; dst already has the shared baseline
       // from the previous destructive repair.
-      mergeOrphanState(orphanPath!, dst, rel);
+      const merge = mergeOrphanState(orphanPath!, dst, rel);
+      if (merge.failed && orphanRootForRel) unsafeOrphanRoots.add(orphanRootForRel);
       console.log(
-        `[session-credentials] recovered orphaned history in ${sessionDir}: ${rel} (no leaked symlink, but ${orphanPath} present)`,
+        `[session-credentials] recovered orphaned history in ${sessionDir}: ${rel} (no leaked symlink, but ${orphanPath} present)${describeMerge(merge, orphanPath)}`,
       );
     }
 
@@ -587,6 +671,12 @@ function materializeLeakedSubtreeSymlinks(
 
   if (aCaseFired) {
     for (const orphanRoot of orphanRootsToRemove) {
+      if (unsafeOrphanRoots.has(orphanRoot)) {
+        console.warn(
+          `[session-credentials] keeping orphan ${orphanRoot}: its conversation state could not be preserved (it is the only copy)`,
+        );
+        continue;
+      }
       try {
         fs.rmSync(orphanRoot, { recursive: true, force: true });
       } catch (err) {
@@ -595,11 +685,52 @@ function materializeLeakedSubtreeSymlinks(
     }
   }
 
-  // The filesystem repair is cross-agent because both Claude and Codex can
-  // inherit leaked credential symlinks. The agent-session-id recovery signal is
-  // Claude-only: it is based on `.claude/projects/*/*.jsonl` and Claude's
-  // `--resume` behavior. Codex thread ids are resumed by `thread/resume` and
-  // must not be cleared just because no Claude jsonl exists.
+  // ---- Codex stale-thread detection ----
+  //
+  // The filesystem repair above is cross-agent (both CLIs can inherit leaked
+  // credential symlinks), but the resume *shape* is not, so each agent gets
+  // its own staleness probe. Claude's (Case 4, above) reads
+  // `.claude/projects/*/*.jsonl`; Codex's reads the rollout tree, and neither
+  // signal may be applied to the other agent.
+  //
+  // Codex fails closed on a bad resume (see `codex-event-handler.ts`), which
+  // is correct — a missing rollout is not permission to silently answer in an
+  // empty thread. But fail-closed alone leaves a session whose rollout is
+  // already gone retrying `thread/resume` on every single turn and erroring
+  // every time, with no way out but manual DB surgery. Detecting the missing
+  // rollout *before* the spawn converts that permanent loop into one explicit
+  // recovery: clear the dead pointer so the next `thread/start` is the only
+  // one attempted, and let the caller re-seed the new thread from ShipIt's own
+  // visible chat history (`buildConversationReplay`) so it is not contextless.
+  // The adapter's fail-closed guarantee is untouched — this path never
+  // *reaches* a failing resume.
+  // eslint-disable-next-line no-restricted-syntax -- docs/155: Codex-specific CLI-shape recovery, see comment above
+  if (agentId === "codex") {
+    if (!currentAgentSessionId) return { outcome: "no-action" };
+    const dst = path.join(sessionDir, ".codex");
+    let isRealDir = false;
+    try {
+      const stat = fs.lstatSync(dst);
+      isRealDir = !stat.isSymbolicLink() && stat.isDirectory();
+    } catch { /* no `.codex` yet — nothing to judge */ }
+    if (!isRealDir) return { outcome: "no-action" };
+    // Runs AFTER the merge loop on purpose: a rollout the repair just restored
+    // from an orphan must count as present, so a successful repair suppresses
+    // the clear and the session keeps true `thread/resume` continuity.
+    //
+    // If a merge *failed*, the rollout is still absent here and the pointer is
+    // cleared — but the orphan holding it was deliberately kept above, so the
+    // raw state survives for a later pass or a human. Unsticking the user
+    // (replayed transcript, working turn) beats preserving a resume id whose
+    // every use errors.
+    if (codexRolloutState(dst, currentAgentSessionId) !== "absent") {
+      return { outcome: "no-action" };
+    }
+    console.log(
+      `[session-credentials] clearing stale agent_session_id in ${sessionDir}: .codex (DB pointed at thread ${currentAgentSessionId}, no rollout on disk)`,
+    );
+    return { outcome: "clear" };
+  }
   // eslint-disable-next-line no-restricted-syntax -- docs/155: Claude-specific CLI-shape recovery, see comment above
   if (agentId !== "claude") return { outcome: "no-action" };
   if (!aCaseFired) return { outcome: "no-action" };
@@ -637,18 +768,62 @@ function jsonlExistsForAgentSessionId(projectsRoot: string, agentSessionId: stri
 }
 
 /**
+ * Outcome of a single orphan merge. Both flags matter and they are not
+ * complements:
+ *
+ *   - `preserved` — at least one piece of conversation state was copied into
+ *     `dst`. Gates the "orphan merged" wording in the repair log, which used
+ *     to be printed unconditionally and so claimed a merge that never
+ *     happened (the `.codex` incident: the log said "orphan merged" ~500ms
+ *     before `thread/resume` failed with "no rollout found").
+ *   - `failed` — something we *should* have preserved could not be. Gates the
+ *     recursive removal of the orphan root: a merge that failed must leave
+ *     the source alone, because the orphan is the only copy.
+ *
+ * `{preserved: false, failed: false}` is the legitimate "nothing of value in
+ * the orphan" case — safe to drop, nothing to claim.
+ */
+interface OrphanMergeResult {
+  preserved: boolean;
+  failed: boolean;
+}
+
+/**
+ * Log suffix describing what a merge actually did. Never claims preservation
+ * that didn't happen — the log line is the only signal an operator has that
+ * the orphan was safe to delete.
+ */
+function describeMerge(merge: OrphanMergeResult, orphanPath: string | null): string {
+  if (!orphanPath) return "";
+  if (merge.failed) {
+    return merge.preserved
+      ? ` (orphan PARTIALLY merged from ${orphanPath}; kept — some state could not be preserved)`
+      : ` (orphan NOT merged from ${orphanPath}; kept — nothing could be preserved)`;
+  }
+  return merge.preserved
+    ? ` (orphan merged from ${orphanPath})`
+    : ` (orphan at ${orphanPath} held no conversation state)`;
+}
+
+/**
  * Move conversation state from an orphan subtree into the freshly
  * materialized destination. Behavior is per-rel:
  *
- *   - For `.claude/`: copy specific session-state subpaths
- *     (`projects/`, `sessions/`, `history.jsonl`) recursively without
- *     overwriting anything the shared source already provided.
+ *   - For a subtree dir with a {@link SUBTREE_STATE_SUBPATHS} entry
+ *     (`.claude/`, `.codex/`): copy those session-state subpaths recursively
+ *     without overwriting anything the shared source already provided
+ *     (`force: false` ⇒ the fresh auth/config baseline always wins).
  *   - For `.claude.json`: if the orphan version exists and differs from
  *     what the shared source wrote, overwrite dest with the orphan.
+ *   - For anything else: refuse. We don't know what carries conversation
+ *     state in an unknown subtree, so we report failure and the caller keeps
+ *     the orphan rather than deleting state it can't identify.
  */
-function mergeOrphanState(orphanPath: string, dstPath: string, rel: string): void {
-  if (rel === ".claude") {
-    for (const sub of CLAUDE_SESSION_STATE_SUBPATHS) {
+function mergeOrphanState(orphanPath: string, dstPath: string, rel: string): OrphanMergeResult {
+  const stateSubpaths = SUBTREE_STATE_SUBPATHS[rel];
+  if (stateSubpaths) {
+    const result: OrphanMergeResult = { preserved: false, failed: false };
+    for (const sub of stateSubpaths) {
       const orphanSub = path.join(orphanPath, sub);
       if (!fs.existsSync(orphanSub)) continue;
       try {
@@ -658,11 +833,13 @@ function mergeOrphanState(orphanPath: string, dstPath: string, rel: string): voi
           errorOnExist: false,
           dereference: true,
         });
+        result.preserved = true;
       } catch (err) {
+        result.failed = true;
         console.warn(`[session-credentials] failed to merge orphan ${orphanSub}:`, err);
       }
     }
-    return;
+    return result;
   }
   if (rel === ".claude.json") {
     try {
@@ -674,10 +851,66 @@ function mergeOrphanState(orphanPath: string, dstPath: string, rel: string): voi
       if (!dstContent || !orphanContent.equals(dstContent)) {
         fs.writeFileSync(dstPath, orphanContent);
       }
+      return { preserved: true, failed: false };
     } catch (err) {
       console.warn(`[session-credentials] failed to merge orphan .claude.json from ${orphanPath}:`, err);
+      return { preserved: false, failed: true };
     }
   }
+  // Unknown subtree — fail closed so the caller keeps the orphan on disk.
+  console.warn(
+    `[session-credentials] no merge strategy for orphan subtree ${rel} at ${orphanPath}; keeping it rather than deleting unknown state`,
+  );
+  return { preserved: false, failed: true };
+}
+
+/**
+ * Whether a Codex thread's rollout jsonl is present under `codexHome`.
+ *
+ * Tri-state on purpose. `"unknown"` (a directory that exists but can't be
+ * read) must NOT be collapsed into `"absent"`: absent is the trigger for
+ * clearing `sessions.agent_session_id`, and clearing a *live* thread's
+ * pointer on a transient permissions error would throw away a perfectly good
+ * conversation. Only a definitively-missing rollout (ENOENT all the way down,
+ * or a readable tree with no matching file) reports `"absent"`.
+ *
+ * Matching is `basename.includes(threadId) && endsWith(".jsonl")` rather than
+ * an exact `rollout-<ts>-<id>.jsonl` pattern, so a CLI change to the filename
+ * prefix or timestamp format degrades to "found" rather than to a spurious
+ * "absent".
+ *
+ * The one assumption left is that the thread id appears in the rollout's
+ * filename at all. If a future CLI drops it, every Codex turn would read as
+ * stale and get a transcript replay instead of a resume — degraded, not
+ * broken, and loud: the `clearing stale agent_session_id` line would then
+ * appear on every turn of every Codex session rather than once.
+ */
+function codexRolloutState(codexHome: string, threadId: string): "found" | "absent" | "unknown" {
+  let sawUnreadableDir = false;
+
+  const walk = (dir: string, depth: number): boolean => {
+    if (depth > CODEX_ROLLOUT_SCAN_MAX_DEPTH) return false;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") sawUnreadableDir = true;
+      return false;
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (walk(path.join(dir, entry.name), depth + 1)) return true;
+      } else if (entry.name.endsWith(".jsonl") && entry.name.includes(threadId)) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  for (const root of CODEX_ROLLOUT_ROOTS) {
+    if (walk(path.join(codexHome, root), 0)) return "found";
+  }
+  return sawUnreadableDir ? "unknown" : "absent";
 }
 
 /**

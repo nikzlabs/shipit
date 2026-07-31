@@ -473,6 +473,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
           credentialStore: ctx.credentialStore,
           sessionManager: ctx.sessionManager,
           providerAccountManager: ctx.providerAccountManager,
+          chatHistoryManager: ctx.chatHistoryManager,
           ...(ctx.ensureAgentTokenFresh ? { ensureAgentTokenFresh: ctx.ensureAgentTokenFresh } : {}),
         },
       });

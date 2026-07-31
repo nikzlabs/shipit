@@ -20,6 +20,7 @@
 
 import type { SessionRunnerInterface } from "./session-runner.js";
 import type { SessionManager } from "./sessions.js";
+import type { ChatHistoryManager } from "./chat-history.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { ServiceManager } from "./service-manager.js";
 import type { AgentId } from "../shared/types.js";
@@ -38,6 +39,7 @@ import { repoUrlToHash } from "./git-utils.js";
 import type { ProviderAccountManager } from "./provider-account-manager.js";
 import { refreshExpiredMcpOAuthTokens } from "./services/mcp-oauth.js";
 import { collectMcpAgentEnv } from "./secret-resolver.js";
+import { buildConversationReplay } from "./services/replay.js";
 import { getErrorMessage } from "./validation.js";
 
 /**
@@ -126,6 +128,49 @@ export interface SessionAgentEnvDeps {
    * the token is usable after the call.
    */
   ensureAgentTokenFresh?: (agentId: AgentId, accountId?: string) => Promise<boolean>;
+  /**
+   * Chat history, read only when a session's CLI-side conversation turns out
+   * to be unresumable and the pointer has to be cleared. ShipIt's own
+   * transcript is the durable copy of that conversation, so it is replayed
+   * into the fresh agent conversation instead of starting contextless — the
+   * same `conversationReplay` mechanism the rollback/fork paths use.
+   *
+   * Optional: without it the recovery still clears the dead pointer (so a
+   * session can never get stuck resume-looping), the new conversation just
+   * starts without the prior transcript.
+   */
+  chatHistoryManager?: Pick<ChatHistoryManager, "load">;
+}
+
+/**
+ * Seed `sessions.conversation_replay` from ShipIt's persisted transcript so
+ * the next agent spawn continues the visible conversation even though the
+ * CLI-side conversation state is gone.
+ *
+ * Consumed within the SAME turn: `executeAgentTurn` runs `prepareAgentEnv`
+ * before `buildRunParams`, and `buildAgentRunParams` calls
+ * `consumeConversationReplay` — which both appends the replay to the system
+ * prompt and drops the resume id. Verified at `turn-executor.ts`
+ * (`prepareAgentEnv` → `buildRunParams`) and
+ * `session-agent-run-params.ts:buildAgentRunParams`.
+ *
+ * Best-effort by design: a failure here must not block the turn, and the
+ * pointer has already been cleared either way.
+ */
+function armConversationReplay(deps: SessionAgentEnvDeps, sessionId: string): void {
+  const chatHistory = deps.chatHistoryManager;
+  if (!chatHistory) return;
+  try {
+    const messages = chatHistory.load(sessionId);
+    const replay = buildConversationReplay(messages);
+    if (!replay) return;
+    deps.sessionManager.setConversationReplay(sessionId, replay);
+    console.log(
+      `[credentials] armed visible-history replay for ${sessionId} (${messages.length} messages) — the new agent conversation continues the transcript instead of starting empty`,
+    );
+  } catch (err) {
+    console.warn("[credentials] failed to arm conversation replay:", getErrorMessage(err));
+  }
 }
 
 /**
@@ -295,8 +340,12 @@ export async function prepareSessionAgentEnvironment(
           // known-bad id.
           overrideAgentSessionId = null;
           if (current) {
-            console.log(`[credentials] clearing agent_session_id for ${sessionId} (was ${current}; no resumable jsonl found)`);
+            console.log(`[credentials] clearing agent_session_id for ${sessionId} (was ${current}; no resumable conversation found on disk)`);
             deps.sessionManager.clearAgentSessionId(sessionId);
+            // The CLI-side conversation is unrecoverable, but ShipIt's own
+            // transcript isn't — replay it so the fresh conversation picks up
+            // where the user left off rather than answering from nothing.
+            armConversationReplay(deps, sessionId);
           }
           return;
         }
