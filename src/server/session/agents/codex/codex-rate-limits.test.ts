@@ -13,8 +13,16 @@ describe("CodexRateLimits", () => {
       });
       expect(event).toEqual({
         type: "agent_rate_limits",
-        session: { usedPct: 5, resetAt: new Date(1779296611 * 1000).toISOString() },
-        weekly: { usedPct: 1, resetAt: new Date(1779883011 * 1000).toISOString() },
+        session: {
+          usedPct: 5,
+          resetAt: new Date(1779296611 * 1000).toISOString(),
+          startedAt: new Date((1779296611 - 300 * 60) * 1000).toISOString(),
+        },
+        weekly: {
+          usedPct: 1,
+          resetAt: new Date(1779883011 * 1000).toISOString(),
+          startedAt: new Date((1779883011 - 10080 * 60) * 1000).toISOString(),
+        },
       });
     });
 

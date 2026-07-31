@@ -181,6 +181,13 @@ the plan tier (read from the `chatgpt_plan_type` JWT claim via
 null). `LimitsRegistry.markAuthRefreshed("codex")` immediately
 rebroadcasts so the pill updates within seconds.
 
+The normalized Codex window also carries `startedAt`, inferred from
+`resetsAt - windowDurationMins`. Because Codex's rolling `resetsAt` can move
+forward on each notification, `CodexLimitsProvider` preserves the first anchor
+until that observed window ends. The client uses this stable anchor for the
+time-progress marker; deriving the start from every fresh reset made the marker
+jump back to zero after each turn.
+
 The adapter also keeps the most recent pushed snapshot locally for error
 classification. Codex app-server has been observed returning the generic
 "org monthly usage limit" JSON-RPC error when the pushed `primary` window is
