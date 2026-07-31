@@ -44,7 +44,11 @@ The requested experience is:
   input or other information; and
 - this enables an agent to create an interface for itself; and
 - the API is compatible with the planned page-visibility feature through which
-  a page can detect that it is inside ShipIt and mute itself when not visible.
+  a page can detect that it is inside ShipIt and mute itself when not visible;
+  and
+- for repository-backed pages, the existing **Trust this repository** action is
+  the consent that authorizes repository code to use the SDK, without a second
+  SDK-specific confirmation solely because the message came from that page.
 
 No requirement was provided for confirmation UI, payload limits, user-gesture
 enforcement, message provenance UI, additional surfaces, or SDK capabilities
@@ -75,6 +79,14 @@ The design relies on the following existing behavior, verified in source:
 - `preview-proxy.ts` already rewrites HTML returned by a service to inject the
   HMR/navigation bootstrap. It is therefore the existing central point at which
   ShipIt can make a small runtime available to proxied service pages.
+- The repository trust gate in `RepoTrustBanner.tsx`, `RepoStore`, and
+  `service-manager-setup.ts` prevents an untrusted remote from starting its
+  install or Compose services. Accepting **Trust this repository** persists
+  trust per canonical remote and unblocks repository-authored code execution.
+  Current source scopes that gate to automatic command/service execution while
+  still allowing chat and file inspection; this design deliberately extends the
+  same trust decision to the new page-to-agent capability rather than inventing
+  a second consent surface.
 - docs/146 defines the planned cooperative Preview visibility protocol under
   the existing `{ source: "shipit-preview", type: ... }` `postMessage`
   envelope. A page emits `ready`; ShipIt replies with and subsequently publishes
@@ -395,9 +407,24 @@ mention it where service-page behavior is described.
 
 ## Security analysis
 
-Presented artifacts and service pages are repository-controlled content and are
-therefore untrusted. This design grants them exactly one new capability: request
-that the owning ShipIt client submit text to the owning session's agent.
+Repository-authored service pages already run only after the user accepts
+ShipIt's one-time **Trust this repository** gate. For this feature, that trust
+decision also authorizes the repository's rendered page code to request that the
+owning ShipIt client submit text to the owning session's agent. The SDK does not
+add a second confirmation solely to re-ask whether that repository is trusted.
+
+The host must enforce the same trust state rather than relying on the fact that a
+service usually cannot start before trust. This keeps the rule explicit and
+also covers persisted/background frames during transitions. A repository-backed
+Present artifact receives the agent module only when its owning remote is
+trusted. Sessions with no remote and ShipIt-template repositories follow the
+existing trust-gate rule and are trusted by construction.
+
+This is a deliberate expansion of the trust gate's current documented scope.
+Today docs/178 gates automatic install and Compose execution but permits agent
+chat and file inspection while restricted. Implementation and agent-facing docs
+must say that page-to-agent SDK access is a trusted-repository capability, so
+future changes do not accidentally expose it in restricted mode.
 
 The containment measures proposed by the design are:
 
@@ -416,18 +443,22 @@ envelope rather than granting multiple bridges.
 Whether SDK dispatch must require a live browser user activation, show the exact
 message for confirmation, or apply a product-level text-size limit is not
 specified by the provided requirements. Those are open product decisions below,
-not assumptions made by this design.
+not assumptions made by this design. Repository trust itself is resolved: once
+the existing trust gate passes, no additional confirmation is required merely
+to establish the page's authority to call the SDK.
 
 ## Open product decisions (not requirements)
 
 These questions must be answered before implementation because each changes
 observable behavior. They are intentionally not resolved here:
 
-1. **Invocation policy:** may page JavaScript call `sendMessage` at any time, or
-   only while handling a recent user gesture such as a click or submit?
-2. **Confirmation:** does ShipIt send immediately, or show the composed text for
-   confirmation first? If confirmation exists, is it always shown or only for
-   selected cases?
+1. **Invocation policy:** after repository trust is established, may page
+   JavaScript call `sendMessage` at any time, or only while handling a recent
+   user gesture such as a click or submit? This is an interaction-policy choice,
+   not a second repository-trust decision.
+2. **Confirmation:** after repository trust is established, does ShipIt send
+   immediately, or show the composed text for confirmation first? Any such
+   confirmation would be message review UX, not a re-prompt to trust the repo.
 3. **Transcript presentation:** is the submitted text rendered as an ordinary
    user bubble, or does it carry a visible “from Present/Preview” treatment?
 4. **Message bounds:** should the first version impose a product-specific text
@@ -473,6 +504,10 @@ Expected touchpoints, subject to the open product decisions:
   bootstrap injection and iframe registration.
 - `src/client/components/PresentPane.tsx` — enable and bind the Present surface.
 - `src/client/components/PreviewFrame/` — bind the active service iframe.
+- `src/client/components/RepoTrustBanner.tsx` and client repo state — authoritative
+  browser-side gate for enabling the agent module on repository-backed frames.
+- `src/server/orchestrator/repo-store.ts` / trust-aware session lookup —
+  authoritative server-side enforcement; never trust a child-provided claim.
 - `src/client/agent-interface-sdk/` — protocol, SDK bootstrap, frame registry,
   and host hook.
 - `src/client/App.tsx` — provide the existing agent-dispatch callback to the host

@@ -24,6 +24,10 @@ security measures, UX details, or anticipated extensions into requirements.
 5. The API is compatible with the planned page-visibility feature that lets a
    page detect that it is running inside ShipIt and mute itself when it is not
    visible.
+6. For a repository-backed page, the existing **Trust this repository** action
+   is the user consent that authorizes repository code to use this API. The SDK
+   does not require a second confirmation solely because the message originates
+   from that trusted repository's page.
 
 ## Not requirements
 
