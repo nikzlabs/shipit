@@ -8,10 +8,12 @@
  */
 
 import { VoiceProviderError, type SttProvider, type SttTranscribeOptions } from "./types.js";
-import { WHISPER_BIAS_PROMPT } from "../vocabulary.js";
+import { CODING_VOCABULARY } from "../vocabulary.js";
 
 const OPENAI_TRANSCRIBE_URL = "https://api.openai.com/v1/audio/transcriptions";
-const OPENAI_TRANSCRIBE_MODEL = "gpt-4o-transcribe";
+const OPENAI_TRANSCRIBE_MODEL = "gpt-transcribe";
+const TRANSCRIPTION_CONTEXT =
+  "Software development dictation. Preserve technical terms, acronyms, product names, punctuation, and capitalization.";
 
 function filenameForMime(mimeType: string | undefined): string {
   if (!mimeType) return "audio.webm";
@@ -29,11 +31,13 @@ export function createWhisperProvider(apiKey: string, fetchImpl: typeof fetch = 
       const blob = new Blob([new Uint8Array(audio)], { type: opts.mimeType ?? "audio/webm" });
       form.append("file", blob, filenameForMime(opts.mimeType));
       form.append("model", OPENAI_TRANSCRIBE_MODEL);
-      // OpenAI expects a 2-letter ISO-639-1 hint; pass the leading subtag.
-      if (opts.language) form.append("language", opts.language.split("-")[0]);
-      // Bias recognition toward coding vocabulary so STT emits "PR"/"JSON"
-      // rather than "APR"/"Jason" — cleanup can only fix what STT produces.
-      form.append("prompt", WHISPER_BIAS_PROMPT);
+      // GPT Transcribe accepts language hints as an array. ShipIt's setting is
+      // singular, so preserve its leading ISO-639-1 subtag as one hint.
+      if (opts.language) form.append("languages[]", opts.language.split("-")[0]);
+      form.append("prompt", TRANSCRIPTION_CONTEXT);
+      // Literal keyword hints are the model's intended mechanism for domain
+      // vocabulary. Cleanup can only fix terms the transcription preserves.
+      for (const keyword of CODING_VOCABULARY) form.append("keywords[]", keyword);
       form.append("response_format", "json");
 
       let res: Response;

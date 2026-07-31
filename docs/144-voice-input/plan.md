@@ -407,7 +407,7 @@ Three provider directions in v1:
 
 | Direction | Provider | Endpoint | Auth | Audio path | Notes |
 |---|---|---|---|---|---|
-| **STT** | `openai` | OpenAI `/v1/audio/transcriptions` with `gpt-4o-transcribe` | BYO OpenAI voice key, server-stored | browser → orchestrator → OpenAI | whole-utterance request/response, no streaming partials |
+| **STT** | `openai` | OpenAI `/v1/audio/transcriptions` with `gpt-transcribe` | BYO OpenAI voice key, server-stored | browser → orchestrator → OpenAI | whole-utterance request/response, no streaming partials |
 | **Cleanup** | `claude-oauth` (default) | Anthropic API via Claude Code OAuth | user's Claude Code subscription, OAuth bearer surfaced by `AuthManager.getAccessToken()` | server-only | `claude-haiku-4-5`, ~400 ms, prompt is the fixed cleanup template |
 | **Cleanup** | `openai-cleanup` (fallback) | OpenAI `/v1/chat/completions` | same OpenAI voice key | server-only | `gpt-4o-mini`, same prompt; lets users without Claude auth still get cleanup |
 | **TTS** | `openai-tts` | OpenAI `/v1/audio/speech` (`tts-1` model) | OpenAI voice key | OpenAI → orchestrator → browser | streaming `audio/mpeg` response body, cached server-side by content hash |

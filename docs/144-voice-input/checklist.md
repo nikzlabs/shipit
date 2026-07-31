@@ -16,7 +16,8 @@
 
 ## Phase 9 — OpenAI transcription model upgrade
 
-- [x] Switch the OpenAI STT adapter from `whisper-1` to `gpt-4o-transcribe` while preserving the existing whole-utterance endpoint, language hint, coding-vocabulary prompt, and JSON response contract.
+- [x] Switch the OpenAI STT adapter from `whisper-1` to `gpt-transcribe` while preserving the existing whole-utterance endpoint and JSON response contract.
+- [x] Send the configured language through `languages[]` and the coding vocabulary through `keywords[]`, matching the model-specific transcription API.
 - [x] Update the provider regression test to pin the new model identifier.
 
 ## Phase 1 — Shared foundation
