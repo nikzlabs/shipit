@@ -36,6 +36,7 @@ import path from "node:path";
 import type { ChildProcess } from "node:child_process";
 import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { stripAnsi } from "../../../shared/strip-ansi.js";
+import { killChild } from "../../../shared/kill-child.js";
 import {
   ensureConfigDir,
   firstEpochMs,
@@ -543,11 +544,7 @@ export class CodexAuthManager extends EventEmitter implements AgentAuthManager {
     this.clearTimeoutHandle();
     proc.removeAllListeners("close");
     proc.removeAllListeners("error");
-    try {
-      proc.kill("SIGTERM");
-    } catch {
-      // Process already dead — nothing to do.
-    }
+    killChild(proc, "SIGTERM");
     this.clearActiveScope();
   }
 
@@ -627,11 +624,7 @@ export class CodexAuthManager extends EventEmitter implements AgentAuthManager {
     if (!proc) return;
     proc.removeAllListeners("close");
     proc.removeAllListeners("error");
-    try {
-      proc.kill("SIGTERM");
-    } catch {
-      // Already gone.
-    }
+    killChild(proc, "SIGTERM");
   }
 
   /**
