@@ -41,18 +41,50 @@ class FakeRunner {
   autoCompleteTurn = true;
   /** Outcome the simulated turn settles with — docs/240: only `completed` delivers. */
   turnOutcome: TurnOutcome = TURN_COMPLETED;
+  /** SHI-264 — the delivery of the turn this runner is RUNNING, if any. */
+  activeDeliveryId: string | undefined;
+  /** SHI-264 — deliveries sitting in the (in-memory) queue behind a busy turn. */
+  private readonly queuedDeliveries = new Set<string>();
   private pendingComplete: (() => void)[] = [];
   constructor(public sessionDir: string) {}
   dispatch(opts: AgentDispatchOptions): TurnHandle {
     this.dispatched.push(opts);
     const settlement = createTurnSettlement();
-    if (!opts.onTurnComplete) return settlement;
-    const fire = () => opts.onTurnComplete!(this.turnOutcome);
     // Busy parent → enqueued, runs (and completes) only on drain. Idle parent →
     // starts now (unless the test holds it via `autoCompleteTurn = false`).
-    if (this.running || !this.autoCompleteTurn) { this.pendingComplete.push(fire); return settlement; }
+    const held = this.running || !this.autoCompleteTurn;
+    if (opts.deliveryId !== undefined) {
+      if (this.running) this.queuedDeliveries.add(opts.deliveryId);
+      else this.activeDeliveryId = opts.deliveryId;
+    }
+    if (!opts.onTurnComplete) return settlement;
+    const fire = () => {
+      if (opts.deliveryId !== undefined) {
+        this.queuedDeliveries.delete(opts.deliveryId);
+        if (this.activeDeliveryId === opts.deliveryId) this.activeDeliveryId = undefined;
+      }
+      opts.onTurnComplete!(this.turnOutcome);
+    };
+    if (held) { this.pendingComplete.push(fire); return settlement; }
     fire();
     return settlement;
+  }
+  /** SHI-264 — the ground-truth liveness answer the retry supervisor now asks for. */
+  hasDelivery(deliveryId: string): boolean {
+    return this.activeDeliveryId === deliveryId || this.queuedDeliveries.has(deliveryId);
+  }
+  /**
+   * An orchestrator restart with nothing surviving in a worker: the in-memory
+   * queue, the held completion callbacks, and the running-turn state all die
+   * with the process. (A turn that DOES survive inside its container is the
+   * adoption case — covered against a real worker in
+   * `integration_tests/restart-delivery-identity.test.ts`.)
+   */
+  simulateRestart(): void {
+    this.pendingComplete = [];
+    this.queuedDeliveries.clear();
+    this.activeDeliveryId = undefined;
+    this.running = false;
   }
   /** Simulate held/queued wake-turns draining to completion. */
   completeTurn(): void {
@@ -323,8 +355,9 @@ describe("MergeWatchManager (docs/196)", () => {
     expect(parentRunner.dispatched).toHaveLength(1);
     expect(ctx.sessionManager.getMergeWatch("child")?.state).toBe("merge-observed");
 
-    // Restart: the queued turn was lost (no `completeTurn()`), parent idle again.
-    parentRunner.running = false;
+    // Restart: the queued turn was lost with the in-memory queue (it never
+    // reached a worker, so nothing survives to adopt), parent idle again.
+    parentRunner.simulateRestart();
     ctx.manager.setPrStatusLookup((id) => (id === "child" ? mergedStatus() : undefined));
     await ctx.manager.reconcilePending();
 
@@ -552,6 +585,80 @@ describe("MergeWatchManager (docs/196)", () => {
       await ctx.manager.retryStalledDeliveries();
 
       expect(ctx.sessionManager.getMergeWatch("child")).toBeUndefined();
+    });
+
+    // ---- SHI-264: the delivery identity the retry supervisor now reads ----
+    //
+    // These pin the manager-side half of "derive liveness rather than track it".
+    // The half that only a real worker can prove — that the id survives an
+    // orchestrator restart inside the container and comes back on
+    // `/agent/status` — is covered in
+    // `integration_tests/restart-delivery-identity.test.ts`.
+
+    it("stamps a durable delivery id on every attempt and persists it WITH the attempt", async () => {
+      arm(ctx.sessionManager);
+      ctx.control.failWake = true;
+      await ctx.manager.handleChildPrTerminal(MERGED);
+
+      const first = ctx.sessionManager.getMergeWatch("child");
+      expect(first?.deliveryAttempts).toBe(1);
+      expect(first?.deliveryId).toBe("child:1");
+
+      // A retry is a NEW delivery: its id must not collide with the previous
+      // attempt's, or a stale worker report would suppress it.
+      rewindLastAttempt();
+      await ctx.manager.retryStalledDeliveries();
+      expect(ctx.sessionManager.getMergeWatch("child")?.deliveryId).toBe("child:2");
+    });
+
+    it("a wake-turn queued behind a busy parent is recognized by its DELIVERY, with no in-memory marker to trust", async () => {
+      arm(ctx.sessionManager);
+      const parentRunner = ctx.registry.getOrCreate("parent", "/ws/parent", "claude") as unknown as FakeRunner;
+      parentRunner.running = true;
+      await ctx.manager.handleChildPrTerminal(MERGED);
+
+      const deliveryId = ctx.sessionManager.getMergeWatch("child")?.deliveryId;
+      expect(deliveryId).toBeTypeOf("string");
+      expect(parentRunner.dispatched[0].deliveryId).toBe(deliveryId);
+      expect(parentRunner.hasDelivery(deliveryId!)).toBe(true);
+
+      // A manager that never dispatched anything — the shape of the process
+      // AFTER a restart — reaches the same "still in flight" verdict, because
+      // the answer lives on the runner rather than in this manager's memory.
+      const fresh = new MergeWatchManager({
+        sessionManager: ctx.sessionManager,
+        runnerRegistry: ctx.registry,
+        chatHistoryManager: ctx.chatHistoryManager,
+        defaultAgentId: "claude",
+      });
+      fresh.setPrStatusLookup((id) => (id === "child" ? mergedStatus() : undefined));
+      rewindLastAttempt();
+      await fresh.retryStalledDeliveries();
+      await fresh.reconcilePending();
+      fresh.stopRetryLoop();
+
+      expect(parentRunner.dispatched).toHaveLength(1);
+      expect(ctx.sessionManager.getMergeWatch("child")?.deliveryAttempts).toBe(1);
+    });
+
+    it("rebindDelivery hands back the settlement for a live delivery, and nothing for a stale one", async () => {
+      arm(ctx.sessionManager);
+      const parentRunner = ctx.registry.getOrCreate("parent", "/ws/parent", "claude") as unknown as FakeRunner;
+      parentRunner.autoCompleteTurn = false;
+      await ctx.manager.handleChildPrTerminal(MERGED);
+      const deliveryId = ctx.sessionManager.getMergeWatch("child")!.deliveryId!;
+
+      expect(ctx.manager.rebindDelivery("child:99")).toBeUndefined();
+
+      // The rebound callback is the same settlement the dispatch attached, so an
+      // ADOPTED turn's clean completion advances the ORIGINAL watch.
+      const settle = ctx.manager.rebindDelivery(deliveryId);
+      expect(settle).toBeTypeOf("function");
+      settle!(TURN_COMPLETED);
+      expect(ctx.sessionManager.getMergeWatch("child")?.state).toBe("delivered");
+
+      // Terminal now — a late second rebind finds nothing to settle.
+      expect(ctx.manager.rebindDelivery(deliveryId)).toBeUndefined();
     });
 
     it("closed-unmerged: a failed wake-turn surfaces a failure card (terminal, not retried)", async () => {

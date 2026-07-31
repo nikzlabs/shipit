@@ -221,6 +221,13 @@ export interface QueuedMessage {
    * every entry they throw away as `dropped` rather than eating the signal.
    */
   onTurnComplete?: (outcome: TurnOutcome) => void;
+  /**
+   * SHI-264 — durable delivery identity, carried through the queue so a wake-turn
+   * waiting behind a busy parent still answers `runner.hasDelivery(id)` while it
+   * sits there. Without this the queued window would read as "not in flight" and
+   * the retry supervisor would fire a duplicate.
+   */
+  deliveryId?: string;
 }
 
 /**
@@ -283,6 +290,18 @@ export interface AgentDispatchOptions {
    * *pending* from *lost*.
    */
   onTurnComplete?: (outcome: TurnOutcome) => void;
+  /**
+   * SHI-264 — durable identity for a turn dispatched on behalf of a server-side
+   * DELIVERY (today: a notify-on-merge wake, `watchId:attempt`). Unlike
+   * `onTurnComplete` — an in-memory callback that dies with the process — this
+   * id is persisted with the dispatch, sent to the worker, and reported back
+   * from `/agent/status`, so a turn that outlives an orchestrator restart can
+   * still be recognized as THIS delivery and have its settlement rebound
+   * (`turn-adoption.ts`) instead of being redispatched over the top of.
+   *
+   * Absent for an ordinary user turn: there is nothing to re-settle.
+   */
+  deliveryId?: string;
 }
 
 /**
@@ -351,6 +370,12 @@ export function dispatchOnRunner(
   // system turn. Cleared by `executeAgentTurn` on completion.
   if (opts.systemTurn) runner.systemTurnInProgress = true;
   runner.running = true;
+  // SHI-264 — publish the delivery in the SAME synchronous tick as `running`,
+  // for the same reason: `runDispatchedTurn` is async (attachment resolution,
+  // agent creation, run-param assembly) and `executeAgentTurn` only sets it much
+  // later, so the gap would read as "this delivery is not in flight" and let the
+  // retry supervisor fire a duplicate at exactly the slowest sessions.
+  if (opts.deliveryId !== undefined) runner.activeDeliveryId = opts.deliveryId;
   const chained = withSettlement(opts, settlement);
   void runner.runDispatchedTurn(chained).catch((err: unknown) => {
     // SHI-263 — the setup half of a dispatched turn (attachment preparation,
@@ -375,6 +400,12 @@ export function dispatchOnRunner(
     );
     if (opts.systemTurn) runner.systemTurnInProgress = false;
     runner.running = false;
+    // SHI-264 — the turn never started, so the delivery is not in flight. Left
+    // set, it would read as live forever and suppress every retry — the same
+    // stranding class SHI-263 fixed for the settlement itself.
+    if (opts.deliveryId !== undefined && runner.activeDeliveryId === opts.deliveryId) {
+      runner.activeDeliveryId = undefined;
+    }
     // Report through the CHAINED callback, not `settlement.settle` directly:
     // the settlement is implemented on top of `onTurnComplete`, and the
     // pre-docs/240 consumers that still read the adapter (`wakeSessionWithTurn`,
@@ -427,6 +458,7 @@ export function toQueuedMessage(opts: PreparedDispatch): QueuedMessage {
   if (opts.postTurn !== undefined) queued.postTurn = opts.postTurn;
   if (opts.systemTurn !== undefined) queued.systemTurn = opts.systemTurn;
   if (opts.onTurnComplete !== undefined) queued.onTurnComplete = opts.onTurnComplete;
+  if (opts.deliveryId !== undefined) queued.deliveryId = opts.deliveryId;
   return queued;
 }
 
@@ -473,6 +505,24 @@ export interface SystemTurnDeps {
    * inherited none of the user-path agent configuration.
    */
   buildRunParams: (sessionId: string, agentId: AgentId, prompt: string) => Promise<AgentRunParams>;
+  /**
+   * SHI-264 — re-acquire the completion settlement for a DELIVERY whose turn
+   * outlived an orchestrator restart.
+   *
+   * Turn adoption rebuilds a live turn from the worker's report, but the
+   * settlement it was dispatched with died with the previous process — so
+   * before this hook the adopted turn ran to completion and settled nothing,
+   * leaving the originating watch non-terminal and `reconcilePending` free to
+   * queue a SECOND wake behind it. Given the worker-reported delivery id, the
+   * owner of that delivery (`MergeWatchManager`) hands back the same callback
+   * it would have attached at dispatch time, and the original watch settles
+   * from the adopted turn.
+   *
+   * Returns undefined when nothing owns the id any more (the watch was
+   * cancelled, re-armed, or already terminal) — the adopted turn then simply
+   * runs with no settlement, exactly as any user turn does.
+   */
+  rebindDelivery?: (deliveryId: string) => ((outcome: TurnOutcome) => void) | undefined;
   /**
    * docs/149 — emit the PR lifecycle card after a system-turn commit lands.
    * Mirrors the WS handler's post-turn flow. Optional so tests can omit it.
@@ -771,6 +821,33 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   clearQueue(): void;
   getQueueSnapshot(): { text: string; position: number }[];
 
+  /**
+   * SHI-264 — the durable DELIVERY id of the turn currently RUNNING on this
+   * runner, when it was dispatched on behalf of a server-side delivery
+   * (a notify-on-merge wake, either `kind`). Undefined for an ordinary turn and
+   * between turns.
+   *
+   * Set synchronously by `dispatchOnRunner` when it starts a turn (the same tick
+   * as `running`, for the same reason: the gap before `executeAgentTurn` runs is
+   * a window a supervisor could read as "not in flight"), by the executor at
+   * turn start, and by TURN ADOPTION from the id the worker reports — which is
+   * what makes it survive an orchestrator restart. Cleared when the turn
+   * settles.
+   */
+  activeDeliveryId: string | undefined;
+  /**
+   * SHI-264 — is `deliveryId` still live on this runner: RUNNING as the current
+   * turn, or QUEUED behind one?
+   *
+   * This is the "derive liveness rather than track it" primitive docs/240 called
+   * for. SHI-258's in-memory `inFlight` set was *tracked* state living beside
+   * the runner, so it desynchronized from a disposed runner, an adopted turn, or
+   * a second runner for the same session. Asking the runner that actually owns
+   * the turn (and, after a restart, whose answer came from the worker's
+   * `/agent/status`) cannot drift: no runner, no delivery.
+   */
+  hasDelivery(deliveryId: string): boolean;
+
   // Terminal
   getTerminal(): TerminalProcess | null;
   setTerminal(t: TerminalProcess | null): void;
@@ -979,6 +1056,8 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _steeredMessages: SteeredMessage[] = [];
   private _recordedCards: RecordedChatCard[] = [];
   private _messageQueue: QueuedMessage[] = [];
+  /** SHI-264 — see `SessionRunnerInterface.activeDeliveryId`. */
+  activeDeliveryId: string | undefined;
   private _terminal: TerminalProcess | null = null;
   private _terminalOutputBuffer = "";
   private static readonly MAX_TERMINAL_BUFFER = 10_000;
@@ -1109,6 +1188,11 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     return this._messageQueue.length;
   }
   dequeue(): QueuedMessage | undefined { return this._messageQueue.shift(); }
+  /** SHI-264 — see `SessionRunnerInterface.hasDelivery`. */
+  hasDelivery(deliveryId: string): boolean {
+    if (this.activeDeliveryId === deliveryId) return true;
+    return this._messageQueue.some((m) => m.deliveryId === deliveryId);
+  }
   clearQueue(): void {
     // docs/240 — a discarded entry SETTLES rather than silently eating its
     // completion signal (see `settleDroppedQueueEntries`).

@@ -38,7 +38,7 @@ function describeWorkerError(err: unknown, op: "start" | "stdin" | "interrupt"):
  * ProxyAgentProcess needs. Avoids a circular import dependency.
  */
 export interface ProxyAgentRunner {
-  _startAgentViaProxy(agentId: AgentId, params: AgentRunParams, runToken?: string): Promise<void>;
+  _startAgentViaProxy(agentId: AgentId, params: AgentRunParams, runToken?: string, deliveryId?: string): Promise<void>;
   writeAgentStdin(data: string): Promise<void>;
   sendAgentMessage(text: string): Promise<void>;
   interruptAgentOnWorker(): Promise<void>;
@@ -103,18 +103,38 @@ export class ProxyAgentProcess extends EventEmitter<{
     skillInvocationPrefix: "/",
   };
 
+  /**
+   * SHI-264 — the durable DELIVERY id of the turn this proxy is about to run (or
+   * is adopting), when the turn was dispatched on behalf of a server-side
+   * delivery. Sent to the worker on `/agent/start` beside {@link runToken} and
+   * reported back from `/agent/status`, so an orchestrator that restarts
+   * mid-turn can tell WHICH delivery the surviving turn belongs to.
+   *
+   * Distinct from `runToken` on purpose: the run token identifies a SPAWN (it
+   * exists so a stale exit can be ignored) and is minted fresh per proxy; the
+   * delivery id identifies the WORK, survives a restart, and is the same across
+   * an adopted turn and the turn it adopts.
+   */
+  deliveryId: string | undefined;
+
   private runner: ProxyAgentRunner;
 
-  constructor(agentId: AgentId, runner: ProxyAgentRunner, opts?: { runToken?: string }) {
+  constructor(agentId: AgentId, runner: ProxyAgentRunner, opts?: { runToken?: string; deliveryId?: string }) {
     super();
     this.agentId = agentId;
     this.runner = runner;
     this.runToken = opts?.runToken ?? randomUUID();
+    this.deliveryId = opts?.deliveryId;
+  }
+
+  /** SHI-264 — stamp the delivery id onto the next spawn (see {@link deliveryId}). */
+  setDeliveryId(deliveryId: string): void {
+    this.deliveryId = deliveryId;
   }
 
   /** Fire-and-forget POST to worker /agent/start. Errors emitted as events. */
   run(params: AgentRunParams): void {
-    this.runner._startAgentViaProxy(this.agentId, params, this.runToken).catch((err: unknown) => {
+    this.runner._startAgentViaProxy(this.agentId, params, this.runToken, this.deliveryId).catch((err: unknown) => {
       this.emit("error", describeWorkerError(err, "start"));
     });
   }

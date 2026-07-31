@@ -409,6 +409,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   clearQueue(): void { this.turn.clearQueue(); }
   getQueueSnapshot(): { text: string; position: number }[] { return this.turn.getQueueSnapshot(); }
 
+  /** SHI-264 — see `SessionRunnerInterface.activeDeliveryId`. */
+  activeDeliveryId: string | undefined;
+  /** SHI-264 — see `SessionRunnerInterface.hasDelivery`. */
+  hasDelivery(deliveryId: string): boolean {
+    if (this.activeDeliveryId === deliveryId) return true;
+    return this.turn.messageQueue.some((m) => m.deliveryId === deliveryId);
+  }
+
   // --- Terminal ---
 
   getTerminal(): TerminalProcess | null { return this._terminal; }
@@ -769,7 +777,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * kill()/writeStdin() methods delegate to the worker via HTTP. Called by the
    * dynamic agentFactory when this runner is attached.
    */
-  createAgent(agentId: AgentId, opts?: { runToken?: string }): ProxyAgentProcess {
+  createAgent(agentId: AgentId, opts?: { runToken?: string; deliveryId?: string }): ProxyAgentProcess {
     const proxy = new ProxyAgentProcess(agentId, this, opts);
     this._agent = proxy;
     return proxy;
@@ -790,7 +798,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * if the worker is genuinely dead, the SSE stream fails and the
    * Rescue-session UI surfaces it. (Refines doc 124 §1.3.)
    */
-  async _startAgentViaProxy(agentId: AgentId, params: AgentRunParams, runToken?: string): Promise<void> {
+  async _startAgentViaProxy(agentId: AgentId, params: AgentRunParams, runToken?: string, deliveryId?: string): Promise<void> {
     // Serialize start sequences per runner. The B2 recovery path below can
     // kill the worker's agent and start a fresh one; if a second caller is
     // mid-kill+restart at the same moment, the two sequences tear down each
@@ -802,13 +810,13 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this._startInFlight = new Promise<void>((r) => { release = r; });
     try {
       await prev.catch(() => {});
-      await this._doStartAgentViaProxy(agentId, params, runToken);
+      await this._doStartAgentViaProxy(agentId, params, runToken, deliveryId);
     } finally {
       release();
     }
   }
 
-  private async _doStartAgentViaProxy(agentId: AgentId, params: AgentRunParams, runToken?: string): Promise<void> {
+  private async _doStartAgentViaProxy(agentId: AgentId, params: AgentRunParams, runToken?: string, deliveryId?: string): Promise<void> {
     await this._workerReady;
 
     await this.fastForwardStaleWorkerEventsBeforeFreshStart();
@@ -827,7 +835,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     await this._waitForInstallBeforeAgent();
 
     try {
-      await workerPost(this.workerUrl, "/agent/start", { agentId, params, runToken }, { timeoutMs: 0 });
+      await workerPost(this.workerUrl, "/agent/start", { agentId, params, runToken, deliveryId }, { timeoutMs: 0 });
     } catch (err) {
       // Narrow race: the previous turn's `agent_done` SSE event reaches the
       // orchestrator and triggers the queue drain → new POST /agent/start —
@@ -847,11 +855,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       if (err instanceof Error && err.message === "Agent already running") {
         await new Promise((r) => setTimeout(r, 150));
         try {
-          await workerPost(this.workerUrl, "/agent/start", { agentId, params, runToken }, { timeoutMs: 0 });
+          await workerPost(this.workerUrl, "/agent/start", { agentId, params, runToken, deliveryId }, { timeoutMs: 0 });
         } catch (retryErr) {
           if (retryErr instanceof Error && retryErr.message === "Agent already running") {
             await workerPost(this.workerUrl, "/agent/kill").catch(() => { /* may already be gone */ });
-            await workerPost(this.workerUrl, "/agent/start", { agentId, params, runToken }, { timeoutMs: 0 });
+            await workerPost(this.workerUrl, "/agent/start", { agentId, params, runToken, deliveryId }, { timeoutMs: 0 });
           } else {
             throw retryErr;
           }
@@ -966,17 +974,24 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // because the turn's earliest rows are then unrecoverable.
     const oldest = status.oldestSseSeq ?? 0;
     const truncated = oldest > turnStartSeq + 1;
+    const delivery = status.deliveryId !== undefined ? `, delivery=${status.deliveryId}` : "";
     console.log(
       `[container-runner:${this.sessionId}] adopting in-flight worker turn ` +
-        `(agent=${agentId}, streaming=${status.streaming === true}, sinceSeq=${turnStartSeq}` +
+        `(agent=${agentId}, streaming=${status.streaming === true}, sinceSeq=${turnStartSeq}${delivery}` +
         `${truncated ? `, PARTIAL replay — buffer starts at ${oldest}` : ""})`,
     );
     this.sse.fastForwardLastSeenSeq(turnStartSeq);
     this._agentId = agentId;
-    const proxy = this.createAgent(agentId, status.runToken ? { runToken: status.runToken } : undefined);
+    const proxy = this.createAgent(agentId, {
+      ...(status.runToken !== undefined ? { runToken: status.runToken } : {}),
+      // SHI-264 — the adopted turn keeps the delivery identity the worker
+      // reported, so a re-spawn on this proxy (auth retry) carries it too.
+      ...(status.deliveryId !== undefined ? { deliveryId: status.deliveryId } : {}),
+    });
     await adoptInFlightTurn(this, deps, proxy, {
       agentId,
       ...(status.runToken !== undefined ? { runToken: status.runToken } : {}),
+      ...(status.deliveryId !== undefined ? { deliveryId: status.deliveryId } : {}),
       streaming: status.streaming === true,
     });
     this.emitMessage({

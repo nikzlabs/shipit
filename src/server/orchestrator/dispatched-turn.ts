@@ -245,6 +245,10 @@ export async function runDispatchedTurn(
       // docs/169 — post-turn policy + system-turn marker + completion signal.
       ...(opts.postTurn !== undefined ? { postTurn: opts.postTurn } : {}),
       ...(opts.systemTurn !== undefined ? { systemTurn: opts.systemTurn } : {}),
+      // SHI-264 — the durable delivery identity travels with every attempt: a
+      // no-result retry is the SAME delivery, so it publishes the same id and
+      // the worker records it on the fresh spawn too.
+      ...(opts.deliveryId !== undefined ? { deliveryId: opts.deliveryId } : {}),
       // SHI-260 — EVERY attempt reports its terminal outcome; `settleAttempt`
       // owns "exactly once" and discards superseded attempts. The old
       // "attempt zero only" guard is deleted, not corrected.

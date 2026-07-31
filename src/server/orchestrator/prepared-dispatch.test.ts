@@ -32,6 +32,7 @@ const FULL_INIT: AgentDispatchInit = {
   postTurn: "none",
   systemTurn: true,
   onTurnComplete: () => {},
+  deliveryId: "watch-1:1",
 };
 
 function newRunner(): SessionRunner {

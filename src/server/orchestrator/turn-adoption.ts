@@ -49,6 +49,12 @@ export interface InFlightTurnInfo {
   agentId: AgentId;
   /** The run token the worker recorded for this spawn (absent on a legacy worker). */
   runToken?: string;
+  /**
+   * SHI-264 — the durable DELIVERY id the worker recorded for this turn, when it
+   * was dispatched on behalf of a server-side delivery (a notify-on-merge wake).
+   * Absent for an ordinary user turn and on a legacy worker.
+   */
+  deliveryId?: string;
   /** The turn is running on a resident streaming (live-steering) process. */
   streaming: boolean;
 }
@@ -98,10 +104,39 @@ export async function adoptInFlightTurn(
     });
   };
 
+  // SHI-264 — re-acquire the completion settlement for the delivery this turn
+  // was dispatched on behalf of.
+  //
+  // Adoption rebuilds a live turn, but the settlement it started with died with
+  // the previous orchestrator process — so before this the adopted turn ran to
+  // completion and settled NOTHING. The originating watch stayed non-terminal,
+  // and `reconcilePending` (which runs right after the adoption sweep) then
+  // queued a SECOND wake behind the still-running first one. Startup ordering
+  // stopped the two colliding; it never stopped the duplicate.
+  //
+  // The worker's reported delivery id is what closes it: the owner of that id
+  // hands back the same callback it would have attached at dispatch time, so
+  // the ORIGINAL watch settles from the adopted turn. Undefined when nothing
+  // owns the id any more (cancelled, re-armed, already terminal) — the turn then
+  // runs with no settlement, exactly like a user turn.
+  const rebound = info.deliveryId !== undefined
+    ? deps.rebindDelivery?.(info.deliveryId)
+    : undefined;
+  if (info.deliveryId !== undefined) {
+    const verdict = rebound ? "settlement rebound" : "no live owner, running unsettled";
+    console.log(
+      `[turn-adoption:${sessionId}] adopted turn carries delivery ${info.deliveryId} — ${verdict}`,
+    );
+  }
+
   await executeAgentTurn(runner, deps, agent, {
     agentId: info.agentId,
     sessionId,
     adopt: true,
+    // Publishes the delivery on the runner for the adopted turn's duration, so
+    // `runner.hasDelivery(id)` answers truthfully in the restarted process too.
+    ...(info.deliveryId !== undefined ? { deliveryId: info.deliveryId } : {}),
+    ...(rebound ? { onTurnComplete: rebound } : {}),
     // No prompt / user text: the turn is mid-flight and its user row was
     // persisted by the orchestrator that started it.
     prompt: "",

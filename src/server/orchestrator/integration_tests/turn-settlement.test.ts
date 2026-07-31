@@ -208,4 +208,120 @@ describe("dispatched-turn settlement (docs/240 Fix B)", () => {
 
     runner.dispose({ force: true });
   });
+  // -------------------------------------------------------------------------
+  // SHI-264 — the delivery a turn carries, and when it stops being live
+  // -------------------------------------------------------------------------
+  //
+  // `runner.hasDelivery(id)` replaces SHI-258's in-memory `inFlight` set as the
+  // answer to "is this server-side delivery still pending?". These drive the
+  // real turn lifecycle to pin when that answer flips, because the consumer
+  // (`merge-watch`) treats a stale `true` as "do not retry, ever" and a
+  // premature `false` as "fire a duplicate".
+
+  it("publishes the delivery for the whole turn and clears it BEFORE the consumer is told", async () => {
+    const runner = newRunner();
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDispatchTurnDeps(agents, []);
+    runner.setSystemTurnDeps(deps);
+
+    const liveAtSettlement: boolean[] = [];
+    runner.dispatch(testDispatch({
+      text: "child PR merged — resume",
+      systemTurn: true,
+      deliveryId: "watch-a:1",
+      onTurnComplete: () => liveAtSettlement.push(runner.hasDelivery("watch-a:1")),
+    }));
+
+    // Live in the SAME synchronous tick as `running`. The gap before
+    // `executeAgentTurn` runs is otherwise a window the retry supervisor would
+    // read as "not in flight" — at exactly the slowest sessions.
+    expect(runner.hasDelivery("watch-a:1")).toBe(true);
+    await waitForTurn(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "agent run");
+    expect(runner.hasDelivery("watch-a:1")).toBe(true);
+
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    agents[0]!.emit("done", 0);
+    await waitForTurn(() => liveAtSettlement.length > 0, "settlement");
+    await flushTurn();
+
+    // Ordering matters: the consumer's first act on a non-`completed` outcome is
+    // to decide whether to retry, and a delivery still reading as in-flight
+    // would suppress that forever.
+    expect(liveAtSettlement).toEqual([false]);
+    expect(runner.hasDelivery("watch-a:1")).toBe(false);
+
+    runner.dispose({ force: true });
+  });
+
+  it("a delivery QUEUED behind a running turn is live for the whole wait, then through its own turn", async () => {
+    const runner = newRunner();
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDispatchTurnDeps(agents, []);
+    runner.setSystemTurnDeps(deps);
+
+    runner.dispatch(testDispatch({ text: "user turn" }));
+    await waitForTurn(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first turn");
+
+    // The wake-turn is enqueued (never preempting). `merge-observed` is its
+    // legitimate state for the whole wait — re-firing here is the duplicate-wake
+    // bug docs/196 fought twice, so the queued entry must answer truthfully.
+    const outcomes: TurnOutcome[] = [];
+    runner.dispatch(testDispatch({
+      text: "child PR merged — resume",
+      systemTurn: true,
+      deliveryId: "watch-b:1",
+      onTurnComplete: (o) => outcomes.push(o),
+    }));
+    expect(runner.queueLength).toBe(1);
+    expect(runner.hasDelivery("watch-b:1")).toBe(true);
+
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    agents[0]!.emit("done", 0);
+    await waitForTurn(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "wake-turn drained");
+    // Still live — it moved from the queue to the running slot.
+    expect(runner.hasDelivery("watch-b:1")).toBe(true);
+
+    agents[1]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    agents[1]!.emit("done", 0);
+    await waitForTurn(() => outcomes.length > 0, "wake settlement");
+    await flushTurn();
+    expect(runner.hasDelivery("watch-b:1")).toBe(false);
+
+    runner.dispose({ force: true });
+  });
+
+  it("a wake-turn that ERRORS with work queued behind it does not leave its dead delivery reading as live", async () => {
+    const runner = newRunner();
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDispatchTurnDeps(agents, []);
+    runner.setSystemTurnDeps(deps);
+
+    const outcomes: TurnOutcome[] = [];
+    runner.dispatch(testDispatch({
+      text: "child PR merged — resume",
+      systemTurn: true,
+      deliveryId: "watch-c:1",
+      onTurnComplete: (o) => outcomes.push(o),
+    }));
+    await waitForTurn(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "wake turn");
+
+    // A user message lands mid-wake, so the errored turn's teardown immediately
+    // drains a SUCCESSOR that carries no delivery of its own. This is the shape
+    // that has to keep working: the failure has just earned a retry, and a dead
+    // delivery left published would suppress it permanently. Two independent
+    // things make it hold — the settlement clears before reporting, and a
+    // starting turn overwrites `activeDeliveryId` with its own (here:
+    // `undefined`) — and the assertion holds whichever of them fires first.
+    runner.dispatch(testDispatch({ text: "actually, do this instead" }));
+    expect(runner.queueLength).toBe(1);
+
+    agents[0]!.emit("error", new Error("agent process error"));
+    await waitForTurn(() => outcomes.length > 0, "wake settlement");
+    await flushTurn();
+
+    expect(outcomes[0]!.errored).toBe(true);
+    expect(runner.hasDelivery("watch-c:1")).toBe(false);
+
+    runner.dispose({ force: true });
+  });
 });

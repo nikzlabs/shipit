@@ -21,6 +21,7 @@ import type { UsageManager } from "./usage.js";
 import type { AuthManager } from "./agents/claude/auth-manager.js";
 import type { AgentAuthManager } from "./agent-auth-manager.js";
 import type { PrepareRunParamsFn } from "./agent-run-params-prep.js";
+import type { TurnOutcome } from "./turn-settlement.js";
 import { pushToOrigin } from "./git-utils.js";
 import { isNonFastForwardError } from "./services/git.js";
 import { getErrorMessage } from "./validation.js";
@@ -155,6 +156,18 @@ export interface RunnerRegistryDeps {
    */
   getAutoConflictResolveManager?: () => AutoConflictResolveManager | undefined;
   /**
+   * SHI-264 — re-acquire the completion settlement for a server-side DELIVERY
+   * whose turn outlived an orchestrator restart, keyed by the delivery id the
+   * worker reports. Threaded into every runner's `SystemTurnDeps` so turn
+   * adoption can settle the ORIGINAL watch from the adopted turn instead of a
+   * duplicate being dispatched over it.
+   *
+   * Lazy in the same way (and for the same reason) as `getPrStatusPoller`: the
+   * merge-watch manager is constructed after the registry it dispatches into.
+   * Optional — a setup without it adopts turns exactly as before.
+   */
+  rebindDelivery?: (deliveryId: string) => ((outcome: TurnOutcome) => void) | undefined;
+  /**
    * Usage manager — used by `wireAgentListeners` to record per-turn token /
    * cost telemetry on `agent_result`. Shared with the WS path so a system-
    * dispatched turn lands in the same `usage_turns` series as a user-typed
@@ -250,7 +263,7 @@ export function createRunnerRegistry(
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
     getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
     credentialStore, secretStore, dockerSecretsConfig, serviceEnvDir, logStore, runtimeMode, broadcastLog,
-    credentialsDir, readSystemPrompt, generateText, getPrStatusPoller,
+    credentialsDir, readSystemPrompt, generateText, getPrStatusPoller, rebindDelivery,
     usageManager, authManager, authManagers, recordAgentRateLimits, getSubscriptionLimitsSnapshot,
     nudgeClaudeOAuthRefresh, onAgentAuthRequired, ensureAgentTokenFresh, runParamsPreps,
     publishOverlayBases,
@@ -348,6 +361,8 @@ export function createRunnerRegistry(
         },
         // docs/179 — token healer for the runtime-401 auto-retry on system turns.
         ...(ensureAgentTokenFresh ? { ensureAgentTokenFresh } : {}),
+        // SHI-264 — lets turn adoption re-settle a delivery that survived a restart.
+        ...(rebindDelivery ? { rebindDelivery } : {}),
         autoCommit: async (sessionDir, summary) => {
           const git = createGitManager(sessionDir);
           const parentHash = await git.getHeadHash();

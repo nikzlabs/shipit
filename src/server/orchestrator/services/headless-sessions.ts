@@ -234,6 +234,7 @@ export async function createHeadlessSession(
     postTurn: undefined,
     systemTurn: undefined,
     onTurnComplete: undefined,
+    deliveryId: undefined,
   }));
 
   // graduate-session.ts owns the warm → active transition (docs/156).

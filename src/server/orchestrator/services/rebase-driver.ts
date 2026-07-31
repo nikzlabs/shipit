@@ -440,6 +440,7 @@ function runRebaseResolutionTurn(
       files: undefined,
       uploads: undefined,
       permissionMode: undefined,
+      deliveryId: undefined,
       onTurnComplete: ({ errored }) => {
         if (errored) {
           // The shared listener already wrote the error row + reset runner

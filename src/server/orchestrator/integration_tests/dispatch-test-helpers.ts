@@ -36,6 +36,7 @@ export function testDispatch(
     postTurn: opts.postTurn,
     systemTurn: opts.systemTurn,
     onTurnComplete: opts.onTurnComplete,
+    deliveryId: opts.deliveryId,
   });
 }
 
