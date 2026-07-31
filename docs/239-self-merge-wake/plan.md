@@ -1,7 +1,7 @@
 ---
 issue: https://linear.app/shipit-ai/issue/SHI-253
 title: Self-merge wake — continue a session automatically when its own PR merges
-description: A session opts in to being woken when its own PR merges; the agent rebases and continues inside its own turn via a tested reset command. ShipIt does not mutate the branch.
+description: A session opts in to being woken when its own PR merges; the agent rebases and continues inside its own turn via a tested reset command. Nothing happens unbidden or outside a turn.
 ---
 
 # Self-merge wake (`shipit session notify-on-merge --self`)
@@ -33,11 +33,12 @@ the ones that were inferred.
 | **Opt-in with stated intent**, not a general merge notification | Rejected the notification framing ("I don't use notifications, only the sound"), and chose the armed-intent option instead |
 | **Opt-in is armed by the agent invoking a command** | "The agent would need to invoke a special command to get notified to merge. Because most of the sessions are single PR and then they are archived." |
 | **Reuse the child-message functionality** for delivery | "We reuse the child message functionality and let the agent know that its PR was merged" |
-| **ShipIt performs no destructive git work**; the agent does the rebase as its regular work | "we don't do any git work… ShipIt would not do any destructive work… instead, it would be the agent doing its regular work" |
+| **Nothing unbidden**: no destructive git work on ShipIt's own schedule, behind the agent's back, outside a turn | "we don't do any git work… ShipIt would not do any destructive work… instead, it would be the agent doing its regular work" — clarified when review showed the command relays to the orchestrator, which executes the reset: "Nothing unbidden — the current design is fine" |
 | **One path for manual and automatic merges — no divergence** | "manual or automatic merges from GitHub, they would all work in the same way. I don't want any divergence." |
 | **Closed-without-merge drops the intent with a note, no wake-turn** | Chosen from options |
 | **Arming surfaces a cancellable card** | Chosen from options |
 | **Chaining until the plan runs out** | Chosen from options — *this reverses an earlier "one turn, one PR" choice, made before the trade-off was clear* |
+| **Chaining is implemented at the agent level** — the agent arms for the current PR and re-arms after creating the next; ShipIt models no chain | "Can we simply implement chaining on the agent level?… the agent would need to rearm manually. Then the agent would be able to merge as many PRs as it wants without any special work on ShipIt itself." Replaced a durable chain object that two reviews found broken on its own happy path. |
 | **SHI-262 is fixed first, on its own** | Chosen from options |
 | The rebase runs via a **tested command** the agent invokes, not prompt instructions | Raised as a deviation from "the instructions would tell the agent to rebase" and confirmed: "I'm fine either way. And actually, the command sounds more robust." |
 
@@ -50,23 +51,28 @@ anchoring and requiring an open PR (binding "on first observation" would anchor 
 unrelated PR); `checkAndFireNow` for an already-merged PR; suppressing docs/218's
 `resetEligible` (two reset mechanisms otherwise armed at once); the supervisor keyed by
 `{kind, watchId}` (its maps are keyed by session id); CAS transitions; workspace restore
-before dispatch; the prompt as a co-located `.md`; and the headline narrowed to "does not
-mutate the session branch".
+before dispatch; the prompt as a co-located `.md`; the live PR lookup at arm time (the
+snapshot is stale by construction at a link boundary); arming replacing a `merge-observed`
+watch (otherwise the wake turn can never re-arm); the reset command being a distinct
+service rather than the interactive policy wrapper, and idempotent; and the invariant
+restated as "never unbidden, never outside a turn" after the earlier headlines proved
+literally false.
 
 ### Proposed (mine — not confirmed)
 
 `--then-file` rather than an inline flag; firing after `markMergedAndPruneExcess`;
-omitting a `completed-without-pr` state; the specific chaining mitigations; amend-replaces
-semantics; treating archive-after-arm as a visible card transition.
+omitting a `completed-without-pr` state; carrying the remaining plan in each re-arm's
+follow-up text; treating archive-after-arm as a visible card transition; and stating
+Cancel's honest limit (it stops the next wake, not a turn already running).
 
 *(No open deviations. The command-vs-instructions change was raised as one and has since
 been confirmed — see the table above.)*
 
 ## Shape — a message plus a tested command
 
-**ShipIt does not mutate the session branch.** The wake is a message; the rebase is
-the agent's own work inside its own turn. But the agent invokes a **tested command**
-rather than reconstructing git plumbing from prose.
+**Nothing happens unbidden or outside a turn.** The wake is a message; the rebase runs
+because the agent chose to run it, during its turn, visibly. The agent invokes a **tested
+command** rather than reconstructing git plumbing from prose.
 
 ```
 shipit session notify-on-merge --self --then-file -    (armed only when a follow-up was stated)
@@ -94,10 +100,51 @@ docs/218 exists because this operation is error-prone enough to automate. Asking
 agent to re-derive base selection, lease semantics, and the deleted-branch case from a
 prompt loses that bet again.
 
-**`shipit branch reset-to-base`** wraps the existing `pre-turn-reset` logic — the same
-gate, fetch, re-gate, reset, force-push-with-live-lease — and is invoked by the agent,
-inside its turn. The user's decision is preserved: ShipIt does not act on the repo
-behind the agent's back. What changes is that the agent calls correct code.
+**`shipit branch reset-to-base`** reuses the existing `pre-turn-reset` *safety and git*
+logic — the same gate, fetch, re-gate, reset, force-push-with-live-lease — invoked by the
+agent, inside its turn.
+
+**The invariant is "never unbidden, never outside a turn" — not "ShipIt's process runs no
+git".** The command relays to the orchestrator, which executes the reset, as every agent
+op does. That is deliberate and confirmed: the objection was to ShipIt reaching into the
+repo on its own schedule behind the agent's back, which this does not do. Earlier drafts
+said "ShipIt performs no git work" and then "does not mutate the session branch"; both
+were literally false (`markMergedAndPruneExcess` deletes the remote branch, the wake's own
+post-turn flow commits and pushes, and this command resets).
+
+### The existing helper is not a usable command contract
+
+`autoResetMergedBranchOnContinue` is an interactive *policy wrapper*, not a reusable
+operation. Reusing it as-is would break the feature in six ways:
+
+- It honours `getAutoResetMergedBranch()`, so an explicit command would silently no-op for
+  anyone who turned interactive auto-reset off.
+- Gate refusal, disabled setting, and thrown errors all collapse to `moved: false`, which
+  cannot support "refuse and report *why*".
+- It returns `moved: true` even when the force-push fails, so a chain would continue onto
+  a branch whose remote is diverged — later auto-pushes then drop silently.
+- It does **not** perform the docs/216 session/poller re-arm or the PR-card update; its
+  current caller does that separately in `agent-execution.ts`. Without it the session
+  stays in `mergedSessions`, the poller keeps skipping it, and `pr_status` never refreshes
+  — which is also what makes the next link's anchoring fail.
+- The orchestrator runs as **root**, and a hard reset rewrites `.git` and worktree files.
+  The repo requires `handWorkspaceBackToWorker` after such an operation; without it the
+  UID-1000 agent hits `EACCES` on its first follow-up edit — the command would break the
+  very turn it exists to enable.
+- It takes no workspace lock, though it now runs *during* an active turn alongside the
+  post-turn commit path that does.
+
+So: extract a typed `resetMergedBranchToBase` service — safety gate only (no UI
+preference), `withWorkspaceLock`, distinct `reset | already-at-base | refused(reason) |
+error` outcomes, the session/poller re-arm, and a `finally` that always hands the
+workspace back.
+
+**It must be idempotent.** After any successful reset `HEAD = origin/<base> ≠
+mergedHeadSha`, so a re-delivered wake, an SHI-258 retry of a turn that failed *after* the
+reset, or a double invocation would all refuse even though the branch state is perfect —
+and a refusal tells the agent to stop. Clean tree ∧ already at the base tip →
+`already-at-base`, exit 0, "proceed". That one outcome defuses the duplicate-wake case,
+the retry case, and double invocation.
 
 ### The safety gate is load-bearing for three separate hazards
 
@@ -152,31 +199,51 @@ or **has no currently-open PR** — see anchoring below.
 the poller will not re-observe an already-terminal PR, so the watch would sit armed
 forever. docs/196 solves this with `checkAndFireNow`; reuse it.
 
-**Amending an armed watch** replaces it (the user said "actually, do Y instead"). A
-replacement is allowed while the watch is still `armed`; once it is `merge-observed`
-delivery has begun and the arm route refuses.
+**Arming always replaces any existing watch** — whether `armed` (the user said "actually,
+do Y instead") or `merge-observed` (the wake turn arming the next link). There is no
+"refuse while non-terminal" rule; that rule made chaining impossible, since the watch is
+`merge-observed` for the entire wake turn.
 
-## Chaining
+## Chaining — at the agent level, with no chain in ShipIt
 
-A multi-step plan chains: each merge triggers the next step, until the captured plan is
-exhausted. The woken turn **may** arm the next watch — the earlier "one turn, one PR"
-refusal is removed, because it delivered a fraction of the motivating case (state a
-three-step plan, get step 2, then stop dead exactly as before).
+A multi-step plan chains, and **ShipIt models no chain at all.** There is one watch,
+armed repeatedly: the agent arms for the current PR, and when the wake turn opens the
+next PR it arms again. Nothing persists a plan, a link sequence, or a position within
+one.
 
-The runaway risk is bounded by construction: **every link requires a real merge** —
-a human click, or CI passing on a PR that human opened. Nothing runs unprompted.
+An earlier draft specified a durable chain object with revisions, staged links promoted
+on clean settlement, and a cancellation tombstone. Two reviews found it broken on its
+own happy path, and all of that machinery existed only to track something ShipIt has no
+reason to know. Deleted.
 
-The genuine risk is staleness, and it grows with chain length: with auto-merge on, a
-plan described days ago keeps executing while attention has moved elsewhere, and each
-link's instructions were written before the previous link's code existed. Three
-mitigations, all already required for other reasons:
+**The remaining plan persists anyway, in the thing already being persisted.** Each
+re-arm carries the *remaining* steps as its follow-up text: state "A, then B, then C"
+and the second watch's instruction is "do B, then C", the third's is "do C". No parallel
+structure to keep consistent with the transcript.
 
-- The wake prompt's escape clause — *proceed unless the user has since redirected you*
-  — shared with docs/196 via one `buildWakeTurnPrompt`.
-- The arm card's **Cancel**, which is the stop button and must remain visible for the
-  whole chain, not just the first link.
-- Each link re-arms explicitly with the *remaining* plan, so the transcript shows what
-  is still queued rather than an opaque multi-step intent.
+**Cancel becomes correct rather than aspirational.** Cancelling the armed watch means no
+wake fires, so no turn runs, so nothing re-arms — the chain stops because the wake is its
+only engine. A wake turn already in flight will still finish and may re-arm at the end;
+the chat-native answer applies there (message the session), and the card copy should say
+so rather than implying Cancel retracts a running turn.
+
+Two rules make this work:
+
+- **A new arm during `merge-observed` replaces the delivering watch.** Without this the
+  agent can never re-arm: the watch stays `merge-observed` for the whole wake turn and
+  only settles afterwards, so an "arm refused while non-terminal" rule leaves no moment
+  when re-arming is legal. Replacement is itself the old link's terminal event, and the
+  new watch anchors to a different PR, so nothing can re-fire the old one.
+- **Arming resolves the PR live**, not from `pr_status` — see *Anchoring*.
+
+The runaway risk stays bounded by construction: **every link requires a real merge** — a
+human click, or CI passing on a PR that human opened. Nothing runs unprompted. The
+residual risk is staleness with auto-merge on, mitigated by the wake prompt's escape
+clause (*proceed unless the user has since redirected you*, shared with docs/196) and by
+each re-arm restating the remaining plan in the transcript.
+
+**A refused reset ends the chain naturally**: the agent reports and does not re-arm, so
+nothing further fires and the user sees why.
 
 ## Delivery
 
@@ -220,10 +287,18 @@ delivery concurrently, which is what the CAS above is for.
 
 ## Anchoring
 
-Bind the watch to a PR **at arm time**, from the persisted `pr_status` snapshot — which
-is why an open PR is required to arm. Binding "on first observation" was incoherent: if
-no PR existed at arm time, a later unrelated PR would become the anchor, which is
-exactly the retargeting it was meant to prevent.
+Bind the watch to a PR **at arm time**, resolved by a **live lookup**
+(`findPullRequestAnyState` — the same source `verifyMissingPr` trusts), **not** from the
+persisted `pr_status` snapshot. An open PR is required to arm; binding "on first
+observation" was incoherent, since with no PR at arm time a later unrelated PR would
+become the anchor — exactly the retargeting this prevents.
+
+The live lookup is load-bearing for chaining, not a refinement. At a link boundary the
+agent arms seconds after opening the next PR, while the session still sits in
+`mergedSessions` — which the poller skips — so `pr_status` still describes the
+*just-merged previous* PR, and `gh pr create` returns before awaiting its own refresh.
+Reading the snapshot would either see no open PR and refuse (killing the chain at every
+link) or anchor to the old merged PR and fire a spurious wake immediately.
 
 Identity is the **PR number**. The head SHA is *not* identity — ordinary CI and review
 pushes move it on the same PR — but the **terminal PR head SHA** is captured at merge
@@ -347,9 +422,11 @@ an existing precedent, and should be justified on its own terms.
 
 ## Resolved decisions
 
-- **ShipIt does not mutate the session branch.** The rebase is the agent's work inside
-  its turn — which is what removed the preparation lease, write-ahead staging, git
-  coordinator, and reset coordinator from earlier drafts.
+- **Nothing unbidden, nothing outside a turn.** The rebase happens because the agent
+  asked for it, during its turn — which is what removed the preparation lease,
+  write-ahead staging, git coordinator, and reset coordinator from earlier drafts. The
+  orchestrator still executes it; the invariant is about *when and why*, not *which
+  process*.
 - **…via `shipit branch reset-to-base`, not prompt instructions.** Both reviews found
   the prompt-only form unsafe, and its gate is the common mitigation for three hazards.
 - **Chaining is allowed** until the captured plan is exhausted; every link is gated on a
@@ -361,6 +438,13 @@ an existing precedent, and should be justified on its own terms.
   the terminal head SHA is a separate safety anchor, not identity.
 - **`armed → merge-observed → delivered`** — the intermediate state is what the retry
   supervisor and reconcile key on.
+- **Chaining lives at the agent level**: one watch, armed repeatedly, with the remaining
+  plan carried in each re-arm's follow-up text. ShipIt models no chain.
+- **Arming always replaces** any existing watch, including a `merge-observed` one — the
+  wake turn must be able to arm the next link.
+- **Arming resolves the PR live**, never from the `pr_status` snapshot.
+- **The reset command is a distinct service**, not the interactive policy wrapper, and is
+  **idempotent** (already-at-base → proceed, not refuse).
 - **A pending self-watch suppresses docs/218's `resetEligible`.**
 - **Reuse docs/196's delivery and SHI-258's supervisor**, refactored to key by
   `{kind, watchId}`.

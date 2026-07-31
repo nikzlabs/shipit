@@ -10,11 +10,18 @@ three separate hazards from data loss into a visible refusal.
 
 ## The reset command
 
-- [ ] `shipit branch reset-to-base` over the existing `pre-turn-reset` logic
+- [ ] `shipit branch reset-to-base` — a **distinct** `resetMergedBranchToBase` service, not the interactive policy wrapper
+- [ ] Safety gate only — **ignores** `getAutoResetMergedBranch()` (else the feature no-ops for anyone who disabled it)
 - [ ] Gate: `HEAD === mergedHeadSha`, clean tree, on `session.branch`, no sequencer — fails closed
+- [ ] **Idempotent**: clean tree ∧ already at base tip → `already-at-base`, exit 0, "proceed" (not a refusal)
+- [ ] Distinct outcomes: `reset | already-at-base | refused(reason) | error` — not one `moved: false`
 - [ ] Force-push via the live-tip lease (`ls-remote`), not a bare `--force-with-lease`
-- [ ] Handles both "remote branch deleted" and "delete failed, remote diverged"
-- [ ] Shim + worker relay + orchestrator route
+- [ ] A failed force-push is **not** reported as success (else the chain continues onto a diverged remote)
+- [ ] Performs the docs/216 session/poller re-arm + PR-card update its current caller does separately
+- [ ] Takes `withWorkspaceLock` (it now runs during an active turn, alongside post-turn commit)
+- [ ] `handWorkspaceBackToWorker` in a `finally` — the orchestrator runs as root; without it the agent hits `EACCES` on its next edit
+- [ ] Refusal message is load-bearing agent-facing copy: says why, and forbids a hand-rolled reset
+- [ ] Shim + worker relay + orchestrator route; budget the shim HTTP timeout (fetch + reset + push, mid-turn)
 
 ## Watch state
 
@@ -30,8 +37,9 @@ three separate hazards from data loss into a visible refusal.
 - [ ] `--self` + `--then-file` (stdin via `-`); inline `--then` rejected
 - [ ] Validate non-empty + bounded length in shim **and** orchestrator
 - [ ] Refuse: archived, no branch, unparseable remote, **no open PR**
+- [ ] Resolve the PR by **live lookup** (`findPullRequestAnyState`), never from the `pr_status` snapshot
 - [ ] Already-merged at arm → fire now (`checkAndFireNow`), don't arm
-- [ ] Amend replaces an `armed` watch; refused once `merge-observed`
+- [ ] Arming always replaces — no "refuse while non-terminal" rule
 - [ ] Cancel route carries `watchId`
 - [ ] Container-accessible route golden test
 
@@ -48,11 +56,13 @@ three separate hazards from data loss into a visible refusal.
 - [ ] Don't assume a settlement always arrives
 - [ ] Pending self-watches keep `PollingGlobalGate` open
 
-## Chaining
+## Chaining (agent-level — ShipIt models no chain)
 
-- [ ] The woken turn may re-arm with the remaining plan
-- [ ] Cancel stops the whole chain, not just the current link
-- [ ] Each link's card shows what remains queued
+- [ ] Arming **replaces** any existing watch, including `merge-observed` (else the wake can never re-arm)
+- [ ] The woken turn re-arms with the *remaining* plan as the new follow-up text
+- [ ] Cancel stops the next wake; a turn already in flight still finishes — card copy says so
+- [ ] A refused reset ends the chain naturally (agent reports, does not re-arm)
+- [ ] No chain object, revisions, staged links, or cancellation tombstone
 
 ## docs/218 overlap
 
@@ -77,7 +87,9 @@ three separate hazards from data loss into a visible refusal.
 
 ## Tests
 
-- [ ] Arm refusals (each), already-merged-at-arm fires now, amend replace/refuse
+- [ ] Arm refusals (each), already-merged-at-arm fires now, arming replaces at both `armed` and `merge-observed`
+- [ ] Re-arm immediately after `gh pr create` anchors to the NEW PR, not the stale merged snapshot
+- [ ] Reset command: idempotent second invocation returns `already-at-base`; setting-disabled still runs; force-push failure is not success; workspace is handed back (agent can edit afterwards)
 - [ ] Crash between terminal-snapshot persist and delivery still wakes
 - [ ] Closed-unmerged expires with no turn, including after restart
 - [ ] docs/202 re-arm supersedes rather than retargets
