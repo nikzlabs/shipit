@@ -1,6 +1,6 @@
 # 241 — Spec discipline: requirements
 
-These requirements were stated by Nik or proposed by the agent and approved by Nik. The design that implements them is in [`plan.md`](./plan.md).
+The design that implements these requirements is in [`plan.md`](./plan.md).
 
 1. A feature can have a requirements document like this one. The human writes it, or prompts the agent to write it — and the human must be able to fully understand it. Plain language, no formal notation. It says what the feature must do, not how it is built.
 
@@ -16,8 +16,11 @@ These requirements were stated by Nik or proposed by the agent and approved by N
 
 7. This works the same for projects developed inside ShipIt as for ShipIt itself.
 
+8. All of this is optional, per project. A project turns it on explicitly; a project that doesn't stays exactly as it is today.
+
+9. A session knows which feature it is working on. When the session is started from an issue, the feature is inferred from that issue; the human can set or change it in chat at any time. A feature can also be invented during a session — prompted directly in chat rather than started from an issue — in which case the agent creates the feature's documents and works on it from then on.
+
 ## Open questions
 
-- How does a session know which feature it is working on — inferred from the issue it was launched from, told explicitly in chat, or configured? Recommendation: inferred at launch, overridable in chat.
-- When a project turns this on, does it start in enforcing mode or report-only mode? Recommendation: enforcing, since only the feature being worked on can block its own work.
-- Should the repo-wide health check (all features at once) run automatically anywhere, or only when asked? Recommendation: on demand, plus a CI report that never fails the build.
+- Requirement 5 says open questions block implementation. When a project turns this on (requirement 8), should blocking be the only behavior, or should there also be a softer report-only mode where open questions are shown but don't block — and if both exist, which one does a project start in? Recommendation: start in blocking mode; only the feature being worked on can block its own work, so unrelated features never get in the way.
+- Beyond the per-feature blocking, it could be useful to see in one place, across the whole project, which features still have open questions or unapproved assumptions. Should such a project-wide summary run automatically anywhere (for example on every pull request), or only when someone asks for it? Recommendation: only when asked, plus an automatic report on pull requests that informs but never fails them.
