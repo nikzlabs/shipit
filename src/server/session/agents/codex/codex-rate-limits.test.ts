@@ -3,7 +3,7 @@ import { CodexRateLimits } from "./codex-rate-limits.js";
 
 describe("CodexRateLimits", () => {
   describe("updateRateLimits", () => {
-    it("maps primary/secondary windows to an agent_rate_limits event", () => {
+    it("maps windows by duration to an agent_rate_limits event", () => {
       const rl = new CodexRateLimits();
       const event = rl.updateRateLimits({
         rateLimits: {
@@ -23,6 +23,41 @@ describe("CodexRateLimits", () => {
           resetAt: new Date(1779883011 * 1000).toISOString(),
           startedAt: new Date((1779883011 - 10080 * 60) * 1000).toISOString(),
         },
+      });
+    });
+
+    it("keeps a lone weekly primary window out of the 5h slot", () => {
+      const rl = new CodexRateLimits();
+      const resetAt = 1779883011;
+      const event = rl.updateRateLimits({
+        rateLimits: {
+          primary: { usedPercent: 23, windowDurationMins: 10080, resetsAt: resetAt },
+        },
+      });
+
+      expect(event).toEqual({
+        type: "agent_rate_limits",
+        session: null,
+        weekly: {
+          usedPct: 23,
+          resetAt: new Date(resetAt * 1000).toISOString(),
+          startedAt: new Date((resetAt - 10080 * 60) * 1000).toISOString(),
+        },
+      });
+    });
+
+    it("uses durations rather than primary/secondary ordering", () => {
+      const rl = new CodexRateLimits();
+      const event = rl.updateRateLimits({
+        rateLimits: {
+          primary: { usedPercent: 23, windowDurationMins: 10080, resetsAt: 1779883011 },
+          secondary: { usedPercent: 41, windowDurationMins: 300, resetsAt: 1779296611 },
+        },
+      });
+
+      expect(event).toMatchObject({
+        session: { usedPct: 41 },
+        weekly: { usedPct: 23 },
       });
     });
 

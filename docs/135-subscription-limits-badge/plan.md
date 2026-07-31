@@ -174,8 +174,13 @@ it draws its own `/status` line from:
     "secondary": { "usedPercent": 1, "windowDurationMins": 10080, "resetsAt": <epoch s> } } }
 ```
 
-`primary` (300 min) → the 5h session window, `secondary` (10080 min) →
-weekly. `CodexAdapter` captures the notification and emits an
+The adapter classifies each window by `windowDurationMins` (300 min → the 5h
+session window, 10080 min → weekly), not by its `primary` / `secondary`
+container. This matters for plans where Codex emits only a weekly window in
+`primary`; treating the container name as the quota identity mislabeled that
+weekly reset as a 5h reset. Payloads from older app-server versions that omit
+duration retain the legacy primary/session and secondary/weekly fallback.
+`CodexAdapter` captures the notification and emits an
 `agent_rate_limits` AgentEvent; it flows through the normal agent event
 stream (worker SSE → `ProxyAgentProcess` → `wireAgentListeners`), where
 the orchestrator calls the unified `recordAgentRateLimits("codex", …)`

@@ -25,8 +25,9 @@ export interface CodexTokenUsage {
 /**
  * One rate-limit window from an `account/rateLimits/updated` notification.
  * `usedPercent` is 0–100, `resetsAt` is epoch *seconds*, `windowDurationMins`
- * distinguishes the 5-hour (300) and weekly (10080) windows. The app-server
- * sends two: `primary` (the 5h session window) and `secondary` (weekly).
+ * distinguishes the 5-hour (300) and weekly (10080) windows. Do not infer a
+ * window's identity from the `primary` / `secondary` slot: some plans expose
+ * only one window, and that single `primary` window can be weekly.
  */
 interface CodexRateLimitWindow {
   usedPercent?: number;
@@ -68,8 +69,13 @@ export class CodexRateLimits {
     const rl = params.rateLimits as Record<string, unknown> | undefined;
     if (!rl || typeof rl !== "object") return null;
 
-    const session = this.parseRateWindow(rl.primary);
-    const weekly = this.parseRateWindow(rl.secondary);
+    const primary = this.parseRateWindow(rl.primary);
+    const secondary = this.parseRateWindow(rl.secondary);
+    const session = this.windowForDuration(primary, secondary, 300)
+      // Backward compatibility for app-server payloads without duration.
+      ?? (primary?.durationMins === null ? primary.window : null);
+    const weekly = this.windowForDuration(primary, secondary, 10_080)
+      ?? (secondary?.durationMins === null ? secondary.window : null);
     if (!session && !weekly) return null;
 
     this.lastRateLimits = { session, weekly };
@@ -79,7 +85,10 @@ export class CodexRateLimits {
   /** Normalize one Codex rate-limit window into the shared window shape. */
   private parseRateWindow(
     raw: unknown,
-  ): { usedPct: number; resetAt: string; startedAt?: string } | null {
+  ): {
+    window: { usedPct: number; resetAt: string; startedAt?: string };
+    durationMins: number | null;
+  } | null {
     if (!raw || typeof raw !== "object") return null;
     const w = raw as CodexRateLimitWindow;
     if (typeof w.usedPercent !== "number" || !Number.isFinite(w.usedPercent)) return null;
@@ -93,10 +102,21 @@ export class CodexRateLimits {
         ? w.windowDurationMins * 60_000
         : null;
     return {
-      usedPct,
-      resetAt,
-      ...(durationMs === null ? {} : { startedAt: new Date(ms - durationMs).toISOString() }),
+      durationMins: durationMs === null ? null : durationMs / 60_000,
+      window: {
+        usedPct,
+        resetAt,
+        ...(durationMs === null ? {} : { startedAt: new Date(ms - durationMs).toISOString() }),
+      },
     };
+  }
+
+  private windowForDuration(
+    primary: ReturnType<CodexRateLimits["parseRateWindow"]>,
+    secondary: ReturnType<CodexRateLimits["parseRateWindow"]>,
+    durationMins: number,
+  ): { usedPct: number; resetAt: string; startedAt?: string } | null {
+    return [primary, secondary].find((candidate) => candidate?.durationMins === durationMins)?.window ?? null;
   }
 
   /**
