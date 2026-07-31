@@ -116,7 +116,6 @@ interface SubscriptionLimitPillProps {
 
 export function SubscriptionLimitPill({ label, snapshot, showRefresh, autoRefresh }: SubscriptionLimitPillProps) {
   const now = Date.now();
-  const hasData = snapshot.session !== null || snapshot.weekly !== null;
 
   // The pill carries inline meters with underline gauges, so it overrides
   // Badge's symmetric padding with the asymmetric `pl-2 pr-* pt-0 pb-0.5` it
@@ -126,28 +125,24 @@ export function SubscriptionLimitPill({ label, snapshot, showRefresh, autoRefres
     <Badge
       numeric
       className={`gap-2 pl-2 ${showRefresh ? "pr-1" : "pr-2"} pt-0 pb-0.5 bg-(--color-bg-hover)`}
-      title={buildTooltip(label, snapshot, now)}
     >
-      <span>{label}</span>
-      {snapshot.session && (
-        <Meter
-          shortLabel="5h"
-          window={snapshot.session}
-          windowMs={SESSION_WINDOW_MS}
-          fetchedAt={snapshot.fetchedAt}
-          now={now}
-        />
-      )}
-      {snapshot.weekly && (
-        <Meter
-          shortLabel="7d"
-          window={snapshot.weekly}
-          windowMs={WEEKLY_WINDOW_MS}
-          fetchedAt={snapshot.fetchedAt}
-          now={now}
-        />
-      )}
-      {!hasData && <span>—</span>}
+      <span title={snapshot.plan ? `${label} — ${snapshot.plan}` : label}>{label}</span>
+      <Meter
+        shortLabel="5h"
+        longLabel="5h window"
+        window={snapshot.session}
+        windowMs={SESSION_WINDOW_MS}
+        fetchedAt={snapshot.fetchedAt}
+        now={now}
+      />
+      <Meter
+        shortLabel="7d"
+        longLabel="7d window"
+        window={snapshot.weekly}
+        windowMs={WEEKLY_WINDOW_MS}
+        fetchedAt={snapshot.fetchedAt}
+        now={now}
+      />
       {showRefresh && <LimitsRefreshButton snapshot={snapshot} autoRefresh={autoRefresh} />}
     </Badge>
   );
@@ -155,7 +150,8 @@ export function SubscriptionLimitPill({ label, snapshot, showRefresh, autoRefres
 
 interface MeterProps {
   shortLabel: string;
-  window: SubscriptionLimitsWindow;
+  longLabel: string;
+  window: SubscriptionLimitsWindow | null;
   /** Fixed length of this window in ms (5h / 7d) — drives the time marker. */
   windowMs: number;
   fetchedAt: number;
@@ -220,7 +216,23 @@ export function meterDisplay(
  * wasn't (docs/161). The reset time itself moves to the tooltip in those
  * states.
  */
-function Meter({ shortLabel, window, windowMs, fetchedAt, now }: MeterProps) {
+function Meter({ shortLabel, longLabel, window, windowMs, fetchedAt, now }: MeterProps) {
+  const title = window
+    ? `${formatWindowLine(longLabel, window, now)}\nUpdated ${formatAge(fetchedAt, now)}`
+    : `${longLabel}: usage not reported yet\nUpdated ${formatAge(fetchedAt, now)}`;
+
+  if (!window) {
+    return (
+      <span
+        className="inline-flex items-center whitespace-nowrap text-(--color-text-secondary)"
+        data-meter-pct="unreported"
+        title={title}
+      >
+        {shortLabel} · —
+      </span>
+    );
+  }
+
   const display = meterDisplay(window, fetchedAt, now);
 
   if (display.kind === "reset") {
@@ -228,6 +240,7 @@ function Meter({ shortLabel, window, windowMs, fetchedAt, now }: MeterProps) {
       <span
         className="inline-flex items-center whitespace-nowrap text-(--color-text-secondary)"
         data-meter-pct="reset"
+        title={title}
       >
         {shortLabel} · reset
       </span>
@@ -239,6 +252,7 @@ function Meter({ shortLabel, window, windowMs, fetchedAt, now }: MeterProps) {
       <span
         className="inline-flex items-center whitespace-nowrap text-(--color-text-secondary)"
         data-meter-pct="unknown"
+        title={title}
       >
         {shortLabel} · —
       </span>
@@ -258,6 +272,7 @@ function Meter({ shortLabel, window, windowMs, fetchedAt, now }: MeterProps) {
       className={`relative inline-flex items-center whitespace-nowrap pb-0.5${display.stale ? " opacity-50" : ""}`}
       data-meter-pct={Math.round(pct)}
       style={{ color }}
+      title={title}
     >
       {shortLabel} {formatPct(pct)}
       {countdown && <span className="ml-1 text-(--color-text-secondary)">resets in {countdown}</span>}
@@ -405,23 +420,6 @@ export function formatAge(fetchedAt: number, nowMs = Date.now()): string {
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `${hours}h ago`;
   return `${Math.floor(hours / 24)}d ago`;
-}
-
-function buildTooltip(label: string, snap: SubscriptionLimits, now: number): string {
-  const lines: string[] = [];
-  lines.push(snap.plan ? `${label} — ${snap.plan}` : label);
-  if (snap.session) lines.push(formatWindowLine("5h window", snap.session, now));
-  if (snap.weekly) lines.push(formatWindowLine("Weekly", snap.weekly, now));
-  lines.push(`Updated ${formatAge(snap.fetchedAt, now)}`);
-  if (snap.lockedUntil !== undefined && snap.lockedUntil > now) {
-    lines.push(
-      `Usage refresh rate-limited — retry in ${formatResetCountdown(
-        new Date(snap.lockedUntil).toISOString(),
-        now,
-      )}`,
-    );
-  }
-  return lines.join("\n");
 }
 
 function formatWindowLine(label: string, window: SubscriptionLimitsWindow, now: number): string {
