@@ -1,5 +1,6 @@
 import { SpawnedSessionCard } from "../../SpawnedSessionCard.js";
 import { ChildMergedCard } from "../../ChildMergedCard.js";
+import { SelfMergeWatchCard } from "../../SelfMergeWatchCard.js";
 import { SessionReportCard } from "../../SessionReportCard.js";
 import { SpawnFailedCard } from "../../SpawnFailedCard.js";
 import { ReviewCard } from "../../ReviewCard.js";
@@ -21,6 +22,12 @@ import { SubAgentConsultCardRow } from "./SubAgentCards.js";
 
 /** Callbacks the inline transcript cards may invoke. */
 export interface MessageCardCallbacks {
+  /**
+   * docs/239 — the session that owns the rendered transcript. Cards whose action
+   * targets their OWN session (the self merge-watch Cancel) need it; it is not a
+   * callback, but it rides here so `renderMessageCard` keeps one context param.
+   */
+  sessionId?: string;
   /** Opens a spawned/fork child session. */
   onResumeSession?: (sessionId: string) => void;
   onSubmitBugReport?: (cardId: string, title: string, body: string) => void;
@@ -112,6 +119,18 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
             {...(msg.childMerged.deliveryFailure ? { deliveryFailure: msg.childMerged.deliveryFailure } : {})}
             {...(cb.onResumeSession ? { onOpen: cb.onResumeSession } : {})}
           />
+        </div>
+      </div>
+    );
+  }
+
+  // docs/239 — the self merge-watch arm card. Static payload; the only action is
+  // Cancel, whose result is component-local (no store, no persisted transition).
+  if (msg.selfMergeWatch) {
+    return (
+      <div className="flex justify-start">
+        <div className="max-w-2xl w-full">
+          <SelfMergeWatchCard card={msg.selfMergeWatch} sessionId={cb.sessionId ?? ""} />
         </div>
       </div>
     );

@@ -89,6 +89,8 @@ import {
 // `./shipit.js` after the shared plumbing moved into shim-common.
 export { parseFlags, type ShimIO };
 
+import { handleBranchResetToBase, RESET_USAGE } from "./shipit-branch.js";
+
 const SHIM_NAME = "shipit (ShipIt)";
 
 /**
@@ -110,12 +112,21 @@ Supported subcommands:
   shipit session message <id> -m "TEXT" [--json]
   shipit session wait    <id...> [--timeout SECONDS] [--any|--all] [--json]
   shipit session notify-on-merge <id> [--json]
+  shipit session notify-on-merge --self [--json]
   shipit session archive <id> [--json]
   shipit session whoami  [--json]
   shipit session report  -b TEXT | --body-file FILE
                           [--severity fyi|warn|blocker] [--subject T]
                           [--to parent|cohort] [--json]
   shipit session help
+
+Branch (docs/239):
+  shipit branch reset-to-base [--json]
+                          Move this session's branch to its merged PR's base and
+                          force the remote to match. Run this FIRST after a
+                          self-merge wake, before editing anything. Exit 0 = the
+                          branch is ready; nonzero = STOP and report (never reset
+                          by hand).
 
 Issues (tracker-neutral — tracker inferred from the pointer; docs/175 + docs/177 + docs/187):
   shipit issue view      <pointer> [--tracker github|linear] [--comments] [--json]
@@ -565,6 +576,11 @@ export async function runShim(
     return;
   }
 
+  if (command === "branch") {
+    await dispatchBranch(args.slice(1), deps, io);
+    return;
+  }
+
   if (command !== "session") {
     fail(io, `Unknown shipit subcommand: ${command}\n${REJECTED_HELP}`);
   }
@@ -588,6 +604,27 @@ export async function runShim(
   }
 
   await handler(args.slice(2), deps);
+}
+
+/**
+ * Dispatch a `shipit branch <sub>` invocation (docs/239). One subcommand today —
+ * `reset-to-base`, the explicit mode over the docs/218 reset core, which the
+ * self-merge wake turn runs before it touches anything.
+ */
+async function dispatchBranch(args: string[], deps: RunDeps, io: ShimIO): Promise<void> {
+  const sub = args[0];
+  if (!sub || sub === "--help" || sub === "-h" || sub === "help") {
+    success(io, RESET_USAGE);
+    return;
+  }
+  if (sub !== "reset-to-base") {
+    fail(io, `Unsupported shipit branch subcommand: ${sub}\n${REJECTED_HELP}`);
+  }
+  if (args.slice(1).some((a) => a === "--help" || a === "-h")) {
+    success(io, RESET_USAGE);
+    return;
+  }
+  await handleBranchResetToBase(args.slice(1), deps);
 }
 
 /**

@@ -33,6 +33,7 @@ import type { SessionInfo } from "../../shared/types.js";
 import type { GitManager } from "../../shared/git.js";
 import type { PrStatusSummary } from "../../shared/types/github-types.js";
 import type { WsServerMessage } from "../../shared/types/ws-server-messages.js";
+import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 
 export interface PreTurnResetDeps {
   getSession: (id: string) => SessionInfo | undefined;
@@ -243,4 +244,161 @@ function buildAgentPrefix(prNumber: number, base: string): string {
     `requested work on top of this fresh base; do not re-apply or recreate anything ` +
     `from the merged PR.`
   );
+}
+
+// ---------------------------------------------------------------------------
+// docs/239 — the explicit `shipit branch reset-to-base` mode
+// ---------------------------------------------------------------------------
+
+/** What an explicit reset did. `refused` and `errored` are one outcome for the
+ * agent — it behaves identically for both — so they are not split. */
+export interface ExplicitResetOutcome {
+  outcome: "reset" | "already-at-base" | "refused";
+  /** Why a refusal happened, or a one-line description of what moved. */
+  reason?: string;
+  base?: string;
+  fromSha?: string;
+  toSha?: string;
+}
+
+/**
+ * The refusal copy is LOAD-BEARING, not decoration.
+ *
+ * This gate is prompt-mediated: a refused agent still has a shell, and
+ * `git reset --hard` is two words away. The one thing standing between a refusal
+ * and the data loss the gate exists to prevent is the agent understanding *why*
+ * it was refused and being told, explicitly, not to route around it. Deleting or
+ * softening this sentence re-opens the hole the gate closes.
+ */
+export const RESET_REFUSAL_GUIDANCE =
+  "Do NOT work around this — do not run `git reset --hard`, `git checkout -f`, "
+  + "`git push --force`, or any other manual reset. The check refused because a reset "
+  + "here would destroy work that is not recoverable (uncommitted edits have no reflog "
+  + "entry, and unmerged commits would be discarded). Report what this said and let the "
+  + "user decide.";
+
+function refuse(reason: string): ExplicitResetOutcome {
+  return { outcome: "refused", reason };
+}
+
+/**
+ * docs/239 — reset the session branch to its merged PR's base, on the agent's
+ * explicit request (`shipit branch reset-to-base`), as the first step of a
+ * self-merge wake turn.
+ *
+ * This is an explicit MODE over docs/218's reset core, not a second service: the
+ * gate ({@link computeResetEligible}), the fetch, the re-gate and the live-tip
+ * leased push are the same code and the same invariants. Five things differ, and
+ * each is a correctness requirement rather than a preference:
+ *
+ *  - **`getAutoResetMergedBranch()` is not consulted.** A command the agent
+ *    deliberately invoked must not silently no-op because an unrelated composer
+ *    preference is off. The arming *is* the consent.
+ *  - **Idempotent, and already-at-base is checked BEFORE the `mergedHeadSha`
+ *    gate.** After any successful reset `HEAD ≠ mergedHeadSha`, and a docs/218
+ *    reset clears the field outright — so with the checks in the other order a
+ *    duplicate wake, a retry, or a second invocation would refuse and stop a
+ *    chain whose branch state is already perfect.
+ *  - **A failed force-push is a FAILURE.** docs/218's heal is best-effort and
+ *    still returns success; in a chain that means every later push against the
+ *    diverged remote is silently dropped as a non-fast-forward and the next PR
+ *    never updates. Here it fails loudly instead.
+ *  - **`handWorkspaceBackToWorker` runs in a `finally`.** The orchestrator does
+ *    this git work as root; without the handback the agent hits `EACCES` on its
+ *    first edit — inside the very turn the wake exists to enable.
+ *  - **Simple CLI semantics.** Exit 0 for `reset` and `already-at-base`, nonzero
+ *    with a reason otherwise.
+ *
+ * The safety gate itself is retained exactly. It is what makes a duplicate wake,
+ * a late wake, or a wake landing behind uncommitted work refuse rather than
+ * destroy.
+ */
+export async function resetBranchToBaseExplicit(
+  deps: ResetEligibleSignalDeps,
+  sessionId: string,
+  sessionDir: string,
+): Promise<ExplicitResetOutcome> {
+  try {
+    const session = deps.getSession(sessionId);
+    if (!session) return refuse("Session not found.");
+    const prStatus = deps.getPrStatus(sessionId);
+    const git = deps.createGitManager(sessionDir);
+
+    // Structural safety first — these refuse both outcomes, so they precede the
+    // already-at-base short-circuit.
+    if (!(await git.isClean())) {
+      return refuse(
+        "The working tree has uncommitted changes. A reset would discard them permanently "
+        + "(uncommitted edits have no reflog entry).",
+      );
+    }
+    const branch = await git.currentBranchOrNull();
+    if (!branch) return refuse("HEAD is detached, so a reset would not move the session branch.");
+    if (session.branch && branch !== session.branch) {
+      return refuse(`HEAD is on '${branch}', not the session branch '${session.branch}'.`);
+    }
+    if (await git.isRebaseInProgress()) {
+      return refuse("A rebase is in progress. Finish or abort it first — a reset would clobber the recovery state.");
+    }
+    if (await git.isMergeOrSequencerInProgress()) {
+      return refuse("A merge / cherry-pick / revert is in progress. Finish or abort it first.");
+    }
+
+    const base = prStatus?.baseBranch;
+    if (!base) {
+      return refuse(
+        "No base branch is known for this session (no merged pull request recorded), so there is "
+        + "nothing to reset to.",
+      );
+    }
+
+    await git.fetch("origin");
+
+    // Idempotent: the branch is already exactly where a reset would put it, so
+    // the caller can proceed. Checked BEFORE the `mergedHeadSha` gate — see the
+    // docblock; this is what makes a duplicate wake harmless instead of
+    // chain-ending.
+    const head = await git.getHeadHash();
+    const baseTip = await git.getRefHash(`origin/${base}`);
+    if (head && baseTip && head === baseTip) {
+      return { outcome: "already-at-base", base, ...(head ? { toSha: head } : {}) };
+    }
+
+    // The destructive move. Full docs/218 gate, evaluated AFTER the fetch (the
+    // fetch yields to the event loop, so a terminal edit could have moved the
+    // branch since the checks above).
+    if (!(await computeResetEligible(session, prStatus, git))) {
+      return refuse(
+        "This branch carries work that is not on the merged pull request, so a reset would "
+        + "discard commits that were never shipped.",
+      );
+    }
+
+    const { from, to } = await git.resetHardToRemoteBase(base);
+
+    // Heal the remote so later plain auto-pushes fast-forward. STRICT, unlike
+    // docs/218's best-effort heal: the reset moved only the local branch, so the
+    // session's remote branch is now diverged, and every subsequent plain push is
+    // a silently-dropped non-fast-forward. In a chain that means the next PR
+    // never updates — a failure the agent must see, not a warning in a log.
+    try {
+      await git.forcePush("origin");
+    } catch (err) {
+      return refuse(
+        `The branch was reset locally to origin/${base}, but the remote branch could not be `
+        + `updated to match (${err instanceof Error ? err.message : String(err)}). Later pushes `
+        + "would be rejected as non-fast-forward, so stop here rather than continuing.",
+      );
+    }
+
+    return { outcome: "reset", base, fromSha: from, toSha: to };
+  } catch (err) {
+    return refuse(`The reset could not be completed: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    // The orchestrator ran the git work as ROOT. Without handing ownership back,
+    // the agent's very first edit in this turn fails with EACCES. In a `finally`
+    // so a refusal or a throw can't skip it — a refused reset still leaves the
+    // agent working in this workspace.
+    handWorkspaceBackToWorker(sessionDir);
+  }
 }

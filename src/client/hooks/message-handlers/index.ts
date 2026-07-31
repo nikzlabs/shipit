@@ -70,6 +70,7 @@ import { handleSessionMemoryExhausted } from "./session-memory-exhausted.js";
 import { handleSessionSpawnFailed } from "./session-spawn-failed.js";
 import { handleSessionSpawned } from "./session-spawned.js";
 import { handleChildMergedCard } from "./child-merged.js";
+import { handleSelfMergeWatchCard } from "./self-merge-watch.js";
 import { handleSessionReportCard } from "./session-report.js";
 import { handleSessionStarted } from "./session-started.js";
 import { handleSessionStatus } from "./session-status.js";
@@ -183,6 +184,7 @@ export const messageHandlers: MessageHandlerMap = {
   session_spawn_failed: handleSessionSpawnFailed,
   session_spawned: handleSessionSpawned,
   child_merged_card: handleChildMergedCard,
+  self_merge_watch_card: handleSelfMergeWatchCard,
   session_started: handleSessionStarted,
   session_status: handleSessionStatus,
   sub_agent_consult_card: handleSubAgentConsultCard,
@@ -238,6 +240,7 @@ const TRANSCRIPT_SCOPED_MESSAGES: ReadonlySet<WsMessageType> = new Set<WsMessage
   "permission_request_card",
   "permission_resolved",
   "release_card",
+  "self_merge_watch_card",
   "session_report_card",
   "session_spawn_failed",
   "session_spawned",

@@ -1,4 +1,4 @@
-import type { ChildMergedCard, SessionReportCard } from "../domain-types.js";
+import type { ChildMergedCard, SelfMergeWatchCard, SessionReportCard } from "../domain-types.js";
 
 /**
  * Server → Client: the parent agent successfully spawned a sibling session
@@ -143,4 +143,21 @@ export interface WsSessionReportCard {
   /** RECIPIENT session id — the runner this event is emitted on. */
   sessionId: string;
   card: SessionReportCard;
+}
+
+/**
+ * Server → Client: this session armed a SELF merge-watch (docs/239) — it will be
+ * woken with a turn when its own PR merges.
+ *
+ * Unlike the two cards above this one fires MID-TURN (the agent's
+ * `shipit session notify-on-merge --self` tool call relays through HTTP), so it
+ * rides `emitChatCard`, which emits + records + persists it in one call.
+ * `sessionId` is the arming session's own id — the client drops it when it
+ * belongs to a session other than the rendered one.
+ */
+export interface WsSelfMergeWatchCard {
+  type: "self_merge_watch_card";
+  /** The arming session's own id — the runner this event is emitted on. */
+  sessionId: string;
+  card: SelfMergeWatchCard;
 }

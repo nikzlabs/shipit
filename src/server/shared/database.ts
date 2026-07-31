@@ -778,6 +778,15 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE repos ADD COLUMN default_branch TEXT");
   },
+  // docs/239 — persist the "will continue when PR #N merges" card the agent's
+  // `shipit session notify-on-merge --self` surfaces into its own transcript.
+  // The arm relays over HTTP mid-turn, i.e. off the agent-event stream, so
+  // `buildTurnMessages` doesn't capture it on its own; without this column the
+  // card would render live and vanish on the next loadSessionHistory. NULL =
+  // ordinary (non-card) message.
+  (db) => {
+    db.exec("ALTER TABLE messages ADD COLUMN self_merge_watch TEXT");
+  },
 ];
 
 export class DatabaseManager {

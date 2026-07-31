@@ -281,6 +281,13 @@ const GOLDEN_CONTAINER_ROUTES = [
   "POST /api/sessions/:parentId/children/:childId/message",
   "POST /api/sessions/:parentId/children/:childId/archive",
   "POST /api/sessions/:parentId/children/:childId/notify-on-merge",
+  // docs/239 — `shipit session notify-on-merge --self` arms a watch on the
+  // CALLER's own PR, and the self-merge wake turn's first act is the explicit,
+  // fully-gated branch reset. Both are own-session scoped (the worker injects the
+  // caller's id) and neither accepts an agent-supplied target. The reset's Cancel
+  // counterpart is deliberately browser-only.
+  "POST /api/sessions/:sessionId/notify-on-merge-self",
+  "POST /api/sessions/:id/branch/reset-to-base",
   // docs/233 (SHI-241) — the upward channel: `shipit session whoami` resolves
   // the CALLING session's own cohort, and `shipit session report` pushes a
   // report to its parent / siblings. Own-session scoped like every route above:

@@ -533,8 +533,14 @@ export async function quickCreatePr(
 /**
  * Look up an open PR for the session's branch. Returns `null` if none exists.
  * Throws ServiceError on auth/remote-resolution failures so callers can map to HTTP.
+ *
+ * Exported for docs/239's self-merge-watch arm, which must resolve the PR by a
+ * LIVE lookup rather than from the `pr_status` snapshot: at a chain boundary the
+ * agent arms seconds after `gh pr create` returns, while the session still sits
+ * in the poller's `mergedSessions` set (which it skips), so the snapshot still
+ * describes the previous, just-merged PR.
  */
-async function resolveSessionPr(
+export async function resolveSessionPr(
   git: GitManager,
   githubAuthManager: GitHubAuthManager,
   remoteUrl?: string,

@@ -23,6 +23,8 @@ import {
   waitForChildIdle,
   assertArchivableChild,
   registerMergeWatch,
+  armSelfMergeWatch,
+  cancelSelfMergeWatch,
   deliverSessionReport,
   resolveSessionCohort,
   archiveSession,
@@ -590,6 +592,69 @@ export async function registerSessionSpawnRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to register merge watch: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/sessions/:sessionId/notify-on-merge-self — docs/239.
+  // `shipit session notify-on-merge --self`: arm a watch that wakes THIS session
+  // with a turn when its OWN PR merges. Own-session scoped like every other
+  // container-reachable route (the worker injects the caller's id), and there is
+  // no payload — the session's transcript already holds the plan.
+  app.post<{ Params: { sessionId: string } }>(
+    "/api/sessions/:sessionId/notify-on-merge-self",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      try {
+        const result = await armSelfMergeWatch(
+          {
+            sessionManager,
+            githubAuthManager: deps.githubAuthManager,
+            createGitManager,
+            runnerRegistry: deps.runnerRegistry,
+            chatHistoryManager: deps.chatHistoryManager,
+            ...(deps.mergeWatchManager ? { mergeWatchManager: deps.mergeWatchManager } : {}),
+          },
+          request.params.sessionId,
+        );
+        return { armed: true, ...result };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to arm self merge-watch: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/sessions/:sessionId/notify-on-merge-self/cancel — docs/239.
+  // The arm card's Cancel. Browser-only (deliberately NOT containerAccessible):
+  // the agent re-arms rather than cancels. `watchId` is required and compared, so
+  // a stale card from an earlier chain link can't cancel the current watch.
+  app.post<{ Params: { sessionId: string }; Body: { watchId?: string } }>(
+    "/api/sessions/:sessionId/notify-on-merge-self/cancel",
+    async (request, reply) => {
+      const watchId = request.body?.watchId;
+      if (!watchId) {
+        reply.code(400).send({ error: "watchId is required" });
+        return;
+      }
+      try {
+        return cancelSelfMergeWatch(
+          {
+            sessionManager,
+            ...(deps.mergeWatchManager ? { mergeWatchManager: deps.mergeWatchManager } : {}),
+          },
+          request.params.sessionId,
+          watchId,
+        );
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to cancel self merge-watch: ${getErrorMessage(err)}` });
       }
     },
   );

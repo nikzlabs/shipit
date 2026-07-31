@@ -24,6 +24,7 @@ import {
   repoDefaultBranch,
   ServiceError,
 } from "./services/index.js";
+import { resetBranchToBaseExplicit } from "./services/pre-turn-reset.js";
 import { getErrorMessage } from "./validation.js";
 
 export async function registerGitRoutes(
@@ -31,6 +32,30 @@ export async function registerGitRoutes(
   deps: ApiDeps,
 ): Promise<void> {
   const { sessionManager, createGitManager } = deps;
+
+  // POST /api/sessions/:id/branch/reset-to-base — docs/239. Backs
+  // `shipit branch reset-to-base`: the explicit, agent-invoked mode over the
+  // docs/218 reset core, used as the first step of a self-merge wake turn.
+  // Container-reachable so the shim can broker it; own-session scoped (the worker
+  // injects the caller's id), and the full safety gate still applies — the arming
+  // is the consent, not a bypass.
+  app.post<{ Params: { id: string } }>(
+    "/api/sessions/:id/branch/reset-to-base",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      const dir = resolveSessionDir(sessionManager, request.params.id, reply);
+      if (!dir) return;
+      return await resetBranchToBaseExplicit(
+        {
+          getSession: (id: string) => sessionManager.get(id),
+          getPrStatus: (id: string) => sessionManager.getPrStatus(id),
+          createGitManager,
+        },
+        request.params.id,
+        dir,
+      );
+    },
+  );
 
   // GET /api/sessions/:id/git/log — git commit log
   app.get<{ Params: { id: string } }>("/api/sessions/:id/git/log", async (request, reply) => {

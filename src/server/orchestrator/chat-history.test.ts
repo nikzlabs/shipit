@@ -117,6 +117,15 @@ const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
     mergeSha: "abc123def456",
     createdAt: "2026-06-05T00:00:00.000Z",
   },
+  selfMergeWatch: {
+    cardId: "self-merge-watch-1",
+    watchId: "watch-1",
+    prNumber: 43,
+    prUrl: "https://github.com/o/r/pull/43",
+    prTitle: "Step one",
+    branch: "shipit/abc",
+    createdAt: "2026-06-05T00:00:00.000Z",
+  },
   sessionReport: {
     cardId: "session-report-1-0",
     fromSessionId: "child-1",

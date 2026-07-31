@@ -293,6 +293,37 @@ export interface SessionMergeWatch {
   /** Session that registered the watch and receives the wake-turn + merge card. */
   parentSessionId: string;
   /**
+   * docs/239 — `"self"` marks a SELF-merge watch: the session asked to be woken
+   * when its OWN PR merges (`shipit session notify-on-merge --self`), so
+   * `parentSessionId === ` the watched session's own id. Absent (the default) is
+   * docs/196's parent→child watch.
+   *
+   * Deliberately one optional discriminator on the EXISTING row rather than a
+   * second watch subsystem: `merge-observed`, the SHI-258 retry supervisor, the
+   * polling gate and `reconcilePending` then all come by inheritance. The
+   * accepted cost is that a session cannot be parent-watched and self-watching
+   * at the same time — the row holds one watch — so a self-arm is refused while
+   * a genuine parent→child watch is live.
+   */
+  kind?: "self";
+  /**
+   * docs/239 — identity of THIS arming, for a self-watch. Checked on every
+   * asynchronous settlement, and carried by the arm card's Cancel.
+   *
+   * Load-bearing rather than decorative: chaining re-arms the watch *inside* the
+   * wake turn, i.e. BEFORE that turn settles, so without an expected-identity
+   * check the old turn's settlement would mark the newly-armed watch delivered
+   * (and a stale card's Cancel would cancel the next PR's watch).
+   */
+  watchId?: string;
+  /**
+   * docs/239 — the open PR number this self-watch is anchored to, resolved by a
+   * LIVE `findPullRequest` at arm time. The merge is only acted on when the
+   * merged PR matches; a mismatch means a docs/202 re-arm replaced the work
+   * before the merge landed, which is a note, not a wake.
+   */
+  prNumber?: number;
+  /**
    * - `armed` — registered, waiting for the child's PR to reach a terminal state
    *   (the PR need not exist yet).
    * - `merge-observed` — the poller saw the merge and surfaced the card, but the
@@ -370,6 +401,30 @@ export interface ChildMergedCard {
     /** Message from the last failed attempt, when available. */
     error?: string;
   };
+  createdAt: string;
+}
+
+/**
+ * docs/239 — payload for the inline "will continue when PR #N merges" card the
+ * agent's `shipit session notify-on-merge --self` surfaces into its OWN
+ * transcript. One card, at arm time, with a Cancel; terminal outcomes append a
+ * plain note rather than transitioning this card (there is deliberately no card
+ * lifecycle here — see the plan's "Resolved decisions").
+ *
+ * `watchId` is what Cancel sends back, so a stale card left in the scrollback
+ * from an earlier link of a chain cannot cancel the CURRENT watch.
+ */
+export interface SelfMergeWatchCard {
+  /** Server-generated stable id — used for live-append idempotency on reconnect. */
+  cardId: string;
+  /** Identity of the armed watch. Cancel carries it; a mismatch is a no-op. */
+  watchId: string;
+  /** The open PR this watch is anchored to (resolved by a live lookup at arm time). */
+  prNumber: number;
+  prUrl: string;
+  prTitle?: string;
+  /** The session's branch, for display. */
+  branch?: string;
   createdAt: string;
 }
 

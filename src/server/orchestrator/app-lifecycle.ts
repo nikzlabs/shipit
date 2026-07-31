@@ -919,6 +919,28 @@ export function createPrStatusPoller(
       } catch (err) {
         console.error(`[pr-poller] Post-merge handling failed for ${sessionId}:`, err);
       }
+
+      // docs/239 — fire a SELF merge-watch here, not from `onPrTerminalState`.
+      // This point is after `markMergedAndPruneExcess` has resolved, so the merge
+      // bookkeeping is complete and the remote head-branch deletion has already
+      // happened — a wake fired earlier could hand the agent a branch about to be
+      // deleted. `setPrStatus` / `setMergedHeadSha` both ran before this callback,
+      // so the deliverer reads the PR facts straight from the persisted snapshot
+      // and this sessionId-only signature needs no widening. No-ops unless the
+      // session carries an armed self-watch.
+      //
+      // Deliberately OUTSIDE the block above, not inside it: the poller's
+      // `alreadyTerminal` guard means this callback fires exactly once per merge,
+      // so a throw in the archive/prune step would otherwise strand the wake until
+      // an orchestrator restart. Its own failures are handled internally (recorded
+      // as a delivery attempt for the retry supervisor).
+      if (mergeWatchManager) {
+        try {
+          await mergeWatchManager.handleSelfMerge(sessionId);
+        } catch (err) {
+          console.error(`[pr-poller] self merge-watch delivery failed for ${sessionId}:`, err);
+        }
+      }
     },
   });
 
