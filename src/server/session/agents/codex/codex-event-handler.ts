@@ -51,6 +51,23 @@ interface JsonRpcServerNotification {
 }
 
 /**
+ * Native approval requests are not, by themselves, evidence that an action is
+ * sensitive: Codex may emit them for routine work even with approvalPolicy
+ * "never". The v1/v2 schemas reserve these fields for requests that need extra
+ * filesystem, network, or execution-policy access, so only those requests need
+ * a user decision inside ShipIt's already-isolated worker container.
+ */
+function requiresUserApproval(params: Record<string, unknown>): boolean {
+  if (typeof params.reason === "string" && params.reason.trim()) return true;
+  if (typeof params.grantRoot === "string" && params.grantRoot.trim()) return true;
+  if (params.networkApprovalContext !== null && params.networkApprovalContext !== undefined) return true;
+  if (params.additionalPermissions !== null && params.additionalPermissions !== undefined) return true;
+
+  return [params.proposedExecpolicyAmendment, params.proposedNetworkPolicyAmendments]
+    .some((value) => Array.isArray(value) && value.length > 0);
+}
+
+/**
  * The slice of the adapter the event handler depends on: emitting normalized
  * events/logs, the JSON-RPC transport, and process teardown. Implemented by
  * `CodexAdapter`, which retains the wire format and child-process lifecycle.
@@ -173,10 +190,10 @@ export class CodexEventHandler {
    * escalated permissions; leaving it unanswered is THE bug behind "Codex stuck
    * on Thinking…".
    *
-   * docs/193 — instead of always auto-accepting (which routed around the user
-   * for genuinely escalated actions), route the request through the shared
-   * `PermissionBroker` when one is injected, so it surfaces the same approve/
-   * deny card as Claude's sensitive-file gate. When no requester is wired
+   * docs/193 — approval methods are also emitted for ordinary commands and
+   * workspace changes despite ShipIt's `approvalPolicy: "never"`. Auto-accept
+   * those routine requests; only requests whose payload explicitly describes
+   * extra access are routed through the shared `PermissionBroker`. When no requester is wired
    * (tests / the broker is unavailable) OR the broker path throws, fall back to
    * the historical auto-accept so a turn can never hang waiting on a human who
    * isn't being asked.
@@ -219,7 +236,7 @@ export class CodexEventHandler {
     const accept = protocol === "v2" ? "accept" : "approved";
     const reject = protocol === "v2" ? "decline" : "denied";
 
-    if (!this.requestPermission) {
+    if (!this.requestPermission || !requiresUserApproval(req.params ?? {})) {
       this.ctx.sendResponse(req.id, { decision: accept });
       return;
     }
