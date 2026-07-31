@@ -2,6 +2,12 @@
 
 Design only so far — nothing implemented. No schema change, no migration.
 
+## 0. Measure first
+- [ ] Instrument one real long session: total `/history` payload size, and the share from `tool_results` / `tool_use` / `images` / `subagent_events`
+- [ ] Split the time: server `load()` + serialize vs transfer vs client parse vs render
+- [ ] Decision gate: if a handful of heavy rows dominate bytes, do SHI-267 (lazy bodies) first and resequence this behind it
+- [ ] Separate item, not a substitute: enable origin compression for the non-Cloudflare deployment paths (tailnet, local)
+
 ## 1. Server (inert until the client sends `limit`)
 - [ ] `ChatHistoryManager.loadWindow(sessionId, { limit, beforeOffset? })` — leave `load()` intact
 - [ ] **Snap the window start to a `role: "user"` row** — extend back to the nearest preceding one; if past a cap, snap forward to the next one instead

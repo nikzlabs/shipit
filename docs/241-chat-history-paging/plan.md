@@ -22,7 +22,26 @@ three were removed after review showed the claim justifying them was false. See
 
 ## Why it is expensive today
 
-Measured against the source, not assumed:
+**First, separate the two costs.** The complaint was "time and traffic," but those
+have different fixes and only one of them is bytes.
+
+*Bytes on the wire* are likely already mitigated on the hosted path: there is no
+`@fastify/compress` at the origin, but the VPS deployment fronts ShipIt with a
+Cloudflare tunnel (`deployment/vps/cloudflare.sh`), and Cloudflare compresses
+proxied JSON by default. The tailnet-only path (`deployment/vps/tailscale.sh`) and
+`deployment/local` have no compressing proxy and do ship raw JSON — enabling
+origin compression is a cheap, orthogonal win for those, and is **not** a
+substitute for this work.
+
+*Work at both ends* is untouched by any of that, and it is what paging actually
+fixes: the SQLite read of every row, `fromRow` JSON-parsing every populated column
+of every row server-side (`chat-history.ts:519-582`), serializing the payload,
+`JSON.parse` in the browser, and the render. Compression shrinks the transfer and
+changes none of it. Note too that base64 `images` compress poorly — already-
+compressed bytes in a text encoding — so the heaviest rows benefit least.
+
+So the design is justified by latency and CPU at both ends more than by raw
+transfer. With that framing, measured against the source:
 
 - **No limit exists anywhere on the read path.** `ChatHistoryManager.load()`
   (`chat-history.ts:590`) runs `SELECT * FROM messages WHERE session_id = ?
@@ -42,7 +61,17 @@ Measured against the source, not assumed:
   (`useWebSocket.ts:160-200`).
 - **Nothing is virtualized.** `MessageList` renders every message and leans on
   CSS `content-visibility: auto` (`MessageList.tsx:252`) plus `useDeferredValue`
-  (`:107`).
+  (`:107`). `buildVisualElements` is a full O(n) pass, recomputed on every render
+  and not memoized.
+
+**Measurement gap.** None of the above is measured — there is no live database in
+a session container, so the byte and time distribution is inferred from schema and
+code. Before building, instrument one real long session: total payload size, the
+share contributed by `tool_results` / `tool_use` / `images` / `subagent_events`,
+server time in `load()` vs serialization, and client time in parse vs render. If
+bytes turn out to be dominated by a handful of rows rather than by row count, then
+SHI-267 (lazy bodies) is the higher-leverage first move and this design should be
+resequenced behind it.
 
 ## Requirements
 
