@@ -267,6 +267,11 @@ function ToolResultImages({ images }: { images: ToolResultImage[] }) {
  * The `startsWith("[")` guard is a fast-path to skip plain string content.
  * If content happens to be a JSON array without image blocks, we return null
  * and fall through to normal text rendering.
+ *
+ * If a screenshot renders as raw JSON text instead of an image, the block is
+ * missing *upstream*, not lost here: `@playwright/mcp` only attaches the image
+ * when `browser_take_screenshot` is called without a `filename`. See
+ * `session/agents/playwright-mcp.ts`.
  */
 export function parseContentForImages(content: string): { text: string; images: ToolResultImage[] } | null {
   if (!content.startsWith("[")) return null;

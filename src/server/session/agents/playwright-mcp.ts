@@ -41,6 +41,23 @@
  * and the profile `mkdir` into the root-owned store silently succeeded.
  */
 
+/**
+ * `browser_take_screenshot` returns the image content block ONLY when the tool
+ * is called WITHOUT a `filename` — upstream gates it on exactly that
+ * (`if (!params.filename) await response.registerImageResult(...)` in
+ * playwright-core's tools bundle). With a `filename` the result is a text-only
+ * markdown link to the file on disk, which means (a) the model never sees the
+ * page it just captured and (b) `parseContentForImages` in `ToolResult.tsx`
+ * finds no image block, so the screenshot doesn't render in the chat
+ * transcript. That is why the agent instructions (`prompts/skeleton.md`,
+ * `shipit-docs/preview.md`) tell the agent to OMIT `filename` rather than to
+ * "save screenshots under /tmp/.playwright-mcp/" — the earlier wording made
+ * every agent pass a path and silently killed inline screenshots. Auto-named
+ * shots land in {@link PLAYWRIGHT_OUTPUT_DIR} anyway (it is both `--output-dir`
+ * and the server's cwd), so nothing is gained by naming them. Don't reinstate
+ * "always name your screenshots" guidance without re-checking this gate.
+ */
+
 /** Directory the Playwright MCP server writes screenshots/output into. */
 export const PLAYWRIGHT_OUTPUT_DIR = "/tmp/.playwright-mcp";
 
