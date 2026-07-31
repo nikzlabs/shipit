@@ -27,8 +27,8 @@ three separate hazards from data loss into a visible refusal.
 
 - [ ] `SelfMergeWatch`: `watchId`, anchor PR number, `mergedHeadSha`, `followUp`, remaining plan, `cardId`, delivery record
 - [ ] Column + migration (`shared/database.ts`)
-- [ ] States `armed → merge-observed → delivered`; terminal `expired`, `cancelled`, `superseded`, `delivery-failed`
-- [ ] Atomic CAS on `{watchId, expectedState}` for every transition
+- [ ] States `armed → merge-observed → delivered`; terminal `expired`, `cancelled`, `delivery-failed`
+- [ ] All transitions go through the watch manager (single writer), each checking current state
 - [ ] Shared exhaustive pending predicate → list query + supervisor + polling gate
 - [ ] Separate list from the child watches (no misrouting into the child handler)
 
@@ -50,8 +50,7 @@ three separate hazards from data loss into a visible refusal.
 - [ ] Closed outcomes fan out from `onPrTerminalState` → expire, no turn
 - [ ] **Startup reconcile for self-watches** (the `alreadyTerminal` hole) — merged and closed
 - [ ] Restore an evicted workspace before dispatch
-- [ ] Supervisor refactored to key by `{kind, watchId}` (child + self on one session must not collide)
-- [ ] Anchor bound at arm time; docs/202 re-arm → `superseded`
+- [ ] Anchor bound at arm time; merged PR not matching the anchor → drop the watch with a note
 - [ ] Dispatch via `prepareDispatch`; advance only on `status === "completed"`
 - [ ] Don't assume a settlement always arrives
 - [ ] Pending self-watches keep `PollingGlobalGate` open
@@ -92,13 +91,12 @@ three separate hazards from data loss into a visible refusal.
 - [ ] Reset command: idempotent second invocation returns `already-at-base`; setting-disabled still runs; force-push failure is not success; workspace is handed back (agent can edit afterwards)
 - [ ] Crash between terminal-snapshot persist and delivery still wakes
 - [ ] Closed-unmerged expires with no turn, including after restart
-- [ ] docs/202 re-arm supersedes rather than retargets
+- [ ] Merged PR not matching the anchor drops the watch rather than retargeting
 - [ ] Reset command refuses on dirty tree / moved HEAD / detached / sequencer, and the wake reports
 - [ ] A wake queued behind a turn with uncommitted edits destroys nothing
 - [ ] Restart during a wake produces no second destructive turn
-- [ ] Child + self watch on one session don't collide in the supervisor
 - [ ] Evicted workspace restored before dispatch (distinct from reaped container)
-- [ ] Cancel-vs-merge CAS, late settlement after cancel, stale-card cancel after re-arm
+- [ ] Cancel-vs-merge ordering, late settlement after cancel, stale-card cancel after re-arm
 - [ ] Chaining: three-step plan runs three links; Cancel stops mid-chain
 - [ ] Card round-trip, no duplicate on replay, `expired` with no runner
 

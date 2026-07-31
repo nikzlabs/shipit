@@ -50,8 +50,7 @@ the startup reconcile (`alreadyTerminal` suppresses the callback after a crash);
 anchoring and requiring an open PR (binding "on first observation" would anchor to an
 unrelated PR); `checkAndFireNow` for an already-merged PR; suppressing docs/218's
 `resetEligible` (two reset mechanisms otherwise armed at once); the supervisor keyed by
-`{kind, watchId}` (its maps are keyed by session id); CAS transitions; workspace restore
-before dispatch; the prompt as a co-located `.md`; the live PR lookup at arm time (the
+workspace restore before dispatch; the prompt as a co-located `.md`; the live PR lookup at arm time (the
 snapshot is stale by construction at a link boundary); arming replacing a `merge-observed`
 watch (otherwise the wake turn can never re-arm); the reset command being a distinct
 service rather than the interactive policy wrapper, and idempotent; and the invariant
@@ -260,7 +259,7 @@ because it starts no turn. The work did not ship, so the follow-up's preconditio
 false.
 
 **States: `armed → merge-observed → delivered`**, with terminal `expired`, `cancelled`,
-`superseded`, and `delivery-failed`. The intermediate state is **not optional**: the
+and `delivery-failed`. The intermediate state is **not optional**: the
 SHI-258 retry supervisor filters on `merge-observed`, its arm/stop conditions use it,
 and `reconcilePending`'s recoverable set is armed-or-observed. An earlier draft
 specified `armed → delivered` while claiming to reuse that machinery — it would have
@@ -275,15 +274,13 @@ the *child* handler. A self-watch equivalent must re-derive "PR terminal + self-
 non-terminal → deliver" from the persisted snapshot. The same applies to the
 closed→`expired` fan-out, which sits behind the same guard.
 
-**Every transition is an atomic compare-and-set on `{watchId, expectedState}`.** The
-existing manager reads a watch and later overwrites it, so a concurrent cancel or
-replacement can be resurrected by a late merge callback or settlement.
+**All transitions go through the watch manager — a single writer** — and each checks the
+current state before writing, so a late merge callback or settlement cannot resurrect a
+cancelled or replaced watch. Full compare-and-set on every transition was specified in an
+earlier draft and cut: one watch per session, mutated from one place, does not have the
+contention that would justify it.
 
-**Delivery failures reuse SHI-258's supervisor**, refactored over generic delivery
-records keyed by `{kind, watchId}` — its `inFlight` set and `lastTerminalInfo` are keyed
-by session id today, so a session that is both child-watched and self-watched would
-collide. It is a scheduler, not a lease: it does not prevent two callers entering
-delivery concurrently, which is what the CAS above is for.
+**Delivery failures reuse SHI-258's supervisor** unchanged.
 
 ## Anchoring
 
@@ -305,9 +302,11 @@ pushes move it on the same PR — but the **terminal PR head SHA** is captured a
 as the reset command's safety anchor (`mergedHeadSha`). Two different things; the
 earlier draft conflated them into an "immutable pair".
 
-A docs/202 re-arm explicitly **supersedes** the watch: the instruction was captured for
-work that has been replaced, so the watch moves to `superseded` visibly rather than
-transferring to an unrelated PR.
+If the merged PR does not match the anchor — a docs/202 re-arm replaced the work before
+the merge landed — **drop the watch and leave a note**. The instruction was captured for
+work that no longer exists, so it must not transfer to an unrelated PR. An earlier draft
+gave this its own `superseded` terminal state; storing the anchor PR number and comparing
+it achieves the same protection without one.
 
 ## Coexistence with docs/218
 
@@ -346,16 +345,16 @@ No `completed-without-pr` state: whether a PR resulted is the PR card's business
 ## The arm card
 
 Do-then-surface: a persisted card stating the captured follow-up and remaining plan,
-with a **Cancel** that works for the whole chain. Emit via `emitChatCard` (the arm
-happens mid-turn, an agent tool call — the side-channel shape CLAUDE.md's persistence
-invariant covers), transitions via `persistCardTransition`, which must also work with
-**no runner attached** since the `expired` path starts no turn. Cancel carries
-`watchId` so a stale card action cannot hit a newer watch. Archiving a session with an
-armed watch transitions the card visibly rather than dropping it silently.
+with a **Cancel**. Emit via `emitChatCard` — the arm happens mid-turn, an agent tool
+call, which is the side-channel shape CLAUDE.md's persistence invariant covers. Cancel
+carries `watchId` so a stale card action cannot hit a newer watch.
 
-Terminal states patch the card in place. Note SHI-258's `ChildMergedCard.deliveryFailure`
-appends a *second* card rather than patching — this is a new pattern for the family, not
-an existing precedent, and should be justified on its own terms.
+**Terminal outcomes append a second card** rather than patching the first — the pattern
+SHI-258 actually uses. An earlier draft specified in-place transitions, which forced
+`persistCardTransition` to work with **no runner attached** (the `expired` path starts no
+turn) — a change to shared machinery, to reach a marginally tidier transcript. Appending
+needs no such change, and reads correctly anyway: "armed at 09:00" and "expired at 14:20,
+PR closed" are two events.
 
 ## Known gaps (tracked separately, not blocking)
 
@@ -371,6 +370,10 @@ an existing precedent, and should be justified on its own terms.
   the surviving first. The reset command's gate makes the duplicate refuse rather than
   destroy, so the cost is bounded to a spurious turn — but relying on a downstream gate
   is not a fix. Resolved properly by the durable `deliveryId` docs/240 deferred.
+- **A session that is both parent-watched and self-watching can collide in the retry
+  supervisor**, whose `inFlight` and `lastTerminalInfo` maps are keyed by session id. One
+  settlement clears the shared marker and the other attempt can look stalled. Uncommon
+  enough to document rather than refactor shared machinery ahead of anyone hitting it.
 - **Eviction.** Disk descent does not exempt pending watches, and a wake against an
   evicted checkout boots a container over a missing directory. Delivery must restore the
   workspace first. Materializing a checkout is not mutating the branch, so this is
@@ -389,11 +392,11 @@ an existing precedent, and should be justified on its own terms.
 | Area | File | Change |
 |---|---|---|
 | Reset command | `services/pre-turn-reset.ts`, `agent-shim/shipit-*.ts`, `agent-ops-routes.ts` | `shipit branch reset-to-base` over the existing gate + fetch + reset + live-lease force-push |
-| Watch state | `sessions.ts`, `shared/types/domain-types/session.ts`, `shared/database.ts` | `SelfMergeWatch` + column + migration; CAS transitions; exhaustive pending predicate |
+| Watch state | `sessions.ts`, `shared/types/domain-types/session.ts`, `shared/database.ts` | `SelfMergeWatch` + column + migration; exhaustive pending predicate |
 | Fire point | `app-lifecycle.ts` | Deliver right after `markMergedAndPruneExcess`, with PR identity |
 | PR identity | `pr-status-poller.ts` | Carry `{prNumber, headSha, baseBranch}` into the merge callback; fan closed outcomes to expiry |
 | Supersession | `services/pr-rearm.ts` | A docs/202 re-arm supersedes the watch |
-| Delivery | `merge-watch.ts`, `wake-session.ts` | Self branch; startup reconcile; supervisor keyed by `{kind, watchId}`; workspace restore before dispatch |
+| Delivery | `merge-watch.ts`, `wake-session.ts` | Self branch; startup reconcile; workspace restore before dispatch |
 | Eviction | `tier-escalation.ts` | Pending watches keep their checkout, or delivery restores it |
 | docs/218 overlap | `services/pre-turn-reset.ts`, `route-registry.ts` | Suppress `resetEligible` while a self-watch is pending |
 | Prompt | `orchestrator/prompts/self-merge-wake.md` | Co-located template, `loadPrompt` at module top level |
@@ -415,7 +418,7 @@ an existing precedent, and should be justified on its own terms.
 - Restart during a wake does not produce a second *destructive* turn.
 - Child-watch and self-watch on one session do not collide in the supervisor.
 - Evicted workspace is restored before dispatch (distinct from a reaped container).
-- Cancel-vs-merge CAS, late settlement after cancel, stale-card cancel after re-arm.
+- Cancel-vs-merge ordering, late settlement after cancel, stale-card cancel after re-arm.
 - Chaining: a three-step plan runs three links; Cancel stops it mid-chain; each link
   re-arms with the remaining plan.
 - Card round-trip, no duplicate on replay, `expired` transition with no runner.
@@ -446,8 +449,9 @@ an existing precedent, and should be justified on its own terms.
 - **The reset command is a distinct service**, not the interactive policy wrapper, and is
   **idempotent** (already-at-base → proceed, not refuse).
 - **A pending self-watch suppresses docs/218's `resetEligible`.**
-- **Reuse docs/196's delivery and SHI-258's supervisor**, refactored to key by
-  `{kind, watchId}`.
+- **Reuse docs/196's delivery and SHI-258's supervisor unchanged.** Refactoring the
+  supervisor to key by `{kind, watchId}` was cut — it only matters when one session is
+  simultaneously parent-watched and self-watching, which is uncommon; see *Known gaps*.
 
 ## Open questions
 
