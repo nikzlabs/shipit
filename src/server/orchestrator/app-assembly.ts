@@ -77,9 +77,9 @@ export async function serveStaticClient(
         // (Vite's content-hashed assets) keeps the prior always-revalidate
         // behavior — no new caching is introduced. See docs/222-pwa-installable.
         if (filePath.endsWith(".html") || filePath.endsWith("service-worker.js")) {
-          res.setHeader("Cache-Control", "no-store, must-revalidate");
+          res.header("Cache-Control", "no-store, must-revalidate");
         } else {
-          res.setHeader("Cache-Control", "public, max-age=0, must-revalidate");
+          res.header("Cache-Control", "public, max-age=0, must-revalidate");
         }
       },
     });
