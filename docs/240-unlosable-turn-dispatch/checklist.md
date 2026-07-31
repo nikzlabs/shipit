@@ -47,7 +47,28 @@
 - [x] A dropped queue entry settles as `dropped`
 - [x] Existing SHI-254 / SHI-255 / SHI-258 regressions still pass
 
-## Follow-up (gated on docs/239)
+## Fix C — durable `deliveryId` (SHI-264; the follow-up docs/239 gated)
 
-- [ ] Durable `deliveryId` reported by the worker; liveness derived, not tracked
-- [ ] Turn adoption re-settles a surviving delivery instead of redispatch
+- [x] Durable `deliveryId` reported by the worker; liveness derived, not tracked —
+      `watchId:attempt` minted + persisted with the attempt, sent on `/agent/start`,
+      keyed to the TURN on the worker (cleared by `endTurn`, so a resident streaming
+      process can't keep reporting a finished delivery), published on `/agent/status`
+- [x] Turn adoption re-settles a surviving delivery instead of redispatch —
+      `SystemTurnDeps.rebindDelivery` → `MergeWatchManager.rebindDelivery`, which
+      rebuilds the settlement from the persisted row via the SAME
+      `buildDeliverySettlement` the dispatch path uses
+- [x] `runner.activeDeliveryId` / `hasDelivery()` on both runners; published
+      synchronously by `dispatch`, carried through the queue on `QueuedMessage`,
+      cleared in `settleTurn` before the consumer is told
+- [x] `attemptDelivery` guards on derived liveness at the single delivery funnel, so
+      `reconcilePending` redispatches only when no live worker reports the delivery
+- [x] SHI-258's `inFlight` set reduced to a `dispatching` re-entrancy lock over one
+      `await`, released in a `finally`
+- [x] Both watch kinds (`child` + `self`) covered; settlement contract unchanged
+      (exactly-once, `finally`, `errored` preserved)
+- [x] Tests: `integration_tests/restart-delivery-identity.test.ts` (real worker +
+      real runner + real manager, both kinds — one turn not two, watch settles from
+      the adopted turn, a genuinely-dead turn redispatches exactly once, a
+      never-dispatched manager reaches the same verdict), plus the manager-side and
+      turn-lifecycle halves in `merge-watch.test.ts` /
+      `integration_tests/turn-settlement.test.ts`

@@ -160,6 +160,14 @@ export interface TurnInput {
    */
   onTurnComplete?: (outcome: TurnOutcome) => void;
   /**
+   * SHI-264 — durable identity of the server-side DELIVERY this turn runs on
+   * behalf of. Published on the runner (`activeDeliveryId`) for the turn's
+   * duration and stamped onto the spawn so the worker reports it back — the two
+   * halves that let a supervisor derive "is this delivery live?" instead of
+   * tracking it, across an orchestrator restart included.
+   */
+  deliveryId?: string;
+  /**
    * docs/240 — ADOPT a turn that is already running on the worker rather than
    * starting one. Set only by the post-restart reattach path
    * (`turn-adoption.ts`): the CLI is mid-turn inside a session container that
@@ -204,6 +212,24 @@ export async function executeAgentTurn(
   const settleTurn = (outcome: TurnOutcome): void => {
     if (turnCompleteFired) return;
     turnCompleteFired = true;
+    // SHI-264 — the delivery stops being live the moment the turn settles, and
+    // it must stop being live BEFORE the consumer is told: the consumer's first
+    // act on a non-`completed` outcome is to ask whether a retry is warranted,
+    // and a delivery still reading as in-flight would suppress it forever.
+    //
+    // Two guards, both load-bearing. The identity check keeps a settling turn
+    // from clearing a SUCCESSOR's delivery; `!runner.running` covers the
+    // no-result RETRY path, where the retry re-arms the same id and starts
+    // running before this (superseded) attempt unwinds — the same shape as the
+    // `systemTurnInProgress` carve-out above.
+    if (
+      runner &&
+      input.deliveryId !== undefined &&
+      runner.activeDeliveryId === input.deliveryId &&
+      !runner.running
+    ) {
+      runner.activeDeliveryId = undefined;
+    }
     input.onTurnComplete?.(outcome);
   };
   const finishTurn = (): void => {
@@ -231,6 +257,16 @@ export async function executeAgentTurn(
     // drained behind a user turn would run steerable, and a message arriving
     // mid-turn would be injected into it. `finishTurn` clears it.
     if (input.systemTurn) runner.systemTurnInProgress = true;
+    // SHI-264 — publish this turn's delivery for its whole duration. `dispatch`
+    // already set it synchronously on the start-now path; adoption and the
+    // queue-drain path reach it only here.
+    //
+    // Assigned unconditionally, INCLUDING to `undefined`: a turn starting is
+    // proof the previous one is over, and the `settleTurn` clear above stands
+    // down when a drained turn has already claimed the runner. Without this, a
+    // wake-turn that ended badly and drained a user turn behind it would leave
+    // its dead delivery reading as in-flight, suppressing every retry.
+    runner.activeDeliveryId = input.deliveryId;
     runner.isStreamingActive = useStreaming;
     resetRunnerTurnState(runner);
   }
@@ -744,6 +780,11 @@ export async function executeAgentTurn(
       }
       agent.sendUserMessage(prompt);
     } else {
+      // SHI-264 — stamp the delivery onto the spawn BEFORE it starts, so the
+      // worker records it with the turn and reports it from `/agent/status`.
+      // That report is the only thing that can tell an orchestrator which
+      // started AFTER this turn what delivery the surviving turn belongs to.
+      if (input.deliveryId !== undefined) agent.setDeliveryId?.(input.deliveryId);
       const paramsBegan = Date.now();
       const runParams = await deps.buildRunParams(sessionId, agentId, prompt);
       console.log(`[turn] build-run-params for ${sessionId} took ${Date.now() - paramsBegan}ms; spawning agent`);

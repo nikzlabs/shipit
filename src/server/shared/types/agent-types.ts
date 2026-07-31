@@ -745,6 +745,18 @@ export interface AgentProcess extends EventEmitter<AgentProcessEvents> {
    */
   setPermissionRequester?(requester: PermissionRequester): void;
   /**
+   * SHI-264 — stamp this turn's durable DELIVERY id onto the next spawn, so the
+   * worker can report it back from `/agent/status` and an orchestrator that
+   * restarted mid-turn can tell WHICH server-originated delivery the surviving
+   * turn belongs to (see `turn-adoption.ts`).
+   *
+   * Optional and orchestrator↔worker only: `ProxyAgentProcess` forwards it in
+   * the `/agent/start` body alongside `runToken`. In-process adapters omit it —
+   * an in-process agent cannot outlive the orchestrator, so there is nothing to
+   * re-identify.
+   */
+  setDeliveryId?(deliveryId: string): void;
+  /**
    * Write whatever MCP configuration this CLI expects before the worker
    * calls `run()`. Each backend owns its own wire format (Claude:
    * `--mcp-config` JSON; Codex: `~/.codex/config.toml`; future Cursor:
@@ -792,6 +804,16 @@ export interface WorkerAgentStatus {
   turnStartSseSeq?: number;
   /** The spawning proxy's run token, so a re-created proxy can keep the epoch. */
   runToken?: string;
+  /**
+   * SHI-264 — the durable DELIVERY id of the turn in flight, when it was
+   * dispatched on behalf of a server-side delivery (a notify-on-merge wake,
+   * either `kind`). Ground truth for "is this delivery still live?": a
+   * restarted orchestrator reads it here, rebinds the delivery's completion
+   * settlement onto the adopted turn, and the watch's reconcile therefore
+   * redispatches only when NO live worker reports the delivery. Absent for an
+   * ordinary user turn, and on a legacy worker.
+   */
+  deliveryId?: string;
   /** Which backend occupies the slot. */
   agentId?: AgentId;
   /** The spawn was started in live-steering (streaming) mode. */

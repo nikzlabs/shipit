@@ -212,6 +212,7 @@ export async function dispatchAgentMessage(
     postTurn: undefined,
     systemTurn: undefined,
     onTurnComplete: undefined,
+    deliveryId: undefined,
   }));
 
   return { ok: true, queued: wasRunning };

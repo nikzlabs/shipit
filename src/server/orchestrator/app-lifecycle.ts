@@ -854,6 +854,7 @@ export function createPrStatusPoller(
           uploads: undefined,
           permissionMode: undefined,
           postTurn: undefined,
+          deliveryId: undefined,
         }));
       });
       return { outcome: "fixed" };

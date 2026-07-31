@@ -26,6 +26,7 @@ describe("queue drain routing (SHI-255)", () => {
       activity: "Resuming after child PR merged…",
       systemTurn: true,
       onTurnComplete,
+      deliveryId: "watch-1:1",
     };
 
     await startQueuedMessage(runner, next, runInteractive);
@@ -77,6 +78,7 @@ describe("queue drain routing (SHI-255)", () => {
       postTurn: "none",
       systemTurn: true,
       onTurnComplete,
+      deliveryId: "watch-1:1",
     };
 
     // docs/240 — `toQueuedMessage` now takes a branded `PreparedDispatch` (so

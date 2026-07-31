@@ -357,6 +357,23 @@ export interface SessionMergeWatch {
    * backoff window since this instant has elapsed.
    */
   lastAttemptAt?: string;
+  /**
+   * SHI-264 — durable identity of the most recent delivery attempt
+   * (`watchId:attempt`), stamped onto the wake-turn, sent to the worker, and
+   * reported back from its `/agent/status`.
+   *
+   * This is what makes liveness DERIVABLE rather than tracked. An orchestrator
+   * that restarts mid-wake has no memory of the dispatch, but the turn is still
+   * running inside a surviving container: matching this id against the worker's
+   * report lets turn adoption rebind the watch's completion settlement to that
+   * turn, and lets `reconcilePending` redispatch only when nothing reports it.
+   * Without it, the adopted turn settled nothing and reconcile queued a
+   * duplicate wake behind it.
+   *
+   * Scoped to the arming via `watchId`, so a docs/202 re-arm (which replaces the
+   * row) can never have an old delivery re-settle the new watch.
+   */
+  deliveryId?: string;
   /** SHI-258 — message from the most recent failed delivery attempt, if any. */
   lastDeliveryError?: string;
   /** SHI-258 — ISO instant the watch gave up (`delivery-failed`). */

@@ -438,6 +438,7 @@ export async function spawnChildSession(
     postTurn: undefined,
     systemTurn: undefined,
     onTurnComplete: undefined,
+    deliveryId: undefined,
   }));
 
   console.log(
@@ -772,6 +773,7 @@ export async function sendChildMessage(
     postTurn: undefined,
     systemTurn: undefined,
     onTurnComplete: undefined,
+    deliveryId: undefined,
   }));
   return {
     queuePosition: wasRunning ? runner.queueLength : 0,

@@ -60,6 +60,21 @@ export class AgentController {
   private residentSpawn: { runToken?: string; streaming: boolean } | null = null;
 
   /**
+   * SHI-264 — the durable DELIVERY id of the turn currently in flight, when the
+   * orchestrator dispatched it on behalf of a server-side delivery (a
+   * notify-on-merge wake). Published via `/agent/status` so a restarted
+   * orchestrator can re-identify the delivery and rebind its completion
+   * settlement onto the adopted turn instead of dispatching a duplicate.
+   *
+   * Deliberately keyed to the TURN, not the spawn: a resident streaming process
+   * outlives its turn, so a delivery held on `residentSpawn` would keep reading
+   * as live after the turn ended (suppressing a legitimate redispatch forever)
+   * and would leak onto the NEXT turn that `/agent/message` starts on the same
+   * process. Cleared by {@link endTurn}.
+   */
+  private turnDeliveryId: string | undefined;
+
+  /**
    * docs/240 — whether a turn is genuinely in flight on the resident process.
    * Set when a turn starts (`/agent/start`, or `/agent/message` into an idle
    * resident streaming process); cleared on `agent_result` and on process exit.
@@ -82,12 +97,12 @@ export class AgentController {
   }
 
   registerRoutes(app: FastifyInstance): void {
-    app.post<{ Body: { agentId: AgentId; params: AgentRunParams; runToken?: string } }>("/agent/start", async (request, reply) => {
+    app.post<{ Body: { agentId: AgentId; params: AgentRunParams; runToken?: string; deliveryId?: string } }>("/agent/start", async (request, reply) => {
       if (this.agent) {
         return reply.code(409).send({ error: "Agent already running" });
       }
 
-      const { agentId, params, runToken } = request.body;
+      const { agentId, params, runToken, deliveryId } = request.body;
       if (!agentId || !params) {
         return reply.code(400).send({ error: "agentId and params are required" });
       }
@@ -98,6 +113,10 @@ export class AgentController {
         // orchestrator replays from exactly here, so the live turn's events are
         // re-delivered while the previous (already-persisted) turn's are not.
         this.beginTurn();
+        // SHI-264 — stamp the delivery AFTER `beginTurn` (which clears nothing,
+        // but keeps the "turn identity is established first" reading) and
+        // before anything can be emitted.
+        this.turnDeliveryId = deliveryId;
         this.residentSpawn = { runToken, streaming: params.useStreaming === true };
         // docs/155 hair 10 — each adapter knows its own MCP wire format
         // (Claude: per-turn `--mcp-config` JSON; Codex: `config.toml` block;
@@ -323,6 +342,7 @@ export class AgentController {
       turnActive: this.turnActive,
       turnStartSseSeq: this.turnStartSseSeq,
       ...(this.residentSpawn?.runToken !== undefined ? { runToken: this.residentSpawn.runToken } : {}),
+      ...(this.turnDeliveryId !== undefined ? { deliveryId: this.turnDeliveryId } : {}),
       ...(this.agent ? { agentId: this.agent.agentId } : {}),
       ...(this.residentSpawn
         ? { streaming: this.residentSpawn.streaming || this.agent?.isStreaming === true }
@@ -344,6 +364,9 @@ export class AgentController {
   /** docs/240 — the turn ended (result, process exit, or kill). */
   private endTurn(): void {
     this.turnActive = false;
+    // SHI-264 — the delivery belongs to the turn that just ended; a later
+    // `/agent/status` must not report it as still live.
+    this.turnDeliveryId = undefined;
   }
 
   /** Kill the resident agent and cancel all sub-agent spawns (worker shutdown). */

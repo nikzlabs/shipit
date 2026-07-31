@@ -98,8 +98,9 @@ turn-completion signal the CI auto-fix loop awaits in `app-lifecycle.ts`).
 > `TurnOutcome`, and `delivered` is stamped **only** when the outcome is a clean
 > `completed`. A wake-turn that errored, exited without ever producing a result
 > (SHI-260), or was dropped when the parent's queue was cleared records a failed
-> attempt and releases the SHI-258 in-flight marker instead — so the retry
-> supervisor re-attempts it rather than the watch looking healthy while stranded.
+> attempt instead — and its delivery stops reading as in-flight the moment the
+> turn settles — so the retry supervisor re-attempts it rather than the watch
+> looking healthy while stranded.
 > The two bullets below still describe *when* the signal fires.
 
 - **idle parent** → `dispatch` starts the turn now → it completes → `delivered`.
@@ -207,17 +208,24 @@ watch sits at `merge-observed`, and stops itself the moment none does). Delivery
 now runs through `attemptDelivery`, which records the attempt on the persisted
 watch *before* running it, and eligibility is decided on two independent axes:
 
-1. **In-memory `inFlight` set — the precise signal.** A dispatch that returned
-   without throwing is genuinely pending *in this process*: its `onTurnComplete`
-   rides the runner's in-memory queue and fires whenever the turn runs, however
-   long the parent stays busy. Such a watch is **never** re-fired. This fact is
-   deliberately *not* persisted, because the thing it describes — the queue and
-   its callback — is itself in-memory: a restart correctly empties the set and
-   hands recovery back to `reconcilePending` (which clears it explicitly, since
-   at bootstrap no dispatch from this process can be pending). The one exception
-   is a parent runner that has since been **disposed**: the queued turn went with
-   it, so `isDeliveryInFlight` drops the marker and the watch becomes retryable —
-   another stranding case the old code could only recover by restarting.
+1. **A durable delivery id, asked of the runner that owns it** — the precise
+   signal. Every attempt is stamped `watchId:attempt` and persisted on the watch
+   row alongside `deliveryAttempts`, so `isDeliveryInFlight` can ask
+   `runner.hasDelivery(id)`: true while the wake-turn runs, and for the whole
+   time it waits in the parent's queue. Such a watch is **never** re-fired. A
+   parent runner that has since been **disposed** answers nothing, so the watch
+   becomes retryable — a stranding case the pre-SHI-258 code could only recover
+   by restarting.
+
+   > **SHI-264 superseded the original form of this axis.** It used to be an
+   > in-memory `inFlight` set — *tracked* state beside the thing it described,
+   > which desynchronized from a disposed runner, a second runner for the same
+   > session, and above all a turn ADOPTED after an orchestrator restart (the
+   > adopted turn could settle nothing, so `reconcilePending` queued a duplicate
+   > behind it). The id is sent to the worker and reported back on
+   > `/agent/status`, so liveness is now *derived* from ground truth and survives
+   > a restart. What remains in memory is a `dispatching` re-entrancy lock over
+   > the one `await` where the delivery exists nowhere yet. See docs/240 § Fix C.
 2. **Persisted `deliveryAttempts` + `lastAttemptAt` backoff — the safety net.**
    Even an eligible watch is re-attempted only once an exponential backoff (1 m,
    2 m, 4 m, 8 m, capped at 10 m) has elapsed, so a container that keeps failing
@@ -241,7 +249,9 @@ time a watch is stalled its child has been promoted into `mergedSessions` and
 archived — nothing in the poller's own bookkeeping is keyed to the stalled watch,
 and the supervisor's arming is driven by `trackSession` / viewer events. Hanging
 retry liveness off that would make it depend on unrelated state. The retry also
-needs the in-memory `inFlight` set, which lives here. A dedicated, self-stopping
+needs the delivery bookkeeping (mint, persist, rebind), which lives here — as
+does `rebindDelivery`, the hook turn adoption calls to re-settle a delivery that
+outlived a restart. A dedicated, self-stopping
 timer is both simpler to reason about and directly testable
 (`retryStalledDeliveries` is public), and it costs nothing in the steady state:
 no watch at `merge-observed` ⇒ no timer.

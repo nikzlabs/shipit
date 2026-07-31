@@ -40,18 +40,23 @@ class FakeRunner {
   recordedCards: { afterGroupIndex: number; message: Record<string, unknown> }[] = [];
   steeredMessages: unknown[] = [];
   lastPersistedBufferIndex = 0;
+  /** SHI-264 — the delivery of the held wake-turn, so liveness is derivable. */
+  activeDeliveryId: string | undefined;
   private pending: ((o: TurnOutcome) => void)[] = [];
 
   dispatch(opts: AgentDispatchOptions): TurnHandle {
     this.dispatched.push(opts);
     const settlement = createTurnSettlement();
+    if (opts.deliveryId !== undefined) this.activeDeliveryId = opts.deliveryId;
     if (opts.onTurnComplete) this.pending.push(opts.onTurnComplete);
     return settlement;
   }
+  hasDelivery(deliveryId: string): boolean { return this.activeDeliveryId === deliveryId; }
   /** Settle every held wake-turn — models the turn actually running. */
   completeTurns(outcome: TurnOutcome = TURN_COMPLETED): void {
     const pending = this.pending;
     this.pending = [];
+    this.activeDeliveryId = undefined;
     for (const fire of pending) fire(outcome);
   }
   emitMessage(msg: Record<string, unknown>): void { this.emitted.push(msg); }

@@ -173,22 +173,87 @@ for the exact field-carrying property that SHI-259 then broke. The tests were
 correct; they covered the drains that existed. A test cannot fail for a call site
 nobody has written yet, which is precisely the failure mode. A type error can.
 
-## Later — durable `deliveryId` (gated on docs/239)
+## Fix C — durable `deliveryId` (SHI-264)
 
-Not part of this work; recorded here because it is the third layer and only earns its
-cost if `docs/239-self-merge-wake` proceeds.
+The third layer, deferred until docs/239 shipped and now built. Fix B made
+completion an **owned** signal; it is still an **in-memory** one, so it dies with
+the orchestrator process. This makes the same signal **durable**.
 
-SHI-258's `inFlight` set is **tracked** state, so it desynchronizes: a disposed
-runner, an adopted turn that survived a restart, or a second runner created for the
-same session all leave it wrong. The robust form is to **derive liveness rather than
-track it** — stamp every server-originated turn with a durable `deliveryId`, have the
-worker report which ids are queued or running (via `/agent/status`), and let a
-supervisor ask ground truth instead of trusting a set someone remembered to update.
+### The gap it closes
 
-That also supplies the missing half of SHI-259: turn adoption currently cannot
-reconstruct a watch's completion settlement, because the worker's reported turn
-identity carries no delivery metadata. With a `deliveryId` it can re-settle a
-surviving delivery instead of the orchestrator redispatching over the top of it.
+Turn adoption reconnects a restarted orchestrator to a turn that outlived it, but
+the worker's reported turn identity carried only agent id, run token and
+streaming state — no delivery metadata — so the adopted `executeAgentTurn`
+reconstructed **no completion settlement**. For a turn dispatched on behalf of a
+notify-on-merge watch (either `kind`), after a restart: the turn kept running,
+the watch stayed non-terminal because nothing could settle it, and
+`reconcilePending` queued a **second** wake behind the still-running first one.
+SHI-259's startup ordering (adopt before reconcile) stopped them colliding; it
+never stopped the duplicate.
+
+For a self-merge wake (docs/239) the duplicate's first act is a branch reset,
+which that command's safety gate makes *refuse* rather than destroy — bounded,
+but leaning on a downstream gate to absorb a duplicate is not a fix.
+
+### Derive liveness rather than track it
+
+Every watch-originated turn is stamped `watchId:attempt` and the id is persisted
+**with** the attempt (`SessionMergeWatch.deliveryId`, same write as
+`deliveryAttempts`). It rides the dispatch to the worker on `/agent/start`, the
+worker records it **against the turn** (not the spawn — a resident streaming
+process outlives its turn, and a delivery held there would keep reading as live
+and leak onto the next turn `/agent/message` starts), and `/agent/status` reports
+it back.
+
+Liveness is then a question with a ground-truth answer, asked of the runner that
+actually owns the turn:
+
+```ts
+runner.hasDelivery(id)   // running as the current turn, OR queued behind one
+```
+
+- **Running** — `runner.activeDeliveryId`, set synchronously by `dispatch` in the
+  same tick as `running` (the async gap before `executeAgentTurn` would otherwise
+  read as "not in flight", at exactly the slowest sessions), re-published by the
+  executor at turn start, and by **adoption** from the worker's report.
+- **Queued** — the id rides `QueuedMessage` exactly as `onTurnComplete` does, so
+  a wake waiting behind a busy parent answers truthfully for the whole wait.
+
+Nothing here can drift the way SHI-258's `inFlight` set did: a disposed runner is
+gone from the registry, a replacement runner has an empty queue, and after a
+restart the answer came from the worker itself. **No runner, no delivery.**
+
+### Adoption re-settles; reconcile stands down
+
+`SystemTurnDeps.rebindDelivery(deliveryId)` hands adoption the settlement for a
+delivery whose original callback died. `MergeWatchManager.rebindDelivery` matches
+the id against the persisted watch rows and rebuilds the **identical** callback
+`attemptDelivery` attaches — same helper, `buildDeliverySettlement`, so the two
+cannot drift (two hand-written copies is precisely the pattern this doc exists to
+end). A miss (cancelled, re-armed, already terminal) returns `undefined` and the
+adopted turn runs unsettled, exactly like a user turn.
+
+`attemptDelivery` then gains one guard, at the single funnel every delivery path
+goes through (poller, register-time check, retry supervisor, startup reconcile):
+if the delivery is live, return. So reconcile redispatches **only** when no live
+worker reports it.
+
+### What's left of `inFlight`
+
+A `dispatching` set holding one `await` — the window between recording the
+attempt and `runner.dispatch` actually enqueueing it, which can span a container
+boot. Released in a `finally`, so it cannot outlive the operation it guards. It
+is a re-entrancy lock, not liveness, and a restart correctly empties it.
+
+### Settlement contract, unchanged
+
+Exactly-once, resolved in a `finally`, `errored` preserved. The delivery id is
+carried *alongside* the settlement, never instead of it: `settleTurn` clears the
+published delivery **before** invoking the consumer (whose first act on a
+non-`completed` outcome is to decide whether to retry — a delivery still reading
+as in-flight would suppress that forever), guarded on identity so a settling turn
+can't clear a successor's, and on `!runner.running` so a no-result retry that has
+already re-armed the id isn't clobbered by its superseded predecessor.
 
 ## SHI-259's second half — startup ordering
 
@@ -221,9 +286,10 @@ failing doesn't skip the other.
 - **`TurnOutcome` must carry the error case.** `wakeSessionWithTurn`'s
   `onExecuted(): void` became `onSettled(outcome: TurnOutcome)`, and
   `merge-watch` now stamps `delivered` **only** on `status === "completed"`.
-  Anything else (`errored`, `no-result`, `dropped`) releases the SHI-258
-  in-flight marker and records a failed attempt, so the retry supervisor
-  re-attempts on a backoff instead of the watch looking healthy while stranded.
+  Anything else (`errored`, `no-result`, `dropped`) records a failed attempt —
+  and (Fix C) the turn's delivery stops reading as in-flight as it settles — so
+  the retry supervisor re-attempts on a backoff instead of the watch looking
+  healthy while stranded.
 
 ## Key files
 
@@ -237,7 +303,13 @@ failing doesn't skip the other.
 | Settlement wiring | `src/server/orchestrator/dispatched-turn.ts`, `turn-executor.ts` | One settlement per logical turn across retries; attempt-zero guard **deleted**; `done` handler settles from a `finally` |
 | Runner impls | `src/server/orchestrator/container-session-runner.ts`, `turn-accumulator.ts` | Same narrowed signatures; queue teardown settles what it discards |
 | Callers | `wake-session.ts`, `merge-watch.ts`, `app-lifecycle.ts` (CI auto-fix), `services/rebase-driver.ts`, `services/child-sessions.ts`, `services/github-ci-fix.ts`, `services/headless-sessions.ts`, `services/agent.ts`, `ws-handlers/send-message.ts` | Migrated to `prepareDispatch`; merge-watch consumes the OUTCOME instead of assuming delivery |
-| Ordering | `src/server/orchestrator/bootstrap-managers.ts` | The adoption sweep is awaited before watch reconciliation (SHI-259's second half) |
+| Ordering | `src/server/orchestrator/bootstrap-managers.ts` | The adoption sweep is awaited before watch reconciliation (SHI-259's second half); `mergeWatchManagerRef` forward-ref feeds `rebindDelivery` into every runner |
+| **Fix C** — worker report | `src/server/session/agent-controller.ts` | `/agent/start` accepts `deliveryId`; `turnDeliveryId` is keyed to the TURN (cleared by `endTurn`) and published on `/agent/status` |
+| Fix C — wire | `src/server/orchestrator/proxy-agent-process.ts`, `container-session-runner.ts` | `ProxyAgentProcess.deliveryId` / `setDeliveryId`, forwarded on `/agent/start`; `adoptWorkerTurn` reads `status.deliveryId` |
+| Fix C — runner contract | `src/server/orchestrator/session-runner.ts` | `activeDeliveryId` + `hasDelivery()` on both runners; `deliveryId` on `AgentDispatchOptions` / `QueuedMessage`; `dispatch` publishes it synchronously and clears it on setup failure |
+| Fix C — turn lifecycle | `src/server/orchestrator/turn-executor.ts`, `dispatched-turn.ts`, `turn-adoption.ts` | Publish at turn start, stamp on the spawn, clear in `settleTurn` before reporting; adoption rebinds via `deps.rebindDelivery` |
+| Fix C — the owner | `src/server/orchestrator/merge-watch.ts` | Mints + persists `watchId:attempt`; `buildDeliverySettlement` shared by dispatch and rebind; `rebindDelivery`; derived `isDeliveryInFlight`; `inFlight` reduced to a `dispatching` lock |
+| Fix C — persistence | `src/server/shared/types/domain-types/session.ts`, `agent-types.ts` | `SessionMergeWatch.deliveryId` (JSON column — no migration), `WorkerAgentStatus.deliveryId`, `AgentProcess.setDeliveryId?` |
 
 ## Testing
 
@@ -261,6 +333,27 @@ failing doesn't skip the other.
   **ADOPTED** turn runs as a system turn and settles (SHI-259).
 - The existing SHI-254 / SHI-255 / SHI-258 regressions pass unchanged — only the
   outcome literal in two assertions grew a `status` field.
+- `integration_tests/restart-delivery-identity.test.ts` (SHI-264) — the honest
+  harness: a REAL `SessionWorker` over HTTP + SSE, a REAL `ContainerSessionRunner`
+  and a REAL `MergeWatchManager`, run in the bootstrap order (adopt, then
+  reconcile), for **both** `kind: "child"` and `kind: "self"`. A restart during a
+  watch-originated turn yields ONE turn and the watch settles from the ADOPTED
+  turn; a restart where the worker turn genuinely died redispatches exactly once
+  (with a fresh id) and a second reconcile stands down; a manager instance that
+  has never dispatched anything reaches the same verdict, which is the property
+  "`inFlight` is no longer load-bearing for liveness" stated as a test. Nothing
+  is faked at the orchestrator boundary — the id makes the round trip through the
+  worker, so `/agent/status` reporting it is part of what's under test.
+- `merge-watch.test.ts` — the manager-side half: an id is minted per attempt and
+  persisted WITH it, a retry mints a distinct one, a queued delivery is
+  recognized by a fresh manager, and `rebindDelivery` matches only a live
+  non-terminal watch. Its `FakeRunner` models `hasDelivery` + a `simulateRestart`
+  that drops the in-memory queue, so the fake tracks the contract rather than
+  the old marker.
+- `integration_tests/turn-settlement.test.ts` — when the published delivery flips:
+  live in the same tick as `running`, live across the queued wait and through its
+  own turn, and cleared BEFORE the consumer is told (a stale `true` reads as
+  "never retry").
 
 ## Resolved decisions
 
@@ -275,4 +368,18 @@ failing doesn't skip the other.
 - **Settlement resolved in `finally`, retries inside one settlement.** Deletes
   SHI-260's guard rather than fixing it.
 - **Incremental migration via a callback adapter**, not a fifteen-caller rewrite.
-- **`deliveryId` is out of scope** and gated on docs/239 proceeding.
+- **`deliveryId` keyed to the TURN on the worker, not the spawn.** A resident
+  streaming process outlives its turn, so a delivery held on `residentSpawn`
+  would keep reporting as live after the turn ended — permanently suppressing a
+  legitimate redispatch — and would leak onto the next turn `/agent/message`
+  starts on the same process.
+- **The liveness guard lives in `attemptDelivery`, not at each caller.** It is the
+  one funnel every delivery path goes through, which is the same reason the
+  settlement lives in the executor rather than at each dispatch site.
+- **`rebindDelivery` rebuilds the settlement from the persisted row** rather than
+  the manager keeping an in-memory map of deliveries. A map would be the same
+  tracked-state mistake one layer up; the row already holds everything the
+  callback needs (attempt number, `watchId`, `observedAt`).
+- **The old `inFlight` set is reduced, not renamed.** What survives guards one
+  `await` and is released in a `finally` — it cannot answer a liveness question
+  it is not asked.

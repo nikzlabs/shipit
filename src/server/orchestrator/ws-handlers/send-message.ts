@@ -324,6 +324,7 @@ export async function handleSendMessage(
         postTurn: undefined,
         systemTurn: undefined,
         onTurnComplete: undefined,
+        deliveryId: undefined,
       }));
       return;
     }

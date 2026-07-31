@@ -103,6 +103,7 @@ export interface AgentDispatchInit {
   postTurn: "commit-push" | "none" | undefined;
   systemTurn: boolean | undefined;
   onTurnComplete: ((outcome: TurnOutcome) => void) | undefined;
+  deliveryId: string | undefined;
 }
 
 /** Compile-time `T extends never` assertion — the error message names the offender. */
@@ -138,6 +139,7 @@ const DISPATCH_FIELDS: Record<keyof AgentDispatchOptions, true> = {
   postTurn: true,
   systemTurn: true,
   onTurnComplete: true,
+  deliveryId: true,
 };
 
 const DISPATCH_FIELD_KEYS = Object.keys(DISPATCH_FIELDS) as (keyof AgentDispatchOptions)[];
@@ -195,6 +197,9 @@ export function queuedMessageToDispatchOptions(next: QueuedMessage): PreparedDis
     // docs/196 → docs/240 — carry the completion signal so an enqueued turn
     // still settles when it drains (the merge-watch busy path depends on this).
     onTurnComplete: next.onTurnComplete,
+    // SHI-264 — and the DURABLE half of the same signal, so the entry answers
+    // `runner.hasDelivery(id)` for the whole time it waits in the queue.
+    deliveryId: next.deliveryId,
   });
 }
 

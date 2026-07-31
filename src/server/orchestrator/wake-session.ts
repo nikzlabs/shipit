@@ -77,6 +77,20 @@ export interface WakeTurnOptions {
    * caller should treat it as a failed attempt.
    */
   onSettled?: (outcome: TurnOutcome) => void;
+  /**
+   * SHI-264 — durable identity for this delivery, stamped onto the turn and
+   * carried all the way to the worker.
+   *
+   * `onSettled` is an in-memory callback: it dies with the orchestrator process,
+   * which is precisely why a restart mid-wake used to leave the originating
+   * watch non-terminal and let a second wake queue behind the still-running
+   * first one. The id survives — the worker reports it back from
+   * `/agent/status`, so turn adoption can re-acquire the settlement and the
+   * caller's reconcile can ask ground truth instead of a set it remembered to
+   * update. Optional: a wake with no owning delivery (a docs/233 report) simply
+   * has nothing to re-identify.
+   */
+  deliveryId?: string;
 }
 
 /**
@@ -188,6 +202,7 @@ export async function wakeSessionWithTurn(
           },
         }
       : { onTurnComplete: undefined }),
+    deliveryId: opts.deliveryId,
     execution: undefined,
     images: undefined,
     files: undefined,

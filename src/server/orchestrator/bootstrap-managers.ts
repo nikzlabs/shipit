@@ -267,6 +267,12 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   // poller exists.
   const prStatusPollerRef: { ref: PrStatusPoller | null } = { ref: null };
 
+  // SHI-264 — the same forward-ref shape for the merge-watch manager, which is
+  // likewise built after the runner registry. Turn adoption (wired into every
+  // runner's system-turn deps) reaches it to re-acquire the settlement for a
+  // delivery whose wake-turn outlived an orchestrator restart.
+  const mergeWatchManagerRef: { ref: MergeWatchManager | null } = { ref: null };
+
   // docs/153 / docs/154 — lazy holders for orchestrator-owned OAuth
   // refreshers. Constructed below (after `wireEventHandlers` so
   // `repushTokenToPinnedSessions` is in scope), referenced from the
@@ -414,6 +420,11 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     readSystemPrompt: readSystemPromptApp,
     generateText,
     getPrStatusPoller: () => prStatusPollerRef.ref ?? undefined,
+    // SHI-264 — same lazy-resolution shape, same reason: the merge-watch manager
+    // is built after the registry it dispatches into. Turn adoption calls this
+    // with the delivery id the worker reported, so a wake-turn that outlived a
+    // restart settles its ORIGINAL watch instead of a duplicate being queued.
+    rebindDelivery: (deliveryId: string) => mergeWatchManagerRef.ref?.rebindDelivery(deliveryId),
     // docs/146 — same lazy-resolution pattern as the poller itself: the
     // manager is constructed inside the poller's constructor, which runs
     // after the registry, so the runner-idle hook reads through a getter.
@@ -464,6 +475,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
         sessionManager, createRepoGit, getBareCacheDir, githubAuthManager, repoStore, sessionId,
       ),
   });
+  mergeWatchManagerRef.ref = mergeWatchManager;
 
   // ---- PR Status Poller ----
   const prStatusPoller = createPrStatusPoller({

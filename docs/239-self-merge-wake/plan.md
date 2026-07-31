@@ -213,8 +213,10 @@ reordered call site.
 
 - **SHI-263** — a dispatch throwing during setup strands its settlement and blocks
   SHI-258's retry.
-- **SHI-264** — a restart mid-wake can queue a duplicate; the reset gate makes it refuse
-  rather than destroy.
+- ~~**SHI-264** — a restart mid-wake can queue a duplicate; the reset gate makes it refuse
+  rather than destroy.~~ Closed: every wake-turn now carries a durable delivery id the
+  worker reports back, so adoption re-settles the surviving turn and reconcile
+  redispatches only when nothing reports it. See docs/240 § Fix C.
 
 ## Key files
 
