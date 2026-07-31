@@ -376,10 +376,31 @@ export async function executeAgentTurn(
     // drains only after the rebase fully settles (the driver's own
     // `drainQueue` callback owns that).
     if (postTurn === "none") return;
+    // SHI-262 — the finished turn's edits MUST be in git before a queued turn
+    // starts. A queued turn is free to begin by discarding working-tree state
+    // (`git reset --hard`, `git checkout -f`, a branch reset); edits that never
+    // entered git have no reflog entry and no way back, so draining first is a
+    // silent, unrecoverable data-loss window. Only the LOCAL half runs here —
+    // `commitOnce` is `git add -A` + `git commit` + chat-history bookkeeping,
+    // and the push it arms is a debounced timer (`scheduleAutoPush`), not a
+    // network call. The network half (PR card, re-arm, release flow) stays
+    // behind the drain in `runCommitAndPr`, so two back-to-back user messages
+    // still never wait on a GitHub round-trip.
+    //
+    // Gated on something actually being queued: every `drainNext` implementation
+    // (WS, dispatch, adoption) starts a turn only when `queueLength > 0`, so on
+    // the ordinary empty-queue turn end nothing moves and the commit stays
+    // where it was — after the `session_agent_finished` SSE broadcast, which
+    // must not be delayed by post-turn work (see `broadcastFinishedIfIdle`).
+    if ((runner?.queueLength ?? 0) > 0) await commitOnce();
     await input.drainNext();
   };
 
   const runCommit = async (): Promise<string | null> => {
+    // docs/169 — rebase turns commit via `git rebase --continue`; auto-committing
+    // would corrupt the rebase. Guarded here as well as in `runCommitAndPr` so
+    // no caller of `commitOnce` can reach the commit on that path.
+    if (postTurn === "none") return null;
     // No runner / no workspace on disk → nothing to commit. Mirrors the WS
     // path's `if (sessionDir)` guard and keeps git off the orchestrator's cwd.
     if (!runner?.sessionDir) return null;
@@ -449,11 +470,21 @@ export async function executeAgentTurn(
     }
   };
 
+  /**
+   * SHI-262 — run the local auto-commit at most once per turn, whichever path
+   * reaches it first. `tryDrain` calls this ahead of starting a queued turn;
+   * `runCommitAndPr` calls it on the ordinary path. Memoizing the PROMISE (not
+   * the resolved hash) means a second caller arriving while the commit is still
+   * in flight awaits the same commit instead of racing a second `git add -A`.
+   */
+  let commitPromise: Promise<string | null> | null = null;
+  const commitOnce = (): Promise<string | null> => (commitPromise ??= runCommit());
+
   const runCommitAndPr = async (): Promise<void> => {
     // docs/169 — rebase turns commit via `git rebase --continue` and force-push
     // after the whole flow; auto-committing here would corrupt the rebase.
     if (postTurn === "none") return;
-    const commitHash = await runCommit();
+    const commitHash = await commitOnce();
     if (commitHash && runner) {
       try {
         await deps.postTurnPrFlow?.(sessionId, runner.sessionDir, commitHash, emit);
@@ -493,6 +524,12 @@ export async function executeAgentTurn(
   // WS by the whole commit duration, leaving other tabs stale on completion.
   // Guarded by `running` so a back-to-back queued turn that `tryDrain` just
   // started suppresses a spurious finished→started flicker.
+  //
+  // SHI-262 caveat: when a message IS queued, `tryDrain` commits before starting
+  // it, so this broadcast lands after that commit. That path is suppressed by
+  // the `running` guard anyway (the drained turn is already running), so the
+  // promptness property above is unaffected — it only ever mattered for the
+  // empty-queue turn end, where the commit still runs after this fires.
   const broadcastFinishedIfIdle = (): void => {
     if (runner?.running) return;
     deps.listenerDeps.sseBroadcast("session_agent_finished", { sessionId });
@@ -520,6 +557,11 @@ export async function executeAgentTurn(
   // for non-streaming we sync the token + drain the queue here and leave
   // commit/PR/finished to `done` (the slow git work runs after the client has
   // cleared queued state).
+  //
+  // SHI-262 — note that the non-streaming branch drains HERE, at `agent_result`,
+  // while its commit runs later in `done`. Reordering the two statements in the
+  // `done` handler would therefore have fixed nothing; the guarantee has to live
+  // inside `tryDrain`, which is the one point every drain path goes through.
   let streamingPostTurnFired = false;
   agent.on("event", async (event: AgentEvent) => {
     if (event.type !== "agent_result") return;
@@ -638,6 +680,11 @@ export async function executeAgentTurn(
         // drained and only fires here on the abnormal-exit path. The done handler
         // above already cleared the resident ref + `isStreamingActive`, so the
         // drained turn spawns a fresh agent rather than writing to dead stdin.
+        // SHI-262 — on that abnormal-exit path `tryDrain` also runs the local
+        // auto-commit first when something is queued, so the crashed turn's
+        // partial edits are in git before the queued turn (which may reset the
+        // working tree) starts. Previously this branch drained with the tree
+        // still uncommitted and no commit ever ran for the turn at all.
         if (runner) runner.running = false;
         await tryDrain();
         emitFinishedIfIdle();
@@ -648,7 +695,9 @@ export async function executeAgentTurn(
       // Non-streaming: drain first (clears queued visual state before the slow
       // commit), broadcast the finished SSE so other tabs update promptly, then
       // commit/PR, then signal idle (remediation) last. All guarded so a prior
-      // agent_result that already drained/synced makes these no-ops.
+      // agent_result that already drained/synced makes these no-ops — including
+      // `runCommitAndPr`, whose `commitOnce` returns the commit `tryDrain`
+      // already made when it had a queued turn to start (SHI-262).
       await tryDrain();
       broadcastFinishedIfIdle();
       await runCommitAndPr();
