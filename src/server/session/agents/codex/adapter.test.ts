@@ -1432,7 +1432,7 @@ describe("CodexAdapter", () => {
     expect(reply.result).toEqual({ decision: "approved" });
   });
 
-  it("routes a v2 approval through the injected permission requester and denies (docs/193)", async () => {
+  it("routes a sensitive v2 approval through the injected permission requester and denies (docs/193)", async () => {
     await createAndInit("Edit a protected file");
     const requester = vi.fn().mockResolvedValue({ behavior: "deny" });
     adapter.setPermissionRequester(requester);
@@ -1441,7 +1441,7 @@ describe("CodexAdapter", () => {
     const reqLine = `${JSON.stringify({
       id: 9101,
       method: "item/fileChange/requestApproval",
-      params: { changes: [{ path: ".npmrc" }] },
+      params: { reason: "write to a sensitive file", changes: [{ path: ".npmrc" }] },
     })}\n`;
     fakeProc.stdout.emit("data", Buffer.from(reqLine));
 
@@ -1457,9 +1457,10 @@ describe("CodexAdapter", () => {
     expect(reply.result).toEqual({ decision: "decline" });
   });
 
-  it("routes a v2 command approval through the requester and accepts on allow (docs/193)", async () => {
+  it("auto-accepts a routine v2 command without invoking the permission requester", async () => {
     await createAndInit("Run a command");
-    adapter.setPermissionRequester(() => Promise.resolve({ behavior: "allow" }));
+    const requester = vi.fn().mockResolvedValue({ behavior: "deny" });
+    adapter.setPermissionRequester(requester);
     fakeProc.stdin.written.length = 0;
 
     const reqLine = `${JSON.stringify({
@@ -1475,7 +1476,52 @@ describe("CodexAdapter", () => {
     const reply = fakeProc.getRequests().find((r) => (r as { id?: number }).id === 9102) as unknown as {
       result: { decision: string };
     };
+    expect(requester).not.toHaveBeenCalled();
     expect(reply.result).toEqual({ decision: "accept" });
+  });
+
+  it("auto-accepts a routine v1 file change without invoking the permission requester", async () => {
+    await createAndInit("Edit a workspace file");
+    const requester = vi.fn().mockResolvedValue({ behavior: "deny" });
+    adapter.setPermissionRequester(requester);
+    fakeProc.stdin.written.length = 0;
+
+    fakeProc.stdout.emit("data", Buffer.from(`${JSON.stringify({
+      id: 9103,
+      method: "applyPatchApproval",
+      params: { fileChanges: { "/workspace/src/app.ts": { type: "update", unified_diff: "" } } },
+    })}\n`));
+
+    await vi.waitFor(() => {
+      expect(fakeProc.getRequests().find((r) => (r as { id?: number }).id === 9103)).toBeDefined();
+    });
+    expect(requester).not.toHaveBeenCalled();
+    const reply = fakeProc.getRequests().find((r) => (r as { id?: number }).id === 9103) as unknown as {
+      result: { decision: string };
+    };
+    expect(reply.result).toEqual({ decision: "approved" });
+  });
+
+  it("routes a sensitive v1 command through the requester and honors allow", async () => {
+    await createAndInit("Run a command with extra access");
+    const requester = vi.fn().mockResolvedValue({ behavior: "allow" });
+    adapter.setPermissionRequester(requester);
+    fakeProc.stdin.written.length = 0;
+
+    fakeProc.stdout.emit("data", Buffer.from(`${JSON.stringify({
+      id: 9104,
+      method: "execCommandApproval",
+      params: { command: ["curl", "https://example.com"], reason: "requires network access" },
+    })}\n`));
+
+    await vi.waitFor(() => {
+      expect(fakeProc.getRequests().find((r) => (r as { id?: number }).id === 9104)).toBeDefined();
+    });
+    expect(requester).toHaveBeenCalledWith(expect.objectContaining({ agentId: "codex", toolName: "shell" }));
+    const reply = fakeProc.getRequests().find((r) => (r as { id?: number }).id === 9104) as unknown as {
+      result: { decision: string };
+    };
+    expect(reply.result).toEqual({ decision: "approved" });
   });
 
   it("replies with a JSON-RPC error to an unhandled server request (no hang)", async () => {
