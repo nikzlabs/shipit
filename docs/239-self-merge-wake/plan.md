@@ -282,18 +282,20 @@ Terminal states patch the card in place. Note SHI-258's `ChildMergedCard.deliver
 appends a *second* card rather than patching — this is a new pattern for the family, not
 an existing precedent, and should be justified on its own terms.
 
-## Known gaps (documented, not blocking)
+## Known gaps (tracked separately, not blocking)
 
-- **Restart during a wake can duplicate it.** Adoption carries no watch identity and
-  reconstructs no settlement, so reconcile may queue a second wake behind the surviving
-  first. The reset command's gate makes the duplicate refuse rather than destroy, so
-  the cost is a spurious turn. The real fix is docs/240's deferred durable `deliveryId`
-  reported by the worker.
-- **Setup rejections can leave a settlement pending.** `dispatchOnRunner`
-  fire-and-forgets `runDispatchedTurn` with no rejection handler, so a throw before the
-  executor's `finally` strands the handle and the SHI-258 marker. Best fixed upstream
-  in docs/240 by settling `errored` from a rejection handler; delivery should not assume
-  a settlement always arrives.
+- **A dispatch that throws during setup strands its settlement — SHI-263.**
+  `dispatchOnRunner` fire-and-forgets `runDispatchedTurn` with no rejection handler, and
+  the settlement's `finally` lives inside the executor's `done` handler — so a throw
+  during attachment preparation or `createAgent` leaves the handle unresolved, `running`
+  stuck true, and SHI-258's `isDeliveryInFlight` reporting the attempt as permanently in
+  flight (no retry, no `delivery-failed`). Delivery here must not assume a settlement
+  always arrives.
+- **Restart during a wake can duplicate it — SHI-264.** Adoption carries no delivery
+  identity and reconstructs no settlement, so reconcile may queue a second wake behind
+  the surviving first. The reset command's gate makes the duplicate refuse rather than
+  destroy, so the cost is bounded to a spurious turn — but relying on a downstream gate
+  is not a fix. Resolved properly by the durable `deliveryId` docs/240 deferred.
 - **Eviction.** Disk descent does not exempt pending watches, and a wake against an
   evicted checkout boots a container over a missing directory. Delivery must restore the
   workspace first. Materializing a checkout is not mutating the branch, so this is
