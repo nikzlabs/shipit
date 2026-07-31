@@ -122,6 +122,10 @@ export async function dispatchAgentMessage(
   if (!runner || runner.disposed) {
     throw new ServiceError(404, "Session is not active");
   }
+  // docs/243 — reject before auth refresh, attachment reads, warm graduation,
+  // persistence, queueing, or process start. dispatch() repeats this check at
+  // the shared boundary to cover races and every non-HTTP ingress.
+  runner.assertCanDispatch();
 
   // 3. Auth gate — mirror ensureActiveAgentAuthenticated from the WS handler.
   //    Without this, the dispatched run would hang the same way an

@@ -19,6 +19,7 @@ import type {
 } from "../shared/types.js";
 import { dispatchAgentMessage, runSubAgent, getSubAgentResult, ServiceError } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
+import { AgentTurnAdmissionError } from "./session-runner.js";
 
 export async function registerAgentRoutes(
   app: FastifyInstance,
@@ -70,6 +71,10 @@ export async function registerAgentRoutes(
         );
         reply.send(result);
       } catch (err) {
+        if (err instanceof AgentTurnAdmissionError) {
+          reply.code(err.statusCode).send({ error: err.message, code: err.code, sessionId: err.sessionId });
+          return;
+        }
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });
           return;
