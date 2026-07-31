@@ -21,3 +21,7 @@ The design that implements these requirements is in [`plan.md`](./plan.md).
 9. A session knows which feature it is working on. When the session is started from an issue, the feature is inferred from that issue; the human can set or change it in chat at any time. A feature can also be invented during a session — prompted directly in chat rather than started from an issue — in which case the agent creates the feature's documents and works on it from then on.
 
 10. When a project turns this on, open questions block from the start — there is no softer report-only mode. If open questions merely produced warnings, the implementer would invent answers to them, and the invented answers would be suboptimal. Only the feature being worked on can block its own work, so unrelated features never get in the way.
+
+## Open questions
+
+- Requirement 5 says the agent cannot mark its own questions as answered. In the simplified v1, the agent maintains the requirements document itself, so ShipIt still blocks implementation while questions are listed — but a question removed without a human answer would be caught by reviewing the document's change history, not prevented by a mechanism. Is that acceptable for v1, or does requirement 5 need the stronger guarantee from the start? Recommendation: acceptable for v1 — every edit to the document is visible in the pull request, and a stronger mechanism can be added later if this proves a problem in practice.
