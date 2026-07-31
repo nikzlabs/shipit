@@ -32,7 +32,7 @@ Within an opted-in project, a feature participates when its folder (`<docsDir>/<
 
 ### Maintaining requirements.md (reqs 3–4)
 
-The agent maintains `requirements.md` — v1 has no separate approval machinery. The agent writes the doc when prompted, adds entries under `## Open questions` when it hits gaps, and removes a question only when writing in the human's answer, together with a dated note of what was asked and what was chosen. Every change to the file is an ordinary git change, visible in the PR diff, so a question that disappears without an answer is caught by review of the history rather than blocked by a mechanism. Whether that level of enforcement satisfies requirement 5's "the agent cannot mark its own questions as answered" is itself an open question in `requirements.md`.
+The agent maintains `requirements.md` — v1 has no separate approval machinery. The agent writes the doc when prompted, adds entries under `## Open questions` when it hits gaps, and removes a question only when writing in the human's answer, together with a dated note of what was asked and what was chosen. Every change to the file is an ordinary git change, visible in the PR diff, so a question that disappears without an answer is caught by review of the history rather than blocked by a mechanism — the enforcement level requirement 5 specifies.
 
 ### Clarification flow (req 4)
 

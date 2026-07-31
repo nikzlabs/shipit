@@ -1,6 +1,6 @@
 # 241 — Spec discipline checklist
 
-- [ ] Resolve the open question in requirements.md: is review-of-history enough for requirement 5's "cannot mark its own questions as answered" in v1? (blocks everything below, per the discipline's own gate)
+- [x] Resolve the open question in requirements.md: review-of-history is enough for v1 (resolved 2026-07-31; requirement 5 reworded to match)
 - [ ] Config reader for `.shipit/spec-discipline.json` (`enabled`, `docsDir`) (req 8)
 - [ ] Validator library: report entries under a feature's `## Open questions` heading as blocking findings with file and line (req 5)
 - [ ] `SpecGateService` + turn-start consult in turn dispatch; clarification-turn designation (reqs 5, 10)
