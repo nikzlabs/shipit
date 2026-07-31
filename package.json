@@ -86,7 +86,7 @@
     "@types/react-dom": "19.2.3",
     "@types/ws": "8.18.1",
     "@vitejs/plugin-react": "6.0.4",
-    "esbuild": "0.28.0",
+    "esbuild": "0.28.1",
     "eslint": "10.7.0",
     "globals": "17.6.0",
     "jsdom": "29.1.1",
