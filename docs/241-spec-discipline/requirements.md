@@ -16,7 +16,7 @@ The design that implements these requirements is in [`plan.md`](./plan.md).
 
 7. This works the same for projects developed inside ShipIt as for ShipIt itself.
 
-8. All of this is optional, per project. A project turns it on explicitly; a project that doesn't stays exactly as it is today.
+8. All of this is optional, per feature. A feature is put under the discipline explicitly, by giving it a requirements document; every feature and project that doesn't do this stays exactly as it is today.
 
 9. A session knows which feature it is working on. When the session is started from an issue, the feature is inferred from that issue; the human can set or change it in chat at any time. A feature can also be invented during a session — prompted directly in chat rather than started from an issue — in which case the agent creates the feature's documents and works on it from then on.
 
