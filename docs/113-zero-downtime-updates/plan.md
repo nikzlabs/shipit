@@ -1,8 +1,47 @@
 ---
-description: Drain in-flight agent turns before swapping the orchestrator container so running sessions survive an Update Now without losing mid-turn work.
+issue: https://linear.app/shipit-ai/issue/SHI-269
+description: Updates replace only the orchestrator; running sessions and mid-turn work survive via boot-time re-adoption, guarded by an additive-only wire-contract CI check.
 ---
 
 # Zero-downtime updates — keep running agents alive across `Update Now`
+
+## Status — shipped (2026-07-31), design revised
+
+Phase 1 landed, in a slimmer shape than the plan below (which predates
+docs/240 and is kept as the option analysis of record):
+
+- **§1 landed.** `deployment/vps/deploy.sh` and `restart.sh` no longer
+  `docker rm -f` session-worker (`shipit-stack=shipit`) or compose service
+  (`shipit-parent-session`) containers. Updates and restarts replace only the
+  orchestrator; the new process re-adopts surviving containers at boot
+  (`rediscoverContainers()`), and orphan GC is owned by the boot cleanup
+  (`cleanupOrphanContainers()` / `cleanupOrphanComposeResources()`), which
+  already existed. (Paths in the plan below say `deployment/hetzner/` — the
+  deployment dir has since moved to `deployment/vps/`.)
+- **§2 (drain mode) is unnecessary and was not built.** The plan assumed a
+  mid-turn agent would lose work across the swap, so updates had to wait for
+  turns to finish. docs/240 removed that premise: session containers keep
+  their CLI running through the swap, and the new orchestrator's boot sweep
+  (`reattachInFlightTurns()`) re-adopts live turns so the post-turn
+  commit/push/PR flow still lands. Nothing needs draining.
+- **§4 (runtime `/version` handshake) is deferred, replaced by a CI guard.**
+  A hand-bumped version is unreliable in both directions (forgotten bumps give
+  false confidence; eager bumps invalidate every session and defeat the
+  feature). Instead, the compatibility guarantee is the additive-only
+  convention on the wire contract, enforced by
+  `src/server/shared/types/worker-wire-contract.test.ts`: frozen copies of the
+  adoption-critical shapes (`WorkerAgentStatus`, `WorkerAgentStartBody` /
+  `AgentRunParams`) with compile-time assignability assertions that fail
+  `npm run typecheck` (CI runs it on every PR) on a non-additive change. Its
+  header tells the developer to either make the change additive or build the
+  §4 handshake first — so the handshake gets built exactly when the first
+  genuinely breaking worker change needs it, not before.
+- **§5 (lazy rotation + telemetry) landed in its minimal form.** Old workers
+  roll forward as the idle enforcer disposes their containers. For visibility,
+  `Dockerfile.session-worker.prod` stamps the image with a `shipit-build-id`
+  label (last instruction, so the per-deploy ARG doesn't bust layer cache),
+  and container adoption (`container-discovery.ts`) logs the adopted worker's
+  build vs the orchestrator's, flagging skew.
 
 ## Problem
 

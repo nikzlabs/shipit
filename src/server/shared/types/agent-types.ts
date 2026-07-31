@@ -779,6 +779,24 @@ export interface AgentProcess extends EventEmitter<AgentProcessEvents> {
   writeMcpConfig(ctx: AgentMcpWriteContext): AgentMcpWriteResult;
 }
 
+// ---- Worker agent start body ----
+
+/**
+ * Request body of the worker's `POST /agent/start` — the orchestrator→worker
+ * call that launches a turn (`container-session-runner.ts` sends it,
+ * `session/agent-controller.ts` handles it). Named and shared (rather than
+ * inlined in the route generic) so the wire-contract guard
+ * (`worker-wire-contract.test.ts`) checks the shape the handler actually uses:
+ * since docs/113 Phase 1, old worker images outlive deploys, so changes to
+ * this body must stay additive.
+ */
+export interface WorkerAgentStartBody {
+  agentId: AgentId;
+  params: AgentRunParams;
+  runToken?: string;
+  deliveryId?: string;
+}
+
 // ---- Worker agent status (docs/240) ----
 
 /**
