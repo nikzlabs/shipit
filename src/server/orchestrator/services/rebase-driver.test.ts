@@ -934,7 +934,7 @@ describe("rebase-driver: docs/221 sync card + local base move", () => {
     }
   });
 
-  it("nothing to do (local main already current) — no card, no baseMoved", async () => {
+  it("nothing to do (local main already current) — still records the manual sync", async () => {
     const { workDir, git } = setupRepoWithRemote(tmpDir);
     // No divergence: session is on main, which already matches origin/main.
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
@@ -944,10 +944,15 @@ describe("rebase-driver: docs/221 sync card + local base move", () => {
     const result = await runFlow({ ...baseDeps(git, runner, [], false), recordSyncCard: true }, "main");
 
     expect(result.status).toBe("up_to_date");
-    expect(messages.find((m) => m.type === "branch_synced_card")).toBeUndefined();
+    const card = messages.find((m) => m.type === "branch_synced_card");
+    expect(card).toBeDefined();
+    if (card?.type === "branch_synced_card") {
+      expect(card.card.headFromSha).toBe(card.card.headToSha);
+      expect(card.card.baseFromSha).toBe(card.card.baseToSha);
+    }
     const complete = messages.find((m) => m.type === "rebase_complete");
     if (complete?.type === "rebase_complete") {
-      expect(complete.baseMoved).toBeFalsy();
+      expect(complete.baseMoved).toBe(true);
     }
   });
 });

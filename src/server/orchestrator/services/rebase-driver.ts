@@ -157,23 +157,19 @@ async function syncLocalBaseRef(git: GitManager, baseBranch: string): Promise<Lo
 }
 
 /**
- * docs/221 — emit the persisted "Synced with <base>" card, but ONLY when the
- * sync actually changed something (the branch rebased and/or local `<base>`
- * moved). The clean-rebase path is not an agent turn, so the card is appended
+ * docs/221 — emit the persisted branch-updated card whenever a manual sync
+ * completes, including when everything was already current. The clean-rebase
+ * path is not an agent turn, so the card is appended
  * directly to chat history AND broadcast over WS, sharing one `cardId` the
  * client dedupes on (mirrors `emitNoticePostTurn`). Returns true when a card was
- * emitted — the caller uses that to suppress the contradictory "Already up to
- * date" toast on the up-to-date path.
+ * emitted — the caller uses that to suppress the redundant "Already up to date"
+ * toast on the up-to-date path.
  */
 function emitSyncCard(
   deps: RebaseDriverDeps,
   opts: { baseBranch: string; headFrom: string | null; headTo: string | null; baseMove: LocalBaseMove | null; forcePushed: boolean },
 ): boolean {
   const { runner, chatHistoryManager } = deps;
-  const headMoved = !!opts.headFrom && !!opts.headTo && opts.headFrom !== opts.headTo;
-  const baseMoved = !!opts.baseMove && opts.baseMove.from !== opts.baseMove.to;
-  if (!headMoved && !baseMoved) return false;
-
   const card: BranchSyncedCard = {
     cardId: `sync-${randomUUID()}`,
     base: opts.baseBranch,
@@ -251,8 +247,8 @@ export async function runRebaseFlow(
     // 3. Check ancestry — already up-to-date?
     const isAncestor = await git.isAncestor(baseRef, "HEAD");
     if (isAncestor) {
-      // The branch didn't move, but the local base may have. Emit the card iff
-      // something changed; suppress the "Already up to date" toast when it did.
+      // Manual syncs always leave a durable confirmation card, including the
+      // already-current case. Automatic conflict resolution remains cardless.
       const cardEmitted = recordSync
         ? emitSyncCard(deps, { baseBranch, headFrom: headBefore, headTo: headBefore, baseMove, forcePushed: false })
         : false;
