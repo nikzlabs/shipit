@@ -22,6 +22,11 @@ wrong for the ones that continue.
 
 **The existing merge-watch, pointed back at the same session.** Not a new subsystem.
 
+Manual verification can use a documentation-only PR from the session being
+watched: open the PR, run `shipit session notify-on-merge --self`, and merge it.
+The resulting wake turn must begin with the guarded `shipit branch reset-to-base`
+flow before any follow-on work starts.
+
 ```
 shipit session notify-on-merge --self        (agent arms it when work remains)
   → store a self-watch on the existing merge_watch row, anchored to the open PR
