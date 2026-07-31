@@ -39,6 +39,7 @@ the ones that were inferred.
 | **Arming surfaces a cancellable card** | Chosen from options |
 | **Chaining until the plan runs out** | Chosen from options — *this reverses an earlier "one turn, one PR" choice, made before the trade-off was clear* |
 | **SHI-262 is fixed first, on its own** | Chosen from options |
+| The rebase runs via a **tested command** the agent invokes, not prompt instructions | Raised as a deviation from "the instructions would tell the agent to rebase" and confirmed: "I'm fine either way. And actually, the command sounds more robust." |
 
 ### Derived from review against source
 
@@ -58,19 +59,8 @@ mutate the session branch".
 omitting a `completed-without-pr` state; the specific chaining mitigations; amend-replaces
 semantics; treating archive-after-arm as a visible card transition.
 
-### ⚠ One deviation from an explicit decision
-
-You said the **instructions** would tell the agent to rebase. This doc now specifies a
-**command** (`shipit branch reset-to-base`) that the agent invokes instead.
-
-I changed this on review evidence, not preference: `git.ts` documents that the bare
-`--force-with-lease` an instruction would produce is rejected in the mainline case, and
-both reviewers independently found the prompt-only form unsafe. The command's gate then
-turned out to be the common mitigation for three separate hazards. I believe it honours
-your actual constraint — ShipIt does not act on the repo behind the agent's back; the
-agent still does the work inside its own turn — but it is a change to what you specified,
-so it should be your call rather than mine. Revert it and the prompt-only form comes back
-along with those three hazards.
+*(No open deviations. The command-vs-instructions change was raised as one and has since
+been confirmed — see the table above.)*
 
 ## Shape — a message plus a tested command
 
