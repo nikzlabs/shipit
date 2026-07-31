@@ -468,6 +468,59 @@ export function setSessionPinned(
   return { session: updated, sessions: sessionManager.list() };
 }
 
+/** Default deployment-wide reservation capacity (docs/241). */
+export const DEFAULT_MAX_KEEP_PREVIEW_RUNNING = 1;
+
+/** Resolve the operator cap. Invalid/negative values fail safe to the default. */
+export function resolveMaxKeepPreviewRunning(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.MAX_KEEP_PREVIEW_RUNNING?.trim();
+  if (!raw) return DEFAULT_MAX_KEEP_PREVIEW_RUNNING;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) && parsed >= 0
+    ? parsed
+    : DEFAULT_MAX_KEEP_PREVIEW_RUNNING;
+}
+
+/**
+ * docs/241 — reserve/release a live preview slot. Admission is checked before
+ * mutation. Enabling activates through the ordinary runner factory, whose
+ * onRunnerCreated hook owns install + Compose auto-preview reconciliation.
+ */
+export function setKeepPreviewRunning(
+  sessionManager: SessionManager,
+  sessionId: string,
+  enabled: boolean,
+  activate: (session: SessionInfo) => void,
+  maxReservations = resolveMaxKeepPreviewRunning(),
+): { session: SessionInfo; sessions: SessionInfo[] } {
+  const current = sessionManager.get(sessionId);
+  if (!current) throw new ServiceError(404, "Session not found");
+  if (current.userArchived || current.archived || current.warm) {
+    throw new ServiceError(409, "Only active sessions can keep a preview running");
+  }
+  if (current.kind === "sandbox") {
+    throw new ServiceError(409, "Sandbox sessions do not support managed previews");
+  }
+  if (enabled && !current.workspaceDir) {
+    throw new ServiceError(409, "Session has no workspace to preview");
+  }
+
+  if (enabled && !current.keepPreviewRunning) {
+    const reserved = sessionManager.listAll().filter((s) => s.keepPreviewRunning).length;
+    if (reserved >= maxReservations) {
+      throw new ServiceError(
+        409,
+        `Always-on preview capacity is full (${reserved}/${maxReservations}). Disable another reservation first.`,
+      );
+    }
+  }
+
+  const updated = sessionManager.setKeepPreviewRunning(sessionId, enabled);
+  if (!updated) throw new ServiceError(404, "Session not found");
+  if (enabled) activate(updated);
+  return { session: updated, sessions: sessionManager.list() };
+}
+
 /**
  * docs/110 Phase 2 — reorder a repo's pinned sessions to the order in `ids`.
  * Returns the refreshed sidebar list for the caller to broadcast.

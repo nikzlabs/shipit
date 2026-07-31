@@ -52,6 +52,8 @@ interface SessionRow {
   auto_fix_ci_paused: number;
   /** docs/110 — ISO instant the session was pinned (persistent); NULL = not pinned. */
   pinned_at: string | null;
+  /** docs/241 — 1 while the session owns an always-on preview reservation. */
+  keep_preview_running: number;
   /** docs/196 — JSON `SessionMergeWatch` for the notify-on-merge watch, or NULL. */
   merge_watch: string | null;
   /** docs/194 — JSON string[] of applied merge→issue-lifecycle effect keys, or NULL. */
@@ -322,6 +324,7 @@ export class SessionManager {
     if (row.last_turn_errored) info.lastTurnErrored = true;
     if (row.auto_fix_ci_paused) info.autoFixCiPaused = true;
     if (row.pinned_at) info.pinnedAt = row.pinned_at;
+    if (row.keep_preview_running) info.keepPreviewRunning = true;
     if (row.merge_watch) {
       try {
         info.mergeWatch = JSON.parse(row.merge_watch) as SessionInfo["mergeWatch"];
@@ -662,6 +665,15 @@ export class SessionManager {
     const result = this.db.prepare(
       "UPDATE sessions SET pinned_at = ? WHERE id = ?",
     ).run(pinnedAt, id);
+    if (result.changes === 0) return null;
+    return this.get(id) ?? null;
+  }
+
+  /** Persist the docs/241 runtime reservation without changing pin or idle clocks. */
+  setKeepPreviewRunning(id: string, enabled: boolean): SessionInfo | null {
+    const result = this.db.prepare(
+      "UPDATE sessions SET keep_preview_running = ? WHERE id = ?",
+    ).run(enabled ? 1 : 0, id);
     if (result.changes === 0) return null;
     return this.get(id) ?? null;
   }

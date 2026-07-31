@@ -321,6 +321,7 @@ export function setupContainerHealthMonitoring(
   loopDetector: SessionLoopDetector = createSessionLoopDetector(),
   oomBreaker?: SessionOomCircuitBreaker,
   chatHistoryManager?: ChatHistoryManager,
+  onContainerExited?: (sessionId: string) => void,
 ): void {
   // Shared "breaker just tripped" emission — sends the WS message to
   // attached viewers and the per-session log ring + journalctl line.
@@ -376,6 +377,7 @@ export function setupContainerHealthMonitoring(
       );
     }
     handleContainerExited(sessionId, exitCode, error, runnerRegistry, broadcastLog, chatHistoryManager);
+    onContainerExited?.(sessionId);
   });
 
   // SIGTERM/recreate loop detector. Field reports show occasional

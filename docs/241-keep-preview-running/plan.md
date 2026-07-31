@@ -96,3 +96,34 @@ reservations. An operator can still stop ShipIt or its containers explicitly.
   and the existing Compose reconciliation starts auto-preview services.
 - `docs/110-pinned-sessions/plan.md` explicitly defines pinning as data/list
   persistence, not an always-warm container guarantee.
+
+## Implementation notes
+
+- `SessionInfo.keepPreviewRunning` is stored in the SQLite sessions row by
+  migration and serialized only when true, matching other optional boolean
+  session flags. It remains independent from `pinnedAt`.
+- `PUT /api/sessions/:id/keep-preview-running` validates a boolean body, rejects
+  archived/warm/sandbox sessions, performs default-1 admission before mutation,
+  and broadcasts the canonical `sessionManager.list()` snapshot. Operators can
+  override the hard cap with `MAX_KEEP_PREVIEW_RUNNING`.
+- Enabling calls `SessionRunnerRegistry.getOrCreate`; its existing
+  `onRunnerCreated` contract wires install and `ServiceManager` reconciliation,
+  so `x-shipit-preview: auto` remains the only automatic service-start path.
+  Disabling changes only persisted admission state.
+- `idle-enforcer.ts` checks the durable flag both while selecting candidates and
+  at the TOCTOU disposal guard, covering ordinary idle and pressure eviction.
+- `keep-preview-running.ts` restores missing reserved runtimes after Docker
+  rediscovery and supervises unexpected exits with three bounded attempts. A
+  successful `container_started` cancels the remaining timers; exhaustion keeps
+  the reservation enabled and writes to the existing Logs surface.
+
+## Implemented touchpoints
+
+- Persistence/types: `shared/database.ts`, `domain-types/session.ts`,
+  `orchestrator/sessions.ts`
+- Lifecycle: `idle-enforcer.ts`, `keep-preview-running.ts`,
+  `startup-monitors.ts`, `startup-tasks.ts`, `bootstrap-managers.ts`
+- API/client: `services/session.ts`, `api-routes-session-crud.ts`,
+  `session-store.ts`, `SessionSidebar/SessionItem.tsx`
+- Deployment/docs: `deployment/vps/docker-compose.yml`, agent-facing
+  `environment.md` and `preview.md`

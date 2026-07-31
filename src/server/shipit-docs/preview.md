@@ -31,6 +31,20 @@ automatically as you edit files.
    resolve naturally, with no path prefix to account for. (Bind the server to
    `0.0.0.0`, not `127.0.0.1`, or the proxy can't reach it.)
 
+## Keeping a preview running
+
+The session overflow menu has a checked **Keep preview running** action. Enabling
+it immediately activates the ordinary session runtime and the same `auto`
+Compose-service reconciliation described above. The reservation survives idle
+periods and orchestrator restarts; unexpected agent-container exits are retried
+with a bounded backoff. Disabling only releases the reservation — it does not
+stop a healthy preview immediately, which returns to the normal idle lifecycle.
+
+The URL and access boundary do not change. This is a private ShipIt preview, not
+a public deployment, and the deployment admits only a bounded number (one by
+default). Failures remain visible through the existing session status, service
+error, and Logs surfaces.
+
 ## Repository trust gate
 
 A freshly-cloned repository is **untrusted** until the user accepts it once. While

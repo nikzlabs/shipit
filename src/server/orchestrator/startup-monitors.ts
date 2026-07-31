@@ -11,6 +11,7 @@ import { runDiskJanitor, runSteadyStateReclaim, pruneSessionVolumes, escalateDis
 import { liveOverlayScopeHashes, depDirsForSession, isOverlayEnabled, overlayRuntimeKey, pnpmStoreHash } from "./overlay-session.js";
 import { DEFAULT_DISK_LADDER, assertDiskLadderOrdering, type DiskLadderThresholds } from "./sessions.js";
 import type { OrchestratorRuntime } from "./bootstrap-managers.js";
+import { createKeepPreviewRestartSupervisor, restoreReservedPreviews } from "./keep-preview-running.js";
 
 /** Functions produced by {@link startStartupMonitors} that later steps need. */
 export interface StartupMonitors {
@@ -339,7 +340,33 @@ export async function startStartupMonitors(
 
   // ---- Container health monitoring ----
   if (containerManager) {
-    setupContainerHealthMonitoring(containerManager, runnerRegistry, broadcastLog, loopDetector, oomBreaker, chatHistoryManager);
+    const keepPreviewSupervisor = createKeepPreviewRestartSupervisor({
+      sessionManager,
+      runnerRegistry,
+      containerManager,
+      defaultAgentId: rt.defaultAgentId,
+      broadcastLog,
+    });
+    const restored = restoreReservedPreviews({
+      sessionManager,
+      runnerRegistry,
+      containerManager,
+      defaultAgentId: rt.defaultAgentId,
+      broadcastLog,
+    });
+    if (restored.length > 0) {
+      console.log(`[keep-preview] Restoring ${restored.length} reserved preview runtime(s)`);
+    }
+    setupContainerHealthMonitoring(
+      containerManager,
+      runnerRegistry,
+      broadcastLog,
+      loopDetector,
+      oomBreaker,
+      chatHistoryManager,
+      keepPreviewSupervisor.handleUnexpectedExit,
+    );
+    app.addHook("onClose", async () => keepPreviewSupervisor.dispose());
   }
 
   // Graceful shutdown

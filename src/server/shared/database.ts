@@ -787,6 +787,11 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE messages ADD COLUMN self_merge_watch TEXT");
   },
+  // docs/241 — explicit per-session always-on preview reservation. This is
+  // deliberately separate from pinned_at because runtime capacity is bounded.
+  (db) => {
+    db.exec("ALTER TABLE sessions ADD COLUMN keep_preview_running INTEGER NOT NULL DEFAULT 0");
+  },
 ];
 
 export class DatabaseManager {

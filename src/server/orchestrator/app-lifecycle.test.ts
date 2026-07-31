@@ -63,6 +63,28 @@ describe("createIdleEnforcer", () => {
     registry.disposeAll();
   });
 
+  it("exempts reserved sessions from both idle and memory-pressure eviction", () => {
+    const containers = [{ sessionId: "reserved" }, { sessionId: "ordinary" }];
+    const destroy = vi.fn().mockResolvedValue(undefined);
+    const cm = makeContainerManager({ containers, destroy });
+    registry.getOrCreate("reserved", "/tmp/reserved", "claude" as AgentId);
+    registry.getOrCreate("ordinary", "/tmp/ordinary", "claude" as AgentId);
+
+    createIdleEnforcer({
+      containerManager: cm,
+      credentialStore: makeCredentialStore(0),
+      runnerRegistry: registry,
+      sessionManager: {
+        get: (id: string) => id === "reserved" ? { keepPreviewRunning: true } : undefined,
+      } as any,
+      getMemoryStats: () => ({ usedBytes: 95, totalBytes: 100 }),
+    })();
+
+    expect(destroy).toHaveBeenCalledWith("ordinary");
+    expect(destroy).not.toHaveBeenCalledWith("reserved");
+    expect(registry.get("reserved")).toBeDefined();
+  });
+
   it("never disposes a runner whose agent is running, even when over the limit", () => {
     const containers = [
       { sessionId: "a" }, { sessionId: "b" }, { sessionId: "c" },

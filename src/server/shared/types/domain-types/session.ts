@@ -139,6 +139,12 @@ export interface SessionInfo {
    * hidden and persistent.
    */
   pinnedAt?: string;
+  /**
+   * docs/241 — explicit runtime reservation for this session's agent container
+   * and auto-preview Compose services. Independent from `pinnedAt`: a sidebar
+   * pin protects list/disk persistence, while this flag consumes live capacity.
+   */
+  keepPreviewRunning?: boolean;
   /** Branch name for sessions cloned from a repo. */
   branch?: string;
   /** If true, this is a pre-created warm session not yet visible in the sidebar. */

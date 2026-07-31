@@ -87,6 +87,9 @@ services:
       #   MAX_SESSION_MEMORY_MB     — hard ceiling, clamps the baseline down
       - DEFAULT_SESSION_MEMORY_MB=${DEFAULT_SESSION_MEMORY_MB:-}
       - MAX_SESSION_MEMORY_MB=${MAX_SESSION_MEMORY_MB:-}
+      # docs/241 — hard admission cap for explicit always-on preview
+      # reservations. Empty uses the in-code default of one per deployment.
+      - MAX_KEEP_PREVIEW_RUNNING=${MAX_KEEP_PREVIEW_RUNNING:-}
       # Overlay dep store (docs/183) — opt-in passthrough for the canary soak.
       # The orchestrator reads OVERLAY_DEP_STORE from its own process env;
       # without this line, exporting the flag on the host (per the runbook in
