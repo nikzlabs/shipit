@@ -1,91 +1,14 @@
-import { useState } from "react";
 import { usePrStore } from "../../../stores/pr-store.js";
 import type { PrCardState } from "../../../stores/pr-store.js";
 import { useUiStore } from "../../../stores/ui-store.js";
 import { useSettingsStore } from "../../../stores/settings-store.js";
-import { useGitStore } from "../../../stores/git-store.js";
-import { useCommentStore } from "../../../stores/comment-store.js";
 import { useCiDisplay } from "../../../hooks/useCiDisplay.js";
 import { useIsMobile } from "../../../hooks/useMediaQuery.js";
-import { Button } from "../../ui/button.js";
-import {
-  AutoMergeToggle,
-  FixCIButton,
-  MergeButton,
-  ResolveConflictsButton,
-} from "../../PrStatusControls.js";
-import {
-  WarningIcon,
-  CircleNotchIcon,
-  PaperPlaneTiltIcon,
-} from "@phosphor-icons/react";
-import { ICON_SIZE } from "../../../design-tokens.js";
+import { WarningIcon } from "@phosphor-icons/react";
 import { PrStateBadge } from "../PrStateBadge.js";
-import { BranchLabel, DiffStats, PreviouslyMergedNote, Spinner, useOpenPrDiff } from "../shared.js";
-import {
-  CiIndicator,
-  ReviewIndicator,
-  MergeConflictIndicator,
-  FailedChecksList,
-  DeploymentStatusRow,
-} from "../indicators/index.js";
-
-function PendingReviewButton({ sessionId, count }: { sessionId: string; count: number }) {
-  const [submitting, setSubmitting] = useState(false);
-  const clearComments = useCommentStore((s) => s.clearComments);
-  const setToast = useUiStore((s) => s.setToast);
-
-  const handleSubmit = async () => {
-    if (submitting || count === 0) return;
-    const comments = useCommentStore.getState().getAllComments(sessionId);
-    if (comments.length === 0) return;
-    setSubmitting(true);
-    try {
-      const res = await fetch(`/api/sessions/${sessionId}/pr/review`, {
-        method: "POST",
-        headers: { Accept: "application/json", "Content-Type": "application/json" },
-        body: JSON.stringify({
-          comments: comments.map((comment) => ({
-            path: comment.filePath,
-            line: comment.line,
-            body: comment.text,
-          })),
-        }),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({})) as { error?: string };
-        setToast({ message: data.error || "Failed to send review" });
-        return;
-      }
-      clearComments(sessionId);
-      setToast({ message: `Sent review with ${comments.length} comment${comments.length === 1 ? "" : "s"}` });
-    } catch (err) {
-      setToast({
-        message: err instanceof Error ? err.message : "Failed to send review",
-      });
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <Button
-      size="md"
-      variant="ghost"
-      onClick={handleSubmit}
-      disabled={submitting}
-      className="shrink-0 border border-(--color-border-secondary)"
-      title="Send local diff comments to GitHub as one review"
-    >
-      {submitting ? (
-        <CircleNotchIcon size={14} className="animate-spin" />
-      ) : (
-        <PaperPlaneTiltIcon size={ICON_SIZE.SM} />
-      )}
-      {submitting ? "Sending..." : `Send review (${count})`}
-    </Button>
-  );
-}
+import { PrStatusActions } from "../PrStatusActions.js";
+import { BranchLabel, Spinner } from "../shared.js";
+import { FailedChecksList, DeploymentStatusRow } from "../indicators/index.js";
 
 export function OpenPhase({
   card,
@@ -98,18 +21,10 @@ export function OpenPhase({
 }) {
   const pr = card.pr;
   const deployments = usePrStore((s) => s.statusBySession[sessionId]?.deployments);
-  const mergeable = usePrStore((s) => s.statusBySession[sessionId]?.mergeable);
-  const reviewDecision = usePrStore((s) => s.statusBySession[sessionId]?.reviewDecision);
-  const rebaseStatus = useGitStore((s) => s.rebaseStatus);
-  const pendingReviewCount = useCommentStore((s) => s.getCommentCount(sessionId));
-  const autoFixCi = useSettingsStore((s) => s.autoFixCi);
-  const openDiff = useOpenPrDiff(pr?.baseBranch);
   const ciDisplay = useCiDisplay(card.checks);
-  // On a phone the action row only has ~220px (the card's right-hand
-  // icon cluster narrows every row, not just the first), so the full-width
-  // auto-merge toggle + "Squash and merge" button can't share a line. Compact
-  // both there: ~123px + ~137px becomes ~56px + ~77px, which fits down to a
-  // 320px viewport and buys back a whole row of the sticky header.
+  // The status chips and action controls live in this column on desktop, but
+  // are hoisted to a full-width row below the header on mobile — see
+  // PrStatusActions for why (the card's icon cluster narrows every row here).
   const isMobile = useIsMobile();
   if (!pr) return null;
 
@@ -118,42 +33,10 @@ export function OpenPhase({
   const isAutoFixRunning = autoFix?.status === "running";
   const isAutoFixExhausted = autoFix?.status === "exhausted";
   const isCiFailed = ciDisplay.kind === "failure";
-  const isCiPassed = ciDisplay.kind === "success";
   // "none" must come from the poller explicitly — `"unknown"` means we haven't
-  // heard from the poller yet, so we don't know whether CI exists. Treating
-  // that as "none" would let the merge button appear in the gap between PR
-  // creation and the first poll, before pending workflows have registered.
-  // The poller also force-overrides "none" → "pending" for a grace window
-  // when the repo runs CI but GitHub hasn't registered any checks for the
-  // current head SHA. Once that grace expires (docs-only PRs whose changed
-  // paths don't match any workflow's `paths:` filter, or a repo with no
-  // PR-triggered workflow at all), the state is legitimately "none" and the
-  // merge button appears. `useCiDisplay` also retires the override locally at
-  // its deadline, so a paused poller can't strand the button behind a spinner.
+  // heard from the poller yet, so we don't know whether CI exists. See
+  // PrStatusActions, which gates the merge button on the same distinction.
   const isCiNone = ciDisplay.kind === "none";
-  const isConflicting = mergeable === "conflicting";
-  // docs/174 — also gate on GitHub's review decision. A base branch with a
-  // required-review protection rule reports "review_required" until approved
-  // and "changes_requested" when a reviewer blocks; both mean GitHub would
-  // reject the merge, so hide the button. "approved"/"none" allow it ("none" =
-  // no review requirement, the common solo-repo case).
-  const isReviewBlocked = reviewDecision === "review_required" || reviewDecision === "changes_requested";
-  // Merge button visibility: gate on CI state AND on GitHub-reported
-  // mergeability. Don't gate on `mergeable === "unknown"` — that's the brief
-  // window after each push while GitHub computes mergeability, and gating
-  // would flicker the button off-on every push. The cost of a stale click
-  // during that window is bounded (the merge attempt fails with a toast).
-  const canMerge = (isCiPassed || isCiNone) && !isConflicting && !isReviewBlocked;
-  // docs/169 — auto-fix is now a global setting, not a per-card toggle. Show the
-  // manual "Fix CI" button when CI failed and the auto-loop isn't actively
-  // handling it (global auto-fix off, or its budget exhausted).
-  const showFixButton = isCiFailed && !isAutoFixRunning && (!autoFixCi || isAutoFixExhausted);
-  const showMergeButton = canMerge && !autoMerge?.enabled;
-  // The inline conflict UI yields to the RebaseBanner once a rebase is
-  // active — RebaseBanner is the surface for the in-flight flow. The
-  // indicator and Resolve button reappear if the rebase aborts back to
-  // the conflict state.
-  const showConflictUi = isConflicting && rebaseStatus === "idle";
 
   // Two-column layout so additional rows (auto-merge text, failed checks,
   // deploys) and the wrapped badges row all align under the PR title rather
@@ -179,44 +62,15 @@ export function OpenPhase({
               prBody={pr.body}
             />
           </div>
-          <span className="basis-full sm:basis-auto min-w-0 flex flex-wrap items-center gap-x-3 gap-y-1">
-            <DiffStats ins={pr.insertions} del={pr.deletions} onClick={openDiff} />
-            {pendingReviewCount > 0 && (
-              <PendingReviewButton sessionId={sessionId} count={pendingReviewCount} />
-            )}
-            <CiIndicator checks={card.checks} />
-            <ReviewIndicator reviewDecision={reviewDecision} />
-            {card.previousMergedPr && (
-              <PreviouslyMergedNote previousMergedPr={card.previousMergedPr} />
-            )}
-            {/* On mobile the toggle and the merge button ride together as one
-                non-wrapping unit — compacting them alone isn't enough, since
-                greedy wrapping would just pull the shrunken toggle up onto the
-                diff/CI line and leave the merge button alone below. On desktop
-                the wrapper is `contents`, so the layout is unchanged there (a
-                narrow chat panel keeps the freedom to wrap between them).
-                Conflict UI renders after the pair rather than between them:
-                a conflicting PR is never mergeable, so the merge button and the
-                conflict controls are mutually exclusive and the visible order
-                is the same as before in every reachable state. */}
-            <span className={isMobile ? "shrink-0 flex items-center gap-2" : "contents"}>
-              {canAutoMerge && (
-                <span className="shrink-0">
-                  <AutoMergeToggle sessionId={sessionId} autoMerge={autoMerge} compact={isMobile} />
-                </span>
-              )}
-              {showMergeButton && (
-                <MergeButton sessionId={sessionId} autoMerge={autoMerge} compact={isMobile} />
-              )}
+          {/* On mobile the status/action cluster is hoisted out of this column
+              into a full-width row below the header (PrLifecycleCard renders
+              it), because the card's icon cluster narrows every row here and
+              the auto-merge toggle + merge button don't fit in what's left. */}
+          {!isMobile && (
+            <span className="min-w-0 flex flex-wrap items-center gap-x-3 gap-y-1">
+              <PrStatusActions card={card} sessionId={sessionId} canAutoMerge={canAutoMerge} />
             </span>
-            {showConflictUi && <MergeConflictIndicator />}
-            {showConflictUi && (
-              <ResolveConflictsButton sessionId={sessionId} baseBranch={pr.baseBranch} />
-            )}
-            {showFixButton && (
-              <FixCIButton sessionId={sessionId} />
-            )}
-          </span>
+          )}
         </div>
         {/* docs/175 decision #2 — durable, conditional transparency line. Shown
             ONLY once we know the head commit has zero CI checks (`isCiNone`)

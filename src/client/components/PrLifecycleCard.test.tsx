@@ -880,24 +880,24 @@ describe("PrLifecycleCard", () => {
     expect(inlineToggle.closest(".md\\:hidden")).toBeNull();
     expect(container.querySelector(".md\\:hidden")).toBeNull();
     // Still sits next to the CI indicator in the badge row. The toggle now
-    // shares an action group with the merge button (so mobile can keep the two
-    // on one line); on desktop that group is `display: contents`, so the row
-    // renders exactly as before.
-    const wrapper = inlineToggle.closest("span.shrink-0");
-    const actionGroup = wrapper?.parentElement;
-    expect(actionGroup).toHaveClass("contents");
-    expect(actionGroup?.previousElementSibling).toHaveTextContent("CI 1/3");
+    // shares a wrap-as-one-unit group with the merge button, so the CI
+    // indicator is the group's previous sibling.
+    const group = inlineToggle.closest("span.flex.items-center")?.parentElement;
+    expect(group).toContainElement(inlineToggle);
+    expect(group?.previousElementSibling).toHaveTextContent("CI 1/3");
     expect(inlineToggle).toHaveTextContent("Auto-merge");
 
     await user.click(inlineToggle);
     expect(toggleAutoMerge).toHaveBeenCalledWith("s1", true);
   });
 
-  it("keeps the auto-merge toggle and the merge button on one line on mobile", () => {
-    // A phone leaves the action row ~250px, and the labelled toggle (~123px)
-    // plus "Squash and merge" (~136px) don't fit — the button wrapped onto a
-    // row of its own. On mobile both shrink to their essentials and share a
-    // non-wrapping group, so the sticky header costs one row less.
+  it("moves the status/action cluster to a full-width row below the header on mobile", () => {
+    // The header's icon cluster (search / docs / ⋯) is a sibling column, so it
+    // narrows every wrapped row inside the left column — on a phone that leaves
+    // ~258px, and the auto-merge toggle (~123px) plus "Squash and merge"
+    // (~137px) need ~272px, which is why the button used to wrap onto a row of
+    // its own. Breaking the cluster out to the card's full width fits both at
+    // their real labels.
     vi.stubGlobal("matchMedia", (query: string) => ({
       matches: query.includes("767"),
       media: query,
@@ -911,19 +911,22 @@ describe("PrLifecycleCard", () => {
       autoMerge: { enabled: false, mergeMethod: "squash" },
     });
 
-    render(<PrLifecycleCard sessionId="s1" canAutoMerge />);
+    const { container } = render(<PrLifecycleCard sessionId="s1" canAutoMerge />);
 
-    // Verb-only merge label, full label still the accessible name.
-    const mergeButton = screen.getByRole("button", { name: "Squash and merge" });
-    expect(mergeButton).toHaveTextContent("Squash");
-    expect(screen.queryByText("Squash and merge")).toBeNull();
-    // Icon-only toggle — the word is gone but the control stays labelled.
-    const toggle = screen.getByRole("button", { name: "Auto-merge" });
-    expect(screen.queryByText("Auto-merge")).toBeNull();
-    // Both live in the same group, which does not wrap between them.
-    const group = mergeButton.parentElement?.parentElement;
-    expect(group).toContainElement(toggle);
-    expect(group).toHaveClass("flex", "items-center", "shrink-0");
+    // Full labels — no compacting needed once the row spans the card.
+    const toggle = screen.getByRole("button", { name: /Auto-merge/ });
+    const mergeButton = screen.getByText("Squash and merge");
+    // Both moved out of the header row (the element that hosts the icon
+    // cluster) and into the row below it.
+    const header = container.firstElementChild;
+    expect(header).not.toContainElement(toggle);
+    expect(header).not.toContainElement(mergeButton);
+    const actionsRow = header?.nextElementSibling;
+    expect(actionsRow).toContainElement(toggle);
+    expect(actionsRow).toContainElement(mergeButton);
+    // …and they still wrap as one unit within that row.
+    const group = toggle.closest("span.flex.items-center")?.parentElement;
+    expect(group).toContainElement(mergeButton);
   });
 
   it("uses the shared neutral auto-merge icon color in the top-bar overflow", async () => {
