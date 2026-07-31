@@ -5,6 +5,7 @@ import type { DockerMemoryStats } from "../shared/types.js";
 import type { LogSource } from "../shared/types.js";
 import { isUnderEvictionPressure } from "./memory-pressure.js";
 import { getErrorMessage } from "./validation.js";
+import type { SessionManager } from "./sessions.js";
 
 // ---- Idle container enforcement ----
 
@@ -13,6 +14,8 @@ export interface IdleEnforcementDeps {
   containerManager: SessionContainerManager | null;
   credentialStore: CredentialStore;
   runnerRegistry: SessionRunnerRegistry;
+  /** Reservation source of truth. Reserved sessions are never eviction candidates. */
+  sessionManager?: SessionManager;
   /**
    * Returns the most recent Docker memory snapshot, or `null` when stats
    * aren't available yet. When usage crosses the eviction threshold the
@@ -83,7 +86,7 @@ export function createIdleEnforcer(
   enforceDeps: IdleEnforcementDeps,
 ): () => void {
   const {
-    containerManager, credentialStore, runnerRegistry, getMemoryStats,
+    containerManager, credentialStore, runnerRegistry, sessionManager, getMemoryStats,
     sseBroadcast, broadcastLog,
   } = enforceDeps;
 
@@ -100,6 +103,9 @@ export function createIdleEnforcer(
 
     for (const sc of containerManager.getAll()) {
       if (containerManager.isStandby(sc.sessionId)) continue;
+      // docs/241 — the reservation is a user-facing always-on guarantee, so it
+      // wins over both ordinary idle trimming and pressure-mode eviction.
+      if (sessionManager?.get(sc.sessionId)?.keepPreviewRunning) continue;
       const runner = runnerRegistry.get(sc.sessionId);
       if (!runner) {
         // Container exists without a runner — orphaned. Eligible for cleanup.
@@ -137,6 +143,7 @@ export function createIdleEnforcer(
         // if it is still safe to do so. `runner.dispose()` also enforces
         // this at the runner level (defense in depth).
         const runner = runnerRegistry.get(sid);
+        if (sessionManager?.get(sid)?.keepPreviewRunning) continue;
         if (runner && (runner.agentBusy || runner.viewerCount > 0)) {
           continue;
         }

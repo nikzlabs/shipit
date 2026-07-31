@@ -14,6 +14,7 @@ import {
   unarchiveSession,
   renameSession,
   setSessionPinned,
+  setKeepPreviewRunning,
   reorderSessionPins,
   archiveSession,
   applyTemplate,
@@ -165,6 +166,40 @@ export async function registerSessionCrudRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to unpin session: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // PUT /api/sessions/:id/keep-preview-running — docs/241 reservation toggle.
+  app.put<{ Params: { id: string }; Body: { enabled?: unknown } }>(
+    "/api/sessions/:id/keep-preview-running",
+    async (request, reply) => {
+      try {
+        if (typeof request.body?.enabled !== "boolean") {
+          throw new ServiceError(400, "enabled must be a boolean");
+        }
+        const result = setKeepPreviewRunning(
+          sessionManager,
+          request.params.id,
+          request.body.enabled,
+          (session) => {
+            if (!session.workspaceDir) throw new ServiceError(409, "Session has no workspace to preview");
+            if (session.diskTier === "light") sessionManager.setDiskTier(session.id, "hot");
+            deps.runnerRegistry.getOrCreate(
+              session.id,
+              session.workspaceDir,
+              session.agentId ?? deps.defaultAgentId,
+            );
+          },
+        );
+        deps.sseBroadcast("session_list", { sessions: result.sessions });
+        return { session: result.session };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to update preview reservation: ${getErrorMessage(err)}` });
       }
     },
   );

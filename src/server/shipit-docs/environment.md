@@ -127,6 +127,14 @@ this "shutting down" or "pausing," but it is a full teardown — `docker stop` +
 thawed; it is deleted. When the user sends the next message, a **brand-new**
 container is created and `/workspace` is re-cloned from git.
 
+The user can explicitly enable **Keep preview running** for a session from its
+overflow menu. While enabled, ShipIt reserves that session's container and its
+`x-shipit-preview: auto` Compose services across viewer disconnects, idle cleanup,
+memory-pressure eviction, and orchestrator restarts. Capacity is deliberately
+limited by the deployment (one reservation by default). This reservation is for
+managed preview services only: arbitrary shell background processes still have
+no durability guarantee and belong in `docker-compose.yml`.
+
 **What this means for you:**
 
 - **In-container background work does not survive.** Anything you start at

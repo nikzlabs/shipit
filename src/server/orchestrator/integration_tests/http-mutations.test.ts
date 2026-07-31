@@ -197,6 +197,55 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
     });
   });
 
+  describe("docs/241: PUT /api/sessions/:id/keep-preview-running", () => {
+    it("persists, activates, broadcasts through the canonical list, and disables without stopping", async () => {
+      await createSession("keep-1", "Keep me");
+      const enabled = await app.inject({
+        method: "PUT",
+        url: "/api/sessions/keep-1/keep-preview-running",
+        payload: { enabled: true },
+      });
+      expect(enabled.statusCode).toBe(200);
+      expect(sessionManager.get("keep-1")?.keepPreviewRunning).toBe(true);
+      expect(app.runnerRegistry.get("keep-1")).toBeDefined();
+
+      const disabled = await app.inject({
+        method: "PUT",
+        url: "/api/sessions/keep-1/keep-preview-running",
+        payload: { enabled: false },
+      });
+      expect(disabled.statusCode).toBe(200);
+      expect(sessionManager.get("keep-1")?.keepPreviewRunning).toBeUndefined();
+      expect(app.runnerRegistry.get("keep-1")).toBeDefined();
+    });
+
+    it("rejects invalid bodies and missing sessions", async () => {
+      await createSession("keep-2", "Keep me");
+      const invalid = await app.inject({
+        method: "PUT", url: "/api/sessions/keep-2/keep-preview-running", payload: { enabled: "yes" },
+      });
+      expect(invalid.statusCode).toBe(400);
+      const missing = await app.inject({
+        method: "PUT", url: "/api/sessions/nope/keep-preview-running", payload: { enabled: true },
+      });
+      expect(missing.statusCode).toBe(404);
+    });
+
+    it("enforces the default capacity before mutating the second session", async () => {
+      await createSession("keep-a", "A");
+      await createSession("keep-b", "B");
+      await app.inject({
+        method: "PUT", url: "/api/sessions/keep-a/keep-preview-running", payload: { enabled: true },
+      });
+      const overflow = await app.inject({
+        method: "PUT", url: "/api/sessions/keep-b/keep-preview-running", payload: { enabled: true },
+      });
+      expect(overflow.statusCode).toBe(409);
+      expect(overflow.json()).toMatchObject({ error: expect.stringContaining("capacity") });
+      expect(sessionManager.get("keep-b")?.keepPreviewRunning).toBeUndefined();
+    });
+  });
+
   describe("DELETE /api/sessions/:id (archive)", () => {
     it("archives a session and returns updated list", async () => {
       await createSession("s1", "Session 1");

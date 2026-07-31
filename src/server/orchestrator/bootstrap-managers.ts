@@ -215,6 +215,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
         containerManager,
         credentialStore,
         runnerRegistry: registryHolder.ref,
+        sessionManager,
         getMemoryStats: () => latestMemoryStats.value,
         sseBroadcast,
         broadcastLog,

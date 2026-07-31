@@ -3,6 +3,7 @@ import { saveDraftMessage } from "../utils/local-storage.js";
 import type { ChatMessage } from "../components/MessageList.js";
 import type { StreamingActivity } from "../components/StreamingIndicator.js";
 import type { SessionInfo, SessionCapabilities, TurnUsage, RescuePhase, WsRewindPreview, AgentId } from "../../server/shared/types.js";
+import { useUiStore } from "./ui-store.js";
 
 /**
  * docs/144 — a transient sub-agent spawn spinner ("Asking Codex…"), live only
@@ -186,6 +187,8 @@ interface SessionState {
    * authoritative `session_list` SSE broadcast reconciles.
    */
   setPinned: (sessionId: string, pinned: boolean) => Promise<void>;
+  /** docs/241 — reserve/release the session runtime for its managed preview. */
+  setKeepPreviewRunning: (sessionId: string, enabled: boolean) => Promise<void>;
   /**
    * docs/110 Phase 2 — reorder a repo's pinned sessions to the given id order
    * (top-first). Optimistic; the authoritative `session_list` broadcast
@@ -418,6 +421,33 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     } catch (err) {
       console.error("[session-store] Pin toggle failed:", err);
       patch(prev); // revert
+    }
+  },
+
+  setKeepPreviewRunning: async (sessionId, enabled) => {
+    const patch = (value: boolean) =>
+      set((state) => ({
+        sessions: state.sessions.map((s) =>
+          s.id === sessionId ? { ...s, keepPreviewRunning: value || undefined } : s,
+        ),
+      }));
+    const prev = get().sessions.find((s) => s.id === sessionId)?.keepPreviewRunning ?? false;
+    patch(enabled);
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/keep-preview-running`, {
+        method: "PUT",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string };
+        patch(prev);
+        useUiStore.getState().setToast({ message: data.error ?? "Failed to update preview reservation" });
+      }
+    } catch (err) {
+      console.error("[session-store] Preview reservation toggle failed:", err);
+      patch(prev);
+      useUiStore.getState().setToast({ message: "Failed to update preview reservation" });
     }
   },
 
