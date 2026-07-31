@@ -126,6 +126,11 @@ override the parent.
 | `shipit session report -b TEXT \| --body-file FILE [--severity fyi\|warn\|blocker] [--subject T] [--to parent\|cohort] [--json]` | Push a report **up** to the session that spawned you (and, with `--to cohort`, to every live sibling). Each recipient gets a card in its chat **and** a queued system turn, so the report is pushed, not waiting to be pulled. See *Reporting upward* below. |
 | `shipit session help` | Print the subcommand reference. |
 
+Every supported subcommand accepts `--help` (or `-h`) and points to the
+canonical agent-facing documentation for its full usage and examples. This
+applies across the `session`, `source`, `issue`, `agent`, `service`, `release`,
+and `branch` command groups.
+
 The prompt is passed via `--prompt-file` — a file path, or `-` to read from
 stdin — never an inline flag. A prompt on the command line gets mangled when it
 contains backticks or `$(...)`, which the shell evaluates before the shim sees
