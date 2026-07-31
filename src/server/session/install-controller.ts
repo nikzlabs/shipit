@@ -15,6 +15,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
+import { killChild } from "../shared/kill-child.js";
 import type { McpServerConfig } from "./agents/agent-process.js";
 import type { WorkerSSEEvent } from "./sse-broadcaster.js";
 import type { McpConfigController } from "./mcp-config-controller.js";
@@ -268,7 +269,7 @@ export class InstallController {
   /** Kill any in-flight install process (worker shutdown). */
   stop(): void {
     if (this._installProcess) {
-      this._installProcess.kill();
+      killChild(this._installProcess);
       this._installProcess = null;
       this._installRunning = false;
     }

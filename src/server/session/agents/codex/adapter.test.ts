@@ -25,6 +25,12 @@ class FakeChildProcess extends EventEmitter {
   stdout = new EventEmitter();
   stderr = new EventEmitter();
   killed = false;
+  /**
+   * A real `spawn()` that exec'd sets a numeric pid; only a spawn that FAILED
+   * leaves it `undefined`. `killChild` keys off exactly that, so the fake has
+   * to carry one or it models a process that never started.
+   */
+  pid: number | undefined = 4242;
 
   kill(_signal?: string): boolean {
     this.killed = true;

@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
+import type { ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -334,6 +335,35 @@ services:
     writeCompose(dir, "services:\n  web:\n    image: node:20\n");
     const mgr = createManager(dir);
     await expect(mgr.restartService("nonexistent")).rejects.toThrow("Unknown service");
+  });
+
+  /**
+   * `streamLogs` is the one docker spawn that bypasses the injectable compose
+   * runner, so it execs for real even when a test has stubbed every other
+   * docker call. Inside a ShipIt session container there is no `docker` binary
+   * at all, so the spawn emits ENOENT asynchronously — and an 'error' event
+   * with no listener is rethrown as an uncaughtException that killed the
+   * vitest worker, taking the whole `npm test` run down with it.
+   */
+  it("registers an 'error' listener on the log follower so a failed docker exec can't crash the process", () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['3000:3000']\n");
+    const mgr = createManager(dir);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const cleanup = mgr.streamLogs("web");
+    const logProcesses = (mgr as unknown as { logProcesses: Map<string, ChildProcess> }).logProcesses;
+    const proc = logProcesses.get("web");
+    expect(proc).toBeDefined();
+    expect(proc!.listenerCount("error")).toBeGreaterThan(0);
+
+    // The exact failure a docker-less container produces must be absorbed,
+    // not rethrown, and must retire the dead follower from the registry.
+    expect(() => proc!.emit("error", new Error("spawn docker ENOENT"))).not.toThrow();
+    expect(logProcesses.has("web")).toBe(false);
+
+    cleanup();
+    warn.mockRestore();
   });
 });
 

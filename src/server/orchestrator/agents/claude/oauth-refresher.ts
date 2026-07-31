@@ -31,6 +31,7 @@ import os from "node:os";
 import { EventEmitter } from "node:events";
 import { spawn as nodeSpawn } from "node:child_process";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
+import { killChild } from "../../../shared/kill-child.js";
 import type { AgentId, ProviderAccount } from "../../../shared/types.js";
 import type { ProviderAccountManager } from "../../provider-account-manager.js";
 import type { RuntimeMode } from "../../app-di.js";
@@ -673,7 +674,7 @@ export class ClaudeOAuthRefresher extends EventEmitter {
       const timer = setTimeout(() => {
         if (settled) return;
         settled = true;
-        try { child.kill("SIGKILL"); } catch {/* */}
+        killChild(child, "SIGKILL");
         finish("[timeout] claude CLI did not exit in time");
       }, timeoutMs);
       if (typeof timer.unref === "function") timer.unref();

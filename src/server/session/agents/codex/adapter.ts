@@ -24,6 +24,7 @@ import { spawn, execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { ChildProcess } from "node:child_process";
+import { killChild } from "../../../shared/kill-child.js";
 import type {
   AgentId,
   AgentCapabilities,
@@ -434,7 +435,7 @@ export class CodexAdapter
 
   kill(): void {
     if (this.proc) {
-      this.proc.kill("SIGTERM");
+      killChild(this.proc, "SIGTERM");
       this.proc = null;
     }
     this.pendingRequests.forEach(({ reject }) => reject(new Error("Process killed")));

@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { isGitLfsAvailable } from "./git-lfs.js";
+import { killChild } from "../shared/kill-child.js";
 
 /**
  * Resolve a Git LFS pointer blob to the bytes it stands for, for *rendering*
@@ -161,7 +162,7 @@ function smudgeLfsObject(workspaceDir: string, pointerText: string, filePath: st
       chunks.push(c);
       bytes += c.length;
     });
-    const timer = setTimeout(() => proc.kill("SIGKILL"), smudgeTimeoutMs());
+    const timer = setTimeout(() => killChild(proc, "SIGKILL"), smudgeTimeoutMs());
     proc.on("error", () => {
       clearTimeout(timer);
       resolve(null);

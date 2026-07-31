@@ -29,6 +29,7 @@ import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import path from "node:path";
 import type { ComposeConfig } from "../shared/shipit-config.js";
+import { killChild } from "../shared/kill-child.js";
 import { truncateTerminalBuffer } from "./terminal-buffer.js";
 import type { LogStore } from "./log-store.js";
 import {
@@ -989,7 +990,7 @@ export class ServiceManager extends EventEmitter {
   streamLogs(name: string): () => void {
     const existing = this.logProcesses.get(name);
     if (existing) {
-      existing.kill();
+      killChild(existing);
       this.logProcesses.delete(name);
     }
 
@@ -1033,10 +1034,24 @@ export class ServiceManager extends EventEmitter {
     proc.stdout?.on("data", handleData);
     proc.stderr?.on("data", handleData);
 
+    // A ChildProcess that fails to exec emits 'error', and an 'error' event
+    // with no listener is rethrown as an uncaughtException that kills the
+    // whole process. The follower is the one docker spawn that bypasses the
+    // injectable compose runner, so it fires for real even when a caller has
+    // stubbed every other docker call — most visibly when `npm test` runs
+    // inside a ShipIt session container, which has no `docker` binary at all:
+    // ENOENT there crashed the vitest worker, and the pool crashed with it.
+    // Losing the follower is not fatal (it only feeds the log buffer), so
+    // degrade to "no follower" instead.
+    proc.on("error", (err: Error) => {
+      console.warn(`[compose:${this.sessionId}] log follower for ${name} failed to start:`, err.message);
+      if (this.logProcesses.get(name) === proc) this.logProcesses.delete(name);
+    });
+
     this.logProcesses.set(name, proc);
 
     return () => {
-      proc.kill();
+      killChild(proc);
       this.logProcesses.delete(name);
     };
   }
@@ -1071,7 +1086,7 @@ export class ServiceManager extends EventEmitter {
   async reconcile(): Promise<void> {
     // Kill orphaned log processes before clearing state — if a service was
     // renamed or removed, start() won't find its old process to clean up.
-    for (const [, proc] of this.logProcesses) proc.kill();
+    for (const [, proc] of this.logProcesses) killChild(proc);
     this.logProcesses.clear();
     this.poller.stop();
     this.retry.cancelAll();
@@ -1101,7 +1116,7 @@ export class ServiceManager extends EventEmitter {
 
     // Kill all log streaming processes
     for (const [name, proc] of this.logProcesses) {
-      proc.kill();
+      killChild(proc);
       this.logProcesses.delete(name);
     }
 

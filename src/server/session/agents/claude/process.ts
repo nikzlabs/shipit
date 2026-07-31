@@ -3,6 +3,7 @@ import type { IPty } from "node-pty";
 import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
+import { killChild } from "../../../shared/kill-child.js";
 import type { ClaudeEvent, ImageAttachment, PermissionMode } from "../../../shared/types.js";
 import { stripAnsi } from "../../../shared/strip-ansi.js";
 import { agentHome } from "../../../shared/agent-home.js";
@@ -599,7 +600,7 @@ export class StreamingClaudeProcess extends EventEmitter {
   kill(): void {
     this.clearWatchdog();
     if (this.proc) {
-      this.proc.kill("SIGTERM");
+      killChild(this.proc, "SIGTERM");
       this.proc = null;
     }
   }

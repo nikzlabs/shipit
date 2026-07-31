@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { killChild } from "../shared/kill-child.js";
 
 /**
  * Git LFS support for session provisioning (docs/231).
@@ -123,7 +124,7 @@ export function runGit(args: string[], cwd: string, timeoutMs: number): Promise<
     proc.stderr.on("data", (c: Buffer) => (stderr = append(stderr, c)));
     const timer = setTimeout(() => {
       timedOut = true;
-      proc.kill("SIGKILL");
+      killChild(proc, "SIGKILL");
     }, timeoutMs);
     proc.on("error", (err) => {
       clearTimeout(timer);
