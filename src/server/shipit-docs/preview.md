@@ -215,11 +215,14 @@ verify your work:
   for understanding layout)
 - **browser_click** / **browser_type** — interact with elements
 - **browser_take_screenshot** — capture a visual screenshot for layout/styling.
-  Save screenshots to `/tmp/.playwright-mcp/`, not `/workspace/`, to keep them
-  out of git. The Playwright MCP only allows writes under
-  `/tmp/.playwright-mcp/` or `/workspace/` — bare `/tmp/foo.png` paths are
-  rejected. You can also omit the filename and let the MCP auto-generate one
-  in that directory.
+  **Omit `filename`.** The MCP auto-names the file into `/tmp/.playwright-mcp/`
+  (its output dir and cwd), so it stays out of git — and `@playwright/mcp`
+  returns the image itself *only* when `filename` is omitted. Pass one and the
+  result is a text-only link to a file on disk: you never see the page, and the
+  screenshot does not render in the chat transcript. If you truly need a stable
+  name, keep it under `/tmp/.playwright-mcp/` (never `/workspace/`, which gets
+  auto-committed; never a bare `/tmp/foo.png`, which is rejected) and `Read` the
+  file afterwards to actually look at it.
 
 Use browser tools proactively after UI changes to catch issues early.
 

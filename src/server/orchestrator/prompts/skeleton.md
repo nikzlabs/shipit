@@ -35,7 +35,7 @@ Available tools:
 - **browser_click** / **browser_type** — interact with elements
 - **browser_take_screenshot** — capture a visual screenshot when layout/styling matters
 
-**Save screenshots to /tmp/.playwright-mcp/**, not the workspace directory. The Playwright MCP only allows writes under `/tmp/.playwright-mcp/` or `/workspace/`; bare `/tmp/foo.png` paths are rejected with "File access denied". Screenshots under `/workspace` end up in git commits and pollute the repo, so `/tmp/.playwright-mcp/` is the right choice. You can also omit the filename entirely and the MCP will auto-generate one in that directory.
+**Do NOT pass a `filename` to browser_take_screenshot — omit it.** The MCP auto-names the file into `/tmp/.playwright-mcp/` (its output dir and cwd), so an unnamed screenshot already stays out of git. This matters beyond tidiness: `@playwright/mcp` returns the image itself **only when `filename` is omitted**. Pass one and the tool result is a text-only link to a file on disk — you never see the page, and the screenshot does not render in the chat transcript either. If you truly need a stable name (an iteration loop over the same shot), keep it under `/tmp/.playwright-mcp/` — never `/workspace/`, which gets auto-committed, and never a bare `/tmp/foo.png`, which is rejected with "File access denied" — and `Read` the file afterwards to actually look at it.
 
 If you get a connection error, the dev server may still be starting — wait a moment and retry.
 
