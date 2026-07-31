@@ -111,9 +111,19 @@ export async function buildAgentRunParams(
   // synchronously, in the pre-`await` DB block (same ordering rule as the reads
   // above), so the ops overlay in the system prompt can't be lost to a mid-build
   // DB close.
-  const sessionKind = deps.sessionManager.get(sessionId)?.kind;
+  const sessionInfo = deps.sessionManager.get(sessionId);
+  const sessionKind = sessionInfo?.kind;
   const isOps = sessionKind === "ops";
   const isSandbox = sessionKind === "sandbox";
+  // SHI-265 — a recorded `mergedHeadSha` means the PR merged and ShipIt anchored
+  // the branch's pre-merge tip: the exact state `shipit branch reset-to-base`
+  // guards, and the only one where a hand-rolled `git reset --hard` can silently
+  // destroy unmerged work. Arms the PreToolUse hook's destructive-git rule for
+  // this turn only; the field is cleared by `clearMerged` and by a successful
+  // reset, so the guard disarms itself. Read here with the other synchronous DB
+  // reads (see the pre-`await` ordering rule above). Sandbox sessions never carry
+  // one, and the hook self-gates off for them regardless (docs/211).
+  const guardDestructiveGit = Boolean(sessionInfo?.mergedHeadSha);
   // docs/211 — a sandbox has no bound repo / session branch, so the Stop-hook PR
   // enforcement must never fire even when the user opted into auto-PR. The agent
   // opens PRs itself per-clone with `gh`.
@@ -154,5 +164,9 @@ export async function buildAgentRunParams(
     ...(compact ? { compact: true } : {}),
   };
   const prepare = getPrepareRunParams(deps.runParamsPreps, agentId);
-  return prepare(baseParams, { autoCreatePrActive: autoCreatePr, sandboxActive: isSandbox });
+  return prepare(baseParams, {
+    autoCreatePrActive: autoCreatePr,
+    sandboxActive: isSandbox,
+    guardDestructiveGitActive: guardDestructiveGit,
+  });
 }
