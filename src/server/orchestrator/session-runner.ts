@@ -886,6 +886,17 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   readonly supportsRemoteTerminal?: boolean;
 
   /**
+   * True while the runner's container is still being created. Container-only —
+   * in-process runners have no container and omit it.
+   *
+   * The missing-container reconciler skips these: a runner is registered
+   * synchronously, but its container manager entry only appears partway
+   * through creation, so a runner in that window is not orphaned. See
+   * `ContainerSessionRunner.awaitingContainer`.
+   */
+  readonly awaitingContainer?: boolean;
+
+  /**
    * Timestamp (Date.now()) of the most recent SSE event from the worker.
    * Container-only — direct runners don't have an SSE stream and may
    * omit this property entirely. Used by the container health endpoint

@@ -18,6 +18,60 @@ import http from "node:http";
  */
 export const DEFAULT_WORKER_TIMEOUT_MS = 10_000;
 
+/**
+ * The worker URL a {@link ContainerSessionRunner} carries between construction
+ * and `setWorkerUrl()` — i.e. while its container is still being created.
+ *
+ * Exported so the runner and this module agree on the sentinel instead of
+ * repeating the literal. Nothing may be dialed at this address: see
+ * {@link WorkerUnavailableError}.
+ */
+export const PLACEHOLDER_WORKER_URL = "http://0.0.0.0:0";
+
+/**
+ * Thrown when a worker call is attempted against a session whose container
+ * never came up — the runner still holds {@link PLACEHOLDER_WORKER_URL}.
+ *
+ * Without this guard the call is actually dialed, and Node reports
+ * `connect ECONNREFUSED 0.0.0.0` (it omits the `:0`). That message reached
+ * users as a chat error: it names neither the session container nor the real
+ * failure, and it looks like a bug in the user's own project rather than a
+ * container that failed to start. `dispose()` resolves the runner's
+ * worker-ready gate so pending awaiters don't leak, which is what lets a
+ * parked turn reach the POST with the placeholder still set — so this has to
+ * be enforced at the transport, where no call site can forget it.
+ *
+ * The `reason` carries the actual container-creation failure when the runner
+ * knows it (see `ContainerSessionRunner.markWorkerUnavailable`).
+ */
+export class WorkerUnavailableError extends Error {
+  readonly path: string;
+  constructor(path: string, reason?: string) {
+    super(
+      reason
+        ? `The session container isn't running, so the request could not be delivered: ${reason}`
+        : "The session container isn't running, so the request could not be delivered. "
+          + "It failed to start — send your message again to retry.",
+    );
+    this.name = "WorkerUnavailableError";
+    this.path = path;
+  }
+}
+
+/**
+ * Reject rather than dial when the base URL is still the placeholder.
+ *
+ * Returns a rejected promise (not a synchronous throw) so the many
+ * fire-and-forget `workerPost(...).catch(() => {})` call sites keep swallowing
+ * it exactly as they swallow a transport error today.
+ */
+function guardPlaceholder(baseUrl: string, path: string): Promise<never> | null {
+  if (baseUrl === PLACEHOLDER_WORKER_URL) {
+    return Promise.reject(new WorkerUnavailableError(path));
+  }
+  return null;
+}
+
 export interface WorkerHttpOpts {
   /**
    * Request timeout in milliseconds. When set, both connect and idle-read
@@ -86,6 +140,8 @@ function attachWorkerResponseHandler(
 }
 
 export async function workerPost(baseUrl: string, path: string, body?: unknown, opts?: WorkerHttpOpts): Promise<unknown> {
+  const unavailable = guardPlaceholder(baseUrl, path);
+  if (unavailable) return unavailable;
   return new Promise((resolve, reject) => {
     const url = new URL(path, baseUrl);
     const payload = body !== undefined ? JSON.stringify(body) : undefined;
@@ -149,6 +205,8 @@ export async function workerPostMessage(baseUrl: string, text: string, opts?: Wo
  * — JSON request/response, optional timeout, error-on-4xx-or-5xx semantics.
  */
 export async function workerPut(baseUrl: string, path: string, body?: unknown, opts?: WorkerHttpOpts): Promise<unknown> {
+  const unavailable = guardPlaceholder(baseUrl, path);
+  if (unavailable) return unavailable;
   return new Promise((resolve, reject) => {
     const url = new URL(path, baseUrl);
     const payload = body !== undefined ? JSON.stringify(body) : undefined;
@@ -192,6 +250,8 @@ export async function workerPushAgentSecrets(baseUrl: string, secrets: Record<st
 }
 
 export async function workerGet(baseUrl: string, path: string, opts?: WorkerHttpOpts): Promise<unknown> {
+  const unavailable = guardPlaceholder(baseUrl, path);
+  if (unavailable) return unavailable;
   return new Promise((resolve, reject) => {
     const url = new URL(path, baseUrl);
 
