@@ -3,7 +3,8 @@
 Design only so far — nothing implemented. No schema change, no migration.
 
 ## 1. Server (inert until the client sends `limit`)
-- [ ] `ChatHistoryManager.loadWindow(sessionId, { limit, beforeOffset? })` — two prepared statements; leave `load()` intact
+- [ ] `ChatHistoryManager.loadWindow(sessionId, { limit, beforeOffset? })` — leave `load()` intact
+- [ ] **Snap the window start to a `role: "user"` row** — extend back to the nearest preceding one; if past a cap, snap forward to the next one instead
 - [ ] `?limit=N` on `GET /history`; absent ⇒ byte-identical to today
 - [ ] `&beforeOffset=` returns `{ messages, omittedBefore, hasMore }` only — skips git log + file tree
 - [ ] `firstUserText` via `LIMIT 1` query (not via `load()`)
@@ -31,6 +32,7 @@ Design only so far — nothing implemented. No schema change, no migration.
 - [ ] Card lifecycle state survives a prepend (older page does not overwrite newer)
 - [ ] Search and export cover the whole conversation from a windowed client
 - [ ] Sent uploads do not resurrect as draft chips when their row is outside the window
-
-## Optional polish (ship without it; add if the seam is visible)
-- [ ] Extend the first page back to the nearest preceding user row, capped
+- [ ] **A window never opens mid-run:** a tool-group at the top of the window shows its full item count, not a truncated one
+- [ ] Snap works when the boundary is a live steer (a steer is a user row, so it is a valid flush point)
+- [ ] Cap case: a run longer than the cap snaps forward rather than opening mid-group
+- [ ] Voice Play prose and `ExitPlanMode` plan lookup are correct for the topmost turn in the window

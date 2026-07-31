@@ -71,15 +71,13 @@ This is what makes the design small, so it is worth stating precisely.
   there is no such column. By persist time the interleaving is flattened into row
   order, and no persisted row references another row's position.
 
-Therefore **a cut at any row boundary breaks nothing structurally.** The only
-consequence of cutting mid-turn is cosmetic: the view starts partway through a
-turn, one scroll-up away from its opening prompt. The UI already treats mid-turn
-positions as first-class — `shouldShowGapBefore` (`MessageList.tsx:208`) renders
-rewind gaps at every role transition, including at mid-turn steers.
+Therefore **a cut at any row boundary loses nothing and breaks no persisted
+relationship.** That removes the need for a persisted turn marker, and with it a
+column, an index, an ordinal-allocation rule, a crash-recovery path, an
+out-of-turn-row policy spanning eight call sites, and a backfill migration.
 
-That single fact removes the need for turn alignment, and with it a column, an
-index, an ordinal-allocation rule, a crash-recovery path, an out-of-turn-row
-policy spanning eight call sites, and a backfill migration.
+**It does not, however, make the cut position free — see §2.** The persistence
+layer is indifferent to where the window starts; the *rendering* layer is not.
 
 ## Design
 
@@ -96,15 +94,50 @@ appends: the agent only ever writes at the tail, and `replaceInProgress` churn i
 confined to the running turn, which is always inside the newest window. A
 front-anchored "the M rows before offset X" read cannot be disturbed by either.
 
-**Optional legibility polish**, if a mid-turn start proves annoying in practice:
-extend the *first* page backward to the nearest preceding `role: "user"` row,
-capped at some multiple of `limit`. Note this heuristic cannot distinguish a
-turn-opening prompt from a live steer (steers persist as user rows *inside* a
-turn — `session-runner.ts:111-148`), but since a wrong boundary is only cosmetic,
-the heuristic is good enough. This is polish, not a requirement; ship without it
-and add it if the seam is visible.
+### 2. Snap the window start to a user row — required, not polish
 
-### 2. API surface
+Persisted rows are self-contained, but the **renderer builds cross-row
+constructs**, and a window that begins mid-run makes them silently wrong rather
+than merely ugly.
+
+`buildVisualElements` accumulates groupable tools across *consecutive assistant
+messages* into one tool-group (`visual-elements.ts:119-123`). It flushes on
+visible content (`:114`), on an extractable standalone tool (`:135`), or on any
+non-groupable message — a condition that includes `msg.role === "user"`
+(`:141-142`). Two more constructs behave the same way: `turnProseByLastIndex`
+tracks a `runStart` reset at user rows (`MessageList.tsx:126-152`), and
+`findPlanContent` scans backward for the `Write` that produced the plan
+(`:168-182`).
+
+So if the window opens in the middle of a run, the grouping layer starts
+accumulating at the first *loaded* row and renders a tool-group with **fewer
+items than the turn actually made** — a turn that ran twelve tool calls displays
+three. Nothing is lost and nothing crashes, but the UI *misreports* what
+happened. Likewise the voice Play button would speak a partial turn's prose, and
+an `ExitPlanMode` card could fail to find its plan. That is a correctness-shaped
+defect in the UI, not an aesthetic seam, and it is not acceptable as
+ship-without-it polish.
+
+**Fix: snap the window start to a `role: "user"` row.** A user row is already a
+flush point for all three constructs, so a window beginning there can never
+bisect a tool group or a prose run. Extend backward to the nearest preceding user
+row; if that exceeds a cap (a pathologically long run), snap *forward* to the
+next user row instead and show slightly less — either direction lands on a flush
+point, so the invariant holds in both. Only a single run longer than the cap in
+both directions forces a mid-group cut; that is rare enough to accept.
+
+**This also fully retires the turn-marker question.** The earlier draft worried
+that "nearest user row" cannot distinguish a turn-opening prompt from a live
+steer (steers persist as user rows inside a turn — `session-runner.ts:111-148`).
+For this purpose the distinction is irrelevant: a steer *is* a user row, and a
+user row is already a flush point, so snapping to one never bisects a group
+either way. The cheap heuristic is exactly as good here as a persisted turn
+marker would have been — which is why `turn_seq` buys nothing.
+
+The snap is a server-side query detail: find the greatest user-row offset at or
+below the requested start. No schema change.
+
+### 3. API surface
 
 One route, one branch — not a new subsystem.
 
@@ -128,7 +161,7 @@ most of the saving):
   upload **resurrects as a draft chip**, the exact bug that code says it
   structurally prevents.
 
-### 3. Index addressing — the one genuine hazard
+### 4. Index addressing — the one genuine hazard
 
 The client addresses messages by array position, and two protocols carry that
 position across the wire. This is data-loss-grade and **gates turning the window
@@ -156,7 +189,7 @@ suffix of the server's, so the mapping is exact in both directions — rewind se
 `omittedBefore + gapPosition`, `commit_linked` applies `messageIndex -
 omittedBefore`. Two one-line changes.
 
-### 4. Client
+### 5. Client
 
 **Stable keys without row ids.** `omittedBefore + i` is invariant: prepending M
 rows decrements `omittedBefore` by M and increments every existing row's `i` by
@@ -260,9 +293,9 @@ were dropped are the useful part of this doc.
 
 ## Sequencing
 
-1. `loadWindow()` + `?limit`/`&beforeOffset` on the existing route + the two
-   metadata fields. Inert: no client sends `limit`, so every response is
-   byte-identical to today.
+1. `loadWindow()` with the user-row snap + `?limit`/`&beforeOffset` on the
+   existing route + the two metadata fields. Inert: no client sends `limit`, so
+   every response is byte-identical to today.
 2. **`omittedBefore` translation for rewind and `commit_linked`.** Must land
    before any client sends `limit`.
 3. Client: keys, prepend + scroll anchoring, prepend-aware `useMessageScroll`,
@@ -303,7 +336,7 @@ artifact id, and subagent reports come from parent tool output
 ## Related docs
 
 `docs/071-sqlite-investigation` (names this work as a follow-up),
-`docs/144-rewind-fork-ux` (the `gapPosition` model §3 must translate),
+`docs/144-rewind-fork-ux` (the `gapPosition` model §4 must translate),
 `docs/188-persist-transcript-cards` and `docs/191-card-persist-on-emit` (the
 persistence contract paging must not break),
 `docs/237-mid-turn-reattach-snapshot` (`turn_snapshot`, the live overlay),
