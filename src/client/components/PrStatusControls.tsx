@@ -23,14 +23,17 @@ function ToggleSwitch({
   enabled,
   onToggle,
   title,
+  ariaLabel,
 }: {
   label: ReactNode;
   enabled: boolean;
   onToggle: () => void;
   title: string;
+  /** Set when `label` carries no text (icon-only compact mode), so the control keeps an accessible name. */
+  ariaLabel?: string;
 }) {
   return (
-    <Button variant="ghost" size="sm" onClick={onToggle} title={title}>
+    <Button variant="ghost" size="sm" onClick={onToggle} title={title} aria-label={ariaLabel}>
       <span className={`inline-block w-6 h-3.5 rounded-full transition-colors ${enabled ? "bg-(--color-success)" : "bg-(--color-text-tertiary)"}`}>
         <span className={`block w-2.5 h-2.5 mt-0.5 rounded-full bg-(--color-text-inverse) transition-transform ${enabled ? "translate-x-3" : "translate-x-0.5"}`} />
       </span>
@@ -111,14 +114,34 @@ export function AutoFixPauseToggle({ sessionId }: { sessionId: string }) {
   );
 }
 
-export function AutoMergeToggle({ sessionId, autoMerge }: { sessionId: string; autoMerge?: PrCardState["autoMerge"] }) {
+export function AutoMergeToggle({
+  sessionId,
+  autoMerge,
+  compact,
+}: {
+  sessionId: string;
+  autoMerge?: PrCardState["autoMerge"];
+  /**
+   * Drop the "Auto-merge" word, leaving the switch + merge glyph. Used by the
+   * PR card's inline action row on mobile, where the label alone is the ~65px
+   * that pushes the merge button onto a line of its own. The tooltip and the
+   * accessible name still carry the full meaning.
+   */
+  compact?: boolean;
+}) {
   const toggleAutoMerge = usePrStore((s) => s.toggleAutoMerge);
   const enabled = autoMerge?.enabled ?? false;
 
   return (
     <span className="flex items-center gap-1">
       <ToggleSwitch
-        label={<span className="inline-flex items-center gap-1"><GitMergeIcon size={ICON_SIZE.XS} className={AUTO_MERGE_ICON_CLASS} />Auto-merge</span>}
+        label={
+          <span className="inline-flex items-center gap-1">
+            <GitMergeIcon size={ICON_SIZE.XS} className={AUTO_MERGE_ICON_CLASS} />
+            {!compact && "Auto-merge"}
+          </span>
+        }
+        ariaLabel={compact ? "Auto-merge" : undefined}
         enabled={enabled}
         onToggle={() => toggleAutoMerge(sessionId, !enabled)}
         title={enabled ? "Disable auto-merge" : "Enable auto-merge"}
@@ -132,6 +155,13 @@ const MERGE_METHOD_LABELS: Record<string, string> = {
   squash: "Squash and merge",
   merge: "Create a merge commit",
   rebase: "Rebase and merge",
+};
+
+/** Verb-only labels for the narrow (mobile card) treatment — see MergeButton's `compact`. */
+const MERGE_METHOD_SHORT_LABELS: Record<string, string> = {
+  squash: "Squash",
+  merge: "Merge",
+  rebase: "Rebase",
 };
 
 /**
@@ -232,7 +262,21 @@ export function ClosePrDropdownItem({ state }: { state: ReturnType<typeof useClo
   );
 }
 
-export function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoMerge?: PrCardState["autoMerge"] }) {
+export function MergeButton({
+  sessionId,
+  autoMerge,
+  compact,
+}: {
+  sessionId: string;
+  autoMerge?: PrCardState["autoMerge"];
+  /**
+   * Show the verb-only method label ("Squash" rather than "Squash and merge").
+   * Used by the PR card's inline action row on mobile so the button shares a
+   * line with the auto-merge toggle; the full label stays as the tooltip and
+   * the accessible name, and the caret dropdown still spells every method out.
+   */
+  compact?: boolean;
+}) {
   const merge = usePrStore((s) => s.merge);
   const setMergeMethod = usePrStore((s) => s.setMergeMethod);
   const setToast = useUiStore((s) => s.setToast);
@@ -243,10 +287,13 @@ export function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoM
 
   const method = autoMerge?.mergeMethod ?? "squash";
   const label = MERGE_METHOD_LABELS[method] ?? "Squash and merge";
+  const shortLabel = MERGE_METHOD_SHORT_LABELS[method] ?? "Squash";
   const disabled = merging || isAgentRunning;
   const title = isAgentRunning
     ? "Agent is still working; merge will be available when the turn finishes"
-    : undefined;
+    : compact
+      ? label
+      : undefined;
 
   // Reset the armed-confirm state whenever the menu closes so it never reopens
   // pre-armed.
@@ -275,9 +322,10 @@ export function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoM
         onClick={handleMerge}
         disabled={disabled}
         title={title}
+        aria-label={compact ? label : undefined}
         className="h-6 px-2 text-xs font-medium whitespace-nowrap bg-(--color-success) hover:opacity-90 text-(--color-text-inverse) rounded-l transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
       >
-        {merging ? "Merging..." : label}
+        {merging ? "Merging..." : compact ? shortLabel : label}
       </button>
       <button
         onClick={() => (dropdownOpen ? closeDropdown() : setDropdownOpen(true))}

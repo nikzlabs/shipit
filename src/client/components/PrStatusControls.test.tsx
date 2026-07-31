@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { ClosePrDropdownItem, MergeButton, useClosePr } from "./PrStatusControls.js";
+import { AutoMergeToggle, ClosePrDropdownItem, MergeButton, useClosePr } from "./PrStatusControls.js";
 import { OverflowMenu } from "./ui/overflow-menu.js";
 import { usePrStore } from "../stores/pr-store.js";
 import type { PrCardState } from "../stores/pr-store.js";
@@ -71,6 +71,34 @@ const surfaces = [
     close: (user: ReturnType<typeof userEvent.setup>) => user.keyboard("{Escape}"),
   },
 ] as const;
+
+// The mobile PR card packs the auto-merge toggle and the merge button onto one
+// line by dropping their text down to the essentials. Both controls must keep
+// an accessible name once the visible label goes away.
+describe("compact (mobile card) labels", () => {
+  it("shortens the merge label to the method verb but keeps the full accessible name", () => {
+    render(<MergeButton sessionId="s1" compact />);
+    const button = screen.getByRole("button", { name: "Squash and merge" });
+    expect(button).toHaveTextContent("Squash");
+    expect(button).not.toHaveTextContent("Squash and merge");
+  });
+
+  it("keeps the full merge label when not compact", () => {
+    render(<MergeButton sessionId="s1" />);
+    expect(screen.getByText("Squash and merge")).toBeInTheDocument();
+  });
+
+  it("drops the auto-merge word but keeps the control labelled", () => {
+    render(<AutoMergeToggle sessionId="s1" compact />);
+    expect(screen.getByRole("button", { name: "Auto-merge" })).toBeInTheDocument();
+    expect(screen.queryByText("Auto-merge")).toBeNull();
+  });
+
+  it("keeps the auto-merge word when not compact", () => {
+    render(<AutoMergeToggle sessionId="s1" />);
+    expect(screen.getByText("Auto-merge")).toBeInTheDocument();
+  });
+});
 
 describe.each(surfaces)("close pull request via $name", ({ render: renderSurface, open, close }) => {
   it("requires a second click to confirm before closing", async () => {

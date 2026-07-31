@@ -6,6 +6,7 @@ import { useSettingsStore } from "../../../stores/settings-store.js";
 import { useGitStore } from "../../../stores/git-store.js";
 import { useCommentStore } from "../../../stores/comment-store.js";
 import { useCiDisplay } from "../../../hooks/useCiDisplay.js";
+import { useIsMobile } from "../../../hooks/useMediaQuery.js";
 import { Button } from "../../ui/button.js";
 import {
   AutoMergeToggle,
@@ -104,6 +105,12 @@ export function OpenPhase({
   const autoFixCi = useSettingsStore((s) => s.autoFixCi);
   const openDiff = useOpenPrDiff(pr?.baseBranch);
   const ciDisplay = useCiDisplay(card.checks);
+  // On a phone the action row only has ~220px (the card's right-hand
+  // icon cluster narrows every row, not just the first), so the full-width
+  // auto-merge toggle + "Squash and merge" button can't share a line. Compact
+  // both there: ~123px + ~137px becomes ~56px + ~77px, which fits down to a
+  // 320px viewport and buys back a whole row of the sticky header.
+  const isMobile = useIsMobile();
   if (!pr) return null;
 
   const autoFix = card.autoFix;
@@ -182,17 +189,29 @@ export function OpenPhase({
             {card.previousMergedPr && (
               <PreviouslyMergedNote previousMergedPr={card.previousMergedPr} />
             )}
-            {canAutoMerge && (
-              <span className="shrink-0">
-                <AutoMergeToggle sessionId={sessionId} autoMerge={autoMerge} />
-              </span>
-            )}
+            {/* On mobile the toggle and the merge button ride together as one
+                non-wrapping unit — compacting them alone isn't enough, since
+                greedy wrapping would just pull the shrunken toggle up onto the
+                diff/CI line and leave the merge button alone below. On desktop
+                the wrapper is `contents`, so the layout is unchanged there (a
+                narrow chat panel keeps the freedom to wrap between them).
+                Conflict UI renders after the pair rather than between them:
+                a conflicting PR is never mergeable, so the merge button and the
+                conflict controls are mutually exclusive and the visible order
+                is the same as before in every reachable state. */}
+            <span className={isMobile ? "shrink-0 flex items-center gap-2" : "contents"}>
+              {canAutoMerge && (
+                <span className="shrink-0">
+                  <AutoMergeToggle sessionId={sessionId} autoMerge={autoMerge} compact={isMobile} />
+                </span>
+              )}
+              {showMergeButton && (
+                <MergeButton sessionId={sessionId} autoMerge={autoMerge} compact={isMobile} />
+              )}
+            </span>
             {showConflictUi && <MergeConflictIndicator />}
             {showConflictUi && (
               <ResolveConflictsButton sessionId={sessionId} baseBranch={pr.baseBranch} />
-            )}
-            {showMergeButton && (
-              <MergeButton sessionId={sessionId} autoMerge={autoMerge} />
             )}
             {showFixButton && (
               <FixCIButton sessionId={sessionId} />
