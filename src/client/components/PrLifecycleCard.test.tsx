@@ -59,6 +59,8 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  // The mobile-layout test stubs matchMedia; unstub so the rest render desktop.
+  vi.unstubAllGlobals();
   cleanup();
 });
 
@@ -877,13 +879,54 @@ describe("PrLifecycleCard", () => {
     // an `md:hidden` container.
     expect(inlineToggle.closest(".md\\:hidden")).toBeNull();
     expect(container.querySelector(".md\\:hidden")).toBeNull();
-    // Still sits next to the CI indicator in the badge row.
-    const wrapper = inlineToggle.closest("span.shrink-0");
-    expect(wrapper?.previousElementSibling).toHaveTextContent("CI 1/3");
+    // Still sits next to the CI indicator in the badge row. The toggle now
+    // shares a wrap-as-one-unit group with the merge button, so the CI
+    // indicator is the group's previous sibling.
+    const group = inlineToggle.closest("span.flex.items-center")?.parentElement;
+    expect(group).toContainElement(inlineToggle);
+    expect(group?.previousElementSibling).toHaveTextContent("CI 1/3");
     expect(inlineToggle).toHaveTextContent("Auto-merge");
 
     await user.click(inlineToggle);
     expect(toggleAutoMerge).toHaveBeenCalledWith("s1", true);
+  });
+
+  it("moves the status/action cluster to a full-width row below the header on mobile", () => {
+    // The header's icon cluster (search / docs / ⋯) is a sibling column, so it
+    // narrows every wrapped row inside the left column — on a phone that leaves
+    // ~258px, and the auto-merge toggle (~123px) plus "Squash and merge"
+    // (~137px) need ~272px, which is why the button used to wrap onto a row of
+    // its own. Breaking the cluster out to the card's full width fits both at
+    // their real labels.
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query.includes("767"),
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    }));
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "success", total: 3, passed: 3, failed: 0, pending: 0 },
+      autoMerge: { enabled: false, mergeMethod: "squash" },
+    });
+
+    const { container } = render(<PrLifecycleCard sessionId="s1" canAutoMerge />);
+
+    // Full labels — no compacting needed once the row spans the card.
+    const toggle = screen.getByRole("button", { name: /Auto-merge/ });
+    const mergeButton = screen.getByText("Squash and merge");
+    // Both moved out of the header row (the element that hosts the icon
+    // cluster) and into the row below it.
+    const header = container.firstElementChild;
+    expect(header).not.toContainElement(toggle);
+    expect(header).not.toContainElement(mergeButton);
+    const actionsRow = header?.nextElementSibling;
+    expect(actionsRow).toContainElement(toggle);
+    expect(actionsRow).toContainElement(mergeButton);
+    // …and they still wrap as one unit within that row.
+    const group = toggle.closest("span.flex.items-center")?.parentElement;
+    expect(group).toContainElement(mergeButton);
   });
 
   it("uses the shared neutral auto-merge icon color in the top-bar overflow", async () => {

@@ -16,6 +16,7 @@ import { useIsMobile } from "../../hooks/useMediaQuery.js";
 import { PrActionsMenu } from "../PrActionsMenu.js";
 import { Button } from "../ui/button.js";
 import { ChangedDocsStrip } from "../ChangedDocsStrip.js";
+import { PrStatusActions } from "./PrStatusActions.js";
 import {
   getSavedChangedDocsExpanded,
   saveChangedDocsExpanded,
@@ -123,7 +124,8 @@ export function PrLifecycleCard({
   // value) rather than reaching for useEffect — the React-endorsed "store info
   // from previous render" pattern, so a session switch restores that session's
   // own expanded/collapsed preference without an effect.
-  const defaultExpanded = !useIsMobile();
+  const isMobile = useIsMobile();
+  const defaultExpanded = !isMobile;
   const [docsState, setDocsState] = useState(() => ({
     sessionId,
     expanded: getSavedChangedDocsExpanded(sessionId, defaultExpanded),
@@ -171,8 +173,15 @@ export function PrLifecycleCard({
   // When the strip drops in below, it owns the assembly's bottom border — so the
   // header drops its own `border-b` to avoid a divider line between the two,
   // letting header + strip read as one seamless card (they share the same
-  // transparent background).
+  // transparent background). The mobile action row sits between the two and
+  // plays the same game: whichever element is last carries the border.
   const stripShown = hasPanelContent && docsExpanded;
+  // On mobile the open card's status chips + actions break out of the header's
+  // left column into a full-width row of their own. The header's right-hand
+  // icon cluster is a sibling column, so it narrows every wrapped row inside
+  // that column — leaving too little for the auto-merge toggle and the merge
+  // button to share a line. See PrStatusActions.
+  const actionsRowShown = isMobile && card?.phase === "open" && !!card.pr;
 
   // Key the inner subtree on sessionId so transient per-session UI state
   // (e.g. MergeButton's "Merging..." flag, CreatePR's "Creating..." flag,
@@ -206,7 +215,7 @@ export function PrLifecycleCard({
         key={sessionId}
         onClick={handleClick}
         aria-label={clickable ? "Open PR details" : undefined}
-        className={`shrink-0 flex items-start gap-2 px-3 sm:px-4 py-2 ${stripShown ? "" : "border-b border-(--color-border-primary)"} ${clickable ? "cursor-pointer hover:bg-(--color-bg-hover)/40 transition-colors" : ""}`}
+        className={`shrink-0 flex items-start gap-2 px-3 sm:px-4 pt-2 ${actionsRowShown ? "pb-1" : "pb-2"} ${stripShown || actionsRowShown ? "" : "border-b border-(--color-border-primary)"} ${clickable ? "cursor-pointer hover:bg-(--color-bg-hover)/40 transition-colors" : ""}`}
       >
         <div className="min-w-0 flex-1 flex items-center">
           {phaseContent}
@@ -227,6 +236,15 @@ export function PrLifecycleCard({
           <PrActionsMenu sessionId={sessionId} />
         </div>
       </div>
+      {actionsRowShown && card && (
+        // `pl-8` = the header's px-3 plus the PR badge (w-5) and its gap, so the
+        // row lines up under the PR title rather than under the badge.
+        <div
+          className={`shrink-0 flex flex-wrap items-center gap-x-3 gap-y-1 pl-8 pr-3 pb-2 ${stripShown ? "" : "border-b border-(--color-border-primary)"}`}
+        >
+          <PrStatusActions card={card} sessionId={sessionId} canAutoMerge={canAutoMerge} />
+        </div>
+      )}
       {hasPanelContent && docsExpanded && (
         <ChangedDocsStrip sessionId={sessionId} notableFiles={notableFiles} issueRefs={issueRefs} />
       )}
