@@ -1,5 +1,5 @@
 /**
- * OpenAI Whisper STT adapter (docs/144).
+ * OpenAI speech-to-text adapter (docs/144).
  *
  * Whole-utterance transcription: takes a recorded audio blob and returns the
  * raw transcript. No streaming partials (see plan "Why no mid-utterance
@@ -11,7 +11,7 @@ import { VoiceProviderError, type SttProvider, type SttTranscribeOptions } from 
 import { WHISPER_BIAS_PROMPT } from "../vocabulary.js";
 
 const OPENAI_TRANSCRIBE_URL = "https://api.openai.com/v1/audio/transcriptions";
-const WHISPER_MODEL = "whisper-1";
+const OPENAI_TRANSCRIBE_MODEL = "gpt-4o-transcribe";
 
 function filenameForMime(mimeType: string | undefined): string {
   if (!mimeType) return "audio.webm";
@@ -28,8 +28,8 @@ export function createWhisperProvider(apiKey: string, fetchImpl: typeof fetch = 
       const form = new FormData();
       const blob = new Blob([new Uint8Array(audio)], { type: opts.mimeType ?? "audio/webm" });
       form.append("file", blob, filenameForMime(opts.mimeType));
-      form.append("model", WHISPER_MODEL);
-      // Whisper expects a 2-letter ISO-639-1 hint; pass the leading subtag.
+      form.append("model", OPENAI_TRANSCRIBE_MODEL);
+      // OpenAI expects a 2-letter ISO-639-1 hint; pass the leading subtag.
       if (opts.language) form.append("language", opts.language.split("-")[0]);
       // Bias recognition toward coding vocabulary so STT emits "PR"/"JSON"
       // rather than "APR"/"Jason" — cleanup can only fix what STT produces.
@@ -44,12 +44,12 @@ export function createWhisperProvider(apiKey: string, fetchImpl: typeof fetch = 
           body: form,
         });
       } catch (err) {
-        throw new VoiceProviderError(502, `Whisper request failed: ${(err as Error).message}`);
+        throw new VoiceProviderError(502, `OpenAI transcription request failed: ${(err as Error).message}`);
       }
 
       if (!res.ok) {
         const detail = await res.text().catch(() => "");
-        throw new VoiceProviderError(res.status, `Whisper returned ${res.status}: ${detail.slice(0, 500)}`);
+        throw new VoiceProviderError(res.status, `OpenAI transcription returned ${res.status}: ${detail.slice(0, 500)}`);
       }
 
       const data = (await res.json()) as { text?: string };

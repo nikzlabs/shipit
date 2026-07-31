@@ -19,7 +19,7 @@ describe("createWhisperProvider", () => {
     expect(init.method).toBe("POST");
     expect(init.headers.Authorization).toBe("Bearer sk-test");
     expect(init.body).toBeInstanceOf(FormData);
-    expect((init.body as FormData).get("model")).toBe("whisper-1");
+    expect((init.body as FormData).get("model")).toBe("gpt-4o-transcribe");
   });
 
   it("biases recognition with the coding vocabulary prompt", async () => {
