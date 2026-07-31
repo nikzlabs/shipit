@@ -1,45 +1,45 @@
 ---
 issue: https://linear.app/shipit-ai/issue/SHI-268
-description: Requirement IDs in per-feature requirements docs, forge-proof clarification receipts, and turn-start gating that blocks implementation while questions are open.
+description: Human-owned requirements docs per feature, forge-proof clarification receipts, and turn-start gating that blocks implementation while questions are open.
 ---
 
 # 241 — Spec discipline: design
 
-**Requirements:** [`requirements.md`](./requirements.md) — the source of truth for what this feature does, reviewable on its own. This doc explains how it is implemented.
+**Requirements:** [`requirements.md`](./requirements.md) — plain-language, human-approved; the source of truth for what this feature does. This doc explains how it is implemented. Numbers like (req 3) refer to entries there.
 
 ## Intent
 
-Coding agents fail at requirements more often than at code: they hit an unspecified detail, pick a plausible answer, write it into the code, and never surface it. Spec discipline makes invented requirements structurally visible: requirements carry stable IDs, unresolved gaps are explicit markers, human resolutions are recorded as orchestrator-owned receipts the agent cannot forge, and a deterministic validator gates implementation turns until the gaps are closed.
+Coding agents fail at requirements more often than at code: they hit an unspecified detail, pick a plausible answer, write it into the code, and never surface it. Spec discipline makes that structurally visible: requirements live in a human-owned document, unresolved gaps are explicit open questions, human answers are recorded as orchestrator-owned receipts the agent cannot forge, and a validator gates implementation turns until the questions are closed.
 
 ## Design
 
-### Feature artifacts (241-REQ-001..004)
+### Feature artifacts (reqs 1–2)
 
-An opted-in feature keeps three files in its `docs/<NNN>-<slug>/` folder: `requirements.md` (requirements with qualified IDs, clarification markers, and the `## Clarifications` resolution log — separate from the design doc so a human can review requirements on their own and design edits can't silently alter them), `plan.md` (design, unchanged role), and `checklist.md` (implementation items, each citing the REQ IDs it satisfies). Linear keeps status and priority, as today.
+An opted-in feature keeps three files in its `docs/<NNN>-<slug>/` folder: `requirements.md` (plain-language requirements and open questions — no formal notation; the format constraint is that the validator can find open questions, so they are written as `[NEEDS CLARIFICATION: <question>]` markers), `plan.md` (design, unchanged role), and `checklist.md` (implementation items). Linear keeps status and priority, as today.
 
-### Validator (241-REQ-010..016)
+### Validator (req 5)
 
-One implementation, two entry points: a library in the orchestrator and a `shipit spec check` CLI shim in the session container. It does only what a parser can prove: markers present, IDs unique and well-formed, checklist↔requirement references resolve, `## Clarifications` entries cite real, unused receipt IDs. Ambiguity-word and EARS-form checks are warnings. Semantic judgment (contradictions, duplicate-in-different-words, test adequacy) is the reviewer's job, not the validator's.
+One implementation, two entry points: a library in the orchestrator and a `shipit spec check` CLI shim in the session container (`--feature docs/<NNN>-<slug>` scoped to one feature; `--all` for an advisory repo-wide report that never blocks anything; `--json` for machine consumption; non-zero exit iff the scoped feature has blocking findings). It checks only what a parser can prove: open-question markers present (blocking, with file and line), and resolution entries citing real, unused receipt IDs (blocking when they don't). Semantic judgment — contradictions, coverage, whether the code matches — is the reviewer's job, not the validator's.
 
-### Resolution receipts (241-REQ-020..022)
+### Resolution receipts (reqs 3, 5)
 
-The gate's authority is a receipt store owned by the orchestrator, persisted outside the session workspace. A receipt is minted only when a user answers a rendered question card, and records the question, options, chosen answer, answering message ID, and the `requirements.md` blob SHA at ask time. Sessions read receipts but cannot create them — the markdown `## Clarifications` log summarizes decisions; receipts *are* the decisions.
+The gate's authority is a receipt store owned by the orchestrator, persisted outside the session workspace. A receipt is minted only when a user answers a rendered question card, and records the feature dir, question text, options offered, chosen answer, answering user message ID, the `requirements.md` git blob SHA at ask time, and a timestamp. Sessions read receipts (to cite them when writing the resolution into `requirements.md`) but cannot create them — any receipt-creation request not originating from a user's answer to a question card is rejected. The markdown resolution log summarizes decisions; receipts *are* the decisions. This is also how requirement provenance survives: a receipt records exactly what was asked, what was offered, and what the human chose.
 
-### Clarification flow (241-REQ-030..031)
+### Clarification flow (req 4)
 
-Batched questions render through the existing structured-question flow (Claude's native question tool; the Codex bridge, docs/147). On submit, the orchestrator mints receipts and delivers the answers as the agent's next turn; the agent writes the resulting requirements into `requirements.md` itself.
+Batched questions render through the existing structured-question flow (Claude's native question tool; the Codex bridge, docs/147), with 2–4 options plus free-text per question. On submit, the orchestrator mints one receipt per answered question and delivers the answers as the agent's next turn; the agent updates `requirements.md` itself — replacing each answered marker with the agreed requirement and a dated resolution entry citing the receipt. The UI never writes workspace files.
 
-### Turn-start gating (241-REQ-040..043)
+### Turn-start gating (req 5)
 
-The gate consults the validator in the orchestrator's turn-dispatch path — the one seam every backend passes through, so gating is backend-neutral by construction. In `blocking` mode, a turn starting with blocking findings becomes a clarification turn: the findings are injected into the turn's instructions, and the validator re-runs post-turn. The gate is deliberately *not* write-proof — there is no per-file write enforcement; the constraint is instructions plus post-turn re-validation. Workspaces opt in via `.shipit/spec-discipline.json`; no file, no gating.
+The gate consults the validator in the orchestrator's turn-dispatch path — the one seam every backend passes through, so gating is backend-neutral by construction. When the session's active feature has blocking findings and the workspace is in enforcing mode, the turn becomes a clarification turn: the findings are injected into the turn's instructions (resolve gaps, do not implement), and the validator re-runs post-turn with remaining findings surfaced in the session. Report-only mode surfaces findings without designating the turn. The gate is deliberately *not* write-proof — there is no per-file write enforcement; the constraint is instructions plus post-turn re-validation. Workspaces opt in via `.shipit/spec-discipline.json` (mode, paths); no file, no gating.
 
-### Post-implementation review (241-REQ-050..051)
+### Post-implementation review (req 6)
 
-A fresh-context reviewer agent (the non-implementing backend when one is configured) gets the requirements, the branch diff, and the checklist, and reports advisory findings inline.
+A fresh-context reviewer agent — never the implementing session's context, and the non-implementing backend when one is configured — gets the requirements, the branch diff against the base, and the checklist, and reports advisory findings inline.
 
-### Child projects (241-REQ-060..061)
+### Child projects (req 7)
 
-The same validator, receipts, question flow, and gating operate on any workspace with the config file; ShipIt scaffolds the skeleton and a short rules block into the project's `CLAUDE.md`. No ShipIt-repo-specific code paths.
+The same validator, receipts, question flow, and gating operate on any workspace with the config file. ShipIt scaffolds `.shipit/spec-discipline.json` and the docs skeleton from templates without overwriting existing files, and appends a short requirements-discipline rules block to the project's `CLAUDE.md` (creating it if absent, never duplicating it). No ShipIt-repo-specific code paths.
 
 ## Key files (planned)
 
