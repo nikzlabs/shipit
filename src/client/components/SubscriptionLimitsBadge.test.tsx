@@ -245,14 +245,14 @@ describe("SubscriptionLimitPill", () => {
     expect(screen.getByText(/7d 90%/)).not.toHaveTextContent(/resets in/);
   });
 
-  it("shows only the weekly meter when session is null", () => {
+  it("keeps both window blocks visible when session usage has not been reported", () => {
     render(
       <SubscriptionLimitPill
         label="Claude"
         snapshot={makeSnap({ session: null, weekly: { usedPct: 40, resetAt: "x" } })}
       />,
     );
-    expect(screen.queryByText(/5h/)).toBeNull();
+    expect(screen.getByText(/5h · —/)).toHaveAttribute("title", expect.stringContaining("usage not reported yet"));
     expect(screen.getByText(/7d 40%/)).toBeInTheDocument();
   });
 
@@ -345,22 +345,34 @@ describe("SubscriptionLimitPill", () => {
     expect(fills[1].style.width).toBe("0%");
   });
 
-  it("renders an em-dash when no windows are present", () => {
+  it("renders explicit 5h and 7d unknown blocks when no windows are present", () => {
     const { container } = render(
       <SubscriptionLimitPill
         label="Claude"
         snapshot={makeSnap({ session: null, weekly: null })}
       />,
     );
-    expect(screen.getByText("—")).toBeInTheDocument();
-    expect(container.querySelector("span")?.className).toContain("text-(--color-text-secondary)");
+    expect(screen.getByText(/5h · —/)).toBeInTheDocument();
+    expect(screen.getByText(/7d · —/)).toBeInTheDocument();
+    expect(container.querySelectorAll('[data-meter-pct="unreported"]')).toHaveLength(2);
   });
 
   it("includes plan name in the tooltip when present", () => {
-    const { container } = render(
+    render(
       <SubscriptionLimitPill label="Claude" snapshot={makeSnap({ plan: "Max 20x" })} />,
     );
-    expect(container.querySelector("span")?.getAttribute("title")).toContain("Max 20x");
+    expect(screen.getByText("Claude")).toHaveAttribute("title", expect.stringContaining("Max 20x"));
+  });
+
+  it("gives each quota block its own window-specific tooltip", () => {
+    render(<SubscriptionLimitPill label="Codex" snapshot={makeSnap({ agentId: "codex" })} />);
+
+    const session = screen.getByText(/5h 30%/);
+    const weekly = screen.getByText(/7d 50%/);
+    expect(session).toHaveAttribute("title", expect.stringContaining("5h window: 30% used"));
+    expect(session.getAttribute("title")).not.toContain("7d window");
+    expect(weekly).toHaveAttribute("title", expect.stringContaining("7d window: 50% used"));
+    expect(weekly.getAttribute("title")).not.toContain("5h window");
   });
 
   it("renders an explicit unknown state (no percentage, no countdown) when usedPct is null", () => {
@@ -387,7 +399,7 @@ describe("SubscriptionLimitPill", () => {
     expect(container.querySelector("[data-meter-fill]")).toBeNull();
     expect(container.querySelector("[data-time-marker]")).toBeNull();
     // Tooltip explains the absence and points at the refresh button.
-    expect(container.querySelector("span")?.getAttribute("title")).toContain(
+    expect(screen.getByText(/5h · —/).getAttribute("title")).toContain(
       "usage not reported",
     );
   });

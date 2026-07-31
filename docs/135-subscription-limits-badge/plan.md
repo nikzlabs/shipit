@@ -20,6 +20,11 @@ time-until-reset text inline next to that window (for example,
 `5h 96% resets in 2h` or `7d 94% resets in 3d`). Below that threshold,
 reset times stay in the tooltip so the header remains compact.
 
+Both the `5h` and `7d` blocks remain visible even when an upstream event
+temporarily omits one window; the missing block renders an explicit `—`
+instead of disappearing. Each block owns its window-specific tooltip so its
+percentage and reset time cannot be mistaken for the other quota.
+
 This pulls upstream rate-limit data — which today lives **only** behind a
 non-ShipIt surface (`claude /usage` in the Claude TUI, `codex /status` in
 the Codex TUI, or the chatgpt.com/codex web dashboard) — into ShipIt and
