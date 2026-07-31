@@ -36,11 +36,12 @@ const openCard: PrCardState = {
 // `useGitStore.reset()` only clears data, not actions — capture the real
 // `startRebase` so a test that stubs it can't leak the stub into the next one.
 const realStartRebase = useGitStore.getState().startRebase;
+const realResetBranchToBase = useGitStore.getState().resetBranchToBase;
 
 beforeEach(() => {
   usePrStore.setState({ statusBySession: {}, cardBySession: {}, autoMergeBySession: {} });
   useGitStore.getState().reset();
-  useGitStore.setState({ startRebase: realStartRebase });
+  useGitStore.setState({ startRebase: realStartRebase, resetBranchToBase: realResetBranchToBase });
   useSessionStore.setState({ activeRunnerSessions: new Set<string>(), sessions: [] });
   useSettingsStore.setState({ autoFixCi: false });
   useRepoStore.setState({ repos: [] });
@@ -145,6 +146,24 @@ describe("PrActionsMenu", () => {
 
     await user.click(screen.getByLabelText("Pull request actions"));
     expect(screen.queryByRole("menuitem", { name: "Close pull request" })).toBeNull();
+  });
+
+  it("resets a merged PR branch to its base instead of rebasing it", async () => {
+    const user = userEvent.setup();
+    useSessionStore.setState({ sessions: [makeSession({ id: "s1" })] });
+    usePrStore.setState({ cardBySession: { s1: { ...openCard, phase: "merged" } } });
+    const startRebase = vi.fn();
+    const resetBranchToBase = vi.fn().mockResolvedValue(undefined);
+    useGitStore.setState({ startRebase, resetBranchToBase });
+    render(<PrActionsMenu sessionId="s1" />);
+
+    await user.click(screen.getByLabelText("Pull request actions"));
+    const item = screen.getByRole("menuitem", { name: "Sync with main" });
+    expect(item).toHaveAttribute("title", "Reset to main and update the branch");
+    await user.click(item);
+
+    expect(resetBranchToBase).toHaveBeenCalledWith("s1");
+    expect(startRebase).not.toHaveBeenCalled();
   });
 
   describe("base branch (no hard-coded 'main')", () => {

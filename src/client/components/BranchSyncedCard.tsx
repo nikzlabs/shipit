@@ -11,7 +11,7 @@
  * are no GitHub links.
  */
 
-import { ArrowsClockwiseIcon } from "@phosphor-icons/react";
+import { GitBranchIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import type { BranchSyncedCard as BranchSyncedCardData } from "../../server/shared/types.js";
 
@@ -42,6 +42,7 @@ function MoveRow({ label, from, to, suffix }: { label: string; from: string; to:
 export function BranchSyncedCard({ card }: BranchSyncedCardProps) {
   const headMoved = !!card.headFromSha && !!card.headToSha && card.headFromSha !== card.headToSha;
   const baseMoved = card.baseFromSha !== null && card.baseFromSha !== card.baseToSha;
+  const alreadyCurrent = !headMoved && !baseMoved;
 
   return (
     <div
@@ -50,11 +51,11 @@ export function BranchSyncedCard({ card }: BranchSyncedCardProps) {
     >
       <div className="flex items-start gap-2.5 px-3 py-2.5">
         <span className="shrink-0 mt-0.5 grid place-items-center w-7 h-7 rounded-lg bg-(--color-accent-subtle) text-(--color-accent) border border-(--color-border-secondary)">
-          <ArrowsClockwiseIcon size={ICON_SIZE.SM} />
+          <GitBranchIcon size={ICON_SIZE.SM} />
         </span>
         <div className="min-w-0 flex-1">
           <div className="font-medium text-(--color-text-primary)">
-            Synced with <code className="px-1.5 py-0.5 rounded bg-(--color-bg-tertiary)">{card.base}</code>
+            Branch updated to latest <code className="px-1.5 py-0.5 rounded bg-(--color-bg-tertiary)">{card.base}</code>
           </div>
           <div className="mt-1 text-(--color-text-secondary)">
             {headMoved ? (
@@ -63,22 +64,27 @@ export function BranchSyncedCard({ card }: BranchSyncedCardProps) {
                 <code className="px-1.5 py-0.5 rounded bg-(--color-bg-tertiary)">{card.base}</code>
                 {card.forcePushed ? " and pushed" : ""}.
               </>
-            ) : (
+            ) : baseMoved ? (
               <>
                 Updated your local{" "}
                 <code className="px-1.5 py-0.5 rounded bg-(--color-bg-tertiary)">{card.base}</code> to the latest{" "}
                 <code className="px-1.5 py-0.5 rounded bg-(--color-bg-tertiary)">origin/{card.base}</code>.
               </>
+            ) : (
+              <>
+                This branch already includes the latest{" "}
+                <code className="px-1.5 py-0.5 rounded bg-(--color-bg-tertiary)">{card.base}</code>.
+              </>
             )}
           </div>
         </div>
       </div>
-      <div className="flex flex-col gap-1 px-3 pb-2.5 pl-[3.25rem] text-(--color-text-tertiary)">
+      {!alreadyCurrent && <div className="flex flex-col gap-1 px-3 pb-2.5 pl-[3.25rem] text-(--color-text-tertiary)">
         {headMoved && <MoveRow label="branch" from={card.headFromSha} to={card.headToSha} />}
         {baseMoved && (
           <MoveRow label={card.base} from={card.baseFromSha!} to={card.baseToSha} suffix={`(origin/${card.base})`} />
         )}
-      </div>
+      </div>}
     </div>
   );
 }
