@@ -15,16 +15,15 @@ Coding agents fail at requirements more often than at code: they hit an unspecif
 
 ### Opting in (reqs 7–8)
 
-A project turns the discipline on by committing `.shipit/spec-discipline.json` at the workspace root:
+A project turns the discipline on with a `spec-discipline` section in its existing `shipit.yaml` (no separate config file):
 
-```json
-{
-  "enabled": true,
-  "docsDir": "docs"
-}
+```yaml
+spec-discipline:
+  enabled: true
+  docs-dir: docs
 ```
 
-`enabled` is the whole switch: `false`, or no file at all, means everything in this doc is off. `docsDir` is optional (default `"docs"`) and names the folder containing feature folders, for projects that don't follow ShipIt's `docs/` convention. No other keys in v1.
+`enabled` is the whole switch: `false`, or no `spec-discipline` section at all, means everything in this doc is off. `docs-dir` is optional (default `docs`) and names the folder containing feature folders, for projects that don't follow ShipIt's `docs/` convention. No other keys in v1.
 
 ### Feature artifacts (reqs 1–2, 9)
 
@@ -50,10 +49,11 @@ A fresh-context reviewer agent — never the implementing session's context, and
 
 ### Child projects (req 7)
 
-The same validator, question flow, and gating operate on any workspace with the config file. ShipIt scaffolds `.shipit/spec-discipline.json` and the docs skeleton from templates without overwriting existing files, and appends a short requirements-discipline rules block to the project's `CLAUDE.md` (creating it if absent, never duplicating it). No ShipIt-repo-specific code paths.
+The same validator, question flow, and gating operate on any workspace whose `shipit.yaml` enables the section. ShipIt scaffolds the `spec-discipline` section into `shipit.yaml` (creating the file if absent) and the docs skeleton from templates without overwriting existing files, and appends a short requirements-discipline rules block to the project's `CLAUDE.md` (creating it if absent, never duplicating it). No ShipIt-repo-specific code paths.
 
 ## Key files (planned)
 
-- `src/server/orchestrator/spec-discipline/` — validator library, `SpecGateService`, config reader
+- `src/server/orchestrator/spec-discipline/` — validator library, `SpecGateService`
+- `src/server/shared/session-config.ts` — extend the `shipit.yaml` schema with the `spec-discipline` section
 - Turn-dispatch integration: `turn-executor.ts` (gate consult at turn start)
 - `src/server/shipit-docs/spec-discipline.md` — agent-facing docs for child projects
