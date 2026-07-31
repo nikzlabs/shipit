@@ -422,7 +422,7 @@ export function createRunnerRegistry(
               sessionId,
               agentId,
               deps: {
-                credentialsDir, credentialStore, sessionManager,
+                credentialsDir, credentialStore, sessionManager, chatHistoryManager,
                 ...(ensureAgentTokenFresh ? { ensureAgentTokenFresh } : {}),
               },
             });

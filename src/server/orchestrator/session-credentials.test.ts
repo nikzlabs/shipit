@@ -881,6 +881,221 @@ describe("session-credentials", () => {
     expect(recovered).toEqual([realSid]);
   });
 
+  // ---- Codex rollout preservation ----
+  //
+  // Regression for the prod incident where env prep logged
+  //   "repaired leaked symlink …: .codex (orphan merged from …)"
+  // and ~500ms later `thread/resume` failed with
+  //   -32600 "no rollout found for thread id <id>".
+  // The repair iterated every agent's credential subtree but `mergeOrphanState`
+  // only implemented `.claude` / `.claude.json`, so a `.codex` orphan was
+  // "merged" by doing nothing and then recursively deleted — destroying the
+  // only copy of Codex's disk-backed rollout while `sessions.agent_session_id`
+  // still pointed at that thread.
+  describe("docs/153 — Codex rollout preservation", () => {
+    const threadId = "019fb994-733e-7051-86da-e7a800bfc710";
+    const rolloutRel = path.join("sessions", "2026", "07", "31", `rollout-2026-07-31T19-20-00-${threadId}.jsonl`);
+    const codexAuth = (tail: string, exp: number) => JSON.stringify({
+      tokens: { access_token: `header.${Buffer.from(JSON.stringify({ exp })).toString("base64url")}.sig-${tail}` },
+    });
+
+    /**
+     * Seed the exact prod shape: a live leaked `.codex` symlink pointing at
+     * the provider-account subtree, plus the orphan tree the Codex CLI wrote
+     * through that symlink inside the container's namespace (carrying a
+     * durable rollout).
+     */
+    function seedLeakedCodexWithRollout(): { sessionDir: string; orphan: string; account: string } {
+      const account = path.join(root, "provider-accounts", "codex", "codex-default");
+      fs.mkdirSync(path.join(account, ".codex"), { recursive: true });
+      fs.writeFileSync(path.join(account, ".codex", "auth.json"), codexAuth("FRESH", 9_000_000_000));
+      fs.writeFileSync(path.join(account, ".codex", "config.toml"), 'model = "gpt-5"\n');
+
+      const sessionDir = perSessionCredentialsDir(root, sid);
+      fs.mkdirSync(sessionDir, { recursive: true });
+      fs.symlinkSync(path.join(account, ".codex"), path.join(sessionDir, ".codex"));
+
+      const orphan = path.join(sessionDir, "provider-accounts", "codex", "codex-default", ".codex");
+      fs.mkdirSync(path.dirname(path.join(orphan, rolloutRel)), { recursive: true });
+      fs.writeFileSync(path.join(orphan, rolloutRel), `${JSON.stringify({ id: threadId, type: "session_meta" })}\n`);
+      fs.writeFileSync(path.join(orphan, "history.jsonl"), `${JSON.stringify({ text: "earlier prompt" })}\n`);
+      // The orphan also carries a STALE auth.json — the shared baseline must win.
+      fs.writeFileSync(path.join(orphan, "auth.json"), codexAuth("STALE", 1_000));
+      return { sessionDir, orphan, account };
+    }
+
+    it("survives a live leaked-symlink repair and drops the orphan only after preserving it", () => {
+      const { sessionDir } = seedLeakedCodexWithRollout();
+
+      syncProviderAccountTokenIn(root, sid, "codex", "codex-default");
+
+      // The symlink is gone and `.codex/` is a real dir.
+      expect(fs.lstatSync(path.join(sessionDir, ".codex")).isSymbolicLink()).toBe(false);
+      // THE REGRESSION: the durable rollout is still there, at the path the
+      // Codex app-server reads for `thread/resume`.
+      const merged = path.join(sessionDir, ".codex", rolloutRel);
+      expect(fs.existsSync(merged)).toBe(true);
+      expect(fs.readFileSync(merged, "utf-8")).toContain(threadId);
+      expect(fs.existsSync(path.join(sessionDir, ".codex", "history.jsonl"))).toBe(true);
+      // Preservation succeeded, so the orphan root is cleaned up.
+      expect(fs.existsSync(path.join(sessionDir, "provider-accounts"))).toBe(false);
+    });
+
+    it("does not let the orphan's stale auth/config clobber the shared baseline", () => {
+      const { sessionDir } = seedLeakedCodexWithRollout();
+
+      syncProviderAccountTokenIn(root, sid, "codex", "codex-default");
+
+      // Shared auth wins on collision (`force: false`), and `auth.json` isn't
+      // in the state allowlist at all.
+      expect(fs.readFileSync(path.join(sessionDir, ".codex", "auth.json"), "utf-8")).toContain("FRESH");
+      expect(fs.existsSync(path.join(sessionDir, ".codex", "config.toml"))).toBe(true);
+    });
+
+    it("case 3: recovers a rollout from a post-repair orphan when .codex/ is already a real dir", () => {
+      const account = path.join(root, "provider-accounts", "codex", "codex-default");
+      fs.mkdirSync(path.join(account, ".codex"), { recursive: true });
+      fs.writeFileSync(path.join(account, ".codex", "auth.json"), codexAuth("FRESH", 9_000_000_000));
+
+      const sessionDir = perSessionCredentialsDir(root, sid);
+      fs.mkdirSync(path.join(sessionDir, ".codex"), { recursive: true });
+      fs.writeFileSync(path.join(sessionDir, ".codex", "auth.json"), codexAuth("FRESH", 9_000_000_000));
+      const orphan = path.join(sessionDir, "provider-accounts", "codex", "codex-default", ".codex");
+      fs.mkdirSync(path.dirname(path.join(orphan, rolloutRel)), { recursive: true });
+      fs.writeFileSync(path.join(orphan, rolloutRel), `${JSON.stringify({ id: threadId })}\n`);
+
+      const recovered: (string | null)[] = [];
+      syncProviderAccountTokenIn(
+        root, sid, "codex", "codex-default",
+        (id) => { recovered.push(id); },
+        threadId,
+      );
+
+      expect(fs.existsSync(path.join(sessionDir, ".codex", rolloutRel))).toBe(true);
+      expect(fs.existsSync(path.join(sessionDir, "provider-accounts"))).toBe(false);
+      // The rollout was restored before the staleness probe ran, so the DB
+      // pointer must be left alone.
+      expect(recovered).toEqual([]);
+    });
+
+    it("keeps the orphan when preservation fails — never delete the only copy", () => {
+      const { sessionDir, orphan } = seedLeakedCodexWithRollout();
+      // Replace the leak with a real `.codex/` dir that has a plain FILE
+      // named `sessions`, so the orphan's `sessions/` dir cannot be copied
+      // onto it and the merge throws.
+      fs.rmSync(path.join(sessionDir, ".codex"), { force: true, recursive: true });
+      fs.mkdirSync(path.join(sessionDir, ".codex"), { recursive: true });
+      fs.writeFileSync(path.join(sessionDir, ".codex", "auth.json"), codexAuth("FRESH", 9_000_000_000));
+      fs.writeFileSync(path.join(sessionDir, ".codex", "sessions"), "not a directory");
+
+      syncProviderAccountTokenIn(root, sid, "codex", "codex-default");
+
+      // Merge failed → the orphan (the only copy of the rollout) survives.
+      expect(fs.existsSync(path.join(orphan, rolloutRel))).toBe(true);
+      expect(fs.existsSync(path.join(sessionDir, "provider-accounts"))).toBe(true);
+    });
+
+    it("an unknown credential subtree is never deleted (fail-safe default)", () => {
+      // The class-level guarantee: the bug was a subtree the merge didn't
+      // understand being deleted anyway. `mergeOrphanState` now refuses.
+      const account = path.join(root, "provider-accounts", "codex", "codex-default");
+      fs.mkdirSync(path.join(account, ".codex"), { recursive: true });
+      fs.writeFileSync(path.join(account, ".codex", "auth.json"), codexAuth("FRESH", 9_000_000_000));
+      const sessionDir = perSessionCredentialsDir(root, sid);
+      fs.mkdirSync(sessionDir, { recursive: true });
+      fs.symlinkSync(path.join(account, ".codex"), path.join(sessionDir, ".codex"));
+      const orphan = path.join(sessionDir, "provider-accounts", "codex", "codex-default", ".codex");
+      fs.mkdirSync(orphan, { recursive: true });
+      // No recognized state subpaths at all — nothing to preserve, safe to drop.
+      fs.writeFileSync(path.join(orphan, "auth.json"), codexAuth("STALE", 1_000));
+
+      syncProviderAccountTokenIn(root, sid, "codex", "codex-default");
+
+      expect(fs.existsSync(path.join(sessionDir, "provider-accounts"))).toBe(false);
+    });
+
+    // ---- Stale-thread detection (the recovery half) ----
+
+    it("clears a stale Codex thread pointer when no rollout exists on disk", () => {
+      const account = path.join(root, "provider-accounts", "codex", "codex-default");
+      fs.mkdirSync(path.join(account, ".codex"), { recursive: true });
+      fs.writeFileSync(path.join(account, ".codex", "auth.json"), codexAuth("FRESH", 9_000_000_000));
+      const sessionDir = perSessionCredentialsDir(root, sid);
+      fs.mkdirSync(path.join(sessionDir, ".codex", "sessions"), { recursive: true });
+      fs.writeFileSync(path.join(sessionDir, ".codex", "auth.json"), codexAuth("FRESH", 9_000_000_000));
+
+      const recovered: (string | null)[] = [];
+      syncProviderAccountTokenIn(
+        root, sid, "codex", "codex-default",
+        (id) => { recovered.push(id); },
+        threadId,
+      );
+
+      // null == "clear the pointer"; the caller then arms a history replay.
+      expect(recovered).toEqual([null]);
+    });
+
+    it("leaves a live Codex thread pointer alone when its rollout is present", () => {
+      const account = path.join(root, "provider-accounts", "codex", "codex-default");
+      fs.mkdirSync(path.join(account, ".codex"), { recursive: true });
+      fs.writeFileSync(path.join(account, ".codex", "auth.json"), codexAuth("FRESH", 9_000_000_000));
+      const sessionDir = perSessionCredentialsDir(root, sid);
+      fs.mkdirSync(path.dirname(path.join(sessionDir, ".codex", rolloutRel)), { recursive: true });
+      fs.writeFileSync(path.join(sessionDir, ".codex", rolloutRel), "{}\n");
+      fs.writeFileSync(path.join(sessionDir, ".codex", "auth.json"), codexAuth("FRESH", 9_000_000_000));
+
+      const recovered: (string | null)[] = [];
+      syncProviderAccountTokenIn(
+        root, sid, "codex", "codex-default",
+        (id) => { recovered.push(id); },
+        threadId,
+      );
+
+      expect(recovered).toEqual([]);
+    });
+
+    it("does not clear on a fresh session with no thread pointer yet", () => {
+      const account = path.join(root, "provider-accounts", "codex", "codex-default");
+      fs.mkdirSync(path.join(account, ".codex"), { recursive: true });
+      fs.writeFileSync(path.join(account, ".codex", "auth.json"), codexAuth("FRESH", 9_000_000_000));
+      const sessionDir = perSessionCredentialsDir(root, sid);
+      fs.mkdirSync(path.join(sessionDir, ".codex"), { recursive: true });
+      fs.writeFileSync(path.join(sessionDir, ".codex", "auth.json"), codexAuth("FRESH", 9_000_000_000));
+
+      const recovered: (string | null)[] = [];
+      syncProviderAccountTokenIn(
+        root, sid, "codex", "codex-default",
+        (id) => { recovered.push(id); },
+        null,
+      );
+
+      expect(recovered).toEqual([]);
+    });
+
+    it("a Claude session's jsonl state is unaffected by the Codex probe", () => {
+      // Cross-agent guard: the Codex staleness signal must never be applied
+      // to a Claude pointer (and vice versa).
+      const account = path.join(root, "provider-accounts", "claude", "claude-default");
+      fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
+      fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
+      const sessionDir = perSessionCredentialsDir(root, sid);
+      const projectsDir = path.join(sessionDir, ".claude", "projects", "-workspace");
+      fs.mkdirSync(projectsDir, { recursive: true });
+      fs.writeFileSync(path.join(sessionDir, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
+      const claudeSid = "11111111-1111-4111-8111-111111111111";
+      fs.writeFileSync(path.join(projectsDir, `${claudeSid}.jsonl`), resumableJsonl(claudeSid));
+
+      const recovered: (string | null)[] = [];
+      syncProviderAccountTokenIn(
+        root, sid, "claude", "claude-default",
+        (id) => { recovered.push(id); },
+        claudeSid,
+      );
+
+      expect(recovered).toEqual([]);
+    });
+  });
+
   it("removeSessionCredentials drops the subtree and is idempotent", () => {
     provisionAgentCredentials(root, sid, "claude");
     expect(fs.existsSync(perSessionCredentialsDir(root, sid))).toBe(true);
