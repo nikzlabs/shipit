@@ -442,7 +442,7 @@ describe("POST /api/voice/transcribe", () => {
     });
 
     expect(res.statusCode).toBe(400);
-    expect(res.json().error).toContain("Couldn't transcribe: Whisper returned 400");
+    expect(res.json().error).toContain("Couldn't transcribe: OpenAI transcription returned 400");
     expect(res.json().error).toContain("audio format is unsupported");
     await app.close();
   });

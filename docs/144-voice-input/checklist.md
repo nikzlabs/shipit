@@ -14,6 +14,12 @@
 - [x] Tests: `MobileRecordingOverlay.test.tsx` (stop / cancel / Escape / transcribing / idle+error render nothing) and a `large`-padding case in `MicButton.test.tsx`.
 - [x] Manual QA on a real phone: tap the enlarged mic, confirm the overlay covers the screen, Stop transcribes into the composer, Cancel discards, and the desktop inline path is unchanged.
 
+## Phase 9 — OpenAI transcription model upgrade
+
+- [x] Switch the OpenAI STT adapter from `whisper-1` to `gpt-transcribe` while preserving the existing whole-utterance endpoint and JSON response contract.
+- [x] Send the configured language through `languages[]` and the coding vocabulary through `keywords[]`, matching the model-specific transcription API.
+- [x] Update the provider regression test to pin the new model identifier.
+
 ## Phase 1 — Shared foundation
 
 - [x] Add `voiceProviderApiKey` and `voiceProvider` to `CredentialData` in `credential-store.ts`.

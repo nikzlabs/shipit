@@ -19,7 +19,7 @@ describe("createWhisperProvider", () => {
     expect(init.method).toBe("POST");
     expect(init.headers.Authorization).toBe("Bearer sk-test");
     expect(init.body).toBeInstanceOf(FormData);
-    expect((init.body as FormData).get("model")).toBe("whisper-1");
+    expect((init.body as FormData).get("model")).toBe("gpt-transcribe");
   });
 
   it("biases recognition with the coding vocabulary prompt", async () => {
@@ -29,10 +29,11 @@ describe("createWhisperProvider", () => {
     await provider.transcribe(Buffer.from("a"), {});
 
     const form = fetchImpl.mock.calls[0][1].body as FormData;
-    const prompt = form.get("prompt") as string;
-    expect(prompt).toContain("PR");
-    expect(prompt).toContain("JSON");
-    expect(prompt).toContain("Claude");
+    expect(form.get("prompt")).toContain("Software development dictation");
+    const keywords = form.getAll("keywords[]");
+    expect(keywords).toContain("PR");
+    expect(keywords).toContain("JSON");
+    expect(keywords).toContain("Claude");
   });
 
   it("passes only the leading language subtag", async () => {
@@ -42,7 +43,8 @@ describe("createWhisperProvider", () => {
     await provider.transcribe(Buffer.from("a"), { language: "en-US" });
 
     const form = fetchImpl.mock.calls[0][1].body as FormData;
-    expect(form.get("language")).toBe("en");
+    expect(form.get("languages[]")).toBe("en");
+    expect(form.has("language")).toBe(false);
   });
 
   it("throws VoiceProviderError on a non-ok response", async () => {
