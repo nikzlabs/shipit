@@ -445,6 +445,30 @@ describe("ClaudeProcess", () => {
       expect(spawnOpts.env.SHIPIT_AUTO_CREATE_PR).toBeUndefined();
     });
 
+    it("SHI-265 — sets SHIPIT_GUARD_DESTRUCTIVE_GIT=1 when guardDestructiveGit is true", () => {
+      // Arms the managed-settings.json PreToolUse hook's destructive-git rule
+      // for a session sitting on a merged branch. See docs/130.
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "test", guardDestructiveGit: true });
+
+      const spawnOpts = mockPtySpawn.mock.calls[0][2] as { env: Record<string, string> };
+      expect(spawnOpts.env.SHIPIT_GUARD_DESTRUCTIVE_GIT).toBe("1");
+    });
+
+    it("SHI-265 — does not set SHIPIT_GUARD_DESTRUCTIVE_GIT when guardDestructiveGit is falsy", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "test" });
+
+      const spawnOpts = mockPtySpawn.mock.calls[0][2] as { env: Record<string, string> };
+      expect(spawnOpts.env.SHIPIT_GUARD_DESTRUCTIVE_GIT).toBeUndefined();
+    });
+
     it("maps guarded mode to --permission-mode auto (docs/138)", () => {
       // Deliberate inversion: ShipIt `guarded` → CLI `auto` (classifier-gated).
       const mockProc = createMockPty();

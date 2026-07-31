@@ -364,6 +364,14 @@ merged, a rebase in progress). Report what it said and let the user decide. Do
 **not** hand-roll `git reset --hard` / `git checkout -f` / `git push --force`
 instead — that is precisely the data loss the check exists to prevent.
 
+That last point is **enforced, not just advised**: while a session sits on a
+merged branch (ShipIt has recorded the merged head commit), `git reset --hard`,
+`git checkout -f` and force-pushes are blocked before they run, and the refusal
+points you back here. `shipit branch reset-to-base` is unaffected — it relays to
+the orchestrator rather than running git in your shell. The block is scoped to
+that window only: on an ordinary session, discarding a local mess with
+`git reset --hard` still works normally.
+
 Then continue the work, open the next PR, and — if more remains after it — run
 `shipit session notify-on-merge --self` again. Each link re-arms itself; ShipIt
 models no chain, so a link you don't arm is where the chain ends. If the user

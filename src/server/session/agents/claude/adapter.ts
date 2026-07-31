@@ -371,6 +371,9 @@ export class ClaudeAdapter
       autoCreatePr: params.autoCreatePr,
       // docs/211 — sets SHIPIT_SANDBOX=1 so the branch-block hook self-gates off.
       sandbox: params.sandbox,
+      // SHI-265 — sets SHIPIT_GUARD_DESTRUCTIVE_GIT=1 so the same hook blocks
+      // hand-rolled destructive git while the session sits on a merged branch.
+      guardDestructiveGit: params.guardDestructiveGit,
       // docs/193 — set when writeMcpConfig registered the permission bridge.
       permissionPromptTool: this._permissionPromptTool,
     });

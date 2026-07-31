@@ -91,6 +91,14 @@ export interface ClaudeRunOptions {
    */
   sandbox?: boolean;
   /**
+   * SHI-265 — when true, set SHIPIT_GUARD_DESTRUCTIVE_GIT=1 in the CLI
+   * environment. The managed-settings.json PreToolUse hook arms its
+   * destructive-git rule (hard reset / forced checkout / force-push) on this
+   * var, so the `shipit branch reset-to-base` safety gate can't be worked
+   * around by hand. See docs/130-block-branch-ops/plan.md.
+   */
+  guardDestructiveGit?: boolean;
+  /**
    * docs/193 — the MCP tool the CLI calls for permission prompts
    * (`--permission-prompt-tool`, e.g. `mcp__shipit__permission_prompt`).
    * Routes the CLI's built-in sensitive-file gate to ShipIt's approve/deny card
@@ -116,7 +124,7 @@ export class ClaudeProcess extends EventEmitter {
    * they're saved to the host uploads directory and referenced in the prompt.
    */
   run(opts: ClaudeRunOptions): void {
-    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, reasoningEffort, settingsPath, autoCreatePr, sandbox, permissionPromptTool } = opts;
+    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, reasoningEffort, settingsPath, autoCreatePr, sandbox, guardDestructiveGit, permissionPromptTool } = opts;
 
     // `Skill` is allowlisted in both modes — including plan — so an explicit
     // `/my-skill` invocation is honored in every permission mode. This accepts
@@ -255,6 +263,14 @@ export class ClaudeProcess extends EventEmitter {
       spawnEnv.SHIPIT_SANDBOX = "1";
     } else {
       delete spawnEnv.SHIPIT_SANDBOX;
+    }
+    // SHI-265 — SHIPIT_GUARD_DESTRUCTIVE_GIT=1 arms the same hook's
+    // destructive-git rule for a session sitting on a merged branch. Normalized
+    // on every spawn for the same reason as the two vars above.
+    if (guardDestructiveGit) {
+      spawnEnv.SHIPIT_GUARD_DESTRUCTIVE_GIT = "1";
+    } else {
+      delete spawnEnv.SHIPIT_GUARD_DESTRUCTIVE_GIT;
     }
 
     try {
@@ -399,7 +415,7 @@ export class StreamingClaudeProcess extends EventEmitter {
   private requestIdCounter = 0;
 
   run(opts: ClaudeRunOptions): void {
-    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, reasoningEffort, settingsPath, autoCreatePr, sandbox, permissionPromptTool } = opts;
+    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, reasoningEffort, settingsPath, autoCreatePr, sandbox, guardDestructiveGit, permissionPromptTool } = opts;
 
     // See ClaudeProcess.run above for why the named `mcp__shipit__*` tools join
     // `mcp__playwright__*` in both lists (SHI-128; docs/125, docs/149).
@@ -460,6 +476,16 @@ export class StreamingClaudeProcess extends EventEmitter {
       spawnEnv.SHIPIT_SANDBOX = "1";
     } else {
       delete spawnEnv.SHIPIT_SANDBOX;
+    }
+    // SHI-265 — see ClaudeProcess.run above. NOTE: this process is resident
+    // across turns, so the value is fixed at first spawn. That is acceptable
+    // because the hazard window — the docs/239 self-merge wake — arrives as a
+    // SYSTEM turn, and system turns never reuse the resident streaming process
+    // (`dispatched-turn.ts`), so they always spawn with a freshly-computed env.
+    if (guardDestructiveGit) {
+      spawnEnv.SHIPIT_GUARD_DESTRUCTIVE_GIT = "1";
+    } else {
+      delete spawnEnv.SHIPIT_GUARD_DESTRUCTIVE_GIT;
     }
 
     console.log("[streaming-claude] spawning:", "claude", args.slice(0, 8).join(" "), "| cwd:", cwd);

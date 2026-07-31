@@ -558,6 +558,16 @@ export interface AgentRunParams {
    */
   sandbox?: boolean;
   /**
+   * SHI-265 — when true, the Claude adapter sets SHIPIT_GUARD_DESTRUCTIVE_GIT=1
+   * in the CLI environment, which arms the managed-settings.json PreToolUse
+   * hook's destructive-git rule (`git reset --hard`, `git checkout -f`,
+   * force-push). Set only when the session is merged with a recorded
+   * `mergedHeadSha` — the state `shipit branch reset-to-base` guards — so a
+   * refused reset can't be worked around with hand-rolled git. Claude-only;
+   * other adapters ignore it. See docs/130-block-branch-ops/plan.md.
+   */
+  guardDestructiveGit?: boolean;
+  /**
    * When true, the Claude adapter spawns with --input-format stream-json
    * for live steering. Ignored by non-streaming adapters. (docs/140)
    */
