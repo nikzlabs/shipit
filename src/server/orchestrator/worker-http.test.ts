@@ -1,6 +1,12 @@
 import { describe, it, expect, afterEach } from "vitest";
 import http from "node:http";
-import { workerGet, workerPost, workerPut } from "./worker-http.js";
+import {
+  workerGet,
+  workerPost,
+  workerPut,
+  PLACEHOLDER_WORKER_URL,
+  WorkerUnavailableError,
+} from "./worker-http.js";
 
 /**
  * Spin up a throwaway HTTP server that responds to every request with the
@@ -68,4 +74,53 @@ describe("worker HTTP response handling", () => {
       });
     });
   }
+});
+
+/**
+ * A runner holds `http://0.0.0.0:0` between construction and `setWorkerUrl()`.
+ * `dispose()` resolves its worker-ready gate so pending awaiters don't leak,
+ * which means a turn parked on that gate can reach the transport with the
+ * placeholder still set. Dialing it produced `connect ECONNREFUSED 0.0.0.0`
+ * (Node omits the `:0`) — a chat error that named neither the session
+ * container nor the real failure. The guard lives at the transport so no call
+ * site can forget it.
+ */
+describe("placeholder worker URL is never dialed", () => {
+  const verbs: [string, () => Promise<unknown>][] = [
+    ["workerGet", () => workerGet(PLACEHOLDER_WORKER_URL, "/agent/status")],
+    ["workerPost", () => workerPost(PLACEHOLDER_WORKER_URL, "/agent/start", { a: 1 })],
+    ["workerPut", () => workerPut(PLACEHOLDER_WORKER_URL, "/secrets", { a: 1 })],
+  ];
+
+  for (const [name, call] of verbs) {
+    it(`${name} rejects with WorkerUnavailableError instead of ECONNREFUSED`, async () => {
+      await expect(call()).rejects.toBeInstanceOf(WorkerUnavailableError);
+      // The exact string users used to see. It must not survive anywhere in
+      // the message — that regression is the whole point of this guard.
+      await expect(call()).rejects.not.toThrow(/ECONNREFUSED|0\.0\.0\.0/);
+    });
+  }
+
+  it("names the container so the message is actionable", async () => {
+    await expect(workerPost(PLACEHOLDER_WORKER_URL, "/agent/start")).rejects.toThrow(
+      /session container isn't running/i,
+    );
+  });
+
+  it("rejects (not throws synchronously) so fire-and-forget call sites still swallow it", async () => {
+    // Dozens of call sites are `workerPost(url, path).catch(() => {})`. A
+    // synchronous throw would escape those handlers and take down `dispose()`.
+    let threwSynchronously = false;
+    try {
+      void workerPost(PLACEHOLDER_WORKER_URL, "/agent/kill").catch(() => undefined);
+    } catch {
+      threwSynchronously = true;
+    }
+    expect(threwSynchronously).toBe(false);
+  });
+
+  it("carries the recorded cause when one is supplied", () => {
+    const err = new WorkerUnavailableError("/agent/start", "no space left on device");
+    expect(err.message).toContain("no space left on device");
+  });
 });

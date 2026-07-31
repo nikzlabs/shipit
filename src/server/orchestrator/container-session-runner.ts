@@ -35,7 +35,7 @@ import { runDispatchedTurn, dispatchOnRunner } from "./session-runner.js";
 import type { PreparedDispatch } from "./prepared-dispatch.js";
 import type { TurnHandle } from "./turn-settlement.js";
 import type { SSEEvent } from "./sse-client.js";
-import { workerPost, workerGet, workerInstall, workerPushAgentSecrets, workerPostMessage } from "./worker-http.js";
+import { workerPost, workerGet, workerInstall, workerPushAgentSecrets, workerPostMessage, PLACEHOLDER_WORKER_URL, WorkerUnavailableError } from "./worker-http.js";
 import { ProxyAgentProcess } from "./proxy-agent-process.js";
 import type { ProxyAgentRunner } from "./proxy-agent-process.js";
 import { adoptInFlightTurn } from "./turn-adoption.js";
@@ -51,7 +51,7 @@ import { TerminalBufferManager } from "./terminal-buffer-manager.js";
 // ---------------------------------------------------------------------------
 export { connectSSE } from "./sse-client.js";
 export type { SSEEvent } from "./sse-client.js";
-export { workerPost, workerGet, workerInstall } from "./worker-http.js";
+export { workerPost, workerGet, workerInstall, PLACEHOLDER_WORKER_URL, WorkerUnavailableError } from "./worker-http.js";
 export { truncateTerminalBuffer } from "./terminal-buffer.js";
 export { ProxyAgentProcess } from "./proxy-agent-process.js";
 export type { ProxyAgentRunner } from "./proxy-agent-process.js";
@@ -78,6 +78,15 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private workerUrl: string;
   private _workerReady: Promise<void>;
   private _resolveWorkerReady!: () => void;
+
+  /**
+   * Why this runner will never get a worker, when container creation failed
+   * outright. Set by `markWorkerUnavailable` (from the create path's terminal
+   * failure) BEFORE `dispose()` resolves the worker-ready gate, so a turn
+   * parked on that gate reports the real cause instead of the transport-level
+   * `connect ECONNREFUSED 0.0.0.0` the placeholder URL used to produce.
+   */
+  private _workerUnavailableReason: string | null = null;
 
   // Collaborators (own narrow slices of state — see file header).
   private sse: SseConnectionManager;
@@ -253,7 +262,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       this._presentations = this._presentStore.listForClient(this.sessionId);
     }
     // If workerUrl looks like a placeholder, defer readiness until setWorkerUrl() is called.
-    if (opts.workerUrl === "http://0.0.0.0:0") {
+    if (opts.workerUrl === PLACEHOLDER_WORKER_URL) {
       this._workerReady = new Promise<void>((resolve) => { this._resolveWorkerReady = resolve; });
     } else {
       this._workerReady = Promise.resolve();
@@ -275,7 +284,56 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   /** Update the worker URL once the container is ready. */
   setWorkerUrl(url: string): void {
     this.workerUrl = url;
+    this._workerUnavailableReason = null;
     this._resolveWorkerReady();
+  }
+
+  /**
+   * True while this runner is still waiting for its container to be created —
+   * it holds the placeholder URL and creation hasn't failed yet.
+   *
+   * The missing-container reconciler consults this. It force-disposes any
+   * registered runner the container manager doesn't know about, but a runner is
+   * registered SYNCHRONOUSLY by `getOrCreate` while `createContainerForRunner`
+   * runs fire-and-forget — and the manager's map entry is only written partway
+   * into `createContainer`. Everything before that (destroying a stale
+   * container, resolving overlay specs, building the config) is a window where
+   * a perfectly healthy session looks orphaned. Disposing it there resolved the
+   * worker-ready gate against the placeholder URL, which is one of the two ways
+   * a turn ended up dialing `0.0.0.0`.
+   */
+  get awaitingContainer(): boolean {
+    return (
+      !this._disposed
+      && this._workerUnavailableReason === null
+      && this.workerUrl === PLACEHOLDER_WORKER_URL
+    );
+  }
+
+  /**
+   * Record that container creation failed terminally, so worker calls report
+   * the real cause. Called by the create path immediately before it disposes
+   * the runner — dispose resolves `_workerReady`, releasing any parked turn,
+   * and this is what that turn reports instead of a bare transport error.
+   */
+  markWorkerUnavailable(reason: string): void {
+    this._workerUnavailableReason = reason;
+  }
+
+  /**
+   * Throw when this runner has no reachable worker. Called after every
+   * `await this._workerReady` on a path whose failure surfaces to the user, so
+   * the chat error names the container instead of the placeholder address.
+   * The transport-level guard in `worker-http.ts` is the backstop for paths
+   * that don't call this.
+   */
+  private assertWorkerReachable(path: string): void {
+    if (this._workerUnavailableReason !== null) {
+      throw new WorkerUnavailableError(path, this._workerUnavailableReason);
+    }
+    if (this.workerUrl === PLACEHOLDER_WORKER_URL) {
+      throw new WorkerUnavailableError(path);
+    }
   }
 
   /**
@@ -818,6 +876,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   private async _doStartAgentViaProxy(agentId: AgentId, params: AgentRunParams, runToken?: string, deliveryId?: string): Promise<void> {
     await this._workerReady;
+    // The gate above is ALSO resolved by `dispose()` (so pending awaiters don't
+    // leak when creation fails before `setWorkerUrl`). Reaching here with no
+    // real worker means this turn has nowhere to run — fail with the recorded
+    // cause rather than POSTing to the placeholder address.
+    this.assertWorkerReachable("/agent/start");
 
     await this.fastForwardStaleWorkerEventsBeforeFreshStart();
 
@@ -1363,6 +1426,21 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     if (this._disposed) {
       this.signalInstallComplete();
       return { ok: true };
+    }
+    // Same gate-resolved-by-dispose caveat as `_doStartAgentViaProxy`: a runner
+    // whose container never came up is not disposed in every path, so check the
+    // worker itself rather than inferring reachability from `_disposed`.
+    try {
+      this.assertWorkerReachable("/install");
+    } catch (err) {
+      this.emitMessage({
+        type: "install_status",
+        sessionId: this.sessionId,
+        status: "error",
+        message: err instanceof Error ? err.message : String(err),
+      });
+      this.signalInstallComplete(false);
+      return { ok: false };
     }
 
     // Open our end of the event pipe BEFORE posting /install. The completion

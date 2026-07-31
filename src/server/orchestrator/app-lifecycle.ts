@@ -301,23 +301,7 @@ export interface RunnerFactoryDeps {
   presentStore?: PresentStore;
 }
 
-/**
- * Single entry point for creating a container and wiring it to a runner.
- *
- * Both runner-factory paths that materialize a new container — the
- * standby-fallback path (after the in-progress standby timed out) and the
- * fresh-create path (no existing or stale container) — go through here.
- * Keeping the [destroy-existing → build config → create → wire runner →
- * handle failure] sequence in one place means the per-session resource
- * limits and error-handling stay in lock-step across all real container
- * creation flows.
- *
- * The warm-pool standby creator does NOT go through this helper because
- * it produces a standby (no runner to wire) and reports failures
- * differently — it uses `mgr.createStandby` + `mgr.buildConfigForWorkspace`
- * directly.
- */
-async function createContainerForRunner(opts: {
+interface CreateContainerForRunnerOpts {
   mgr: SessionContainerManager;
   runner: ContainerSessionRunner;
   sessionId: string;
@@ -340,7 +324,58 @@ async function createContainerForRunner(opts: {
   broadcastLog?: (sessionId: string, source: LogSource, text: string) => void;
   /** OOM circuit breaker — when tripped, creation is refused. */
   oomBreaker?: SessionOomCircuitBreaker;
-}): Promise<void> {
+}
+
+/**
+ * How many times {@link createContainerForRunner} tries to bring a session
+ * container up before giving up.
+ *
+ * Container creation fails transiently more often than it fails for good: a
+ * slow image pull, a busy Docker daemon, a veth/IP allocation race, a worker
+ * health check that misses its window under host load. Every one of those used
+ * to dispose the runner on the FIRST error, which stranded the turn the user
+ * had already sent — they saw an error, typed "continue", and the fresh runner
+ * (with its fresh container) then worked. The retry IS that "continue", done
+ * automatically and *before* the turn is torn down, so the prompt is never
+ * lost: a turn parked on the runner's worker-ready gate just starts a few
+ * seconds late.
+ */
+const MAX_CONTAINER_CREATE_ATTEMPTS = 3;
+
+/** Backoff before create attempt N+1. Short — a user's turn is parked on this. */
+const CONTAINER_CREATE_RETRY_DELAYS_MS = [1000, 3000];
+
+/**
+ * Failures worth another attempt. Everything is retryable EXCEPT causes known
+ * to be deterministic, where retrying only delays the error the user needs to
+ * see: a workspace that could not be restored, and a deployment whose egress
+ * sidecar image isn't configured.
+ */
+function isRetryableCreateFailure(errMsg: string): boolean {
+  return !/Session workspace is missing|SESSION_EGRESS_SIDECAR_IMAGE is not set/i.test(errMsg);
+}
+
+/**
+ * Single entry point for creating a container and wiring it to a runner.
+ *
+ * Both runner-factory paths that materialize a new container — the
+ * standby-fallback path (after the in-progress standby timed out) and the
+ * fresh-create path (no existing or stale container) — go through here.
+ * Keeping the [destroy-existing → build config → create → wire runner →
+ * handle failure] sequence in one place means the per-session resource
+ * limits and error-handling stay in lock-step across all real container
+ * creation flows.
+ *
+ * Failures are retried up to {@link MAX_CONTAINER_CREATE_ATTEMPTS} times; only
+ * when the budget is exhausted (or the cause is deterministic) is the runner
+ * marked unavailable and disposed.
+ *
+ * The warm-pool standby creator does NOT go through this helper because
+ * it produces a standby (no runner to wire) and reports failures
+ * differently — it uses `mgr.createStandby` + `mgr.buildConfigForWorkspace`
+ * directly.
+ */
+async function createContainerForRunner(opts: CreateContainerForRunnerOpts): Promise<void> {
   const { mgr, runner, sessionId } = opts;
 
   // Circuit-break before doing any work. If the breaker is tripped the
@@ -352,12 +387,79 @@ async function createContainerForRunner(opts: {
     console.warn(`[container] Refusing to create container for ${sessionId}: OOM circuit breaker tripped`);
     mgr.recordCreateError(sessionId, errMsg);
     opts.broadcastLog?.(sessionId, "server", errMsg);
+    runner.markWorkerUnavailable(errMsg);
     runner.dispose({ force: true });
     return;
   }
 
+  for (let attempt = 0; attempt < MAX_CONTAINER_CREATE_ATTEMPTS; attempt++) {
+    // A retry always clears whatever the failed attempt left behind. The
+    // create path's own catch removes the container and its overlay volumes,
+    // but `destroy` additionally drops the manager entry and reaps
+    // parent-session-labeled children, so the next attempt starts clean.
+    const destroyFirst = attempt > 0 || opts.destroyExisting;
+    const err = await attemptContainerCreate({ ...opts, destroyFirst });
+    if (!err) return;
+
+    const errMsg = getErrorMessage(err);
+    const lastAttempt = attempt === MAX_CONTAINER_CREATE_ATTEMPTS - 1;
+
+    // The runner went away mid-attempt (session archived, full reset, shutdown).
+    // Nothing is waiting on this container any more.
+    if (runner.disposed) {
+      console.warn(`[container] Abandoning container creation for ${sessionId} — runner disposed: ${errMsg}`);
+      return;
+    }
+
+    if (!lastAttempt && isRetryableCreateFailure(errMsg)) {
+      const delayMs = CONTAINER_CREATE_RETRY_DELAYS_MS[attempt] ?? 3000;
+      console.warn(
+        `[container] Container creation for ${sessionId} failed (attempt ${attempt + 1}/${MAX_CONTAINER_CREATE_ATTEMPTS}), `
+        + `retrying in ${delayMs}ms: ${errMsg}`,
+      );
+      opts.broadcastLog?.(
+        sessionId,
+        "server",
+        `Container creation failed (attempt ${attempt + 1}/${MAX_CONTAINER_CREATE_ATTEMPTS}) — retrying: ${errMsg}`,
+      );
+      await new Promise((r) => setTimeout(r, delayMs));
+      continue;
+    }
+
+    console.error(`[container] Failed to start container for ${sessionId}:`, errMsg);
+    // Record so the health endpoint can surface it to the UI — without this
+    // async creation failures from the fire-and-forget block are invisible.
+    mgr.recordCreateError(sessionId, errMsg);
+    // Mirror into the per-session ring — `lastCreateError` is wiped on
+    // the next successful create, but a copied diagnostic still shows the
+    // failure in recentLogs.
+    const qualifier = opts.failureContext ? ` (${opts.failureContext})` : "";
+    opts.broadcastLog?.(sessionId, "server", `Container creation failed${qualifier}: ${errMsg}`);
+    // Record the cause BEFORE disposing. `dispose()` resolves the runner's
+    // worker-ready gate, releasing any turn parked on it; without this the
+    // released turn POSTs to the `0.0.0.0:0` placeholder and the user gets
+    // `Error: connect ECONNREFUSED 0.0.0.0` instead of the real reason.
+    runner.markWorkerUnavailable(errMsg);
+    // Forced — container start failed, the runner is unusable and must be
+    // torn down. The agent isn't running on any worker yet, but if some
+    // race ever flipped `_isRunning` (early enqueue, etc.), an unforced
+    // dispose would silently no-op and leak the registry entry.
+    runner.dispose({ force: true });
+    return;
+  }
+}
+
+/**
+ * One container-creation attempt. Returns the error instead of throwing so the
+ * retry loop in {@link createContainerForRunner} owns all the policy (backoff,
+ * terminal-failure detection, error recording) in one place.
+ */
+async function attemptContainerCreate(
+  opts: CreateContainerForRunnerOpts & { destroyFirst: boolean },
+): Promise<unknown> {
+  const { mgr, runner, sessionId } = opts;
   try {
-    if (opts.destroyExisting) await mgr.destroy(sessionId);
+    if (opts.destroyFirst) await mgr.destroy(sessionId);
     // SHI-179 — fail fast with a clear, terminal message if the workspace clone
     // is missing. The activation path (route-registry `activateSession`)
     // re-materializes an evicted/missing workspace from the bare cache before
@@ -410,22 +512,9 @@ async function createContainerForRunner(opts: {
     console.log(`[container] Container ready for ${sessionId} at ${sc.workerUrl}`);
     runner.setWorkerUrl(sc.workerUrl);
     mgr.clearCreateError(sessionId);
+    return null;
   } catch (err) {
-    const errMsg = getErrorMessage(err);
-    console.error(`[container] Failed to start container for ${sessionId}:`, errMsg);
-    // Record so the health endpoint can surface it to the UI — without this
-    // async creation failures from the fire-and-forget block are invisible.
-    mgr.recordCreateError(sessionId, errMsg);
-    // Mirror into the per-session ring — `lastCreateError` is wiped on
-    // the next successful create, but a copied diagnostic still shows the
-    // failure in recentLogs.
-    const qualifier = opts.failureContext ? ` (${opts.failureContext})` : "";
-    opts.broadcastLog?.(sessionId, "server", `Container creation failed${qualifier}: ${errMsg}`);
-    // Forced — container start failed, the runner is unusable and must be
-    // torn down. The agent isn't running on any worker yet, but if some
-    // race ever flipped `_isRunning` (early enqueue, etc.), an unforced
-    // dispose would silently no-op and leak the registry entry.
-    runner.dispose({ force: true });
+    return err ?? new Error("Container creation failed");
   }
 }
 
@@ -618,6 +707,16 @@ export function createMissingContainerReconciler(
       if (!runner) continue;
       if (containerManager.isStandby(sid)) continue;
       if (containerManager.get(sid)) continue;
+      // Creation in flight — NOT orphaned. `getOrCreate` registers the runner
+      // synchronously and kicks `createContainerForRunner` off fire-and-forget,
+      // but the manager's map entry is only written partway into
+      // `createContainer`. Destroying a stale container, resolving overlay
+      // specs, and building the config all happen before that, so a healthy
+      // session activating right now looks container-less to this pass.
+      // Force-disposing it there resolved the runner's worker-ready gate while
+      // the URL was still the `0.0.0.0:0` placeholder, and the parked turn then
+      // dialed it — surfacing as `Error: connect ECONNREFUSED 0.0.0.0` in chat.
+      if (runner.awaitingContainer) continue;
       // Inverse-leak backstop (C3): the runner has no container entry, but
       // a live Docker container may still exist — orphaned because a
       // `die`/`oom` event deleted a healthy container's map entry. Try to

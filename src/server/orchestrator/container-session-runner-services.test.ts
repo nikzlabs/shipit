@@ -27,6 +27,10 @@ vi.mock("./worker-http.js", () => ({
   workerInstall: vi.fn().mockResolvedValue({}),
   workerPushAgentSecrets: vi.fn().mockResolvedValue({}),
   workerPostMessage: vi.fn().mockResolvedValue({}),
+  // The runner compares its constructor URL against this sentinel and throws
+  // this error when it has no reachable worker — both must exist on the mock.
+  PLACEHOLDER_WORKER_URL: "http://0.0.0.0:0",
+  WorkerUnavailableError: class WorkerUnavailableError extends Error {},
 }));
 
 const { ContainerSessionRunner } = await import("./container-session-runner.js");
