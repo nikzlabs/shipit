@@ -201,11 +201,13 @@ No terminal-state card family, no in-place transitions, no runner-less
 `persistCardTransition`, no card repair, no archive-time transition. Archiving clears the
 watch silently; the user froze that transcript deliberately.
 
-## Prerequisite
+## Prerequisite — done
 
-**SHI-262** — the queue drains before the finished turn's commit. Not a UX requirement,
-but without it a wake queued behind a user turn meets uncommitted work and refuses,
-making the happy path unreliable.
+**SHI-262** ✅ — the finished turn's local commit now completes before a queued turn
+starts. Without it a wake queued behind a user turn would meet uncommitted work and
+refuse, making the happy path unreliable. The guarantee lives inside `tryDrain`, the
+funnel every drain site passes through, so it holds for all of them rather than for one
+reordered call site.
 
 ## Known gaps (tracked separately)
 

@@ -6,7 +6,7 @@ it has been cut — see the plan's "Resolved decisions".
 
 ## Prerequisite
 
-- [ ] **SHI-262** — queue drains before the finished turn's commit (fixed separately)
+- [x] **SHI-262** — the finished turn's commit completes before a queued turn starts ✅ merged
 
 ## Watch
 
