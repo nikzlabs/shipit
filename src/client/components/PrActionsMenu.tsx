@@ -30,6 +30,7 @@ export function PrActionsMenu({ sessionId }: { sessionId: string }) {
   const session = useSessionStore((s) => s.sessions.find((sess) => sess.id === sessionId));
   const setToast = useUiStore((s) => s.setToast);
   const startRebase = useGitStore((s) => s.startRebase);
+  const resetBranchToBase = useGitStore((s) => s.resetBranchToBase);
   const rebaseStatus = useGitStore((s) => s.rebaseStatus);
   const isAgentRunning = useSessionStore((s) => s.activeRunnerSessions.has(sessionId));
   // docs/186 — the per-session auto-fix pause only makes sense when the global
@@ -51,6 +52,7 @@ export function PrActionsMenu({ sessionId }: { sessionId: string }) {
   const syncBaseBranch = card?.pr?.baseBranch ?? repoDefaultBranch;
   const syncDisabled = isAgentRunning || rebaseStatus !== "idle";
   const isOpen = card?.phase === "open";
+  const isMerged = card?.phase === "merged";
 
   const handleCopyBranch = () => {
     if (!headBranch) return;
@@ -58,12 +60,16 @@ export function PrActionsMenu({ sessionId }: { sessionId: string }) {
     setToast({ message: "Branch name copied" });
   };
 
-  // "Sync with <base>" rebases the branch onto the latest base and pushes,
-  // reusing the conflict-resolution flow that the push-rejected banner and the
-  // "Resolve conflicts" button already drive.
+  // An active branch syncs by rebasing. A merged branch instead uses the
+  // squash-safe reset flow: hard-reset to the merged PR's latest base, heal the
+  // remote, re-arm the PR lifecycle, and record the durable branch-updated card.
   const handleSyncWithBase = () => {
     if (isAgentRunning || useGitStore.getState().rebaseStatus !== "idle") return;
-    void startRebase(sessionId, syncBaseBranch);
+    if (isMerged) {
+      void resetBranchToBase(sessionId);
+    } else {
+      void startRebase(sessionId, syncBaseBranch);
+    }
   };
 
   // The auto-merge toggle is shown here only for the phases without an inline
@@ -109,7 +115,9 @@ export function PrActionsMenu({ sessionId }: { sessionId: string }) {
           title={
             isAgentRunning
               ? "Wait for the agent to finish before syncing"
-              : `Rebase onto ${syncBaseBranch} and push`
+              : isMerged
+                ? `Reset to ${syncBaseBranch} and update the branch`
+                : `Rebase onto ${syncBaseBranch} and push`
           }
         >
           <ArrowsClockwiseIcon size={ICON_SIZE.SM} />

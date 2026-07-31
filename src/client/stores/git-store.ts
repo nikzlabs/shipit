@@ -46,6 +46,7 @@ interface GitState {
   fetchDiffVsBranch: (sessionId: string, baseBranch?: string) => Promise<void>;
   submitGitIdentity: (name: string, email: string) => Promise<void>;
   startRebase: (sessionId: string, baseBranch: string) => Promise<void>;
+  resetBranchToBase: (sessionId: string) => Promise<void>;
   abortRebase: (sessionId: string) => Promise<void>;
 }
 
@@ -162,6 +163,30 @@ export const useGitStore = create<GitState>((set) => ({
       // of silently bouncing back to idle. Async server-side failures
       // (post-200) come through the `rebase_aborted` WS event's `reason`.
       const message = err instanceof Error ? err.message : "Rebase failed";
+      set({ rebaseStatus: "idle", rebaseError: message });
+    }
+  },
+
+  resetBranchToBase: async (sessionId) => {
+    // A merged branch must be reset, not rebased: squash and merge commits make
+    // the merged branch's old commits unsafe to replay. The server applies the
+    // same safety gate as the agent-driven reset and synchronously settles the
+    // durable branch-updated card + PR re-arm before this request completes.
+    set({ rebaseStatus: "in_progress", pushRejected: false, rebaseError: null });
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/branch/reset-to-base`, {
+        method: "POST",
+      });
+      const data = await res.json().catch(() => ({})) as {
+        outcome?: "reset" | "already-at-base" | "refused";
+        reason?: string;
+      };
+      if (!res.ok || data.outcome === "refused") {
+        throw new Error(data.reason ?? `Branch reset failed: ${res.status}`);
+      }
+      set({ rebaseStatus: "idle" });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Branch reset failed";
       set({ rebaseStatus: "idle", rebaseError: message });
     }
   },
