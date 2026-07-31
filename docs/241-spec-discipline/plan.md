@@ -11,15 +11,7 @@ description: Requirement IDs in feature docs, forge-proof clarification receipts
 
 Coding agents fail at requirements more often than at code: they hit an unspecified detail, pick a plausible answer, write it into the code, and never surface it. This feature makes invented requirements structurally visible: requirements carry stable IDs, unresolved gaps are explicit markers, human resolutions are recorded as orchestrator-owned receipts the agent cannot forge, and a deterministic validator gates implementation turns until the gaps are closed.
 
-This is the reshaped v1 of an external proposal ("ShipIt Spec Discipline", uploaded 2026-07-31, reviewed by this session with a cross-agent Codex review). The original proposed a parallel `specs/` hierarchy, per-file write-blocking via Claude Code hooks, and a self-stored spec hash. All three were rejected in review — see "Settled rationale" — and this doc records what survived.
-
-## Out of scope
-
-- A `specs/` directory, `tasks.md`, `constitution.md`, or a global `decisions.md`. ShipIt already has `docs/NNN-*` + `checklist.md` + Linear; a second feature hierarchy is the "never mirror" violation CLAUDE.md forbids.
-- Per-file-write blocking (PreToolUse hooks on Write/Edit). Bash, `sed -i`, formatters, and the Codex backend all bypass tool-name interception; a gate that one backend ignores is decorative. Enforcement lives at turn start in the orchestrator.
-- Permanent spec freezing via a content hash stored in the spec file. Approvals bind to git blob SHAs instead; git already preserves history.
-- Per-hunk REQ-citation enforcement in review, live marker-count badges, an assumptions dashboard, mandatory fresh implementation sessions, and N-candidate ambiguity detection (divergence sampling). All cut from v1.
-- The UI writing workspace files. The agent is the actor; the UI records answers, the agent edits the doc.
+Requirements live as sections of the existing `docs/NNN-*/plan.md` (alongside `checklist.md` and the Linear issue); the discipline adds format, receipts, a validator, and gating on top of that structure rather than a new artifact hierarchy.
 
 ## Requirements
 
@@ -64,7 +56,7 @@ The gate's authority is a receipt store owned by the orchestrator, outside the s
 - **241-REQ-042:** WHEN a gated turn ends THE SYSTEM SHALL re-run the validator and surface remaining blocking findings in the session.
 - **241-REQ-043:** THE SYSTEM SHALL read mode and paths from `.shipit/spec-discipline.json` in the workspace, and SHALL treat a workspace without that file as opted out entirely.
 
-Gating is backend-neutral by construction: it runs in the orchestrator's turn-dispatch path, which every backend passes through. It is deliberately *not* claimed to be write-proof — a designated clarification turn constrains the agent through instructions plus post-turn re-validation, and hard write enforcement is out of scope (see above).
+Gating is backend-neutral by construction: it runs in the orchestrator's turn-dispatch path, which every backend passes through. It is deliberately *not* write-proof — a designated clarification turn constrains the agent through instructions plus post-turn re-validation; there is no per-file write enforcement.
 
 ### Post-implementation review
 
@@ -83,16 +75,6 @@ Open questions, marked per the discipline itself. These block implementation unt
 - [NEEDS CLARIFICATION: How is a session's active feature selected — inferred from the issue/doc the session was launched from, set explicitly by the user in chat, or a default in `.shipit/spec-discipline.json`? Recommended: inferred at launch with an explicit chat override, since sessions already launch from issues.]
 - [NEEDS CLARIFICATION: What is the default mode for a newly opted-in workspace — `blocking` or `advisory`? Recommended: `blocking`, since gating is scoped to the active feature and a stale sibling doc cannot deadlock unrelated work.]
 - [NEEDS CLARIFICATION: Do `--all` advisory findings run anywhere automatically (CI job, post-turn summary), or only on demand? Recommended: on demand plus a CI job that never fails the build.]
-
-## Settled rationale
-
-Decisions from the 2026-07-31 review (this session + Codex cross-review), recorded so they are not re-litigated:
-
-1. **Extend `docs/NNN-*`, don't add `specs/`.** The original's `spec.md`/`plan.md`/`tasks.md` triple duplicates `plan.md`/`checklist.md`/Linear. Requirements become sections of the existing `plan.md`; checklist items cite REQ IDs; Linear keeps status and priority.
-2. **Receipts, because the gate must not trust the principal it polices.** The original left spec files agent-writable while deriving gate state from their content, so a blocked agent could flip `Status: open → resolved` itself. Only an orchestrator-owned receipt minted from a real user answer opens the gate.
-3. **Turn-start gating, because tool-name hooks don't cover the write surface.** Claude Code hooks miss Bash and don't exist for Codex (its file changes are reported after application). The orchestrator's turn dispatch is the one seam every backend crosses.
-4. **Deterministic vs semantic checks split.** The validator does only what a parser can prove (markers, IDs, references, receipts). Contradiction/duplication/coverage judgment belongs to the fresh-context reviewer and stays advisory until its false-positive rate is understood.
-5. **No separate assumption ledger.** Provenance (human-stated vs agent-ratified) lives in receipts — question, options, and chosen answer are recorded verbatim — so a separate append-only `assumptions.md` per feature is redundant bookkeeping.
 
 ## Key files (planned)
 
