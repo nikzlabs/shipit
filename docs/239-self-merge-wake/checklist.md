@@ -44,6 +44,8 @@ it has been cut — see the plan's "Resolved decisions".
 - [x] `handWorkspaceBackToWorker` in a `finally`
 - [x] Exit 0 for reset/already-at-base; nonzero with a reason otherwise
 - [x] Refusal copy says why and forbids a hand-rolled reset
+- [x] Successful explicit reset clears composer eligibility, re-arms the PR
+      lifecycle, and persists the same branch-updated card as docs/218
 
 ## Prompt + card
 
