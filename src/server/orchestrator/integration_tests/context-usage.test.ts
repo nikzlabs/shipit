@@ -13,7 +13,6 @@ import {
   MODEL_CONTEXT_WINDOWS,
   DEFAULT_CONTEXT_WINDOW_TOKENS,
   getContextWindowForModel,
-  reconcileReportedContextWindow,
 } from "../../shared/agent-registry.js";
 import type { FastifyInstance } from "fastify";
 import type { WsTurnUsageUpdate, AgentProcess, AgentId } from "../../shared/types.js";
@@ -266,11 +265,12 @@ describe("Integration: Context window usage (105)", () => {
     client.close();
   });
 
-  it("emits dynamic model_info from result.modelUsage.contextWindow (Opus 4.8 → 1M)", async () => {
-    // Two-bug regression: (a) Opus 4.x has a 1M window, not 200K; (b) a tool-
-    // heavy turn's top-level cache_read_input_tokens is the SUM across all API
-    // calls and over-counts context. Both are fixed by reading
-    // `result.modelUsage.contextWindow` and `result.usage.iterations[]`.
+  it("lets backend telemetry replace the static context-window fallback", async () => {
+    // Two-bug regression: (a) the backend's active session window must replace
+    // the model's larger static/API fallback; (b) a tool-heavy turn's top-level
+    // cache_read_input_tokens is the SUM across all API calls and over-counts
+    // context. Both are fixed by reading `result.modelUsage.contextWindow` and
+    // `result.usage.iterations[]`.
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
@@ -280,18 +280,17 @@ describe("Integration: Context window usage (105)", () => {
     lastClaude.emit("event", {
       type: "system",
       subtype: "init",
-      session_id: "opus-1m-session",
-      model: "claude-opus-4-8",
+      session_id: "backend-window-session",
+      model: "gpt-5.6-sol",
     });
     await client.receiveType("session_started");
 
-    // Static fallback fires first via agent_init — exact key
-    // "claude-opus-4-8" → 1_000_000.
+    // Static fallback fires first via agent_init.
     const initModelInfo = await client.receiveType("model_info");
     expect(initModelInfo).toMatchObject({
       type: "model_info",
-      model: "claude-opus-4-8",
-      contextWindowTokens: 1_000_000,
+      model: "gpt-5.6-sol",
+      contextWindowTokens: 1_050_000,
     });
 
     lastClaude.emit("event", {
@@ -304,7 +303,7 @@ describe("Integration: Context window usage (105)", () => {
     lastClaude.emit("event", {
       type: "result",
       subtype: "success",
-      session_id: "opus-1m-session",
+      session_id: "backend-window-session",
       total_cost_usd: 0.5,
       duration_ms: 8000,
       usage: {
@@ -319,16 +318,17 @@ describe("Integration: Context window usage (105)", () => {
         ],
       },
       modelUsage: {
-        "claude-opus-4-8": { contextWindow: 1_000_000 },
+        "gpt-5.6-sol": { contextWindow: 258_400 },
       },
     });
 
-    // Authoritative model_info re-emit from result.modelUsage.contextWindow.
+    // The active backend profile is authoritative even when it is smaller
+    // than the model's maximum API context represented by the static fallback.
     const resultModelInfo = await client.receiveType("model_info");
     expect(resultModelInfo).toMatchObject({
       type: "model_info",
-      model: "claude-opus-4-8",
-      contextWindowTokens: 1_000_000,
+      model: "gpt-5.6-sol",
+      contextWindowTokens: 258_400,
     });
 
     const turnUsage = (await client.receiveType("turn_usage_update")) as WsTurnUsageUpdate;
@@ -363,10 +363,4 @@ describe("Integration: Context window usage (105)", () => {
     expect(getContextWindowForModel(undefined)).toBe(DEFAULT_CONTEXT_WINDOW_TOKENS);
   });
 
-  it("does not let legacy Codex telemetry shrink GPT-5.6 between turns", () => {
-    expect(reconcileReportedContextWindow("gpt-5.6-sol", 258_400)).toBe(1_050_000);
-    expect(reconcileReportedContextWindow("gpt-5.6-terra", 1_000_000)).toBe(1_050_000);
-    expect(reconcileReportedContextWindow("gpt-5.4", 258_400)).toBe(258_400);
-    expect(reconcileReportedContextWindow("claude-opus-5", 200_000)).toBe(200_000);
-  });
 });

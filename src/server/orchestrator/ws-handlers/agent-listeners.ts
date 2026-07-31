@@ -10,7 +10,6 @@ import type { AuthManager } from "../agents/claude/auth-manager.js";
 import type { AgentAuthManager } from "../agent-auth-manager.js";
 import {
   getContextWindowForModel,
-  reconcileReportedContextWindow,
   DEFAULT_CONTEXT_WINDOW_TOKENS,
 } from "../../shared/agent-registry.js";
 import type { VoiceNotePayload, VoiceNoteSource } from "../../shared/types/voice-note-types.js";
@@ -1059,7 +1058,7 @@ export function wireAgentListeners(
         emitToViewers({
           type: "model_info",
           model: turnModel,
-          contextWindowTokens: reconcileReportedContextWindow(turnModel, event.contextWindow),
+          contextWindowTokens: event.contextWindow,
         });
       }
 
