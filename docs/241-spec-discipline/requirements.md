@@ -20,7 +20,4 @@ The design that implements these requirements is in [`plan.md`](./plan.md).
 
 9. A session knows which feature it is working on. When the session is started from an issue, the feature is inferred from that issue; the human can set or change it in chat at any time. A feature can also be invented during a session — prompted directly in chat rather than started from an issue — in which case the agent creates the feature's documents and works on it from then on.
 
-## Open questions
-
-- Requirement 5 says open questions block implementation. When a project turns this on (requirement 8), should blocking be the only behavior, or should there also be a softer report-only mode where open questions are shown but don't block — and if both exist, which one does a project start in? Recommendation: start in blocking mode; only the feature being worked on can block its own work, so unrelated features never get in the way.
-- Beyond the per-feature blocking, it could be useful to see in one place, across the whole project, which features still have open questions or unapproved assumptions. Should such a project-wide summary run automatically anywhere (for example on every pull request), or only when someone asks for it? Recommendation: only when asked, plus an automatic report on pull requests that informs but never fails them.
+10. When a project turns this on, open questions block from the start — there is no softer report-only mode. If open questions merely produced warnings, the implementer would invent answers to them, and the invented answers would be suboptimal. Only the feature being worked on can block its own work, so unrelated features never get in the way.

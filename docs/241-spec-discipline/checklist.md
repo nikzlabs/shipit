@@ -1,8 +1,8 @@
 # 241 — Spec discipline checklist
 
-- [ ] Resolve the three open questions in requirements.md (blocks everything below, per the discipline's own gate)
+- [x] Resolve the open questions in requirements.md (all resolved in review, 2026-07-31 — became requirements 9 and 10; the project-wide summary idea moved to SHI-270)
 - [ ] Validator library: find open-question markers, verify resolution entries cite real unused receipts (reqs 3, 5)
-- [ ] `shipit spec check` CLI shim with `--feature`, `--all`, `--json` (req 5)
+- [ ] `shipit spec check` CLI shim with `--feature` and `--json` (req 5)
 - [ ] Receipt store: schema, persistence outside the workspace, read-only session exposure, reject non-user-answer creation (reqs 3, 5)
 - [ ] Mint receipts from question-card answers; deliver answers as next turn (req 4)
 - [ ] `SpecGateService` + turn-start consult in turn dispatch; clarification-turn designation (req 5)
