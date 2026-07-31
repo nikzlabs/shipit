@@ -21,6 +21,9 @@ security measures, UX details, or anticipated extensions into requirements.
    and sending the message to the agent.
 4. The capability lets the agent create an interface for itself: the agent can
    create a page whose interactions send subsequent messages back to the agent.
+5. The API is compatible with the planned page-visibility feature that lets a
+   page detect that it is running inside ShipIt and mute itself when it is not
+   visible.
 
 ## Not requirements
 

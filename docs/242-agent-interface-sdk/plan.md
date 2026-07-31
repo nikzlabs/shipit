@@ -42,7 +42,9 @@ The requested experience is:
   agent for the same ShipIt session;
 - the page uses a JavaScript SDK, because its JavaScript may first collect user
   input or other information; and
-- this enables an agent to create an interface for itself.
+- this enables an agent to create an interface for itself; and
+- the API is compatible with the planned page-visibility feature through which
+  a page can detect that it is inside ShipIt and mute itself when not visible.
 
 No requirement was provided for confirmation UI, payload limits, user-gesture
 enforcement, message provenance UI, additional surfaces, or SDK capabilities
@@ -73,6 +75,12 @@ The design relies on the following existing behavior, verified in source:
 - `preview-proxy.ts` already rewrites HTML returned by a service to inject the
   HMR/navigation bootstrap. It is therefore the existing central point at which
   ShipIt can make a small runtime available to proxied service pages.
+- docs/146 defines the planned cooperative Preview visibility protocol under
+  the existing `{ source: "shipit-preview", type: ... }` `postMessage`
+  envelope. A page emits `ready`; ShipIt replies with and subsequently publishes
+  `visibility` transitions. The first visibility message is authoritative, so a
+  cooperating page does not assume that a newly mounted background frame is
+  visible.
 - `dispatchAgentMessage` in
   `src/client/utils/dispatch-agent-message.ts` owns the browser-side optimistic
   user bubble and calls `POST /api/sessions/:id/agent/dispatch`.
@@ -91,19 +99,22 @@ These are implementation foundations, not new requirements.
 First-version working API:
 
 ```ts
-interface ShipItAgentSdk {
-  sendMessage(input: {
-    text: string;
-  }): Promise<{
-    status: "submitted";
-  }>;
+interface ShipItSdk {
+  /** The runtime exists only when the page is embedded in a supported ShipIt surface. */
+  readonly embedded: true;
+  readonly visibility: {
+    /** Unknown until ShipIt supplies the authoritative initial state. */
+    readonly current: boolean | null;
+    subscribe(listener: (visible: boolean) => void): () => void;
+  };
+  readonly agent: {
+    sendMessage(input: { text: string }): Promise<{ status: "submitted" }>;
+  };
 }
 
 declare global {
   interface Window {
-    shipit?: {
-      agent: ShipItAgentSdk;
-    };
+    shipit?: ShipItSdk;
   }
 }
 ```
@@ -132,15 +143,23 @@ final text. The SDK is intentionally narrow in the first version: it does not
 expose session lookup, filesystem access, credentials, agent configuration,
 permission-mode changes, or arbitrary WebSocket/HTTP calls.
 
+The shared runtime also exposes the planned visibility contract. Its presence
+and `embedded: true` let a page detect ShipIt without a separate probe. The
+visibility state remains `null` until the parent supplies the first
+authoritative value; `subscribe` then reports that value and every transition.
+An audio application can suspend or resume its own `AudioContext` from that
+callback without coupling its code to raw `postMessage` shapes.
+
 ### Why an injected global
 
-An injected `window.shipit` global works for both requested surfaces without
-requiring an npm dependency, a build step, or a network import. An agent can
+An injected `window.shipit` global works for both requested surfaces and both
+capabilities without requiring an npm dependency, a build step, or a network
+import. An agent can
 write a self-contained HTML artifact or ordinary application code and feature
 detect the host:
 
 ```js
-if (window.shipit?.agent) {
+if (window.shipit?.embedded) {
   // Running inside a ShipIt surface that supports the bridge.
 }
 ```
@@ -149,17 +168,49 @@ The SDK implementation is a small browser-side proxy. It does not contain an
 orchestrator URL, session ID, cookie, token, or other authority that the child
 page could extract.
 
+## Compatibility with the preview visibility contract
+
+The Agent Interface SDK and docs/146 must be two modules of one page bridge, not
+two globals or two unrelated protocols:
+
+```text
+window.shipit
+   ├─ embedded
+   ├─ visibility.current / subscribe()  ← docs/146 ready + visibility
+   └─ agent.sendMessage()               ← this design
+```
+
+On initialization the shared bootstrap:
+
+1. installs `window.shipit` once;
+2. registers one parent-message listener;
+3. posts the existing `{ source: "shipit-preview", type: "ready" }` handshake;
+4. updates the visibility module for every existing
+   `{ source: "shipit-preview", type: "visibility", visible }` message; and
+5. correlates agent-message responses without swallowing other
+   `shipit-preview` message types.
+
+The visibility module is a convenience wrapper around docs/146, not a replacement
+wire contract. Existing pages that implement the raw `ready`/`visibility`
+snippet remain compatible. A duplicate `ready` is safe because docs/146 already
+requires the parent response to be idempotent.
+
+The SDK must preserve docs/146's visibility semantics: visibility describes
+whether the ShipIt surface is on screen, not merely whether the browser tab is
+foregrounded, and `null` is the safe initial state until the parent replies. The
+page remains responsible for deciding how to pause, mute, or throttle itself.
+
 ## Transport design
 
 ### Child frame to ShipIt host
 
-The injected SDK sends a versioned `postMessage` request to the parent frame:
+The injected SDK adds an agent-message type under docs/146's existing
+`shipit-preview` `postMessage` envelope:
 
 ```ts
 interface AgentSdkRequest {
-  source: "shipit-agent-sdk";
-  version: 1;
-  type: "send_message";
+  source: "shipit-preview";
+  type: "agent_message";
   requestId: string;
   payload: { text: string };
 }
@@ -169,9 +220,8 @@ The ShipIt client sends a correlated response to that same frame:
 
 ```ts
 type AgentSdkResponse = {
-  source: "shipit-agent-host";
-  version: 1;
-  type: "send_message_result";
+  source: "shipit-preview";
+  type: "agent_message_result";
   requestId: string;
 } & (
   | { ok: true; status: "submitted" }
@@ -227,9 +277,10 @@ isolation.
 
 ### Present artifacts
 
-`RenderedFrame` should gain an opt-in agent-bridge mode rather than enabling the
-SDK for every HTML file it renders. `PresentPane` enables that mode and supplies
-the presentation/session binding; the ordinary file preview leaves it off.
+`RenderedFrame` should gain an opt-in ShipIt page-bridge mode rather than
+enabling the SDK for every HTML file it renders. `PresentPane` enables that mode
+and supplies the presentation/session binding; the ordinary file preview leaves
+it off.
 
 The enabled renderer injects the SDK bootstrap into `srcDoc` alongside the
 existing CSP. `postMessage` remains available inside the origin-null sandbox,
@@ -240,10 +291,13 @@ source mode do not run page JavaScript and therefore do not expose the SDK.
 
 ### Service previews
 
-`preview-proxy.ts` should inject the same SDK bootstrap into HTML responses next
-to its existing HMR/navigation patch. This makes the API available to pages
-served by any Compose preview without requiring the application to import a
-ShipIt package.
+`preview-proxy.ts` should inject the same shared ShipIt bootstrap into HTML
+responses next to its existing HMR/navigation patch. This makes both the
+visibility wrapper and agent API available to pages served by any Compose
+preview without requiring the application to import a ShipIt package. This
+supersedes docs/146's need for newly scaffolded applications to hand-copy the
+raw listener for detection and visibility; the raw protocol remains supported
+for existing pages.
 
 The Preview frame registers its `contentWindow` with the host bridge and binds
 it to the active session. A service page loaded directly outside ShipIt's
@@ -257,8 +311,8 @@ one-off message handling to `App.tsx`:
 
 ```text
 src/client/agent-interface-sdk/
-  protocol.ts          shared request/response guards and public TS shape
-  bootstrap.ts         dependency-free child-frame SDK source
+  protocol.ts          shared visibility + agent protocol guards and public TS shape
+  bootstrap.ts         dependency-free child-frame ShipIt runtime source
   frame-registry.ts    event.source → session/surface binding
   useAgentInterfaceHost.ts
 ```
@@ -275,8 +329,10 @@ surface components only register their frames.
 ## SDK distribution
 
 The Present renderer and preview proxy need byte-identical bootstrap code. Keep
-one dependency-free source of truth and produce a string suitable for both
-injection sites. The build must not maintain two hand-copied SDK implementations.
+one dependency-free source of truth for `embedded`, visibility, and agent
+messaging, and produce a string suitable for both injection sites. The build
+must not maintain separate visibility and agent bootstraps or two hand-copied
+SDK implementations.
 
 One viable implementation is a small TypeScript module that exports the
 bootstrap source as a constant, with a test that executes that source in a DOM
@@ -284,8 +340,9 @@ fixture. If escaping becomes difficult, a tiny build script can generate the
 string; adding a separately versioned npm package is unnecessary for the first
 version.
 
-The protocol carries `version: 1` from the start so ShipIt can reject an
-incompatible old page cleanly if the SDK evolves.
+Following docs/146, additive behaviors receive new `type` names under the
+`shipit-preview` envelope rather than versioning every message. A future breaking
+change adds a new type and preserves the old one during compatibility rollout.
 
 ## Failure behavior
 
@@ -313,6 +370,8 @@ cover:
 
 - where the SDK is available;
 - feature detection;
+- the visibility state and subscription API, including the authoritative
+  initial-state rule and an audio-muting example;
 - the `sendMessage({ text })` signature and Promise behavior;
 - a form example that collects values before composing the message; and
 - the fact that the call produces another agent turn rather than directly
@@ -349,6 +408,10 @@ The containment measures proposed by the design are:
 - no cross-session target supplied by the child;
 - no relaxation of the Present iframe sandbox; and
 - sanitized errors returned to the child.
+
+The shared runtime also reduces protocol surface: page detection, visibility,
+and agent messaging use one injected global and the existing `shipit-preview`
+envelope rather than granting multiple bridges.
 
 Whether SDK dispatch must require a live browser user activation, show the exact
 message for confirmation, or apply a product-level text-size limit is not
@@ -426,8 +489,12 @@ docs/150's dispatch funnel.
 
 Implementation should co-locate tests with each layer:
 
-- protocol guards reject wrong versions, message types, empty text, and invalid
-  shapes;
+- protocol guards reject unknown sources/types, empty text, and invalid shapes;
+- the shared bootstrap exposes `embedded`, starts visibility at `null`, emits
+  the existing `ready` handshake, and updates subscribers from existing
+  `visibility` messages;
+- raw docs/146 visibility listeners and the SDK wrapper can coexist without
+  either swallowing the other's messages;
 - the injected SDK correlates concurrent requests and resolves/rejects the
   correct Promise;
 - Present exposes the SDK only in rendered HTML mode and retains
@@ -450,6 +517,8 @@ page SDK call → parent bridge → authenticated dispatch → owning runner
 ## Relationship to existing designs
 
 - `docs/093-agent-present` — Present artifact lifecycle and sandboxed rendering.
+- `docs/146-preview-visibility-contract` — the existing page-detection and
+  cooperative visibility protocol that the shared SDK wraps and preserves.
 - `docs/150-unify-agent-message-dispatch` — shared send/steer/queue funnel.
 - `docs/175-preview-services-drawer` — service/debug UI inside the Preview tab.
 - `docs/188-present-from-file` — file-backed Present artifacts.

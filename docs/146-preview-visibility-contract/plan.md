@@ -5,6 +5,19 @@ issue: https://linear.app/shipit-ai/issue/SHI-44
 
 # Preview visibility contract
 
+> **Integration update (docs/242):** the planned Agent Interface SDK now owns a
+> shared injected `window.shipit` page runtime for both agent messaging and this
+> visibility contract. The wire contract below remains authoritative and
+> backward-compatible: `{ source: "shipit-preview", type: "ready" }` and
+> `{ source: "shipit-preview", type: "visibility", visible }` do not change.
+> The shared bootstrap emits `ready` automatically and exposes
+> `window.shipit.visibility.current/subscribe()` as a wrapper over visibility
+> messages. Consequently, new templates should consume the injected SDK rather
+> than hand-copying the raw listener, and `preview-proxy.ts` is no longer
+> unchanged: it injects the shared bootstrap beside its existing HMR patch. Raw
+> listeners remain supported for existing pages. See
+> `docs/242-agent-interface-sdk/plan.md` for the combined runtime design.
+
 ## Problem
 
 When a preview iframe in ShipIt is hidden in the UI (user switches sessions,
