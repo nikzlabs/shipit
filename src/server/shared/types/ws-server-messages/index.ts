@@ -63,6 +63,7 @@ import type {
   WsSessionStarted,
   WsSessionRenamed,
   WsContainerRestarting,
+  WsSessionContainerFreshness,
   WsFullResetComplete,
   WsSessionStatus,
   WsBackgroundTasks,
@@ -201,6 +202,7 @@ export type WsServerMessage =
   | WsAgentListMessage
   | WsAgentInterrupted
   | WsContainerRestarting
+  | WsSessionContainerFreshness
   | WsFullResetComplete
   | WsTurnDiff
   | WsSessionStatus

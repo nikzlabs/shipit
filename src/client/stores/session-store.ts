@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { saveDraftMessage } from "../utils/local-storage.js";
 import type { ChatMessage } from "../components/MessageList.js";
 import type { StreamingActivity } from "../components/StreamingIndicator.js";
-import type { SessionInfo, SessionCapabilities, TurnUsage, RescuePhase, WsRewindPreview, AgentId } from "../../server/shared/types.js";
+import type { SessionInfo, SessionCapabilities, TurnUsage, RescuePhase, WsRewindPreview, AgentId, ContainerFreshness } from "../../server/shared/types.js";
 import { useUiStore } from "./ui-store.js";
 
 /**
@@ -141,6 +141,8 @@ interface SessionState {
    * See docs/124-session-rescue-and-diagnostics follow-up.
    */
   memoryExhausted: { countInWindow: number; windowMs: number; threshold: number; at: number } | null;
+  /** Runtime worker/orchestrator build comparison for the active session. */
+  containerFreshness: ContainerFreshness | null;
   /**
    * Per-turn usage history keyed by session ID. Populated from
    * `turn_usage_update` WS messages live, and seeded on session attach from
@@ -171,6 +173,7 @@ interface SessionState {
   setInterruptError: (error: string | null) => void;
   setPauseNotice: (notice: SessionState["pauseNotice"]) => void;
   setMemoryExhausted: (notice: SessionState["memoryExhausted"]) => void;
+  setContainerFreshness: (freshness: ContainerFreshness | null) => void;
   setSessions: (
     sessions: SessionInfo[] | ((prev: SessionInfo[]) => SessionInfo[]),
   ) => void;
@@ -302,6 +305,7 @@ const initialResettableState = {
   interruptError: null as string | null,
   pauseNotice: null as SessionState["pauseNotice"],
   memoryExhausted: null as SessionState["memoryExhausted"],
+  containerFreshness: null as ContainerFreshness | null,
 };
 
 const initialTurnUsage: Record<string, TurnUsage[]> = {};
@@ -365,6 +369,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setPauseNotice: (pauseNotice) => set({ pauseNotice }),
 
   setMemoryExhausted: (memoryExhausted) => set({ memoryExhausted }),
+
+  setContainerFreshness: (containerFreshness) => set({ containerFreshness }),
 
   setSessions: (sessions) =>
     set((state) => ({

@@ -23,6 +23,7 @@ interface FakeContainerSpec {
   state: "running" | "exited";
   ip?: string;
   standby?: boolean;
+  buildId?: string;
   inspectThrows?: boolean;
 }
 
@@ -39,6 +40,7 @@ function makeFakeDocker(specs: FakeContainerSpec[]) {
           Labels: {
             [CONTAINER_SESSION_ID_LABEL]: s.sessionId,
             ...(s.standby ? { [CONTAINER_STANDBY_LABEL]: "true" } : {}),
+            ...(s.buildId ? { "shipit-build-id": s.buildId } : {}),
           },
         }));
     },
@@ -106,6 +108,16 @@ describe("adoptRunningContainer", () => {
       status: "running",
       hostWorkspaceDir: "/ws/sess-1",
     });
+  });
+
+  it("preserves the immutable worker build label on adoption", async () => {
+    const { deps, containers } = makeDeps([
+      { id: "c1", sessionId: "sess-1", state: "running", ip: "172.18.0.4", buildId: "worker-sha" },
+    ]);
+
+    await adoptRunningContainer(deps, "sess-1", resolver);
+
+    expect(containers.get("sess-1")?.workerBuildId).toBe("worker-sha");
   });
 
   it("returns false and adopts nothing when the resolver yields no workspaceDir", async () => {

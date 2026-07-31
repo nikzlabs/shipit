@@ -42,6 +42,11 @@ docs/240 and is kept as the option analysis of record):
   label (last instruction, so the per-deploy ARG doesn't bust layer cache),
   and container adoption (`container-discovery.ts`) logs the adopted worker's
   build vs the orchestrator's, flagging skew.
+- **User-visible skew indication landed in docs/242.** The same immutable build
+  identity now reaches the active session over a scoped runtime WS signal. A
+  stale worker shows an inline chat warning and reuses the agent-only restart
+  flow, leaving Compose preview services running and disabling restart during
+  an active turn.
 
 ## Problem
 

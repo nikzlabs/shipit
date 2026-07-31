@@ -7,7 +7,13 @@ description: Detect workers left on an older ShipIt build after an update and sh
 
 ## Status
 
-Planned.
+Implemented (2026-07-31).
+
+The implementation follows this design: worker image build IDs are retained on
+fresh and adopted container records, classified centrally, and delivered as a
+transient session-scoped WebSocket message. The active chat renders a warning
+with the existing agent-only restart lifecycle; it never blocks chat or
+restarts a running turn automatically.
 
 ## Requirement provenance
 
@@ -270,7 +276,7 @@ themes, at desktop width, and in the mobile chat layout.
 | Client handling/state | `src/client/hooks/message-handlers/`, `src/client/stores/session-store.ts`, `src/client/stores/actions/session-actions.ts` |
 | UI | new `src/client/components/StaleContainerBanner.tsx`, chat-column composition in `src/client/App.tsx` |
 | Existing restart flow | `src/server/orchestrator/services/recovery.ts`, `src/server/orchestrator/api-routes-container.ts`, `src/client/components/SessionHealthStrip/RecoveryActions.tsx` |
-| Tests | co-located server freshness/discovery tests and client banner/message-handler tests |
+| Tests | `container-freshness.test.ts`, `container-discovery.test.ts`, `integration_tests/connection.test.ts`, `StaleContainerBanner.test.tsx`, `dispatch-session-scope.test.ts` |
 | Related designs | `docs/113-zero-downtime-updates`, `docs/112-container-recovery`, `docs/127-restart-agent`, `docs/240-turn-survives-orchestrator-restart` |
 
 ## Out of scope
