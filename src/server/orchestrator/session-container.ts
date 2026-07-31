@@ -366,6 +366,13 @@ export const CONTAINER_LABEL_VALUE = "true";
 export const CONTAINER_SESSION_ID_LABEL = "shipit-session-id";
 export const CONTAINER_STACK_LABEL = "shipit-stack";
 export const CONTAINER_STANDBY_LABEL = "shipit-standby";
+/**
+ * Image label (not set by the orchestrator) stamped by
+ * Dockerfile.session-worker.prod with the git SHA the worker image was built
+ * from. Containers inherit image labels, so adoption after an orchestrator
+ * redeploy can log which build a grandfathered worker is running (docs/113).
+ */
+export const CONTAINER_BUILD_ID_LABEL = "shipit-build-id";
 
 // ---------------------------------------------------------------------------
 // SessionContainerManager

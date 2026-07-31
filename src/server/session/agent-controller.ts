@@ -12,11 +12,10 @@
 import type { FastifyInstance } from "fastify";
 import type {
   AgentProcess,
-  AgentRunParams,
   AgentEvent,
   AgentId,
 } from "./agents/agent-process.js";
-import type { PermissionMode, WorkerAgentStatus } from "../shared/types.js";
+import type { PermissionMode, WorkerAgentStartBody, WorkerAgentStatus } from "../shared/types.js";
 import type { PermissionBroker } from "./permission-broker.js";
 import type { WorkerSSEEvent } from "./sse-broadcaster.js";
 import type { McpConfigController } from "./mcp-config-controller.js";
@@ -97,7 +96,7 @@ export class AgentController {
   }
 
   registerRoutes(app: FastifyInstance): void {
-    app.post<{ Body: { agentId: AgentId; params: AgentRunParams; runToken?: string; deliveryId?: string } }>("/agent/start", async (request, reply) => {
+    app.post<{ Body: WorkerAgentStartBody }>("/agent/start", async (request, reply) => {
       if (this.agent) {
         return reply.code(409).send({ error: "Agent already running" });
       }

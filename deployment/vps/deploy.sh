@@ -22,11 +22,21 @@ if [ -f "$SHIPIT_ENV_FILE" ]; then
   set +a
 fi
 
-# Kill stale session-worker and compose service containers from previous runs
-docker rm -f $(docker ps -aq --filter "label=shipit-stack=shipit") 2>/dev/null || true
-docker rm -f $(docker ps -aq --filter "label=shipit-parent-session") 2>/dev/null || true
+# docs/113 Phase 1 — do NOT kill session-worker or compose service containers
+# here. Updates replace ONLY the orchestrator; running sessions (and any agent
+# turns mid-flight inside them) survive and the new orchestrator re-adopts them
+# at boot: `rediscoverContainers()` rebuilds the container map,
+# `reattachInFlightTurns()` (docs/240) re-adopts live turns, and
+# `cleanupOrphanContainers()` / `cleanupOrphanComposeResources()` reap anything
+# that no longer maps to an active session. The `docker rm -f` sweep that used
+# to live here was the single thing forcing operators to wait for all sessions
+# to finish before updating. Old worker containers keep their old image until
+# they idle out (lazy rotation); the wire contract stays additive-only, guarded
+# by src/server/shared/types/worker-wire-contract.test.ts.
 
-# Prune orphaned networks from previous sessions to reclaim address space
+# Prune orphaned networks from previous sessions to reclaim address space.
+# Safe for surviving sessions: `network prune` only removes networks with no
+# containers attached, and live session networks have their containers on them.
 docker network prune -f
 
 # Reclaim dangling images + stale BuildKit cache. Defined as a function and

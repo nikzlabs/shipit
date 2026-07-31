@@ -289,3 +289,12 @@ RUN chmod 0755 /usr/local/bin/shipit-entrypoint
 ENTRYPOINT ["/usr/local/bin/shipit-entrypoint"]
 
 CMD ["node", "--import", "tsx", "src/server/session/session-worker.ts"]
+
+# docs/113 — stamp the git SHA this image was built from as a label, so the
+# orchestrator can log skew when it adopts a container that outlived a deploy
+# (containers inherit image labels; container-discovery.ts reads it). Deliberately
+# the LAST instruction: the ARG changes every deploy, and placing it earlier
+# would invalidate the layer cache for everything after it. The :docker variant
+# inherits the label via FROM. Empty when built outside deploy.sh (dev/tests).
+ARG SHIPIT_BUILD_ID
+LABEL shipit-build-id=${SHIPIT_BUILD_ID}
