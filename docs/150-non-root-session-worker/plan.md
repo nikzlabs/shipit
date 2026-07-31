@@ -558,6 +558,17 @@ and now chowns the `.shipit` dir + marker to the worker uid, so the worker's
 uid-1000 `writeMarker` can later overwrite the marker when a HEAD change
 invalidates it (otherwise: EACCES, install fails).
 
+**Restore-safe sentinel (#1813).** The entrypoint's one-shot sentinel is valid
+only while its inode ownership survives. Infrastructure backup/volume restore
+can recreate the complete workspace as `root:root`, including
+`.shipit-uid-1000`; an existence-only check then incorrectly skips the recursive
+handoff and leaves restored tracked files unwritable by the worker. This is
+especially visible in Git LFS repositories: `git lfs pull` downloads the full
+objects but cannot replace root-owned pointer files. The entrypoint now accepts
+an existing sentinel only when `stat` reports the configured worker UID as its
+owner. A root-owned restored sentinel forces one recursive chown; ordinary warm
+restarts retain the fast path.
+
 **Addendum — the dep-dir exclusion still stranded root-owned tool caches (#1666).**
 The handback above (and §7.1) deliberately **excludes** the declared dep dirs:
 re-walking a populated `node_modules` (tens of thousands of files) every boot is

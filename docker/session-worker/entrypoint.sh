@@ -48,8 +48,14 @@ for d in /workspace /uploads /persist /dep-cache /credentials /home/shipit; do
   # the walk is skipped (large node_modules trees), and for the shared /dep-cache
   # only the winner of a concurrent-boot race performs the walk. A UID change
   # rotates the sentinel name so the chown re-runs once under the new owner.
+  #
+  # A backup/volume restore recreates every inode as root, INCLUDING an existing
+  # sentinel. Existence alone therefore cannot prove that the restored tree was
+  # handed to the worker. Treat a marker owned by anyone other than UID_GID as
+  # stale and re-run the handoff. This is what lets git-lfs replace restored,
+  # root-owned pointer files instead of merely downloading their objects.
   marker="$d/.shipit-uid-${UID_GID}"
-  if mkdir "$marker" 2>/dev/null; then
+  if mkdir "$marker" 2>/dev/null || [ "$(stat -c '%u' "$marker" 2>/dev/null || true)" != "$UID_GID" ]; then
     chown -R "${UID_GID}:${UID_GID}" "$d"
   fi
 done
