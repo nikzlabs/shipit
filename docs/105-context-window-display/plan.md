@@ -146,6 +146,7 @@ The original implementation derived the context window from a static `MODEL_CONT
 - `claude-adapter.ts` extracts the largest `contextWindow` reported across models in the turn (handles mid-turn model switches by keeping the more permissive value).
 - `agent-listeners.ts` re-emits `model_info` with the authoritative `contextWindowTokens` from the result event, overriding whatever the static map produced on `agent_init`.
 - The static map is still used (a) for the first frame before `result` arrives, and (b) for adapters that can't surface the field. `"claude-opus-4-7": 1_000_000` was added so even the first-frame fallback is correct.
+- Backend-reported context windows are authoritative for the active session, including Codex profiles that expose less than a model's maximum API context. The static model map remains a first-frame fallback only; completion telemetry replaces it without model-specific reconciliation so the dial reflects the context the backend actually assigned.
 
 ## Future extensions
 
