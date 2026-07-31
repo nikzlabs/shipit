@@ -3,9 +3,14 @@
  * Handles: git log, branches, remotes, commit, push, pull, diff, rollback, merge, workspace-state.
  */
 
+import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
+import type { BranchAutoResetCard, PrStatusSummary, WsServerMessage } from "../shared/types.js";
 import type { ApiDeps } from "./api-routes.js";
 import { resolveSessionDir } from "./api-routes.js";
+import { emitChatCard } from "./chat-card-persistence.js";
+import type { ChatHistoryManager } from "./chat-history.js";
+import type { SessionRunnerInterface } from "./session-runner.js";
 
 import {
   getGitLog,
@@ -24,8 +29,59 @@ import {
   repoDefaultBranch,
   ServiceError,
 } from "./services/index.js";
-import { resetBranchToBaseExplicit } from "./services/pre-turn-reset.js";
+import { detectAndReArmResetSession } from "./services/pr-rearm.js";
+import {
+  resetBranchToBaseExplicit,
+  type ExplicitResetOutcome,
+} from "./services/pre-turn-reset.js";
 import { getErrorMessage } from "./validation.js";
+
+interface ExplicitResetPresentationDeps {
+  runner: SessionRunnerInterface | undefined;
+  chatHistoryManager: ChatHistoryManager;
+  sessionId: string;
+  prStatus: PrStatusSummary | null | undefined;
+  outcome: ExplicitResetOutcome;
+  reArmResetSession: () => Promise<void>;
+}
+
+/**
+ * docs/239 + docs/218 — an explicit self-wake reset must settle the same UI
+ * state as the checked composer flow. The git move alone is not enough: the
+ * composer eligibility signal is transient, the merged PR card must re-arm,
+ * and the destructive move needs a durable transcript record.
+ */
+export async function presentExplicitResetSuccess(
+  deps: ExplicitResetPresentationDeps,
+): Promise<void> {
+  if (deps.outcome.outcome === "refused") return;
+
+  deps.runner?.emitMessage({
+    type: "reset_eligible",
+    sessionId: deps.sessionId,
+    eligible: false,
+  });
+  await deps.reArmResetSession();
+
+  if (deps.outcome.outcome !== "reset" || !deps.runner || !deps.prStatus
+    || !deps.outcome.base || !deps.outcome.fromSha || !deps.outcome.toSha) return;
+
+  const card: BranchAutoResetCard = {
+    cardId: `branch-reset-${randomUUID()}`,
+    base: deps.outcome.base,
+    prNumber: deps.prStatus.prNumber,
+    prUrl: deps.prStatus.prUrl,
+    fromSha: deps.outcome.fromSha,
+    toSha: deps.outcome.toSha,
+    createdAt: new Date().toISOString(),
+  };
+  emitChatCard(
+    deps.runner,
+    { type: "branch_auto_reset_card", sessionId: deps.sessionId, card },
+    { role: "assistant", text: "", branchAutoReset: card },
+    { chatHistoryManager: deps.chatHistoryManager, sessionId: deps.sessionId },
+  );
+}
 
 export async function registerGitRoutes(
   app: FastifyInstance,
@@ -45,15 +101,40 @@ export async function registerGitRoutes(
     async (request, reply) => {
       const dir = resolveSessionDir(sessionManager, request.params.id, reply);
       if (!dir) return;
-      return await resetBranchToBaseExplicit(
+      const sessionId = request.params.id;
+      const prStatus = sessionManager.getPrStatus(sessionId);
+      const outcome = await resetBranchToBaseExplicit(
         {
           getSession: (id: string) => sessionManager.get(id),
           getPrStatus: (id: string) => sessionManager.getPrStatus(id),
           createGitManager,
         },
-        request.params.id,
+        sessionId,
         dir,
       );
+      await presentExplicitResetSuccess({
+        runner: deps.runnerRegistry.get(sessionId),
+        chatHistoryManager: deps.chatHistoryManager,
+        sessionId,
+        prStatus,
+        outcome,
+        reArmResetSession: async () => {
+          if (!deps.prStatusPoller) return;
+          await detectAndReArmResetSession({
+            deps: {
+              sessionManager,
+              prStatusPoller: deps.prStatusPoller,
+              createGitManager,
+              sseBroadcast: deps.sseBroadcast,
+            },
+            sessionId,
+            sessionDir: dir,
+            emit: (message: WsServerMessage) => deps.runnerRegistry.get(sessionId)?.emitMessage(message),
+            skipFetch: true,
+          });
+        },
+      });
+      return outcome;
     },
   );
 

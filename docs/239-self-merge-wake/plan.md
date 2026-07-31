@@ -27,6 +27,13 @@ watched: open the PR, run `shipit session notify-on-merge --self`, and merge it.
 The resulting wake turn must begin with the guarded `shipit branch reset-to-base`
 flow before any follow-on work starts.
 
+The explicit reset also completes docs/218's user-facing state transition. On
+success it immediately clears `reset_eligible` (hiding the composer control),
+re-arms the merged PR lifecycle to its clean ready state, and emits the same
+persisted `BranchUpdatedCard` used by the checked composer flow. The reset route
+captures the merged PR snapshot before re-arming so the durable card retains the
+correct PR number and concrete before/after SHAs.
+
 ```
 shipit session notify-on-merge --self        (agent arms it when work remains)
   → store a self-watch on the existing merge_watch row, anchored to the open PR
