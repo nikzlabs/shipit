@@ -20,8 +20,8 @@
 ## Parent (PreviewFrame.tsx)
 
 - [ ] Extend postMessage handler at
-      `PreviewFrame.tsx:211` to recognize `type === "ready"` alongside
-      `type === "loaded"`. Reply with current `visibility` for the
+      `PreviewFrame/PreviewFrame.tsx` to recognize `type === "ready"`
+      alongside `type === "loaded"`. Reply with current `visibility` for the
       originating slot.
 - [ ] Add a ref-held ring buffer (cap 8, 2s eviction) for unmatched
       `ready` messages; drain from a `useEffect` keyed on `[slotOrder]`

@@ -87,12 +87,6 @@ The design relies on the following existing behavior, verified in source:
   still allowing chat and file inspection; this design deliberately extends the
   same trust decision to the new page-to-agent capability rather than inventing
   a second consent surface.
-- docs/146 defines the planned cooperative Preview visibility protocol under
-  the existing `{ source: "shipit-preview", type: ... }` `postMessage`
-  envelope. A page emits `ready`; ShipIt replies with and subsequently publishes
-  `visibility` transitions. The first visibility message is authoritative, so a
-  cooperating page does not assume that a newly mounted background frame is
-  visible.
 - `dispatchAgentMessage` in
   `src/client/utils/dispatch-agent-message.ts` owns the browser-side optimistic
   user bubble and calls `POST /api/sessions/:id/agent/dispatch`.
@@ -101,8 +95,32 @@ The design relies on the following existing behavior, verified in source:
   reaches `runner.dispatch(...)`, the shared start-or-queue funnel introduced by
   docs/150. The funnel also participates in the existing programmatic steering
   decision when a turn is already running.
+- `useIframePool.ts` retains as many as 20 live Preview iframes keyed by
+  `(sessionId, port)`, including frames from non-active sessions. CSS visibility
+  does not stop their JavaScript.
+- `usePreviewErrors.ts` already extracts a session from the preview subdomain
+  origin and drops messages from non-active sessions. This is the precedent for
+  validating Preview bridge traffic; frame identity alone is not sufficient.
 
 These are implementation foundations, not new requirements.
+
+### Planned dependency, not an existing guarantee
+
+docs/146 specifies the cooperative `{ source: "shipit-preview", type: ... }`
+`ready`/`visibility` protocol, but its checklist is entirely unimplemented. The
+current `PreviewFrame` handles only `loaded`; it does not answer `ready` or emit
+visibility transitions.
+
+The SDK's visibility module therefore depends on docs/146's parent behavior
+landing first. Implementation order is explicit:
+
+1. implement docs/146's parent-side `ready`/`visibility` contract;
+2. introduce the shared injected runtime as a wrapper over that working
+   contract; and
+3. enable `agent.sendMessage` on the validated active Present/Preview frames.
+
+The agent-message module may be developed independently, but ShipIt must not
+publish a visibility API that remains permanently unknown.
 
 ## Proposed SDK
 
@@ -112,11 +130,14 @@ First-version working API:
 
 ```ts
 interface ShipItSdk {
-  /** The runtime exists only when the page is embedded in a supported ShipIt surface. */
-  readonly embedded: true;
+  /** False until the parent completes the ShipIt host handshake. */
+  readonly embedded: boolean;
+  /** Resolves after the host handshake; rejects after a documented timeout. */
+  readonly ready: Promise<void>;
   readonly visibility: {
     /** Unknown until ShipIt supplies the authoritative initial state. */
     readonly current: boolean | null;
+    /** Immediately reports the current value when it is already known. */
     subscribe(listener: (visible: boolean) => void): () => void;
   };
   readonly agent: {
@@ -155,10 +176,13 @@ final text. The SDK is intentionally narrow in the first version: it does not
 expose session lookup, filesystem access, credentials, agent configuration,
 permission-mode changes, or arbitrary WebSocket/HTTP calls.
 
-The shared runtime also exposes the planned visibility contract. Its presence
-and `embedded: true` let a page detect ShipIt without a separate probe. The
-visibility state remains `null` until the parent supplies the first
-authoritative value; `subscribe` then reports that value and every transition.
+The shared runtime also exposes the planned visibility contract. Injection alone
+does not prove embedding: the preview proxy also rewrites a page opened directly
+or nested inside another app. `embedded` becomes true only after the registered
+ShipIt parent answers the handshake, and `ready` gives asynchronous code an
+unambiguous detection primitive. Visibility remains `null` until the parent
+supplies the first authoritative value; `subscribe` immediately reports an
+already-known value and then every transition.
 An audio application can suspend or resume its own `AudioContext` from that
 callback without coupling its code to raw `postMessage` shapes.
 
@@ -171,8 +195,9 @@ write a self-contained HTML artifact or ordinary application code and feature
 detect the host:
 
 ```js
+await window.shipit?.ready;
 if (window.shipit?.embedded) {
-  // Running inside a ShipIt surface that supports the bridge.
+  // The registered ShipIt parent completed the handshake.
 }
 ```
 
@@ -182,19 +207,21 @@ page could extract.
 
 ## Compatibility with the preview visibility contract
 
-The Agent Interface SDK and docs/146 must be two modules of one page bridge, not
-two globals or two unrelated protocols:
+Design choice: expose the Agent Interface SDK and docs/146 as two modules of one
+page bridge rather than two globals or unrelated protocols. The cost is an
+ordering dependency on docs/146; the benefit is one detection/visibility state
+machine and one additive message envelope:
 
 ```text
 window.shipit
-   ├─ embedded
+   ├─ embedded / ready
    ├─ visibility.current / subscribe()  ← docs/146 ready + visibility
    └─ agent.sendMessage()               ← this design
 ```
 
 On initialization the shared bootstrap:
 
-1. installs `window.shipit` once;
+1. idempotently installs `window.shipit` once;
 2. registers one parent-message listener;
 3. posts the existing `{ source: "shipit-preview", type: "ready" }` handshake;
 4. updates the visibility module for every existing
@@ -203,9 +230,9 @@ On initialization the shared bootstrap:
    `shipit-preview` message types.
 
 The visibility module is a convenience wrapper around docs/146, not a replacement
-wire contract. Existing pages that implement the raw `ready`/`visibility`
-snippet remain compatible. A duplicate `ready` is safe because docs/146 already
-requires the parent response to be idempotent.
+wire contract. Raw app-authored `ready`/`visibility` listeners remain compatible.
+A duplicate `ready` is safe because docs/146 requires the parent response to be
+idempotent.
 
 The SDK must preserve docs/146's visibility semantics: visibility describes
 whether the ShipIt surface is on screen, not merely whether the browser tab is
@@ -245,6 +272,14 @@ The response allows page code to show its own success or error state. The
 proposed status means ShipIt accepted the message into the normal dispatch
 flow; it does not claim that the agent completed the requested work.
 
+The bootstrap posts to `window.parent`, never `window.top`. A nested iframe then
+talks only to its immediate application parent and times out harmlessly; it
+cannot jump across an inner ShipIt UI into an outer dogfooding session. A
+top-level/directly-opened preview rejects immediately because
+`window.parent === window`. Child-to-parent posting uses the expected parent
+origin when it can be derived and does not send user-composed text with an
+unconditional `"*"` target.
+
 ### Host-side frame binding
 
 The child does not supply a `sessionId`. The ShipIt host resolves it from the
@@ -256,14 +291,27 @@ event.source
    └─ active Preview iframe ──→ preview's owning session
 ```
 
-The listener accepts a request only when `event.source` is the `contentWindow`
-of a registered ShipIt iframe. A page opened outside ShipIt has no registered
-parent and therefore no working bridge. A page cannot choose or name another
-session.
+Each surface accepts a request only when all of the following hold:
 
-This source binding is the central trust boundary. Checking only the payload's
-`source` string would not be sufficient because any browser script can forge
-that string.
+1. `event.source` equals the live `contentWindow` of that surface's iframe
+   element at event time;
+2. `event.origin` equals the expected Preview URL origin, or is `"null"` for the
+   sandboxed Present `srcDoc` frame;
+3. for Preview, the slot key's session equals the currently active ShipIt
+   session and the slot is the active visible slot; and
+4. the payload passes the shared schema guard.
+
+The exact-origin check closes the stable-`WindowProxy` navigation hole: a
+Preview frame that navigates to another origin keeps the same `contentWindow`
+identity but loses its authority. Reuse/refactor the existing origin extraction
+from `usePreviewErrors.ts`; do not trust a child-supplied session ID.
+
+Background Preview slots are rejected even though their JavaScript remains
+alive. The current optimistic dispatch helper writes to the single active
+transcript store and receives echoes only for the active session, so accepting a
+background request would corrupt the visible session's bubble/loading state.
+Supporting autonomous background-session interfaces would require a different
+multi-session dispatch UX and is outside the stated requirement.
 
 ### Host to agent
 
@@ -272,12 +320,12 @@ with the host-resolved session ID and the SDK-provided text:
 
 ```text
 SDK postMessage
-  → client frame registry validates source and resolves session
+  → owning surface validates source + origin + active session
   → dispatchAgentMessage(...)
   → POST /api/sessions/:id/agent/dispatch
   → services/agent.ts validation and session resolution
   → runner.dispatch(...)
-  → start, steer, or queue under existing turn rules
+  → busy-turn behavior selected by the open product decision below
 ```
 
 This deliberately does not add an orchestrator endpoint reachable directly by
@@ -289,10 +337,11 @@ isolation.
 
 ### Present artifacts
 
-`RenderedFrame` should gain an opt-in ShipIt page-bridge mode rather than
-enabling the SDK for every HTML file it renders. `PresentPane` enables that mode
-and supplies the presentation/session binding; the ordinary file preview leaves
-it off.
+`RenderedFrame` should gain an opt-in ShipIt page-bridge mode and an iframe-ref
+callback rather than enabling the SDK for every HTML file it renders. The prop
+threads through `FileContentView` from `PresentPane`, which owns the active
+artifact/session binding. Ordinary file preview, `PresentGallery` thumbnails,
+and `DiffMediaView` explicitly leave the bridge off.
 
 The enabled renderer injects the SDK bootstrap into `srcDoc` alongside the
 existing CSP. `postMessage` remains available inside the origin-null sandbox,
@@ -305,43 +354,43 @@ source mode do not run page JavaScript and therefore do not expose the SDK.
 
 `preview-proxy.ts` should inject the same shared ShipIt bootstrap into HTML
 responses next to its existing HMR/navigation patch. This makes both the
-visibility wrapper and agent API available to pages served by any Compose
-preview without requiring the application to import a ShipIt package. This
+visibility wrapper and agent API available to ordinary Compose preview pages
+without requiring the application to import a ShipIt package. Applications with
+restrictive script CSP require the CSP-compatible delivery described below. This
 supersedes docs/146's need for newly scaffolded applications to hand-copy the
 raw listener for detection and visibility; the raw protocol remains supported
 for existing pages.
 
-The Preview frame registers its `contentWindow` with the host bridge and binds
-it to the active session. A service page loaded directly outside ShipIt's
-Preview iframe may still contain the harmless bootstrap, but calls fail because
-there is no registered ShipIt parent to answer them.
+`PreviewFrame` already owns the iframe pool, slot keys, active slot, and live
+element refs. It handles bridge requests in its existing window-message
+listener and delegates the validated payload to a shared request handler. A
+service page loaded directly or as a nested iframe may contain the bootstrap,
+but never completes the host handshake.
 
 ## Client ownership
 
-A focused client module should own the protocol rather than adding more
-one-off message handling to `App.tsx`:
+A small shared module owns protocol parsing/bootstrap generation, while each
+surface retains authority over its own frame:
 
 ```text
+src/server/shared/agent-interface-sdk/
+  protocol.ts          request/response guards and public shapes
+  bootstrap.ts         dependency-free child-frame runtime source
+
 src/client/agent-interface-sdk/
-  protocol.ts          shared visibility + agent protocol guards and public TS shape
-  bootstrap.ts         dependency-free child-frame ShipIt runtime source
-  frame-registry.ts    event.source → session/surface binding
-  useAgentInterfaceHost.ts
+  handle-request.ts    common validated-request → dispatch/reply behavior
 ```
 
-`App.tsx` supplies the authenticated dispatch callback and current-session
-connection; the hook owns listener lifecycle, request correlation, validation,
-and replies. `PresentPane` and `PreviewFrame` register/unregister their iframe
-elements through the frame registry.
-
-The exact file split may change during implementation. The ownership boundary
-is the design decision: protocol and frame authorization stay centralized, while
-surface components only register their frames.
+`PreviewFrame` and `PresentPane` match `event.source` against their own live
+elements, verify their own expected origins and active state, then call the
+shared handler. This removes a global frame registry, registration lifecycle,
+LRU-eviction synchronization, and stale-ref cleanup. `App.tsx` only supplies the
+authenticated dispatch callback.
 
 ## SDK distribution
 
 The Present renderer and preview proxy need byte-identical bootstrap code. Keep
-one dependency-free source of truth for `embedded`, visibility, and agent
+one dependency-free source of truth for embedding detection, visibility, and agent
 messaging, and produce a string suitable for both injection sites. The build
 must not maintain separate visibility and agent bootstraps or two hand-copied
 SDK implementations.
@@ -352,6 +401,14 @@ fixture. If escaping becomes difficult, a tiny build script can generate the
 string; adding a separately versioned npm package is unnecessary for the first
 version.
 
+The bootstrap is document-idempotent (`if (window.shipit) return`) because the
+proxy can encounter multiple `text/html` responses and fragments. Proxy
+injection also has to account for application CSP: the current inline HMR patch
+is blocked by restrictive `script-src` policies, so the SDK cannot claim
+universal availability until implementation either serves an allowed same-origin
+bootstrap or deliberately adjusts CSP with a stable hash/nonce. Tests cover a
+restrictive-CSP response, not only ordinary HTML.
+
 Following docs/146, additive behaviors receive new `type` names under the
 `shipit-preview` envelope rather than versioning every message. A future breaking
 change adds a new type and preserves the old one during compatibility rollout.
@@ -360,11 +417,12 @@ change adds a new type and preserves the old one during compatibility rollout.
 
 The Promise rejects when:
 
-- the page is not hosted in a registered ShipIt surface;
+- the page does not complete a handshake with an authorized active ShipIt
+  surface;
 - the payload is malformed or its text is empty;
 - the session connection is unavailable;
 - ShipIt's authenticated dispatch endpoint rejects the message; or
-- no host response arrives before the SDK timeout.
+- no host response arrives within the documented handshake/request timeout.
 
 Errors returned to the child should be useful but should not expose internal
 paths, credentials, stack traces, or session metadata. The ShipIt host also
@@ -399,11 +457,13 @@ mention it where service-page behavior is described.
   exists only at render time and does not modify the file on disk.
 - A service application's source and built output remain unchanged. Injection
   happens in the preview proxy's HTML response.
+- A background Preview slot remains mounted but is not authorized to send agent
+  messages. Returning to that session/port makes the slot active and restores
+  authority without reloading it.
 - A container restart does not invalidate the API contract. A reloaded page
   receives a fresh bootstrap and binds to the current browser/session frame.
 - Each SDK call is independent. The page is not promised a long-lived agent
-  process; the call creates, steers, or queues a normal turn under current
-  ShipIt behavior.
+  process; accepted work follows the explicit busy-agent policy selected below.
 
 ## Security analysis
 
@@ -429,7 +489,9 @@ future changes do not accidentally expose it in restricted mode.
 The containment measures proposed by the design are:
 
 - no session ID or credential in the child SDK;
-- frame-source binding in the parent;
+- live frame-source **and exact-origin** binding in the owning surface;
+- active-session/active-slot enforcement for pooled Preview frames;
+- `window.parent` rather than `window.top`, preserving nested ShipIt boundaries;
 - a single, schema-validated method;
 - no generic fetch or WebSocket bridge;
 - no cross-session target supplied by the child;
@@ -440,31 +502,29 @@ The shared runtime also reduces protocol surface: page detection, visibility,
 and agent messaging use one injected global and the existing `shipit-preview`
 envelope rather than granting multiple bridges.
 
-Whether SDK dispatch must require a live browser user activation, show the exact
-message for confirmation, or apply a product-level text-size limit is not
-specified by the provided requirements. Those are open product decisions below,
-not assumptions made by this design. Repository trust itself is resolved: once
-the existing trust gate passes, no additional confirmation is required merely
-to establish the page's authority to call the SDK.
+The existing server dispatch path already bounds text at 50,000 characters, so
+the SDK inherits that limit and does not invent another. The user requirements
+also name Present and Preview/service pages as the initial surfaces; other HTML
+renderers remain off. Repository trust itself is resolved: once the existing
+trust gate passes, no additional confirmation is required merely to establish
+the page's authority to call the SDK.
 
 ## Open product decisions (not requirements)
 
 These questions must be answered before implementation because each changes
 observable behavior. They are intentionally not resolved here:
 
-1. **Invocation policy:** after repository trust is established, may page
-   JavaScript call `sendMessage` at any time, or only while handling a recent
-   user gesture such as a click or submit? This is an interaction-policy choice,
-   not a second repository-trust decision.
-2. **Confirmation:** after repository trust is established, does ShipIt send
-   immediately, or show the composed text for confirmation first? Any such
-   confirmation would be message review UX, not a re-prompt to trust the repo.
-3. **Transcript presentation:** is the submitted text rendered as an ordinary
-   user bubble, or does it carry a visible “from Present/Preview” treatment?
-4. **Message bounds:** should the first version impose a product-specific text
-   limit beyond the limits already enforced by the agent dispatch path?
-5. **Surface scope:** are Present and Preview/service pages the complete initial
-   surface list, or should other ShipIt-rendered HTML surfaces opt in too?
+1. **Invocation/review policy:** after repository trust is established, choose
+   one of: require a recent click/submit and send immediately; allow any page
+   JavaScript (including load/timer callbacks) to send immediately; or show the
+   composed text for confirmation before every send.
+2. **Transcript presentation:** render the SDK instruction as a normal user
+   bubble with a Present/Preview source badge, as an indistinguishable plain user
+   message, or as a dedicated interface-action card.
+3. **Busy-agent behavior:** always queue the SDK request as its own next turn;
+   honor live steering and inject when supported; or reject while busy. Current
+   `runner.dispatch` calls are steerable unless marked otherwise, so this choice
+   must be encoded explicitly rather than inherited accidentally.
 
 These are candidate requirements only if the user chooses them. Until then,
 implementation should not silently decide them.
@@ -501,17 +561,23 @@ security benefit over an injected host bridge.
 Expected touchpoints, subject to the open product decisions:
 
 - `src/client/components/FileContentView/RenderedFrame.tsx` — opt-in Present SDK
-  bootstrap injection and iframe registration.
+  bootstrap injection and iframe-ref callback.
+- `src/client/components/FileContentView/FileContentView.tsx` — thread the
+  Present-only opt-in; ordinary file preview remains off.
 - `src/client/components/PresentPane.tsx` — enable and bind the Present surface.
-- `src/client/components/PreviewFrame/` — bind the active service iframe.
+- `src/client/components/PresentGallery.tsx` and `DiffMediaView.tsx` — explicit
+  non-enabled `RenderedFrame` call sites.
+- `src/client/components/PreviewFrame/PreviewFrame.tsx` — validate and handle
+  requests for the active slot using its existing refs/session ownership.
 - `src/client/components/RepoTrustBanner.tsx` and client repo state — authoritative
   browser-side gate for enabling the agent module on repository-backed frames.
 - `src/server/orchestrator/repo-store.ts` / trust-aware session lookup —
   authoritative server-side enforcement; never trust a child-provided claim.
-- `src/client/agent-interface-sdk/` — protocol, SDK bootstrap, frame registry,
-  and host hook.
-- `src/client/App.tsx` — provide the existing agent-dispatch callback to the host
-  hook.
+- `src/server/shared/agent-interface-sdk/` — shared protocol and bootstrap used
+  by the server proxy and client surfaces.
+- `src/client/agent-interface-sdk/handle-request.ts` — common dispatch/reply
+  behavior after a surface has authorized the frame.
+- `src/client/App.tsx` — provide the existing agent-dispatch callback.
 - `src/server/orchestrator/preview-proxy.ts` — inject the SDK bootstrap into
   proxied HTML.
 - `src/server/shipit-docs/agent-interface-sdk.md` — agent-facing SDK reference.
@@ -525,9 +591,9 @@ docs/150's dispatch funnel.
 Implementation should co-locate tests with each layer:
 
 - protocol guards reject unknown sources/types, empty text, and invalid shapes;
-- the shared bootstrap exposes `embedded`, starts visibility at `null`, emits
-  the existing `ready` handshake, and updates subscribers from existing
-  `visibility` messages;
+- the shared bootstrap starts `embedded=false`/visibility `null`, resolves
+  `ready` only after the host handshake, immediately reports a known visibility
+  value to new subscribers, and is idempotent on duplicate installation;
 - raw docs/146 visibility listeners and the SDK wrapper can coexist without
   either swallowing the other's messages;
 - the injected SDK correlates concurrent requests and resolves/rejects the
@@ -535,10 +601,15 @@ Implementation should co-locate tests with each layer:
 - Present exposes the SDK only in rendered HTML mode and retains
   `sandbox="allow-scripts"` without `allow-same-origin`;
 - the preview proxy injects the bootstrap once into HTML and not into non-HTML
-  responses;
-- the host rejects a forged payload from an unregistered `Window`;
-- the host binds a valid request to the frame's session rather than accepting a
-  child-supplied session target;
+  responses, with explicit restrictive-CSP coverage;
+- a top-level page rejects immediately, a nested page cannot reach
+  `window.top`, and ShipIt-in-ShipIt binds to the immediate host only;
+- Present accepts only its active origin-null `srcDoc` frame; gallery, diff, and
+  ordinary file-render frames cannot send;
+- Preview requires both the active slot's live `contentWindow` and exact expected
+  origin, rejects navigated frames, and drops background-session/port slots;
+- the host derives the frame's session rather than accepting a child-supplied
+  session target;
 - dispatch success produces the normal user-message/turn flow, including the
   busy-runner path; and
 - dispatch errors return a correlated, sanitized failure to the page.
@@ -552,8 +623,9 @@ page SDK call → parent bridge → authenticated dispatch → owning runner
 ## Relationship to existing designs
 
 - `docs/093-agent-present` — Present artifact lifecycle and sandboxed rendering.
-- `docs/146-preview-visibility-contract` — the existing page-detection and
-  cooperative visibility protocol that the shared SDK wraps and preserves.
+- `docs/146-preview-visibility-contract` — the planned page-detection and
+  cooperative visibility protocol that must land before the shared SDK wraps
+  and preserves it.
 - `docs/150-unify-agent-message-dispatch` — shared send/steer/queue funnel.
 - `docs/175-preview-services-drawer` — service/debug UI inside the Preview tab.
 - `docs/188-present-from-file` — file-backed Present artifacts.
