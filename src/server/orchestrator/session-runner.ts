@@ -304,6 +304,21 @@ export interface AgentDispatchOptions {
   deliveryId?: string;
 }
 
+export const REPOSITORY_UNTRUSTED_CODE = "repository_untrusted" as const;
+export const REPOSITORY_UNTRUSTED_MESSAGE =
+  "Trust this repository before sending messages to the agent.";
+
+/** Stable, transport-independent rejection for the repository trust gate. */
+export class AgentTurnAdmissionError extends Error {
+  readonly statusCode = 403;
+  readonly code = REPOSITORY_UNTRUSTED_CODE;
+
+  constructor(public readonly sessionId: string) {
+    super(REPOSITORY_UNTRUSTED_MESSAGE);
+    this.name = "AgentTurnAdmissionError";
+  }
+}
+
 /**
  * The shared send-or-queue implementation behind BOTH runners' `dispatch`
  * (docs/240). Previously duplicated field-for-field in `SessionRunner` and
@@ -327,6 +342,10 @@ export function dispatchOnRunner(
   deps: SystemTurnDeps | null,
   opts: PreparedDispatch,
 ): TurnHandle {
+  // docs/243 — the shared server security boundary. Keep this first so denial
+  // cannot steer, enqueue, mutate runner state, resolve attachments, persist,
+  // graduate a warm session, or start a process.
+  runner.assertCanDispatch();
   const settlement = createTurnSettlement();
 
   const enqueueAndReport = (): TurnHandle => {
@@ -467,6 +486,8 @@ export function toQueuedMessage(opts: PreparedDispatch): QueuedMessage {
  * runner is created. Without these, dispatch() falls back to enqueue.
  */
 export interface SystemTurnDeps {
+  /** Resolve server-owned session/repository trust and throw on denial. */
+  authorizeDispatch?: (sessionId: string) => void;
   /** Create an AgentProcess for the given agent ID. */
   agentFactory: (agentId: AgentId) => AgentProcess;
   /**
@@ -974,6 +995,8 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   // Dispatched turns (docs/150)
   /** Inject dependencies needed for server-initiated agent turns. */
   setSystemTurnDeps(deps: SystemTurnDeps): void;
+  /** Synchronous trust admission used by dispatch and interactive WS preflight. */
+  assertCanDispatch(): void;
   /**
    * Dispatch a new agent turn. The runner's send-or-queue entry point —
    * serves both server-internal callers (Fix CI, child-session spawn) and
@@ -1285,6 +1308,15 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
 
   setSystemTurnDeps(deps: SystemTurnDeps): void {
     this._systemTurnDeps = deps;
+  }
+
+  assertCanDispatch(): void {
+    const authorize = this._systemTurnDeps?.authorizeDispatch;
+    if (!authorize) {
+      if (process.env.NODE_ENV === "test") return;
+      throw new AgentTurnAdmissionError(this.sessionId);
+    }
+    authorize(this.sessionId);
   }
 
   /** docs/240 — one shared send-or-queue implementation for both runners. */

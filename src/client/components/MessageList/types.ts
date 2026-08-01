@@ -68,6 +68,8 @@ export interface ChatMessageFile {
 export interface ChatMessage {
   role: "user" | "assistant";
   text: string;
+  /** Client-only identity for precise rollback of a rejected optimistic send. */
+  clientRequestId?: string;
   toolUse?: ToolUseBlock[];
   toolResults?: ToolResultBlock[];
   images?: ChatMessageImage[];

@@ -12,6 +12,7 @@ import {
   CONTAINER_STANDBY_LABEL,
 } from "./session-container.js";
 import { cleanupSessionDockerResources } from "./container-lifecycle.js";
+import { getContainerFreshness } from "./container-freshness.js";
 
 // ---------------------------------------------------------------------------
 // Internal types for dependency injection
@@ -43,14 +44,14 @@ function logAdoptedWorkerBuild(
   containerId: string,
   labels: Record<string, string> | undefined,
 ): void {
-  const workerBuild = labels?.[CONTAINER_BUILD_ID_LABEL] || "unknown";
-  const orchBuild = process.env.SHIPIT_BUILD_ID || "unknown";
-  const skew =
-    workerBuild !== "unknown" && orchBuild !== "unknown" && workerBuild !== orchBuild
-      ? " — build skew: grandfathered worker from a previous deploy"
-      : "";
+  const workerBuild = labels?.[CONTAINER_BUILD_ID_LABEL];
+  const orchBuild = process.env.SHIPIT_BUILD_ID;
+  const freshness = getContainerFreshness(workerBuild, orchBuild);
+  const skew = freshness.state === "stale"
+    ? " — build skew: grandfathered worker from a previous deploy"
+    : "";
   console.log(
-    `[adopt] session ${sessionId} container ${containerId.slice(0, 12)}: worker build ${workerBuild}, orchestrator build ${orchBuild}${skew}`,
+    `[adopt] session ${sessionId} container ${containerId.slice(0, 12)}: worker build ${workerBuild ?? "unknown"}, orchestrator build ${orchBuild ?? "unknown"}${skew}`,
   );
 }
 
@@ -102,6 +103,7 @@ export async function rediscoverContainers(
           containerIp: networkInfo.IPAddress,
           workerUrl: `http://${networkInfo.IPAddress}:${deps.workerPort}`,
           status: "running",
+          workerBuildId: ci.Labels?.[CONTAINER_BUILD_ID_LABEL] || undefined,
           hostWorkspaceDir: resolved.workspaceDir,
           dockerAccess,
           sessionNetworkName: dockerAccess ? `shipit-session-${sessionId.slice(0, 12)}` : undefined,
@@ -172,6 +174,7 @@ export async function adoptRunningContainer(
           containerIp: networkInfo.IPAddress,
           workerUrl: `http://${networkInfo.IPAddress}:${deps.workerPort}`,
           status: "running",
+          workerBuildId: ci.Labels?.[CONTAINER_BUILD_ID_LABEL] || undefined,
           hostWorkspaceDir: resolved.workspaceDir,
           dockerAccess,
           sessionNetworkName: dockerAccess ? `shipit-session-${sessionId.slice(0, 12)}` : undefined,

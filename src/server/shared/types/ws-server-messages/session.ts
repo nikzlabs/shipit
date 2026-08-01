@@ -59,6 +59,19 @@ export interface WsContainerRestarting {
   message?: string;
 }
 
+/** Runtime comparison between a session worker image and the orchestrator. */
+export type ContainerFreshness =
+  | { state: "current"; workerBuildId: string; orchestratorBuildId: string }
+  | { state: "stale"; workerBuildId: string; orchestratorBuildId: string }
+  | { state: "unknown"; workerBuildId?: string; orchestratorBuildId?: string };
+
+/** Transient, session-scoped worker freshness signal (docs/242). */
+export interface WsSessionContainerFreshness {
+  type: "session_container_freshness";
+  sessionId: string;
+  freshness: ContainerFreshness;
+}
+
 /** Server → Client: full reset completed successfully. */
 export interface WsFullResetComplete {
   type: "full_reset_complete";

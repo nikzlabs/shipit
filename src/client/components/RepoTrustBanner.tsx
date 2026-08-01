@@ -31,6 +31,7 @@ import { ShieldWarningIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { useRepoStore } from "../stores/repo-store.js";
 import { Button } from "./ui/button.js";
+import { useUiStore } from "../stores/ui-store.js";
 
 /** Tolerant repo-URL match — mirrors the server's `canonicalRepoKey` fallback. */
 function normalizeRepoUrl(u: string): string {
@@ -51,8 +52,14 @@ export function RepoTrustBanner({ repoUrl }: { repoUrl: string | undefined }) {
 
   const onTrust = async () => {
     setTrusting(true);
-    await useRepoStore.getState().trustRepo(repo.url);
-    setTrusting(false);
+    try {
+      const trusted = await useRepoStore.getState().trustRepo(repo.url);
+      if (!trusted) {
+        useUiStore.getState().setToast({ message: "Repository trust could not be saved. Try again." });
+      }
+    } finally {
+      setTrusting(false);
+    }
   };
 
   return (
@@ -70,10 +77,9 @@ export function RepoTrustBanner({ repoUrl }: { repoUrl: string | undefined }) {
           This repository is not trusted yet
         </h2>
         <p className="text-sm text-(--color-text-secondary)">
-          It can run setup commands and start services on your machine. The
-          preview and <code className="text-xs">agent.install</code> stay off
-          until you trust it — browsing files, diffs, and chat keep working
-          while restricted.
+          Agent messages, the preview, setup commands, and services stay blocked
+          until you trust it. You can still browse files and diffs while the
+          repository is restricted.
         </p>
         <Button
           size="md"

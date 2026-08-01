@@ -15,6 +15,7 @@ import type {
   SessionContainerManagerEvents,
 } from "./session-container.js";
 import {
+  CONTAINER_BUILD_ID_LABEL,
   CONTAINER_SESSION_ID_LABEL,
 } from "./session-container.js";
 import { CONTAINER_WORKSPACE_DIR } from "../shared/fs-constants.js";
@@ -946,6 +947,7 @@ export async function createContainer(
 
     // Get the container's IP on the bridge network
     const info = await container.inspect();
+    sc.workerBuildId = info.Config?.Labels?.[CONTAINER_BUILD_ID_LABEL] || undefined;
     const networks = info.NetworkSettings.Networks;
     const networkInfo = networks[deps.networkName];
     if (!networkInfo?.IPAddress) {

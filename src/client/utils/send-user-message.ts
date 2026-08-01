@@ -37,12 +37,13 @@ export interface SendUserMessageOptions {
    * wrapper around `send({ type: "send_message", ... })`, but can also
    * call `setPendingWsMessage` when the socket isn't open yet.
    */
-  dispatch: () => void;
+  dispatch: (requestId: string) => void;
 }
 
 export function sendUserMessage({ bubble, activity, dispatch }: SendUserMessageOptions): void {
   const session = useSessionStore.getState();
-  session.setMessages((prev) => [...prev, bubble]);
+  const requestId = crypto.randomUUID();
+  session.setMessages((prev) => [...prev, { ...bubble, clientRequestId: requestId }]);
   session.setIsLoading(true);
   session.setActivity({ label: activity });
   // Optimistically mark this session as running so the sidebar drops its
@@ -62,5 +63,5 @@ export function sendUserMessage({ bubble, activity, dispatch }: SendUserMessageO
       return next;
     });
   }
-  dispatch();
+  dispatch(requestId);
 }

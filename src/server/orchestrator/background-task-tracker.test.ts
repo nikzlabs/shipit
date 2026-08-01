@@ -46,8 +46,10 @@ describe("BackgroundTaskTracker", () => {
 
   it("decays a stale count so a dropped drain event can't strand a session", () => {
     const t = new BackgroundTaskTracker();
-    const now = Date.now();
     t.set([task("a")]);
+    // Capture the boundary after set(): set records its own Date.now(), which
+    // can advance by a millisecond between two calls under CI load.
+    const now = Date.now();
     // Just inside the window: still trusted.
     expect(t.count(true, now + BACKGROUND_TASK_TTL_MS - 1)).toBe(1);
     // Past it: we would rather under-report (and let the next real event

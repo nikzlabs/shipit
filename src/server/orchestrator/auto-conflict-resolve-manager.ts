@@ -101,6 +101,7 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
     now: () => number = () => Date.now(),
     /** docs/169 Workstream C — cross-automation arbiter (optional). */
     arbiter?: RemediationArbiter,
+    ensureRunner?: (sessionId: string) => Promise<SessionRunnerInterface | undefined>,
   ) {
     super({
       name: "auto-resolve",
@@ -110,6 +111,7 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
       isGlobalEnabled,
       now,
       ...(arbiter ? { arbiter } : {}),
+      ...(ensureRunner ? { ensureRunner } : {}),
     });
     this.rebaseAndResolveCb = rebaseAndResolveCb;
   }

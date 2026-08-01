@@ -51,6 +51,10 @@ export async function runDispatchedTurn(
   opts: PreparedDispatch,
   createAgent: (agentId: AgentId) => AgentProcess,
 ): Promise<void> {
+  // Re-check on queue drain / recovered-turn execution, not only when the item
+  // first entered dispatch. This is currently defense in depth (there is no
+  // trust-revoke UI), and makes later revocation fail closed.
+  runner.assertCanDispatch();
   const { text, activity } = opts;
 
   // docs/163 — a child/quick-session dispatched turn must run as a *streaming*

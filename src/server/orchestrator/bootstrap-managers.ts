@@ -481,7 +481,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   // ---- PR Status Poller ----
   const prStatusPoller = createPrStatusPoller({
     deps, githubAuthManager, sessionManager, sseBroadcast,
-    runnerRegistry, createRepoGit, createGitManager, getBareCacheDir,
+    runnerRegistry, defaultAgentId, createRepoGit, createGitManager, getBareCacheDir,
     mergeWatchManager,
     // Skip the volume-prune fallback in test mode so the poller's
     // auto-archive-on-merge path doesn't shell out to docker from tests.

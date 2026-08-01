@@ -88,6 +88,9 @@ describe("Integration: Ops ShipIt fix-session spawn (docs/162)", () => {
     });
     repoStore.add(SHIPIT_REPO_URL);
     repoStore.setReady(SHIPIT_REPO_URL);
+    // These scenarios exercise Ops fix-session spawning after repository
+    // consent, not the trust gate itself.
+    repoStore.setTrusted(SHIPIT_REPO_URL, true);
 
     // The seeded cache doubles as the "running source checkout": point
     // SHIPIT_SOURCE_DIR at it and pin SHIPIT_BUILD_ID to its HEAD so

@@ -352,6 +352,11 @@ polls.
   turn (both already keep the gate open). The armed read is
   `AutoRemediationManager.isEnabledFor(sessionId)`.
 
+  Detection is only half of that invariant. A failed-CI transition also boots
+  the session runner through the orchestrator when idle eviction left no runner
+  in the registry. Runner creation is therefore server-owned; WebSocket
+  activation is never a prerequisite for dispatching the remediation turn.
+
 Closed otherwise. A closed gate stops the single supervisor timer entirely
 — *zero* GraphQL polls until the gate reopens.
 

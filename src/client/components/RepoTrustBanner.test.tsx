@@ -53,7 +53,7 @@ describe("RepoTrustBanner (docs/178)", () => {
   it("clicking Trust POSTs to the trust endpoint and clears the banner", async () => {
     const url = "https://github.com/owner/repo.git";
     useRepoStore.setState({ repos: [repo(url, false)] });
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ repo: repo(url, true) }) });
     vi.stubGlobal("fetch", fetchMock);
 
     render(<RepoTrustBanner repoUrl={url} />);
