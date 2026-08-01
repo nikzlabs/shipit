@@ -56,18 +56,14 @@ remains on a subagent row is per-step text, which is small.
 * **`added` / `removed`** — `DiffBlock` derives these via `countLines(newString)`
   and `countLines(oldString)`. Persist the two integers and the body can go
   lazy with no visible change at all.
-* **A real thumbnail** — the UI is already thumbnail-shaped; it just draws the
-  96px image from full-resolution base64. `ChatMessageImage` already carries an
-  optional `src?: string` (`MessageList/types.ts:59`), so a URL-backed path
-  exists in the type today.
+* **The image itself, at today's resolution** — user-row images draw at 96×96
+  (`message-media.tsx:53`) behind a click-to-full-size; tool-result images draw
+  at up to 256px (`max-h-64`, `ToolResult.tsx:252`) with **no click affordance
+  at all**. `ChatMessageImage` already carries an optional `src?: string`
+  (`MessageList/types.ts:59`), so a URL-backed path exists in the type today.
 
-### Two things that must never be truncated
+### One thing that must never be truncated
 
-* **Image-bearing tool results.** MCP image results (Playwright screenshots) are
-  persisted as `JSON.stringify(content)` — a JSON array of text and base64 image
-  blocks. `parseContentForImages` needs the whole array; a head slice is
-  unparseable JSON, so the image silently degrades to raw JSON text. These get
-  the thumbnail treatment instead of the slice treatment.
 * **The subagent final report.** `findSubagentFinalReport` reads it from the
   *parent's* `toolResults` and renders it in full as markdown
   (`SubagentCall.tsx:50, 132`) with no expand affordance. Exempt by parent tool
@@ -122,14 +118,33 @@ Each tool result gains three fields:
 `truncated` is the `contentAvailable` flag the issue asks for, inverted so the
 common (small) case stays absent from the JSON.
 
-**Slice size: 16 KB**, a byte cap rather than a line cap — the goal is bounding
-payload, and one pathological line is as heavy as a thousand. Two orders of
-magnitude below the 1 MB case, and far above anything drawn inline (30 lines of
-Bash output is ~2 KB) or read by the constraint consumers. The cut lands on a
-UTF-8 character boundary, preferring the last newline within the final 10% of
-the slice so a preview never ends mid-codepoint or mid-line.
+**Slice size: the first 40 lines, hard-capped at 16 KB** — whichever comes
+first.
 
-Exempt: image-bearing results, and Task-parent results (final report).
+The line cap does the real work, and 40 is derived rather than picked: the
+largest inline preview is Bash at 30 lines (`ToolResult.tsx:11–14`), so 40
+covers every render path with headroom. A pure byte cap was the first proposal
+and is worse: at 16 KB it transfers roughly eight times what is drawn, and a
+page of 50 results still moves ~800 KB — which is exactly the outcome req 1
+rules out. Deriving the cap from what the UI draws is what makes it principled.
+
+The byte cap is a backstop for the case a line cap cannot bound: one
+pathological line (minified JSON, a base64 blob) can be megabytes on its own.
+It is the one place the design knowingly deviates from req 8 — a result whose
+first 40 lines exceed 16 KB shows less inline than it does today. The
+alternative, honouring 40 lines at any width, re-admits the unbounded payload
+the feature exists to remove. Rare enough to accept, and the "Show all N lines"
+button already there is the recovery path.
+
+`SLICE_LINES` lives in shared code with a guard test asserting it is ≥ every
+`*_MAX_LINES` in `ToolResult.tsx`, so a future render path that shows more
+lines fails the build rather than silently rendering a short preview.
+
+The cut lands on a UTF-8 character boundary so a preview never ends
+mid-codepoint.
+
+Exempt: Task-parent results (final report). Image-bearing results are **not**
+exempt — see below.
 
 ### 2. Write/Edit inputs — store the stats, lazy body
 
