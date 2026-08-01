@@ -15,15 +15,15 @@ import type { VoiceNoteSource } from "../voice-note-types.js";
  * docs/163 — the Native sink of a voice note. Emitted via `runner.emitMessage`
  * so it buffers into the turn-event log and survives reconnects. Carries only
  * the ear-shaped `headline` (never the full body); the client decides whether
- * to autoplay based on `needsAttention` + hands-free mode. `id` is synthetic
- * (not a turnId) so the playback-store can cache its audio independently.
+ * to autoplay based on hands-free mode alone — every note means the agent needs
+ * the user. `id` is synthetic (not a turnId) so the playback-store can cache its
+ * audio independently.
  */
 export interface WsVoiceNote {
   type: "voice_note";
   sessionId: string;
   id: string;
   headline: string;
-  needsAttention: boolean;
   kind: VoiceNoteSource;
   createdAt: string;
 }

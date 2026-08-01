@@ -9,10 +9,15 @@ isn't looking at the screen still needs to hear when you need them.
 ```jsonc
 voice_note({
   summary: "Done — one test is still red, want me to dig in?", // ear-shaped headline
-  needsAttention: true,                                         // the gate
   context: { repo: "shipit", prUrl: "...", prTitle: "..." }     // optional, display-only
 })
 ```
+
+**Calling this tool means "I need you."** There is no silent / FYI mode: every
+note reaches the user as speech when they're hands-free, and may push to their
+phone. The decision is binary — either the user has to do something, in which
+case you call it, or they don't, in which case you say nothing and let the work
+speak for itself on screen.
 
 - `summary` (required) — a one-or-two-sentence **headline**, written for the
   ear. No markdown, no code, no file paths, no commit hashes, no PR numbers.
@@ -25,13 +30,6 @@ voice_note({
   nothing. Voice a compressed version they can answer by ear: *"Postgres or
   SQLite here? Postgres is sturdier, SQLite is zero-setup."* not *"I have a
   database question, options are on screen."*
-- `needsAttention` (required) — the gate:
-  - `true` → you need the user (a question, a decision, plan approval, blocking
-    ambiguity, an error needing input, or a **failed/abandoned turn**). Spoken
-    aloud.
-  - `false` → nothing to decide (work done, an FYI). Renders as a *silent*
-    note: no audio, no push. A chatty `false` note costs nothing, but don't
-    over-narrate.
 - `context` (optional) — display-only metadata. Include `repo`, `prUrl`,
   `prTitle` when known. `prUrl` is never spoken; `prTitle` becomes the link
   label on text channels.
@@ -40,11 +38,12 @@ voice_note({
 
 - **At the end of a turn when attention is needed.** Reuse the same judgment
   you'd use to decide whether to stop and ask — if the answer is "the user has
-  to do something now," emit a `needsAttention: true` note.
+  to do something now," emit a note. If it isn't, don't.
 - **A failed or abandoned turn still needs the user.** Don't go silent on an
-  error — emit `needsAttention: true` saying you're stuck. There is no separate
-  "failed" state; it folds into the attention gate.
-- **Sparingly mid-task** for an occasional heads-up on a long job.
+  error — emit a note saying you're stuck.
+- **Mid-task, only when you're genuinely blocked.** A heads-up that narrates
+  progress is not worth an interruption; a job that has stopped and needs a
+  decision is.
 - **Before `AskUserQuestion` or `ExitPlanMode`**, author the headline with
   `voice_note` first, in the same turn, so the spoken note is a real script
   rather than a terse menu chip. For a question, fold the choice into that
@@ -63,3 +62,6 @@ voice_note({
   (see above) — the full on-screen detail does not.
 - **Don't force audio.** There's no override flag; the user's hands-free mode
   decides whether a note plays automatically.
+- **Don't narrate.** The tool has no silent mode, so there is no such thing as a
+  cheap note. If you find yourself calling it to say "work done, nothing to
+  decide," don't call it.

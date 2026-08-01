@@ -3,7 +3,6 @@ import {
   routeVoiceNote,
   resetVoiceNoteTurnState,
   hasAuthoredVoiceNoteThisTurn,
-  MAX_ATTENTION_NOTES_PER_TURN,
 } from "./voice-note-router.js";
 import type { WsServerMessage } from "../../shared/types.js";
 import type { VoiceDeliveryMode } from "../../shared/types/voice-note-types.js";
@@ -47,9 +46,8 @@ function fakeCredentialStore(opts: {
   } as unknown as CredentialStore;
 }
 
-const base = (over: Partial<{ summary: string; needsAttention: boolean }> = {}) => ({
+const base = (over: Partial<{ summary: string }> = {}) => ({
   summary: over.summary ?? "Done — one test is still red, want me to dig in?",
-  needsAttention: over.needsAttention ?? true,
 });
 
 let idCounter = 0;
@@ -79,7 +77,6 @@ describe("routeVoiceNote", () => {
       type: "voice_note",
       sessionId: "s1",
       headline: base().summary,
-      needsAttention: true,
       kind: "authored",
     });
   });
@@ -110,7 +107,6 @@ describe("routeVoiceNote", () => {
         voiceNote: {
           id: "voice-test-1",
           headline: base().summary,
-          needsAttention: true,
           kind: "authored",
           createdAt: "2026-06-01T00:00:00.000Z",
         },
@@ -214,22 +210,25 @@ describe("routeVoiceNote", () => {
     expect(webhookCalls).toBe(1);
   });
 
-  it("needsAttention: false renders a silent native bubble and never webhooks", async () => {
-    const { runner, emitted } = fakeRunner();
+  // The silent (`needsAttention: false`) note was removed — every note is
+  // attention-worthy. The webhook body keeps a constant `needsAttention: true`
+  // so existing `v: 1` receivers that branch on it keep working.
+  it("posts a constant needsAttention: true in the v1 webhook body", async () => {
+    const { runner } = fakeRunner();
     const credentialStore = fakeCredentialStore({
-      mode: "both",
+      mode: "external",
       webhook: { url: "https://hook.example/notes", token: "t" },
     });
-    let webhookCalled = false;
-    const fetchImpl = (async () => { webhookCalled = true; return new Response("{}", { status: 200 }); }) as unknown as typeof fetch;
-    const res = await route(base({ needsAttention: false }), {
+    let body: Record<string, unknown> = {};
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      body = JSON.parse(init?.body as string) as Record<string, unknown>;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    await route(base(), {
       runner, sessionId: "s1", credentialStore, source: "authored", fetchImpl,
       idFactory: deterministicId, now: fixedNow,
     });
-    expect(res.native).toBe(true);
-    expect(res.webhook).toBe(false);
-    expect(webhookCalled).toBe(false);
-    expect(emitted[0]).toMatchObject({ needsAttention: false });
+    expect(body).toMatchObject({ v: 1, needsAttention: true });
   });
 
   it("authored source sets the per-turn authored flag", async () => {
@@ -244,34 +243,49 @@ describe("routeVoiceNote", () => {
     expect(hasAuthoredVoiceNoteThisTurn(r2)).toBe(false);
   });
 
-  it("caps attention-grabbing notes per turn (downgrades extras to silent)", async () => {
+  // The per-turn attention cap was removed (docs/163): it was redundant with the
+  // client's 20s chime debounce and inverted against latest-wins playback —
+  // silencing the NEWEST note while stale speech kept playing. Every note in a
+  // turn now delivers in full.
+  it("does not cap or downgrade repeated notes within a turn", async () => {
     const { runner, emitted } = fakeRunner();
-    const credentialStore = fakeCredentialStore({ mode: "native" });
+    let webhookPosts = 0;
+    const fetchImpl = (async () => {
+      webhookPosts++;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    const credentialStore = fakeCredentialStore({
+      mode: "both",
+      webhook: { url: "https://hook.example/notes", token: "t" },
+    });
     const results = [];
-    for (let i = 0; i < MAX_ATTENTION_NOTES_PER_TURN + 2; i++) {
+    for (let i = 0; i < 6; i++) {
       results.push(
-        await route(base(), { runner, sessionId: "s1", credentialStore, source: "authored", idFactory: deterministicId }),
+        await route(base({ summary: `Note ${i} — your call.` }), {
+          runner,
+          sessionId: "s1",
+          credentialStore,
+          source: "authored",
+          idFactory: deterministicId,
+          fetchImpl,
+        }),
       );
     }
-    const attention = results.filter((r) => r.attention).length;
-    expect(attention).toBe(MAX_ATTENTION_NOTES_PER_TURN);
-    expect(results.slice(MAX_ATTENTION_NOTES_PER_TURN).every((r) => r.capped)).toBe(true);
-    // The capped notes still render a (silent) bubble.
-    expect(emitted).toHaveLength(MAX_ATTENTION_NOTES_PER_TURN + 2);
+    expect(results.every((r) => r.native)).toBe(true);
+    expect(results.every((r) => r.webhook)).toBe(true);
+    expect(emitted).toHaveLength(6);
+    expect(webhookPosts).toBe(6);
   });
 
-  it("resetVoiceNoteTurnState clears the per-turn cap and authored flag", async () => {
+  it("resetVoiceNoteTurnState clears the authored flag", async () => {
     const { runner } = fakeRunner();
     const credentialStore = fakeCredentialStore({ mode: "native" });
-    for (let i = 0; i < MAX_ATTENTION_NOTES_PER_TURN; i++) {
-      await route(base(), { runner, sessionId: "s1", credentialStore, source: "authored", idFactory: deterministicId });
-    }
+    await route(base(), { runner, sessionId: "s1", credentialStore, source: "authored", idFactory: deterministicId });
     expect(hasAuthoredVoiceNoteThisTurn(runner)).toBe(true);
     resetVoiceNoteTurnState(runner);
     expect(hasAuthoredVoiceNoteThisTurn(runner)).toBe(false);
     const res = await route(base(), { runner, sessionId: "s1", credentialStore, source: "authored", idFactory: deterministicId });
-    expect(res.attention).toBe(true);
-    expect(res.capped).toBe(false);
+    expect(res.native).toBe(true);
   });
 
   it("external mode with no webhook configured does not post", async () => {

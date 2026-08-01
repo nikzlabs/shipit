@@ -8,7 +8,9 @@
  * autoplay isn't unlocked, this is the prominent tap-to-play prompt; tapping it
  * arms autoplay for subsequent notes.
  *
- * `needsAttention: false` notes render as a quieter "silent" bubble.
+ * Every note means the agent needs the user, so there is one visual treatment.
+ * (Cards persisted before the `needsAttention` gate was removed render the same
+ * way — the stored flag is not read.)
  */
 
 import { PlayIcon, PauseIcon, SpinnerGapIcon, WarningCircleIcon, MegaphoneIcon } from "@phosphor-icons/react";
@@ -16,15 +18,7 @@ import { ICON_SIZE } from "../design-tokens.js";
 import { useVoicePlayback } from "../voice/use-voice-playback.js";
 import { armAutoplay } from "../voice/voice-notes.js";
 
-export function VoiceNoteCard({
-  id,
-  headline,
-  needsAttention,
-}: {
-  id: string;
-  headline: string;
-  needsAttention: boolean;
-}) {
+export function VoiceNoteCard({ id, headline }: { id: string; headline: string }) {
   const playback = useVoicePlayback();
   const isActive = playback.playingTurnId === id;
   const state = isActive ? playback.state : "idle";
@@ -54,17 +48,12 @@ export function VoiceNoteCard({
     );
 
   const label =
-    state === "playing" ? "Pause" : state === "paused" ? "Resume" : state === "error" ? "Retry" : needsAttention ? "Play — the agent needs you" : "Play";
+    state === "playing" ? "Pause" : state === "paused" ? "Resume" : state === "error" ? "Retry" : "Play — the agent needs you";
 
   return (
     <div
-      className={`flex items-center gap-3 rounded-lg border px-3 py-2 ${
-        needsAttention
-          ? "border-(--color-accent)/40 bg-(--color-accent)/10"
-          : "border-(--color-border) bg-(--color-bg-secondary)"
-      }`}
+      className="flex items-center gap-3 rounded-lg border border-(--color-accent)/40 bg-(--color-accent)/10 px-3 py-2"
       data-testid="voice-note-card"
-      data-needs-attention={needsAttention}
       data-state={state}
     >
       <button
@@ -73,9 +62,7 @@ export function VoiceNoteCard({
         className={`flex items-center justify-center shrink-0 rounded-full h-8 w-8 transition-colors ${
           state === "error"
             ? "text-(--color-error) hover:bg-(--color-error)/15"
-            : needsAttention
-              ? "text-(--color-accent) hover:bg-(--color-accent)/15"
-              : "text-(--color-text-tertiary) hover:text-(--color-text-secondary) hover:bg-(--color-bg-hover)"
+            : "text-(--color-accent) hover:bg-(--color-accent)/15"
         }`}
         aria-label={label}
         data-testid="voice-note-play"
@@ -85,7 +72,7 @@ export function VoiceNoteCard({
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5 text-xs text-(--color-text-tertiary)">
           <MegaphoneIcon size={ICON_SIZE.XS} weight="fill" />
-          <span>{needsAttention ? "Voice note — needs you" : "Voice note"}</span>
+          <span>Voice note — needs you</span>
         </div>
         <p className="text-sm text-(--color-text-primary) mt-0.5">{headline}</p>
       </div>

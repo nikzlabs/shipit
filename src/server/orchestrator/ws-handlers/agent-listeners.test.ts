@@ -275,7 +275,6 @@ describe("wireAgentListeners", () => {
       expect(deliverVoiceNote).toHaveBeenCalledTimes(1);
       const [payload, , source] = deliverVoiceNote.mock.calls[0];
       expect(source).toBe("ask");
-      expect(payload.needsAttention).toBe(true);
       expect(payload.summary).toContain("delivery");
       runner.dispose({ force: true });
     });
@@ -307,7 +306,7 @@ describe("wireAgentListeners", () => {
             type: "tool_use",
             id: "v1",
             name: "mcp__shipit__voice_note",
-            input: { summary: "Big finding — your call on the direction.", needsAttention: true, context: { repo: "acme/app" } },
+            input: { summary: "Big finding — your call on the direction.", context: { repo: "acme/app" } },
           },
         ],
       } satisfies AgentEvent);
@@ -316,7 +315,6 @@ describe("wireAgentListeners", () => {
       const [payload, , source] = deliverVoiceNote.mock.calls[0];
       expect(source).toBe("authored");
       expect(payload.summary).toBe("Big finding — your call on the direction.");
-      expect(payload.needsAttention).toBe(true);
       expect(payload.context).toEqual({ repo: "acme/app" });
       runner.dispose({ force: true });
     });
@@ -326,7 +324,7 @@ describe("wireAgentListeners", () => {
       // ride the same fast event-stream channel as the dialog (not the slow
       // relay), and the authored headline must win over the derived one.
       const credentialStore = { getVoiceDeliveryMode: () => "native", getVoiceWebhook: () => null } as unknown as CredentialStore;
-      const deliverVoiceNote = (payload: { summary: string; needsAttention: boolean }, r: SessionRunner, source: "authored" | "ask" | "plan") =>
+      const deliverVoiceNote = (payload: { summary: string }, r: SessionRunner, source: "authored" | "ask" | "plan") =>
         void routeVoiceNote(payload, { runner: r, sessionId: "session-1", credentialStore, source, chatHistoryManager: { replaceInProgress: () => {} } });
       const { agent, runner } = wire({ deliverVoiceNote: deliverVoiceNote as unknown as AgentListenerDeps["deliverVoiceNote"] });
 
@@ -336,7 +334,7 @@ describe("wireAgentListeners", () => {
       agent.emit("event", {
         type: "agent_assistant",
         content: [
-          { type: "tool_use", id: "v1", name: "mcp__shipit__voice_note", input: { summary: "Authored headline.", needsAttention: true } },
+          { type: "tool_use", id: "v1", name: "mcp__shipit__voice_note", input: { summary: "Authored headline." } },
           { type: "tool_use", id: "q1", name: "AskUserQuestion", input: { questions: [{ header: "direction", question: "Which way?" }] } },
         ],
       } satisfies AgentEvent);
@@ -363,7 +361,7 @@ describe("wireAgentListeners", () => {
         updateLastMessage: vi.fn(() => null),
         indexOfMessageId: vi.fn(() => -1),
       } as unknown as AgentListenerDeps["chatHistoryManager"];
-      const deliverVoiceNote = (payload: { summary: string; needsAttention: boolean }, r: SessionRunner, source: "authored" | "ask" | "plan") =>
+      const deliverVoiceNote = (payload: { summary: string }, r: SessionRunner, source: "authored" | "ask" | "plan") =>
         void routeVoiceNote(payload, { runner: r, sessionId: "session-1", credentialStore, source, chatHistoryManager });
       const { agent, runner } = wire({
         deliverVoiceNote: deliverVoiceNote as unknown as AgentListenerDeps["deliverVoiceNote"],
@@ -376,7 +374,7 @@ describe("wireAgentListeners", () => {
         type: "agent_assistant",
         content: [
           { type: "text", text: "Here's the summary." },
-          { type: "tool_use", id: "v1", name: "mcp__shipit__voice_note", input: { summary: "Done — your call.", needsAttention: true } },
+          { type: "tool_use", id: "v1", name: "mcp__shipit__voice_note", input: { summary: "Done — your call." } },
         ],
       } satisfies AgentEvent);
 
@@ -416,7 +414,7 @@ describe("wireAgentListeners", () => {
       // Simulate the agent authoring a headline via the built-in tool first.
       const credentialStore = { getVoiceDeliveryMode: () => "native", getVoiceWebhook: () => null } as unknown as CredentialStore;
       await routeVoiceNote(
-        { summary: "I have a question coming up.", needsAttention: true },
+        { summary: "I have a question coming up." },
         { runner, sessionId: "session-1", credentialStore, source: "authored", chatHistoryManager: { replaceInProgress: () => {} } },
       );
 
@@ -444,7 +442,7 @@ describe("wireAgentListeners", () => {
       message: {
         role: "assistant",
         text: "",
-        voiceNote: { id, headline: `note-${id}`, needsAttention: true, kind: "authored", createdAt: "2026-06-01T00:00:00.000Z" },
+        voiceNote: { id, headline: `note-${id}`, kind: "authored", createdAt: "2026-06-01T00:00:00.000Z" },
       },
     });
     const bugCard = (id: string, afterGroupIndex: number): RecordedChatCard => ({

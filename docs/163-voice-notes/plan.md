@@ -18,10 +18,11 @@ Built end-to-end on the existing voice stack. Key files added/changed:
 - **Router:** `src/server/orchestrator/voice/voice-note-router.ts` —
   `routeVoiceNote(payload, deps)` fans out to the native sink
   (`runner.emitMessage` of a `voice_note` WS message) and the webhook sink
-  (`POST { v: 1, summary, needsAttention, context }` with bearer auth).
-  Per-turn attention cap (`MAX_ATTENTION_NOTES_PER_TURN = 3`) and the
-  authored-this-turn flag live in a runner-keyed `WeakMap`, reset from
-  `resetRunnerTurnState`.
+  (`POST { v: 1, summary, needsAttention, context }` with bearer auth, where
+  `needsAttention` is now a constant `true` kept for receiver compat). The
+  authored-this-turn flag and the authored-payload dedup live in a runner-keyed
+  `WeakMap`, reset from `resetRunnerTurnState`. (The per-turn attention cap that
+  also lived here was removed — see the simplification section below.)
 - **Source observation:** `agent-listeners.ts` derives an `ask` / `plan`
   headline from a top-level `AskUserQuestion` / `ExitPlanMode` and routes it via
   the new `deliverVoiceNote` listener dep — suppressed when the agent authored a
@@ -229,6 +230,62 @@ existing stored token when an existing webhook is saved with a blank token;
 the explicit Remove action remains the way to delete the webhook configuration.
 Covered by the voice route tests.
 
+## Simplification — the `needsAttention` gate and the per-turn cap (removed)
+
+Both the agent-facing `needsAttention` argument and the server-side per-turn
+attention cap were removed. A voice note now means exactly one thing: **the
+agent needs the user**. There is no silent mode and no downgrade path.
+
+**Why the gate went.** A `needsAttention: false` note produced no autoplay
+(`voice-notes.ts` bailed on the flag), no webhook (the external sink was gated on
+it), and a quieter transcript bubble whose entire content was a one-sentence
+restatement of prose already on screen directly above it — with a play button
+duplicating what `PlayTurnButton` already offers for the whole turn. So the
+"silent note" was a bubble with no unique affordance. Worse, the instruction text
+actively manufactured them: `prompts/skeleton.md` told the agent *"a chatty note
+costs nothing,"* which is exactly the behavior that made the surface noisy.
+
+**Why the cap went.** `MAX_ATTENTION_NOTES_PER_TURN = 3` downgraded the 4th+ note
+in a turn to silent. Measured against what the client already does, it protected
+nothing and actively hurt:
+
+| Risk | Cap's contribution | Already handled by |
+|---|---|---|
+| Chime spam | none | `CHIME_QUIET_WINDOW_MS = 20_000` — notes 2 and 3 of a burst never chimed anyway |
+| Overlapping speech | **negative** | latest-wins in `playback-store` — a new note stops the current audio |
+| Webhook push spam | real, but ~3/turn | nothing else |
+
+The speech row is why it had to go: the cap silenced note 4 *while leaving note
+3's speech playing*. Note 4 is the newest and most relevant, so in the exact
+scenario the cap existed for, it made an eyes-off user hear the stale note and
+miss the current one — precisely inverted from the latest-wins rule the rest of
+the stack follows. `RouteVoiceNoteResult.capped` was also computed, returned, and
+read by nothing outside its own test.
+
+The webhook rate-limiting was the one genuine loss, and it was not worth keeping
+a mechanism for: with the gate gone a note means "I need you," and the paths that
+could stack are already suppressed (`AskUserQuestion` / `ExitPlanMode` interrupt
+the turn; the derived headline is skipped when the agent authored one, via
+`hasAuthoredVoiceNoteThisTurn`). Four in a turn is pathological. If a real turn
+ever pushes four times, the fix is a webhook-only counter — never a card
+downgrade.
+
+**Compatibility.** The webhook body keeps `{ v: 1, ..., needsAttention: true }`
+as a constant so existing receivers that branch on it keep working. The
+`voice_note` DB column and its rows are untouched and **no migration is needed**:
+pre-removal rows carry a now-dead `needsAttention` key in their stored JSON that
+nothing reads, and they rehydrate and render as ordinary notes. That's safe
+because autoplay only ever fired on the live WS path (`handleVoiceNote` is the
+sole caller of `autoplayVoiceNote`); history rehydration spreads persisted
+messages straight into the store, so a legacy `false` row could never have
+chimed on reload regardless.
+
+Key files: `mcp-tools/voice.ts` (tool schema + description),
+`prompts/skeleton.md`, `voice-note-router.ts`, `agent-voice-handler.ts`,
+`voice-note-types.ts`, `ws-server-messages/cards.ts`, `chat-history.ts`,
+`VoiceNoteCard.tsx`, `client/voice/voice-notes.ts`,
+`src/server/shipit-docs/voice-notes.md`.
+
 ## Problem
 
 ShipIt has two voice mechanisms today, and neither is the right surface for
@@ -302,10 +359,17 @@ convey the payload — the screen still holds the options, the plan, the diff.
 
 ### Invariant 2 — voice notes fire *only when the user is needed*
 
-The gate is `needsAttention`. `true` (question, decision, plan approval,
-blocking ambiguity, error needing input) → emit. `false` (work done, nothing to
-decide, auto-merge carries it) → **silent**. The agent reuses the attention
-judgment it already makes; it gets no new "should I voice this?" decision.
+Calling the tool **is** the assertion that the user is needed (question,
+decision, plan approval, blocking ambiguity, error needing input, failed or
+abandoned turn). When there's nothing to decide, the agent says nothing. The
+agent reuses the attention judgment it already makes; it gets no new "should I
+voice this?" decision.
+
+> Originally this invariant was expressed as a `needsAttention` *field* on the
+> payload, with `false` producing a silent bubble. That field was removed — see
+> "Simplification — the `needsAttention` gate and the per-turn cap" below. The
+> invariant itself is unchanged; it is now carried by whether the tool is called
+> at all rather than by an argument to it.
 
 ## Sources
 
@@ -539,7 +603,9 @@ decisions" and the relevant sections):
 1. **Derived headline quality** → require the agent to author the headline via the
    voice tool; derive from observed `input` only as a fallback floor (Sources §2).
 2. **Failed turn with `needsAttention: false`** → "failed" folds into
-   `needsAttention: true` by instruction; no third state.
+   `needsAttention: true` by instruction; no third state. (Superseded: the
+   `needsAttention` field itself was later removed — a failed turn is simply a
+   reason to call the tool. See the simplification section.)
 3. **Webhook payload versioning** → ship `{ v: 1, ... }` now; receivers branch on
    `v` and may reject unknown majors.
 4. **Autoplay edge UX (foreground)** → chime debounced to one per 20s quiet

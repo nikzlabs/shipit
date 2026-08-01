@@ -108,7 +108,7 @@ describe("createShipitBridgeServer — CallTool dispatch", () => {
 
     const result = await bridge.client.callTool({
       name: "voice_note",
-      arguments: { summary: "Done.", needsAttention: false },
+      arguments: { summary: "Done." },
     });
 
     expect(fetchMock).toHaveBeenCalledWith(`${WORKER}/agent-ops/voice/note`, expect.objectContaining({ method: "POST" }));
@@ -121,7 +121,7 @@ describe("createShipitBridgeServer — CallTool dispatch", () => {
 
     const result = await bridge.client.callTool({
       name: "voice_note",
-      arguments: { summary: "Done.", needsAttention: false },
+      arguments: { summary: "Done." },
     });
     expect(JSON.parse(firstText(result))).toEqual({ status: "not_delivered", delivered: false });
   });

@@ -39,12 +39,12 @@ describe("observeVoiceNotes", () => {
     const r = runner();
     const deliver = vi.fn();
     observeVoiceNotes(r, [
-      tool("mcp__shipit__voice_note", { summary: "Your call.", needsAttention: true, context: { repo: "a/b" } }),
+      tool("mcp__shipit__voice_note", { summary: "Your call.", context: { repo: "a/b" } }),
     ], deliver);
     expect(deliver).toHaveBeenCalledTimes(1);
     const [payload, , source] = deliver.mock.calls[0];
     expect(source).toBe("authored");
-    expect(payload).toMatchObject({ summary: "Your call.", needsAttention: true, context: { repo: "a/b" } });
+    expect(payload).toEqual({ summary: "Your call.", context: { repo: "a/b" } });
     r.dispose({ force: true });
   });
 

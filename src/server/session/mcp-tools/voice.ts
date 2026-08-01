@@ -10,20 +10,19 @@
 import type { ToolDescriptor } from "./types.js";
 
 const TOOL_DESCRIPTION = [
-  "Emit a short, ear-shaped spoken summary for the user. Call this at the END of",
-  "a turn when you need the user's attention, and sparingly mid-task for an",
-  "occasional heads-up. The `summary` is a one-or-two-sentence HEADLINE written",
-  "for the ear (no markdown, no code, no file paths, no PR numbers) — it grabs",
-  "attention and orients the user. Don't read the full on-screen detail aloud",
-  "(plan text, diff, long-form option descriptions stay on screen) — BUT when you",
-  "are asking a question, the headline MUST voice the actual question and a brief",
-  "gist of the options, since a hands-free user can't see the screen (\"Postgres or",
-  "SQLite? Postgres is sturdier, SQLite is zero-setup\" — not \"I have a question,",
-  "options are on screen\"). Set `needsAttention: true` only when you",
-  "genuinely need the user (a question, a decision, plan approval, blocking",
-  "ambiguity, an error needing input, or a failed/abandoned turn) — these are",
-  "spoken aloud. Set `needsAttention: false` for FYIs (work done, nothing to",
-  "decide) — these render as a silent note with no audio. Before calling",
+  "Emit a short, ear-shaped spoken summary for the user. Call this ONLY when you",
+  "genuinely need the user: a question, a decision, plan approval, blocking",
+  "ambiguity, an error needing input, or a turn you failed or abandoned. Calling",
+  "it means \"I need you\" — there is no FYI mode, so when there is nothing for the",
+  "user to decide, do not call it at all. Usually that is at the END of a turn;",
+  "call it mid-task only when you are genuinely blocked. The `summary` is a",
+  "one-or-two-sentence HEADLINE written for the ear (no markdown, no code, no file",
+  "paths, no PR numbers) — it grabs attention and orients the user. Don't read the",
+  "full on-screen detail aloud (plan text, diff, long-form option descriptions stay",
+  "on screen) — BUT when you are asking a question, the headline MUST voice the",
+  "actual question and a brief gist of the options, since a hands-free user can't",
+  "see the screen (\"Postgres or SQLite? Postgres is sturdier, SQLite is",
+  "zero-setup\" — not \"I have a question, options are on screen\"). Before calling",
   "AskUserQuestion or ExitPlanMode, author the headline here FIRST in the same",
   "turn so the spoken note is a real script rather than a terse chip. Do not",
   "describe how the summary is delivered — that is the user's setting.",
@@ -37,11 +36,6 @@ const inputSchema = {
       description:
         "A one-or-two-sentence spoken headline written for the ear. No markdown, code, file paths, commit hashes, or PR numbers. When asking a question, voice the actual question plus a brief gist of the options (a compressed version answerable by ear) — never just 'options are on screen'.",
     },
-    needsAttention: {
-      type: "boolean",
-      description:
-        "true when you need the user (question, decision, plan approval, blocking ambiguity, error, failed turn) → spoken aloud. false for FYIs → silent note.",
-    },
     context: {
       type: "object",
       description:
@@ -53,7 +47,7 @@ const inputSchema = {
       },
     },
   },
-  required: ["summary", "needsAttention"],
+  required: ["summary"],
 };
 
 export const voiceTool: ToolDescriptor = {
@@ -64,7 +58,6 @@ export const voiceTool: ToolDescriptor = {
   async call(args, { workerUrl }) {
     const a = args as {
       summary?: string;
-      needsAttention?: boolean;
       context?: Record<string, unknown>;
     };
     try {
@@ -73,7 +66,6 @@ export const voiceTool: ToolDescriptor = {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           summary: a.summary,
-          needsAttention: a.needsAttention,
           context: a.context,
         }),
       });

@@ -91,11 +91,9 @@ function maybeChime(now: number): void {
  * `nowMs` is injectable for tests.
  */
 export function autoplayVoiceNote(
-  note: { id: string; headline: string; needsAttention: boolean },
+  note: { id: string; headline: string },
   nowMs: number = Date.now(),
 ): boolean {
-  // Silent notes (needsAttention: false) never grab attention.
-  if (!note.needsAttention) return false;
   const handsFree = useSettingsStore.getState().voiceHandsFree;
   if (!handsFree || !unlocked) return false;
 

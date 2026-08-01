@@ -262,7 +262,6 @@ export interface ChatMessage {
   voiceNote?: {
     id: string;
     headline: string;
-    needsAttention: boolean;
     kind: "authored" | "ask" | "plan";
     createdAt: string;
   };
