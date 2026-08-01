@@ -86,6 +86,12 @@ export interface AgentListenerDeps {
     agentId: AgentId,
     session: { usedPct: number | null; resetAt: string } | null,
     weekly: { usedPct: number | null; resetAt: string } | null,
+    /**
+     * docs/150 — the session whose turn reported these numbers, so the
+     * orchestrator can attribute them to that session's pinned provider
+     * account. Omitted only where no session owns the turn.
+     */
+    sessionId?: string,
   ) => void;
   /** Optional: latest subscription-limits snapshot, used to reclassify generic CLI errors. */
   getSubscriptionLimitsSnapshot?: () => SubscriptionLimitsMap;
@@ -334,7 +340,7 @@ export function wireAgentListeners(
     // single callback — the orchestrator dispatches to the right provider.
     // See docs/135.
     if (event.type === "agent_rate_limits") {
-      deps.recordAgentRateLimits?.(agent.agentId, event.session, event.weekly);
+      deps.recordAgentRateLimits?.(agent.agentId, event.session, event.weekly, opts.capturedSessionId);
       return;
     }
 

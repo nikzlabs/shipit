@@ -4,6 +4,11 @@ import { MobileStatusPanel } from "./MobileStatusPanel.js";
 import { resetAutoRefreshThrottle } from "./SubscriptionLimitsBadge.js";
 import type { SubscriptionLimits } from "../../server/shared/types.js";
 
+/** docs/150 — wrap snapshots into the provider → route → limits wire shape. */
+function routed(...snaps: SubscriptionLimits[]): Record<string, SubscriptionLimits> {
+  return Object.fromEntries(snaps.map((snap) => [snap.routeId, snap]));
+}
+
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
@@ -13,8 +18,10 @@ const FUTURE_SESSION_RESET = new Date(Date.now() + 60 * 60_000).toISOString();
 const FUTURE_WEEKLY_RESET = new Date(Date.now() + 7 * 24 * 60 * 60_000).toISOString();
 
 function makeSnap(overrides: Partial<SubscriptionLimits> = {}): SubscriptionLimits {
+  const agentId = overrides.agentId ?? "claude";
   return {
-    agentId: "claude",
+    agentId,
+    routeId: `acct-${agentId}`,
     plan: "Pro",
     session: { usedPct: 30, resetAt: FUTURE_SESSION_RESET },
     weekly: { usedPct: 50, resetAt: FUTURE_WEEKLY_RESET },
@@ -59,7 +66,7 @@ describe("MobileStatusPanel", () => {
     // — the user shouldn't need a second tap on the refresh glyph.
     render(
       <MobileStatusPanel
-        subscriptionLimits={{ claude: makeSnap() }}
+        subscriptionLimits={{ claude: routed(makeSnap()) }}
         dockerMemory={null}
         processStartedAt={null}
       />,

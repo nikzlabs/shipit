@@ -37,6 +37,18 @@ export interface SubscriptionLimits {
   /** Which agent these numbers belong to. */
   agentId: AgentId;
   /**
+   * docs/150 req 10 — which *route* produced these numbers: a provider-account
+   * id (`acct_…`) or a reserved route id (`claude-env-oauth`,
+   * `claude-api-key`).
+   *
+   * Quota belongs to the subscription, not the provider: two connected
+   * Anthropic accounts have two independent 5h windows, and keying only by
+   * provider made the badge show whichever account last took a turn.
+   * Duplicated from the map key so a snapshot stays self-describing once it has
+   * been pulled out of the map.
+   */
+  routeId: string;
+  /**
    * Subscription tier name to render in the tooltip
    * (e.g. "Pro", "Max 20x", "Plus"). Null when the provider can't
    * determine it.
@@ -60,10 +72,31 @@ export interface SubscriptionLimits {
 }
 
 /**
- * Map sent over the wire on every `subscription_limits` SSE
- * broadcast. Providers that report `canFetch() === false` are
- * **omitted** from the map (not stored as `null`); a missing key
- * means "do not render a pill." The client replaces its store map
+ * Map sent over the wire on every `subscription_limits` SSE broadcast:
+ * **provider → route → limits** (docs/150 req 10).
+ *
+ * The inner key is a provider-account id or a reserved route id, so a user with
+ * two Anthropic subscriptions gets two independent entries under `claude`
+ * rather than one that flickers between whichever account last took a turn.
+ * Routes with no snapshot are **omitted** (not stored as `null`); a missing or
+ * empty entry means "do not render a pill." The client replaces its store map
  * wholesale on each broadcast so sign-outs propagate naturally.
  */
-export type SubscriptionLimitsMap = Partial<Record<AgentId, SubscriptionLimits>>;
+export type SubscriptionLimitsMap = Partial<Record<AgentId, Record<string, SubscriptionLimits>>>;
+
+/**
+ * Flatten the nested map to a list — what most consumers actually want (render
+ * each pill, find the worst window, ask whether anything is exhausted). Each
+ * entry carries its own `agentId`/`routeId`, so nothing has to be re-derived
+ * from the nesting.
+ */
+export function listSubscriptionLimits(map: SubscriptionLimitsMap): SubscriptionLimits[] {
+  const out: SubscriptionLimits[] = [];
+  for (const byRoute of Object.values(map)) {
+    if (!byRoute) continue;
+    // Defensive: this map arrives over the wire, and a hole here would
+    // otherwise throw inside every consumer that reads `.agentId`.
+    for (const snap of Object.values(byRoute)) if (snap) out.push(snap);
+  }
+  return out;
+}

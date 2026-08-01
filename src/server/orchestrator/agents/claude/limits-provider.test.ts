@@ -2,6 +2,9 @@ import { describe, it, expect, vi } from "vitest";
 import { ClaudeLimitsProvider } from "./limits-provider.js";
 import type { AuthManager } from "./auth-manager.js";
 
+/** docs/150 — every snapshot is now attributed to a route (account) id. */
+const ROUTE = "acct-test";
+
 function makeAuthStub(
   result: Awaited<ReturnType<AuthManager["getAccessToken"]>>,
 ): Pick<AuthManager, "getAccessToken"> {
@@ -14,16 +17,17 @@ describe("ClaudeLimitsProvider", () => {
       authManager: makeAuthStub({ token: "tok", source: "file", expiresAt: null, plan: "Max 20x" }),
     });
 
-    expect(provider.canFetch()).toBe(false);
-    expect(await provider.fetch()).toBeNull();
+    expect(provider.routeIds()).toEqual([]);
+    expect(await provider.fetch(ROUTE)).toBeNull();
 
     provider.setRateLimits(
       { usedPct: 30, resetAt: "2026-06-01T00:00:00Z" },
       { usedPct: 12, resetAt: "2026-06-07T00:00:00Z" },
+      ROUTE,
     );
 
-    expect(provider.canFetch()).toBe(true);
-    const snap = await provider.fetch();
+    expect(provider.routeIds()).toEqual([ROUTE]);
+    const snap = await provider.fetch(ROUTE);
     expect(snap).not.toBeNull();
     expect(snap?.agentId).toBe("claude");
     expect(snap?.plan).toBe("Max 20x");
@@ -39,8 +43,9 @@ describe("ClaudeLimitsProvider", () => {
     provider.setRateLimits(
       { usedPct: 5, resetAt: "2026-06-01T00:00:00Z" },
       null,
+      ROUTE,
     );
-    const snap = await provider.fetch();
+    const snap = await provider.fetch(ROUTE);
     expect(snap?.plan).toBeNull();
     expect(snap?.session?.usedPct).toBe(5);
     expect(snap?.weekly).toBeNull();
@@ -53,12 +58,14 @@ describe("ClaudeLimitsProvider", () => {
     provider.setRateLimits(
       { usedPct: 10, resetAt: "2026-06-01T00:00:00Z" },
       { usedPct: 20, resetAt: "2026-06-07T00:00:00Z" },
+      ROUTE,
     );
     provider.setRateLimits(
       { usedPct: 80, resetAt: "2026-06-01T00:00:00Z" },
       null,
+      ROUTE,
     );
-    const snap = await provider.fetch();
+    const snap = await provider.fetch(ROUTE);
     expect(snap?.session?.usedPct).toBe(80);
     // Adapter is responsible for accumulating partial updates; the provider
     // just stores whatever was last pushed.
@@ -87,10 +94,11 @@ describe("ClaudeLimitsProvider", () => {
     provider.setRateLimits(
       { usedPct: null, resetAt: "2026-06-01T00:00:00Z" },
       { usedPct: null, resetAt: "2026-06-07T00:00:00Z" },
+      ROUTE,
     );
 
-    await provider.refreshNow("manual");
-    const snap = await provider.fetch();
+    await provider.refreshNow("manual", ROUTE);
+    const snap = await provider.fetch(ROUTE);
     expect(fetchImpl).toHaveBeenCalledOnce();
     expect(snap?.session?.usedPct).toBe(12);
     expect(snap?.session?.source).toBe("usage-api");
@@ -111,8 +119,8 @@ describe("ClaudeLimitsProvider", () => {
       authManager: makeAuthStub({ token: "tok", source: "file", expiresAt: null, plan: "Pro" }),
       fetchImpl,
     });
-    await provider.refreshNow("manual");
-    const snap = await provider.fetch();
+    await provider.refreshNow("manual", ROUTE);
+    const snap = await provider.fetch(ROUTE);
     expect(snap?.session?.usedPct).toBe(1);
     expect(snap?.weekly?.usedPct).toBe(0.4);
   });
@@ -127,11 +135,11 @@ describe("ClaudeLimitsProvider", () => {
       fetchImpl,
       now: clock,
     });
-    await provider.refreshNow("manual");
+    await provider.refreshNow("manual", ROUTE);
     // A later event with a real number should override the older API value.
     clock.mockReturnValue(2_000);
-    provider.setRateLimits({ usedPct: 88, resetAt: "2026-06-01T00:00:00Z" }, null);
-    const snap = await provider.fetch();
+    provider.setRateLimits({ usedPct: 88, resetAt: "2026-06-01T00:00:00Z" }, null, ROUTE);
+    const snap = await provider.fetch(ROUTE);
     expect(snap?.session?.usedPct).toBe(88);
     expect(snap?.session?.source).toBe("event");
   });
@@ -146,14 +154,14 @@ describe("ClaudeLimitsProvider", () => {
       fetchImpl,
       now: clock,
     });
-    await provider.refreshNow("manual");
+    await provider.refreshNow("manual", ROUTE);
     expect(fetchImpl).toHaveBeenCalledOnce();
     // Still locked → second manual refresh is a no-op (no new fetch).
-    await provider.refreshNow("manual");
+    await provider.refreshNow("manual", ROUTE);
     expect(fetchImpl).toHaveBeenCalledOnce();
     // The snapshot carries lockedUntil so the client can disable the button.
-    provider.setRateLimits({ usedPct: 1, resetAt: "2026-06-01T00:00:00Z" }, null);
-    const snap = await provider.fetch();
+    provider.setRateLimits({ usedPct: 1, resetAt: "2026-06-01T00:00:00Z" }, null, ROUTE);
+    const snap = await provider.fetch(ROUTE);
     expect(snap?.lockedUntil).toBeGreaterThan(0);
   });
 
@@ -165,8 +173,8 @@ describe("ClaudeLimitsProvider", () => {
       authManager: makeAuthStub({ token: "tok", source: "file", expiresAt: null, plan: "Pro" }),
       fetchImpl,
     });
-    await provider.refreshNow("seed");
-    await provider.refreshNow("seed");
+    await provider.refreshNow("seed", ROUTE);
+    await provider.refreshNow("seed", ROUTE);
     expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
@@ -177,8 +185,8 @@ describe("ClaudeLimitsProvider", () => {
       authManager: makeAuthStub({ token: "tok", source: "file", expiresAt: null, plan: null }),
       now: clock,
     });
-    provider.setRateLimits({ usedPct: 1, resetAt: "2026-06-01T00:00:00Z" }, null);
-    const snap = await provider.fetch();
+    provider.setRateLimits({ usedPct: 1, resetAt: "2026-06-01T00:00:00Z" }, null, ROUTE);
+    const snap = await provider.fetch(ROUTE);
     expect(snap?.fetchedAt).toBe(1_700_000_000_000);
   });
 });

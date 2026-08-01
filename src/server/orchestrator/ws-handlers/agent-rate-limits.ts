@@ -1,4 +1,5 @@
 import type { AgentId, SubscriptionLimitsMap } from "../../shared/types.js";
+import { listSubscriptionLimits } from "../../shared/types/usage-limits-types.js";
 
 /**
  * Rate-limit + subscription-snapshot handling, extracted from
@@ -26,14 +27,17 @@ export function normalizeAgentUsageLimitError(
 ): string {
   if (!/monthly usage limit/i.test(message)) return message;
 
-  const sessionLimit = limits?.[agentId]?.session;
-  if (!sessionLimit) return message;
-  // usedPct is null when the provider hasn't reported utilization yet (Claude
-  // CLI 2.1.140 below its warning thresholds — anthropics/claude-code#50518).
-  // Without a number we can't claim the window is exhausted, so leave the
-  // upstream "monthly usage limit" message intact.
-  if (sessionLimit.usedPct === null || sessionLimit.usedPct < 100) return message;
-
+  // docs/150 — quota is per account now, so "is the 5h window exhausted?" is
+  // only true if *every* connected account for this provider is exhausted.
+  // Reclassifying on the first exhausted account would tell a user with a
+  // healthy second subscription that they are out of quota.
+  const providerLimits = listSubscriptionLimits(limits ?? {}).filter((l) => l.agentId === agentId);
+  const sessionWindows = providerLimits.map((l) => l.session).filter((w) => w !== null);
+  if (sessionWindows.length === 0) return message;
+  if (sessionWindows.some((w) => w.usedPct === null || w.usedPct < 100)) return message;
+  // Report the window that frees up first.
+  const sessionLimit = sessionWindows.reduce((soonest, w) =>
+    Date.parse(w.resetAt) < Date.parse(soonest.resetAt) ? w : soonest);
   const reset = new Date(sessionLimit.resetAt);
   const resetText = Number.isNaN(reset.getTime())
     ? sessionLimit.resetAt

@@ -175,6 +175,12 @@ export interface AppCtx {
     agentId: AgentId,
     session: { usedPct: number | null; resetAt: string } | null,
     weekly: { usedPct: number | null; resetAt: string } | null,
+    /**
+     * docs/150 — the session whose turn reported these numbers, so the
+     * orchestrator can attribute them to that session's pinned provider
+     * account. Omitted only where no session owns the turn.
+     */
+    sessionId?: string,
   ) => void;
   /**
    * Latest subscription-limits snapshot from the limits registry. Used to
