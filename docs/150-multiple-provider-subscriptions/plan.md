@@ -40,6 +40,11 @@ The product shape should be:
 
 ## Requirement provenance
 
+The human-stated requirements for this feature live in
+[`requirements.md`](./requirements.md) and are the source of truth; this doc is
+design. Open questions in that file block implementation until the user answers
+them (see `/shipit-docs/spec-discipline.md`).
+
 The original requirement was automatic failover among multiple authenticated
 subscriptions. A follow-up user requirement made the policy explicit:
 
@@ -93,8 +98,8 @@ The reserved ids are not all the same kind of fallback:
   visibility and keeps the existing subscription-limits badge behavior. It is
   not a provider-account row, so it does not participate in multi-account
   ranking between stored account rows; however, when it is the selected Claude
-  route, quota polling, hard exhaustion detection, delayed-turn handling, and
-  same-route reset-time display behave like a Claude subscription account.
+  route, quota polling, hard exhaustion detection, and same-route reset-time
+  display behave like a Claude subscription account.
 
   Selection rule for `claude-env-oauth`: it is the selected Claude route only
   when **no stored Claude provider-account row exists** (no `acct_<id>` under
@@ -132,8 +137,8 @@ The reserved ids are not all the same kind of fallback:
 - Re-route already-pinned sessions while preserving local transcript and
   workspace context; account pinning is audit state, not a reason to strand an
   existing conversation on an exhausted subscription.
-- Automatically fail over after a hard quota/auth exhaustion signal when retrying
-  will not duplicate side effects.
+- Automatically fail over after a hard quota/auth exhaustion signal, retrying the
+  turn once on the next eligible account.
 - Render provider-account state inline: account label, provider, plan, quota
   windows, active/in-use sessions, errors, and reset time.
 - Preserve per-agent credential isolation from doc 138 and token copy-back from
@@ -191,8 +196,10 @@ several others. The amendments are called out here so a reader who finds 119 or
   user choice.
 - Shell-shaped quick actions such as "run this with account B" buttons. The user
   expresses intent in chat or Settings; ShipIt performs the account routing.
-- Guaranteeing retry safety after arbitrary tool execution. Some turns cannot be
-  safely retried automatically; those become visible recoverable states.
+- Guaranteeing that a retried turn does not repeat work. Req 14 chooses
+  uninterrupted failover over side-effect protection; a retry may redo file
+  edits or commands the first attempt already performed.
+- Holding an exhausted prompt until quota resets. Req 13 fails the turn instead.
 
 ## Product behavior
 
@@ -250,21 +257,21 @@ Common steps (run for every disconnect):
    actually depend on the deleted account. Matching-by-stable-identity is
    the boundary; the per-session subtree as a whole is *not* deleted at the
    disconnect step.
-6. Clear `agentSessionId` for affected sessions because provider-side resume is
-   no longer valid against any other account.
+6. **Keep `agentSessionId` and the conversation-state subpaths.** Resume is
+   backed by a per-session local file, not by the deleted account (see
+   "Existing pinned sessions"), so disconnecting an account does not end the
+   conversation. Step 5's purge targets credential files by stable account
+   identity; it must not touch `projects/`, `sessions/`,
+   `archived_sessions/`, or `history.jsonl`.
 
 Then split by whether the user already picked a replacement:
 
 7a. **Replacement chosen.** Update `provider_route_kind` / `provider_route_id`
-    to the replacement account or reserved route. The next turn invokes the
-    full account-switch replay path — replay assembly reads from ShipIt's
-    persisted chat history and current workspace state, never from the deleted
-    source credentials or the now-purged per-session subtree.
+    to the replacement account or reserved route. The next turn provisions the
+    replacement credentials and resumes the same conversation.
 7b. **No replacement.** Mark sessions as needing account selection/re-auth
     before the next turn. The recovery path runs at next-turn time: it
-    re-provisions the user-selected account, clears any residual
-    `agentSessionId`, and starts from local context via the same replay
-    mechanism.
+    re-provisions the user-selected account and resumes.
 
 This prevents a deleted source account from continuing to run through a stale
 per-session credential copy.
@@ -276,8 +283,9 @@ provisioning:
 
 1. Filter to accounts that are eligible for the selected model, permission mode,
    and requested provider features.
-2. Read the provider's persisted user-defined account order. The primary account
-   is the first entry; newly connected accounts append to the end until the user
+2. Read the provider's persisted user-defined account order — `ProviderAccount.
+   priority` ascending (see Data model). The primary account is the first entry
+   (`priority === 0`); newly connected accounts append to the end until the user
    reorders them.
 3. Treat an account as **quota-low** when either known short-window usage meets
    the configured short-window cutoff or known weekly usage meets the configured
@@ -318,12 +326,14 @@ provisioning:
    when usage is tied. A known-hard-exhausted account is never selected by this
    fallback.
 7. When preflight changes an existing session's account, stop its persistent
-   provider process, clear provider resume state, provision the replacement
-   credentials, persist the new route for audit, and rebuild provider context
-   from ShipIt's transcript plus current workspace state before starting.
-8. If all eligible accounts are exhausted, put the prompt into a delayed
-   recoverable state with a wake-up time, show a chat-visible system message
-   with reset times, and do not start the agent.
+   provider process, provision the replacement credentials (preserving the
+   conversation-state subpaths), and persist the new route for audit. The
+   restarted process resumes the same conversation from `agentSessionId`; no
+   context rebuild is needed (req 9, see "Existing pinned sessions").
+8. If all eligible accounts are exhausted, fail the turn immediately with a
+   chat-visible system message naming the earliest reset time, and do not start
+   the agent (req 13). ShipIt does not hold the prompt for later; the user
+   resends when they choose to.
 
 Eligibility is checked before quota ranking. A fallback account that cannot run
 the selected model, image support, MCP/review capability, or other
@@ -384,9 +394,10 @@ Selection treats unknown capability conservatively for automatic failover:
 - If the current/primary account has unknown-but-unproven capability, it may be
   attempted because that matches today's behavior.
 - A fallback account with unknown capability is not used for **automatic
-  failover** when the current turn requires that capability; ShipIt asks for
-  user intent or reports `no_model_eligible_account` / `capability_unknown`
-  instead.
+  failover** when the current turn requires that capability; ShipIt reports
+  `no_model_eligible_account` / `capability_unknown` instead. Per req 17 it
+  never substitutes a model the account does support — a skipped account
+  produces a report, not a quiet downgrade.
 - Guarded-mode eligibility is checked via the live per-runner `guardedUnavailable`
   flag rather than `capabilities`, in line with the rule above.
 
@@ -414,88 +425,39 @@ first `agent_init` as a special key on
 gates *future* unknown-capability fallback to a stored Claude account if one
 is added later.
 
-An exhausted turn cannot use the existing in-memory message queue by itself.
-Today queued messages drain from agent completion paths; if no agent starts,
-there is no completion event to wake the queue after a quota reset. Delayed
-quota waits therefore need their own persisted/scheduled state:
+**Exhaustion is a turn failure, not a deferral (req 13).** The preflight that
+detects `all_exhausted` ends the turn in an error state with a chat-visible
+system message naming the earliest reset time and the accounts it covers. There
+is no delayed-turn record, no orchestrator wake-up timer, no attachment
+staging step, and no restart-time re-arming. This keeps the exhausted path on
+the same failure machinery every other preflight rejection uses.
 
-- materialize attachments to stable on-disk paths **before** persisting the
-  delayed turn: today `runAgentWithMessage` calls `saveImagesToUploadsDir`
-  during prompt assembly (not "immediately before `agent.run`," but well before
-  the agent ever spawns). Inline base64 images only exist in the WS payload up
-  to that point. The preflight that delays a turn must run that same write
-  step first so the delayed record references stable file paths, not WS-only
-  base64 bytes. If materialization itself fails (disk full, permission error,
-  workspace dir missing), the delay is **rejected** rather than persisted
-  with broken file references: the user gets an immediate chat-visible error
-  ("could not stage attachments for delayed turn — exhaustion still in effect
-  until <reset>; try again with attachments removed or after reset") and the
-  turn ends in an error state. The session is not pinned, no delayed-turn
-  record is written, and no timer is scheduled.
-- conversely, the preflight must NOT run the first-turn side effects that
-  follow attachment materialization in today's order — first-turn
-  `provisionAgentCredentials`, `setAgentId` / `setAgentPinned`,
-  `syncAgentTokenIn`, and `tryPushAgentSecrets`. Running any of these and then
-  deferring would (a) pin the session to an account before the user has had a
-  chance to pick a replacement during the wait, (b) leave a provisioned
-  credential subtree that no turn ever consumed, and (c) defeat the
-  replacement-account recovery path in the disconnect section. The preflight
-  must decide "is this turn going to be delayed?" **before** running any of
-  those steps,
-- persist the full turn request in a delayed-turn table or session field:
-  user text, validated file refs, upload refs, image refs (the on-disk paths
-  just materialized), permission mode, review-file authorization, selected
-  model, selected agent, target provider, and the assembled prompt/context
-  snapshot needed to restart deterministically,
-- schedule an orchestrator timer for the earliest eligible reset,
-- re-check account eligibility/quota at wake time before starting,
-- revalidate that referenced files/uploads still exist and surface a recoverable
-  error instead of starting with silently missing context,
-- broadcast the delayed state so reconnecting clients show why the prompt is not
-  running,
-- allow the user to cancel or replace the delayed prompt from chat.
+Two orderings still matter:
 
-If the process restarts before the reset, startup tasks reload delayed turns and
-re-arm their timers.
-
-**Interaction with the in-memory message queue.** `drainNextQueuedMessage`
-calls `runAgentWithMessage` recursively without going through
-`handleSendMessage`, so a dequeued message hits the same preflight as a fresh
-one. The exhaustion path must not produce one delayed-turn record per queued
-message — that would land N orchestrator timers for the same reset window,
-and the user would see N rolling failover messages as each timer fires.
-
-The rule is:
-
-- A turn can be moved to the delayed state at most once. The first preflight
-  that detects `all_exhausted` either persists the active prompt as a delayed
-  turn **or** marks the rest of the queue as deferred behind the same wake-up
-  event, but it never persists multiple separate delayed-turn records for one
-  exhaustion window.
-- While at least one delayed turn exists for a session, `drainNextQueuedMessage`
-  short-circuits: it does not call `runAgentWithMessage` for further queued
-  messages. The queue is held in-memory as today; the wake-up handler is the
-  only path that resumes draining.
-- When the wake-up fires and the active delayed turn starts, ordinary
-  post-turn drain takes over from there.
+- The preflight must decide "can any account run this turn?" **before** the
+  first-turn side effects — `provisionAgentCredentials`, `setAgentId` /
+  `setAgentPinned`, `syncAgentTokenIn`, `tryPushAgentSecrets`. Failing after
+  them would pin the session to an account no turn ever used and leave a
+  provisioned credential subtree behind.
+- `drainNextQueuedMessage` calls `runAgentWithMessage` recursively without going
+  through `handleSendMessage`, so a dequeued message hits the same preflight and
+  fails the same way. Each queued message therefore produces its own exhaustion
+  error rather than draining silently; the queue empties as today. If that
+  proves noisy in practice, collapse repeated identical exhaustion messages
+  within one window at the message level — not by reintroducing deferral state.
 
 ### Mid-turn failover
 
-Automatic retry is conservative:
+When a hard exhaustion signal arrives partway through a turn, ShipIt switches to
+the next eligible provider account and retries once, regardless of what the turn
+has already done (req 14). There is no side-effect gate, no per-turn side-effect
+tracking, and no read-only tool allowlist: a retried turn may repeat work the
+first attempt already performed, and the user accepted that tradeoff in exchange
+for uninterrupted failover.
 
-- **Safe retry:** the agent failed before any side-effecting tool call, or the
-  failure happened during initial provider/model request before tool execution.
-  ShipIt switches to the next eligible provider account and retries once.
-- **Needs user intent:** the turn already wrote files, ran commands, modified git,
-  called side-effecting MCP tools, or created external side effects. ShipIt
-  stops, records the exhausted account, surfaces the next eligible account, and
-  asks the user in chat whether to continue from the current workspace state.
-- **No retry:** all accounts are exhausted or unauthenticated.
+If no eligible account remains, the turn fails as in the exhaustion path above.
 
-This mirrors the existing product stance: the agent is the actor, but ShipIt does
-not silently duplicate side effects.
-
-Safe retry is a same-turn retry, not a new user message. The implementation must
+The retry is a same-turn retry, not a new user message. The implementation must
 avoid duplicating chat history:
 
 - persist the user's prompt once for the turn,
@@ -537,25 +499,43 @@ though it is stored as a reserved route and not as a provider-account row.
 `agent_pinned` remains the first-turn boundary. On first turn, ShipIt pins both
 the agent and the provider account. The agent itself does not change.
 
-Provider-account switching after pinning is **not** a credential-only operation.
-The existing runtime has account-bound process and thread state:
+**Conversation continuity survives an account switch on its own — verified,
+not assumed.** An earlier draft of this doc asserted that "account B cannot
+resume account A's Claude session or Codex thread" and built a replay package
+around that assertion. The assertion is wrong. Both providers resume from a file
+in the session's own credential subtree, and neither file carries account
+identity:
 
-- Live steering reuses an existing worker-side process via
-  `existingAgent.sendUserMessage(...)` rather than calling `/agent/start`.
-- `agentSessionId` is persisted on the ShipIt session and passed back to adapters
-  for provider-side resume/thread continuation.
-- The mounted per-session credential subtree contains files for the previously
-  selected account.
+- Claude: `--resume <agentSessionId>` (`agents/claude/process.ts:197`) reads
+  `.claude/projects/<encoded-cwd>/<agentSessionId>.jsonl`.
+- Codex: `thread/resume` (`agents/codex/codex-event-handler.ts:682`) reads
+  `.codex/sessions/<Y>/<M>/<D>/rollout-*-<threadId>.jsonl`; losing that file is
+  what produces `-32600 no rollout found for thread id …`.
 
-So an account switch for an already-pinned session must be a full runtime
-transition:
+`~/.claude` and `~/.codex` are symlinks into the per-session credentials dir
+(`session-credentials-scaffold.ts` → `AGENT_CREDENTIAL_PATHS`), which is
+per-session and account-agnostic. So switching accounts does not invalidate
+resume. What *would* invalidate it is this doc's own reprovisioning step
+deleting those files — the same data-loss shape docs/153 already hit, which is
+why `token-sync-manager.ts` keeps a conversation-state allowlist
+(`CLAUDE_SESSION_STATE_SUBPATHS` / `CODEX_SESSION_STATE_SUBPATHS`:
+`projects`, `sessions`, `archived_sessions`, `history.jsonl`).
+
+That satisfies req 9 with no new machinery: keep `agentSessionId`, preserve the
+conversation-state subpaths across reprovisioning, and let the CLI resume.
+
+What genuinely is account-bound is the running process and the credential files.
+So an account switch for an already-pinned session is:
 
 1. Stop the persistent agent process, if one exists, before switching accounts.
-   Reusing the old process would keep sending requests with account A.
-2. Clear the stored `agentSessionId` unless the provider explicitly supports
-   cross-account conversation migration. Claude and Codex should be treated as
-   **not** supporting it: account B cannot resume account A's Claude session or
-   Codex thread.
+   Reusing the old process would keep sending requests with account A (live
+   steering reuses a worker-side process via
+   `existingAgent.sendUserMessage(...)` rather than calling `/agent/start`).
+2. **Keep the stored `agentSessionId`.** Provider-side resume is not reset by an
+   account change, per the verification above. If a future provider is found to
+   bind conversations to an account, clear it for *that* provider only and fall
+   back to `buildConversationReplay` (`services/replay.ts`), which already exists
+   for the rollback path — no bespoke replay package is needed.
 3. **Tighten the A3 re-push guard.** Today
    `repushAgentToken` / `repushTokenToPinnedSessions` (app-lifecycle.ts) only
    filter by `session.agentId === agentId` and "session holds the agent's
@@ -579,20 +559,23 @@ transition:
    this in one provisioning step (rm-then-copy) is preferable to a separate
    "delete A files" step because it leaves no window in which the per-session
    subtree is empty or half-A/half-B.
-5. Build an explicit replay package from ShipIt's persisted chat history and
-   current workspace state before starting account B. This package includes the
-   user/assistant transcript since the last checkpoint or bounded summary, any
-   still-relevant file references, active thread/checkpoint metadata, current git
-   diff summary, and a note that provider-side resume was reset because the
-   account changed. Inject it into the system prompt or first user message using
-   the same conversation-replay mechanism used when `agentSessionId` is cleared.
-6. Record a chat-visible system event that the session moved from account A to
-   account B and provider-side resume was reset.
 
-Automatic account switching is therefore allowed only at a turn boundary or in a
-safe pre-tool retry path. If a persistent process is alive, the router first
-terminates it and restarts from local context. Token sync-in alone is never
-sufficient for account switching.
+   **The rm half must exempt the conversation-state subpaths** listed above.
+   Removing `.claude/projects` or `.codex/sessions` would delete the very
+   transcript the next `--resume` / `thread/resume` reads, converting an
+   account switch into silent conversation loss — req 9's failure mode. Reuse
+   `SUBTREE_STATE_SUBPATHS` from `token-sync-manager.ts` rather than
+   re-deriving the list, so a future CLI layout change is fixed in one place.
+   Its "a subtree absent from the map is unpreservable, so fail rather than
+   delete" default applies here too.
+5. Record a chat-visible system event that the session moved from account A to
+   account B (req 11). The conversation itself continues uninterrupted, so the
+   event is attribution, not a warning about lost context.
+
+Automatic account switching is therefore allowed only at a turn boundary or in
+the mid-turn retry path. If a persistent process is alive, the router first
+terminates it and restarts, resuming the same conversation under the new
+account. Token sync-in alone is never sufficient for account switching.
 
 ## Data model
 
@@ -603,6 +586,26 @@ interface ProviderAccount {
   id: string;
   provider: AgentId; // "claude" | "codex"
   label: string;
+  /**
+   * Position in this provider's user-controlled priority list (req 2).
+   * Ascending: the lowest `priority` is tried first. Dense and contiguous
+   * within a provider — reordering rewrites the affected rows rather than
+   * inserting fractional values, so "first entry" is unambiguous and the
+   * order survives a round-trip through the store.
+   *
+   * A newly connected account appends to the END (highest priority value),
+   * never displacing the account the user already relies on. On disconnect,
+   * the remaining rows are re-densified so no gap survives.
+   */
+  priority: number;
+  /**
+   * Derived, not independent: the primary IS the head of the order
+   * (`priority === 0`). Kept as a stored field only because Phase 1 already
+   * ships it and the Settings UI reads it; "make primary" is implemented as
+   * "move to position 0" and must not be allowed to disagree with `priority`.
+   * A later cleanup may drop the field and compute it — do not add a second
+   * writer in the meantime.
+   */
   isPrimary: boolean;
   // status is "ready" | "authenticating" | "auth_failed" | "unavailable".
   // "exhausted" is NOT a stored status — it is derived from
@@ -616,8 +619,8 @@ interface ProviderAccount {
   lastUsedAt?: number;
   /**
    * Earliest reset time across whichever quota window(s) are currently at
-   * 100%. Used to schedule the delayed-turn timer and to render reset
-   * hints; NOT an exhausted/ready boolean. Whether a given turn is blocked
+   * 100%. Used to render reset hints and to name the earliest reset in the
+   * exhaustion error; NOT an exhausted/ready boolean. Whether a given turn is blocked
    * is computed at selection time from `quota.*.usedPct` against the
    * requested model's window (see Quota and exhaustion detection).
    */
@@ -704,6 +707,21 @@ orchestrator restarts. Guarded-mode availability is excluded from the persisted
 snapshot — see "Per-account capability facts" above.
 
 ### Agent availability gates
+
+**Selector naming.** This doc calls the per-turn selector
+`ProviderAccountManager.selectAccountForTurn(...)`. The shipped Phase 1 method
+is `selectRouteForTurn(provider): ProviderRoute | null` — it walks the stored
+accounts (primary first, then the rest) and falls back to the reserved
+env/API-key routes, but it returns `null` for every unusable state, conflating
+"no auth at all" with "authenticated but nothing can run this turn".
+`selectAccountForTurn` is the target: same walk, plus the requested model /
+capability filter and a **structured** failure result
+(`all_exhausted` | `auth_required` | `no_model_eligible_account` |
+`capability_unknown`). That result type is not cosmetic — req 13 (fail the turn
+with the earliest reset time) and req 17 (skip an ineligible account and report)
+cannot be expressed by a `null`. Phase 2 should widen `selectRouteForTurn` into
+it rather than adding a second selector; callers that only need coarse
+availability keep using `hasAnyAuthForProvider`.
 
 `AgentRegistry.authConfigured` remains a coarse agent-level signal for existing
 UI and server gates, but its meaning changes:
@@ -953,7 +971,7 @@ that every turn entrypoint must call before `agent.run()` or
 - resolving or pinning `provider_account_id`,
 - deciding whether an existing process can be reused,
 - killing/restarting a persistent process when account switch is required,
-- clearing provider resume state on account switch,
+- preserving conversation state across an account switch,
 - provisioning account-qualified credentials,
 - syncing the account token in before start,
 - returning metadata used to decorate `agent_init`,
@@ -968,11 +986,11 @@ question, by the agent via `shipit session create`, or by a server automation.
 Reserved route ids have an explicit preflight contract because they are not
 provider-account rows:
 
-| Route id | Provisioning | Env/config pushed to the runner | Token sync | Quota/delayed-turn behavior |
+| Route id | Provisioning | Env/config pushed to the runner | Token sync | Quota/exhaustion behavior |
 | --- | --- | --- | --- | --- |
-| `codex-api-key` | Skip provider-account credential copy. Preserve any existing subscription `.codex` files instead of deleting them. | Set `OPENAI_API_KEY` for the Codex run and ensure adapter config prefers the API-key path over subscription files for this attempt. | No-op; API keys do not rotate through the Codex subscription token store. | No subscription quota. It is not ranked with subscription accounts, not used for subscription failover, and does not create delayed quota turns. Runtime API 429s surface as API-key rate/billing errors for that route. |
-| `claude-api-key` | Skip provider-account credential copy. Preserve any existing subscription `.claude` files instead of deleting them. | Set `ANTHROPIC_API_KEY` for the Claude run and ensure adapter config prefers the API-key path over OAuth files for this attempt. | No-op; API keys do not rotate through the Claude OAuth token store. | No subscription quota. It is not ranked with subscription accounts, not used for subscription failover, and does not create delayed quota turns. Runtime API 429s surface as API-key rate/billing errors for that route. |
-| `claude-env-oauth` | Skip provider-account credential copy because the source of truth is the orchestrator/session env, not `/credentials/provider-accounts/...`. Per the selection rule above, this route is only ever chosen when no stored Claude account row exists, so there is no `provider-accounts/claude/acct_<id>/` subtree to preserve. Any `.credentials.json` the CLI writes during this env-OAuth turn stays local to the per-session credential subtree; it is never copied back to `provider-accounts/...`, and if the user later adds a stored Claude account the next preflight switches off env-OAuth and the per-session file is purged on the normal account-switch path. | Set `ANTHROPIC_AUTH_TOKEN` and do not set `ANTHROPIC_API_KEY`. Claude must treat the bearer as the selected OAuth source, matching doc 135's env-token path. | Both `syncAgentTokenIn` and `syncAgentTokenBack` are explicitly **disabled** for this route at the helper-invocation site. `AGENT_TOKEN_FILES[claude]` is a static map in `session-credentials.ts` and is not mutated per-route; the gate belongs in the preflight code that decides whether to call the helpers at all. Without that gate, the generic file-list pathway would still pull a token file into and out of the env-OAuth session. If the provider returns a refreshed token file during the run, it must not be copied into a stored provider-account row. | Subscription-style quota applies. The limits badge remains visible, hard exhaustion can create delayed quota turns, and reset-time handling matches Claude OAuth accounts. It is not ranked against stored provider-account rows for multi-account spreading because it has no account row; it is used when explicitly selected, pinned from migration/local auth, or when no stored Claude account exists and env OAuth is the available Claude auth. |
+| `codex-api-key` | Skip provider-account credential copy. Preserve any existing subscription `.codex` files instead of deleting them. | Set `OPENAI_API_KEY` for the Codex run and ensure adapter config prefers the API-key path over subscription files for this attempt. | No-op; API keys do not rotate through the Codex subscription token store. | No subscription quota. It is not ranked with subscription accounts and is not used for subscription failover. Runtime API 429s surface as API-key rate/billing errors for that route. |
+| `claude-api-key` | Skip provider-account credential copy. Preserve any existing subscription `.claude` files instead of deleting them. | Set `ANTHROPIC_API_KEY` for the Claude run and ensure adapter config prefers the API-key path over OAuth files for this attempt. | No-op; API keys do not rotate through the Claude OAuth token store. | No subscription quota. It is not ranked with subscription accounts and is not used for subscription failover. Runtime API 429s surface as API-key rate/billing errors for that route. |
+| `claude-env-oauth` | Skip provider-account credential copy because the source of truth is the orchestrator/session env, not `/credentials/provider-accounts/...`. Per the selection rule above, this route is only ever chosen when no stored Claude account row exists, so there is no `provider-accounts/claude/acct_<id>/` subtree to preserve. Any `.credentials.json` the CLI writes during this env-OAuth turn stays local to the per-session credential subtree; it is never copied back to `provider-accounts/...`, and if the user later adds a stored Claude account the next preflight switches off env-OAuth and the per-session file is purged on the normal account-switch path. | Set `ANTHROPIC_AUTH_TOKEN` and do not set `ANTHROPIC_API_KEY`. Claude must treat the bearer as the selected OAuth source, matching doc 135's env-token path. | Both `syncAgentTokenIn` and `syncAgentTokenBack` are explicitly **disabled** for this route at the helper-invocation site. `AGENT_TOKEN_FILES[claude]` is a static map in `session-credentials.ts` and is not mutated per-route; the gate belongs in the preflight code that decides whether to call the helpers at all. Without that gate, the generic file-list pathway would still pull a token file into and out of the env-OAuth session. If the provider returns a refreshed token file during the run, it must not be copied into a stored provider-account row. | Subscription-style quota applies. The limits badge remains visible, hard exhaustion fails the turn with a reset time, and reset-time handling matches Claude OAuth accounts. It is not ranked against stored provider-account rows for multi-account spreading because it has no account row; it is used when explicitly selected, pinned from migration/local auth, or when no stored Claude account exists and env OAuth is the available Claude auth. |
 
 Preflight must check route kind before assuming a `provider_account_id` can be
 loaded from `ProviderAccountManager`. Account-row provisioning, capability
@@ -1014,10 +1032,8 @@ attention are:
 - `src/server/orchestrator/services/child-sessions.ts:321`
   (`spawnChildSession`) — child session's very first turn. **Selection,
   not hydration:** there is no persisted routing to read; the spawn path
-  is the first place we *create* it. Covered by the
-  "child-session inheritance policy" question in Open questions: this
-  site either inherits the parent's `{ provider_route_kind, provider_route_id }`
-  or runs the normal account router. Either way it must persist the
+  is the first place we *create* it. Per req 18 it runs the normal account
+  router rather than inheriting the parent's route, and must persist the
   routing before `setAgentPinned` fires.
 - `src/server/orchestrator/services/recovery.ts` — both recovery paths that
   call `deps.runnerRegistry.getOrCreate(...)` during the `creating_container`
@@ -1115,8 +1131,8 @@ subscription quota ranking. Model them separately as provider auth fallbacks:
 `ANTHROPIC_AUTH_TOKEN` is different: route id `claude-env-oauth` is reserved,
 but it is OAuth-style subscription auth per doc 135, not a pay-as-you-go
 API-key path. It keeps the Claude
-subscription-limits pill, quota polling, hard-exhaustion detection, and delayed
-quota turns. It is excluded only from multi-account spreading/ranking among
+subscription-limits pill, quota polling, and hard-exhaustion detection. It is
+excluded only from multi-account spreading/ranking among
 stored provider-account rows because there is no provider-account row to update
 or sync back into.
 
@@ -1135,7 +1151,7 @@ model is Opus and ready-for-this-turn when it is Sonnet, and an
 account-wide `exhaustedUntil` cannot model that. `ProviderAccount.exhaustedUntil`
 therefore stores **only** the next reset time, not an exhausted/ready
 boolean: it is the earliest reset across whichever windows are currently at
-100%, used to schedule the delayed-turn timer. Whether the account is
+100%, used to name the earliest reset when a turn fails. Whether the account is
 exhausted "right now" for a given turn is computed at selection time from
 `quota.*.usedPct` against the requested model's window (see "model → window
 mapping" in the Session startup quota-low rule). Today's 'account-wide,
@@ -1163,38 +1179,42 @@ GitHub rate-limit state.
 ### UI surfaces
 
 - Settings owns account management.
-- Header subscription-limits badge shows multiple pills or a compact grouped
-  pill when a provider has more than one account. This is the doc-135
-  amendment described in "Relationship to prior docs": the pill is still
-  account-wide, never focus-driven, but a provider with N accounts now expands
-  into N sub-pills or a roll-up rather than collapsing to a single number. The
-  grouped layout MUST keep the header non-shifting for the common 1-account
-  case so existing users see no UI change after migration.
+- **One connect flow, not two (req 16).** Connecting the first account for a
+  provider and connecting the Nth use the same UI. Today they diverge: the
+  first account goes through the provider-wide sign-in control while
+  additional accounts go through the per-row account-scoped control added in
+  Phase 1. Collapse them — the provider-wide control becomes the account-row
+  control operating on the first (or a newly appended) row, so there is one
+  code path and one thing for the user to learn.
+- Header subscription-limits badge stays the existing pill (req 10) — same
+  visual language, one per connected account, each labelled with that
+  account's name. This is the doc-135 amendment described in "Relationship to
+  prior docs": the pill is still account-wide and never focus-driven, but a
+  provider with N accounts now shows N labelled pills (or a roll-up that
+  expands into them) rather than collapsing to a single number. The label is
+  the user's account name from Settings, which is what makes two pills for
+  the same provider tellable apart. The grouped layout MUST keep the header
+  non-shifting for the common 1-account case so existing users see no UI
+  change after migration.
 - Session diagnostics shows the active provider account for the current session.
 - Chat system messages report failover decisions:
   - `Claude: Primary exhausted until 14:30; retrying with Work account.`
-  - `Claude: Primary exhausted after file edits; Work account is available. Say continue to retry from the current workspace state.`
+  - `Claude: all accounts exhausted. Earliest reset 14:30 (Primary). Send again after that.`
 
 Do not open provider dashboards for normal quota/status inspection. Billing and
 account-management links live in overflow menus.
 
 ## Retry safety model
 
-Track per-turn side effects using existing agent event observations:
+There is no side-effect gate (req 14). A hard exhaustion signal retries the turn
+on the next eligible account whatever the turn has already done, so ShipIt does
+not track `turnHadSideEffects`, does not maintain a read-only tool allowlist, and
+does not ask the user for intent mid-turn.
 
-- Before first tool call: safe to retry.
-- After read-only tools only: safe to retry.
-- After write/edit/bash/side-effecting MCP/external side-effect tools: require
-  user intent.
-
-Implementation can start coarse:
-
-- Maintain `runner.turnHadSideEffects`.
-- Mark true for `Write`, `Edit`, `Bash`, shell/file-write equivalents, git/gh
-  shim writes, MCP tools except known read-only allowlist.
-- If unknown, treat as side-effecting.
-
-This intentionally favors correctness over seamless failover.
+What the retry does still owe the user is legibility: the failover is recorded as
+a system event on the same turn (see "Mid-turn failover"), so a repeated file
+edit or command is attributable rather than mysterious. Retry is capped at one
+switch per turn, which bounds duplicated work to a single repeat.
 
 ## Migration
 
@@ -1207,6 +1227,18 @@ This intentionally favors correctness over seamless failover.
    singleton call sites resolve the primary account.
 4. Once all call sites use `ProviderAccountManager`, remove direct root-path
    reads except migration.
+5. **Backfill `priority` on existing rows.** Phase 1 shipped
+   `ProviderAccount` without it, so rows already in `CredentialStore` have no
+   order. Backfill on load: the row flagged `isPrimary` takes `priority: 0`,
+   the rest take their existing stored order starting at 1. Because
+   `isPrimary` is already single-valued (`upsertProviderAccount` demotes the
+   others, and both it and `deleteProviderAccount` re-promote `accounts[0]`
+   when none is flagged), the backfill is deterministic and needs no user
+   input. Write the backfilled values back once so later reads are not
+   order-sensitive. This is a JSON-store migration, not a SQLite one — the
+   provider-account registry lives in `CredentialStore`, while the session's
+   `provider_route_kind` / `provider_route_id` columns are the SQLite half and
+   are unaffected.
 
 Existing sessions without `provider_account_id` are split by pin state.
 Before classifying pinned sessions, run doc 142's A-copyback
@@ -1242,8 +1274,11 @@ copy-back is just "A" / "A-copyback" — there is no separate A2 step to run.)
   a stored account without that validation step.
 - **Pinned sessions whose credential source cannot be identified:** mark the
   session as needing re-auth/account selection before the next turn. The
-  recovery path must kill any persistent process, clear `agentSessionId`,
-  provision the chosen account, and restart from local context.
+  recovery path must kill any persistent process, provision the chosen
+  account, and restart. `agentSessionId` is cleared only when the
+  conversation-state file backing it is genuinely gone, in which case
+  `buildConversationReplay` re-seeds from ShipIt's transcript as it does on
+  the docs/153 repair path.
 
 The per-session subtree is always a consumer of account credentials, never
 the source of truth.
@@ -1300,7 +1335,7 @@ the source of truth.
   or running token sync (it relies on prior WS-path setup having done so),
   so the change is "rebase-driver now runs the full system-turn preflight,"
   not "rebase-driver now also passes one extra argument." Cancellation /
-  error paths in the rebase driver must trigger the same delayed-turn /
+  error paths in the rebase driver must trigger the same
   recoverable-error handling as the chat path when preflight reports
   `all_exhausted` or `auth_required`.
 - `src/server/orchestrator/app-lifecycle.ts` — account-qualify auth-complete
@@ -1434,6 +1469,32 @@ Implementation started:
   for agent turns / dogfooding). Regression test: `auth-manager.test.ts` →
   "strips ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN from the login subprocess
   env".
+- **Selection walks every stored account, not just the primary.**
+  `selectRouteForTurn` originally consulted `getPrimary()` alone, so a user
+  with two connected subscriptions lost the healthy one the moment the primary
+  went `auth_failed`: selection returned `null` while `hasAnyAuthForProvider`
+  still reported `true`, and with `ANTHROPIC_API_KEY` in the environment the
+  turn silently routed onto metered Platform API billing instead of the
+  working subscription (violating reqs 3 and 12). It now iterates
+  primary-then-stored-order and only falls through to the reserved routes when
+  no stored account is usable. Regression tests:
+  `provider-account-manager.test.ts` → "falls back to a healthy secondary
+  account when the primary's auth failed" / "prefers a healthy secondary
+  account over the API-key fallback".
+- **Reprovisioning preserves conversation state.**
+  `provisionAgentCredentialsFromRoot`'s replace path used to `rmSync` the whole
+  `.claude` / `.codex` subtree, which includes `projects/`, `sessions/`,
+  `archived_sessions/`, and `history.jsonl` — the files `--resume` and
+  `thread/resume` read. Harmless while provisioning was first-turn-only, but it
+  is the exact primitive the account-switch transition calls, so it would have
+  turned every switch into silent conversation loss (req 9). It now removes
+  only the non-allowlisted entries, reusing `SUBTREE_STATE_SUBPATHS` (exported
+  from `token-sync-manager.ts`) so there is one definition of "this is
+  conversation state" — and keeps that map's fail-safe default: an unknown
+  subtree is not deleted at all. Regression tests:
+  `session-credentials.test.ts` → "reprovisioning from another account
+  preserves conversation state but replaces credentials" (+ the Codex rollout
+  variant).
 - `ProviderAccountManager` gained `attachAuthManagers` + `startAccountAuth` /
   `cancelAccountAuth` / `submitAccountCode` / `signOutAccount` /
   `setAccountStatus`, and is wired to the auth-manager map in `index.ts` after
@@ -1504,8 +1565,8 @@ Planned authentication-surface consolidation:
 ### Phase 3 — Automatic failover
 
 - Detect hard exhaustion during startup or turn execution.
-- Retry automatically when no side effects occurred.
-- Ask for chat confirmation when side effects already happened.
+- Retry once on the next eligible account, unconditionally (req 14).
+- Fail the turn with reset times when no eligible account remains (req 13).
 - Record failover events in chat history and diagnostics.
 
 ### Phase 4 — Policy controls
@@ -1529,17 +1590,15 @@ Planned authentication-surface consolidation:
   inline (see `OPENAI_AUTH_CLAIM` and `extractCodexPlan`). The Codex account
   identifier the duplicate-row check needs is therefore already available
   from existing credentials with no extra endpoint.
-- **Provider terms:** verify whether automatic failover among user-owned
-  subscriptions is acceptable for each provider before defaulting it on.
+- ~~Provider terms / default posture~~: **closed.** Req 15 — automatic failover
+  is on by default for every provider.
 - **Concurrent turns on one account:** decide whether ShipIt should avoid routing
   multiple simultaneous heavy turns to the same provider account when another
   account has more remaining quota.
 - **Warm pool timing:** confirm account selection happens before credential
   provisioning for every runner path, including claimed warm sessions.
-- **Child-session inheritance policy:** decide whether spawned sessions inherit
-  the parent's provider account by default or run the same account router used by
-  normal new sessions. Inheritance is more predictable; routing is better for
-  quota spreading.
+- ~~Child-session inheritance policy~~: **closed.** Req 18 — spawned sessions run
+  the normal account router; no inheritance.
 
 ## Test plan
 
@@ -1552,12 +1611,12 @@ Planned authentication-surface consolidation:
 - Integration: first Claude turn pins `{ agent_id: "claude", provider_account_id
   }` and starts with that account's credentials.
 - Integration: exhausted primary account causes a new turn to start on secondary.
-- Integration: mid-turn exhaustion before side effects retries on secondary once.
-- Integration: mid-turn exhaustion after side effects emits a confirmation prompt
-  and does not auto-retry.
+- Integration: mid-turn exhaustion retries on the secondary account exactly once,
+  including when the turn has already edited files or run commands (req 14).
 - Integration: switching a pinned session from account A to account B kills any
-  persistent agent, clears provider resume state, reprovisions account B's
-  credentials, and starts from local context.
+  persistent agent, reprovisions account B's credentials, preserves
+  `.claude/projects` / `.codex/sessions` and `agentSessionId`, and the next turn
+  resumes the same conversation (req 9).
 - Integration: agent-spawned child sessions persist `provider_account_id` and
   provision account-qualified credentials before their first `sendSystemMessage`
   turn.
@@ -1578,9 +1637,9 @@ Planned authentication-surface consolidation:
 - Integration: Codex unknown-quota accounts are selectable but do not outrank
   equivalent accounts with fresh known quota; `OPENAI_API_KEY` fallback is not
   rendered or ranked as a subscription account.
-- Integration: delayed quota turns persist and restore the full turn request,
-  including files, uploads/images, permission mode, review authorization, model,
-  and assembled prompt context.
+- Integration: with every account exhausted, the turn fails immediately with the
+  earliest reset time, pins nothing, provisions no credentials, and schedules no
+  timer (req 13); a queued message behind it fails the same way.
 - Integration: exhausted-but-authenticated accounts keep
   `AgentRegistry.authConfigured` true; account selection reports `all_exhausted`
   separately from `auth_required`.

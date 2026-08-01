@@ -15,6 +15,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { AgentId } from "../shared/types/agent-types.js";
 import { providerAccountCredentialRoot } from "./provider-account-manager.js";
+import { SUBTREE_STATE_SUBPATHS } from "./token-sync-manager.js";
 import {
   AGENT_CREDENTIAL_PATHS,
   SHARED_CREDENTIAL_PATHS,
@@ -58,6 +59,55 @@ export function provisionProviderAccountCredentials(
   );
 }
 
+/**
+ * Clear a session's existing provider subtree so a *different* account's
+ * subtree can be copied over it — **without** deleting the agent's
+ * conversation state.
+ *
+ * `cpSync({ force: true })` already overwrites every file both subtrees have;
+ * the removal exists only for files the outgoing account left that the
+ * incoming one does not produce (a cached `.claude/settings.json`, a stale
+ * per-account state file). Doing that as a blanket `rmSync(rel)` also takes
+ * `projects/`, `sessions/`, `archived_sessions/`, and `history.jsonl` — the
+ * files Claude's `--resume` and Codex's `thread/resume` read. Those are
+ * per-session and carry no account identity, so an account switch does not
+ * invalidate them; deleting them is what would strand the user mid-conversation
+ * (docs/150 req 9, and the same data-loss shape docs/153 hit).
+ *
+ * Three cases, mirroring the allowlist's own fail-safe contract:
+ *
+ *   - Path is a **file** (`.claude.json`): no conversation state to lose,
+ *     remove it.
+ *   - Path is a **directory with an allowlist entry** (`.claude`, `.codex`):
+ *     remove every top-level entry *except* the allowlisted ones.
+ *   - Path is a **directory with no allowlist entry** (a future agent's
+ *     subtree): remove nothing and let the copy overwrite in place. Leaking a
+ *     stale file is recoverable; deleting an unknown agent's conversation is
+ *     not. This is the same "absent from the map ⇒ unpreservable ⇒ don't
+ *     delete" default {@link SUBTREE_STATE_SUBPATHS} documents for the leak
+ *     repair.
+ */
+function removeProviderSubtreeForReplacement(sessionDir: string, rel: string): void {
+  const target = path.join(sessionDir, rel);
+  const stat = fs.lstatSync(target, { throwIfNoEntry: false });
+  if (!stat) return;
+
+  // A symlink at `rel` is the docs/153 leak shape, not a real subtree — drop
+  // the link itself (never follow it) and let the copy write a real dir.
+  if (!stat.isDirectory()) {
+    fs.rmSync(target, { recursive: true, force: true });
+    return;
+  }
+
+  const preserved = SUBTREE_STATE_SUBPATHS[rel];
+  if (!preserved) return;
+
+  for (const entry of fs.readdirSync(target)) {
+    if (preserved.includes(entry)) continue;
+    fs.rmSync(path.join(target, entry), { recursive: true, force: true });
+  }
+}
+
 function provisionAgentCredentialsFromRoot(
   credentialsRoot: string,
   sessionId: string,
@@ -77,7 +127,7 @@ function provisionAgentCredentialsFromRoot(
   writeSessionGitConfig(credentialsRoot, sessionId);
   for (const rel of AGENT_CREDENTIAL_PATHS[agentId]) {
     if (replaceExistingProviderSubtree) {
-      fs.rmSync(path.join(dir, rel), { recursive: true, force: true });
+      removeProviderSubtreeForReplacement(dir, rel);
     }
     copyCredentialPath(sourceRoot, dir, rel);
   }
