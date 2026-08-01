@@ -790,6 +790,7 @@ export interface PrPollerDeps {
   sessionManager: SessionManager;
   sseBroadcast: (event: string, data: unknown) => void;
   runnerRegistry: SessionRunnerRegistry;
+  defaultAgentId: AgentId;
   createRepoGit: (dir: string) => RepoGit;
   /**
    * Factory for a GitManager bound to a session's workspace dir. Passed to
@@ -867,7 +868,7 @@ export function createPrStatusPoller(
 ): PrStatusPoller {
   const {
     deps, githubAuthManager, sessionManager, sseBroadcast,
-    runnerRegistry, createRepoGit, getBareCacheDir, pruneSessionVolumes,
+    runnerRegistry, defaultAgentId, createRepoGit, getBareCacheDir, pruneSessionVolumes,
     onRepoMainAdvanced, containerManager, mergeWatchManager,
     createGitManager, chatHistoryManager, usageManager, authManager, credentialStore,
     drainQueueForSession, agentFactory,
@@ -926,6 +927,15 @@ export function createPrStatusPoller(
     isAutoResolveEnabled: credentialStore ? (() => credentialStore.getAutoResolveConflicts()) : (() => false),
     // docs/169 — global gate for the auto-fix-CI loop, read at decision time.
     isAutoFixEnabled: credentialStore ? (() => credentialStore.getAutoFixCi()) : (() => false),
+    ensureRunner: async (sessionId) => {
+      const session = sessionManager.get(sessionId);
+      if (!session?.workspaceDir) return undefined;
+      return runnerRegistry.getOrCreate(
+        sessionId,
+        session.workspaceDir,
+        session.agentId ?? defaultAgentId,
+      );
+    },
     ...(rebaseAndResolveCb ? { rebaseAndResolveCb } : {}),
     // docs/169 — the auto-fix loop's per-attempt callback. Fetches CI logs and
     // dispatches the fix as a `systemTurn` (suppressing live-steering), then

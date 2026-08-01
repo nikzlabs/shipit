@@ -107,7 +107,7 @@ function recordingCb(outcome: () => AutoFixResult | Promise<AutoFixResult>): Rec
   return cb as RecordingCb;
 }
 
-function makeFixture(opts?: { enabled?: boolean; runner?: RunnerStub; cb?: RecordingCb; paused?: boolean }) {
+function makeFixture(opts?: { enabled?: boolean; runner?: RunnerStub; cb?: RecordingCb; paused?: boolean; ensureRunner?: () => Promise<RunnerStub | undefined> }) {
   let time = 1_000_000;
   let enabled = opts?.enabled ?? true;
   let paused = opts?.paused ?? false;
@@ -122,6 +122,9 @@ function makeFixture(opts?: { enabled?: boolean; runner?: RunnerStub; cb?: Recor
     () => time,
     undefined,
     () => !paused, // docs/186 — per-session pause gate
+    opts?.ensureRunner
+      ? async () => await opts.ensureRunner!() as unknown as SessionRunnerInterface | undefined
+      : undefined,
   );
   return {
     manager,
@@ -152,6 +155,22 @@ describe("AutoFixManager", () => {
   it("fires on first FAILURE poll when idle + enabled", async () => {
     await fx.fail();
     await tick();
+    expect(fx.cb.count()).toBe(1);
+  });
+
+  it("boots a runner server-side before firing when no viewer created one", async () => {
+    const runner = makeRunner(false);
+    let ensured = 0;
+    fx = makeFixture({
+      runner: undefined,
+      ensureRunner: async () => { ensured++; return runner; },
+    });
+    fx.setRunner(undefined);
+
+    await fx.fail();
+    await tick();
+
+    expect(ensured).toBe(1);
     expect(fx.cb.count()).toBe(1);
   });
 

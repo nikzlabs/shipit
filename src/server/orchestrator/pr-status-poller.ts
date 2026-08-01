@@ -44,6 +44,7 @@ import { RemediationArbiter } from "./auto-remediation-arbiter.js";
 import type { MergedPrInfo } from "./issue-lifecycle.js";
 import { PrSessionTracker } from "./pr-session-tracker.js";
 import { PollingGlobalGate } from "./polling-global-gate.js";
+import type { SessionRunnerInterface } from "./session-runner.js";
 import {
   PrPollingSupervisor,
   PR_STATUS_POLL_INTERVAL_MS,
@@ -201,6 +202,8 @@ export class PrStatusPoller {
     rebaseAndResolveCb?: RebaseAndResolveCb;
     /** docs/169 — global gate getter for the auto-fix-CI loop. */
     isAutoFixEnabled?: () => boolean;
+    /** Server-owned runner activation for viewerless remediation. */
+    ensureRunner?: (sessionId: string) => Promise<SessionRunnerInterface | undefined>;
   }) {
     this.githubAuth = opts.githubAuth;
     this.sessionManager = opts.sessionManager;
@@ -231,6 +234,7 @@ export class PrStatusPoller {
       // `autoFixCiPaused` opts out of the auto-fix loop even with the global
       // setting on. Read at decision time so a resume takes effect next poll.
       (sessionId) => !this.sessionManager.get(sessionId)?.autoFixCiPaused,
+      opts.ensureRunner,
     );
     this.autoMerge = new AutoMergeManager(this.githubAuth, onSessionChange);
     this.graceTracker = new CiGraceTracker(opts.getSharedRepoDir);
@@ -247,6 +251,7 @@ export class PrStatusPoller {
         opts.rebaseAndResolveCb,
         undefined,
         this.remediationArbiter,
+        opts.ensureRunner,
       );
     }
 
