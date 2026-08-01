@@ -7,6 +7,7 @@ import { emitChatCard } from "../chat-card-persistence.js";
 import { postTurnCommit } from "./post-turn.js";
 import { resolveRunner } from "./resolve-runner.js";
 import { autoResetMergedBranchOnContinue, isResetEligible } from "../services/pre-turn-reset.js";
+import { sessionNeedsAccountFailover } from "../services/provider-account-switch.js";
 import { routeVoiceNote } from "../voice/voice-note-router.js";
 import type { SessionRunnerInterface, SystemTurnDeps, QueuedMessage } from "../session-runner.js";
 import { startQueuedMessage } from "../queue-drain.js";
@@ -260,6 +261,31 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   // a new one.
   const agentInfo = ctx.agentRegistry.get(agentId);
   const useStreaming = ctx.credentialStore.getLiveSteering() && (agentInfo?.capabilities.supportsSteering ?? false);
+  // docs/150 reqs 3/7/8 — a resident streaming process holds the OUTGOING
+  // account's token in memory, so a failover has to kill it. Env-prep does the
+  // switch, but it runs inside `executeAgentTurn`, by which point this function
+  // has already handed the executor an agent to write into — killing it there
+  // would leave `sendUserMessage` addressing a dead process. So release it
+  // here, before it can be captured; env-prep still owns the switch itself,
+  // and with no resident agent the turn simply spawns a fresh one against the
+  // new account's credentials.
+  if (
+    useStreaming &&
+    sessionNeedsAccountFailover(
+      capturedSessionId ? ctx.sessionManager.get(capturedSessionId) : undefined,
+      ctx.providerAccountManager,
+    )
+  ) {
+    const resident = runner?.getAgent() ?? null;
+    if (resident) {
+      try {
+        resident.kill();
+      } catch {
+        // Already gone is the state we wanted.
+      }
+      runner?.setAgent(null);
+    }
+  }
   const existingAgent = useStreaming ? (runner?.getAgent() ?? null) : null;
   const currentAgent = existingAgent ?? ctx.agentFactory(agentId);
   if (!existingAgent && runner) runner.setAgent(currentAgent);

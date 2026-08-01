@@ -305,6 +305,36 @@ export class ProviderAccountManager {
     return { ok: false, reason: "auth_required" };
   }
 
+  /**
+   * docs/150 reqs 3, 7, 8 — can the route a session is **already pinned to**
+   * still run a turn?
+   *
+   * `selectAccountForTurn` cannot answer this: it returns the *best* route in
+   * priority order, so a session healthily pinned to a secondary account would
+   * see it name the primary and read that as "you have been skipped." The
+   * eligibility rules are the same, asked about one route instead of all of
+   * them.
+   *
+   * Reserved env/API-key routes are always usable. They are metered billing,
+   * not a subscription window, so there is nothing to exhaust — and req 12
+   * means nothing may move a turn off them for quota reasons either.
+   * A pinned account that has since been deleted or signed out reports
+   * unusable, which sends the caller back through the router.
+   */
+  isRouteUsableForTurn(
+    provider: AgentId,
+    route: ProviderRoute,
+    opts: Pick<SelectAccountOptions, "model"> = {},
+  ): boolean {
+    if (route.kind !== "account") return true;
+    const account = this.get(provider, route.id);
+    if (!account) return false;
+    if (account.status !== "ready" && account.status !== "authenticating") return false;
+    if (opts.model && !accountSupportsModel(account, opts.model)) return false;
+    const limits = this.getSubscriptionLimits?.()?.[provider] ?? {};
+    return exhaustedUntil(limits[route.id], account, Date.now()) === null;
+  }
+
   hasAnyAuthForProvider(provider: AgentId): boolean {
     if (this.list(provider).some((account) => account.status === "ready")) return true;
     if (provider === "claude") {

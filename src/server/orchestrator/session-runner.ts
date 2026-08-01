@@ -605,6 +605,13 @@ export interface SystemTurnDeps {
    */
   prepareAgentEnv?: (sessionId: string, agentId: AgentId) => Promise<void>;
   /**
+   * docs/150 — whether the persisted provider account must change before the
+   * next agent is captured. The dispatch adapter uses this to retire a
+   * resident streaming process before creating the incoming turn's agent;
+   * environment prep later performs the credential and route switch.
+   */
+  needsAccountFailover?: (sessionId: string, agentId: AgentId) => boolean;
+  /**
    * docs/179 — heal the agent's OAuth source token. Used by the runtime-401
    * auto-retry: when a turn's CLI emits `auth_required`, the executor awaits
    * this and, if the token rotated back to usable, re-dispatches the same turn

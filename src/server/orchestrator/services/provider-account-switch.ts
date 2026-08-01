@@ -33,12 +33,42 @@
  * than trusting the docstring.
  */
 
-import type { AgentId } from "../../shared/types/agent-types.js";
+import type { AgentId, SessionInfo } from "../../shared/types.js";
 import type { SessionManager } from "../sessions.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
 import { provisionProviderAccountCredentials } from "../session-agent-credentials.js";
+import { routeFromSelection } from "../provider-route-preflight.js";
 import { ServiceError } from "./types.js";
+
+/**
+ * docs/150 reqs 3, 7, 8 — does this session's pinned route need to move before
+ * its next turn?
+ *
+ * Cheap and side-effect free, so a caller can ask it at a point where doing the
+ * move would be unsafe. `runAgentWithMessage` uses exactly that: it asks before
+ * it captures the resident streaming process, and releases the process if the
+ * answer is yes — the switch itself still happens once, later, inside
+ * `prepareSessionAgentEnvironment` where all routing lives.
+ *
+ * Answers `false` for an unpinned session (the first-turn path already routes
+ * through the router) and for reserved env/API-key routes (metered billing has
+ * no subscription window to exhaust, and req 12 forbids moving a turn off one
+ * for quota reasons anyway).
+ */
+export function sessionNeedsAccountFailover(
+  session: Pick<SessionInfo, "agentId" | "providerRouteKind" | "providerRouteId" | "model"> | undefined,
+  providerAccountManager: Pick<ProviderAccountManager, "isRouteUsableForTurn"> | undefined,
+): boolean {
+  if (!session || !providerAccountManager) return false;
+  const { agentId, providerRouteKind, providerRouteId } = session;
+  if (!agentId || providerRouteKind !== "account" || !providerRouteId) return false;
+  return !providerAccountManager.isRouteUsableForTurn(
+    agentId,
+    { kind: "account", id: providerRouteId },
+    session.model === undefined ? {} : { model: session.model },
+  );
+}
 
 export interface SwitchSessionProviderAccountDeps {
   sessionManager: SessionManager;
@@ -137,5 +167,86 @@ export function switchSessionProviderAccount(
     toAccountId,
     agentSessionId: session.agentSessionId,
     killedRunningAgent,
+  };
+}
+
+/**
+ * The move a failover made, for the caller to report to the user (req 11).
+ * Labels are the user's own account names, because "moved from acct_9f3e… to
+ * acct_1b77…" tells them nothing about which subscription is now paying.
+ */
+export interface PinnedAccountFailover {
+  provider: AgentId;
+  fromAccountId: string;
+  fromLabel: string;
+  toAccountId: string;
+  toLabel: string;
+}
+
+export interface FailoverPinnedSessionDeps {
+  sessionManager: Pick<SessionManager, "get" | "setProviderRoute">;
+  providerAccountManager: Pick<
+    ProviderAccountManager,
+    "isRouteUsableForTurn" | "selectAccountForTurn" | "get"
+  >;
+  credentialsDir: string;
+}
+
+/**
+ * docs/150 reqs 3, 7, 8 — move a pinned session onto the next eligible account
+ * when the one it is pinned to can no longer run a turn.
+ *
+ * Returns `null` when nothing needed to change (the common case, checked on
+ * every turn). **Throws** `ProviderRouteUnavailableError` when the pinned
+ * account is spent and no other account can serve the turn — reqs 8 + 13
+ * together: failover applies to existing sessions, and when it has nowhere to
+ * go the turn fails immediately with the earliest reset time.
+ *
+ * The conversation survives because `provisionProviderAccountCredentials`
+ * preserves the resume files and `agentSessionId` is left untouched — the same
+ * guarantee `switchSessionProviderAccount` above documents and relies on.
+ *
+ * Process retirement belongs to the turn adapter before it captures or creates
+ * the incoming agent. Doing it here, during environment prep, would kill that
+ * newly-created agent instead of the outgoing resident process.
+ */
+export function failoverPinnedSession(
+  sessionId: string,
+  deps: FailoverPinnedSessionDeps,
+): PinnedAccountFailover | null {
+  const session = deps.sessionManager.get(sessionId);
+  if (!sessionNeedsAccountFailover(session, deps.providerAccountManager)) return null;
+  // Narrowing: `sessionNeedsAccountFailover` already established all three.
+  const provider = session?.agentId;
+  const fromAccountId = session?.providerRouteId;
+  if (!session || !provider || !fromAccountId) return null;
+
+  // Re-run the router rather than "pick the next one in the list": it is the
+  // single place that knows the priority order, the exhaustion rules, and req
+  // 12's refusal to roll onto metered billing. A blocking failure throws from
+  // here, which is what makes req 13 apply to existing sessions too.
+  const next = routeFromSelection(
+    provider,
+    deps.providerAccountManager.selectAccountForTurn(
+      provider,
+      session.model === undefined ? {} : { model: session.model },
+    ),
+  );
+  // A reserved route is not a failover target (req 12), and re-selecting the
+  // same account would mean the router disagrees with `isRouteUsableForTurn` —
+  // in either case, leave the session where it is rather than churn it.
+  if (next?.kind !== "account" || next.id === fromAccountId) return null;
+
+  provisionProviderAccountCredentials(deps.credentialsDir, sessionId, provider, next.id);
+  deps.sessionManager.setProviderRoute(sessionId, "account", next.id);
+
+  const accountLabel = (id: string): string =>
+    deps.providerAccountManager.get(provider, id)?.label ?? id;
+  return {
+    provider,
+    fromAccountId,
+    fromLabel: accountLabel(fromAccountId),
+    toAccountId: next.id,
+    toLabel: accountLabel(next.id),
   };
 }

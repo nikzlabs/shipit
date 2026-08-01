@@ -192,6 +192,17 @@ export async function runDispatchedTurn(
   };
 
   const runOnce = async (attempt: number): Promise<void> => {
+    // docs/150 — credential switching happens later in env prep, after this
+    // adapter has chosen its agent. Retire a resident process here, before
+    // capture, so we neither steer the turn into the outgoing account nor let
+    // env prep kill the newly-created incoming agent.
+    if (deps.needsAccountFailover?.(runner.sessionId, agentId)) {
+      const outgoing = runner.getAgent();
+      if (outgoing) {
+        try { outgoing.kill(); } catch { /* already gone */ }
+        runner.setAgent(null);
+      }
+    }
     // docs/140 + docs/163 — when a resident streaming process from a previous
     // turn is still alive, REUSE it (carry the message in via `sendUserMessage`)
     // exactly as the WS path does, rather than spawning a fresh agent. Spawning

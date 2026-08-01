@@ -78,7 +78,7 @@
 - [ ] Clear or replace failed in-progress assistant output during retry.
 - [ ] Record failover as a chat-visible system event attached to the original turn.
 - [x] Ensure all turn entrypoints use shared provider-account preflight: chat, answer-question, system turns, CI auto-fix, child sessions, and rebase/conflict recovery.
-- [ ] Re-check an already-pinned session's account before its turn (the preflight only decides for the first turn today).
+- [x] Re-check an already-pinned session's account before its turn; switch away from a known-exhausted or unusable account before spawning.
 
 ## Phase 4 — Policy Controls
 
@@ -87,7 +87,7 @@
 - [ ] Add Settings controls to reorder provider accounts; newly connected accounts append to the fallback order.
 - [ ] Persist per-provider short-window and weekly usage cutoffs with 90% defaults and 1–100 validation.
 - [ ] Add Settings controls for both proactive failover cutoffs.
-- [ ] Re-evaluate account eligibility before every turn, including existing-session, queued, and system-initiated turns.
+- [x] Re-evaluate account eligibility before every turn, including existing-session, queued, and system-initiated turns.
 - [ ] Switch an existing session to the next ordered eligible account when either configured cutoff is reached.
 - [x] Skip an account that cannot run the requested model and report no eligible account (req 17).
 - [ ] Add optional per-session account preference.

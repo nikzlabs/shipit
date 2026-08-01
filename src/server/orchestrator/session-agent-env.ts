@@ -38,6 +38,8 @@ import {
 import { repoUrlToHash } from "./git-utils.js";
 import type { ProviderAccountManager, ProviderRoute } from "./provider-account-manager.js";
 import { routeFromSelection } from "./provider-route-preflight.js";
+import { failoverPinnedSession } from "./services/provider-account-switch.js";
+import { emitNoticeInTurn } from "./chat-card-persistence.js";
 import { refreshExpiredMcpOAuthTokens } from "./services/mcp-oauth.js";
 import { collectMcpAgentEnv } from "./secret-resolver.js";
 import { buildConversationReplay } from "./services/replay.js";
@@ -140,7 +142,7 @@ export interface SessionAgentEnvDeps {
    * session can never get stuck resume-looping), the new conversation just
    * starts without the prior transcript.
    */
-  chatHistoryManager?: Pick<ChatHistoryManager, "load">;
+  chatHistoryManager?: Pick<ChatHistoryManager, "load" | "replaceInProgress">;
 }
 
 /**
@@ -294,14 +296,45 @@ export async function prepareSessionAgentEnvironment(
   const { sessionId, agentId, deps } = args;
   const session = deps.sessionManager.get(sessionId);
   if (!session) return {};
+  // docs/150 reqs 3/7/8 — an ALREADY-pinned session whose account is spent
+  // moves to the next eligible one before the turn starts, keeping its
+  // transcript and workspace (req 9). Throws when there is nowhere to go, which
+  // is how req 13's fail-fast reaches existing sessions and not just first
+  // turns. Gated on the same flag as the routing preflight: this rewrites
+  // credentials and kills a process, which a pre-turn warm-up must not do.
+  const failover =
+    args.enforceAccountRouting && deps.providerAccountManager
+      ? failoverPinnedSession(sessionId, {
+          sessionManager: deps.sessionManager,
+          providerAccountManager: deps.providerAccountManager,
+          credentialsDir: deps.credentialsDir,
+        })
+      : null;
+  // Re-read: the failover just repointed `provider_route_id`, and everything
+  // below (provisioning, token sync, sync-back bookkeeping) has to see the
+  // account the turn will actually run on.
+  const routedSession = failover ? (deps.sessionManager.get(sessionId) ?? session) : session;
+
   // docs/150 reqs 13/17 — route preflight. For a session that has not been
   // pinned to a route yet this is the decision point, so it is also the last
   // moment a turn can be stopped *before* pinning and credential provisioning
   // make it look like it ran on an account.
   const selectedRoute =
-    session.providerRouteKind && session.providerRouteId
-      ? { kind: session.providerRouteKind, id: session.providerRouteId }
+    routedSession.providerRouteKind && routedSession.providerRouteId
+      ? { kind: routedSession.providerRouteKind, id: routedSession.providerRouteId }
       : selectRouteForNewTurn(agentId, session.model, deps, args.enforceAccountRouting ?? false);
+
+  // req 11 — say it in the session, where the user is already looking, and
+  // persist it: a switch the transcript forgets on reload is not a record.
+  const chatHistory = deps.chatHistoryManager;
+  if (failover && runner && chatHistory) {
+    emitNoticeInTurn(
+      runner,
+      sessionId,
+      `${failover.fromLabel} is out of quota — continuing this session on ${failover.toLabel}.`,
+      chatHistory,
+    );
+  }
 
   // Step 1: provision the pinned agent's credential subtree (write-once),
   // then mark the session as pinned. After the first turn `session.agentPinned`
