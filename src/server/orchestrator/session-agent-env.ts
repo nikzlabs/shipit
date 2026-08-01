@@ -304,7 +304,7 @@ export async function prepareSessionAgentEnvironment(
   // credentials and kills a process, which a pre-turn warm-up must not do.
   const failover =
     args.enforceAccountRouting && deps.providerAccountManager
-      ? failoverPinnedSession(runner, sessionId, {
+      ? failoverPinnedSession(sessionId, {
           sessionManager: deps.sessionManager,
           providerAccountManager: deps.providerAccountManager,
           credentialsDir: deps.credentialsDir,

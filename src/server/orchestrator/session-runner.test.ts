@@ -476,6 +476,59 @@ describe("SessionRunner", () => {
     runner.dispose({ force: true });
   });
 
+  it("retires the outgoing resident before creating an account-failover turn", async () => {
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    const outgoing = {
+      kill: vi.fn(),
+      removeAllListeners: vi.fn(),
+    } as any;
+    const incoming = {
+      on: vi.fn(),
+      run: vi.fn(),
+      kill: vi.fn(),
+      removeAllListeners: vi.fn(),
+    } as any;
+    runner.setAgent(outgoing);
+    runner.isStreamingActive = true;
+    runner.setSystemTurnDeps({
+      agentFactory: () => incoming,
+      autoCommit: vi.fn().mockResolvedValue({
+        commitHash: null,
+        parentHash: null,
+        conflictedFiles: [],
+        rebaseInProgress: false,
+        secretFindings: [],
+      }),
+      scheduleAutoPush: vi.fn(),
+      listenerDeps: {
+        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
+        chatHistoryManager: { replaceInProgress: vi.fn(), finalizeInProgress: vi.fn(), append: vi.fn() } as any,
+        usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as any,
+        authManager: { startOAuthFlow: vi.fn() } as any,
+        sseBroadcast: vi.fn(),
+        broadcastLog: vi.fn(),
+        getSelectedModel: () => undefined,
+      },
+      needsAccountFailover: () => true,
+      prepareAgentEnv: vi.fn().mockResolvedValue(undefined),
+      buildRunParams: vi.fn().mockResolvedValue({ prompt: "continue", cwd: "/tmp/s1" }),
+    });
+
+    runner.dispatch(testDispatch({ text: "continue" }));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(outgoing.kill).toHaveBeenCalledOnce();
+    expect(incoming.kill).not.toHaveBeenCalled();
+    expect(incoming.run).toHaveBeenCalledWith(expect.objectContaining({ prompt: "continue" }));
+    expect(runner.getAgent()).toBe(incoming);
+    runner.dispose({ force: true });
+  });
+
   it("dispatch still spawns the agent when env prep's network step hangs (warm-pool hang regression)", async () => {
     // The warm-pool quick-session hang (docs/162 follow-up): the install gate
     // resolved, but a pre-spawn env-prep await (an un-timed MCP-OAuth refresh /

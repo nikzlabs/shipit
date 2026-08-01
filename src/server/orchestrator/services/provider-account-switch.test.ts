@@ -323,7 +323,7 @@ describe("failoverPinnedSession", () => {
   it("moves an exhausted pinned session to the next account and keeps the conversation (reqs 3, 8, 9)", () => {
     const { a, b } = pinnedToExhaustedPrimary();
 
-    const moved = failoverPinnedSession(null, SESSION, deps());
+    const moved = failoverPinnedSession(SESSION, deps());
 
     expect(moved).toMatchObject({
       provider: "claude",
@@ -344,21 +344,6 @@ describe("failoverPinnedSession", () => {
     ).toBe("token-b");
   });
 
-  it("kills the resident process so it stops spending the outgoing account's token", () => {
-    pinnedToExhaustedPrimary();
-    let killed = 0;
-    let cleared = 0;
-    const runner = {
-      getAgent: () => ({ kill: () => { killed += 1; } }),
-      setAgent: () => { cleared += 1; },
-    } as never;
-
-    failoverPinnedSession(runner, SESSION, deps());
-
-    expect(killed).toBe(1);
-    expect(cleared).toBe(1);
-  });
-
   it("does nothing while the pinned account still has quota", () => {
     const a = accounts.create("claude", "Work");
     accounts.create("claude", "Personal");
@@ -367,7 +352,7 @@ describe("failoverPinnedSession", () => {
     sessions.setAgentId(SESSION, "claude");
     sessions.setProviderRoute(SESSION, "account", a.id);
 
-    expect(failoverPinnedSession(null, SESSION, deps())).toBeNull();
+    expect(failoverPinnedSession(SESSION, deps())).toBeNull();
     expect(sessions.get(SESSION)?.providerRouteId).toBe(a.id);
   });
 
@@ -386,7 +371,7 @@ describe("failoverPinnedSession", () => {
     sessions.setProviderRoute(SESSION, "account", b.id);
 
     expect(accounts.getPrimary("claude")?.id).toBe(a.id);
-    expect(failoverPinnedSession(null, SESSION, deps())).toBeNull();
+    expect(failoverPinnedSession(SESSION, deps())).toBeNull();
     expect(sessions.get(SESSION)?.providerRouteId).toBe(b.id);
   });
 
@@ -399,7 +384,7 @@ describe("failoverPinnedSession", () => {
     const resetAt = new Date(Date.now() + 3_600_000).toISOString();
     limits = { claude: { [a.id]: spent(resetAt) } };
 
-    expect(() => failoverPinnedSession(null, SESSION, deps())).toThrow(ProviderRouteUnavailableError);
+    expect(() => failoverPinnedSession(SESSION, deps())).toThrow(ProviderRouteUnavailableError);
     // The session stays where it is: nothing to move to, so nothing moved.
     expect(sessions.get(SESSION)?.providerRouteId).toBe(a.id);
   });
@@ -416,7 +401,7 @@ describe("failoverPinnedSession", () => {
     const previous = process.env.ANTHROPIC_API_KEY;
     process.env.ANTHROPIC_API_KEY = "sk-metered";
     try {
-      expect(() => failoverPinnedSession(null, SESSION, deps())).toThrow(ProviderRouteUnavailableError);
+      expect(() => failoverPinnedSession(SESSION, deps())).toThrow(ProviderRouteUnavailableError);
       expect(sessions.get(SESSION)?.providerRouteId).toBe(a.id);
     } finally {
       if (previous === undefined) delete process.env.ANTHROPIC_API_KEY;
@@ -428,12 +413,12 @@ describe("failoverPinnedSession", () => {
     sessions.setAgentId(SESSION, "claude");
     sessions.setProviderRoute(SESSION, "reserved", "claude-api-key");
 
-    expect(failoverPinnedSession(null, SESSION, deps())).toBeNull();
+    expect(failoverPinnedSession(SESSION, deps())).toBeNull();
     expect(sessions.get(SESSION)?.providerRouteId).toBe("claude-api-key");
   });
 
   it("does nothing for a session that has not been pinned yet", () => {
     sessions.setAgentId(SESSION, "claude");
-    expect(failoverPinnedSession(null, SESSION, deps())).toBeNull();
+    expect(failoverPinnedSession(SESSION, deps())).toBeNull();
   });
 });

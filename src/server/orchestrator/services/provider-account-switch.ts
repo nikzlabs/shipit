@@ -35,7 +35,7 @@
 
 import type { AgentId, SessionInfo } from "../../shared/types.js";
 import type { SessionManager } from "../sessions.js";
-import type { SessionRunnerInterface, SessionRunnerRegistry } from "../session-runner.js";
+import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
 import { provisionProviderAccountCredentials } from "../session-agent-credentials.js";
 import { routeFromSelection } from "../provider-route-preflight.js";
@@ -206,13 +206,11 @@ export interface FailoverPinnedSessionDeps {
  * preserves the resume files and `agentSessionId` is left untouched — the same
  * guarantee `switchSessionProviderAccount` above documents and relies on.
  *
- * Deliberately does NOT consult a running turn: the caller is the turn's own
- * pre-spawn step, so "a turn is running" is always true and would refuse every
- * failover. Killing the resident process is exactly the point — it holds the
- * outgoing account's token in memory.
+ * Process retirement belongs to the turn adapter before it captures or creates
+ * the incoming agent. Doing it here, during environment prep, would kill that
+ * newly-created agent instead of the outgoing resident process.
  */
 export function failoverPinnedSession(
-  runner: Pick<SessionRunnerInterface, "getAgent" | "setAgent"> | null,
   sessionId: string,
   deps: FailoverPinnedSessionDeps,
 ): PinnedAccountFailover | null {
@@ -238,19 +236,6 @@ export function failoverPinnedSession(
   // same account would mean the router disagrees with `isRouteUsableForTurn` —
   // in either case, leave the session where it is rather than churn it.
   if (next?.kind !== "account" || next.id === fromAccountId) return null;
-
-  // Kill first: a live process keeps spending the outgoing account's token
-  // regardless of what we write to disk.
-  const agent = runner?.getAgent() ?? null;
-  if (agent) {
-    try {
-      agent.kill();
-    } catch {
-      // Already gone is the state we wanted; the reprovision below is what
-      // matters and must not be skipped because a dead handle threw.
-    }
-    runner?.setAgent(null);
-  }
 
   provisionProviderAccountCredentials(deps.credentialsDir, sessionId, provider, next.id);
   deps.sessionManager.setProviderRoute(sessionId, "account", next.id);

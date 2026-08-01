@@ -35,6 +35,7 @@ import { postTurnCommit } from "./ws-handlers/post-turn.js";
 import { routeVoiceNote } from "./voice/voice-note-router.js";
 import type { VoiceNotePayload, VoiceNoteSource } from "../shared/types/voice-note-types.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
+import { sessionNeedsAccountFailover } from "./services/provider-account-switch.js";
 
 // ---- Runner registry setup ----
 
@@ -450,6 +451,10 @@ export function createRunnerRegistry(
               },
             });
           },
+          ...(providerAccountManager ? {
+            needsAccountFailover: (sessionId: string) =>
+              sessionNeedsAccountFailover(sessionManager.get(sessionId), providerAccountManager),
+          } : {}),
         } : {}),
         // Single shared commit helper — same `postTurnCommit` the WS path uses
         // (workspace-locked auto-commit + conflict notice + auto-push + commit
