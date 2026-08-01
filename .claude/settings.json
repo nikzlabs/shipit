@@ -2,9 +2,7 @@
   "permissions": {
     "allow": [
       "Edit(.claude/skills/**)",
-      "Write(.claude/skills/**)",
-      "Edit(**/.claude/skills/**)",
-      "Write(**/.claude/skills/**)"
+      "Edit(**/.claude/skills/**)"
     ]
   }
 }
