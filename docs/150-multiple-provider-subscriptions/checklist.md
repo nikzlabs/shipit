@@ -30,6 +30,13 @@
 - [x] Add account-qualified auth pending/complete/failed SSE events.
 - [x] Add Settings endpoints/services for list, create, rename, make primary, and disconnect provider accounts.
 - [x] Render provider account management in Settings.
+- [ ] Replace provider-wide Claude/Codex subscription cards with one account-row authentication surface for all stored subscriptions.
+- [ ] Share the account-row shell across Claude code-paste and Codex device-code challenge variants.
+- [ ] Key pending challenge, progress, diagnostics, failure, and completion state by provider account id.
+- [ ] Reuse the account-row flow in onboarding instead of singleton Claude/Codex auth cards.
+- [ ] Move Claude and Codex Platform API-key inputs into separate collapsed fallback sections with explicit metered-billing copy.
+- [ ] Migrate singleton Claude/Codex login, code, cancel, and sign-out callers to provider-account endpoints.
+- [ ] Remove singleton subscription auth endpoints and provider-wide pending client state after caller migration.
 - [ ] Block disconnect while an account is pinned to a running session unless replacement is selected.
 - [ ] Implement account-switch runtime transition for pinned sessions: kill process, clear `agentSessionId`, reprovision, replay from local context.
 - [ ] Hydrate persisted provider route for detached/system-turn runner recreation.
@@ -110,5 +117,10 @@
 - [ ] Integration: answer-question and rebase/conflict direct `agent.run` paths use provider preflight.
 - [x] Client: Settings renders multiple accounts and primary selection.
 - [x] Client: account-scoped sign-in renders its authorization controls on the owning row and submits through the scoped endpoint.
+- [ ] Client: render the migrated primary/default Claude subscription through the same account-row auth flow as secondary Claude subscriptions.
+- [ ] Client: render the migrated primary/default Codex subscription through the same account-row device-auth flow as secondary Codex subscriptions.
+- [ ] Client: share the account-row auth shell across Claude code-paste and Codex device-code challenge variants.
+- [ ] Unit: API-key fallback configures only its reserved route and never marks a subscription account ready.
+- [ ] Client: an authenticated primary row does not hide or overwrite a secondary row's pending flow or diagnostics.
 - [ ] Client: subscription limits render multiple accounts per provider.
 - [ ] Client: session diagnostics renders the active account.
