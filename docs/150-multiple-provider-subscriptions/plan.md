@@ -1387,7 +1387,10 @@ Implementation started:
   marked `ready` and the fresh token is re-pushed only into sessions pinned to
   that account; on failure the row is marked `auth_failed`. Settings renders a
   per-row Connect / Cancel sign-in control; the pending URL/code surfaces
-  through the existing per-agent sign-in card. Concurrency is serialized per
+  inline on the owning account row. The client retains the event's `accountId`
+  and submits Claude authorization codes through the account-scoped endpoint,
+  so a provider-wide authenticated primary cannot hide a secondary account's
+  active flow. Concurrency is serialized per
   provider for now (the managers remain single-flow); concurrent flows for
   different accounts are deferred.
 

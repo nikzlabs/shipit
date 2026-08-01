@@ -219,13 +219,22 @@ export function useServerEvents(): void {
     es.addEventListener("agent_auth_pending", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as {
         agentId: AgentId;
+        accountId?: string;
         details:
           | { kind: "code-paste-url"; verificationUri: string }
           | { kind: "device-code"; verificationUri: string; userCode: string; expiresInSec: number };
       };
       // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
       if (data.agentId === "claude" && data.details.kind === "code-paste-url") {
-        useSessionStore.getState().setAuthUrl(data.details.verificationUri);
+        if (data.accountId) {
+          useSettingsStore.getState().setProviderAccountAuth({
+            provider: "claude",
+            accountId: data.accountId,
+            verificationUri: data.details.verificationUri,
+          });
+        } else {
+          useSessionStore.getState().setAuthUrl(data.details.verificationUri);
+        }
         const currentAttemptId = useSettingsStore.getState().claudeAuthDiagnostics.attemptId;
         if (currentAttemptId) {
           useSettingsStore.getState().setClaudeAuthProgress({
@@ -246,10 +255,17 @@ export function useServerEvents(): void {
     });
 
     es.addEventListener("agent_auth_complete", (e: MessageEvent) => {
-      const data = JSON.parse(e.data as string) as { agentId: AgentId };
+      const data = JSON.parse(e.data as string) as { agentId: AgentId; accountId?: string };
       // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
       if (data.agentId === "claude") {
-        useSessionStore.getState().setAuthUrl(null);
+        if (data.accountId) {
+          const active = useSettingsStore.getState().providerAccountAuth;
+          if (active?.provider === "claude" && active.accountId === data.accountId) {
+            useSettingsStore.getState().setProviderAccountAuth(null);
+          }
+        } else {
+          useSessionStore.getState().setAuthUrl(null);
+        }
         useSettingsStore.getState().finishClaudeAuthDiagnostics("complete", "Claude sign-in completed.");
       // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
       } else if (data.agentId === "codex") {
@@ -261,6 +277,7 @@ export function useServerEvents(): void {
     es.addEventListener("agent_auth_failed", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as {
         agentId: AgentId;
+        accountId?: string;
         reason?: "timeout" | "denied" | "error" | "revoked";
         message?: string;
       };
@@ -269,7 +286,14 @@ export function useServerEvents(): void {
         // Clear the URL so the sign-in card flips back to "Sign in" — also
         // the path the legacy `auth_required {}` broadcast took for
         // refresher-revoked accounts.
-        useSessionStore.getState().setAuthUrl(null);
+        if (data.accountId) {
+          const active = useSettingsStore.getState().providerAccountAuth;
+          if (active?.provider === "claude" && active.accountId === data.accountId) {
+            useSettingsStore.getState().setProviderAccountAuth(null);
+          }
+        } else {
+          useSessionStore.getState().setAuthUrl(null);
+        }
         useSettingsStore.getState().finishClaudeAuthDiagnostics(
           "failed",
           data.message ?? "Claude sign-in failed. You can retry or copy the diagnostic details.",
