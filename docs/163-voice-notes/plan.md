@@ -220,6 +220,15 @@ while making `delivered: true` mean a sink actually delivered (or the other path
 already did). Route and router tests cover fallback delivery, persistence, and
 cross-transport deduplication.
 
+### Post-ship fix #6 — blank webhook token preserves the secret
+
+The webhook editor promises that leaving its write-only bearer-token field
+blank keeps the configured token, but the POST route previously stored the
+blank string and silently removed authentication. The route now reuses the
+existing stored token when an existing webhook is saved with a blank token;
+the explicit Remove action remains the way to delete the webhook configuration.
+Covered by the voice route tests.
+
 ## Problem
 
 ShipIt has two voice mechanisms today, and neither is the right surface for

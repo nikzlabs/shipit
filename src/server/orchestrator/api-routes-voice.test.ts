@@ -471,6 +471,25 @@ describe("Voice-note webhook config (docs/163)", () => {
     await app.close();
   });
 
+  it("keeps the stored token when an existing webhook is saved with a blank token", async () => {
+    const credentialStore = makeCredentialStore();
+    credentialStore.setVoiceWebhook("https://hook.example/old", "super-secret");
+    const { app } = await buildApp({ credentialStore });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/voice/webhook",
+      payload: { url: "https://hook.example/new", token: "" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(credentialStore.getVoiceWebhook()).toEqual({
+      url: "https://hook.example/new",
+      token: "super-secret",
+    });
+    await app.close();
+  });
+
   it("rejects a non-http URL with 400", async () => {
     const { app } = await buildApp();
     const res = await app.inject({
