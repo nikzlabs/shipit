@@ -2,7 +2,7 @@
 
 ## Source
 
-Two human inputs, kept verbatim so the boundary between stated intent and design
+Human inputs, kept verbatim so the boundary between stated intent and design
 inference stays checkable.
 
 **SHI-56** (user-authored issue):
@@ -19,7 +19,25 @@ user-configurable usage cutoffs; both default to 90% and reaching either cutoff
 advances to the next eligible account; and this applies to existing sessions,
 with the ShipIt transcript and workspace context preserved across the switch.
 
+**Review feedback on this file**, 2026-08-01:
+
+> let's add a requirement that connecting an account UI should be the same for
+> the first and for subsequent accounts. Now they diverge.
+
+> [quota visible inside ShipIt] yes, as a pill like it already works now. The
+> pill should have the name of the account.
+
+> [next account cannot run the requested model] skip it and report
+
+> [child sessions] normal order.
+
+> [transcript and workspace preserved] I believe claude does this automatically,
+> using the same session id. Please check, also for codex.
+
 ## User-sourced requirements
+
+(Numbers are stable IDs, not an ordering. 10 and 11 live in the next section;
+12–18 were added later than 10–11 and keep their original IDs.)
 
 1. A user can connect more than one subscription account for the same agent
    provider — for example two Anthropic accounts, or two ChatGPT accounts.
@@ -54,26 +72,30 @@ with the ShipIt transcript and workspace context preserved across the switch.
     next eligible account regardless of what that turn has already done.
 15. Automatic failover is on by default for every provider. Connecting a second
     account is enough to enable it; no separate opt-in.
+16. Connecting an account uses the same UI for the first account and for every
+    subsequent account. The two flows must not diverge as they do today.
+17. If the next account in priority order cannot run the requested model, ShipIt
+    skips it and reports that no account can serve the turn. It does not
+    silently substitute a model that account does support.
+18. An agent-spawned child session picks its own account through the normal
+    priority order. It does not inherit the parent session's account.
 
 ## Requirements from standing product principles
 
 Sourced from `CLAUDE.md` §1–§2 (human-authored, repo-wide), not from a specific
 request for this feature.
 
-10. Each connected account's quota state is visible inside ShipIt. Checking how
-    much quota an account has left does not require opening a provider
-    dashboard.
+10. Each connected account's quota state is visible inside ShipIt as a
+    subscription-limits pill, the same pill that works today, labelled with the
+    account's name. Checking how much quota an account has left does not require
+    opening a provider dashboard. (Confirmed by the user in review; the pill
+    shape and per-account naming are their words, not an inference.)
 11. When ShipIt changes which account a session runs on, it says so where the
     user is already looking — in the session, not in an external tool.
 
 ## Open questions
 
-- **Next account cannot run the requested model.** If the next account in
-  priority order lacks the selected model (different plan or tier), should
-  ShipIt skip it and report that no account can serve the turn, or run the turn
-  on a model that account does support?
-- **Child sessions.** Should an agent-spawned child session inherit its parent's
-  provider account, or pick its own account through the normal priority order?
+None. Implementation is unblocked.
 
 ## Resolved questions
 
@@ -93,12 +115,36 @@ request for this feature.
   design.
 - 2026-08-01 — Is automatic failover on by default or opt-in per provider?
   **On by default.** Became requirement 15.
+- 2026-08-01 — If the next account cannot run the requested model, skip it and
+  report, or substitute a model it does support? **Skip it and report.** Became
+  requirement 17.
+- 2026-08-01 — Do child sessions inherit the parent's account or route
+  independently? **Normal priority order.** Became requirement 18; closes the
+  Phase 0 checklist item that had this undecided.
+- 2026-08-01 — Does preserving the conversation across an account switch need
+  ShipIt to rebuild context, or does the agent resume on its own from the same
+  session id? **The user was right — resume is local, and no requirement
+  changed.** Verified in code: Claude's `--resume <id>`
+  (`agents/claude/process.ts:197`) reads
+  `.claude/projects/<encoded-cwd>/<id>.jsonl`, and Codex's `thread/resume`
+  (`agents/codex/codex-event-handler.ts:682`) reads
+  `.codex/sessions/.../rollout-*.jsonl` — both files live in the session's own
+  credential subtree, which is mounted per session and carries no account
+  identity. Neither provider validates the conversation against the
+  authenticated account. So an account switch does not by itself break resume;
+  what would break it is the design's own rm-then-copy reprovisioning step
+  deleting those files. `plan.md` now preserves the conversation-state subpaths
+  (the same allowlist `token-sync-manager.ts` already uses for the docs/153
+  repair) instead of clearing `agentSessionId` and rebuilding a replay package.
 
 ## Provenance boundary
 
 Requirements 1–9 are the user's words, restated as observable behavior.
-12–15 come from the user's answers recorded under "Resolved questions".
-10–11 come from the standing product principles in `CLAUDE.md`. Everything else
+12–18 come from the user's answers and review feedback, each with a dated
+receipt under "Resolved questions" (16 came directly as a requirement, so it has
+no question to resolve). 11 comes from the standing product principles in
+`CLAUDE.md`; 10 started there and the user then specified its shape in review.
+Everything else
 in this feature — the account registry and credential layout, route pinning,
 capability snapshots, migration, quota-polling shape, and phasing — is design
 inferred by the agent and lives in `plan.md`. None of it is a requirement until

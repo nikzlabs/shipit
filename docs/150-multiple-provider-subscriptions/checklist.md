@@ -5,7 +5,7 @@
 - [ ] Confirm stable provider account identity fields for Claude.
 - [x] Confirm stable provider account identity fields for Codex.
 - [x] Decide default failover posture — on by default for every provider (req 15).
-- [ ] Decide child-session inheritance policy for provider routes.
+- [x] Decide child-session inheritance policy for provider routes — normal priority order, no inheritance (req 18).
 - [ ] Decide whether concurrent turns should spread across accounts or keep primary affinity.
 
 ## Phase 1 — Account Registry and Manual Routing
@@ -30,7 +30,7 @@
 - [x] Add account-qualified auth pending/complete/failed SSE events.
 - [x] Add Settings endpoints/services for list, create, rename, make primary, and disconnect provider accounts.
 - [x] Render provider account management in Settings.
-- [ ] Replace provider-wide Claude/Codex subscription cards with one account-row authentication surface for all stored subscriptions.
+- [ ] Replace provider-wide Claude/Codex subscription cards with one account-row authentication surface for all stored subscriptions (req 16 — first and subsequent accounts use the same connect UI).
 - [ ] Share the account-row shell across Claude code-paste and Codex device-code challenge variants.
 - [ ] Key pending challenge, progress, diagnostics, failure, and completion state by provider account id.
 - [ ] Reuse the account-row flow in onboarding instead of singleton Claude/Codex auth cards.
@@ -38,9 +38,9 @@
 - [ ] Migrate singleton Claude/Codex login, code, cancel, and sign-out callers to provider-account endpoints.
 - [ ] Remove singleton subscription auth endpoints and provider-wide pending client state after caller migration.
 - [ ] Block disconnect while an account is pinned to a running session unless replacement is selected.
-- [ ] Implement account-switch runtime transition for pinned sessions: kill process, clear `agentSessionId`, reprovision, replay from local context.
+- [ ] Implement account-switch runtime transition for pinned sessions: kill process, reprovision while preserving conversation-state subpaths, keep `agentSessionId`, resume (req 9).
 - [ ] Hydrate persisted provider route for detached/system-turn runner recreation.
-- [ ] Route child-session first turns through account selection or inheritance.
+- [ ] Route child-session first turns through the normal account router (req 18).
 - [ ] Route child follow-up turns through persisted agent and provider route, not default agent fallback.
 - [ ] Add `agent_init` provider-account metadata decoration at the orchestrator boundary.
 - [ ] Add local/dogfood direct-run account-scoped HOME/config-root support or explicit unsupported diagnostic.
@@ -55,7 +55,7 @@
 - [ ] Persist quota snapshots and plan labels onto provider accounts where appropriate.
 - [ ] Compute Claude model-specific quota state using `weeklyOpus`, `weeklySonnet`, or `weekly`.
 - [ ] Treat unknown Codex quota as selectable but lower-ranked than known healthy quota.
-- [ ] Render header subscription limits by provider account.
+- [ ] Render header subscription limits as one existing-style pill per account, labelled with the account name (req 10).
 - [ ] Keep the 1-account badge layout visually stable.
 - [ ] Render multi-account grouped/expanded quota state without layout overlap.
 - [ ] Render active provider account in session diagnostics.
@@ -71,8 +71,7 @@
 - [ ] Avoid duplicating user chat history during same-turn retry.
 - [ ] Clear or replace failed in-progress assistant output during retry.
 - [ ] Record failover as a chat-visible system event attached to the original turn.
-- [ ] Reset provider-side resume state when switching accounts.
-- [ ] Rebuild replay context from ShipIt history and workspace state after account switch.
+- [ ] Exempt the conversation-state subpaths (`SUBTREE_STATE_SUBPATHS`) from the rm half of account-switch reprovisioning so resume survives (req 9).
 - [ ] Ensure all turn entrypoints use shared provider-account preflight: chat, answer-question, system turns, CI auto-fix, child sessions, and rebase/conflict recovery.
 
 ## Phase 4 — Policy Controls
@@ -83,6 +82,7 @@
 - [ ] Add Settings controls for both proactive failover cutoffs.
 - [ ] Re-evaluate account eligibility before every turn, including existing-session, queued, and system-initiated turns.
 - [ ] Switch an existing session to the next ordered eligible account when either configured cutoff is reached.
+- [ ] Skip an account that cannot run the requested model and report no eligible account (req 17).
 - [ ] Add optional per-session account preference.
 - [ ] Add optional per-provider “do not auto-failover” setting.
 - [ ] Add optional provider-profile label refresh where stable.
@@ -106,7 +106,7 @@
 - [ ] Integration: exhausted primary starts a new turn on a secondary account.
 - [ ] Integration: all-exhausted fails the turn with reset times, pins nothing, and schedules no timer.
 - [ ] Integration: mid-turn exhaustion retries on secondary once, including after file edits or commands.
-- [ ] Integration: switching a pinned session kills the persistent agent, clears `agentSessionId`, and reprovisions credentials.
+- [ ] Integration: switching a pinned session kills the persistent agent, reprovisions credentials, preserves `.claude/projects` / `.codex/sessions` and `agentSessionId`, and resumes the same conversation.
 - [ ] Integration: detached system turns recreate runners from persisted agent/provider route.
 - [ ] Integration: answer-question and rebase/conflict direct `agent.run` paths use provider preflight.
 - [x] Client: Settings renders multiple accounts and primary selection.

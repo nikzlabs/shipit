@@ -257,21 +257,21 @@ Common steps (run for every disconnect):
    actually depend on the deleted account. Matching-by-stable-identity is
    the boundary; the per-session subtree as a whole is *not* deleted at the
    disconnect step.
-6. Clear `agentSessionId` for affected sessions because provider-side resume is
-   no longer valid against any other account.
+6. **Keep `agentSessionId` and the conversation-state subpaths.** Resume is
+   backed by a per-session local file, not by the deleted account (see
+   "Existing pinned sessions"), so disconnecting an account does not end the
+   conversation. Step 5's purge targets credential files by stable account
+   identity; it must not touch `projects/`, `sessions/`,
+   `archived_sessions/`, or `history.jsonl`.
 
 Then split by whether the user already picked a replacement:
 
 7a. **Replacement chosen.** Update `provider_route_kind` / `provider_route_id`
-    to the replacement account or reserved route. The next turn invokes the
-    full account-switch replay path — replay assembly reads from ShipIt's
-    persisted chat history and current workspace state, never from the deleted
-    source credentials or the now-purged per-session subtree.
+    to the replacement account or reserved route. The next turn provisions the
+    replacement credentials and resumes the same conversation.
 7b. **No replacement.** Mark sessions as needing account selection/re-auth
     before the next turn. The recovery path runs at next-turn time: it
-    re-provisions the user-selected account, clears any residual
-    `agentSessionId`, and starts from local context via the same replay
-    mechanism.
+    re-provisions the user-selected account and resumes.
 
 This prevents a deleted source account from continuing to run through a stale
 per-session credential copy.
@@ -325,9 +325,10 @@ provisioning:
    when usage is tied. A known-hard-exhausted account is never selected by this
    fallback.
 7. When preflight changes an existing session's account, stop its persistent
-   provider process, clear provider resume state, provision the replacement
-   credentials, persist the new route for audit, and rebuild provider context
-   from ShipIt's transcript plus current workspace state before starting.
+   provider process, provision the replacement credentials (preserving the
+   conversation-state subpaths), and persist the new route for audit. The
+   restarted process resumes the same conversation from `agentSessionId`; no
+   context rebuild is needed (req 9, see "Existing pinned sessions").
 8. If all eligible accounts are exhausted, fail the turn immediately with a
    chat-visible system message naming the earliest reset time, and do not start
    the agent (req 13). ShipIt does not hold the prompt for later; the user
@@ -392,9 +393,10 @@ Selection treats unknown capability conservatively for automatic failover:
 - If the current/primary account has unknown-but-unproven capability, it may be
   attempted because that matches today's behavior.
 - A fallback account with unknown capability is not used for **automatic
-  failover** when the current turn requires that capability; ShipIt asks for
-  user intent or reports `no_model_eligible_account` / `capability_unknown`
-  instead.
+  failover** when the current turn requires that capability; ShipIt reports
+  `no_model_eligible_account` / `capability_unknown` instead. Per req 17 it
+  never substitutes a model the account does support — a skipped account
+  produces a report, not a quiet downgrade.
 - Guarded-mode eligibility is checked via the live per-runner `guardedUnavailable`
   flag rather than `capabilities`, in line with the rule above.
 
@@ -496,25 +498,43 @@ though it is stored as a reserved route and not as a provider-account row.
 `agent_pinned` remains the first-turn boundary. On first turn, ShipIt pins both
 the agent and the provider account. The agent itself does not change.
 
-Provider-account switching after pinning is **not** a credential-only operation.
-The existing runtime has account-bound process and thread state:
+**Conversation continuity survives an account switch on its own — verified,
+not assumed.** An earlier draft of this doc asserted that "account B cannot
+resume account A's Claude session or Codex thread" and built a replay package
+around that assertion. The assertion is wrong. Both providers resume from a file
+in the session's own credential subtree, and neither file carries account
+identity:
 
-- Live steering reuses an existing worker-side process via
-  `existingAgent.sendUserMessage(...)` rather than calling `/agent/start`.
-- `agentSessionId` is persisted on the ShipIt session and passed back to adapters
-  for provider-side resume/thread continuation.
-- The mounted per-session credential subtree contains files for the previously
-  selected account.
+- Claude: `--resume <agentSessionId>` (`agents/claude/process.ts:197`) reads
+  `.claude/projects/<encoded-cwd>/<agentSessionId>.jsonl`.
+- Codex: `thread/resume` (`agents/codex/codex-event-handler.ts:682`) reads
+  `.codex/sessions/<Y>/<M>/<D>/rollout-*-<threadId>.jsonl`; losing that file is
+  what produces `-32600 no rollout found for thread id …`.
 
-So an account switch for an already-pinned session must be a full runtime
-transition:
+`~/.claude` and `~/.codex` are symlinks into the per-session credentials dir
+(`session-credentials-scaffold.ts` → `AGENT_CREDENTIAL_PATHS`), which is
+per-session and account-agnostic. So switching accounts does not invalidate
+resume. What *would* invalidate it is this doc's own reprovisioning step
+deleting those files — the same data-loss shape docs/153 already hit, which is
+why `token-sync-manager.ts` keeps a conversation-state allowlist
+(`CLAUDE_SESSION_STATE_SUBPATHS` / `CODEX_SESSION_STATE_SUBPATHS`:
+`projects`, `sessions`, `archived_sessions`, `history.jsonl`).
+
+That satisfies req 9 with no new machinery: keep `agentSessionId`, preserve the
+conversation-state subpaths across reprovisioning, and let the CLI resume.
+
+What genuinely is account-bound is the running process and the credential files.
+So an account switch for an already-pinned session is:
 
 1. Stop the persistent agent process, if one exists, before switching accounts.
-   Reusing the old process would keep sending requests with account A.
-2. Clear the stored `agentSessionId` unless the provider explicitly supports
-   cross-account conversation migration. Claude and Codex should be treated as
-   **not** supporting it: account B cannot resume account A's Claude session or
-   Codex thread.
+   Reusing the old process would keep sending requests with account A (live
+   steering reuses a worker-side process via
+   `existingAgent.sendUserMessage(...)` rather than calling `/agent/start`).
+2. **Keep the stored `agentSessionId`.** Provider-side resume is not reset by an
+   account change, per the verification above. If a future provider is found to
+   bind conversations to an account, clear it for *that* provider only and fall
+   back to `buildConversationReplay` (`services/replay.ts`), which already exists
+   for the rollback path — no bespoke replay package is needed.
 3. **Tighten the A3 re-push guard.** Today
    `repushAgentToken` / `repushTokenToPinnedSessions` (app-lifecycle.ts) only
    filter by `session.agentId === agentId` and "session holds the agent's
@@ -538,20 +558,23 @@ transition:
    this in one provisioning step (rm-then-copy) is preferable to a separate
    "delete A files" step because it leaves no window in which the per-session
    subtree is empty or half-A/half-B.
-5. Build an explicit replay package from ShipIt's persisted chat history and
-   current workspace state before starting account B. This package includes the
-   user/assistant transcript since the last checkpoint or bounded summary, any
-   still-relevant file references, active thread/checkpoint metadata, current git
-   diff summary, and a note that provider-side resume was reset because the
-   account changed. Inject it into the system prompt or first user message using
-   the same conversation-replay mechanism used when `agentSessionId` is cleared.
-6. Record a chat-visible system event that the session moved from account A to
-   account B and provider-side resume was reset.
 
-Automatic account switching is therefore allowed only at a turn boundary or in a
-safe pre-tool retry path. If a persistent process is alive, the router first
-terminates it and restarts from local context. Token sync-in alone is never
-sufficient for account switching.
+   **The rm half must exempt the conversation-state subpaths** listed above.
+   Removing `.claude/projects` or `.codex/sessions` would delete the very
+   transcript the next `--resume` / `thread/resume` reads, converting an
+   account switch into silent conversation loss — req 9's failure mode. Reuse
+   `SUBTREE_STATE_SUBPATHS` from `token-sync-manager.ts` rather than
+   re-deriving the list, so a future CLI layout change is fixed in one place.
+   Its "a subtree absent from the map is unpreservable, so fail rather than
+   delete" default applies here too.
+5. Record a chat-visible system event that the session moved from account A to
+   account B (req 11). The conversation itself continues uninterrupted, so the
+   event is attribution, not a warning about lost context.
+
+Automatic account switching is therefore allowed only at a turn boundary or in
+the mid-turn retry path. If a persistent process is alive, the router first
+terminates it and restarts, resuming the same conversation under the new
+account. Token sync-in alone is never sufficient for account switching.
 
 ## Data model
 
@@ -912,7 +935,7 @@ that every turn entrypoint must call before `agent.run()` or
 - resolving or pinning `provider_account_id`,
 - deciding whether an existing process can be reused,
 - killing/restarting a persistent process when account switch is required,
-- clearing provider resume state on account switch,
+- preserving conversation state across an account switch,
 - provisioning account-qualified credentials,
 - syncing the account token in before start,
 - returning metadata used to decorate `agent_init`,
@@ -973,10 +996,8 @@ attention are:
 - `src/server/orchestrator/services/child-sessions.ts:321`
   (`spawnChildSession`) — child session's very first turn. **Selection,
   not hydration:** there is no persisted routing to read; the spawn path
-  is the first place we *create* it. Covered by the
-  "child-session inheritance policy" question in Open questions: this
-  site either inherits the parent's `{ provider_route_kind, provider_route_id }`
-  or runs the normal account router. Either way it must persist the
+  is the first place we *create* it. Per req 18 it runs the normal account
+  router rather than inheriting the parent's route, and must persist the
   routing before `setAgentPinned` fires.
 - `src/server/orchestrator/services/recovery.ts` — both recovery paths that
   call `deps.runnerRegistry.getOrCreate(...)` during the `creating_container`
@@ -1122,13 +1143,23 @@ GitHub rate-limit state.
 ### UI surfaces
 
 - Settings owns account management.
-- Header subscription-limits badge shows multiple pills or a compact grouped
-  pill when a provider has more than one account. This is the doc-135
-  amendment described in "Relationship to prior docs": the pill is still
-  account-wide, never focus-driven, but a provider with N accounts now expands
-  into N sub-pills or a roll-up rather than collapsing to a single number. The
-  grouped layout MUST keep the header non-shifting for the common 1-account
-  case so existing users see no UI change after migration.
+- **One connect flow, not two (req 16).** Connecting the first account for a
+  provider and connecting the Nth use the same UI. Today they diverge: the
+  first account goes through the provider-wide sign-in control while
+  additional accounts go through the per-row account-scoped control added in
+  Phase 1. Collapse them — the provider-wide control becomes the account-row
+  control operating on the first (or a newly appended) row, so there is one
+  code path and one thing for the user to learn.
+- Header subscription-limits badge stays the existing pill (req 10) — same
+  visual language, one per connected account, each labelled with that
+  account's name. This is the doc-135 amendment described in "Relationship to
+  prior docs": the pill is still account-wide and never focus-driven, but a
+  provider with N accounts now shows N labelled pills (or a roll-up that
+  expands into them) rather than collapsing to a single number. The label is
+  the user's account name from Settings, which is what makes two pills for
+  the same provider tellable apart. The grouped layout MUST keep the header
+  non-shifting for the common 1-account case so existing users see no UI
+  change after migration.
 - Session diagnostics shows the active provider account for the current session.
 - Chat system messages report failover decisions:
   - `Claude: Primary exhausted until 14:30; retrying with Work account.`
@@ -1195,8 +1226,11 @@ copy-back is just "A" / "A-copyback" — there is no separate A2 step to run.)
   a stored account without that validation step.
 - **Pinned sessions whose credential source cannot be identified:** mark the
   session as needing re-auth/account selection before the next turn. The
-  recovery path must kill any persistent process, clear `agentSessionId`,
-  provision the chosen account, and restart from local context.
+  recovery path must kill any persistent process, provision the chosen
+  account, and restart. `agentSessionId` is cleared only when the
+  conversation-state file backing it is genuinely gone, in which case
+  `buildConversationReplay` re-seeds from ShipIt's transcript as it does on
+  the docs/153 repair path.
 
 The per-session subtree is always a consumer of account credentials, never
 the source of truth.
@@ -1482,17 +1516,15 @@ Planned authentication-surface consolidation:
   inline (see `OPENAI_AUTH_CLAIM` and `extractCodexPlan`). The Codex account
   identifier the duplicate-row check needs is therefore already available
   from existing credentials with no extra endpoint.
-- **Provider terms:** verify whether automatic failover among user-owned
-  subscriptions is acceptable for each provider before defaulting it on.
+- ~~Provider terms / default posture~~: **closed.** Req 15 — automatic failover
+  is on by default for every provider.
 - **Concurrent turns on one account:** decide whether ShipIt should avoid routing
   multiple simultaneous heavy turns to the same provider account when another
   account has more remaining quota.
 - **Warm pool timing:** confirm account selection happens before credential
   provisioning for every runner path, including claimed warm sessions.
-- **Child-session inheritance policy:** decide whether spawned sessions inherit
-  the parent's provider account by default or run the same account router used by
-  normal new sessions. Inheritance is more predictable; routing is better for
-  quota spreading.
+- ~~Child-session inheritance policy~~: **closed.** Req 18 — spawned sessions run
+  the normal account router; no inheritance.
 
 ## Test plan
 
@@ -1508,8 +1540,9 @@ Planned authentication-surface consolidation:
 - Integration: mid-turn exhaustion retries on the secondary account exactly once,
   including when the turn has already edited files or run commands (req 14).
 - Integration: switching a pinned session from account A to account B kills any
-  persistent agent, clears provider resume state, reprovisions account B's
-  credentials, and starts from local context.
+  persistent agent, reprovisions account B's credentials, preserves
+  `.claude/projects` / `.codex/sessions` and `agentSessionId`, and the next turn
+  resumes the same conversation (req 9).
 - Integration: agent-spawned child sessions persist `provider_account_id` and
   provision account-qualified credentials before their first `sendSystemMessage`
   turn.
