@@ -36,7 +36,7 @@ The fragment stays short (the reason it can be always-on): what a requirements d
 
 **Reviewing afterwards** (req 6). The agent asks a fresh-context reviewer to check the built code against the requirements: `shipit agent run` for a different backend (docs/144), or a subagent when only one backend is configured — both already exist and are already fresh-context. The reviewer gets the feature's requirements, the branch diff against the PR base, and the checklist; its findings surface inline in the transcript. The reviewer shares the workspace, so "review, don't edit" is instruction-level here too.
 
-## Key files (planned)
+## Key files
 
 - `src/server/orchestrator/prompts/spec-discipline.md` — the rules fragment
 - `src/server/orchestrator/agent-instructions.ts` — compose the fragment into the instruction skeleton
