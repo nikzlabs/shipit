@@ -11,6 +11,10 @@ When the rebase encounters conflicts and hands them to the system-owned agent
 turn, the same surface remains a buttonless progress card until the rebase
 completes or aborts; users are not presented with an action card while the agent
 is already resolving the problem.
+The automatic conflict resolver's outer `auto_resolve_started` / result
+envelopes also drive this client state. That makes progress visible from the
+start of an automatic attempt and provides a settle path when pre-flight work
+defers before the inner rebase emits its own lifecycle events.
 
 ## Motivation
 
