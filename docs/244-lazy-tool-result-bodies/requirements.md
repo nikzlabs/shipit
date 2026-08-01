@@ -1,7 +1,8 @@
 # Lazy-load heavy chat-history row bodies
 
-1. Loading a session's transcript must not transfer row bodies that the
-   conversation does not display inline.
+1. Loading a session's transcript must not transfer information that is not
+   visible without a click. This is also the completion criterion: there is no
+   separate transferred-size target to hit.
 2. A body that is not transferred up front must be fetchable on demand, at the
    point the user opens the view that displays it.
 3. Every tool result must keep the following available without a fetch: its
@@ -18,24 +19,38 @@
 7. This complements paging (SHI-266) rather than replacing it: paging avoids
    transferring untouched history, this reduces the weight of the pages that do
    load.
+8. The transcript itself must look exactly as it does today and must not
+   introduce loading states of its own. A view the user opens by clicking may
+   load data on demand, and may show a loading state while it does.
+9. Images may render inline at reduced resolution, with the full-resolution
+   image loaded when the user opens the full-size preview.
 
 ## Open questions
 
-- Is "the transcript looks and behaves exactly as it does today" a hard
-  requirement, or is a brief loading state acceptable in the places where the
-  body is already behind a click (the diff modal, the full-size image preview,
-  the "Show all N lines" expansion)? The design currently assumes the strict
-  reading, which is what rules out several cheaper options.
-- Are screenshots and pasted images allowed to display at reduced resolution
-  until the user clicks them, or must the inline rendering always come from the
-  full-resolution image? (Today the UI draws them at 96×96 from full-resolution
-  data.)
-- When a body can no longer be fetched — the row was removed by a rewind — what
-  should the user see in its place?
-- Is there a target the transferred size should meet, or is "materially smaller
-  than today" sufficient to call this done?
+None.
 
 ## Resolved questions
 
 - 2026-08-01 — Should the byte bound apply to the live WebSocket path or only
   to history loads? Answer: both. Recorded as requirement 6.
+- 2026-08-01 — Is "the transcript looks and behaves exactly as today" a hard
+  requirement, or is a brief loading state acceptable where the body is already
+  behind a click? Answer: the transcript must look like today and must not have
+  loading states itself; clicks may load more data. Recorded as requirement 8.
+- 2026-08-01 — Are images allowed to display at reduced resolution until the
+  user clicks them? Answer: yes. Recorded as requirement 9.
+- 2026-08-01 — Is there a target the transferred size should meet, or is
+  "materially smaller than today" sufficient? Answer: neither — the target is
+  not loading information that is not visible without clicks. Folded into
+  requirement 1 as the completion criterion; no separate size requirement.
+- 2026-08-01 — What should the user see when a body can no longer be fetched
+  because a rewind removed the row? Answer: the question was based on a false
+  premise and no requirement follows from it. Verified in the code: a chat
+  rewind deletes the rows (`ChatHistoryManager.truncate`) and the client drops
+  the same rows from the transcript in the same handler
+  (`rewind-complete.ts` → `setMessages(prev.slice(0, gapPosition))`), so the
+  expand affordance goes away with the row. A code rewind only sets
+  `rolled_back = 1` (`markRolledBackFromIndex`) and deletes nothing, so those
+  rows stay visible and their bodies stay fetchable. A visible row therefore
+  always has a fetchable body, and an unfetchable one is an ordinary request
+  error rather than a state to design for.

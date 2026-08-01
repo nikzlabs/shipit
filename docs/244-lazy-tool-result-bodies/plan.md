@@ -13,13 +13,22 @@ near-1 MB tool outputs is still a heavy payload. This feature bounds the bytes.
 ## Requirements
 
 This feature is under requirements discipline — `requirements.md` in this folder
-is the source of truth for what it must do, and **four open questions there
-currently block implementation**. Everything in this document is design: the
-mechanism chosen to satisfy those requirements, not the requirements themselves.
+is the source of truth for what it must do. No open questions remain.
+Everything in this document is design: the mechanism chosen to satisfy those
+requirements, not the requirements themselves.
 
-The guiding constraint below — that **no change should be visible in the
-transcript** — is an inferred design stance, not a stated requirement. It is the
-first open question, because it is what rules out several cheaper options.
+Two resolutions shape the design directly:
+
+* **Req 8** — the transcript must look exactly as it does today and carry no
+  loading states of its own, but a view opened by a click may load on demand.
+  So the inline artifacts below (the preview, `+N -M`, the thumbnail) are
+  non-negotiable, while the diff modal, the full-size image preview, and the
+  "Show all N lines" expansion may each show a spinner.
+* **Req 9** — images may render inline at reduced resolution. This is what
+  makes the thumbnail mechanism legal rather than a compromise.
+
+Req 1 also fixes the completion criterion: *do not load information that is not
+visible without a click*. There is no byte target to tune against.
 
 ## What the UI actually draws
 
@@ -147,9 +156,16 @@ what lets those results skip the head-slice mechanism safely.
 * `GET /api/sessions/:id/images/:hash` → full-resolution image
 
 Lookup scans the session's `tool_results` / `tool_use` columns and, on a miss,
-`subagent_events`. If the row is gone (rewind truncated the tail) the endpoint
-404s and the client renders "no longer available" in place of the expanded body
-rather than failing the interaction.
+`subagent_events`.
+
+A miss is not a state to design for. A chat rewind deletes rows
+(`ChatHistoryManager.truncate`) and the client drops the same rows from the
+transcript in the same handler (`rewind-complete.ts` →
+`setMessages(prev.slice(0, gapPosition))`), so the expand affordance disappears
+with the row; a code rewind only sets `rolled_back = 1` and deletes nothing, so
+those rows keep both their affordance and their body. A visible row therefore
+always has a fetchable body. The endpoint 404s and the client surfaces an
+ordinary error, with no bespoke "no longer available" affordance.
 
 ### Where the projection happens — and where it must not
 

@@ -1,14 +1,14 @@
 # Lazy row bodies — checklist
 
-> Under requirements discipline — see `requirements.md`. Implementation is
-> blocked while its `## Open questions` section is non-empty.
+> Under requirements discipline — see `requirements.md`. No open questions
+> remain; implementation is unblocked.
 
 ## Requirements
 - [x] Draft `requirements.md` from the issue and the chat
-- [ ] Resolve: is zero visible change a hard requirement?
-- [ ] Resolve: may images display at reduced resolution until clicked?
-- [ ] Resolve: what shows when a body is no longer fetchable?
-- [ ] Resolve: is there a target transferred size?
+- [x] Resolve: is zero visible change a hard requirement? → req 8
+- [x] Resolve: may images display at reduced resolution until clicked? → req 9
+- [x] Resolve: what shows when a body is no longer fetchable? → false premise, no requirement
+- [x] Resolve: is there a target transferred size? → folded into req 1
 
 ## Design
 - [x] Verify what each column actually draws inline vs. behind a click
@@ -49,6 +49,7 @@
 - [ ] Exemptions: image-bearing result survives `parseContentForImages`; subagent final report stays whole
 - [ ] Diff stats match `countLines` on the full body
 - [ ] Regression guard: a `fromRow` read-modify-write round-trip does **not** persist a sliced body
-- [ ] Endpoints: hit, subagent-nested hit, 404 after rewind
-- [ ] Constraint consumers still resolve from a sliced result
-- [ ] Payload-size assertion: a synthetic 1 MB-result transcript loads under a byte budget
+- [ ] Endpoints: hit, subagent-nested hit, 404 on unknown id
+- [ ] Constraint consumers still resolve from a sliced result (req 4)
+- [ ] Rewind invariant: after a chat rewind the client holds no row whose body was deleted
+- [ ] Req 1 assertion: a synthetic 1 MB-result transcript transfers nothing that isn't visible without a click
