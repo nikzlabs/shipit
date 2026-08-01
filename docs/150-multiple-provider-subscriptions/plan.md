@@ -27,12 +27,34 @@ copy credentials around.
 The product shape should be:
 
 1. User connects multiple accounts for the same provider in ShipIt Settings.
-2. ShipIt shows each account's quota state inline.
-3. When a session starts, ShipIt chooses the best available account.
-4. If the current account hits a hard limit during a turn, ShipIt retries on the
+2. User orders those accounts by preference and chooses the short-window and
+   weekly usage cutoffs at which ShipIt should move to the next account.
+3. ShipIt shows each account's quota state inline.
+4. Before every turn, including turns in existing sessions, ShipIt chooses the
+   first eligible account in that order whose configured quota cutoffs have not
+   been reached.
+5. If the current account hits a hard limit during a turn, ShipIt retries on the
    next eligible account when the operation is safe to retry.
-5. Sessions record which provider account was used so credential isolation and
+6. Sessions record which provider account was used so credential isolation and
    auditability stay intact.
+
+## Requirement provenance
+
+The original requirement was automatic failover among multiple authenticated
+subscriptions. A follow-up user requirement made the policy explicit:
+
+- accounts form a user-controlled prioritized list per provider;
+- both the short subscription window (currently five hours for Claude) and the
+  weekly window have user-configurable usage cutoffs;
+- both cutoffs default to 90%, and reaching either cutoff advances to the next
+  eligible account in priority order; and
+- this applies to existing sessions, not only newly created sessions. Switching
+  preserves the ShipIt transcript and workspace context, so quota pressure does
+  not force the user to abandon a conversation and start a new session.
+
+Hard provider exhaustion remains an immediate failover signal regardless of the
+configured proactive cutoffs. The controls are subscription-routing policy, not
+generic API-key billing failover.
 
 This doc uses "provider account" to mean one authenticated subscription identity
 for one agent provider. For Claude, that is one Anthropic/Claude Code account.
@@ -100,8 +122,11 @@ The reserved ids are not all the same kind of fallback:
 
 - Support **multiple authenticated accounts per provider** (`claude`, `codex`)
   while keeping the existing single-account path as a compatible default.
-- Automatically select a non-exhausted account for new turns, preferring the
-  user's chosen primary account until it crosses a defined quota threshold.
+- Automatically select an account for every turn from the user's ordered
+  provider-account list, advancing when either configured quota cutoff is met.
+- Re-route already-pinned sessions while preserving local transcript and
+  workspace context; account pinning is audit state, not a reason to strand an
+  existing conversation on an exhausted subscription.
 - Automatically fail over after a hard quota/auth exhaustion signal when retrying
   will not duplicate side effects.
 - Render provider-account state inline: account label, provider, plan, quota
@@ -234,18 +259,26 @@ per-session credential copy.
 
 ### Session startup
 
-For a new turn, the router chooses a provider account before credential
+For every turn, the router chooses a provider account before credential
 provisioning:
 
 1. Filter to accounts that are eligible for the selected model, permission mode,
    and requested provider features.
-2. If the session already has a pinned provider account and it is still usable,
-   keep using it.
-3. Otherwise prefer the provider's primary account.
-4. Skip accounts known to be exhausted until their reset time.
-5. Treat accounts as **quota-low** when either known short-window usage is at or
-   above 90% or known weekly usage is at or above 95%. For Claude accounts that
-   expose `weeklyOpus` / `weeklySonnet` sub-windows (`usage-limits-types.ts`),
+2. Read the provider's persisted user-defined account order. The primary account
+   is the first entry; newly connected accounts append to the end until the user
+   reorders them.
+3. Treat an account as **quota-low** when either known short-window usage meets
+   the configured short-window cutoff or known weekly usage meets the configured
+   weekly cutoff. Both cutoffs default to 90% and are configurable per provider
+   in Settings. Validate each as an integer percentage from 1 through 100.
+4. Walk the ordered list and choose the first eligible account that is neither
+   quota-low nor known exhausted. A session's currently pinned account remains
+   in use only when it is still the highest-priority qualifying account; this
+   preflight runs before every turn, including existing-session, queued, and
+   system-initiated turns.
+5. Skip accounts known to be exhausted until their reset time. For Claude
+   accounts that expose `weeklyOpus` / `weeklySonnet` sub-windows
+   (`usage-limits-types.ts`),
    the sub-window that matches the *requested model* counts as the weekly
    window for this check — a Claude Max account at 100% `weeklyOpus` and 40%
    `weekly` is quota-low (and effectively exhausted) for an Opus turn, but
@@ -265,11 +298,18 @@ provisioning:
    ineligible because Opus quota is unknown." Sub-window absence is
    structural (the plan does not split that model) and is distinct from
    "unknown quota" (the snapshot has not been hydrated yet).
-   If the primary account is quota-low and another eligible account is not
-   quota-low, choose the healthier account instead of primary.
-6. Prefer accounts with the most remaining weekly quota; use short-window quota
-   as the tiebreaker.
-7. If all eligible accounts are exhausted, put the prompt into a delayed
+   If an earlier account is quota-low and a later eligible account is not,
+   choose the later account. User priority, not maximum remaining quota, decides
+   between multiple healthy accounts.
+6. If every eligible account is quota-low, keep the least-used eligible account
+   rather than cycling indefinitely; prefer the earliest account in user order
+   when usage is tied. A known-hard-exhausted account is never selected by this
+   fallback.
+7. When preflight changes an existing session's account, stop its persistent
+   provider process, clear provider resume state, provision the replacement
+   credentials, persist the new route for audit, and rebuild provider context
+   from ShipIt's transcript plus current workspace state before starting.
+8. If all eligible accounts are exhausted, put the prompt into a delayed
    recoverable state with a wake-up time, show a chat-visible system message
    with reset times, and do not start the agent.
 
@@ -1409,6 +1449,8 @@ Implementation started:
 
 ### Phase 4 — Policy controls
 
+- Drag/reorder controls for the per-provider prioritized account list.
+- Per-provider short-window and weekly cutoff controls, both defaulting to 90%.
 - Optional per-session account preference.
 - Optional "do not auto-failover for this provider" setting.
 - Optional account labels sourced from provider profile where stable.

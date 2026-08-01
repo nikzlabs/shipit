@@ -75,6 +75,12 @@
 
 ## Phase 4 — Policy Controls
 
+- [ ] Persist a user-controlled priority order for authenticated accounts per provider.
+- [ ] Add Settings controls to reorder provider accounts; newly connected accounts append to the fallback order.
+- [ ] Persist per-provider short-window and weekly usage cutoffs with 90% defaults and 1–100 validation.
+- [ ] Add Settings controls for both proactive failover cutoffs.
+- [ ] Re-evaluate account eligibility before every turn, including existing-session, queued, and system-initiated turns.
+- [ ] Switch an existing session to the next ordered eligible account when either configured cutoff is reached.
 - [ ] Add optional per-session account preference.
 - [ ] Add optional per-provider “do not auto-failover” setting.
 - [ ] Add optional provider-profile label refresh where stable.
@@ -90,6 +96,8 @@
 - [x] Unit: account-scoped Claude auth manager writes to the requested account root.
 - [x] Unit: account-scoped Codex auth manager writes to the requested account root.
 - [ ] Unit: account selection prefers primary, skips exhausted accounts, respects reset times, and ranks quota.
+- [ ] Unit: account selection follows user priority and advances when either configurable cutoff is reached.
+- [ ] Integration: an existing pinned session switches accounts at the proactive cutoff and preserves local context.
 - [ ] Integration: first Claude turn pins `{ agent_id, provider_route_kind, provider_route_id }`.
 - [ ] Integration: first Codex turn pins `{ agent_id, provider_route_kind, provider_route_id }`.
 - [ ] Integration: auth-complete for account X re-pushes only to sessions pinned to account X.
