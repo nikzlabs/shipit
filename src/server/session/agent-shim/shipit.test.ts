@@ -156,6 +156,31 @@ describe("runShim — help and version", () => {
     expect(out.exitCode).toBe(0);
   });
 
+  it.each([
+    ["session", "message", "/shipit-docs/sessions.md"],
+    ["source", "status", "/shipit-docs/ops-session.md"],
+    ["issue", "list", "/shipit-docs/issues.md"],
+    ["agent", "result", "/shipit-docs/agent.md"],
+    ["service", "list", "/shipit-docs/compose.md"],
+    ["release", "plan", "/shipit-docs/release.md"],
+    ["branch", "reset-to-base", "/shipit-docs/sessions.md"],
+  ])("supports --help for shipit %s %s", async (domain, sub, docsPath) => {
+    const { run } = makeRunner();
+    const out = await run([domain, sub, "--help"]);
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain(`shipit ${domain} ${sub}`);
+    expect(out.stdout).toContain(docsPath);
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("supports the -h alias after positional arguments", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "message", "ses_a", "-h"]);
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("/shipit-docs/sessions.md");
+    expect(out.calls).toHaveLength(0);
+  });
+
   it("--version prints the shim version", async () => {
     const { run } = makeRunner();
     const out = await run(["--version"]);
@@ -2116,21 +2141,22 @@ describe("shipit issue", () => {
 
   // ---- per-subcommand --help (SHI-199, smaller note) ---------------------
 
-  it("`issue list --help` prints list usage, not an unsupported-flag error", async () => {
+  it("`issue list --help` points to the canonical issue docs", async () => {
     const { run } = makeRunner();
     const out = await run(["issue", "list", "--help"]);
     expect(out.exitCode).toBe(0);
     expect(out.stdout).toContain("shipit issue list");
-    expect(out.stdout).toContain("--full");
+    expect(out.stdout).toContain("/shipit-docs/issues.md");
     // No broker call — help short-circuits before the handler.
     expect(out.calls).toHaveLength(0);
   });
 
-  it("`issue labels -h` prints labels usage", async () => {
+  it("`issue labels -h` points to the canonical issue docs", async () => {
     const { run } = makeRunner();
     const out = await run(["issue", "labels", "-h"]);
     expect(out.exitCode).toBe(0);
     expect(out.stdout).toContain("shipit issue labels");
+    expect(out.stdout).toContain("/shipit-docs/issues.md");
     expect(out.calls).toHaveLength(0);
   });
 

@@ -424,44 +424,24 @@ const ISSUE_HANDLERS: Record<
   label: handleIssueLabel,
 };
 
-/**
- * Per-subcommand usage strings for `shipit issue <sub> --help` (SHI-199). Before
- * this, `--help` fell into a subcommand's flag parser and was rejected as an
- * unsupported flag; now `dispatchIssue` intercepts it and prints the matching
- * entry. Top-level `shipit issue help` still prints the full HELP block.
- */
-const ISSUE_USAGE: Record<string, string> = {
-  view: `shipit issue view <pointer> [--tracker github|linear] [--comments] [--json]
-  Read one issue — identifier, title, status, priority, assignee, URL, body, and
-  the valid status targets. --comments adds the thread; --json emits the object.`,
-  list: `shipit issue list [--tracker github|linear] [--state open|closed|all] [--full] [--json]
-  List issues (priority-sorted). --json rows are lean by default (no body); --full
-  re-adds each issue's description.`,
-  labels: `shipit issue labels [--tracker github|linear] [--json]
-  List the tracker's pickable labels — the valid set to pass to --label on
-  create/edit (so you don't guess and trip the rejection).`,
-  statuses: `shipit issue statuses [--tracker github|linear] [--json]
-  List the tracker's assignable statuses — the valid targets for 'issue status'.`,
-  create: `shipit issue create --title T [--body B | --body-file FILE] [--label NAME]... [--create-missing-labels] [--priority P] [--parent <pointer>] [--tracker github|linear] [--json]
-  File a new issue (defaults to Linear). Do-then-surface — created immediately
-  with an Undo card. --create-missing-labels creates unknown --label names first.
-  --priority and --parent (sub-issue nesting) are Linear-only.`,
-  comment: `shipit issue comment <pointer> -b BODY | --body-file FILE [--tracker T] [--json]
-  Add a comment to an issue.`,
-  edit: `shipit issue edit <pointer> [--title T] [--body B | --body-file FILE] [--label NAME]... [--create-missing-labels] [--priority P] [--parent <pointer>|none] [--tracker T] [--json]
-  Edit title/body/labels/priority/parent. Labels are additive; --create-missing-
-  labels creates unknown names first; --parent nests as a Linear sub-issue
-  (--parent none detaches).`,
-  label: `shipit issue label create --name NAME [--color '#rrggbb'] [--description TEXT] [--tracker github|linear] [--json]
-  Create a tracker label so --label can apply it (defaults to Linear).
-  Do-then-surface — created immediately with an Undo card; Undo deletes the
-  label while it's still unused. List existing labels with 'shipit issue labels'.`,
-  status: `shipit issue status <pointer> <state> [--tracker T] [--json]
-  Set status from a normalized type (completed, started, …) or a native name.
-  Run 'shipit issue statuses' to see the valid targets.`,
-  assign: `shipit issue assign <pointer> <user|me | --none> [--tracker T] [--json]
-  Set or clear (--none) the assignee.`,
+const COMMAND_DOCS: Record<string, string> = {
+  session: "/shipit-docs/sessions.md",
+  source: "/shipit-docs/ops-session.md",
+  issue: "/shipit-docs/issues.md",
+  agent: "/shipit-docs/agent.md",
+  service: "/shipit-docs/compose.md",
+  release: "/shipit-docs/release.md",
+  branch: "/shipit-docs/sessions.md",
 };
+
+/** Keep command help useful without maintaining a second copy of canonical docs. */
+function commandHelp(domain: keyof typeof COMMAND_DOCS, sub: string): string {
+  return `See ${COMMAND_DOCS[domain]} for \`shipit ${domain} ${sub}\` usage and examples.`;
+}
+
+function requestsHelp(args: string[]): boolean {
+  return args.some((arg) => arg === "--help" || arg === "-h");
+}
 
 const AGENT_HANDLERS: Record<
   string,
@@ -603,6 +583,11 @@ export async function runShim(
     fail(io, `Unsupported shipit session subcommand: ${sub}\n${REJECTED_HELP}`);
   }
 
+  if (requestsHelp(args.slice(2))) {
+    success(io, commandHelp("session", sub));
+    return;
+  }
+
   await handler(args.slice(2), deps);
 }
 
@@ -620,8 +605,8 @@ async function dispatchBranch(args: string[], deps: RunDeps, io: ShimIO): Promis
   if (sub !== "reset-to-base") {
     fail(io, `Unsupported shipit branch subcommand: ${sub}\n${REJECTED_HELP}`);
   }
-  if (args.slice(1).some((a) => a === "--help" || a === "-h")) {
-    success(io, RESET_USAGE);
+  if (requestsHelp(args.slice(1))) {
+    success(io, commandHelp("branch", sub));
     return;
   }
   await handleBranchResetToBase(args.slice(1), deps);
@@ -649,6 +634,10 @@ async function dispatchSource(args: string[], deps: RunDeps, io: ShimIO): Promis
   const handler = SOURCE_HANDLERS[sub];
   if (!handler) {
     fail(io, `Unsupported shipit source subcommand: ${sub}\n${REJECTED_HELP}`);
+  }
+  if (requestsHelp(args.slice(1))) {
+    success(io, commandHelp("source", sub));
+    return;
   }
   await handler(args.slice(1), deps);
 }
@@ -678,10 +667,8 @@ async function dispatchIssue(args: string[], deps: RunDeps, io: ShimIO): Promise
   if (!handler) {
     fail(io, `Unsupported shipit issue subcommand: ${sub}\n${REJECTED_HELP}`);
   }
-  // `shipit issue <sub> --help` prints that subcommand's usage (SHI-199), rather
-  // than letting --help fall through to the flag parser as an unsupported flag.
-  if (args.slice(1).some((a) => a === "--help" || a === "-h")) {
-    success(io, ISSUE_USAGE[sub] ?? HELP);
+  if (requestsHelp(args.slice(1))) {
+    success(io, commandHelp("issue", sub));
     return;
   }
   await handler(args.slice(1), deps);
@@ -701,6 +688,10 @@ async function dispatchAgent(args: string[], deps: RunDeps, io: ShimIO): Promise
   const handler = AGENT_HANDLERS[sub];
   if (!handler) {
     fail(io, `Unsupported shipit agent subcommand: ${sub}\n${REJECTED_HELP}`);
+  }
+  if (requestsHelp(args.slice(1))) {
+    success(io, commandHelp("agent", sub));
+    return;
   }
   await handler(args.slice(1), deps);
 }
@@ -729,6 +720,10 @@ async function dispatchService(args: string[], deps: RunDeps, io: ShimIO): Promi
   if (!handler) {
     fail(io, `Unsupported shipit service subcommand: ${sub}\n${REJECTED_HELP}`);
   }
+  if (requestsHelp(args.slice(1))) {
+    success(io, commandHelp("service", sub));
+    return;
+  }
   await handler(args.slice(1), deps);
 }
 
@@ -755,6 +750,10 @@ async function dispatchRelease(args: string[], deps: RunDeps, io: ShimIO): Promi
   const handler = RELEASE_HANDLERS[sub];
   if (!handler) {
     fail(io, `Unsupported shipit release subcommand: ${sub}\n${REJECTED_HELP}`);
+  }
+  if (requestsHelp(args.slice(1))) {
+    success(io, commandHelp("release", sub));
+    return;
   }
   await handler(args.slice(1), deps);
 }
