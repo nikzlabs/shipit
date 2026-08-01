@@ -4,6 +4,10 @@
 
 When a ShipIt session's branch falls behind its base branch (e.g., `main` gets new commits while the agent is working), pushing fails and PRs can't be merged cleanly. This feature adds support for detecting divergence, rebasing onto the latest base branch, resolving conflicts (via the agent), and force-pushing the rebased branch — completing the loop so PRs stay up to date without manual intervention.
 
+The client suppresses the idle "Branch is behind" nudge for the full active
+rebase flow. It also ignores push-rejection events that race with active rebase
+progress, preventing a stale nudge from appearing when the rebase settles.
+
 ## Motivation
 
 Today, ShipIt sessions push to feature branches and open PRs. But if the base branch moves forward:

@@ -84,6 +84,14 @@ describe("RebaseBanner", () => {
     expect(screen.getByText("trunk")).toBeInTheDocument();
   });
 
+  it("does not show the branch-behind nudge while a rebase runs", () => {
+    useGitStore.setState({ pushRejected: true, rebaseStatus: "in_progress" });
+    render(<RebaseBanner sessionId="s1" />);
+
+    expect(screen.queryByText(/Branch is behind/)).toBeNull();
+    expect(screen.getByText(/Rebasing onto/)).toBeInTheDocument();
+  });
+
   it("falls back to main before the repo list hydrates", () => {
     useGitStore.setState({ pushRejected: true });
     render(<RebaseBanner sessionId="s1" />);
