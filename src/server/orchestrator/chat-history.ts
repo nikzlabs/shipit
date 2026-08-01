@@ -151,11 +151,15 @@ export interface PersistedMessage {
    * notes arrive on a side channel (not the agent-event stream), so they aren't
    * captured by `buildTurnMessages`; they are persisted directly so the card
    * survives a history reload like any other transcript content.
+   *
+   * Rows written before the `needsAttention` gate was removed carry an extra
+   * `needsAttention` key in the stored JSON. It is deliberately absent from this
+   * type and read by nothing — legacy rows rehydrate and render as ordinary
+   * notes, so no migration is needed.
    */
   voiceNote?: {
     id: string;
     headline: string;
-    needsAttention: boolean;
     kind: "authored" | "ask" | "plan";
     createdAt: string;
   };

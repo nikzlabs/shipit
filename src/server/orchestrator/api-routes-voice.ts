@@ -195,7 +195,7 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
   // the turn, so whichever path arrives second is a no-op.
   app.post<{
     Params: { sessionId: string };
-    Body: { summary?: string; needsAttention?: boolean; context?: unknown };
+    Body: { summary?: string; context?: unknown };
   }>(
     "/api/sessions/:sessionId/voice-note",
     { config: { containerAccessible: true } },
@@ -214,7 +214,6 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
       const result = await routeVoiceNote(
         {
           summary,
-          needsAttention: request.body?.needsAttention === true,
           ...(context ? { context } : {}),
         },
         {

@@ -17,7 +17,6 @@ const note = (over: Partial<WsVoiceNote> = {}): WsVoiceNote => ({
   sessionId: "s1",
   id: "voice-1",
   headline: "Done — one test is still red, want me to dig in?",
-  needsAttention: true,
   kind: "authored",
   createdAt: "2026-06-01T00:00:00.000Z",
   ...over,
@@ -41,7 +40,7 @@ describe("handleVoiceNote (docs/163)", () => {
     expect(messages[0]).toMatchObject({
       role: "assistant",
       text: "",
-      voiceNote: { id: "voice-1", headline: note().headline, needsAttention: true, kind: "authored" },
+      voiceNote: { id: "voice-1", headline: note().headline, kind: "authored" },
     });
   });
 
@@ -73,12 +72,14 @@ describe("handleVoiceNote (docs/163)", () => {
     expect(playSpy).toHaveBeenCalledWith("voice-1", note().headline);
   });
 
-  it("never autoplays a needsAttention:false (silent) note even with hands-free on", () => {
+  // The silent-note variant was removed (docs/163): every note means the agent
+  // needs the user, so hands-free is the only gate on autoplay.
+  it("autoplays every note when hands-free is on — there is no silent variant", () => {
     useSettingsStore.setState({ voiceHandsFree: true });
     armAutoplay();
-    handleVoiceNote(ctx, note({ needsAttention: false }));
-    expect(playSpy).not.toHaveBeenCalled();
-    // The silent note still renders a bubble.
-    expect(useSessionStore.getState().messages).toHaveLength(1);
+    handleVoiceNote(ctx, note({ id: "voice-a", kind: "ask" }));
+    handleVoiceNote(ctx, note({ id: "voice-b", kind: "plan" }));
+    expect(playSpy).toHaveBeenCalledTimes(2);
+    expect(useSessionStore.getState().messages).toHaveLength(2);
   });
 });

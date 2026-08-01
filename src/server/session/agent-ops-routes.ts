@@ -98,7 +98,7 @@ export function registerAgentOpsRoutes(
   // The consolidated `shipit` bridge forwards `voice_note` here; the worker
   // relays to the orchestrator with the trusted SESSION_ID injected. The
   // orchestrator's router decides delivery (native / external / both).
-  app.post<{ Body: { summary?: string; needsAttention?: boolean; context?: unknown } }>(
+  app.post<{ Body: { summary?: string; context?: unknown } }>(
     "/agent-ops/voice/note",
     async (request, reply) => relay("POST", "/voice-note", request.body ?? {}, reply),
   );

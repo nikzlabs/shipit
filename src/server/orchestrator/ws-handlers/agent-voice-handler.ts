@@ -92,37 +92,24 @@ export function observeVoiceNotes(
   const voiceCall = toolBlocks.find((t) => t.name === VOICE_NOTE_TOOL_NAME);
   const input = (voiceCall?.input ?? {}) as {
     summary?: unknown;
-    needsAttention?: unknown;
     context?: unknown;
   };
   const summary = typeof input.summary === "string" ? input.summary.trim() : "";
   if (voiceCall && summary) {
     const context = sanitizeVoiceContext(input.context);
-    deliverVoiceNote(
-      { summary, needsAttention: input.needsAttention === true, ...(context ? { context } : {}) },
-      runner,
-      "authored",
-    );
+    deliverVoiceNote({ summary, ...(context ? { context } : {}) }, runner, "authored");
   }
 
   // Gated on the authored flag, set synchronously above when the authored call
-  // is observed, and by the bridge route; the per-turn cap in the router
-  // backstops any rare overlap.
+  // is observed, and by the bridge route; the router's authored-payload dedup
+  // backstops any rare overlap between the two delivery paths.
   if (!hasAuthoredVoiceNoteThisTurn(runner)) {
     const ask = toolBlocks.find(isWellFormedAskUserQuestion);
     const plan = toolBlocks.find((t) => t.name === "ExitPlanMode");
     if (ask) {
-      deliverVoiceNote(
-        { summary: deriveAskHeadline(ask.input), needsAttention: true },
-        runner,
-        "ask",
-      );
+      deliverVoiceNote({ summary: deriveAskHeadline(ask.input) }, runner, "ask");
     } else if (plan) {
-      deliverVoiceNote(
-        { summary: derivePlanHeadline(plan.input), needsAttention: true },
-        runner,
-        "plan",
-      );
+      deliverVoiceNote({ summary: derivePlanHeadline(plan.input) }, runner, "plan");
     }
   }
 }

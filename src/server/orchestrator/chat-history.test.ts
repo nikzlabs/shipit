@@ -28,7 +28,7 @@ const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
   rolledBack: true,
   forkChild: { childSessionId: "child", title: "T", branch: "b" },
   codeRollbackHash: "c0ffee",
-  voiceNote: { id: "v1", headline: "h", needsAttention: true, kind: "authored", createdAt: "t" },
+  voiceNote: { id: "v1", headline: "h", kind: "authored", createdAt: "t" },
   bugReport: { cardId: "b1", phase: "filed", title: "T", body: "B", stage2Ran: true, producer: "ops", issueNumber: 5, issueUrl: "u" },
   permissionPrompt: { requestId: "p1", phase: "approved", toolName: "Write", path: ".npmrc", summary: "Write .npmrc", agentId: "claude", createdAt: "2026-06-05T00:00:00.000Z", remembered: true },
   egressPrompt: { cardId: "eg1", host: "evil.example.com", phase: "denied", createdAt: "2026-06-05T00:00:00.000Z" },
@@ -283,7 +283,6 @@ describe("ChatHistoryManager", () => {
       voiceNote: {
         id: "voice-1",
         headline: "Done — want me to open a PR?",
-        needsAttention: true,
         kind: "authored",
         createdAt: "2026-06-02T00:00:00.000Z",
       },
@@ -292,6 +291,33 @@ describe("ChatHistoryManager", () => {
     mgr.append("sess-1", msg);
     const loaded = mgr.load("sess-1");
     expect(loaded[0].voiceNote).toEqual(msg.voiceNote);
+  });
+
+  // The `needsAttention` gate was removed (docs/163). Rows written before that
+  // carry the extra key in their stored JSON; they must still rehydrate so the
+  // card keeps rendering — no migration, nothing reads the dead flag.
+  it("rehydrates a pre-removal voice-note row carrying a legacy needsAttention flag", () => {
+    const mgr = new ChatHistoryManager(dbManager);
+    const legacy = {
+      id: "voice-legacy",
+      headline: "Work is done, nothing to decide.",
+      needsAttention: false,
+      kind: "authored",
+      createdAt: "2026-06-02T00:00:00.000Z",
+    };
+    // Written the way the old code wrote it — the extra key is not in the type.
+    mgr.append("sess-1", {
+      role: "assistant",
+      text: "",
+      voiceNote: legacy as unknown as PersistedMessage["voiceNote"],
+    });
+
+    const card = mgr.load("sess-1")[0].voiceNote;
+    expect(card).toMatchObject({
+      id: "voice-legacy",
+      headline: "Work is done, nothing to decide.",
+      kind: "authored",
+    });
   });
 
   describe("bug-report card persistence (docs/164)", () => {

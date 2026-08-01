@@ -44,8 +44,8 @@ describe("chat-card-persistence", () => {
 
     emitChatCard(
       runner,
-      { type: "voice_note", sessionId: "s1", id: "v1", headline: "hi", needsAttention: false, kind: "authored", createdAt: "t" },
-      { role: "assistant", text: "", voiceNote: { id: "v1", headline: "hi", needsAttention: false, kind: "authored", createdAt: "t" } },
+      { type: "voice_note", sessionId: "s1", id: "v1", headline: "hi", kind: "authored", createdAt: "t" },
+      { role: "assistant", text: "", voiceNote: { id: "v1", headline: "hi", kind: "authored", createdAt: "t" } },
       { chatHistoryManager, sessionId: "s1" },
     );
 
@@ -98,7 +98,7 @@ describe("chat-card-persistence", () => {
       { text: "two", toolUse: [] },
     ]);
 
-    recordChatCard(runner, { role: "assistant", text: "", voiceNote: { id: "v1", headline: "h", needsAttention: false, kind: "authored", createdAt: "t" } });
+    recordChatCard(runner, { role: "assistant", text: "", voiceNote: { id: "v1", headline: "h", kind: "authored", createdAt: "t" } });
 
     // Two persistable groups → anchor 2 (lands after both).
     expect(runner.recordedCards[0].afterGroupIndex).toBe(2);

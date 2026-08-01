@@ -178,11 +178,7 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
     return (
       <div className="flex justify-start">
         <div className="max-w-2xl w-full">
-          <VoiceNoteCard
-            id={msg.voiceNote.id}
-            headline={msg.voiceNote.headline}
-            needsAttention={msg.voiceNote.needsAttention}
-          />
+          <VoiceNoteCard id={msg.voiceNote.id} headline={msg.voiceNote.headline} />
         </div>
       </div>
     );

@@ -524,7 +524,7 @@ describe("POST /api/sessions/:sessionId/voice-note (docs/163)", () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/sessions/sess-1/voice-note",
-      payload: { summary: "Done — want me to open a PR?", needsAttention: true, context: { repo: "shipit" } },
+      payload: { summary: "Done — want me to open a PR?", context: { repo: "shipit" } },
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ delivered: true });
@@ -533,7 +533,6 @@ describe("POST /api/sessions/:sessionId/voice-note (docs/163)", () => {
       type: "voice_note",
       sessionId: "sess-1",
       headline: "Done — want me to open a PR?",
-      needsAttention: true,
     });
     expect(runner.recordedCards).toHaveLength(1);
     expect(replaceInProgress).toHaveBeenCalled();
@@ -546,7 +545,7 @@ describe("POST /api/sessions/:sessionId/voice-note (docs/163)", () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/sessions/sess-1/voice-note",
-      payload: { needsAttention: true },
+      payload: {},
     });
     expect(res.statusCode).toBe(400);
     await app.close();
@@ -557,7 +556,7 @@ describe("POST /api/sessions/:sessionId/voice-note (docs/163)", () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/sessions/gone/voice-note",
-      payload: { summary: "hi", needsAttention: true },
+      payload: { summary: "hi" },
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ delivered: false });
