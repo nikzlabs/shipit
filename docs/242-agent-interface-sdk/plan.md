@@ -317,7 +317,20 @@ multi-session dispatch UX and is outside the stated requirement.
 ### Host to agent
 
 After validation, the client calls the existing authenticated dispatch helper
-with the host-resolved session ID and the SDK-provided text:
+with the host-resolved session ID, the SDK-provided text, and host-owned
+provenance:
+
+```ts
+interface AgentInterfaceProvenance {
+  source: "agent_interface_sdk";
+  surface: "preview" | "present";
+}
+```
+
+The child supplies neither field. The owning ShipIt surface assigns them only
+after source, origin, activity, and session validation. Provenance is carried as
+typed dispatch metadata rather than inferred by parsing a prefix from the
+page-authored text.
 
 ```text
 SDK postMessage
@@ -328,6 +341,20 @@ SDK postMessage
   → runner.dispatch(...)
   → busy-turn behavior selected by the open product decision below
 ```
+
+The transcript persists the page-authored text as a normal user message plus
+the typed provenance. The client renders that metadata as a small `Preview` or
+`Present` badge. Before agent execution, ShipIt adds a deterministic,
+ShipIt-authored context wrapper explaining that the following instruction was
+submitted through the Agent Interface SDK and naming its surface. The original
+page-authored text remains clearly delimited and unchanged inside that wrapper.
+The agent therefore does not confuse an automatic SDK invocation with text
+typed directly into the composer, while the user's transcript remains readable.
+
+The badge and agent-visible wrapper both derive from the same trusted metadata;
+neither relies on wording supplied by the page. This provenance is contextual,
+not an additional authorization mechanism: repository trust and runner
+admission remain authoritative.
 
 This deliberately does not add an orchestrator endpoint reachable directly by
 the service or artifact. The browser host already has the authenticated session
@@ -521,15 +548,20 @@ server dispatch gate supplies authorization.
 The host still restricts authority to the validated active Preview or Present
 frame. That is a surface-ownership boundary, not a user-gesture proxy.
 
+### Transcript and agent-visible provenance
+
+An SDK instruction renders as a normal user-message bubble with a `Preview` or
+`Present` source badge. ShipIt also identifies the SDK and surface in the actual
+message delivered to the agent. Typed, host-owned dispatch metadata drives both
+representations, so provenance does not depend on page-authored text or on the
+agent inferring context from transcript styling it cannot see.
+
 ## Open product decisions (not requirements)
 
 These questions must be answered before implementation because each changes
 observable behavior. They are intentionally not resolved here:
 
-1. **Transcript presentation:** render the SDK instruction as a normal user
-   bubble with a Present/Preview source badge, as an indistinguishable plain user
-   message, or as a dedicated interface-action card.
-2. **Busy-agent behavior:** always queue the SDK request as its own next turn;
+1. **Busy-agent behavior:** always queue the SDK request as its own next turn;
    honor live steering and inject when supported; or reject while busy. Current
    `runner.dispatch` calls are steerable unless marked otherwise, so this choice
    must be encoded explicitly rather than inherited accidentally.

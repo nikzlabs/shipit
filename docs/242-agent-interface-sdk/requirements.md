@@ -31,6 +31,11 @@ security measures, UX details, or anticipated extensions into requirements.
 7. SDK messages may be initiated programmatically without a recent user
    gesture. Agent-created tools may invoke the agent automatically, including
    from load, timer, or other asynchronous application logic.
+8. An SDK instruction appears in the ShipIt transcript as a normal user-message
+   bubble with a badge identifying whether it came from Preview or Present.
+9. The message delivered to the agent identifies that it was submitted through
+   the Agent Interface SDK rather than typed as a regular user message, so the
+   agent can interpret automatic tool invocation correctly.
 
 ## Not requirements
 
