@@ -14,6 +14,7 @@
 - [x] Resolve the authoritative remote from `sessionManager.get(runner.sessionId)` and check it with `RepoStore.isTrusted()`
 - [x] Deny unknown remotes, missing sessions, and missing production authorization dependencies
 - [x] Preserve trusted-by-construction behavior for sessions without a remote and ShipIt-created templates
+- [x] Exempt server-authored ops and sandbox sessions from messaging trust admission
 - [x] Ensure denial happens before settlement side effects, running-state mutation, steering, queue insertion, persistence, graduation, attachment reads, or process creation
 - [x] Re-check authorization when queued or recovered work re-enters `dispatchOnRunner()`
 - [ ] Drop and settle a denied queued entry exactly once without starting it or looping the drain
@@ -75,6 +76,7 @@
 - [ ] Avoid an enabled-state flash while trust data for a known remote is unresolved
 - [ ] Enable messaging after authoritative trust state arrives
 - [ ] Keep no-remote and ShipIt-template sessions enabled
+- [x] Keep ops and sandbox session composers enabled regardless of repository trust state
 - [ ] Verify the existing Trust surface remains the only consent action and explains the message restriction
 - [ ] Verify failed trust restores the button and leaves send disabled
 - [ ] Verify exact optimistic rollback without removing unrelated messages

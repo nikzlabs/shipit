@@ -21,6 +21,9 @@ The requested outcome is narrow:
 - the normal chat send control reflects that state;
 - the server is authoritative; and
 - the existing Trust action grants the consent.
+- ops and sandbox sessions remain messageable without repository trust because
+  they are explicit, server-authored execution environments rather than
+  ShipIt-managed repository checkouts.
 
 Everything below is an implementation decision or an open question. In particular, the requirements do not prescribe a new trust store, a new consent action, a second policy tier, queue cancellation, running-turn interruption, trust revocation, or SDK-specific authorization machinery.
 
@@ -68,6 +71,10 @@ Make `SessionRunnerInterface.dispatch()` the only way to introduce a new agent m
 Both runner implementations already delegate to `dispatchOnRunner`, so the invariant is stated once:
 
 > A dispatch for a session with a remote is admitted only when that remote is trusted at the instant the dispatch boundary is entered. A missing session/trust resolver or an unknown remote denies admission. A session with no remote is trusted by construction.
+
+Server-authored `ops` and `sandbox` session kinds are exempt from this check.
+Their purpose is to operate outside a ShipIt-managed repository checkout, and
+their separate capability boundaries remain authoritative.
 
 The runner must be wired at creation with an authorizer that resolves the session by `runner.sessionId`, reads its authoritative `remoteUrl`, and asks `RepoStore.isTrusted(remoteUrl)`. It must not accept a client-supplied URL or trust flag. Missing dependencies fail closed for production runners; test helpers must opt into an explicit trusted authorizer rather than inheriting an allow-by-default fallback.
 

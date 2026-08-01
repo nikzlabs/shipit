@@ -142,6 +142,7 @@ import { dispatchAgentMessage } from "./utils/dispatch-agent-message.js";
 import type { AgentInterfaceProvenance } from "../server/shared/agent-interface-sdk/protocol.js";
 import { sendUserMessage } from "./utils/send-user-message.js";
 import { buildReleaseConfirmMessage } from "./utils/release-confirm-message.js";
+import { isAgentMessagingBlocked } from "./utils/agent-messaging-trust.js";
 import type { SendCommentsPayload } from "./components/FilePreviewModal.js";
 
 export default function App() {
@@ -415,8 +416,11 @@ export default function App() {
         (repo) => parseRepoLabel(repo.url) === parseRepoLabel(currentRepoUrl),
       )
     : undefined;
-  const agentMessagingBlocked =
-    currentRepoUrl !== undefined && currentRepo?.trusted !== true;
+  const agentMessagingBlocked = isAgentMessagingBlocked(
+    currentSession,
+    currentRepoUrl,
+    currentRepo,
+  );
   const search = useSearch(messages);
   const { notify, requestPermission } = useNotification();
   useAttentionNotifications(notify);
