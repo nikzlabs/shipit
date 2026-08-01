@@ -236,7 +236,7 @@ Two browser channels: per-session **WebSocket** (`/ws/sessions/{id}`) and global
 
 ## Workflow
 
-- **Read before coding** — before changing a feature, read its `docs/NNN-feature/plan.md` and the source files listed under "Key files". Trace the data flow for similar features to understand existing patterns.
+- **Read before coding** — before changing a feature, read its `docs/NNN-feature/requirements.md` (if present) and `plan.md`, plus the source files listed under "Key files". Trace the data flow for similar features to understand existing patterns. A new feature starts at `requirements.md`, not at `plan.md` — see [Every new feature is under requirements discipline](#every-new-feature-is-under-requirements-discipline).
 - **Verify an inherited guarantee at the source; a doc describing one is a claim, not a contract.** When your design leans on a neighbouring mechanism ("the retry supervisor covers restart", "the queue carries the callback", "that lease prevents concurrent entry"), read the code that would have to hold for it. This repo has repeatedly shipped plans asserting guarantees the code did not provide — docs/196 claimed a failed delivery retried "on the next poll" when the only retry was at bootstrap, and SHI-255's write-up claimed a later drain "cannot re-narrow an entry without deliberately bypassing that module" days before SHI-259 did exactly that by accident. Both read as settled fact. State such dependencies as "verified at `file.ts:fn`", not as inheritance.
 - **Requirements are usually stated at the UX level — don't promote your mechanism into one.** "Ship several PRs in a row without shepherding each merge" is the whole requirement; it implies nothing about unattended turns, durable plan payloads, or a new subsystem. Build the smallest mechanism that produces the stated experience, and when writing it up, keep what was actually asked for separate from what you inferred (docs/239's "Requirement provenance" section is the pattern). If a feature starts needing platform primitives to support it, treat that as evidence the shape is wrong rather than as a work estimate.
 - **Adversarial review hardens a design; it does not simplify it.** A reviewer asked "what's wrong with this" will answer that question and never "this shouldn't exist" — so rounds of review reliably add mechanism and never remove it. Between rounds, ask the opposite question explicitly: for each element, *would anyone notice if it were removed?* Run at least one review with that brief before implementing anything sizeable; on docs/239 it cut roughly a third of the design after five rounds of the usual kind had only grown it.
@@ -287,12 +287,29 @@ ShipIt's own repo uses the **`release-branch`** mechanism (`shipit.yaml` `releas
 ```
 docs/
   NNN-feature-name/
+    requirements.md — What the feature must do, in the human's terms (required for new features)
     plan.md        — How the feature works, key files, patterns
     checklist.md   — Remaining work items or tracking notes
     mockup.html    — Optional UI prototype committed as reference (or mockup.svg / mocks/)
 ```
 
 Docs are **reference material** — what a feature is, why, and how (including planned-but-unimplemented designs); work tracking lives in the issue tracker. Features are numbered by creation order; read a feature's `plan.md` first, check its `checklist.md` for remaining work, create `docs/NNN-new-feature/plan.md` for a new one. Frontmatter (`issue`/`title`/`description`) is optional. A 100%-complete `checklist.md` folds the doc into collapsed **Done**, else **Active**. `issue:` shape selects the tracker — **Linear = full URL without the title slug** (a bare `TRACKER-28` is rejected), **GitHub = `owner/repo#123`** or a full URL.
+
+### Every new feature is under requirements discipline
+
+Requirements discipline (docs/241, `/shipit-docs/spec-discipline.md`) is opt-in per feature *for projects built inside ShipIt*. **In this repo it is mandatory for every new feature**: if the work warrants a `docs/NNN-*` folder, that folder gets a `requirements.md`, written **before** `plan.md`. Existing features without one are not retroactively required to have it — but the moment you materially rework one, write its requirements first.
+
+That means, in order:
+
+1. **`requirements.md` first, from what the human actually said.** Numbered, plain-language, observable statements of what the feature must do — never how. Anything you had to supply yourself is not a requirement: it goes under `## Open questions`.
+2. **Ask, don't assume.** Batch the open questions into one structured question with concrete options and a recommendation. Do not write implementation code while any bullet remains under `## Open questions`; requirements and design work may continue.
+3. **Record the answer where it happened.** A human answer adds/edits the numbered requirement *and* leaves a dated receipt under `## Resolved questions`, with the open-question bullet removed in the same change — receipt, removal, and requirement change all in one diff. An agent inference never clears an open question.
+4. **Then design.** `plan.md` implements `requirements.md` and cites requirements as `(req 3)`; it opens with a link to the requirements doc. Later human input lands in `requirements.md` first — editing `plan.md` from human input while the requirements stay unchanged makes the design a second, hidden source of requirements.
+5. **Independent check before you call it done.** A fresh-context reviewer (`shipit agent run` for the other backend, else a subagent) compares the branch diff against every numbered requirement. Your own final pass doesn't count.
+
+Nothing enforces this mechanically — the pull-request diff is the enforcement, so a skipped question or a self-promoted requirement is visible to review (mechanical enforcement is SHI-273). `docs/241-spec-discipline/` is the worked example: read its `requirements.md` alongside its `plan.md` for the shape.
+
+Not every change is a feature. Bug fixes, refactors, and chores that don't get a docs folder don't get a requirements doc either — the rule attaches to the folder, not to the commit.
 
 ### Keep the tracker in sync when you touch a design doc
 
@@ -307,6 +324,7 @@ This rule is ShipIt-specific and deliberately lives here, not in `src/server/shi
 
 | Surface | Holds | Must NOT hold |
 |---|---|---|
+| **`requirements.md`** | What the feature must do, in the human's words: numbered observable statements, plus `## Open questions` and dated `## Resolved questions` receipts. Human-owned. | How it's built (files, mechanisms, APIs), agent assumptions the human never approved, status. |
 | **`checklist.md`** | The branch's implementation to-do: granular build steps checked off in the *same PR*. Diffable, branch-scoped; drives the docs-list Active/Done grouping. | Priorities, the status of *other* work, cross-issue links. |
 | **`plan.md` / committed docs** | What the feature *is*/*how it works* **as of this commit**: design, key files, **settled** rationale. Plus exactly **one** `issue:` self-pointer. | Live priority, sibling-issue status rosters, scheduling. |
 | **The Linear issue** | The work unit + everything on a **non-code cadence**: priority, status (automated via `Closes`/`Refs`), cross-issue relations, ownership, scheduling, discussion, progress narration across PRs. | — (a tracker is a conversation medium; markdown is not). |
