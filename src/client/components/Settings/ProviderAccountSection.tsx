@@ -12,10 +12,13 @@ const providerNames: Record<AgentId, string> = {
 export function ProviderAccountSection({ provider }: { provider: AgentId }) {
   const allAccounts = useSettingsStore((s) => s.providerAccounts);
   const setProviderAccounts = useSettingsStore((s) => s.setProviderAccounts);
+  const accountAuth = useSettingsStore((s) => s.providerAccountAuth);
+  const setProviderAccountAuth = useSettingsStore((s) => s.setProviderAccountAuth);
   const accounts = allAccounts.filter((account) => account.provider === provider);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [draftLabels, setDraftLabels] = useState<Record<string, string>>({});
   const [creating, setCreating] = useState(false);
+  const [authCodes, setAuthCodes] = useState<Record<string, string>>({});
 
   const applyAccounts = (next: ProviderAccount[]) => setProviderAccounts(next);
 
@@ -123,8 +126,27 @@ export function ProviderAccountSection({ provider }: { provider: AgentId }) {
     setSavingId(account.id);
     try {
       await request(`/api/provider-accounts/${provider}/${account.id}/login/cancel`, { method: "POST" });
+      if (accountAuth?.provider === provider && accountAuth.accountId === account.id) {
+        setProviderAccountAuth(null);
+      }
     } catch (err) {
       useUiStore.getState().setToast({ message: err instanceof Error ? err.message : "Failed to cancel sign-in" });
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  const submitAuthCode = async (account: ProviderAccount) => {
+    const code = authCodes[account.id]?.trim();
+    if (!code) return;
+    setSavingId(account.id);
+    try {
+      await request(`/api/provider-accounts/${provider}/${account.id}/login/code`, {
+        method: "POST",
+        body: JSON.stringify({ code }),
+      });
+    } catch (err) {
+      useUiStore.getState().setToast({ message: err instanceof Error ? err.message : "Failed to submit authorization code" });
     } finally {
       setSavingId(null);
     }
@@ -158,6 +180,9 @@ export function ProviderAccountSection({ provider }: { provider: AgentId }) {
           {accounts.map((account) => {
             const draft = draftLabels[account.id] ?? account.label;
             const busy = savingId === account.id;
+            const pendingAuth = accountAuth?.provider === provider && accountAuth.accountId === account.id
+              ? accountAuth
+              : null;
             return (
               <div
                 key={account.id}
@@ -184,6 +209,36 @@ export function ProviderAccountSection({ provider }: { provider: AgentId }) {
                     </span>
                   </div>
                 </div>
+
+                {pendingAuth && provider === "claude" && (
+                  <div className="space-y-2 rounded-md border border-(--color-border-secondary) bg-(--color-bg-primary) p-3">
+                    <a
+                      href={pendingAuth.verificationUri}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-sm font-medium text-(--color-text-link) hover:underline"
+                    >
+                      Open Claude authentication page
+                    </a>
+                    <div className="flex gap-2">
+                      <input
+                        value={authCodes[account.id] ?? ""}
+                        onChange={(event) => setAuthCodes((current) => ({ ...current, [account.id]: event.target.value }))}
+                        placeholder="Paste authorization code"
+                        aria-label={`Authorization code for ${account.label}`}
+                        className="min-w-0 flex-1 rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) px-2 py-1.5 text-sm text-(--color-text-primary) focus:outline-none focus:border-(--color-border-focus)"
+                      />
+                      <Button
+                        variant="primary"
+                        size="md"
+                        disabled={busy || !authCodes[account.id]?.trim()}
+                        onClick={() => void submitAuthCode(account)}
+                      >
+                        Submit code
+                      </Button>
+                    </div>
+                  </div>
+                )}
 
                 <div className="flex flex-wrap gap-2">
                   {account.status === "authenticating" ? (

@@ -101,5 +101,6 @@
 - [ ] Integration: detached system turns recreate runners from persisted agent/provider route.
 - [ ] Integration: answer-question and rebase/conflict direct `agent.run` paths use provider preflight.
 - [x] Client: Settings renders multiple accounts and primary selection.
+- [x] Client: account-scoped sign-in renders its authorization controls on the owning row and submits through the scoped endpoint.
 - [ ] Client: subscription limits render multiple accounts per provider.
 - [ ] Client: session diagnostics renders the active account.

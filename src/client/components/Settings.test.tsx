@@ -17,6 +17,7 @@ afterEach(() => {
     missingRequired: [],
   });
   useSettingsStore.getState().setProviderAccounts([]);
+  useSettingsStore.getState().setProviderAccountAuth(null);
 });
 
 const claudeAuthed = { id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: ["claude-sonnet"], supportsReview: true };
@@ -182,6 +183,41 @@ describe("Settings - Agent → Claude tab", () => {
     expect(screen.getByDisplayValue("Primary Anthropic")).toBeInTheDocument();
     expect(screen.getByDisplayValue("Backup Anthropic")).toBeInTheDocument();
     expect(screen.getByText("Primary")).toBeInTheDocument();
+  });
+
+  it("renders and submits the scoped Claude authorization flow for an authenticated secondary account", async () => {
+    const now = Date.now();
+    useSettingsStore.getState().setProviderAccounts([{
+      id: "acct-secondary",
+      provider: "claude",
+      label: "Claude account 2",
+      isPrimary: false,
+      status: "authenticating",
+      createdAt: now,
+      updatedAt: now,
+    }]);
+    useSettingsStore.getState().setProviderAccountAuth({
+      provider: "claude",
+      accountId: "acct-secondary",
+      verificationUri: "https://claude.ai/oauth/authorize?secondary=true",
+    });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ success: true }) });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Settings {...defaultProps} agentList={[claudeAuthed]} />);
+
+    expect(screen.getByRole("link", { name: "Open Claude authentication page" })).toHaveAttribute(
+      "href",
+      "https://claude.ai/oauth/authorize?secondary=true",
+    );
+    await userEvent.type(screen.getByLabelText("Authorization code for Claude account 2"), "oauth-code");
+    await userEvent.click(screen.getByRole("button", { name: "Submit code" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      "/api/provider-accounts/claude/acct-secondary/login/code",
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ code: "oauth-code" }) }),
+    ));
+    vi.unstubAllGlobals();
   });
 });
 

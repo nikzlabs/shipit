@@ -62,6 +62,7 @@ describe("useServerEvents — session_agent_started", () => {
       activeRunnerSessions: new Set<string>(),
     });
     useSettingsStore.setState({
+      providerAccountAuth: null,
       claudeAuthDiagnostics: {
         attemptId: null,
         active: false,
@@ -167,6 +168,31 @@ describe("useServerEvents — Claude auth diagnostics", () => {
       message: "Claude sign-in failed.",
     });
     expect(useSettingsStore.getState().claudeAuthDiagnostics.entries).toHaveLength(1);
+  });
+
+  it("keeps an account-scoped Claude login attached to its provider-account row", () => {
+    renderHook(() => useServerEvents());
+    const es = FakeEventSource.last!;
+
+    act(() => {
+      es.emit("agent_auth_pending", {
+        agentId: "claude",
+        accountId: "acct-secondary",
+        details: { kind: "code-paste-url", verificationUri: "https://claude.ai/oauth/authorize?secondary=true" },
+      });
+    });
+
+    expect(useSessionStore.getState().authUrl).toBeNull();
+    expect(useSettingsStore.getState().providerAccountAuth).toEqual({
+      provider: "claude",
+      accountId: "acct-secondary",
+      verificationUri: "https://claude.ai/oauth/authorize?secondary=true",
+    });
+
+    act(() => {
+      es.emit("agent_auth_complete", { agentId: "claude", accountId: "acct-secondary" });
+    });
+    expect(useSettingsStore.getState().providerAccountAuth).toBeNull();
   });
 });
 

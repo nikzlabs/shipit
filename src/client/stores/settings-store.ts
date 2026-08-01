@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { PermissionMode, FileContextRef, ProviderAccount, SubAgentDefaults } from "../../server/shared/types.js";
+import type { AgentId, PermissionMode, FileContextRef, ProviderAccount, SubAgentDefaults } from "../../server/shared/types.js";
 import {
   getSavedNotifyOnFinish, saveNotifyOnFinish,
   getSavedSoundOnFinish, saveSoundOnFinish,
@@ -31,6 +31,13 @@ export interface CodexDeviceAuth {
   verificationUri: string;
   userCode: string;
   expiresInSec: number;
+}
+
+export interface ProviderAccountAuth {
+  provider: AgentId;
+  accountId: string;
+  verificationUri: string;
+  userCode?: string;
 }
 
 export interface ClaudeAuthDiagnosticEntry {
@@ -137,6 +144,8 @@ interface SettingsState {
   codexDeviceAuthError: string | null;
   claudeAuthDiagnostics: ClaudeAuthDiagnostics;
   providerAccounts: ProviderAccount[];
+  /** In-flight account-scoped sign-in details, keyed to the row that owns them. */
+  providerAccountAuth: ProviderAccountAuth | null;
 
   setHasSystemPrompt: (has: boolean) => void;
   setSystemPromptContent: (content: string) => void;
@@ -181,6 +190,7 @@ interface SettingsState {
   appendClaudeAuthLog: (entry: Omit<ClaudeAuthDiagnosticEntry, "id">) => void;
   finishClaudeAuthDiagnostics: (status: "complete" | "failed", message?: string) => void;
   setProviderAccounts: (accounts: ProviderAccount[]) => void;
+  setProviderAccountAuth: (auth: ProviderAccountAuth | null) => void;
   /**
    * Update the permission mode. When `sessionId` is provided, the change is
    * scoped to that session only. When `sessionId` is undefined (e.g. on the
@@ -252,6 +262,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     entries: [],
   },
   providerAccounts: [],
+  providerAccountAuth: null,
 
   setHasSystemPrompt: (has) => set({ hasSystemPrompt: has }),
 
@@ -408,6 +419,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       },
     })),
   setProviderAccounts: (accounts) => set({ providerAccounts: accounts }),
+  setProviderAccountAuth: (auth) => set({ providerAccountAuth: auth }),
 
   setPermissionMode: (sessionId, mode) => {
     if (sessionId) {
