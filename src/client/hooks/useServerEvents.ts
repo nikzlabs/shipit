@@ -17,6 +17,14 @@ import { useEventListener } from "./useEventListener.js";
 let reloadingForClientUpdate = false;
 
 /**
+ * Exponential backoff for our own reconnect loop: 1s, 2s, 4s, … capped at 30s.
+ * Matches `useWebSocket`'s shape (jitter omitted — one tab, no herd).
+ */
+function backoffMs(attempt: number): number {
+  return Math.min(1000 * Math.pow(2, attempt), 30_000);
+}
+
+/**
  * SSE hook for global push events — session list, repo updates, auth, activity dots.
  * Always active (home page and session page). Replaces WS broadcasts for global state.
  *
@@ -28,10 +36,25 @@ let reloadingForClientUpdate = false;
  * `visibilitychange` and force a fresh connection when the tab returns to the
  * foreground; the server re-sends its snapshot (PR statuses, sessions, repos
  * — see `/api/events` initial-state writes) so the UI catches up immediately.
+ *
+ * Restart resilience: native EventSource auto-reconnect only covers *network*
+ * errors. Per the HTML spec, a response that is not `200 text/event-stream`
+ * **fails the connection permanently** — readyState goes to CLOSED and the
+ * browser never retries. That is exactly what an orchestrator restart produces:
+ * while the container is being replaced, the ingress (cloudflared) answers with
+ * a 502 HTML error page, so any retry landing inside that window kills the
+ * stream for the lifetime of the page. The WebSocket has its own backoff loop
+ * and comes back, so the app *looks* connected while SSE is silently dead — and
+ * because the post-update page reload is driven by the `system_info` build id
+ * delivered on SSE *connect*, the tab never reloads onto the new client bundle
+ * (it also strands the session list, PR status and version badge). So we own the
+ * retry: on CLOSED we reconnect with backoff instead of giving up.
  */
 export function useServerEvents(): void {
   const eventSourceRef = useRef<EventSource | null>(null);
   const [connectAttempt, setConnectAttempt] = useState(0);
+  const reconnectAttemptRef = useRef(0);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
@@ -509,28 +532,53 @@ export function useServerEvents(): void {
       }
     });
 
+    // A stream that opened is a healthy generation — restart the backoff ladder
+    // so the next outage retries promptly instead of inheriting an old delay.
+    es.onopen = () => {
+      reconnectAttemptRef.current = 0;
+    };
+
     es.onerror = () => {
-      // Connection lost — EventSource auto-reconnects.
-      // Only log if the connection was previously open.
-      if (es.readyState === EventSource.CLOSED) {
-        console.warn("[sse] Connection closed");
-      }
+      // CONNECTING means the browser's own auto-reconnect is already in flight
+      // (a plain network error) — leave it alone. CLOSED means the connection
+      // was *failed*, which the browser never retries: a non-200 / non-
+      // `text/event-stream` response, i.e. the ingress's 502 page while the
+      // orchestrator restarts. That is ours to recover from.
+      if (es.readyState !== EventSource.CLOSED) return;
+      const attempt = reconnectAttemptRef.current;
+      reconnectAttemptRef.current = attempt + 1;
+      const delay = backoffMs(attempt);
+      console.warn(`[sse] Connection closed — reconnecting in ${delay}ms`);
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = setTimeout(() => setConnectAttempt((n) => n + 1), delay);
     };
 
     return () => {
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      es.onopen = null;
+      es.onerror = null;
       es.close();
       eventSourceRef.current = null;
     };
   }, [connectAttempt]);
 
-  // Force a fresh SSE connection when the tab returns from the background.
-  // Native EventSource readyState often stays OPEN over a dead socket on
-  // mobile, so we tear down and re-open instead of waiting for a (never-firing)
-  // error event. Closing the previous EventSource is handled by the effect's
-  // cleanup, which re-runs when `connectAttempt` changes.
+  // Force a fresh SSE connection when the tab returns from the background, or
+  // when the network comes back. Native EventSource readyState often stays OPEN
+  // over a dead socket on mobile, so we tear down and re-open instead of waiting
+  // for a (never-firing) error event. Closing the previous EventSource and
+  // cancelling any pending backoff timer are both handled by the effect's
+  // cleanup, which re-runs when `connectAttempt` changes. The attempt counter is
+  // reset first so a user-visible return to the app reconnects immediately
+  // rather than inheriting a long backoff delay from the outage.
+  function reconnectNow(): void {
+    reconnectAttemptRef.current = 0;
+    setConnectAttempt((n) => n + 1);
+  }
   useEventListener(document, "visibilitychange", () => {
-    if (!document.hidden) {
-      setConnectAttempt((n) => n + 1);
-    }
+    if (!document.hidden) reconnectNow();
   });
+  useEventListener(window, "online", reconnectNow);
 }

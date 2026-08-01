@@ -10,13 +10,21 @@ import { useSettingsStore } from "../stores/settings-store.js";
  * `useServerEvents` touches is implemented.
  */
 class FakeEventSource {
+  static CONNECTING = 0;
+  static OPEN = 1;
+  static CLOSED = 2;
   static last: FakeEventSource | null = null;
+  static created = 0;
   listeners = new Map<string, ((e: MessageEvent) => void)[]>();
   readyState = 1;
   url: string;
+  closed = false;
+  onopen: (() => void) | null = null;
+  onerror: (() => void) | null = null;
   constructor(url: string) {
     this.url = url;
     FakeEventSource.last = this;
+    FakeEventSource.created += 1;
   }
   addEventListener(type: string, cb: (e: MessageEvent) => void): void {
     const arr = this.listeners.get(type) ?? [];
@@ -24,11 +32,22 @@ class FakeEventSource {
     this.listeners.set(type, arr);
   }
   removeEventListener(): void {}
-  close(): void {}
+  close(): void {
+    this.closed = true;
+  }
   emit(type: string, data: unknown): void {
     for (const cb of this.listeners.get(type) ?? []) {
       cb({ data: JSON.stringify(data) } as MessageEvent);
     }
+  }
+  /**
+   * Simulate the spec's "fail the connection" path — the response was not
+   * `200 text/event-stream` (e.g. the ingress's 502 page while the orchestrator
+   * restarts), so readyState lands on CLOSED and the browser will NOT retry.
+   */
+  failConnection(): void {
+    this.readyState = FakeEventSource.CLOSED;
+    this.onerror?.();
   }
 }
 
@@ -148,5 +167,120 @@ describe("useServerEvents — Claude auth diagnostics", () => {
       message: "Claude sign-in failed.",
     });
     expect(useSettingsStore.getState().claudeAuthDiagnostics.entries).toHaveLength(1);
+  });
+});
+
+/**
+ * The post-update page reload (`system_info.buildId` vs the baked client build
+ * id) only ever fires on an SSE *connect*. So it depends entirely on the stream
+ * coming back after the orchestrator is replaced — which native EventSource
+ * does NOT guarantee: a non-200 response (the ingress's 502 page during the
+ * restart window) *fails* the connection permanently. These cover our own
+ * retry loop and the reload it enables.
+ */
+describe("useServerEvents — SSE reconnect after a failed connection", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+    FakeEventSource.last = null;
+    FakeEventSource.created = 0;
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it("reopens the stream with backoff when the connection is failed (CLOSED)", () => {
+    renderHook(() => useServerEvents());
+    const first = FakeEventSource.last!;
+    expect(FakeEventSource.created).toBe(1);
+
+    act(() => {
+      first.failConnection();
+    });
+    // Nothing yet — the retry is scheduled, not immediate.
+    expect(FakeEventSource.created).toBe(1);
+
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(FakeEventSource.created).toBe(2);
+    expect(FakeEventSource.last).not.toBe(first);
+    expect(first.closed).toBe(true);
+
+    // Still down: the ladder backs off (1s, then 2s) rather than giving up.
+    act(() => {
+      FakeEventSource.last!.failConnection();
+      vi.advanceTimersByTime(1000);
+    });
+    expect(FakeEventSource.created).toBe(2);
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(FakeEventSource.created).toBe(3);
+  });
+
+  it("does not schedule a retry while the browser's own auto-reconnect is in flight", () => {
+    renderHook(() => useServerEvents());
+    const es = FakeEventSource.last!;
+
+    act(() => {
+      es.readyState = FakeEventSource.CONNECTING;
+      es.onerror?.();
+      vi.advanceTimersByTime(30_000);
+    });
+
+    expect(FakeEventSource.created).toBe(1);
+  });
+
+  it("stops retrying once the hook unmounts", () => {
+    const { unmount } = renderHook(() => useServerEvents());
+
+    act(() => {
+      FakeEventSource.last!.failConnection();
+    });
+    unmount();
+    act(() => {
+      vi.advanceTimersByTime(30_000);
+    });
+
+    expect(FakeEventSource.created).toBe(1);
+  });
+
+  // Must stay last: the reload guard in the hook is module-level and latches
+  // once fired, so any later test in this file would see it already set.
+  it("reloads the page when the reconnected orchestrator advertises a new build id", () => {
+    vi.stubGlobal("__SHIPIT_CLIENT_BUILD_ID__", "old-build");
+    const reload = vi.fn();
+    Object.defineProperty(window, "location", {
+      value: Object.assign(Object.create(null), window.location, { reload }),
+      writable: true,
+    });
+
+    renderHook(() => useServerEvents());
+    const stranded = FakeEventSource.last!;
+
+    // Orchestrator container is replaced: the stream is failed by the 502, then
+    // our retry lands on the new process, which sends its build id on connect.
+    act(() => {
+      stranded.failConnection();
+      vi.advanceTimersByTime(1000);
+    });
+    const reconnected = FakeEventSource.last!;
+    // The reload can only come from a *new* connect — without the retry loop
+    // there is no second stream and `system_info` is never re-delivered.
+    expect(reconnected).not.toBe(stranded);
+
+    act(() => {
+      reconnected.emit("system_info", {
+        processStartedAt: 1,
+        buildId: "new-build",
+        updateMode: "managed",
+      });
+    });
+
+    expect(reload).toHaveBeenCalled();
   });
 });

@@ -36,6 +36,21 @@ docs/240 and is kept as the option analysis of record):
   header tells the developer to either make the change additive or build the
   §4 handshake first — so the handshake gets built exactly when the first
   genuinely breaking worker change needs it, not before.
+- **Follow-up (2026-08-01): the browser's SSE now survives the swap.** The
+  post-update page reload is driven by the `system_info` build id, which the
+  orchestrator sends **once per SSE connect** — so it fires only if the stream
+  actually comes back after the orchestrator container is replaced. Native
+  EventSource does not guarantee that: per the HTML spec, auto-reconnect covers
+  *network* errors only, and a response that is not `200 text/event-stream`
+  **fails the connection permanently** (readyState → CLOSED, no retry). During
+  the restart window the ingress (cloudflared) answers with a 502 HTML error
+  page, so any retry landing in that window stranded the tab for the rest of its
+  life. The WebSocket has its own backoff loop and came back, so the app *looked*
+  connected while SSE was dead — the tab kept running the old bundle (and a stale
+  session list / PR status / version badge) until the user reloaded by hand.
+  `useServerEvents` now owns the retry: on CLOSED it reopens with 1s→30s backoff
+  (mirroring `useWebSocket`), resets the ladder on a successful open, and also
+  reconnects on `online` alongside the existing `visibilitychange` trigger.
 - **§5 (lazy rotation + telemetry) landed in its minimal form.** Old workers
   roll forward as the idle enforcer disposes their containers. For visibility,
   `Dockerfile.session-worker.prod` stamps the image with a `shipit-build-id`
@@ -457,7 +472,10 @@ forward; you don't need 4 to start.
 - `src/client/hooks/useServerEvents.ts` — handle the new event types.
   Already handles client/server build skew: `system_info.buildId`
   is compared against the browser's baked client build id, and a
-  mismatch triggers a hard page reload.
+  mismatch triggers a hard page reload. Owns the SSE reconnect loop
+  that makes that reload actually fire across a restart (see the
+  Status section's follow-up) — native EventSource gives up for good
+  on the ingress's 502.
 - `src/client/components/Settings.tsx` — surface drain countdown in
   the existing "Software Updates" section.
 
