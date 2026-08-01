@@ -3,6 +3,9 @@ import { render, screen, fireEvent, cleanup, within, waitFor } from "@testing-li
 import { useState } from "react";
 import userEvent from "@testing-library/user-event";
 import { MarkdownSelectionComments, type SelectionCommentData } from "./MarkdownSelectionComments.js";
+import { useIssuesStore } from "../stores/issues-store.js";
+import { useFileStore } from "../stores/file-store.js";
+import { useUiStore } from "../stores/ui-store.js";
 
 afterEach(cleanup);
 
@@ -98,16 +101,53 @@ description: Align spawned sessions with the user path.
 Context body.
 `;
       render(<MarkdownSelectionComments {...makeProps({ content })} />);
-      // The issue pointer renders as a jump-to-issue chip linking to the tracker.
+      // The issue pointer renders as a jump-to-issue chip. A known tracker
+      // opens the inline Issues view, so it must NOT be an external link.
       const chip = screen.getByText("TRACKER-28");
-      expect(chip.closest("a")).toHaveAttribute(
-        "href",
-        "https://linear.app/example/issue/TRACKER-28/decouple",
-      );
+      expect(chip.closest("a")).toBeNull();
+      expect(chip.closest("button")).toHaveAttribute("title", "Open TRACKER-28 in ShipIt");
       expect(
         screen.getByText("Align spawned sessions with the user path."),
       ).toBeInTheDocument();
       expect(screen.queryByText(/issue: https/)).not.toBeInTheDocument();
+    });
+
+    it("opens the frontmatter issue pointer inline (Issues tab), not in a new tab", () => {
+      const openIssue = vi.fn();
+      useIssuesStore.setState({ openIssue });
+      const closePreview = vi.fn();
+      useFileStore.setState({ closePreview });
+      const content = `---
+issue: https://linear.app/example/issue/TRACKER-28/decouple
+---
+
+# Title
+`;
+      render(<MarkdownSelectionComments {...makeProps({ content })} />);
+      fireEvent.click(screen.getByText("TRACKER-28"));
+      expect(openIssue).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tracker: "linear",
+          identifier: "TRACKER-28",
+          id: "TRACKER-28",
+          url: "https://linear.app/example/issue/TRACKER-28/decouple",
+        }),
+      );
+      expect(useUiStore.getState().rightTab).toBe("issues");
+      // The doc is usually read in the preview modal — it must get out of the way.
+      expect(closePreview).toHaveBeenCalled();
+    });
+
+    it("keeps the external-link escape hatch for an unknown-shape pointer", () => {
+      const content = `---
+issue: https://example.com/tickets/42
+---
+
+# Title
+`;
+      render(<MarkdownSelectionComments {...makeProps({ content })} />);
+      const chip = screen.getByText("https://example.com/tickets/42");
+      expect(chip.closest("a")).toHaveAttribute("href", "https://example.com/tickets/42");
     });
 
     it("does NOT render a per-section + button (selection-driven only)", () => {
