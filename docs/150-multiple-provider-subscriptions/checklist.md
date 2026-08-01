@@ -4,7 +4,7 @@
 
 - [ ] Confirm stable provider account identity fields for Claude.
 - [x] Confirm stable provider account identity fields for Codex.
-- [ ] Verify provider terms for automatic failover among user-owned subscriptions.
+- [x] Decide default failover posture — on by default for every provider (req 15).
 - [ ] Decide child-session inheritance policy for provider routes.
 - [ ] Decide whether concurrent turns should spread across accounts or keep primary affinity.
 
@@ -61,21 +61,16 @@
 - [ ] Render active provider account in session diagnostics.
 - [ ] Skip known-exhausted accounts for new turns.
 - [ ] Surface `all_exhausted`, `auth_required`, and `no_model_eligible_account` as distinct recoverable states.
-- [ ] Persist delayed quota turns with staged attachments and wake-up time.
-- [ ] Restore delayed quota turns and timers after orchestrator restart.
-- [ ] Allow delayed turns to be cancelled or replaced from chat.
+- [ ] Fail an all-exhausted turn immediately with the earliest reset time, before any first-turn pinning or credential provisioning (req 13).
 
 ## Phase 3 — Automatic Failover
 
-- [ ] Track per-turn side effects on the runner.
-- [ ] Maintain a read-only tool allowlist for safe retry classification.
 - [ ] Detect hard quota exhaustion from Claude quota/runtime failures.
 - [ ] Detect hard quota exhaustion from Codex usage events/runtime failures.
-- [ ] Retry once on the next eligible account when exhaustion occurs before side effects.
+- [ ] Retry once on the next eligible account on hard exhaustion, unconditionally (req 14).
 - [ ] Avoid duplicating user chat history during same-turn retry.
 - [ ] Clear or replace failed in-progress assistant output during retry.
 - [ ] Record failover as a chat-visible system event attached to the original turn.
-- [ ] Stop and ask for user intent when exhaustion happens after side effects.
 - [ ] Reset provider-side resume state when switching accounts.
 - [ ] Rebuild replay context from ShipIt history and workspace state after account switch.
 - [ ] Ensure all turn entrypoints use shared provider-account preflight: chat, answer-question, system turns, CI auto-fix, child sessions, and rebase/conflict recovery.
@@ -109,9 +104,8 @@
 - [ ] Integration: first Codex turn pins `{ agent_id, provider_route_kind, provider_route_id }`.
 - [ ] Integration: auth-complete for account X re-pushes only to sessions pinned to account X.
 - [ ] Integration: exhausted primary starts a new turn on a secondary account.
-- [ ] Integration: all-exhausted state delays one active prompt and holds the in-memory queue.
-- [ ] Integration: mid-turn exhaustion before side effects retries on secondary once.
-- [ ] Integration: mid-turn exhaustion after side effects asks for confirmation and does not auto-retry.
+- [ ] Integration: all-exhausted fails the turn with reset times, pins nothing, and schedules no timer.
+- [ ] Integration: mid-turn exhaustion retries on secondary once, including after file edits or commands.
 - [ ] Integration: switching a pinned session kills the persistent agent, clears `agentSessionId`, and reprovisions credentials.
 - [ ] Integration: detached system turns recreate runners from persisted agent/provider route.
 - [ ] Integration: answer-question and rebase/conflict direct `agent.run` paths use provider preflight.

@@ -98,8 +98,8 @@ The reserved ids are not all the same kind of fallback:
   visibility and keeps the existing subscription-limits badge behavior. It is
   not a provider-account row, so it does not participate in multi-account
   ranking between stored account rows; however, when it is the selected Claude
-  route, quota polling, hard exhaustion detection, delayed-turn handling, and
-  same-route reset-time display behave like a Claude subscription account.
+  route, quota polling, hard exhaustion detection, and same-route reset-time
+  display behave like a Claude subscription account.
 
   Selection rule for `claude-env-oauth`: it is the selected Claude route only
   when **no stored Claude provider-account row exists** (no `acct_<id>` under
@@ -137,8 +137,8 @@ The reserved ids are not all the same kind of fallback:
 - Re-route already-pinned sessions while preserving local transcript and
   workspace context; account pinning is audit state, not a reason to strand an
   existing conversation on an exhausted subscription.
-- Automatically fail over after a hard quota/auth exhaustion signal when retrying
-  will not duplicate side effects.
+- Automatically fail over after a hard quota/auth exhaustion signal, retrying the
+  turn once on the next eligible account.
 - Render provider-account state inline: account label, provider, plan, quota
   windows, active/in-use sessions, errors, and reset time.
 - Preserve per-agent credential isolation from doc 138 and token copy-back from
@@ -196,8 +196,10 @@ several others. The amendments are called out here so a reader who finds 119 or
   user choice.
 - Shell-shaped quick actions such as "run this with account B" buttons. The user
   expresses intent in chat or Settings; ShipIt performs the account routing.
-- Guaranteeing retry safety after arbitrary tool execution. Some turns cannot be
-  safely retried automatically; those become visible recoverable states.
+- Guaranteeing that a retried turn does not repeat work. Req 14 chooses
+  uninterrupted failover over side-effect protection; a retry may redo file
+  edits or commands the first attempt already performed.
+- Holding an exhausted prompt until quota resets. Req 13 fails the turn instead.
 
 ## Product behavior
 
@@ -326,9 +328,10 @@ provisioning:
    provider process, clear provider resume state, provision the replacement
    credentials, persist the new route for audit, and rebuild provider context
    from ShipIt's transcript plus current workspace state before starting.
-8. If all eligible accounts are exhausted, put the prompt into a delayed
-   recoverable state with a wake-up time, show a chat-visible system message
-   with reset times, and do not start the agent.
+8. If all eligible accounts are exhausted, fail the turn immediately with a
+   chat-visible system message naming the earliest reset time, and do not start
+   the agent (req 13). ShipIt does not hold the prompt for later; the user
+   resends when they choose to.
 
 Eligibility is checked before quota ranking. A fallback account that cannot run
 the selected model, image support, MCP/review capability, or other
@@ -419,88 +422,39 @@ first `agent_init` as a special key on
 gates *future* unknown-capability fallback to a stored Claude account if one
 is added later.
 
-An exhausted turn cannot use the existing in-memory message queue by itself.
-Today queued messages drain from agent completion paths; if no agent starts,
-there is no completion event to wake the queue after a quota reset. Delayed
-quota waits therefore need their own persisted/scheduled state:
+**Exhaustion is a turn failure, not a deferral (req 13).** The preflight that
+detects `all_exhausted` ends the turn in an error state with a chat-visible
+system message naming the earliest reset time and the accounts it covers. There
+is no delayed-turn record, no orchestrator wake-up timer, no attachment
+staging step, and no restart-time re-arming. This keeps the exhausted path on
+the same failure machinery every other preflight rejection uses.
 
-- materialize attachments to stable on-disk paths **before** persisting the
-  delayed turn: today `runAgentWithMessage` calls `saveImagesToUploadsDir`
-  during prompt assembly (not "immediately before `agent.run`," but well before
-  the agent ever spawns). Inline base64 images only exist in the WS payload up
-  to that point. The preflight that delays a turn must run that same write
-  step first so the delayed record references stable file paths, not WS-only
-  base64 bytes. If materialization itself fails (disk full, permission error,
-  workspace dir missing), the delay is **rejected** rather than persisted
-  with broken file references: the user gets an immediate chat-visible error
-  ("could not stage attachments for delayed turn — exhaustion still in effect
-  until <reset>; try again with attachments removed or after reset") and the
-  turn ends in an error state. The session is not pinned, no delayed-turn
-  record is written, and no timer is scheduled.
-- conversely, the preflight must NOT run the first-turn side effects that
-  follow attachment materialization in today's order — first-turn
-  `provisionAgentCredentials`, `setAgentId` / `setAgentPinned`,
-  `syncAgentTokenIn`, and `tryPushAgentSecrets`. Running any of these and then
-  deferring would (a) pin the session to an account before the user has had a
-  chance to pick a replacement during the wait, (b) leave a provisioned
-  credential subtree that no turn ever consumed, and (c) defeat the
-  replacement-account recovery path in the disconnect section. The preflight
-  must decide "is this turn going to be delayed?" **before** running any of
-  those steps,
-- persist the full turn request in a delayed-turn table or session field:
-  user text, validated file refs, upload refs, image refs (the on-disk paths
-  just materialized), permission mode, review-file authorization, selected
-  model, selected agent, target provider, and the assembled prompt/context
-  snapshot needed to restart deterministically,
-- schedule an orchestrator timer for the earliest eligible reset,
-- re-check account eligibility/quota at wake time before starting,
-- revalidate that referenced files/uploads still exist and surface a recoverable
-  error instead of starting with silently missing context,
-- broadcast the delayed state so reconnecting clients show why the prompt is not
-  running,
-- allow the user to cancel or replace the delayed prompt from chat.
+Two orderings still matter:
 
-If the process restarts before the reset, startup tasks reload delayed turns and
-re-arm their timers.
-
-**Interaction with the in-memory message queue.** `drainNextQueuedMessage`
-calls `runAgentWithMessage` recursively without going through
-`handleSendMessage`, so a dequeued message hits the same preflight as a fresh
-one. The exhaustion path must not produce one delayed-turn record per queued
-message — that would land N orchestrator timers for the same reset window,
-and the user would see N rolling failover messages as each timer fires.
-
-The rule is:
-
-- A turn can be moved to the delayed state at most once. The first preflight
-  that detects `all_exhausted` either persists the active prompt as a delayed
-  turn **or** marks the rest of the queue as deferred behind the same wake-up
-  event, but it never persists multiple separate delayed-turn records for one
-  exhaustion window.
-- While at least one delayed turn exists for a session, `drainNextQueuedMessage`
-  short-circuits: it does not call `runAgentWithMessage` for further queued
-  messages. The queue is held in-memory as today; the wake-up handler is the
-  only path that resumes draining.
-- When the wake-up fires and the active delayed turn starts, ordinary
-  post-turn drain takes over from there.
+- The preflight must decide "can any account run this turn?" **before** the
+  first-turn side effects — `provisionAgentCredentials`, `setAgentId` /
+  `setAgentPinned`, `syncAgentTokenIn`, `tryPushAgentSecrets`. Failing after
+  them would pin the session to an account no turn ever used and leave a
+  provisioned credential subtree behind.
+- `drainNextQueuedMessage` calls `runAgentWithMessage` recursively without going
+  through `handleSendMessage`, so a dequeued message hits the same preflight and
+  fails the same way. Each queued message therefore produces its own exhaustion
+  error rather than draining silently; the queue empties as today. If that
+  proves noisy in practice, collapse repeated identical exhaustion messages
+  within one window at the message level — not by reintroducing deferral state.
 
 ### Mid-turn failover
 
-Automatic retry is conservative:
+When a hard exhaustion signal arrives partway through a turn, ShipIt switches to
+the next eligible provider account and retries once, regardless of what the turn
+has already done (req 14). There is no side-effect gate, no per-turn side-effect
+tracking, and no read-only tool allowlist: a retried turn may repeat work the
+first attempt already performed, and the user accepted that tradeoff in exchange
+for uninterrupted failover.
 
-- **Safe retry:** the agent failed before any side-effecting tool call, or the
-  failure happened during initial provider/model request before tool execution.
-  ShipIt switches to the next eligible provider account and retries once.
-- **Needs user intent:** the turn already wrote files, ran commands, modified git,
-  called side-effecting MCP tools, or created external side effects. ShipIt
-  stops, records the exhausted account, surfaces the next eligible account, and
-  asks the user in chat whether to continue from the current workspace state.
-- **No retry:** all accounts are exhausted or unauthenticated.
+If no eligible account remains, the turn fails as in the exhaustion path above.
 
-This mirrors the existing product stance: the agent is the actor, but ShipIt does
-not silently duplicate side effects.
-
-Safe retry is a same-turn retry, not a new user message. The implementation must
+The retry is a same-turn retry, not a new user message. The implementation must
 avoid duplicating chat history:
 
 - persist the user's prompt once for the turn,
@@ -621,8 +575,8 @@ interface ProviderAccount {
   lastUsedAt?: number;
   /**
    * Earliest reset time across whichever quota window(s) are currently at
-   * 100%. Used to schedule the delayed-turn timer and to render reset
-   * hints; NOT an exhausted/ready boolean. Whether a given turn is blocked
+   * 100%. Used to render reset hints and to name the earliest reset in the
+   * exhaustion error; NOT an exhausted/ready boolean. Whether a given turn is blocked
    * is computed at selection time from `quota.*.usedPct` against the
    * requested model's window (see Quota and exhaustion detection).
    */
@@ -973,11 +927,11 @@ question, by the agent via `shipit session create`, or by a server automation.
 Reserved route ids have an explicit preflight contract because they are not
 provider-account rows:
 
-| Route id | Provisioning | Env/config pushed to the runner | Token sync | Quota/delayed-turn behavior |
+| Route id | Provisioning | Env/config pushed to the runner | Token sync | Quota/exhaustion behavior |
 | --- | --- | --- | --- | --- |
-| `codex-api-key` | Skip provider-account credential copy. Preserve any existing subscription `.codex` files instead of deleting them. | Set `OPENAI_API_KEY` for the Codex run and ensure adapter config prefers the API-key path over subscription files for this attempt. | No-op; API keys do not rotate through the Codex subscription token store. | No subscription quota. It is not ranked with subscription accounts, not used for subscription failover, and does not create delayed quota turns. Runtime API 429s surface as API-key rate/billing errors for that route. |
-| `claude-api-key` | Skip provider-account credential copy. Preserve any existing subscription `.claude` files instead of deleting them. | Set `ANTHROPIC_API_KEY` for the Claude run and ensure adapter config prefers the API-key path over OAuth files for this attempt. | No-op; API keys do not rotate through the Claude OAuth token store. | No subscription quota. It is not ranked with subscription accounts, not used for subscription failover, and does not create delayed quota turns. Runtime API 429s surface as API-key rate/billing errors for that route. |
-| `claude-env-oauth` | Skip provider-account credential copy because the source of truth is the orchestrator/session env, not `/credentials/provider-accounts/...`. Per the selection rule above, this route is only ever chosen when no stored Claude account row exists, so there is no `provider-accounts/claude/acct_<id>/` subtree to preserve. Any `.credentials.json` the CLI writes during this env-OAuth turn stays local to the per-session credential subtree; it is never copied back to `provider-accounts/...`, and if the user later adds a stored Claude account the next preflight switches off env-OAuth and the per-session file is purged on the normal account-switch path. | Set `ANTHROPIC_AUTH_TOKEN` and do not set `ANTHROPIC_API_KEY`. Claude must treat the bearer as the selected OAuth source, matching doc 135's env-token path. | Both `syncAgentTokenIn` and `syncAgentTokenBack` are explicitly **disabled** for this route at the helper-invocation site. `AGENT_TOKEN_FILES[claude]` is a static map in `session-credentials.ts` and is not mutated per-route; the gate belongs in the preflight code that decides whether to call the helpers at all. Without that gate, the generic file-list pathway would still pull a token file into and out of the env-OAuth session. If the provider returns a refreshed token file during the run, it must not be copied into a stored provider-account row. | Subscription-style quota applies. The limits badge remains visible, hard exhaustion can create delayed quota turns, and reset-time handling matches Claude OAuth accounts. It is not ranked against stored provider-account rows for multi-account spreading because it has no account row; it is used when explicitly selected, pinned from migration/local auth, or when no stored Claude account exists and env OAuth is the available Claude auth. |
+| `codex-api-key` | Skip provider-account credential copy. Preserve any existing subscription `.codex` files instead of deleting them. | Set `OPENAI_API_KEY` for the Codex run and ensure adapter config prefers the API-key path over subscription files for this attempt. | No-op; API keys do not rotate through the Codex subscription token store. | No subscription quota. It is not ranked with subscription accounts and is not used for subscription failover. Runtime API 429s surface as API-key rate/billing errors for that route. |
+| `claude-api-key` | Skip provider-account credential copy. Preserve any existing subscription `.claude` files instead of deleting them. | Set `ANTHROPIC_API_KEY` for the Claude run and ensure adapter config prefers the API-key path over OAuth files for this attempt. | No-op; API keys do not rotate through the Claude OAuth token store. | No subscription quota. It is not ranked with subscription accounts and is not used for subscription failover. Runtime API 429s surface as API-key rate/billing errors for that route. |
+| `claude-env-oauth` | Skip provider-account credential copy because the source of truth is the orchestrator/session env, not `/credentials/provider-accounts/...`. Per the selection rule above, this route is only ever chosen when no stored Claude account row exists, so there is no `provider-accounts/claude/acct_<id>/` subtree to preserve. Any `.credentials.json` the CLI writes during this env-OAuth turn stays local to the per-session credential subtree; it is never copied back to `provider-accounts/...`, and if the user later adds a stored Claude account the next preflight switches off env-OAuth and the per-session file is purged on the normal account-switch path. | Set `ANTHROPIC_AUTH_TOKEN` and do not set `ANTHROPIC_API_KEY`. Claude must treat the bearer as the selected OAuth source, matching doc 135's env-token path. | Both `syncAgentTokenIn` and `syncAgentTokenBack` are explicitly **disabled** for this route at the helper-invocation site. `AGENT_TOKEN_FILES[claude]` is a static map in `session-credentials.ts` and is not mutated per-route; the gate belongs in the preflight code that decides whether to call the helpers at all. Without that gate, the generic file-list pathway would still pull a token file into and out of the env-OAuth session. If the provider returns a refreshed token file during the run, it must not be copied into a stored provider-account row. | Subscription-style quota applies. The limits badge remains visible, hard exhaustion fails the turn with a reset time, and reset-time handling matches Claude OAuth accounts. It is not ranked against stored provider-account rows for multi-account spreading because it has no account row; it is used when explicitly selected, pinned from migration/local auth, or when no stored Claude account exists and env OAuth is the available Claude auth. |
 
 Preflight must check route kind before assuming a `provider_account_id` can be
 loaded from `ProviderAccountManager`. Account-row provisioning, capability
@@ -1120,8 +1074,8 @@ subscription quota ranking. Model them separately as provider auth fallbacks:
 `ANTHROPIC_AUTH_TOKEN` is different: route id `claude-env-oauth` is reserved,
 but it is OAuth-style subscription auth per doc 135, not a pay-as-you-go
 API-key path. It keeps the Claude
-subscription-limits pill, quota polling, hard-exhaustion detection, and delayed
-quota turns. It is excluded only from multi-account spreading/ranking among
+subscription-limits pill, quota polling, and hard-exhaustion detection. It is
+excluded only from multi-account spreading/ranking among
 stored provider-account rows because there is no provider-account row to update
 or sync back into.
 
@@ -1140,7 +1094,7 @@ model is Opus and ready-for-this-turn when it is Sonnet, and an
 account-wide `exhaustedUntil` cannot model that. `ProviderAccount.exhaustedUntil`
 therefore stores **only** the next reset time, not an exhausted/ready
 boolean: it is the earliest reset across whichever windows are currently at
-100%, used to schedule the delayed-turn timer. Whether the account is
+100%, used to name the earliest reset when a turn fails. Whether the account is
 exhausted "right now" for a given turn is computed at selection time from
 `quota.*.usedPct` against the requested model's window (see "model → window
 mapping" in the Session startup quota-low rule). Today's 'account-wide,
@@ -1178,28 +1132,22 @@ GitHub rate-limit state.
 - Session diagnostics shows the active provider account for the current session.
 - Chat system messages report failover decisions:
   - `Claude: Primary exhausted until 14:30; retrying with Work account.`
-  - `Claude: Primary exhausted after file edits; Work account is available. Say continue to retry from the current workspace state.`
+  - `Claude: all accounts exhausted. Earliest reset 14:30 (Primary). Send again after that.`
 
 Do not open provider dashboards for normal quota/status inspection. Billing and
 account-management links live in overflow menus.
 
 ## Retry safety model
 
-Track per-turn side effects using existing agent event observations:
+There is no side-effect gate (req 14). A hard exhaustion signal retries the turn
+on the next eligible account whatever the turn has already done, so ShipIt does
+not track `turnHadSideEffects`, does not maintain a read-only tool allowlist, and
+does not ask the user for intent mid-turn.
 
-- Before first tool call: safe to retry.
-- After read-only tools only: safe to retry.
-- After write/edit/bash/side-effecting MCP/external side-effect tools: require
-  user intent.
-
-Implementation can start coarse:
-
-- Maintain `runner.turnHadSideEffects`.
-- Mark true for `Write`, `Edit`, `Bash`, shell/file-write equivalents, git/gh
-  shim writes, MCP tools except known read-only allowlist.
-- If unknown, treat as side-effecting.
-
-This intentionally favors correctness over seamless failover.
+What the retry does still owe the user is legibility: the failover is recorded as
+a system event on the same turn (see "Mid-turn failover"), so a repeated file
+edit or command is attributable rather than mysterious. Retry is capped at one
+switch per turn, which bounds duplicated work to a single repeat.
 
 ## Migration
 
@@ -1305,7 +1253,7 @@ the source of truth.
   or running token sync (it relies on prior WS-path setup having done so),
   so the change is "rebase-driver now runs the full system-turn preflight,"
   not "rebase-driver now also passes one extra argument." Cancellation /
-  error paths in the rebase driver must trigger the same delayed-turn /
+  error paths in the rebase driver must trigger the same
   recoverable-error handling as the chat path when preflight reports
   `all_exhausted` or `auth_required`.
 - `src/server/orchestrator/app-lifecycle.ts` — account-qualify auth-complete
@@ -1509,8 +1457,8 @@ Planned authentication-surface consolidation:
 ### Phase 3 — Automatic failover
 
 - Detect hard exhaustion during startup or turn execution.
-- Retry automatically when no side effects occurred.
-- Ask for chat confirmation when side effects already happened.
+- Retry once on the next eligible account, unconditionally (req 14).
+- Fail the turn with reset times when no eligible account remains (req 13).
 - Record failover events in chat history and diagnostics.
 
 ### Phase 4 — Policy controls
@@ -1557,9 +1505,8 @@ Planned authentication-surface consolidation:
 - Integration: first Claude turn pins `{ agent_id: "claude", provider_account_id
   }` and starts with that account's credentials.
 - Integration: exhausted primary account causes a new turn to start on secondary.
-- Integration: mid-turn exhaustion before side effects retries on secondary once.
-- Integration: mid-turn exhaustion after side effects emits a confirmation prompt
-  and does not auto-retry.
+- Integration: mid-turn exhaustion retries on the secondary account exactly once,
+  including when the turn has already edited files or run commands (req 14).
 - Integration: switching a pinned session from account A to account B kills any
   persistent agent, clears provider resume state, reprovisions account B's
   credentials, and starts from local context.
@@ -1583,9 +1530,9 @@ Planned authentication-surface consolidation:
 - Integration: Codex unknown-quota accounts are selectable but do not outrank
   equivalent accounts with fresh known quota; `OPENAI_API_KEY` fallback is not
   rendered or ranked as a subscription account.
-- Integration: delayed quota turns persist and restore the full turn request,
-  including files, uploads/images, permission mode, review authorization, model,
-  and assembled prompt context.
+- Integration: with every account exhausted, the turn fails immediately with the
+  earliest reset time, pins nothing, provisions no credentials, and schedules no
+  timer (req 13); a queued message behind it fails the same way.
 - Integration: exhausted-but-authenticated accounts keep
   `AgentRegistry.authConfigured` true; account selection reports `all_exhausted`
   separately from `auth_required`.

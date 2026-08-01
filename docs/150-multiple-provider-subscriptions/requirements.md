@@ -43,6 +43,18 @@ with the ShipIt transcript and workspace context preserved across the switch.
    workspace context are preserved. Quota pressure never forces the user to
    abandon a conversation and start a new session.
 
+12. Failover only ever moves a turn between connected subscription accounts for
+    the same provider. ShipIt never switches a turn onto pay-as-you-go API
+    billing (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`) because a subscription ran
+    out. Those remain a manually chosen auth path.
+13. When no connected account for the provider can run the turn, ShipIt fails
+    the turn immediately and tells the user when the earliest window resets. It
+    does not hold the prompt for later.
+14. When hard exhaustion happens partway through a turn, ShipIt retries on the
+    next eligible account regardless of what that turn has already done.
+15. Automatic failover is on by default for every provider. Connecting a second
+    account is enough to enable it; no separate opt-in.
+
 ## Requirements from standing product principles
 
 Sourced from `CLAUDE.md` §1–§2 (human-authored, repo-wide), not from a specific
@@ -56,20 +68,6 @@ request for this feature.
 
 ## Open questions
 
-- **All accounts exhausted.** When no connected account for the provider is
-  usable, should ShipIt hold the user's prompt and start it automatically when
-  the earliest window resets, or fail the turn immediately with the reset times
-  and let the user resend?
-- **Paid API billing as a last resort.** If a subscription is exhausted and an
-  `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` is configured on the host, may ShipIt
-  fail over onto pay-as-you-go API billing, or must failover stay strictly
-  between subscription accounts?
-- **Mid-turn exhaustion after the agent already changed things.** If the account
-  runs out after the turn has edited files, run commands, or pushed, should
-  ShipIt retry on the next account anyway, or stop and ask the user before
-  continuing?
-- **Default posture.** Is automatic failover on by default for every provider,
-  or opt-in per provider?
 - **Next account cannot run the requested model.** If the next account in
   priority order lacks the selected model (different plan or tier), should
   ShipIt skip it and report that no account can serve the turn, or run the turn
@@ -77,11 +75,31 @@ request for this feature.
 - **Child sessions.** Should an agent-spawned child session inherit its parent's
   provider account, or pick its own account through the normal priority order?
 
+## Resolved questions
+
+- 2026-08-01 — When every connected account is out of quota, should ShipIt hold
+  the prompt until reset or fail fast? **Fail fast, showing the reset times.**
+  The user resends. Became requirement 13; removes the persisted delayed-turn
+  record, the orchestrator wake-up timer, the attachment-staging step, and the
+  queue-hold rules the design had assumed.
+- 2026-08-01 — May failover fall back to pay-as-you-go API billing when a
+  subscription is exhausted? **No — subscriptions only.** Became requirement 12;
+  confirms the design's existing treatment of `codex-api-key` / `claude-api-key`
+  as non-failover routes.
+- 2026-08-01 — If quota runs out mid-turn after the agent has already edited
+  files or run commands, retry anyway or stop and ask? **Always retry on the
+  next account.** Became requirement 14; removes the side-effect gate, the
+  per-turn side-effect tracking, and the read-only tool allowlist from the
+  design.
+- 2026-08-01 — Is automatic failover on by default or opt-in per provider?
+  **On by default.** Became requirement 15.
+
 ## Provenance boundary
 
 Requirements 1–9 are the user's words, restated as observable behavior.
+12–15 come from the user's answers recorded under "Resolved questions".
 10–11 come from the standing product principles in `CLAUDE.md`. Everything else
 in this feature — the account registry and credential layout, route pinning,
-retry-safety classification, delayed-turn persistence, capability snapshots,
-migration, quota-polling shape, and phasing — is design inferred by the agent
-and lives in `plan.md`. None of it is a requirement until it appears above.
+capability snapshots, migration, quota-polling shape, and phasing — is design
+inferred by the agent and lives in `plan.md`. None of it is a requirement until
+it appears above.
