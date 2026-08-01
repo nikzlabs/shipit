@@ -142,15 +142,8 @@ export function RebaseBanner({ sessionId }: { sessionId: string }) {
           <>
             <Spinner />
             <span className="text-(--color-text-secondary) flex-1">
-              Agent is resolving merge conflicts…
+              Rebase in progress — agent is resolving conflicts…
             </span>
-            <Button
-              size="md"
-              variant="secondary"
-              onClick={() => abortRebase(sessionId)}
-            >
-              Abort rebase
-            </Button>
           </>
         )}
       </div>
