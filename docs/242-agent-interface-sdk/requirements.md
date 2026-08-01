@@ -36,6 +36,8 @@ security measures, UX details, or anticipated extensions into requirements.
 9. The message delivered to the agent identifies that it was submitted through
    the Agent Interface SDK rather than typed as a regular user message, so the
    agent can interpret automatic tool invocation correctly.
+10. SDK messages use the same send-to-agent dispatch behavior as existing
+    ShipIt UI actions rather than defining a separate busy-agent policy.
 
 ## Not requirements
 

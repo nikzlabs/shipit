@@ -339,7 +339,7 @@ SDK postMessage
   → POST /api/sessions/:id/agent/dispatch
   → services/agent.ts validation and session resolution
   → runner.dispatch(...)
-  → busy-turn behavior selected by the open product decision below
+  → the same start/steer/queue decision used by existing UI dispatches
 ```
 
 The transcript persists the page-authored text as a normal user message plus
@@ -491,7 +491,7 @@ mention it where service-page behavior is described.
 - A container restart does not invalidate the API contract. A reloaded page
   receives a fresh bootstrap and binds to the current browser/session frame.
 - Each SDK call is independent. The page is not promised a long-lived agent
-  process; accepted work follows the explicit busy-agent policy selected below.
+  process; accepted work follows ShipIt's existing start/steer/queue behavior.
 
 ## Security analysis
 
@@ -556,18 +556,21 @@ message delivered to the agent. Typed, host-owned dispatch metadata drives both
 representations, so provenance does not depend on page-authored text or on the
 agent inferring context from transcript styling it cannot see.
 
-## Open product decisions (not requirements)
+### Existing send-to-agent behavior
 
-These questions must be answered before implementation because each changes
-observable behavior. They are intentionally not resolved here:
+SDK requests use the existing authenticated `dispatchAgentMessage` →
+`runner.dispatch()` path used by ShipIt's other send-to-agent UI actions. The
+SDK does not introduce a separate busy-agent mode:
 
-1. **Busy-agent behavior:** always queue the SDK request as its own next turn;
-   honor live steering and inject when supported; or reject while busy. Current
-   `runner.dispatch` calls are steerable unless marked otherwise, so this choice
-   must be encoded explicitly rather than inherited accidentally.
+- when the runner is idle, the request starts a turn;
+- when a running turn is steerable and live steering is enabled, the request is
+  injected into that turn; and
+- otherwise, the request enters the existing queue.
 
-These are candidate requirements only if the user chooses them. Until then,
-implementation should not silently decide them.
+This behavior is inherited deliberately, not accidentally: SDK dispatch must
+not set `systemTurn`, completion callbacks, or other options merely to force one
+branch. Changes to ShipIt's shared live-steering preference therefore apply to
+SDK and UI sends consistently.
 
 ## Rejected alternatives
 
@@ -598,7 +601,7 @@ security benefit over an injected host bridge.
 
 ## Implementation touchpoints
 
-Expected touchpoints, subject to the open product decisions:
+Expected implementation touchpoints:
 
 - `src/client/components/FileContentView/RenderedFrame.tsx` — opt-in Present SDK
   bootstrap injection and iframe-ref callback.
