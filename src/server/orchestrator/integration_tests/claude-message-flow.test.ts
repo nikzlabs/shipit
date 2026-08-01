@@ -338,11 +338,11 @@ describe("Integration: Claude message flow — basics", () => {
 
   it("multiple clients each receive their own preview_status on connect", async () => {
     const client1 = await TestClient.connect(port);
-    const msg1 = await client1.receive();
+    const msg1 = await client1.receiveType("preview_status");
     expect(msg1.type).toBe("preview_status");
 
     const client2 = await TestClient.connect(port);
-    const msg2 = await client2.receive();
+    const msg2 = await client2.receiveType("preview_status");
     expect(msg2.type).toBe("preview_status");
 
     client1.close();

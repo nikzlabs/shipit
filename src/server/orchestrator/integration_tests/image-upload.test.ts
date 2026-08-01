@@ -112,7 +112,7 @@ describe("Integration: Image upload", () => {
       ],
     });
 
-    const msg = await client.receive();
+    const msg = await client.receiveType("error");
     expect(msg.type).toBe("error");
     expect((msg as any).message).toContain("unsupported type");
 
@@ -135,7 +135,7 @@ describe("Integration: Image upload", () => {
       images,
     });
 
-    const msg = await client.receive();
+    const msg = await client.receiveType("error");
     expect(msg.type).toBe("error");
     expect((msg as any).message).toContain("Too many images");
 
@@ -159,7 +159,7 @@ describe("Integration: Image upload", () => {
       ],
     });
 
-    const msg = await client.receive();
+    const msg = await client.receiveType("error");
     expect(msg.type).toBe("error");
     expect((msg as any).message).toContain("too large");
 

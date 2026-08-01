@@ -80,7 +80,7 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
       await client.receive(); // connection_established
 
       client.send({ type: "send_message", text: "hello" });
-      const msg = await client.receive();
+      const msg = await client.receiveType("error");
 
       // We no longer auto-launch the OAuth flow / pop the global sign-in
       // overlay. The turn is blocked with an actionable error that directs the
