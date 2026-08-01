@@ -4,6 +4,7 @@ import { SessionRunner } from "../session-runner.js";
 import { wireAgentListeners, buildTurnMessages, type AgentListenerDeps } from "./agent-listeners.js";
 import type { ChatMessageGroup, RecordedChatCard } from "../session-runner.js";
 import { routeVoiceNote } from "../voice/voice-note-router.js";
+import { ProviderRouteUnavailableError } from "../provider-route-preflight.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { AgentCapabilities, AgentEvent, AgentMcpWriteContext, AgentMcpWriteResult, AgentProcess } from "../../shared/types.js";
 
@@ -105,6 +106,77 @@ describe("wireAgentListeners", () => {
     expect(runner.getTurnEventBuffer()).toHaveLength(1);
 
     runner.dispose({ force: true });
+  });
+
+  // docs/150 req 13 — a turn blocked because no connected account can serve it
+  // reaches the same `error` listener as a crashed process (env-prep throws,
+  // `executeAgentTurn` re-emits). It must inherit the terminal-turn cleanup but
+  // NOT the "Agent process error" framing: nothing crashed, and the message
+  // already tells the user what to do.
+  describe("blocked-turn errors (docs/150 req 13)", () => {
+    function wireForError() {
+      const agent = new FakeAgent();
+      const runner = new SessionRunner({
+        sessionId: "session-1",
+        sessionDir: "/tmp/session-1",
+        defaultAgentId: "codex",
+      });
+      runner.running = true;
+      const emitted: { type?: string; message?: string }[] = [];
+      runner.on("message", (msg) => emitted.push(msg as { type?: string; message?: string }));
+      const d = deps();
+      d.chatHistoryManager.append = vi.fn() as never;
+      wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
+        capturedSessionId: "session-1",
+        isNewSession: false,
+        persistUserMessage: vi.fn(),
+      });
+      return { agent, runner, emitted, d };
+    }
+
+    const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+    it("surfaces the routing message verbatim and persists it as the turn's error", async () => {
+      const { agent, runner, emitted, d } = wireForError();
+      const blocked = new ProviderRouteUnavailableError("claude", {
+        reason: "all_exhausted",
+        earliestResetAt: "2026-08-01T14:30:00.000Z",
+      });
+
+      agent.emit("error", blocked);
+      await tick();
+
+      const errorMsg = emitted.find((m) => m.type === "error");
+      expect(errorMsg?.message).toBe(blocked.message);
+      expect(errorMsg?.message).not.toContain("Agent process error");
+      expect(d.chatHistoryManager.append).toHaveBeenCalledWith("session-1", {
+        role: "assistant",
+        text: blocked.message,
+        isError: true,
+      });
+      // Terminal-turn cleanup still runs, so the runner is reclaimable and the
+      // queue drains — a blocked turn must not wedge the session.
+      expect(runner.running).toBe(false);
+      expect(runner.lastTurnErrored).toBe(true);
+      runner.dispose({ force: true });
+    });
+
+    it("still frames a genuine process crash as an agent process error", async () => {
+      const { agent, runner, emitted, d } = wireForError();
+
+      agent.emit("error", new Error("spawn ENOENT"));
+      await tick();
+
+      expect(emitted.find((m) => m.type === "error")?.message).toBe(
+        "Agent process error: spawn ENOENT",
+      );
+      expect(d.chatHistoryManager.append).toHaveBeenCalledWith("session-1", {
+        role: "assistant",
+        text: "Error: spawn ENOENT",
+        isError: true,
+      });
+      runner.dispose({ force: true });
+    });
   });
 
   describe("auth_required auto-recovery (docs/179)", () => {

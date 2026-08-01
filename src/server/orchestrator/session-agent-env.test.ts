@@ -25,6 +25,7 @@ import {
   PUSH_AGENT_SECRETS_TIMEOUT_MS,
 } from "./session-agent-env.js";
 import { repoUrlToHash } from "./git-utils.js";
+import { ProviderRouteUnavailableError } from "./provider-route-preflight.js";
 
 /**
  * Minimal ContainerSessionRunner stand-in that satisfies the instanceof check
@@ -62,6 +63,7 @@ function makeFakeSessionManager(opts: {
   providerRouteKind?: "account";
   providerRouteId?: string;
   remoteUrl?: string;
+  model?: string;
 }): {
   sm: SessionManager;
   state: {
@@ -93,6 +95,7 @@ function makeFakeSessionManager(opts: {
       providerRouteKind: opts.providerRouteKind,
       providerRouteId: opts.providerRouteId,
       remoteUrl: opts.remoteUrl ?? "",
+      model: opts.model,
     }),
     setAgentId: () => { state.setAgentIdCalls += 1; },
     setAgentPinned: () => {
@@ -272,7 +275,9 @@ describe("prepareSessionAgentEnvironment", () => {
     const runner = new FakeContainerRunner();
     const credentialStore = makeFakeCredentialStore();
     const { sm, state } = makeFakeSessionManager({ agentPinned: false });
-    const selectRouteForTurn = vi.fn().mockReturnValue({ kind: "account", id: "acct-primary" });
+    const selectAccountForTurn = vi
+      .fn()
+      .mockReturnValue({ ok: true, route: { kind: "account", id: "acct-primary" } });
 
     await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
       sessionId: "s1",
@@ -281,11 +286,11 @@ describe("prepareSessionAgentEnvironment", () => {
         credentialsDir: tmpDir,
         credentialStore,
         sessionManager: sm,
-        providerAccountManager: { selectRouteForTurn } as never,
+        providerAccountManager: { selectAccountForTurn } as never,
       },
     });
 
-    expect(selectRouteForTurn).toHaveBeenCalledWith("claude");
+    expect(selectAccountForTurn).toHaveBeenCalledWith("claude", {});
     expect(state.setProviderRouteCalls).toEqual([
       { id: "s1", kind: "account", routeId: "acct-primary" },
     ]);
@@ -306,7 +311,124 @@ describe("prepareSessionAgentEnvironment", () => {
       providerRouteKind: "account",
       providerRouteId: "acct-secondary",
     });
-    const selectRouteForTurn = vi.fn();
+    const selectAccountForTurn = vi.fn();
+
+    await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+      sessionId: "s1",
+      agentId: "claude",
+      enforceAccountRouting: true,
+      deps: {
+        credentialsDir: tmpDir,
+        credentialStore,
+        sessionManager: sm,
+        providerAccountManager: { selectAccountForTurn } as never,
+      },
+    });
+
+    expect(selectAccountForTurn).not.toHaveBeenCalled();
+    expect(state.setProviderRouteCalls).toEqual([]);
+  });
+
+  // ---- docs/150 req 13: the turn preflight ----
+
+  it("fails the turn immediately with the earliest reset when every account is exhausted (req 13)", async () => {
+    const runner = new FakeContainerRunner();
+    const credentialStore = makeFakeCredentialStore();
+    const { sm, state } = makeFakeSessionManager({ agentPinned: false });
+    const selectAccountForTurn = vi.fn().mockReturnValue({
+      ok: false,
+      reason: "all_exhausted",
+      earliestResetAt: "2026-08-01T14:30:00.000Z",
+    });
+
+    await expect(
+      prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+        sessionId: "s1",
+        agentId: "claude",
+        enforceAccountRouting: true,
+        deps: {
+          credentialsDir: tmpDir,
+          credentialStore,
+          sessionManager: sm,
+          providerAccountManager: { selectAccountForTurn } as never,
+        },
+      }),
+    ).rejects.toThrow(ProviderRouteUnavailableError);
+
+    // req 13 — "before any first-turn pinning or credential provisioning": a
+    // blocked turn must leave no trace that it picked an account, or the next
+    // turn would silently reuse a route the router never chose.
+    expect(state.setAgentPinnedCalls).toBe(0);
+    expect(state.setProviderRouteCalls).toEqual([]);
+    expect(fs.existsSync(path.join(tmpDir, "sessions", "s1"))).toBe(false);
+  });
+
+  it("passes the session's model to the router so req 17 can skip ineligible accounts", async () => {
+    const runner = new FakeContainerRunner();
+    const credentialStore = makeFakeCredentialStore();
+    const { sm } = makeFakeSessionManager({ agentPinned: false, model: "claude-opus-5" });
+    const selectAccountForTurn = vi
+      .fn()
+      .mockReturnValue({ ok: false, reason: "no_model_eligible_account", model: "claude-opus-5" });
+
+    await expect(
+      prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+        sessionId: "s1",
+        agentId: "claude",
+        enforceAccountRouting: true,
+        deps: {
+          credentialsDir: tmpDir,
+          credentialStore,
+          sessionManager: sm,
+          providerAccountManager: { selectAccountForTurn } as never,
+        },
+      }),
+    ).rejects.toThrow(/claude-opus-5/);
+
+    expect(selectAccountForTurn).toHaveBeenCalledWith("claude", { model: "claude-opus-5" });
+  });
+
+  // Not-signed-in has its own guided surface; env-prep must not convert it
+  // into a hard turn error, and the legacy provisioning path still runs.
+  it("does not block the turn when nothing is connected (auth_required)", async () => {
+    fs.mkdirSync(path.join(tmpDir, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, ".claude.json"), "{}");
+
+    const runner = new FakeContainerRunner();
+    const credentialStore = makeFakeCredentialStore();
+    const { sm, state } = makeFakeSessionManager({ agentPinned: false });
+    const selectAccountForTurn = vi.fn().mockReturnValue({ ok: false, reason: "auth_required" });
+
+    await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+      sessionId: "s1",
+      agentId: "claude",
+      enforceAccountRouting: true,
+      deps: {
+        credentialsDir: tmpDir,
+        credentialStore,
+        sessionManager: sm,
+        providerAccountManager: { selectAccountForTurn } as never,
+      },
+    });
+
+    expect(state.setAgentPinnedCalls).toBe(1);
+    expect(state.setProviderRouteCalls).toEqual([]);
+  });
+
+  // The service-level warm-up calls (child spawn, headless create) run before
+  // the turn exists. Throwing there would abort a session *creation*, leaving
+  // a session in the sidebar nobody asked for; the executor's own preflight is
+  // what stops the turn moments later.
+  it("keeps its fail-open contract when the caller is not the turn's preflight", async () => {
+    fs.mkdirSync(path.join(tmpDir, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, ".claude.json"), "{}");
+
+    const runner = new FakeContainerRunner();
+    const credentialStore = makeFakeCredentialStore();
+    const { sm, state } = makeFakeSessionManager({ agentPinned: false });
+    const selectAccountForTurn = vi
+      .fn()
+      .mockReturnValue({ ok: false, reason: "all_exhausted", earliestResetAt: null });
 
     await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
       sessionId: "s1",
@@ -315,12 +437,14 @@ describe("prepareSessionAgentEnvironment", () => {
         credentialsDir: tmpDir,
         credentialStore,
         sessionManager: sm,
-        providerAccountManager: { selectRouteForTurn } as never,
+        providerAccountManager: { selectAccountForTurn } as never,
       },
     });
 
-    expect(selectRouteForTurn).not.toHaveBeenCalled();
+    // Nothing was routed, so the executor's preflight still has the decision
+    // to make — but the session itself was created and pinned normally.
     expect(state.setProviderRouteCalls).toEqual([]);
+    expect(state.setAgentPinnedCalls).toBe(1);
   });
 
   it("returns no override on healthy turns (no leak repair fired)", async () => {

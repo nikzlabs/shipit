@@ -418,6 +418,10 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
     serviceEnvDir,
     ...(credentialsDir ? { credentialsDir } : {}),
+    // docs/150 req 13 — give the system-turn env-prep hook the same router the
+    // WS path has, so a dispatched turn is blocked by an exhausted provider
+    // instead of spawning against it.
+    ...(providerAccountManager ? { providerAccountManager } : {}),
     readSystemPrompt: readSystemPromptApp,
     generateText,
     getPrStatusPoller: () => prStatusPollerRef.ref ?? undefined,

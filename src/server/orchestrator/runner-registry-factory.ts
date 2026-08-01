@@ -21,6 +21,7 @@ import type { UsageManager } from "./usage.js";
 import type { AuthManager } from "./agents/claude/auth-manager.js";
 import type { AgentAuthManager } from "./agent-auth-manager.js";
 import type { PrepareRunParamsFn } from "./agent-run-params-prep.js";
+import type { ProviderAccountManager } from "./provider-account-manager.js";
 import type { TurnOutcome } from "./turn-settlement.js";
 import { pushToOrigin } from "./git-utils.js";
 import { isNonFastForwardError } from "./services/git.js";
@@ -127,6 +128,14 @@ export interface RunnerRegistryDeps {
    * Optional so test setups without container creds still work.
    */
   credentialsDir?: string;
+  /**
+   * docs/150 — provider-account router, used by the system-turn env-prep hook
+   * so a dispatched turn (child session, CI fix, wake) runs the same
+   * account-routing preflight the WS path does. Optional: without it the hook
+   * keeps the pre-docs/150 behavior of provisioning the legacy credential
+   * subtree and never blocking on quota.
+   */
+  providerAccountManager?: ProviderAccountManager;
   /**
    * docs/149 — used by the system-turn `buildRunParams` hook to load the
    * user's optional Settings > Instructions suffix. Optional so test setups
@@ -263,7 +272,7 @@ export function createRunnerRegistry(
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
     getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
     credentialStore, secretStore, dockerSecretsConfig, serviceEnvDir, logStore, runtimeMode, broadcastLog,
-    credentialsDir, readSystemPrompt, generateText, getPrStatusPoller, rebindDelivery,
+    credentialsDir, providerAccountManager, readSystemPrompt, generateText, getPrStatusPoller, rebindDelivery,
     usageManager, authManager, authManagers, recordAgentRateLimits, getSubscriptionLimitsSnapshot,
     nudgeClaudeOAuthRefresh, onAgentAuthRequired, ensureAgentTokenFresh, runParamsPreps,
     publishOverlayBases,
@@ -430,8 +439,13 @@ export function createRunnerRegistry(
             await prepareSessionAgentEnvironment(runner, {
               sessionId,
               agentId,
+              // docs/150 req 13 — the dispatched/system-turn twin of the WS
+              // path's preflight, so a child, CI-fix, or wake turn is blocked
+              // by an exhausted provider exactly like a user-typed one.
+              enforceAccountRouting: true,
               deps: {
                 credentialsDir, credentialStore, sessionManager, chatHistoryManager,
+                ...(providerAccountManager ? { providerAccountManager } : {}),
                 ...(ensureAgentTokenFresh ? { ensureAgentTokenFresh } : {}),
               },
             });

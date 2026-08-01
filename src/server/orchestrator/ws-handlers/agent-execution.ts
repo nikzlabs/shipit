@@ -468,6 +468,10 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       await prepareSessionAgentEnvironment(runner, {
         sessionId,
         agentId: id,
+        // docs/150 req 13 — this IS the turn's pre-spawn step, so an
+        // unroutable turn fails here rather than spawning against an
+        // exhausted account.
+        enforceAccountRouting: true,
         deps: {
           credentialsDir: ctx.credentialsDir,
           credentialStore: ctx.credentialStore,

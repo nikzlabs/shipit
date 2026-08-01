@@ -66,8 +66,8 @@
 - [ ] Render active provider account in session diagnostics.
 - [x] Skip known-exhausted accounts for new turns.
 - [x] Return `all_exhausted` / `auth_required` / `no_model_eligible_account` as distinct results from the router.
-- [ ] Surface those three states to the user on a blocked turn (req 13's message).
-- [ ] Fail an all-exhausted turn immediately with the earliest reset time, before any first-turn pinning or credential provisioning (req 13).
+- [x] Surface those three states to the user on a blocked turn (req 13's message).
+- [x] Fail an all-exhausted turn immediately with the earliest reset time, before any first-turn pinning or credential provisioning (req 13).
 
 ## Phase 3 — Automatic Failover
 
@@ -77,7 +77,8 @@
 - [ ] Avoid duplicating user chat history during same-turn retry.
 - [ ] Clear or replace failed in-progress assistant output during retry.
 - [ ] Record failover as a chat-visible system event attached to the original turn.
-- [ ] Ensure all turn entrypoints use shared provider-account preflight: chat, answer-question, system turns, CI auto-fix, child sessions, and rebase/conflict recovery.
+- [x] Ensure all turn entrypoints use shared provider-account preflight: chat, answer-question, system turns, CI auto-fix, child sessions, and rebase/conflict recovery.
+- [ ] Re-check an already-pinned session's account before its turn (the preflight only decides for the first turn today).
 
 ## Phase 4 — Policy Controls
 
@@ -112,6 +113,7 @@
 - [ ] Integration: first Codex turn pins `{ agent_id, provider_route_kind, provider_route_id }`.
 - [ ] Integration: auth-complete for account X re-pushes only to sessions pinned to account X.
 - [ ] Integration: exhausted primary starts a new turn on a secondary account.
+- [x] Unit: all-exhausted fails the turn with the earliest reset time, pins nothing, and provisions no credentials.
 - [ ] Integration: all-exhausted fails the turn with reset times, pins nothing, and schedules no timer.
 - [ ] Integration: mid-turn exhaustion retries on secondary once, including after file edits or commands.
 - [x] Integration: switching a pinned session kills the persistent agent, reprovisions credentials, preserves `.claude/projects` / `.codex/sessions` and `agentSessionId`, and resumes the same conversation.
