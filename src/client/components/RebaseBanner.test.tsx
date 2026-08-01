@@ -92,6 +92,19 @@ describe("RebaseBanner", () => {
     expect(screen.getByText(/Rebasing onto/)).toBeInTheDocument();
   });
 
+  it("shows a buttonless progress card while the agent resolves conflicts", () => {
+    useGitStore.setState({
+      pushRejected: true,
+      rebaseStatus: "resolving",
+      rebaseConflicts: [{ path: "src/conflicted.ts" }],
+    });
+    render(<RebaseBanner sessionId="s1" />);
+
+    expect(screen.getByText(/Rebase in progress — agent is resolving conflicts/)).toBeInTheDocument();
+    expect(screen.queryByText(/Branch is behind/)).toBeNull();
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
   it("falls back to main before the repo list hydrates", () => {
     useGitStore.setState({ pushRejected: true });
     render(<RebaseBanner sessionId="s1" />);

@@ -7,6 +7,10 @@ When a ShipIt session's branch falls behind its base branch (e.g., `main` gets n
 The client suppresses the idle "Branch is behind" nudge for the full active
 rebase flow. It also ignores push-rejection events that race with active rebase
 progress, preventing a stale nudge from appearing when the rebase settles.
+When the rebase encounters conflicts and hands them to the system-owned agent
+turn, the same surface remains a buttonless progress card until the rebase
+completes or aborts; users are not presented with an action card while the agent
+is already resolving the problem.
 
 ## Motivation
 
