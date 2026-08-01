@@ -1,10 +1,10 @@
 ---
 issue: https://linear.app/shipit-ai/issue/SHI-267
-title: Lazy-load heavy tool-result bodies
-description: Send a head slice of tool-result content on the wire and fetch the full body on expand, keyed by toolUseId.
+title: Lazy-load heavy chat-history row bodies
+description: Keep what the transcript actually draws inline and fetch the rest on demand, so a history load transfers kilobytes instead of megabytes.
 ---
 
-# Lazy-load heavy tool-result bodies
+# Lazy-load heavy chat-history row bodies
 
 Paging (SHI-266, not yet built) bounds how many **rows** a transcript load
 transfers. It does not bound **bytes**: a window of ten turns containing several
@@ -12,47 +12,60 @@ near-1 MB tool outputs is still a heavy payload. This feature bounds the bytes.
 
 ## Requirement provenance
 
-Stated by the issue (UX-level): loading a transcript should not transfer
-megabytes of tool output the user will never look at.
+Stated (UX-level): loading a transcript should not transfer megabytes of tool
+output the user will never look at.
 
-Everything below is inferred mechanism. In particular the issue's proposed
-shape — "keep per-result metadata inline and fetch bodies on demand" — does not
-survive contact with the render code, for the reasons in the next section. The
-design here is narrower than the issue proposes.
+Everything below is inferred mechanism. The guiding constraint is that **no
+change should be visible in the transcript** — every mechanism here keeps
+exactly what the UI draws today and defers only what sits behind a click.
 
-## What the issue assumed, and what the code actually does
+## What the UI actually draws
 
 The issue's premise is that the heavy columns "are not directly displayed in the
-conversation UI — they sit behind a click". Verified against the render paths,
-that is true of **one** column and false of the rest.
+conversation UI — they sit behind a click". Checked against the render paths,
+that is broadly right — but each column draws a small *derived* artifact inline,
+and it is that artifact, not raw metadata, that has to stay on the wire.
 
-| Column | Issue's claim | Verified behavior |
+| Column | What renders inline | What's behind a click |
 |---|---|---|
-| `tool_results` | behind a click | **Partly true.** `ToolResult.tsx` renders an inline preview of the first 15–30 lines on every path (Bash 30, Read 20, Grep 20, generic 15). Only the tail is behind "Show all N lines". |
-| `tool_use` | behind a click | **False.** `Write`'s full `input.content` and `Edit`'s `old_string`/`new_string` render immediately as a `DiffBlock` (`message-tools.tsx:78–99`). No click. |
-| `subagent_events` | behind a click | **False.** `SubagentCall` keeps the work timeline **expanded by default**, deliberately — `SubagentCall.tsx:53–57` documents the previous auto-collapse as a bug that hid the subagent's work. |
-| `images` | behind a click | **False.** User-row images render inline via `message-media.tsx`; tool-result images render inline via `ToolResultImages`. |
+| `tool_results` | First 15–30 lines (`ToolResult.tsx`: Bash 30, Read 20, Grep 20, generic 15) + a "Show all N lines" button | The tail |
+| `tool_use` (Write/Edit) | One line: verb, path, `+40 -12` (`DiffBlock.tsx:66–92`) | The whole diff body, in a modal |
+| `images` (user rows) | A 96×96 thumbnail (`w-24 h-24 object-cover`, `message-media.tsx:53`) | Full-size preview |
+| `subagent_events` | A `Disclosure` — "Subagent's work (N actions)" — open by default, containing ordinary tool calls | Per-step detail, via the same components |
 
-Two further constraints the render code imposes:
+So three mechanisms cover all four columns, and `subagent_events` needs none of
+its own: its contents are rendered by the *same* components as top-level tools,
+so fixing tool results and Write/Edit bodies covers its innards for free. What
+remains on a subagent row is per-step text, which is small.
 
-* **The "Show all N lines" label needs the full line count.** `truncateLines`
-  computes `totalLines` from the whole body. A head slice must therefore carry
-  the true line count as metadata, or the button lies.
-* **`parseContentForImages` needs the whole body.** MCP image results (e.g.
-  Playwright screenshots) are persisted as `JSON.stringify(content)` — a JSON
-  array of text and base64 image blocks. A head slice of a JSON array is
-  unparseable, so the images silently vanish and the result renders as raw JSON.
+### The inline artifacts each mechanism must preserve
 
-The four consumers the issue flags as reading result *content* or *existence*
-are all confirmed, and all read short values that fit comfortably inside a
-generous head slice:
+* **`totalLines`** — `truncateLines` computes the "Show all N lines" label from
+  the whole body. A head slice must carry the true count or the button lies.
+* **`added` / `removed`** — `DiffBlock` derives these via `countLines(newString)`
+  and `countLines(oldString)`. Persist the two integers and the body can go
+  lazy with no visible change at all.
+* **A real thumbnail** — the UI is already thumbnail-shaped; it just draws the
+  96px image from full-resolution base64. `ChatMessageImage` already carries an
+  optional `src?: string` (`MessageList/types.ts:59`), so a URL-backed path
+  exists in the type today.
 
-* `AskUserQuestion` — `resolvedAnswer={result?.content}` (`message-tools.tsx:137`)
-* `ExitPlanMode` — `resolved={!!result}` (`message-tools.tsx:162`)
-* Present — `parsePresentToolResult(tool, result)` (`message-tools.tsx:171`)
-* Subagent final report — `findSubagentFinalReport(tool.id, parentToolResults)`
-  (`SubagentCall.tsx:50`), rendered **in full** as markdown at
-  `SubagentCall.tsx:132`. This one is *not* bounded and must be exempt.
+### Two things that must never be truncated
+
+* **Image-bearing tool results.** MCP image results (Playwright screenshots) are
+  persisted as `JSON.stringify(content)` — a JSON array of text and base64 image
+  blocks. `parseContentForImages` needs the whole array; a head slice is
+  unparseable JSON, so the image silently degrades to raw JSON text. These get
+  the thumbnail treatment instead of the slice treatment.
+* **The subagent final report.** `findSubagentFinalReport` reads it from the
+  *parent's* `toolResults` and renders it in full as markdown
+  (`SubagentCall.tsx:50, 132`) with no expand affordance. Exempt by parent tool
+  name (`SUBAGENT_TOOLS`).
+
+The other three consumers the issue flags all read short values that fit well
+inside a slice: `AskUserQuestion` (`resolvedAnswer={result?.content}`,
+`message-tools.tsx:137`), `ExitPlanMode` (`resolved={!!result}`, `:162`), and
+Present (`parsePresentToolResult`, `:171`).
 
 ## Verified facts
 
@@ -60,33 +73,28 @@ generous head slice:
   on the live in-memory copy.
 * The **persist path is uncapped**: `extractToolResults`
   (`ws-handlers/agent-event-normalizer.ts:15–31`) applies no size limit, and
-  `chat-history.ts:489` stores `JSON.stringify(msg.toolResults)` verbatim. So
-  the issue's claim that the persisted copy is uncapped holds.
-* `PersistedMessage` carries **no row id** (`chat-history.ts:107`). The wire has
-  no `rowId` today.
+  `chat-history.ts:489` stores `JSON.stringify(msg.toolResults)` verbatim.
+* `PersistedMessage` carries **no row id** (`chat-history.ts:107`).
 
-## The SHI-266 dependency is weaker than the issue states
+## The SHI-266 dependency is not real
 
 SHI-267 was sequenced after SHI-266 "because it depends on `rowId` being on the
-wire". That is only true for the `images` column, which this design scopes out.
+wire". Neither mechanism needs one:
 
-`toolUseId` is a unique key within a session and is already on the wire. It
-addresses tool results wherever they appear — top-level `tool_results` and the
-results nested inside `subagent_events` (which carry their own `toolUseId`s, see
-`collectToolResults`, `SubagentCall.tsx:248`). So the mechanism below needs no
-`rowId` and **does not depend on SHI-266**. The two can ship in either order.
+* Tool results and Write/Edit inputs are addressed by `toolUseId`, already on
+  the wire and unique within a session — including results nested inside
+  `subagent_events`, which carry their own (`collectToolResults`,
+  `SubagentCall.tsx:248`).
+* Images are addressed by a content hash, which is a better key than a row id
+  anyway: it dedupes a screenshot pasted twice and survives rewind renumbering.
+
+The two issues can ship in either order.
 
 ## Design
 
-One mechanism, applied to one column.
+### 1. Tool results — head slice, lazy tail
 
-**Serve a head slice of `tool_results[].content`; fetch the full body on
-expand, keyed by `{sessionId, toolUseId}`.**
-
-### Wire shape
-
-Each tool result gains three metadata fields alongside the existing
-`toolUseId` / `content` / `isError` / `durationMs`:
+Each tool result gains three fields:
 
 ```ts
 {
@@ -103,34 +111,48 @@ Each tool result gains three metadata fields alongside the existing
 `truncated` is the `contentAvailable` flag the issue asks for, inverted so the
 common (small) case stays absent from the JSON.
 
-### Slice size
+**Slice size: 16 KB**, a byte cap rather than a line cap — the goal is bounding
+payload, and one pathological line is as heavy as a thousand. Two orders of
+magnitude below the 1 MB case, and far above anything drawn inline (30 lines of
+Bash output is ~2 KB) or read by the constraint consumers. The cut lands on a
+UTF-8 character boundary, preferring the last newline within the final 10% of
+the slice so a preview never ends mid-codepoint or mid-line.
 
-A byte cap, not a line cap — the goal is bounding payload, and one pathological
-line is as heavy as a thousand. **16 KB** is the proposed default: two orders of
-magnitude below the 1 MB case the issue names, and far above anything the UI
-renders inline (30 lines of Bash output is ~2 KB) or that any of the four
-constraint consumers reads.
+Exempt: image-bearing results, and Task-parent results (final report).
 
-The slice is cut on a UTF-8 character boundary and, where one exists within the
-last 10% of the slice, at the last newline — so the preview never ends
-mid-codepoint or mid-line.
+### 2. Write/Edit inputs — store the stats, lazy body
 
-### Exemptions
+Persist `added` / `removed` alongside the tool input and drop `content` /
+`old_string` / `new_string` from the wire, replacing them with a `truncated`
+marker. `DiffBlock` reads the stats from metadata instead of recomputing them,
+and fetches the body when the user opens the modal — which is already an
+explicit click with a loading state to hang a spinner on.
 
-Two result classes must never be sliced, both detectable server-side:
+### 3. Images — stored thumbnail, lazy full-res
 
-1. **Image-bearing results** — `content` starts with `[` and parses to an array
-   containing a `type: "image"` block. Slicing breaks `parseContentForImages`.
-   These are heavy, which is unfortunate, but correctness wins; bounding them is
-   a separate problem (see Deferred).
-2. **Task/subagent parent results** — the final report renders in full with no
-   expand affordance. Exempt by parent tool name (`SUBAGENT_TOOLS`).
+Store a downscaled thumbnail (192px longest edge, so 96×96 stays crisp on
+2× displays) content-addressed by hash, and put its URL in the existing `src`
+field. The full-resolution bytes stay in the row and are fetched only when the
+preview modal opens.
 
-### Where the slice happens — and where it must not
+This applies to both user-row images and image-bearing tool results, which is
+what lets those results skip the head-slice mechanism safely.
 
-The slice is a **serve-path projection**, applied where history is sent to the
-client. The full body stays in SQLite; no migration, no data loss, and an old
-transcript benefits immediately.
+### Fetch endpoints
+
+* `GET /api/sessions/:id/tool-results/:toolUseId` → full result content
+* `GET /api/sessions/:id/tool-inputs/:toolUseId` → full Write/Edit body
+* `GET /api/sessions/:id/images/:hash` → full-resolution image
+
+Lookup scans the session's `tool_results` / `tool_use` columns and, on a miss,
+`subagent_events`. If the row is gone (rewind truncated the tail) the endpoint
+404s and the client renders "no longer available" in place of the expanded body
+rather than failing the interaction.
+
+### Where the projection happens — and where it must not
+
+The slice is a **serve-path projection**. Full bodies stay in SQLite; no data
+loss, and an existing transcript benefits immediately.
 
 **It must not live in `ChatHistoryManager.fromRow`.** `fromRow` feeds six
 read-modify-write paths (`chat-history.ts:630, 659, 686, 716, 745, 808` —
@@ -141,59 +163,31 @@ truncation, permanently destroying the bodies this design is careful to keep.
 This is the single most dangerous way to implement the feature and the reason
 the projection is a separate function.
 
-### Fetch endpoint
-
-`GET /api/sessions/:id/tool-results/:toolUseId` → `{ content, isError, truncated: false }`.
-
-Lookup scans the session's `tool_results` column and, on a miss, the
-`subagent_events` column. If the row is gone (rewind truncated the tail) the
-endpoint 404s and the client renders "output is no longer available" in place of
-the expanded body rather than failing the expand.
-
-### Client
-
-`ToolResult.tsx`'s four render paths already share the same
-preview/expand/`totalLines` structure. The change is one hook — on expand, if
-`result.truncated`, fetch the body and swap it in; show a spinner in the
-expanded region meanwhile. `totalLines` comes from the metadata instead of
-`truncateLines` when the content is a slice.
-
 ### Live path
 
-The live WS path applies the same projection, so the client has one code path
-and the per-turn event buffer gets lighter too. The client's existing 1 MB cap
-in `agent-event.ts` becomes redundant for sliced results but is harmless and
-stays as a backstop for the exempt classes.
+The same projection applies to the live WS path as well as history loads, so the
+client has one code path and the per-turn event replay buffer gets lighter too.
+The client's existing 1 MB cap in `agent-event.ts` becomes redundant for sliced
+results but stays as a backstop for the exempt classes.
 
-## Deferred, with reasons
-
-Scoped out because each renders inline with no click, so lazy-loading trades
-bytes for visible pop-in on every transcript load — and none is the near-1 MB
-case the issue names:
-
-* **`tool_use` input** — bounded by the size of the file the agent wrote, and
-  rendered as a diff the user reads. Making a `Write` diff pop in after a fetch
-  is a real UX regression for a modest byte saving.
-* **`subagent_events`** — expanded by default by deliberate design.
-* **`images` on user rows** — the genuinely unsolved one. Base64 in a text
-  column is the wrong storage; the fix is content-addressed blob storage with
-  the row holding a reference, not a lazy fetch of an inline blob. This is also
-  the only piece that would need `rowId`, hence the only real SHI-266
-  dependency. Worth its own issue.
-* **Image-bearing tool results** — same underlying problem as above.
+Thumbnail generation happens once, at persist time, off the turn's critical
+path.
 
 ## Key files
 
-* `src/server/orchestrator/chat-history.ts` — `PersistedMessage.toolResults`, `fromRow` (do not slice here)
+* `src/server/orchestrator/chat-history.ts` — `PersistedMessage`, `fromRow` (do not slice here)
 * `src/server/orchestrator/ws-handlers/agent-event-normalizer.ts` — `extractToolResults`, the uncapped persist path
 * `src/server/orchestrator/api-routes-session-spawn.ts:85` — `GET /api/sessions/:id/history`
 * `src/client/components/ToolResult.tsx` — the four preview/expand render paths
-* `src/client/components/message-tools.tsx` — the four constraint consumers
+* `src/client/components/DiffBlock.tsx` — the `+N -M` summary and the diff modal
+* `src/client/components/message-media.tsx` — user-row image thumbnails
+* `src/client/components/message-tools.tsx` — the constraint consumers
 * `src/client/components/SubagentCall.tsx` — final report (exempt), nested tool results
 * `src/client/hooks/message-handlers/agent-event.ts:122` — the client-side 1 MB cap
 
 ## Open decisions
 
-* Slice size: 16 KB proposed, not confirmed.
-* Whether to apply the projection to the live WS path as well as history, or
-  history only.
+* Slice size: 16 KB proposed.
+* Thumbnail size: 192px longest edge proposed.
+* Whether thumbnails are stored in SQLite alongside the row or on disk keyed by
+  hash. Disk keeps the DB small; SQLite keeps teardown simple.

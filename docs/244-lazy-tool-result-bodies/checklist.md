@@ -1,27 +1,44 @@
-# Lazy tool-result bodies — checklist
+# Lazy row bodies — checklist
 
 ## Design
-- [x] Verify the issue's "behind a click" premise against the render paths
-- [x] Confirm the four constraint consumers (AskUserQuestion, ExitPlanMode, Present, subagent report)
+- [x] Verify what each column actually draws inline vs. behind a click
+- [x] Confirm the constraint consumers (AskUserQuestion, ExitPlanMode, Present, subagent report)
 - [x] Confirm persist path is uncapped and the 1 MB cap is client-only
-- [x] Determine whether the SHI-266 / `rowId` dependency is real
+- [x] Determine whether the SHI-266 / `rowId` dependency is real (it isn't)
+- [x] Decide: project the live WS path as well as history
 - [ ] Confirm slice size (16 KB proposed)
-- [ ] Decide: project the live WS path too, or history only
+- [ ] Confirm thumbnail size (192px longest edge proposed)
+- [ ] Decide thumbnail storage: SQLite row vs. disk keyed by hash
 
-## Server
+## Server — tool results
 - [ ] Add `truncated` / `totalLines` / `totalBytes` to the tool-result type
-- [ ] Add the serve-path slice projection (separate from `fromRow`)
+- [ ] Serve-path slice projection, separate from `fromRow`
 - [ ] Exempt image-bearing results and Task-parent results
-- [ ] `GET /api/sessions/:id/tool-results/:toolUseId` (404 when the row is gone)
+- [ ] `GET /api/sessions/:id/tool-results/:toolUseId`
+
+## Server — Write/Edit inputs
+- [ ] Persist `added` / `removed` line stats
+- [ ] Strip body from the wire behind a `truncated` marker
+- [ ] `GET /api/sessions/:id/tool-inputs/:toolUseId`
+
+## Server — images
+- [ ] Thumbnail generation at persist time, content-addressed by hash
+- [ ] Populate `src` with the thumbnail URL; keep full-res out of the payload
+- [ ] `GET /api/sessions/:id/images/:hash`
+- [ ] Apply to image-bearing tool results as well as user rows
 
 ## Client
 - [ ] Fetch-on-expand in `ToolResult.tsx`; spinner while loading
-- [ ] Use metadata `totalLines` for the "Show all N lines" label
-- [ ] Render "output is no longer available" on a 404
+- [ ] `totalLines` from metadata for the "Show all N lines" label
+- [ ] `DiffBlock` reads stats from metadata; fetches body when the modal opens
+- [ ] Full-res image fetched when the preview modal opens
+- [ ] "No longer available" on a 404
 
 ## Tests
 - [ ] Slice boundary: UTF-8 safety, newline preference, exact-threshold case
-- [ ] Exemptions: image-bearing result survives `parseContentForImages`; subagent final report is whole
+- [ ] Exemptions: image-bearing result survives `parseContentForImages`; subagent final report stays whole
+- [ ] Diff stats match `countLines` on the full body
 - [ ] Regression guard: a `fromRow` read-modify-write round-trip does **not** persist a sliced body
-- [ ] Endpoint: hit, subagent-nested hit, 404 after rewind
+- [ ] Endpoints: hit, subagent-nested hit, 404 after rewind
 - [ ] Constraint consumers still resolve from a sliced result
+- [ ] Payload-size assertion: a synthetic 1 MB-result transcript loads under a byte budget
