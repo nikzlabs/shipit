@@ -17,6 +17,7 @@ import type { AgentInfo, GlobalSettings } from "./types.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
 import type { SessionManager } from "../sessions.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
+import { switchSessionProviderAccount } from "./provider-account-switch.js";
 
 // ---- Read operations ----
 
@@ -393,13 +394,30 @@ export function makePrimaryProviderAccount(
   }
 }
 
+/**
+ * Disconnect a provider account (docs/150).
+ *
+ * Sessions pinned to the account are the hard part. Deleting the credentials
+ * out from under them would leave the user with sessions that cannot take
+ * another turn, so this used to refuse outright ("until account switching is
+ * available"). Account switching now exists, so the refusal becomes a choice:
+ * pass `replacementAccountId` and the pinned sessions move there first,
+ * conversation intact (req 9). Without one, the caller still gets a 409 — but
+ * now it is a question with an answer rather than a dead end.
+ *
+ * A *running* session is still refused unconditionally. Reprovisioning
+ * credentials under a live agent is the one case the switch itself declines,
+ * and silently killing someone's in-flight turn to satisfy a Settings click is
+ * not a trade this should make on their behalf.
+ */
 export function deleteProviderAccount(
   providerAccountManager: ProviderAccountManager,
   sessionManager: SessionManager,
   runnerRegistry: SessionRunnerRegistry,
   provider: AgentId,
   accountId: string,
-): { accounts: ProviderAccount[] } {
+  opts: { credentialsDir?: string; replacementAccountId?: string } = {},
+): { accounts: ProviderAccount[]; switchedSessionIds: string[] } {
   validateProvider(provider);
   validateAccountId(accountId);
   const pinned = sessionManager
@@ -414,12 +432,39 @@ export function deleteProviderAccount(
   if (running.length > 0) {
     throw new ServiceError(409, "Cannot disconnect an account while a pinned session is running");
   }
+
+  const switchedSessionIds: string[] = [];
   if (pinned.length > 0) {
-    throw new ServiceError(409, "Cannot disconnect an account pinned to existing sessions until account switching is available");
+    const { replacementAccountId, credentialsDir } = opts;
+    if (!replacementAccountId || !credentialsDir) {
+      const usable = providerAccountManager
+        .list(provider)
+        .filter((account) => account.id !== accountId && account.status === "ready")
+        .map((account) => account.id);
+      throw new ServiceError(
+        409,
+        usable.length > 0
+          ? `${pinned.length} session(s) are pinned to this account. Choose a replacement account to move them to (available: ${usable.join(", ")}).`
+          : `${pinned.length} session(s) are pinned to this account and there is no other connected ${provider} account to move them to.`,
+      );
+    }
+    if (replacementAccountId === accountId) {
+      throw new ServiceError(400, "Replacement account must differ from the account being disconnected");
+    }
+    for (const session of pinned) {
+      switchSessionProviderAccount(session.id, replacementAccountId, {
+        sessionManager,
+        runnerRegistry,
+        providerAccountManager,
+        credentialsDir,
+      });
+      switchedSessionIds.push(session.id);
+    }
   }
+
   try {
     providerAccountManager.delete(provider, accountId);
-    return { accounts: providerAccountManager.list() };
+    return { accounts: providerAccountManager.list(), switchedSessionIds };
   } catch (err) {
     throw providerAccountServiceError(err);
   }

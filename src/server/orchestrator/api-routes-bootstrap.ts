@@ -226,16 +226,28 @@ export async function registerBootstrapRoutes(
     },
   );
 
-  app.delete<{ Params: { provider: AgentId; accountId: string } }>(
+  app.delete<{
+    Params: { provider: AgentId; accountId: string };
+    Querystring: { replacementAccountId?: string };
+  }>(
     "/api/provider-accounts/:provider/:accountId",
     async (request, reply) => {
       try {
+        // `replacementAccountId` rides the query string because DELETE bodies
+        // are not reliably forwarded by proxies and Fastify's JSON parser
+        // rejects an empty-but-declared body (the FST_ERR_CTP_EMPTY_JSON_BODY
+        // trap the client already works around elsewhere).
+        const replacementAccountId = request.query.replacementAccountId?.trim();
         const result = deleteProviderAccount(
           deps.providerAccountManager,
           deps.sessionManager,
           deps.runnerRegistry,
           request.params.provider,
           request.params.accountId,
+          {
+            credentialsDir: deps.credentialsDir,
+            ...(replacementAccountId ? { replacementAccountId } : {}),
+          },
         );
         deps.agentRegistry.refreshAuth(request.params.provider);
         deps.sseBroadcast("provider_accounts", { accounts: result.accounts });

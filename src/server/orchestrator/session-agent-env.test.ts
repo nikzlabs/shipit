@@ -72,6 +72,7 @@ function makeFakeSessionManager(opts: {
     setAgentSessionIdCalls: { id: string; value: string }[];
     clearAgentSessionIdCalls: string[];
     conversationReplay: string | undefined;
+    setProviderRouteCalls: { id: string; kind: string; routeId: string }[];
   };
 } {
   const state = {
@@ -82,6 +83,7 @@ function makeFakeSessionManager(opts: {
     setAgentSessionIdCalls: [] as { id: string; value: string }[],
     clearAgentSessionIdCalls: [] as string[],
     conversationReplay: undefined as string | undefined,
+    setProviderRouteCalls: [] as { id: string; kind: string; routeId: string }[],
   };
   const sm = {
     get: () => ({
@@ -108,7 +110,9 @@ function makeFakeSessionManager(opts: {
     setConversationReplay: (_id: string, replay: string) => {
       state.conversationReplay = replay;
     },
-    setProviderRoute: () => { /* no-op */ },
+    setProviderRoute: (id: string, kind: string, routeId: string) => {
+      state.setProviderRouteCalls.push({ id, kind, routeId });
+    },
   } as unknown as SessionManager;
   return { sm, state };
 }
@@ -252,6 +256,71 @@ describe("prepareSessionAgentEnvironment", () => {
     // to the right value too — but the spawn-arg override is the primary fix).
     expect(state.setAgentSessionIdCalls).toContainEqual({ id: "s1", value: recoveredId });
     expect(state.agentSessionId).toBe(recoveredId);
+  });
+
+  it("routes a fresh session through the account router rather than inheriting one (req 18)", async () => {
+    // An agent-spawned child session is created with no persisted route. It
+    // must therefore ask the router, which applies the user's normal priority
+    // order — a child does NOT ride whatever account its parent happened to be
+    // pinned to (docs/150 req 18). This is the mechanism that guarantees it:
+    // `providerRouteKind`/`providerRouteId` are only ever written from a
+    // router decision, never copied at spawn.
+    const account = path.join(tmpDir, "provider-accounts", "claude", "acct-primary");
+    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), "{}");
+
+    const runner = new FakeContainerRunner();
+    const credentialStore = makeFakeCredentialStore();
+    const { sm, state } = makeFakeSessionManager({ agentPinned: false });
+    const selectRouteForTurn = vi.fn().mockReturnValue({ kind: "account", id: "acct-primary" });
+
+    await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+      sessionId: "s1",
+      agentId: "claude",
+      deps: {
+        credentialsDir: tmpDir,
+        credentialStore,
+        sessionManager: sm,
+        providerAccountManager: { selectRouteForTurn } as never,
+      },
+    });
+
+    expect(selectRouteForTurn).toHaveBeenCalledWith("claude");
+    expect(state.setProviderRouteCalls).toEqual([
+      { id: "s1", kind: "account", routeId: "acct-primary" },
+    ]);
+    // The child's own credentials came from the routed account.
+    expect(
+      fs.existsSync(path.join(tmpDir, "sessions", "s1", ".claude", ".credentials.json")),
+    ).toBe(true);
+  });
+
+  it("reuses an already-persisted route instead of re-running the router", async () => {
+    // Follow-up turns (including detached / system turns that recreate a
+    // runner from scratch) must land on the account the session is already
+    // pinned to, not re-select and drift onto a different one mid-conversation.
+    const runner = new FakeContainerRunner();
+    const credentialStore = makeFakeCredentialStore();
+    const { sm, state } = makeFakeSessionManager({
+      agentPinned: true,
+      providerRouteKind: "account",
+      providerRouteId: "acct-secondary",
+    });
+    const selectRouteForTurn = vi.fn();
+
+    await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+      sessionId: "s1",
+      agentId: "claude",
+      deps: {
+        credentialsDir: tmpDir,
+        credentialStore,
+        sessionManager: sm,
+        providerAccountManager: { selectRouteForTurn } as never,
+      },
+    });
+
+    expect(selectRouteForTurn).not.toHaveBeenCalled();
+    expect(state.setProviderRouteCalls).toEqual([]);
   });
 
   it("returns no override on healthy turns (no leak repair fired)", async () => {

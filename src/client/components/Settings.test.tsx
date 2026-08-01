@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Settings, type SettingsProps } from "./Settings.js";
 import { useUiStore } from "../stores/ui-store.js";
@@ -132,6 +132,43 @@ describe("Settings - Agent → Claude tab", () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
       "/api/provider-accounts/claude/acct-1/login",
       expect.objectContaining({ method: "POST" }),
+    ));
+    vi.unstubAllGlobals();
+  });
+
+  it("asks which account to move pinned sessions to instead of dead-ending on the refusal", async () => {
+    const now = Date.now();
+    const base = { provider: "claude" as const, isPrimary: false, status: "ready" as const, createdAt: now, updatedAt: now };
+    useSettingsStore.getState().setProviderAccounts([
+      { ...base, id: "acct-a", label: "Account A", isPrimary: true },
+      { ...base, id: "acct-b", label: "Account B" },
+    ]);
+
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        json: async () => ({
+          error: "1 session(s) are pinned to this account. Choose a replacement account to move them to (available: acct-b).",
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ accounts: [{ ...base, id: "acct-b", label: "Account B" }], switchedSessionIds: ["s1"] }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Settings {...defaultProps} />);
+    await userEvent.click(within(screen.getByTestId("provider-account-row-acct-a")).getByRole("button", { name: "Disconnect" }));
+
+    // The refusal names the alternatives, so it becomes a picker on the row.
+    const panel = await screen.findByTestId("provider-account-replacement-acct-a");
+    expect(panel).toHaveTextContent("1 session(s) are pinned");
+    await userEvent.click(screen.getByTestId("provider-account-confirm-replacement-acct-a"));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenLastCalledWith(
+      "/api/provider-accounts/claude/acct-a?replacementAccountId=acct-b",
+      expect.objectContaining({ method: "DELETE" }),
     ));
     vi.unstubAllGlobals();
   });
