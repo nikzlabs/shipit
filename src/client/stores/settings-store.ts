@@ -40,6 +40,26 @@ export interface ProviderAccountAuth {
   userCode?: string;
 }
 
+/**
+ * docs/150 req 16 — key for the per-account sign-in maps below.
+ *
+ * Sign-in state used to live in a single slot, which was only ever correct
+ * because exactly one account could be connecting at a time. Once every
+ * account (including the first) connects through its own row, two rows can be
+ * mid-challenge simultaneously — and a single slot silently shows account B's
+ * device code on account A's row. Keying by provider *and* account id keeps
+ * each row's challenge, error, and completion independent.
+ */
+export function providerAccountAuthKey(provider: AgentId, accountId: string): string {
+  return `${provider}:${accountId}`;
+}
+
+/** Immutably set `key` to `value`, or drop it entirely when `value` is null. */
+function withKey<T>(map: Record<string, T>, key: string, value: T | null): Record<string, T> {
+  if (value === null) return Object.fromEntries(Object.entries(map).filter(([k]) => k !== key));
+  return { ...map, [key]: value };
+}
+
 export interface ClaudeAuthDiagnosticEntry {
   id: string;
   attemptId: string;
@@ -144,8 +164,13 @@ interface SettingsState {
   codexDeviceAuthError: string | null;
   claudeAuthDiagnostics: ClaudeAuthDiagnostics;
   providerAccounts: ProviderAccount[];
-  /** In-flight account-scoped sign-in details, keyed to the row that owns them. */
-  providerAccountAuth: ProviderAccountAuth | null;
+  /**
+   * In-flight account-scoped sign-in challenges, keyed by
+   * {@link providerAccountAuthKey} so concurrent row sign-ins stay independent.
+   */
+  providerAccountAuths: Record<string, ProviderAccountAuth>;
+  /** Last sign-in failure per account, same key space as `providerAccountAuths`. */
+  providerAccountAuthErrors: Record<string, string>;
 
   setHasSystemPrompt: (has: boolean) => void;
   setSystemPromptContent: (content: string) => void;
@@ -190,7 +215,10 @@ interface SettingsState {
   appendClaudeAuthLog: (entry: Omit<ClaudeAuthDiagnosticEntry, "id">) => void;
   finishClaudeAuthDiagnostics: (status: "complete" | "failed", message?: string) => void;
   setProviderAccounts: (accounts: ProviderAccount[]) => void;
-  setProviderAccountAuth: (auth: ProviderAccountAuth | null) => void;
+  /** Set (or clear, with `null`) one account's in-flight sign-in challenge. */
+  setProviderAccountAuth: (provider: AgentId, accountId: string, auth: ProviderAccountAuth | null) => void;
+  /** Set (or clear, with `null`) one account's last sign-in failure message. */
+  setProviderAccountAuthError: (provider: AgentId, accountId: string, message: string | null) => void;
   /**
    * Update the permission mode. When `sessionId` is provided, the change is
    * scoped to that session only. When `sessionId` is undefined (e.g. on the
@@ -262,7 +290,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     entries: [],
   },
   providerAccounts: [],
-  providerAccountAuth: null,
+  providerAccountAuths: {},
+  providerAccountAuthErrors: {},
 
   setHasSystemPrompt: (has) => set({ hasSystemPrompt: has }),
 
@@ -419,7 +448,22 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       },
     })),
   setProviderAccounts: (accounts) => set({ providerAccounts: accounts }),
-  setProviderAccountAuth: (auth) => set({ providerAccountAuth: auth }),
+  setProviderAccountAuth: (provider, accountId, auth) =>
+    set((state) => ({
+      providerAccountAuths: withKey(
+        state.providerAccountAuths,
+        providerAccountAuthKey(provider, accountId),
+        auth,
+      ),
+    })),
+  setProviderAccountAuthError: (provider, accountId, message) =>
+    set((state) => ({
+      providerAccountAuthErrors: withKey(
+        state.providerAccountAuthErrors,
+        providerAccountAuthKey(provider, accountId),
+        message,
+      ),
+    })),
 
   setPermissionMode: (sessionId, mode) => {
     if (sessionId) {

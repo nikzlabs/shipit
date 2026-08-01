@@ -108,6 +108,25 @@ describe("listChangedFiles", () => {
     expect(listChangedFiles(repo)).toEqual([]);
   });
 
+  it("omits a deleted file so ESLint is never handed a missing path", () => {
+    // `git diff --name-only` reports deletions, and a nonexistent path makes
+    // ESLint fail the entire run ("No files matching the pattern") rather than
+    // skip that one file — so deleting a component broke `npm run lint:dev`
+    // wholesale until the path was filtered out here.
+    fs.rmSync(path.join(repo, "src/base.ts"));
+    write("src/replacement.ts");
+
+    expect(listChangedFiles(repo)).toEqual(["src/replacement.ts"]);
+  });
+
+  it("omits a file deleted in a committed branch commit", () => {
+    git("checkout", "-qb", "feature");
+    git("rm", "-q", "src/base.ts");
+    git("commit", "-qm", "remove base");
+
+    expect(listChangedFiles(repo, { mergeBase: findMergeBase(repo) })).toEqual([]);
+  });
+
   it("de-duplicates a file that is both staged and edited again", () => {
     write("src/twice.ts");
     git("add", "src/twice.ts");

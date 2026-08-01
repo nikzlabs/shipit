@@ -2078,7 +2078,6 @@ export default function App() {
                 .gitHubLogout()
                 .catch(() => {})
             }
-            authUrl={authUrl}
             onApiKey={(key) => {
               apiPost("/api/auth/api-key", { key }).catch(() => {});
             }}
@@ -2098,41 +2097,11 @@ export default function App() {
                 console.error("[settings] Claude sign-out failed:", err);
               }
             }}
-            onStartAuth={() => {
-              apiPost("/api/auth/start", {}).catch(() => {});
-            }}
-            onPasteCode={(code) => {
-              apiPost("/api/auth/code", { code }).catch(() => {});
-            }}
             agentList={agentList}
             onSetAgentEnv={(agentId, key, value) => {
               apiPost(`/api/agents/${agentId}/env`, { key, value }).catch(
                 () => {},
               );
-            }}
-            codexDeviceAuth={codexDeviceAuth}
-            codexDeviceAuthError={codexDeviceAuthError}
-            onStartCodexDeviceAuth={() => {
-              apiPost("/api/codex-auth/start", {}).catch(() => {});
-            }}
-            onCancelCodexDeviceAuth={() => {
-              apiPost("/api/codex-auth/cancel", {}).catch(() => {});
-            }}
-            onSignOutCodex={async () => {
-              // The DELETE response includes the refreshed agent list, so we
-              // don't need a follow-up bootstrap fetch — but the SSE
-              // `agent_list` broadcast from the server will repaint the list
-              // for any other open tab too.
-              try {
-                const result = await apiDel<{ agents?: AgentOption[] }>(
-                  "/api/codex-auth",
-                );
-                if (result.agents) {
-                  useUiStore.getState().setAgentList(result.agents);
-                }
-              } catch (err) {
-                console.error("[settings] Codex sign-out failed:", err);
-              }
             }}
             onFullReset={async () => {
               try {

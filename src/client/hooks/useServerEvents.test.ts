@@ -62,7 +62,8 @@ describe("useServerEvents — session_agent_started", () => {
       activeRunnerSessions: new Set<string>(),
     });
     useSettingsStore.setState({
-      providerAccountAuth: null,
+      providerAccountAuths: {},
+      providerAccountAuthErrors: {},
       claudeAuthDiagnostics: {
         attemptId: null,
         active: false,
@@ -183,7 +184,7 @@ describe("useServerEvents — Claude auth diagnostics", () => {
     });
 
     expect(useSessionStore.getState().authUrl).toBeNull();
-    expect(useSettingsStore.getState().providerAccountAuth).toEqual({
+    expect(useSettingsStore.getState().providerAccountAuths["claude:acct-secondary"]).toEqual({
       provider: "claude",
       accountId: "acct-secondary",
       verificationUri: "https://claude.ai/oauth/authorize?secondary=true",
@@ -192,7 +193,7 @@ describe("useServerEvents — Claude auth diagnostics", () => {
     act(() => {
       es.emit("agent_auth_complete", { agentId: "claude", accountId: "acct-secondary" });
     });
-    expect(useSettingsStore.getState().providerAccountAuth).toBeNull();
+    expect(useSettingsStore.getState().providerAccountAuths["claude:acct-secondary"]).toBeUndefined();
   });
 });
 

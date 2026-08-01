@@ -40,7 +40,7 @@ agent uses **control B**.
 ### Control A is a per-agent "Sub-agent defaults" group
 
 Control A lives on each agent's existing Settings tab — the page that already
-holds that agent's connection/auth info (`ClaudeAuthCard` + `ProviderAccountSection`
+holds that agent's connection/auth info (`ProviderAccountsCard`
 in `ClaudeTab.tsx` / `CodexTab.tsx`). It is framed as a **"Sub-agent defaults"**
 section: the settings a *parent* agent's sub-invocation of *this* agent should
 run with. It has **two members**: a **default model** and a **reasoning effort**.

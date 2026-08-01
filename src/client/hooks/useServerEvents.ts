@@ -227,11 +227,12 @@ export function useServerEvents(): void {
       // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
       if (data.agentId === "claude" && data.details.kind === "code-paste-url") {
         if (data.accountId) {
-          useSettingsStore.getState().setProviderAccountAuth({
+          useSettingsStore.getState().setProviderAccountAuth("claude", data.accountId, {
             provider: "claude",
             accountId: data.accountId,
             verificationUri: data.details.verificationUri,
           });
+          useSettingsStore.getState().setProviderAccountAuthError("claude", data.accountId, null);
         } else {
           useSessionStore.getState().setAuthUrl(data.details.verificationUri);
         }
@@ -245,12 +246,27 @@ export function useServerEvents(): void {
         }
       // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
       } else if (data.agentId === "codex" && data.details.kind === "device-code") {
-        useSettingsStore.getState().setCodexDeviceAuth({
-          verificationUri: data.details.verificationUri,
-          userCode: data.details.userCode,
-          expiresInSec: data.details.expiresInSec,
-        });
-        useSettingsStore.getState().setCodexDeviceAuthError(null);
+        // docs/150 req 16 — an account-scoped Codex sign-in belongs on its own
+        // row. Before this, `accountId` was dropped here and every device code
+        // landed in the provider-wide slot, so connecting a second Codex
+        // account rendered its challenge in the singleton card instead of the
+        // row that started it.
+        if (data.accountId) {
+          useSettingsStore.getState().setProviderAccountAuth("codex", data.accountId, {
+            provider: "codex",
+            accountId: data.accountId,
+            verificationUri: data.details.verificationUri,
+            userCode: data.details.userCode,
+          });
+          useSettingsStore.getState().setProviderAccountAuthError("codex", data.accountId, null);
+        } else {
+          useSettingsStore.getState().setCodexDeviceAuth({
+            verificationUri: data.details.verificationUri,
+            userCode: data.details.userCode,
+            expiresInSec: data.details.expiresInSec,
+          });
+          useSettingsStore.getState().setCodexDeviceAuthError(null);
+        }
       }
     });
 
@@ -259,18 +275,21 @@ export function useServerEvents(): void {
       // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
       if (data.agentId === "claude") {
         if (data.accountId) {
-          const active = useSettingsStore.getState().providerAccountAuth;
-          if (active?.provider === "claude" && active.accountId === data.accountId) {
-            useSettingsStore.getState().setProviderAccountAuth(null);
-          }
+          useSettingsStore.getState().setProviderAccountAuth("claude", data.accountId, null);
+          useSettingsStore.getState().setProviderAccountAuthError("claude", data.accountId, null);
         } else {
           useSessionStore.getState().setAuthUrl(null);
         }
         useSettingsStore.getState().finishClaudeAuthDiagnostics("complete", "Claude sign-in completed.");
       // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
       } else if (data.agentId === "codex") {
-        useSettingsStore.getState().setCodexDeviceAuth(null);
-        useSettingsStore.getState().setCodexDeviceAuthError(null);
+        if (data.accountId) {
+          useSettingsStore.getState().setProviderAccountAuth("codex", data.accountId, null);
+          useSettingsStore.getState().setProviderAccountAuthError("codex", data.accountId, null);
+        } else {
+          useSettingsStore.getState().setCodexDeviceAuth(null);
+          useSettingsStore.getState().setCodexDeviceAuthError(null);
+        }
       }
     });
 
@@ -286,18 +305,15 @@ export function useServerEvents(): void {
         // Clear the URL so the sign-in card flips back to "Sign in" — also
         // the path the legacy `auth_required {}` broadcast took for
         // refresher-revoked accounts.
+        const claudeFailure = data.message
+          ?? "Claude sign-in failed. You can retry or copy the diagnostic details.";
         if (data.accountId) {
-          const active = useSettingsStore.getState().providerAccountAuth;
-          if (active?.provider === "claude" && active.accountId === data.accountId) {
-            useSettingsStore.getState().setProviderAccountAuth(null);
-          }
+          useSettingsStore.getState().setProviderAccountAuth("claude", data.accountId, null);
+          useSettingsStore.getState().setProviderAccountAuthError("claude", data.accountId, claudeFailure);
         } else {
           useSessionStore.getState().setAuthUrl(null);
         }
-        useSettingsStore.getState().finishClaudeAuthDiagnostics(
-          "failed",
-          data.message ?? "Claude sign-in failed. You can retry or copy the diagnostic details.",
-        );
+        useSettingsStore.getState().finishClaudeAuthDiagnostics("failed", claudeFailure);
         if (data.reason === "revoked") {
           useUiStore.getState().setToast({
             message: data.message ?? "Claude authentication expired. Sign in again.",
@@ -313,13 +329,18 @@ export function useServerEvents(): void {
         }
       // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
       } else if (data.agentId === "codex") {
-        useSettingsStore.getState().setCodexDeviceAuth(null);
         const fallback = data.reason === "timeout"
           ? "Sign-in timed out. Try again."
           : data.reason === "denied"
             ? "Sign-in was denied."
             : "Sign-in failed. Try again.";
-        useSettingsStore.getState().setCodexDeviceAuthError(data.message ?? fallback);
+        if (data.accountId) {
+          useSettingsStore.getState().setProviderAccountAuth("codex", data.accountId, null);
+          useSettingsStore.getState().setProviderAccountAuthError("codex", data.accountId, data.message ?? fallback);
+        } else {
+          useSettingsStore.getState().setCodexDeviceAuth(null);
+          useSettingsStore.getState().setCodexDeviceAuthError(data.message ?? fallback);
+        }
       }
     });
 

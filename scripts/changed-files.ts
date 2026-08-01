@@ -14,8 +14,17 @@
  * `--others` lists untracked paths, `--exclude-standard` applies the normal
  * ignore rules so `node_modules/`, `dist/`, and friends stay out. Callers still
  * apply their own path/extension filters afterwards.
+ *
+ * The mirror-image invariant: **a deleted file does not count as changed.**
+ * `git diff --name-only` reports deletions too, and handing a path that no
+ * longer exists to ESLint is not a skipped file but a hard failure ("No files
+ * matching the pattern …"), which takes down the whole dev-loop run over a file
+ * there is nothing left to check. Extant-path filtering lives here rather than
+ * in each caller because every consumer wants the same thing.
  */
 import { execSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import path from "node:path";
 
 /** Run a git command in `root`, returning trimmed stdout ("" on any failure). */
 export function gitOutput(root: string, cmd: string): string {
@@ -63,7 +72,7 @@ export function listChangedFiles(root: string, options: ChangedFilesOptions = {}
   sources.push(splitLines(gitOutput(root, "diff --name-only")));
   sources.push(splitLines(gitOutput(root, "diff --staged --name-only")));
   sources.push(listUntrackedFiles(root));
-  return [...new Set(sources.flat())];
+  return [...new Set(sources.flat())].filter((file) => existsSync(path.join(root, file)));
 }
 
 /** True for files this repo's TS tooling cares about: `src/**` `.ts` / `.tsx`. */
