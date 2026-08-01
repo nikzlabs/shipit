@@ -315,6 +315,7 @@ export async function handleSendMessage(
       // it, not just this socket).
       runnerForQueue.dispatch(prepareDispatch({
         text: msg.text,
+        agentInterface: undefined,
         // SHI-255 — a user-typed message: when this queues behind the running
         // turn, the drain must reproduce an INTERACTIVE turn (the client already
         // rendered an optimistic bubble, so the dispatched executor's

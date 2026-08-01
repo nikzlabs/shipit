@@ -208,6 +208,35 @@ describe("PreviewFrame", () => {
     expect(postMessage).not.toHaveBeenCalled();
   });
 
+  it("dispatches an SDK request only from the active exact-origin preview", async () => {
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    const onAgentInterfaceMessage = vi.fn().mockResolvedValue(undefined);
+    render(<PreviewFrame
+      preview={preview}
+      {...defaultProps}
+      onAgentInterfaceMessage={onAgentInterfaceMessage}
+    />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+
+    window.dispatchEvent(new MessageEvent("message", {
+      data: {
+        source: "shipit-preview",
+        type: "agent_message",
+        requestId: "sdk-1",
+        payload: { text: "Apply the selected settings" },
+      },
+      source: iframe.contentWindow,
+      origin: "http://localhost:5173",
+    }));
+
+    await vi.waitFor(() => {
+      expect(onAgentInterfaceMessage).toHaveBeenCalledWith(
+        "Apply the selected settings",
+        { source: "agent_interface_sdk", surface: "preview" },
+      );
+    });
+  });
+
   it("emits hidden visibility when a mounted preview stops running", async () => {
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     const { rerender } = render(<PreviewFrame preview={preview} {...defaultProps} />);

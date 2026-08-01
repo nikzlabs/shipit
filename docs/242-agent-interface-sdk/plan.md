@@ -6,6 +6,16 @@ description: Let JavaScript in service previews and presented artifacts compose 
 
 # 242 — Agent interface SDK
 
+## Implementation status
+
+Implemented on this feature branch. The shared runtime lives under
+`src/server/shared/agent-interface-sdk/`; Preview proxy injection and active-slot
+validation are in `preview-proxy.ts` and `PreviewFrame.tsx`; Present opt-in is
+threaded through `PresentPane` → `FileContentView` → `RenderedFrame`; and typed
+provenance travels through HTTP dispatch, steering/queue conversion, SQLite
+chat history, WebSocket echoes, and the user-bubble badge. Agent-facing usage is
+documented in `src/server/shipit-docs/agent-interface-sdk.md`.
+
 ## Overview
 
 ShipIt can already render interactive pages in two places relevant to this
@@ -105,23 +115,16 @@ The design relies on the following existing behavior, verified in source:
 
 These are implementation foundations, not new requirements.
 
-### Planned dependency, not an existing guarantee
+### Visibility dependency
 
 docs/146 specifies the cooperative `{ source: "shipit-preview", type: ... }`
-`ready`/`visibility` protocol, but its checklist is entirely unimplemented. The
-current `PreviewFrame` handles only `loaded`; it does not answer `ready` or emit
-visibility transitions.
+`ready`/`visibility` protocol. It is now implemented through this feature's
+shared bootstrap and Preview parent behavior:
 
-The SDK's visibility module therefore depends on docs/146's parent behavior
-landing first. Implementation order is explicit:
-
-1. implement docs/146's parent-side `ready`/`visibility` contract;
-2. introduce the shared injected runtime as a wrapper over that working
-   contract; and
-3. enable `agent.sendMessage` on the validated active Present/Preview frames.
-
-The agent-message module may be developed independently, but ShipIt must not
-publish a visibility API that remains permanently unknown.
+1. Preview answers `ready` with authoritative current visibility;
+2. the shared runtime wraps the raw protocol without breaking raw listeners;
+3. Preview and Present emit transitions while their mounted frames move between
+   active and hidden states.
 
 ## Proposed SDK
 

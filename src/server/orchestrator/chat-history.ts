@@ -3,6 +3,7 @@ import type { DatabaseManager } from "../shared/database.js";
 import type { SubagentEvent } from "./session-runner.js";
 import type { IssueWriteCard, IssueRefCard, CompactionCard, ChildMergedCard, SelfMergeWatchCard, SessionReportCard, SubAgentConsultCard, AiReviewCard, ActionChecklistCard, BranchAutoResetCard, BranchSyncedCard } from "../shared/types.js";
 import type { ReleaseStatusSummary } from "../shared/types/release-types.js";
+import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
 
 export type RewindSnapshotAction = "chat" | "code" | "both" | "fork";
 
@@ -106,6 +107,7 @@ interface RewindSnapshotRow {
 export interface PersistedMessage {
   role: "user" | "assistant";
   text: string;
+  agentInterface?: AgentInterfaceProvenance;
   toolUse?: {
     type: "tool_use";
     id: string;
@@ -409,6 +411,7 @@ interface MessageRow {
   ai_review: string | null;
   user_review: string | null;
   notice_id: string | null;
+  agent_interface: string | null;
   /**
    * Legacy column — older rows may carry a serialized per-turn usage record
    * here. The canonical per-turn series is now owned by `UsageManager`
@@ -422,8 +425,8 @@ interface MessageRow {
 }
 
 const INSERT_SQL = `
-  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, permission_prompt, egress_prompt, issue_write, issue_ref, compaction, sub_agent_consult, action_checklist, branch_auto_reset, branch_synced, child_merged, self_merge_watch, session_report, release_card, spawned_session, spawn_failed, agent_review, ai_review, user_review, notice_id)
-  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @permission_prompt, @egress_prompt, @issue_write, @issue_ref, @compaction, @sub_agent_consult, @action_checklist, @branch_auto_reset, @branch_synced, @child_merged, @self_merge_watch, @session_report, @release_card, @spawned_session, @spawn_failed, @agent_review, @ai_review, @user_review, @notice_id)
+  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, permission_prompt, egress_prompt, issue_write, issue_ref, compaction, sub_agent_consult, action_checklist, branch_auto_reset, branch_synced, child_merged, self_merge_watch, session_report, release_card, spawned_session, spawn_failed, agent_review, ai_review, user_review, notice_id, agent_interface)
+  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @permission_prompt, @egress_prompt, @issue_write, @issue_ref, @compaction, @sub_agent_consult, @action_checklist, @branch_auto_reset, @branch_synced, @child_merged, @self_merge_watch, @session_report, @release_card, @spawned_session, @spawn_failed, @agent_review, @ai_review, @user_review, @notice_id, @agent_interface)
 `;
 
 const UPDATE_SQL = `
@@ -433,7 +436,7 @@ const UPDATE_SQL = `
     turn_usage=@turn_usage, subagent_events=@subagent_events, rolled_back=@rolled_back,
     notice=@notice, notice_level=@notice_level, fork_child=@fork_child, code_rollback_hash=@code_rollback_hash,
     voice_note=@voice_note, bug_report=@bug_report, permission_prompt=@permission_prompt, egress_prompt=@egress_prompt, issue_write=@issue_write, issue_ref=@issue_ref, compaction=@compaction, sub_agent_consult=@sub_agent_consult, action_checklist=@action_checklist, branch_auto_reset=@branch_auto_reset, branch_synced=@branch_synced, child_merged=@child_merged, self_merge_watch=@self_merge_watch, session_report=@session_report, release_card=@release_card,
-    spawned_session=@spawned_session, spawn_failed=@spawn_failed, agent_review=@agent_review, ai_review=@ai_review, user_review=@user_review, notice_id=@notice_id
+    spawned_session=@spawned_session, spawn_failed=@spawn_failed, agent_review=@agent_review, ai_review=@ai_review, user_review=@user_review, notice_id=@notice_id, agent_interface=@agent_interface
   WHERE id = @id
 `;
 
@@ -513,6 +516,7 @@ export class ChatHistoryManager {
       ai_review: msg.aiReview ? JSON.stringify(msg.aiReview) : null,
       user_review: msg.userReview ? JSON.stringify(msg.userReview) : null,
       notice_id: msg.noticeId ?? null,
+      agent_interface: msg.agentInterface ? JSON.stringify(msg.agentInterface) : null,
     };
   }
 
@@ -578,6 +582,7 @@ export class ChatHistoryManager {
     }
     if (row.user_review) msg.userReview = JSON.parse(row.user_review) as PersistedMessage["userReview"];
     if (row.notice_id) msg.noticeId = row.notice_id;
+    if (row.agent_interface) msg.agentInterface = JSON.parse(row.agent_interface) as PersistedMessage["agentInterface"];
     return msg;
   }
 

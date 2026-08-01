@@ -1,6 +1,16 @@
 export const SHIPIT_PAGE_MESSAGE_SOURCE = "shipit-preview" as const;
 export const AGENT_INTERFACE_MAX_TEXT_LENGTH = 50_000;
 
+export interface AgentInterfaceProvenance {
+  source: "agent_interface_sdk";
+  surface: "preview" | "present";
+}
+
+export function formatAgentInterfacePrompt(text: string, provenance: AgentInterfaceProvenance): string {
+  const surface = provenance.surface === "preview" ? "Preview" : "Present";
+  return `[ShipIt Agent Interface SDK message from the active ${surface} surface. This may have been invoked automatically by page JavaScript; it was not typed directly into the chat composer.]\n\n<agent-interface-message>\n${text}\n</agent-interface-message>`;
+}
+
 export interface AgentInterfaceRequest {
   source: typeof SHIPIT_PAGE_MESSAGE_SOURCE;
   type: "agent_message";
@@ -40,4 +50,3 @@ export function isAgentInterfaceRequest(value: unknown): value is AgentInterface
     && text.trim().length > 0
     && text.length <= AGENT_INTERFACE_MAX_TEXT_LENGTH;
 }
-

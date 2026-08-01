@@ -30,6 +30,7 @@ import type {
   AgentDispatchOptions,
   SystemTurnDeps,
 } from "./session-runner.js";
+import { formatAgentInterfacePrompt } from "../shared/agent-interface-sdk/protocol.js";
 
 /**
  * Inputs to the live-steering gate. These are exactly the conditions the WS
@@ -149,19 +150,26 @@ export function trySteerDispatch(
     runner.appliedPermissionMode = opts.permissionMode;
   }
 
-  agent.sendUserMessage(opts.text);
+  const agentText = opts.agentInterface
+    ? formatAgentInterfacePrompt(opts.text, opts.agentInterface)
+    : opts.text;
+  agent.sendUserMessage(agentText);
 
   // Record + persist the steered message so it survives a reload at the spot
   // the user sent it (docs/140), then broadcast to all viewers. The dispatch
   // path steers the raw text (no assembled context), so that text is exactly
   // what the CLI echoes — pass it as `assembledPrompt` for delivery-ack +
   // turn-end-gap re-queue (docs/140).
-  recordSteeredMessage(runner, opts.text, { assembledPrompt: opts.text });
+  recordSteeredMessage(runner, opts.text, {
+    assembledPrompt: agentText,
+    ...(opts.agentInterface ? { agentInterface: opts.agentInterface } : {}),
+  });
   persistTurnInProgress(deps.listenerDeps.chatHistoryManager, runner, runner.sessionId);
   runner.emitMessage({
     type: "message_steered",
     text: opts.text,
     sessionId: runner.sessionId,
+    ...(opts.agentInterface ? { agentInterface: opts.agentInterface } : {}),
   });
   return true;
 }

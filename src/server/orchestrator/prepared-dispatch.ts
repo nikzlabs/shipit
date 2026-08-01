@@ -62,6 +62,7 @@ import type {
   UploadRef,
   PermissionMode,
 } from "../shared/types.js";
+import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
 
 // ---------------------------------------------------------------------------
 // The brand
@@ -94,6 +95,7 @@ export type PreparedDispatch = AgentDispatchOptions & { readonly [PREPARED]: tru
  */
 export interface AgentDispatchInit {
   text: string;
+  agentInterface: AgentInterfaceProvenance | undefined;
   execution: "interactive" | "dispatched" | undefined;
   activity: string | undefined;
   images: ImageAttachment[] | undefined;
@@ -130,6 +132,7 @@ export type _InitHasNoExtraFields = AssertNever<
  */
 const DISPATCH_FIELDS: Record<keyof AgentDispatchOptions, true> = {
   text: true,
+  agentInterface: true,
   execution: true,
   activity: true,
   images: true,
@@ -186,6 +189,7 @@ export function prepareDispatch(init: AgentDispatchInit): PreparedDispatch {
 export function queuedMessageToDispatchOptions(next: QueuedMessage): PreparedDispatch {
   return prepareDispatch({
     text: next.text,
+    agentInterface: next.agentInterface,
     execution: next.execution,
     activity: next.activity,
     images: next.images,

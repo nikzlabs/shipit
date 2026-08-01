@@ -16,6 +16,7 @@
  */
 
 import http from "node:http";
+import { createHash } from "node:crypto";
 import type { Duplex } from "node:stream";
 import type { FastifyInstance } from "fastify";
 import type { SessionContainerManager } from "./session-container.js";
@@ -94,6 +95,29 @@ export function injectPreviewBootstrap(html: string): string {
   if (headIdx === -1) return scripts + html;
   const insertAt = html.indexOf(">", headIdx) + 1;
   return html.slice(0, insertAt) + scripts + html.slice(insertAt);
+}
+
+function scriptBody(script: string): string {
+  return script.replace(/^<script[^>]*>/, "").replace(/<\/script>$/, "");
+}
+
+const INJECTED_SCRIPT_HASHES = [HMR_WS_PATCH, AGENT_INTERFACE_SDK_SCRIPT].map((script) =>
+  `'sha256-${createHash("sha256").update(scriptBody(script)).digest("base64")}'`);
+
+/** Permit only ShipIt's two exact injected scripts in an upstream CSP. */
+export function allowPreviewBootstrapInCsp(csp: string): string {
+  return csp.split(",").map((policy) => {
+    const directives = policy.split(";").map((part) => part.trim()).filter(Boolean);
+    const index = directives.findIndex((part) => part === "script-src" || part.startsWith("script-src "));
+    if (index === -1) {
+      directives.push(`script-src ${INJECTED_SCRIPT_HASHES.join(" ")}`);
+    } else {
+      const tokens = directives[index].split(/\s+/).filter((token) => token !== "'none'");
+      for (const hash of INJECTED_SCRIPT_HASHES) if (!tokens.includes(hash)) tokens.push(hash);
+      directives[index] = tokens.join(" ");
+    }
+    return directives.join("; ");
+  }).join(", ");
 }
 
 // ---------------------------------------------------------------------------
@@ -206,6 +230,12 @@ function proxyHttp(
         proxyRes.on("end", () => {
           const html = injectPreviewBootstrap(Buffer.concat(chunks).toString("utf-8"));
           const outHeaders = { ...proxyRes.headers };
+          const csp = outHeaders["content-security-policy"];
+          if (typeof csp === "string") {
+            outHeaders["content-security-policy"] = allowPreviewBootstrapInCsp(csp);
+          } else if (Array.isArray(csp)) {
+            outHeaders["content-security-policy"] = csp.map(allowPreviewBootstrapInCsp);
+          }
           delete outHeaders["content-length"];
           delete outHeaders["content-encoding"];
           delete outHeaders["transfer-encoding"];

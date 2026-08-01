@@ -225,6 +225,7 @@ export async function createHeadlessSession(
 
   runner.dispatch(prepareDispatch({
     text: trimmedPrompt,
+    agentInterface: undefined,
     uploads: uploadRefs.length > 0 ? uploadRefs : undefined,
     execution: undefined,
     activity: undefined,

@@ -18,6 +18,7 @@ function installShipItPageSdk(): void {
   const pending = new Map<string, {
     resolve: (result: { status: "submitted" }) => void;
     reject: (reason: Error) => void;
+    timeout: number;
   }>();
 
   const ready = new Promise<void>((resolve, reject) => {
@@ -73,6 +74,7 @@ function installShipItPageSdk(): void {
     const request = pending.get(data.requestId);
     if (!request) return;
     pending.delete(data.requestId);
+    window.clearTimeout(request.timeout);
     if (data.ok === true && data.status === "submitted") {
       request.resolve({ status: "submitted" });
     } else {
@@ -104,7 +106,11 @@ function installShipItPageSdk(): void {
         if (!parentOrigin) throw new Error("ShipIt parent origin is unavailable");
         const requestId = crypto.randomUUID();
         return await new Promise<{ status: "submitted" }>((resolve, reject) => {
-          pending.set(requestId, { resolve, reject });
+          const timeout = window.setTimeout(() => {
+            pending.delete(requestId);
+            reject(new Error("ShipIt agent message timed out"));
+          }, 30_000);
+          pending.set(requestId, { resolve, reject, timeout });
           hostWindow.postMessage({
             source,
             type: "agent_message",

@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import { FileContentView } from "./FileContentView.js";
 import { svgToMarkup } from "./RenderedFrame.js";
+import { AGENT_INTERFACE_SDK_MARKER } from "../../../server/shared/agent-interface-sdk/bootstrap.js";
 
 // Monaco uses dynamic import("monaco-editor") and won't run in jsdom — stub it
 // so the source/code views render their mount div.
@@ -58,6 +59,23 @@ describe("FileContentView dispatch", () => {
     expect(iframe).toHaveAttribute("sandbox", "allow-scripts");
     const srcdoc = iframe.getAttribute("srcdoc") ?? "";
     expect(srcdoc).toContain("<h1>Hi</h1>");
+    expect(srcdoc).toContain("connect-src 'none'");
+    expect(srcdoc).not.toContain(AGENT_INTERFACE_SDK_MARKER);
+  });
+
+  it("injects the Agent Interface SDK only when the Present surface opts in", () => {
+    render(
+      <FileContentView
+        {...base}
+        filePath="m.html"
+        content="<h1>Hi</h1>"
+        kind="html"
+        viewMode="rendered"
+        agentInterfaceFrameRef={() => { /* test ref */ }}
+      />,
+    );
+    const srcdoc = screen.getByTitle("Rendered content").getAttribute("srcdoc") ?? "";
+    expect(srcdoc).toContain(AGENT_INTERFACE_SDK_MARKER);
     expect(srcdoc).toContain("connect-src 'none'");
   });
 

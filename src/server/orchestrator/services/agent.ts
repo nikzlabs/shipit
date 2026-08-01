@@ -30,6 +30,7 @@ import {
 import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js";
 import { ServiceError } from "./types.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
+import type { AgentInterfaceProvenance } from "../../shared/agent-interface-sdk/protocol.js";
 
 const PERMISSION_MODES: ReadonlySet<PermissionMode> = new Set<PermissionMode>([
   "auto",
@@ -42,6 +43,7 @@ const MAX_ACTIVITY_LEN = 200;
 
 export interface DispatchAgentMessageInput {
   text: string;
+  agentInterface?: AgentInterfaceProvenance;
   activity?: string;
   permissionMode?: PermissionMode;
   images?: ImageAttachment[];
@@ -108,6 +110,12 @@ export async function dispatchAgentMessage(
   }
   if (input.permissionMode !== undefined && !PERMISSION_MODES.has(input.permissionMode)) {
     throw new ServiceError(400, `Unknown permission mode: ${input.permissionMode}`);
+  }
+  if (input.agentInterface !== undefined && (
+    input.agentInterface.source !== "agent_interface_sdk"
+    || (input.agentInterface.surface !== "preview" && input.agentInterface.surface !== "present")
+  )) {
+    throw new ServiceError(400, "Invalid agent interface provenance");
   }
   if (input.images && input.images.length > 0) {
     const imageError = validateImages(input.images);
@@ -207,6 +215,7 @@ export async function dispatchAgentMessage(
   const wasRunning = runner.running;
   runner.dispatch(prepareDispatch({
     text,
+    agentInterface: input.agentInterface,
     activity: input.activity,
     images: allImages,
     files: validatedFiles.length > 0 ? validatedFiles.map(asFileContextRef) : undefined,

@@ -16,6 +16,7 @@ describe("handleSystemUserMessage (docs/150 dedupe)", () => {
   it("appends when no optimistic bubble matches (server-only dispatch path)", () => {
     handleSystemUserMessage(ctx, {
       type: "system_user_message",
+      sessionId: "s1",
       text: "Auto-fixing CI…",
       activity: "Auto-fixing CI...",
     });
@@ -32,6 +33,7 @@ describe("handleSystemUserMessage (docs/150 dedupe)", () => {
     });
     handleSystemUserMessage(ctx, {
       type: "system_user_message",
+      sessionId: "s1",
       text: "Create the PR",
       activity: "Creating PR…",
     });
@@ -48,6 +50,7 @@ describe("handleSystemUserMessage (docs/150 dedupe)", () => {
     });
     handleSystemUserMessage(ctx, {
       type: "system_user_message",
+      sessionId: "s1",
       text: "Auto-fixing CI…",
     });
     const messages = useSessionStore.getState().messages;
@@ -65,6 +68,7 @@ describe("handleSystemUserMessage (docs/150 dedupe)", () => {
     });
     handleSystemUserMessage(ctx, {
       type: "system_user_message",
+      sessionId: "s1",
       text: "Queued user input",
     });
     const messages = useSessionStore.getState().messages;

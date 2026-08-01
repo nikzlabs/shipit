@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   AGENT_INTERFACE_MAX_TEXT_LENGTH,
   isAgentInterfaceRequest,
+  formatAgentInterfacePrompt,
 } from "./protocol.js";
 
 const request = (text: string): unknown => ({
@@ -9,6 +10,18 @@ const request = (text: string): unknown => ({
   type: "agent_message",
   requestId: "request-1",
   payload: { text },
+});
+
+describe("formatAgentInterfacePrompt", () => {
+  it("identifies automatic Preview SDK input and preserves the authored text", () => {
+    const result = formatAgentInterfacePrompt("Run the selected audit", {
+      source: "agent_interface_sdk",
+      surface: "preview",
+    });
+    expect(result).toContain("Agent Interface SDK message from the active Preview surface");
+    expect(result).toContain("may have been invoked automatically");
+    expect(result).toContain("<agent-interface-message>\nRun the selected audit\n</agent-interface-message>");
+  });
 });
 
 describe("isAgentInterfaceRequest", () => {

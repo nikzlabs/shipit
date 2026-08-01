@@ -16,6 +16,8 @@ import { PreviewToolbar, type PortInfo } from "./PreviewToolbar.js";
 import { PreviewErrors } from "./PreviewErrors.js";
 import { ComposeErrorBanner, ComposeHint } from "./ComposeErrorBanner.js";
 import { SecretsMissingBanner } from "./SecretsMissingBanner.js";
+import { handleAgentInterfaceRequest } from "../../agent-interface-sdk/handle-request.js";
+import type { AgentInterfaceProvenance } from "../../../server/shared/agent-interface-sdk/protocol.js";
 
 export interface PreviewStatus {
   running: boolean;
@@ -64,6 +66,7 @@ interface PreviewFrameProps {
   onSendCrashToAgent?: () => void;
   /** Called when user clicks "Send to agent" to ask the agent to add compose config. */
   onSendComposeHintToAgent?: () => void;
+  onAgentInterfaceMessage?: (text: string, provenance: AgentInterfaceProvenance) => Promise<void>;
 }
 
 export function PreviewFrame({
@@ -78,6 +81,7 @@ export function PreviewFrame({
   onClearErrors,
   onSendCrashToAgent,
   onSendComposeHintToAgent,
+  onAgentInterfaceMessage,
 }: PreviewFrameProps) {
   const autoFixEnabled = usePreviewStore((s) => s.autoFixEnabled);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -219,6 +223,21 @@ export function PreviewFrame({
   useEventListener(window, "message", (event) => {
     const data = event.data as { source?: string; type?: string } | undefined;
     if (data?.source !== "shipit-preview") return;
+    if (data.type === "agent_message" && onAgentInterfaceMessage && activeSlotKeyRef.current) {
+      const iframe = iframeRefs.current.get(activeSlotKeyRef.current);
+      const slot = slots.get(activeSlotKeyRef.current);
+      const expectedOrigin = slot ? previewOrigin(slot.url) : null;
+      if (iframe && expectedOrigin) {
+        void handleAgentInterfaceRequest({
+          event,
+          iframe,
+          expectedOrigin,
+          surface: "preview",
+          dispatch: onAgentInterfaceMessage,
+        });
+      }
+      return;
+    }
     if (data.type === "ready" && event.source) {
       const result = replyToVisibilityReady(event.source, event.origin);
       if (result === "unmatched") {

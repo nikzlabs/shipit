@@ -250,6 +250,8 @@ const TRANSCRIPT_SCOPED_MESSAGES: ReadonlySet<WsMessageType> = new Set<WsMessage
   "sub_agent_consult_card",
   "sub_agent_spawn",
   "system_notice",
+  "system_user_message",
+  "message_steered",
   "turn_snapshot",
   "voice_note",
 ]);

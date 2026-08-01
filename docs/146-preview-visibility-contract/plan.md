@@ -5,15 +5,13 @@ issue: https://linear.app/shipit-ai/issue/SHI-44
 
 # Preview visibility contract
 
-> **Proposed integration (docs/242; not implemented):** the Agent Interface SDK
-> design proposes a shared injected `window.shipit` runtime that wraps this
-> contract after the parent-side behavior below lands. The wire shapes remain
+> **Implemented integration (docs/242):** the Agent Interface SDK provides a
+> shared injected `window.shipit` runtime that wraps this contract. The wire shapes remain
 > authoritative: `{ source: "shipit-preview", type: "ready" }` and
 > `{ source: "shipit-preview", type: "visibility", visible }`. Under that plan,
 > the bootstrap emits `ready` and exposes
 > `window.shipit.visibility.current/subscribe()`; raw listeners remain
-> compatible. This is a forward design reference, not a claim about current
-> source—the current `PreviewFrame` handles `loaded` only. See
+> compatible. `PreviewFrame` answers `ready` and emits transitions. See
 > `docs/242-agent-interface-sdk/plan.md` for sequencing and trade-offs.
 
 ## Problem

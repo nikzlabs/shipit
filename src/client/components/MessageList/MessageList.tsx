@@ -356,6 +356,11 @@ export function MessageList({
                   : "text-(--color-text-primary)"
               }`}
             >
+              {msg.agentInterface && (
+                <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-(--color-accent-text)/75">
+                  {msg.agentInterface.surface === "preview" ? "Preview" : "Present"} · Agent Interface SDK
+                </div>
+              )}
               {msg.queued && (
                 <div className="flex items-center gap-1.5 mb-1.5 text-xs text-(--color-accent-text)/80 font-medium">
                   <CircleNotchIcon size={12} className="animate-spin" />

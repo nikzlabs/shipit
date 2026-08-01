@@ -1,4 +1,5 @@
 import type { SessionInfo } from "../domain-types.js";
+import type { AgentInterfaceProvenance } from "../../agent-interface-sdk/protocol.js";
 
 export interface WsSessionList {
   type: "session_list";
@@ -194,9 +195,11 @@ export interface WsSessionAgentFinished {
 /** Server → Client: a server-initiated user message (e.g. CI fix prompt). */
 export interface WsSystemUserMessage {
   type: "system_user_message";
+  sessionId: string;
   text: string;
   /** Activity label for the UI (e.g. "Auto-fixing CI..."). */
   activity?: string;
+  agentInterface?: AgentInterfaceProvenance;
 }
 
 /**

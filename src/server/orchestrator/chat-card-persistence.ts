@@ -107,6 +107,7 @@ export function buildTurnMessages(
   const persistedSteer = (s: SteeredMessage): PersistedMessage => ({
     role: "user",
     text: s.text,
+    agentInterface: s.agentInterface,
     images: s.images,
     files: s.files,
     uploadPaths: s.uploadPaths,

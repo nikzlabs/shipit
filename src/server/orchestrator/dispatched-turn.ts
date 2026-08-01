@@ -34,6 +34,7 @@ import type {
 import type { PreparedDispatch } from "./prepared-dispatch.js";
 import { queuedMessageToDispatchOptions } from "./queue-drain.js";
 import type { TurnOutcome } from "./turn-settlement.js";
+import { formatAgentInterfacePrompt } from "../shared/agent-interface-sdk/protocol.js";
 
 /**
  * How many times a dispatched first turn that exited WITHOUT producing a result
@@ -128,7 +129,8 @@ export async function runDispatchedTurn(
   const fileContext = validatedFiles.length > 0 ? formatFileContext(validatedFiles) : "";
   const imageContext =
     images && images.length > 0 && sessionDir ? saveImagesToUploadsDir(images, sessionDir) : "";
-  const prompt = assembleAgentPrompt({ userText: text, fileContext, imageContext });
+  const agentText = opts.agentInterface ? formatAgentInterfacePrompt(text, opts.agentInterface) : text;
+  const prompt = assembleAgentPrompt({ userText: agentText, fileContext, imageContext });
 
   // Chat-history metadata for the persisted user row — mirrors the WS path so a
   // reload shows the same inline image / file chips on the dispatched bubble.
@@ -261,12 +263,14 @@ export async function runDispatchedTurn(
       // one). A retry must NOT re-echo the bubble or re-append the user row —
       // both already happened on the first attempt — so only the first run does.
       emitUserEcho: attempt === 0,
+      ...(opts.agentInterface ? { agentInterface: opts.agentInterface } : {}),
       persistUserMessage:
         attempt === 0
           ? (sid) =>
               deps.listenerDeps.chatHistoryManager.append(sid, {
                 role: "user",
                 text,
+                ...(opts.agentInterface ? { agentInterface: opts.agentInterface } : {}),
                 ...(historyImages ? { images: historyImages } : {}),
                 ...(historyFiles ? { files: historyFiles } : {}),
                 ...(uploadPaths && uploadPaths.length > 0 ? { uploadPaths } : {}),

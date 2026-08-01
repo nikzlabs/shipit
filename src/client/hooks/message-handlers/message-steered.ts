@@ -23,6 +23,7 @@ export const handleMessageSteered: Handler<WsMessageSteered> = (_ctx, data) => {
       images: data.images,
       files: data.files,
       uploadPaths: data.uploadPaths,
+      agentInterface: data.agentInterface,
     },
   ]);
 };

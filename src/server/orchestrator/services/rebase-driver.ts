@@ -424,6 +424,7 @@ function runRebaseResolutionTurn(
 
     runner.dispatch(prepareDispatch({
       text: prompt,
+      agentInterface: undefined,
       activity: "Resolving conflicts...",
       // Elide the post-turn commit/push/PR/drain — the rebase owns committing.
       postTurn: "none",

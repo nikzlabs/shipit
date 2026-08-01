@@ -317,6 +317,7 @@ export async function triggerCIFix(
   const queued = runner.running;
   runner.dispatch(prepareDispatch({
     text: prompt,
+    agentInterface: undefined,
     activity: "Fixing CI…",
     execution: undefined,
     images: undefined,

@@ -10,7 +10,7 @@
 
 import { describe, it, expect } from "vitest";
 import { AGENT_INTERFACE_SDK_MARKER } from "../shared/agent-interface-sdk/bootstrap.js";
-import { buildUpstreamHeaders, injectPreviewBootstrap } from "./preview-proxy.js";
+import { allowPreviewBootstrapInCsp, buildUpstreamHeaders, injectPreviewBootstrap } from "./preview-proxy.js";
 
 describe("buildUpstreamHeaders", () => {
   it("rewrites Host to loopback for the upstream", () => {
@@ -84,5 +84,18 @@ describe("injectPreviewBootstrap", () => {
     const once = injectPreviewBootstrap("<html><head></head></html>");
     const twice = injectPreviewBootstrap(once);
     expect(twice.split(AGENT_INTERFACE_SDK_MARKER)).toHaveLength(2);
+  });
+});
+
+describe("allowPreviewBootstrapInCsp", () => {
+  it("replaces script-src none with exact injected-script hashes", () => {
+    const result = allowPreviewBootstrapInCsp("default-src 'self'; script-src 'none'; connect-src 'self'");
+    expect(result).not.toContain("script-src 'none'");
+    expect(result.match(/'sha256-[^']+'/g)).toHaveLength(2);
+    expect(result).toContain("connect-src 'self'");
+  });
+
+  it("adds a script directive when only default-src exists", () => {
+    expect(allowPreviewBootstrapInCsp("default-src 'none'")).toMatch(/script-src 'sha256-/);
   });
 });
