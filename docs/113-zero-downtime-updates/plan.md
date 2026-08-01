@@ -49,8 +49,25 @@ docs/240 and is kept as the option analysis of record):
   connected while SSE was dead — the tab kept running the old bundle (and a stale
   session list / PR status / version badge) until the user reloaded by hand.
   `useServerEvents` now owns the retry: on CLOSED it reopens with 1s→30s backoff
-  (mirroring `useWebSocket`), resets the ladder on a successful open, and also
-  reconnects on `online` alongside the existing `visibilitychange` trigger.
+  (mirroring `useWebSocket`), and resets the ladder on a successful open.
+
+  The same follow-up fixed a second, independent way the stream failed to come
+  back — reported as "on mobile, every session's git status stays stale until I
+  fully reload". `useServerEvents` re-opened on `visibilitychange` **only**,
+  while `useWebSocket` re-opens on `visibilitychange` + `pageshow` + `focus` +
+  `online`. A standalone-PWA app-switch or bfcache restore surfaces as
+  `pageshow`/`focus`, so the WebSocket recovered and the SSE did not — and since
+  `/api/bootstrap` carries **no** PR state, the `/api/events` connect snapshot
+  (`pr_status` with `isSnapshot: true`) is the *only* thing that refreshes the
+  sidebar's PR / CI indicators. Hence: chat live, every session's status frozen,
+  full reload the only cure. The SSE now listens for the same four signals,
+  coalesced within 1s so one resume opens one stream rather than three.
+
+  Still open, deliberately: an EventSource that stays `OPEN` over a socket the OS
+  killed silently emits no `error`, and there is no SSE heartbeat to detect it —
+  the foreground triggers are what recovers that case. A server-side keepalive +
+  client staleness watchdog would close it for a tab left open in the foreground;
+  no report has called for one yet.
 - **§5 (lazy rotation + telemetry) landed in its minimal form.** Old workers
   roll forward as the idle enforcer disposes their containers. For visibility,
   `Dockerfile.session-worker.prod` stamps the image with a `shipit-build-id`

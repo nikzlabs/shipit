@@ -12,7 +12,7 @@ import type { SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemI
 import { getLoadedClientBuildId, shouldReloadForServerBuild } from "../utils/client-build.js";
 import { getSavedModelId, saveAgentId, saveModelId } from "../utils/local-storage.js";
 import { resolveAuthedSelection } from "../utils/resolve-authed-selection.js";
-import { useEventListener } from "./useEventListener.js";
+import { useEventListeners } from "./useEventListener.js";
 
 let reloadingForClientUpdate = false;
 
@@ -25,6 +25,14 @@ function backoffMs(attempt: number): number {
 }
 
 /**
+ * One window reactivation fires several listeners within a few milliseconds
+ * (`visibilitychange` + `focus`, plus `pageshow` on a bfcache restore). Treat
+ * them as one signal so a resume opens ONE stream, not three — same constant and
+ * reason as `useWebSocket`'s `handleForeground`.
+ */
+const FOREGROUND_COALESCE_MS = 1000;
+
+/**
  * SSE hook for global push events — session list, repo updates, auth, activity dots.
  * Always active (home page and session page). Replaces WS broadcasts for global state.
  *
@@ -32,10 +40,21 @@ function backoffMs(attempt: number): number {
  * often silently terminates the underlying TCP connection. Native EventSource
  * keeps `readyState === OPEN` and never fires `error`, so its built-in
  * auto-reconnect never triggers and PR/CI status updates stop arriving — the
- * UI shows stale data until the user reloads the page. We watch
- * `visibilitychange` and force a fresh connection when the tab returns to the
- * foreground; the server re-sends its snapshot (PR statuses, sessions, repos
- * — see `/api/events` initial-state writes) so the UI catches up immediately.
+ * UI shows stale data until the user reloads the page. We force a fresh
+ * connection whenever the app returns to the foreground; the server re-sends its
+ * snapshot (PR statuses, sessions, repos — see `/api/events` initial-state
+ * writes) so the UI catches up immediately.
+ *
+ * That foreground signal must be the SAME set the WebSocket listens for —
+ * `visibilitychange` + `pageshow` + `focus` + `online` — not `visibilitychange`
+ * alone. A standalone-PWA app-switch or a bfcache restore surfaces as
+ * `pageshow`/`focus` with `visibilitychange` either absent or already delivered
+ * while the page was frozen, so a visibility-only trigger misses the resume the
+ * WebSocket recovers from. That asymmetry is directly visible in the product:
+ * the chat reconnects and looks healthy while every *cross-session* surface fed
+ * only by SSE — the sidebar's PR / CI indicators above all, since
+ * `/api/bootstrap` carries no PR state and nothing else re-fetches it — stays
+ * frozen at its pre-background values until a full page reload.
  *
  * Restart resilience: native EventSource auto-reconnect only covers *network*
  * errors. Per the HTML spec, a response that is not `200 text/event-stream`
@@ -55,6 +74,7 @@ export function useServerEvents(): void {
   const [connectAttempt, setConnectAttempt] = useState(0);
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastForegroundReconnectRef = useRef(0);
 
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
@@ -565,7 +585,7 @@ export function useServerEvents(): void {
     };
   }, [connectAttempt]);
 
-  // Force a fresh SSE connection when the tab returns from the background, or
+  // Force a fresh SSE connection when the app returns from the background, or
   // when the network comes back. Native EventSource readyState often stays OPEN
   // over a dead socket on mobile, so we tear down and re-open instead of waiting
   // for a (never-firing) error event. Closing the previous EventSource and
@@ -577,8 +597,17 @@ export function useServerEvents(): void {
     reconnectAttemptRef.current = 0;
     setConnectAttempt((n) => n + 1);
   }
-  useEventListener(document, "visibilitychange", () => {
-    if (!document.hidden) reconnectNow();
-  });
-  useEventListener(window, "online", reconnectNow);
+  function handleForeground(): void {
+    if (document.hidden) return;
+    const now = Date.now();
+    if (now - lastForegroundReconnectRef.current < FOREGROUND_COALESCE_MS) return;
+    lastForegroundReconnectRef.current = now;
+    reconnectNow();
+  }
+  useEventListeners([
+    { target: document, type: "visibilitychange", handler: handleForeground },
+    { target: window, type: "pageshow", handler: handleForeground },
+    { target: window, type: "focus", handler: handleForeground },
+    { target: window, type: "online", handler: handleForeground },
+  ]);
 }

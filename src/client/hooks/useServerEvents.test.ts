@@ -284,3 +284,81 @@ describe("useServerEvents — SSE reconnect after a failed connection", () => {
     expect(reload).toHaveBeenCalled();
   });
 });
+
+/**
+ * Cross-session state — the sidebar's PR / CI indicators above all — is fed
+ * ONLY by this stream: `/api/bootstrap` carries no PR state, so nothing but an
+ * SSE (re)connect refreshes it. A mobile resume that reconnects the WebSocket
+ * but not the SSE therefore looks healthy while every session's status is
+ * frozen at its pre-background value until a full page reload. So the SSE has
+ * to listen for the same foreground signals the WebSocket does.
+ */
+describe("useServerEvents — foreground reconnect", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+    FakeEventSource.last = null;
+    FakeEventSource.created = 0;
+    setHidden(false);
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  /** jsdom's `document.hidden` is read-only; redefine it per test. */
+  function setHidden(hidden: boolean): void {
+    Object.defineProperty(document, "hidden", { value: hidden, configurable: true });
+  }
+
+  it.each([
+    ["visibilitychange", () => document.dispatchEvent(new Event("visibilitychange"))],
+    // A standalone-PWA app-switch / bfcache restore surfaces as pageshow or
+    // focus — the resume paths a visibility-only trigger misses.
+    ["pageshow", () => window.dispatchEvent(new Event("pageshow"))],
+    ["focus", () => window.dispatchEvent(new Event("focus"))],
+    ["online", () => window.dispatchEvent(new Event("online"))],
+  ])("reopens the stream on %s", (_name, fire) => {
+    renderHook(() => useServerEvents());
+    expect(FakeEventSource.created).toBe(1);
+
+    act(() => {
+      fire();
+    });
+
+    expect(FakeEventSource.created).toBe(2);
+  });
+
+  it("opens one stream per resume, not one per event in the burst", () => {
+    renderHook(() => useServerEvents());
+
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+      window.dispatchEvent(new Event("focus"));
+      window.dispatchEvent(new Event("pageshow"));
+    });
+
+    expect(FakeEventSource.created).toBe(2);
+
+    // A later, genuinely separate resume is not swallowed by the coalesce window.
+    act(() => {
+      vi.advanceTimersByTime(1000);
+      window.dispatchEvent(new Event("focus"));
+    });
+    expect(FakeEventSource.created).toBe(3);
+  });
+
+  it("ignores foreground events fired while the page is still hidden", () => {
+    renderHook(() => useServerEvents());
+    setHidden(true);
+
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+      window.dispatchEvent(new Event("focus"));
+    });
+
+    expect(FakeEventSource.created).toBe(1);
+  });
+});
