@@ -28,6 +28,9 @@ security measures, UX details, or anticipated extensions into requirements.
    is the user consent that authorizes repository code to use this API. The SDK
    does not require a second confirmation solely because the message originates
    from that trusted repository's page.
+7. SDK messages may be initiated programmatically without a recent user
+   gesture. Agent-created tools may invoke the agent automatically, including
+   from load, timer, or other asynchronous application logic.
 
 ## Not requirements
 

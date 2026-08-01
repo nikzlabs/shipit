@@ -48,12 +48,13 @@ The requested experience is:
   and
 - for repository-backed pages, the existing **Trust this repository** action is
   the consent that authorizes repository code to use the SDK, without a second
-  SDK-specific confirmation solely because the message came from that page.
+  SDK-specific confirmation solely because the message came from that page; and
+- the SDK is a programmatic interface: agent-created tools may invoke the agent
+  automatically without a recent click, submit, or other user gesture.
 
-No requirement was provided for confirmation UI, payload limits, user-gesture
-enforcement, message provenance UI, additional surfaces, or SDK capabilities
-beyond sending a message. Those remain product/design choices rather than being
-silently added to the requirement set.
+No requirement was provided for payload limits, message provenance UI,
+additional surfaces, or SDK capabilities beyond sending a message. Those remain
+product/design choices rather than being silently added to the requirement set.
 
 ## Product-principle check
 
@@ -480,11 +481,9 @@ Present artifact receives the agent module only when its owning remote is
 trusted. Sessions with no remote and ShipIt-template repositories follow the
 existing trust-gate rule and are trusted by construction.
 
-This is a deliberate expansion of the trust gate's current documented scope.
-Today docs/178 gates automatic install and Compose execution but permits agent
-chat and file inspection while restricted. Implementation and agent-facing docs
-must say that page-to-agent SDK access is a trusted-repository capability, so
-future changes do not accidentally expose it in restricted mode.
+The repository messaging trust gate is now an existing server-side invariant,
+implemented separately in docs/243. SDK submissions must use that shared
+dispatch path rather than implementing a second or client-only trust check.
 
 The containment measures proposed by the design are:
 
@@ -509,19 +508,28 @@ renderers remain off. Repository trust itself is resolved: once the existing
 trust gate passes, no additional confirmation is required merely to establish
 the page's authority to call the SDK.
 
+## Resolved product decisions
+
+### Programmatic invocation
+
+SDK calls do not require a recent user gesture and do not show a mandatory
+confirmation before sending. Automatic invocation is part of the intended
+agent-created-tool capability, including calls from load, timer, and other
+asynchronous application logic. Repository trust supplies consent; the shared
+server dispatch gate supplies authorization.
+
+The host still restricts authority to the validated active Preview or Present
+frame. That is a surface-ownership boundary, not a user-gesture proxy.
+
 ## Open product decisions (not requirements)
 
 These questions must be answered before implementation because each changes
 observable behavior. They are intentionally not resolved here:
 
-1. **Invocation/review policy:** after repository trust is established, choose
-   one of: require a recent click/submit and send immediately; allow any page
-   JavaScript (including load/timer callbacks) to send immediately; or show the
-   composed text for confirmation before every send.
-2. **Transcript presentation:** render the SDK instruction as a normal user
+1. **Transcript presentation:** render the SDK instruction as a normal user
    bubble with a Present/Preview source badge, as an indistinguishable plain user
    message, or as a dedicated interface-action card.
-3. **Busy-agent behavior:** always queue the SDK request as its own next turn;
+2. **Busy-agent behavior:** always queue the SDK request as its own next turn;
    honor live steering and inject when supported; or reject while busy. Current
    `runner.dispatch` calls are steerable unless marked otherwise, so this choice
    must be encoded explicitly rather than inherited accidentally.
