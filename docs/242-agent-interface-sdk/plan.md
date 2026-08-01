@@ -669,9 +669,8 @@ page SDK call → parent bridge → authenticated dispatch → owning runner
 ## Relationship to existing designs
 
 - `docs/093-agent-present` — Present artifact lifecycle and sandboxed rendering.
-- `docs/146-preview-visibility-contract` — the planned page-detection and
-  cooperative visibility protocol that must land before the shared SDK wraps
-  and preserves it.
+- `docs/146-preview-visibility-contract` — the page-detection and cooperative
+  visibility protocol implemented and preserved by the shared SDK runtime.
 - `docs/150-unify-agent-message-dispatch` — shared send/steer/queue funnel.
 - `docs/175-preview-services-drawer` — service/debug UI inside the Preview tab.
 - `docs/188-present-from-file` — file-backed Present artifacts.
