@@ -25,10 +25,11 @@ export interface DispatchAgentMessageOptions {
 export async function dispatchAgentMessage(opts: DispatchAgentMessageOptions): Promise<void> {
   const { sessionId, text, activity, apiPost } = opts;
   const session = useSessionStore.getState();
+  const requestId = crypto.randomUUID();
 
   // Optimistic append — the server's `system_user_message` echo is deduped
   // against this bubble via the `pendingDispatch` flag.
-  session.setMessages((prev) => [...prev, { role: "user", text, pendingDispatch: true }]);
+  session.setMessages((prev) => [...prev, { role: "user", text, pendingDispatch: true, clientRequestId: requestId }]);
   session.setIsLoading(true);
   session.setActivity({ label: activity });
 
@@ -38,16 +39,9 @@ export async function dispatchAgentMessage(opts: DispatchAgentMessageOptions): P
       { text, activity },
     );
   } catch (err) {
-    // Roll back the optimistic bubble — pop the last matching pending message.
-    useSessionStore.getState().setMessages((prev) => {
-      for (let i = prev.length - 1; i >= 0; i--) {
-        const m = prev[i];
-        if (m?.role === "user" && m.text === text && m.pendingDispatch) {
-          return [...prev.slice(0, i), ...prev.slice(i + 1)];
-        }
-      }
-      return prev;
-    });
+    // Roll back only this request; another identical send may have landed.
+    useSessionStore.getState().setMessages((prev) =>
+      prev.filter((message) => message.clientRequestId !== requestId));
     useSessionStore.getState().setIsLoading(false);
     useSessionStore.getState().setActivity(undefined);
 

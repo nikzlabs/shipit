@@ -1,6 +1,6 @@
 import type { GitManager } from "../shared/git.js";
 import type { SessionRunnerFactory } from "./session-runner.js";
-import { SessionRunnerRegistry } from "./session-runner.js";
+import { AgentTurnAdmissionError, SessionRunnerRegistry } from "./session-runner.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import type { SessionManager } from "./sessions.js";
 import type { RepoStore } from "./repo-store.js";
@@ -354,6 +354,15 @@ export function createRunnerRegistry(
         }, autoPushDebounceMs));
       };
       runner.setSystemTurnDeps({
+        authorizeDispatch: (sessionId) => {
+          const session = sessionManager.get(sessionId);
+          if (!session) throw new AgentTurnAdmissionError(sessionId);
+          // Standalone and template-created sessions have no remote and are
+          // trusted by construction. Unknown remote records fail closed.
+          if (session.remoteUrl && !repoStore.isTrusted(session.remoteUrl)) {
+            throw new AgentTurnAdmissionError(sessionId);
+          }
+        },
         agentFactory: (agentId) => {
           if (runner.createAgent) return runner.createAgent(agentId);
           if (agentFactory) return agentFactory(agentId);

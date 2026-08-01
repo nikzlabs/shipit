@@ -30,6 +30,7 @@ import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { UsageManager } from "../usage.js";
 import { CredentialStore } from "../credential-store.js";
+import { RepoStore } from "../repo-store.js";
 import type { WsServerMessage } from "../../shared/types.js";
 
 let tmpDir: string;
@@ -38,6 +39,7 @@ let client: TestClient;
 let githubAuth: StubGitHubAuthManager;
 let sessionManager: SessionManager;
 let credentialStore: CredentialStore;
+let repoStore: RepoStore;
 let latestClaude: FakeClaudeProcess | null = null;
 let dbManager: DatabaseManager;
 // docs/202 — controls the stubbed `advancedBeyondMergedBase` so a test can
@@ -54,6 +56,7 @@ beforeEach(async () => {
   githubAuth.setPrData(null); // No pre-existing PR
 
   sessionManager = new SessionManager(dbManager);
+  repoStore = new RepoStore(dbManager);
   credentialStore = createTestCredentialStore(tmpDir);
 
   app = await buildApp({
@@ -89,6 +92,7 @@ beforeEach(async () => {
     authManager: new StubAuthManager() as any,
     githubAuthManager: githubAuth as any,
     sessionManager,
+    repoStore,
     chatHistoryManager: new ChatHistoryManager(dbManager),
     usageManager: new UsageManager(dbManager),
     serveStatic: false,
@@ -151,6 +155,10 @@ async function setupPrimedSession(): Promise<{ sessionId: string; sessionDir: st
     sessionId,
     "https://github.com/test-user/test-repo.git",
   );
+  // Subsequent turns exercise PR lifecycle behavior on a repository that has
+  // already passed the user's Trust action.
+  repoStore.add("https://github.com/test-user/test-repo.git");
+  repoStore.setTrusted("https://github.com/test-user/test-repo.git", true);
   sessionManager.setBranch(sessionId, "shipit/test-feature");
   sessionManager.setBranchRenamed(sessionId, true);
 

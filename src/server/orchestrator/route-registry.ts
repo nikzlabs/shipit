@@ -11,7 +11,7 @@ import { pushToOrigin, isGitAuthError } from "./git-utils.js";
 import { isNonFastForwardError } from "./services/git.js";
 import { notableFilesForBranch } from "./services/notable-files.js";
 import { isResetEligible } from "./services/pre-turn-reset.js";
-import type { SessionRunnerInterface } from "./session-runner.js";
+import { AgentTurnAdmissionError, type SessionRunnerInterface } from "./session-runner.js";
 import { registerPreviewProxy } from "./preview-proxy.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./ws-handlers/types.js";
 import * as terminalHandlers from "./ws-handlers/terminal-handlers.js";
@@ -1357,7 +1357,12 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
           // down the whole orchestrator this way.
           console.error(`[ws] handler error for "${msg.type}" (session ${sessionId}):`, err);
           try {
-            send({ type: "error", message: err instanceof Error ? err.message : "Request failed" });
+            if (err instanceof AgentTurnAdmissionError) {
+              const requestId = "requestId" in msg && typeof msg.requestId === "string" ? msg.requestId : undefined;
+              send({ type: "error", message: err.message, code: err.code, sessionId: err.sessionId, ...(requestId ? { requestId } : {}) });
+            } else {
+              send({ type: "error", message: err instanceof Error ? err.message : "Request failed" });
+            }
           } catch { /* socket may already be closed */ }
         }
       });

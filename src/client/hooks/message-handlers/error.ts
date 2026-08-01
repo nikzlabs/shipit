@@ -7,7 +7,10 @@ export const handleError: Handler<WsError> = (_ctx, data) => {
   session.setIsLoading(false);
   session.setActivity(undefined);
   session.setMessages((prev) => {
-    const updated = prev.map((m) =>
+    const withoutRejected = data.code === "repository_untrusted" && data.requestId
+      ? prev.filter((m) => m.clientRequestId !== data.requestId)
+      : prev;
+    const updated = withoutRejected.map((m) =>
       m.role === "assistant" && m.streaming ? { ...m, streaming: false } : m
     );
     return [
@@ -15,4 +18,14 @@ export const handleError: Handler<WsError> = (_ctx, data) => {
       { role: "assistant", text: `Error: ${data.message}`, streaming: false, isError: true },
     ];
   });
+  if (data.code === "repository_untrusted" && data.requestId) {
+    session.setPendingWsMessage(undefined);
+    if (data.sessionId) {
+      session.setActiveRunnerSessions((prev) => {
+        const next = new Set(prev);
+        next.delete(data.sessionId!);
+        return next;
+      });
+    }
+  }
 };

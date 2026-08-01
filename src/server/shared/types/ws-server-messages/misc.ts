@@ -6,6 +6,12 @@ import type { SubscriptionLimitsMap } from "../usage-limits-types.js";
 export interface WsError {
   type: "error";
   message: string;
+  /** Stable machine-readable code for actionable transport errors. */
+  code?: string;
+  /** Authoritative owning session when the error is session-scoped. */
+  sessionId?: string;
+  /** Correlates rejection with the client's optimistic user bubble. */
+  requestId?: string;
 }
 
 // ---- Global settings messages ----

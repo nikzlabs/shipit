@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
-import { SessionRunner, SessionRunnerRegistry } from "./session-runner.js";
+import { AgentTurnAdmissionError, SessionRunner, SessionRunnerRegistry } from "./session-runner.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import {
   prepareSessionAgentEnvironment,
@@ -185,6 +185,30 @@ describe("SessionRunner", () => {
       steerInputs: () => ({ liveSteering: opts.liveSteering, steeringCapable: opts.steeringCapable ?? true }),
     } as any;
   }
+
+  it("rejects an untrusted dispatch before steering or queue insertion (docs/243)", () => {
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    const deps = steerDeps({ liveSteering: true });
+    deps.authorizeDispatch = vi.fn(() => {
+      throw new AgentTurnAdmissionError("s1");
+    });
+    runner.setSystemTurnDeps(deps);
+    const sendUserMessage = vi.fn();
+    runner.setAgent({ sendUserMessage, kill: vi.fn() } as any);
+    runner.running = true;
+    runner.isStreamingActive = true;
+
+    expect(() => runner.dispatch(testDispatch({ text: "blocked" }))).toThrow(
+      expect.objectContaining({ code: "repository_untrusted", statusCode: 403 }),
+    );
+    expect(sendUserMessage).not.toHaveBeenCalled();
+    expect(runner.queueLength).toBe(0);
+    runner.dispose({ force: true });
+  });
 
   it("dispatch steers a mid-turn message via sendUserMessage when live steering + streaming are active (docs/163)", () => {
     const runner = new SessionRunner({

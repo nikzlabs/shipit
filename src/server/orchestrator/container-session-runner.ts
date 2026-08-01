@@ -31,7 +31,7 @@ import type { PresentStateEntry } from "../shared/types/ws-server-messages.js";
 import type { PresentStore } from "./present-store.js";
 import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps, ChatMessageGroup, SteeredMessage, RecordedChatCard } from "./session-runner.js";
 import type { SubAgentSpawnRequest, SubAgentRunResult } from "../shared/sub-agent-run.js";
-import { runDispatchedTurn, dispatchOnRunner } from "./session-runner.js";
+import { AgentTurnAdmissionError, runDispatchedTurn, dispatchOnRunner } from "./session-runner.js";
 import type { PreparedDispatch } from "./prepared-dispatch.js";
 import type { TurnHandle } from "./turn-settlement.js";
 import type { SSEEvent } from "./sse-client.js";
@@ -2201,6 +2201,15 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   setSystemTurnDeps(deps: SystemTurnDeps): void {
     this._systemTurnDeps = deps;
+  }
+
+  assertCanDispatch(): void {
+    const authorize = this._systemTurnDeps?.authorizeDispatch;
+    if (!authorize) {
+      if (process.env.NODE_ENV === "test") return;
+      throw new AgentTurnAdmissionError(this.sessionId);
+    }
+    authorize(this.sessionId);
   }
 
   /**

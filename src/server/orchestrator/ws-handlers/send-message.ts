@@ -122,6 +122,10 @@ export async function handleSendMessage(
   // If Claude is already processing, queue this message and return.
   // Resolve runner via registry — survives WS disconnect.
   const runnerForQueue = resolveRunner(ctx);
+  // docs/243 — interactive paths preflight through the exact same runner-owned
+  // admission used by dispatch(), before steering, attachment reads, warm
+  // graduation, persistence, or process mutation.
+  if (runnerForQueue) runnerForQueue.assertCanDispatch();
   if (runnerForQueue?.running) {
     // Verify with the worker that an agent is actually running. The local
     // `running` flag can get stranded `true` if the orchestrator missed a
@@ -532,6 +536,7 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
   // agent never starts." Routing through `runAgentWithMessage` makes the reset
   // + re-wire unconditional, which is the fix.
   const runnerEarly = resolveRunner(ctx);
+  if (runnerEarly) runnerEarly.assertCanDispatch();
 
   // Preserve the session's permission mode across the answer. An AskUserQuestion
   // answer is a fresh `--resume` turn; if we don't re-pin the mode, a session
