@@ -261,6 +261,23 @@ export interface RunnerRegistryDeps {
 }
 
 /**
+ * Enforce repository trust for ordinary repo-backed sessions. Ops and sandbox
+ * sessions are explicit, server-authored execution environments rather than a
+ * ShipIt-managed checkout, so the repository messaging gate does not apply.
+ */
+export function assertSessionCanDispatch(
+  sessionId: string,
+  session: Pick<SessionInfo, "kind" | "remoteUrl"> | undefined,
+  isTrusted: (remoteUrl: string) => boolean,
+): void {
+  if (!session) throw new AgentTurnAdmissionError(sessionId);
+  if (session.kind === "ops" || session.kind === "sandbox") return;
+  if (session.remoteUrl && !isTrusted(session.remoteUrl)) {
+    throw new AgentTurnAdmissionError(sessionId);
+  }
+}
+
+/**
  * Create and configure the SessionRunnerRegistry with all callbacks.
  */
 export function createRunnerRegistry(
@@ -365,12 +382,9 @@ export function createRunnerRegistry(
       runner.setSystemTurnDeps({
         authorizeDispatch: (sessionId) => {
           const session = sessionManager.get(sessionId);
-          if (!session) throw new AgentTurnAdmissionError(sessionId);
-          // Standalone and template-created sessions have no remote and are
-          // trusted by construction. Unknown remote records fail closed.
-          if (session.remoteUrl && !repoStore.isTrusted(session.remoteUrl)) {
-            throw new AgentTurnAdmissionError(sessionId);
-          }
+          assertSessionCanDispatch(sessionId, session, (remoteUrl) =>
+            repoStore.isTrusted(remoteUrl),
+          );
         },
         agentFactory: (agentId) => {
           if (runner.createAgent) return runner.createAgent(agentId);
