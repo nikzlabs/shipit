@@ -1575,6 +1575,25 @@ Implementation started:
   different account mid-flight. Both directions are pinned by tests in
   `session-agent-env.test.ts`.
 
+**Phase 2 entry note — where the account keying has to live.** Surveying the
+existing quota path before starting: `LimitsRegistry` caches
+`Map<AgentId, SubscriptionLimits>` and each `LimitsProvider` (one per agent)
+holds a **single** merged snapshot internally — Claude's merges the CLI's
+`rate_limit_event` windows with its on-demand `/api/oauth/usage` result and
+derives `plan` from `authManager.getAccessToken()`; Codex's holds one `latest`
+and reads `plan` from the auth token's JWT claim. So the map key is not the only
+single-slot assumption: **the providers are single-slot too.** Re-keying only
+the registry would give each route its own cached copy of the *broadcast* while
+both routes still shared one provider merge buffer — correct for the
+last-reporting route, quietly wrong for the others (and outright wrong for
+Claude's on-demand refresh, which would attribute the primary account's token
+result to whichever route asked). The keying therefore has to go into
+`LimitsProvider` — per-route internal state, `setRateLimits`/`fetch` taking the
+route — with the registry keying on top, and `recordAgentRateLimits` resolving
+the route from the reporting session's `providerRouteId` at the call site.
+`claude-env-oauth` and `claude-api-key` stay reserved route ids in the same key
+space, which is what keeps the env-auth pill working with no accounts stored.
+
 Planned authentication-surface consolidation:
 
 - **One row model for both providers.** `ProviderAccountsCard` owns every
