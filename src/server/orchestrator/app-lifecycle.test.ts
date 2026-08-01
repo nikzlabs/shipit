@@ -12,6 +12,7 @@ import {
   wireEventHandlers,
   markProviderAccountUnauthenticated,
   markProviderAccountReauthenticated,
+  resolveAutoStartDeps,
 } from "./app-lifecycle.js";
 import { SessionRunner, SessionRunnerRegistry } from "./session-runner.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
@@ -33,6 +34,25 @@ import type { SessionContainerManager } from "./session-container.js";
  */
 
 interface FakeContainer { sessionId: string }
+
+describe("resolveAutoStartDeps", () => {
+  it("keeps local-mode credentials in the writable ShipIt state directory", () => {
+    expect(resolveAutoStartDeps({
+      RUNTIME_MODE: "local",
+      SHIPIT_STATE_DIR: "/workspace/.inner-shipit",
+    })).toEqual({
+      serveStatic: true,
+      credentialsDir: "/workspace/.inner-shipit/credentials",
+    });
+  });
+
+  it("preserves the containerized credentials default outside local mode", () => {
+    expect(resolveAutoStartDeps({
+      RUNTIME_MODE: "containerized",
+      SHIPIT_STATE_DIR: "/workspace/.inner-shipit",
+    })).toEqual({ serveStatic: true });
+  });
+});
 
 function makeContainerManager(opts: {
   containers: FakeContainer[];

@@ -1360,8 +1360,18 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
 /**
  * Start the server when running as the entry point (not imported by tests).
  */
+export function resolveAutoStartDeps(env: NodeJS.ProcessEnv = process.env): AppDeps {
+  const localStateDir = env.RUNTIME_MODE === "local"
+    ? env.SHIPIT_STATE_DIR
+    : undefined;
+  return {
+    serveStatic: true,
+    ...(localStateDir ? { credentialsDir: path.join(localStateDir, "credentials") } : {}),
+  };
+}
+
 export async function autoStart(buildApp: (deps: AppDeps) => Promise<FastifyInstance>): Promise<void> {
-  const app = await buildApp({ serveStatic: true });
+  const app = await buildApp(resolveAutoStartDeps());
 
   let shuttingDown = false;
   const shutdown = async () => {
