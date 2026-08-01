@@ -2,7 +2,6 @@ import { useState, useRef } from "react";
 import type { AgentOption } from "../../agent-types.js";
 import { Dialog, DialogContent, DialogTitle } from "../ui/dialog.js";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "../ui/tabs.js";
-import { type CodexDeviceAuthState } from "../CodexAuthCard.js";
 import { SettingsIntegrations } from "../SettingsIntegrations.js";
 import { SettingsEgress } from "../SettingsEgress.js";
 import { SkillsTab } from "../SkillsTab.js";
@@ -28,19 +27,10 @@ export interface SettingsProps {
   githubStatus: { authenticated: boolean; username?: string; avatarUrl?: string };
   onGitHubTokenSubmit: (token: string) => Promise<void> | void;
   onGitHubLogout: () => void;
-  authUrl: string | null;
   onApiKey: (key: string) => void;
   onClearApiKey: () => void;
-  onStartAuth: () => void;
-  onPasteCode: (code: string) => void;
   agentList?: AgentOption[];
   onSetAgentEnv?: (agentId: string, key: string, value: string) => void;
-  // Codex (ChatGPT subscription) device-auth — feature 119.
-  codexDeviceAuth?: CodexDeviceAuthState | null;
-  codexDeviceAuthError?: string | null;
-  onStartCodexDeviceAuth?: () => void;
-  onCancelCodexDeviceAuth?: () => void;
-  onSignOutCodex?: () => void;
   onFullReset?: () => void;
   gitIdentity: { name: string; email: string };
   onGitIdentitySave: (name: string, email: string) => void;
@@ -59,18 +49,10 @@ export function Settings({
   githubStatus,
   onGitHubTokenSubmit,
   onGitHubLogout,
-  authUrl,
   onApiKey,
   onClearApiKey,
-  onStartAuth,
-  onPasteCode,
   agentList = [],
   onSetAgentEnv,
-  codexDeviceAuth,
-  codexDeviceAuthError,
-  onStartCodexDeviceAuth,
-  onCancelCodexDeviceAuth,
-  onSignOutCodex,
   onFullReset,
   gitIdentity,
   onGitIdentitySave,
@@ -184,24 +166,13 @@ export function Settings({
           <TabsContent value="agent-claude">
             <ClaudeTab
               agent={claudeAgent}
-              authUrl={authUrl}
-              onStartAuth={onStartAuth}
               onApiKey={onApiKey}
               onClearApiKey={onClearApiKey}
-              onPasteCode={onPasteCode}
             />
           </TabsContent>
 
           <TabsContent value="agent-codex">
-            <CodexTab
-              agent={codexAgent}
-              codexDeviceAuth={codexDeviceAuth}
-              codexDeviceAuthError={codexDeviceAuthError}
-              onStartCodexDeviceAuth={onStartCodexDeviceAuth}
-              onCancelCodexDeviceAuth={onCancelCodexDeviceAuth}
-              onSignOutCodex={onSignOutCodex}
-              onSetAgentEnv={onSetAgentEnv}
-            />
+            <CodexTab agent={codexAgent} onSetAgentEnv={onSetAgentEnv} />
           </TabsContent>
 
           <TabsContent value="instructions">

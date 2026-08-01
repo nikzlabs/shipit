@@ -1387,7 +1387,7 @@ the source of truth.
   pair; persistence and APIs MUST use the two-field form, not an overloaded
   single column.
 - `src/client/stores/*` — provider account state and SSE handling.
-- `src/client/components/Settings/ProviderAccountSection.tsx` — unified Claude
+- `src/client/components/Settings/ProviderAccountsCard.tsx` — unified Claude
   and Codex subscription-account authentication and management UI.
 - `src/client/components/ClaudeAuthCard.tsx` /
   `src/client/components/CodexAuthCard.tsx` — legacy provider-wide subscription
@@ -1512,10 +1512,41 @@ Implementation started:
   active flow. Concurrency is serialized per
   provider for now (the managers remain single-flow); concurrent flows for
   different accounts are deferred.
+- **The two connect flows are now one (req 16).** Settings no longer stacks a
+  provider-wide `ClaudeAuthCard` / `CodexAuthCard` on top of the account rows.
+  `ProviderAccountsCard` (replacing `ProviderAccountSection`) is the single
+  connect surface for both providers: "Add account" creates the row *and*
+  starts its account-scoped login in one action, so the first subscription
+  takes exactly the path the fifth does. Three things fell out of the
+  consolidation:
+  - **Codex account sign-ins reached no row at all.** `agent_auth_pending`
+    carried `accountId`, but the client's codex branch dropped it and always
+    wrote the provider-wide `codexDeviceAuth` slot — so a second Codex
+    account's device code rendered in the singleton card, which the Codex tab
+    is no longer even showing. The branch now keys by account like Claude's.
+  - **One challenge slot, two variants.** The row shell is shared; only the
+    challenge panel differs, because the providers genuinely differ (Anthropic
+    returns a code the user pastes into ShipIt, OpenAI shows a code the user
+    types on OpenAI's page). Both render on the row that started them.
+  - **Sign-in state is keyed per account.** `providerAccountAuth` was a single
+    slot — correct only while one account could connect at a time. With every
+    account connecting through a row, two rows can be mid-challenge at once,
+    and a single slot shows B's code on A's row. It is now
+    `providerAccountAuths` / `providerAccountAuthErrors` keyed by
+    `providerAccountAuthKey(provider, accountId)`.
+
+  API keys stay deliberately outside the account list: they are not
+  subscriptions, never participate in failover (req 12), and now live in a
+  collapsed disclosure with explicit metered-billing copy. `ClaudeAuthCard` /
+  `CodexAuthCard` survive only as first-run onboarding, which is the remaining
+  consolidation step. Tests: `Settings.test.tsx` → "creates the account and
+  immediately starts its sign-in, first account included", "renders a Codex
+  device code on the row that started the sign-in", "keeps two concurrent row
+  sign-ins independent".
 
 Planned authentication-surface consolidation:
 
-- **One row model for both providers.** `ProviderAccountSection` owns every
+- **One row model for both providers.** `ProviderAccountsCard` owns every
   stored Claude and Codex subscription, including the migrated
   `claude-default` / `codex-default` account. Each row exposes the same lifecycle:
   Connect, in-progress state, Cancel sign-in, Reconnect, and Disconnect. Primary

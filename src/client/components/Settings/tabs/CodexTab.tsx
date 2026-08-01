@@ -1,39 +1,28 @@
 import type { AgentOption } from "../../../agent-types.js";
-import { CodexAuthCard, type CodexDeviceAuthState } from "../../CodexAuthCard.js";
-import { ProviderAccountSection } from "../ProviderAccountSection.js";
+import { ProviderAccountsCard } from "../ProviderAccountsCard.js";
 import { SubAgentDefaultsSection } from "../SubAgentDefaultsSection.js";
 
+/**
+ * docs/150 req 16 — see {@link ClaudeTab}. The provider-wide `CodexAuthCard`
+ * is gone from Settings; every Codex subscription, first or fifth, connects
+ * through an account row. The device-code challenge now renders on the row that
+ * started it (previously the `accountId` on `agent_auth_pending` was dropped
+ * and every code landed in the singleton card).
+ */
 export function CodexTab({
   agent,
-  codexDeviceAuth,
-  codexDeviceAuthError,
-  onStartCodexDeviceAuth,
-  onCancelCodexDeviceAuth,
-  onSignOutCodex,
   onSetAgentEnv,
 }: {
   agent: AgentOption | undefined;
-  codexDeviceAuth?: CodexDeviceAuthState | null;
-  codexDeviceAuthError?: string | null;
-  onStartCodexDeviceAuth?: () => void;
-  onCancelCodexDeviceAuth?: () => void;
-  onSignOutCodex?: () => void;
   onSetAgentEnv?: (agentId: string, key: string, value: string) => void;
 }) {
   return (
     <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full">
-      {agent && (
-        <CodexAuthCard
-          agent={agent}
-          deviceAuth={codexDeviceAuth ?? null}
-          deviceAuthError={codexDeviceAuthError ?? null}
-          onStartDeviceAuth={onStartCodexDeviceAuth}
-          onCancelDeviceAuth={onCancelCodexDeviceAuth}
-          onSignOut={onSignOutCodex}
-          onApiKeySubmit={async (key) => { onSetAgentEnv?.("codex", "OPENAI_API_KEY", key); return undefined; }}
-        />
-      )}
-      <ProviderAccountSection provider="codex" />
+      <ProviderAccountsCard
+        provider="codex"
+        agent={agent}
+        onSubmitApiKey={(key) => onSetAgentEnv?.("codex", "OPENAI_API_KEY", key)}
+      />
       <SubAgentDefaultsSection agent={agent} />
     </div>
   );
