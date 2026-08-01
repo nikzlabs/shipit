@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import type { AgentId, ProviderAccount, ProviderRouteKind } from "../shared/types.js";
+import type { AgentId, ProviderAccount, ProviderRouteKind, SubscriptionLimitsMap } from "../shared/types.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { AgentAuthManager } from "./agent-auth-manager.js";
 
@@ -28,6 +28,51 @@ export interface ProviderRoute {
 export interface ProviderAccountManagerOptions {
   credentialsDir: string;
   credentialStore: CredentialStore;
+  /**
+   * docs/150 — read the current account-keyed quota snapshot. Injected rather
+   * than imported so this manager stays free of the limits registry (which is
+   * constructed later and depends on the agent runtime). Absent in tests and
+   * before the registry exists, in which case quota is simply unknown and every
+   * connected account is considered usable.
+   */
+  getSubscriptionLimits?: () => SubscriptionLimitsMap;
+}
+
+/**
+ * Why an account could not be selected (docs/150 reqs 13, 17). A bare `null`
+ * could not express any of these, and reqs 13 and 17 are specifically about
+ * *telling the user which one happened* — "everything is exhausted until 14:30"
+ * and "no connected account can run this model" are different problems with
+ * different fixes.
+ */
+export type AccountSelectionFailure =
+  /** Nothing is connected (or everything needs re-auth). */
+  | { reason: "auth_required" }
+  /**
+   * Every connected account has a window at 100%. `earliestResetAt` is the
+   * soonest any of them frees up, so req 13 can say when — `null` only if no
+   * exhausted window carried a parseable reset time.
+   */
+  | { reason: "all_exhausted"; earliestResetAt: string | null }
+  /**
+   * Accounts are available but none reports the requested model (req 17). We
+   * skip and report rather than silently substituting a model the user did not
+   * ask for.
+   */
+  | { reason: "no_model_eligible_account"; model: string };
+
+export type AccountSelection =
+  | { ok: true; route: ProviderRoute }
+  | ({ ok: false } & AccountSelectionFailure);
+
+export interface SelectAccountOptions {
+  /** Model the turn intends to run, when known — drives req 17's skip-and-report. */
+  model?: string;
+  /**
+   * Routes already tried and failed this turn. Mid-turn failover (req 14)
+   * passes the exhausted route so the retry cannot pick it again.
+   */
+  exclude?: readonly string[];
 }
 
 /**
@@ -48,9 +93,21 @@ export class ProviderAccountManager {
    */
   private authManagers: Map<AgentId, AgentAuthManager> | null = null;
 
+  private getSubscriptionLimits: (() => SubscriptionLimitsMap) | undefined;
+
   constructor(opts: ProviderAccountManagerOptions) {
     this.credentialsDir = opts.credentialsDir;
     this.credentialStore = opts.credentialStore;
+    this.getSubscriptionLimits = opts.getSubscriptionLimits;
+  }
+
+  /**
+   * Late-bind the quota source. `LimitsRegistry` is constructed after this
+   * manager (it needs the agent runtime), so the wiring cannot be a constructor
+   * argument in the real app.
+   */
+  attachSubscriptionLimits(getSubscriptionLimits: () => SubscriptionLimitsMap): void {
+    this.getSubscriptionLimits = getSubscriptionLimits;
   }
 
   /**
@@ -161,12 +218,12 @@ export class ProviderAccountManager {
    * policy.
    */
   selectRouteForTurn(provider: AgentId): ProviderRoute | null {
-    for (const account of this.accountsInSelectionOrder(provider)) {
-      if (account.status === "ready" || account.status === "authenticating") {
-        return { kind: "account", id: account.id };
-      }
-    }
+    const selection = this.selectAccountForTurn(provider);
+    return selection.ok ? selection.route : null;
+  }
 
+  /** Metered env/API-key fallback for a provider, if one is configured. */
+  private reservedRouteFor(provider: AgentId): ProviderRoute | null {
     if (provider === "claude") {
       if (process.env.ANTHROPIC_AUTH_TOKEN?.trim()) return { kind: "reserved", id: "claude-env-oauth" };
       if (process.env.ANTHROPIC_API_KEY?.trim()) return { kind: "reserved", id: "claude-api-key" };
@@ -175,6 +232,77 @@ export class ProviderAccountManager {
       return { kind: "reserved", id: "codex-api-key" };
     }
     return null;
+  }
+
+  /**
+   * docs/150 — the turn-routing decision, with a reason when it fails.
+   *
+   * This is {@link selectRouteForTurn} widened: same eligibility walk, but it
+   * also skips accounts whose quota is spent (reqs 6, 7), honours an exclusion
+   * list so a mid-turn retry cannot land back on the account that just ran out
+   * (req 14), skips accounts that cannot run the requested model (req 17), and
+   * distinguishes *why* nothing was selectable so the caller can tell the user
+   * (req 13). `selectRouteForTurn` remains as the thin "just give me a route"
+   * wrapper for callers that have nothing useful to do with the reason.
+   *
+   * Reserved env/API-key routes are the last resort and are never treated as
+   * exhausted — they are metered billing, not a subscription window, and
+   * req 12 keeps failover from *choosing* them; they are only reachable when no
+   * stored account is usable at all, which is the manual-selection case.
+   */
+  selectAccountForTurn(provider: AgentId, opts: SelectAccountOptions = {}): AccountSelection {
+    const exclude = new Set(opts.exclude ?? []);
+    const connected = this.accountsInSelectionOrder(provider).filter(
+      (account) =>
+        (account.status === "ready" || account.status === "authenticating") &&
+        !exclude.has(account.id),
+    );
+
+    const limits = this.getSubscriptionLimits?.()?.[provider] ?? {};
+    const now = Date.now();
+
+    // Partition rather than short-circuit: which bucket the *last* candidate
+    // falls into is what decides the failure reason, so we need all of them.
+    const modelEligible: ProviderAccount[] = [];
+    let skippedForModel = false;
+    for (const account of connected) {
+      if (opts.model && !accountSupportsModel(account, opts.model)) {
+        skippedForModel = true;
+        continue;
+      }
+      modelEligible.push(account);
+    }
+
+    const exhaustedResets: number[] = [];
+    for (const account of modelEligible) {
+      const resetAt = exhaustedUntil(limits[account.id], account, now);
+      if (resetAt === null) return { ok: true, route: { kind: "account", id: account.id } };
+      exhaustedResets.push(resetAt);
+    }
+
+    // req 12 — a *spent* subscription must never silently roll onto
+    // pay-as-you-go billing. The reserved env/API-key route is only reachable
+    // when the user has no usable subscription at all (the manual-auth case),
+    // never as the next hop after one runs out. Ordering this check after the
+    // reserved fallback would spend the user's money on their behalf, which is
+    // the one outcome this feature must not produce.
+    if (exhaustedResets.length > 0) {
+      const earliest = Math.min(...exhaustedResets);
+      return {
+        ok: false,
+        reason: "all_exhausted",
+        earliestResetAt: Number.isFinite(earliest) ? new Date(earliest).toISOString() : null,
+      };
+    }
+    if (skippedForModel && opts.model) {
+      return { ok: false, reason: "no_model_eligible_account", model: opts.model };
+    }
+
+    // No connected subscription at all — fall back to reserved routes so
+    // env/API-key users keep working.
+    const reserved = this.reservedRouteFor(provider);
+    if (reserved && !exclude.has(reserved.id)) return { ok: true, route: reserved };
+    return { ok: false, reason: "auth_required" };
   }
 
   hasAnyAuthForProvider(provider: AgentId): boolean {
@@ -336,4 +464,55 @@ export function providerDisplayLabel(provider: AgentId): string {
 function normalizeLabel(label: string | undefined): string | null {
   const normalized = typeof label === "string" ? label.trim() : "";
   return normalized || null;
+}
+
+/**
+ * Is this account out of quota right now, and until when?
+ *
+ * Returns the reset epoch-ms when exhausted, or `null` when the account is
+ * usable. Two independent signals:
+ *
+ *   - the live quota snapshot's windows (`usedPct >= 100` with a reset still in
+ *     the future), and
+ *   - a persisted `exhaustedUntil` stamp, which is how a *hard* exhaustion
+ *     reported mid-turn (req 7) keeps the account out of the running before any
+ *     new snapshot has arrived.
+ *
+ * **Unknown quota counts as usable.** Claude only reports `usedPct` above a
+ * warning threshold and Codex reports nothing until a turn has run, so treating
+ * unknown as exhausted would lock out every freshly connected account. Erring
+ * toward "try it" costs one failed turn; erring the other way makes the account
+ * unusable forever.
+ */
+function exhaustedUntil(
+  limits: { session?: unknown; weekly?: unknown } | undefined,
+  account: ProviderAccount,
+  now: number,
+): number | null {
+  const resets: number[] = [];
+  if (typeof account.exhaustedUntil === "number" && account.exhaustedUntil > now) {
+    resets.push(account.exhaustedUntil);
+  }
+  for (const key of ["session", "weekly"] as const) {
+    const window = limits?.[key] as { usedPct: number | null; resetAt: string } | null | undefined;
+    if (window === null || window === undefined) continue;
+    if (window.usedPct === null || window.usedPct < 100) continue;
+    const at = Date.parse(window.resetAt);
+    // An exhausted window whose reset already passed is stale, not blocking.
+    if (Number.isNaN(at)) resets.push(Number.POSITIVE_INFINITY);
+    else if (at > now) resets.push(at);
+  }
+  if (resets.length === 0) return null;
+  return Math.min(...resets);
+}
+
+/**
+ * req 17 — can this account run the requested model? An account with no
+ * capability snapshot yet is assumed capable: we have not learned otherwise,
+ * and refusing on absent data would block every account until its first turn.
+ */
+function accountSupportsModel(account: ProviderAccount, model: string): boolean {
+  const models = account.capabilities?.models;
+  if (!models || models.length === 0) return true;
+  return models.includes(model);
 }

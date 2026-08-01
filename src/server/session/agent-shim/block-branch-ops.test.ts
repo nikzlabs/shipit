@@ -31,10 +31,23 @@ const HOOK_SCRIPT = path.resolve(
 );
 
 function runHook(payload: unknown, env?: Record<string, string>): { status: number | null; stderr: string } {
+  // Scrub the hook's own control variables from the inherited environment
+  // before layering the case's `env` on top. ShipIt sets
+  // `SHIPIT_GUARD_DESTRUCTIVE_GIT=1` inside a session whose PR has merged, so
+  // an agent running this suite in that state inherited it — and the
+  // "outside the guarded state" case then asserted against an environment that
+  // was, in fact, guarded, and failed. CI never sets it, which is why this only
+  // ever bit in-session. `SHIPIT_SANDBOX` is scrubbed for the mirror-image
+  // reason: inheriting it would silently disarm the *blocked* cases.
+  const {
+    SHIPIT_GUARD_DESTRUCTIVE_GIT: _guard,
+    SHIPIT_SANDBOX: _sandbox,
+    ...ambient
+  } = process.env;
   const r = spawnSync("node", [HOOK_SCRIPT], {
     input: typeof payload === "string" ? payload : JSON.stringify(payload),
     encoding: "utf8",
-    ...(env ? { env: { ...process.env, ...env } } : {}),
+    env: { ...ambient, ...env },
   });
   return { status: r.status, stderr: r.stderr };
 }

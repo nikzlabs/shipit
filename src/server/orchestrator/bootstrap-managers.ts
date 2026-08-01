@@ -663,6 +663,11 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     ? new LimitsRegistry({ providers: limitsProviders, sseBroadcast })
     : null;
   if (limitsRegistry) {
+    // docs/150 — give the account router the live quota snapshot so it can skip
+    // spent accounts (reqs 6, 7) and report `all_exhausted` with a reset time
+    // (req 13). Late-bound because the registry needs the agent runtime, which
+    // is built after the account manager.
+    providerAccountManager?.attachSubscriptionLimits(() => limitsRegistry.getSnapshot());
     // One subscription per backend, keyed off the auth-manager map built
     // above. Adding a new agent picks this up for free. The normalized
     // `complete` event fires alongside each backend's legacy
