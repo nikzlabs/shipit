@@ -51,6 +51,11 @@ subscriptions. A follow-up user requirement made the policy explicit:
 - this applies to existing sessions, not only newly created sessions. Switching
   preserves the ShipIt transcript and workspace context, so quota pressure does
   not force the user to abandon a conversation and start a new session.
+- Claude and Codex each expose one subscription-authentication surface: the
+  provider-account list. The migrated primary/default subscription is an
+  ordinary account row and uses the same connect/reconnect flow as every
+  secondary row. Provider API keys remain a clearly separate fallback, not a
+  second way to populate a subscription row.
 
 Hard provider exhaustion remains an immediate failover signal regardless of the
 configured proactive cutoffs. The controls are subscription-routing policy, not
@@ -148,6 +153,13 @@ several others. The amendments are called out here so a reader who finds 119 or
   establishing subscription auth in the first place. This doc lifts that
   restriction symmetrically for Claude and Codex; doc 119's per-installation
   singleton becomes the migrated default account.
+- **Docs 119 and 202's standalone `ClaudeAuthCard` / `CodexAuthCard`
+  subscription controls are superseded.** Those cards established first-class
+  subscription login in Settings before provider-account rows existed. Once
+  account migration is available, both the default and additional Claude/Codex
+  subscriptions authenticate through the same account-row UI. Their API-key
+  disclosures survive as a separate fallback section; they do not remain mixed
+  into a provider-wide subscription card.
 - **Doc 135 "one pill per provider, account-wide" is extended, not replaced.**
   Doc 135's original framing rested on two assumptions that this doc partially
   undoes: (a) "exactly one pill per provider" (broken — N accounts produce N
@@ -1340,7 +1352,11 @@ the source of truth.
   pair; persistence and APIs MUST use the two-field form, not an overloaded
   single column.
 - `src/client/stores/*` — provider account state and SSE handling.
-- `src/client/components/Settings.tsx` — Agent accounts management UI.
+- `src/client/components/Settings/ProviderAccountSection.tsx` — unified Claude
+  and Codex subscription-account authentication and management UI.
+- `src/client/components/ClaudeAuthCard.tsx` /
+  `src/client/components/CodexAuthCard.tsx` — legacy provider-wide subscription
+  surfaces to remove after onboarding and API-key fallback are separated.
 - `src/client/components/SubscriptionLimitsBadge.tsx` — grouped multi-account
   rendering.
 - `src/client/components/SessionDiagnosticsPanel.tsx` — active account display.
@@ -1355,6 +1371,8 @@ the source of truth.
 - Let users choose the primary account per provider.
 - New turns use the primary account.
 - No automatic failover yet.
+- Consolidate legacy provider-wide subscription cards into the account rows for
+  both Claude and Codex; keep API-key fallback visually and semantically separate.
 
 Implementation started:
 
@@ -1433,6 +1451,49 @@ Implementation started:
   active flow. Concurrency is serialized per
   provider for now (the managers remain single-flow); concurrent flows for
   different accounts are deferred.
+
+Planned authentication-surface consolidation:
+
+- **One row model for both providers.** `ProviderAccountSection` owns every
+  stored Claude and Codex subscription, including the migrated
+  `claude-default` / `codex-default` account. Each row exposes the same lifecycle:
+  Connect, in-progress state, Cancel sign-in, Reconnect, and Disconnect. Primary
+  is metadata and routing priority; it does not select a different auth UI.
+- **Provider-specific challenge, shared shell.** Claude rows expand inline with
+  the `claude /login` verification link and authorization-code input. Codex rows
+  expand in the same place with the `codex login --device-auth` verification
+  link, user code, copy affordance, and expiry state. These are variants inside
+  one account-row component, not separate provider-wide cards.
+- **Account-scoped state throughout.** Pending challenge, progress, diagnostic
+  log, failure, and completion state carry `{ agentId, accountId, attemptId }`
+  and are stored by account id. A successful primary account must not hide a
+  secondary flow, and activity on one row must not overwrite another row's last
+  diagnostics. The existing one-active-flow-per-provider server serialization
+  remains until concurrent auth processes are deliberately supported.
+- **Onboarding reuses the same flow.** When no stored subscription exists,
+  onboarding creates the provider's default account row and renders the same
+  account-row auth component in a compact layout. It must not call singleton
+  auth endpoints or maintain separate pending state.
+- **API keys are separate routes.** Below the subscription list, Settings may
+  expose a collapsed “Use Platform API key instead” section for
+  `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`. Copy must state that this uses metered
+  API billing rather than the Claude/ChatGPT subscription. Saving an API key
+  creates or updates the reserved `claude-api-key` / `codex-api-key` route; it
+  never marks a provider-account row ready and never participates in subscription
+  priority or quota failover.
+- **Remove singleton client/server paths after migration.** Migrate all callers
+  from `/api/auth/start`, `/api/auth/code`, `/api/codex-auth/start`, and their
+  singleton cancel/sign-out variants to the provider-account endpoints. Then
+  remove provider-wide subscription pending state (`sessionStore.authUrl`,
+  `codexDeviceAuth`) and the subscription portions of `ClaudeAuthCard` /
+  `CodexAuthCard`. Keep auth-manager methods internally capable of scoped CLI
+  execution; the UI/API boundary always supplies an account id. Compatibility
+  aliases for legacy credential files remain storage implementation details and
+  do not justify a second user-facing flow.
+- **Provider-wide availability remains derived.** `AgentRegistry.authConfigured`
+  is true when any eligible account row is ready or an explicit reserved route
+  is configured. It controls agent availability only; it must never be used to
+  hide per-account connect/reconnect controls.
 
 ### Phase 2 — Inline quota per account
 
