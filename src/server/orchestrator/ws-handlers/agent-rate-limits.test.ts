@@ -2,8 +2,13 @@ import { describe, expect, it } from "vitest";
 import { normalizeAgentUsageLimitError } from "./agent-rate-limits.js";
 import type { AgentId, SubscriptionLimits, SubscriptionLimitsMap, SubscriptionLimitsWindow } from "../../shared/types.js";
 
-const snapshot = (agentId: AgentId, session: SubscriptionLimitsWindow | null): SubscriptionLimits => ({
+const snapshot = (
+  agentId: AgentId,
+  session: SubscriptionLimitsWindow | null,
+  routeId = `acct-${agentId}`,
+): SubscriptionLimits => ({
   agentId,
+  routeId,
   plan: null,
   session,
   weekly: null,
@@ -11,7 +16,19 @@ const snapshot = (agentId: AgentId, session: SubscriptionLimitsWindow | null): S
 });
 
 const limitsFor = (agentId: AgentId, session: SubscriptionLimitsWindow | null): SubscriptionLimitsMap => ({
-  [agentId]: snapshot(agentId, session),
+  [agentId]: { [`acct-${agentId}`]: snapshot(agentId, session) },
+});
+
+/** docs/150 — two connected accounts for one provider. */
+const twoAccounts = (
+  agentId: AgentId,
+  a: SubscriptionLimitsWindow | null,
+  b: SubscriptionLimitsWindow | null,
+): SubscriptionLimitsMap => ({
+  [agentId]: {
+    "acct-a": snapshot(agentId, a, "acct-a"),
+    "acct-b": snapshot(agentId, b, "acct-b"),
+  },
 });
 
 describe("normalizeAgentUsageLimitError", () => {
@@ -58,6 +75,30 @@ describe("normalizeAgentUsageLimitError", () => {
     const limits = limitsFor("claude", { usedPct: 100, resetAt: "not-a-date" });
     expect(normalizeAgentUsageLimitError("claude", "monthly usage limit", limits)).toBe(
       "You've hit Claude's 5h usage limit. It resets at not-a-date.",
+    );
+  });
+
+  it("does not claim exhaustion while another connected account still has quota", () => {
+    // docs/150 — with two subscriptions, one exhausted window is not "you are
+    // out of quota": failover will move the turn to the healthy account.
+    const limits = twoAccounts(
+      "claude",
+      { usedPct: 100, resetAt: "2026-06-16T05:00:00.000Z" },
+      { usedPct: 12, resetAt: "2026-06-16T09:00:00.000Z" },
+    );
+    expect(normalizeAgentUsageLimitError("claude", "monthly usage limit", limits)).toBe(
+      "monthly usage limit",
+    );
+  });
+
+  it("reports the soonest reset once every connected account is exhausted", () => {
+    const limits = twoAccounts(
+      "claude",
+      { usedPct: 100, resetAt: "2026-06-16T09:00:00.000Z" },
+      { usedPct: 100, resetAt: "2026-06-16T05:00:00.000Z" },
+    );
+    expect(normalizeAgentUsageLimitError("claude", "monthly usage limit", limits)).toBe(
+      "You've hit Claude's 5h usage limit. It resets at 2026-06-16T05:00:00.000Z.",
     );
   });
 });

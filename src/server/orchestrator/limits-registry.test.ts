@@ -3,6 +3,9 @@ import { LimitsRegistry } from "./limits-registry.js";
 import type { LimitsProvider } from "./agents/types.js";
 import type { AgentId, SubscriptionLimits } from "../shared/types.js";
 
+/** The single route id these registry-level tests drive through. */
+const STUB_ROUTE = "acct-stub";
+
 class StubLimitsProvider implements LimitsProvider {
   readonly agentId: AgentId;
   /** Sequence of snapshots returned by consecutive `fetch()` calls. */
@@ -13,14 +16,33 @@ class StubLimitsProvider implements LimitsProvider {
     this.agentId = agentId;
   }
 
-  canFetch(): boolean {
-    return this.snapshots.length > 0;
+  /**
+   * docs/150 — the registry drives one route at a time. These tests use a
+   * single stub route unless a snapshot names another, which keeps the
+   * pre-existing single-account cases readable while still exercising the
+   * per-route plumbing.
+   */
+  routeIds(): string[] {
+    return [...this.liveRoutes];
   }
+  liveRoutes = new Set<string>([STUB_ROUTE]);
 
-  async fetch(): Promise<SubscriptionLimits | null> {
+  /**
+   * Per-route snapshots for the multi-account cases. When a route has an entry
+   * here it wins; otherwise the shared `snapshots` queue drives the
+   * single-route cases unchanged.
+   */
+  byRoute = new Map<string, SubscriptionLimits | null>();
+
+  async fetch(routeId: string): Promise<SubscriptionLimits | null> {
     this.fetchCallCount += 1;
+    if (this.byRoute.has(routeId)) return this.byRoute.get(routeId) ?? null;
     const next = this.snapshots.shift();
     return next === undefined ? null : next;
+  }
+
+  forgetRoute(routeId: string): void {
+    this.liveRoutes.delete(routeId);
   }
 
   enqueue(snapshot: SubscriptionLimits | null): this {
@@ -40,6 +62,7 @@ function makeSnapshot(
   overrides: Partial<SubscriptionLimits> & { agentId: AgentId },
 ): SubscriptionLimits {
   return {
+    routeId: STUB_ROUTE,
     plan: "Pro",
     session: { usedPct: 30, resetAt: "2026-05-19T18:00:00Z" },
     weekly: { usedPct: 40, resetAt: "2026-05-26T00:00:00Z" },
@@ -82,8 +105,8 @@ describe("LimitsRegistry", () => {
     expect(claude.fetchCallCount).toBe(1);
     expect(spy.calls).toHaveLength(1);
     expect(spy.calls[0].event).toBe("subscription_limits");
-    const payload = spy.calls[0].data as { limits: Record<string, SubscriptionLimits> };
-    expect(payload.limits.claude.plan).toBe("Max 20x");
+    const payload = spy.calls[0].data as { limits: Record<string, Record<string, SubscriptionLimits>> };
+    expect(payload.limits.claude[STUB_ROUTE].plan).toBe("Max 20x");
   });
 
   it("does not rebroadcast when the snapshot is unchanged", async () => {
@@ -137,10 +160,10 @@ describe("LimitsRegistry", () => {
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(spy.calls).toHaveLength(2);
-    const first = spy.calls[0].data as { limits: Record<string, SubscriptionLimits> };
-    const second = spy.calls[1].data as { limits: Record<string, SubscriptionLimits> };
-    expect(first.limits.claude.session?.usedPct).toBeNull();
-    expect(second.limits.claude.session?.usedPct).toBe(42);
+    const first = spy.calls[0].data as { limits: Record<string, Record<string, SubscriptionLimits>> };
+    const second = spy.calls[1].data as { limits: Record<string, Record<string, SubscriptionLimits>> };
+    expect(first.limits.claude[STUB_ROUTE].session?.usedPct).toBeNull();
+    expect(second.limits.claude[STUB_ROUTE].session?.usedPct).toBe(42);
   });
 
   it("rebroadcasts when a window's usedPct changes", async () => {
@@ -165,8 +188,8 @@ describe("LimitsRegistry", () => {
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(spy.calls).toHaveLength(2);
-    const second = spy.calls[1].data as { limits: Record<string, SubscriptionLimits> };
-    expect(second.limits.claude.session?.usedPct).toBe(65);
+    const second = spy.calls[1].data as { limits: Record<string, Record<string, SubscriptionLimits>> };
+    expect(second.limits.claude[STUB_ROUTE].session?.usedPct).toBe(65);
   });
 
   it("getSnapshot returns the cached map and omits unfetchable providers", async () => {
@@ -220,5 +243,49 @@ describe("LimitsRegistry", () => {
 
     registry.markSignedOut("claude");
     expect(spy.calls).toHaveLength(0);
+  });
+
+  it("keeps two accounts of one provider independent (docs/150 req 10)", async () => {
+    // The defect this shape exists to prevent: with a provider-keyed cache,
+    // whichever account reported last overwrote the other, so the badge showed
+    // one number that silently jumped between subscriptions.
+    const provider = new StubLimitsProvider("claude");
+    provider.liveRoutes = new Set(["acct-a", "acct-b"]);
+    provider.byRoute.set("acct-a", makeSnapshot({ agentId: "claude", routeId: "acct-a", session: { usedPct: 90, resetAt: "2026-05-19T18:00:00Z" } }));
+    provider.byRoute.set("acct-b", makeSnapshot({ agentId: "claude", routeId: "acct-b", session: { usedPct: 10, resetAt: "2026-05-19T20:00:00Z" } }));
+    const spy = makeBroadcastSpy();
+    const registry = new LimitsRegistry({
+      providers: new Map([["claude", provider]]),
+      sseBroadcast: spy.broadcast,
+    });
+
+    registry.markAuthRefreshed("claude");
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const snap = registry.getSnapshot();
+    expect(snap.claude?.["acct-a"]?.session?.usedPct).toBe(90);
+    expect(snap.claude?.["acct-b"]?.session?.usedPct).toBe(10);
+  });
+
+  it("drops only the disconnected account's pill", async () => {
+    const provider = new StubLimitsProvider("claude");
+    provider.liveRoutes = new Set(["acct-a", "acct-b"]);
+    provider.byRoute.set("acct-a", makeSnapshot({ agentId: "claude", routeId: "acct-a" }));
+    provider.byRoute.set("acct-b", makeSnapshot({ agentId: "claude", routeId: "acct-b" }));
+    const spy = makeBroadcastSpy();
+    const registry = new LimitsRegistry({
+      providers: new Map([["claude", provider]]),
+      sseBroadcast: spy.broadcast,
+    });
+    registry.markAuthRefreshed("claude");
+    await new Promise((resolve) => setImmediate(resolve));
+
+    registry.markSignedOut("claude", "acct-a");
+
+    const snap = registry.getSnapshot();
+    expect(snap.claude?.["acct-a"]).toBeUndefined();
+    expect(snap.claude?.["acct-b"]).toBeDefined();
+    // The provider was told too, so a later refresh can't resurrect it.
+    expect(provider.routeIds()).toEqual(["acct-b"]);
   });
 });

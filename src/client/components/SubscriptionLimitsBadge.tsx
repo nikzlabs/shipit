@@ -10,6 +10,7 @@ import type {
   SubscriptionLimitsMap,
   SubscriptionLimitsWindow,
 } from "../../server/shared/types.js";
+import { useSettingsStore } from "../stores/settings-store.js";
 
 /**
  * Stable ordering of pills in the header. Matches the provider
@@ -77,25 +78,49 @@ interface SubscriptionLimitsBadgeProps {
 }
 
 /**
- * Header badge group rendering one **pill per fetchable provider** plus a
- * single account-global refresh button (Claude only — it's the one with an
- * on-demand `/api/oauth/usage` path). See docs/161 and
+ * Header badge group rendering one **pill per connected subscription** plus a
+ * refresh button (Claude only — it's the one with an on-demand
+ * `/api/oauth/usage` path). See docs/161 and
  * docs/135-subscription-limits-badge/plan.md.
+ *
+ * docs/150 req 10 — quota is per account, so a provider with two connected
+ * subscriptions gets two pills, each labelled with that account's name. With a
+ * single account the pill keeps the bare provider label, so the common
+ * one-subscription layout is byte-for-byte what it was before multi-account
+ * existed; the account name only appears once it disambiguates something.
  */
 export function SubscriptionLimitsBadge({ limits, autoRefresh }: SubscriptionLimitsBadgeProps) {
-  const pills: { agentId: AgentId; snapshot: SubscriptionLimits }[] = [];
+  const accounts = useSettingsStore((s) => s.providerAccounts);
+  const pills: { key: string; agentId: AgentId; label: string; snapshot: SubscriptionLimits }[] = [];
   for (const id of PILL_ORDER) {
-    const snap = limits[id];
-    if (snap) pills.push({ agentId: id, snapshot: snap });
+    const byRoute = limits[id];
+    if (!byRoute) continue;
+    // Stable order: the user's account order first, then any reserved route
+    // (env / API key), so pills don't reshuffle as snapshots arrive.
+    const order = accounts.filter((a) => a.provider === id).map((a) => a.id);
+    const entries = Object.values(byRoute).sort((a, b) => {
+      const ai = order.indexOf(a.routeId);
+      const bi = order.indexOf(b.routeId);
+      return (ai === -1 ? order.length : ai) - (bi === -1 ? order.length : bi);
+    });
+    for (const snapshot of entries) {
+      const account = accounts.find((a) => a.id === snapshot.routeId);
+      pills.push({
+        key: `${id}:${snapshot.routeId}`,
+        agentId: id,
+        label: entries.length > 1 ? (account?.label ?? AGENT_LABEL[id]) : AGENT_LABEL[id],
+        snapshot,
+      });
+    }
   }
   if (pills.length === 0) return null;
 
   return (
     <>
-      {pills.map(({ agentId, snapshot }) => (
+      {pills.map(({ key, agentId, label, snapshot }) => (
         <SubscriptionLimitPill
-          key={agentId}
-          label={AGENT_LABEL[agentId]}
+          key={key}
+          label={label}
           snapshot={snapshot}
           // eslint-disable-next-line no-restricted-syntax -- Claude is the only agent with an on-demand /api/oauth/usage refresh endpoint
           showRefresh={agentId === "claude"}

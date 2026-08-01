@@ -1594,6 +1594,41 @@ the route from the reporting session's `providerRouteId` at the call site.
 `claude-env-oauth` and `claude-api-key` stay reserved route ids in the same key
 space, which is what keeps the env-auth pill working with no accounts stored.
 
+**Phase 2 landed — quota is per account end to end.** Built exactly where the
+entry note said it had to go:
+
+- `LimitsProvider` is per route. Claude's `eventLatest` / `apiLatest` /
+  `lockedUntil` / in-flight guard are all `Map<routeId, …>`, and Codex's
+  `latest` likewise; `canFetch(): boolean` became `routeIds(): string[]`
+  (a single flag could only ever describe one subscription), plus
+  `forgetRoute(routeId)` for disconnects. The 429 lockout being per route
+  matters: a 429 against one account's token says nothing about another's.
+- `LimitsRegistry` caches `agentId → routeId → snapshot`, prunes routes the
+  provider has forgotten so a stale pill can't outlive its account, and
+  `markSignedOut(agentId, routeId?)` drops one account without blanking the
+  other's pill.
+- `recordAgentRateLimits(agentId, session, weekly, sessionId)` attributes each
+  snapshot to the reporting session's pinned route. The resolution lives in
+  `bootstrap-managers.ts` (one place that knows how a session maps to a route)
+  rather than at each call site. **When no route resolves, the snapshot is
+  dropped** — recording it under a guess would bill one subscription's usage to
+  another, and a missing pill is honest where a wrong number is not.
+- The header renders one pill per connected subscription, labelled with the
+  account name (req 10), ordered by the user's account order with reserved
+  routes last. With a single account the pill keeps the bare provider label, so
+  the common one-subscription layout is unchanged.
+- `normalizeAgentUsageLimitError` now reclassifies the upstream "monthly usage
+  limit" only when **every** connected account for that provider is exhausted,
+  and reports the soonest reset. Firing on the first exhausted account would
+  have told a user with a healthy second subscription they were out of quota —
+  precisely the situation this feature exists to avoid.
+
+Still open in Phase 2: persisting snapshots onto accounts, Claude
+model-specific windows (`weeklyOpus`/`weeklySonnet`), ranking unknown Codex
+quota, the grouped/expanded multi-account layout, session diagnostics, and the
+eligibility work (skip-exhausted, structured states, fail-fast on req 13) which
+belongs with Phase 3.
+
 Planned authentication-surface consolidation:
 
 - **One row model for both providers.** `ProviderAccountsCard` owns every

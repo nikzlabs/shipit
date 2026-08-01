@@ -51,16 +51,17 @@
 
 ## Phase 2 — Inline Quota Per Account
 
-- [ ] Change `SubscriptionLimitsMap` wire shape to provider -> account-or-route -> limits.
-- [ ] Update `LimitsPoller` cache, state, delta detection, and SSE broadcast for account-keyed snapshots.
-- [ ] Poll Claude quota per stored Claude provider account.
-- [ ] Preserve `claude-env-oauth` as a quota-bearing reserved route keyed by `claude-env-oauth`.
-- [ ] Associate Codex `agent_rate_limits` events with the account used by the current runner.
+- [x] Change `SubscriptionLimitsMap` wire shape to provider -> account-or-route -> limits.
+- [x] Update `LimitsPoller` cache, state, delta detection, and SSE broadcast for account-keyed snapshots.
+- [x] Poll Claude quota per stored Claude provider account.
+- [x] Preserve `claude-env-oauth` as a quota-bearing reserved route keyed by `claude-env-oauth`.
+- [x] Associate Codex `agent_rate_limits` events with the account used by the current runner.
 - [ ] Persist quota snapshots and plan labels onto provider accounts where appropriate.
 - [ ] Compute Claude model-specific quota state using `weeklyOpus`, `weeklySonnet`, or `weekly`.
 - [ ] Treat unknown Codex quota as selectable but lower-ranked than known healthy quota.
-- [ ] Render header subscription limits as one existing-style pill per account, labelled with the account name (req 10).
-- [ ] Keep the 1-account badge layout visually stable.
+- [x] Render header subscription limits as one existing-style pill per account, labelled with the account name (req 10).
+- [x] Keep the 1-account badge layout visually stable.
+- [x] Reclassify "monthly usage limit" only when *every* connected account is exhausted, reporting the soonest reset.
 - [ ] Render multi-account grouped/expanded quota state without layout overlap.
 - [ ] Render active provider account in session diagnostics.
 - [ ] Skip known-exhausted accounts for new turns.

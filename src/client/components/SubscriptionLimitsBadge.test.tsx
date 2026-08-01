@@ -13,10 +13,17 @@ import {
   AUTO_REFRESH_MIN_INTERVAL_MS,
 } from "./SubscriptionLimitsBadge.js";
 import type { SubscriptionLimits, SubscriptionLimitsMap } from "../../server/shared/types.js";
+import { useSettingsStore } from "../stores/settings-store.js";
+
+/** docs/150 — wrap snapshots into the provider → route → limits wire shape. */
+function routed(...snaps: SubscriptionLimits[]): Record<string, SubscriptionLimits> {
+  return Object.fromEntries(snaps.map((snap) => [snap.routeId, snap]));
+}
 
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  useSettingsStore.getState().setProviderAccounts([]);
 });
 
 // Reset timestamps live in the future relative to the test clock so the
@@ -27,8 +34,10 @@ const FUTURE_SESSION_RESET = new Date(Date.now() + 60 * 60_000).toISOString();
 const FUTURE_WEEKLY_RESET = new Date(Date.now() + 7 * 24 * 60 * 60_000).toISOString();
 
 function makeSnap(overrides: Partial<SubscriptionLimits> = {}): SubscriptionLimits {
+  const agentId = overrides.agentId ?? "claude";
   return {
-    agentId: "claude",
+    agentId,
+    routeId: `acct-${agentId}`,
     plan: "Pro",
     session: { usedPct: 30, resetAt: FUTURE_SESSION_RESET },
     weekly: { usedPct: 50, resetAt: FUTURE_WEEKLY_RESET },
@@ -164,7 +173,7 @@ describe("SubscriptionLimitsBadge group", () => {
   });
 
   it("renders one row for one provider", () => {
-    const limits: SubscriptionLimitsMap = { claude: makeSnap() };
+    const limits: SubscriptionLimitsMap = { claude: routed(makeSnap()) };
     render(<SubscriptionLimitsBadge limits={limits} />);
     expect(screen.getByText("Claude")).toBeInTheDocument();
     expect(screen.getByText(/5h 30%/)).toBeInTheDocument();
@@ -172,12 +181,49 @@ describe("SubscriptionLimitsBadge group", () => {
     expect(screen.queryByText("Codex")).toBeNull();
   });
 
+  it("renders one labelled pill per connected account (docs/150 req 10)", () => {
+    const now = Date.now();
+    useSettingsStore.getState().setProviderAccounts([
+      { id: "acct-work", provider: "claude", label: "Work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+      { id: "acct-personal", provider: "claude", label: "Personal", isPrimary: false, status: "ready", createdAt: now, updatedAt: now },
+    ]);
+    const limits: SubscriptionLimitsMap = {
+      claude: {
+        // Reversed vs the account order to prove the pills follow the user's
+        // account order, not map insertion order.
+        "acct-personal": makeSnap({ routeId: "acct-personal", session: { usedPct: 12, resetAt: FUTURE_SESSION_RESET } }),
+        "acct-work": makeSnap({ routeId: "acct-work", session: { usedPct: 88, resetAt: FUTURE_SESSION_RESET } }),
+      },
+    };
+    const { container } = render(<SubscriptionLimitsBadge limits={limits} />);
+
+    const rows = container.querySelectorAll(":scope > span");
+    expect(rows.length).toBe(2);
+    expect(rows[0].textContent).toMatch(/^Work/);
+    expect(rows[0].textContent).toMatch(/5h 88%/);
+    expect(rows[1].textContent).toMatch(/^Personal/);
+    expect(rows[1].textContent).toMatch(/5h 12%/);
+  });
+
+  it("keeps the bare provider label when only one subscription is connected", () => {
+    const now = Date.now();
+    useSettingsStore.getState().setProviderAccounts([
+      { id: "acct-work", provider: "claude", label: "Work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+    ]);
+    // The one-account layout must be exactly what it was before multi-account
+    // existed — the account name only appears once it disambiguates something.
+    const limits: SubscriptionLimitsMap = { claude: routed(makeSnap({ routeId: "acct-work" })) };
+    render(<SubscriptionLimitsBadge limits={limits} />);
+    expect(screen.getByText("Claude")).toBeInTheDocument();
+    expect(screen.queryByText("Work")).toBeNull();
+  });
+
   it("renders both rows in stable order: Claude then Codex", () => {
     const limits: SubscriptionLimitsMap = {
       // Map insertion order is reversed to confirm the component
       // doesn't naively use it.
-      codex: makeSnap({ agentId: "codex", plan: "Plus", session: { usedPct: 10, resetAt: "x" }, weekly: { usedPct: 5, resetAt: "y" } }),
-      claude: makeSnap({ agentId: "claude" }),
+      codex: routed(makeSnap({ agentId: "codex", plan: "Plus", session: { usedPct: 10, resetAt: "x" }, weekly: { usedPct: 5, resetAt: "y" } })),
+      claude: routed(makeSnap({ agentId: "claude" })),
     };
     const { container } = render(<SubscriptionLimitsBadge limits={limits} />);
     const rows = container.querySelectorAll(":scope > span");
@@ -487,7 +533,7 @@ describe("SubscriptionLimitsBadge auto refresh", () => {
   }
 
   it("fetches fresh usage on mount when autoRefresh is set", async () => {
-    render(<SubscriptionLimitsBadge limits={{ claude: makeSnap() }} autoRefresh />);
+    render(<SubscriptionLimitsBadge limits={{ claude: routed(makeSnap()) }} autoRefresh />);
     await waitFor(() => expect(refreshCalls()).toHaveLength(1));
     const init = refreshCalls()[0][1] as RequestInit;
     expect(init.method).toBe("POST");
@@ -495,7 +541,7 @@ describe("SubscriptionLimitsBadge auto refresh", () => {
   });
 
   it("does not fetch on mount without autoRefresh (the desktop header)", async () => {
-    render(<SubscriptionLimitsBadge limits={{ claude: makeSnap() }} />);
+    render(<SubscriptionLimitsBadge limits={{ claude: routed(makeSnap()) }} />);
     await Promise.resolve();
     expect(refreshCalls()).toHaveLength(0);
   });
@@ -503,7 +549,7 @@ describe("SubscriptionLimitsBadge auto refresh", () => {
   it("skips the fetch while the provider is locked out after a 429", async () => {
     render(
       <SubscriptionLimitsBadge
-        limits={{ claude: makeSnap({ lockedUntil: Date.now() + 10 * 60_000 }) }}
+        limits={{ claude: routed(makeSnap({ lockedUntil: Date.now() + 10 * 60_000 })) }}
         autoRefresh
       />,
     );
@@ -514,7 +560,7 @@ describe("SubscriptionLimitsBadge auto refresh", () => {
   it("does not fetch for a provider with no on-demand endpoint (Codex)", async () => {
     render(
       <SubscriptionLimitsBadge
-        limits={{ codex: makeSnap({ agentId: "codex", plan: "Plus" }) }}
+        limits={{ codex: routed(makeSnap({ agentId: "codex", plan: "Plus" })) }}
         autoRefresh
       />,
     );
@@ -523,17 +569,17 @@ describe("SubscriptionLimitsBadge auto refresh", () => {
   });
 
   it("throttles repeated opens so re-opening the dropdown can't burn the budget", async () => {
-    render(<SubscriptionLimitsBadge limits={{ claude: makeSnap() }} autoRefresh />);
+    render(<SubscriptionLimitsBadge limits={{ claude: routed(makeSnap()) }} autoRefresh />);
     await waitFor(() => expect(refreshCalls()).toHaveLength(1));
     // Closing the popover unmounts the badge; re-opening remounts it.
     cleanup();
-    render(<SubscriptionLimitsBadge limits={{ claude: makeSnap() }} autoRefresh />);
+    render(<SubscriptionLimitsBadge limits={{ claude: routed(makeSnap()) }} autoRefresh />);
     await Promise.resolve();
     expect(refreshCalls()).toHaveLength(1);
   });
 
   it("fetches again once the throttle interval has elapsed", async () => {
-    render(<SubscriptionLimitsBadge limits={{ claude: makeSnap() }} autoRefresh />);
+    render(<SubscriptionLimitsBadge limits={{ claude: routed(makeSnap()) }} autoRefresh />);
     await waitFor(() => expect(refreshCalls()).toHaveLength(1));
     cleanup();
 
@@ -542,7 +588,7 @@ describe("SubscriptionLimitsBadge auto refresh", () => {
       .spyOn(Date, "now")
       .mockReturnValue(realNow + AUTO_REFRESH_MIN_INTERVAL_MS + 1);
     try {
-      render(<SubscriptionLimitsBadge limits={{ claude: makeSnap() }} autoRefresh />);
+      render(<SubscriptionLimitsBadge limits={{ claude: routed(makeSnap()) }} autoRefresh />);
       await waitFor(() => expect(refreshCalls()).toHaveLength(2));
     } finally {
       nowSpy.mockRestore();
@@ -559,7 +605,7 @@ describe("SubscriptionLimitsBadge auto refresh", () => {
 
     // Opening the dropdown right after a manual refresh shouldn't spend a
     // second call — the numbers are seconds old.
-    render(<SubscriptionLimitsBadge limits={{ claude: makeSnap() }} autoRefresh />);
+    render(<SubscriptionLimitsBadge limits={{ claude: routed(makeSnap()) }} autoRefresh />);
     await Promise.resolve();
     expect(refreshCalls()).toHaveLength(1);
   });

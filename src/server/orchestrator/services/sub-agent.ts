@@ -64,6 +64,12 @@ export interface RunSubAgentDeps {
     agentId: AgentId,
     session: { usedPct: number | null; resetAt: string } | null,
     weekly: { usedPct: number | null; resetAt: string } | null,
+    /**
+     * docs/150 — the session whose turn reported these numbers, so the
+     * orchestrator can attribute them to that session's pinned provider
+     * account. Omitted only where no session owns the turn.
+     */
+    sessionId?: string,
   ) => void;
   /** Source-of-truth credentials root (`/credentials`). Omitted in local mode / tests. */
   credentialsDir?: string;

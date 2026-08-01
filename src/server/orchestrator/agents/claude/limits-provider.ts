@@ -56,14 +56,23 @@ export class ClaudeLimitsProvider implements LimitsProvider {
   private fetchImpl: typeof fetch;
   private now: () => number;
 
-  /** Latest windows pushed from the CLI stream (`rate_limit_event`). */
-  private eventLatest: WindowSnapshot | null = null;
-  /** Latest windows pulled from `/api/oauth/usage` via `refreshNow()`. */
-  private apiLatest: WindowSnapshot | null = null;
-  /** Epoch ms until which `/api/oauth/usage` is locked out after a 429. */
-  private lockedUntil = 0;
-  /** Single-flight guard so concurrent refreshes share one request. */
-  private inFlight: Promise<void> | null = null;
+  /**
+   * docs/150 — every cache below is keyed by **route id** (a provider-account
+   * id, or a reserved route like `claude-env-oauth`). Two connected Anthropic
+   * subscriptions have two independent 5h windows, two independent
+   * `/api/oauth/usage` results, and two independent 429 lockouts — a 429
+   * against one account's token says nothing about another's. Sharing any of
+   * these across routes produces plausible numbers attributed to the wrong
+   * subscription, which is worse than no numbers.
+   */
+  /** Latest windows pushed from the CLI stream (`rate_limit_event`), per route. */
+  private eventLatest = new Map<string, WindowSnapshot>();
+  /** Latest windows pulled from `/api/oauth/usage` via `refreshNow()`, per route. */
+  private apiLatest = new Map<string, WindowSnapshot>();
+  /** Epoch ms until which `/api/oauth/usage` is locked out after a 429, per route. */
+  private lockedUntil = new Map<string, number>();
+  /** Single-flight guard so concurrent refreshes share one request, per route. */
+  private inFlight = new Map<string, Promise<void>>();
 
   constructor(deps: ClaudeLimitsDeps) {
     this.authManager = deps.authManager;
@@ -80,16 +89,25 @@ export class ClaudeLimitsProvider implements LimitsProvider {
   setRateLimits(
     session: SubscriptionLimitsWindow | null,
     weekly: SubscriptionLimitsWindow | null,
+    routeId: string,
   ): void {
-    this.eventLatest = { session, weekly, at: this.now() };
+    this.eventLatest.set(routeId, { session, weekly, at: this.now() });
   }
 
-  canFetch(): boolean {
-    return this.eventLatest !== null || this.apiLatest !== null;
+  routeIds(): string[] {
+    return [...new Set([...this.eventLatest.keys(), ...this.apiLatest.keys()])];
   }
 
-  async fetch(): Promise<SubscriptionLimits | null> {
-    if (!this.eventLatest && !this.apiLatest) return null;
+  forgetRoute(routeId: string): void {
+    this.eventLatest.delete(routeId);
+    this.apiLatest.delete(routeId);
+    this.lockedUntil.delete(routeId);
+  }
+
+  async fetch(routeId: string): Promise<SubscriptionLimits | null> {
+    const eventLatest = this.eventLatest.get(routeId) ?? null;
+    const apiLatest = this.apiLatest.get(routeId) ?? null;
+    if (!eventLatest && !apiLatest) return null;
 
     // Plan tier isn't in either payload — derive from the credentials file.
     let plan: string | null = null;
@@ -97,26 +115,28 @@ export class ClaudeLimitsProvider implements LimitsProvider {
     if (tokenResult.token !== null) plan = tokenResult.plan;
 
     const session = mergeWindow(
-      this.eventLatest?.session ?? null,
-      this.eventLatest?.at ?? 0,
-      this.apiLatest?.session ?? null,
-      this.apiLatest?.at ?? 0,
+      eventLatest?.session ?? null,
+      eventLatest?.at ?? 0,
+      apiLatest?.session ?? null,
+      apiLatest?.at ?? 0,
     );
     const weekly = mergeWindow(
-      this.eventLatest?.weekly ?? null,
-      this.eventLatest?.at ?? 0,
-      this.apiLatest?.weekly ?? null,
-      this.apiLatest?.at ?? 0,
+      eventLatest?.weekly ?? null,
+      eventLatest?.at ?? 0,
+      apiLatest?.weekly ?? null,
+      apiLatest?.at ?? 0,
     );
 
-    const fetchedAt = Math.max(this.eventLatest?.at ?? 0, this.apiLatest?.at ?? 0);
+    const fetchedAt = Math.max(eventLatest?.at ?? 0, apiLatest?.at ?? 0);
+    const lockedUntil = this.lockedUntil.get(routeId) ?? 0;
     return {
       agentId: "claude",
+      routeId,
       plan,
       session,
       weekly,
       fetchedAt,
-      ...(this.lockedUntil > this.now() ? { lockedUntil: this.lockedUntil } : {}),
+      ...(lockedUntil > this.now() ? { lockedUntil } : {}),
     };
   }
 
@@ -126,20 +146,22 @@ export class ClaudeLimitsProvider implements LimitsProvider {
    * upstream 429. `"seed"` self-skips once an API snapshot already exists;
    * `"manual"` always attempts (subject only to the lockout). Never throws.
    */
-  async refreshNow(reason: "manual" | "seed"): Promise<void> {
-    if (reason === "seed" && this.apiLatest !== null) return;
-    if (this.lockedUntil > this.now()) return;
-    if (this.inFlight) {
-      await this.inFlight;
+  async refreshNow(reason: "manual" | "seed", routeId: string): Promise<void> {
+    if (reason === "seed" && this.apiLatest.has(routeId)) return;
+    if ((this.lockedUntil.get(routeId) ?? 0) > this.now()) return;
+    const existing = this.inFlight.get(routeId);
+    if (existing) {
+      await existing;
       return;
     }
-    this.inFlight = this.doRefresh().finally(() => {
-      this.inFlight = null;
+    const run = this.doRefresh(routeId).finally(() => {
+      this.inFlight.delete(routeId);
     });
-    await this.inFlight;
+    this.inFlight.set(routeId, run);
+    await run;
   }
 
-  private async doRefresh(): Promise<void> {
+  private async doRefresh(routeId: string): Promise<void> {
     const tokenResult = await this.authManager.getAccessToken();
     if (tokenResult.token === null) return;
     // Skip a doomed call against an idle-expired access token — the shared
@@ -169,9 +191,10 @@ export class ClaudeLimitsProvider implements LimitsProvider {
     }
 
     if (response.status === 429) {
-      this.lockedUntil = this.now() + retryAfterMs(response);
+      const until = this.now() + retryAfterMs(response);
+      this.lockedUntil.set(routeId, until);
       console.warn(
-        `[claude-limits] /usage 429 — locked out until ${new Date(this.lockedUntil).toISOString()}`,
+        `[claude-limits] /usage 429 for ${routeId} — locked out until ${new Date(until).toISOString()}`,
       );
       return;
     }
@@ -193,9 +216,9 @@ export class ClaudeLimitsProvider implements LimitsProvider {
       console.warn("[claude-limits] /usage unexpected payload shape");
       return;
     }
-    // A successful fetch clears any prior lockout.
-    this.lockedUntil = 0;
-    this.apiLatest = { session: parsed.session, weekly: parsed.weekly, at: this.now() };
+    // A successful fetch clears any prior lockout for this route.
+    this.lockedUntil.delete(routeId);
+    this.apiLatest.set(routeId, { session: parsed.session, weekly: parsed.weekly, at: this.now() });
   }
 }
 
