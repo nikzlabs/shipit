@@ -115,6 +115,10 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     });
     repoStore.add(SPAWN_REPO_URL);
     repoStore.setReady(SPAWN_REPO_URL);
+    // Agent-spawned turns inherit the parent's repository trust boundary.
+    // This suite exercises spawning behavior, so make its registered fixture
+    // explicitly trusted rather than relying on the pre-docs/243 default.
+    repoStore.setTrusted(SPAWN_REPO_URL, true);
 
     app = await buildApp({
       credentialStore,
@@ -1270,4 +1274,3 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     expect(limited.json().error).toContain("Per-turn spawn limit");
   });
 });
-

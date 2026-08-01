@@ -41,6 +41,7 @@ import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { UsageManager } from "../usage.js";
 import { CredentialStore } from "../credential-store.js";
+import { RepoStore } from "../repo-store.js";
 import type { WsServerMessage } from "../../shared/types.js";
 
 let tmpDir: string;
@@ -50,6 +51,7 @@ let githubAuth: StubGitHubAuthManager;
 let sessionManager: SessionManager;
 let chatHistoryManager: ChatHistoryManager;
 let credentialStore: CredentialStore;
+let repoStore: RepoStore;
 let latestClaude: FakeClaudeProcess | null = null;
 let dbManager: DatabaseManager;
 let port: number;
@@ -65,6 +67,7 @@ beforeEach(async () => {
   sessionManager = new SessionManager(dbManager);
   chatHistoryManager = new ChatHistoryManager(dbManager);
   credentialStore = createTestCredentialStore(tmpDir);
+  repoStore = new RepoStore(dbManager);
 
   app = await buildApp({
     credentialStore,
@@ -91,6 +94,7 @@ beforeEach(async () => {
     authManager: new StubAuthManager() as never,
     githubAuthManager: githubAuth as never,
     sessionManager,
+    repoStore,
     chatHistoryManager,
     usageManager: new UsageManager(dbManager),
     serveStatic: false,
@@ -161,6 +165,11 @@ async function setupPrimedSession(): Promise<{ sessionId: string; sessionDir: st
     sessionId,
     "https://github.com/test-user/test-repo.git",
   );
+  // The remaining turns exercise PR creation, not trust denial. Model the
+  // user's existing Trust action explicitly once this standalone fixture is
+  // converted into a repository-backed session.
+  repoStore.add("https://github.com/test-user/test-repo.git");
+  repoStore.setTrusted("https://github.com/test-user/test-repo.git", true);
   sessionManager.setBranch(sessionId, "shipit/test-feature");
   sessionManager.setBranchRenamed(sessionId, true);
 
