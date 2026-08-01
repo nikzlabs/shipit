@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import fs from "node:fs";
 import {
   buildAgentSystemInstructions,
   AGENT_SYSTEM_INSTRUCTIONS,
@@ -71,6 +72,27 @@ describe("buildAgentSystemInstructions", () => {
       const out = buildAgentSystemInstructions(opts);
       expect(out.length).toBeGreaterThan(1000);
       expect(out).not.toMatch(/\{\{[A-Z0-9_]+\}\}/);
+    }
+  });
+
+  it("composes the shared requirements-discipline fragment into every variant", () => {
+    const fragment = fs.readFileSync(
+      new URL("./prompts/spec-discipline.md", import.meta.url),
+      "utf8",
+    ).trim();
+    const variants: AgentSystemInstructionOptions[] = [
+      {},
+      { agentId: "claude" },
+      { agentId: "codex" },
+      { isOps: true },
+      { agentId: "claude", isOps: true },
+      { agentId: "codex", isOps: true },
+      { isSandbox: true },
+      { agentId: "claude", isSandbox: true },
+      { agentId: "codex", isSandbox: true },
+    ];
+    for (const opts of variants) {
+      expect(buildAgentSystemInstructions(opts)).toContain(fragment);
     }
   });
 

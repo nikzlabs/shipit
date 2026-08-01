@@ -131,6 +131,8 @@ const NEW_PROJECT_BEST_PRACTICE = loadPrompt(import.meta.url, "./prompts/new-pro
 // A sandbox renders no preview, so it drops this section entirely.
 const LIVE_PREVIEW = loadPrompt(import.meta.url, "./prompts/live-preview.md");
 const COMPOSE_SERVICES_OPS = loadPrompt(import.meta.url, "./prompts/compose-services-ops.md");
+// docs/241 — optional per-feature requirements workflow, shared by every variant.
+const SPEC_DISCIPLINE = loadPrompt(import.meta.url, "./prompts/spec-discipline.md");
 
 /**
  * The session-mode branching axis. `std` is an ordinary repo/local session;
@@ -182,6 +184,7 @@ function renderInstructions(
     PULL_REQUESTS: isOps ? PULL_REQUESTS_OPS : isSandbox ? PULL_REQUESTS_SANDBOX : PULL_REQUESTS_STANDARD,
     RELEASES: isOps || isSandbox ? "" : RELEASES,
     PARALLEL_SESSIONS: parallelSessionsSection,
+    SPEC_DISCIPLINE,
     NEW_PROJECT_BEST_PRACTICE: isOps || isSandbox ? "" : NEW_PROJECT_BEST_PRACTICE,
   });
 }
