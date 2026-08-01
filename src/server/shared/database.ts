@@ -792,6 +792,11 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE sessions ADD COLUMN keep_preview_running INTEGER NOT NULL DEFAULT 0");
   },
+  // docs/242 — host-owned provenance for messages submitted by an embedded
+  // Preview or Present page through the Agent Interface SDK.
+  (db) => {
+    db.exec("ALTER TABLE messages ADD COLUMN agent_interface TEXT");
+  },
 ];
 
 export class DatabaseManager {

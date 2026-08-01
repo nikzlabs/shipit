@@ -1,5 +1,7 @@
 # Present tool — render files in the Present tab
 
+Active rendered HTML artifacts receive the [Agent Interface SDK](./agent-interface-sdk.md), allowing artifact JavaScript to collect input and send a composed instruction to the owning session's agent. Gallery thumbnails, ordinary file views, diffs, SVG, markdown, and images do not receive it.
+
 The `present` tool displays self-contained files to the user in ShipIt's
 dedicated **Present** tab — an HTML page, an SVG diagram, a rendered markdown
 doc, a chart, or an image. You **write the file first** (with the `Write`

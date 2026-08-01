@@ -33,6 +33,7 @@ import { formatUnresolvedConflictNotice } from "./services/conflict-marker-notic
 import { formatSecretScanNotice } from "./services/secret-scan-notice.js";
 import { emitNoticePostTurn } from "./chat-card-persistence.js";
 import { TURN_COMPLETED, turnErrored, turnNoResult, type TurnOutcome } from "./turn-settlement.js";
+import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
 
 /**
  * Normalized, transport-agnostic description of one turn. The adapters
@@ -48,6 +49,7 @@ export interface TurnInput {
   prompt: string;
   /** Raw user text — drives the echo bubble, persisted user row, and titles. */
   userText: string;
+  agentInterface?: AgentInterfaceProvenance;
   /** Optional activity label (dispatch); used in the echo + commit-summary fallback. */
   activity?: string;
   permissionMode?: PermissionMode;
@@ -340,7 +342,13 @@ export async function executeAgentTurn(
   // Surface the user message. Dispatch emits a `system_user_message` bubble (no
   // client-side optimistic bubble to dedupe against); WS skips the echo.
   if (input.emitUserEcho) {
-    emit({ type: "system_user_message", text: input.userText, activity });
+    emit({
+      type: "system_user_message",
+      sessionId,
+      text: input.userText,
+      activity,
+      ...(input.agentInterface ? { agentInterface: input.agentInterface } : {}),
+    });
   }
   deps.listenerDeps.sseBroadcast("session_agent_started", { sessionId, activity });
 

@@ -70,6 +70,7 @@ describe("queue drain routing (SHI-255)", () => {
     const onTurnComplete = vi.fn();
     const opts: Required<Omit<AgentDispatchOptions, "execution">> & { execution?: AgentDispatchOptions["execution"] } = {
       text: "everything",
+      agentInterface: { source: "agent_interface_sdk", surface: "present" },
       activity: "Working…",
       images: [{ data: "abc", mediaType: "image/png" }],
       files: [{ path: "src/a.ts" }],

@@ -16,6 +16,7 @@ import type { PersistedMessage } from "./chat-history.js";
 import type { SecretFinding } from "../shared/secret-scan.js";
 import type { SubAgentSpawnRequest, SubAgentRunResult, SubAgentRunHandle } from "../shared/sub-agent-run.js";
 import { runAgentToCompletion, buildSubAgentRunParams } from "../shared/sub-agent-run.js";
+import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
 
 // `runDispatchedTurn` lives in a separate module because it depends on
 // `wireAgentListeners` at runtime, which would otherwise create an import
@@ -121,6 +122,7 @@ export interface ChatMessageGroup {
 export interface SteeredMessage {
   afterGroupIndex: number;
   text: string;
+  agentInterface?: AgentInterfaceProvenance;
   /**
    * Attachments the user sent with this steer. Shapes match `PersistedMessage`
    * so `buildTurnMessages` can write them straight through to chat history;
@@ -175,6 +177,7 @@ export interface RecordedChatCard {
 
 export interface QueuedMessage {
   text: string;
+  agentInterface?: AgentInterfaceProvenance;
   /**
    * SHI-255 — which executor must run this entry when it drains.
    *
@@ -239,6 +242,7 @@ export interface QueuedMessage {
  */
 export interface AgentDispatchOptions {
   text: string;
+  agentInterface?: AgentInterfaceProvenance;
   /**
    * SHI-255 — which executor must run this turn if it ends up queued behind a
    * running turn. Defaults to `"dispatched"` (this IS the dispatch path). The
@@ -469,6 +473,7 @@ export function toQueuedMessage(opts: PreparedDispatch): QueuedMessage {
   // restores `systemTurn` / `onTurnComplete` / `postTurn` / `activity`), so an
   // untagged dispatch can never be narrowed away by the interactive drain.
   const queued: QueuedMessage = { text: opts.text, execution: opts.execution ?? "dispatched" };
+  if (opts.agentInterface !== undefined) queued.agentInterface = opts.agentInterface;
   if (opts.activity !== undefined) queued.activity = opts.activity;
   if (opts.images !== undefined) queued.images = opts.images;
   if (opts.files !== undefined) queued.files = opts.files;

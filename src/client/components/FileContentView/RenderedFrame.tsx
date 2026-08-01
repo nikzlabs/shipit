@@ -13,7 +13,10 @@
  * with a best-effort frame CSP (`connect-src 'none'; form-action 'none'`)
  * injected into the document — scripts still run (charts work) but can't phone
  * home or submit forms.
- */
+*/
+
+import type { Ref } from "react";
+import { AGENT_INTERFACE_SDK_SCRIPT } from "../../../server/shared/agent-interface-sdk/bootstrap.js";
 
 /** SVG content arrives raw (Present) or as a base64/url-encoded `data:` URI
  *  (the files API for a dialog-opened `.svg`). Normalize to raw markup so both
@@ -50,12 +53,25 @@ function injectCsp(html: string): string {
   return `<!doctype html><html><head>${CSP_META}</head><body>${html}</body></html>`;
 }
 
+function injectAgentInterface(html: string): string {
+  const head = /<head[^>]*>/i.exec(html);
+  if (head?.index !== undefined) {
+    const at = head.index + head[0].length;
+    return `${html.slice(0, at)}${AGENT_INTERFACE_SDK_SCRIPT}${html.slice(at)}`;
+  }
+  return `${AGENT_INTERFACE_SDK_SCRIPT}${html}`;
+}
+
 export function RenderedFrame({
   kind,
   content,
+  enableAgentInterface = false,
+  frameRef,
 }: {
   kind: "html" | "svg";
   content: string;
+  enableAgentInterface?: boolean;
+  frameRef?: Ref<HTMLIFrameElement>;
 }) {
   let srcDoc: string;
   if (kind === "svg") {
@@ -65,12 +81,14 @@ export function RenderedFrame({
     const markup = svgToMarkup(content);
     srcDoc = `<!doctype html><html><head>${CSP_META}</head><body style="margin:0;display:flex;align-items:center;justify-content:center;height:100vh;background:white">${markup}</body></html>`;
   } else {
-    srcDoc = injectCsp(content);
+    const secured = injectCsp(content);
+    srcDoc = enableAgentInterface ? injectAgentInterface(secured) : secured;
   }
 
   return (
     <iframe
       title="Rendered content"
+      ref={frameRef}
       sandbox="allow-scripts"
       srcDoc={srcDoc}
       className="w-full h-full border-0"

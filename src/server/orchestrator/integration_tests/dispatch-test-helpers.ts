@@ -27,6 +27,7 @@ export function testDispatch(
 ): PreparedDispatch {
   return prepareDispatch({
     text: opts.text,
+    agentInterface: opts.agentInterface,
     execution: opts.execution,
     activity: opts.activity,
     images: opts.images,

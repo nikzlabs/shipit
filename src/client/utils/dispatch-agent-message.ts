@@ -14,29 +14,37 @@
 import { useSessionStore } from "../stores/session-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import type { ApiError } from "../hooks/useApi.js";
+import type { AgentInterfaceProvenance } from "../../server/shared/agent-interface-sdk/protocol.js";
 
 export interface DispatchAgentMessageOptions {
   sessionId: string;
   text: string;
   activity: string;
   apiPost: <T>(path: string, body?: unknown) => Promise<T>;
+  agentInterface?: AgentInterfaceProvenance;
 }
 
 export async function dispatchAgentMessage(opts: DispatchAgentMessageOptions): Promise<void> {
-  const { sessionId, text, activity, apiPost } = opts;
+  const { sessionId, text, activity, apiPost, agentInterface } = opts;
   const session = useSessionStore.getState();
   const requestId = crypto.randomUUID();
 
   // Optimistic append — the server's `system_user_message` echo is deduped
   // against this bubble via the `pendingDispatch` flag.
-  session.setMessages((prev) => [...prev, { role: "user", text, pendingDispatch: true, clientRequestId: requestId }]);
+  session.setMessages((prev) => [...prev, {
+    role: "user",
+    text,
+    pendingDispatch: true,
+    clientRequestId: requestId,
+    ...(agentInterface ? { agentInterface } : {}),
+  }]);
   session.setIsLoading(true);
   session.setActivity({ label: activity });
 
   try {
     await apiPost<{ ok: true; queued: boolean }>(
       `/api/sessions/${sessionId}/agent/dispatch`,
-      { text, activity },
+      { text, activity, ...(agentInterface ? { agentInterface } : {}) },
     );
   } catch (err) {
     // Roll back only this request; another identical send may have landed.

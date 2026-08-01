@@ -954,6 +954,7 @@ export function createPrStatusPoller(
       await new Promise<void>((resolve) => {
         runner.dispatch(prepareDispatch({
           text: prompt,
+          agentInterface: undefined,
           activity: "Auto-fixing CI...",
           systemTurn: true,
           onTurnComplete: () => resolve(),

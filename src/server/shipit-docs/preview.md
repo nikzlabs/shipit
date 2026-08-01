@@ -1,5 +1,7 @@
 # Preview System
 
+HTML served through an active Preview receives the [Agent Interface SDK](./agent-interface-sdk.md). It exposes `window.shipit.agent.sendMessage()` plus cooperative visibility state. Use visibility to suspend audio, animation, polling, and timers when hidden; background iframe slots remain mounted.
+
 The preview pane shows a live view of the running application. It updates
 automatically as you edit files.
 

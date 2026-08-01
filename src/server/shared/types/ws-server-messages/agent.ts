@@ -5,6 +5,7 @@ import type { PermissionMode } from "../attachment-types.js";
 // the same path). Erased at build time — no runtime coupling reaches the
 // client bundle.
 import type { PersistedMessage } from "../../../orchestrator/chat-history.js";
+import type { AgentInterfaceProvenance } from "../../agent-interface-sdk/protocol.js";
 
 export interface WsAgentEvent {
   type: "agent_event";
@@ -133,6 +134,7 @@ export interface WsMessageSteered {
   images?: { data: string; mediaType: string }[];
   files?: { path: string; contentPreview: string; startLine?: number; endLine?: number }[];
   uploadPaths?: string[];
+  agentInterface?: AgentInterfaceProvenance;
 }
 
 // ---- Agent registry server messages ----

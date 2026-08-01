@@ -20,6 +20,7 @@ import type {
 import { dispatchAgentMessage, runSubAgent, getSubAgentResult, ServiceError } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
 import { AgentTurnAdmissionError } from "./session-runner.js";
+import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
 
 export async function registerAgentRoutes(
   app: FastifyInstance,
@@ -32,6 +33,7 @@ export async function registerAgentRoutes(
     Params: { id: string };
     Body: {
       text?: string;
+      agentInterface?: AgentInterfaceProvenance;
       activity?: string;
       permissionMode?: PermissionMode;
       images?: ImageAttachment[];
@@ -62,6 +64,7 @@ export async function registerAgentRoutes(
           request.params.id,
           {
             text: body.text ?? "",
+            ...(body.agentInterface !== undefined ? { agentInterface: body.agentInterface } : {}),
             ...(body.activity !== undefined ? { activity: body.activity } : {}),
             ...(body.permissionMode !== undefined ? { permissionMode: body.permissionMode } : {}),
             ...(body.images !== undefined ? { images: body.images } : {}),

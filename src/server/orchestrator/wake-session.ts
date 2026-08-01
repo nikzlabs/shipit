@@ -189,6 +189,7 @@ export async function wakeSessionWithTurn(
   const onSettled = opts.onSettled;
   runner.dispatch(prepareDispatch({
     text: opts.text,
+    agentInterface: undefined,
     activity: opts.activity,
     systemTurn: true,
     ...(onSettled

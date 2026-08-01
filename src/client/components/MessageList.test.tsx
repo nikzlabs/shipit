@@ -24,6 +24,16 @@ function msg(role: "user" | "assistant", text: string, opts?: { toolUse?: ToolUs
 }
 
 describe("MessageList", () => {
+  it("labels an Agent Interface SDK user message with its host surface", () => {
+    render(<MessageList messages={[{
+      role: "user",
+      text: "Build it",
+      agentInterface: { source: "agent_interface_sdk", surface: "present" },
+    }]} isLoading={false} />);
+    expect(screen.getByText("Present · Agent Interface SDK")).toBeInTheDocument();
+    expect(screen.getByText("Build it")).toBeInTheDocument();
+  });
+
   describe("scroll behavior", () => {
     function setScrollMetrics(
       element: Element,

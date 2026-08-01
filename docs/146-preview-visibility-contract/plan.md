@@ -5,13 +5,22 @@ issue: https://linear.app/shipit-ai/issue/SHI-44
 
 # Preview visibility contract
 
+> **Implemented integration (docs/242):** the Agent Interface SDK provides a
+> shared injected `window.shipit` runtime that wraps this contract. The wire shapes remain
+> authoritative: `{ source: "shipit-preview", type: "ready" }` and
+> `{ source: "shipit-preview", type: "visibility", visible }`. Under that plan,
+> the bootstrap emits `ready` and exposes
+> `window.shipit.visibility.current/subscribe()`; raw listeners remain
+> compatible. `PreviewFrame` answers `ready` and emits transitions. See
+> `docs/242-agent-interface-sdk/plan.md` for sequencing and trade-offs.
+
 ## Problem
 
 When a preview iframe in ShipIt is hidden in the UI (user switches sessions,
 switches ports, or collapses the preview panel) its audio keeps playing. The
 current implementation toggles Tailwind's `invisible` (`visibility: hidden`)
 on the iframe element at
-[`PreviewFrame.tsx:708–709`](../../src/client/components/PreviewFrame.tsx#L708)
+[`PreviewFrame/PreviewFrame.tsx`](../../src/client/components/PreviewFrame/PreviewFrame.tsx)
 (both the device-frame branch on 708 and the fullscreen branch on 709 set
 the class); that hides the pixels but leaves the document fully alive —
 timers fire, network requests resolve, and **all audio output continues**.
@@ -97,7 +106,7 @@ The two events mean different things:
 - `"loaded"` is emitted by the proxy-injected shim, fires on every HTML
   parse, and tells the parent "this iframe finished loading." Used by the
   auth-blocked detector at
-  [`PreviewFrame.tsx:211–233`](../../src/client/components/PreviewFrame.tsx#L211).
+  [`PreviewFrame/PreviewFrame.tsx`](../../src/client/components/PreviewFrame/PreviewFrame.tsx).
   Fires whether or not the app implements the visibility contract.
 - `"ready"` is emitted by the **app's own snippet** (or by the scaffolded
   template), fires once the app's `message` listener is registered, and
@@ -132,7 +141,7 @@ construction on the first `visibility` message.
 The reply targets a specific iframe by matching `event.source` against the
 iframe pool's `contentWindow` refs (the same pattern as the existing
 `loaded` handler at
-[PreviewFrame.tsx:220–229](../../src/client/components/PreviewFrame.tsx#L220)).
+[PreviewFrame/PreviewFrame.tsx](../../src/client/components/PreviewFrame/PreviewFrame.tsx)).
 React's iframe DOM node is inserted during commit, with the ref callback
 firing immediately after — but in principle the iframe can start loading
 and the page can post `ready` before the parent's React effect has settled
@@ -234,12 +243,12 @@ This file is baked into the session container image at
 [`environment.md`](../../src/server/shipit-docs/environment.md)); the
 agent reads it via its tools at scaffolding time.
 
-### 2. Parent-side wiring (`src/client/components/PreviewFrame.tsx`)
+### 2. Parent-side wiring (`src/client/components/PreviewFrame/PreviewFrame.tsx`)
 
 Three changes inside the component.
 
 **(a) Extend the existing postMessage handler** at
-[line 211](../../src/client/components/PreviewFrame.tsx#L211) to recognize
+in the existing `loaded` message handler to recognize
 `type === "ready"` alongside `type === "loaded"`. The slot-resolution
 logic (matching `event.source` against each iframe's `contentWindow`) is
 reused. On `ready`:
@@ -264,7 +273,7 @@ are unaffected — they filter by `type` and fall through on `"ready"` /
 
 **(b) Add a per-slot effect** that watches the slot's `hidden` value
 (computed at
-[line 685](../../src/client/components/PreviewFrame.tsx#L685)) and, on
+inside the per-slot render) and, on
 every change, posts `{ source: "shipit-preview", type: "visibility",
 visible: !hidden }` to that slot's `contentWindow`. This re-emits the
 state unconditionally, closing the race even if the initial
@@ -272,12 +281,18 @@ ready-reply was dropped. Concretely: lift the `hidden` computation into
 a stable per-slot value and run a `useEffect` keyed on `[key, hidden]`.
 
 **(c) Update both Tailwind sites at
-[lines 708 and 709](../../src/client/components/PreviewFrame.tsx#L708)**
+in both iframe className branches**
 to keep their `invisible` class. The hiding mechanism doesn't change —
 this is just a reminder that both branches (device-frame and fullscreen)
 need to stay in sync if the className composition is refactored.
 
-### 3. Scaffolding templates
+### 3. Scaffolding templates (superseded if docs/242's shared runtime lands)
+
+The original standalone plan below copies a listener into every template. The
+docs/242 integration instead injects one shared runtime from the preview proxy
+after this parent contract is implemented. Do not implement both paths: retain
+the table as historical standalone design, while `checklist.md` tracks the
+shared-runtime route currently proposed.
 
 The reviewer flagged that template entry-file shapes vary. Concretely:
 
@@ -319,9 +334,8 @@ Add to `PreviewFrame.test.tsx`:
   assert the reply fires when the ref settles. (Use fake timers; verify
   the 2-second eviction by advancing past it.)
 - **Existing `loaded` regression test continues to pass**: the cached-slot
-  test at
-  [`PreviewFrame.test.tsx:851`](../../src/client/components/PreviewFrame.test.tsx#L851)
-  must still pass unchanged — `loaded` keeps its existing semantics.
+  test in `PreviewFrame.test.tsx` must still pass unchanged — `loaded` keeps its
+  existing semantics.
 - **Idempotent `ready`**: dispatching `ready` twice for the same slot
   produces two visibility replies, both correct (no internal state that
   could go stale).
@@ -404,20 +418,18 @@ Manual verification:
 
 - `src/server/shipit-docs/preview.md` — new section documenting the
   contract; baked into session containers at `/shipit-docs/preview.md`.
-- `src/client/components/PreviewFrame.tsx` — parent-side: extend
-  postMessage handler at line 211 to handle `ready` (with ring-buffer
-  fallback); add per-slot effect that posts `visibility` on `hidden`
-  transitions; keep `invisible` className at lines 708/709.
-- `src/client/components/PreviewFrame.test.tsx` — new test cases listed
-  above; preserve existing cached-slot regression test at line 851.
-- `src/server/orchestrator/preview-proxy.ts` — **unchanged.** `loaded`
-  keeps its existing semantics; `ready` is emitted by app code, not by
-  the injected shim.
+- `src/client/components/PreviewFrame/PreviewFrame.tsx` — parent-side: extend
+  the existing `loaded` postMessage handler to handle `ready` (with ring-buffer
+  fallback); add per-slot visibility emission; keep both iframe className
+  branches aligned.
+- `src/client/components/PreviewFrame.test.tsx` — new test cases listed above;
+  preserve the existing cached-slot regression test.
+- `src/server/orchestrator/preview-proxy.ts` — unchanged only for the original
+  standalone/template design. Under docs/242 it injects the shared runtime next
+  to the existing HMR bootstrap.
 - `src/server/orchestrator/templates-frontend.ts`,
-  `templates-fullstack.ts` — add snippet to each template's entry file,
-  with the structural variations noted in §"Scaffolding templates."
-- `src/server/orchestrator/templates.test.ts` — update snapshots for
-  affected templates.
+  `templates-fullstack.ts`, `templates.test.ts` — historical standalone path;
+  superseded by shared runtime injection if docs/242 lands.
 
 ## Checklist
 

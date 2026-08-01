@@ -139,6 +139,7 @@ import {
   isPlanPath,
 } from "./utils/doc-paths.js";
 import { dispatchAgentMessage } from "./utils/dispatch-agent-message.js";
+import type { AgentInterfaceProvenance } from "../server/shared/agent-interface-sdk/protocol.js";
 import { sendUserMessage } from "./utils/send-user-message.js";
 import { buildReleaseConfirmMessage } from "./utils/release-confirm-message.js";
 import type { SendCommentsPayload } from "./components/FilePreviewModal.js";
@@ -672,6 +673,21 @@ export default function App() {
   const createPrInFlight = useRef(false);
   const composeErrorInFlight = useRef(false);
   const composeHintInFlight = useRef(false);
+
+  const handleAgentInterfaceMessage = useCallback(async (
+    text: string,
+    provenance: AgentInterfaceProvenance,
+  ): Promise<void> => {
+    const sid = useSessionStore.getState().sessionId;
+    if (!sid) throw new Error("No active ShipIt session");
+    await dispatchAgentMessage({
+      sessionId: sid,
+      text,
+      activity: "Responding to interface…",
+      apiPost,
+      agentInterface: provenance,
+    });
+  }, [apiPost]);
 
   const handleSendErrors = useCallback(
     (errors: PreviewError[]) => {
@@ -1590,6 +1606,7 @@ export default function App() {
               onClearErrors={clearPreviewErrors}
               onSendCrashToAgent={handleSendComposeErrorToAgent}
               onSendComposeHintToAgent={handleSendComposeHintToAgent}
+              onAgentInterfaceMessage={handleAgentInterfaceMessage}
             />
             {/* docs/178 — restricted empty state overlaying the (empty) preview
                 frame when the repo is untrusted. Inside the preview wrapper, so
@@ -1728,6 +1745,7 @@ export default function App() {
             isActiveTab={rightTab === "present"}
             onSendComments={handleFileSendComments}
             onAskAgentReview={handleAskAgentReview}
+            onAgentInterfaceMessage={handleAgentInterfaceMessage}
           />
         ) : rightTab === "host" ? (
           <HostPanel isActiveTab={rightTab === "host"} />

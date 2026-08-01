@@ -429,6 +429,7 @@ export async function spawnChildSession(
 
   runner.dispatch(prepareDispatch({
     text: trimmedPrompt,
+    agentInterface: undefined,
     execution: undefined,
     activity: undefined,
     images: undefined,
@@ -764,6 +765,7 @@ export async function sendChildMessage(
 
   runner.dispatch(prepareDispatch({
     text: trimmed,
+    agentInterface: undefined,
     execution: undefined,
     activity: undefined,
     images: undefined,

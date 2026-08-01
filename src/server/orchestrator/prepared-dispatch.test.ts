@@ -23,6 +23,7 @@ import type { AgentId } from "../shared/types.js";
 /** Every field, so the exhaustiveness assertions below have something to chew on. */
 const FULL_INIT: AgentDispatchInit = {
   text: "everything",
+  agentInterface: { source: "agent_interface_sdk", surface: "preview" },
   execution: "dispatched",
   activity: "Working…",
   images: [{ data: "abc", mediaType: "image/png" }],

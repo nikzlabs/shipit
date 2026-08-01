@@ -14,6 +14,7 @@ import { CARD_MESSAGE_FIELDS } from "../../client/components/visual-elements.js"
 const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
   role: "assistant",
   text: "everything",
+  agentInterface: { source: "agent_interface_sdk", surface: "preview" },
   toolUse: [{ type: "tool_use", id: "t1", name: "Edit", input: { path: "a.ts" } }],
   images: [{ data: "abc", mediaType: "image/png" }],
   files: [{ path: "a.ts", contentPreview: "x", startLine: 1, endLine: 2 }],
