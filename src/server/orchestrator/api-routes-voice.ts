@@ -165,7 +165,11 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
         reply.code(400).send({ error: "url must be an http(s) URL" });
         return;
       }
-      credentialStore.setVoiceWebhook(url, token);
+      // The token is write-only, so an empty field while editing an existing
+      // webhook means "keep the stored token". Clearing the whole webhook is
+      // handled explicitly by DELETE /api/voice/webhook.
+      const storedToken = credentialStore.getVoiceWebhook()?.token ?? "";
+      credentialStore.setVoiceWebhook(url, token || storedToken);
       return { ok: true };
     },
   );
