@@ -120,6 +120,7 @@ export class AutoFixManager extends AutoRemediationManager<CiSignal> {
      * for the session, suppressing the loop even with the global setting on.
      */
     isSessionEnabled?: (sessionId: string) => boolean,
+    ensureRunner?: (sessionId: string) => Promise<SessionRunnerInterface | undefined>,
   ) {
     super({
       name: "auto-fix",
@@ -130,6 +131,7 @@ export class AutoFixManager extends AutoRemediationManager<CiSignal> {
       now,
       ...(arbiter ? { arbiter } : {}),
       ...(isSessionEnabled ? { isSessionEnabled } : {}),
+      ...(ensureRunner ? { ensureRunner } : {}),
     });
     this.fetchAndFixCb = fetchAndFixCb;
   }

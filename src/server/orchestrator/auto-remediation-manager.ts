@@ -89,6 +89,8 @@ export interface RemediationManagerConfig {
   onChange: (sessionId: string) => void;
   /** Resolve the per-session runner for the pre-attempt gate. */
   getRunner: (sessionId: string) => SessionRunnerInterface | undefined;
+  /** Boot a runner when a headless server-driven attempt needs one. */
+  ensureRunner?: (sessionId: string) => Promise<SessionRunnerInterface | undefined>;
   /** Read the global enable setting at decision time (not mirrored per-session). */
   isGlobalEnabled: () => boolean;
   /**
@@ -376,7 +378,8 @@ export abstract class AutoRemediationManager<TSignal> {
     if (state.nextEligibleAt !== undefined && this.now() < state.nextEligibleAt) return;
 
     // 11 — pre-attempt runner gate.
-    const runner = this.cfg.getRunner(sessionId);
+    let runner = this.cfg.getRunner(sessionId);
+    if (!runner && this.cfg.ensureRunner) runner = await this.cfg.ensureRunner(sessionId);
     if (!runner) {
       this.defer(sessionId, state);
       return;
@@ -431,7 +434,8 @@ export abstract class AutoRemediationManager<TSignal> {
     }
     if (state.nextEligibleAt !== undefined && this.now() < state.nextEligibleAt) return;
 
-    const runner = this.cfg.getRunner(sessionId);
+    let runner = this.cfg.getRunner(sessionId);
+    if (!runner && this.cfg.ensureRunner) runner = await this.cfg.ensureRunner(sessionId);
     if (!runner) return; // stay deferred — next poll / idle retries
     if (runner.running) {
       const stillRunning = await runner.verifyRunningState();
