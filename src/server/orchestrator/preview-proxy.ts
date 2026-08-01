@@ -21,6 +21,10 @@ import type { FastifyInstance } from "fastify";
 import type { SessionContainerManager } from "./session-container.js";
 import type { ServiceManager } from "./service-manager.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
+import {
+  AGENT_INTERFACE_SDK_MARKER,
+  AGENT_INTERFACE_SDK_SCRIPT,
+} from "../shared/agent-interface-sdk/bootstrap.js";
 
 // ---------------------------------------------------------------------------
 // Subdomain parsing
@@ -81,6 +85,16 @@ const HMR_WS_PATCH = `<script>(function(){` +
     `})` +
   `}` +
   `})()</script>`;
+
+export function injectPreviewBootstrap(html: string): string {
+  const scripts = html.includes(AGENT_INTERFACE_SDK_MARKER)
+    ? HMR_WS_PATCH
+    : HMR_WS_PATCH + AGENT_INTERFACE_SDK_SCRIPT;
+  const headIdx = html.search(/<head[^>]*>/i);
+  if (headIdx === -1) return scripts + html;
+  const insertAt = html.indexOf(">", headIdx) + 1;
+  return html.slice(0, insertAt) + scripts + html.slice(insertAt);
+}
 
 // ---------------------------------------------------------------------------
 // Forwarded headers
@@ -190,15 +204,7 @@ function proxyHttp(
         const chunks: Buffer[] = [];
         proxyRes.on("data", (chunk: Buffer) => chunks.push(chunk));
         proxyRes.on("end", () => {
-          let html = Buffer.concat(chunks).toString("utf-8");
-          // Inject right after <head> (or at the start if no <head>)
-          const headIdx = html.search(/<head[^>]*>/i);
-          if (headIdx !== -1) {
-            const insertAt = html.indexOf(">", headIdx) + 1;
-            html = html.slice(0, insertAt) + HMR_WS_PATCH + html.slice(insertAt);
-          } else {
-            html = HMR_WS_PATCH + html;
-          }
+          const html = injectPreviewBootstrap(Buffer.concat(chunks).toString("utf-8"));
           const outHeaders = { ...proxyRes.headers };
           delete outHeaders["content-length"];
           delete outHeaders["content-encoding"];

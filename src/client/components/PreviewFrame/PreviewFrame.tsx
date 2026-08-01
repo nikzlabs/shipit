@@ -31,6 +31,17 @@ export interface PreviewStatus {
   errorOutput?: string;
 }
 
+const READY_BUFFER_LIMIT = 8;
+const READY_BUFFER_TTL_MS = 2_000;
+
+function previewOrigin(url: string): string | null {
+  try {
+    return new URL(url, window.location.href).origin;
+  } catch {
+    return null;
+  }
+}
+
 interface PreviewFrameProps {
   preview: PreviewStatus | null;
   /** Current session ID — part of the iframe-pool slot key (`sessionId:port`). */
@@ -168,6 +179,7 @@ export function PreviewFrame({
   // came up cleanly.
   const [authBlocked, setAuthBlocked] = useState(false);
   const loadedSlotsRef = useRef<Set<string>>(new Set());
+  const pendingReadyRef = useRef<{ source: MessageEventSource; origin: string; receivedAt: number }[]>([]);
   const authRetryRef = useRef(0);
   const lastAuthUrlRef = useRef<string | null>(null);
   // Mirror `activeSlotKey` into a ref so the postMessage listener (registered
@@ -177,9 +189,48 @@ export function PreviewFrame({
   const MAX_AUTH_TIMEOUT_MS = 5000;
   const MAX_AUTH_RETRIES = 2;
 
+  const replyToVisibilityReady = (
+    source: MessageEventSource,
+    origin: string,
+  ): "sent" | "rejected" | "unmatched" => {
+    for (const [key, el] of iframeRefs.current.entries()) {
+      if (!el?.contentWindow || el.contentWindow !== source) continue;
+      const slot = slots.get(key);
+      const expectedOrigin = slot ? previewOrigin(slot.url) : null;
+      if (!expectedOrigin || origin !== expectedOrigin) return "rejected";
+      el.contentWindow.postMessage({
+        source: "shipit-preview",
+        type: "visibility",
+        visible: key === activeSlotKeyRef.current && !hideIframe,
+      }, expectedOrigin);
+      return "sent";
+    }
+    return "unmatched";
+  };
+
+  const drainPendingReady = () => {
+    const now = Date.now();
+    pendingReadyRef.current = pendingReadyRef.current.filter((pending) => {
+      if (now - pending.receivedAt > READY_BUFFER_TTL_MS) return false;
+      return replyToVisibilityReady(pending.source, pending.origin) === "unmatched";
+    });
+  };
+
   useEventListener(window, "message", (event) => {
     const data = event.data as { source?: string; type?: string } | undefined;
-    if (data?.source !== "shipit-preview" || data?.type !== "loaded") return;
+    if (data?.source !== "shipit-preview") return;
+    if (data.type === "ready" && event.source) {
+      const result = replyToVisibilityReady(event.source, event.origin);
+      if (result === "unmatched") {
+        const pending = pendingReadyRef.current.filter(
+          (entry) => Date.now() - entry.receivedAt <= READY_BUFFER_TTL_MS,
+        );
+        pending.push({ source: event.source, origin: event.origin, receivedAt: Date.now() });
+        pendingReadyRef.current = pending.slice(-READY_BUFFER_LIMIT);
+      }
+      return;
+    }
+    if (data.type !== "loaded") return;
     // Identify which pool slot the message came from by matching
     // `event.source` against each iframe's contentWindow. We can't trust
     // the message contents for this — the injected script doesn't know
@@ -322,6 +373,24 @@ export function PreviewFrame({
 
   // When not running, hide the iframe behind the overlay (but keep DOM element alive)
   const hideIframe = !isRunning && !showStarting;
+
+  // Keep every mounted page informed when its ShipIt surface becomes visible
+  // or hidden. Background slots remain alive by design, so CSS alone is not a
+  // sufficient lifecycle signal for audio, animation, or automatic work.
+  // eslint-disable-next-line no-restricted-syntax -- synchronize cooperative child visibility with iframe-pool state
+  useEffect(() => {
+    drainPendingReady();
+    for (const [key, el] of iframeRefs.current.entries()) {
+      const slot = slots.get(key);
+      const expectedOrigin = slot ? previewOrigin(slot.url) : null;
+      if (!el?.contentWindow || !expectedOrigin) continue;
+      el.contentWindow.postMessage({
+        source: "shipit-preview",
+        type: "visibility",
+        visible: key === activeSlotKey && !hideIframe,
+      }, expectedOrigin);
+    }
+  }, [activeSlotKey, hideIframe, slotOrder, slots]);
 
   // Determine overlay content for the main area
   let overlayContent: React.ReactNode = null;
@@ -519,7 +588,10 @@ export function PreviewFrame({
           return (
             <iframe
               key={key}
-              ref={(el) => { iframeRefs.current.set(key, el); }}
+              ref={(el) => {
+                iframeRefs.current.set(key, el);
+                if (el) drainPendingReady();
+              }}
               src={slot.url}
               title={isActive ? "Live Preview" : "Background Preview"}
               style={deviceFrameStyle}
