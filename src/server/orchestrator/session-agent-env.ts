@@ -36,7 +36,8 @@ import {
   syncMemoryBack,
 } from "./session-credentials.js";
 import { repoUrlToHash } from "./git-utils.js";
-import type { ProviderAccountManager } from "./provider-account-manager.js";
+import type { ProviderAccountManager, ProviderRoute } from "./provider-account-manager.js";
+import { routeFromSelection } from "./provider-route-preflight.js";
 import { refreshExpiredMcpOAuthTokens } from "./services/mcp-oauth.js";
 import { collectMcpAgentEnv } from "./secret-resolver.js";
 import { buildConversationReplay } from "./services/replay.js";
@@ -244,17 +245,63 @@ export interface PrepareSessionAgentEnvironmentResult {
   overrideAgentSessionId?: string | null;
 }
 
+/**
+ * Resolve the provider route for a turn that has not pinned one yet.
+ *
+ * With `enforce`, throws {@link ProviderRouteUnavailableError} when no
+ * connected account can serve the turn (docs/150 reqs 13, 17). Returns
+ * `undefined` — today's behavior — when there is no router wired at all
+ * (tests, local runtime), when the only problem is that nothing is signed in
+ * (which has its own UX), or when this call isn't the turn's own preflight.
+ */
+function selectRouteForNewTurn(
+  agentId: AgentId,
+  model: string | undefined,
+  deps: SessionAgentEnvDeps,
+  enforce: boolean,
+): ProviderRoute | undefined {
+  const manager = deps.providerAccountManager;
+  if (!manager) return undefined;
+  const selection = manager.selectAccountForTurn(agentId, model === undefined ? {} : { model });
+  if (!enforce) return selection.ok ? selection.route : undefined;
+  return routeFromSelection(agentId, selection);
+}
+
 export async function prepareSessionAgentEnvironment(
   runner: SessionRunnerInterface | null,
-  args: { sessionId: string; agentId: AgentId; deps: SessionAgentEnvDeps },
+  args: {
+    sessionId: string;
+    agentId: AgentId;
+    deps: SessionAgentEnvDeps;
+    /**
+     * docs/150 req 13 — set by the two callers that are the turn's own
+     * pre-spawn step (`turn-executor` via `SystemTurnDeps.prepareAgentEnv`,
+     * for both the WS and dispatched paths). Only there may this function
+     * throw: a blocked turn has to fail *as a turn*, so the agent-error path
+     * writes the reason into the session's transcript, clears turn state, and
+     * drains the queue.
+     *
+     * The service-level warm-up calls (child spawn, headless create, CI fix,
+     * session wake) leave it unset and keep their fail-open contract — they
+     * run before the turn exists, and throwing there would abort a session
+     * *creation* instead of a turn, leaving a session in the sidebar that no
+     * one asked for. Those paths simply pin nothing; the executor's own
+     * preflight, moments later, is what stops the turn and tells the user.
+     */
+    enforceAccountRouting?: boolean;
+  },
 ): Promise<PrepareSessionAgentEnvironmentResult> {
   const { sessionId, agentId, deps } = args;
   const session = deps.sessionManager.get(sessionId);
   if (!session) return {};
+  // docs/150 reqs 13/17 — route preflight. For a session that has not been
+  // pinned to a route yet this is the decision point, so it is also the last
+  // moment a turn can be stopped *before* pinning and credential provisioning
+  // make it look like it ran on an account.
   const selectedRoute =
     session.providerRouteKind && session.providerRouteId
       ? { kind: session.providerRouteKind, id: session.providerRouteId }
-      : deps.providerAccountManager?.selectRouteForTurn(agentId);
+      : selectRouteForNewTurn(agentId, session.model, deps, args.enforceAccountRouting ?? false);
 
   // Step 1: provision the pinned agent's credential subtree (write-once),
   // then mark the session as pinned. After the first turn `session.agentPinned`

@@ -1045,6 +1045,56 @@ attention are:
 The shared preflight then validates that the hydrated account/route is still
 usable before the turn starts.
 
+#### Landed: the preflight is `prepareSessionAgentEnvironment`, not a new helper
+
+The design above asked for a new `prepareProviderAccountTurn(...)` that every
+turn entrypoint would be made to call. Building it turned out to be
+unnecessary: `prepareSessionAgentEnvironment` (docs/149) is *already* that
+chokepoint, and already does five of the eight things the helper was specified
+to do (resolve/pin the route, provision account-qualified credentials, sync the
+token in, record state for sync-back, decide reuse). Every entrypoint the
+section lists reaches it — the WS path and the dispatched/system-turn path both
+through `SystemTurnDeps.prepareAgentEnv`, plus service-level warm-up calls from
+child spawn, child send, headless create, CI fix, and session wake. Adding a
+second preflight beside it would have meant two places that pin a route.
+
+So the preflight is that function, extended with the routing decision:
+
+- Route resolution moved from `selectRouteForTurn` (route-or-null) to
+  `selectAccountForTurn` (route-or-reason), with the session's `model` passed
+  through so req 17's skip-and-report can fire.
+- `provider-route-preflight.ts` decides what a `{ ok: false }` means:
+  `all_exhausted` and `no_model_eligible_account` throw
+  `ProviderRouteUnavailableError`; `auth_required` does not. Not-signed-in
+  already has a guided surface (`authConfigured`, the Settings account rows),
+  and converting it into a thrown turn error would replace that flow with a
+  dead end — so it keeps today's fall-through.
+- The throw is gated on an explicit `enforceAccountRouting` flag, set by
+  exactly the two callers that are a turn's own pre-spawn step
+  (`ws-handlers/agent-execution.ts` for the WS path,
+  `runner-registry-factory.ts` for the dispatched path — the latter also
+  gained `providerAccountManager`, which it had never been given). The
+  service-level warm-up calls keep their fail-open contract: they run *before*
+  the turn exists, so throwing there would abort a session **creation**,
+  stranding a session in the sidebar that nobody asked for. They simply pin
+  nothing, and the executor's preflight moments later is what stops the turn.
+- The block surfaces through the existing agent-`error` path, which already
+  persists a terminal error row into the transcript, clears turn state, marks
+  `lastTurnErrored`, and drains the queue. `agent-listeners.ts` special-cases
+  `ProviderRouteUnavailableError` so the user is not told their agent crashed:
+  nothing crashed, and the message already says when quota returns and that
+  the resend is theirs to make (req 13 — ShipIt does not hold the prompt).
+
+Because the check runs before Step 1, a blocked turn leaves **no** pinning and
+**no** provisioned credential subtree — the next turn re-decides rather than
+inheriting a route the router never chose.
+
+**Not yet covered.** A session that is *already pinned* skips selection
+entirely, so this fails fast only for the first turn of a session. Re-checking
+a pinned session's account — and moving it when its own quota is gone — is the
+failover work in Phase 3/4 (reqs 3, 7, 8), not something this preflight does
+today.
+
 ### Quota and exhaustion detection
 
 Doc 135's limits map changes shape from a one-level agent-keyed record to a

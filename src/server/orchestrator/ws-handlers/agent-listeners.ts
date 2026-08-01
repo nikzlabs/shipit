@@ -35,6 +35,7 @@ import {
 import { observeVoiceNotes } from "./agent-voice-handler.js";
 import { wireAuthRequiredHandler } from "./agent-auth-handler.js";
 import { normalizeAgentUsageLimitError } from "./agent-rate-limits.js";
+import { ProviderRouteUnavailableError } from "../provider-route-preflight.js";
 
 // `buildTurnMessages` / `persistTurnInProgress` now live in
 // `chat-card-persistence.ts` (co-located with `recordChatCard`, which shares
@@ -1232,9 +1233,17 @@ export function wireAgentListeners(
   wireAuthRequiredHandler(agent, runner, deps, opts, emitToViewers);
 
   agent.on("error", async (err: Error) => {
-    console.error("[agent] process error:", err.message);
-    deps.broadcastLog("server", `Agent process error: ${err.message}`);
-    emitToViewers({ type: "error", message: `Agent process error: ${err.message}` });
+    // docs/150 req 13 — a turn blocked because no connected account can serve
+    // it is a routing decision, not a crashed process. It reaches this handler
+    // (env-prep throws, `executeAgentTurn` re-emits as `error`) so it inherits
+    // the whole terminal-turn cleanup below, but the user must not be told
+    // their agent crashed: the message already says what happened and what to
+    // do, so it is surfaced verbatim.
+    const blocked = err instanceof ProviderRouteUnavailableError;
+    const display = blocked ? err.message : `Agent process error: ${err.message}`;
+    console.error(blocked ? "[agent] turn blocked:" : "[agent] process error:", err.message);
+    deps.broadcastLog("server", display);
+    emitToViewers({ type: "error", message: display });
     const turnSessionId = opts.capturedSessionId;
     if (turnSessionId) {
       // Preserve whatever partial turn the agent produced before it errored.
@@ -1257,7 +1266,7 @@ export function wireAgentListeners(
       deps.chatHistoryManager.finalizeInProgress(turnSessionId);
       deps.chatHistoryManager.append(turnSessionId, {
         role: "assistant",
-        text: `Error: ${err.message}`,
+        text: blocked ? err.message : `Error: ${err.message}`,
         isError: true,
       });
     }
