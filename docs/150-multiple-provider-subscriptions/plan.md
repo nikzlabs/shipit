@@ -40,6 +40,11 @@ The product shape should be:
 
 ## Requirement provenance
 
+The human-stated requirements for this feature live in
+[`requirements.md`](./requirements.md) and are the source of truth; this doc is
+design. Open questions in that file block implementation until the user answers
+them (see `/shipit-docs/spec-discipline.md`).
+
 The original requirement was automatic failover among multiple authenticated
 subscriptions. A follow-up user requirement made the policy explicit:
 
