@@ -55,6 +55,7 @@ function makeRunnerRegistry(sessionId: string) {
   const runner = {
     emitMessage: (m: { type: string }) => emitted.push(m),
     chatMessageGroups: [] as { text: string; toolUse: unknown[] }[],
+    steeredMessages: [] as unknown[],
     recordedCards: [] as unknown[],
   };
   return {
@@ -103,6 +104,7 @@ async function buildApp(overrides?: {
   credentialStore?: ReturnType<typeof makeCredentialStore>;
   authManager?: ReturnType<typeof makeAuthManager>;
   runnerRegistry?: { get: (id: string) => unknown };
+  chatHistoryManager?: { replaceInProgress: (sessionId: string, messages: unknown[]) => void };
 }): Promise<{
   app: FastifyInstance;
   credentialStore: ReturnType<typeof makeCredentialStore>;
@@ -118,6 +120,7 @@ async function buildApp(overrides?: {
     workspaceDir: tmpDir,
     stateDir: tmpDir,
     runnerRegistry: overrides?.runnerRegistry ?? { get: () => undefined },
+    chatHistoryManager: overrides?.chatHistoryManager ?? { replaceInProgress: vi.fn() },
   } as unknown as ApiDeps);
   await app.ready();
   return { app, credentialStore, authManager };
@@ -492,13 +495,13 @@ describe("Voice-note webhook config (docs/163)", () => {
 });
 
 describe("POST /api/sessions/:sessionId/voice-note (docs/163)", () => {
-  it("acks delivered:true for an active runner WITHOUT delivering (observation is the deliverer)", async () => {
-    // docs/163 — the card + webhook are delivered from the event-stream
-    // observation of the voice_note tool call (agent-listeners.ts), built from
-    // the tool input. This relay is a pure ack: it must NOT emit or record a
-    // card, only report that a runner exists to receive the note.
+  it("delivers through the bridge when event-stream observation is unavailable", async () => {
     const { emitted, runner, registry } = makeRunnerRegistry("sess-1");
-    const { app } = await buildApp({ runnerRegistry: registry });
+    const replaceInProgress = vi.fn();
+    const { app } = await buildApp({
+      runnerRegistry: registry,
+      chatHistoryManager: { replaceInProgress },
+    });
     const res = await app.inject({
       method: "POST",
       url: "/api/sessions/sess-1/voice-note",
@@ -506,8 +509,15 @@ describe("POST /api/sessions/:sessionId/voice-note (docs/163)", () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ delivered: true });
-    expect(emitted).toHaveLength(0);
-    expect(runner.recordedCards).toHaveLength(0);
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]).toMatchObject({
+      type: "voice_note",
+      sessionId: "sess-1",
+      headline: "Done — want me to open a PR?",
+      needsAttention: true,
+    });
+    expect(runner.recordedCards).toHaveLength(1);
+    expect(replaceInProgress).toHaveBeenCalled();
     await app.close();
   });
 
