@@ -102,6 +102,9 @@ describe("Integration: quick-capture headless sessions", () => {
     });
     repoStore.add(REPO_URL);
     repoStore.setReady(REPO_URL);
+    // Quick capture starts an agent turn immediately, so its repository
+    // fixture represents one the user has already trusted.
+    repoStore.setTrusted(REPO_URL, true);
 
     githubAuth = new StubGitHubAuthManager();
     app = await buildApp({
