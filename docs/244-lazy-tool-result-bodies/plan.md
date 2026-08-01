@@ -10,14 +10,16 @@ Paging (SHI-266, not yet built) bounds how many **rows** a transcript load
 transfers. It does not bound **bytes**: a window of ten turns containing several
 near-1 MB tool outputs is still a heavy payload. This feature bounds the bytes.
 
-## Requirement provenance
+## Requirements
 
-Stated (UX-level): loading a transcript should not transfer megabytes of tool
-output the user will never look at.
+This feature is under requirements discipline — `requirements.md` in this folder
+is the source of truth for what it must do, and **four open questions there
+currently block implementation**. Everything in this document is design: the
+mechanism chosen to satisfy those requirements, not the requirements themselves.
 
-Everything below is inferred mechanism. The guiding constraint is that **no
-change should be visible in the transcript** — every mechanism here keeps
-exactly what the UI draws today and defers only what sits behind a click.
+The guiding constraint below — that **no change should be visible in the
+transcript** — is an inferred design stance, not a stated requirement. It is the
+first open question, because it is what rules out several cheaper options.
 
 ## What the UI actually draws
 

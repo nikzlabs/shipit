@@ -1,5 +1,15 @@
 # Lazy row bodies — checklist
 
+> Under requirements discipline — see `requirements.md`. Implementation is
+> blocked while its `## Open questions` section is non-empty.
+
+## Requirements
+- [x] Draft `requirements.md` from the issue and the chat
+- [ ] Resolve: is zero visible change a hard requirement?
+- [ ] Resolve: may images display at reduced resolution until clicked?
+- [ ] Resolve: what shows when a body is no longer fetchable?
+- [ ] Resolve: is there a target transferred size?
+
 ## Design
 - [x] Verify what each column actually draws inline vs. behind a click
 - [x] Confirm the constraint consumers (AskUserQuestion, ExitPlanMode, Present, subagent report)
