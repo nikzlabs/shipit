@@ -180,6 +180,17 @@ This design does not invent revocation requirements. It does ensure queue drains
 ### Regression and discovery
 
 - Existing install/Compose trust-gate tests remain green.
+- **Every integration fixture whose scenario runs an agent turn against a
+  session with a remote must grant trust explicitly** —
+  `repoStore.setTrusted(REPO_URL, true)` beside the existing
+  `add()` / `setReady()` in its `beforeEach`. The gate is fail-closed, so a
+  fixture that omits it fails at the first turn with "Trust this repository
+  before sending messages to the agent", which surfaces far from the cause: as
+  a 500 from `POST /api/sessions/:id/spawn`, a wake-turn that never delivers,
+  or a `waitForClaude` timeout. The first pass covered the agent-driven PR,
+  spawned-session, Ops fix-spawn, PR auto-create and quick-capture fixtures;
+  `session-report`, `session-notify-on-merge`, `release-flow` and
+  `warm-sessions` were missed and fixed after they went red on main.
 - Run the docs navigator index and confirm this package is listed independently from docs/178 and the Agent Interface SDK package.
 
 ## Complexity challenge

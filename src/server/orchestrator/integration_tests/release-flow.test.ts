@@ -18,6 +18,15 @@ import {
   createTestDatabaseManager,
 } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
+import { RepoStore } from "../repo-store.js";
+
+/**
+ * The remote both tests attach to their session. docs/243 gates every agent
+ * turn on runner-owned trust admission against the session's remote, so the
+ * fixture registers this URL as trusted — the release flow needs turns to run,
+ * and the trust gate has its own coverage elsewhere.
+ */
+const REPO_URL = "https://github.com/owner/repo";
 
 /**
  * docs/171 Phase 1 — confirm → tag → publish, end to end. Drives the WS turn
@@ -43,10 +52,18 @@ describe("Integration: release flow — propose → tag → publish", () => {
     githubAuthManager = new StubGitHubAuthManager();
     await githubAuthManager.setToken("test-token");
 
+    // Registered (but deliberately NOT marked ready — that would make the
+    // startup pass try to warm a session against a bare cache this suite
+    // never seeds) purely so the trust flag has a row to land on.
+    const repoStore = new RepoStore(dbManager);
+    repoStore.add(REPO_URL);
+    repoStore.setTrusted(REPO_URL, true);
+
     app = await buildApp({
       credentialStore: createTestCredentialStore(tmpDir),
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
+      repoStore,
       authManager: new StubAuthManager() as unknown as AuthManager,
       githubAuthManager: githubAuthManager as unknown as GitHubAuthManager,
       agentFactory: () => {

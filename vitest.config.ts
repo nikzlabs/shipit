@@ -1,10 +1,17 @@
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
-// Some ShipIt session images run with NODE_ENV=production. React's production
-// bundle does not export `act`, which breaks React Testing Library even though
-// the same tests pass in CI with NODE_ENV=test.
-if (process.env.NODE_ENV === "production") {
+// CI runs with NODE_ENV unset, so Vitest sets it to "test". A ShipIt session
+// image inherits its own value (production, development, …) and Vitest leaves
+// an already-set one alone — so a local run silently diverges from CI on any
+// code that branches on it. Two ways that has bitten:
+//   - React's production bundle does not export `act`, breaking React Testing
+//     Library while the same tests pass in CI.
+//   - Test-only escape hatches keyed on `NODE_ENV === "test"` (e.g.
+//     `SessionRunner.authorizeDispatch`'s, docs/243) stay disabled, so suites
+//     fail locally for a reason that does not exist in CI.
+// Normalize to what CI does rather than enumerating the values one at a time.
+if (process.env.NODE_ENV !== "test") {
   process.env.NODE_ENV = "test";
 }
 
