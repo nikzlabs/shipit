@@ -74,7 +74,7 @@ services:
       while [ ! -x node_modules/.bin/vite ]; do
         echo '[dev] waiting for agent.install to populate node_modules…'; sleep 1;
       done &&
-      (PORT=4000 npm run dev 2>&1 | sed 's/^/[orch] /' &) &&
+      PORT=4000 npm run dev &
       API_PORT=4000 exec npx vite --host 0.0.0.0 --port 3000
       "
     working_dir: /workspace
