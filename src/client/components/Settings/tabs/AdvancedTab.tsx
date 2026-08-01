@@ -415,12 +415,13 @@ export function AdvancedTab({
         )}
         {updateApplying && (
           <p className="text-sm text-(--color-text-secondary)">
-            Updating... ShipIt will restart momentarily. Refresh the page in a few seconds.
+            Updating... ShipIt will restart momentarily, and this page reloads itself
+            once the new version is up.
           </p>
         )}
         {restarting && (
           <p className="text-sm text-(--color-text-secondary)">
-            Restarting... ShipIt will be back momentarily. Refresh the page in a few seconds.
+            Restarting... ShipIt will be back momentarily and reconnects on its own.
           </p>
         )}
         {updateError && (

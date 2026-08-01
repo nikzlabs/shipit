@@ -76,6 +76,10 @@ describe("Integration: session report (docs/233)", () => {
     seedRepoCacheWithLocalBare({ tmpDir, repoUrl: REPO_URL, seedFiles: { "README.md": "# x\n" } });
     repoStore.add(REPO_URL);
     repoStore.setReady(REPO_URL);
+    // docs/243 — a report is delivered as a wake-turn, and every agent turn
+    // now passes runner-owned trust admission. This suite exercises report
+    // delivery after repository consent, not the trust gate itself.
+    repoStore.setTrusted(REPO_URL, true);
 
     app = await buildApp({
       credentialStore,

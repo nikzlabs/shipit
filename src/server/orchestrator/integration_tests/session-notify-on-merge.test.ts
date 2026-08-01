@@ -79,6 +79,10 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
     seedRepoCacheWithLocalBare({ tmpDir, repoUrl: REPO_URL, seedFiles: { "README.md": "# x\n" } });
     repoStore.add(REPO_URL);
     repoStore.setReady(REPO_URL);
+    // docs/243 — the merge notification is delivered as a wake-turn, and every
+    // agent turn now passes runner-owned trust admission. This suite exercises
+    // watch/delivery behavior after repository consent, not the trust gate.
+    repoStore.setTrusted(REPO_URL, true);
 
     app = await buildApp({
       credentialStore,

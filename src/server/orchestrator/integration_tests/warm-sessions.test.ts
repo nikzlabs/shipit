@@ -90,6 +90,10 @@ describe("Integration: warm session lifecycle", () => {
     // (setTimeout(0)) picks it up and calls warmSessionForRepo.
     repoStore.add(REPO_URL);
     repoStore.setReady(REPO_URL);
+    // docs/243 — graduation runs the first agent turn, which now passes
+    // runner-owned trust admission. This suite exercises the warm-pool
+    // lifecycle after repository consent, not the trust gate itself.
+    repoStore.setTrusted(REPO_URL, true);
 
     app = await buildApp({
       createGitManager: (dir: string) => new GitManager(dir),
