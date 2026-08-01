@@ -237,7 +237,7 @@ export function failoverPinnedSession(
   // A reserved route is not a failover target (req 12), and re-selecting the
   // same account would mean the router disagrees with `isRouteUsableForTurn` —
   // in either case, leave the session where it is rather than churn it.
-  if (!next || next.kind !== "account" || next.id === fromAccountId) return null;
+  if (next?.kind !== "account" || next.id === fromAccountId) return null;
 
   // Kill first: a live process keeps spending the outgoing account's token
   // regardless of what we write to disk.

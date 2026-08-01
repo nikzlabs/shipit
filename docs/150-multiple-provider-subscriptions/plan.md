@@ -1715,6 +1715,22 @@ errors, performing the single retry on the next eligible account (req 14),
 recording the switch as a chat-visible event (req 11), and surfacing the three
 failure states on a blocked turn (req 13's message).
 
+**Existing pinned sessions now run the same quota preflight.** Before every
+enforced turn, `prepareSessionAgentEnvironment` asks whether the persisted
+account route is still usable for the requested model and current quota
+snapshot. If not, it selects the next eligible subscription account, stops any
+resident process that still holds the outgoing token, reprovisions only the
+credential files while preserving Claude/Codex conversation-state paths, and
+updates the persisted route without clearing `agentSessionId`. The switch is
+written into the ShipIt transcript with both user-facing account labels. When
+no account can serve the turn, the existing structured route error fails it
+before spawn and reports the earliest reset instead of falling through to an
+API-key route. Streaming chat releases a stale resident process before the turn
+executor captures it, so the executor never tries to steer a process that the
+environment preflight just killed. Unit coverage exercises account switching,
+conversation preservation, process termination, healthy secondary affinity,
+reserved-route isolation, and the all-exhausted failure.
+
 Planned authentication-surface consolidation:
 
 - **One row model for both providers.** `ProviderAccountsCard` owns every
