@@ -15,7 +15,7 @@ When a user starts a feature directly in chat and asks to use requirements disci
 The document is deliberately readable without specialist notation:
 
 ```markdown
-# Feature name: requirements
+# Session sharing requirements
 
 1. A numbered, plain-language statement of what the feature must do.
 2. Another observable requirement, without implementation details.
@@ -30,6 +30,8 @@ The document is deliberately readable without specialist notation:
 ```
 
 Requirements say what the feature must do, not how it will be implemented. Keep implementation decisions in `plan.md`. A requirement comes from the human, either directly or by approving an assumption the agent proposed. The agent must not promote its own guess into a requirement.
+
+For a feature under this discipline, `requirements.md` is the first destination for human input. Any human input that adds, removes, changes, or clarifies what the feature should do must first update the numbered requirements (and, when resolving an open question, its clarification receipt). Only then may the design be updated to implement those requirements. Updating `plan.md` directly from human input while leaving `requirements.md` unchanged is an anti-pattern: it lets the design become a second, hidden source of requirements.
 
 Use stable numbered statements as requirement IDs. Designs, checklists, implementation notes, and review findings can refer to them as `req 1`, `req 2`, and so on. Preserve existing numbers when editing; append new requirements unless the human explicitly restructures the document.
 
