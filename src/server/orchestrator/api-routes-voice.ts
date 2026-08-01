@@ -28,6 +28,7 @@ import {
   speakVoice,
 } from "./services/voice.js";
 import { TtsCache } from "./voice/index.js";
+import { routeVoiceNote, sanitizeVoiceContext } from "./voice/voice-note-router.js";
 
 export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): Promise<void> {
   const { credentialStore, authManager } = deps;
@@ -183,15 +184,11 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
   // Built-in voice_note tool write-back. The `shipit` bridge → worker
   // `/agent-ops/voice/note` relays here with the trusted session id.
   //
-  // docs/163 — delivery (the native card + the webhook) is driven entirely by
-  // the orchestrator's OBSERVATION of the `voice_note` tool call in the agent
-  // event stream (`agent-listeners.ts`): the card is built from the tool INPUT,
-  // and observation is guaranteed and on the same fast channel as the rest of
-  // the turn. This relay therefore does NOT deliver — it exists only to give
-  // the agent's MCP tool call a return value. We report whether an active
-  // runner exists to receive the note (a torn-down turn can't); a subagent's
-  // call isn't observed at the top level and so won't render — by design, a
-  // subagent shouldn't be paging the user.
+  // Event-stream observation remains the preferred low-latency delivery path,
+  // but not every agent adapter exposes MCP tool calls in an observable
+  // assistant event. The bridge therefore also routes the note as a reliability
+  // fallback. `routeVoiceNote` deduplicates identical authored payloads within
+  // the turn, so whichever path arrives second is a no-op.
   app.post<{
     Params: { sessionId: string };
     Body: { summary?: string; needsAttention?: boolean; context?: unknown };
@@ -207,7 +204,25 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
       }
 
       const runner = deps.runnerRegistry.get(sessionId);
-      return { delivered: !!runner };
+      if (!runner) return { delivered: false };
+
+      const context = sanitizeVoiceContext(request.body?.context);
+      const result = await routeVoiceNote(
+        {
+          summary,
+          needsAttention: request.body?.needsAttention === true,
+          ...(context ? { context } : {}),
+        },
+        {
+          runner,
+          sessionId,
+          credentialStore,
+          chatHistoryManager: deps.chatHistoryManager,
+          source: "authored",
+          authoredPath: "bridge",
+        },
+      );
+      return { delivered: result.native || result.webhook || result.duplicate };
     },
   );
 }

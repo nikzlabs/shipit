@@ -54,6 +54,9 @@ interface VoiceTurnState {
   authored: boolean;
   /** Count of attention-grabbing notes routed this turn (for the cap). */
   attentionCount: number;
+  /** Authored payloads already delivered, regardless of whether they arrived
+   * through event-stream observation or the HTTP bridge fallback. */
+  authoredPayloads: Map<string, { id: string; path: "observation" | "bridge" }>;
 }
 
 // Per-turn voice state keyed by runner. A WeakMap keeps both runner
@@ -65,7 +68,7 @@ const turnStates = new WeakMap<object, VoiceTurnState>();
 function stateFor(runner: object): VoiceTurnState {
   let s = turnStates.get(runner);
   if (!s) {
-    s = { authored: false, attentionCount: 0 };
+    s = { authored: false, attentionCount: 0, authoredPayloads: new Map() };
     turnStates.set(runner, s);
   }
   return s;
@@ -114,6 +117,9 @@ export interface RouteVoiceNoteDeps {
   chatHistoryManager: InProgressPersister;
   /** Where this note came from (authored / derived). */
   source: VoiceNoteSource;
+  /** Which authored-tool transport reached the router. Used only to collapse
+   * the event observation and HTTP fallback for the same call. */
+  authoredPath?: "observation" | "bridge";
   /** Injectable for tests; defaults to the global fetch. */
   fetchImpl?: typeof fetch;
   /** Injectable id factory (synthetic note id). */
@@ -136,6 +142,8 @@ export interface RouteVoiceNoteResult {
   attention: boolean;
   /** True when the per-turn attention cap downgraded this note to silent. */
   capped: boolean;
+  /** The same authored call was already delivered through the other path. */
+  duplicate: boolean;
 }
 
 let fallbackCounter = 0;
@@ -161,11 +169,44 @@ export async function routeVoiceNote(
   deps: RouteVoiceNoteDeps,
 ): Promise<RouteVoiceNoteResult> {
   const { runner, sessionId, credentialStore, source, chatHistoryManager } = deps;
-  const id = (deps.idFactory ?? defaultId)();
-  const nowIso = (deps.now ?? (() => new Date().toISOString()))();
-
   const state = stateFor(runner);
-  if (source === "authored") state.authored = true;
+  if (source === "authored") {
+    state.authored = true;
+    // The event stream is the preferred low-latency path, while the bridge is
+    // a reliability fallback for adapters that don't surface MCP tool calls in
+    // an observable assistant event. Both carry the same sanitized payload, so
+    // suppress whichever path arrives second. Mark synchronously before any
+    // webhook await so racing paths cannot double-send.
+    const fingerprint = JSON.stringify({
+      summary: payload.summary,
+      needsAttention: payload.needsAttention,
+      context: payload.context ?? null,
+    });
+    const path = deps.authoredPath ?? "observation";
+    const existing = state.authoredPayloads.get(fingerprint);
+    if (existing && existing.path !== path) {
+      state.authoredPayloads.delete(fingerprint);
+      return {
+        id: existing.id,
+        native: false,
+        webhook: false,
+        attention: payload.needsAttention,
+        capped: false,
+        duplicate: true,
+      };
+    }
+    const id = (deps.idFactory ?? defaultId)();
+    state.authoredPayloads.set(fingerprint, { id, path });
+  }
+
+  const id = source === "authored"
+    ? state.authoredPayloads.get(JSON.stringify({
+        summary: payload.summary,
+        needsAttention: payload.needsAttention,
+        context: payload.context ?? null,
+      }))!.id
+    : (deps.idFactory ?? defaultId)();
+  const nowIso = (deps.now ?? (() => new Date().toISOString()))();
 
   // Per-turn attention cap. A `needsAttention: false` note is silent by
   // construction; an attention note past the cap is downgraded to silent.
@@ -186,6 +227,7 @@ export async function routeVoiceNote(
     webhook: false,
     attention,
     capped,
+    duplicate: false,
   };
 
   // ---- Native sink ----

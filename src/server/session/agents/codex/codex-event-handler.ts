@@ -29,6 +29,7 @@ import {
   contentToAddedDiff,
   fileChangeKindLabel,
   isAskUserQuestionTool,
+  normalizeMcpToolName,
   normalizeFileChangeDiff,
   normalizeWebSearchItem,
   summarizeCodexSubagentPrompt,
@@ -471,10 +472,13 @@ export class CodexEventHandler {
             input = { raw: item.arguments };
           }
         }
+        const toolName = item.type === "mcpToolCall"
+          ? normalizeMcpToolName(item.server, item.tool)
+          : item.tool ?? "tool";
         if (phase === "started") {
-          this.emitToolUseOnce(id, item.tool ?? "tool", input);
+          this.emitToolUseOnce(id, toolName, input);
         } else {
-          this.emitToolUseOnce(id, item.tool ?? "tool", input);
+          this.emitToolUseOnce(id, toolName, input);
           const payload = item.result ?? item.error ?? "";
           this.emitToolResult(id, typeof payload === "string" ? payload : JSON.stringify(payload));
         }

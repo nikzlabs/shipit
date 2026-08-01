@@ -197,6 +197,29 @@ three agent-facing surfaces that carry this contract:
   "Before AskUserQuestion/ExitPlanMode" bullet, and the "Don't speak the body"
   rule (now "Don't speak the *full* body").
 
+### Post-ship fix #5 — bridge fallback for adapters without observable MCP calls
+
+The authored-note path still had a false-success failure mode: the
+`POST /api/sessions/:id/voice-note` bridge endpoint returned
+`{ delivered: true }` whenever a runner existed but deliberately performed no
+delivery. It assumed every adapter would later expose the MCP call through an
+observable `agent_assistant` event. Codex can execute the bridge successfully
+without producing that event shape, so Both mode yielded neither the native
+card nor the external webhook even though the tool reported success.
+
+The Codex adapter now normalizes app-server's split MCP identity (`server:
+"shipit"`, `tool: "voice_note"`) to ShipIt's canonical shared-event name
+`mcp__shipit__voice_note`, matching Claude and restoring both the UI's MCP chip
+and the voice observer. The event-stream observation remains the preferred
+low-latency path, but the HTTP bridge also routes the sanitized payload as a
+reliability fallback. The
+router records authored payloads by transport (`observation` or `bridge`) for
+the current turn and suppresses the matching payload arriving from the other
+transport. This preserves the fast path and prevents duplicate cards/webhooks,
+while making `delivered: true` mean a sink actually delivered (or the other path
+already did). Route and router tests cover fallback delivery, persistence, and
+cross-transport deduplication.
+
 ## Problem
 
 ShipIt has two voice mechanisms today, and neither is the right surface for

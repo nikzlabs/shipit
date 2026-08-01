@@ -182,6 +182,38 @@ describe("routeVoiceNote", () => {
     expect(emitted).toHaveLength(1);
   });
 
+  it("deduplicates event observation against the bridge fallback", async () => {
+    const { runner, emitted } = fakeRunner();
+    const credentialStore = fakeCredentialStore({
+      mode: "both",
+      webhook: { url: "https://hook.example/notes", token: "t" },
+    });
+    let webhookCalls = 0;
+    const fetchImpl = (async () => {
+      webhookCalls += 1;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const observed = await route(base(), {
+      runner, sessionId: "s1", credentialStore, source: "authored",
+      authoredPath: "observation", fetchImpl, idFactory: deterministicId,
+    });
+    const bridged = await route(base(), {
+      runner, sessionId: "s1", credentialStore, source: "authored",
+      authoredPath: "bridge", fetchImpl, idFactory: deterministicId,
+    });
+
+    expect(observed.duplicate).toBe(false);
+    expect(bridged).toMatchObject({
+      id: observed.id,
+      duplicate: true,
+      native: false,
+      webhook: false,
+    });
+    expect(emitted).toHaveLength(1);
+    expect(webhookCalls).toBe(1);
+  });
+
   it("needsAttention: false renders a silent native bubble and never webhooks", async () => {
     const { runner, emitted } = fakeRunner();
     const credentialStore = fakeCredentialStore({

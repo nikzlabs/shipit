@@ -35,6 +35,7 @@ export interface CodexItem {
   // field name suggests — interpolating it raw was the "[object Object]" bug.
   changes?: { path: string; kind?: string | Record<string, unknown>; diff?: string }[];
   // mcpToolCall / dynamicToolCall — generic tool invocations
+  server?: string;
   tool?: string;
   arguments?: string; // JSON-encoded arguments
   result?: unknown;
@@ -55,6 +56,17 @@ export interface CodexItem {
   receiverThreadId?: string;
   newThreadId?: string;
   agentStatus?: string;
+}
+
+/**
+ * Convert Codex app-server's split MCP identity (`server`, `tool`) into the
+ * canonical name used by ShipIt's shared agent event model and UI. Claude
+ * already emits this `mcp__<server>__<tool>` form.
+ */
+export function normalizeMcpToolName(server: string | undefined, tool: string | undefined): string {
+  const name = tool?.trim() || "tool";
+  if (name.startsWith("mcp__") || !server?.trim()) return name;
+  return `mcp__${server.trim()}__${name}`;
 }
 
 /**
