@@ -6,7 +6,9 @@ import { CredentialStore } from "../credential-store.js";
 import { ProviderAccountManager, providerAccountCredentialRoot } from "../provider-account-manager.js";
 import { SessionManager } from "../sessions.js";
 import { createTestDatabaseManager } from "../integration_tests/test-helpers.js";
-import { switchSessionProviderAccount } from "./provider-account-switch.js";
+import { failoverPinnedSession, switchSessionProviderAccount } from "./provider-account-switch.js";
+import { ProviderRouteUnavailableError } from "../provider-route-preflight.js";
+import type { SubscriptionLimits, SubscriptionLimitsMap } from "../../shared/types.js";
 import { ServiceError } from "./types.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 
@@ -236,5 +238,202 @@ describe("switchSessionProviderAccount", () => {
     // Re-provisioning a session onto the account it is already using would kill
     // a healthy agent for nothing.
     expect(killed).toBe(0);
+  });
+});
+
+/**
+ * docs/150 reqs 3, 7, 8 — the pre-turn failover: an already-pinned session
+ * whose account is spent moves to the next eligible one, keeping its
+ * conversation, and fails the turn when there is nowhere to go.
+ */
+describe("failoverPinnedSession", () => {
+  let root: string;
+  let store: CredentialStore;
+  let accounts: ProviderAccountManager;
+  let sessions: SessionManager;
+  let limits: SubscriptionLimitsMap;
+
+  const SESSION = "sess-failover";
+  const sessionDir = () => path.join(root, "sessions", SESSION);
+
+  /** An exhausted 5h window that frees up at `resetAt`. */
+  function spent(resetAt: string): SubscriptionLimits {
+    return {
+      agentId: "claude",
+      routeId: "unused",
+      plan: null,
+      session: { usedPct: 100, resetAt },
+      weekly: null,
+      fetchedAt: 0,
+    };
+  }
+
+  function seedClaudeAccount(accountId: string, token: string): void {
+    const accountRoot = providerAccountCredentialRoot(root, "claude", accountId);
+    fs.mkdirSync(path.join(accountRoot, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(accountRoot, ".claude", ".credentials.json"), token);
+    fs.writeFileSync(path.join(accountRoot, ".claude.json"), token);
+  }
+
+  const deps = () => ({
+    sessionManager: sessions,
+    providerAccountManager: accounts,
+    credentialsDir: root,
+  });
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-account-failover-"));
+    store = new CredentialStore(root);
+    limits = {};
+    accounts = new ProviderAccountManager({
+      credentialsDir: root,
+      credentialStore: store,
+      getSubscriptionLimits: () => limits,
+    });
+    sessions = new SessionManager(createTestDatabaseManager());
+    sessions.track(SESSION, "Test session");
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  /** Two ready Claude accounts, session pinned to the first, mid-conversation. */
+  function pinnedToExhaustedPrimary(): { a: string; b: string } {
+    const a = accounts.create("claude", "Work");
+    const b = accounts.create("claude", "Personal");
+    accounts.setAccountStatus("claude", a.id, "ready");
+    accounts.setAccountStatus("claude", b.id, "ready");
+    seedClaudeAccount(a.id, "token-a");
+    seedClaudeAccount(b.id, "token-b");
+
+    sessions.setAgentId(SESSION, "claude");
+    sessions.setProviderRoute(SESSION, "account", a.id);
+    sessions.setAgentSessionId(SESSION, "conv-xyz");
+
+    const dir = sessionDir();
+    fs.mkdirSync(path.join(dir, ".claude", "projects", "-workspace"), { recursive: true });
+    fs.writeFileSync(path.join(dir, ".claude", ".credentials.json"), "token-a");
+    fs.writeFileSync(path.join(dir, ".claude", "projects", "-workspace", "conv-xyz.jsonl"), "turn1\n");
+
+    limits = { claude: { [a.id]: spent(new Date(Date.now() + 3_600_000).toISOString()) } };
+    return { a: a.id, b: b.id };
+  }
+
+  it("moves an exhausted pinned session to the next account and keeps the conversation (reqs 3, 8, 9)", () => {
+    const { a, b } = pinnedToExhaustedPrimary();
+
+    const moved = failoverPinnedSession(null, SESSION, deps());
+
+    expect(moved).toMatchObject({
+      provider: "claude",
+      fromAccountId: a,
+      fromLabel: "Work",
+      toAccountId: b,
+      toLabel: "Personal",
+    });
+    expect(sessions.get(SESSION)?.providerRouteId).toBe(b);
+    // req 9 — the user does not lose the conversation they are in the middle of.
+    expect(sessions.get(SESSION)?.agentSessionId).toBe("conv-xyz");
+    expect(
+      fs.readFileSync(path.join(sessionDir(), ".claude", "projects", "-workspace", "conv-xyz.jsonl"), "utf-8"),
+    ).toBe("turn1\n");
+    // ...running on the incoming account's credentials.
+    expect(
+      fs.readFileSync(path.join(sessionDir(), ".claude", ".credentials.json"), "utf-8"),
+    ).toBe("token-b");
+  });
+
+  it("kills the resident process so it stops spending the outgoing account's token", () => {
+    pinnedToExhaustedPrimary();
+    let killed = 0;
+    let cleared = 0;
+    const runner = {
+      getAgent: () => ({ kill: () => { killed += 1; } }),
+      setAgent: () => { cleared += 1; },
+    } as never;
+
+    failoverPinnedSession(runner, SESSION, deps());
+
+    expect(killed).toBe(1);
+    expect(cleared).toBe(1);
+  });
+
+  it("does nothing while the pinned account still has quota", () => {
+    const a = accounts.create("claude", "Work");
+    accounts.create("claude", "Personal");
+    accounts.setAccountStatus("claude", a.id, "ready");
+    seedClaudeAccount(a.id, "token-a");
+    sessions.setAgentId(SESSION, "claude");
+    sessions.setProviderRoute(SESSION, "account", a.id);
+
+    expect(failoverPinnedSession(null, SESSION, deps())).toBeNull();
+    expect(sessions.get(SESSION)?.providerRouteId).toBe(a.id);
+  });
+
+  // The router walks primary-first, so asking it "who should run this turn"
+  // would name the primary and read as "you have been skipped" for a session
+  // healthily pinned to a secondary. Eligibility is asked about the pinned
+  // route, not derived from the router's preference.
+  it("leaves a healthy session pinned to a NON-primary account alone", () => {
+    const a = accounts.create("claude", "Work");
+    const b = accounts.create("claude", "Personal");
+    accounts.setAccountStatus("claude", a.id, "ready");
+    accounts.setAccountStatus("claude", b.id, "ready");
+    seedClaudeAccount(a.id, "token-a");
+    seedClaudeAccount(b.id, "token-b");
+    sessions.setAgentId(SESSION, "claude");
+    sessions.setProviderRoute(SESSION, "account", b.id);
+
+    expect(accounts.getPrimary("claude")?.id).toBe(a.id);
+    expect(failoverPinnedSession(null, SESSION, deps())).toBeNull();
+    expect(sessions.get(SESSION)?.providerRouteId).toBe(b.id);
+  });
+
+  it("fails the turn with the earliest reset when the only account is spent (reqs 8 + 13)", () => {
+    const a = accounts.create("claude", "Work");
+    accounts.setAccountStatus("claude", a.id, "ready");
+    seedClaudeAccount(a.id, "token-a");
+    sessions.setAgentId(SESSION, "claude");
+    sessions.setProviderRoute(SESSION, "account", a.id);
+    const resetAt = new Date(Date.now() + 3_600_000).toISOString();
+    limits = { claude: { [a.id]: spent(resetAt) } };
+
+    expect(() => failoverPinnedSession(null, SESSION, deps())).toThrow(ProviderRouteUnavailableError);
+    // The session stays where it is: nothing to move to, so nothing moved.
+    expect(sessions.get(SESSION)?.providerRouteId).toBe(a.id);
+  });
+
+  // req 12 — a spent subscription must never roll onto pay-as-you-go billing.
+  it("does not move an exhausted session onto the metered API-key route", () => {
+    const a = accounts.create("claude", "Work");
+    accounts.setAccountStatus("claude", a.id, "ready");
+    seedClaudeAccount(a.id, "token-a");
+    sessions.setAgentId(SESSION, "claude");
+    sessions.setProviderRoute(SESSION, "account", a.id);
+    limits = { claude: { [a.id]: spent(new Date(Date.now() + 3_600_000).toISOString()) } };
+
+    const previous = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = "sk-metered";
+    try {
+      expect(() => failoverPinnedSession(null, SESSION, deps())).toThrow(ProviderRouteUnavailableError);
+      expect(sessions.get(SESSION)?.providerRouteId).toBe(a.id);
+    } finally {
+      if (previous === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = previous;
+    }
+  });
+
+  it("leaves a session on a reserved route alone (no subscription window to exhaust)", () => {
+    sessions.setAgentId(SESSION, "claude");
+    sessions.setProviderRoute(SESSION, "reserved", "claude-api-key");
+
+    expect(failoverPinnedSession(null, SESSION, deps())).toBeNull();
+    expect(sessions.get(SESSION)?.providerRouteId).toBe("claude-api-key");
+  });
+
+  it("does nothing for a session that has not been pinned yet", () => {
+    sessions.setAgentId(SESSION, "claude");
+    expect(failoverPinnedSession(null, SESSION, deps())).toBeNull();
   });
 });
