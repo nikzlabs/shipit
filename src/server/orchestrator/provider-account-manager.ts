@@ -79,6 +79,19 @@ export class ProviderAccountManager {
     return this.credentialStore.getPrimaryProviderAccount(provider);
   }
 
+  /**
+   * This provider's accounts, primary first, then the remaining rows in stored
+   * order. The de-dup guards the case where the store has no row flagged
+   * primary and `getPrimaryProviderAccount` falls back to `accounts[0]` —
+   * without it that row would be visited twice.
+   */
+  private accountsInSelectionOrder(provider: AgentId): ProviderAccount[] {
+    const accounts = this.list(provider);
+    const primary = this.getPrimary(provider);
+    if (!primary) return accounts;
+    return [primary, ...accounts.filter((account) => account.id !== primary.id)];
+  }
+
   create(provider: AgentId, label?: string): ProviderAccount {
     const now = Date.now();
     const existing = this.list(provider);
@@ -127,10 +140,31 @@ export class ProviderAccountManager {
     return account;
   }
 
+  /**
+   * Pick the auth route for the next turn with this provider.
+   *
+   * Walks **every** stored account — primary first, then the rest in stored
+   * order — and only falls back to the reserved env/API-key routes when no
+   * stored account is usable. Consulting just the primary (the shape this had
+   * through Phase 1) meant a user with two connected subscriptions lost access
+   * to the healthy one the moment the primary's auth failed: selection returned
+   * null while `hasAnyAuthForProvider` still reported true, and with
+   * `ANTHROPIC_API_KEY` set in the environment it silently routed the turn onto
+   * metered Platform API billing instead of the working subscription. That
+   * contradicts docs/150 req 3 (continue on another connected account) and
+   * req 12 (never route onto pay-as-you-go billing because a subscription is
+   * unavailable).
+   *
+   * Ordering here is "primary, then stored order" — the user-controlled
+   * priority list (req 2) and quota-aware ranking (reqs 6/7) land with the
+   * later phases; this is the eligibility walk they will extend, not the final
+   * policy.
+   */
   selectRouteForTurn(provider: AgentId): ProviderRoute | null {
-    const account = this.getPrimary(provider);
-    if (account?.status === "ready" || account?.status === "authenticating") {
-      return { kind: "account", id: account.id };
+    for (const account of this.accountsInSelectionOrder(provider)) {
+      if (account.status === "ready" || account.status === "authenticating") {
+        return { kind: "account", id: account.id };
+      }
     }
 
     if (provider === "claude") {

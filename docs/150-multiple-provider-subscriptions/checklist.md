@@ -20,6 +20,8 @@
 - [x] Keep legacy root credential paths as aliases during the compatibility window.
 - [x] Rewire `AgentRegistry.authConfigured` derivation through provider-account/reserved-route availability.
 - [x] Provision per-session credentials from the selected provider account.
+- [x] Select any usable stored account, not only the primary, before falling back to reserved env/API-key routes (reqs 3, 12).
+- [x] Preserve conversation-state subpaths when reprovisioning replaces a provider subtree (req 9).
 - [x] Extend token sync-in/sync-back to account-qualified credential paths.
 - [x] Skip token sync for `claude-env-oauth` reserved route.
 - [x] Account-qualify token re-push helper so account X does not update account Y sessions.
@@ -71,12 +73,12 @@
 - [ ] Avoid duplicating user chat history during same-turn retry.
 - [ ] Clear or replace failed in-progress assistant output during retry.
 - [ ] Record failover as a chat-visible system event attached to the original turn.
-- [ ] Exempt the conversation-state subpaths (`SUBTREE_STATE_SUBPATHS`) from the rm half of account-switch reprovisioning so resume survives (req 9).
 - [ ] Ensure all turn entrypoints use shared provider-account preflight: chat, answer-question, system turns, CI auto-fix, child sessions, and rebase/conflict recovery.
 
 ## Phase 4 — Policy Controls
 
-- [ ] Persist a user-controlled priority order for authenticated accounts per provider.
+- [ ] Persist a user-controlled priority order for authenticated accounts per provider (`ProviderAccount.priority`, ascending; backfill existing rows from `isPrimary`).
+- [ ] Widen `selectRouteForTurn` into `selectAccountForTurn` with structured failures (`all_exhausted` / `auth_required` / `no_model_eligible_account`), which reqs 13 and 17 depend on.
 - [ ] Add Settings controls to reorder provider accounts; newly connected accounts append to the fallback order.
 - [ ] Persist per-provider short-window and weekly usage cutoffs with 90% defaults and 1–100 validation.
 - [ ] Add Settings controls for both proactive failover cutoffs.
@@ -92,6 +94,8 @@
 
 - [x] Unit: provider-account migration creates default accounts.
 - [x] Unit: provider-account route selection prefers stored primary before API-key fallback.
+- [x] Unit: a healthy secondary account is selected when the primary is auth-failed, and outranks the API-key fallback.
+- [x] Unit: reprovisioning from another account preserves `.claude/projects` and `.codex/sessions` while replacing credentials.
 - [x] Unit: session manager persists provider route kind/id.
 - [x] Unit: session credentials provision only the selected provider-account subtree.
 - [x] Unit: account-qualified sync-in/sync-back writes only the matching account source.

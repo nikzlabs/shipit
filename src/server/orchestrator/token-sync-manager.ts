@@ -372,8 +372,16 @@ const CODEX_SESSION_STATE_SUBPATHS: readonly string[] = [
  * "merged" (a no-op) and then recursively deleted, taking the session's
  * rollouts with it. A future agent's subtree now leaks an orphan dir rather
  * than losing the user's conversation.
+ *
+ * Exported because the docs/150 account-switch reprovisioning path needs the
+ * same allowlist: replacing account A's credential subtree with account B's
+ * must not take the session's conversation with it (req 9 — a session keeps
+ * its conversation across an account switch). See
+ * `removeProviderSubtreeForReplacement` in `session-agent-credentials.ts`.
+ * One definition, two consumers — a second hand-maintained copy is exactly
+ * how the `.codex` case got missed the first time.
  */
-const SUBTREE_STATE_SUBPATHS: Readonly<Record<string, readonly string[]>> = {
+export const SUBTREE_STATE_SUBPATHS: Readonly<Record<string, readonly string[]>> = {
   ".claude": CLAUDE_SESSION_STATE_SUBPATHS,
   ".codex": CODEX_SESSION_STATE_SUBPATHS,
 };

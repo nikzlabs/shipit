@@ -96,6 +96,58 @@ describe("ProviderAccountManager", () => {
     expect(mgr.selectRouteForTurn("codex")).toEqual({ kind: "account", id: "codex-default" });
   });
 
+  it("falls back to a healthy secondary account when the primary's auth failed", () => {
+    const now = Date.now();
+    store.upsertProviderAccount({
+      id: "acct_primary", provider: "claude", label: "Personal",
+      isPrimary: true, status: "auth_failed", createdAt: now, updatedAt: now,
+    });
+    store.upsertProviderAccount({
+      id: "acct_secondary", provider: "claude", label: "Work",
+      isPrimary: false, status: "ready", createdAt: now, updatedAt: now,
+    });
+
+    const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
+
+    expect(mgr.selectRouteForTurn("claude")).toEqual({ kind: "account", id: "acct_secondary" });
+  });
+
+  it("prefers a healthy secondary account over the API-key fallback (docs/150 req 12)", () => {
+    // A connected subscription must never lose a turn to metered Platform API
+    // billing just because the *primary* row is broken.
+    process.env.ANTHROPIC_API_KEY = "sk-test";
+    const now = Date.now();
+    store.upsertProviderAccount({
+      id: "acct_primary", provider: "claude", label: "Personal",
+      isPrimary: true, status: "auth_failed", createdAt: now, updatedAt: now,
+    });
+    store.upsertProviderAccount({
+      id: "acct_secondary", provider: "claude", label: "Work",
+      isPrimary: false, status: "ready", createdAt: now, updatedAt: now,
+    });
+
+    const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
+
+    expect(mgr.selectRouteForTurn("claude")).toEqual({ kind: "account", id: "acct_secondary" });
+  });
+
+  it("still falls back to a reserved route when no stored account is usable", () => {
+    process.env.ANTHROPIC_API_KEY = "sk-test";
+    const now = Date.now();
+    store.upsertProviderAccount({
+      id: "acct_primary", provider: "claude", label: "Personal",
+      isPrimary: true, status: "auth_failed", createdAt: now, updatedAt: now,
+    });
+    store.upsertProviderAccount({
+      id: "acct_secondary", provider: "claude", label: "Work",
+      isPrimary: false, status: "unavailable", createdAt: now, updatedAt: now,
+    });
+
+    const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
+
+    expect(mgr.selectRouteForTurn("claude")).toEqual({ kind: "reserved", id: "claude-api-key" });
+  });
+
   it("does not count unavailable or failed stored accounts as configured", () => {
     const now = Date.now();
     store.upsertProviderAccount({

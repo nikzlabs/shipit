@@ -174,6 +174,61 @@ describe("session-credentials", () => {
     expect(fs.existsSync(path.join(perSessionCredentialsDir(root, sid), ".codex"))).toBe(false);
   });
 
+  // docs/150 req 9 — an account switch reprovisions credentials but must not
+  // take the session's conversation with it. Claude resumes from
+  // `.claude/projects/<encoded-cwd>/<agentSessionId>.jsonl` and Codex from
+  // `.codex/sessions/.../rollout-*.jsonl`; both are per-session files that
+  // carry no account identity, so switching accounts does not invalidate them.
+  it("reprovisioning from another account preserves conversation state but replaces credentials", () => {
+    const accountA = path.join(root, "provider-accounts", "claude", "acct-a");
+    const accountB = path.join(root, "provider-accounts", "claude", "acct-b");
+    writeClaudeToken(accountA, "A", 3_000);
+    writeClaudeToken(accountB, "B", 4_000);
+
+    provisionProviderAccountCredentials(root, sid, "claude", "acct-a");
+
+    // The session runs a turn: the CLI writes its conversation jsonl, plus a
+    // settings file that only account A produces.
+    const sessionDir = perSessionCredentialsDir(root, sid);
+    const transcript = path.join(sessionDir, ".claude", "projects", "-workspace", "conv-1.jsonl");
+    fs.mkdirSync(path.dirname(transcript), { recursive: true });
+    fs.writeFileSync(transcript, '{"type":"user"}\n');
+    fs.writeFileSync(path.join(sessionDir, ".claude", "settings.json"), '{"onlyUnderA":true}');
+
+    provisionProviderAccountCredentials(root, sid, "claude", "acct-b");
+
+    // Conversation survives …
+    expect(fs.existsSync(transcript)).toBe(true);
+    expect(fs.readFileSync(transcript, "utf-8")).toBe('{"type":"user"}\n');
+    // … credentials are account B's …
+    expect(readTail(path.join(sessionDir, ".claude", ".credentials.json"))).toBe("B");
+    // … and A-only leftovers are gone.
+    expect(fs.existsSync(path.join(sessionDir, ".claude", "settings.json"))).toBe(false);
+  });
+
+  it("reprovisioning preserves a Codex rollout across an account switch", () => {
+    const accountA = path.join(root, "provider-accounts", "codex", "acct-a");
+    const accountB = path.join(root, "provider-accounts", "codex", "acct-b");
+    for (const [dir, tok] of [[accountA, "A"], [accountB, "B"]] as const) {
+      fs.mkdirSync(path.join(dir, ".codex"), { recursive: true });
+      fs.writeFileSync(path.join(dir, ".codex", "auth.json"), `{"tokens":{"access_token":"${tok}"}}`);
+    }
+
+    provisionProviderAccountCredentials(root, sid, "codex", "acct-a");
+
+    const sessionDir = perSessionCredentialsDir(root, sid);
+    const rollout = path.join(sessionDir, ".codex", "sessions", "2026", "08", "01", "rollout-1-t.jsonl");
+    fs.mkdirSync(path.dirname(rollout), { recursive: true });
+    fs.writeFileSync(rollout, "{}\n");
+    fs.writeFileSync(path.join(sessionDir, ".codex", "config.toml"), "model = 'a'\n");
+
+    provisionProviderAccountCredentials(root, sid, "codex", "acct-b");
+
+    expect(fs.existsSync(rollout)).toBe(true);
+    expect(fs.readFileSync(path.join(sessionDir, ".codex", "auth.json"), "utf-8")).toContain('"B"');
+    expect(fs.existsSync(path.join(sessionDir, ".codex", "config.toml"))).toBe(false);
+  });
+
   it("syncAgentTokenIn copies the freshest source token into the session dir", () => {
     writeClaudeToken(root, "SOURCE", 2_000);
     provisionAgentCredentials(root, sid, "claude"); // session starts with the source token

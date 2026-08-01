@@ -283,8 +283,9 @@ provisioning:
 
 1. Filter to accounts that are eligible for the selected model, permission mode,
    and requested provider features.
-2. Read the provider's persisted user-defined account order. The primary account
-   is the first entry; newly connected accounts append to the end until the user
+2. Read the provider's persisted user-defined account order — `ProviderAccount.
+   priority` ascending (see Data model). The primary account is the first entry
+   (`priority === 0`); newly connected accounts append to the end until the user
    reorders them.
 3. Treat an account as **quota-low** when either known short-window usage meets
    the configured short-window cutoff or known weekly usage meets the configured
@@ -585,6 +586,26 @@ interface ProviderAccount {
   id: string;
   provider: AgentId; // "claude" | "codex"
   label: string;
+  /**
+   * Position in this provider's user-controlled priority list (req 2).
+   * Ascending: the lowest `priority` is tried first. Dense and contiguous
+   * within a provider — reordering rewrites the affected rows rather than
+   * inserting fractional values, so "first entry" is unambiguous and the
+   * order survives a round-trip through the store.
+   *
+   * A newly connected account appends to the END (highest priority value),
+   * never displacing the account the user already relies on. On disconnect,
+   * the remaining rows are re-densified so no gap survives.
+   */
+  priority: number;
+  /**
+   * Derived, not independent: the primary IS the head of the order
+   * (`priority === 0`). Kept as a stored field only because Phase 1 already
+   * ships it and the Settings UI reads it; "make primary" is implemented as
+   * "move to position 0" and must not be allowed to disagree with `priority`.
+   * A later cleanup may drop the field and compute it — do not add a second
+   * writer in the meantime.
+   */
   isPrimary: boolean;
   // status is "ready" | "authenticating" | "auth_failed" | "unavailable".
   // "exhausted" is NOT a stored status — it is derived from
@@ -686,6 +707,21 @@ orchestrator restarts. Guarded-mode availability is excluded from the persisted
 snapshot — see "Per-account capability facts" above.
 
 ### Agent availability gates
+
+**Selector naming.** This doc calls the per-turn selector
+`ProviderAccountManager.selectAccountForTurn(...)`. The shipped Phase 1 method
+is `selectRouteForTurn(provider): ProviderRoute | null` — it walks the stored
+accounts (primary first, then the rest) and falls back to the reserved
+env/API-key routes, but it returns `null` for every unusable state, conflating
+"no auth at all" with "authenticated but nothing can run this turn".
+`selectAccountForTurn` is the target: same walk, plus the requested model /
+capability filter and a **structured** failure result
+(`all_exhausted` | `auth_required` | `no_model_eligible_account` |
+`capability_unknown`). That result type is not cosmetic — req 13 (fail the turn
+with the earliest reset time) and req 17 (skip an ineligible account and report)
+cannot be expressed by a `null`. Phase 2 should widen `selectRouteForTurn` into
+it rather than adding a second selector; callers that only need coarse
+availability keep using `hasAnyAuthForProvider`.
 
 `AgentRegistry.authConfigured` remains a coarse agent-level signal for existing
 UI and server gates, but its meaning changes:
@@ -1191,6 +1227,18 @@ switch per turn, which bounds duplicated work to a single repeat.
    singleton call sites resolve the primary account.
 4. Once all call sites use `ProviderAccountManager`, remove direct root-path
    reads except migration.
+5. **Backfill `priority` on existing rows.** Phase 1 shipped
+   `ProviderAccount` without it, so rows already in `CredentialStore` have no
+   order. Backfill on load: the row flagged `isPrimary` takes `priority: 0`,
+   the rest take their existing stored order starting at 1. Because
+   `isPrimary` is already single-valued (`upsertProviderAccount` demotes the
+   others, and both it and `deleteProviderAccount` re-promote `accounts[0]`
+   when none is flagged), the backfill is deterministic and needs no user
+   input. Write the backfilled values back once so later reads are not
+   order-sensitive. This is a JSON-store migration, not a SQLite one — the
+   provider-account registry lives in `CredentialStore`, while the session's
+   `provider_route_kind` / `provider_route_id` columns are the SQLite half and
+   are unaffected.
 
 Existing sessions without `provider_account_id` are split by pin state.
 Before classifying pinned sessions, run doc 142's A-copyback
@@ -1421,6 +1469,32 @@ Implementation started:
   for agent turns / dogfooding). Regression test: `auth-manager.test.ts` →
   "strips ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN from the login subprocess
   env".
+- **Selection walks every stored account, not just the primary.**
+  `selectRouteForTurn` originally consulted `getPrimary()` alone, so a user
+  with two connected subscriptions lost the healthy one the moment the primary
+  went `auth_failed`: selection returned `null` while `hasAnyAuthForProvider`
+  still reported `true`, and with `ANTHROPIC_API_KEY` in the environment the
+  turn silently routed onto metered Platform API billing instead of the
+  working subscription (violating reqs 3 and 12). It now iterates
+  primary-then-stored-order and only falls through to the reserved routes when
+  no stored account is usable. Regression tests:
+  `provider-account-manager.test.ts` → "falls back to a healthy secondary
+  account when the primary's auth failed" / "prefers a healthy secondary
+  account over the API-key fallback".
+- **Reprovisioning preserves conversation state.**
+  `provisionAgentCredentialsFromRoot`'s replace path used to `rmSync` the whole
+  `.claude` / `.codex` subtree, which includes `projects/`, `sessions/`,
+  `archived_sessions/`, and `history.jsonl` — the files `--resume` and
+  `thread/resume` read. Harmless while provisioning was first-turn-only, but it
+  is the exact primitive the account-switch transition calls, so it would have
+  turned every switch into silent conversation loss (req 9). It now removes
+  only the non-allowlisted entries, reusing `SUBTREE_STATE_SUBPATHS` (exported
+  from `token-sync-manager.ts`) so there is one definition of "this is
+  conversation state" — and keeps that map's fail-safe default: an unknown
+  subtree is not deleted at all. Regression tests:
+  `session-credentials.test.ts` → "reprovisioning from another account
+  preserves conversation state but replaces credentials" (+ the Codex rollout
+  variant).
 - `ProviderAccountManager` gained `attachAuthManagers` + `startAccountAuth` /
   `cancelAccountAuth` / `submitAccountCode` / `signOutAccount` /
   `setAccountStatus`, and is wired to the auth-manager map in `index.ts` after
