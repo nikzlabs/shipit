@@ -2,7 +2,68 @@ import { ArrowSquareOutIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import { Badge } from "../ui/badge.js";
 import type { ParsedFrontmatter } from "../../utils/markdown-frontmatter.js";
-import { parseIssueRef } from "../../../server/shared/issue-ref.js";
+import { parseIssueRef, type ParsedIssueRef } from "../../../server/shared/issue-ref.js";
+import { useFileStore } from "../../stores/file-store.js";
+import { useIssuesStore } from "../../stores/issues-store.js";
+import { useUiStore } from "../../stores/ui-store.js";
+
+/**
+ * Jump-to-issue chip for the doc's `issue:` pointer. A known tracker (Linear /
+ * GitHub) opens ShipIt's inline issue detail view — inline beats link-out
+ * (CLAUDE.md §1/§2), and the deep link to the upstream tracker lives inside
+ * that view. Mirrors the docs-list chip (`DocsViewer.IssueChip`) and the
+ * changed-docs strip; an unknown-shape pointer has no inline view to open, so
+ * it keeps the external-link escape hatch (or a plain badge with no URL).
+ */
+function IssueChip({ issueRef }: { issueRef: ParsedIssueRef }) {
+  if (issueRef.tracker !== "unknown") {
+    const tracker = issueRef.tracker;
+    return (
+      <button
+        type="button"
+        title={`Open ${issueRef.identifier} in ShipIt`}
+        onClick={() => {
+          // The doc is often being read in the file-preview modal, which would
+          // sit on top of the Issues tab — dismiss it so the issue is actually
+          // visible. No-op when the doc is rendered in the panel instead.
+          useFileStore.getState().closePreview();
+          // Select the Issues tab (and surface the workspace column on mobile)
+          // before opening the detail — mirrors handleOpenIssue in App.tsx.
+          useUiStore.getState().setRightTab("issues");
+          useUiStore.getState().setMobilePanel("preview");
+          void useIssuesStore.getState().openIssue({
+            tracker,
+            identifier: issueRef.identifier,
+            ...(issueRef.issueId ? { id: issueRef.issueId } : {}),
+            ...(issueRef.url ? { url: issueRef.url } : {}),
+          });
+        }}
+        className="inline-flex cursor-pointer"
+      >
+        <Badge variant="info" className="hover:brightness-110">
+          {issueRef.identifier}
+        </Badge>
+      </button>
+    );
+  }
+
+  if (!issueRef.url) return <Badge variant="default">{issueRef.identifier}</Badge>;
+
+  return (
+    <a
+      href={issueRef.url}
+      target="_blank"
+      rel="noopener noreferrer"
+      title={`Open ${issueRef.identifier} in the tracker`}
+      className="inline-flex"
+    >
+      <Badge variant="info" className="inline-flex items-center gap-1 hover:brightness-110">
+        {issueRef.identifier}
+        <ArrowSquareOutIcon size={ICON_SIZE.XS} />
+      </Badge>
+    </a>
+  );
+}
 
 /**
  * Frontmatter header. docs/168 removed the status/priority badges — priority
@@ -19,22 +80,7 @@ export function FrontmatterHeader({ fm }: { fm: ParsedFrontmatter }) {
     <div className="mb-4 pb-4 border-b border-(--color-border-secondary) space-y-2">
       {issueRef && (
         <div className="flex flex-wrap items-center gap-2">
-          {issueRef.url ? (
-            <a
-              href={issueRef.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              title={`Open ${issueRef.identifier} in ${issueRef.tracker === "unknown" ? "the tracker" : issueRef.tracker}`}
-              className="inline-flex"
-            >
-              <Badge variant="info" className="inline-flex items-center gap-1 hover:brightness-110">
-                {issueRef.identifier}
-                <ArrowSquareOutIcon size={ICON_SIZE.XS} />
-              </Badge>
-            </a>
-          ) : (
-            <Badge variant="default">{issueRef.identifier}</Badge>
-          )}
+          <IssueChip issueRef={issueRef} />
         </div>
       )}
       {fm.description && (
