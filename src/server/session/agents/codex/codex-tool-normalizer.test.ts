@@ -6,7 +6,19 @@ import {
   normalizeFileChangeDiff,
   normalizeWebSearchItem,
   isAskUserQuestionTool,
+  normalizeMcpToolName,
 } from "./codex-tool-normalizer.js";
+
+describe("normalizeMcpToolName", () => {
+  it("combines Codex's split server and tool fields", () => {
+    expect(normalizeMcpToolName("shipit", "voice_note")).toBe("mcp__shipit__voice_note");
+  });
+
+  it("preserves canonical and serverless names", () => {
+    expect(normalizeMcpToolName("shipit", "mcp__shipit__voice_note")).toBe("mcp__shipit__voice_note");
+    expect(normalizeMcpToolName(undefined, "search")).toBe("search");
+  });
+});
 
 describe("unwrapShellCommand", () => {
   it("strips the /bin/bash -lc wrapper (single and double quotes)", () => {

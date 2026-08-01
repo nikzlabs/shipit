@@ -207,8 +207,12 @@ observable `agent_assistant` event. Codex can execute the bridge successfully
 without producing that event shape, so Both mode yielded neither the native
 card nor the external webhook even though the tool reported success.
 
-The event-stream observation remains the preferred low-latency path, but the
-HTTP bridge now routes the sanitized payload as a reliability fallback. The
+The Codex adapter now normalizes app-server's split MCP identity (`server:
+"shipit"`, `tool: "voice_note"`) to ShipIt's canonical shared-event name
+`mcp__shipit__voice_note`, matching Claude and restoring both the UI's MCP chip
+and the voice observer. The event-stream observation remains the preferred
+low-latency path, but the HTTP bridge also routes the sanitized payload as a
+reliability fallback. The
 router records authored payloads by transport (`observation` or `bridge`) for
 the current turn and suppresses the matching payload arriving from the other
 transport. This preserves the fast path and prevents duplicate cards/webhooks,

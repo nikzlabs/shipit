@@ -1156,7 +1156,7 @@ describe("CodexAdapter", () => {
     expect(events).toHaveLength(0);
   });
 
-  it("leaves non-ask mcpToolCalls flowing through under their own tool name", async () => {
+  it("normalizes split Codex MCP identity to ShipIt's canonical tool name", async () => {
     // Regression: the ask special-case must not swallow other MCP tools.
     await createAndInit("Hello");
     events.length = 0;
@@ -1165,7 +1165,8 @@ describe("CodexAdapter", () => {
       item: {
         type: "mcpToolCall",
         id: "call-other-1",
-        tool: "shipit__present",
+        server: "shipit",
+        tool: "present",
         arguments: JSON.stringify({ file: "/persist/diagram.html" }),
       },
     });
@@ -1175,7 +1176,7 @@ describe("CodexAdapter", () => {
     });
     expect(events[0]).toMatchObject({
       type: "agent_assistant",
-      content: [{ type: "tool_use", id: "call-other-1", name: "shipit__present" }],
+      content: [{ type: "tool_use", id: "call-other-1", name: "mcp__shipit__present" }],
     });
   });
 
