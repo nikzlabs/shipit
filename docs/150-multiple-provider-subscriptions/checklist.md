@@ -58,14 +58,15 @@
 - [x] Associate Codex `agent_rate_limits` events with the account used by the current runner.
 - [ ] Persist quota snapshots and plan labels onto provider accounts where appropriate.
 - [ ] Compute Claude model-specific quota state using `weeklyOpus`, `weeklySonnet`, or `weekly`.
-- [ ] Treat unknown Codex quota as selectable but lower-ranked than known healthy quota.
+- [x] Treat unknown quota as selectable (ranking below known-healthy quota is still open).
 - [x] Render header subscription limits as one existing-style pill per account, labelled with the account name (req 10).
 - [x] Keep the 1-account badge layout visually stable.
 - [x] Reclassify "monthly usage limit" only when *every* connected account is exhausted, reporting the soonest reset.
 - [ ] Render multi-account grouped/expanded quota state without layout overlap.
 - [ ] Render active provider account in session diagnostics.
-- [ ] Skip known-exhausted accounts for new turns.
-- [ ] Surface `all_exhausted`, `auth_required`, and `no_model_eligible_account` as distinct recoverable states.
+- [x] Skip known-exhausted accounts for new turns.
+- [x] Return `all_exhausted` / `auth_required` / `no_model_eligible_account` as distinct results from the router.
+- [ ] Surface those three states to the user on a blocked turn (req 13's message).
 - [ ] Fail an all-exhausted turn immediately with the earliest reset time, before any first-turn pinning or credential provisioning (req 13).
 
 ## Phase 3 — Automatic Failover
@@ -81,13 +82,13 @@
 ## Phase 4 — Policy Controls
 
 - [ ] Persist a user-controlled priority order for authenticated accounts per provider (`ProviderAccount.priority`, ascending; backfill existing rows from `isPrimary`).
-- [ ] Widen `selectRouteForTurn` into `selectAccountForTurn` with structured failures (`all_exhausted` / `auth_required` / `no_model_eligible_account`), which reqs 13 and 17 depend on.
+- [x] Widen `selectRouteForTurn` into `selectAccountForTurn` with structured failures (`all_exhausted` / `auth_required` / `no_model_eligible_account`), which reqs 13 and 17 depend on.
 - [ ] Add Settings controls to reorder provider accounts; newly connected accounts append to the fallback order.
 - [ ] Persist per-provider short-window and weekly usage cutoffs with 90% defaults and 1–100 validation.
 - [ ] Add Settings controls for both proactive failover cutoffs.
 - [ ] Re-evaluate account eligibility before every turn, including existing-session, queued, and system-initiated turns.
 - [ ] Switch an existing session to the next ordered eligible account when either configured cutoff is reached.
-- [ ] Skip an account that cannot run the requested model and report no eligible account (req 17).
+- [x] Skip an account that cannot run the requested model and report no eligible account (req 17).
 - [ ] Add optional per-session account preference.
 - [ ] Add optional per-provider “do not auto-failover” setting.
 - [ ] Add optional provider-profile label refresh where stable.
@@ -104,7 +105,7 @@
 - [x] Unit: account-qualified sync-in/sync-back writes only the matching account source.
 - [x] Unit: account-scoped Claude auth manager writes to the requested account root.
 - [x] Unit: account-scoped Codex auth manager writes to the requested account root.
-- [ ] Unit: account selection prefers primary, skips exhausted accounts, respects reset times, and ranks quota.
+- [x] Unit: account selection prefers primary, skips exhausted accounts, and respects reset times (quota *ranking* still open).
 - [ ] Unit: account selection follows user priority and advances when either configurable cutoff is reached.
 - [ ] Integration: an existing pinned session switches accounts at the proactive cutoff and preserves local context.
 - [ ] Integration: first Claude turn pins `{ agent_id, provider_route_kind, provider_route_id }`.

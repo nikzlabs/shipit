@@ -1629,6 +1629,42 @@ quota, the grouped/expanded multi-account layout, session diagnostics, and the
 eligibility work (skip-exhausted, structured states, fail-fast on req 13) which
 belongs with Phase 3.
 
+**The account router is now quota-aware and gives reasons.**
+`selectAccountForTurn(provider, { model, exclude })` is `selectRouteForTurn`
+widened: the same eligibility walk, plus (a) skipping accounts whose quota is
+spent, from either the live snapshot or a persisted `exhaustedUntil` stamp,
+(b) an exclusion list so a mid-turn retry cannot land back on the account that
+just ran out (req 14), (c) skipping accounts that cannot run the requested model
+(req 17), and (d) a structured failure — `auth_required`, `all_exhausted` with
+the soonest `earliestResetAt`, or `no_model_eligible_account` — because reqs 13
+and 17 are specifically about telling the user *which* happened.
+`selectRouteForTurn` survives as the thin wrapper for callers with nothing to do
+with the reason.
+
+Two rules that are load-bearing and were both caught by their own tests:
+
+- **A spent subscription never rolls onto metered billing (req 12).** The first
+  implementation checked the reserved env/API-key route before reporting
+  exhaustion, which would have quietly spent the user's pay-as-you-go money the
+  moment a subscription ran out. The reserved route is now reachable only when
+  there is no usable subscription *at all* (the manual-auth case), never as the
+  next hop after one is exhausted.
+- **Unknown quota counts as usable.** Claude reports `usedPct` only above a
+  warning threshold and Codex reports nothing until a turn has run, so treating
+  unknown as exhausted would lock out every freshly connected account forever.
+  Erring toward "try it" costs one failed turn; erring the other way is
+  unrecoverable. Same reasoning for an account with no capability snapshot: it
+  is assumed able to run the model until we learn otherwise.
+
+`bootstrap-managers` late-binds the quota source
+(`attachSubscriptionLimits(() => limitsRegistry.getSnapshot())`) because the
+registry needs the agent runtime, which is built after the account manager.
+
+Still open for Phase 3: detecting hard exhaustion from each provider's runtime
+errors, performing the single retry on the next eligible account (req 14),
+recording the switch as a chat-visible event (req 11), and surfacing the three
+failure states on a blocked turn (req 13's message).
+
 Planned authentication-surface consolidation:
 
 - **One row model for both providers.** `ProviderAccountsCard` owns every

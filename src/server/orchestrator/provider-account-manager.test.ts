@@ -235,4 +235,161 @@ describe("ProviderAccountManager", () => {
       expect(() => mgr.startAccountAuth("claude", account.id)).toThrow(/no auth manager wired/i);
     });
   });
+
+  describe("selectAccountForTurn (docs/150 reqs 13, 14, 17)", () => {
+    const READY = "ready" as const;
+
+    function withLimits(
+      root: string,
+      store: CredentialStore,
+      limits: Record<string, { session?: { usedPct: number | null; resetAt: string } | null }>,
+    ): ProviderAccountManager {
+      return new ProviderAccountManager({
+        credentialsDir: root,
+        credentialStore: store,
+        getSubscriptionLimits: () => ({ claude: limits as never }),
+      });
+    }
+
+    it("skips an exhausted account and picks the next one with quota", () => {
+      const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
+      const a = mgr.create("claude", "A");
+      const b = mgr.create("claude", "B");
+      mgr.setAccountStatus("claude", a.id, READY);
+      mgr.setAccountStatus("claude", b.id, READY);
+
+      const quota = withLimits(root, store, {
+        [a.id]: { session: { usedPct: 100, resetAt: new Date(Date.now() + 3_600_000).toISOString() } },
+        [b.id]: { session: { usedPct: 20, resetAt: new Date(Date.now() + 3_600_000).toISOString() } },
+      });
+
+      expect(quota.selectAccountForTurn("claude")).toEqual({
+        ok: true,
+        route: { kind: "account", id: b.id },
+      });
+    });
+
+    it("reports all_exhausted with the soonest reset when every account is spent (req 13)", () => {
+      const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
+      const a = mgr.create("claude", "A");
+      const b = mgr.create("claude", "B");
+      mgr.setAccountStatus("claude", a.id, READY);
+      mgr.setAccountStatus("claude", b.id, READY);
+
+      const later = new Date(Date.now() + 7_200_000).toISOString();
+      const sooner = new Date(Date.now() + 1_800_000).toISOString();
+      const quota = withLimits(root, store, {
+        [a.id]: { session: { usedPct: 100, resetAt: later } },
+        [b.id]: { session: { usedPct: 100, resetAt: sooner } },
+      });
+
+      expect(quota.selectAccountForTurn("claude")).toEqual({
+        ok: false,
+        reason: "all_exhausted",
+        earliestResetAt: sooner,
+      });
+    });
+
+    it("never fails over onto metered API billing (req 12)", () => {
+      process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+      const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
+      const a = mgr.create("claude", "A");
+      mgr.setAccountStatus("claude", a.id, READY);
+      const quota = withLimits(root, store, {
+        [a.id]: { session: { usedPct: 100, resetAt: new Date(Date.now() + 3_600_000).toISOString() } },
+      });
+
+      // The reserved API-key route exists, but an exhausted *subscription* must
+      // not silently spend pay-as-you-go money.
+      const selection = quota.selectAccountForTurn("claude");
+      expect(selection.ok).toBe(false);
+    });
+
+    it("treats unknown quota as usable rather than locking out a fresh account", () => {
+      const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
+      const a = mgr.create("claude", "A");
+      mgr.setAccountStatus("claude", a.id, READY);
+      // Claude reports no usedPct below its warning threshold; Codex reports
+      // nothing until a turn has run.
+      const quota = withLimits(root, store, { [a.id]: { session: { usedPct: null, resetAt: "x" } } });
+
+      expect(quota.selectAccountForTurn("claude")).toEqual({
+        ok: true,
+        route: { kind: "account", id: a.id },
+      });
+    });
+
+    it("ignores an exhausted window whose reset has already passed", () => {
+      const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
+      const a = mgr.create("claude", "A");
+      mgr.setAccountStatus("claude", a.id, READY);
+      const quota = withLimits(root, store, {
+        [a.id]: { session: { usedPct: 100, resetAt: new Date(Date.now() - 60_000).toISOString() } },
+      });
+
+      expect(quota.selectAccountForTurn("claude").ok).toBe(true);
+    });
+
+    it("excludes a route that already failed this turn (req 14)", () => {
+      const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
+      const a = mgr.create("claude", "A");
+      const b = mgr.create("claude", "B");
+      mgr.setAccountStatus("claude", a.id, READY);
+      mgr.setAccountStatus("claude", b.id, READY);
+
+      expect(mgr.selectAccountForTurn("claude", { exclude: [a.id] })).toEqual({
+        ok: true,
+        route: { kind: "account", id: b.id },
+      });
+    });
+
+    it("skips an account that cannot run the requested model and reports it (req 17)", () => {
+      const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
+      const a = mgr.create("claude", "A");
+      mgr.setAccountStatus("claude", a.id, READY);
+      store.upsertProviderAccount({
+        ...mgr.list("claude")[0],
+        capabilities: { models: ["claude-sonnet"], source: "agent_init", refreshedAt: Date.now() },
+      });
+
+      expect(mgr.selectAccountForTurn("claude", { model: "claude-opus" })).toEqual({
+        ok: false,
+        reason: "no_model_eligible_account",
+        model: "claude-opus",
+      });
+      // ...but the model it *does* support still routes.
+      expect(mgr.selectAccountForTurn("claude", { model: "claude-sonnet" }).ok).toBe(true);
+    });
+
+    it("assumes an account with no capability snapshot can run the model", () => {
+      const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
+      const a = mgr.create("claude", "A");
+      mgr.setAccountStatus("claude", a.id, READY);
+
+      expect(mgr.selectAccountForTurn("claude", { model: "anything" }).ok).toBe(true);
+    });
+
+    it("reports auth_required when nothing is connected", () => {
+      const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
+      expect(mgr.selectAccountForTurn("claude")).toEqual({ ok: false, reason: "auth_required" });
+    });
+
+    it("keeps a persisted exhaustedUntil out of the running until it lapses (req 7)", () => {
+      const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
+      const a = mgr.create("claude", "A");
+      const b = mgr.create("claude", "B");
+      mgr.setAccountStatus("claude", a.id, READY);
+      mgr.setAccountStatus("claude", b.id, READY);
+      // Hard exhaustion reported mid-turn, before any new snapshot arrives.
+      store.upsertProviderAccount({
+        ...mgr.list("claude").find((x) => x.id === a.id)!,
+        exhaustedUntil: Date.now() + 3_600_000,
+      });
+
+      expect(mgr.selectAccountForTurn("claude")).toEqual({
+        ok: true,
+        route: { kind: "account", id: b.id },
+      });
+    });
+  });
 });
