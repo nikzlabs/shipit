@@ -190,6 +190,8 @@ export interface SessionContainer {
   workerUrl: string;
   /** Container lifecycle status. */
   status: "starting" | "running" | "stopping" | "stopped";
+  /** Immutable build ID baked into the worker image, when labeled (docs/242). */
+  workerBuildId?: string;
   /** Host-side workspace directory for bind mount validation. */
   hostWorkspaceDir: string;
   /** Whether this session has Docker access. */

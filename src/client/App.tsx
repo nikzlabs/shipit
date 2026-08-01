@@ -71,6 +71,7 @@ import { HostPanel } from "./components/HostPanel.js";
 import { RebaseBanner } from "./components/RebaseBanner.js";
 import { QueueIndicator } from "./components/QueueIndicator.js";
 import { AgentStatusBar } from "./components/AgentStatusBar.js";
+import { StaleContainerBanner } from "./components/StaleContainerBanner.js";
 import type { AgentOption } from "./agent-types.js";
 import type { AgentId, DocEntry, ProviderAccount, TrackerIssue, ReleaseMechanism, SubAgentDefaults } from "../server/shared/types.js";
 
@@ -1267,6 +1268,7 @@ export default function App() {
             {isLoading && <AgentStatusBar activity={activity} />}
             {wsSessionId && <RebaseBanner sessionId={wsSessionId} />}
             {queuedMessages.length > 0 && <QueueIndicator queue={queuedMessages} onCancel={(pos) => send({ type: "cancel_queued_message", position: pos })} />}
+            {wsSessionId && <StaleContainerBanner sessionId={wsSessionId} />}
           </div>
         </div>
       )}

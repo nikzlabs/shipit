@@ -243,7 +243,7 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
     await client.receive(); // preview_status
 
     client.send({ type: "answer_question", toolUseId: "tool-3", answers: {} });
-    const msg = await client.receive();
+    const msg = await client.receiveType("error");
 
     expect(msg.type).toBe("error");
     expect((msg as any).message).toBe("Answer cannot be empty");

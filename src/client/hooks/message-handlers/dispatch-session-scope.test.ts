@@ -83,6 +83,27 @@ describe("dispatchMessage — transcript session scoping", () => {
     expect(useSessionStore.getState().messages).toEqual([]);
   });
 
+  it("applies container freshness only to its owning active session", () => {
+    const stale = {
+      state: "stale" as const,
+      workerBuildId: "old",
+      orchestratorBuildId: "new",
+    };
+    dispatchMessage(ctx, {
+      type: "session_container_freshness",
+      sessionId: "other",
+      freshness: stale,
+    });
+    expect(useSessionStore.getState().containerFreshness).toBeNull();
+
+    dispatchMessage(ctx, {
+      type: "session_container_freshness",
+      sessionId: "active",
+      freshness: stale,
+    });
+    expect(useSessionStore.getState().containerFreshness).toEqual(stale);
+  });
+
   it("still delivers messages that legitimately describe OTHER sessions", () => {
     // Sidebar running dots are keyed by their own sessionId — never scoped out.
     dispatchMessage(ctx, { type: "session_status", sessionId: "other", running: true });

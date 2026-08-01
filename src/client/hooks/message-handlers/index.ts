@@ -74,6 +74,7 @@ import { handleSelfMergeWatchCard } from "./self-merge-watch.js";
 import { handleSessionReportCard } from "./session-report.js";
 import { handleSessionStarted } from "./session-started.js";
 import { handleSessionStatus } from "./session-status.js";
+import { handleSessionContainerFreshness } from "./session-container-freshness.js";
 import { handleSubAgentConsultCard } from "./sub-agent-consult-card.js";
 import { handleSubAgentSpawn } from "./sub-agent-spawn.js";
 import { handleSystemNotice } from "./system-notice.js";
@@ -187,6 +188,7 @@ export const messageHandlers: MessageHandlerMap = {
   self_merge_watch_card: handleSelfMergeWatchCard,
   session_started: handleSessionStarted,
   session_status: handleSessionStatus,
+  session_container_freshness: handleSessionContainerFreshness,
   sub_agent_consult_card: handleSubAgentConsultCard,
   sub_agent_spawn: handleSubAgentSpawn,
   system_notice: handleSystemNotice,
@@ -244,6 +246,7 @@ const TRANSCRIPT_SCOPED_MESSAGES: ReadonlySet<WsMessageType> = new Set<WsMessage
   "session_report_card",
   "session_spawn_failed",
   "session_spawned",
+  "session_container_freshness",
   "sub_agent_consult_card",
   "sub_agent_spawn",
   "system_notice",

@@ -35,6 +35,7 @@ import { listAgents } from "./services/settings.js";
 import { serveStaticClient } from "./app-assembly.js";
 import type { OrchestratorRuntime } from "./bootstrap-managers.js";
 import type { StartupMonitors } from "./startup-monitors.js";
+import { getContainerFreshness } from "./container-freshness.js";
 
 /**
  * Register the long-lived `/api/events` SSE endpoint. Kept as its own step so
@@ -242,7 +243,7 @@ export async function registerRoutes(
     runnerRegistry, repoPrefetcher, mergeWatchManager,
     prStatusPoller, releaseStatusPoller, limitsRegistry, recordAgentRateLimits,
     createSessionDir, warmSessionForRepo, waitForWarmSession,
-    clientDir, logStore,
+    clientDir, logStore, buildId,
   } = rt;
   const { kickDiskEscalation } = monitors;
 
@@ -541,6 +542,20 @@ export async function registerRoutes(
           socket.send(JSON.stringify(msg));
         }
       };
+
+      const sendContainerFreshness = (sid: string) => {
+        const container = containerManager?.get(sid);
+        send({
+          type: "session_container_freshness",
+          sessionId: sid,
+          freshness: getContainerFreshness(container?.workerBuildId, buildId),
+        });
+      };
+
+      const onContainerStarted = (sid: string) => {
+        if (sid === activeAppSessionId) sendContainerFreshness(sid);
+      };
+      containerManager?.on("container_started", onContainerStarted);
 
       // ---- Runner attach/detach (same as /ws) ----
       const attachToRunner = (runner: SessionRunnerInterface) => {
@@ -922,6 +937,7 @@ export async function registerRoutes(
           }
         }
         if (dir) void checkGitIdentity(dir);
+        sendContainerFreshness(sid);
         // docs/161 — after the session is up and the user has control, kick a
         // background disk-tier escalation pass over the OTHER idle sessions
         // (this one is excluded + guarded anyway). Never awaited — adds no
@@ -1348,6 +1364,7 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
 
       socket.on("close", () => {
         console.log(`[ws] session client disconnected: ${sessionId}`);
+        containerManager?.off("container_started", onContainerStarted);
         detachFromRunner();
         // Intentionally do NOT call enforceIdleContainerLimit() here.
         // WebSocket lifecycle MUST NOT affect runner/container lifecycle —
