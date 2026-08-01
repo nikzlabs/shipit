@@ -15,7 +15,7 @@ When a user starts a feature directly in chat and asks to use requirements disci
 The document is deliberately readable without specialist notation:
 
 ```markdown
-# Session sharing requirements
+# Sample feature
 
 1. A numbered, plain-language statement of what the feature must do.
 2. Another observable requirement, without implementation details.
