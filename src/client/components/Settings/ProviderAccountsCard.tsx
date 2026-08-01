@@ -67,8 +67,14 @@ export function ProviderAccountsCard({
   const [apiKeyError, setApiKeyError] = useState("");
   const [apiKeySaving, setApiKeySaving] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const [pendingDisconnect, setPendingDisconnect] = useState<{ accountId: string; message: string } | null>(null);
+  const [replacementChoice, setReplacementChoice] = useState("");
 
   const name = providerNames[provider];
+
+  /** Accounts a pinned session could be moved to — connected, and not this one. */
+  const otherReadyAccounts = (excludeId: string) =>
+    accounts.filter((account) => account.id !== excludeId && account.status === "ready");
 
   const toast = (err: unknown, fallback: string) => {
     useUiStore.getState().setToast({ message: err instanceof Error ? err.message : fallback });
@@ -159,15 +165,42 @@ export function ProviderAccountsCard({
     }
   };
 
-  const disconnect = async (account: ProviderAccount) => {
+  /**
+   * Disconnect, resolving the pinned-session case inline rather than by toast.
+   *
+   * The server refuses to strand sessions that are pinned to the account and
+   * answers with the list of accounts they could move to instead (req 9). That
+   * is a question, so it gets asked here — a row-local picker — instead of
+   * being flattened into an error toast the user can only retry verbatim.
+   */
+  const disconnect = async (account: ProviderAccount, replacementAccountId?: string) => {
     setSavingId(account.id);
     try {
-      const result = await request<{ accounts: ProviderAccount[] }>(`/api/provider-accounts/${provider}/${account.id}`, {
-        method: "DELETE",
-      });
+      const query = replacementAccountId
+        ? `?replacementAccountId=${encodeURIComponent(replacementAccountId)}`
+        : "";
+      const result = await request<{ accounts: ProviderAccount[]; switchedSessionIds: string[] }>(
+        `/api/provider-accounts/${provider}/${account.id}${query}`,
+        { method: "DELETE" },
+      );
       setProviderAccounts(result.accounts);
+      setPendingDisconnect(null);
+      if (result.switchedSessionIds.length > 0) {
+        useUiStore.getState().setToast({
+          message: `Moved ${result.switchedSessionIds.length} session(s) to the replacement account.`,
+        });
+      }
     } catch (err) {
-      toast(err, "Failed to disconnect account");
+      const message = err instanceof Error ? err.message : "Failed to disconnect account";
+      // Only the "choose a replacement" refusal is answerable in place; a
+      // running session (or any other failure) is not something a picker fixes.
+      const movable = otherReadyAccounts(account.id);
+      if (message.includes("session(s) are pinned") && movable.length > 0) {
+        setPendingDisconnect({ accountId: account.id, message });
+        setReplacementChoice(movable[0]?.id ?? "");
+      } else {
+        toast(err, "Failed to disconnect account");
+      }
     } finally {
       setSavingId(null);
     }
@@ -372,6 +405,39 @@ export function ProviderAccountsCard({
                   <p className="text-xs text-(--color-error)" data-testid={`provider-account-error-${account.id}`}>
                     {authError}
                   </p>
+                )}
+
+                {pendingDisconnect?.accountId === account.id && (
+                  <div
+                    className="space-y-2 rounded-md border border-(--color-border-secondary) bg-(--color-bg-primary) p-3"
+                    data-testid={`provider-account-replacement-${account.id}`}
+                  >
+                    <p className="text-xs text-(--color-text-secondary)">{pendingDisconnect.message}</p>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <select
+                        value={replacementChoice}
+                        onChange={(event) => setReplacementChoice(event.target.value)}
+                        aria-label={`Replacement account for ${account.label}`}
+                        className="min-w-0 flex-1 rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) px-2 py-1.5 text-sm text-(--color-text-primary) focus:outline-none focus:border-(--color-border-focus)"
+                      >
+                        {otherReadyAccounts(account.id).map((candidate) => (
+                          <option key={candidate.id} value={candidate.id}>{candidate.label}</option>
+                        ))}
+                      </select>
+                      <Button
+                        variant="primary"
+                        size="md"
+                        disabled={busy || !replacementChoice}
+                        onClick={() => void disconnect(account, replacementChoice)}
+                        data-testid={`provider-account-confirm-replacement-${account.id}`}
+                      >
+                        Move and disconnect
+                      </Button>
+                      <Button variant="ghost" size="md" onClick={() => setPendingDisconnect(null)}>
+                        Cancel
+                      </Button>
+                    </div>
+                  </div>
                 )}
 
                 {/* Claude's CLI-driven sign-in is the one that strands users, so

@@ -1544,6 +1544,37 @@ Implementation started:
   device code on the row that started the sign-in", "keeps two concurrent row
   sign-ins independent".
 
+- **The account-switch transition exists (req 9).**
+  `services/provider-account-switch.ts` → `switchSessionProviderAccount` moves a
+  pinned session between accounts of the same provider: kill the live agent,
+  reprovision from the incoming account's root (preserving the
+  conversation-state allowlist), persist the new route, and leave
+  `agentSessionId` untouched so the next turn resumes the same conversation.
+  The kill is not optional — both CLIs read credentials once at process start,
+  so a running agent keeps spending the outgoing account's token no matter what
+  is written to disk. It refuses rather than guesses on the unsafe cases:
+  unknown session, cross-provider target, unusable account, or a turn in
+  flight. A caller that must preempt a running turn (mid-turn exhaustion,
+  req 14) stops the turn first — that ordering belongs to the caller.
+- **Disconnect now offers a destination instead of a dead end.**
+  `deleteProviderAccount` used to refuse outright whenever any session was
+  pinned ("until account switching is available"). It now takes an optional
+  `replacementAccountId`: without one it 409s *naming the usable alternatives*,
+  with one it switches every pinned session across and then deletes. A
+  *running* pinned session is still refused unconditionally. The client turns
+  that 409 into a row-local picker rather than a toast, so the refusal is
+  answerable where it appears. This is also the first production caller of the
+  switch — the transition is exercised today, not merely staged for Phase 3.
+- **Child sessions route independently (req 18), verified rather than assumed.**
+  A spawned child reaches `prepareSessionAgentEnvironment` with no persisted
+  route, so it asks `selectRouteForTurn` and gets the user's normal priority
+  order; `providerRouteKind`/`providerRouteId` are only ever written from a
+  router decision and never copied from a parent at spawn. Follow-up turns
+  (including detached/system turns that recreate a runner) reuse the persisted
+  route instead of re-selecting, so a conversation cannot drift onto a
+  different account mid-flight. Both directions are pinned by tests in
+  `session-agent-env.test.ts`.
+
 Planned authentication-surface consolidation:
 
 - **One row model for both providers.** `ProviderAccountsCard` owns every

@@ -40,11 +40,12 @@
 - [x] Move Claude and Codex Platform API-key inputs into separate collapsed fallback sections with explicit metered-billing copy.
 - [ ] Migrate singleton Claude/Codex login, code, cancel, and sign-out callers to provider-account endpoints.
 - [ ] Remove singleton subscription auth endpoints and provider-wide pending client state after caller migration.
-- [ ] Block disconnect while an account is pinned to a running session unless replacement is selected.
-- [ ] Implement account-switch runtime transition for pinned sessions: kill process, reprovision while preserving conversation-state subpaths, keep `agentSessionId`, resume (req 9).
-- [ ] Hydrate persisted provider route for detached/system-turn runner recreation.
-- [ ] Route child-session first turns through the normal account router (req 18).
+- [x] Block disconnect while an account is pinned to a running session unless replacement is selected.
+- [x] Implement account-switch runtime transition for pinned sessions: kill process, reprovision while preserving conversation-state subpaths, keep `agentSessionId`, resume (req 9).
+- [x] Hydrate persisted provider route for detached/system-turn runner recreation.
+- [x] Route child-session first turns through the normal account router (req 18).
 - [ ] Route child follow-up turns through persisted agent and provider route, not default agent fallback.
+- [x] Offer a replacement account inline when disconnecting an account that pinned sessions use.
 - [ ] Add `agent_init` provider-account metadata decoration at the orchestrator boundary.
 - [ ] Add local/dogfood direct-run account-scoped HOME/config-root support or explicit unsupported diagnostic.
 
@@ -111,7 +112,7 @@
 - [ ] Integration: exhausted primary starts a new turn on a secondary account.
 - [ ] Integration: all-exhausted fails the turn with reset times, pins nothing, and schedules no timer.
 - [ ] Integration: mid-turn exhaustion retries on secondary once, including after file edits or commands.
-- [ ] Integration: switching a pinned session kills the persistent agent, reprovisions credentials, preserves `.claude/projects` / `.codex/sessions` and `agentSessionId`, and resumes the same conversation.
+- [x] Integration: switching a pinned session kills the persistent agent, reprovisions credentials, preserves `.claude/projects` / `.codex/sessions` and `agentSessionId`, and resumes the same conversation.
 - [ ] Integration: detached system turns recreate runners from persisted agent/provider route.
 - [ ] Integration: answer-question and rebase/conflict direct `agent.run` paths use provider preflight.
 - [x] Client: Settings renders multiple accounts and primary selection.
