@@ -248,25 +248,22 @@ export class CredentialStore {
     return found ? { ...found } : undefined;
   }
 
-  getPrimaryProviderAccount(provider: AgentId): ProviderAccount | undefined {
-    const accounts = this.data.providerAccounts?.[provider] ?? [];
-    const found = accounts.find((a) => a.isPrimary) ?? accounts[0];
-    return found ? { ...found } : undefined;
-  }
-
+  /**
+   * docs/150 req 19 — this store no longer maintains an `isPrimary` invariant.
+   * "Primary" is position 0 of the `priority` order, derived by
+   * `ProviderAccountManager.list()`. The three blocks that used to live here —
+   * clearing the flag from siblings on upsert, and re-electing a primary on
+   * upsert and on delete — existed only to keep a second copy of that fact
+   * consistent, and a second copy is what req 19 is about removing. Rows on
+   * disk may still carry a stale flag; it is ignored on read.
+   */
   upsertProviderAccount(account: ProviderAccount): void {
     this.data.providerAccounts ??= {};
     const accounts = [...(this.data.providerAccounts[account.provider] ?? [])];
     const idx = accounts.findIndex((a) => a.id === account.id);
     const next = { ...account, updatedAt: Date.now() };
-    if (next.isPrimary) {
-      for (const existing of accounts) existing.isPrimary = false;
-    }
     if (idx >= 0) accounts[idx] = next;
     else accounts.push(next);
-    if (!accounts.some((a) => a.isPrimary) && accounts[0]) {
-      accounts[0] = { ...accounts[0], isPrimary: true, updatedAt: Date.now() };
-    }
     this.data.providerAccounts[account.provider] = accounts;
     this.save();
   }
@@ -274,11 +271,7 @@ export class CredentialStore {
   deleteProviderAccount(provider: AgentId, accountId: string): void {
     const accounts = this.data.providerAccounts?.[provider];
     if (!accounts) return;
-    const next = accounts.filter((a) => a.id !== accountId);
-    if (next.length > 0 && !next.some((a) => a.isPrimary)) {
-      next[0] = { ...next[0], isPrimary: true, updatedAt: Date.now() };
-    }
-    this.data.providerAccounts![provider] = next;
+    this.data.providerAccounts![provider] = accounts.filter((a) => a.id !== accountId);
     this.save();
   }
 

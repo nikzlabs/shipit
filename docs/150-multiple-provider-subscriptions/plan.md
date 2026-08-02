@@ -2014,6 +2014,46 @@ selection order is still "primary first, then stored order". Reqs 4–6 say the
 cutoff advances to the next account *in the user's priority order*, so this
 delivers the advancing half; the ordering half is the next piece.
 
+### Landed: one field for the order (req 19, Phase 5)
+
+`priority` and `isPrimary` both encoded the same fact, and two fields for one
+fact are two fields that can disagree. "Primary" only ever meant "first in the
+fallback order" — `makePrimary` is implemented as a `reorder`, and `reorder`
+wrote `isPrimary: index === 0` in step with it. So `isPrimary` was never
+independent; it was a cached copy with three separate pieces of machinery
+keeping it honest.
+
+`isPrimary` is now **derived on read** — `list()` stamps `index === 0` — and is
+neither persisted nor maintained. That deletes:
+
+- the `isPrimary` write in `reorder` and `create`,
+- `CredentialStore.upsertProviderAccount`'s two blocks (clear the flag from
+  siblings; re-elect a primary if none is set),
+- `CredentialStore.deleteProviderAccount`'s re-election,
+- `CredentialStore.getPrimaryProviderAccount` entirely — `getPrimary` is now
+  `list(provider)[0]`.
+
+`get()` also routes through `list()`, so no caller can see a different
+`isPrimary` depending on which accessor it reached for. The wire shape is
+unchanged, so the client still reads `account.isPrimary` and nothing in the UI
+moved. Stale flags left on disk are simply ignored.
+
+**The legacy ordering rule is gone from the read path, not disabled.** `list()`
+used to carry a compatibility branch — rows with no `priority` sorted
+primary-first, then stored order — so an upgrade wouldn't move which account a
+user's turns ran on. That guarantee now belongs to `backfillPriority()`, which
+runs once from `migrateDefaultAccounts` (already the "bring stored accounts up
+to the current shape" entry point) and records the order those rows *currently*
+resolve to under the old rule. Same order, written down instead of recomputed
+forever. The old rule survives only as `legacyRank`, used solely to seed that
+one-time backfill; nothing on the read path calls it. `migrateProviderDefault`
+also stamps `priority: 0`, so it stops minting priority-less rows.
+
+A row with no `priority` now sorts *last* rather than first. That is deliberate:
+after the backfill there shouldn't be any, and treating a missing value as `0`
+would silently promote an unknown row to primary — the failure mode worth
+avoiding is the quiet one.
+
 ### Fixed: the reorder buttons wrote the order but never showed it (req 2)
 
 Reported as "buttons that change the order of accounts don't work". They half

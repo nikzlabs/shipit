@@ -144,6 +144,9 @@
 - [x] Unit: `list()` — the accessor every wire path reads — reflects the user's order, not storage order.
 - [x] Integration: `PUT /order` changes the order in its own response and in a later `GET`.
 - [x] Manual: reorder buttons move rows in the preview, the primary badge follows, and the order survives a reload.
+- [x] Unit: the backfill records the order legacy rows already resolved to, and is idempotent.
+- [x] Unit: `isPrimary` is derived from position — a poisoned stored flag is ignored, and every accessor agrees.
+- [x] Manual: make-primary in the running app renumbers `priority`, moves the badge, and disables its own button.
 - [x] Client: Add account / Connect are disabled while another row of the provider is authenticating.
 - [ ] Unit: API-key fallback configures only its reserved route and never marks a subscription account ready.
 - [x] Client: an authenticated primary row does not hide or overwrite a secondary row's pending flow or diagnostics.
@@ -159,6 +162,6 @@ exercised the new path. The signal one is ready to go is that nothing reads it.
 - [x] Give provider-wide sign-out the running-turn guard the per-account disconnect has. (An *idle* pinned session is deliberately left to re-route itself: a route whose row is gone reads unusable, so the next turn's preflight fails it over. Only the mid-turn case is unrecoverable.)
 - [ ] Drop `AgentAuthManager.start`'s no-scope overload and the account-less `complete` branch in `wireEventHandlers` once nothing can start an unscoped flow (nothing does today — `startProviderAccountLogin` is the only caller).
 - [x] ~~Remove `selectRouteForTurn`~~ — **not legacy after all.** It is a three-line convenience over `selectAccountForTurn` with two honest callers that genuinely want route-or-null (rate-limit attribution, sub-agent spawn). Removing it would inline the same wrapper twice.
-- [ ] Backfill `priority` onto stored rows, then drop the `isPrimary`-only ordering fallback in `accountsInSelectionOrder`.
-- [ ] Resolve `ProviderAccount.isPrimary` vs `priority` — drop whichever is no longer read independently.
+- [x] Backfill `priority` onto stored rows (idempotent, runs from `migrateDefaultAccounts`), then drop the `isPrimary`-only ordering fallback from the read path.
+- [x] Resolve `ProviderAccount.isPrimary` vs `priority` — `isPrimary` is derived from position on read and no longer persisted or maintained by the credential store. The wire shape is unchanged.
 - [x] Confirm no singleton subscription auth endpoint, client state, or onboarding card remains (covers the three Phase 1 migration items).
