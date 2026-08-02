@@ -99,24 +99,31 @@ interface SubscriptionLimitsBadgeProps {
  */
 export function SubscriptionLimitsBadge({ limits, autoRefresh }: SubscriptionLimitsBadgeProps) {
   const accounts = useSettingsStore((s) => s.providerAccounts);
-  const pills: { key: string; agentId: AgentId; label: string; snapshot: SubscriptionLimits }[] = [];
+  const pills: { key: string; agentId: AgentId; label: string; snapshot?: SubscriptionLimits }[] = [];
   for (const id of PILL_ORDER) {
     const byRoute = limits[id];
-    if (!byRoute) continue;
-    // Stable order: the user's account order first, then any reserved route
-    // (env / API key), so pills don't reshuffle as snapshots arrive.
-    const order = accounts.filter((a) => a.provider === id).map((a) => a.id);
-    const entries = Object.values(byRoute).sort((a, b) => {
-      const ai = order.indexOf(a.routeId);
-      const bi = order.indexOf(b.routeId);
-      return (ai === -1 ? order.length : ai) - (bi === -1 ? order.length : bi);
-    });
-    for (const snapshot of entries) {
-      const account = accounts.find((a) => a.id === snapshot.routeId);
+    const providerAccounts = accounts.filter((account) => account.provider === id);
+
+    // Connected accounts define pill presence, not cached snapshots. A quiet
+    // account may have no quota event yet, but its pill must remain available
+    // so the user can request a refresh and see that usage is still unknown.
+    for (const account of providerAccounts) {
+      pills.push({
+        key: `${id}:${account.id}`,
+        agentId: id,
+        label: account.label,
+        snapshot: byRoute?.[account.id],
+      });
+    }
+
+    // Reserved routes are not provider-account rows, so snapshots remain the
+    // only evidence that they exist. Append them after the user's account order.
+    for (const snapshot of Object.values(byRoute ?? {})) {
+      if (providerAccounts.some((account) => account.id === snapshot.routeId)) continue;
       pills.push({
         key: `${id}:${snapshot.routeId}`,
         agentId: id,
-        label: account?.label ?? AGENT_LABEL[id],
+        label: AGENT_LABEL[id],
         snapshot,
       });
     }
@@ -128,6 +135,7 @@ export function SubscriptionLimitsBadge({ limits, autoRefresh }: SubscriptionLim
       {pills.map(({ key, agentId, label, snapshot }) => (
         <SubscriptionLimitPill
           key={key}
+          agentId={agentId}
           label={label}
           snapshot={snapshot}
           // eslint-disable-next-line no-restricted-syntax -- Claude is the only agent with an on-demand /api/oauth/usage refresh endpoint
@@ -140,15 +148,17 @@ export function SubscriptionLimitsBadge({ limits, autoRefresh }: SubscriptionLim
 }
 
 interface SubscriptionLimitPillProps {
+  agentId?: AgentId;
   label: string;
-  snapshot: SubscriptionLimits;
+  snapshot?: SubscriptionLimits;
   showRefresh?: boolean;
   /** See `SubscriptionLimitsBadgeProps.autoRefresh`. Only acts with `showRefresh`. */
   autoRefresh?: boolean;
 }
 
-export function SubscriptionLimitPill({ label, snapshot, showRefresh, autoRefresh }: SubscriptionLimitPillProps) {
+export function SubscriptionLimitPill({ agentId, label, snapshot, showRefresh, autoRefresh }: SubscriptionLimitPillProps) {
   const now = Date.now();
+  const resolvedAgentId = snapshot?.agentId ?? agentId;
 
   // The pill carries inline meters with underline gauges, so it overrides
   // Badge's symmetric padding with the asymmetric `pl-2 pr-* pt-0 pb-0.5` it
@@ -159,24 +169,30 @@ export function SubscriptionLimitPill({ label, snapshot, showRefresh, autoRefres
       numeric
       className={`gap-2 pl-2 ${showRefresh ? "pr-1" : "pr-2"} pt-0 pb-0.5 bg-(--color-bg-hover)`}
     >
-      <span title={snapshot.plan ? `${label} — ${snapshot.plan}` : label}>{label}</span>
+      <span title={snapshot?.plan ? `${label} — ${snapshot.plan}` : label}>{label}</span>
       <Meter
         shortLabel="5h"
         longLabel="5h window"
-        window={snapshot.session}
+        window={snapshot?.session ?? null}
         windowMs={SESSION_WINDOW_MS}
-        fetchedAt={snapshot.fetchedAt}
+        fetchedAt={snapshot?.fetchedAt}
         now={now}
       />
       <Meter
         shortLabel="7d"
         longLabel="7d window"
-        window={snapshot.weekly}
+        window={snapshot?.weekly ?? null}
         windowMs={WEEKLY_WINDOW_MS}
-        fetchedAt={snapshot.fetchedAt}
+        fetchedAt={snapshot?.fetchedAt}
         now={now}
       />
-      {showRefresh && <LimitsRefreshButton snapshot={snapshot} autoRefresh={autoRefresh} />}
+      {showRefresh && resolvedAgentId && (
+        <LimitsRefreshButton
+          agentId={resolvedAgentId}
+          lockedUntil={snapshot?.lockedUntil}
+          autoRefresh={autoRefresh}
+        />
+      )}
     </Badge>
   );
 }
@@ -187,7 +203,7 @@ interface MeterProps {
   window: SubscriptionLimitsWindow | null;
   /** Fixed length of this window in ms (5h / 7d) — drives the time marker. */
   windowMs: number;
-  fetchedAt: number;
+  fetchedAt?: number;
   now: number;
 }
 
@@ -251,8 +267,8 @@ export function meterDisplay(
  */
 function Meter({ shortLabel, longLabel, window, windowMs, fetchedAt, now }: MeterProps) {
   const title = window
-    ? `${formatWindowLine(longLabel, window, now)}\nUpdated ${formatAge(fetchedAt, now)}`
-    : `${longLabel}: usage not reported yet\nUpdated ${formatAge(fetchedAt, now)}`;
+    ? `${formatWindowLine(longLabel, window, now)}${fetchedAt === undefined ? "" : `\nUpdated ${formatAge(fetchedAt, now)}`}`
+    : `${longLabel}: usage not reported yet${fetchedAt === undefined ? "" : `\nUpdated ${formatAge(fetchedAt, now)}`}`;
 
   if (!window) {
     return (
@@ -266,7 +282,7 @@ function Meter({ shortLabel, longLabel, window, windowMs, fetchedAt, now }: Mete
     );
   }
 
-  const display = meterDisplay(window, fetchedAt, now);
+  const display = meterDisplay(window, fetchedAt ?? 0, now);
 
   if (display.kind === "reset") {
     return (
@@ -349,32 +365,34 @@ function Meter({ shortLabel, longLabel, window, windowMs, fetchedAt, now }: Mete
  * both go through this component's state.
  */
 function LimitsRefreshButton({
-  snapshot,
+  agentId,
+  lockedUntil,
   autoRefresh,
 }: {
-  snapshot: SubscriptionLimits;
+  agentId: AgentId;
+  lockedUntil?: number;
   autoRefresh?: boolean;
 }) {
   const api = useApi();
   const [refreshing, setRefreshing] = useState(false);
   const now = Date.now();
-  const locked = snapshot.lockedUntil !== undefined && snapshot.lockedUntil > now;
+  const locked = lockedUntil !== undefined && lockedUntil > now;
   const lockCountdown = locked
-    ? formatResetCountdown(new Date(snapshot.lockedUntil!).toISOString(), now)
+    ? formatResetCountdown(new Date(lockedUntil).toISOString(), now)
     : null;
 
   const refresh = useCallback(async () => {
-    lastRefreshAttemptAt.set(snapshot.agentId, Date.now());
+    lastRefreshAttemptAt.set(agentId, Date.now());
     setRefreshing(true);
     try {
-      await api.post("/api/limits/refresh", { agentId: snapshot.agentId });
+      await api.post("/api/limits/refresh", { agentId });
     } catch {
       // Swallow — the SSE broadcast (or its absence) is the source of truth;
       // a failed refresh just leaves the last-known numbers in place.
     } finally {
       setRefreshing(false);
     }
-  }, [api, snapshot.agentId]);
+  }, [agentId, api]);
 
   // Fire-once-on-mount auto refresh. The ref (not the throttle map) is what
   // makes it once-per-mount: the map only bounds how often *any* mount is
@@ -386,10 +404,10 @@ function LimitsRefreshButton({
     if (!autoRefresh || autoFired.current) return;
     autoFired.current = true;
     if (locked) return;
-    const last = lastRefreshAttemptAt.get(snapshot.agentId) ?? 0;
+    const last = lastRefreshAttemptAt.get(agentId) ?? 0;
     if (Date.now() - last < AUTO_REFRESH_MIN_INTERVAL_MS) return;
     void refresh();
-  }, [autoRefresh, locked, refresh, snapshot.agentId]);
+  }, [agentId, autoRefresh, locked, refresh]);
 
   const title = locked
     ? `Usage refresh rate-limited — retry in ${lockCountdown}`

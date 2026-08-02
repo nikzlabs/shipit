@@ -3,6 +3,7 @@ import type { DockerMemoryStats, SubscriptionLimitsMap } from "../../server/shar
 import { DockerMemoryBadge } from "./DockerMemoryBadge.js";
 import { SubscriptionLimitsBadge } from "./SubscriptionLimitsBadge.js";
 import { UptimeBadge } from "./UptimeBadge.js";
+import { useSettingsStore } from "../stores/settings-store.js";
 
 interface MobileStatusPanelProps {
   subscriptionLimits: SubscriptionLimitsMap;
@@ -24,7 +25,8 @@ interface MobileStatusPanelProps {
  * making them tap the refresh glyph as a second step.
  */
 export function MobileStatusPanel({ subscriptionLimits, dockerMemory, processStartedAt }: MobileStatusPanelProps) {
-  const hasSubscription = Object.values(subscriptionLimits).some((s) => s);
+  const hasProviderAccounts = useSettingsStore((s) => s.providerAccounts.length > 0);
+  const hasSubscription = hasProviderAccounts || Object.values(subscriptionLimits).some((s) => s);
   const hasMemoryLimit = dockerMemory && dockerMemory.totalBytes > 0;
 
   return (
