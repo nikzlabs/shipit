@@ -309,15 +309,19 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
 
   // ---- Auth manager ----
   const authManager = deps.authManager ?? new AuthManager();
-  const hasCredentials = authManager.checkCredentials();
-  console.log("[server] Claude credentials found:", hasCredentials);
+  // Primes the manager's singleton `authenticated` flag. Deliberately NOT the
+  // startup log's source: with the req-19 aliases gone the singleton path holds
+  // nothing on a migrated install, so it would report "no credentials found"
+  // for a user with several accounts connected. Ask the account manager, which
+  // is what every routing decision asks.
+  authManager.checkCredentials();
+  console.log("[server] Claude credentials found:", providerAccountManager.hasAnyAuthForProvider("claude"));
 
   // ---- Codex auth manager (ChatGPT subscription) ----
   // Wraps `codex login --device-auth` so a user can sign in with their
   // ChatGPT plan instead of an OPENAI_API_KEY. See feature 119.
   const codexAuthManager = deps.codexAuthManager ?? new CodexAuthManager();
-  const hasCodexAuth = codexAuthManager.checkCredentials();
-  console.log("[server] Codex ChatGPT credentials found:", hasCodexAuth);
+  console.log("[server] Codex ChatGPT credentials found:", providerAccountManager.hasAnyAuthForProvider("codex"));
 
   // ---- Global git config (single source of truth for identity) ----
   // Only initialize if not already configured (tests set this up via createTestCredentialStore).

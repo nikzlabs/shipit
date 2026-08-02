@@ -75,7 +75,79 @@ describe("ProviderAccountManager", () => {
       status: "ready",
     });
     expect(fs.existsSync(path.join(root, "provider-accounts", "claude", "claude-default", ".claude", ".credentials.json"))).toBe(true);
-    expect(fs.existsSync(path.join(root, ".claude", ".credentials.json"))).toBe(true);
+    // req 19 — migration no longer leaves an alias behind, so the credentials
+    // exist at exactly one place. What remains at the flat root is an empty
+    // real directory, because `/root/.claude` is an image symlink to it.
+    expect(fs.existsSync(path.join(root, ".claude", ".credentials.json"))).toBe(false);
+    expect(fs.lstatSync(path.join(root, ".claude")).isSymbolicLink()).toBe(false);
+    expect(fs.readdirSync(path.join(root, ".claude"))).toEqual([]);
+    expect(fs.existsSync(path.join(root, ".claude.json"))).toBe(false);
+  });
+
+  // req 19 — the alias symlinks are the thing being removed, and installs that
+  // already have them must converge on the same shape as a fresh migration.
+  it("retires an existing legacy alias symlink, leaving a real empty config dir", () => {
+    const accountRoot = path.join(root, "provider-accounts", "claude", "claude-default");
+    fs.mkdirSync(path.join(accountRoot, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(accountRoot, ".claude", ".credentials.json"), "{}");
+    fs.writeFileSync(path.join(accountRoot, ".claude.json"), "{}");
+    fs.symlinkSync(path.join(accountRoot, ".claude"), path.join(root, ".claude"));
+    fs.symlinkSync(path.join(accountRoot, ".claude.json"), path.join(root, ".claude.json"));
+    const now = Date.now();
+    store.upsertProviderAccount({
+      id: "claude-default", provider: "claude", label: "Primary Anthropic account",
+      isPrimary: true, status: "ready", createdAt: now, updatedAt: now,
+    });
+
+    new ProviderAccountManager({ credentialsDir: root, credentialStore: store }).migrateDefaultAccounts();
+
+    expect(fs.lstatSync(path.join(root, ".claude")).isSymbolicLink()).toBe(false);
+    expect(fs.readdirSync(path.join(root, ".claude"))).toEqual([]);
+    // A file-shaped alias needs no placeholder — a write through the dangling
+    // image symlink creates it.
+    expect(fs.existsSync(path.join(root, ".claude.json"))).toBe(false);
+    // The account's own credentials are untouched.
+    expect(fs.existsSync(path.join(accountRoot, ".claude", ".credentials.json"))).toBe(true);
+    expect(fs.existsSync(path.join(accountRoot, ".claude.json"))).toBe(true);
+  });
+
+  // The sweep must never mistake un-migrated credentials for an alias: they are
+  // the only copy, and the migration that would move them has not run.
+  it("leaves a real (un-aliased) legacy directory alone", () => {
+    fs.mkdirSync(path.join(root, ".codex"), { recursive: true });
+    fs.writeFileSync(path.join(root, ".codex", "auth.json"), "{}");
+    const now = Date.now();
+    // A pre-existing row makes `migrateProviderDefault` bail, so only the alias
+    // sweep runs over this directory.
+    store.upsertProviderAccount({
+      id: "acct_other", provider: "codex", label: "Work",
+      isPrimary: true, status: "ready", createdAt: now, updatedAt: now,
+    });
+
+    new ProviderAccountManager({ credentialsDir: root, credentialStore: store }).migrateDefaultAccounts();
+
+    expect(fs.readFileSync(path.join(root, ".codex", "auth.json"), "utf8")).toBe("{}");
+  });
+
+  // A symlink the sweep did not create (an operator's mount indirection) points
+  // outside `provider-accounts/` and is not ours to remove.
+  it("leaves a symlink pointing outside provider-accounts alone", () => {
+    const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-elsewhere-"));
+    try {
+      fs.mkdirSync(path.join(elsewhere, "creds"), { recursive: true });
+      fs.symlinkSync(path.join(elsewhere, "creds"), path.join(root, ".codex"));
+      const now = Date.now();
+      store.upsertProviderAccount({
+        id: "acct_other", provider: "codex", label: "Work",
+        isPrimary: true, status: "ready", createdAt: now, updatedAt: now,
+      });
+
+      new ProviderAccountManager({ credentialsDir: root, credentialStore: store }).migrateDefaultAccounts();
+
+      expect(fs.lstatSync(path.join(root, ".codex")).isSymbolicLink()).toBe(true);
+    } finally {
+      fs.rmSync(elsewhere, { recursive: true, force: true });
+    }
   });
 
   it("does not create an account when only reserved env auth exists", () => {
@@ -351,6 +423,42 @@ describe("ProviderAccountManager", () => {
       expect(claude.signOutCalls[0]).toEqual({
         credentialDir: mgr.resolveCredentialRoot("claude", account.id),
       });
+    });
+
+    /**
+     * req 19 — provider-wide sign-out used to delete the account *rows* and
+     * clear only the singleton path. On a migrated install that path aliased
+     * `<provider>-default`, so one account's credentials were erased and every
+     * account connected afterwards kept live OAuth tokens on disk with no row
+     * left to reach them from: "Sign out of Claude" left the tokens behind.
+     */
+    it("signOutProvider erases every account's credentials, not just the migrated default", () => {
+      const { mgr, claude, account } = setup();
+      const second = mgr.create("claude", "Work");
+      for (const id of [account.id, second.id]) {
+        const dir = path.join(mgr.resolveCredentialRoot("claude", id), ".claude");
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, ".credentials.json"), "{}");
+      }
+
+      mgr.signOutProvider("claude");
+
+      expect(mgr.list("claude")).toEqual([]);
+      for (const id of [account.id, second.id]) {
+        expect(fs.existsSync(mgr.resolveCredentialRoot("claude", id))).toBe(false);
+      }
+      // The unscoped sign-out still runs, for installs that never migrated.
+      expect(claude.signOutCalls).toContainEqual({});
+    });
+
+    it("signOutProvider ends an in-flight login on an account it is deleting", () => {
+      const { mgr, claude, account } = setup();
+      mgr.startAccountAuth("claude", account.id);
+      expect(claude.getActiveAccountId()).toBe(account.id);
+
+      mgr.signOutProvider("claude");
+
+      expect(claude.getActiveAccountId()).toBeNull();
     });
 
     it("scoped-auth methods throw a clear error when no auth managers are wired", () => {
