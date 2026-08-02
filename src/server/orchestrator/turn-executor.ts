@@ -27,6 +27,7 @@
 
 import type { AgentId, AgentProcess, PermissionMode, AgentEvent, WsServerMessage } from "../shared/types.js";
 import { wireAgentListeners } from "./ws-handlers/agent-listeners.js";
+import { detectHardExhaustion } from "./ws-handlers/agent-rate-limits.js";
 import { resetRunnerTurnState } from "./session-runner.js";
 import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js";
 import { formatUnresolvedConflictNotice } from "./services/conflict-marker-notice.js";
@@ -79,9 +80,18 @@ export interface TurnInput {
    */
   isAuthRetry?: boolean;
   /**
+   * docs/150 req 14 — set on the quota-retry re-dispatch (a turn re-run after
+   * the provider killed it for subscription exhaustion). Bounds the retry to
+   * exactly one: if the second account is spent too, the turn fails normally
+   * rather than walking down every account one process at a time. Absent on a
+   * first attempt.
+   */
+  isQuotaRetry?: boolean;
+  /**
    * docs/179 — shared "user row persisted" latch, threaded from the original
-   * attempt into the auth-retry so the user message is persisted exactly once
-   * across both. Created internally when absent.
+   * attempt into the auth-retry (and docs/150's quota retry) so the user
+   * message is persisted exactly once across both. Created internally when
+   * absent.
    */
   persistGuard?: { done: boolean };
   /** Fallback chat title when AI naming hasn't produced one yet. */
@@ -337,6 +347,55 @@ export async function executeAgentTurn(
       persistGuard,
     });
     return true;
+  };
+
+  // docs/150 req 14 — same-turn quota failover. When the provider kills a turn
+  // because the subscription is spent, the user should not have to notice or
+  // resend: the turn re-runs once on the next eligible account, "regardless of
+  // what that turn has already done."
+  //
+  // Deliberately does NOT choose the account itself. By the time this runs the
+  // listener has already benched the spent one (req 7), so the retry's own
+  // env-prep is what switches: `failoverPinnedSession` sees the pinned account
+  // is no longer usable, moves the session, preserves the conversation, and
+  // posts the req-11 notice. That also gives the no-account-left case for free
+  // — env-prep throws `ProviderRouteUnavailableError` and the retry surfaces
+  // req 13's "every account is out of quota, earliest reset at X", which is a
+  // better message than the raw provider error this attempt died of.
+  //
+  // Side effects from the failed attempt are kept, not rolled back: req 14 is
+  // explicit that a mid-turn exhaustion retries regardless of what the turn
+  // already did. Its partial output has already been finalized into history by
+  // the listener, so the retry's fresh in-progress turn appends below it rather
+  // than colliding with it — the transcript reads as attempt, notice, retry.
+  let quotaRetryInProgress = false;
+  const retryOnNextAccount = async (): Promise<void> => {
+    console.log(
+      `[turn] ${agentId} reported quota exhaustion for ${sessionId}; `
+      + "retrying once on the next eligible account",
+    );
+    // The dying process still holds the spent account's token. Kill it before
+    // the retry re-provisions, so nothing keeps spending the account we just
+    // benched. Its `done` fires into the stood-down handler below.
+    try {
+      agent.kill();
+    } catch {
+      // Already gone is the state we wanted.
+    }
+    const freshAgent = deps.agentFactory(agentId);
+    if (runner) {
+      runner.setAgent(freshAgent);
+      // The resident streaming process died with the account; the retry spawns
+      // its own. Left set, the next turn would try to steer into a dead pipe.
+      runner.isStreamingActive = false;
+    }
+    await executeAgentTurn(runner, deps, freshAgent, {
+      ...input,
+      isQuotaRetry: true,
+      reuseExistingAgent: false,
+      emitUserEcho: false,
+      persistGuard,
+    });
   };
 
   // Surface the user message. Dispatch emits a `system_user_message` bubble (no
@@ -610,6 +669,19 @@ export async function executeAgentTurn(
   agent.on("event", async (event: AgentEvent) => {
     if (event.type !== "agent_result") return;
     receivedResult = true;
+    // docs/150 req 14 — before ANY post-turn work. Draining the queue or
+    // broadcasting "finished" here would tell the user (and the next queued
+    // turn) that a turn we are about to re-run is over. The retry owns
+    // drain / commit / finished, exactly as the auth retry does.
+    //
+    // Reads the RAW error: `wireAgentListeners` normalizes onto its own local
+    // copy of the event, so its rewrite is not visible here. Both providers'
+    // raw usage-limit text is covered by the same detector.
+    if (!input.isQuotaRetry && event.error && detectHardExhaustion(event.error)) {
+      quotaRetryInProgress = true;
+      await retryOnNextAccount();
+      return;
+    }
     if (useStreaming) {
       if (streamingPostTurnFired) return;
       streamingPostTurnFired = true;
@@ -637,6 +709,11 @@ export async function executeAgentTurn(
     // / finished). Stand down so we don't double-drain, emit a spurious error,
     // or finalize a turn that's about to be retried.
     if (authRecoveryInProgress) return;
+    // docs/150 req 14 — same stand-down for the quota retry: `retryOnNextAccount`
+    // killed this process on purpose and the re-dispatched turn owns every
+    // terminal step. Without this, the kill's `done` would drain the queue and
+    // finalize a turn that is being re-run.
+    if (quotaRetryInProgress) return;
     // docs/240 — everything below is wrapped so the turn SETTLES on every exit
     // path, including the early `return`s. The one that mattered is the
     // no-result hand-off near the bottom: it returns without calling
