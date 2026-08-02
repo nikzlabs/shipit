@@ -20,7 +20,7 @@ baseline for issue tracking that does not depend on Linear's issue allowance:
 6. A first-party implementation in ShipIt
 
 **Recommendation:** first evaluate the already-shipped GitHub adapter against a
-dedicated private GitHub repository. This meets requirement 6 with no new
+dedicated private GitHub repository. This meets product requirement 2 with no new
 storage service, but its repository-bound Open/Closed model may still be too
 narrow. If it is, run a short, bounded Vikunja integration spike before
 committing to a first-party implementation. Vikunja is the best operational fit
@@ -33,9 +33,11 @@ deployment scoping are brittle, build the first-party option. Do not fall back
 to Plane or Huly merely to avoid writing storage code; their deployment cost is
 disproportionate for a subsystem that should be invisible inside ShipIt.
 
-This is an evaluation, not an implementation commitment. The requirements are
-in [requirements.md](./requirements.md), and implementation gates are recorded
-in [checklist.md](./checklist.md).
+This is an evaluation, not an implementation commitment. The tracker itself is
+governed by [product requirements](./requirements.md); the scope of this
+research is governed separately by
+[evaluation requirements](./evaluation-requirements.md). Implementation gates
+are recorded in [checklist.md](./checklist.md).
 
 ## Problem
 
@@ -54,9 +56,9 @@ issue can also be held back by an open parent/sub-issue, active cycle, or
 unfinished project. See [Delete and archive issues](https://linear.app/docs/delete-archive-issues)
 and [Issue status](https://linear.app/docs/configuring-workflows).
 
-Moving issue storage out of Linear removes the allowance constraint in
-requirement 5. Keeping that replacement outside ShipIt's public repository
-satisfies the separate privacy constraint in requirement 6. Storage may be a
+Moving issue storage out of Linear addresses evaluation requirement 5. Keeping
+that replacement outside ShipIt's public repository satisfies product
+requirement 2. Storage may be a
 dedicated private GitHub repository or a ShipIt-operated service. In either
 case, ShipIt remains the user surface and the agent remains the actor; an
 upstream UI is only an administrative escape hatch.
@@ -109,6 +111,27 @@ underlying evidence.
 | **Leantime** | Medium: application + MySQL | Good | JSON-RPC; no built-in webhooks | Medium/high | More planning machinery than ShipIt needs |
 | **Huly** | Very high: platform stack | Excellent | Broad but operationally coupled | High | Collaboration platform, not lightweight storage |
 
+## Product-requirement compliance
+
+These are hard gates, not weighted preferences. “Conditional” means the option
+cannot be selected until its decision gate demonstrates parity through ShipIt's
+existing wrapper.
+
+| Option | Req 1: no less than wrapper | Req 2: private | Req 3: free/no subscription |
+|---|---|---|---|
+| **GitHub Issues in a private repo** | **Conditional / fails as-is.** Gate 0 must add safe cross-repo routing, writable workflow/priority conventions, and parent issues. | **Pass.** GitHub Free supports private repositories. | **Pass today.** GitHub Free is $0/month and includes Issues & Projects plus unlimited private repositories; revalidate before selection. [Pricing](https://github.com/pricing) |
+| **Vikunja Community** | **Conditional.** Gate 1 must prove every `Tracker` capability, especially bucket-backed status and parent relations. | **Pass.** Self-hosted storage. | **Pass.** The fully functional community edition is AGPL-licensed without a subscription. [Community edition](https://vikunja.io/docs/pro/) |
+| **First-party ShipIt** | **Pass by design.** It implements the wrapper contract directly; parity tests are the acceptance boundary. | **Pass.** Data stays in ShipIt's private deployment storage. | **Pass.** No separate license or subscription. |
+| **Forgejo** | **Fails as described.** Open/Closed plus label conventions do not yet preserve the full wrapper contract. | **Pass.** Self-hosted storage. | **Pass.** Free/open-source self-hosting; license obligations still apply. |
+| **Plane Community** | **Conditional.** Strong model fit, but the community API must pass the tracker contract suite. | **Pass.** Self-hosted storage. | **Pass.** Community is AGPL-3.0, free, and has no user limit. [Editions](https://developers.plane.so/self-hosting/editions-and-versions) |
+| **Leantime Community** | **Conditional.** JSON-RPC coverage must be tested against the complete wrapper contract. | **Pass.** Self-hosted storage. | **Must verify before selection.** Core self-hosting is open source, but paid marketplace plugins cannot become dependencies. |
+| **Huly self-hosted** | **Conditional.** Rich model, but its supported self-host API must pass the wrapper contract. | **Pass.** Self-hosted storage. | **Must verify before selection.** No paid cloud or proprietary add-on may be required for the adapter path. |
+
+An option marked “fails as-is” can remain in the evaluation, but cannot be the
+selected implementation unless a bounded adapter change converts it to a pass.
+Any future pricing or license change that introduces a required subscription
+automatically disqualifies that option under product requirement 3.
+
 The implementation decision is sequential: validate a dedicated private GitHub
 repository first; if its workflow model is insufficient, falsify the lightest
 self-hosted reusable service (Vikunja) with a bounded spike; build first-party
@@ -142,7 +165,7 @@ reads, writes, undo, seed-time Started, and merged-PR lifecycle effects before
 it is safe to enable.
 
 This baseline is not a ShipIt-run open-source service, so it does not satisfy
-requirement 2 by itself. It does satisfy requirement 6 when ShipIt binds the
+evaluation requirement 2 by itself. It does satisfy product requirement 2 when ShipIt binds the
 adapter to a dedicated private repository rather than the public ShipIt source
 repository. The remaining question is model fit, not privacy.
 
@@ -590,7 +613,7 @@ following without label conventions becoming a second hidden workflow engine:
 
 If any workflow requirement needs substantial emulation beyond the adapter,
 Gate 0 fails and ShipIt proceeds to Gate 1. Privacy alone does not fail Gate 0:
-a dedicated private repository satisfies requirement 6.
+a dedicated private repository satisfies product requirement 2.
 
 ### Gate 1 — Vikunja spike
 
