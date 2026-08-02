@@ -52,6 +52,7 @@ function makeFakeAgent(): FakeAgent {
 function makeDeps(
   agents: FakeAgent[],
   ensureAgentTokenFresh: SystemTurnDeps["ensureAgentTokenFresh"],
+  resolveTurnAccountId?: SystemTurnDeps["resolveTurnAccountId"],
 ): {
   deps: SystemTurnDeps;
   sseBroadcast: ReturnType<typeof vi.fn>;
@@ -66,6 +67,7 @@ function makeDeps(
       return a as unknown as ReturnType<SystemTurnDeps["agentFactory"]>;
     },
     ...(ensureAgentTokenFresh ? { ensureAgentTokenFresh } : {}),
+    ...(resolveTurnAccountId ? { resolveTurnAccountId } : {}),
     autoCommit: vi.fn().mockResolvedValue({
       commitHash: null,
       parentHash: null,
@@ -209,6 +211,72 @@ describe("runtime-401 auto-retry (docs/179)", () => {
     expect(startOAuthFlow).not.toHaveBeenCalled();
     expect(agents).toHaveLength(2);
     expect(runner.running).toBe(false);
+
+    runner.dispose({ force: true });
+  });
+  // docs/150 — with several accounts per provider, the heal has to name the
+  // account this turn is pinned to. Provider-wide, `ensureAgentTokenFresh`
+  // refreshes every account and returns `results.every(Boolean)`, so a second
+  // account that is revoked (or was never signed in) makes the aggregate false
+  // and a healthy account's turn gets a sign-in card it did not need.
+  it("heals the account the turn is pinned to, not the whole provider", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    const agents: FakeAgent[] = [];
+    // Stands in for the real healer: account-scoped calls heal, a
+    // provider-wide call reports failure because a sibling account is revoked.
+    const ensureAgentTokenFresh = vi.fn(
+      async (_agentId: AgentId, accountId?: string) => accountId === "acct_healthy",
+    );
+    const { deps, startOAuthFlow } = makeDeps(
+      agents,
+      ensureAgentTokenFresh as unknown as SystemTurnDeps["ensureAgentTokenFresh"],
+      () => "acct_healthy",
+    );
+    runner.setSystemTurnDeps(deps);
+
+    runner.dispatch(testDispatch({ text: "do work" }));
+    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first agent run");
+
+    agents[0]!.emit("auth_required");
+    agents[0]!.emit("done", 0);
+
+    await waitFor(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "re-dispatched agent run");
+    expect(ensureAgentTokenFresh).toHaveBeenCalledWith("claude", "acct_healthy");
+    // Quiet recovery — the revoked sibling never entered the picture.
+    expect(startOAuthFlow).not.toHaveBeenCalled();
+
+    runner.dispose({ force: true });
+  });
+
+  // docs/150 — a session pinned to a reserved route (`claude-api-key`,
+  // `claude-env-oauth`) has no account token of its own. Rotating every
+  // *subscription* account and reporting the aggregate answers a question
+  // nobody asked: a bad API key would read as healed because the subscriptions
+  // are fine. Don't heal; let the 401 surface.
+  it("does not heal a reserved-route turn off other accounts' tokens", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    const agents: FakeAgent[] = [];
+    const messages: { type: string; [k: string]: unknown }[] = [];
+    runner.on("message", (m) => messages.push(m as never));
+    const ensureAgentTokenFresh = vi.fn().mockResolvedValue(true);
+    const { deps } = makeDeps(
+      agents,
+      ensureAgentTokenFresh,
+      // Pinned to `claude-api-key` — not an account.
+      () => undefined,
+    );
+    runner.setSystemTurnDeps(deps);
+
+    runner.dispatch(testDispatch({ text: "do work" }));
+    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first agent run");
+
+    agents[0]!.emit("auth_required");
+    agents[0]!.emit("done", 0);
+    await waitFor(() => messages.some((m) => m.type === "error"), "re-auth error surfaced");
+
+    // No OAuth refresh was attempted, and no silent re-dispatch happened.
+    expect(ensureAgentTokenFresh).not.toHaveBeenCalled();
+    expect(agents).toHaveLength(1);
 
     runner.dispose({ force: true });
   });

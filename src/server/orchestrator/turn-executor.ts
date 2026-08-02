@@ -318,7 +318,27 @@ export async function executeAgentTurn(
   const recoverAuth = async (): Promise<boolean> => {
     let healed: boolean;
     try {
-      healed = deps.ensureAgentTokenFresh ? await deps.ensureAgentTokenFresh(agentId) : false;
+      // docs/150 — heal the account THIS turn is pinned to. Provider-wide,
+      // the healer aggregates with `every()`, so one revoked sibling account
+      // would report "couldn't heal" for a turn whose own token is fine.
+      //
+      // A resolver that answers `undefined` means the turn is on a reserved
+      // route (`claude-api-key`, `claude-env-oauth`) — not an account, and not
+      // refresher-managed. There is no OAuth token of its own to heal, so
+      // rotating every *other* account's token and reporting the aggregate
+      // would be answering a question nobody asked: a bad API key would look
+      // healed because the subscriptions are fine, or look unhealable because
+      // one of them isn't. Don't heal; let the 401 surface.
+      if (deps.resolveTurnAccountId) {
+        const turnAccountId = deps.resolveTurnAccountId(sessionId);
+        healed = turnAccountId && deps.ensureAgentTokenFresh
+          ? await deps.ensureAgentTokenFresh(agentId, turnAccountId)
+          : false;
+      } else {
+        // No resolver wired (tests / local runtime): keep the pre-docs/150
+        // provider-wide behaviour rather than silently disabling recovery.
+        healed = deps.ensureAgentTokenFresh ? await deps.ensureAgentTokenFresh(agentId) : false;
+      }
     } catch (err) {
       console.error("[turn] auth heal failed:", err);
       healed = false;

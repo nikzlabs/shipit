@@ -36,8 +36,8 @@
 - [x] Share the account-row shell across Claude code-paste and Codex device-code challenge variants.
 - [x] Key pending challenge, failure, and completion state by provider account id.
 - [ ] Key Claude CLI auth *diagnostics* by account id too (still provider-wide; the row renders the shared buffer while it is mid-challenge).
-- [ ] Serialize concurrent per-provider sign-ins: two rows connecting at once share one CLI process, and cancel/code do not check which row owns it (Codex replays the first row's challenge; Claude kills the earlier flow without resetting its status). Not reachable from onboarding, where only one account exists.
-- [ ] Scope `ensureAgentTokenFresh` to the turn's account: it refreshes every account for the provider and aggregates with `every()`, so an unrelated revoked account fails a healthy account's turn.
+- [x] Serialize concurrent per-provider sign-ins: start refuses (409) while another row owns the flow, cancel only kills the owning row's process, and a pasted code is rejected on a row that doesn't own the challenge.
+- [x] Scope the runtime-401 heal to the turn's account (`resolveTurnAccountId`), so a revoked sibling account can't make a healthy account's turn look unhealable.
 - [x] Reuse the account-row flow in onboarding instead of singleton Claude/Codex auth cards.
 - [x] Move Claude and Codex Platform API-key inputs into separate collapsed fallback sections with explicit metered-billing copy.
 - [x] Migrate singleton Claude/Codex login, code, and cancel callers to provider-account endpoints (sign-*out* stays provider-wide by design).
@@ -50,6 +50,7 @@
 - [x] Offer a replacement account inline when disconnecting an account that pinned sessions use.
 - [x] Do NOT route around model capability — removed the skip-and-report mechanism (req 17 reversed to a non-goal, 2026-08-02).
 - [ ] Add local/dogfood direct-run account-scoped HOME/config-root support or explicit unsupported diagnostic.
+- [ ] Scope the AI session-naming pre-flight heal to an account: `graduateSession` calls `ensureAgentTokenFresh(agentId)` with none, then names against the legacy root path, so a near-expiry sibling account is refreshed on every new session.
 
 ## Phase 2 — Inline Quota Per Account
 
@@ -134,6 +135,12 @@
 - [x] Client: onboarding renders the card `compact` (no between-accounts explainer) so the fixed-height pane keeps "Get Started" above the fold.
 - [x] Manual: first-run onboarding in the dogfood preview — add account, challenge lands on its own row, cancel flips that row to `auth failed`.
 - [x] Unit: both OAuth refreshers name the revoked account on `agent_auth_failed`.
+- [x] Unit: a second concurrent sign-in is refused, cancel spares another row's flow, and a code is rejected on a non-owning row.
+- [x] Integration: the runtime-401 heal names the turn's account, not the provider.
+- [x] Integration: a reserved-route turn is not healed off other accounts' tokens.
+- [x] Integration: a second concurrent sign-in is 409 with the blocking row named, and cancel frees the provider.
+- [x] Unit: cancel / delete / failed-spawn all release the provider's login scope.
+- [x] Client: Add account / Connect are disabled while another row of the provider is authenticating.
 - [ ] Unit: API-key fallback configures only its reserved route and never marks a subscription account ready.
 - [x] Client: an authenticated primary row does not hide or overwrite a secondary row's pending flow or diagnostics.
 - [x] Client: subscription limits render multiple accounts per provider, each named.

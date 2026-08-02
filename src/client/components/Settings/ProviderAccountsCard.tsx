@@ -319,6 +319,18 @@ export function ProviderAccountsCard({
   const installed = agent?.installed ?? true;
   const authed = agent?.authConfigured ?? false;
 
+  /**
+   * docs/150 — the provider runs ONE login process, so only one row can be
+   * signing in at a time. The server enforces it (409); this just stops the
+   * user walking into that refusal, and says why on hover instead of after
+   * the click.
+   */
+  const signingIn = accounts.find((account) => account.status === "authenticating");
+  const blockedBy = (accountId: string): string | undefined =>
+    signingIn && signingIn.id !== accountId
+      ? `Finish or cancel the sign-in on "${signingIn.label}" first.`
+      : undefined;
+
   return (
     <div className="space-y-3" data-testid={`provider-accounts-card-${provider}`}>
       <div className="flex items-start justify-between gap-3">
@@ -348,7 +360,8 @@ export function ProviderAccountsCard({
           variant="secondary"
           size="md"
           onClick={() => void addAccount()}
-          disabled={adding || !installed}
+          disabled={adding || !installed || !!signingIn}
+          {...(signingIn ? { title: `Finish or cancel the sign-in on "${signingIn.label}" first.` } : {})}
           className="rounded-md shrink-0"
           data-testid={`provider-account-add-${provider}`}
         >
@@ -540,7 +553,8 @@ export function ProviderAccountsCard({
                       variant="ghost"
                       size="md"
                       onClick={() => void connect(account)}
-                      disabled={busy}
+                      disabled={busy || !!blockedBy(account.id)}
+                      {...(blockedBy(account.id) ? { title: blockedBy(account.id) } : {})}
                       className="rounded-md"
                       data-testid={`provider-account-connect-${account.id}`}
                     >

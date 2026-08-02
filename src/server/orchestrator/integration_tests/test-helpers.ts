@@ -267,13 +267,20 @@ export class StubAuthManager extends EventEmitter {
   // docs/155 Phase 2 — AgentAuthManager surface. Aliases mirror the real
   // `AuthManager` so the stub satisfies the interface the orchestrator
   // dispatches through (e.g. agent-listeners' auth_required handler).
-  start() { this.startOAuthFlow(); }
-  cancel() { this.kill(); }
+  start(opts?: { accountId?: string }) {
+    this.startOAuthFlow();
+    // docs/150 — the real managers run ONE login per provider and claim the
+    // account scope for its duration; `cancel()` releases it. Model that here
+    // or the stub can't exercise the ownership guards (submit-code and
+    // start-while-busy both key off `getActiveAccountId()`).
+    this.activeAccountId = opts?.accountId ?? null;
+  }
+  cancel() { this.kill(); this.activeAccountId = null; }
   submitCode(_code: string) { /* no-op */ }
   isConfigured() { return this.checkCredentials(); }
   getPendingPayload() { return null; }
-  // docs/150 — scoped-flow account id. The stub never runs a scoped flow.
-  getActiveAccountId(): string | null { return null; }
+  private activeAccountId: string | null = null;
+  getActiveAccountId(): string | null { return this.activeAccountId; }
 }
 
 /**

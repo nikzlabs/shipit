@@ -587,5 +587,9 @@ function providerAccountServiceError(err: unknown): ServiceError {
   const message = err instanceof Error ? err.message : "Provider account operation failed";
   if (/not found/i.test(message)) return new ServiceError(404, message);
   if (/empty|too long/i.test(message)) return new ServiceError(400, message);
+  // docs/150 — one CLI process per provider, so a sign-in started on another
+  // account blocks this one. That's a conflict the user resolves (finish or
+  // cancel the other row), not a server fault.
+  if (/already signing in|no longer running/i.test(message)) return new ServiceError(409, message);
   return new ServiceError(500, message);
 }

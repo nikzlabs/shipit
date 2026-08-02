@@ -303,9 +303,13 @@ export class ClaudeOAuthRefresher extends EventEmitter {
    * healthy token (no work done), `true` after a successful rotation, `false`
    * when the token is missing or still expired (rate-limited / revoked).
    *
-   * `accountId` omitted → every known Claude account (in production: just
-   * `claude-default`). No-op (returns `true`) outside containerized runtime,
-   * matching `refreshNow`.
+   * `accountId` omitted → every known Claude account, aggregated with
+   * `every()`. That is right for a *proactive* sweep ("is everything healthy")
+   * and wrong for a caller asking about one turn: since docs/150 a provider can
+   * have several accounts, so one revoked account would answer `false` for a
+   * turn whose own account is fine. Callers that know which account they mean
+   * must pass it — see `resolveTurnAccountId` on the turn deps. No-op (returns
+   * `true`) outside containerized runtime, matching `refreshNow`.
    */
   async ensureFresh(accountId?: string): Promise<boolean> {
     if (this.deps.runtimeMode !== "containerized") return true;

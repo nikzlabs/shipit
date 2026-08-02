@@ -2207,19 +2207,84 @@ that is unused by the code it is handed to can still be load-bearing as a
 *presence check*; grep for the identifier in conditionals, not just in call
 positions.
 
-**What the review found that is real and deliberately not fixed here** — each is
-now a checklist item, because each is a different subsystem and folding them in
-would make this diff un-reviewable:
+### Landed: auth operations are per-account, not per-provider
+
+Two of the review findings above, both instances of the same mistake: an
+operation that names an account, implemented against the provider.
+
+**The runtime-401 heal healed everything.** When a turn's CLI reports
+`auth_required`, docs/179 heals the OAuth token and quietly re-dispatches the
+turn once. It called `ensureAgentTokenFresh(agentId)` with no account, and the
+Claude refresher's no-account path refreshes *every* connected account and
+returns `results.every(Boolean)`. That was correct when a provider had one
+account. With several, a second account that is revoked or was never signed in
+makes the aggregate `false`, so a turn whose own token healed fine is told it
+could not heal — and the user gets a sign-in card for an account that was
+never broken. The turn deps gained `resolveTurnAccountId`, wired on both turn
+paths from the session's pinned route, so the heal names the account the turn
+actually runs on. The refresher's docstring said "in production: just
+`claude-default`" — the whole premise of this feature is that it isn't, so that
+is corrected rather than left as a trap for the next reader.
+
+**One login process, three unguarded entry points.** `startAccountAuth`,
+`cancelAccountAuth`, and `submitAccountCode` each took an account id and then
+drove the provider-wide manager without checking which account owned the
+in-flight flow. Concretely: a second "Add account" marked its own row
+`authenticating` and then either inherited the first row's challenge (Codex
+replays its cached device code) or killed the first row's flow while leaving
+that row spinning (Claude); one row's Cancel aborted another row's sign-in
+while resetting only the clicked row; and a pasted authorization code went to
+whichever flow was running, not the one that issued it. All three now check
+`getActiveAccountId()`. Start and submit refuse with a 409 naming the row that
+holds the flow; cancel spares a flow it doesn't own but still resets its own
+row's status, because that row genuinely isn't signing in.
+
+Refusing is deliberate over queueing or pre-empting. One process per provider is
+a real constraint of the CLIs, so the honest move is to say so — and the client
+disables "Add account" / "Connect" while another row is authenticating, so the
+409 is a backstop rather than the normal path.
+
+**The guard needed three escape valves before it was safe.** A refusal keyed on
+"who owns the flow" is only as good as the paths that *release* ownership, and
+review found three that didn't:
+
+- **Claude's `cancel()` never cleared the scope.** It called `kill()`, which
+  tears down the PTY but leaves `activeFlowAccountId` set — and a cancel emits
+  no terminal `complete`/`failed`, so nothing else would ever clear it. Harmless
+  before; with the guard, one cancelled sign-in would refuse every later sign-in
+  for that provider, forever. Codex's `cancel()` always cleared its scope; the
+  two now match.
+- **Deleting the owning row orphaned the flow.** `delete()` removed the row and
+  its credential root without cancelling the login, so the manager kept naming a
+  row that no longer existed — and with no row, no Cancel button, no way back.
+  `delete()` now cancels a flow it owns.
+- **A failed spawn left a phantom `authenticating` row.** The status was
+  persisted before `mgr.start()`, so a throw left the row claiming to be signing
+  in — blocking every other account. `startAccountAuth` now rolls the status
+  back and releases the scope before rethrowing.
+
+Submitting a code was also tightened past the original finding: `null` owner is
+a refusal too, not a pass. Previously a code pasted after a timeout or restart
+was swallowed by the manager with a log line while the endpoint answered 200,
+so the user waited on a sign-in that had already gone nowhere.
+
+**Known limit, deliberately kept.** `resolveTurnAccountId` is optional, so a
+hand-built deps object with `ensureAgentTokenFresh` and no resolver still gets
+provider-wide healing. Making that unrepresentable would mean a required field
+on every test fixture for a path only production wires; the fallback is the
+pre-docs/150 behaviour, not a new hazard. Every production path supplies it
+(WS directly; dispatch and turn-adoption via the runner registry; the auth and
+quota retries recurse with the same deps).
+
+**What the review found that is real and was deferred out of that change** —
+each was a different subsystem, and folding them in would have made one diff
+un-reviewable. Two have since landed (see "auth operations are per-account"
+below); these two have not:
 
 - Provider-wide sign-out (`DELETE /api/auth/api-key`, `DELETE /api/codex-auth`)
   drops every row for the provider with none of the pinned-session safeguards
   the per-account disconnect has. Legacy, and destructive — but it is sign-*out*,
   not a second way to connect, so it is a Phase 5 item rather than a req 16 one.
-- `ensureAgentTokenFresh(agentId)` refreshes *every* account and aggregates with
-  `every()`, so one revoked account fails a healthy account's turn.
-- Two rows of the same provider signing in at once share one CLI process, and
-  cancel/code don't check which row owns it. Not reachable from onboarding
-  (there is exactly one account there), so it doesn't gate req 16.
 - `AgentAuthManager.start` still accepts a call with no account scope. Nothing
   calls it that way — `startProviderAccountLogin` is the only interactive
   caller — but the overload and the account-less `complete` branch behind it
