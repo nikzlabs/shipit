@@ -129,3 +129,14 @@
 - [x] Client: an authenticated primary row does not hide or overwrite a secondary row's pending flow or diagnostics.
 - [x] Client: subscription limits render multiple accounts per provider, each named.
 - [ ] Client: session diagnostics renders the active account.
+
+## Phase 5 — Legacy Removal (req 19)
+
+Runs last: every shim below is load-bearing for an install that has not yet
+exercised the new path. The signal one is ready to go is that nothing reads it.
+
+- [ ] Remove the legacy root credential paths and alias symlinks once every read/write goes through an account root.
+- [ ] Remove `selectRouteForTurn` in favour of `selectAccountForTurn`.
+- [ ] Backfill `priority` onto stored rows, then drop the `isPrimary`-only ordering fallback in `accountsInSelectionOrder`.
+- [ ] Resolve `ProviderAccount.isPrimary` vs `priority` — drop whichever is no longer read independently.
+- [ ] Confirm no singleton subscription auth endpoint, client state, or onboarding card remains (covers the three Phase 1 migration items).

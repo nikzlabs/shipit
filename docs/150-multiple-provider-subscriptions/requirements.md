@@ -34,6 +34,11 @@ with the ShipIt transcript and workspace context preserved across the switch.
 > [transcript and workspace preserved] I believe claude does this automatically,
 > using the same session id. Please check, also for codex.
 
+**Follow-up user requirement**, 2026-08-02:
+
+> all legacy behavior and code related to agent accounts need to be cleaned up
+> after all work is done.
+
 ## User-sourced requirements
 
 (Numbers are stable IDs, not an ordering. 10 and 11 live in the next section;
@@ -79,6 +84,10 @@ with the ShipIt transcript and workspace context preserved across the switch.
     silently substitute a model that account does support.
 18. An agent-spawned child session picks its own account through the normal
     priority order. It does not inherit the parent session's account.
+19. When the feature is finished, the legacy single-account behaviour and the
+    code supporting it are gone. The compatibility shims kept while migrating
+    are a migration step, not a permanent second way for provider accounts to
+    work.
 
 ## Requirements from standing product principles
 
@@ -142,7 +151,9 @@ None. Implementation is unblocked.
 Requirements 1–9 are the user's words, restated as observable behavior.
 12–18 come from the user's answers and review feedback, each with a dated
 receipt under "Resolved questions" (16 came directly as a requirement, so it has
-no question to resolve). 11 comes from the standing product principles in
+no question to resolve). 19 came directly as a requirement on 2026-08-02 and
+likewise has no question to resolve; *what* counts as legacy is design detail
+and lives in `plan.md`, not here. 11 comes from the standing product principles in
 `CLAUDE.md`; 10 started there and the user then specified its shape in review.
 Everything else
 in this feature — the account registry and credential layout, route pinning,

@@ -2085,3 +2085,33 @@ The lesson for the remaining per-account work: threading an id through the data
 structures is the easy half. The half that bites is every *call* that still runs
 provider-wide — enumeration, credential lookup, and any UI rule that infers
 "how many accounts" from "how much data arrived".
+
+### Legacy removal (req 19)
+
+Req 19 says the compatibility shims are a migration step, not a permanent second
+way for provider accounts to work. What "legacy" means concretely — this is
+design detail, deliberately kept out of `requirements.md`:
+
+- **Legacy root credential paths.** `LEGACY_CREDENTIAL_PATHS` and the alias
+  symlinks that keep `~/.claude`, `~/.claude.json`, `~/.codex` working beside
+  `provider-accounts/<provider>/<id>/`. Removing them means every read and write
+  goes through an account root.
+- **The singleton subscription auth surface.** The pre-account login / code /
+  cancel / sign-out endpoints and the provider-wide pending client state they
+  drive, plus the onboarding cards that still use them instead of the account-row
+  flow. (Already tracked as three Phase 1 items.)
+- **`selectRouteForTurn`.** The route-or-null wrapper kept for callers that had
+  nothing to do with a reason; `selectAccountForTurn` is the real API.
+- **The `isPrimary`-only ordering fallback.** `accountsInSelectionOrder` still
+  honours rows with no `priority`. That branch exists so an upgrade doesn't move
+  which account a user's turns run on — it can go once stored rows are
+  backfilled, which is the one item here that needs a migration rather than a
+  deletion.
+- **`ProviderAccount.isPrimary` itself**, if it survives as nothing but "position
+  0". It is currently written in step with `priority` by `reorder`; once nothing
+  reads it independently, one of the two should go.
+
+Ordering matters: this is the **last** phase. Each shim is load-bearing for an
+install that has not yet exercised the new path, so removing one before the
+replacement is proven turns a migration into a regression. The signal that a
+shim is ready to go is that nothing reads it — not that the replacement exists.
