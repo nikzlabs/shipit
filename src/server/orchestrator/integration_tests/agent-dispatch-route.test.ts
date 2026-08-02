@@ -27,6 +27,7 @@ import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { AuthManager } from "../agents/claude/auth-manager.js";
 import { DatabaseManager } from "../../shared/database.js";
+import type { CredentialStore } from "../credential-store.js";
 
 import {
   TestClient,
@@ -48,6 +49,7 @@ describe("Integration: POST /api/sessions/:id/agent/dispatch", () => {
   let lastClaude: FakeClaudeProcess = null as any;
   let dbManager: DatabaseManager;
   let stubAuth: StubAuthManager;
+  let credentialStore: CredentialStore;
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
@@ -58,8 +60,21 @@ describe("Integration: POST /api/sessions/:id/agent/dispatch", () => {
     sessionManager = new SessionManager(dbManager);
     chatHistoryManager = new ChatHistoryManager(dbManager);
 
+    credentialStore = createTestCredentialStore(tmpDir);
+    const now = Date.now();
+    credentialStore.upsertProviderAccount({
+      id: "acct-added-claude",
+      provider: "claude",
+      label: "Added Claude subscription",
+      isPrimary: true,
+      status: "ready",
+      createdAt: now,
+      updatedAt: now,
+    });
+
     app = await buildApp({
-      credentialStore: createTestCredentialStore(tmpDir),
+      credentialStore,
+      credentialsDir: path.join(tmpDir, "credentials"),
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       chatHistoryManager,
@@ -135,7 +150,7 @@ describe("Integration: POST /api/sessions/:id/agent/dispatch", () => {
   it("401 — unauthenticated Claude blocks dispatch", async () => {
     const client = await TestClient.connect(port);
     await client.receive();
-    stubAuth.authenticated = false;
+    credentialStore.deleteProviderAccount("claude", "acct-added-claude");
     const res = await app.inject({
       method: "POST",
       url: `/api/sessions/${client.sessionId}/agent/dispatch`,
