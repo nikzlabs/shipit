@@ -14,7 +14,14 @@ import type { AgentAuthManager } from "./agent-auth-manager.js";
 /** Persisted, non-derived account statuses (see {@link ProviderAccount}). */
 export type ProviderAccountStatus = ProviderAccount["status"];
 
-const PROVIDER_ACCOUNTS_SUBDIR = "provider-accounts";
+/**
+ * Subdirectory under the credentials root holding one credential root per
+ * provider account (`provider-accounts/<provider>/<accountId>`). Exported
+ * because the docs/153 leak repair has to *discover* the account dirs a
+ * session leaked into, rather than probe the one it can compute — see
+ * `materializeLeakedSubtreeSymlinks` in `token-sync-manager.ts`.
+ */
+export const PROVIDER_ACCOUNTS_SUBDIR = "provider-accounts";
 
 const PROVIDER_LABEL: Record<AgentId, string> = {
   claude: "Claude",
@@ -774,6 +781,20 @@ export class ProviderAccountManager {
   private migrateProviderDefault(provider: AgentId, accountId: string, label: string): void {
     if (this.list(provider).length > 0) return;
 
+    // The legacy migration belongs to the ORCHESTRATOR's credentials volume.
+    // Inside a session container `/credentials` is that session's own agent
+    // home (`container-lifecycle.ts` mounts `<root>/sessions/<id>` there), so
+    // the exact same code path would "migrate" the live home of the CLI that
+    // is running right now — see {@link isSessionContainerCredentialRoot}.
+    if (isSessionContainerCredentialRoot()) {
+      console.warn(
+        `[provider-accounts] skipping ${provider} legacy migration: running inside session `
+          + `container ${process.env.SHIPIT_SESSION_ID}, where ${this.credentialsDir} is the `
+          + `live agent home, not the orchestrator credentials volume.`,
+      );
+      return;
+    }
+
     // req 19 — gate on real credentials, not on a legacy path merely existing.
     // See {@link LEGACY_CREDENTIAL_MARKERS}: an empty `.claude` directory (the
     // alias-retirement placeholder, or anything that ran with `HOME=/root`) is
@@ -794,20 +815,40 @@ export class ProviderAccountManager {
     const accountRoot = this.resolveCredentialRoot(provider, accountId);
     fs.mkdirSync(accountRoot, { recursive: true });
 
+    // Copy-then-verify, never rename. A `renameSync` here is a MOVE with no
+    // intermediate state: the instant it returns, the only copy of the
+    // credential (and, for `.claude`, the conversation history beside it) lives
+    // at the new path. If the dir it was handed turns out to be someone's live
+    // agent home, that is unrecoverable and silent. Copying first means a
+    // mistake costs disk, not credentials; the source is removed only after the
+    // copy is confirmed present at the destination.
     for (const { rel } of existingRelPaths) {
       const legacy = path.join(this.credentialsDir, rel);
       const dest = path.join(accountRoot, rel);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       if (!fs.existsSync(dest)) {
         try {
-          fs.renameSync(legacy, dest);
-        } catch {
-          fs.cpSync(legacy, dest, { recursive: true, force: true });
-          fs.rmSync(legacy, { recursive: true, force: true });
+          fs.cpSync(legacy, dest, { recursive: true, force: true, dereference: true });
+        } catch (err) {
+          // Copy failed — leave the legacy path exactly as it was and abandon
+          // the migration rather than register an account with a half-copied
+          // credential root behind it.
+          console.error(
+            `[provider-accounts] ${provider} legacy migration failed copying ${legacy}: ${
+              err instanceof Error ? err.message : String(err)
+            }. Leaving credentials in place.`,
+          );
+          return;
         }
-      } else {
-        fs.rmSync(legacy, { recursive: true, force: true });
       }
+      if (!fs.existsSync(dest)) {
+        console.error(
+          `[provider-accounts] ${provider} legacy migration: ${dest} missing after copy; `
+            + `leaving ${legacy} in place.`,
+        );
+        return;
+      }
+      fs.rmSync(legacy, { recursive: true, force: true });
     }
 
     const now = Date.now();
@@ -853,6 +894,22 @@ function normalizeLabel(label: string | undefined): string | null {
  * legacy credential marker is real: a zero-byte file is what a crashed write or
  * a `touch` leaves, and it carries no token, so it must not trigger migration.
  */
+/**
+ * Are we running inside a session container, where `/credentials` is a single
+ * session's live agent home rather than the orchestrator's credentials volume?
+ *
+ * `SHIPIT_SESSION_ID` is set on every session container (`container-lifecycle
+ * .ts`) and on nothing else — the orchestrator process never has it. That makes
+ * it the cheap, exact answer to "is the dir I am about to rewrite someone's
+ * running home?", which no amount of inspecting the dir's *contents* can give:
+ * a session home and a pre-account orchestrator volume have the same shape
+ * (`.claude/`, `.claude.json`), which is precisely why the migration mistook
+ * one for the other.
+ */
+export function isSessionContainerCredentialRoot(): boolean {
+  return (process.env.SHIPIT_SESSION_ID ?? "") !== "";
+}
+
 function isNonEmptyFile(filePath: string): boolean {
   try {
     const stat = fs.statSync(filePath, { throwIfNoEntry: false });

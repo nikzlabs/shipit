@@ -26,7 +26,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { AgentId } from "../shared/types/agent-types.js";
 import { CONTAINER_WORKSPACE_DIR } from "../shared/fs-constants.js";
-import { providerAccountCredentialRoot } from "./provider-account-manager.js";
+import { PROVIDER_ACCOUNTS_SUBDIR, providerAccountCredentialRoot } from "./provider-account-manager.js";
 import {
   AGENT_CREDENTIAL_PATHS,
   chownSessionCredentialsTree,
@@ -431,6 +431,129 @@ type LeakRepairResult =
   | { outcome: "clear" };
 
 /**
+ * Token file names *inside* a credential subtree (e.g. `.credentials.json` for
+ * `.claude`), derived from {@link AGENT_TOKEN_FILES} so the two lists can't
+ * drift. Used by the Case 1/3 merge to rescue a credential the destination
+ * lacks, and by the credential-less warning below.
+ */
+function tokenFileNamesForSubtree(rel: string): string[] {
+  const names: string[] = [];
+  for (const files of Object.values(AGENT_TOKEN_FILES)) {
+    for (const file of files ?? []) {
+      // AGENT_TOKEN_FILES entries are credentials-root-relative POSIX paths
+      // ("<subtree>/<name>"), so split on "/" rather than path.sep.
+      const parts = file.split("/");
+      if (parts.length === 2 && parts[0] === rel) names.push(parts[1]);
+    }
+  }
+  return names;
+}
+
+/**
+ * Session-dir-relative base dirs to look for Case 3 orphans under, in a
+ * deterministic order.
+ *
+ * The orphan is whatever the agent CLI wrote while it followed a leaked
+ * symlink in its own (Subpath-mounted) namespace, so its path mirrors the
+ * *account root the symlink named at the time it was created* — not the
+ * account the session resolves to today. Those diverge whenever the account
+ * was renamed or replaced: a symlink authored against the migrated
+ * `provider-accounts/claude/claude-default` root leaves an orphan under that
+ * name long after the live account root became `acct_<uuid>`. Probing exactly
+ * one computed base is why that shape was stranded forever with no credential
+ * and no log line — `existsSync` on the computed path simply returned false
+ * and the repair read it as a healthy no-op.
+ *
+ * So: keep the computed base (it is the most likely match, and covers source
+ * roots the scan below can't see), then add every *other* account dir actually
+ * present under `<sessionDir>/provider-accounts/<agentId>/`, sorted by name so
+ * several stale dirs are handled in a fixed order rather than readdir order.
+ *
+ * Discovery never leaves the session dir: entries come from a single
+ * `readdirSync` of a path under `sessionDir`, symlinked entries are skipped
+ * (`isDirectory()` is false for a symlink from `withFileTypes`), and a name
+ * can't contain a path separator.
+ */
+function discoverOrphanBases(
+  credentialsRoot: string,
+  sessionDir: string,
+  agentId: AgentId,
+  sourceRoot: string,
+): string[] {
+  // The computed base: "<sourceRoot relative to credentialsRoot>", which is
+  // where the agent CLI wrote when it followed the now-removed symlink. Only
+  // meaningful when sourceRoot lives under credentialsRoot (the
+  // provider-account flow); the legacy `provisionAgentCredentials` path uses
+  // sourceRoot === credentialsRoot, where the mirror collapses to dst itself.
+  const sourceRelToCredentials = path.relative(credentialsRoot, sourceRoot);
+  const expectedBase =
+    sourceRelToCredentials
+      && sourceRelToCredentials !== ""
+      && !sourceRelToCredentials.startsWith("..")
+      && !path.isAbsolute(sourceRelToCredentials)
+      ? sourceRelToCredentials
+      : null;
+
+  const bases: string[] = expectedBase ? [expectedBase] : [];
+
+  const accountsDir = path.join(sessionDir, PROVIDER_ACCOUNTS_SUBDIR, agentId);
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(accountsDir, { withFileTypes: true });
+  } catch {
+    return bases; // no leaked provider-accounts subtree — nothing to discover
+  }
+  const discovered = entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => path.join(PROVIDER_ACCOUNTS_SUBDIR, agentId, entry.name))
+    .sort();
+  for (const base of discovered) {
+    if (!bases.includes(base)) bases.push(base);
+  }
+  return bases;
+}
+
+/**
+ * The removable root of an orphan at `<sessionDir>/<relBase>/...` — the
+ * top-level dir the leak created inside the session dir (in practice
+ * `provider-accounts/`). Deliberately coarse: every stale account dir under it
+ * shares one root, so ANY merge failure below it keeps the whole tree (the
+ * orphan is the only copy of what it holds). Null when `relBase` names no
+ * segment inside the session dir.
+ */
+function orphanRootFor(sessionDir: string, relBase: string): string | null {
+  const firstSegment = relBase.split(path.sep)[0] ?? "";
+  if (!firstSegment) return null;
+  const root = path.join(sessionDir, firstSegment);
+  return root === sessionDir ? null : root;
+}
+
+/**
+ * Merge every orphan for one `rel` into `dst`, in the caller's order, and
+ * report the combined outcome. A failure under any orphan marks that orphan's
+ * root unsafe, so the cleanup pass keeps the whole tree rather than deleting
+ * state it could not preserve.
+ */
+function mergeOrphans(
+  orphans: readonly { path: string; root: string | null }[],
+  dst: string,
+  rel: string,
+  unsafeOrphanRoots: Set<string>,
+): OrphanMergeResult {
+  const combined: OrphanMergeResult = { preserved: false, failed: false };
+  for (const orphan of orphans) {
+    if (!fs.existsSync(orphan.path)) continue;
+    const merge = mergeOrphanState(orphan.path, dst, rel);
+    if (merge.preserved) combined.preserved = true;
+    if (merge.failed) {
+      combined.failed = true;
+      if (orphan.root) unsafeOrphanRoots.add(orphan.root);
+    }
+  }
+  return combined;
+}
+
+/**
  * Repair the docs/153 leak. Two entry conditions:
  *
  *   Case 1 — LIVE LEAK (`.claude/` is a symlink). The legacy alias was
@@ -441,10 +564,17 @@ type LeakRepairResult =
  *     history there. Repair: unlink + cpSync shared baseline + merge
  *     orphan content + drop orphan root + recover agent_session_id.
  *
- *   Case 3 — POST-DESTRUCTIVE-REPAIR ORPHAN (`.claude/` is a real dir, but
- *     `<sessionDir>/provider-accounts/.../<rel>` still exists). The
- *     pre-#758 destructive repair already rm'd the symlink and cpSync'd
- *     the shared baseline, but left the orphan tree behind. The agent now
+ *   Case 3 — ORPHAN BESIDE A REAL DIR (`.claude/` is a real dir, but
+ *     `<sessionDir>/provider-accounts/.../<rel>` still exists). Two known
+ *     producers, and the second is the one actually observed in the field:
+ *     (a) the pre-#758 destructive repair rm'd the symlink and cpSync'd the
+ *     shared baseline but left the orphan tree behind; (b) —
+ *     CONFIRMED 2026-08-02 — `migrateProviderDefault` `renameSync`'d a live
+ *     agent home into `provider-accounts/<provider>/<accountId>/`, which
+ *     produces exactly this shape with no symlink ever involved. See the
+ *     addendum in `docs/153-orchestrator-owned-claude-oauth-refresh/plan.md`.
+ *     Do not assume a symlink was here; in every observed case there was not
+ *     one. The agent now
  *     reads `.claude/` (real dir) which has no `projects/...` for this
  *     session, so `--resume <agentSessionId>` keeps failing with "No
  *     conversation found" until we layer the orphan back on top. Repair:
@@ -496,20 +626,12 @@ function materializeLeakedSubtreeSymlinks(
   const unsafeOrphanRoots = new Set<string>();
 
   // For the post-destructive-repair case below (no symlink, but orphan still
-  // present): the orphan lives at the "<sessionDir>/<sourceRoot relative to
-  // credentialsRoot>" mirror, which is where the agent CLI wrote when it
-  // followed the now-removed symlink in its Subpath namespace. Only relevant
-  // when sourceRoot lives under credentialsRoot (the provider-account flow);
-  // the legacy `provisionAgentCredentials` path uses sourceRoot ===
-  // credentialsRoot, where the mirror collapses to dst itself.
-  const sourceRelToCredentials = path.relative(credentialsRoot, sourceRoot);
-  const expectedOrphanBase =
-    sourceRelToCredentials
-      && sourceRelToCredentials !== ""
-      && !sourceRelToCredentials.startsWith("..")
-      && !path.isAbsolute(sourceRelToCredentials)
-      ? sourceRelToCredentials
-      : null;
+  // present): the orphan lives at a "<sessionDir>/<account root relative to
+  // credentialsRoot>" mirror — where the agent CLI wrote when it followed the
+  // now-removed symlink in its Subpath namespace. The account dir named by
+  // that symlink is not necessarily the one the session resolves to today, so
+  // the bases are *discovered*, not computed. See {@link discoverOrphanBases}.
+  const orphanBases = discoverOrphanBases(credentialsRoot, sessionDir, agentId, sourceRoot);
 
   for (const rel of AGENT_CREDENTIAL_PATHS[agentId]) {
     const dst = path.join(sessionDir, rel);
@@ -520,8 +642,10 @@ function materializeLeakedSubtreeSymlinks(
       continue; // dst doesn't exist — nothing to repair
     }
 
-    let orphanPath: string | null = null;
-    let orphanRootForRel: string | null = null;
+    // Orphans to layer back onto `dst`, in the deterministic order above. Case
+    // 1 contributes at most one (the symlink's own target); Case 3 contributes
+    // one per stale account dir that actually holds this `rel`.
+    const orphans: { path: string; root: string | null }[] = [];
     let isSymlinkLeak = false;
 
     if (dstStat.isSymbolicLink()) {
@@ -546,14 +670,12 @@ function materializeLeakedSubtreeSymlinks(
         relativeFromVolume = target.slice(credentialsRoot.length + 1);
       }
       if (relativeFromVolume) {
-        orphanPath = path.join(sessionDir, relativeFromVolume);
-        const orphanRoot = path.join(sessionDir, relativeFromVolume.split(path.sep)[0] ?? "");
-        if (orphanRoot && orphanRoot !== sessionDir) {
-          orphanRootsToRemove.add(orphanRoot);
-          orphanRootForRel = orphanRoot;
-        }
+        orphans.push({
+          path: path.join(sessionDir, relativeFromVolume),
+          root: orphanRootFor(sessionDir, relativeFromVolume),
+        });
       }
-    } else if (expectedOrphanBase) {
+    } else {
       // ---- Case 3: real dir + orphan still present ----
       //
       // Sessions repaired by the pre-#758 destructive flow had their leaked
@@ -565,31 +687,59 @@ function materializeLeakedSubtreeSymlinks(
       // shared — dst already has shared content from the previous repair,
       // and re-copying risks clobbering anything the user's CLI has written
       // to `.claude/` since.
-      const candidateOrphan = path.join(sessionDir, expectedOrphanBase, rel);
-      if (fs.existsSync(candidateOrphan)) {
-        orphanPath = candidateOrphan;
-        const orphanRoot = path.join(sessionDir, expectedOrphanBase.split(path.sep)[0] ?? "");
-        if (orphanRoot && orphanRoot !== sessionDir) {
-          orphanRootsToRemove.add(orphanRoot);
-          orphanRootForRel = orphanRoot;
-        }
+      //
+      // Every discovered base is probed, not just the one derived from the
+      // currently resolved account: the orphan is named after whichever
+      // account root the leaked symlink pointed at, which for a migrated or
+      // replaced account is a *different* directory (the docs/153 "stranded
+      // with no credential" shape — see {@link discoverOrphanBases}).
+      for (const base of orphanBases) {
+        const candidateOrphan = path.join(sessionDir, base, rel);
+        if (!fs.existsSync(candidateOrphan)) continue;
+        orphans.push({ path: candidateOrphan, root: orphanRootFor(sessionDir, base) });
       }
     }
 
-    if (!isSymlinkLeak && !orphanPath) continue; // healthy dir with no orphan — true no-op
+    for (const orphan of orphans) {
+      if (orphan.root) orphanRootsToRemove.add(orphan.root);
+    }
 
-    // Recover the agent_session_id from the orphan's `projects/` tree BEFORE
+    if (!isSymlinkLeak && orphans.length === 0) {
+      // Case 2 — healthy dir with no orphan. Silent, EXCEPT when the subtree
+      // carries no token file at all: that session authenticates on nothing
+      // and will fail every turn, and used to do so with no log line anywhere
+      // (the incident that motivated the discovery fix above took a container
+      // forensics session to find). One greppable line per turn is the cost of
+      // never having to do that again.
+      const tokenNames = tokenFileNamesForSubtree(rel);
+      if (
+        tokenNames.length > 0
+        && dstStat.isDirectory()
+        && !tokenNames.some((name) => fs.existsSync(path.join(dst, name)))
+      ) {
+        console.warn(
+          `[session-credentials] ${sessionDir}: ${rel} has no token file (looked for ${tokenNames.join(", ")}) `
+            + `and no orphan to recover one from — this session will fail authentication until its credentials `
+            + `are reprovisioned (source root ${sourceRoot})`,
+        );
+      }
+      continue;
+    }
+
+    // Recover the agent_session_id from the orphans' `projects/` trees BEFORE
     // any cpSync/merge — cpSync doesn't preserve mtimes, so once we copy the
     // orphan's jsonls into dst the latest-mtime ordering signal is gone.
-    // Applies to both Case 1 and Case 3.
-    if (
-      orphanPath
-        && rel === ".claude"
-        && recoveredAgentSessionId === null
-        && fs.existsSync(orphanPath)
-    ) {
-      recoveredAgentSessionId = findLatestAgentSessionId(path.join(orphanPath, "projects"));
+    // Applies to both Case 1 and Case 3; first orphan (in the deterministic
+    // order above) that yields a resumable id wins.
+    if (rel === ".claude" && recoveredAgentSessionId === null) {
+      for (const orphan of orphans) {
+        if (!fs.existsSync(orphan.path)) continue;
+        recoveredAgentSessionId = findLatestAgentSessionId(path.join(orphan.path, "projects"));
+        if (recoveredAgentSessionId !== null) break;
+      }
     }
+
+    const orphanPathsNote = orphans.map((orphan) => orphan.path).join(", ") || null;
 
     if (isSymlinkLeak) {
       // `recursive: true` is required: Node.js 24.13.0 (the version currently
@@ -603,25 +753,20 @@ function materializeLeakedSubtreeSymlinks(
       if (fs.existsSync(src)) {
         fs.cpSync(src, dst, { recursive: true, force: true, dereference: true });
       }
-      let merge: OrphanMergeResult = { preserved: false, failed: false };
-      if (orphanPath && fs.existsSync(orphanPath)) {
-        merge = mergeOrphanState(orphanPath, dst, rel);
-      }
-      if (merge.failed && orphanRootForRel) unsafeOrphanRoots.add(orphanRootForRel);
+      const merge = mergeOrphans(orphans, dst, rel, unsafeOrphanRoots);
       // Only claim a merge when one actually happened. The unconditional
       // "(orphan merged from …)" note was actively misleading: for `.codex`
       // the merge was a silent no-op, so the log asserted preservation on the
       // very pass that deleted the rollout.
       console.log(
-        `[session-credentials] repaired leaked symlink in ${sessionDir}: ${rel}${describeMerge(merge, orphanPath)}`,
+        `[session-credentials] repaired leaked symlink in ${sessionDir}: ${rel}${describeMerge(merge, orphanPathsNote)}`,
       );
     } else {
       // Case 3 — orphan-only recovery; dst already has the shared baseline
       // from the previous destructive repair.
-      const merge = mergeOrphanState(orphanPath!, dst, rel);
-      if (merge.failed && orphanRootForRel) unsafeOrphanRoots.add(orphanRootForRel);
+      const merge = mergeOrphans(orphans, dst, rel, unsafeOrphanRoots);
       console.log(
-        `[session-credentials] recovered orphaned history in ${sessionDir}: ${rel} (no leaked symlink, but ${orphanPath} present)${describeMerge(merge, orphanPath)}`,
+        `[session-credentials] recovered orphaned history in ${sessionDir}: ${rel} (no leaked symlink, but ${orphanPathsNote} present)${describeMerge(merge, orphanPathsNote)}`,
       );
     }
 
@@ -847,6 +992,33 @@ function mergeOrphanState(orphanPath: string, dstPath: string, rel: string): Orp
       } catch (err) {
         result.failed = true;
         console.warn(`[session-credentials] failed to merge orphan ${orphanSub}:`, err);
+      }
+    }
+    // Rescue a token file the destination is MISSING. This is not a widening
+    // of "shared wins on conflict" — an existing dst token is never touched,
+    // so the fresh baseline still wins whenever there is one to win with. It
+    // covers the case where there isn't: a session whose resolved account root
+    // no longer exists on the orchestrator (renamed/deleted account) has no
+    // source to sync a token in from, and the orphan holds its only copy. The
+    // repair is about to delete that orphan, so without this the fix would
+    // destroy the very credential it exists to restore. A rescued token is not
+    // necessarily the freshest one — the per-turn sync-in still pulls a newer
+    // source token over it — but it is the difference between a session that
+    // authenticates and one that fails every turn.
+    for (const name of tokenFileNamesForSubtree(rel)) {
+      const orphanToken = path.join(orphanPath, name);
+      const dstToken = path.join(dstPath, name);
+      if (!fs.existsSync(orphanToken) || fs.existsSync(dstToken)) continue;
+      try {
+        fs.mkdirSync(path.dirname(dstToken), { recursive: true });
+        fs.cpSync(orphanToken, dstToken, { dereference: true });
+        result.preserved = true;
+        console.log(
+          `[session-credentials] restored missing ${rel}/${name} from orphan ${orphanPath}`,
+        );
+      } catch (err) {
+        result.failed = true;
+        console.warn(`[session-credentials] failed to restore ${orphanToken}:`, err);
       }
     }
     return result;
