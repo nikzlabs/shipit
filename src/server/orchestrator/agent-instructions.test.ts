@@ -131,6 +131,20 @@ describe("buildAgentSystemInstructions", () => {
     expect(fragment).toContain("ambiguous, destructive, externally consequential");
   });
 
+  it("keeps Claude's pre-existing section boundary byte-for-byte unchanged", () => {
+    const claudeParallelSection = fs.readFileSync(
+      new URL("./agents/claude/system-prompt.md", import.meta.url),
+      "utf8",
+    );
+
+    // Before docs/245 the skeleton placed exactly one newline between the
+    // parallel-sessions token and this heading. The optional Codex token must
+    // not leave another blank line in Claude's rendered prompt.
+    expect(buildAgentSystemInstructions({ agentId: "claude" })).toContain(
+      `${claudeParallelSection}\n## ShipIt platform docs`,
+    );
+  });
+
   // docs/128 — ops overlay. docs/211 — sandbox overlay. Both are mutually
   // exclusive composition switches layered on the shared base.
   it("omits the overlays by default and renders byte-identically", () => {

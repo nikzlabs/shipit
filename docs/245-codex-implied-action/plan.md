@@ -19,7 +19,7 @@ That omission matters for Codex because its baseline autonomy policy distinguish
 
 Add a short Codex-only `implied-action.md` fragment to the existing static prompt composition. It tells Codex to use active-task context, answer and act in the same turn for clear safe/reversible/in-scope continuations, and retain the read-only boundary for genuine questions and the authorization boundary for ambiguous, destructive, externally consequential, or out-of-scope work.
 
-The fragment is selected during the existing module-load precomputation, so prompt-cache stability and the pure per-turn lookup remain unchanged. Claude and the no-agent Settings baseline receive an empty substitution, leaving their rendered instructions unchanged. No runtime intent classifier or new subsystem is introduced.
+The fragment is selected during the existing module-load precomputation, so prompt-cache stability and the pure per-turn lookup remain unchanged. Its token shares the pre-existing parallel-section line, so an empty substitution leaves the exact legacy newline boundary intact: Claude and the no-agent Settings baseline remain byte-for-byte unchanged. No runtime intent classifier or new subsystem is introduced.
 
 ## Key files
 
