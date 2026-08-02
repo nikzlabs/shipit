@@ -177,9 +177,15 @@ Six things the mode must change or add:
   request recorded" — wrong (the base never changed) and misleading (a PR had very much
   merged). Fall back to `session.previousMergedPr.baseBranch`, which both re-arm paths
   write via `clearMerged` in the same beat the snapshot is cleared and which is DB-backed.
-  No third fallback to the repo default branch: a session that never had a PR has no base
-  of its own, and inventing one would turn an honest refusal into a silent reset onto a
-  branch the session was never based on. `resolveResetBase` in `services/pre-turn-reset.ts`.
+  No third fallback to the repo **default** branch, even though one is knowable (session
+  branches are cut from `origin/<defaultBranch>`). It would not let a never-PR'd session
+  reset — the gate independently requires `mergedAt` + `mergedHeadSha` + a live `prStatus`,
+  so such a session refuses regardless of which base is found — and all it would add is a
+  guessable reset target in a command whose safety story is "reset only onto the base of a
+  PR this branch provably shipped". Widening *which* sessions may reset is a separate
+  decision about the gate, not something to smuggle in via the base lookup; the no-PR
+  refusal therefore names the gate as the reason rather than a missing base.
+  `resolveResetBase` in `services/pre-turn-reset.ts`.
 - **Simple CLI semantics:** exit 0 for reset/already-at-base, nonzero with a reason
   otherwise. The agent behaves identically for "unsafe" and "errored", so they are one
   outcome.

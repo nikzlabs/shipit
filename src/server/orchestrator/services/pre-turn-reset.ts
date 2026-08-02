@@ -302,10 +302,18 @@ function refuse(reason: string): ExplicitResetOutcome {
  * beat the snapshot is cleared, and it is DB-backed (`previous_merged_pr`), so it
  * survives a restart too.
  *
- * There is deliberately no third fallback to the repo's default branch: a session
- * that has never had a PR has no base *of its own*, and inventing one would turn
- * the honest refusal below into a silent reset onto a branch the session was
- * never based on. That case must still refuse.
+ * There is deliberately no third fallback to the repo's **default** branch, even
+ * though one is knowable (session branches are cut from `origin/<defaultBranch>`
+ * — `services/session.ts`, `services/repo-default-branch.ts`). It would not let a
+ * never-PR'd session reset: {@link computeResetEligible} independently requires
+ * `mergedAt` + `mergedHeadSha` + a live `prStatus`, so such a session refuses at
+ * the gate regardless of what base is found. All the fallback would add is a
+ * truthful-but-useless `already-at-base` for a branch sitting exactly on the
+ * default tip, in exchange for making the reset target guessable in a command
+ * whose entire safety story is "reset only onto the base of a PR this branch
+ * provably shipped". Widening *which* sessions may reset is a separate,
+ * deliberate decision about the gate — not something to smuggle in via the base
+ * lookup. The refusal below therefore names the gate as the reason, not the base.
  *
  * Note this only *finds* the base — the destructive move is still gated by the
  * unchanged {@link computeResetEligible}, which reads the live `prStatus` and
@@ -385,8 +393,10 @@ export async function resetBranchToBaseExplicit(
     const base = resolveResetBase(session, prStatus);
     if (!base) {
       return refuse(
-        "No base branch is known for this session — it has no live pull request and no "
-        + "previously merged one, so there is nothing to reset to.",
+        "No pull-request base is recorded for this session — neither a live pull request nor a "
+        + "previously merged one. A reset needs one: without a merged pull request there is no "
+        + "proof this branch's commits have already shipped, so resetting it onto the repo's "
+        + "default branch would discard them.",
       );
     }
 

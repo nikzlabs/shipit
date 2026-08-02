@@ -459,11 +459,15 @@ describe("resetBranchToBaseExplicit (docs/239)", () => {
       );
       expect(result.outcome).toBe("refused");
       expect(result.reason).toMatch(/not on the merged pull request/i);
-      expect(result.reason).not.toMatch(/no base branch/i);
+      expect(result.reason).not.toMatch(/no pull-request base/i);
       expect(git.resetHardToRemoteBase).not.toHaveBeenCalled();
     });
 
-    it("still refuses for a session that never had a PR, without claiming one merged", async () => {
+    it("still refuses for a session that never had a PR, naming the gate as the reason", async () => {
+      // The repo's default branch is knowable (session branches are cut from it),
+      // so the refusal must not imply ShipIt merely failed to find a base — the
+      // real reason is that `computeResetEligible` requires a merged PR, which is
+      // what proves the branch's commits are safe to discard.
       const session = makeSession();
       delete session.mergedAt;
       delete session.mergedHeadSha;
@@ -474,7 +478,7 @@ describe("resetBranchToBaseExplicit (docs/239)", () => {
         "/ws",
       );
       expect(result.outcome).toBe("refused");
-      expect(result.reason).toMatch(/no base branch/i);
+      expect(result.reason).toMatch(/no proof|already shipped/i);
       // The old copy asserted a merged PR had been recorded when none had.
       expect(result.reason).not.toMatch(/merged pull request recorded/i);
       // Refused before any network or destructive git.
