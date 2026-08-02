@@ -1,8 +1,13 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { computeResetEligible, autoResetMergedBranchOnContinue, isResetEligible, emitResetEligibleSignal, resetBranchToBaseExplicit, RESET_REFUSAL_GUIDANCE, type PreTurnResetDeps } from "./pre-turn-reset.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 
 vi.mock("../session-worker-uid.js", () => ({ handWorkspaceBackToWorker: vi.fn() }));
+import { DatabaseManager } from "../../shared/database.js";
+import { SessionManager } from "../sessions.js";
+import { PrStatusPoller } from "../pr-status-poller.js";
+import { makeGitHubAuth } from "../pr-poller-test-helpers.js";
+import { detectAndReArmResetSession } from "./pr-rearm.js";
 import type { GitManager } from "../../shared/git.js";
 import type { SessionInfo } from "../../shared/types.js";
 import type { PrStatusSummary } from "../../shared/types/github-types.js";
@@ -406,6 +411,98 @@ describe("resetBranchToBaseExplicit (docs/239)", () => {
     expect(handWorkspaceBackToWorker).toHaveBeenCalledWith("/ws");
   });
 
+  /**
+   * The base derivation, which a docs/202 re-arm used to break: `reArm` nulls the
+   * live PR snapshot (`setPrStatus(id, null)`) in the ordinary post-turn flow, so
+   * a base read only from `getPrStatus` disappears while the session is plainly
+   * still based on `main`. `previousMergedPr.baseBranch` is written by
+   * `clearMerged` in the same beat and is DB-backed.
+   */
+  describe("base derivation survives a docs/202 re-arm", () => {
+    /** What a session looks like AFTER `clearMerged` + `reArm`: no live snapshot,
+     * no `mergedAt`/`mergedHeadSha`, but a durable breadcrumb naming the base. */
+    function reArmedSession(over: Partial<SessionInfo> = {}): SessionInfo {
+      const s = makeSession(over);
+      delete s.mergedAt;
+      delete s.mergedHeadSha;
+      s.previousMergedPr = {
+        number: 482,
+        url: "https://github.com/o/r/pull/482",
+        title: "Fix login redirect",
+        baseBranch: "main",
+      };
+      return s;
+    }
+
+    it("reports already-at-base from previousMergedPr when pr_status is null", async () => {
+      // The live-reproduced failure: the branch is exactly where a reset would put
+      // it, so this must be a clean exit-0 — not "no merged pull request recorded".
+      const git = gitWith({ getHeadHash: vi.fn().mockResolvedValue(BASE_TIP) });
+      const result = await resetBranchToBaseExplicit(
+        makeDeps({ getSession: () => reArmedSession(), getPrStatus: () => null, createGitManager: () => git }),
+        "s1",
+        "/ws",
+      );
+      expect(result.outcome).toBe("already-at-base");
+      expect(result.base).toBe("main");
+      expect(git.fetch).toHaveBeenCalledWith("origin");
+    });
+
+    it("refuses on the real reason — unshipped work — not on a missing base", async () => {
+      // Re-armed AND ahead of the base: a reset would discard commits that were
+      // never shipped, so it must still refuse. Only the reason changes.
+      const git = gitWith({ getHeadHash: vi.fn().mockResolvedValue("cafe0000000000000000000000000000000000cc") });
+      const result = await resetBranchToBaseExplicit(
+        makeDeps({ getSession: () => reArmedSession(), getPrStatus: () => null, createGitManager: () => git }),
+        "s1",
+        "/ws",
+      );
+      expect(result.outcome).toBe("refused");
+      expect(result.reason).toMatch(/not on the merged pull request/i);
+      expect(result.reason).not.toMatch(/no base branch/i);
+      expect(git.resetHardToRemoteBase).not.toHaveBeenCalled();
+    });
+
+    it("still refuses for a session that never had a PR, without claiming one merged", async () => {
+      const session = makeSession();
+      delete session.mergedAt;
+      delete session.mergedHeadSha;
+      const git = gitWith();
+      const result = await resetBranchToBaseExplicit(
+        makeDeps({ getSession: () => session, getPrStatus: () => null, createGitManager: () => git }),
+        "s1",
+        "/ws",
+      );
+      expect(result.outcome).toBe("refused");
+      expect(result.reason).toMatch(/no base branch/i);
+      // The old copy asserted a merged PR had been recorded when none had.
+      expect(result.reason).not.toMatch(/merged pull request recorded/i);
+      // Refused before any network or destructive git.
+      expect(git.fetch).not.toHaveBeenCalled();
+      expect(git.resetHardToRemoteBase).not.toHaveBeenCalled();
+    });
+
+    it("prefers the LIVE snapshot over the breadcrumb when both exist", async () => {
+      // Unchanged behaviour for the normal path: the breadcrumb is a fallback, and
+      // a stale one must never override a live PR's base.
+      const git = gitWith();
+      const session = makeSession({
+        previousMergedPr: {
+          number: 100,
+          url: "https://github.com/o/r/pull/100",
+          title: "Older PR",
+          baseBranch: "stale-base",
+        },
+      });
+      const result = await resetBranchToBaseExplicit(
+        makeDeps({ getSession: () => session, createGitManager: () => git }), "s1", "/ws",
+      );
+      expect(result.outcome).toBe("reset");
+      expect(result.base).toBe("main");
+      expect(git.resetHardToRemoteBase).toHaveBeenCalledWith("main");
+    });
+  });
+
   it("the refusal guidance says WHY and forbids a hand-rolled reset", () => {
     // Load-bearing copy: the gate is prompt-mediated, so a refused agent that is
     // not told to stop can simply `git reset --hard` and cause the exact loss the
@@ -413,5 +510,87 @@ describe("resetBranchToBaseExplicit (docs/239)", () => {
     expect(RESET_REFUSAL_GUIDANCE).toMatch(/git reset --hard/);
     expect(RESET_REFUSAL_GUIDANCE).toMatch(/do not|Do NOT/);
     expect(RESET_REFUSAL_GUIDANCE).toMatch(/destroy|recover/i);
+  });
+});
+
+/**
+ * The whole failing sequence as ONE test, against the REAL SessionManager, the
+ * REAL PrStatusPoller and the REAL re-arm helper — only git is stubbed. The bug
+ * lived in the seam between them (`reArm` nulls `pr_status`; the reset read the
+ * base from `pr_status` alone), so mocking either side would have hidden it.
+ */
+describe("merge → reset → re-arm → reset-to-base (docs/202 × docs/239 seam)", () => {
+  let dbManager: DatabaseManager | undefined;
+  let poller: PrStatusPoller | undefined;
+
+  afterEach(() => {
+    poller?.destroy();
+    poller = undefined;
+    dbManager?.close();
+    dbManager = undefined;
+  });
+
+  it("keeps finding the base after a re-arm clears the live PR snapshot", async () => {
+    dbManager = new DatabaseManager(":memory:");
+    const sessionManager = new SessionManager(dbManager);
+    sessionManager.track("s1", "Fix login redirect");
+    sessionManager.setRemoteUrl("s1", "https://github.com/o/r.git");
+    sessionManager.setBranch("s1", "shipit/fix-login");
+    sessionManager.setPrStatus("s1", makePrStatus());
+    sessionManager.markMerged("s1");
+    sessionManager.setMergedHeadSha("s1", MERGED_SHA);
+
+    poller = new PrStatusPoller({
+      githubAuth: makeGitHubAuth(),
+      sessionManager,
+      sseBroadcast: vi.fn(),
+    });
+    poller.loadPersisted(); // seeds the merged snapshot, as a restart would
+
+    // Git stub for the whole sequence: HEAD tracks the reset, base tip is fixed.
+    let head = MERGED_SHA;
+    const git = makeGit({
+      getHeadHash: vi.fn(async () => head),
+      getRefHash: vi.fn(async () => BASE_TIP),
+      resetHardToRemoteBase: vi.fn(async () => {
+        const from = head;
+        head = BASE_TIP;
+        return { from, to: BASE_TIP };
+      }),
+      headIsAtBase: vi.fn(async () => head === BASE_TIP),
+    });
+    const deps = {
+      getSession: (id: string) => sessionManager.get(id),
+      getPrStatus: (id: string) => sessionManager.getPrStatus(id),
+      createGitManager: () => git,
+    };
+
+    // 1. The reset itself — works today, from the live snapshot.
+    const first = await resetBranchToBaseExplicit(deps, "s1", "/ws");
+    expect(first).toMatchObject({ outcome: "reset", base: "main" });
+
+    // 2. The post-turn re-arm the reset triggers (docs/216 every-turn hook).
+    const reArmed = await detectAndReArmResetSession({
+      deps: {
+        sessionManager,
+        prStatusPoller: poller,
+        createGitManager: () => git,
+        sseBroadcast: vi.fn(),
+      },
+      sessionId: "s1",
+      sessionDir: "/ws",
+      emit: vi.fn(),
+    });
+    expect(reArmed).toBe(true);
+
+    // 3. The state that broke it, asserted at the source rather than assumed:
+    //    the live snapshot is gone, the durable breadcrumb carries the base.
+    expect(sessionManager.getPrStatus("s1")).toBeNull();
+    expect(sessionManager.get("s1")?.previousMergedPr?.baseBranch).toBe("main");
+
+    // 4. A duplicate / later wake must still find the base and exit cleanly.
+    //    Before the fix this refused with "no merged pull request recorded".
+    const second = await resetBranchToBaseExplicit(deps, "s1", "/ws");
+    expect(second).toMatchObject({ outcome: "already-at-base", base: "main" });
   });
 });
