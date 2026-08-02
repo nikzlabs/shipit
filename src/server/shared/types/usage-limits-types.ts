@@ -88,6 +88,43 @@ export interface SubscriptionLimits {
 export type SubscriptionLimitsMap = Partial<Record<AgentId, Record<string, SubscriptionLimits>>>;
 
 /**
+ * Why an on-demand usage refresh did or didn't produce new numbers.
+ *
+ * Every one of these except `"updated"` used to be a silent `return` inside the
+ * provider, which is what made the refresh button look broken: the click
+ * spun, the pill stayed at `—`, and nothing anywhere said why. The outcome
+ * travels back on the `POST /api/limits/refresh` response so the button can
+ * explain itself.
+ */
+export type LimitsRefreshOutcome =
+  /** Fresh numbers fetched and cached. */
+  | "updated"
+  /** A previous 429 is still locked out; no request was made. */
+  | "locked"
+  /** This attempt was 429'd — `lockedUntil` says until when. */
+  | "rate-limited"
+  /** No usable OAuth token on disk for this route (signed out / never signed in). */
+  | "no-credentials"
+  /** The route's access token is at/past expiry, so the call would 401. */
+  | "expired-token"
+  /** Network error, non-429 HTTP error, or an unparseable payload. */
+  | "failed"
+  /** Nothing to do: unknown route, or a provider with no on-demand path (Codex). */
+  | "unavailable"
+  /** `reason: "seed"` self-skip — this route already has a usage-api snapshot. */
+  | "skipped";
+
+/** One route's refresh outcome, returned per route by `POST /api/limits/refresh`. */
+export interface LimitsRefreshResult {
+  routeId: string;
+  outcome: LimitsRefreshOutcome;
+  /** Epoch ms the lockout elapses, when `outcome` is `locked` / `rate-limited`. */
+  lockedUntil?: number;
+  /** Short human-readable detail for the button tooltip (HTTP status, error text). */
+  detail?: string;
+}
+
+/**
  * Flatten the nested map to a list — what most consumers actually want (render
  * each pill, find the worst window, ask whether anything is exhausted). Each
  * entry carries its own `agentId`/`routeId`, so nothing has to be re-derived

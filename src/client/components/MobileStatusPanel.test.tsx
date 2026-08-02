@@ -76,6 +76,7 @@ describe("MobileStatusPanel", () => {
     await waitFor(() => expect(refreshCalls()).toHaveLength(1));
     expect(JSON.parse((refreshCalls()[0][1] as RequestInit).body as string)).toEqual({
       agentId: "claude",
+      routeId: "acct-claude",
     });
   });
 

@@ -267,6 +267,44 @@ describe("LimitsRegistry", () => {
     expect(snap.claude?.["acct-b"]?.session?.usedPct).toBe(10);
   });
 
+  it("refreshes only the named route, and fans out only without one", async () => {
+    // The pill's button names its route: each route is a separate upstream
+    // `/api/oauth/usage` call against a budget of a handful per ~30 min, so a
+    // fan-out press spends every other subscription's share. The sign-in seed
+    // passes no route and still covers everything.
+    const provider = new StubLimitsProvider("claude");
+    provider.liveRoutes = new Set(["acct-a", "acct-b"]);
+    provider.byRoute.set("acct-a", makeSnapshot({ agentId: "claude", routeId: "acct-a" }));
+    provider.byRoute.set("acct-b", makeSnapshot({ agentId: "claude", routeId: "acct-b" }));
+    const refreshed: string[] = [];
+    (provider as LimitsProvider).refreshNow = async (_reason, routeId) => {
+      refreshed.push(routeId);
+      return { routeId, outcome: "updated" as const };
+    };
+    const registry = new LimitsRegistry({
+      providers: new Map([["claude", provider]]),
+      sseBroadcast: makeBroadcastSpy().broadcast,
+    });
+
+    const scoped = await registry.refreshNow("claude", "manual", "acct-a");
+    expect(refreshed).toEqual(["acct-a"]);
+    expect(scoped).toEqual([{ routeId: "acct-a", outcome: "updated" }]);
+
+    refreshed.length = 0;
+    await registry.refreshNow("claude", "seed");
+    expect(refreshed.sort()).toEqual(["acct-a", "acct-b"]);
+  });
+
+  it("reports a route whose provider has no on-demand refresh", async () => {
+    const registry = new LimitsRegistry({
+      providers: new Map([["codex", new StubLimitsProvider("codex")]]),
+      sseBroadcast: makeBroadcastSpy().broadcast,
+    });
+    expect(await registry.refreshNow("codex", "manual", "acct-x")).toEqual([
+      { routeId: "acct-x", outcome: "unavailable" },
+    ]);
+  });
+
   it("drops only the disconnected account's pill", async () => {
     const provider = new StubLimitsProvider("claude");
     provider.liveRoutes = new Set(["acct-a", "acct-b"]);

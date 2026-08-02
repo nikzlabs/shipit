@@ -150,14 +150,18 @@ just-reset vs. never-known are the three flavors of "no live number," and the
 user asked for them to be visually distinct — Unknown shows `—`, Just-reset
 shows `reset`, Stale shows a dimmed last-known number with an age in the tooltip.
 
-The **refresh button** (`⟳`) sits at the end of the pill group (account-global,
-one button, not per-window). States:
+The **refresh button** (`⟳`) sits at the end of each pill — one per
+**subscription**, not per-window, and not one globally (see "Follow-up:
+multi-account" below, which corrects the original account-global design).
+States:
 
-- **Idle** — clickable; click → `POST /api/limits/refresh` → single-flight
-  `/api/oauth/usage` fetch → SSE rebroadcast.
+- **Idle** — clickable; click → `POST /api/limits/refresh` with this pill's
+  `routeId` → single-flight `/api/oauth/usage` fetch → SSE rebroadcast.
 - **In-flight** — spinner while the fetch is outstanding.
 - **Locked** — disabled with a countdown title (`Rate-limited — retry in N min`)
   while `lockedUntil` is in the future, so it can't re-trip the 429.
+- **Failed** — warning glyph in the high-context color, with the reason in the
+  tooltip, when the attempt returned an outcome other than `updated`.
 
 ## On the manual button vs. product principle §5
 
@@ -213,18 +217,55 @@ Note also that the header's `resetsAt` is bucketed to the hour (`20:00Z`) where
 up to an hour early depending on which source last won the merge. Cosmetic;
 not addressed.
 
+## Follow-up: multi-account broke the button, four ways
+
+With a second Claude subscription connected, the **primary** account's pill sat
+at `5h · — 7d · —` and its refresh button did nothing, while the second
+account's pill showed live numbers. Four compounding causes, all of which trace
+back to this doc's original **account-global** framing of the refresh:
+
+1. **The button was unscoped, so one press spent every account's budget.**
+   `POST /api/limits/refresh` took only `agentId`, and `LimitsRegistry.refreshNow`
+   fans out over `provider.routeIds()` when no route is given. The budget is
+   *per subscription* and allows only a handful of calls per ~30 min — so with
+   two accounts, pressing the pill that showed no numbers was the fastest way
+   to 429-lock both, including itself. The fan-out is still correct for the
+   once-per-sign-in seed; it was never right for a button press.
+2. **A locked-out route with no prior reading reported nothing at all.**
+   `ClaudeLimitsProvider.fetch` returned `null` when it had neither an event nor
+   an API reading — dropping `lockedUntil` on the floor for *exactly* the route
+   whose button looks broken. An account 429'd before it ever reported a number
+   rendered an **enabled** button that silently no-op'd for ~30 minutes. It now
+   returns a lockout-only snapshot, so that pill shows the countdown and a
+   disabled button like any other locked route.
+3. **Every failure path was a silent early return.** `refreshNow` returned
+   `void`, and the client deliberately swallowed errors ("the SSE broadcast is
+   the source of truth"). Rate-limited, no credentials on disk, expired access
+   token, upstream 500, unparseable payload — all indistinguishable from a
+   broken button. `refreshNow` now resolves a `LimitsRefreshResult` per route,
+   the HTTP response carries them, and the button renders the reason.
+4. **The client's auto-refresh throttle was keyed by provider, not route.** The
+   first pill to mount stamped `lastRefreshAttemptAt` for the whole provider, so
+   the second pill's mount-time baseline fetch was skipped for 5 minutes — the
+   primary account never got its own baseline reading in the first place.
+
+The general lesson: "account-global" was a fair simplification when one
+subscription per provider was the only shape, and every one of these bugs is
+that assumption surviving past it. Anything keyed by `AgentId` that describes a
+*subscription* — cache, throttle, lockout, button — wants a `routeId`.
+
 ## Key files
 
 | File | Role / change |
 |------|---------------|
-| `src/server/orchestrator/agents/claude/limits-provider.ts` | Add the single-flight `/api/oauth/usage` fetch + lockout state; merge with event snapshot |
+| `src/server/orchestrator/agents/claude/limits-provider.ts` | Single-flight `/api/oauth/usage` fetch + per-route lockout state; merge with event snapshot; `refreshNow` resolves a per-route outcome; `fetch` reports a lockout even with no readings |
 | `src/server/orchestrator/agents/claude/` (auth) | Reuse OAuth bearer + `isAccessTokenExpired` pre-check |
-| `src/server/orchestrator/limits-registry.ts` | On-demand refresh entry point; cache + SSE broadcast (already present) |
-| `src/server/orchestrator/agents/types.ts` | Possibly extend `LimitsProvider` with `refreshNow()` / lockout reporting |
-| WS layer (`ws-client-messages.ts` + a handler) or an HTTP route | `refresh_subscription_limits` trigger from client |
-| `src/client/components/SubscriptionLimitsBadge.tsx` | Refresh glyph, disabled-with-countdown while locked, source/age in tooltip; `autoRefresh` on-mount fetch + module-level throttle |
+| `src/server/orchestrator/limits-registry.ts` | On-demand refresh entry point; returns one result per attempted route; cache + SSE broadcast |
+| `src/server/orchestrator/agents/types.ts` | `LimitsProvider.refreshNow()` returns `LimitsRefreshResult` |
+| `src/server/orchestrator/api-routes-limits.ts` | `POST /api/limits/refresh` — accepts + validates `routeId`, returns `results` |
+| `src/client/components/SubscriptionLimitsBadge.tsx` | Per-route refresh glyph, disabled-with-countdown while locked, failure glyph + reason tooltip, source/age in tooltip; `autoRefresh` on-mount fetch + route-keyed module-level throttle |
 | `src/client/components/MobileStatusPanel.tsx` | Mobile dropdown content — passes `autoRefresh` so opening it refreshes usage |
-| `src/server/shared/types/usage-limits-types.ts` | Add `source`/`lockedUntil` fields as needed |
+| `src/server/shared/types/usage-limits-types.ts` | `source`/`lockedUntil` fields; `LimitsRefreshOutcome` + `LimitsRefreshResult` |
 | `src/server/session/agents/claude/adapter.ts` | `parseRateLimitWindow` — scale the CLI's 0–1 `utilization` fraction to 0–100 (see follow-up above) |
 
 ## Reference

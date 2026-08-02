@@ -31,6 +31,15 @@
 - [x] lint:dev + typecheck clean
 - [x] Manual browser check: low-usage click → percentage appears; locked button greys out
 
+## Follow-up: multi-account — refresh button dead on the primary account
+- [x] Scope the button: send this pill's `routeId` on `POST /api/limits/refresh` so one press costs one upstream call, not one per connected account
+- [x] Validate `routeId` on the route; thread it through `refreshSubscriptionLimits` → `LimitsRegistry.refreshNow`
+- [x] `fetch()` reports a lockout-only snapshot when a route has no readings, so a route 429'd before its first number shows the countdown + a disabled button
+- [x] `refreshNow` resolves `LimitsRefreshResult` per route instead of `void`; every silent early return became a named outcome
+- [x] Return `results` from the route; button renders a warning glyph + reason tooltip on any non-`updated` outcome
+- [x] Key the client auto-refresh throttle by route, not provider (the second pill's baseline fetch was being skipped)
+- [x] Tests: route scoping, per-route outcomes, lockout visibility with no readings, per-route throttle
+
 ## Follow-up: scale mismatch between the two sources
 - [x] Scale the CLI event's 0–1 `utilization` fraction to 0–100 in `parseRateLimitWindow` (a real 92% rendered as `5h 1%`)
 - [x] Passthrough guard for `utilization > 1` so an upstream switch to 0–100 doesn't pin the badge at 100%

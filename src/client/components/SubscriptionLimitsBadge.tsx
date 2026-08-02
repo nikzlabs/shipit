@@ -1,4 +1,4 @@
-import { ArrowClockwiseIcon, CircleNotchIcon } from "@phosphor-icons/react";
+import { ArrowClockwiseIcon, CircleNotchIcon, WarningCircleIcon } from "@phosphor-icons/react";
 // eslint-disable-next-line no-restricted-imports -- useEffect: one-shot /api/oauth/usage fetch when the mobile status dropdown mounts it (external system sync)
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ICON_SIZE } from "../design-tokens.js";
@@ -6,6 +6,8 @@ import { useApi } from "../hooks/useApi.js";
 import { Badge } from "./ui/badge.js";
 import type {
   AgentId,
+  LimitsRefreshOutcome,
+  LimitsRefreshResult,
   SubscriptionLimits,
   SubscriptionLimitsMap,
   SubscriptionLimitsWindow,
@@ -54,11 +56,15 @@ const WEEKLY_WINDOW_MS = 7 * 24 * 60 * 60_000; // 7d
 export const AUTO_REFRESH_MIN_INTERVAL_MS = 5 * 60_000;
 
 /**
- * Last refresh attempt per provider, module-scoped so it survives the
+ * Last refresh attempt per **route**, module-scoped so it survives the
  * mount/unmount cycle of the popover that hosts the pill (Radix unmounts
  * `PopoverContent` on close, so component state can't carry the throttle).
+ *
+ * Keyed by route, not by provider: the upstream budget is per subscription, and
+ * a provider-keyed throttle meant the second account's pill was silently
+ * skipped on every dropdown open — it never got its own baseline reading.
  */
-const lastRefreshAttemptAt = new Map<AgentId, number>();
+const lastRefreshAttemptAt = new Map<string, number>();
 
 /** Test seam — clears the module-level auto-refresh throttle between cases. */
 export function resetAutoRefreshThrottle(): void {
@@ -99,7 +105,13 @@ interface SubscriptionLimitsBadgeProps {
  */
 export function SubscriptionLimitsBadge({ limits, autoRefresh }: SubscriptionLimitsBadgeProps) {
   const accounts = useSettingsStore((s) => s.providerAccounts);
-  const pills: { key: string; agentId: AgentId; label: string; snapshot?: SubscriptionLimits }[] = [];
+  const pills: {
+    key: string;
+    agentId: AgentId;
+    routeId: string;
+    label: string;
+    snapshot?: SubscriptionLimits;
+  }[] = [];
   for (const id of PILL_ORDER) {
     const byRoute = limits[id];
     const providerAccounts = accounts.filter((account) => account.provider === id);
@@ -111,6 +123,7 @@ export function SubscriptionLimitsBadge({ limits, autoRefresh }: SubscriptionLim
       pills.push({
         key: `${id}:${account.id}`,
         agentId: id,
+        routeId: account.id,
         label: account.label,
         snapshot: byRoute?.[account.id],
       });
@@ -123,6 +136,7 @@ export function SubscriptionLimitsBadge({ limits, autoRefresh }: SubscriptionLim
       pills.push({
         key: `${id}:${snapshot.routeId}`,
         agentId: id,
+        routeId: snapshot.routeId,
         label: AGENT_LABEL[id],
         snapshot,
       });
@@ -132,10 +146,11 @@ export function SubscriptionLimitsBadge({ limits, autoRefresh }: SubscriptionLim
 
   return (
     <>
-      {pills.map(({ key, agentId, label, snapshot }) => (
+      {pills.map(({ key, agentId, routeId, label, snapshot }) => (
         <SubscriptionLimitPill
           key={key}
           agentId={agentId}
+          routeId={routeId}
           label={label}
           snapshot={snapshot}
           // eslint-disable-next-line no-restricted-syntax -- Claude is the only agent with an on-demand /api/oauth/usage refresh endpoint
@@ -149,6 +164,12 @@ export function SubscriptionLimitsBadge({ limits, autoRefresh }: SubscriptionLim
 
 interface SubscriptionLimitPillProps {
   agentId?: AgentId;
+  /**
+   * The subscription this pill describes — a provider-account id or a reserved
+   * route id. Scopes the refresh to this account so one press costs one
+   * upstream call instead of one per connected account.
+   */
+  routeId?: string;
   label: string;
   snapshot?: SubscriptionLimits;
   showRefresh?: boolean;
@@ -156,9 +177,10 @@ interface SubscriptionLimitPillProps {
   autoRefresh?: boolean;
 }
 
-export function SubscriptionLimitPill({ agentId, label, snapshot, showRefresh, autoRefresh }: SubscriptionLimitPillProps) {
+export function SubscriptionLimitPill({ agentId, routeId, label, snapshot, showRefresh, autoRefresh }: SubscriptionLimitPillProps) {
   const now = Date.now();
   const resolvedAgentId = snapshot?.agentId ?? agentId;
+  const resolvedRouteId = routeId ?? snapshot?.routeId;
 
   // The pill carries inline meters with underline gauges, so it overrides
   // Badge's symmetric padding with the asymmetric `pl-2 pr-* pt-0 pb-0.5` it
@@ -189,6 +211,7 @@ export function SubscriptionLimitPill({ agentId, label, snapshot, showRefresh, a
       {showRefresh && resolvedAgentId && (
         <LimitsRefreshButton
           agentId={resolvedAgentId}
+          routeId={resolvedRouteId}
           lockedUntil={snapshot?.lockedUntil}
           autoRefresh={autoRefresh}
         />
@@ -352,11 +375,39 @@ function Meter({ shortLabel, longLabel, window, windowMs, fetchedAt, now }: Mete
 }
 
 /**
- * Account-global refresh button. Fires a single on-demand `/api/oauth/usage`
- * fetch (Claude) via `POST /api/limits/refresh`; the server is single-flight
- * and 429-lockout-guarded, and the result returns over the `subscription_limits`
- * SSE broadcast. While `lockedUntil` is in the future the button is disabled
- * with a countdown so it can't re-trip the upstream rate limit (docs/161).
+ * Explanations for the outcomes a refresh can end on without producing new
+ * numbers. Shown in the button's tooltip — the whole point is that a press
+ * which changes nothing on screen still says why.
+ */
+const OUTCOME_MESSAGE: Record<LimitsRefreshOutcome, string | null> = {
+  updated: null,
+  skipped: null,
+  locked: "Usage refresh rate-limited by Anthropic",
+  "rate-limited": "Usage refresh rate-limited by Anthropic",
+  "no-credentials": "This account has no usable sign-in — reconnect it in Settings",
+  "expired-token": "This account's sign-in expired — reconnect it in Settings",
+  failed: "Couldn't reach Anthropic's usage endpoint",
+  unavailable: "Usage refresh isn't available for this account",
+};
+
+/**
+ * Per-subscription refresh button. Fires one on-demand `/api/oauth/usage` fetch
+ * for **this pill's route** via `POST /api/limits/refresh`; the server is
+ * single-flight and 429-lockout-guarded, and the numbers return over the
+ * `subscription_limits` SSE broadcast. While `lockedUntil` is in the future the
+ * button is disabled with a countdown so it can't re-trip the upstream rate
+ * limit (docs/161).
+ *
+ * Sending `routeId` is load-bearing, not tidiness. Without it the server fans
+ * the fetch out over every connected account, so with two subscriptions each
+ * press spent both accounts' share of a budget that allows only a handful of
+ * calls per ~30 min — pressing the pill that showed no numbers was the fastest
+ * way to lock out the pill that did.
+ *
+ * A failed attempt is reported, not swallowed. Every non-success path in the
+ * provider is a silent early return, so the previous "swallow, the SSE is the
+ * source of truth" left a button that spun and did nothing with no way to tell
+ * a rate-limit from a signed-out account.
  *
  * With `autoRefresh` the same fetch also fires once on mount — the mobile
  * status dropdown opens straight into fresh numbers instead of requiring a tap
@@ -366,37 +417,49 @@ function Meter({ shortLabel, longLabel, window, windowMs, fetchedAt, now }: Mete
  */
 function LimitsRefreshButton({
   agentId,
+  routeId,
   lockedUntil,
   autoRefresh,
 }: {
   agentId: AgentId;
+  routeId?: string;
   lockedUntil?: number;
   autoRefresh?: boolean;
 }) {
   const api = useApi();
   const [refreshing, setRefreshing] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
   const now = Date.now();
   const locked = lockedUntil !== undefined && lockedUntil > now;
   const lockCountdown = locked
     ? formatResetCountdown(new Date(lockedUntil).toISOString(), now)
     : null;
 
+  const throttleKey = `${agentId}:${routeId ?? "*"}`;
+
   const refresh = useCallback(async () => {
-    lastRefreshAttemptAt.set(agentId, Date.now());
+    lastRefreshAttemptAt.set(throttleKey, Date.now());
     setRefreshing(true);
     try {
-      await api.post("/api/limits/refresh", { agentId });
-    } catch {
-      // Swallow — the SSE broadcast (or its absence) is the source of truth;
-      // a failed refresh just leaves the last-known numbers in place.
+      const res = await api.post<{ ok: boolean; results?: LimitsRefreshResult[] }>(
+        "/api/limits/refresh",
+        routeId ? { agentId, routeId } : { agentId },
+      );
+      // Report on this pill's own route when the response names it; a fan-out
+      // response (no routeId sent) has no single owner, so fall back to the
+      // first result rather than attributing another account's failure here.
+      const mine = res.results?.find((r) => r.routeId === routeId) ?? res.results?.[0];
+      setProblem(mine ? OUTCOME_MESSAGE[mine.outcome] ?? null : null);
+    } catch (err) {
+      setProblem(err instanceof Error ? err.message : "Usage refresh failed");
     } finally {
       setRefreshing(false);
     }
-  }, [agentId, api]);
+  }, [agentId, api, routeId, throttleKey]);
 
   // Fire-once-on-mount auto refresh. The ref (not the throttle map) is what
   // makes it once-per-mount: the map only bounds how often *any* mount is
-  // allowed to spend a call, and a locked-out provider is skipped entirely
+  // allowed to spend a call, and a locked-out route is skipped entirely
   // rather than firing a request the server would no-op.
   const autoFired = useRef(false);
   // eslint-disable-next-line no-restricted-syntax -- mount IS the event here: Radix unmounts PopoverContent on close, so this component mounting is the dropdown opening, and the fetch is an external-system sync with no event-handler equivalent.
@@ -404,26 +467,36 @@ function LimitsRefreshButton({
     if (!autoRefresh || autoFired.current) return;
     autoFired.current = true;
     if (locked) return;
-    const last = lastRefreshAttemptAt.get(agentId) ?? 0;
+    const last = lastRefreshAttemptAt.get(throttleKey) ?? 0;
     if (Date.now() - last < AUTO_REFRESH_MIN_INTERVAL_MS) return;
     void refresh();
-  }, [agentId, autoRefresh, locked, refresh]);
+  }, [autoRefresh, locked, refresh, throttleKey]);
 
+  // The lockout countdown is the more specific message when both are present:
+  // it carries a retry time, and it is broadcast state rather than the result
+  // of one press, so it survives a remount.
   const title = locked
     ? `Usage refresh rate-limited — retry in ${lockCountdown}`
-    : "Refresh usage from Anthropic";
+    : problem ?? "Refresh usage from Anthropic";
+
+  const failed = !locked && problem !== null;
 
   return (
     <button
       type="button"
       onClick={refresh}
       disabled={refreshing || locked}
-      className="inline-flex items-center justify-center rounded-full -ml-1 p-1 translate-y-px text-(--color-text-secondary) transition-colors hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) disabled:cursor-not-allowed disabled:opacity-40"
+      className={`inline-flex items-center justify-center rounded-full -ml-1 p-1 translate-y-px transition-colors hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) disabled:cursor-not-allowed disabled:opacity-40 ${
+        failed ? "text-(--color-context-high)" : "text-(--color-text-secondary)"
+      }`}
       title={title}
       aria-label="Refresh subscription usage"
+      data-refresh-problem={problem ?? undefined}
     >
       {refreshing ? (
         <CircleNotchIcon size={ICON_SIZE.XS} className="animate-spin" />
+      ) : failed ? (
+        <WarningCircleIcon size={ICON_SIZE.XS} />
       ) : (
         <ArrowClockwiseIcon size={ICON_SIZE.XS} />
       )}

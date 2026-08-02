@@ -165,6 +165,86 @@ describe("ClaudeLimitsProvider", () => {
     expect(snap?.lockedUntil).toBeGreaterThan(0);
   });
 
+  it("surfaces the lockout on a route that has never reported a number", async () => {
+    // The reported symptom: an account 429'd before it ever had a reading, so
+    // `fetch()` returned null, the broadcast omitted the route entirely, and
+    // the pill rendered an ENABLED refresh button that silently no-opped for
+    // the whole ~30 min lockout. The lockout is the one thing that route knows.
+    const clock = vi.fn(() => 1_000);
+    const provider = new ClaudeLimitsProvider({
+      authManager: makeAuthStub({ token: "tok", source: "file", expiresAt: null, plan: "Pro" }),
+      fetchImpl: vi.fn().mockResolvedValue(new Response("", { status: 429 })),
+      now: clock,
+    });
+
+    expect(await provider.fetch(ROUTE)).toBeNull();
+    await provider.refreshNow("manual", ROUTE);
+
+    const snap = await provider.fetch(ROUTE);
+    expect(snap?.lockedUntil).toBeGreaterThan(1_000);
+    expect(snap?.session).toBeNull();
+    expect(snap?.weekly).toBeNull();
+  });
+
+  it("reports why a refresh produced nothing", async () => {
+    // Every one of these was a silent `return` — indistinguishable, from the
+    // button, from a refresh that worked.
+    const clock = vi.fn(() => 10_000);
+
+    const noCreds = new ClaudeLimitsProvider({
+      authManager: makeAuthStub({ token: null, reason: "not-authenticated" }),
+      fetchImpl: vi.fn(),
+      now: clock,
+    });
+    expect(await noCreds.refreshNow("manual", ROUTE)).toMatchObject({
+      routeId: ROUTE,
+      outcome: "no-credentials",
+    });
+
+    const expired = new ClaudeLimitsProvider({
+      authManager: makeAuthStub({ token: "tok", source: "file", expiresAt: 10_000, plan: "Pro" }),
+      fetchImpl: vi.fn(),
+      now: clock,
+    });
+    expect(await expired.refreshNow("manual", ROUTE)).toMatchObject({ outcome: "expired-token" });
+
+    const httpError = new ClaudeLimitsProvider({
+      authManager: makeAuthStub({ token: "tok", source: "file", expiresAt: null, plan: "Pro" }),
+      fetchImpl: vi.fn().mockResolvedValue(new Response("", { status: 500 })),
+      now: clock,
+    });
+    expect(await httpError.refreshNow("manual", ROUTE)).toMatchObject({
+      outcome: "failed",
+      detail: "HTTP 500",
+    });
+
+    const offline = new ClaudeLimitsProvider({
+      authManager: makeAuthStub({ token: "tok", source: "file", expiresAt: null, plan: "Pro" }),
+      fetchImpl: vi.fn().mockRejectedValue(new Error("ECONNRESET")),
+      now: clock,
+    });
+    expect(await offline.refreshNow("manual", ROUTE)).toMatchObject({ outcome: "failed" });
+
+    const rateLimited = new ClaudeLimitsProvider({
+      authManager: makeAuthStub({ token: "tok", source: "file", expiresAt: null, plan: "Pro" }),
+      fetchImpl: vi.fn().mockResolvedValue(new Response("", { status: 429 })),
+      now: clock,
+    });
+    expect(await rateLimited.refreshNow("manual", ROUTE)).toMatchObject({ outcome: "rate-limited" });
+    // A second press while locked out is reported as such, not as a success.
+    expect(await rateLimited.refreshNow("manual", ROUTE)).toMatchObject({ outcome: "locked" });
+
+    const ok = new ClaudeLimitsProvider({
+      authManager: makeAuthStub({ token: "tok", source: "file", expiresAt: null, plan: "Pro" }),
+      fetchImpl: vi.fn().mockResolvedValue(
+        jsonResponse({ five_hour: { utilization: 3, resets_at: "2026-06-01T00:00:00Z" } }),
+      ),
+      now: clock,
+    });
+    expect(await ok.refreshNow("manual", ROUTE)).toMatchObject({ outcome: "updated" });
+    expect(await ok.refreshNow("seed", ROUTE)).toMatchObject({ outcome: "skipped" });
+  });
+
   it("seed self-skips once an API snapshot exists", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(
       jsonResponse({ five_hour: { utilization: 7, resets_at: "2026-06-01T00:00:00Z" } }),

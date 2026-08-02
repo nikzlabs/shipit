@@ -28,7 +28,12 @@
  *     the header.
  */
 
-import type { AgentId, SubscriptionLimits, SubscriptionLimitsMap } from "../shared/types.js";
+import type {
+  AgentId,
+  LimitsRefreshResult,
+  SubscriptionLimits,
+  SubscriptionLimitsMap,
+} from "../shared/types.js";
 import type { LimitsProvider } from "./agents/types.js";
 
 export interface LimitsRegistryOptions {
@@ -86,22 +91,37 @@ export class LimitsRegistry {
    * rebroadcast the merged snapshot. `"manual"` is the user's refresh button;
    * `"seed"` is the once-per-sign-in baseline. No-ops for providers without an
    * on-demand path (Codex) or unknown agents. Never throws.
+   *
+   * Returns one result per route attempted, so the caller (the HTTP route
+   * behind the pill's refresh button) can tell the user why nothing changed.
    */
-  async refreshNow(agentId: AgentId, reason: "manual" | "seed", routeId?: string): Promise<void> {
+  async refreshNow(
+    agentId: AgentId,
+    reason: "manual" | "seed",
+    routeId?: string,
+  ): Promise<LimitsRefreshResult[]> {
     const provider = this.providers.get(agentId);
-    if (!provider?.refreshNow) return;
-    // Without an explicit route, refresh every route the provider knows about:
-    // the user's refresh button is a provider-level affordance, and each
-    // account's usage endpoint is a separate call against a separate token.
+    if (!provider?.refreshNow) {
+      return routeId ? [{ routeId, outcome: "unavailable" }] : [];
+    }
+    // Without an explicit route this fans out over every route the provider
+    // knows about — right for the once-per-sign-in seed, wrong for the pill's
+    // button. Each route is a separate upstream call against a separate token,
+    // and `/api/oauth/usage` allows only a handful before a ~30 min lockout, so
+    // a fan-out press spends every OTHER account's budget too. The badge sends
+    // its own `routeId` for exactly that reason (docs/161).
     const routes = routeId ? [routeId] : provider.routeIds();
+    const results: LimitsRefreshResult[] = [];
     for (const route of routes) {
       try {
-        await provider.refreshNow(reason, route);
+        results.push(await provider.refreshNow(reason, route));
       } catch (err) {
         console.error(`[limits] on-demand refresh for ${agentId}/${route} failed:`, err);
+        results.push({ routeId: route, outcome: "failed", detail: errMsg(err) });
       }
     }
     await this.refreshOne(agentId);
+    return results;
   }
 
   /**
@@ -179,6 +199,10 @@ export class LimitsRegistry {
   private broadcast(): void {
     this.sseBroadcast("subscription_limits", { limits: this.getSnapshot() });
   }
+}
+
+function errMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 function windowEqual(
