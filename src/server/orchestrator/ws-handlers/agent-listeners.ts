@@ -677,8 +677,21 @@ export function wireAgentListeners(
     // filtering removes every block, skip the whole event — the client has
     // nothing to render and per-type handling below would no-op on empty
     // content anyway.
-    if (event.type === "agent_tool_result" && suppressedToolResultIds.size > 0) {
-      const content = (event as { content?: unknown[] }).content ?? [];
+    // `content` is `unknown[]` by declaration but not by guarantee: the
+    // Anthropic message schema also permits a bare string, and the adapter
+    // passes `message.content` through untouched. A string here threw
+    // `TypeError: content.filter is not a function` out of the SSE event
+    // parser mid-turn, which stranded the turn and requeued an unacknowledged
+    // steer. Skip the filter for a non-array (there are no blocks to suppress)
+    // rather than trusting the type — `stampToolDurations` right below already
+    // guards the same way.
+    const toolResultContent = (event as { content?: unknown }).content;
+    if (
+      event.type === "agent_tool_result" &&
+      suppressedToolResultIds.size > 0 &&
+      Array.isArray(toolResultContent)
+    ) {
+      const content: unknown[] = toolResultContent;
       const filtered = content.filter((b) => {
         if (typeof b !== "object" || b === null) return true;
         const id = (b as Record<string, unknown>).tool_use_id;

@@ -186,6 +186,21 @@ export interface ClaudeAssistantEvent {
    * nested tree (109 — subagent transparency).
    */
   parent_tool_use_id?: string;
+  /**
+   * True when this "assistant" message is a SYNTHETIC error envelope the CLI
+   * emits in place of model output (`message.model` is `"<synthetic>"`), not
+   * something the model said. An unauthenticated turn's only "reply" is one of
+   * these, carrying the text `Not logged in · Please run /login`.
+   * See {@link error}.
+   */
+  is_api_error_message?: boolean;
+  /**
+   * Machine-readable failure code on a synthetic API-error message — e.g.
+   * `"authentication_failed"`. Present only alongside
+   * {@link is_api_error_message}; it is the reliable signal, since the human
+   * text varies by failure mode. Verified against CLI 2.1.219.
+   */
+  error?: string;
 }
 
 export interface ClaudeUserEvent {
@@ -237,7 +252,21 @@ export interface ClaudeModelUsage {
 
 export interface ClaudeResultEvent {
   type: "result";
-  subtype: "success" | "error";
+  /**
+   * The CLI's terminal classification — NOT a success/failure flag.
+   * `subtype: "success"` only means the turn ran to a normal end-of-turn
+   * boundary: an API failure (auth, quota, overload) also ends
+   * `subtype: "success"` with `is_error: true`. `error_during_execution` is
+   * what an interrupt produces. `"error"` is a legacy value kept for fixtures
+   * and adapters that still emit it; the real CLI never sends it. Read
+   * {@link is_error} to decide whether the turn failed. Verified against CLI
+   * 2.1.219.
+   */
+  subtype: "success" | "error" | "error_max_turns" | "error_during_execution";
+  /** Authoritative "this turn failed" flag, independent of {@link subtype}. */
+  is_error?: boolean;
+  /** Why the turn ended — e.g. `"api_error"` when an upstream call failed. */
+  terminal_reason?: string;
   session_id: string;
   total_cost_usd?: number;
   duration_ms?: number;

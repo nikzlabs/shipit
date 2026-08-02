@@ -1,4 +1,5 @@
 ---
+issue: nikzlabs/shipit#1874
 title: New-session 401 — proactive OAuth heal + runtime-401 auto-retry
 description: Kill the "new session 401 once a day" by healing the source OAuth token before it's read and silently re-dispatching a turn that 401s on a transient stale token.
 ---
@@ -92,6 +93,70 @@ the client doesn't flicker out of its loading state between attempts.
 Net effect: a transient stale-token 401 recovers invisibly — no sign-in card,
 no manual re-send.
 
+### 3. Recognizing the failure at all (the 2026-08 follow-up)
+
+Both mechanisms above hang off one signal: the CLI process emitting
+`auth_required`. That signal was **never raised in production** for the most
+common auth failure, so neither mechanism ever ran.
+
+`resultEventIndicatesAuthFailure` gated on `subtype === "error"` — a value the
+Claude Code CLI does not emit. Captured from a real unauthenticated
+`claude -p --output-format stream-json` run (CLI 2.1.219), the failure is two
+events:
+
+```jsonc
+{"type":"assistant","message":{"model":"<synthetic>","content":[{"type":"text",
+  "text":"Not logged in · Please run /login"}]},
+  "error":"authentication_failed","is_api_error_message":true}
+{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error",
+  "result":"Not logged in · Please run /login"}
+```
+
+`subtype` is `"success"`; `is_error` is the failure flag. So detection missed
+both events, and the synthetic assistant message — an error envelope, not model
+output — was rendered as the agent's reply. The user's whole experience of an
+auth failure was the CLI telling them to run `/login`, a command that does not
+exist anywhere in ShipIt, followed by the next message working because the
+scheduled refresher had healed the source token in the meantime.
+
+The fix, in `agents/claude/process.ts`:
+
+- **`resultEventIsError`** — `is_error === true || subtype !== "success"` is the
+  failure test. The only non-success subtypes the CLI emits are
+  `error_during_execution` (an interrupt) and `error_max_turns`.
+- **`resultEventIndicatesAuthFailure`** uses it, still ignoring *successful*
+  results: `AUTH_ERROR_PATTERNS` contains generic words ("oauth", "sign in") a
+  legitimate final answer could contain.
+- **`assistantEventIndicatesAuthFailure`** — new. Requires
+  `is_api_error_message`, so a model that merely talks about signing in can't
+  trip it, and matches on the `error` code (`authentication_failed`) or the
+  text. Firing here recovers the turn one event earlier than the result would.
+- Both events are **swallowed** rather than forwarded. An auth failure ends the
+  turn and ShipIt owns what happens next — the quiet heal-and-retry (where a
+  half-rendered failed turn would flicker in and have to be undone) or the
+  sign-in card. This matches the shape the rest of the system already expects:
+  a turn dying on the stderr auth path emits no `agent_result` either, and
+  `turn-executor` documents that an auth-required turn legitimately ends
+  without one.
+
+**Adjacent, from the same incident report:** an `agent_tool_result` whose
+`content` is a bare string (permitted by the Anthropic message schema; the
+adapter forwards `message.content` untouched) threw
+`TypeError: content.filter is not a function` out of the SSE event parser
+mid-turn, stranding the turn and requeuing an unacknowledged steer. Two call
+sites cast `content` to `unknown[]` without checking —
+`agent-listeners`' AskUserQuestion suppression filter and
+`extractToolResults` — while their neighbour `stampToolDurations` had the
+`Array.isArray` guard all along. Both now guard the same way.
+
+The same `subtype === "error"` assumption sat in `ClaudeAdapter`'s result
+mapping, so `agent_result.error` was **always** `undefined` and two unrelated
+features gated on it were dead in production: the docs/182 turn-errored flag
+(`session.lastTurnErrored`, which `shipit session wait` reads) and the docs/150
+req 7 quota-exhaustion stamp that makes the *next* turn fail over to another
+account. The adapter now normalizes `is_error` / non-success subtypes into its
+`success | error` status.
+
 ## Wiring
 
 `buildApp` (index.ts) builds an `ensureAgentTokenFresh(agentId, accountId?)`
@@ -112,6 +177,16 @@ local runtime omit it and get the legacy visible re-auth flow with no retry.
 
 ## Key files
 
+- `session/agents/claude/process.ts` — `resultEventIsError`,
+  `resultEventIndicatesAuthFailure`, `assistantEventIndicatesAuthFailure`,
+  `consumeAuthFailureEvent` (the drain-loop gate that raises `auth_required`
+  and swallows the CLI's error copy).
+- `session/agents/claude/adapter.ts` — `is_error`-based `agent_result` status /
+  error mapping.
+- `ws-handlers/agent-event-normalizer.ts`, `ws-handlers/agent-listeners.ts` —
+  `Array.isArray` guards on `agent_tool_result.content`.
+- `shared/types/claude-types.ts` — `ClaudeResultEvent.is_error` /
+  `terminal_reason`, `ClaudeAssistantEvent.is_api_error_message` / `error`.
 - `agents/claude/oauth-refresher.ts` — `ensureFresh` / `ensureFreshOne`
   (single-flight pre-read heal).
 - `session-agent-env.ts` — Step 2a pre-spawn heal; `ENSURE_TOKEN_FRESH_TIMEOUT_MS`,
@@ -132,6 +207,16 @@ local runtime omit it and get the legacy visible re-auth flow with no retry.
 - `ws-handlers/agent-listeners.test.ts` — `auth_required` handler: quiet heal
   (no card / `running` stays set), heal-fail fallback (card + OAuth), legacy
   flow when no hooks wired.
+- `session/agents/claude/auth-detection.test.ts` — the real CLI payloads
+  (`subtype:"success"` + `is_error`, the synthetic assistant envelope), the
+  no-false-positive cases (a model reply that discusses signing in; a non-auth
+  API error), and `resultEventIsError`.
+- `session/agents/claude/process.test.ts` — the drain loop raises
+  `auth_required` for both events and forwards neither, while a normal
+  assistant message + clean result still pass through.
+- `integration_tests/ask-user-question.test.ts` — a string-valued
+  `tool_result.content` passes through intact while suppression is active
+  instead of throwing.
 - `integration_tests/auth-401-auto-retry.test.ts` — end-to-end dispatch path:
   heal succeeds → silent re-dispatch + completion; heal fails → card, no
   re-dispatch; bounded (second 401 on the retry surfaces the card, heal runs
