@@ -44,6 +44,28 @@ interface WindowSnapshot {
 
 export interface ClaudeLimitsDeps {
   authManager: Pick<AuthManager, "getAccessToken">;
+  /**
+   * docs/150 — every connected account for this provider, whether or not it has
+   * reported quota yet.
+   *
+   * Without this, `routeIds()` could only name routes that already had a cached
+   * snapshot, which made the once-per-sign-in seed fetch a no-op for a freshly
+   * connected account: you needed data before you were allowed to fetch data,
+   * so the pill sat at "—" until a turn happened to push an event. Optional —
+   * tests and pre-docs/150 wiring fall back to the cached keys alone.
+   */
+  listAccountRouteIds?: () => string[];
+  /**
+   * docs/150 — the credential dir backing a route, so the usage fetch reads
+   * THAT account's token.
+   *
+   * Returning `undefined` selects the legacy/env path, which is correct for the
+   * reserved `claude-env-oauth` / API-key routes. Getting this wrong is not a
+   * missing number but a wrong one: without it the fetch reads the root config
+   * dir (or `ANTHROPIC_AUTH_TOKEN`) for every route and attributes one
+   * subscription's usage to another.
+   */
+  credentialDirForRoute?: (routeId: string) => string | undefined;
   /** Inject for tests; defaults to `globalThis.fetch`. */
   fetchImpl?: typeof fetch;
   /** Inject for deterministic tests; defaults to `Date.now`. */
@@ -74,10 +96,15 @@ export class ClaudeLimitsProvider implements LimitsProvider {
   /** Single-flight guard so concurrent refreshes share one request, per route. */
   private inFlight = new Map<string, Promise<void>>();
 
+  private listAccountRouteIds: (() => string[]) | undefined;
+  private credentialDirForRoute: ((routeId: string) => string | undefined) | undefined;
+
   constructor(deps: ClaudeLimitsDeps) {
     this.authManager = deps.authManager;
     this.fetchImpl = deps.fetchImpl ?? ((input, init) => fetch(input, init));
     this.now = deps.now ?? (() => Date.now());
+    this.listAccountRouteIds = deps.listAccountRouteIds;
+    this.credentialDirForRoute = deps.credentialDirForRoute;
   }
 
   /**
@@ -94,8 +121,18 @@ export class ClaudeLimitsProvider implements LimitsProvider {
     this.eventLatest.set(routeId, { session, weekly, at: this.now() });
   }
 
+  /**
+   * Routes this provider can be asked about: every connected account (so a
+   * newly connected one is refreshable before it has ever reported), unioned
+   * with anything already cached (so a reserved env/API-key route, which only
+   * appears once a turn pushes a snapshot, is not dropped).
+   */
   routeIds(): string[] {
-    return [...new Set([...this.eventLatest.keys(), ...this.apiLatest.keys()])];
+    return [...new Set([
+      ...(this.listAccountRouteIds?.() ?? []),
+      ...this.eventLatest.keys(),
+      ...this.apiLatest.keys(),
+    ])];
   }
 
   forgetRoute(routeId: string): void {
@@ -162,7 +199,10 @@ export class ClaudeLimitsProvider implements LimitsProvider {
   }
 
   private async doRefresh(routeId: string): Promise<void> {
-    const tokenResult = await this.authManager.getAccessToken();
+    // Account-scoped: `getAccessToken()` with no dir prefers ANTHROPIC_AUTH_TOKEN
+    // and otherwise reads the ROOT config dir, so passing nothing here fetched
+    // the wrong subscription's usage (or none at all, leaving the pill at "—").
+    const tokenResult = await this.authManager.getAccessToken(this.credentialDirForRoute?.(routeId));
     if (tokenResult.token === null) return;
     // Skip a doomed call against an idle-expired access token — the shared
     // credential file is refreshed by the CLI on each turn; we don't refresh

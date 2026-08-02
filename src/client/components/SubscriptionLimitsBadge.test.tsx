@@ -205,17 +205,41 @@ describe("SubscriptionLimitsBadge group", () => {
     expect(rows[1].textContent).toMatch(/5h 12%/);
   });
 
-  it("keeps the bare provider label when only one subscription is connected", () => {
+  // req 10 asks for the account name outright, so it is shown even when there
+  // is only one pill.
+  it("labels a single account's pill with the account name", () => {
     const now = Date.now();
     useSettingsStore.getState().setProviderAccounts([
       { id: "acct-work", provider: "claude", label: "Work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
     ]);
-    // The one-account layout must be exactly what it was before multi-account
-    // existed — the account name only appears once it disambiguates something.
     const limits: SubscriptionLimitsMap = { claude: routed(makeSnap({ routeId: "acct-work" })) };
     render(<SubscriptionLimitsBadge limits={limits} />);
+    expect(screen.getByText("Work")).toBeInTheDocument();
+  });
+
+  // The regression this replaced: the old rule counted SNAPSHOTS, and routes
+  // with no snapshot are omitted from the map — so two connected accounts with
+  // one quiet account rendered a single pill labelled "Claude", saying nothing
+  // about which subscription it described.
+  it("names the account even when the other connected account has reported nothing yet", () => {
+    const now = Date.now();
+    useSettingsStore.getState().setProviderAccounts([
+      { id: "acct-work", provider: "claude", label: "Work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+      { id: "acct-personal", provider: "claude", label: "Personal", isPrimary: false, status: "ready", createdAt: now, updatedAt: now },
+    ]);
+    const limits: SubscriptionLimitsMap = { claude: routed(makeSnap({ routeId: "acct-work" })) };
+    render(<SubscriptionLimitsBadge limits={limits} />);
+    expect(screen.getByText("Work")).toBeInTheDocument();
+    expect(screen.queryByText("Claude")).toBeNull();
+  });
+
+  // Reserved env / API-key routes are not accounts, so they keep the provider
+  // label rather than inventing a name for something the user never named.
+  it("keeps the provider label for a reserved route", () => {
+    useSettingsStore.getState().setProviderAccounts([]);
+    const limits: SubscriptionLimitsMap = { claude: routed(makeSnap({ routeId: "claude-env-oauth" })) };
+    render(<SubscriptionLimitsBadge limits={limits} />);
     expect(screen.getByText("Claude")).toBeInTheDocument();
-    expect(screen.queryByText("Work")).toBeNull();
   });
 
   it("renders both rows in stable order: Claude then Codex", () => {

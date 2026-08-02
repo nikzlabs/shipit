@@ -190,3 +190,79 @@ describe("ClaudeLimitsProvider", () => {
     expect(snap?.fetchedAt).toBe(1_700_000_000_000);
   });
 });
+
+/**
+ * docs/150 — the route id has to reach BOTH the enumeration and the token
+ * lookup. These two bugs together produced the reported symptom: a pill stuck
+ * at "—" whose refresh button did nothing.
+ */
+describe("ClaudeLimitsProvider account routing", () => {
+  const okUsage = {
+    ok: true,
+    status: 200,
+    json: async () => ({
+      five_hour: { utilization: 40, resets_at: "2026-06-01T00:00:00Z" },
+      seven_day: { utilization: 20, resets_at: "2026-06-07T00:00:00Z" },
+    }),
+  } as unknown as Response;
+
+  it("can name a connected account before it has ever reported quota", async () => {
+    // The bug: routeIds() returned only routes with a cached snapshot, so the
+    // once-per-sign-in seed fetch iterated zero routes for a fresh account —
+    // data was required in order to be allowed to fetch data.
+    const provider = new ClaudeLimitsProvider({
+      authManager: makeAuthStub({ token: "tok", source: "file", expiresAt: null, plan: "Pro" }),
+      listAccountRouteIds: () => ["acct-work", "acct-personal"],
+    });
+
+    expect(provider.routeIds().sort()).toEqual(["acct-personal", "acct-work"]);
+  });
+
+  it("still surfaces a cached reserved route that is not an account row", async () => {
+    const provider = new ClaudeLimitsProvider({
+      authManager: makeAuthStub({ token: "tok", source: "env", expiresAt: null, plan: null }),
+      listAccountRouteIds: () => ["acct-work"],
+    });
+    provider.setRateLimits({ usedPct: 5, resetAt: "2026-06-01T00:00:00Z" }, null, "claude-env-oauth");
+
+    expect(provider.routeIds().sort()).toEqual(["acct-work", "claude-env-oauth"]);
+  });
+
+  it("fetches each account's usage with THAT account's credentials", async () => {
+    // The bug: `getAccessToken()` was called with no dir, so it preferred
+    // ANTHROPIC_AUTH_TOKEN / the root config dir — reading the wrong
+    // subscription's usage, or none at all.
+    const getAccessToken = vi.fn().mockResolvedValue({
+      token: "tok", source: "file", expiresAt: null, plan: "Pro",
+    });
+    const fetchImpl = vi.fn().mockResolvedValue(okUsage);
+    const provider = new ClaudeLimitsProvider({
+      authManager: { getAccessToken },
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      listAccountRouteIds: () => ["acct-work"],
+      credentialDirForRoute: (routeId) =>
+        routeId === "acct-work" ? "/credentials/provider-accounts/claude/acct-work" : undefined,
+    });
+
+    await provider.refreshNow("manual", "acct-work");
+
+    expect(getAccessToken).toHaveBeenCalledWith("/credentials/provider-accounts/claude/acct-work");
+    const snap = await provider.fetch("acct-work");
+    expect(snap?.session?.usedPct).toBe(40);
+  });
+
+  it("uses the env/legacy path for a reserved route, which has no account dir", async () => {
+    const getAccessToken = vi.fn().mockResolvedValue({
+      token: "tok", source: "env", expiresAt: null, plan: null,
+    });
+    const provider = new ClaudeLimitsProvider({
+      authManager: { getAccessToken },
+      fetchImpl: vi.fn().mockResolvedValue(okUsage) as unknown as typeof fetch,
+      credentialDirForRoute: () => undefined,
+    });
+
+    await provider.refreshNow("manual", "claude-env-oauth");
+
+    expect(getAccessToken).toHaveBeenCalledWith(undefined);
+  });
+});

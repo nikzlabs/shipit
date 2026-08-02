@@ -18,6 +18,7 @@ import type { AgentId } from "../../shared/types.js";
 import type { AgentAuthManager } from "../agent-auth-manager.js";
 import type { LimitsProvider } from "./types.js";
 import type { PrepareRunParamsFn } from "../agent-run-params-prep.js";
+import type { ProviderAccountManager } from "../provider-account-manager.js";
 import * as claude from "./claude/index.js";
 import * as codex from "./codex/index.js";
 
@@ -26,6 +27,13 @@ export interface BuildAgentRuntimeDeps {
   authManager: claude.AuthManager;
   /** Already-constructed Codex device-flow manager from `app-di`. */
   codexAuthManager: codex.CodexAuthManager;
+  /**
+   * docs/150 — provider-account registry, so a limits provider can enumerate
+   * connected accounts and resolve a route id to the credential dir whose token
+   * that route's usage must be fetched with. Optional: without it the providers
+   * keep their pre-docs/150 behaviour (cached routes only, root credentials).
+   */
+  providerAccountManager?: ProviderAccountManager;
 }
 
 export interface AgentRuntime {
@@ -55,7 +63,22 @@ export function buildAgentRuntime(deps: BuildAgentRuntimeDeps): AgentRuntime {
   ]);
 
   const limitsProviders = new Map<AgentId, LimitsProvider>([
-    ["claude", new claude.ClaudeLimitsProvider({ authManager: deps.authManager })],
+    ["claude", new claude.ClaudeLimitsProvider({
+      authManager: deps.authManager,
+      ...(deps.providerAccountManager
+        ? {
+            listAccountRouteIds: () =>
+              deps.providerAccountManager!.list("claude").map((account) => account.id),
+            // Reserved routes (`claude-env-oauth`, `claude-api-key`) are not
+            // account rows; `undefined` sends them down the env/legacy path,
+            // which is the correct source for them.
+            credentialDirForRoute: (routeId: string) =>
+              deps.providerAccountManager!.get("claude", routeId)
+                ? deps.providerAccountManager!.resolveCredentialRoot("claude", routeId)
+                : undefined,
+          }
+        : {}),
+    })],
     ["codex", new codex.CodexLimitsProvider({ codexAuthManager: deps.codexAuthManager })],
   ]);
 

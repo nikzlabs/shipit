@@ -360,7 +360,14 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   // shared run-params assembler, system-prompt fragments for
   // `agent-instructions.ts`). Adding a backend = one new folder under
   // `agents/<id>/` + one entry per table inside `buildAgentRuntime()`.
-  const agentRuntime = buildAgentRuntime({ authManager, codexAuthManager });
+  const agentRuntime = buildAgentRuntime({
+    authManager,
+    codexAuthManager,
+    // docs/150 — lets the Claude limits provider fetch each account's usage
+    // with THAT account's token, and know about an account before it has ever
+    // reported quota.
+    ...(providerAccountManager ? { providerAccountManager } : {}),
+  });
   const { authManagers, limitsProviders, runParamsPreps } = agentRuntime;
 
   // docs/150 — let the provider-account manager drive account-scoped login

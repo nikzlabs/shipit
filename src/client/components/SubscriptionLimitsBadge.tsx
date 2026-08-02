@@ -84,10 +84,18 @@ interface SubscriptionLimitsBadgeProps {
  * docs/135-subscription-limits-badge/plan.md.
  *
  * docs/150 req 10 — quota is per account, so a provider with two connected
- * subscriptions gets two pills, each labelled with that account's name. With a
- * single account the pill keeps the bare provider label, so the common
- * one-subscription layout is byte-for-byte what it was before multi-account
- * existed; the account name only appears once it disambiguates something.
+ * subscriptions gets two pills, each labelled with that account's name.
+ *
+ * The name is shown whenever the route IS an account, unconditionally. An
+ * earlier version suppressed it for the single-pill case, on the theory that a
+ * name only earns its space when it disambiguates. That was wrong twice over:
+ * req 10 asks for the account name outright, and — worse — the condition
+ * counted *snapshots*, not accounts. Routes with no snapshot are omitted from
+ * the map, so a user with two connected accounts where only one had ever
+ * reported quota saw a single pill labelled "Claude", indistinguishable from
+ * the one-account case and silent about which subscription it described.
+ *
+ * Reserved env / API-key routes are not accounts and keep the provider label.
  */
 export function SubscriptionLimitsBadge({ limits, autoRefresh }: SubscriptionLimitsBadgeProps) {
   const accounts = useSettingsStore((s) => s.providerAccounts);
@@ -108,7 +116,7 @@ export function SubscriptionLimitsBadge({ limits, autoRefresh }: SubscriptionLim
       pills.push({
         key: `${id}:${snapshot.routeId}`,
         agentId: id,
-        label: entries.length > 1 ? (account?.label ?? AGENT_LABEL[id]) : AGENT_LABEL[id],
+        label: account?.label ?? AGENT_LABEL[id],
         snapshot,
       });
     }
