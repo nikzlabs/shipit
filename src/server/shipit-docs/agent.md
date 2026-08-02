@@ -70,12 +70,19 @@ $(git diff)
 EOF
 ```
 
-The command prints the sub-agent's findings on stdout. You read them and **act**
-— fix what's real, or summarize. You do **not** need to paste the output back for
-the user to see it: ShipIt surfaces the sub-agent's verbatim output inline, in
-the persisted "Consulted Codex" card, with attribution (docs/220). So treat
-stdout as input for *acting*, not as something to re-type into chat — re-pasting
-it just duplicates what the card already shows.
+The command prints the sub-agent's findings on stdout. **A review you asked for
+is input to your work, not the deliverable.** Triage the findings in the same
+turn: fix the ones that are real, and say which ones you are not acting on and
+why. Relaying the list and ending the turn is not a completed task — it leaves
+the user to do the triage you were asked to do. The one exception is a finding
+whose fix needs a decision or authority you don't have; ask about *that* finding
+and act on the rest.
+
+You also do **not** need to paste the output back for the user to see it: ShipIt
+surfaces the sub-agent's verbatim output inline, in the persisted "Consulted
+Codex" card, with attribution (docs/220). So treat stdout as input for *acting*,
+not as something to re-type into chat — re-pasting it just duplicates what the
+card already shows.
 
 **Your copy and the user's copy are the same document.** stdout and the card are
 written from one string, so there is no "the UI has more" — if you and the user
