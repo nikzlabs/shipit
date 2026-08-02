@@ -7,6 +7,7 @@ import {
   perSessionCredentialsSubpath,
   sessionCredentialsRoot,
   ensureSessionCredentialsScaffold,
+  ensureSessionAgentUserConfig,
   provisionAgentCredentials,
   provisionProviderAccountCredentials,
   provisionSubAgentCredentials,
@@ -127,6 +128,78 @@ describe("session-credentials", () => {
     expect(fs.existsSync(path.join(dir, ".codex"))).toBe(false);
     // shipit-credentials.json is never copied into a session container.
     expect(fs.existsSync(path.join(dir, "shipit-credentials.json"))).toBe(false);
+  });
+
+  // A freshly provisioned Claude session container must start TRUSTED: without
+  // `projects["/workspace"].hasTrustDialogAccepted` the CLI silently drops the
+  // workspace's own `.claude/settings.json` permissions.allow entries. The
+  // orchestrator-side login flow writes this into a DIFFERENT file than the one
+  // the container reads, so provisioning has to write it here.
+  describe("Claude workspace trust in the session container's own .claude.json", () => {
+    function readSessionConfig(): Record<string, unknown> {
+      const raw = fs.readFileSync(path.join(perSessionCredentialsDir(root, sid), ".claude.json"), "utf-8");
+      return JSON.parse(raw) as Record<string, unknown>;
+    }
+
+    it("provisioning pre-trusts /workspace and completes onboarding", () => {
+      provisionAgentCredentials(root, sid, "claude");
+      const config = readSessionConfig();
+      expect(config.hasCompletedOnboarding).toBe(true);
+      expect(config.projects).toMatchObject({ "/workspace": { hasTrustDialogAccepted: true } });
+    });
+
+    it("merges into the copied source config without clobbering unrelated keys", () => {
+      fs.writeFileSync(
+        path.join(root, ".claude.json"),
+        JSON.stringify({ oauthAccount: { emailAddress: "a@b.c" }, projects: { "/workspace": { history: ["x"] } } }),
+      );
+      provisionAgentCredentials(root, sid, "claude");
+      const config = readSessionConfig();
+      expect(config.oauthAccount).toEqual({ emailAddress: "a@b.c" });
+      expect(config.projects).toEqual({
+        "/workspace": { history: ["x"], hasTrustDialogAccepted: true },
+        "/app": { hasTrustDialogAccepted: true },
+      });
+    });
+
+    it("writes the config even when the source root has no .claude.json at all", () => {
+      fs.rmSync(path.join(root, ".claude.json"), { force: true });
+      provisionAgentCredentials(root, sid, "claude");
+      expect(readSessionConfig().projects).toMatchObject({ "/workspace": { hasTrustDialogAccepted: true } });
+    });
+
+    // Provisioning runs once per session, so sessions pinned before this
+    // existed only heal via the per-turn re-assert.
+    it("ensureSessionAgentUserConfig heals an already-provisioned session and is idempotent", () => {
+      provisionAgentCredentials(root, sid, "claude");
+      const configPath = path.join(perSessionCredentialsDir(root, sid), ".claude.json");
+      // Simulate a session provisioned by the old code path.
+      fs.writeFileSync(configPath, JSON.stringify({ oauthAccount: { emailAddress: "a@b.c" } }));
+
+      ensureSessionAgentUserConfig(root, sid, "claude");
+      expect(readSessionConfig().projects).toMatchObject({ "/workspace": { hasTrustDialogAccepted: true } });
+      expect(readSessionConfig().oauthAccount).toEqual({ emailAddress: "a@b.c" });
+
+      const after = fs.readFileSync(configPath, "utf-8");
+      ensureSessionAgentUserConfig(root, sid, "claude");
+      expect(fs.readFileSync(configPath, "utf-8")).toBe(after);
+    });
+
+    // Cross-agent isolation: a Codex session must not grow a Claude config.
+    it("is a no-op for a Codex session", () => {
+      provisionAgentCredentials(root, sid, "codex");
+      ensureSessionAgentUserConfig(root, sid, "codex");
+      expect(fs.existsSync(path.join(perSessionCredentialsDir(root, sid), ".claude.json"))).toBe(false);
+    });
+
+    it("applies to a provider-account provisioned session too", () => {
+      const accountRoot = path.join(root, "provider-accounts", "claude", "acct-1");
+      fs.mkdirSync(path.join(accountRoot, ".claude"), { recursive: true });
+      fs.writeFileSync(path.join(accountRoot, ".claude", ".credentials.json"), '{"claudeAiOauth":{"accessToken":"a1"}}');
+      fs.writeFileSync(path.join(accountRoot, ".claude.json"), '{"projects":{}}');
+      provisionProviderAccountCredentials(root, sid, "claude", "acct-1");
+      expect(readSessionConfig().projects).toMatchObject({ "/workspace": { hasTrustDialogAccepted: true } });
+    });
   });
 
   it("provisioning Codex copies .codex but NOT .claude / .claude.json", () => {

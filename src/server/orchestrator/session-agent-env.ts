@@ -26,6 +26,7 @@ import type { ServiceManager } from "./service-manager.js";
 import type { AgentId } from "../shared/types.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import {
+  ensureSessionAgentUserConfig,
   provisionAgentCredentials,
   provisionProviderAccountCredentials,
   provisionRepoMemory,
@@ -362,6 +363,19 @@ export async function prepareSessionAgentEnvironment(
     deps.sessionManager.setAgentId(sessionId, agentId);
     if (selectedRoute) deps.sessionManager.setProviderRoute(sessionId, selectedRoute.kind, selectedRoute.id);
     deps.sessionManager.setAgentPinned(sessionId);
+  } else if (runner instanceof ContainerSessionRunner) {
+    // Provisioning above already normalized the agent's user config, but it runs
+    // exactly once per session — a session pinned before that normalization
+    // existed would stay wrong forever (for Claude: an untrusted `/workspace`,
+    // so the CLI silently drops the workspace's own `permissions.allow`
+    // entries). Re-assert it on every later turn instead. Idempotent and
+    // merge-only: it reads one small JSON file and writes only when a key is
+    // actually missing.
+    try {
+      ensureSessionAgentUserConfig(deps.credentialsDir, sessionId, agentId);
+    } catch (err) {
+      console.warn("[credentials] agent user-config normalization failed:", getErrorMessage(err));
+    }
   }
 
   // Step 2a (docs/179): heal the source OAuth token if it's within the refresh
