@@ -63,11 +63,7 @@ export function sessionNeedsAccountFailover(
   if (!session || !providerAccountManager) return false;
   const { agentId, providerRouteKind, providerRouteId } = session;
   if (!agentId || providerRouteKind !== "account" || !providerRouteId) return false;
-  return !providerAccountManager.isRouteUsableForTurn(
-    agentId,
-    { kind: "account", id: providerRouteId },
-    session.model === undefined ? {} : { model: session.model },
-  );
+  return !providerAccountManager.isRouteUsableForTurn(agentId, { kind: "account", id: providerRouteId });
 }
 
 export interface SwitchSessionProviderAccountDeps {
@@ -227,10 +223,7 @@ export function failoverPinnedSession(
   // here, which is what makes req 13 apply to existing sessions too.
   const next = routeFromSelection(
     provider,
-    deps.providerAccountManager.selectAccountForTurn(
-      provider,
-      session.model === undefined ? {} : { model: session.model },
-    ),
+    deps.providerAccountManager.selectAccountForTurn(provider),
   );
   // A reserved route is not a failover target (req 12), and re-selecting the
   // same account would mean the router disagrees with `isRouteUsableForTurn` —

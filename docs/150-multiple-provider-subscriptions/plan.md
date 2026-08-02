@@ -2115,3 +2115,48 @@ Ordering matters: this is the **last** phase. Each shim is load-bearing for an
 install that has not yet exercised the new path, so removing one before the
 replacement is proven turns a migration into a regression. The signal that a
 shim is ready to go is that nothing reads it — not that the replacement exists.
+
+### Non-goal: routing around model capability (req 17, reversed 2026-08-02)
+
+Requirement 17 originally said ShipIt should skip an account that cannot run the
+requested model and report that no account can serve the turn. The user reversed
+it: mixing accounts with different model access is theirs to manage, ShipIt must
+not work around it, and the error simply has to be clear with no automatic
+recovery. See `requirements.md` for the rewritten requirement and its receipt.
+
+**What prompted the reversal.** The mechanism was built and tested but dormant,
+because nothing populated `ProviderAccount.capabilities.models`. The planned
+source — an `agent_init` decoration — cannot do it: `AgentInitEvent` carries a
+single `model`, the one that just *started*, plus tools and permission mode.
+Both adapters construct it that way (`codex/codex-event-handler.ts:729`,
+`claude/adapter.ts`). Nothing in it enumerates *supported* models.
+
+Writing the observed model in would have been worse than leaving it empty.
+`accountSupportsModel` read that array as a **whitelist**: absent or empty meant
+"assume capable", non-empty meant "only these". The first turn an account ran on
+Sonnet would have set `models: ["sonnet"]`, and the feature would then have
+refused Opus on an account that very likely supports it — a single positive
+observation silently promoted into an exhaustive capability list, failing in a
+way that looks like the feature working.
+
+The remaining options were a static plan→models table (stale the moment a
+provider changes tiers, and mis-refusing silently when it does) or detecting
+refusals from turn failures (sound, but real mechanism for a corner case). The
+user's call was neither: **do nothing.**
+
+**What that means in code.** Removed rather than left dormant, per req 19's
+spirit — a mechanism with no data behind it is exactly the kind of second way of
+working that requirement exists to prevent:
+
+- `AccountSelectionFailure`'s `no_model_eligible_account` variant
+- `SelectAccountOptions.model` and the `accountSupportsModel` helper
+- the model filter in `selectAccountForTurn` and in `isRouteUsableForTurn`
+- the model plumbing through `selectRouteForNewTurn` and
+  `sessionNeedsAccountFailover`
+
+**What provides the "clear error".** Nothing new. The turn runs on the selected
+account, the provider rejects the model, and that error reaches the transcript
+through the existing `agent_result` error path. The req-14 same-turn retry does
+not fire, because `detectHardExhaustion` matches quota language only — verified,
+not assumed: none of its patterns match a model-unavailable message. So "no
+automatic recovery" holds by construction rather than by a new guard.

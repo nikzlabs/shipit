@@ -1,5 +1,5 @@
 /**
- * Turn preflight for provider-account routing (docs/150 reqs 13, 17).
+ * Turn preflight for provider-account routing (docs/150 req 13).
  *
  * `selectAccountForTurn` already answers "which account runs this turn, and if
  * none, why" — this module is the other half: turning a `{ ok: false }` answer
@@ -7,7 +7,7 @@
  * place every turn entrypoint passes through
  * (`prepareSessionAgentEnvironment`).
  *
- * **Which failures stop a turn.** Only the two the user cannot act on by
+ * **Which failures stop a turn.** Only the one the user cannot act on by
  * signing in:
  *
  *   - `all_exhausted` — every connected subscription for the provider has a
@@ -15,9 +15,6 @@
  *     resets. Notably we must NOT quietly roll onto the metered env/API-key
  *     route instead (req 12) — `selectAccountForTurn` already refuses to, and
  *     this is what makes that refusal visible rather than a silent stall.
- *   - `no_model_eligible_account` — accounts are healthy but none reports the
- *     requested model. Req 17: skip and report, never substitute a model the
- *     user did not ask for.
  *
  * `auth_required` is deliberately NOT a blocking failure here. "You are not
  * signed in" already has its own surface — `authConfigured`, the auth prompts,
@@ -60,9 +57,13 @@ export class ProviderRouteUnavailableError extends Error {
 /**
  * True when a failed selection should stop the turn rather than fall through.
  * See the module docstring for why `auth_required` is excluded.
+ *
+ * Model eligibility is not a selection failure at all — routing around an
+ * account that cannot run the requested model is a non-goal, so the turn runs
+ * and the provider's own error is what the user sees.
  */
 export function isTurnBlockingFailure(failure: AccountSelectionFailure): boolean {
-  return failure.reason === "all_exhausted" || failure.reason === "no_model_eligible_account";
+  return failure.reason === "all_exhausted";
 }
 
 /**
@@ -90,12 +91,6 @@ export function describeAccountSelectionFailure(
         `Send this message again once quota is back, or connect another ${label} account in Settings.`
       );
     }
-    case "no_model_eligible_account":
-      return (
-        `No connected ${label} account can run ${failure.model}. ` +
-        `ShipIt will not silently switch you to a different model — pick a model one of your ` +
-        `accounts supports, or connect an account that has it.`
-      );
     case "auth_required":
       return `No ${label} account is connected. Connect one in Settings to run this turn.`;
   }

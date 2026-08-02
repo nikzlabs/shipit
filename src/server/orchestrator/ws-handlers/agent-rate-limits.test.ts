@@ -146,6 +146,12 @@ describe("detectHardExhaustion", () => {
       "Request timed out",
       "tool use failed: file not found",
       "",
+      // docs/150 req 17 (non-goal) — a model the account cannot run must NOT
+      // trigger the same-turn retry. "No automatic recovery" holds because this
+      // detector is the retry's only trigger and matches quota language only.
+      "model claude-opus-5 is not available on your plan",
+      "The model `claude-opus-5` does not exist or you do not have access to it",
+      "This model is not supported for your account",
     ]) {
       expect(detectHardExhaustion(message)).toBeNull();
     }

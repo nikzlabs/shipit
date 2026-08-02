@@ -45,11 +45,16 @@ export interface ProviderAccountManagerOptions {
 }
 
 /**
- * Why an account could not be selected (docs/150 reqs 13, 17). A bare `null`
- * could not express any of these, and reqs 13 and 17 are specifically about
- * *telling the user which one happened* — "everything is exhausted until 14:30"
- * and "no connected account can run this model" are different problems with
- * different fixes.
+ * Why an account could not be selected (docs/150 req 13). A bare `null` could
+ * not express either of these, and req 13 is specifically about *telling the
+ * user which one happened* — "everything is exhausted until 14:30" and "nothing
+ * is connected" are different problems with different fixes.
+ *
+ * Model eligibility is deliberately absent: routing around an account that
+ * cannot run the requested model is a non-goal (see `plan.md` — "Non-goal:
+ * routing around model capability"). Mixing accounts with different model
+ * access is the user's choice to manage, and the provider's own error is the
+ * clear signal.
  */
 export type AccountSelectionFailure =
   /** Nothing is connected (or everything needs re-auth). */
@@ -59,21 +64,13 @@ export type AccountSelectionFailure =
    * soonest any of them frees up, so req 13 can say when — `null` only if no
    * exhausted window carried a parseable reset time.
    */
-  | { reason: "all_exhausted"; earliestResetAt: string | null }
-  /**
-   * Accounts are available but none reports the requested model (req 17). We
-   * skip and report rather than silently substituting a model the user did not
-   * ask for.
-   */
-  | { reason: "no_model_eligible_account"; model: string };
+  | { reason: "all_exhausted"; earliestResetAt: string | null };
 
 export type AccountSelection =
   | { ok: true; route: ProviderRoute }
   | ({ ok: false } & AccountSelectionFailure);
 
 export interface SelectAccountOptions {
-  /** Model the turn intends to run, when known — drives req 17's skip-and-report. */
-  model?: string;
   /**
    * Routes already tried and failed this turn. Mid-turn failover (req 14)
    * passes the exhausted route so the retry cannot pick it again.
@@ -314,18 +311,6 @@ export class ProviderAccountManager {
     const limits = this.getSubscriptionLimits?.()?.[provider] ?? {};
     const now = Date.now();
 
-    // Partition rather than short-circuit: which bucket the *last* candidate
-    // falls into is what decides the failure reason, so we need all of them.
-    const modelEligible: ProviderAccount[] = [];
-    let skippedForModel = false;
-    for (const account of connected) {
-      if (opts.model && !accountSupportsModel(account, opts.model)) {
-        skippedForModel = true;
-        continue;
-      }
-      modelEligible.push(account);
-    }
-
     // docs/150 reqs 4–6 — three tiers, not two. An account past its cutoff is
     // still perfectly capable of running the turn; it has just stopped being
     // the *first* choice. Collapsing "past cutoff" into "exhausted" would make
@@ -335,7 +320,7 @@ export class ProviderAccountManager {
     const cutoffs = this.credentialStore.getFailoverCutoffs(provider);
     const overCutoff: ProviderAccount[] = [];
     const exhaustedResets: number[] = [];
-    for (const account of modelEligible) {
+    for (const account of connected) {
       const resetAt = exhaustedUntil(limits[account.id], account, now);
       if (resetAt !== null) {
         exhaustedResets.push(resetAt);
@@ -367,10 +352,6 @@ export class ProviderAccountManager {
         earliestResetAt: Number.isFinite(earliest) ? new Date(earliest).toISOString() : null,
       };
     }
-    if (skippedForModel && opts.model) {
-      return { ok: false, reason: "no_model_eligible_account", model: opts.model };
-    }
-
     // No connected subscription at all — fall back to reserved routes so
     // env/API-key users keep working.
     const reserved = this.reservedRouteFor(provider);
@@ -394,16 +375,11 @@ export class ProviderAccountManager {
    * A pinned account that has since been deleted or signed out reports
    * unusable, which sends the caller back through the router.
    */
-  isRouteUsableForTurn(
-    provider: AgentId,
-    route: ProviderRoute,
-    opts: Pick<SelectAccountOptions, "model"> = {},
-  ): boolean {
+  isRouteUsableForTurn(provider: AgentId, route: ProviderRoute): boolean {
     if (route.kind !== "account") return true;
     const account = this.get(provider, route.id);
     if (!account) return false;
     if (account.status !== "ready" && account.status !== "authenticating") return false;
-    if (opts.model && !accountSupportsModel(account, opts.model)) return false;
     const limits = this.getSubscriptionLimits?.()?.[provider] ?? {};
     if (exhaustedUntil(limits[route.id], account, Date.now()) !== null) return false;
 
@@ -425,7 +401,6 @@ export class ProviderAccountManager {
     const hasBetter = this.accountsInSelectionOrder(provider).some((candidate) => {
       if (candidate.id === route.id) return false;
       if (candidate.status !== "ready" && candidate.status !== "authenticating") return false;
-      if (opts.model && !accountSupportsModel(candidate, opts.model)) return false;
       if (exhaustedUntil(limits[candidate.id], candidate, now) !== null) return false;
       return !isOverCutoff(limits[candidate.id], cutoffs);
     });
@@ -658,16 +633,6 @@ function exhaustedUntil(
   return Math.min(...resets);
 }
 
-/**
- * req 17 — can this account run the requested model? An account with no
- * capability snapshot yet is assumed capable: we have not learned otherwise,
- * and refusing on absent data would block every account until its first turn.
- */
-function accountSupportsModel(account: ProviderAccount, model: string): boolean {
-  const models = account.capabilities?.models;
-  if (!models || models.length === 0) return true;
-  return models.includes(model);
-}
 
 /**
  * docs/150 reqs 4–6 — has this account crossed either proactive cutoff?
