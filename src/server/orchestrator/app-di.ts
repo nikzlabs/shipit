@@ -276,6 +276,16 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   // credentials (CredentialStore, the secret cipher, the global git config,
   // and above all ProviderAccountManager's destructive legacy migration) is
   // constructed in between. See {@link resolveCredentialsDir}.
+  //
+  // NOTE: `serveStatic === false` is now load-bearing for CREDENTIAL SAFETY,
+  // not just for enabling test-only routes. It is what keeps a test from being
+  // handed {@link LIVE_CREDENTIALS_DIR} — i.e. the running agent's own home
+  // when the suite executes inside a session container. Every current test
+  // reaches this with `serveStatic: false`; a future one that doesn't would
+  // silently lose that protection (the in-container guard in
+  // `provider-account-manager.ts` still covers it, but that is the second
+  // layer, not the first). If this flag ever stops implying "under test",
+  // take an explicit signal here rather than widening its meaning.
   const isTestMode = deps.serveStatic === false;
   const credentialsDir = resolveCredentialsDir(deps.credentialsDir, isTestMode);
 

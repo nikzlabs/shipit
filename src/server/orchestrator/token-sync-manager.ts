@@ -564,10 +564,17 @@ function mergeOrphans(
  *     history there. Repair: unlink + cpSync shared baseline + merge
  *     orphan content + drop orphan root + recover agent_session_id.
  *
- *   Case 3 — POST-DESTRUCTIVE-REPAIR ORPHAN (`.claude/` is a real dir, but
- *     `<sessionDir>/provider-accounts/.../<rel>` still exists). The
- *     pre-#758 destructive repair already rm'd the symlink and cpSync'd
- *     the shared baseline, but left the orphan tree behind. The agent now
+ *   Case 3 — ORPHAN BESIDE A REAL DIR (`.claude/` is a real dir, but
+ *     `<sessionDir>/provider-accounts/.../<rel>` still exists). Two known
+ *     producers, and the second is the one actually observed in the field:
+ *     (a) the pre-#758 destructive repair rm'd the symlink and cpSync'd the
+ *     shared baseline but left the orphan tree behind; (b) —
+ *     CONFIRMED 2026-08-02 — `migrateProviderDefault` `renameSync`'d a live
+ *     agent home into `provider-accounts/<provider>/<accountId>/`, which
+ *     produces exactly this shape with no symlink ever involved. See the
+ *     addendum in `docs/153-orchestrator-owned-claude-oauth-refresh/plan.md`.
+ *     Do not assume a symlink was here; in every observed case there was not
+ *     one. The agent now
  *     reads `.claude/` (real dir) which has no `projects/...` for this
  *     session, so `--resume <agentSessionId>` keeps failing with "No
  *     conversation found" until we layer the orphan back on top. Repair:

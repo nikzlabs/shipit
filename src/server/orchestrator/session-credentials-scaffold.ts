@@ -106,37 +106,37 @@ export function perSessionCredentialsSubpath(sessionId: string): string {
  * Drop a symlink sitting AT a credential destination so the copy that follows
  * materializes a real file/dir there.
  *
- * `fs.cpSync`'s `dereference` option governs the SOURCE only; it says nothing
- * about a symlink at the destination, and neither outcome is survivable:
+ * DEFENSIVE ONLY — this guards a case we have never observed. It does **not**
+ * explain any known incident, and in particular it does not explain the
+ * `.credentials.json` found nested under
+ * `<sessionDir>/provider-accounts/<provider>/<account>/.claude/`. That nesting
+ * came from `migrateProviderDefault`'s `renameSync` moving a live agent home
+ * (see `provider-account-manager.ts` and the addendum in
+ * `docs/153-orchestrator-owned-claude-oauth-refresh/plan.md`); every affected
+ * session had a real `.claude` directory and no symlink was ever found. An
+ * earlier draft of this comment narrated the symlink as the cause — it was a
+ * hypothesis, it was disproved, and chasing it cost hours. If you are here
+ * debugging nested credentials, look at the migration, not at this function.
  *
- *   - The link RESOLVES on the orchestrator — `cpSync` follows it and writes
- *     THROUGH it. The flat `<sessionDir>/<rel>` never becomes a real dir, and
- *     the credential lands wherever the link pointed. That is how a session is
- *     born with its `.credentials.json` nested under
- *     `<sessionDir>/provider-accounts/<provider>/<account>/.claude/` instead of
- *     at `<sessionDir>/.claude/`. It still *works* at first — the agent CLI
- *     follows the same link in its own namespace, so it reads the same nested
- *     file and can grow a whole conversation there — right up until the link is
- *     replaced by a real dir (any later repair pass, including this one). At
- *     that instant the credential AND the conversation leave the CLI's view in
- *     one step and every subsequent turn 401s.
- *   - The link DANGLES — `cpSync` throws EEXIST, provisioning fails, and the
- *     session gets no credentials at all. `prepareSessionAgentEnvironment`
- *     catches and warns, so this is quiet too.
+ * What is independently true, and why the guard is still worth keeping:
  *
- * `rmSync` on a symlink unlinks the LINK, never the target — the orphaned
- * subtree the link pointed at stays on disk, and the per-turn repair
- * (`materializeLeakedSubtreeSymlinks`, which runs one step later in
- * `prepareSessionAgentEnvironment`) discovers it and merges its credential and
- * conversation back into the real dir. So the two halves compose: this stops
- * the orphan being CREATED, that one recovers any already created.
- *
- * `recursive: true` is required for the symlink-to-directory case: Node.js
- * 24.13.0 throws ERR_FS_EISDIR without it (same constraint the leak repair
- * documents). Only the FINAL path component is materialized, which covers every
- * entry in {@link AGENT_CREDENTIAL_PATHS} and {@link SHARED_CREDENTIAL_PATHS} —
- * all single-segment. A future multi-segment `rel` would need its parents
- * checked too.
+ *   - `fs.cpSync`'s `dereference` option governs the SOURCE only; it says
+ *     nothing about a symlink at the destination.
+ *   - Both destination-symlink outcomes would be bad. If the link RESOLVES,
+ *     `cpSync` follows it and writes THROUGH it, so the flat
+ *     `<sessionDir>/<rel>` never becomes a real dir and the credential lands
+ *     wherever the link pointed. If it DANGLES, `cpSync` throws EEXIST and
+ *     provisioning fails — quietly, since `prepareSessionAgentEnvironment`
+ *     catches and warns.
+ *   - `rmSync` on a symlink unlinks the LINK, never the target, so removing it
+ *     cannot destroy whatever the link pointed at.
+ *   - `recursive: true` is required for the symlink-to-directory case: Node.js
+ *     24.13.0 throws ERR_FS_EISDIR without it (the same constraint the leak
+ *     repair documents).
+ *   - Only the FINAL path component is materialized, which covers every entry
+ *     in {@link AGENT_CREDENTIAL_PATHS} and {@link SHARED_CREDENTIAL_PATHS} —
+ *     all single-segment. A future multi-segment `rel` would need its parents
+ *     checked too.
  */
 function materializeCredentialDestination(dest: string): void {
   const stat = fs.lstatSync(dest, { throwIfNoEntry: false });
