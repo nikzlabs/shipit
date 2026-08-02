@@ -19,10 +19,12 @@ baseline for issue tracking that does not depend on Linear's issue allowance:
 5. Huly
 6. A first-party implementation in ShipIt
 
-**Recommendation:** first evaluate the already-shipped GitHub adapter against a
-dedicated private GitHub repository. This meets product requirement 2 with no new
-storage service, but its repository-bound Open/Closed model may still be too
-narrow. If it is, run a short, bounded Vikunja integration spike before
+**Recommendation:** first classify C1–C18 as Required, Optional, or Not needed;
+no implementation option can be selected while that product decision is open.
+Then evaluate the already-shipped GitHub adapter against a dedicated private
+GitHub repository. This meets product requirement 2 with no new storage service,
+but its repository-bound Open/Closed model may still be too narrow for the
+Required set. If it is, run a short, bounded Vikunja integration spike before
 committing to a first-party implementation. Vikunja is the best operational fit
 among reusable self-hosted services: one container, SQLite, a REST/OpenAPI API,
 and enough task features to satisfy ShipIt's normalized tracker contract. Its
@@ -113,24 +115,55 @@ underlying evidence.
 
 ## Product-requirement compliance
 
-These are hard gates, not weighted preferences. “Conditional” means the option
-cannot be selected until its decision gate demonstrates parity through ShipIt's
-existing wrapper.
+Privacy and free/no-subscription are hard pass/fail gates. Capability fit cannot
+be reduced to blanket wrapper parity: product requirement 1 now requires the
+user to classify C1–C18 in `requirements.md`. Until that is done, every
+candidate's capability result is provisional.
 
-| Option | Req 1: no less than wrapper | Req 2: private | Req 3: free/no subscription |
+| Option | Req 1: required capabilities | Req 2: private | Req 3: free/no subscription |
 |---|---|---|---|
-| **GitHub Issues in a private repo** | **Conditional / fails as-is.** Gate 0 must add safe cross-repo routing, writable workflow/priority conventions, and parent issues. | **Pass.** GitHub Free supports private repositories. | **Pass today.** GitHub Free is $0/month and includes Issues & Projects plus unlimited private repositories; revalidate before selection. [Pricing](https://github.com/pricing) |
-| **Vikunja Community** | **Conditional.** Gate 1 must prove every `Tracker` capability, especially bucket-backed status and parent relations. | **Pass.** Self-hosted storage. | **Pass.** The fully functional community edition is AGPL-licensed without a subscription. [Community edition](https://vikunja.io/docs/pro/) |
-| **First-party ShipIt** | **Pass by design.** It implements the wrapper contract directly; parity tests are the acceptance boundary. | **Pass.** Data stays in ShipIt's private deployment storage. | **Pass.** No separate license or subscription. |
-| **Forgejo** | **Fails as described.** Open/Closed plus label conventions do not yet preserve the full wrapper contract. | **Pass.** Self-hosted storage. | **Pass.** Free/open-source self-hosting; license obligations still apply. |
-| **Plane Community** | **Conditional.** Strong model fit, but the community API must pass the tracker contract suite. | **Pass.** Self-hosted storage. | **Pass.** Community is AGPL-3.0, free, and has no user limit. [Editions](https://developers.plane.so/self-hosting/editions-and-versions) |
-| **Leantime Community** | **Conditional.** JSON-RPC coverage must be tested against the complete wrapper contract. | **Pass.** Self-hosted storage. | **Must verify before selection.** Core self-hosting is open source, but paid marketplace plugins cannot become dependencies. |
-| **Huly self-hosted** | **Conditional.** Rich model, but its supported self-host API must pass the wrapper contract. | **Pass.** Self-hosted storage. | **Must verify before selection.** No paid cloud or proprietary add-on may be required for the adapter path. |
+| **GitHub Issues in a private repo** | **Pending classification.** Safe cross-repo routing is mandatory; Gate 0 then checks only capabilities marked Required. | **Pass.** GitHub Free supports private repositories. | **Pass today.** GitHub Free is $0/month and includes Issues & Projects plus unlimited private repositories; revalidate before selection. [Pricing](https://github.com/pricing) |
+| **Vikunja Community** | **Pending classification.** Gate 1 checks every Required capability, especially bucket-backed status and parent relations if selected. | **Pass.** Self-hosted storage. | **Pass.** The fully functional community edition is AGPL-licensed without a subscription. [Community edition](https://vikunja.io/docs/pro/) |
+| **First-party ShipIt** | **Can implement the classified set exactly.** Acceptance tests cover Required capabilities; Optional ones may be deferred explicitly. | **Pass.** Data stays in ShipIt's private deployment storage. | **Pass.** No separate license or subscription. |
+| **Forgejo** | **Pending classification.** Open/Closed and label conventions may be sufficient if richer workflow capabilities are Optional. | **Pass.** Self-hosted storage. | **Pass.** Free/open-source self-hosting; license obligations still apply. |
+| **Plane Community** | **Pending classification.** Strong model fit, but the community API must pass the Required-capability suite. | **Pass.** Self-hosted storage. | **Pass.** Community is AGPL-3.0, free, and has no user limit. [Editions](https://developers.plane.so/self-hosting/editions-and-versions) |
+| **Leantime Community** | **Pending classification.** JSON-RPC coverage must be tested against the Required-capability suite. | **Pass.** Self-hosted storage. | **Must verify before selection.** Core self-hosting is open source, but paid marketplace plugins cannot become dependencies. |
+| **Huly self-hosted** | **Pending classification.** Its supported self-host API must pass the Required-capability suite. | **Pass.** Self-hosted storage. | **Must verify before selection.** No paid cloud or proprietary add-on may be required for the adapter path. |
 
-An option marked “fails as-is” can remain in the evaluation, but cannot be the
-selected implementation unless a bounded adapter change converts it to a pass.
+An option may lack Optional capabilities and still be selected, but every such
+gap must be documented. Missing a Required capability disqualifies it unless a
+bounded adapter change supplies that capability.
 Any future pricing or license change that introduces a required subscription
 automatically disqualifies that option under product requirement 3.
+
+### GitHub capability feasibility, pending user classification
+
+This table answers the review question “is it possible for GitHub Issues at
+all?” without treating every wrapper feature as mandatory. “Adapter work” means
+the capability is plausible but is not provided safely by today's private-repo
+path. The final pass/fail result depends on the classifications in
+`requirements.md`.
+
+| Capability | GitHub/private-repo feasibility |
+|---|---|
+| C1 list open/done | Supported after dedicated-repo binding |
+| C2 UI search/filter/sort/nesting | Search/filter/sort are client-side over normalized issues; nesting depends on C11 |
+| C3 rich detail | Mostly supported; parent data depends on C11 |
+| C4 create | Supported after dedicated-repo binding |
+| C5 edit title/description | Supported after dedicated-repo binding |
+| C6 workflow statuses/reopen | Native Open/Closed only; richer states require an explicit label/project convention and adapter work |
+| C7 priority read/write | Reads derive priority from labels; writes are currently rejected but could update the agreed labels |
+| C8 labels | Supported, including creation and replacement |
+| C9 assignees | Supported for GitHub identities with repository access |
+| C10 comments and undo | Supported after safe repository routing |
+| C11 parent/sub-issues | GitHub supports sub-issues, but ShipIt's REST adapter does not currently map or mutate them; API and permission work required |
+| C12 start session | ShipIt-owned and available once issue reads route correctly |
+| C13 `shipit issue` commands | ShipIt-owned and available once every command carries authoritative repository context |
+| C14 provenance cards/Undo | ShipIt-owned; Undo must preserve the private repository target |
+| C15 automatic Started | Requires the C6 workflow convention plus safe seed-time routing |
+| C16 PR `Refs` | Commenting is feasible; PR parsing must retain owner/repo |
+| C17 PR `Closes` | Feasible; completion/comment writes must retain owner/repo |
+| C18 stable pointers | Requires the safety-critical pointer/routing changes described below |
 
 The implementation decision is sequential: validate a dedicated private GitHub
 repository first; if its workflow model is insufficient, falsify the lightest
@@ -594,8 +627,9 @@ authoritative.
 
 ### Gate 0 — dedicated private GitHub repository
 
-GitHub is sufficient only if a focused adapter change demonstrates all of the
-following without label conventions becoming a second hidden workflow engine:
+Do not run this gate until C1–C18 are classified in `requirements.md`. GitHub is
+sufficient only if a focused adapter change demonstrates safe routing plus every
+capability marked Required:
 
 - A full private-repo pointer round-trips through list, detail, create/edit,
   comment, undo, seed-time Started, `Refs`, and merged-PR `Closes` without ever
@@ -604,16 +638,16 @@ following without label conventions becoming a second hidden workflow engine:
 - The private tracker repository is selected through deployment settings or the
   existing [Projects design](../231-projects/plan.md), not inferred from the
   active session remote.
-- Backlog, Todo, Started, Done, and Canceled remain distinguishable and writable
-  through an explicit, documented convention.
-- Priority can be edited, not merely inferred from labels on reads.
-- Parent/sub-issue nesting survives list, detail, edit, and session-seed flows.
-- The Issues list can show the deployment/project backlog independently of the
-  currently active code repository.
+- For each Required capability, its row in the GitHub feasibility table is
+  implemented and covered by a contract/integration test. In particular, C6
+  needs an explicit writable workflow convention, C7 needs priority writes, and
+  C11 needs sub-issue API mapping only when those capabilities are Required.
+- Optional gaps are listed in the implementation plan and visible in ShipIt's
+  tracker metadata/UI rather than failing silently.
 
-If any workflow requirement needs substantial emulation beyond the adapter,
-Gate 0 fails and ShipIt proceeds to Gate 1. Privacy alone does not fail Gate 0:
-a dedicated private repository satisfies product requirement 2.
+If a Required capability is impossible or needs substantial emulation beyond
+the adapter, Gate 0 fails and ShipIt proceeds to Gate 1. Privacy alone does not
+fail Gate 0: a dedicated private repository satisfies product requirement 2.
 
 ### Gate 1 — Vikunja spike
 
@@ -627,8 +661,8 @@ The spike succeeds only if all of these are demonstrated against a pinned image:
 
 - Cold start provisions storage and a usable internal workspace without a
   browser setup wizard.
-- CRUD, labels, priority, comments, and parent relations satisfy the existing
-  `Tracker` contract.
+- Every capability classified Required passes the shared tracker contract and
+  end-to-end integration tests; Optional gaps are documented.
 - Status bucket IDs survive restart and can be repaired deterministically.
 - Done, canceled, and reopen mappings round-trip without ambiguity.
 - Backup/restore preserves identifiers and relationships.
