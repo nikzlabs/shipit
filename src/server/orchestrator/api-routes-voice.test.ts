@@ -105,6 +105,8 @@ async function buildApp(overrides?: {
   authManager?: ReturnType<typeof makeAuthManager>;
   runnerRegistry?: { get: (id: string) => unknown };
   chatHistoryManager?: { replaceInProgress: (sessionId: string, messages: unknown[]) => void };
+  providerAccountManager?: { selectRouteForTurn: (agentId: string) => unknown };
+  credentialsDir?: string;
 }): Promise<{
   app: FastifyInstance;
   credentialStore: ReturnType<typeof makeCredentialStore>;
@@ -121,6 +123,13 @@ async function buildApp(overrides?: {
     stateDir: tmpDir,
     runnerRegistry: overrides?.runnerRegistry ?? { get: () => undefined },
     chatHistoryManager: overrides?.chatHistoryManager ?? { replaceInProgress: vi.fn() },
+    // docs/150 req 19 — cleanup resolves the account whose credentials it reads.
+    // Defaults to a reserved route (no account root), which is the pre-account
+    // shape the rest of these tests assume.
+    providerAccountManager: overrides?.providerAccountManager ?? {
+      selectRouteForTurn: () => ({ kind: "api-key", id: "claude-api-key" }),
+    },
+    ...(overrides?.credentialsDir ? { credentialsDir: overrides.credentialsDir } : {}),
   } as unknown as ApiDeps);
   await app.ready();
   return { app, credentialStore, authManager };
@@ -252,6 +261,49 @@ describe("GET /api/voice/cleanup/status", () => {
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.provider).toBeTruthy();
+    await app.close();
+  });
+
+  // docs/150 req 19 — the singleton config root holds nothing once the legacy
+  // aliases are retired, so cleanup has to read the account the router picks.
+  it("reads the bearer from the credential root of the account the router picks", async () => {
+    const authManager = makeAuthManager("oauth-bearer-token");
+    const { app } = await buildApp({
+      authManager,
+      credentialsDir: "/credentials",
+      providerAccountManager: {
+        selectRouteForTurn: () => ({ kind: "account", id: "acct_work" }),
+      },
+    });
+
+    const res = await app.inject({ method: "GET", url: "/api/voice/cleanup/status" });
+
+    expect(res.statusCode).toBe(200);
+    expect(authManager.getAccessToken).toHaveBeenCalledWith(
+      "/credentials/provider-accounts/claude/acct_work",
+    );
+    await app.close();
+  });
+
+  // Cleanup is best-effort: `pickCleanupProvider` already treats a broken
+  // Claude path as "fall through to OpenAI". Account resolution must not be
+  // the one step that escapes that and 500s the request.
+  it("degrades to an unscoped read when account resolution throws", async () => {
+    const authManager = makeAuthManager("oauth-bearer-token");
+    const { app } = await buildApp({
+      authManager,
+      credentialsDir: "/credentials",
+      providerAccountManager: {
+        selectRouteForTurn: () => {
+          throw new Error("account store unavailable");
+        },
+      },
+    });
+
+    const res = await app.inject({ method: "GET", url: "/api/voice/cleanup/status" });
+
+    expect(res.statusCode).toBe(200);
+    expect(authManager.getAccessToken).toHaveBeenCalledWith(undefined);
     await app.close();
   });
 });

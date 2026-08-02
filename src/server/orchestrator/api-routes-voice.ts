@@ -44,9 +44,16 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
    * route (API key / env OAuth), which legitimately uses the singleton path.
    */
   const cleanupCredentialRoot = (): string | undefined => {
-    const route = deps.providerAccountManager.selectRouteForTurn("claude");
-    if (route?.kind !== "account" || !deps.credentialsDir) return undefined;
-    return providerAccountCredentialRoot(deps.credentialsDir, "claude", route.id);
+    try {
+      const route = deps.providerAccountManager?.selectRouteForTurn("claude");
+      if (route?.kind !== "account" || !deps.credentialsDir) return undefined;
+      return providerAccountCredentialRoot(deps.credentialsDir, "claude", route.id);
+    } catch {
+      // Never fail a voice request on account resolution. `pickCleanupProvider`
+      // already treats a broken Claude path as "fall through to OpenAI"; an
+      // unguarded throw here would escape that and 500 the whole request.
+      return undefined;
+    }
   };
 
   function handleError(reply: FastifyReply, err: unknown, genericMsg: string): void {
