@@ -150,6 +150,81 @@ describe("ProviderAccountManager", () => {
     }
   });
 
+  /**
+   * The sweep and the migration run in the same call, so whatever the sweep
+   * leaves on disk is an input to the NEXT boot's migration. Boot-to-boot
+   * idempotence is therefore the property that matters, and asserting a single
+   * boot cannot see a violation of it: the placeholder the sweep used to write
+   * unconditionally was read back on boot 2 as pre-account credentials, and a
+   * `ready` account with an empty credential root was registered for a user who
+   * had never signed in. That row makes `hasAnyAuthForProvider` true (so the UI
+   * reports a connected account) and `selectAccountForTurn` prefers it over the
+   * reserved API-key route, sending turns to a credential root with nothing in
+   * it.
+   */
+  describe("boot-to-boot idempotence", () => {
+    const boot = (): ProviderAccountManager => {
+      const mgr = new ProviderAccountManager({
+        credentialsDir: root,
+        credentialStore: new CredentialStore(root),
+      });
+      mgr.migrateDefaultAccounts();
+      return mgr;
+    };
+
+    it("never invents an account on an install that was never signed in", () => {
+      boot();
+      const second = boot();
+
+      expect(second.list("claude")).toEqual([]);
+      expect(second.list("codex")).toEqual([]);
+      expect(second.hasAnyAuthForProvider("claude")).toBe(false);
+      expect(second.hasAnyAuthForProvider("codex")).toBe(false);
+    });
+
+    it("writes no placeholder at all before an account exists", () => {
+      boot();
+
+      expect(fs.existsSync(path.join(root, ".claude"))).toBe(false);
+      expect(fs.existsSync(path.join(root, ".codex"))).toBe(false);
+    });
+
+    // The placeholder is still owed to a migrated install, and re-booting over
+    // it must not re-migrate it once the accounts are gone.
+    it("does not re-migrate the placeholder left behind after every account is deleted", () => {
+      fs.mkdirSync(path.join(root, ".claude"), { recursive: true });
+      fs.writeFileSync(path.join(root, ".claude", ".credentials.json"), '{"accessToken":"live"}');
+
+      const first = boot();
+      expect(first.list("claude").map((a) => a.id)).toEqual(["claude-default"]);
+      // The migrated install keeps its placeholder: `/root/.claude` is an
+      // image-level symlink to this path.
+      expect(fs.readdirSync(path.join(root, ".claude"))).toEqual([]);
+
+      first.delete("claude", "claude-default");
+      const second = boot();
+
+      expect(second.list("claude")).toEqual([]);
+    });
+
+    // CLI config written through the image-level `/root/.claude.json` symlink is
+    // not a credential, and a reserved-route run legitimately produces one.
+    it("does not migrate CLI config with no credentials beside it", () => {
+      fs.writeFileSync(path.join(root, ".claude.json"), '{"theme":"dark"}');
+
+      expect(boot().list("claude")).toEqual([]);
+      // Untouched: it is the CLI's config, and nothing has claimed it.
+      expect(fs.existsSync(path.join(root, ".claude.json"))).toBe(true);
+    });
+
+    it("does not migrate a zero-byte credentials file", () => {
+      fs.mkdirSync(path.join(root, ".codex"), { recursive: true });
+      fs.writeFileSync(path.join(root, ".codex", "auth.json"), "");
+
+      expect(boot().list("codex")).toEqual([]);
+    });
+  });
+
   it("does not create an account when only reserved env auth exists", () => {
     process.env.ANTHROPIC_AUTH_TOKEN = "token";
 

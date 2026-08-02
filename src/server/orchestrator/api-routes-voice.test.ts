@@ -105,8 +105,10 @@ async function buildApp(overrides?: {
   authManager?: ReturnType<typeof makeAuthManager>;
   runnerRegistry?: { get: (id: string) => unknown };
   chatHistoryManager?: { replaceInProgress: (sessionId: string, messages: unknown[]) => void };
-  providerAccountManager?: { selectRouteForTurn: (agentId: string) => unknown };
-  credentialsDir?: string;
+  providerAccountManager?: {
+    selectRouteForTurn: (agentId: string) => unknown;
+    resolveCredentialRoot?: (agentId: string, accountId: string) => string;
+  };
 }): Promise<{
   app: FastifyInstance;
   credentialStore: ReturnType<typeof makeCredentialStore>;
@@ -129,7 +131,6 @@ async function buildApp(overrides?: {
     providerAccountManager: overrides?.providerAccountManager ?? {
       selectRouteForTurn: () => ({ kind: "api-key", id: "claude-api-key" }),
     },
-    ...(overrides?.credentialsDir ? { credentialsDir: overrides.credentialsDir } : {}),
   } as unknown as ApiDeps);
   await app.ready();
   return { app, credentialStore, authManager };
@@ -270,9 +271,10 @@ describe("GET /api/voice/cleanup/status", () => {
     const authManager = makeAuthManager("oauth-bearer-token");
     const { app } = await buildApp({
       authManager,
-      credentialsDir: "/credentials",
       providerAccountManager: {
         selectRouteForTurn: () => ({ kind: "account", id: "acct_work" }),
+        resolveCredentialRoot: (agentId, accountId) =>
+          `/credentials/provider-accounts/${agentId}/${accountId}`,
       },
     });
 
@@ -292,7 +294,6 @@ describe("GET /api/voice/cleanup/status", () => {
     const authManager = makeAuthManager("oauth-bearer-token");
     const { app } = await buildApp({
       authManager,
-      credentialsDir: "/credentials",
       providerAccountManager: {
         selectRouteForTurn: () => {
           throw new Error("account store unavailable");

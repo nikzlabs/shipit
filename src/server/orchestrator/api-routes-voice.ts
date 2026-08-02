@@ -29,7 +29,6 @@ import {
 } from "./services/voice.js";
 import { TtsCache } from "./voice/index.js";
 import { routeVoiceNote, sanitizeVoiceContext } from "./voice/voice-note-router.js";
-import { providerAccountCredentialRoot } from "./provider-account-manager.js";
 
 export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): Promise<void> {
   const { credentialStore, authManager } = deps;
@@ -42,12 +41,17 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
    * than once at registration because the user can connect, reorder, or
    * disconnect accounts while the server is up. `undefined` for a reserved
    * route (API key / env OAuth), which legitimately uses the singleton path.
+   *
+   * The account manager resolves the root itself rather than this composing one
+   * from `deps.credentialsDir`: that field is optional on `ApiDeps`, so an
+   * absent one would silently hand back `undefined` and drop cleanup to the
+   * unscoped read this exists to replace.
    */
   const cleanupCredentialRoot = (): string | undefined => {
     try {
       const route = deps.providerAccountManager?.selectRouteForTurn("claude");
-      if (route?.kind !== "account" || !deps.credentialsDir) return undefined;
-      return providerAccountCredentialRoot(deps.credentialsDir, "claude", route.id);
+      if (route?.kind !== "account") return undefined;
+      return deps.providerAccountManager?.resolveCredentialRoot("claude", route.id);
     } catch {
       // Never fail a voice request on account resolution. `pickCleanupProvider`
       // already treats a broken Claude path as "fall through to OpenAI"; an
