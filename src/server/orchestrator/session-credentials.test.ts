@@ -559,7 +559,13 @@ describe("session-credentials", () => {
 
     const dest = path.join(sessionDir, ".claude.json");
     expect(fs.lstatSync(dest).isSymbolicLink()).toBe(false);
-    expect(fs.readFileSync(dest, "utf-8")).toBe('{"projects":{}}');
+    // Structural, not byte-exact: the invariant is "a fresh scaffold, none of
+    // the link target's state" — the scaffold's *contents* are owned by the
+    // pre-trust seeding (85bb9eae) and grow keys over time. Pinning the literal
+    // bytes here made this test fail the moment pre-trust landed, even though
+    // the leak it guards never reopened.
+    const materialized = JSON.parse(fs.readFileSync(dest, "utf-8"));
+    expect(Object.keys(materialized.projects)).not.toContain("leaked");
     // The link target is left alone — it may hold the only copy of state.
     expect(fs.readFileSync(path.join(nested, ".claude.json"), "utf-8"))
       .toBe('{"projects":{"leaked":{}}}');
