@@ -47,7 +47,7 @@ Write the file first, then `present({ file })`. Put it under `/persist` for a th
 
 {{PULL_REQUESTS}}
 {{RELEASES}}
-{{PARALLEL_SESSIONS}}
+{{PARALLEL_SESSIONS}}{{IMPLIED_ACTION}}
 ## ShipIt platform docs
 
 Reference documentation about the ShipIt platform is at /shipit-docs/. Consult these docs when you need to configure shipit.yaml, write docker-compose.yml for previews, troubleshoot services, or answer questions about platform capabilities (deployment, GitHub integration, environment details). Key docs:

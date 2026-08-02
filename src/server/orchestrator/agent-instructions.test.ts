@@ -110,6 +110,44 @@ describe("buildAgentSystemInstructions", () => {
     expect(claude).not.toBe(codex);
   });
 
+  // docs/245 — Codex's conservative default needs an explicit tie-breaker for
+  // confirmation-shaped continuations. Keep it backend-specific: Claude
+  // already acts on these requests and must not receive a prompt change.
+  it("tells Codex, but not Claude, to execute clearly implied in-scope actions", () => {
+    const fragment = fs.readFileSync(
+      new URL("./agents/codex/implied-action.md", import.meta.url),
+      "utf8",
+    ).trim();
+
+    expect(buildAgentSystemInstructions({ agentId: "codex" })).toContain(fragment);
+    expect(buildAgentSystemInstructions({ agentId: "claude" })).not.toContain(fragment);
+    expect(buildAgentSystemInstructions()).not.toContain(fragment);
+
+    // The behavioral boundaries are part of the regression contract: act on
+    // a clear continuation, preserve information-only questions, and do not
+    // infer authority for risky or out-of-scope work.
+    expect(fragment).toContain("answer the question and perform that action");
+    expect(fragment).toContain("genuine information-only questions read-only");
+    expect(fragment).toContain("ambiguous, destructive, externally consequential");
+    expect(fragment).toContain("Treat that gate as an intermediate phase");
+    expect(fragment).toContain("without requiring the user to ping you");
+    expect(fragment).toContain("genuinely requires user input or new authority");
+  });
+
+  it("keeps Claude's pre-existing section boundary byte-for-byte unchanged", () => {
+    const claudeParallelSection = fs.readFileSync(
+      new URL("./agents/claude/system-prompt.md", import.meta.url),
+      "utf8",
+    );
+
+    // Before docs/245 the skeleton placed exactly one newline between the
+    // parallel-sessions token and this heading. The optional Codex token must
+    // not leave another blank line in Claude's rendered prompt.
+    expect(buildAgentSystemInstructions({ agentId: "claude" })).toContain(
+      `${claudeParallelSection}\n## ShipIt platform docs`,
+    );
+  });
+
   // docs/128 — ops overlay. docs/211 — sandbox overlay. Both are mutually
   // exclusive composition switches layered on the shared base.
   it("omits the overlays by default and renders byte-identically", () => {
