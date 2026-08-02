@@ -2013,3 +2013,33 @@ account there is nowhere to fail over to, so the number could never do anything
 selection order is still "primary first, then stored order". Reqs 4–6 say the
 cutoff advances to the next account *in the user's priority order*, so this
 delivers the advancing half; the ordering half is the next piece.
+
+### Landed: the priority order (req 2)
+
+`ProviderAccount.priority` (ascending, 0 tried first) is now the authoritative
+selection order, replacing "primary first, then stored order". Three decisions
+worth recording:
+
+- **Legacy rows keep the old behaviour exactly.** `priority` is optional, and a
+  row without one sorts by the previous rule (the primary leads, everything else
+  in stored order). An install that never touches the reorder control therefore
+  sees no change in which account its turns run on — an upgrade that silently
+  moved work to a different subscription would be a bad surprise, not a feature.
+- **A new account appends.** `create` assigns `max(existing) + 1`. Inserting it
+  anywhere else would mean connecting an account silently changed which
+  subscription existing sessions run on.
+- **`reorder` takes the complete list, not a move-one verb.** An ordering is
+  only meaningful as a whole, and demanding the full set makes a stale client —
+  one whose list predates an account added in another tab — fail loudly with a
+  400 rather than quietly demoting the account it never saw. `makePrimary` is
+  expressed *through* `reorder` so `priority` and `isPrimary` cannot drift
+  apart; position 0 and the `isPrimary` flag are written together.
+
+The Settings control is a pair of up/down carets per row, shown only with two or
+more accounts. Deliberately not drag-and-drop: the list is short, carets are
+keyboard- and screen-reader-accessible without extra work, and each press is one
+complete `PUT` rather than a drag that has to be reconciled mid-gesture.
+
+With this, reqs 4-6's "advances to the next eligible account **in the user's
+priority order**" is satisfied in full — the cutoff mechanism already advanced,
+and this is the order it advances along.

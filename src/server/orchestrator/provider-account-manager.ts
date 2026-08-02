@@ -143,16 +143,50 @@ export class ProviderAccountManager {
   }
 
   /**
-   * This provider's accounts, primary first, then the remaining rows in stored
-   * order. The de-dup guards the case where the store has no row flagged
-   * primary and `getPrimaryProviderAccount` falls back to `accounts[0]` —
-   * without it that row would be visited twice.
+   * docs/150 req 2 — this provider's accounts in the user's fallback order:
+   * ascending `priority`, ties broken by stored order so the sort is stable.
+   *
+   * Rows written before `priority` existed have none. Those keep exactly the
+   * previous behaviour — primary first, then stored order — so an install that
+   * has never used the reorder control sees no change in which account its
+   * turns run on. Once the user reorders, every row carries an explicit value
+   * and this mixed state is gone.
    */
-  private accountsInSelectionOrder(provider: AgentId): ProviderAccount[] {
+  accountsInSelectionOrder(provider: AgentId): ProviderAccount[] {
     const accounts = this.list(provider);
-    const primary = this.getPrimary(provider);
-    if (!primary) return accounts;
-    return [primary, ...accounts.filter((account) => account.id !== primary.id)];
+    const primaryId = this.getPrimary(provider)?.id;
+    return accounts
+      .map((account, index) => ({ account, index }))
+      .sort((a, b) => rankForOrder(a, primaryId) - rankForOrder(b, primaryId) || a.index - b.index)
+      .map((entry) => entry.account);
+  }
+
+  /**
+   * docs/150 req 2 — persist an explicit fallback order.
+   *
+   * Takes the complete list rather than a move-one-account verb: an ordering is
+   * only meaningful as a whole, and requiring the full set makes a stale client
+   * (one that never saw an account added in another tab) fail loudly instead of
+   * silently dropping that account to the end.
+   */
+  reorder(provider: AgentId, orderedIds: readonly string[]): ProviderAccount[] {
+    const accounts = this.list(provider);
+    const known = new Set(accounts.map((account) => account.id));
+    const requested = new Set(orderedIds);
+    if (requested.size !== orderedIds.length) {
+      throw new Error("Provider account order contains duplicates");
+    }
+    if (requested.size !== known.size || orderedIds.some((id) => !known.has(id))) {
+      throw new Error("Provider account order must list every account for this provider exactly once");
+    }
+    orderedIds.forEach((id, index) => {
+      const account = accounts.find((a) => a.id === id)!;
+      // `isPrimary` stays in step with position 0 so the badge, the disabled
+      // "make primary" button, and the order can't disagree about which account
+      // leads. `upsertProviderAccount` clears the flag from the others.
+      this.credentialStore.upsertProviderAccount({ ...account, priority: index, isPrimary: index === 0 });
+    });
+    return this.accountsInSelectionOrder(provider);
   }
 
   create(provider: AgentId, label?: string): ProviderAccount {
@@ -163,6 +197,10 @@ export class ProviderAccountManager {
       provider,
       label: normalizeLabel(label) ?? `${PROVIDER_LABEL[provider]} account ${existing.length + 1}`,
       isPrimary: existing.length === 0,
+      // req 2 — a newly connected account APPENDS to the fallback order. If it
+      // were inserted anywhere else, connecting an account would silently
+      // change which subscription existing work runs on.
+      priority: existing.reduce((max, a) => Math.max(max, a.priority ?? -1), -1) + 1,
       status: "unavailable",
       capabilities: {
         source: "manual_default",
@@ -185,9 +223,18 @@ export class ProviderAccountManager {
     return this.require(provider, accountId);
   }
 
+  /**
+   * Promote an account to the front of the fallback order. Kept as its own verb
+   * (rather than "reorder with this id first") because it is the one-click
+   * affordance the account rows already offer, and expressing it through
+   * `reorder` keeps `priority` and `isPrimary` from drifting apart.
+   */
   makePrimary(provider: AgentId, accountId: string): ProviderAccount {
-    const account = this.require(provider, accountId);
-    this.credentialStore.upsertProviderAccount({ ...account, isPrimary: true });
+    this.require(provider, accountId);
+    const rest = this.accountsInSelectionOrder(provider)
+      .map((account) => account.id)
+      .filter((id) => id !== accountId);
+    this.reorder(provider, [accountId, ...rest]);
     return this.require(provider, accountId);
   }
 
@@ -645,4 +692,18 @@ function isOverCutoff(
     if (window.usedPct >= cutoff) return true;
   }
   return false;
+}
+
+/**
+ * Sort key for {@link ProviderAccountManager.accountsInSelectionOrder}.
+ * An explicit `priority` wins; without one, the legacy primary leads and
+ * everything else falls back to stored order.
+ */
+function rankForOrder(
+  entry: { account: ProviderAccount; index: number },
+  primaryId: string | undefined,
+): number {
+  if (typeof entry.account.priority === "number") return entry.account.priority;
+  if (entry.account.id === primaryId) return Number.NEGATIVE_INFINITY;
+  return entry.index;
 }

@@ -303,6 +303,95 @@ describe("ProviderAccountManager", () => {
   });
 
   /**
+   * docs/150 req 2 — the user-controlled fallback order. Reqs 4-6 and 3 all say
+   * failover advances "to the next eligible account in the user's priority
+   * order", so this is what those mean by order.
+   */
+  describe("priority order (docs/150 req 2)", () => {
+    function threeReady(): { mgr: ProviderAccountManager; ids: string[] } {
+      const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
+      const ids = ["A", "B", "C"].map((label) => {
+        const account = mgr.create("claude", label);
+        mgr.setAccountStatus("claude", account.id, "ready");
+        return account.id;
+      });
+      return { mgr, ids };
+    }
+
+    it("selects in the user's order, not creation order", () => {
+      const { mgr, ids } = threeReady();
+      mgr.reorder("claude", [ids[2]!, ids[0]!, ids[1]!]);
+
+      expect(mgr.accountsInSelectionOrder("claude").map((a) => a.id)).toEqual([ids[2], ids[0], ids[1]]);
+      expect(mgr.selectAccountForTurn("claude")).toEqual({ ok: true, route: { kind: "account", id: ids[2] } });
+    });
+
+    it("survives a restart", () => {
+      const { mgr, ids } = threeReady();
+      mgr.reorder("claude", [ids[1]!, ids[2]!, ids[0]!]);
+
+      const reloaded = new ProviderAccountManager({
+        credentialsDir: root,
+        credentialStore: new CredentialStore(root),
+      });
+      expect(reloaded.accountsInSelectionOrder("claude").map((a) => a.id)).toEqual([ids[1], ids[2], ids[0]]);
+    });
+
+    // Otherwise connecting an account would silently change which subscription
+    // existing work runs on.
+    it("appends a newly connected account rather than inserting it", () => {
+      const { mgr, ids } = threeReady();
+      mgr.reorder("claude", [ids[2]!, ids[0]!, ids[1]!]);
+      const fresh = mgr.create("claude", "D");
+      mgr.setAccountStatus("claude", fresh.id, "ready");
+
+      expect(mgr.accountsInSelectionOrder("claude").map((a) => a.id)).toEqual([ids[2], ids[0], ids[1], fresh.id]);
+      expect(mgr.selectAccountForTurn("claude")).toEqual({ ok: true, route: { kind: "account", id: ids[2] } });
+    });
+
+    it("keeps isPrimary in step with position 0 so the two cannot disagree", () => {
+      const { mgr, ids } = threeReady();
+      mgr.reorder("claude", [ids[1]!, ids[0]!, ids[2]!]);
+
+      expect(mgr.get("claude", ids[1]!)?.isPrimary).toBe(true);
+      expect(mgr.get("claude", ids[0]!)?.isPrimary).toBe(false);
+      expect(mgr.getPrimary("claude")?.id).toBe(ids[1]);
+    });
+
+    it("promotes to the front via makePrimary without disturbing the rest", () => {
+      const { mgr, ids } = threeReady();
+      mgr.reorder("claude", [ids[0]!, ids[1]!, ids[2]!]);
+      mgr.makePrimary("claude", ids[2]!);
+
+      expect(mgr.accountsInSelectionOrder("claude").map((a) => a.id)).toEqual([ids[2], ids[0], ids[1]]);
+    });
+
+    // A stale client — one whose list predates an account added in another tab
+    // — must fail loudly rather than quietly demoting the account it never saw.
+    it("rejects a partial, duplicated, or foreign order", () => {
+      const { mgr, ids } = threeReady();
+      expect(() => mgr.reorder("claude", [ids[0]!, ids[1]!])).toThrow(/exactly once/);
+      expect(() => mgr.reorder("claude", [ids[0]!, ids[0]!, ids[1]!])).toThrow(/duplicates/);
+      expect(() => mgr.reorder("claude", [ids[0]!, ids[1]!, "acct_nope"])).toThrow(/exactly once/);
+      // Nothing was written on any of the rejected calls.
+      expect(mgr.accountsInSelectionOrder("claude").map((a) => a.id)).toEqual(ids);
+    });
+
+    // Rows written before `priority` existed must keep behaving exactly as they
+    // did, or an upgrade would silently move which account turns run on.
+    it("falls back to primary-then-stored-order for rows with no stored priority", () => {
+      const { mgr, ids } = threeReady();
+      for (const id of ids) {
+        const account = mgr.get("claude", id)!;
+        const { priority: _dropped, ...legacy } = account;
+        store.upsertProviderAccount({ ...legacy, isPrimary: id === ids[1] });
+      }
+
+      expect(mgr.accountsInSelectionOrder("claude").map((a) => a.id)).toEqual([ids[1], ids[0], ids[2]]);
+    });
+  });
+
+  /**
    * docs/150 reqs 4-6 — the proactive cutoff. The load-bearing property is that
    * a cutoff is a PREFERENCE, not a wall: crossing it demotes an account, it
    * does not make it unusable. Collapsing the two would make a 90% setting

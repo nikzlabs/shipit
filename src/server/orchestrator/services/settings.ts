@@ -425,6 +425,32 @@ export function makePrimaryProviderAccount(
 }
 
 /**
+ * docs/150 req 2 — persist the user's fallback order for a provider.
+ *
+ * `accountIds` must be the complete set: a partial list is rejected rather than
+ * interpreted, so a stale client (one whose account list predates an account
+ * added in another tab) gets a 400 instead of silently demoting that account to
+ * the end of the order.
+ */
+export function reorderProviderAccounts(
+  providerAccountManager: ProviderAccountManager,
+  provider: AgentId,
+  accountIds: unknown,
+): { accounts: ProviderAccount[] } {
+  validateProvider(provider);
+  if (!Array.isArray(accountIds) || accountIds.some((id) => typeof id !== "string" || !id)) {
+    throw new ServiceError(400, "accountIds must be an array of account ids");
+  }
+  for (const id of accountIds as string[]) validateAccountId(id);
+  try {
+    providerAccountManager.reorder(provider, accountIds as string[]);
+    return { accounts: providerAccountManager.list() };
+  } catch (err) {
+    throw providerAccountServiceError(err);
+  }
+}
+
+/**
  * Disconnect a provider account (docs/150).
  *
  * Sessions pinned to the account are the hard part. Deleting the credentials

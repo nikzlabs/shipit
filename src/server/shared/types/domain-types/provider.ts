@@ -18,6 +18,17 @@ export interface ProviderAccount {
   provider: AgentId;
   label: string;
   isPrimary: boolean;
+  /**
+   * docs/150 req 2 — the user's fallback order for this provider, ascending
+   * (0 is tried first). Authoritative for selection.
+   *
+   * Optional so rows written before this existed still load; those are ordered
+   * the old way (primary first, then stored order) until the user reorders,
+   * at which point every row gets an explicit value. A newly connected account
+   * is appended rather than inserted, so connecting one never silently changes
+   * which account existing work runs on.
+   */
+  priority?: number;
   status: ProviderAccountStatus;
   plan?: string | null;
   capabilities?: ProviderAccountCapabilities;

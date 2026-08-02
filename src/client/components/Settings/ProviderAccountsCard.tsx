@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { CaretDownIcon, CaretUpIcon } from "@phosphor-icons/react";
+import { ICON_SIZE } from "../../design-tokens.js";
 import type { AgentOption } from "../../agent-types.js";
 import type { AgentId, ProviderAccount } from "../../../server/shared/types.js";
 import { Button } from "../ui/button.js";
@@ -166,6 +168,34 @@ export function ProviderAccountsCard({
   };
 
   /**
+   * docs/150 req 2 — move an account one place in the fallback order.
+   *
+   * Sends the whole order rather than "move this one": the server rejects a
+   * partial list, so a card rendered before another tab added an account fails
+   * visibly instead of quietly demoting it to the end.
+   */
+  const moveAccount = async (account: ProviderAccount, direction: -1 | 1) => {
+    const ids = accounts.map((a) => a.id);
+    const from = ids.indexOf(account.id);
+    const to = from + direction;
+    if (from < 0 || to < 0 || to >= ids.length) return;
+    const next = [...ids];
+    next.splice(to, 0, ...next.splice(from, 1));
+    setSavingId(account.id);
+    try {
+      const result = await request<{ accounts: ProviderAccount[] }>(`/api/provider-accounts/${provider}/order`, {
+        method: "PUT",
+        body: JSON.stringify({ accountIds: next }),
+      });
+      setProviderAccounts(result.accounts);
+    } catch (err) {
+      toast(err, "Failed to reorder accounts");
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  /**
    * Disconnect, resolving the pinned-session case inline rather than by toast.
    *
    * The server refuses to strand sessions that are pinned to the account and
@@ -322,7 +352,7 @@ export function ProviderAccountsCard({
         </div>
       ) : (
         <div className="space-y-2">
-          {accounts.map((account) => {
+          {accounts.map((account, accountIndex) => {
             const draft = draftLabels[account.id] ?? account.label;
             const busy = savingId === account.id;
             const key = providerAccountAuthKey(provider, account.id);
@@ -346,6 +376,30 @@ export function ProviderAccountsCard({
                     <p className="mt-1 text-[11px] text-(--color-text-tertiary) truncate">{account.id}</p>
                   </div>
                   <div className="flex flex-wrap justify-end gap-1.5">
+                    {/* req 2 — the fallback order, only meaningful with more
+                        than one account to fall back between. */}
+                    {accounts.length > 1 && (
+                      <span className="flex items-center gap-0.5" data-testid={`provider-account-order-${account.id}`}>
+                        <button
+                          onClick={() => void moveAccount(account, -1)}
+                          disabled={busy || accountIndex === 0}
+                          aria-label={`Move ${account.label} earlier in the fallback order`}
+                          className="rounded px-1 py-0.5 text-[11px] text-(--color-text-secondary) hover:bg-(--color-bg-hover) disabled:opacity-30 disabled:hover:bg-transparent"
+                          data-testid={`provider-account-move-up-${account.id}`}
+                        >
+                          <CaretUpIcon size={ICON_SIZE.XS} />
+                        </button>
+                        <button
+                          onClick={() => void moveAccount(account, 1)}
+                          disabled={busy || accountIndex === accounts.length - 1}
+                          aria-label={`Move ${account.label} later in the fallback order`}
+                          className="rounded px-1 py-0.5 text-[11px] text-(--color-text-secondary) hover:bg-(--color-bg-hover) disabled:opacity-30 disabled:hover:bg-transparent"
+                          data-testid={`provider-account-move-down-${account.id}`}
+                        >
+                          <CaretDownIcon size={ICON_SIZE.XS} />
+                        </button>
+                      </span>
+                    )}
                     {account.isPrimary && (
                       <span className="rounded px-1.5 py-0.5 text-[11px] bg-(--color-accent-subtle) text-(--color-accent)">Primary</span>
                     )}
