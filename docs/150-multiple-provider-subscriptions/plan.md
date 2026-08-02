@@ -2115,3 +2115,43 @@ Ordering matters: this is the **last** phase. Each shim is load-bearing for an
 install that has not yet exercised the new path, so removing one before the
 replacement is proven turns a migration into a regression. The signal that a
 shim is ready to go is that nothing reads it — not that the replacement exists.
+
+### Finding: `agent_init` cannot populate `capabilities.models` (req 17 blocked)
+
+The Phase 1 item "add `agent_init` provider-account metadata decoration at the
+orchestrator boundary" was written on the assumption that `agent_init` carries
+enough to fill `ProviderAccount.capabilities`, which is what req 17's
+`accountSupportsModel` reads. Checked at the source: it does not.
+
+`AgentInitEvent` (`shared/types/agent-types.ts`) carries a single `model` — the
+one that just started — plus `tools`, `sessionId`, and `permissionMode`. Both
+adapters construct it that way (`codex-event-handler.ts:729`,
+`claude/adapter.ts`). There is no enumeration of *supported* models anywhere in
+it.
+
+Writing the observed model into `capabilities.models` would be worse than
+leaving it empty. `accountSupportsModel` treats that array as a **whitelist**:
+absent or empty means "assume capable", but non-empty means "only these". So the
+first turn an account ran on Sonnet would set `models: ["sonnet"]`, and req 17
+would thereafter *skip that account and report no eligible account* the moment
+the user asked for Opus — refusing a model the account very likely supports. One
+positive observation would be silently promoted into an exhaustive capability
+list.
+
+So req 17 stays dormant until a source of real per-account model eligibility
+exists. Three candidates, none free:
+
+1. **Detect from turn failures**, mirroring req 7's hard-exhaustion detection:
+   when a turn dies because the model is not available on that plan, record that
+   account+model pair as refused. Negative evidence is sound where positive
+   observation is not — an account that refused Opus genuinely cannot run it —
+   and it errs toward "try it", matching the default this feature already uses
+   for unknown quota and unknown capabilities.
+2. **Derive from plan tier.** The plan string is already read from credentials.
+   Needs a static plan→models table, which goes stale every time a provider
+   changes its tiers, and would silently mis-refuse when it does.
+3. **Leave req 17 dormant** and say so, rather than shipping a mechanism with no
+   data behind it.
+
+Recorded here rather than acted on, because the three lead to materially
+different implementations and (3) is a decision not to build.
