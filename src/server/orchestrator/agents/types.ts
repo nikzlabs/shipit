@@ -12,7 +12,12 @@
  * See docs/135-subscription-limits-badge/plan.md.
  */
 
-import type { AgentId, SubscriptionLimits, SubscriptionLimitsWindow } from "../../shared/types.js";
+import type {
+  AgentId,
+  LimitsRefreshResult,
+  SubscriptionLimits,
+  SubscriptionLimitsWindow,
+} from "../../shared/types.js";
 
 export interface LimitsProvider {
   /** Which agent backend this provider belongs to. */
@@ -71,6 +76,10 @@ export interface LimitsProvider {
    *
    * Absent on providers with no HTTP usage endpoint (Codex), so callers must
    * null-check.
+   *
+   * Resolves with *why* the attempt did or didn't produce numbers. Every
+   * non-`updated` outcome was previously a silent `return`, which is what made
+   * a rate-limited pill indistinguishable from a broken button.
    */
-  refreshNow?(reason: "manual" | "seed", routeId: string): Promise<void>;
+  refreshNow?(reason: "manual" | "seed", routeId: string): Promise<LimitsRefreshResult>;
 }

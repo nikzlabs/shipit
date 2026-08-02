@@ -13,7 +13,7 @@ import type { RepoGit } from "./repo-git.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { AgentRegistry } from "../shared/agent-registry.js";
-import type { AgentId, AgentProcess } from "../shared/types.js";
+import type { AgentId, AgentProcess, LimitsRefreshResult } from "../shared/types.js";
 import type { UsageManager } from "./usage.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { SessionContainerManager } from "./session-container.js";
@@ -128,11 +128,19 @@ export interface ApiDeps {
   broadcastLog: (sessionId: string, source: "stderr" | "stdout" | "server" | "preview" | "install", text: string) => void;
   sseBroadcast: (event: string, data: unknown) => void;
   /**
-   * docs/161 — run a provider's on-demand `/api/oauth/usage` refresh and
-   * rebroadcast over SSE. Backs the header pill's refresh button. Omitted in
-   * test mode (no `LimitsRegistry`); the route then 503s.
+   * docs/161 — run an on-demand `/api/oauth/usage` refresh and rebroadcast over
+   * SSE. Backs the header pill's refresh button. `routeId` scopes the fetch to
+   * one subscription; omitting it fans out over every connected account, which
+   * is right for the sign-in seed and wrong for a button press (each route is a
+   * separate upstream call against a tight budget). Resolves with one outcome
+   * per attempted route. Omitted in test mode (no `LimitsRegistry`); the route
+   * then 503s.
    */
-  refreshSubscriptionLimits?: (agentId: AgentId, reason: "manual" | "seed") => Promise<void>;
+  refreshSubscriptionLimits?: (
+    agentId: AgentId,
+    reason: "manual" | "seed",
+    routeId?: string,
+  ) => Promise<LimitsRefreshResult[]>;
   /**
    * docs/144 — push a sub-agent consult's carried-back rate-limit snapshot into
    * the matching `LimitsProvider`. Same closure the WS turn path uses; threaded

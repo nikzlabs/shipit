@@ -27,7 +27,11 @@
 
 import type { AuthManager } from "./auth-manager.js";
 import type { LimitsProvider } from "../types.js";
-import type { SubscriptionLimits, SubscriptionLimitsWindow } from "../../../shared/types.js";
+import type {
+  LimitsRefreshResult,
+  SubscriptionLimits,
+  SubscriptionLimitsWindow,
+} from "../../../shared/types.js";
 
 /** OAuth usage endpoint backing Claude Code's `/usage` slash command. */
 export const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
@@ -94,7 +98,7 @@ export class ClaudeLimitsProvider implements LimitsProvider {
   /** Epoch ms until which `/api/oauth/usage` is locked out after a 429, per route. */
   private lockedUntil = new Map<string, number>();
   /** Single-flight guard so concurrent refreshes share one request, per route. */
-  private inFlight = new Map<string, Promise<void>>();
+  private inFlight = new Map<string, Promise<LimitsRefreshResult>>();
 
   private listAccountRouteIds: (() => string[]) | undefined;
   private credentialDirForRoute: ((routeId: string) => string | undefined) | undefined;
@@ -144,7 +148,14 @@ export class ClaudeLimitsProvider implements LimitsProvider {
   async fetch(routeId: string): Promise<SubscriptionLimits | null> {
     const eventLatest = this.eventLatest.get(routeId) ?? null;
     const apiLatest = this.apiLatest.get(routeId) ?? null;
-    if (!eventLatest && !apiLatest) return null;
+    const lockedUntilNow = this.lockedUntil.get(routeId) ?? 0;
+    const locked = lockedUntilNow > this.now();
+    // A route with no readings but an active lockout still has something the
+    // user needs: the countdown. Returning null here (the old behavior) dropped
+    // `lockedUntil` on the floor for exactly the route whose refresh button
+    // looks broken — an account that got 429'd before it ever reported a
+    // number renders an enabled button that silently no-ops for ~30 minutes.
+    if (!eventLatest && !apiLatest && !locked) return null;
 
     // Plan tier isn't in either payload — derive from the credentials file.
     // Account-scoped for the same reason `doRefresh` is (docs/150 req 19): the
@@ -170,7 +181,6 @@ export class ClaudeLimitsProvider implements LimitsProvider {
     );
 
     const fetchedAt = Math.max(eventLatest?.at ?? 0, apiLatest?.at ?? 0);
-    const lockedUntil = this.lockedUntil.get(routeId) ?? 0;
     return {
       agentId: "claude",
       routeId,
@@ -178,7 +188,7 @@ export class ClaudeLimitsProvider implements LimitsProvider {
       session,
       weekly,
       fetchedAt,
-      ...(lockedUntil > this.now() ? { lockedUntil } : {}),
+      ...(locked ? { lockedUntil: lockedUntilNow } : {}),
     };
   }
 
@@ -187,28 +197,40 @@ export class ClaudeLimitsProvider implements LimitsProvider {
    * user mashing the refresh button (or back-to-back seeds) can't trip the
    * upstream 429. `"seed"` self-skips once an API snapshot already exists;
    * `"manual"` always attempts (subject only to the lockout). Never throws.
+   *
+   * Resolves with the outcome rather than `void`: every early return here is a
+   * state the user is entitled to see on the button that just did nothing.
    */
-  async refreshNow(reason: "manual" | "seed", routeId: string): Promise<void> {
-    if (reason === "seed" && this.apiLatest.has(routeId)) return;
-    if ((this.lockedUntil.get(routeId) ?? 0) > this.now()) return;
-    const existing = this.inFlight.get(routeId);
-    if (existing) {
-      await existing;
-      return;
+  async refreshNow(reason: "manual" | "seed", routeId: string): Promise<LimitsRefreshResult> {
+    if (reason === "seed" && this.apiLatest.has(routeId)) {
+      return { routeId, outcome: "skipped" };
     }
+    const lockedUntil = this.lockedUntil.get(routeId) ?? 0;
+    if (lockedUntil > this.now()) {
+      return { routeId, outcome: "locked", lockedUntil };
+    }
+    const existing = this.inFlight.get(routeId);
+    if (existing) return existing;
     const run = this.doRefresh(routeId).finally(() => {
       this.inFlight.delete(routeId);
     });
     this.inFlight.set(routeId, run);
-    await run;
+    return run;
   }
 
-  private async doRefresh(routeId: string): Promise<void> {
+  private async doRefresh(routeId: string): Promise<LimitsRefreshResult> {
     // Account-scoped: `getAccessToken()` with no dir prefers ANTHROPIC_AUTH_TOKEN
     // and otherwise reads the ROOT config dir, so passing nothing here fetched
     // the wrong subscription's usage (or none at all, leaving the pill at "—").
     const tokenResult = await this.authManager.getAccessToken(this.credentialDirForRoute?.(routeId));
-    if (tokenResult.token === null) return;
+    if (tokenResult.token === null) {
+      console.warn(`[claude-limits] /usage skipped for ${routeId}: ${tokenResult.reason}`);
+      return {
+        routeId,
+        outcome: "no-credentials",
+        detail: tokenResult.reason === "api-key" ? "route uses an API key, not a subscription" : "no OAuth credentials on disk",
+      };
+    }
     // Skip a doomed call against an idle-expired access token — the shared
     // credential file is refreshed by the CLI on each turn; we don't refresh
     // it ourselves (blast radius). The badge keeps its last numbers.
@@ -216,7 +238,8 @@ export class ClaudeLimitsProvider implements LimitsProvider {
       tokenResult.expiresAt !== null &&
       tokenResult.expiresAt <= this.now() + 60_000
     ) {
-      return;
+      console.warn(`[claude-limits] /usage skipped for ${routeId}: access token expired`);
+      return { routeId, outcome: "expired-token", detail: "access token expired — sign in again" };
     }
 
     let response: Response;
@@ -232,7 +255,7 @@ export class ClaudeLimitsProvider implements LimitsProvider {
       });
     } catch (err) {
       console.warn(`[claude-limits] /usage network error: ${errMsg(err)}`);
-      return;
+      return { routeId, outcome: "failed", detail: `network error: ${errMsg(err)}` };
     }
 
     if (response.status === 429) {
@@ -241,11 +264,11 @@ export class ClaudeLimitsProvider implements LimitsProvider {
       console.warn(
         `[claude-limits] /usage 429 for ${routeId} — locked out until ${new Date(until).toISOString()}`,
       );
-      return;
+      return { routeId, outcome: "rate-limited", lockedUntil: until };
     }
     if (!response.ok) {
       console.warn(`[claude-limits] /usage HTTP ${response.status}`);
-      return;
+      return { routeId, outcome: "failed", detail: `HTTP ${response.status}` };
     }
 
     let body: unknown;
@@ -253,17 +276,18 @@ export class ClaudeLimitsProvider implements LimitsProvider {
       body = await response.json();
     } catch (err) {
       console.warn(`[claude-limits] /usage non-JSON body: ${errMsg(err)}`);
-      return;
+      return { routeId, outcome: "failed", detail: "response was not JSON" };
     }
 
     const parsed = parseUsageWindows(body);
     if (!parsed) {
       console.warn("[claude-limits] /usage unexpected payload shape");
-      return;
+      return { routeId, outcome: "failed", detail: "unexpected /usage payload" };
     }
     // A successful fetch clears any prior lockout for this route.
     this.lockedUntil.delete(routeId);
     this.apiLatest.set(routeId, { session: parsed.session, weekly: parsed.weekly, at: this.now() });
+    return { routeId, outcome: "updated" };
   }
 }
 

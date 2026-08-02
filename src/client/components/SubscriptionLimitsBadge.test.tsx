@@ -589,12 +589,64 @@ describe("SubscriptionLimitsBadge auto refresh", () => {
     return fetchMock.mock.calls.filter((call) => call[0] === "/api/limits/refresh");
   }
 
-  it("fetches fresh usage on mount when autoRefresh is set", async () => {
+  it("fetches fresh usage on mount when autoRefresh is set, scoped to the pill's route", async () => {
     render(<SubscriptionLimitsBadge limits={{ claude: routed(makeSnap()) }} autoRefresh />);
     await waitFor(() => expect(refreshCalls()).toHaveLength(1));
     const init = refreshCalls()[0][1] as RequestInit;
     expect(init.method).toBe("POST");
-    expect(JSON.parse(init.body as string)).toEqual({ agentId: "claude" });
+    expect(JSON.parse(init.body as string)).toEqual({ agentId: "claude", routeId: "acct-claude" });
+  });
+
+  it("refreshes only the pressed account, not every connected subscription", async () => {
+    // The regression this covers: the button used to post `{ agentId }` only,
+    // so the server fanned the fetch out over every route. `/api/oauth/usage`
+    // allows a handful of calls per ~30 min, so pressing the pill that showed
+    // no numbers spent the other subscription's budget and locked it out too.
+    useSettingsStore.getState().setProviderAccounts([
+      { id: "acct-one", provider: "claude", label: "Claude", status: "ready" },
+      { id: "acct-two", provider: "claude", label: "Claude2", status: "ready" },
+    ] as never);
+    render(<SubscriptionLimitsBadge limits={{ claude: routed(makeSnap({ routeId: "acct-two" })) }} />);
+
+    const buttons = screen.getAllByLabelText("Refresh subscription usage");
+    expect(buttons).toHaveLength(2);
+    buttons[0].click();
+    await waitFor(() => expect(refreshCalls()).toHaveLength(1));
+    expect(JSON.parse((refreshCalls()[0][1] as RequestInit).body as string)).toEqual({
+      agentId: "claude",
+      routeId: "acct-one",
+    });
+  });
+
+  it("explains a refresh that produced nothing instead of failing silently", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ok: true,
+          results: [{ routeId: "acct-claude", outcome: "no-credentials" }],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    render(<SubscriptionLimitPill label="Claude" snapshot={makeSnap()} showRefresh />);
+    const button = screen.getByLabelText("Refresh subscription usage");
+    button.click();
+    await waitFor(() =>
+      expect(button.getAttribute("title")).toContain("no usable sign-in"),
+    );
+  });
+
+  it("keeps the rate-limit countdown as the message when the route is locked out", async () => {
+    render(
+      <SubscriptionLimitPill
+        label="Claude"
+        snapshot={makeSnap({ lockedUntil: Date.now() + 10 * 60_000 })}
+        showRefresh
+      />,
+    );
+    const button = screen.getByLabelText("Refresh subscription usage");
+    expect(button).toBeDisabled();
+    expect(button.getAttribute("title")).toContain("rate-limited");
   });
 
   it("does not fetch on mount without autoRefresh (the desktop header)", async () => {
