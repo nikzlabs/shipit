@@ -236,6 +236,72 @@ describe("ProviderAccountManager", () => {
     });
   });
 
+  /**
+   * docs/150 req 7 — hard exhaustion has to be *persisted*, not inferred from
+   * the live quota snapshot: that snapshot is telemetry, and it can lag the
+   * failure, report a null percentage below a warning threshold, or not exist
+   * at all for a freshly connected account.
+   */
+  describe("markAccountExhausted (docs/150 req 7)", () => {
+    it("benches the account so the router stops choosing it", () => {
+      const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
+      const a = mgr.create("claude", "A");
+      const b = mgr.create("claude", "B");
+      mgr.setAccountStatus("claude", a.id, "ready");
+      mgr.setAccountStatus("claude", b.id, "ready");
+      // No quota snapshot at all — the stamp is the only signal there is.
+      expect(mgr.selectAccountForTurn("claude")).toEqual({ ok: true, route: { kind: "account", id: a.id } });
+
+      const until = Date.now() + 3_600_000;
+      mgr.markAccountExhausted("claude", a.id, until);
+
+      expect(mgr.isRouteUsableForTurn("claude", { kind: "account", id: a.id })).toBe(false);
+      expect(mgr.selectAccountForTurn("claude")).toEqual({ ok: true, route: { kind: "account", id: b.id } });
+    });
+
+    it("persists across manager instances (a restart must not un-bench it)", () => {
+      const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
+      const a = mgr.create("claude", "A");
+      mgr.setAccountStatus("claude", a.id, "ready");
+      const until = Date.now() + 3_600_000;
+      mgr.markAccountExhausted("claude", a.id, until);
+
+      const reloaded = new ProviderAccountManager({
+        credentialsDir: root,
+        credentialStore: new CredentialStore(root),
+      });
+      expect(reloaded.isRouteUsableForTurn("claude", { kind: "account", id: a.id })).toBe(false);
+    });
+
+    it("expires on its own, so a lockout can never outlive its reset", () => {
+      const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
+      const a = mgr.create("claude", "A");
+      mgr.setAccountStatus("claude", a.id, "ready");
+      mgr.markAccountExhausted("claude", a.id, Date.now() - 1_000);
+
+      expect(mgr.isRouteUsableForTurn("claude", { kind: "account", id: a.id })).toBe(true);
+    });
+
+    // A later failure carrying a vaguer reset must not shorten a lockout the
+    // provider already told us the true end of.
+    it("only ever extends an existing lockout", () => {
+      const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
+      const a = mgr.create("claude", "A");
+      mgr.setAccountStatus("claude", a.id, "ready");
+      const far = Date.now() + 7_200_000;
+      mgr.markAccountExhausted("claude", a.id, far);
+      mgr.markAccountExhausted("claude", a.id, Date.now() + 60_000);
+
+      expect(mgr.get("claude", a.id)?.exhaustedUntil).toBe(far);
+    });
+
+    it("ignores an unknown account rather than inventing a row", () => {
+      const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
+      expect(mgr.markAccountExhausted("claude", "acct_nope", Date.now() + 1000)).toBeNull();
+      expect(mgr.list("claude")).toEqual([]);
+    });
+  });
+
   describe("selectAccountForTurn (docs/150 reqs 13, 14, 17)", () => {
     const READY = "ready" as const;
 

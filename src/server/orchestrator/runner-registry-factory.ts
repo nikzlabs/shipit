@@ -209,6 +209,12 @@ export interface RunnerRegistryDeps {
    */
   getSubscriptionLimitsSnapshot?: () => SubscriptionLimitsMap;
   /**
+   * docs/150 req 7 — bench the session's provider account after the provider
+   * fails its turn for quota. Forwarded into the listener so a dispatched /
+   * system turn marks exhaustion exactly like a WS turn does.
+   */
+  markSessionAccountExhausted?: (sessionId: string, until: number) => void;
+  /**
    * docs/153 — fire-and-forget nudge to the Claude OAuth refresher. Forwarded
    * into the listener so dispatched/system turns also heal a stale token via
    * the orchestrator-owned refresher when the CLI emits `auth_required`.
@@ -292,6 +298,7 @@ export function createRunnerRegistry(
     credentialStore, secretStore, dockerSecretsConfig, serviceEnvDir, logStore, runtimeMode, broadcastLog,
     credentialsDir, providerAccountManager, readSystemPrompt, generateText, getPrStatusPoller, rebindDelivery,
     usageManager, authManager, authManagers, recordAgentRateLimits, getSubscriptionLimitsSnapshot,
+    markSessionAccountExhausted,
     nudgeClaudeOAuthRefresh, onAgentAuthRequired, ensureAgentTokenFresh, runParamsPreps,
     publishOverlayBases,
   } = registryDeps;
@@ -333,6 +340,7 @@ export function createRunnerRegistry(
         ...(authManagers ? { authManagers } : {}),
         ...(recordAgentRateLimits ? { recordAgentRateLimits } : {}),
         ...(getSubscriptionLimitsSnapshot ? { getSubscriptionLimitsSnapshot } : {}),
+        ...(markSessionAccountExhausted ? { markSessionAccountExhausted } : {}),
         ...(nudgeClaudeOAuthRefresh ? { nudgeClaudeOAuthRefresh } : {}),
         ...(onAgentAuthRequired ? { onAgentAuthRequired } : {}),
         // docs/163 — derived voice-note delivery for system turns. Only when a

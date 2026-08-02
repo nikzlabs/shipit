@@ -71,12 +71,12 @@
 
 ## Phase 3 — Automatic Failover
 
-- [ ] Detect hard quota exhaustion from Claude quota/runtime failures.
-- [ ] Detect hard quota exhaustion from Codex usage events/runtime failures.
+- [x] Detect hard quota exhaustion from Claude quota/runtime failures.
+- [x] Detect hard quota exhaustion from Codex usage events/runtime failures.
 - [ ] Retry once on the next eligible account on hard exhaustion, unconditionally (req 14).
 - [ ] Avoid duplicating user chat history during same-turn retry.
 - [ ] Clear or replace failed in-progress assistant output during retry.
-- [ ] Record failover as a chat-visible system event attached to the original turn.
+- [x] Record failover as a chat-visible system event attached to the original turn (pre-turn failover; the same-turn retry's event lands with req 14).
 - [x] Ensure all turn entrypoints use shared provider-account preflight: chat, answer-question, system turns, CI auto-fix, child sessions, and rebase/conflict recovery.
 - [x] Re-check an already-pinned session's account before its turn; switch away from a known-exhausted or unusable account before spawning.
 
@@ -112,6 +112,7 @@
 - [ ] Integration: first Claude turn pins `{ agent_id, provider_route_kind, provider_route_id }`.
 - [ ] Integration: first Codex turn pins `{ agent_id, provider_route_kind, provider_route_id }`.
 - [ ] Integration: auth-complete for account X re-pushes only to sessions pinned to account X.
+- [x] Unit: a turn the provider kills for quota benches its account, and the stamp survives a restart and expires on its own.
 - [ ] Integration: exhausted primary starts a new turn on a secondary account.
 - [x] Unit: all-exhausted fails the turn with the earliest reset time, pins nothing, and provisions no credentials.
 - [ ] Integration: all-exhausted fails the turn with reset times, pins nothing, and schedules no timer.

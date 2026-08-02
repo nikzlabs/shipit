@@ -241,7 +241,7 @@ export async function registerRoutes(
     nudgeClaudeOAuthRefresh, onAgentAuthRequired, ensureAgentTokenFresh,
     authManagers, runParamsPreps,
     runnerRegistry, repoPrefetcher, mergeWatchManager,
-    prStatusPoller, releaseStatusPoller, limitsRegistry, recordAgentRateLimits,
+    prStatusPoller, releaseStatusPoller, limitsRegistry, recordAgentRateLimits, markSessionAccountExhausted,
     createSessionDir, warmSessionForRepo, waitForWarmSession,
     clientDir, logStore, buildId,
   } = rt;
@@ -1019,6 +1019,7 @@ export async function registerRoutes(
         prStatusPoller,
         releaseStatusPoller,
         recordAgentRateLimits,
+        markSessionAccountExhausted,
         getSubscriptionLimitsSnapshot: () => limitsRegistry?.getSnapshot() ?? {},
         nudgeClaudeOAuthRefresh,
         onAgentAuthRequired,

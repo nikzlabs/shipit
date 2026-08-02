@@ -439,6 +439,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     getSelectedModel: ctx.getSelectedModel,
     recordAgentRateLimits: ctx.recordAgentRateLimits,
     getSubscriptionLimitsSnapshot: ctx.getSubscriptionLimitsSnapshot,
+    markSessionAccountExhausted: ctx.markSessionAccountExhausted,
     nudgeClaudeOAuthRefresh: ctx.nudgeClaudeOAuthRefresh,
     onAgentAuthRequired: ctx.onAgentAuthRequired,
     deliverVoiceNote: (payload, runner, source) =>
