@@ -283,7 +283,7 @@ describe("SubscriptionLimitPill", () => {
         })}
       />,
     );
-    expect(screen.getByText(/5h 96%/)).toHaveTextContent(/resets in/);
+    expect(screen.getByText(/5h 96%/).closest("[data-meter-pct]")).toHaveTextContent(/resets in/);
     expect(screen.getByText(/7d 22%/)).not.toHaveTextContent(/resets in/);
   });
 
@@ -298,7 +298,26 @@ describe("SubscriptionLimitPill", () => {
       />,
     );
     expect(screen.getByText(/5h 20%/)).not.toHaveTextContent(/resets in/);
-    expect(screen.getByText(/7d 94%/)).toHaveTextContent(/resets in/);
+    expect(screen.getByText(/7d 94%/).closest("[data-meter-pct]")).toHaveTextContent(/resets in/);
+  });
+
+  it("limits the progress track to the usage value instead of the reset countdown", () => {
+    render(
+      <SubscriptionLimitPill
+        label="Claude"
+        snapshot={makeSnap({
+          session: { usedPct: 20, resetAt: FUTURE_SESSION_RESET },
+          weekly: { usedPct: 94, resetAt: FUTURE_WEEKLY_RESET },
+        })}
+      />,
+    );
+
+    const weeklyValue = screen.getByText(/7d 94%/);
+    const weeklyMeter = weeklyValue.closest("[data-meter-pct]");
+    const track = weeklyValue.querySelector("[data-meter-track]");
+    expect(track?.parentElement).toHaveAttribute("data-meter-value");
+    expect(track?.parentElement).toHaveTextContent(/^7d 94%$/);
+    expect(weeklyMeter).toHaveTextContent(/resets in/);
   });
 
   it("does not show reset countdown text at exactly 90%", () => {
@@ -397,7 +416,7 @@ describe("SubscriptionLimitPill", () => {
     expect(fills.length).toBe(1);
     // Weekly window is still open — unchanged.
     expect(screen.getByText(/7d 91%/)).toBeInTheDocument();
-    expect(screen.getByText(/7d 91%/)).toHaveTextContent(/resets in/);
+    expect(screen.getByText(/7d 91%/).closest("[data-meter-pct]")).toHaveTextContent(/resets in/);
   });
 
   it("clamps fill width to the 0–100 range for out-of-range inputs", () => {
@@ -437,8 +456,8 @@ describe("SubscriptionLimitPill", () => {
   it("gives each quota block its own window-specific tooltip", () => {
     render(<SubscriptionLimitPill label="Codex" snapshot={makeSnap({ agentId: "codex" })} />);
 
-    const session = screen.getByText(/5h 30%/);
-    const weekly = screen.getByText(/7d 50%/);
+    const session = screen.getByText(/5h 30%/).closest("[data-meter-pct]");
+    const weekly = screen.getByText(/7d 50%/).closest("[data-meter-pct]");
     expect(session).toHaveAttribute("title", expect.stringContaining("5h window: 30% used"));
     expect(session.getAttribute("title")).not.toContain("7d window");
     expect(weekly).toHaveAttribute("title", expect.stringContaining("7d window: 50% used"));
