@@ -9,8 +9,11 @@
 - [x] Document Leantime as a ShipIt-managed backend option.
 - [x] Document Huly as a ShipIt-managed backend option.
 - [x] Document a first-party ShipIt implementation.
-- [x] Compare the options against common weighted criteria.
-- [x] Document Linear migration, archive, tenancy, authentication, upgrade, and availability concerns.
+- [x] Compare the options against common qualitative criteria, including implementation effort.
+- [x] Document the existing GitHub Issues adapter with a dedicated private repository as a viable baseline.
+- [x] Document Linear migration, archive, deployment scope, authentication, upgrade, and availability concerns.
+- [x] Record that issues must stay private and outside ShipIt's public repository; a dedicated private GitHub repository is acceptable.
+- [x] Add falsifiable gates for the dedicated-private-GitHub, Vikunja, and first-party decision sequence.
 
 ## Decision and implementation
 
