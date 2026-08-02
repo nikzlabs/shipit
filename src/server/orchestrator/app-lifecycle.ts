@@ -1287,22 +1287,25 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
     });
 
     mgr.on("complete", () => {
+      // docs/150 req 19 — every flow is account-scoped (`start` requires the
+      // scope), so a completion always names its account. The old `else` here
+      // re-ran `migrateDefaultAccounts()` to re-register a default row after a
+      // singleton sign-in; there is no singleton sign-in any more, and a user
+      // signing in after a sign-out goes through "Add account", which creates
+      // the row before the flow starts. A null here would mean a manager
+      // emitted `complete` without a start, which is a bug worth seeing rather
+      // than papering over with a migration.
       const accountId = mgr.getActiveAccountId() ?? undefined;
       if (accountId) {
-        // docs/150 — a scoped login finished: flip the row to `ready` and
-        // re-push the fresh token only into sessions pinned to this account.
+        // A scoped login finished: flip the row to `ready` and re-push the
+        // fresh token only into sessions pinned to this account.
         try {
           providerAccountManager.setAccountStatus(agentId, accountId, "ready");
         } catch (err) {
           console.error(`[auth] failed to mark account ${accountId} ready:`, err);
         }
       } else {
-        // Singleton sign-in: re-register the default provider-account row if it
-        // was dropped on the previous sign-out. The migration is a no-op when
-        // any account row for the agent already exists, so re-auth into an
-        // existing account stays untouched. See the matching teardown in
-        // `DELETE /api/auth/api-key` (Claude) and `DELETE /api/codex-auth`.
-        providerAccountManager.migrateDefaultAccounts();
+        console.warn(`[auth] ${agentId} reported a completed sign-in with no account scope; nothing to mark ready`);
       }
       agentRegistry.refreshAuth(agentId);
       repushTokenToPinnedSessions(agentId, accountId);

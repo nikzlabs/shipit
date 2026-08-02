@@ -945,14 +945,25 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
     });
   });
 
-  it("singleton complete omits accountId", () => {
-    const { mgr, events } = setup();
+  // docs/150 req 19 — a scope-less completion is no longer a supported flow
+  // (`AgentAuthManager.start` requires the account), so this is the defensive
+  // case: a manager emitting `complete` without a start. It must not fabricate
+  // an account, and must not re-run the default-account migration the singleton
+  // branch used to.
+  it("a completion with no account scope marks nothing and invents no accountId", () => {
+    const { mgr, events, providerAccountManager } = setup();
+    const before = providerAccountManager.list("claude").map((a) => a.id);
     mgr.activeAccountId = null;
+
     mgr.emit("complete");
 
     const complete = events.find((e) => e.event === "agent_auth_complete");
     expect(complete?.data).toMatchObject({ agentId: "claude" });
     expect(complete?.data.accountId).toBeUndefined();
+    // No row invented (the old `else` called migrateDefaultAccounts here) and
+    // none flipped to ready off an unattributable completion.
+    expect(providerAccountManager.list("claude").map((a) => a.id)).toEqual(before);
+    expect(providerAccountManager.list("claude").every((a) => a.status !== "ready")).toBe(true);
   });
 });
 

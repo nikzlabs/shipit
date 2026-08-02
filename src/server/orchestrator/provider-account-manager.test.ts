@@ -29,10 +29,10 @@ class FakeAuthManager extends EventEmitter implements AgentAuthManager {
   activeAccountId: string | null = null;
   /** Set to make `start()` throw, standing in for a failed CLI spawn. */
   startShouldThrow: Error | null = null;
-  start(opts?: AgentAuthStartOptions): void {
-    this.startCalls.push(opts ?? {});
+  start(opts: AgentAuthStartOptions): void {
+    this.startCalls.push(opts);
     if (this.startShouldThrow) throw this.startShouldThrow;
-    this.activeAccountId = opts?.accountId ?? null;
+    this.activeAccountId = opts.accountId;
   }
   cancel(): void { this.cancelCalls++; this.activeAccountId = null; }
   submitCode(code: string): void { this.codeCalls.push(code); }

@@ -147,6 +147,8 @@
 - [x] Unit: the backfill records the order legacy rows already resolved to, and is idempotent.
 - [x] Unit: `isPrimary` is derived from position — a poisoned stored flag is ignored, and every accessor agrees.
 - [x] Manual: make-primary in the running app renumbers `priority`, moves the badge, and disables its own button.
+- [x] Unit: a completion with no account scope marks nothing ready and invents no row (the old singleton branch re-ran the migration here).
+- [x] Manual: a scoped sign-in still reaches its own row with the challenge after the contract was tightened.
 - [x] Client: Add account / Connect are disabled while another row of the provider is authenticating.
 - [ ] Unit: API-key fallback configures only its reserved route and never marks a subscription account ready.
 - [x] Client: an authenticated primary row does not hide or overwrite a secondary row's pending flow or diagnostics.
@@ -160,7 +162,7 @@ exercised the new path. The signal one is ready to go is that nothing reads it.
 
 - [ ] Remove the legacy root credential paths and alias symlinks once every read/write goes through an account root.
 - [x] Give provider-wide sign-out the running-turn guard the per-account disconnect has. (An *idle* pinned session is deliberately left to re-route itself: a route whose row is gone reads unusable, so the next turn's preflight fails it over. Only the mid-turn case is unrecoverable.)
-- [ ] Drop `AgentAuthManager.start`'s no-scope overload and the account-less `complete` branch in `wireEventHandlers` once nothing can start an unscoped flow (nothing does today — `startProviderAccountLogin` is the only caller).
+- [x] Drop `AgentAuthManager.start`'s no-scope overload and the account-less `complete` branch in `wireEventHandlers`. `accountId`/`credentialDir` are now required, so an unscoped flow is unrepresentable rather than merely unused.
 - [x] ~~Remove `selectRouteForTurn`~~ — **not legacy after all.** It is a three-line convenience over `selectAccountForTurn` with two honest callers that genuinely want route-or-null (rate-limit attribution, sub-agent spawn). Removing it would inline the same wrapper twice.
 - [x] Backfill `priority` onto stored rows (idempotent, runs from `migrateDefaultAccounts`), then drop the `isPrimary`-only ordering fallback from the read path.
 - [x] Resolve `ProviderAccount.isPrimary` vs `priority` — `isPrimary` is derived from position on read and no longer persisted or maintained by the credential store. The wire shape is unchanged.
