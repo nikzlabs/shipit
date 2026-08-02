@@ -132,7 +132,7 @@ describe("Integration: Claude message flow — basics", () => {
   // the previously-stored id (or a freshly-recovered one) and every
   // subsequent retry compounds the loss into a self-perpetuating loop.
 
-  it("'No conversation found' stderr blocks the doomed init UUID from clobbering the DB", async () => {
+  it("'No conversation found' clears the guarded pointer and retries fresh without persisting the doomed init", async () => {
     // Pre-register a session with an existing agentSessionId — this is what
     // the listener must protect.
     sessionManager.track("loop-session", "Stuck session", tmpDir);
@@ -143,22 +143,38 @@ describe("Integration: Claude message flow — basics", () => {
 
     client.send({ type: "send_message", text: "anything", sessionId: "loop-session" });
     await waitForClaude(() => lastClaude);
+    const rejectedProcess = lastClaude;
 
     // 1. CLI fails to resume → emits the missing-conversation stderr.
-    lastClaude.emit("log", "stderr", "No conversation found with session ID: recovered-real-id");
+    rejectedProcess.emit("log", "stderr", "No conversation found with session ID: recovered-real-id");
     // 2. CLI emits a fresh init UUID just before exiting.
-    lastClaude.emit("event", {
+    rejectedProcess.emit("event", {
       type: "system",
       subtype: "init",
       session_id: "doomed-fresh-uuid",
       tools: [],
     });
-    // Let both messages propagate to the listener.
-    await client.receiveType("error");
-    await client.receiveType("agent_event");
+    await waitForClaude(() => lastClaude !== rejectedProcess ? lastClaude : null);
+    expect(rejectedProcess.killed).toBe(true);
+    expect(lastClaude.lastPrompt).toBe("anything");
+    expect(lastClaude.lastSessionId).toBeUndefined();
+    expect(sessionManager.get("loop-session")?.agentSessionId).toBeUndefined();
 
-    // DB row unchanged — the doomed UUID didn't land.
-    expect(sessionManager.get("loop-session")?.agentSessionId).toBe("recovered-real-id");
+    // The retry's trustworthy content gate persists its fresh conversation id.
+    lastClaude.emit("event", {
+      type: "system",
+      subtype: "init",
+      session_id: "fresh-conversation-id",
+      tools: [],
+    });
+    lastClaude.emit("event", {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "recovered" }] },
+      session_id: "fresh-conversation-id",
+    });
+    await client.receiveType("agent_event");
+    await client.receiveType("agent_event");
+    expect(sessionManager.get("loop-session")?.agentSessionId).toBe("fresh-conversation-id");
 
     client.close();
   });

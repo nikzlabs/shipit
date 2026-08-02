@@ -191,6 +191,12 @@ export interface WireListenersOpts {
    */
   recoverAuth?: () => Promise<boolean>;
   /**
+   * Runtime stale-resume recovery. Called with the id parsed from Claude's
+   * "No conversation found" stderr. Returning true means the executor has
+   * claimed recovery, so the listener suppresses the user-facing error.
+   */
+  recoverMissingConversation?: (agentSessionId: string) => boolean;
+  /**
    * True when this turn is being run on a persistent streaming agent
    * (live steering active, docs/140). In streaming mode the CLI can
    * genuinely block on `AskUserQuestion` (the user's answer flows back via
@@ -324,14 +330,21 @@ export function wireAgentListeners(
     // listener stops the pending agent_session_id from clobbering the DB,
     // and surface a chat-level error so the user sees why the turn aborted
     // (vs. the previous silent loop).
-    if (source === "stderr" && /No conversation found with session ID/i.test(text)) {
+    const missingConversation = source === "stderr"
+      ? /No conversation found with session ID:\s*([^\s]+)/i.exec(text)
+      : null;
+    if (missingConversation) {
       if (!missingConversationDetected) {
         missingConversationDetected = true;
         pendingAgentSessionId = null;
-        emitToViewers({
-          type: "error",
-          message: "Couldn't resume the previous conversation — it appears to have been moved or removed. Send your next message to start a fresh thread.",
-        });
+        const invalidId = missingConversation[1];
+        const recovering = opts.recoverMissingConversation?.(invalidId) ?? false;
+        if (!recovering) {
+          emitToViewers({
+            type: "error",
+            message: "Couldn't resume the previous conversation. ShipIt could not start a fresh thread automatically; resend your message or open Settings → Agents if the problem continues.",
+          });
+        }
       }
     }
   });

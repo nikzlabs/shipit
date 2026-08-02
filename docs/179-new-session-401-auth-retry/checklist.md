@@ -10,5 +10,7 @@
 - [x] Unit tests: `ensureFresh` (5 cases)
 - [x] Unit tests: `auth_required` handler recovery (3 cases)
 - [x] Integration test: end-to-end 401 → heal → re-dispatch (+ fallback + bounded)
+- [x] Runtime rejected-resume recovery: guarded pointer clear + one fresh-conversation retry
+- [x] Finalize visible first-attempt output before auth or stale-resume retry resets
 - [x] typecheck + lint clean
 - [x] Feature doc (this folder)
