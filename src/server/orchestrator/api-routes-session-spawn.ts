@@ -56,6 +56,10 @@ export async function registerSessionSpawnRoutes(
     ...(deps.prStatusPoller ? { prStatusPoller: deps.prStatusPoller } : {}),
     sseBroadcast: deps.sseBroadcast,
     ...(deps.ensureAgentTokenFresh ? { ensureAgentTokenFresh: deps.ensureAgentTokenFresh } : {}),
+    // docs/150 — so AI naming runs on the account a turn would use, not the
+    // singleton root (which aliases to the migrated default account).
+    providerAccountManager: deps.providerAccountManager,
+    ...(deps.credentialsDir ? { credentialsDir: deps.credentialsDir } : {}),
   };
 
   // Single shared claim service for every surface that mints a repo-backed

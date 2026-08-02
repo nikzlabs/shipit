@@ -2014,6 +2014,41 @@ selection order is still "primary first, then stored order". Reqs 4–6 say the
 cutoff advances to the next account *in the user's priority order*, so this
 delivers the advancing half; the ordering half is the next piece.
 
+### Landed: AI session naming runs on a real account (req 19 prerequisite)
+
+Phase 5's last item — remove the legacy root credential paths and the alias
+symlinks — carries its own precondition: *once every read and write goes
+through an account root*. That precondition is not met yet, and this is one of
+the readers standing in the way.
+
+`session-namer.ts` shells out to `claude -p` / `codex exec` with `HOME` forced
+to `/root`. In production `/root/.claude` → `/credentials/.claude` → the alias
+symlink → `provider-accounts/claude/claude-default`. So AI naming always ran on
+the **migrated default account**, whichever account the user had made primary —
+and stopped working entirely once that account was disconnected, while
+everything else kept working. A quiet, hard-to-attribute failure.
+
+Naming now resolves the same route a turn for that agent would take
+(`selectRouteForTurn`) and points `HOME` at that account's credential root —
+the same "the account layout mirrors `$HOME`" trick the scoped auth flows use.
+A reserved route (`claude-api-key`, `claude-env-oauth`) has no account root, so
+it keeps the singleton path, which is what those routes legitimately use.
+
+The same call site also carried the last deferred finding from the account-
+scoping review: `graduateSession` called `ensureAgentTokenFresh(agentId)` with
+no account, so every new session refreshed *every* connected account and
+aggregated with `every()` — wasting a refresh on unrelated accounts and letting
+a revoked sibling report failure for a token that was fine. It now heals the
+account naming will actually use.
+
+**What this does and does not unblock.** It removes one legacy-root reader.
+Others remain — `AgentRegistry`'s auth probe (`isConfigured()` unscoped),
+Codex's unscoped `checkCredentials`, and provider-wide sign-out — and each has
+an honest reason to read the singleton path today. The aliases cannot go until
+those are resolved too, so the final Phase 5 item stays open rather than being
+force-landed. Note the aliases are not merely inert: they leak into session
+containers, which is the entire reason docs/153's symlink-leak repair exists.
+
 ### Landed: there is no unscoped sign-in (req 19, Phase 5)
 
 `AgentAuthStartOptions` had `accountId` and `credentialDir` optional, with a
