@@ -797,6 +797,12 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE messages ADD COLUMN agent_interface TEXT");
   },
+  // Prompts relayed by another session's agent must not masquerade as direct
+  // user input after a reload. Stores the source session and its relationship
+  // to the recipient for the transcript provenance label.
+  (db) => {
+    db.exec("ALTER TABLE messages ADD COLUMN message_origin TEXT");
+  },
 ];
 
 export class DatabaseManager {

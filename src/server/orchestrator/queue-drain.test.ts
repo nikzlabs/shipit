@@ -71,6 +71,7 @@ describe("queue drain routing (SHI-255)", () => {
     const opts: Required<Omit<AgentDispatchOptions, "execution">> & { execution?: AgentDispatchOptions["execution"] } = {
       text: "everything",
       agentInterface: { source: "agent_interface_sdk", surface: "present" },
+      messageOrigin: { sessionId: "parent", sessionTitle: "Parent", relation: "parent" },
       activity: "Working…",
       images: [{ data: "abc", mediaType: "image/png" }],
       files: [{ path: "src/a.ts" }],

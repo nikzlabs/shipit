@@ -1,4 +1,4 @@
-import type { SessionInfo } from "../domain-types.js";
+import type { SessionInfo, SessionMessageOrigin } from "../domain-types.js";
 import type { AgentInterfaceProvenance } from "../../agent-interface-sdk/protocol.js";
 
 export interface WsSessionList {
@@ -200,6 +200,8 @@ export interface WsSystemUserMessage {
   /** Activity label for the UI (e.g. "Auto-fixing CI..."). */
   activity?: string;
   agentInterface?: AgentInterfaceProvenance;
+  /** Another session's agent supplied this prompt, rather than the user. */
+  messageOrigin?: SessionMessageOrigin;
 }
 
 /**

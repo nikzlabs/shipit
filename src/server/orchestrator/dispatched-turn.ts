@@ -35,6 +35,7 @@ import type { PreparedDispatch } from "./prepared-dispatch.js";
 import { queuedMessageToDispatchOptions } from "./queue-drain.js";
 import type { TurnOutcome } from "./turn-settlement.js";
 import { formatAgentInterfacePrompt } from "../shared/agent-interface-sdk/protocol.js";
+import { formatSessionMessagePrompt } from "./session-message-origin.js";
 
 /**
  * How many times a dispatched first turn that exited WITHOUT producing a result
@@ -129,7 +130,10 @@ export async function runDispatchedTurn(
   const fileContext = validatedFiles.length > 0 ? formatFileContext(validatedFiles) : "";
   const imageContext =
     images && images.length > 0 && sessionDir ? saveImagesToUploadsDir(images, sessionDir) : "";
-  const agentText = opts.agentInterface ? formatAgentInterfacePrompt(text, opts.agentInterface) : text;
+  const surfacedText = opts.agentInterface ? formatAgentInterfacePrompt(text, opts.agentInterface) : text;
+  const agentText = opts.messageOrigin
+    ? formatSessionMessagePrompt(surfacedText, opts.messageOrigin)
+    : surfacedText;
   const prompt = assembleAgentPrompt({ userText: agentText, fileContext, imageContext });
 
   // Chat-history metadata for the persisted user row — mirrors the WS path so a
@@ -275,6 +279,7 @@ export async function runDispatchedTurn(
       // both already happened on the first attempt — so only the first run does.
       emitUserEcho: attempt === 0,
       ...(opts.agentInterface ? { agentInterface: opts.agentInterface } : {}),
+      ...(opts.messageOrigin ? { messageOrigin: opts.messageOrigin } : {}),
       persistUserMessage:
         attempt === 0
           ? (sid) =>
@@ -282,6 +287,7 @@ export async function runDispatchedTurn(
                 role: "user",
                 text,
                 ...(opts.agentInterface ? { agentInterface: opts.agentInterface } : {}),
+                ...(opts.messageOrigin ? { messageOrigin: opts.messageOrigin } : {}),
                 ...(historyImages ? { images: historyImages } : {}),
                 ...(historyFiles ? { files: historyFiles } : {}),
                 ...(uploadPaths && uploadPaths.length > 0 ? { uploadPaths } : {}),

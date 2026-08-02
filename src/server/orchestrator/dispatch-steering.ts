@@ -31,6 +31,7 @@ import type {
   SystemTurnDeps,
 } from "./session-runner.js";
 import { formatAgentInterfacePrompt } from "../shared/agent-interface-sdk/protocol.js";
+import { formatSessionMessagePrompt } from "./session-message-origin.js";
 
 /**
  * Inputs to the live-steering gate. These are exactly the conditions the WS
@@ -150,9 +151,12 @@ export function trySteerDispatch(
     runner.appliedPermissionMode = opts.permissionMode;
   }
 
-  const agentText = opts.agentInterface
+  const surfacedText = opts.agentInterface
     ? formatAgentInterfacePrompt(opts.text, opts.agentInterface)
     : opts.text;
+  const agentText = opts.messageOrigin
+    ? formatSessionMessagePrompt(surfacedText, opts.messageOrigin)
+    : surfacedText;
   agent.sendUserMessage(agentText);
 
   // Record + persist the steered message so it survives a reload at the spot
@@ -163,6 +167,7 @@ export function trySteerDispatch(
   recordSteeredMessage(runner, opts.text, {
     assembledPrompt: agentText,
     ...(opts.agentInterface ? { agentInterface: opts.agentInterface } : {}),
+    ...(opts.messageOrigin ? { messageOrigin: opts.messageOrigin } : {}),
   });
   persistTurnInProgress(deps.listenerDeps.chatHistoryManager, runner, runner.sessionId);
   runner.emitMessage({
@@ -170,6 +175,7 @@ export function trySteerDispatch(
     text: opts.text,
     sessionId: runner.sessionId,
     ...(opts.agentInterface ? { agentInterface: opts.agentInterface } : {}),
+    ...(opts.messageOrigin ? { messageOrigin: opts.messageOrigin } : {}),
   });
   return true;
 }

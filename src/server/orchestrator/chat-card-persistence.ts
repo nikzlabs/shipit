@@ -108,6 +108,7 @@ export function buildTurnMessages(
     role: "user",
     text: s.text,
     agentInterface: s.agentInterface,
+    messageOrigin: s.messageOrigin,
     images: s.images,
     files: s.files,
     uploadPaths: s.uploadPaths,

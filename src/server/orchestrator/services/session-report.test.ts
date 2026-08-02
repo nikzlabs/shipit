@@ -136,6 +136,11 @@ describe("deliverSessionReport (docs/233)", () => {
     expect(parent?.dispatched[0].text).toContain("BLOCKER");
     expect(parent?.dispatched[0].text).toContain("The shared regen command deletes every catalog.");
     expect(parent?.dispatched[0].text).toContain("CHILD session you spawned");
+    expect(parent?.dispatched[0].messageOrigin).toEqual({
+      sessionId: "elementalist",
+      sessionTitle: "Elementalist catalog",
+      relation: "child",
+    });
 
     // Live card broadcast to any attached viewer.
     expect(parent?.emitted).toContainEqual(

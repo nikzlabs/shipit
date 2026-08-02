@@ -1,5 +1,12 @@
 import type { AgentId } from "../agent-types.js";
 
+/** Provenance for a prompt delivered by another ShipIt session's agent. */
+export interface SessionMessageOrigin {
+  sessionId: string;
+  sessionTitle: string;
+  relation: "parent" | "child" | "sibling";
+}
+
 /**
  * docs/178 — a persisted "Context compacted" transcript card. Shared verbatim by
  * the live WS payload (`WsCompactionCard`), the persisted chat-history row

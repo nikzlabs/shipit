@@ -430,6 +430,13 @@ export async function spawnChildSession(
   runner.dispatch(prepareDispatch({
     text: trimmedPrompt,
     agentInterface: undefined,
+    ...(!opts.detached ? {
+      messageOrigin: {
+        sessionId: parent.id,
+        sessionTitle: parent.title,
+        relation: "parent" as const,
+      },
+    } : {}),
     execution: undefined,
     activity: undefined,
     images: undefined,
@@ -766,6 +773,11 @@ export async function sendChildMessage(
   runner.dispatch(prepareDispatch({
     text: trimmed,
     agentInterface: undefined,
+    messageOrigin: {
+      sessionId: parentSessionId,
+      sessionTitle: sessionManager.get(parentSessionId)?.title ?? "Parent session",
+      relation: "parent",
+    },
     execution: undefined,
     activity: undefined,
     images: undefined,

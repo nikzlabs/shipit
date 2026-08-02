@@ -31,7 +31,7 @@ import type { TurnOutcome } from "./turn-settlement.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { ProviderAccountManager } from "./provider-account-manager.js";
 import type { SessionContainerManager } from "./session-container.js";
-import type { AgentId, SessionInfo } from "../shared/types.js";
+import type { AgentId, SessionInfo, SessionMessageOrigin } from "../shared/types.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import { prepareSessionAgentEnvironment } from "./session-agent-env.js";
 
@@ -64,6 +64,8 @@ export interface WakeTurnOptions {
   text: string;
   /** Activity label shown while the woken turn runs. */
   activity?: string;
+  /** Another session's agent supplied this wake prompt. */
+  messageOrigin?: SessionMessageOrigin;
   /**
    * Fires once the wake-turn reaches a TERMINAL outcome — on both the idle path
    * (the turn starts now) and the busy path (the settlement rides the in-memory
@@ -190,6 +192,7 @@ export async function wakeSessionWithTurn(
   runner.dispatch(prepareDispatch({
     text: opts.text,
     agentInterface: undefined,
+    messageOrigin: opts.messageOrigin,
     activity: opts.activity,
     systemTurn: true,
     ...(onSettled

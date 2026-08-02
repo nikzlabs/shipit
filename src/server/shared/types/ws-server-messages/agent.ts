@@ -6,6 +6,7 @@ import type { PermissionMode } from "../attachment-types.js";
 // client bundle.
 import type { PersistedMessage } from "../../../orchestrator/chat-history.js";
 import type { AgentInterfaceProvenance } from "../../agent-interface-sdk/protocol.js";
+import type { SessionMessageOrigin } from "../domain-types.js";
 
 export interface WsAgentEvent {
   type: "agent_event";
@@ -135,6 +136,7 @@ export interface WsMessageSteered {
   files?: { path: string; contentPreview: string; startLine?: number; endLine?: number }[];
   uploadPaths?: string[];
   agentInterface?: AgentInterfaceProvenance;
+  messageOrigin?: SessionMessageOrigin;
 }
 
 // ---- Agent registry server messages ----

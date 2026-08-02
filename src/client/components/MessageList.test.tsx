@@ -34,6 +34,16 @@ describe("MessageList", () => {
     expect(screen.getByText("Build it")).toBeInTheDocument();
   });
 
+  it("labels a prompt relayed by another session as non-user-originated", () => {
+    render(<MessageList messages={[{
+      role: "user",
+      text: "Check the shared parser",
+      messageOrigin: { sessionId: "parent", sessionTitle: "Parser plan", relation: "parent" },
+    }]} isLoading={false} />);
+
+    expect(screen.getByText("From parent session · Parser plan")).toBeInTheDocument();
+  });
+
   describe("scroll behavior", () => {
     function setScrollMetrics(
       element: Element,

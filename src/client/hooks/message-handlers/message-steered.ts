@@ -14,7 +14,14 @@ export const handleMessageSteered: Handler<WsMessageSteered> = (_ctx, data) => {
   // Skip if the message is already shown (optimistic insert from the sender tab).
   const messages = session.messages;
   const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
-  if (lastUserMsg?.text === data.text) return;
+  if (lastUserMsg?.text === data.text) {
+    if (data.messageOrigin && !lastUserMsg.messageOrigin) {
+      session.setMessages((prev) => prev.map((message) =>
+        message === lastUserMsg ? { ...message, messageOrigin: data.messageOrigin } : message
+      ));
+    }
+    return;
+  }
   session.setMessages((prev) => [
     ...prev,
     {
@@ -24,6 +31,7 @@ export const handleMessageSteered: Handler<WsMessageSteered> = (_ctx, data) => {
       files: data.files,
       uploadPaths: data.uploadPaths,
       agentInterface: data.agentInterface,
+      messageOrigin: data.messageOrigin,
     },
   ]);
 };

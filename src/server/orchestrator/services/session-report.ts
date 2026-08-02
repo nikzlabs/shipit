@@ -291,6 +291,11 @@ export async function deliverSessionReport(
     try {
       await wakeSessionWithTurn(deps, session, {
         text: buildReportWakePrompt(card),
+        messageOrigin: {
+          sessionId: reporter.id,
+          sessionTitle: reporter.title,
+          relation,
+        },
         activity:
           severity === "blocker"
             ? "Reassessing after a cohort blocker report…"

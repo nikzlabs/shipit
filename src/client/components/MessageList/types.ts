@@ -11,6 +11,7 @@ import type {
 } from "../../../server/shared/types.js";
 import type { ReleaseStatusSummary } from "../../../server/shared/types/release-types.js";
 import type { AgentInterfaceProvenance } from "../../../server/shared/agent-interface-sdk/protocol.js";
+import type { SessionMessageOrigin } from "../../../server/shared/types.js";
 
 // ── Type exports (kept here as the canonical location for backward compat) ──
 
@@ -70,6 +71,7 @@ export interface ChatMessage {
   role: "user" | "assistant";
   text: string;
   agentInterface?: AgentInterfaceProvenance;
+  messageOrigin?: SessionMessageOrigin;
   /** Client-only identity for precise rollback of a rejected optimistic send. */
   clientRequestId?: string;
   toolUse?: ToolUseBlock[];
