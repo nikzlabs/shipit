@@ -852,12 +852,17 @@ describe("Integration: live steering (docs/140)", () => {
       check();
     });
 
-    runner.dispatch(testDispatch({ text: "Programmatic steer" }));
+    runner.dispatch(testDispatch({
+      text: "Programmatic steer",
+      messageOrigin: { sessionId: "parent", sessionTitle: "Parent", relation: "parent" },
+    }));
 
     const steered = await drainUntil(client, (m) => m.type === "message_steered");
     expect(steered).toMatchObject({ type: "message_steered", text: "Programmatic steer" });
     // Injected into the running agent — the fake records sendUserMessage under stdinData.
-    expect(claude.stdinData).toContain("Programmatic steer");
+    expect(claude.stdinData.some((input) => input.includes("Programmatic steer"))).toBe(true);
+    expect(claude.stdinData.some((input) => input.includes("not directly from the user"))).toBe(true);
+    expect(claude.stdinData.some((input) => input.includes('Source: PARENT session "Parent" (parent)'))).toBe(true);
     // And it was NOT queued.
     expect(runner.queueLength).toBe(0);
 

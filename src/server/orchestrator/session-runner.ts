@@ -123,6 +123,7 @@ export interface SteeredMessage {
   afterGroupIndex: number;
   text: string;
   agentInterface?: AgentInterfaceProvenance;
+  messageOrigin?: SessionMessageOrigin;
   /**
    * Attachments the user sent with this steer. Shapes match `PersistedMessage`
    * so `buildTurnMessages` can write them straight through to chat history;

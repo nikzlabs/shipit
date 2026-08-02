@@ -10,7 +10,8 @@ Session-report wake turns carry the reporting session's id, title, and
 relationship as persisted message provenance. Their user-shaped prompt bubble
 is therefore labeled as coming from a child or sibling session rather than
 appearing to be direct user input; the existing report card remains the richer
-human-facing summary.
+human-facing summary. The model-facing wake prompt is also wrapped in the same
+agent-to-agent provenance envelope before dispatch.
 
 ## Problem
 

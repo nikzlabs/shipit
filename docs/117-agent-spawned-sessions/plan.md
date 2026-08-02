@@ -39,7 +39,10 @@ Phases 1, 2, and 3 are live as of this revision. What works today:
   turn directly (when the child is idle) or enqueues behind the running
   turn; the shim prints the queue position. The receiving transcript labels
   the prompt with its parent-session origin, including after a reload, so it
-  cannot be mistaken for a message typed directly by the user.
+  cannot be mistaken for a message typed directly by the user. The same
+  provenance is wrapped into the prompt sent to the receiving agent (including
+  the live-steering path), explicitly stating that the body came from another
+  session's agent and is not a user instruction.
 - **(Phase 3.)** `shipit session wait <id> [--timeout SECONDS]` long-polls
   the orchestrator until the child reports idle
   (`running=false && queueLength=0`) or the timeout fires. Default 5

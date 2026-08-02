@@ -28,6 +28,7 @@ export function testDispatch(
   return prepareDispatch({
     text: opts.text,
     agentInterface: opts.agentInterface,
+    messageOrigin: opts.messageOrigin,
     execution: opts.execution,
     activity: opts.activity,
     images: opts.images,
