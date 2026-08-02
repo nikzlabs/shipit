@@ -46,10 +46,20 @@ class FakeAuthManager extends EventEmitter implements AgentAuthManager {
 describe("ProviderAccountManager", () => {
   let root: string;
   let store: CredentialStore;
+  /**
+   * The migration guard reads `SHIPIT_SESSION_ID` to detect "I am inside a
+   * session container, so `credentialsDir` is a live agent home". That env var
+   * is genuinely set whenever this suite runs inside ShipIt (dogfooding), which
+   * would otherwise flip every migration test to the refusal path depending on
+   * where it ran. Pin it off here and let the tests that care set it.
+   */
+  let savedSessionId: string | undefined;
 
   beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-provider-accounts-"));
     store = new CredentialStore(root);
+    savedSessionId = process.env.SHIPIT_SESSION_ID;
+    delete process.env.SHIPIT_SESSION_ID;
   });
 
   afterEach(() => {
@@ -57,6 +67,8 @@ describe("ProviderAccountManager", () => {
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.ANTHROPIC_AUTH_TOKEN;
     delete process.env.OPENAI_API_KEY;
+    if (savedSessionId === undefined) delete process.env.SHIPIT_SESSION_ID;
+    else process.env.SHIPIT_SESSION_ID = savedSessionId;
   });
 
   it("migrates legacy Claude credentials into a primary default account", () => {
@@ -148,6 +160,77 @@ describe("ProviderAccountManager", () => {
     } finally {
       fs.rmSync(elsewhere, { recursive: true, force: true });
     }
+  });
+
+  /**
+   * The migration is a one-shot for the ORCHESTRATOR's credentials volume, but
+   * `app-di` hands it whatever `credentialsDir` resolved to — and inside a
+   * session container that is the session's own live agent home (the container
+   * mounts `<root>/sessions/<id>` at `/credentials`). Running the test suite
+   * in-container therefore moved the running CLI's `.claude/` — credential and
+   * conversation jsonl both — into `provider-accounts/claude/claude-default/`,
+   * and every turn afterwards failed with "Not logged in · Please run /login".
+   *
+   * Two independent guards, tested separately below, because either alone
+   * leaves a live home reachable: refuse to migrate in a session container at
+   * all, and never destroy the source before the copy is confirmed.
+   */
+  describe("live-home safety", () => {
+    // `SHIPIT_SESSION_ID` is cleared by the outer `beforeEach` and restored by
+    // the outer `afterEach`, so setting it here needs no local teardown.
+    it("refuses to migrate when running inside a session container", () => {
+      process.env.SHIPIT_SESSION_ID = "sess-live-123";
+      fs.mkdirSync(path.join(root, ".claude"), { recursive: true });
+      fs.writeFileSync(path.join(root, ".claude", ".credentials.json"), '{"token":"live"}');
+      fs.writeFileSync(path.join(root, ".claude.json"), '{"conversation":"live"}');
+
+      const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
+      mgr.migrateDefaultAccounts();
+
+      // The home is untouched — this is the assertion that the session lives.
+      expect(fs.readFileSync(path.join(root, ".claude", ".credentials.json"), "utf8"))
+        .toBe('{"token":"live"}');
+      expect(fs.readFileSync(path.join(root, ".claude.json"), "utf8"))
+        .toBe('{"conversation":"live"}');
+      // And no phantom account was registered against the untouched dir.
+      expect(mgr.getPrimary("claude")).toBeUndefined();
+      expect(fs.existsSync(path.join(root, "provider-accounts", "claude", "claude-default")))
+        .toBe(false);
+    });
+
+    it("migrates normally when not in a session container", () => {
+      fs.mkdirSync(path.join(root, ".claude"), { recursive: true });
+      fs.writeFileSync(path.join(root, ".claude", ".credentials.json"), '{"token":"orch"}');
+
+      const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
+      mgr.migrateDefaultAccounts();
+
+      expect(mgr.getPrimary("claude")).toBeDefined();
+      const moved = path.join(
+        root, "provider-accounts", "claude", "claude-default", ".claude", ".credentials.json",
+      );
+      expect(fs.readFileSync(moved, "utf8")).toBe('{"token":"orch"}');
+    });
+
+    /**
+     * Copy-then-verify, not rename: the credential must exist at the
+     * destination before the source is removed, so an interrupted migration
+     * can only ever cost disk — never the only copy of a live credential.
+     */
+    it("never leaves the credential absent from both paths", () => {
+      fs.mkdirSync(path.join(root, ".claude"), { recursive: true });
+      fs.writeFileSync(path.join(root, ".claude", ".credentials.json"), '{"token":"t"}');
+
+      new ProviderAccountManager({ credentialsDir: root, credentialStore: store })
+        .migrateDefaultAccounts();
+
+      const dest = path.join(
+        root, "provider-accounts", "claude", "claude-default", ".claude", ".credentials.json",
+      );
+      const legacy = path.join(root, ".claude", ".credentials.json");
+      expect(fs.existsSync(dest) || fs.existsSync(legacy)).toBe(true);
+      expect(fs.readFileSync(dest, "utf8")).toBe('{"token":"t"}');
+    });
   });
 
   /**

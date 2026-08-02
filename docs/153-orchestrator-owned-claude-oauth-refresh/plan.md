@@ -393,6 +393,61 @@ event carries the accountId for docs/150 to consume.
 - **Codex.** Codex's auth flow is unaffected — different identity provider, different
   refresh model. No Codex changes in this PR.
 
+## Addendum — a second, unrelated cause of "Not logged in · Please run /login"
+
+Confirmed on a dogfooding session container 2026-08-02. This is **not** the OAuth
+refresh stampede above; it is a separate mechanism that produces a similar
+symptom, and it destroys the session permanently rather than for one turn.
+
+**Mechanism.** `initializeManagers` (`app-di.ts`) defaulted `credentialsDir` to
+the literal `/credentials`, then constructed a `ProviderAccountManager` and
+called `migrateDefaultAccounts()` (`app-di.ts:369`). That runs
+`migrateProviderDefault`, a one-shot legacy migration ending in `fs.renameSync`
+— a **move**. Its only guard is `if (this.list(provider).length > 0) return`,
+which never fires in production (accounts exist) but **always** fires against a
+fresh test database.
+
+99 test files call `buildApp()`; 86 of them pass `workspaceDir: tmpDir` but no
+`credentialsDir`, so they inherited `/credentials`. Inside a session container
+that path is *not* the orchestrator's credentials volume — `container-lifecycle
+.ts:265` mounts `<root>/sessions/<sessionId>` there, so it is that session's own
+live agent home. Running the test suite in-container therefore moved the running
+CLI's `.claude/` (credential **and** conversation jsonl) and `.claude.json` into
+`provider-accounts/claude/claude-default/`. Nothing moves them back, so every
+subsequent turn 401s forever.
+
+This tracked *running the suite*, not subject matter: `connection.test.ts` and
+`http-bootstrap.test.ts` are smoke tests, so `npm run test:dev` triggered it
+regardless of what the session was working on. It also explains the artifacts —
+the orphan is named `claude-default` because that is the migration's literal
+target; it holds the real credential and a multi-megabyte conversation because
+it *is* the moved home; and "no resumable jsonl on disk (DB pointed at `<id>`)"
+happened because the jsonl moved with it. The DB pointer was always correct.
+
+**Fix — three independent layers**, since any one alone still leaves a live home
+reachable:
+
+1. `resolveCredentialsDir` (`app-di.ts`) — under test mode an omitted
+   `credentialsDir` gets a fresh `mkdtemp` dir, never the live volume, and an
+   *explicit* live path is a hard error. Enforced in one place rather than at 86
+   call sites, so a future test author cannot reintroduce it by omission. (Temp
+   roots are created under `os.tmpdir()` rather than under `workspaceDir`,
+   because a test that passes neither would otherwise write into the real
+   `/workspace` git tree.)
+2. `isSessionContainerCredentialRoot` (`provider-account-manager.ts`) — the
+   migration refuses to run when `SHIPIT_SESSION_ID` is set. That env var is on
+   every session container and nothing else, which is the only reliable signal:
+   a session home and a pre-account orchestrator volume have identical *shape*
+   (`.claude/`, `.claude.json`), which is exactly why the migration confused
+   them.
+3. Copy-then-verify instead of `renameSync` — the source is removed only after
+   the copy is confirmed at the destination, so an interrupted or misdirected
+   migration costs disk rather than the only copy of a live credential.
+
+The orphan-discovery and rescue work in `token-sync-manager.ts` is what recovers
+sessions already broken by this, including reuniting them with the conversation
+history that was moved into the orphan.
+
 ## Key files (planned)
 
 - `src/server/orchestrator/claude-oauth-refresher.ts` — new module
@@ -401,3 +456,14 @@ event carries the accountId for docs/150 to consume.
 - `src/server/orchestrator/app-di.ts` — pass `providerAccountManager` into the refresher
 - `src/server/orchestrator/ws-handlers/agent-listeners.ts` — optional: route
   `auth_required` through `refresher.refreshNow()` before propagating to the client
+
+### Key files (addendum — live-home destruction)
+
+- `src/server/orchestrator/app-di.ts` — `resolveCredentialsDir`, `LIVE_CREDENTIALS_DIR`
+- `src/server/orchestrator/app-di-credentials.test.ts` — the default/refusal rules
+- `src/server/orchestrator/provider-account-manager.ts` —
+  `isSessionContainerCredentialRoot`, copy-then-verify migration
+- `src/server/orchestrator/provider-account-manager.test.ts` — `live-home safety`
+- `src/server/orchestrator/token-sync-manager.ts` — orphan discovery + rescue
+- `src/server/orchestrator/session-credentials-scaffold.ts` — never write through a
+  symlink at a credential destination

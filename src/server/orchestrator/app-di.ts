@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { DatabaseManager } from "../shared/database.js";
 import { GitManager } from "../shared/git.js";
@@ -33,6 +35,59 @@ import type { AgentId, AgentEvent, AgentProcess, RuntimeMode } from "../shared/t
  * "isTestMode ≠ runtimeMode === 'local'" note in docs/118.
  */
 export type { RuntimeMode } from "../shared/types.js";
+
+/**
+ * The production credentials volume. In the orchestrator's own container this
+ * is the shared credentials volume; **inside a session container it is that
+ * session's live agent home** — the dir holding the running CLI's
+ * `.claude/.credentials.json` and its conversation jsonl.
+ */
+export const LIVE_CREDENTIALS_DIR = "/credentials";
+
+/**
+ * Resolve the credentials root, refusing to hand the live volume to a test.
+ *
+ * `initializeManagers` constructs a {@link ProviderAccountManager}, whose
+ * constructor runs a one-shot legacy migration that *moves* `<credentialsDir>/
+ * .claude` and `.claude.json` into `provider-accounts/<provider>/<id>/`. That
+ * migration is guarded by "no accounts registered yet", which never fires in
+ * production but **always** fires against a fresh test database.
+ *
+ * So a test that passed `workspaceDir: tmpDir` but let `credentialsDir` default
+ * was pointing that migration at {@link LIVE_CREDENTIALS_DIR}. When the suite
+ * ran inside a ShipIt session container — i.e. every time the agent ran the
+ * tests on itself — the migration found the session's real credentials and
+ * renamed the agent's home out from under the running CLI. Every subsequent
+ * turn failed with "Not logged in · Please run /login", permanently, because
+ * nothing moved it back. It tracked *running the suite*, not subject matter,
+ * because the smoke tests alone were enough to trigger it.
+ *
+ * Two rules, both enforced here rather than at ~90 call sites:
+ *
+ *  - Under test mode an omitted `credentialsDir` gets a fresh temp dir, never
+ *    the live volume. Tests that don't care about credentials keep working
+ *    untouched; tests that do get a private root.
+ *  - Under test mode an *explicit* live path is a hard error. Nothing legitimate
+ *    needs it, and it is the one value that destroys the developer's session.
+ */
+export function resolveCredentialsDir(
+  credentialsDir: string | undefined,
+  isTestMode: boolean,
+): string {
+  if (!isTestMode) return credentialsDir ?? LIVE_CREDENTIALS_DIR;
+
+  if (credentialsDir === undefined) {
+    return fs.mkdtempSync(path.join(os.tmpdir(), "shipit-test-credentials-"));
+  }
+  if (path.resolve(credentialsDir) === LIVE_CREDENTIALS_DIR) {
+    throw new Error(
+      `Refusing to use the live credentials volume (${LIVE_CREDENTIALS_DIR}) in test mode: `
+        + `ProviderAccountManager's legacy migration would move the running agent's home out `
+        + `from under it. Pass a temp dir as credentialsDir, or omit it to get one.`,
+    );
+  }
+  return credentialsDir;
+}
 
 /** Read RUNTIME_MODE from process.env, defaulting to "containerized". */
 export function resolveRuntimeMode(): RuntimeMode {
@@ -213,10 +268,26 @@ export interface ManagerSet {
 export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   const {
     workspaceDir = "/workspace",
-    credentialsDir = "/credentials",
     serveStatic: shouldServeStatic = true,
     autoPushDebounceMs = 5000,
   } = deps;
+
+  // Resolved up here, not at the return: every manager below that touches
+  // credentials (CredentialStore, the secret cipher, the global git config,
+  // and above all ProviderAccountManager's destructive legacy migration) is
+  // constructed in between. See {@link resolveCredentialsDir}.
+  //
+  // NOTE: `serveStatic === false` is now load-bearing for CREDENTIAL SAFETY,
+  // not just for enabling test-only routes. It is what keeps a test from being
+  // handed {@link LIVE_CREDENTIALS_DIR} — i.e. the running agent's own home
+  // when the suite executes inside a session container. Every current test
+  // reaches this with `serveStatic: false`; a future one that doesn't would
+  // silently lose that protection (the in-container guard in
+  // `provider-account-manager.ts` still covers it, but that is the second
+  // layer, not the first). If this flag ever stops implying "under test",
+  // take an explicit signal here rather than widening its meaning.
+  const isTestMode = deps.serveStatic === false;
+  const credentialsDir = resolveCredentialsDir(deps.credentialsDir, isTestMode);
 
   // ---- Runtime mode ----
   // `containerized` = production (Docker per session). `local` = dogfooding
@@ -424,8 +495,6 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
       agent.run({ prompt, cwd, permissionMode: "auto" });
     });
   });
-
-  const isTestMode = deps.serveStatic === false;
 
   return {
     defaultAgentId,
