@@ -666,4 +666,64 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
 
     client.close();
   });
+
+  it("survives a tool_result whose content is a bare string while suppression is active", async () => {
+    // The Anthropic message schema permits `content` as a plain string, and the
+    // adapter passes `message.content` through untouched — so the suppression
+    // filter met a string and threw `TypeError: content.filter is not a
+    // function` out of the SSE parser mid-turn, stranding the turn and
+    // requeuing an unacknowledged steer (nikzlabs/shipit#1874). Nothing is
+    // suppressible in a string, so the event must pass through intact.
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "Pick one" });
+    await waitForClaude(() => lastClaude);
+
+    lastClaude.emit("event", {
+      type: "assistant",
+      message: {
+        content: [{
+          type: "tool_use",
+          id: "ask-string-1",
+          name: "AskUserQuestion",
+          input: {
+            questions: [{
+              question: "Pick a backend",
+              header: "Backend",
+              options: [{ label: "Redis", description: "" }],
+              multiSelect: false,
+            }],
+          },
+        }],
+      },
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(lastClaude.interrupted).toBe(true);
+
+    lastClaude.emit("event", {
+      type: "user",
+      message: { content: "plain string content" as unknown as unknown[] },
+    });
+
+    let sawStringToolResult = false;
+    const deadline = Date.now() + 200;
+    while (Date.now() < deadline) {
+      let msg;
+      try {
+        msg = await client.receive(80);
+      } catch {
+        break;
+      }
+      if (msg.type === "agent_event") {
+        const event = (msg as { event: { type: string; content?: unknown } }).event;
+        if (event.type === "agent_tool_result" && event.content === "plain string content") {
+          sawStringToolResult = true;
+        }
+      }
+    }
+    expect(sawStringToolResult).toBe(true);
+
+    client.close();
+  });
 });

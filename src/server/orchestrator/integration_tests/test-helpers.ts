@@ -858,6 +858,7 @@ interface RawClaudeEvent {
   tools?: string[];
   message?: { content?: unknown[] };
   subtype?: string;
+  is_error?: boolean;
   total_cost_usd?: number | null;
   usage?: {
     input_tokens?: number;
@@ -948,9 +949,11 @@ function mapClaudeEvent(raw: RawClaudeEvent): Record<string, unknown> | null {
           }
         }
       }
+      // Mirrors ClaudeAdapter: `is_error` (not `subtype`) is the failure flag.
+      const errored = raw.is_error === true || (raw.subtype !== undefined && raw.subtype !== "success");
       return {
         type: "agent_result",
-        status: raw.subtype,
+        status: errored ? "error" : "success",
         sessionId: raw.session_id,
         cost: raw.total_cost_usd !== null && raw.total_cost_usd !== undefined ? { totalUsd: raw.total_cost_usd } : undefined,
         tokens: u && (u.input_tokens !== undefined || u.output_tokens !== undefined)
@@ -964,7 +967,7 @@ function mapClaudeEvent(raw: RawClaudeEvent): Record<string, unknown> | null {
         contextTokens,
         contextWindow,
         durationMs: raw.duration_ms,
-        error: raw.subtype === "error" ? raw.result : undefined,
+        error: errored ? raw.result : undefined,
         permissionDenials: raw.permission_denials?.length
           ? raw.permission_denials.map((d) => ({
               toolName: d.tool_name,

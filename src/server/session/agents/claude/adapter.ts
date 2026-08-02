@@ -280,9 +280,19 @@ export class ClaudeAdapter
             }
           }
         }
+        // The CLI's `subtype` is not a success/failure flag: an API-error turn
+        // ends `subtype: "success"` with `is_error: true`, and the only
+        // non-success subtypes are `error_during_execution` (an interrupt) and
+        // `error_max_turns`. `"error"` — what this used to test for — is a
+        // value the real CLI never emits, so `error` here was ALWAYS undefined
+        // and everything gated on it was dead in production: the docs/182
+        // turn-errored flag and the docs/150 req 7 quota-exhaustion stamp that
+        // makes the next turn fail over to another account. Normalize both
+        // signals into the adapter-neutral success/error status instead.
+        const errored = raw.is_error === true || raw.subtype !== "success";
         return {
           type: "agent_result",
-          status: raw.subtype,
+          status: errored ? "error" : "success",
           sessionId: raw.session_id,
           cost: raw.total_cost_usd !== null && raw.total_cost_usd !== undefined
             ? { totalUsd: raw.total_cost_usd }
@@ -298,7 +308,7 @@ export class ClaudeAdapter
           contextTokens,
           contextWindow,
           durationMs: raw.duration_ms,
-          error: raw.subtype === "error" ? raw.result : undefined,
+          error: errored ? raw.result : undefined,
           // docs/138 — normalize the CLI's snake_case classifier denials into
           // the camelCase shape the orchestrator consumes for inline surfacing.
           permissionDenials: raw.permission_denials?.length

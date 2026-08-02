@@ -27,6 +27,7 @@ const AUTH_ERROR_PATTERNS = [
   "sign in",
   "invalid authentication credentials",
   "authentication_error",
+  "authentication_failed",
   "invalid api key",
   "invalid x-api-key",
 ];
@@ -38,13 +39,74 @@ export function textIndicatesAuthFailure(text: string): boolean {
 }
 
 /**
- * True when a parsed event is an error `result` whose message indicates an auth
- * failure (the runtime-401 case). Other event types and successful results are
- * ignored.
+ * True when a `result` event reports a FAILED turn — `is_error` is the
+ * authoritative flag, not `subtype`. The CLI ends an API-error turn with
+ * `subtype: "success"` and `is_error: true`; the only non-success subtypes it
+ * emits are `error_during_execution` (an interrupt) and `error_max_turns`.
+ * Verified against CLI 2.1.219.
+ */
+export function resultEventIsError(event: ClaudeEvent): boolean {
+  if (event.type !== "result") return false;
+  return event.is_error === true || event.subtype !== "success";
+}
+
+/**
+ * True when a parsed event is a FAILED `result` whose message indicates an auth
+ * failure (the runtime-401 case). Successful results are ignored — that matters
+ * because {@link AUTH_ERROR_PATTERNS} contains generic words ("oauth",
+ * "sign in") a legitimate final answer could contain.
+ *
+ * This gated on `subtype === "error"` until now — a value the real CLI never
+ * emits — so no auth failure was ever detected here in production: no
+ * `auth_required`, hence no docs/179 quiet retry, no refresher nudge, and no
+ * sign-in card. The turn instead "succeeded" carrying the CLI's own
+ * `Not logged in · Please run /login` text, and the user had to re-send.
  */
 export function resultEventIndicatesAuthFailure(event: ClaudeEvent): boolean {
-  if (event.type !== "result" || event.subtype !== "error") return false;
+  if (!resultEventIsError(event) || event.type !== "result") return false;
   return typeof event.result === "string" && textIndicatesAuthFailure(event.result);
+}
+
+/**
+ * True when a parsed event is the CLI's SYNTHETIC assistant message for an auth
+ * failure — the first thing an unauthenticated turn emits, ahead of the result
+ * event. It is an error envelope, not model output, so the caller both raises
+ * `auth_required` from it (recovering a turn earlier than the result event
+ * would) and drops it: rendering it would put "Please run /login" in the
+ * transcript as the agent's reply, which is not an instruction a ShipIt user
+ * can act on — there is no CLI to run it in.
+ *
+ * Requires `is_api_error_message`, so a model that merely *talks about* signing
+ * in can't trip it. Other API errors (quota, overload) carry the same flag with
+ * a different `error` code and are deliberately left alone.
+ */
+export function assistantEventIndicatesAuthFailure(event: ClaudeEvent): boolean {
+  if (event.type !== "assistant" || event.is_api_error_message !== true) return false;
+  if (typeof event.error === "string" && textIndicatesAuthFailure(event.error)) return true;
+  return event.message.content.some(
+    (block) => block.type === "text" && textIndicatesAuthFailure(block.text),
+  );
+}
+
+/**
+ * Shared auth-failure gate for the two drain loops. Raises `auth_required` via
+ * `emitAuthRequired` and reports whether the event must be SWALLOWED rather
+ * than forwarded.
+ *
+ * Both of the CLI's auth-failure events are swallowed, because an auth failure
+ * ends the turn and ShipIt — not the CLI — owns what the user sees next: either
+ * the docs/179 quiet heal-and-retry (where a half-rendered failed turn would
+ * flicker in and then have to be undone) or the sign-in card. This is already
+ * the shape the rest of the system expects: a turn that dies on the stderr auth
+ * path emits no `agent_result` either, and `turn-executor` documents that an
+ * auth-required turn legitimately ends without one.
+ */
+function consumeAuthFailureEvent(event: ClaudeEvent, emitAuthRequired: () => void): boolean {
+  if (!assistantEventIndicatesAuthFailure(event) && !resultEventIndicatesAuthFailure(event)) {
+    return false;
+  }
+  emitAuthRequired();
+  return true;
 }
 
 export interface ClaudeRunOptions {
@@ -381,9 +443,12 @@ export class ClaudeProcess extends EventEmitter {
       if (!trimmed) continue;
       try {
         const event = JSON.parse(trimmed) as ClaudeEvent;
-        // docs/142 A1 — a runtime 401 arrives as an error `result` event, not a
-        // stderr line; surface it as an auth failure so the session re-auths.
-        if (resultEventIndicatesAuthFailure(event)) this.emit("auth_required");
+        // docs/142 A1, docs/179 — an auth failure arrives as structured events,
+        // not a stderr line: a synthetic assistant message carrying the CLI's
+        // "Please run /login" text, then a result flagged `is_error`. Surface it
+        // as an auth failure so the session heals + retries, and swallow the
+        // CLI's own error copy.
+        if (consumeAuthFailureEvent(event, () => this.emit("auth_required"))) continue;
         this.emit("event", event);
       } catch {
         // Not valid JSON — relay as log output.
@@ -691,10 +756,11 @@ export class StreamingClaudeProcess extends EventEmitter {
           // Turn ended — arm watchdog for next potential turn; don't kill process
           this.clearWatchdog();
         }
-        // docs/142 A1 — a runtime 401 comes through as an error `result` event;
-        // surface it as an auth failure so the session re-auths instead of the
-        // turn dying as a generic error.
-        if (resultEventIndicatesAuthFailure(event)) this.emit("auth_required");
+        // docs/142 A1, docs/179 — an auth failure comes through as structured
+        // events (synthetic assistant message + `is_error` result), not as
+        // stderr; surface it as an auth failure so the session re-auths instead
+        // of the turn "succeeding" with the CLI's /login text as its reply.
+        if (consumeAuthFailureEvent(event, () => this.emit("auth_required"))) continue;
         this.emit("event", event);
       } catch {
         if (textIndicatesAuthFailure(trimmed)) {

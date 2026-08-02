@@ -261,6 +261,67 @@ describe("ClaudeProcess", () => {
         expect(authRequired).toBe(true);
       }
     });
+
+    it("raises auth_required from the structured events a real unauthenticated run emits", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      const events: unknown[] = [];
+      let authRequiredCount = 0;
+      claude.on("event", (e) => events.push(e));
+      claude.on("auth_required", () => { authRequiredCount += 1; });
+
+      claude.run({ prompt: "test" });
+
+      // Verbatim shape from CLI 2.1.219: a synthetic assistant message, then a
+      // result whose `subtype` is "success" and whose `is_error` is true. Both
+      // used to slip through as ordinary turn content, so the CLI's own
+      // "run /login" line was rendered as the agent's reply.
+      mockProc.simulateData(
+        `${JSON.stringify({
+          type: "assistant",
+          message: { content: [{ type: "text", text: "Not logged in · Please run /login" }] },
+          error: "authentication_failed",
+          is_api_error_message: true,
+        })}\n${JSON.stringify({
+          type: "result",
+          subtype: "success",
+          is_error: true,
+          terminal_reason: "api_error",
+          session_id: "abc",
+          result: "Not logged in · Please run /login",
+        })}\n`,
+      );
+
+      expect(authRequiredCount).toBe(2);
+      // Neither is forwarded: ShipIt owns the recovery and the sign-in copy.
+      expect(events).toEqual([]);
+    });
+
+    it("still forwards a normal assistant message and a clean result", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      const events: unknown[] = [];
+      let authRequired = false;
+      claude.on("event", (e) => events.push(e));
+      claude.on("auth_required", () => { authRequired = true; });
+
+      claude.run({ prompt: "test" });
+      mockProc.simulateData(
+        `${JSON.stringify({
+          type: "assistant",
+          message: { content: [{ type: "text", text: "Added the sign in button." }] },
+        })}\n${JSON.stringify({
+          type: "result", subtype: "success", session_id: "abc", result: "Added the sign in button.",
+        })}\n`,
+      );
+
+      expect(authRequired).toBe(false);
+      expect(events).toHaveLength(2);
+    });
   });
 
   describe("spawn arguments", () => {
