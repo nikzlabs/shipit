@@ -102,11 +102,69 @@ export function perSessionCredentialsSubpath(sessionId: string): string {
   return path.posix.join(SESSION_CREDENTIALS_SUBDIR, sessionId);
 }
 
+/**
+ * Drop a symlink sitting AT a credential destination so the copy that follows
+ * materializes a real file/dir there.
+ *
+ * `fs.cpSync`'s `dereference` option governs the SOURCE only; it says nothing
+ * about a symlink at the destination, and neither outcome is survivable:
+ *
+ *   - The link RESOLVES on the orchestrator — `cpSync` follows it and writes
+ *     THROUGH it. The flat `<sessionDir>/<rel>` never becomes a real dir, and
+ *     the credential lands wherever the link pointed. That is how a session is
+ *     born with its `.credentials.json` nested under
+ *     `<sessionDir>/provider-accounts/<provider>/<account>/.claude/` instead of
+ *     at `<sessionDir>/.claude/`. It still *works* at first — the agent CLI
+ *     follows the same link in its own namespace, so it reads the same nested
+ *     file and can grow a whole conversation there — right up until the link is
+ *     replaced by a real dir (any later repair pass, including this one). At
+ *     that instant the credential AND the conversation leave the CLI's view in
+ *     one step and every subsequent turn 401s.
+ *   - The link DANGLES — `cpSync` throws EEXIST, provisioning fails, and the
+ *     session gets no credentials at all. `prepareSessionAgentEnvironment`
+ *     catches and warns, so this is quiet too.
+ *
+ * `rmSync` on a symlink unlinks the LINK, never the target — the orphaned
+ * subtree the link pointed at stays on disk, and the per-turn repair
+ * (`materializeLeakedSubtreeSymlinks`, which runs one step later in
+ * `prepareSessionAgentEnvironment`) discovers it and merges its credential and
+ * conversation back into the real dir. So the two halves compose: this stops
+ * the orphan being CREATED, that one recovers any already created.
+ *
+ * `recursive: true` is required for the symlink-to-directory case: Node.js
+ * 24.13.0 throws ERR_FS_EISDIR without it (same constraint the leak repair
+ * documents). Only the FINAL path component is materialized, which covers every
+ * entry in {@link AGENT_CREDENTIAL_PATHS} and {@link SHARED_CREDENTIAL_PATHS} —
+ * all single-segment. A future multi-segment `rel` would need its parents
+ * checked too.
+ */
+function materializeCredentialDestination(dest: string): void {
+  const stat = fs.lstatSync(dest, { throwIfNoEntry: false });
+  if (!stat?.isSymbolicLink()) return;
+  // Read the target before unlinking: it names the tree the agent CLI has been
+  // reading and writing, which is the one piece of forensics worth having when
+  // this fires. Best-effort — the removal matters, the log line does not.
+  let target = "?";
+  try {
+    target = fs.readlinkSync(dest);
+  } catch {
+    // Unreadable link — still remove it.
+  }
+  fs.rmSync(dest, { recursive: true, force: true });
+  console.warn(
+    `[session-credentials] removed symlink at credential destination ${dest} -> ${target}; `
+      + `materializing a real path instead. Any state under the old target is recovered by the `
+      + `per-turn orphan repair (docs/153).`,
+  );
+}
+
 /** Copy a single credential path (file or dir) from the source root into dest, overwriting. */
 export function copyCredentialPath(srcRoot: string, destRoot: string, rel: string): void {
   const src = path.join(srcRoot, rel);
   if (!fs.existsSync(src)) return; // e.g. Codex never logged in — no .codex
   const dest = path.join(destRoot, rel);
+  // Never write THROUGH a symlink at the destination — see the function's doc.
+  materializeCredentialDestination(dest);
   // `dereference: true` materializes any symlinks at or under `src` as real
   // files in `dest`. docs/150 added legacy-alias symlinks at the credentials
   // root (e.g. `<credentialsDir>/.claude` → `provider-accounts/.../.claude`),
