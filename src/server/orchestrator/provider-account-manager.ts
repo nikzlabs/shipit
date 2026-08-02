@@ -125,6 +125,11 @@ export class ProviderAccountManager {
   migrateDefaultAccounts(): void {
     this.migrateProviderDefault("claude", "claude-default", "Primary Anthropic account");
     this.migrateProviderDefault("codex", "codex-default", "Primary ChatGPT account");
+    // req 19 — runs here rather than as separate boot wiring because this is
+    // already the "bring stored accounts up to the current shape" entry point,
+    // and both of its callers (boot, and the post-sign-in re-registration) want
+    // the invariant. Idempotent, so the second call is free.
+    this.backfillPriority();
   }
 
   /**
@@ -144,30 +149,68 @@ export class ProviderAccountManager {
    * Sorting at the source instead of at the ~8 wire boundaries means a new
    * broadcast site cannot reintroduce it by forgetting to sort.
    *
-   * Rows written before `priority` existed have none. Those keep exactly the
-   * previous behaviour — primary first, then stored order — so an install that
-   * has never used the reorder control sees no change in which account its
-   * turns run on. Once the user reorders, every row carries an explicit value
-   * and this mixed state is gone.
+   * docs/150 req 19 — `isPrimary` is **derived here**, not read from disk.
+   * "Primary" only ever meant "first in the fallback order": `makePrimary` is
+   * implemented as a `reorder`, and `reorder` wrote `isPrimary: index === 0`.
+   * Two fields encoding one fact is two fields that can disagree, so the
+   * stored flag is now ignored on read and stamped from position instead. The
+   * wire shape is unchanged, so the client still reads `account.isPrimary`.
+   *
+   * A row with no `priority` sorts after every row that has one, by stored
+   * order. In practice there are none — {@link backfillPriority} runs at boot
+   * and `create` always assigns one — but sorting them last beats treating a
+   * missing value as 0 and silently promoting a legacy row to primary.
    */
   list(provider?: AgentId): ProviderAccount[] {
     if (!provider) {
       return (["claude", "codex"] as AgentId[]).flatMap((id) => this.list(id));
     }
-    const accounts = this.credentialStore.listProviderAccounts(provider);
-    const primaryId = this.credentialStore.getPrimaryProviderAccount(provider)?.id;
-    return accounts
+    return this.credentialStore.listProviderAccounts(provider)
       .map((account, index) => ({ account, index }))
-      .sort((a, b) => rankForOrder(a, primaryId) - rankForOrder(b, primaryId) || a.index - b.index)
-      .map((entry) => entry.account);
+      .sort((a, b) => rankForOrder(a) - rankForOrder(b) || a.index - b.index)
+      .map((entry, index) => ({ ...entry.account, isPrimary: index === 0 }));
   }
 
   get(provider: AgentId, accountId: string): ProviderAccount | undefined {
-    return this.credentialStore.getProviderAccount(provider, accountId);
+    // Through `list` so `isPrimary` is the derived value, not the stale stored
+    // one — a caller must not see a different answer depending on which
+    // accessor it happened to use.
+    return this.list(provider).find((account) => account.id === accountId);
   }
 
+  /** The account at the head of the fallback order, if any. */
   getPrimary(provider: AgentId): ProviderAccount | undefined {
-    return this.credentialStore.getPrimaryProviderAccount(provider);
+    return this.list(provider)[0];
+  }
+
+  /**
+   * docs/150 req 19 — give every stored row an explicit `priority`, once.
+   *
+   * Rows minted before `priority` existed (and the migrated `claude-default` /
+   * `codex-default` rows) have none, which forced {@link list} to carry a
+   * second ordering rule — "primary first, then stored order" — as a
+   * compatibility branch. Backfilling from the order those rows *currently*
+   * resolve to means the fallback order is unchanged for every existing
+   * install, and the branch can go.
+   *
+   * Idempotent: a provider whose rows all have `priority` is not touched, so
+   * this is a no-op on every boot after the first.
+   */
+  backfillPriority(): void {
+    for (const provider of ["claude", "codex"] as AgentId[]) {
+      const stored = this.credentialStore.listProviderAccounts(provider);
+      if (stored.length === 0 || stored.every((a) => typeof a.priority === "number")) continue;
+      // The order these rows resolve to TODAY, under the legacy rule, so the
+      // backfill records what the user already had rather than reshuffling it.
+      const primaryId = stored.find((a) => a.isPrimary)?.id ?? stored[0]?.id;
+      const ordered = stored
+        .map((account, index) => ({ account, index }))
+        .sort((a, b) => legacyRank(a, primaryId) - legacyRank(b, primaryId) || a.index - b.index)
+        .map((entry) => entry.account);
+      ordered.forEach((account, index) => {
+        this.credentialStore.upsertProviderAccount({ ...account, priority: index });
+      });
+    }
   }
 
   /**
@@ -199,10 +242,10 @@ export class ProviderAccountManager {
     }
     orderedIds.forEach((id, index) => {
       const account = accounts.find((a) => a.id === id)!;
-      // `isPrimary` stays in step with position 0 so the badge, the disabled
-      // "make primary" button, and the order can't disagree about which account
-      // leads. `upsertProviderAccount` clears the flag from the others.
-      this.credentialStore.upsertProviderAccount({ ...account, priority: index, isPrimary: index === 0 });
+      // req 19 — `priority` is the whole record of the order. `isPrimary` used
+      // to be written in step with position 0 here; it is derived on read now,
+      // so writing it would just be a second copy that can drift.
+      this.credentialStore.upsertProviderAccount({ ...account, priority: index });
     });
     return this.accountsInSelectionOrder(provider);
   }
@@ -214,7 +257,8 @@ export class ProviderAccountManager {
       id: `acct_${randomUUID()}`,
       provider,
       label: normalizeLabel(label) ?? `${PROVIDER_LABEL[provider]} account ${existing.length + 1}`,
-      isPrimary: existing.length === 0,
+      // req 19 — derived from position on read; see `list`.
+      isPrimary: false,
       // req 2 — a newly connected account APPENDS to the fallback order. If it
       // were inserted anywhere else, connecting an account would silently
       // change which subscription existing work runs on.
@@ -245,7 +289,7 @@ export class ProviderAccountManager {
    * Promote an account to the front of the fallback order. Kept as its own verb
    * (rather than "reorder with this id first") because it is the one-click
    * affordance the account rows already offer, and expressing it through
-   * `reorder` keeps `priority` and `isPrimary` from drifting apart.
+   * `reorder` means "primary" has exactly one definition: position 0.
    */
   makePrimary(provider: AgentId, accountId: string): ProviderAccount {
     this.require(provider, accountId);
@@ -626,7 +670,10 @@ export class ProviderAccountManager {
       id: accountId,
       provider,
       label,
-      isPrimary: true,
+      // req 19 — the migrated row is the only account at migration time, so it
+      // leads the order. `isPrimary` is derived from that on read.
+      isPrimary: false,
+      priority: 0,
       status: "ready",
       capabilities: {
         source: "manual_default",
@@ -740,7 +787,22 @@ function isOverCutoff(
  * An explicit `priority` wins; without one, the legacy primary leads and
  * everything else falls back to stored order.
  */
-function rankForOrder(
+/**
+ * docs/150 req 2 — the fallback order is `priority`, ascending. A row without
+ * one sorts last (see {@link ProviderAccountManager.list}); `backfillPriority`
+ * means there shouldn't be any.
+ */
+function rankForOrder(entry: { account: ProviderAccount }): number {
+  return entry.account.priority ?? Number.POSITIVE_INFINITY;
+}
+
+/**
+ * The pre-`priority` ordering rule — primary first, then stored order — kept
+ * ONLY to seed {@link ProviderAccountManager.backfillPriority}, so the
+ * one-time backfill records the order an existing install already had instead
+ * of reshuffling it. Nothing on the read path uses this.
+ */
+function legacyRank(
   entry: { account: ProviderAccount; index: number },
   primaryId: string | undefined,
 ): number {

@@ -520,16 +520,65 @@ describe("ProviderAccountManager", () => {
     });
 
     // Rows written before `priority` existed must keep behaving exactly as they
-    // did, or an upgrade would silently move which account turns run on.
-    it("falls back to primary-then-stored-order for rows with no stored priority", () => {
-      const { mgr, ids } = threeReady();
+    // did, or an upgrade would silently move which account turns run on. That
+    // used to be a read-time fallback; docs/150 req 19 replaces it with a
+    // one-time backfill, so the guarantee is asserted against the backfill.
+    const stripPriority = (mgr: ProviderAccountManager, ids: string[], primaryId: string): void => {
       for (const id of ids) {
         const account = mgr.get("claude", id)!;
         const { priority: _dropped, ...legacy } = account;
-        store.upsertProviderAccount({ ...legacy, isPrimary: id === ids[1] });
+        store.upsertProviderAccount({ ...legacy, isPrimary: id === primaryId });
       }
+    };
 
-      expect(mgr.accountsInSelectionOrder("claude").map((a) => a.id)).toEqual([ids[1], ids[0], ids[2]]);
+    it("backfills priority from the order legacy rows already resolved to", () => {
+      const { mgr, ids } = threeReady();
+      stripPriority(mgr, ids as string[], ids[1]!);
+
+      mgr.backfillPriority();
+
+      // Same order the old primary-then-stored-order rule produced.
+      expect(mgr.list("claude").map((a) => a.id)).toEqual([ids[1], ids[0], ids[2]]);
+      expect(mgr.list("claude").map((a) => a.priority)).toEqual([0, 1, 2]);
+      // And it is now recorded, so the legacy rule is never needed again.
+      expect(store.listProviderAccounts("claude").every((a) => typeof a.priority === "number")).toBe(true);
+    });
+
+    it("backfill is idempotent and does not disturb an explicit order", () => {
+      const { mgr, ids } = threeReady();
+      mgr.reorder("claude", [ids[2]!, ids[0]!, ids[1]!]);
+
+      mgr.backfillPriority();
+      mgr.backfillPriority();
+
+      expect(mgr.list("claude").map((a) => a.id)).toEqual([ids[2], ids[0], ids[1]]);
+    });
+
+    // req 19 — one fact, one field. `isPrimary` is position 0, always.
+    it("derives isPrimary from position rather than the stored flag", () => {
+      const { mgr, ids } = threeReady();
+      // Poison the stored flag: claim the LAST row is primary.
+      const last = mgr.get("claude", ids[2]!)!;
+      store.upsertProviderAccount({ ...last, isPrimary: true });
+
+      const rows = mgr.list("claude");
+      expect(rows.map((a) => a.isPrimary)).toEqual([true, false, false]);
+      expect(rows[0]!.id).toBe(ids[0]);
+      // Every accessor agrees — a caller must not get a different answer
+      // depending on which one it reached for.
+      expect(mgr.get("claude", ids[0]!)?.isPrimary).toBe(true);
+      expect(mgr.get("claude", ids[2]!)?.isPrimary).toBe(false);
+      expect(mgr.getPrimary("claude")?.id).toBe(ids[0]);
+    });
+
+    it("moves the primary badge with the order", () => {
+      const { mgr, ids } = threeReady();
+      expect(mgr.getPrimary("claude")?.id).toBe(ids[0]);
+
+      mgr.makePrimary("claude", ids[2]!);
+
+      expect(mgr.getPrimary("claude")?.id).toBe(ids[2]);
+      expect(mgr.list("claude").map((a) => a.isPrimary)).toEqual([true, false, false]);
     });
   });
 
