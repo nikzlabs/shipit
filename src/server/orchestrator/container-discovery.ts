@@ -1,5 +1,5 @@
 /**
- * Container discovery — rediscover running containers and clean up orphans.
+ * Container discovery — recover active containers and clean up orphans.
  *
  * Extracted from SessionContainerManager for single-responsibility modules.
  */
@@ -60,12 +60,13 @@ function logAdoptedWorkerBuild(
 // ---------------------------------------------------------------------------
 
 /**
- * Rediscover running containers from a previous orchestrator run.
+ * Rediscover containers from a previous orchestrator run.
  * After restart, the in-memory containers map is empty even though Docker
- * containers keep running. This function queries Docker for containers with
- * the shipit-session label, and for each running container whose session ID
- * is in the active set, populates the map so the runner factory can
- * reconnect to them instead of creating duplicates.
+ * containers normally keep running. A container may also have stopped during
+ * the update window (for example after a worker crash while the old
+ * orchestrator was unavailable). For every container whose session is still
+ * active, restart it when necessary and populate the map so the runner factory
+ * can reconnect instead of creating a duplicate on the next activation.
  */
 export async function rediscoverContainers(
   deps: DiscoveryDeps,
@@ -86,16 +87,27 @@ export async function rediscoverContainers(
       const sessionId = ci.Labels?.[CONTAINER_SESSION_ID_LABEL];
       if (!sessionId || !activeSessionIds.has(sessionId)) continue;
       if (deps.containers.has(sessionId)) continue;
-      if (ci.State !== "running") continue;
       try {
         const container = deps.docker.getContainer(ci.Id);
+        const wasRunning = ci.State === "running";
+        const resolved = sessionInfoResolver?.(sessionId);
+        // Resolve the workspace before reviving a stopped container. Without a
+        // valid bind-mount target we cannot safely adopt it, and starting it
+        // would leave an unmanaged worker behind.
+        if (!resolved?.workspaceDir) continue;
+        if (!wasRunning) {
+          console.log(`[adopt] restarting stopped session container ${ci.Id.slice(0, 12)} for ${sessionId}`);
+          await container.start();
+        }
         const info = await container.inspect();
+        // `start()` can succeed even when the process exits immediately. Only
+        // publish a worker URL for a container that survived startup.
+        if (!wasRunning && !info.State?.Running) {
+          console.error(`[adopt] session container ${ci.Id.slice(0, 12)} for ${sessionId} stopped again during startup`);
+          continue;
+        }
         const networkInfo = info.NetworkSettings?.Networks?.[deps.networkName];
         if (!networkInfo?.IPAddress) continue;
-        const resolved = sessionInfoResolver?.(sessionId);
-        // Skip containers whose session info can't be resolved — without a
-        // valid workspace dir, bind mount validation would be unsafe
-        if (!resolved?.workspaceDir) continue;
         const dockerAccess = resolved.dockerAccess;
         deps.containers.set(sessionId, {
           id: ci.Id,
@@ -114,8 +126,10 @@ export async function rediscoverContainers(
         }
         logAdoptedWorkerBuild(sessionId, ci.Id, ci.Labels);
         count++;
-      } catch {
-        // Container may have exited between list and inspect
+      } catch (err) {
+        // Container may have exited between list/start and inspect. Keep booting
+        // other sessions, but leave a breadcrumb for the failed recovery.
+        console.error(`[adopt] failed to recover session container ${ci.Id.slice(0, 12)} for ${sessionId}:`, err);
       }
     }
   } catch {

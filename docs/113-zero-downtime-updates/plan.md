@@ -74,6 +74,12 @@ docs/240 and is kept as the option analysis of record):
   label (last instruction, so the per-deploy ARG doesn't bust layer cache),
   and container adoption (`container-discovery.ts`) logs the adopted worker's
   build vs the orchestrator's, flagging skew.
+- **Stopped-worker recovery (2026-08-02).** Boot-time rediscovery now starts a
+  stopped/exited container when it still belongs to a valid session, then
+  adopts it only after Docker confirms it remained running. This closes the
+  update-window gap where a worker that stopped while the orchestrator was
+  being replaced remained stranded until a user manually rescued the session.
+  Orphans and sessions whose workspace cannot be resolved are never started.
 - **User-visible skew indication landed in docs/242.** The same immutable build
   identity now reaches the active session over a scoped runtime WS signal. A
   stale worker shows an inline chat warning and reuses the agent-only restart

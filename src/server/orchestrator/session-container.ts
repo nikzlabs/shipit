@@ -1008,12 +1008,10 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   }
 
   /**
-   * Rediscover running containers from a previous orchestrator run.
+   * Rediscover containers from a previous orchestrator run.
    * After restart, the in-memory containers map is empty even though Docker
-   * containers keep running. This method queries Docker for containers with
-   * the shipit-session label, and for each running container whose session ID
-   * is in the active set, populates the map so the runner factory can
-   * reconnect to them instead of creating duplicates.
+   * containers normally keep running. Stopped containers belonging to active
+   * sessions are restarted before adoption so an update cannot strand them.
    */
   async rediscover(
     activeSessionIds: Set<string>,

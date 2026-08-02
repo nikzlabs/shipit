@@ -7,7 +7,11 @@
  * instead of force-disposing the runner and leaking the container.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { adoptRunningContainer, type DiscoveryDeps } from "./container-discovery.js";
+import {
+  adoptRunningContainer,
+  rediscoverContainers,
+  type DiscoveryDeps,
+} from "./container-discovery.js";
 import {
   CONTAINER_SESSION_ID_LABEL,
   CONTAINER_STANDBY_LABEL,
@@ -25,6 +29,9 @@ interface FakeContainerSpec {
   standby?: boolean;
   buildId?: string;
   inspectThrows?: boolean;
+  startThrows?: boolean;
+  exitsOnStart?: boolean;
+  starts?: number;
 }
 
 function makeFakeDocker(specs: FakeContainerSpec[]) {
@@ -45,10 +52,17 @@ function makeFakeDocker(specs: FakeContainerSpec[]) {
         }));
     },
     getContainer: (id: string) => ({
+      start: async () => {
+        const spec = specs.find((s) => s.id === id);
+        if (!spec || spec.startThrows) throw new Error("start failed");
+        spec.starts = (spec.starts ?? 0) + 1;
+        spec.state = spec.exitsOnStart ? "exited" : "running";
+      },
       inspect: async () => {
         const spec = specs.find((s) => s.id === id);
         if (!spec || spec.inspectThrows) throw new Error("inspect failed");
         return {
+          State: { Running: spec.state === "running" },
           NetworkSettings: {
             Networks: spec.ip ? { [NETWORK]: { IPAddress: spec.ip } } : {},
           },
@@ -80,6 +94,51 @@ function makeDeps(specs: FakeContainerSpec[]): {
 }
 
 const resolver = (sid: string) => ({ workspaceDir: `/ws/${sid}`, dockerAccess: false });
+
+describe("rediscoverContainers", () => {
+  it("restarts and adopts a stopped container for an active session", async () => {
+    const specs: FakeContainerSpec[] = [
+      { id: "c1", sessionId: "sess-1", state: "exited", ip: "172.18.0.4" },
+    ];
+    const { deps, containers } = makeDeps(specs);
+
+    const count = await rediscoverContainers(deps, new Set(["sess-1"]), resolver);
+
+    expect(count).toBe(1);
+    expect(specs[0].starts).toBe(1);
+    expect(containers.get("sess-1")).toMatchObject({
+      id: "c1",
+      status: "running",
+      workerUrl: "http://172.18.0.4:9100",
+    });
+  });
+
+  it("does not restart a stopped orphan or a session without a resolvable workspace", async () => {
+    const specs: FakeContainerSpec[] = [
+      { id: "orphan", sessionId: "gone", state: "exited", ip: "172.18.0.5" },
+      { id: "unresolved", sessionId: "active", state: "exited", ip: "172.18.0.6" },
+    ];
+    const { deps, containers } = makeDeps(specs);
+
+    expect(await rediscoverContainers(deps, new Set(["active"]), () => undefined)).toBe(0);
+    expect(specs.map((spec) => spec.starts ?? 0)).toEqual([0, 0]);
+    expect(containers.size).toBe(0);
+  });
+
+  it("does not adopt a container that exits again immediately after restart", async () => {
+    const specs: FakeContainerSpec[] = [
+      { id: "c1", sessionId: "sess-1", state: "exited", ip: "172.18.0.4", exitsOnStart: true },
+    ];
+    const { deps, containers } = makeDeps(specs);
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    expect(await rediscoverContainers(deps, new Set(["sess-1"]), resolver)).toBe(0);
+    expect(specs[0].starts).toBe(1);
+    expect(containers.size).toBe(0);
+    expect(error).toHaveBeenCalledWith(expect.stringContaining("stopped again during startup"));
+    error.mockRestore();
+  });
+});
 
 describe("adoptRunningContainer", () => {
   let errSpy: ReturnType<typeof vi.spyOn>;
