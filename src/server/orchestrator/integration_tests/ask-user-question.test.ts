@@ -14,6 +14,7 @@ import {
   StubAuthManager,
   FakeClaudeProcess,
   waitForClaude,
+  waitFor,
   createTestCredentialStore,
   createTestDatabaseManager,
   createTestSession,
@@ -124,7 +125,10 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
 
     // Now Claude is null — send an answer
     client.send({ type: "answer_question", toolUseId: "tool-2", answers: { "0": "PostgreSQL" } });
-    await new Promise((r) => setTimeout(r, 50));
+    // Poll for the respawn instead of betting on 50 ms: spawning goes through
+    // `createSessionDir()`'s async mkdir, which a loaded machine stretches
+    // well past that budget.
+    await waitForClaude(() => lastClaude, firstClaude);
 
     // A new ClaudeProcess should have been created
     expect(lastClaude).not.toBe(firstClaude);
@@ -458,7 +462,9 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
       answers: { "0": "Redis" },
       text: "Redis",
     });
-    await new Promise((r) => setTimeout(r, 50));
+    // Poll for the answer reaching the resident process rather than betting on
+    // 50 ms — delivery goes through the WS handler and the runner registry.
+    await waitFor(() => claude.stdinData.includes("Redis"), "answer delivered to stdin");
     // Reused process — not killed, not respawned, answer delivered.
     expect(claude.killed).toBe(false);
     expect(lastClaude).toBe(claude);

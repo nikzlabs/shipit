@@ -289,9 +289,16 @@ describe("auto-create PR after meaningful turn", () => {
       });
       claude2.finish("agent-session-1");
 
-      // Quiet-period drain so the "no 'creating' event" assertion doesn't
-      // sit on a full timeout.
-      const messages = await client.drain({ quietMs: 250 });
+      // Wait for the 'ready' phase before asserting, rather than draining a
+      // fixed quiet period: `drain({ quietMs: 250 })` returns on the first
+      // 250 ms gap, which on a loaded machine lands before the post-turn PR
+      // flow has emitted anything at all (observed as `expected [] to include
+      // 'ready'`). The quiet tail inside `collectUntil` still gives the
+      // "no 'creating' event" assertion its let-time-pass window.
+      const messages = await client.collectUntil(
+        (m) => m.type === "pr_lifecycle_update" && (m as { phase?: string }).phase === "ready",
+        { quietMs: 250 },
+      );
       const phases = messages
         .filter((m) => m.type === "pr_lifecycle_update")
         .map((m) => (m as { phase: string }).phase);
