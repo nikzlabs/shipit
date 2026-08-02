@@ -265,4 +265,29 @@ describe("ClaudeLimitsProvider account routing", () => {
 
     expect(getAccessToken).toHaveBeenCalledWith(undefined);
   });
+
+  // docs/150 req 19 — `fetch()` reads the plan label through the same door.
+  // It stayed unscoped after `doRefresh` was fixed, so each pill was labelled
+  // with whatever the singleton root held: the migrated default's plan for
+  // every account, and nothing at all once the aliases were retired.
+  it("reads each account's plan label from that account's credentials", async () => {
+    const getAccessToken = vi.fn().mockResolvedValue({
+      token: "tok", source: "file", expiresAt: null, plan: "Max 20x",
+    });
+    const provider = new ClaudeLimitsProvider({
+      authManager: { getAccessToken },
+      fetchImpl: vi.fn().mockResolvedValue(okUsage) as unknown as typeof fetch,
+      listAccountRouteIds: () => ["acct-work"],
+      credentialDirForRoute: (routeId) =>
+        routeId === "acct-work" ? "/credentials/provider-accounts/claude/acct-work" : undefined,
+    });
+
+    await provider.refreshNow("manual", "acct-work");
+    getAccessToken.mockClear();
+
+    const snap = await provider.fetch("acct-work");
+
+    expect(getAccessToken).toHaveBeenCalledWith("/credentials/provider-accounts/claude/acct-work");
+    expect(snap?.plan).toBe("Max 20x");
+  });
 });

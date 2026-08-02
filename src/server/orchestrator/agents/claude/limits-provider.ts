@@ -147,8 +147,13 @@ export class ClaudeLimitsProvider implements LimitsProvider {
     if (!eventLatest && !apiLatest) return null;
 
     // Plan tier isn't in either payload — derive from the credentials file.
+    // Account-scoped for the same reason `doRefresh` is (docs/150 req 19): the
+    // unscoped read hits the singleton config root, which since the aliases
+    // were retired holds nothing on a migrated install — so every account's
+    // pill lost its plan label, and before that they all showed the migrated
+    // default's label regardless of whose usage the numbers were.
     let plan: string | null = null;
-    const tokenResult = await this.authManager.getAccessToken();
+    const tokenResult = await this.authManager.getAccessToken(this.credentialDirForRoute?.(routeId));
     if (tokenResult.token !== null) plan = tokenResult.plan;
 
     const session = mergeWindow(

@@ -804,6 +804,31 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       // The pin is left in place on purpose — the preflight re-routes it.
       expect(sessionManager.get("signout-2")?.providerRouteId).toBe("acct_gone");
     });
+
+    // docs/150 req 19 — the route used to drop the account rows and clear only
+    // the singleton path, which on a migrated install aliased the *first*
+    // account. Every account connected after that kept live OAuth tokens on
+    // disk, with its row deleted so nothing in the UI could reach them.
+    it("erases the on-disk credentials of every connected account, not just the first", async () => {
+      const now = Date.now();
+      const accountDirs = ["claude-default", "acct_work"].map((id, index) => {
+        credentialStore.upsertProviderAccount({
+          id, provider: "claude", label: id, isPrimary: index === 0,
+          priority: index, status: "ready", createdAt: now, updatedAt: now,
+        });
+        const dir = path.join(tmpDir, "provider-accounts", "claude", id, ".claude");
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, ".credentials.json"), '{"accessToken":"live"}');
+        return path.join(tmpDir, "provider-accounts", "claude", id);
+      });
+
+      expect((await app.inject({ method: "DELETE", url: "/api/auth/api-key" })).statusCode).toBe(200);
+
+      expect(credentialStore.listProviderAccounts("claude")).toEqual([]);
+      for (const dir of accountDirs) {
+        expect(fs.existsSync(dir)).toBe(false);
+      }
+    });
   });
 
   // ---- GitHub mutations ----

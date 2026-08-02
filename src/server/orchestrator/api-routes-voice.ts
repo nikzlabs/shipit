@@ -35,6 +35,31 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
   const cacheDir = path.join(deps.stateDir ?? deps.workspaceDir, ".voice-cache");
   const ttsCache = new TtsCache(cacheDir);
 
+  /**
+   * docs/150 req 19 — transcript cleanup is a real Claude call, so it reads a
+   * real account: the same route a turn would pick. Resolved per request rather
+   * than once at registration because the user can connect, reorder, or
+   * disconnect accounts while the server is up. `undefined` for a reserved
+   * route (API key / env OAuth), which legitimately uses the singleton path.
+   *
+   * The account manager resolves the root itself rather than this composing one
+   * from `deps.credentialsDir`: that field is optional on `ApiDeps`, so an
+   * absent one would silently hand back `undefined` and drop cleanup to the
+   * unscoped read this exists to replace.
+   */
+  const cleanupCredentialRoot = (): string | undefined => {
+    try {
+      const route = deps.providerAccountManager?.selectRouteForTurn("claude");
+      if (route?.kind !== "account") return undefined;
+      return deps.providerAccountManager?.resolveCredentialRoot("claude", route.id);
+    } catch {
+      // Never fail a voice request on account resolution. `pickCleanupProvider`
+      // already treats a broken Claude path as "fall through to OpenAI"; an
+      // unguarded throw here would escape that and 500 the whole request.
+      return undefined;
+    }
+  };
+
   function handleError(reply: FastifyReply, err: unknown, genericMsg: string): void {
     if (err instanceof ServiceError) {
       reply.code(err.statusCode).send({ error: err.message });
@@ -69,7 +94,7 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
   });
 
   app.get("/api/voice/cleanup/status", async () => {
-    return getCleanupStatus(credentialStore, authManager);
+    return getCleanupStatus(credentialStore, authManager, fetch, cleanupCredentialRoot());
   });
 
   // ---- Transcription (STT + cleanup) ----
@@ -115,7 +140,7 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
         ...(mimeType ? { mimeType } : {}),
         ...(language ? { language } : {}),
         ...(sttProvider ? { sttProvider } : {}),
-      });
+      }, fetch, cleanupCredentialRoot());
     } catch (err) {
       handleError(reply, err, "Failed to transcribe");
     }

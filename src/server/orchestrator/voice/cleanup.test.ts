@@ -34,6 +34,22 @@ describe("pickCleanupProvider", () => {
   it("returns null when neither path is available", async () => {
     expect(await pickCleanupProvider(authStub(null), null)).toBeNull();
   });
+
+  // docs/150 req 19 — the unscoped read lands on the singleton config root,
+  // which holds nothing once the legacy aliases are retired. Cleanup has to
+  // name the account, or every migrated install silently loses the Claude
+  // cleanup path and drops to the OpenAI fallback.
+  it("reads the OAuth bearer from the account root it was given", async () => {
+    const auth = authStub("oauth-token");
+    await pickCleanupProvider(auth, "openai-key", fetch, "/credentials/provider-accounts/claude/acct_work");
+    expect(auth.getAccessToken).toHaveBeenCalledWith("/credentials/provider-accounts/claude/acct_work");
+  });
+
+  it("leaves the read unscoped for a reserved route, which uses the singleton path", async () => {
+    const auth = authStub("env-token");
+    await pickCleanupProvider(auth, "openai-key");
+    expect(auth.getAccessToken).toHaveBeenCalledWith(undefined);
+  });
 });
 
 function fakeProvider(impl: (raw: string) => Promise<string> | string): CleanupProvider {

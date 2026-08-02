@@ -2042,12 +2042,89 @@ a revoked sibling report failure for a token that was fine. It now heals the
 account naming will actually use.
 
 **What this does and does not unblock.** It removes one legacy-root reader.
-Others remain — `AgentRegistry`'s auth probe (`isConfigured()` unscoped),
-Codex's unscoped `checkCredentials`, and provider-wide sign-out — and each has
-an honest reason to read the singleton path today. The aliases cannot go until
-those are resolved too, so the final Phase 5 item stays open rather than being
-force-landed. Note the aliases are not merely inert: they leak into session
-containers, which is the entire reason docs/153's symlink-leak repair exists.
+Others remained at the time — `AgentRegistry`'s auth probe (`isConfigured()`
+unscoped), Codex's unscoped `checkCredentials`, and provider-wide sign-out — and
+each had an honest reason to read the singleton path. They have since been
+resolved; see the next section, which retires the aliases themselves. Note the
+aliases were not merely inert: they leak into session containers, which is the
+entire reason docs/153's symlink-leak repair exists.
+
+### Landed: the legacy aliases are retired (req 19, Phase 5)
+
+Migration no longer leaves `<credentialsDir>/.claude`, `.claude.json`, or
+`.codex` as symlinks into the migrated default account, and
+`migrateDefaultAccounts` retires any left behind by an earlier boot. The three
+readers the previous section was blocked on turned out to be resolved or
+deliberate: the registry's probe is wired to `hasAnyAuthForProvider` at the DI
+boundary (its one surviving `isConfigured()` caller passes `credentialDir`);
+Codex's no-arg `checkCredentials()` resolves through `activeCredentialDir`
+during a scoped flow; and provider-wide sign-out reads the singleton path *on
+purpose*, for installs that never migrated.
+
+Two details are load-bearing:
+
+- **Only symlinks pointing into `provider-accounts/` are removed.** A real file
+  or directory at a legacy path belongs to an install whose migration has not
+  run yet — deleting it would destroy the only copy of its credentials.
+- **A directory-shaped legacy path is left as a real, empty directory — but only
+  on an install that has an account.** `/root/.claude` and `/root/.codex` are
+  image-level symlinks to these paths (`docker/Dockerfile.prod`), and `mkdir`
+  through a *dangling* symlink fails with EEXIST — so a CLI invocation on a
+  reserved route (which legitimately runs with `HOME=/root`) would lose its
+  config dir and fail in exactly the quiet way session naming used to.
+  File-shaped paths need no placeholder: a write through the dangling image
+  symlink creates the target.
+
+**The sweep's output is the next boot's input, and that closed a loop.** The
+placeholder was first written unconditionally, including on an install that had
+never been signed in. `migrateProviderDefault` gated on `fs.existsSync` of a
+legacy path, so the *next* boot read that empty directory back as pre-account
+credentials and registered a `ready` `claude-default` / `codex-default` row with
+an empty credential root. That row is not inert: `hasAnyAuthForProvider` turns
+true (so onboarding and the startup log both report a connected account), and
+`selectAccountForTurn` prefers any `ready` account over the reserved route — req
+12's guard only covers the *failover* direction — so an install running on
+`ANTHROPIC_API_KEY` routed its turns to a directory with nothing in it. The same
+state was reachable by deleting every account and restarting.
+
+Two independent guards, because either alone leaves a hole:
+
+- **The placeholder is owed only to an install with accounts.** A never-signed-in
+  install keeps the legacy path absent, which is the state it had before req 19.
+- **Migration gates on a credential *marker* with content**
+  (`.claude/.credentials.json` and friends, `.codex/auth.json`), not on a legacy
+  path existing. Existence was never evidence: `.claude.json` is the CLI's user
+  config, and the directory itself is something any `HOME=/root` run creates
+  through the image symlink. This is the guard that covers an install whose
+  accounts were all deleted after a placeholder had already been written.
+
+Boot-to-boot idempotence is the property under test, and a single-boot assertion
+cannot see a violation of it — the regression tests run `migrateDefaultAccounts()`
+across two manager instances over one credentials root.
+
+**Sign-out was erasing one account's credentials, not the provider's.** The
+route deleted the account *rows*, then called the unscoped `signOut()`, which
+only ever cleared the singleton path — an alias into the migrated default. Every
+account connected after that kept live OAuth tokens on disk, with its row
+deleted so nothing in the UI could reach them. `signOutProvider` now walks every
+account through `delete()` first, then runs the unscoped `signOut()` for
+pre-account installs.
+
+**Removing the aliases exposed two readers that had been quietly leaning on
+them**, both fixed here by resolving a real account root the way session naming
+does. Neither would have failed loudly:
+
+- **Voice transcript cleanup** gated on an unscoped `getAccessToken()`, so on a
+  migrated install it would have found nothing and silently dropped to the
+  OpenAI fallback — or to no cleanup at all.
+- **The limits pill's plan label** stayed unscoped when `doRefresh` was fixed,
+  so it labelled every account with the migrated default's plan, and with
+  nothing once the aliases went.
+
+That pattern — an unscoped read that degrades quietly rather than erroring — is
+what made this phase worth finishing rather than leaving the aliases in place.
+Startup credential logging had the same shape and now asks the account manager,
+so a multi-account install no longer boots claiming "no credentials found".
 
 ### Landed: there is no unscoped sign-in (req 19, Phase 5)
 

@@ -395,19 +395,13 @@ export async function registerBootstrapRoutes(
         // credentials under a live agent.
         assertNoRunningPinnedSessions(deps.sessionManager, deps.runnerRegistry, "claude");
         clearApiKey();
-        deps.authManager.signOut();
-        // Drop the stored Claude provider-account rows so authConfigured
-        // actually flips to false. `hasAnyAuthForProvider("claude")` returns
-        // true if any account row exists (see docs/150), so leaving the
-        // migrated `claude-default` row in place would leave the UI showing
-        // "Authenticated" even though we just wiped the credentials. We only
-        // drop the row, not the on-disk dir, so the legacy symlinks at
-        // `<credentialsDir>/.claude` keep pointing at a usable target for the
-        // next sign-in. The `auth_complete` listener in `app-lifecycle.ts`
-        // re-registers the row via `migrateDefaultAccounts()`.
-        for (const account of deps.providerAccountManager.list("claude")) {
-          deps.credentialStore.deleteProviderAccount("claude", account.id);
-        }
+        // docs/150 req 19 — one call that clears every connected account's
+        // credentials *and* rows, then the singleton path for pre-account
+        // installs. Dropping only the rows (what this did before) left the
+        // OAuth tokens of every account past the migrated default on disk with
+        // no row left to reach them from. Signing back in goes through "Add
+        // account", which creates a fresh row.
+        deps.providerAccountManager.signOutProvider("claude");
         deps.agentRegistry.refreshAuth("claude");
         const agents = listAgents(deps.agentRegistry);
         deps.sseBroadcast("agent_list", { agents });
@@ -449,13 +443,9 @@ export async function registerBootstrapRoutes(
       try {
         assertNoRunningPinnedSessions(deps.sessionManager, deps.runnerRegistry, "codex");
         deps.codexAuthManager.cancel();
-        deps.codexAuthManager.signOut();
-        // Mirror the Claude sign-out: drop stored Codex provider-account rows
-        // so `hasAnyAuthForProvider("codex")` reflects the wiped credentials.
-        // See the matching block in DELETE /api/auth/api-key for the rationale.
-        for (const account of deps.providerAccountManager.list("codex")) {
-          deps.credentialStore.deleteProviderAccount("codex", account.id);
-        }
+        // Mirror the Claude sign-out — see the matching block in
+        // DELETE /api/auth/api-key for why the per-account walk is required.
+        deps.providerAccountManager.signOutProvider("codex");
         deps.agentRegistry.refreshAuth("codex");
         const agents = deps.agentRegistry.list().map((a) => ({
           id: a.id, name: a.name, installed: a.installed,

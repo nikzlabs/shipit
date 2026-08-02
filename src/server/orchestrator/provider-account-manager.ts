@@ -21,9 +21,44 @@ const PROVIDER_LABEL: Record<AgentId, string> = {
   codex: "Codex",
 };
 
-const LEGACY_CREDENTIAL_PATHS: Record<AgentId, readonly string[]> = {
-  claude: [".claude", ".claude.json"],
-  codex: [".codex"],
+/**
+ * Pre-account credential locations at the credentials root, with the shape each
+ * one has on disk. The shape is recorded because req 19's alias removal has to
+ * leave a **real empty directory** behind for the directory-shaped ones — see
+ * {@link ProviderAccountManager.removeLegacyAliases}.
+ */
+const LEGACY_CREDENTIAL_PATHS: Record<AgentId, readonly LegacyCredentialPath[]> = {
+  claude: [{ rel: ".claude", kind: "dir" }, { rel: ".claude.json", kind: "file" }],
+  codex: [{ rel: ".codex", kind: "dir" }],
+};
+
+interface LegacyCredentialPath {
+  rel: string;
+  kind: "dir" | "file";
+}
+
+/**
+ * The files whose presence at the credentials root means the install genuinely
+ * has pre-account credentials worth migrating.
+ *
+ * {@link LEGACY_CREDENTIAL_PATHS} answers "what do we move"; this answers
+ * "should we move anything at all", and the two are deliberately different sets.
+ * Existence of a legacy *path* is not evidence of credentials: `.claude.json` is
+ * the CLI's user config, and `<credentialsDir>/.claude` is a directory anything
+ * running with `HOME=/root` can create through the image-level symlink
+ * (`docker/Dockerfile.prod`) — including the empty placeholder
+ * {@link ProviderAccountManager.removeLegacyAliases} leaves behind. Migrating on
+ * mere existence registered a `ready` account with an empty credential root,
+ * which the router then preferred over the reserved API-key route (req 12's
+ * guard only covers the failover direction) and the UI reported as connected.
+ */
+const LEGACY_CREDENTIAL_MARKERS: Record<AgentId, readonly string[]> = {
+  claude: [
+    path.join(".claude", ".credentials.json"),
+    path.join(".claude", "credentials.json"),
+    path.join(".claude", "auth.json"),
+  ],
+  codex: [path.join(".codex", "auth.json")],
 };
 
 export interface ProviderRoute {
@@ -130,6 +165,82 @@ export class ProviderAccountManager {
     // and both of its callers (boot, and the post-sign-in re-registration) want
     // the invariant. Idempotent, so the second call is free.
     this.backfillPriority();
+    this.removeLegacyAliases();
+  }
+
+  /**
+   * req 19 — retire the legacy alias symlinks at the credentials root.
+   *
+   * Migration used to leave `<credentialsDir>/.claude` (and friends) as a
+   * symlink into the migrated default account, so anything still reading the
+   * singleton path landed on real credentials. Every reader has since been
+   * account-scoped, and the aliases were never harmless:
+   *
+   *   - they leak into session containers as *absolute* `/credentials/...`
+   *     symlinks that resolve to a different physical file inside the
+   *     subpath-mounted agent namespace than they do here, which is the entire
+   *     reason docs/153's `materializeLeakedSubtreeSymlinks` repair exists; and
+   *   - they make the flat root look like a credential source, so a session
+   *     routed to a *reserved* route (`ANTHROPIC_API_KEY` / env OAuth) copied
+   *     the migrated default's OAuth files in and ran on that subscription
+   *     instead — the "never silently move between subscription and metered
+   *     billing" hazard of req 12, in the direction nobody was watching.
+   *
+   * On an install that HAS a migrated account, a directory-shaped legacy path is
+   * left as a real **empty** directory rather than removed outright:
+   * `/root/.claude` and `/root/.codex` are image-level symlinks to these paths
+   * (`docker/Dockerfile.prod`), and `mkdir` through a *dangling* symlink fails
+   * with EEXIST — so a CLI invocation on a reserved route (which legitimately
+   * runs with `HOME=/root`) would lose its config directory and fail in the same
+   * quiet way session naming used to. File-shaped paths (`.claude.json`) need no
+   * placeholder: a write through the dangling image symlink creates the target.
+   *
+   * The placeholder is owed only to an install with accounts. Writing it on a
+   * never-signed-in install invents state nothing asked for, and
+   * {@link migrateProviderDefault} read it back on the next boot as an account —
+   * so the gate here is the account list, and the marker check there is the
+   * second, independent guard for an install whose accounts were all deleted
+   * after a placeholder had already been written.
+   *
+   * Only symlinks pointing into `provider-accounts/` are touched. A real file or
+   * directory here belongs to an install whose migration has not run yet, and
+   * deleting it would destroy the only copy of its credentials.
+   */
+  private removeLegacyAliases(): void {
+    const accountsPrefix = path.join(this.credentialsDir, PROVIDER_ACCOUNTS_SUBDIR);
+    for (const provider of ["claude", "codex"] as AgentId[]) {
+      // The placeholder below is only owed to an install that HAS a migrated
+      // account — the legacy path is where its credentials used to live. On a
+      // never-signed-in install there is nothing to stand in for, and creating
+      // the directory anyway invented on-disk state that the next boot's
+      // migration then read back as an account. Leaving the path absent is
+      // exactly the state such an install had before req 19.
+      const migrated = this.list(provider).length > 0;
+      for (const { rel, kind } of LEGACY_CREDENTIAL_PATHS[provider]) {
+        const aliasPath = path.join(this.credentialsDir, rel);
+        try {
+          const stat = fs.lstatSync(aliasPath, { throwIfNoEntry: false });
+          if (stat?.isSymbolicLink()) {
+            const target = path.resolve(path.dirname(aliasPath), fs.readlinkSync(aliasPath));
+            const insideAccounts =
+              target === accountsPrefix || target.startsWith(`${accountsPrefix}${path.sep}`);
+            if (!insideAccounts) continue;
+            fs.unlinkSync(aliasPath);
+          } else if (stat) {
+            // Real file or directory: a pre-migration install, the empty
+            // placeholder a previous boot left, or CLI config written through
+            // the image-level `/root/.claude` symlink. Leave it alone — only
+            // the first case holds credentials, and we cannot tell them apart
+            // without reading, which {@link migrateProviderDefault} does.
+            continue;
+          }
+          // Absent (alias just removed, or migration moved the subtree away).
+          if (kind === "dir" && migrated) fs.mkdirSync(aliasPath, { recursive: true });
+        } catch (err) {
+          console.warn(`[provider-accounts] failed to retire legacy alias ${aliasPath}:`, err);
+        }
+      }
+    }
   }
 
   /**
@@ -631,6 +742,29 @@ export class ProviderAccountManager {
     return this.setAccountStatus(provider, accountId, "unavailable");
   }
 
+  /**
+   * req 19 — sign out of a provider entirely: every connected account, plus any
+   * pre-account credentials still sitting at the singleton path.
+   *
+   * The route used to delete the account *rows* and then call the unscoped
+   * `signOut()`, which only ever cleared the singleton path. On a migrated
+   * install that path was an alias into `<provider>-default`, so exactly one
+   * account's credentials were erased; every account connected afterwards kept
+   * live OAuth tokens on disk under `provider-accounts/`, unreachable from the
+   * UI because its row was gone. "Sign out of Claude" left the tokens behind.
+   *
+   * Deleting through `delete()` per account is what fixes that — it ends an
+   * in-flight login for the row, removes the credential root, and drops the
+   * row. The unscoped `signOut()` still runs afterwards for installs that never
+   * migrated (and, for Claude, to re-derive the singleton authenticated flag).
+   */
+  signOutProvider(provider: AgentId): void {
+    for (const account of this.list(provider)) {
+      this.delete(provider, account.id);
+    }
+    this.requireAuthManager(provider).signOut();
+  }
+
   private requireAuthManager(provider: AgentId): AgentAuthManager {
     const mgr = this.authManagers?.get(provider);
     if (!mgr) throw new Error(`No auth manager wired for provider: ${provider}`);
@@ -640,15 +774,27 @@ export class ProviderAccountManager {
   private migrateProviderDefault(provider: AgentId, accountId: string, label: string): void {
     if (this.list(provider).length > 0) return;
 
-    const existingRelPaths = LEGACY_CREDENTIAL_PATHS[provider].filter((rel) =>
-      fs.existsSync(path.join(this.credentialsDir, rel)),
+    // req 19 — gate on real credentials, not on a legacy path merely existing.
+    // See {@link LEGACY_CREDENTIAL_MARKERS}: an empty `.claude` directory (the
+    // alias-retirement placeholder, or anything that ran with `HOME=/root`) is
+    // not an account, and registering it as one produced a `ready` row with no
+    // credentials behind it.
+    const hasCredentials = LEGACY_CREDENTIAL_MARKERS[provider].some((rel) =>
+      isNonEmptyFile(path.join(this.credentialsDir, rel)),
+    );
+    if (!hasCredentials) return;
+
+    // Credentials confirmed — now move everything the legacy layout owns,
+    // including the CLI config (`.claude.json`) that is not itself a credential.
+    const existingRelPaths = LEGACY_CREDENTIAL_PATHS[provider].filter((entry) =>
+      fs.existsSync(path.join(this.credentialsDir, entry.rel)),
     );
     if (existingRelPaths.length === 0) return;
 
     const accountRoot = this.resolveCredentialRoot(provider, accountId);
     fs.mkdirSync(accountRoot, { recursive: true });
 
-    for (const rel of existingRelPaths) {
+    for (const { rel } of existingRelPaths) {
       const legacy = path.join(this.credentialsDir, rel);
       const dest = path.join(accountRoot, rel);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
@@ -662,7 +808,6 @@ export class ProviderAccountManager {
       } else {
         fs.rmSync(legacy, { recursive: true, force: true });
       }
-      this.ensureLegacyAlias(legacy, dest);
     }
 
     const now = Date.now();
@@ -684,15 +829,6 @@ export class ProviderAccountManager {
     });
   }
 
-  private ensureLegacyAlias(legacyPath: string, targetPath: string): void {
-    try {
-      if (fs.existsSync(legacyPath)) return;
-      fs.mkdirSync(path.dirname(legacyPath), { recursive: true });
-      fs.symlinkSync(targetPath, legacyPath);
-    } catch (err) {
-      console.warn("[provider-accounts] failed to create legacy credential alias:", err);
-    }
-  }
 }
 
 export function providerAccountCredentialRoot(
@@ -703,10 +839,6 @@ export function providerAccountCredentialRoot(
   return path.join(credentialsDir, PROVIDER_ACCOUNTS_SUBDIR, provider, accountId);
 }
 
-export function legacyCredentialPathsForProvider(provider: AgentId): readonly string[] {
-  return LEGACY_CREDENTIAL_PATHS[provider];
-}
-
 export function providerDisplayLabel(provider: AgentId): string {
   return PROVIDER_LABEL[provider];
 }
@@ -714,6 +846,20 @@ export function providerDisplayLabel(provider: AgentId): string {
 function normalizeLabel(label: string | undefined): string | null {
   const normalized = typeof label === "string" ? label.trim() : "";
   return normalized || null;
+}
+
+/**
+ * True iff `filePath` is a regular file with content. Used to decide whether a
+ * legacy credential marker is real: a zero-byte file is what a crashed write or
+ * a `touch` leaves, and it carries no token, so it must not trigger migration.
+ */
+function isNonEmptyFile(filePath: string): boolean {
+  try {
+    const stat = fs.statSync(filePath, { throwIfNoEntry: false });
+    return stat !== undefined && stat.isFile() && stat.size > 0;
+  } catch {
+    return false;
+  }
 }
 
 /**
