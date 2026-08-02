@@ -39,7 +39,9 @@ This is an evaluation, not an implementation commitment. The tracker itself is
 governed by [product requirements](./requirements.md); the scope of this
 research is governed separately by
 [evaluation requirements](./evaluation-requirements.md). Implementation gates
-are recorded in [checklist.md](./checklist.md).
+are recorded in [checklist.md](./checklist.md). The dedicated private-GitHub
+option now has its own focused [requirements and design](../247-private-github-issue-tracker/plan.md);
+this document remains the comparison and selection record.
 
 ## Problem
 
@@ -176,6 +178,10 @@ for self-hosted and first-party options, practical capacity is deployment
 storage rather than a vendor issue counter.
 
 ## Baseline — existing GitHub Issues adapter
+
+The implementation-oriented design for this option is maintained separately in
+[247 — Private GitHub issue tracker](../247-private-github-issue-tracker/plan.md).
+The analysis below explains its place in the option comparison.
 
 ShipIt already implements the complete `Tracker` contract for GitHub Issues in
 `src/server/orchestrator/trackers/github/adapter.ts`. It lists and reads issues,
@@ -629,7 +635,8 @@ authoritative.
 
 Do not run this gate until C1–C18 are classified in `requirements.md`. GitHub is
 sufficient only if a focused adapter change demonstrates safe routing plus every
-capability marked Required:
+capability marked Required. The detailed routing and validation design lives in
+[doc 247](../247-private-github-issue-tracker/plan.md):
 
 - A full private-repo pointer round-trips through list, detail, create/edit,
   comment, undo, seed-time Started, `Refs`, and merged-PR `Closes` without ever
