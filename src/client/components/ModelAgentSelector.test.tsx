@@ -292,7 +292,7 @@ describe("ModelAgentSelector — mid-session model picking", () => {
         activeAgentId="claude"
         onAgentChange={vi.fn()}
         onModelChange={vi.fn()}
-        modelInfo={{ model: "gpt-5.6-sol", contextWindowTokens: 1_050_000 }}
+        modelInfo={{ model: "gpt-5.6-sol", contextWindowTokens: 272_000 }}
         hasActiveSession={true}
       />,
     );

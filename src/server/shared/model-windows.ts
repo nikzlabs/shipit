@@ -44,16 +44,18 @@ export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   "haiku": 200_000,
   "claude-haiku": 200_000,
   "opus-1m": 1_000_000,
-  // Codex / GPT-5 family. GPT-5.6 advertises a 1.05M context window; older
-  // Codex-listed GPT-5.x models remain at 272K. Longest-key matching keeps
-  // `gpt-5.6-*` on the larger window while preserving the `gpt-5` fallback.
+  // Codex / GPT-5 family. Use Codex's context window rather than the model's
+  // larger API-advertised maximum: ShipIt runs these models through Codex,
+  // whose app-server assigns and reports a 272K window. Runtime telemetry can
+  // still replace this first-frame fallback when a profile reports another
+  // effective window.
   // The legacy unsuffixed `gpt-5.6` key is retained for old session/history
   // display only; Codex selection now uses the explicit `gpt-5.6-sol` slug.
   "gpt-5": 272_000,
-  "gpt-5.6": 1_050_000,
-  "gpt-5.6-sol": 1_050_000,
-  "gpt-5.6-terra": 1_050_000,
-  "gpt-5.6-luna": 1_050_000,
+  "gpt-5.6": 272_000,
+  "gpt-5.6-sol": 272_000,
+  "gpt-5.6-terra": 272_000,
+  "gpt-5.6-luna": 272_000,
   "gpt-5.5": 272_000,
   "gpt-5.4": 272_000,
   "gpt-5.4-mini": 272_000,
