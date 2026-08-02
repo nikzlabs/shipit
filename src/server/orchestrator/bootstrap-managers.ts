@@ -791,8 +791,11 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   // still mid-turn. Reattach those turns now — rebuilding the agent proxy +
   // listeners and replaying the turn's events — so the session comes back as
   // running and its post-turn commit / push / PR flow still fires, instead of
-  // the turn silently evaporating until the user types "continue". Off the boot
-  // path and best-effort: probes are per-container and independently guarded.
+  // the turn silently evaporating until the user types "continue". Best-effort:
+  // probes are per-container and independently guarded.
+  // Await the sweep before returning the app so stale idle workers can be
+  // destroyed and registered for recreation before a reconnecting viewer races
+  // to attach to the old container.
   //
   // SHI-259 (second half) — the notify-on-merge reconcile is CHAINED off this
   // sweep rather than launched independently. Both used to be fire-and-forget
@@ -803,14 +806,15 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   // makes those runners report `running`, so a reconcile-issued wake-turn
   // enqueues behind the surviving turn — or is skipped entirely, because the
   // adopted turn's own completion advanced the watch.
+  try {
+    await reattachInFlightTurns({
+      containerManager, runnerRegistry, sessionManager, defaultAgentId,
+      orchestratorBuildId: process.env.SHIPIT_BUILD_ID,
+    });
+  } catch (err: unknown) {
+    console.error("[turn-reattach] startup sweep failed:", err);
+  }
   void (async () => {
-    try {
-      await reattachInFlightTurns({
-        containerManager, runnerRegistry, sessionManager, defaultAgentId,
-      });
-    } catch (err: unknown) {
-      console.error("[turn-reattach] startup sweep failed:", err);
-    }
     // docs/196 — re-derive any watch whose child PR reached a terminal state
     // while the orchestrator was down. Ordered AFTER the sweep above, on
     // purpose (SHI-259).

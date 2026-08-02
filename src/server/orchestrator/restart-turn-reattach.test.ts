@@ -40,19 +40,22 @@ interface Harness {
   deps: Parameters<typeof reattachInFlightTurns>[0];
   created: string[];
   resumed: string[];
+  destroyed: string[];
 }
 
 function makeHarness(
-  containers: { sessionId: string; workerUrl: string; status?: string }[],
+  containers: { sessionId: string; workerUrl: string; status?: string; workerBuildId?: string }[],
   opts: { sessions?: Set<string>; existingRunners?: Set<string>; standby?: Set<string>; resumeResult?: boolean } = {},
 ): Harness {
   const created: string[] = [];
   const resumed: string[] = [];
+  const destroyed: string[] = [];
   const sessions = opts.sessions ?? new Set(containers.map((c) => c.sessionId));
 
   const containerManager = {
     getAll: () => containers.map((c) => ({ ...c, status: c.status ?? "running" })),
     isStandby: (id: string) => opts.standby?.has(id) ?? false,
+    destroy: async (id: string) => { destroyed.push(id); },
   } as unknown as SessionContainerManager;
 
   const runnerRegistry = {
@@ -74,9 +77,13 @@ function makeHarness(
   } as unknown as SessionManager;
 
   return {
-    deps: { containerManager, runnerRegistry, sessionManager, defaultAgentId: "claude" },
+    deps: {
+      containerManager, runnerRegistry, sessionManager, defaultAgentId: "claude",
+      orchestratorBuildId: "current-build",
+    },
     created,
     resumed,
+    destroyed,
   };
 }
 
@@ -110,6 +117,38 @@ describe("reattachInFlightTurns", () => {
     const h = makeHarness([{ sessionId: "s1", workerUrl: url }]);
 
     expect(await reattachInFlightTurns(h.deps)).toBe(0);
+    expect(h.created).toEqual([]);
+  });
+
+  it("automatically restarts a stale container when its agent process is stopped", async () => {
+    const url = await worker({ running: false, turnActive: false, latestSseSeq: 9 });
+    const h = makeHarness([{ sessionId: "s1", workerUrl: url, workerBuildId: "old-build" }]);
+
+    expect(await reattachInFlightTurns(h.deps)).toBe(0);
+    expect(h.destroyed).toEqual(["s1"]);
+    expect(h.created).toEqual(["s1"]);
+    expect(h.resumed).toEqual([]);
+  });
+
+  it("preserves a stale container while its turn is active", async () => {
+    const url = await worker({ running: true, turnActive: true, latestSseSeq: 9 });
+    const h = makeHarness([{ sessionId: "s1", workerUrl: url, workerBuildId: "old-build" }]);
+
+    expect(await reattachInFlightTurns(h.deps)).toBe(1);
+    expect(h.destroyed).toEqual([]);
+    expect(h.created).toEqual(["s1"]);
+    expect(h.resumed).toEqual(["s1"]);
+  });
+
+  it("does not rotate a stopped agent when the worker is current or its build is unknown", async () => {
+    const url = await worker({ running: false, turnActive: false });
+    const h = makeHarness([
+      { sessionId: "current", workerUrl: url, workerBuildId: "current-build" },
+      { sessionId: "unknown", workerUrl: url },
+    ]);
+
+    expect(await reattachInFlightTurns(h.deps)).toBe(0);
+    expect(h.destroyed).toEqual([]);
     expect(h.created).toEqual([]);
   });
 

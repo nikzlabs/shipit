@@ -7,13 +7,13 @@ description: Detect workers left on an older ShipIt build after an update and sh
 
 ## Status
 
-Implemented (2026-07-31).
+Implemented (2026-07-31), automatic idle rotation added 2026-08-02.
 
-The implementation follows this design: worker image build IDs are retained on
-fresh and adopted container records, classified centrally, and delivered as a
-transient session-scoped WebSocket message. The active chat renders a warning
-with the existing agent-only restart lifecycle; it never blocks chat or
-restarts a running turn automatically.
+Worker image build IDs are retained on fresh and adopted container records,
+classified centrally, and delivered as a transient session-scoped WebSocket
+message. On orchestrator startup, a stale container whose agent process reports
+stopped is now recreated automatically from the current image. A live turn is
+still re-adopted and is never interrupted.
 
 ## Requirement provenance
 
@@ -67,10 +67,11 @@ primary indication.
 
 ### Running-turn safety
 
-Restarting the agent container kills its current CLI process. While a turn is
-running, keep the warning visible but disable the action with the explanation
-“Wait for the current turn to finish.” Once the turn finishes, the action
-becomes available. ShipIt never restarts a stale worker automatically.
+Restarting the agent container kills its current CLI process. The boot sweep
+therefore checks the worker's authoritative agent status: a live turn is
+re-adopted unchanged, while only a stale worker reporting `running: false` is
+rotated automatically. The manual action remains disabled during a turn as a
+fallback for states that cannot be classified automatically.
 
 ### Restart lifecycle
 
@@ -191,6 +192,9 @@ a sidebar warning badge can be evaluated separately.
 ShipIt update
   -> old session container survives
   -> new orchestrator rediscovers container
+  -> boot sweep probes agent status
+  -> stopped agent + stale worker: recreate container automatically
+  -> active turn: re-adopt without interruption
   -> Docker label supplies workerBuildId
   -> compare with orchestrator buildId
   -> session attach emits session_container_freshness
@@ -207,7 +211,8 @@ ShipIt update
 |---|---|
 | Worker and orchestrator IDs match | No warning. |
 | Either ID is missing | No stale warning; diagnostics/logs show unknown. |
-| Update occurs during an active turn | Turn survives; warning appears after reconnect; restart is disabled until the turn finishes. |
+| Update occurs during an active turn | Turn survives and is re-adopted; automatic rotation does not run. |
+| Stale container is running but its agent is stopped | Boot sweep recreates the agent container from the current image automatically. |
 | Restart request fails | Existing container remains classified stale; warning stays visible and the existing error surface explains the failure. |
 | New container starts from an unexpectedly old/custom image | Recomputed IDs still differ, so the warning remains. |
 | Session has no running container | No warning. Its next activation creates from the current image. |
@@ -226,8 +231,8 @@ beside chat.
 ### Restart every surviving worker after an update
 
 Rejected. It would undo the benefit of zero-downtime updates and could kill
-active turns. The stale state is safe under the additive wire contract, so
-rotation remains user-initiated or natural through idle disposal.
+active turns. Automatic rotation is limited to workers whose agent endpoint
+authoritatively reports no resident process; live turns remain untouched.
 
 ### Compare semantic release versions
 
@@ -281,7 +286,6 @@ themes, at desktop width, and in the mobile chat layout.
 
 ## Out of scope
 
-- Automatically restarting stale containers.
 - Blocking chat on a stale-but-compatible worker.
 - Restarting the user's Compose service containers.
 - A fleet-wide admin page or bulk restart action.

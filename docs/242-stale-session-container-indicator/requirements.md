@@ -13,6 +13,16 @@ User request, 2026-07-31:
 3. The feature must have a design document.
 4. A `requirements.md` file must live next to the design document.
 5. This requirements file must contain only requirements sourced from the user.
+6. On an orchestrator update, a running stale agent container whose agent is
+   stopped must be restarted automatically, so the user does not have to click
+   the manual restart-container action.
+
+## Resolved questions
+
+- 2026-08-02 — The user clarified that “containers that are not running” meant
+  a running container whose agent process is stopped. The desired behavior is
+  automatic restart after an orchestrator update, without requiring the manual
+  restart-container click. This is recorded as requirement 6.
 
 ## Provenance boundary
 
