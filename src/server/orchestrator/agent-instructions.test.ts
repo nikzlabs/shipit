@@ -110,6 +110,27 @@ describe("buildAgentSystemInstructions", () => {
     expect(claude).not.toBe(codex);
   });
 
+  // docs/245 — Codex's conservative default needs an explicit tie-breaker for
+  // confirmation-shaped continuations. Keep it backend-specific: Claude
+  // already acts on these requests and must not receive a prompt change.
+  it("tells Codex, but not Claude, to execute clearly implied in-scope actions", () => {
+    const fragment = fs.readFileSync(
+      new URL("./agents/codex/implied-action.md", import.meta.url),
+      "utf8",
+    ).trim();
+
+    expect(buildAgentSystemInstructions({ agentId: "codex" })).toContain(fragment);
+    expect(buildAgentSystemInstructions({ agentId: "claude" })).not.toContain(fragment);
+    expect(buildAgentSystemInstructions()).not.toContain(fragment);
+
+    // The behavioral boundaries are part of the regression contract: act on
+    // a clear continuation, preserve information-only questions, and do not
+    // infer authority for risky or out-of-scope work.
+    expect(fragment).toContain("answer the question and perform that action");
+    expect(fragment).toContain("genuine information-only questions read-only");
+    expect(fragment).toContain("ambiguous, destructive, externally consequential");
+  });
+
   // docs/128 — ops overlay. docs/211 — sandbox overlay. Both are mutually
   // exclusive composition switches layered on the shared base.
   it("omits the overlays by default and renders byte-identically", () => {
