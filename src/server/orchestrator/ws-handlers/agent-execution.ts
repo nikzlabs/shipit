@@ -7,7 +7,7 @@ import { emitChatCard } from "../chat-card-persistence.js";
 import { postTurnCommit } from "./post-turn.js";
 import { resolveRunner } from "./resolve-runner.js";
 import { autoResetMergedBranchOnContinue, isResetEligible } from "../services/pre-turn-reset.js";
-import { sessionNeedsAccountFailover } from "../services/provider-account-switch.js";
+import { sessionAccountId, sessionNeedsAccountFailover } from "../services/provider-account-switch.js";
 import { routeVoiceNote } from "../voice/voice-note-router.js";
 import type { SessionRunnerInterface, SystemTurnDeps, QueuedMessage } from "../session-runner.js";
 import { startQueuedMessage } from "../queue-drain.js";
@@ -456,6 +456,9 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     agentFactory: (id) => ctx.agentFactory(id),
     // docs/179 — token healer for the runtime-401 auto-retry.
     ...(ctx.ensureAgentTokenFresh ? { ensureAgentTokenFresh: ctx.ensureAgentTokenFresh } : {}),
+    // docs/150 — and the account to heal, so a revoked sibling account can't
+    // make a healthy account's turn look unhealable.
+    resolveTurnAccountId: (sid: string) => sessionAccountId(ctx.sessionManager.get(sid)),
     autoCommit: async (sessionDir, summary) => {
       const git = ctx.createGitManager(sessionDir);
       const parentHash = await git.getHeadHash();

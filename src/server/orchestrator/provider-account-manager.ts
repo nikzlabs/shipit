@@ -237,6 +237,15 @@ export class ProviderAccountManager {
 
   delete(provider: AgentId, accountId: string): void {
     this.require(provider, accountId);
+    // Deleting the row that owns the in-flight login must also end that login.
+    // Otherwise the CLI keeps running against a credential root we are about to
+    // remove, and the manager keeps reporting the deleted account as the active
+    // scope — which `startAccountAuth` reads, so every later sign-in for this
+    // provider is refused by a row that no longer exists and therefore has no
+    // Cancel button. The provider would be locked out of sign-in until the
+    // process exited or the orchestrator restarted.
+    const mgr = this.authManagers?.get(provider);
+    if (mgr?.getActiveAccountId() === accountId) mgr.cancel();
     fs.rmSync(this.resolveCredentialRoot(provider, accountId), { recursive: true, force: true });
     this.credentialStore.deleteProviderAccount(provider, accountId);
   }
@@ -465,10 +474,34 @@ export class ProviderAccountManager {
   startAccountAuth(provider: AgentId, accountId: string): ProviderAccount {
     this.require(provider, accountId);
     const mgr = this.requireAuthManager(provider);
+    // There is ONE login process per provider, so two rows cannot sign in at
+    // once. Without this guard the second `Add account` marked its own row
+    // `authenticating` and then either inherited the first row's challenge
+    // (Codex replays the cached device code) or killed the first row's flow
+    // while leaving that row stuck on `authenticating` (Claude). Either way one
+    // row showed a state that did not match any real process. Refusing is the
+    // honest outcome: the user finishes or cancels the other sign-in first.
+    const inFlight = mgr.getActiveAccountId();
+    if (inFlight && inFlight !== accountId) {
+      const label = this.get(provider, inFlight)?.label ?? inFlight;
+      throw new Error(
+        `${PROVIDER_LABEL[provider]} is already signing in on "${label}". Finish or cancel that sign-in first.`,
+      );
+    }
     const credentialDir = this.resolveCredentialRoot(provider, accountId);
     fs.mkdirSync(credentialDir, { recursive: true });
     const account = this.setAccountStatus(provider, accountId, "authenticating");
-    mgr.start({ accountId, credentialDir });
+    try {
+      mgr.start({ accountId, credentialDir });
+    } catch (err) {
+      // A failed spawn must not leave the row claiming to be signing in: with
+      // the guard above, a phantom `authenticating` row blocks every other
+      // account's sign-in, and the caller only sees an error string. Put the
+      // row back and release any scope the manager took before throwing.
+      this.setAccountStatus(provider, accountId, "unavailable");
+      try { mgr.cancel(); } catch { /* best effort — the flow may never have started */ }
+      throw err;
+    }
     return account;
   }
 
@@ -479,7 +512,14 @@ export class ProviderAccountManager {
   cancelAccountAuth(provider: AgentId, accountId: string): ProviderAccount {
     this.require(provider, accountId);
     const mgr = this.requireAuthManager(provider);
-    mgr.cancel();
+    // Only kill the CLI if it is *this* account's flow. An unconditional
+    // cancel let one row's Cancel button abort another row's sign-in — and
+    // since the status reset below only touches the row that was clicked, the
+    // aborted row would have sat on `authenticating` forever. Resetting this
+    // row's status still happens either way: the row is not signing in now,
+    // whatever the process is doing.
+    const inFlight = mgr.getActiveAccountId();
+    if (!inFlight || inFlight === accountId) mgr.cancel();
     const credentialDir = this.resolveCredentialRoot(provider, accountId);
     const status: ProviderAccountStatus = mgr.isConfigured({ credentialDir }) ? "ready" : "unavailable";
     return this.setAccountStatus(provider, accountId, status);
@@ -494,6 +534,21 @@ export class ProviderAccountManager {
     const mgr = this.requireAuthManager(provider);
     if (typeof mgr.submitCode !== "function") {
       throw new Error(`${PROVIDER_LABEL[provider]} login has no code-submission step`);
+    }
+    // A pasted authorization code is bound to the challenge that issued it, so
+    // it may only go to the flow this row owns. `null` is a refusal too, not a
+    // pass: it means no flow is running (timed out, cancelled, or lost to a
+    // restart), and the manager would otherwise swallow the code with a log
+    // line while the endpoint answered 200 — the user waits on a sign-in that
+    // silently went nowhere.
+    const inFlight = mgr.getActiveAccountId();
+    if (inFlight !== accountId) {
+      const label = inFlight ? this.get(provider, inFlight)?.label ?? inFlight : null;
+      throw new Error(
+        label
+          ? `${PROVIDER_LABEL[provider]} is already signing in on "${label}". Finish or cancel that sign-in first.`
+          : `That ${PROVIDER_LABEL[provider]} sign-in is no longer running. Start it again before pasting the code.`,
+      );
     }
     mgr.submitCode(code);
   }

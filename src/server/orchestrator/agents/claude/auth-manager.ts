@@ -330,8 +330,21 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
     this.startOAuthFlow(opts);
   }
 
+  /**
+   * Abort an in-flight sign-in.
+   *
+   * docs/150 — releases the account scope as well as the process. `kill()`
+   * alone tears down the PTY but leaves `activeFlowAccountId` set, and since
+   * a cancel emits no terminal `complete`/`failed` event, nothing else would
+   * ever clear it. That used to be invisible; now that `startAccountAuth`
+   * refuses while another account owns the flow, a stale scope would reject
+   * every subsequent sign-in for the provider — permanently, with no way out
+   * from the UI. Codex's `cancel()` has always cleared its scope; this is the
+   * same contract.
+   */
   cancel(): void {
     this.kill();
+    this.clearActiveScope();
   }
 
   /** {@link AgentAuthManager.submitCode} — alias for {@link sendCode}. */

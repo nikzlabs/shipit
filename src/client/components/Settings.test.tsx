@@ -139,6 +139,26 @@ describe("Settings - Agent → Claude tab", () => {
     vi.unstubAllGlobals();
   });
 
+  // docs/150 — one login process per provider, so the server rejects a second
+  // concurrent sign-in with a 409. Surface that as a disabled affordance rather
+  // than letting the user click into the refusal.
+  it("blocks a second concurrent sign-in while one account is authenticating", () => {
+    const now = Date.now();
+    const base = { provider: "claude" as const, isPrimary: false, createdAt: now, updatedAt: now };
+    useSettingsStore.getState().setProviderAccounts([
+      { ...base, id: "acct-a", label: "Account A", isPrimary: true, status: "authenticating" as const },
+      { ...base, id: "acct-b", label: "Account B", status: "unavailable" as const },
+    ]);
+
+    render(<Settings {...defaultProps} agentList={[claudeUnauthed]} />);
+
+    expect(screen.getByTestId("provider-account-add-claude")).toBeDisabled();
+    // The row that is NOT signing in can't start a competing flow...
+    expect(screen.getByTestId("provider-account-connect-acct-b")).toBeDisabled();
+    // ...and the one that is keeps its own way out.
+    expect(screen.getByTestId("provider-account-cancel-login-acct-a")).toBeEnabled();
+  });
+
   it("asks which account to move pinned sessions to instead of dead-ending on the refusal", async () => {
     const now = Date.now();
     const base = { provider: "claude" as const, isPrimary: false, status: "ready" as const, createdAt: now, updatedAt: now };

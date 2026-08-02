@@ -42,6 +42,19 @@ import { routeFromSelection } from "../provider-route-preflight.js";
 import { ServiceError } from "./types.js";
 
 /**
+ * docs/150 — the provider account a session's turns run on, or `undefined` when
+ * it is unpinned or pinned to a reserved route (`claude-env-oauth`,
+ * `claude-api-key`, `codex-api-key`), which are not accounts and have no
+ * per-account credential root.
+ *
+ * Small enough to inline, but every caller that inlined it is a caller that
+ * could forget the `kind` check and treat a reserved route id as an account id.
+ */
+export function sessionAccountId(session: SessionInfo | undefined): string | undefined {
+  return session?.providerRouteKind === "account" ? session.providerRouteId ?? undefined : undefined;
+}
+
+/**
  * docs/150 reqs 3, 7, 8 — does this session's pinned route need to move before
  * its next turn?
  *
@@ -115,8 +128,7 @@ export function switchSessionProviderAccount(
     throw new ServiceError(409, `Account ${toAccountId} is not usable (status: ${target.status})`);
   }
 
-  const fromAccountId =
-    session.providerRouteKind === "account" ? session.providerRouteId : undefined;
+  const fromAccountId = sessionAccountId(session);
   if (fromAccountId === toAccountId) {
     return {
       sessionId,

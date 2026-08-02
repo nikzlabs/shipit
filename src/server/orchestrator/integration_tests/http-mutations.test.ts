@@ -613,6 +613,44 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       expect((cancelled.json() as { account: { status: string } }).account.status).toBe("ready");
     });
 
+    // docs/150 — one CLI login per provider. A second concurrent sign-in is a
+    // conflict the user resolves, not a 500.
+    it("refuses a second concurrent sign-in with 409, and frees up after cancel", async () => {
+      const mk = async (label: string): Promise<string> => {
+        const res = await app.inject({
+          method: "POST", url: "/api/provider-accounts", payload: { provider: "claude", label },
+        });
+        return (res.json() as { account: { id: string } }).account.id;
+      };
+      const first = await mk("First Anthropic");
+      const second = await mk("Second Anthropic");
+
+      expect((await app.inject({
+        method: "POST", url: `/api/provider-accounts/claude/${first}/login`,
+      })).statusCode).toBe(202);
+
+      const blocked = await app.inject({
+        method: "POST", url: `/api/provider-accounts/claude/${second}/login`,
+      });
+      expect(blocked.statusCode).toBe(409);
+      // The message has to name the row holding the flow — "conflict" alone
+      // leaves the user with no idea what to go cancel.
+      expect((blocked.json() as { error: string }).error).toContain("First Anthropic");
+
+      // A code pasted on the row that does not own the challenge is refused too.
+      expect((await app.inject({
+        method: "POST",
+        url: `/api/provider-accounts/claude/${second}/login/code`,
+        payload: { code: "abc-123" },
+      })).statusCode).toBe(409);
+
+      // Cancelling the owner frees the provider.
+      await app.inject({ method: "POST", url: `/api/provider-accounts/claude/${first}/login/cancel` });
+      expect((await app.inject({
+        method: "POST", url: `/api/provider-accounts/claude/${second}/login`,
+      })).statusCode).toBe(202);
+    });
+
     it("rejects an empty login code and an unknown account (docs/150)", async () => {
       const created = await app.inject({
         method: "POST",

@@ -448,6 +448,26 @@ describe("AuthManager / scoped spawn (docs/150)", () => {
     }
   });
 
+  // docs/150 — `startAccountAuth` refuses while another account owns the flow,
+  // so a scope that outlives its process locks the provider out of sign-in
+  // entirely. A cancel emits no terminal complete/failed event, so `cancel()`
+  // is the only thing that can release it.
+  it("cancel() releases the account scope, not just the PTY", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-claude-home-"));
+    try {
+      const mgr = new AuthManager();
+      mgr.startOAuthFlow({ accountId: "acct-7", credentialDir: tmp });
+      expect(mgr.getActiveAccountId()).toBe("acct-7");
+
+      mgr.cancel();
+
+      // Stale scope here would 409 every later sign-in for this provider.
+      expect(mgr.getActiveAccountId()).toBeNull();
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("spawns with HOME=/root for the legacy singleton flow", () => {
     const mgr = new AuthManager();
     mgr.startOAuthFlow();

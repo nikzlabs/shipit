@@ -33,7 +33,7 @@ import { postTurnCommit } from "./ws-handlers/post-turn.js";
 import { routeVoiceNote } from "./voice/voice-note-router.js";
 import type { VoiceNotePayload, VoiceNoteSource } from "../shared/types/voice-note-types.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
-import { sessionNeedsAccountFailover } from "./services/provider-account-switch.js";
+import { sessionAccountId, sessionNeedsAccountFailover } from "./services/provider-account-switch.js";
 
 // ---- Runner registry setup ----
 
@@ -458,6 +458,9 @@ export function createRunnerRegistry(
           ...(providerAccountManager ? {
             needsAccountFailover: (sessionId: string) =>
               sessionNeedsAccountFailover(sessionManager.get(sessionId), providerAccountManager),
+            // docs/150 — scope the runtime-401 heal to this turn's account.
+            resolveTurnAccountId: (sessionId: string) =>
+              sessionAccountId(sessionManager.get(sessionId)),
           } : {}),
         } : {}),
         // Single shared commit helper — same `postTurnCommit` the WS path uses

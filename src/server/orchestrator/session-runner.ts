@@ -628,6 +628,19 @@ export interface SystemTurnDeps {
    */
   ensureAgentTokenFresh?: (agentId: AgentId, accountId?: string) => Promise<boolean>;
   /**
+   * docs/150 — the provider account this session's turn is running on, or
+   * `undefined` when unpinned / on a reserved route.
+   *
+   * Exists so the runtime-401 recovery above can heal **that** account rather
+   * than the provider. Called with no account id, `ensureAgentTokenFresh`
+   * refreshes every connected account and returns `results.every(Boolean)` —
+   * fine when a provider had exactly one account, wrong once it can have
+   * several: a second account that is revoked or never signed in makes the
+   * aggregate false, so a healthy account's turn is told it could not heal and
+   * the user gets a sign-in card for an account that was fine.
+   */
+  resolveTurnAccountId?: (sessionId: string) => string | undefined;
+  /**
    * Single shared post-turn commit helper — the same `postTurnCommit` the WS
    * path uses (auto-commit + conflict notice + workspace-locked `git add` +
    * auto-push + commit→message link). Wiring both transports to one helper is

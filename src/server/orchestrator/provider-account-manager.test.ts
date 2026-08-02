@@ -21,12 +21,24 @@ class FakeAuthManager extends EventEmitter implements AgentAuthManager {
   configured = false;
   hasSubmitCode = true;
   constructor(readonly agentId: AgentId) { super(); }
-  start(opts?: AgentAuthStartOptions): void { this.startCalls.push(opts ?? {}); }
-  cancel(): void { this.cancelCalls++; }
+  /**
+   * Mirrors the real managers: one process per provider, so `start` claims the
+   * scope and `cancel` releases it. Tests that never start a flow see `null`,
+   * exactly as before.
+   */
+  activeAccountId: string | null = null;
+  /** Set to make `start()` throw, standing in for a failed CLI spawn. */
+  startShouldThrow: Error | null = null;
+  start(opts?: AgentAuthStartOptions): void {
+    this.startCalls.push(opts ?? {});
+    if (this.startShouldThrow) throw this.startShouldThrow;
+    this.activeAccountId = opts?.accountId ?? null;
+  }
+  cancel(): void { this.cancelCalls++; this.activeAccountId = null; }
   submitCode(code: string): void { this.codeCalls.push(code); }
   signOut(opts?: AgentAuthScopeOptions): void { this.signOutCalls.push(opts ?? {}); }
   isConfigured(): boolean { return this.configured; }
-  getActiveAccountId(): string | null { return null; }
+  getActiveAccountId(): string | null { return this.activeAccountId; }
   getPendingPayload() { return null; }
   kill(): void { /* no-op */ }
 }
@@ -207,8 +219,120 @@ describe("ProviderAccountManager", () => {
 
     it("submitAccountCode delegates to the manager's submitCode", () => {
       const { mgr, claude, account } = setup();
+      // The code only means anything against a live challenge, so the flow has
+      // to be running — submitting into nothing is its own case below.
+      mgr.startAccountAuth("claude", account.id);
       mgr.submitAccountCode("claude", account.id, "abc-123");
       expect(claude.codeCalls).toEqual(["abc-123"]);
+    });
+
+    // docs/150 — there is one login process per provider, so an auth operation
+    // aimed at account A must never act on account B's in-flight flow.
+    describe("two accounts of the same provider signing in at once", () => {
+      it("refuses a second sign-in while another account owns the flow", () => {
+        const { mgr, claude, account } = setup();
+        const second = mgr.create("claude", "Work");
+        mgr.startAccountAuth("claude", account.id);
+
+        expect(() => mgr.startAccountAuth("claude", second.id)).toThrow(/already signing in/i);
+        // The refusal must leave BOTH rows honest: the first still owns the
+        // live flow, and the second was never moved to `authenticating`.
+        expect(claude.getActiveAccountId()).toBe(account.id);
+        expect(mgr.get("claude", second.id)?.status).not.toBe("authenticating");
+        expect(claude.startCalls).toHaveLength(1);
+      });
+
+      it("re-starting the SAME account's sign-in is allowed (retry on its own row)", () => {
+        const { mgr, claude, account } = setup();
+        mgr.startAccountAuth("claude", account.id);
+        expect(() => mgr.startAccountAuth("claude", account.id)).not.toThrow();
+        expect(claude.startCalls).toHaveLength(2);
+      });
+
+      it("cancelling one row does not kill another row's in-flight sign-in", () => {
+        const { mgr, claude, account } = setup();
+        const second = mgr.create("claude", "Work");
+        mgr.startAccountAuth("claude", account.id);
+
+        mgr.cancelAccountAuth("claude", second.id);
+
+        // The live flow survives — previously this cancelled it while only
+        // resetting `second`, stranding the first row on `authenticating`.
+        expect(claude.cancelCalls).toBe(0);
+        expect(claude.getActiveAccountId()).toBe(account.id);
+        expect(mgr.get("claude", account.id)?.status).toBe("authenticating");
+      });
+
+      it("cancelling the owning row does kill the flow", () => {
+        const { mgr, claude, account } = setup();
+        mgr.startAccountAuth("claude", account.id);
+        mgr.cancelAccountAuth("claude", account.id);
+        expect(claude.cancelCalls).toBe(1);
+        expect(claude.getActiveAccountId()).toBeNull();
+      });
+
+      // The nastiest shape of this bug: the row that owns the flow is deleted,
+      // so the scope it holds can never be released from the UI — there is no
+      // row left to press Cancel on — and the guard then refuses every future
+      // sign-in for the provider.
+      it("deleting the row that owns the flow releases the provider", () => {
+        const { mgr, claude, account } = setup();
+        mgr.startAccountAuth("claude", account.id);
+        expect(claude.getActiveAccountId()).toBe(account.id);
+
+        mgr.delete("claude", account.id);
+
+        expect(claude.cancelCalls).toBe(1);
+        expect(claude.getActiveAccountId()).toBeNull();
+        // And a fresh account can sign in rather than hitting a phantom owner.
+        const replacement = mgr.create("claude", "Replacement");
+        expect(() => mgr.startAccountAuth("claude", replacement.id)).not.toThrow();
+      });
+
+      it("deleting an unrelated row leaves the in-flight sign-in alone", () => {
+        const { mgr, claude, account } = setup();
+        const second = mgr.create("claude", "Work");
+        mgr.startAccountAuth("claude", account.id);
+
+        mgr.delete("claude", second.id);
+
+        expect(claude.cancelCalls).toBe(0);
+        expect(claude.getActiveAccountId()).toBe(account.id);
+      });
+
+      // A row stuck on `authenticating` blocks every other account, so a
+      // sign-in that never started must not leave one behind.
+      it("puts the row back when the login process fails to start", () => {
+        const { mgr, claude, account } = setup();
+        claude.startShouldThrow = new Error("spawn ENOENT");
+
+        expect(() => mgr.startAccountAuth("claude", account.id)).toThrow(/spawn ENOENT/);
+
+        expect(mgr.get("claude", account.id)?.status).toBe("unavailable");
+        // ...and the provider is still usable by anyone else.
+        const second = mgr.create("claude", "Work");
+        claude.startShouldThrow = null;
+        expect(() => mgr.startAccountAuth("claude", second.id)).not.toThrow();
+      });
+
+      it("refuses a pasted code when no sign-in is running at all", () => {
+        const { mgr, claude, account } = setup();
+        // Timed out, cancelled, or lost to a restart. Previously the manager
+        // logged and dropped it while the endpoint answered 200.
+        expect(() => mgr.submitAccountCode("claude", account.id, "abc-123")).toThrow(/no longer running/i);
+        expect(claude.codeCalls).toEqual([]);
+      });
+
+      it("refuses a code pasted on a row that does not own the flow", () => {
+        const { mgr, claude, account } = setup();
+        const second = mgr.create("claude", "Work");
+        mgr.startAccountAuth("claude", account.id);
+
+        // The code belongs to the challenge that issued it; submitting it here
+        // would authenticate the wrong account.
+        expect(() => mgr.submitAccountCode("claude", second.id, "abc-123")).toThrow(/already signing in/i);
+        expect(claude.codeCalls).toEqual([]);
+      });
     });
 
     it("submitAccountCode throws when the provider flow has no code step", () => {
