@@ -91,6 +91,14 @@ describe("OnboardingWizard", () => {
       expect(screen.queryByTestId("codex-auth-card")).not.toBeInTheDocument();
     });
 
+    it("vertically centers compact provider headings with their add buttons", async () => {
+      renderStep2();
+      await waitFor(() => {
+        expect(screen.getByTestId("provider-accounts-header-claude")).toHaveClass("items-center");
+        expect(screen.getByTestId("provider-accounts-header-codex")).toHaveClass("items-center");
+      });
+    });
+
     // The card is rendered `compact` here. Two full-density cards overflowed
     // the fixed-height pane by ~200px and pushed "Get Started" below the fold
     // with no scroll cue — verified in the browser, not just in this test.

@@ -333,7 +333,10 @@ export function ProviderAccountsCard({
 
   return (
     <div className="space-y-3" data-testid={`provider-accounts-card-${provider}`}>
-      <div className="flex items-start justify-between gap-3">
+      <div
+        className={`flex justify-between gap-3 ${compact ? "items-center" : "items-start"}`}
+        data-testid={`provider-accounts-header-${provider}`}
+      >
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <span
