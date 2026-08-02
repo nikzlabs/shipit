@@ -448,6 +448,45 @@ Two orderings still matter:
 
 ### Mid-turn failover
 
+#### Landed: the retry is the auth-retry mechanism, re-aimed
+
+Req 14's same-turn retry needed no new machinery. docs/179 already built
+exactly this shape in `turn-executor.ts` for the runtime-401 case — stand the
+`done` handler down, kill the process, re-enter `executeAgentTurn` on a fresh
+agent with `emitUserEcho: false` and a shared `persistGuard`, bounded to one
+attempt by a flag on the input. The quota retry is the same five pieces with a
+different trigger, so it reuses them rather than growing a parallel path:
+
+- **Trigger.** `agent_result` carrying an error that `detectHardExhaustion`
+  classifies, checked *before* any post-turn work. Draining the queue or
+  broadcasting "finished" there would announce the end of a turn that is about
+  to be re-run.
+- **It does not choose the account.** By the time it fires, the listener has
+  already benched the spent account (req 7), so the retry's own env-prep does
+  the switching: `failoverPinnedSession` sees the pinned account is no longer
+  usable, moves the session, preserves the conversation (req 9), and posts the
+  req-11 notice. The no-account-left case comes free — env-prep throws and the
+  retry surfaces req 13's "every account is out of quota, earliest reset at X",
+  which is a better message than the raw provider error the first attempt died
+  of.
+- **`persistGuard` gives "no duplicated user history" for free**: the same latch
+  docs/179 threads through the auth retry, threaded through this one.
+- **Side effects are kept, not rolled back.** Req 14 is explicit that the retry
+  happens "regardless of what that turn has already done." The failed attempt's
+  partial output has already been *finalized* into history by the listener's
+  `agent_result` path, so the retry's fresh in-progress turn appends below it
+  rather than colliding with it. The transcript reads: partial attempt →
+  "X is out of quota — continuing on Y" → the real answer. Nothing about the
+  edits that already happened is hidden.
+- **Bounded to one.** `isQuotaRetry` stops a second hop, so an account-exhausted
+  fleet fails the turn normally instead of marching down every account one
+  process at a time.
+
+One deliberate non-change: the first attempt's provider error still reaches the
+transcript. It is true, the req-11 notice immediately after explains the
+recovery, and suppressing a real provider error to tidy the transcript is the
+kind of thing that costs a debugging session later.
+
 When a hard exhaustion signal arrives partway through a turn, ShipIt switches to
 the next eligible provider account and retries once, regardless of what the turn
 has already done (req 14). There is no side-effect gate, no per-turn side-effect
