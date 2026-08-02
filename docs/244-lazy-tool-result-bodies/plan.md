@@ -24,8 +24,10 @@ Two resolutions shape the design directly:
   So the inline artifacts below (the preview, `+N -M`, the thumbnail) are
   non-negotiable, while the diff modal, the full-size image preview, and the
   "Show all N lines" expansion may each show a spinner.
-* **Req 9** — images may render inline at reduced resolution. This is what
-  makes the thumbnail mechanism legal rather than a compromise.
+* **Req 9** — images *may* render inline at reduced resolution. Permission, not
+  obligation: the design ends up not needing it, and req 8 turns out to forbid
+  exercising it for tool-result images, which have no full-size view to recover
+  the detail from.
 
 Req 1 also fixes the completion criterion: *do not load information that is not
 visible without a click*. There is no byte target to tune against.
@@ -56,18 +58,14 @@ remains on a subagent row is per-step text, which is small.
 * **`added` / `removed`** — `DiffBlock` derives these via `countLines(newString)`
   and `countLines(oldString)`. Persist the two integers and the body can go
   lazy with no visible change at all.
-* **A real thumbnail** — the UI is already thumbnail-shaped; it just draws the
-  96px image from full-resolution base64. `ChatMessageImage` already carries an
-  optional `src?: string` (`MessageList/types.ts:59`), so a URL-backed path
-  exists in the type today.
+* **The image itself, at today's resolution** — user-row images draw at 96×96
+  (`message-media.tsx:53`) behind a click-to-full-size; tool-result images draw
+  at up to 256px (`max-h-64`, `ToolResult.tsx:252`) with **no click affordance
+  at all**. `ChatMessageImage` already carries an optional `src?: string`
+  (`MessageList/types.ts:59`), so a URL-backed path exists in the type today.
 
-### Two things that must never be truncated
+### One thing that must never be truncated
 
-* **Image-bearing tool results.** MCP image results (Playwright screenshots) are
-  persisted as `JSON.stringify(content)` — a JSON array of text and base64 image
-  blocks. `parseContentForImages` needs the whole array; a head slice is
-  unparseable JSON, so the image silently degrades to raw JSON text. These get
-  the thumbnail treatment instead of the slice treatment.
 * **The subagent final report.** `findSubagentFinalReport` reads it from the
   *parent's* `toolResults` and renders it in full as markdown
   (`SubagentCall.tsx:50, 132`) with no expand affordance. Exempt by parent tool
@@ -122,14 +120,33 @@ Each tool result gains three fields:
 `truncated` is the `contentAvailable` flag the issue asks for, inverted so the
 common (small) case stays absent from the JSON.
 
-**Slice size: 16 KB**, a byte cap rather than a line cap — the goal is bounding
-payload, and one pathological line is as heavy as a thousand. Two orders of
-magnitude below the 1 MB case, and far above anything drawn inline (30 lines of
-Bash output is ~2 KB) or read by the constraint consumers. The cut lands on a
-UTF-8 character boundary, preferring the last newline within the final 10% of
-the slice so a preview never ends mid-codepoint or mid-line.
+**Slice size: the first 40 lines, hard-capped at 16 KB** — whichever comes
+first.
 
-Exempt: image-bearing results, and Task-parent results (final report).
+The line cap does the real work, and 40 is derived rather than picked: the
+largest inline preview is Bash at 30 lines (`ToolResult.tsx:11–14`), so 40
+covers every render path with headroom. A pure byte cap was the first proposal
+and is worse: at 16 KB it transfers roughly eight times what is drawn, and a
+page of 50 results still moves ~800 KB — which is exactly the outcome req 1
+rules out. Deriving the cap from what the UI draws is what makes it principled.
+
+The byte cap is a backstop for the case a line cap cannot bound: one
+pathological line (minified JSON, a base64 blob) can be megabytes on its own.
+It is the one place the design knowingly deviates from req 8 — a result whose
+first 40 lines exceed 16 KB shows less inline than it does today. The
+alternative, honouring 40 lines at any width, re-admits the unbounded payload
+the feature exists to remove. Rare enough to accept, and the "Show all N lines"
+button already there is the recovery path.
+
+`SLICE_LINES` lives in shared code with a guard test asserting it is ≥ every
+`*_MAX_LINES` in `ToolResult.tsx`, so a future render path that shows more
+lines fails the build rather than silently rendering a short preview.
+
+The cut lands on a UTF-8 character boundary so a preview never ends
+mid-codepoint.
+
+Exempt: Task-parent results (final report). Image-bearing results are **not**
+exempt — see below.
 
 ### 2. Write/Edit inputs — store the stats, lazy body
 
@@ -139,24 +156,73 @@ marker. `DiffBlock` reads the stats from metadata instead of recomputing them,
 and fetches the body when the user opens the modal — which is already an
 explicit click with a loading state to hang a spinner on.
 
-### 3. Images — stored thumbnail, lazy full-res
+### 3. Images — serve by URL, no thumbnail
 
-Store a downscaled thumbnail (192px longest edge, so 96×96 stays crisp on
-2× displays) content-addressed by hash, and put its URL in the existing `src`
-field. The full-resolution bytes stay in the row and are fetched only when the
-preview modal opens.
+Replace the inline base64 with a URL to a content-addressed endpoint, and mark
+the `<img>` `loading="lazy"`. No downscaling, no thumbnail, no new artifact to
+store: the bytes stay exactly where they are today, and only the *wire format*
+changes.
 
-This applies to both user-row images and image-bearing tool results, which is
-what lets those results skip the head-slice mechanism safely.
+This is a deliberate reversal of the earlier "stored thumbnail" proposal, for
+three reasons:
+
+* **Downscaling tool-result images would be an unrecoverable quality loss.**
+  They render at up to 256px (`max-h-64`) and have **no click-to-full-size
+  affordance at all** (`ToolResult.tsx:242–255`) — unlike user-row images, there
+  is no second view to load the full resolution into. A thumbnail there is
+  simply a permanently worse screenshot, which req 8 forbids.
+* **Req 9 permits reduced resolution; it does not require it.** The completion
+  criterion is req 1 — do not transfer what is not visible without a click. A
+  lazily-fetched URL satisfies that directly: an image scrolled off-screen
+  transfers *nothing*, and an image on screen is, by definition, visible.
+* **There is no image library in the tree** (no `sharp`, `jimp`, or `canvas`).
+  Downscaling means a new native dependency in every session image — a real
+  cost, and by the two points above it buys no requirement.
+
+What the URL buys on its own: the transcript JSON stops carrying megabytes of
+base64 (which also inflates the bytes by ~33%); off-screen images cost nothing;
+on-screen ones load in parallel without blocking the transcript render; and
+content-addressing means a screenshot that appears twenty times is fetched
+once. The `<img>` boxes are fixed-size (`w-24 h-24`, `max-h-64`), so lazy
+loading introduces no layout shift.
+
+The client change is close to nothing: `MessageImages` already prefers
+`img.src` over a `data:` URI (`message-media.tsx:41`), and the preview modal is
+handed that same `src` — so one URL serves both the inline render and the
+full-size view, with the browser cache making the second free. `data` becomes
+optional on `ChatMessageImage`; `ToolResultImage` gains the same optional `src`.
+
+If a future measurement shows on-screen image bytes still dominate, downscaling
+can be added *behind the same URL* (`?w=192`) with no client change and no
+change to what is stored. That is the reason to leave it out now rather than a
+reason it is unnecessary forever.
+
+Because image blocks are substituted rather than left intact, image-bearing
+tool results no longer need the head-slice exemption they had in the earlier
+draft — the base64 is gone before the slice is applied, so what remains is
+ordinary text that slices safely and stays valid JSON.
 
 ### Fetch endpoints
 
 * `GET /api/sessions/:id/tool-results/:toolUseId` → full result content
 * `GET /api/sessions/:id/tool-inputs/:toolUseId` → full Write/Edit body
-* `GET /api/sessions/:id/images/:hash` → full-resolution image
+* `GET /api/sessions/:id/images/:hash` → the image, at its stored resolution
 
 Lookup scans the session's `tool_results` / `tool_use` columns and, on a miss,
 `subagent_events`.
+
+The image hash is computed **at serve time**, over the base64 payload, during
+the same projection that strips it. Nothing is persisted for it and nothing is
+backfilled, so existing transcripts get the benefit on their next load. A hash
+is also what lets images avoid the row id that SHI-267 was thought to need: it
+addresses an image by what it *is* rather than where it sits, so it survives
+rewind renumbering and dedupes a screenshot that appears in many rows.
+
+Image responses are immutable by construction — the hash *is* the content — so
+they carry `Cache-Control: immutable` and a matching `ETag`. Each distinct image
+is fetched at most once per browser, which is what keeps the scan-based lookup
+affordable; if profiling later says otherwise, a per-session `hash → row`
+index is the fix, not a schema change.
 
 A miss is not a state to design for. A chat rewind deletes rows
 (`ChatHistoryManager.truncate`) and the client drops the same rows from the
@@ -203,9 +269,26 @@ path.
 * `src/client/components/SubagentCall.tsx` — final report (exempt), nested tool results
 * `src/client/hooks/message-handlers/agent-event.ts:122` — the client-side 1 MB cap
 
-## Open decisions
+## Settled decisions
 
-* Slice size: 16 KB proposed.
-* Thumbnail size: 192px longest edge proposed.
-* Whether thumbnails are stored in SQLite alongside the row or on disk keyed by
-  hash. Disk keeps the DB small; SQLite keeps teardown simple.
+No open decisions remain; implementation is unblocked.
+
+* **Slice size — first 40 lines, capped at 16 KB.** Derived from the largest
+  inline preview (Bash, 30 lines) rather than picked as a byte budget, and
+  guarded by a test against the client's `*_MAX_LINES`. The byte cap is a
+  backstop for single pathological lines. Reasoning above under *1. Tool
+  results*.
+* **Thumbnail size — no thumbnail.** Images are served by URL at their stored
+  resolution. Downscaling tool-result images would be permanent quality loss
+  (they have no full-size view), req 9 permits reduction without requiring it,
+  and no image library exists in the tree. Reasoning above under *3. Images*.
+* **Thumbnail storage — no new store.** Falls away with the thumbnail. Image
+  bytes stay in SQLite where they already are; only the wire format changes,
+  and the hash is computed at serve time, so there is no migration, no
+  backfill, and no new disk surface for the janitor (SHI-196) to own.
+
+The through-line: each of the three resolutions removes mechanism rather than
+adding it. The first replaces an arbitrary byte budget with a number derived
+from what the UI draws; the second and third delete a thumbnail pipeline, a
+native dependency, and a storage decision by observing that the requirement
+they were meant to serve is already met by not inlining the bytes.
