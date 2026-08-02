@@ -26,7 +26,7 @@
  */
 
 import type { AgentId, AgentProcess, PermissionMode, AgentEvent, WsServerMessage, SessionMessageOrigin } from "../shared/types.js";
-import { wireAgentListeners } from "./ws-handlers/agent-listeners.js";
+import { buildTurnMessages, wireAgentListeners } from "./ws-handlers/agent-listeners.js";
 import { detectHardExhaustion } from "./ws-handlers/agent-rate-limits.js";
 import { resetRunnerTurnState } from "./session-runner.js";
 import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js";
@@ -81,6 +81,8 @@ export interface TurnInput {
    * looping. Absent on a first attempt.
    */
   isAuthRetry?: boolean;
+  /** One shared retry budget for automatic auth and stale-resume recovery. */
+  recoveryRetryUsed?: boolean;
   /**
    * docs/150 req 14 — set on the quota-retry re-dispatch (a turn re-run after
    * the provider killed it for subscription exhaustion). Bounds the retry to
@@ -308,11 +310,12 @@ export async function executeAgentTurn(
   // turn once on a fresh agent (same assembled prompt, so attachments and
   // slash commands survive). A transient stale-token 401 thus recovers with no
   // sign-in card and no manual re-send.
-  let authRecoveryInProgress = false;
-  const canRecoverAuth = !input.isAuthRetry && !!deps.ensureAgentTokenFresh;
+  let automaticRecoveryInProgress = false;
+  const recoveryRetryUsed = input.recoveryRetryUsed ?? input.isAuthRetry ?? false;
+  const canRecoverAuth = !recoveryRetryUsed && !!deps.ensureAgentTokenFresh;
   const willRecoverAuth = (): boolean => {
     if (!canRecoverAuth) return false;
-    authRecoveryInProgress = true;
+    automaticRecoveryInProgress = true;
     return true;
   };
   const recoverAuth = async (): Promise<boolean> => {
@@ -359,11 +362,66 @@ export async function executeAgentTurn(
     // prevents a second recovery (one quiet retry, then the card surfaces);
     // the shared `persistGuard` keeps the user row at exactly one copy.
     console.log(`[turn] auth healed for ${sessionId}; re-dispatching turn (quiet auth retry)`);
+    if (runner) {
+      // The retry starts by resetting every per-turn accumulator. Finalize any
+      // output the first attempt already streamed before allowing that reset,
+      // otherwise a retry that fails before producing output rebuilds history
+      // from empty groups and deletes the transcript the user already saw.
+      // The user row is persisted independently and guarded across attempts;
+      // only the first attempt's assistant/tool groups are finalized here.
+      const firstAttemptMessages = buildTurnMessages(
+        runner.chatMessageGroups,
+        runner.steeredMessages ?? [],
+        runner.recordedCards ?? [],
+        { inProgress: false },
+      );
+      if (firstAttemptMessages.length > 0) {
+        deps.listenerDeps.chatHistoryManager.replaceInProgress(sessionId, firstAttemptMessages);
+        deps.listenerDeps.chatHistoryManager.finalizeInProgress(sessionId);
+      }
+    }
     const freshAgent = deps.agentFactory(agentId);
     if (runner) runner.setAgent(freshAgent);
     await executeAgentTurn(runner, deps, freshAgent, {
       ...input,
       isAuthRetry: true,
+      recoveryRetryUsed: true,
+      reuseExistingAgent: false,
+      emitUserEcho: false,
+      persistGuard,
+    });
+    return true;
+  };
+
+  // Captured after env preparation, immediately before buildRunParams reads
+  // the same DB pointer. This is the exact resume id owned by this process.
+  let activeResumeSessionId: string | null = null;
+  const recoverMissingConversation = (invalidId: string): boolean => {
+    // eslint-disable-next-line no-restricted-syntax -- Claude-only CLI stderr/--resume recovery (docs/155)
+    if (agentId !== "claude" || recoveryRetryUsed || invalidId !== activeResumeSessionId) return false;
+    const current = deps.listenerDeps.sessionManager.get(sessionId)?.agentSessionId;
+    if (current !== invalidId) return false; // stale process must not clear a newer pointer
+    automaticRecoveryInProgress = true;
+    deps.listenerDeps.sessionManager.clearAgentSessionId(sessionId);
+    if (runner) {
+      const partial = buildTurnMessages(
+        runner.chatMessageGroups,
+        runner.steeredMessages ?? [],
+        runner.recordedCards ?? [],
+        { inProgress: false },
+      );
+      if (partial.length > 0) {
+        deps.listenerDeps.chatHistoryManager.replaceInProgress(sessionId, partial);
+        deps.listenerDeps.chatHistoryManager.finalizeInProgress(sessionId);
+      }
+    }
+    agent.kill();
+    if (runner?.getAgent() === agent) runner.setAgent(null);
+    const freshAgent = deps.agentFactory(agentId);
+    if (runner) runner.setAgent(freshAgent);
+    void executeAgentTurn(runner, deps, freshAgent, {
+      ...input,
+      recoveryRetryUsed: true,
       reuseExistingAgent: false,
       emitUserEcho: false,
       persistGuard,
@@ -447,6 +505,8 @@ export async function executeAgentTurn(
     // `recoverAuth` to heal + re-dispatch. Omitted when this turn can't recover
     // (already a retry, or no healer) so the listener keeps the legacy flow.
     ...(canRecoverAuth ? { willRecoverAuth, recoverAuth } : {}),
+    // eslint-disable-next-line no-restricted-syntax -- Claude-only CLI stderr/--resume recovery (docs/155)
+    ...(!recoveryRetryUsed && agentId === "claude" ? { recoverMissingConversation } : {}),
     ...(input.permissionMode !== undefined ? { requestedPermissionMode: input.permissionMode } : {}),
     // Route the error-path drain through the SAME guarded `tryDrain` the
     // agent_result / done paths use, so a process that both errors AND exits
@@ -731,7 +791,7 @@ export async function executeAgentTurn(
     // owns the agent ref, the re-dispatch, and ALL terminal work (drain / commit
     // / finished). Stand down so we don't double-drain, emit a spurious error,
     // or finalize a turn that's about to be retried.
-    if (authRecoveryInProgress) return;
+    if (automaticRecoveryInProgress) return;
     // docs/150 req 14 — same stand-down for the quota retry: `retryOnNextAccount`
     // killed this process on purpose and the re-dispatched turn owns every
     // terminal step. Without this, the kill's `done` would drain the queue and
@@ -876,6 +936,7 @@ export async function executeAgentTurn(
     const envBegan = Date.now();
     await deps.prepareAgentEnv?.(sessionId, agentId);
     console.log(`[turn] env-prep for ${sessionId} took ${Date.now() - envBegan}ms`);
+    activeResumeSessionId = deps.listenerDeps.sessionManager.get(sessionId)?.agentSessionId ?? null;
 
     if (input.reuseExistingAgent) {
       // docs/140 — carry the message into the resident streaming process. Push

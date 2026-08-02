@@ -177,6 +177,25 @@ local runtime omit it and get the legacy visible re-auth flow with no retry.
 
 ## Key files
 
+### 2026-08-02 incident follow-up — rejected resume and retry transcript durability
+
+A production turn exposed two recovery edges after it streamed visible work,
+healed an auth failure, and retried against a Claude conversation id that
+existed on disk but could not be resumed from `/workspace`:
+
+- Leak repair validates and selects JSONLs only from Claude's
+  `projects/-workspace` bucket. A structurally valid conversation from another
+  encoded cwd is not resumable by the session CLI and cannot become the DB
+  pointer.
+- The shared executor recognizes `No conversation found with session ID`,
+  identity-guards clearing against the exact id used by that process, and
+  re-dispatches the same assembled turn once without `--resume`. Stale-resume
+  and quiet-auth recovery share one retry budget.
+- Before either automatic retry resets runner accumulators, visible assistant,
+  tool, and card groups are finalized. An empty failed retry appends its error
+  without deleting the first attempt, while the shared user-row guard prevents
+  a duplicate prompt.
+
 - `session/agents/claude/process.ts` — `resultEventIsError`,
   `resultEventIndicatesAuthFailure`, `assistantEventIndicatesAuthFailure`,
   `consumeAuthFailureEvent` (the drain-loop gate that raises `auth_required`

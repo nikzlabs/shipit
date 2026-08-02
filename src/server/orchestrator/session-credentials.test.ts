@@ -882,6 +882,38 @@ describe("session-credentials", () => {
     expect(recovered).toEqual([realSid]);
   });
 
+  it("validator: ignores a newer resumable conversation from a different project bucket", () => {
+    const account = path.join(root, "provider-accounts", "claude", "claude-default");
+    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
+    const sessionDir = perSessionCredentialsDir(root, sid);
+    fs.mkdirSync(path.join(sessionDir, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(sessionDir, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
+
+    const workspaceSid = "11111111-1111-4111-8111-111111111111";
+    const otherProjectSid = "9ee27e97-b788-4aed-b1e0-d87c23e2eebf";
+    const workspaceDir = path.join(sessionDir, ".claude", "projects", "-workspace");
+    const otherProjectDir = path.join(sessionDir, ".claude", "projects", "-tmp-other-project");
+    fs.mkdirSync(workspaceDir, { recursive: true });
+    fs.mkdirSync(otherProjectDir, { recursive: true });
+    fs.writeFileSync(path.join(workspaceDir, `${workspaceSid}.jsonl`), resumableJsonl(workspaceSid));
+    fs.writeFileSync(path.join(otherProjectDir, `${otherProjectSid}.jsonl`), resumableJsonl(otherProjectSid));
+    const now = Date.now() / 1000;
+    fs.utimesSync(path.join(workspaceDir, `${workspaceSid}.jsonl`), now - 60, now - 60);
+    fs.utimesSync(path.join(otherProjectDir, `${otherProjectSid}.jsonl`), now, now);
+
+    const recovered: (string | null)[] = [];
+    syncProviderAccountTokenIn(
+      root, sid, "claude", "claude-default",
+      (id) => { recovered.push(id); },
+      "stale-db-id-with-no-jsonl",
+    );
+
+    // Claude resolves --resume within the current cwd's encoded project
+    // bucket. A valid JSONL elsewhere is still unresumable from /workspace.
+    expect(recovered).toEqual([workspaceSid]);
+  });
+
   it("validator: only-stub jsonls present → callback fires with null (clear signal)", () => {
     const account = path.join(root, "provider-accounts", "claude", "claude-default");
     fs.mkdirSync(path.join(account, ".claude"), { recursive: true });

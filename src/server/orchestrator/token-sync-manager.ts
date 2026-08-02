@@ -25,6 +25,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { AgentId } from "../shared/types/agent-types.js";
+import { CONTAINER_WORKSPACE_DIR } from "../shared/fs-constants.js";
 import { providerAccountCredentialRoot } from "./provider-account-manager.js";
 import {
   AGENT_CREDENTIAL_PATHS,
@@ -43,6 +44,13 @@ const AGENT_TOKEN_FILES: Partial<Record<AgentId, readonly string[]>> = {
   claude: [".claude/.credentials.json", ".claude/credentials.json", ".claude/auth.json"],
   codex: [".codex/auth.json"],
 };
+
+// Claude keys conversation history by its encoded cwd. Session agents always
+// run at /workspace, so only this bucket can be resumed by the next CLI spawn.
+// Scanning sibling buckets can find a structurally valid conversation that
+// `claude --resume` still rejects as "No conversation found" because it belongs
+// to a different project.
+const CLAUDE_SESSION_PROJECT_DIR = CONTAINER_WORKSPACE_DIR.replaceAll("/", "-");
 
 /** Copy a file via temp + atomic rename so a concurrent reader never sees a partial write. */
 function atomicCopyFile(src: string, dst: string): void {
@@ -761,20 +769,12 @@ function materializeLeakedSubtreeSymlinks(
  * from "DB id points at junk."
  */
 function jsonlExistsForAgentSessionId(projectsRoot: string, agentSessionId: string): boolean {
-  let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(projectsRoot, { withFileTypes: true });
-  } catch {
-    return false;
-  }
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const candidate = path.join(projectsRoot, entry.name, `${agentSessionId}.jsonl`);
-    if (fs.existsSync(candidate) && jsonlIsResumableConversation(candidate)) {
-      return true;
-    }
-  }
-  return false;
+  const candidate = path.join(
+    projectsRoot,
+    CLAUDE_SESSION_PROJECT_DIR,
+    `${agentSessionId}.jsonl`,
+  );
+  return fs.existsSync(candidate) && jsonlIsResumableConversation(candidate);
 }
 
 /**
@@ -969,7 +969,7 @@ function jsonlIsResumableConversation(file: string): boolean {
 }
 
 /**
- * Walk `<projectsRoot>/*\/*.jsonl`, keep only files that pass
+ * Walk `<projectsRoot>/-workspace/*.jsonl`, keep only files that pass
  * {@link jsonlIsResumableConversation} (real user+assistant events
  * present), and return the `sessionId` from the most-recently-modified
  * qualifying file's first JSON line. Returns null when no jsonl exists,
@@ -982,29 +982,23 @@ function jsonlIsResumableConversation(file: string): boolean {
  */
 function findLatestAgentSessionId(projectsRoot: string): string | null {
   const candidates: { path: string; mtimeMs: number }[] = [];
-  let entries: fs.Dirent[];
+  let files: fs.Dirent[];
   try {
-    entries = fs.readdirSync(projectsRoot, { withFileTypes: true });
+    files = fs.readdirSync(
+      path.join(projectsRoot, CLAUDE_SESSION_PROJECT_DIR),
+      { withFileTypes: true },
+    );
   } catch {
     return null;
   }
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const projectDir = path.join(projectsRoot, entry.name);
-    let files: fs.Dirent[];
+  const projectDir = path.join(projectsRoot, CLAUDE_SESSION_PROJECT_DIR);
+  for (const file of files) {
+    if (!file.isFile() || !file.name.endsWith(".jsonl")) continue;
+    const full = path.join(projectDir, file.name);
     try {
-      files = fs.readdirSync(projectDir, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const file of files) {
-      if (!file.isFile() || !file.name.endsWith(".jsonl")) continue;
-      const full = path.join(projectDir, file.name);
-      try {
-        const mtimeMs = fs.statSync(full).mtimeMs;
-        candidates.push({ path: full, mtimeMs });
-      } catch { /* ignore — race with another writer */ }
-    }
+      const mtimeMs = fs.statSync(full).mtimeMs;
+      candidates.push({ path: full, mtimeMs });
+    } catch { /* ignore — race with another writer */ }
   }
   // Descending mtime — pick the first that looks like a real conversation.
   candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
