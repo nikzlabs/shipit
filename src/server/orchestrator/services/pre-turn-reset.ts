@@ -282,13 +282,55 @@ function refuse(reason: string): ExplicitResetOutcome {
 }
 
 /**
+ * Find the base branch an explicit reset should target — DURABLY, because the
+ * live PR snapshot is not.
+ *
+ * `getPrStatus` is the obvious source and the right first choice, but it is
+ * transient by design: `PrStatusPoller.reArm` nulls it
+ * (`sessionManager.setPrStatus(id, null)`) every time a merged session gains new
+ * work, which is the ordinary "keep working after a merge" path — both
+ * `detectAndReArmMergedSession` (rebased + progressed) and
+ * `detectAndReArmResetSession` (branch back at base) run it from the post-turn
+ * flow. Deriving the base from that snapshot alone therefore made a routine
+ * merge → commit → re-arm sequence refuse with "no merged pull request
+ * recorded", which was both wrong (the base never changed) and misleading (a PR
+ * very much merged; the record was cleared for an unrelated reason).
+ *
+ * `session.previousMergedPr.baseBranch` is the durable answer in exactly that
+ * case: both re-arm paths call `sessionManager.clearMerged(id, { …, baseBranch })`
+ * **immediately before** `poller.reArm`, so the breadcrumb is written in the same
+ * beat the snapshot is cleared, and it is DB-backed (`previous_merged_pr`), so it
+ * survives a restart too.
+ *
+ * There is deliberately no third fallback to the repo's **default** branch, even
+ * though one is knowable (session branches are cut from `origin/<defaultBranch>`
+ * — `services/session.ts`, `services/repo-default-branch.ts`). It would not let a
+ * never-PR'd session reset: {@link computeResetEligible} independently requires
+ * `mergedAt` + `mergedHeadSha` + a live `prStatus`, so such a session refuses at
+ * the gate regardless of what base is found. All the fallback would add is a
+ * truthful-but-useless `already-at-base` for a branch sitting exactly on the
+ * default tip, in exchange for making the reset target guessable in a command
+ * whose entire safety story is "reset only onto the base of a PR this branch
+ * provably shipped". Widening *which* sessions may reset is a separate,
+ * deliberate decision about the gate — not something to smuggle in via the base
+ * lookup. The refusal below therefore names the gate as the reason, not the base.
+ *
+ * Note this only *finds* the base — the destructive move is still gated by the
+ * unchanged {@link computeResetEligible}, which reads the live `prStatus` and
+ * fails closed without it.
+ */
+function resolveResetBase(session: SessionInfo, prStatus: PrStatusSummary | null): string | undefined {
+  return prStatus?.baseBranch ?? session.previousMergedPr?.baseBranch;
+}
+
+/**
  * docs/239 — reset the session branch to its merged PR's base, on the agent's
  * explicit request (`shipit branch reset-to-base`), as the first step of a
  * self-merge wake turn.
  *
  * This is an explicit MODE over docs/218's reset core, not a second service: the
  * gate ({@link computeResetEligible}), the fetch, the re-gate and the live-tip
- * leased push are the same code and the same invariants. Five things differ, and
+ * leased push are the same code and the same invariants. Six things differ, and
  * each is a correctness requirement rather than a preference:
  *
  *  - **`getAutoResetMergedBranch()` is not consulted.** A command the agent
@@ -306,6 +348,10 @@ function refuse(reason: string): ExplicitResetOutcome {
  *  - **`handWorkspaceBackToWorker` runs in a `finally`.** The orchestrator does
  *    this git work as root; without the handback the agent hits `EACCES` on its
  *    first edit — inside the very turn the wake exists to enable.
+ *  - **The base is derived durably** ({@link resolveResetBase}), not from the
+ *    live PR snapshot alone. A docs/202 re-arm nulls that snapshot in the normal
+ *    post-turn flow, which made an ordinary merge → commit → re-arm sequence
+ *    refuse a reset the session was plainly entitled to.
  *  - **Simple CLI semantics.** Exit 0 for `reset` and `already-at-base`, nonzero
  *    with a reason otherwise.
  *
@@ -344,11 +390,13 @@ export async function resetBranchToBaseExplicit(
       return refuse("A merge / cherry-pick / revert is in progress. Finish or abort it first.");
     }
 
-    const base = prStatus?.baseBranch;
+    const base = resolveResetBase(session, prStatus);
     if (!base) {
       return refuse(
-        "No base branch is known for this session (no merged pull request recorded), so there is "
-        + "nothing to reset to.",
+        "No pull-request base is recorded for this session — neither a live pull request nor a "
+        + "previously merged one. A reset needs one: without a merged pull request there is no "
+        + "proof this branch's commits have already shipped, so resetting it onto the repo's "
+        + "default branch would discard them.",
       );
     }
 

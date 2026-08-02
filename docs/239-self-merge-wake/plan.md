@@ -157,7 +157,7 @@ which would hold disk for the unbounded duration of human review.
 `shipit branch reset-to-base` — an **explicit mode over the existing docs/218 reset
 core**, not a new service. Reuse its gate, fetch, re-gate, reset and live-tip leased push.
 
-Five things the mode must change or add:
+Six things the mode must change or add:
 
 - **Ignore `getAutoResetMergedBranch()`.** A command the agent deliberately invoked must
   not silently no-op because an unrelated composer preference is off.
@@ -170,6 +170,22 @@ Five things the mode must change or add:
   silently dropped and the next PR never updates.
 - **`handWorkspaceBackToWorker` in a `finally`.** The orchestrator writes as root; without
   it the agent hits `EACCES` on its first edit — inside the very turn the wake enables.
+- **Derive the base durably, not from the live PR snapshot alone.** `getPrStatus` is
+  transient: docs/202's `PrStatusPoller.reArm` nulls it every time a merged session gains
+  new work, which is the ordinary "keep working after a merge" path. Reading the base only
+  from there made a routine merge → commit → re-arm sequence refuse with "no merged pull
+  request recorded" — wrong (the base never changed) and misleading (a PR had very much
+  merged). Fall back to `session.previousMergedPr.baseBranch`, which both re-arm paths
+  write via `clearMerged` in the same beat the snapshot is cleared and which is DB-backed.
+  No third fallback to the repo **default** branch, even though one is knowable (session
+  branches are cut from `origin/<defaultBranch>`). It would not let a never-PR'd session
+  reset — the gate independently requires `mergedAt` + `mergedHeadSha` + a live `prStatus`,
+  so such a session refuses regardless of which base is found — and all it would add is a
+  guessable reset target in a command whose safety story is "reset only onto the base of a
+  PR this branch provably shipped". Widening *which* sessions may reset is a separate
+  decision about the gate, not something to smuggle in via the base lookup; the no-PR
+  refusal therefore names the gate as the reason rather than a missing base.
+  `resolveResetBase` in `services/pre-turn-reset.ts`.
 - **Simple CLI semantics:** exit 0 for reset/already-at-base, nonzero with a reason
   otherwise. The agent behaves identically for "unsafe" and "errored", so they are one
   outcome.
