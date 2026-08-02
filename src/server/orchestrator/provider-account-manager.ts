@@ -474,8 +474,8 @@ export class ProviderAccountManager {
    *
    * This is {@link selectRouteForTurn} widened: same eligibility walk, but it
    * also skips accounts whose quota is spent (reqs 6, 7), honours an exclusion
-   * list so a mid-turn retry cannot land back on the account that just ran out
-   * (req 14), skips accounts that cannot run the requested model (req 17), and
+   * list so a retry cannot land back on an account that just ran out (reqs 14,
+   * 20), and
    * distinguishes *why* nothing was selectable so the caller can tell the user
    * (req 13). `selectRouteForTurn` remains as the thin "just give me a route"
    * wrapper for callers that have nothing useful to do with the reason.

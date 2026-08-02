@@ -82,7 +82,7 @@
 - [x] Record failover as a chat-visible system event attached to the original turn (pre-turn failover; the same-turn retry's event lands with req 14).
 - [x] Ensure all turn entrypoints use shared provider-account preflight: chat, answer-question, system turns, CI auto-fix, child sessions, and rebase/conflict recovery.
 - [x] Re-check an already-pinned session's account before its turn; switch away from a known-exhausted or unusable account before spawning.
-- [x] Route brokered one-shot runs (`shipit agent run`) through structured account selection and one bounded hard-exhaustion fallback (req 20).
+- [x] Route brokered one-shot runs (`shipit agent run`) through structured account selection and bounded hard-exhaustion fallback across every eligible subscription account (req 20).
 
 ## Phase 4 — Policy Controls
 

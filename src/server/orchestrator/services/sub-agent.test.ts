@@ -284,6 +284,30 @@ describe("runSubAgent — happy path", () => {
     expect(result.text).toBe("review complete");
   });
 
+  it("continues across exhausted accounts until a healthy subscription succeeds", async () => {
+    const resetAt = "2099-08-02T12:00:00.000Z";
+    const { deps, runner, selectAccountForTurn, markAccountExhausted } = makeDeps({
+      spawnResults: [
+        { status: "error", text: "", error: `Weekly usage limit reached. It resets at ${resetAt}.`, truncated: false, durationMs: 10, costUsd: 0 },
+        { status: "error", text: "", error: "Quota exhausted", truncated: false, durationMs: 10, costUsd: 0 },
+        { status: "success", text: "third account worked", truncated: false, durationMs: 20, costUsd: 0 },
+      ],
+    });
+    selectAccountForTurn
+      .mockReturnValueOnce({ ok: true, route: { kind: "account", id: "acct-primary" } })
+      .mockReturnValueOnce({ ok: true, route: { kind: "account", id: "acct-secondary" } })
+      .mockReturnValueOnce({ ok: true, route: { kind: "account", id: "acct-tertiary" } });
+
+    const result = await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+
+    expect(runner.spawnSubAgent).toHaveBeenCalledTimes(3);
+    expect(markAccountExhausted).toHaveBeenCalledTimes(2);
+    expect(selectAccountForTurn).toHaveBeenNthCalledWith(3, "codex", {
+      exclude: ["acct-primary", "acct-secondary"],
+    });
+    expect(result.text).toBe("third account worked");
+  });
+
   it("does not retry a model-access error", async () => {
     const { deps, runner, markAccountExhausted } = makeDeps({
       spawnResult: { status: "error", text: "", error: "This account cannot access model opus", truncated: false, durationMs: 10, costUsd: 0 },

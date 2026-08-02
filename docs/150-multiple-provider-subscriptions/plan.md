@@ -11,9 +11,10 @@ The account router is an execution invariant, not only a session-turn feature.
 Regular conversations preflight through `selectAccountForTurn` in the shared
 turn executor. Brokered one-shot runs (`shipit agent run`) now use the same
 structured selection before spawning and the same hard-exhaustion detector and
-persisted account benching as normal turns. A one-shot retry excludes the
-failed account, accepts only another connected subscription-account route, and
-is bounded to one fallback attempt. Reserved API-key routes are therefore never
+persisted account benching as normal turns. A one-shot retry excludes every
+account already attempted, accepts only another connected subscription-account
+route, and is bounded by the finite number of connected accounts (each is tried
+at most once). Reserved API-key routes are therefore never
 entered as quota failover, while non-quota provider errors (including model
 access errors) remain untouched and visible.
 

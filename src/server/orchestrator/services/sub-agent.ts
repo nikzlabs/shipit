@@ -236,10 +236,11 @@ export async function runSubAgent(
     // fallback is deliberately bounded: a second provider/model error is
     // returned truthfully instead of walking accounts indefinitely. API-key
     // routes never enter this branch because only account routes are benched.
-    const exhausted = result.status === "error" && result.error
+    const attemptedAccountIds = new Set(accountId ? [accountId] : []);
+    let exhausted = result.status === "error" && result.error
       ? detectHardExhaustion(result.error)
       : null;
-    if (exhausted && accountId && deps.providerAccountManager) {
+    while (exhausted && accountId && deps.providerAccountManager) {
       const failedAccountId = accountId;
       deps.providerAccountManager.markAccountExhausted(
         subAgentId,
@@ -247,22 +248,25 @@ export async function runSubAgent(
         exhaustionLockoutUntil(exhausted),
       );
       const fallback = deps.providerAccountManager.selectAccountForTurn(subAgentId, {
-        exclude: [failedAccountId],
+        exclude: [...attemptedAccountIds],
       });
-      if (fallback.ok && fallback.route.kind === "account") {
-        if (provisioned && credentialsDir) {
-          try {
-            syncProviderAccountTokenBack(credentialsDir, sessionId, subAgentId, failedAccountId);
-          } catch {
-            // Best-effort, matching the terminal sync below.
-          }
-          removeSubAgentCredentials(credentialsDir, sessionId, subAgentId);
+      if (!fallback.ok || fallback.route.kind !== "account") break;
+      if (provisioned && credentialsDir) {
+        try {
+          syncProviderAccountTokenBack(credentialsDir, sessionId, subAgentId, failedAccountId);
+        } catch {
+          // Best-effort, matching the terminal sync below.
         }
-        route = fallback.route;
-        accountId = route.id;
-        provisionAttempt();
-        result = await spawn();
+        removeSubAgentCredentials(credentialsDir, sessionId, subAgentId);
       }
+      route = fallback.route;
+      accountId = route.id;
+      attemptedAccountIds.add(accountId);
+      provisionAttempt();
+      result = await spawn();
+      exhausted = result.status === "error" && result.error
+        ? detectHardExhaustion(result.error)
+        : null;
     }
 
     // §5 — attribute the sub-agent's cost AND token usage to subAgentId, not the
