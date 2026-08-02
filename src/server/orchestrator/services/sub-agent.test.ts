@@ -12,6 +12,7 @@ import path from "node:path";
 import { getSubAgentResult, runSubAgent, sweepSubAgentCredentialsOnSignOut, SUB_AGENT_PER_TURN_CAP } from "./sub-agent.js";
 import { ServiceError } from "./types.js";
 import type { SubAgentRunResult } from "../../shared/sub-agent-run.js";
+import type { AccountSelection } from "../provider-account-manager.js";
 import {
   perSessionCredentialsDir,
   provisionSubAgentCredentials,
@@ -31,6 +32,7 @@ function makeDeps(opts: {
   agentKnown?: boolean;
   subAgentSpawnsThisTurn?: number;
   spawnResult?: SubAgentRunResult;
+  spawnResults?: SubAgentRunResult[];
   runnerPresent?: boolean;
   subAgentDefaults?: { reasoningEffort?: string; model?: string };
 }) {
@@ -59,7 +61,7 @@ function makeDeps(opts: {
     steeredMessages: [] as never[],
     recordedCards: [] as never[],
     spawnSubAgent: vi.fn(async () =>
-      opts.spawnResult ?? {
+      opts.spawnResults?.shift() ?? opts.spawnResult ?? {
         status: "success",
         text: "2 bugs found",
         truncated: false,
@@ -71,6 +73,11 @@ function makeDeps(opts: {
       },
     ),
   };
+  const selectAccountForTurn = vi.fn((_provider: string, selectOpts?: { exclude?: string[] }): AccountSelection => ({
+    ok: true as const,
+    route: { kind: "account" as const, id: selectOpts?.exclude?.length ? "acct-secondary" : "acct-primary" },
+  }));
+  const markAccountExhausted = vi.fn();
   const deps = {
     sessionManager: {
       get: vi.fn((id: string) => (session?.id === id ? session : undefined)),
@@ -85,11 +92,12 @@ function makeDeps(opts: {
       get: vi.fn(() => (opts.agentKnown === false ? undefined : { name: "Codex", authConfigured: opts.authConfigured ?? true })),
     } as never,
     runnerRegistry: { get: vi.fn(() => (opts.runnerPresent === false ? undefined : runner)) } as never,
+    providerAccountManager: { selectAccountForTurn, markAccountExhausted } as never,
     usageManager: { record, getSessionUsage, getSessionTokenTotals } as never,
     recordAgentRateLimits,
     chatHistoryManager: { replaceInProgress } as never,
   };
-  return { deps, runner, emitMessage, record, replaceInProgress, recordAgentRateLimits };
+  return { deps, runner, emitMessage, record, replaceInProgress, recordAgentRateLimits, selectAccountForTurn, markAccountExhausted };
 }
 
 async function expectServiceError(p: Promise<unknown>, status: number): Promise<ServiceError> {
@@ -253,6 +261,84 @@ describe("runSubAgent — happy path", () => {
     });
     await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
     expect(recordAgentRateLimits).not.toHaveBeenCalled();
+  });
+
+  it("selects a healthy subscription account proactively for a one-shot run", async () => {
+    const { deps, runner, selectAccountForTurn } = makeDeps({});
+    await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+    expect(selectAccountForTurn).toHaveBeenCalledWith("codex");
+    expect(runner.spawnSubAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it("benches a hard-exhausted account and retries once on the next subscription", async () => {
+    const resetAt = "2099-08-02T12:00:00.000Z";
+    const { deps, runner, selectAccountForTurn, markAccountExhausted } = makeDeps({
+      spawnResults: [
+        { status: "error", text: "", error: `Weekly usage limit reached. It resets at ${resetAt}.`, truncated: false, durationMs: 10, costUsd: 0 },
+        { status: "success", text: "review complete", truncated: false, durationMs: 20, costUsd: 0 },
+      ],
+    });
+    const result = await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+    expect(markAccountExhausted).toHaveBeenCalledWith("codex", "acct-primary", Date.parse(resetAt));
+    expect(selectAccountForTurn).toHaveBeenLastCalledWith("codex", { exclude: ["acct-primary"] });
+    expect(runner.spawnSubAgent).toHaveBeenCalledTimes(2);
+    expect(result.text).toBe("review complete");
+  });
+
+  it("continues across exhausted accounts until a healthy subscription succeeds", async () => {
+    const resetAt = "2099-08-02T12:00:00.000Z";
+    const { deps, runner, selectAccountForTurn, markAccountExhausted } = makeDeps({
+      spawnResults: [
+        { status: "error", text: "", error: `Weekly usage limit reached. It resets at ${resetAt}.`, truncated: false, durationMs: 10, costUsd: 0 },
+        { status: "error", text: "", error: "Quota exhausted", truncated: false, durationMs: 10, costUsd: 0 },
+        { status: "success", text: "third account worked", truncated: false, durationMs: 20, costUsd: 0 },
+      ],
+    });
+    selectAccountForTurn
+      .mockReturnValueOnce({ ok: true, route: { kind: "account", id: "acct-primary" } })
+      .mockReturnValueOnce({ ok: true, route: { kind: "account", id: "acct-secondary" } })
+      .mockReturnValueOnce({ ok: true, route: { kind: "account", id: "acct-tertiary" } });
+
+    const result = await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+
+    expect(runner.spawnSubAgent).toHaveBeenCalledTimes(3);
+    expect(markAccountExhausted).toHaveBeenCalledTimes(2);
+    expect(selectAccountForTurn).toHaveBeenNthCalledWith(3, "codex", {
+      exclude: ["acct-primary", "acct-secondary"],
+    });
+    expect(result.text).toBe("third account worked");
+  });
+
+  it("reports the earliest reset after every eligible account is exhausted", async () => {
+    const earliestResetAt = "2099-08-02T11:00:00.000Z";
+    const { deps, runner, selectAccountForTurn } = makeDeps({
+      spawnResults: [
+        { status: "error", text: "", error: "Weekly usage limit reached", truncated: false, durationMs: 10, costUsd: 0 },
+        { status: "error", text: "", error: "Quota exhausted", truncated: false, durationMs: 10, costUsd: 0 },
+      ],
+    });
+    selectAccountForTurn
+      .mockReturnValueOnce({ ok: true, route: { kind: "account", id: "acct-primary" } })
+      .mockReturnValueOnce({ ok: true, route: { kind: "account", id: "acct-secondary" } })
+      .mockReturnValueOnce({ ok: false, reason: "all_exhausted", earliestResetAt });
+
+    const result = await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+
+    expect(runner.spawnSubAgent).toHaveBeenCalledTimes(2);
+    expect(result.status).toBe("error");
+    expect(result.error).toBe(
+      "Every connected Codex subscription account is out of quota. Earliest reset: 2099-08-02T11:00:00.000Z.",
+    );
+  });
+
+  it("does not retry a model-access error", async () => {
+    const { deps, runner, markAccountExhausted } = makeDeps({
+      spawnResult: { status: "error", text: "", error: "This account cannot access model opus", truncated: false, durationMs: 10, costUsd: 0 },
+    });
+    const result = await runSubAgent(deps, "s1", { subAgentId: "claude", prompt: "review", depth: 0 });
+    expect(result.status).toBe("error");
+    expect(runner.spawnSubAgent).toHaveBeenCalledTimes(1);
+    expect(markAccountExhausted).not.toHaveBeenCalled();
   });
 
   it("omits outputMarkdown when the sub-agent returned empty text (docs/220)", async () => {

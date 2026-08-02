@@ -31,11 +31,13 @@ import { ContainerSessionRunner } from "../container-session-runner.js";
 import { emitChatCard, type InProgressPersister } from "../chat-card-persistence.js";
 import {
   provisionSubAgentCredentials,
+  provisionProviderAccountCredentials,
   removeSubAgentCredentials,
   syncAgentTokenBack,
   syncProviderAccountTokenBack,
 } from "../session-credentials.js";
 import type { SubAgentRunResult } from "../../shared/sub-agent-run.js";
+import { detectHardExhaustion, exhaustionLockoutUntil } from "../ws-handlers/agent-rate-limits.js";
 import { ServiceError } from "./types.js";
 
 /** §5 — modest per-turn fan-out cap; the forgery-resistant bound on total spawns. */
@@ -100,6 +102,13 @@ export interface RunSubAgentResult extends SubAgentRunResult {
   spawnId: string;
 }
 
+function allAccountsExhaustedMessage(providerName: string, earliestResetAt: string | null): string {
+  const reset = earliestResetAt
+    ? ` Earliest reset: ${new Date(earliestResetAt).toISOString()}.`
+    : "";
+  return `Every connected ${providerName} subscription account is out of quota.${reset}`;
+}
+
 /**
  * Run a one-shot sub-agent on behalf of a pinned session's primary agent and
  * return its final assistant text. Throws {@link ServiceError} for every
@@ -161,20 +170,29 @@ export async function runSubAgent(
   // §4 — resolve the sub-agent's provider-account route exactly as the primary
   // turn path does, so a multi-account user provisions from the freshest account
   // root rather than the stale flat root.
-  const route = deps.providerAccountManager?.selectRouteForTurn(subAgentId) ?? null;
-  const accountId = route?.kind === "account" ? route.id : undefined;
+  const selection = deps.providerAccountManager?.selectAccountForTurn(subAgentId);
+  if (selection && !selection.ok) {
+    if (selection.reason === "all_exhausted") {
+      throw new ServiceError(429, allAccountsExhaustedMessage(info.name, selection.earliestResetAt));
+    }
+    throw new ServiceError(400, `${info.name} is not signed in. Connect it in Settings before spawning it.`);
+  }
+  let route = selection?.route ?? null;
+  let accountId = route?.kind === "account" ? route.id : undefined;
 
   // A same-provider spawn reuses the pinned agent's already-present credentials
   // and provisions nothing. A cross-provider spawn provisions the other agent's
   // subtree — only on a container runner (local mode is a no-op, docs/138).
-  const crossProvider = subAgentId !== session.agentId;
   const isContainer = runner instanceof ContainerSessionRunner;
-  const provisioned = crossProvider && isContainer && !!deps.credentialsDir;
+  const provisioned = isContainer && !!deps.credentialsDir;
   const credentialsDir = deps.credentialsDir;
 
-  if (provisioned && credentialsDir) {
-    provisionSubAgentCredentials(credentialsDir, sessionId, subAgentId, accountId);
-  }
+  const provisionAttempt = (): void => {
+    if (provisioned && credentialsDir) {
+      provisionSubAgentCredentials(credentialsDir, sessionId, subAgentId, accountId);
+    }
+  };
+  provisionAttempt();
 
   const spawnId = randomUUID();
   const startedAtMs = Date.now();
@@ -204,7 +222,7 @@ export async function runSubAgent(
   const { reasoningEffort, model } = deps.credentialStore.getAgentSubAgentDefaults(subAgentId);
 
   try {
-    const result = await runner.spawnSubAgent({
+    const spawn = () => runner.spawnSubAgent({
       agentId: subAgentId,
       prompt,
       spawnId,
@@ -212,6 +230,54 @@ export async function runSubAgent(
       ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
       ...(model !== undefined ? { model } : {}),
     });
+    let result = await spawn();
+
+    // docs/150 reqs 7, 14, 20 — one-shot reviews use the same persisted hard-
+    // exhaustion signal and structured account router as ordinary turns. One
+    // fallback is bounded by the connected subscription set: every account is
+    // attempted at most once. API-key routes never enter this branch because
+    // only account routes are benched or accepted as fallbacks.
+    const attemptedAccountIds = new Set(accountId ? [accountId] : []);
+    let exhausted = result.status === "error" && result.error
+      ? detectHardExhaustion(result.error)
+      : null;
+    while (exhausted && accountId && deps.providerAccountManager) {
+      const failedAccountId = accountId;
+      deps.providerAccountManager.markAccountExhausted(
+        subAgentId,
+        failedAccountId,
+        exhaustionLockoutUntil(exhausted),
+      );
+      const fallback = deps.providerAccountManager.selectAccountForTurn(subAgentId, {
+        exclude: [...attemptedAccountIds],
+      });
+      if (!fallback.ok) {
+        if (fallback.reason === "all_exhausted") {
+          result = {
+            ...result,
+            error: allAccountsExhaustedMessage(info.name, fallback.earliestResetAt),
+          };
+        }
+        break;
+      }
+      if (fallback.route.kind !== "account") break;
+      if (provisioned && credentialsDir) {
+        try {
+          syncProviderAccountTokenBack(credentialsDir, sessionId, subAgentId, failedAccountId);
+        } catch {
+          // Best-effort, matching the terminal sync below.
+        }
+        removeSubAgentCredentials(credentialsDir, sessionId, subAgentId);
+      }
+      route = fallback.route;
+      accountId = route.id;
+      attemptedAccountIds.add(accountId);
+      provisionAttempt();
+      result = await spawn();
+      exhausted = result.status === "error" && result.error
+        ? detectHardExhaustion(result.error)
+        : null;
+    }
 
     // §5 — attribute the sub-agent's cost AND token usage to subAgentId, not the
     // pinned agentId. A subscription backend (Codex) reports tokens but $0 cost,
@@ -300,6 +366,22 @@ export async function runSubAgent(
         // start from a slightly older token, which heals on its own refresh.
       }
       removeSubAgentCredentials(credentialsDir, sessionId, subAgentId);
+      // A same-provider consult temporarily borrows the session's provider
+      // subtree while the primary is blocked waiting for it. Put the pinned
+      // account back before the primary resumes; cross-provider runs touched a
+      // different subtree, so there is nothing to restore.
+      if (
+        subAgentId === session.agentId
+        && session.providerRouteKind === "account"
+        && session.providerRouteId
+      ) {
+        provisionProviderAccountCredentials(
+          credentialsDir,
+          sessionId,
+          subAgentId,
+          session.providerRouteId,
+        );
+      }
     }
   }
 }

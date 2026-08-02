@@ -98,6 +98,11 @@ with the ShipIt transcript and workspace context preserved across the switch.
     code supporting it are gone. The compatibility shims kept while migrating
     are a migration step, not a permanent second way for provider accounts to
     work.
+20. Provider-account selection and quota failover apply to every
+    provider-authenticated agent run, including regular session turns and
+    brokered one-shot runs used for cross-agent reviews (`shipit agent run`). A
+    review does not fail on an exhausted account while another eligible
+    subscription account for the same provider is configured.
 
 ## Requirements from standing product principles
 
@@ -167,6 +172,11 @@ None. Implementation is unblocked.
   deleting those files. `plan.md` now preserves the conversation-state subpaths
   (the same allowlist `token-sync-manager.ts` already uses for the docs/153
   repair) instead of clearing `agentSessionId` and rebuilding a replay package.
+- 2026-08-02 — The parent review found that brokered one-shot reviews bypassed
+  normal turn routing and stopped on the first exhausted subscription. The
+  human requirement is that provider-account selection and quota failover cover
+  every provider-authenticated run, expressly including `shipit agent run`.
+  Became requirement 20.
 
 ## Provenance boundary
 
@@ -174,7 +184,8 @@ Requirements 1–9 are the user's words, restated as observable behavior.
 12–18 come from the user's answers and review feedback, each with a dated
 receipt under "Resolved questions" (16 came directly as a requirement, so it has
 no question to resolve). 19 came directly as a requirement on 2026-08-02 and
-likewise has no question to resolve; *what* counts as legacy is design detail
+likewise has no question to resolve. Requirement 20 came directly from the
+2026-08-02 parent review and is recorded above; *what* counts as legacy is design detail
 and lives in `plan.md`, not here. 11 comes from the standing product principles in
 `CLAUDE.md`; 10 started there and the user then specified its shape in review.
 Everything else

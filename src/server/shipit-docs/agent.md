@@ -28,6 +28,12 @@ Unauthorized**. `shipit agent run` is the only authenticated path — it brokers
 through the orchestrator, which supplies the spawned agent's credentials
 server-side.
 
+The broker selects among connected subscription accounts using the same quota
+policy as an ordinary session turn. If the selected account reports hard quota
+exhaustion, the run is retried once on the next eligible account for that same
+provider. It never falls through to a pay-as-you-go API key, and model-access
+errors are returned as-is rather than routed around.
+
 For an in-turn fan-out under your *own* model (parallel research, parallel
 codegen you'll synthesize), prefer the built-in `Task` tool. `shipit agent run`
 is for a *different* agent (or a deliberately fresh-context helper).
