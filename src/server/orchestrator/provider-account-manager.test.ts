@@ -450,6 +450,24 @@ describe("ProviderAccountManager", () => {
       expect(mgr.selectAccountForTurn("claude")).toEqual({ ok: true, route: { kind: "account", id: ids[2] } });
     });
 
+    // The bug the reorder buttons actually had: `reorder` wrote `priority`
+    // correctly and the ROUTER honoured it, but everything the client sees —
+    // the PUT response, the `provider_accounts` broadcast, bootstrap — reads
+    // `list()`, which returned raw storage order. `upsertProviderAccount`
+    // replaces in place, so storage order never moves: the rows stayed put and
+    // the control read as broken while routing silently changed underneath.
+    // Asserting `accountsInSelectionOrder` alone never caught it, because that
+    // was the one accessor that was always right.
+    it("exposes the user's order through list(), which is what the client renders", () => {
+      const { mgr, ids } = threeReady();
+      mgr.reorder("claude", [ids[2]!, ids[0]!, ids[1]!]);
+
+      expect(mgr.list("claude").map((a) => a.id)).toEqual([ids[2], ids[0], ids[1]]);
+      // And through the all-providers form the SSE broadcast uses.
+      expect(mgr.list().filter((a) => a.provider === "claude").map((a) => a.id))
+        .toEqual([ids[2], ids[0], ids[1]]);
+    });
+
     it("survives a restart", () => {
       const { mgr, ids } = threeReady();
       mgr.reorder("claude", [ids[1]!, ids[2]!, ids[0]!]);
