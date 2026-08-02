@@ -125,8 +125,9 @@ export async function applyTemplate(
   // a *reference* to the session the operator wants to debug — never the
   // session being templated — so it doesn't weaken the fresh-only privilege
   // gate above. We use it to name the new ops session after its quarry and to
-  // seed the composer with a concrete read-only first step (the agent filters
-  // containers by the target id). Silently ignored for non-ops templates or an
+  // seed the composer with the target identity and read-only boundary, leaving
+  // the incident-specific investigation request for the operator. Silently
+  // ignored for non-ops templates or an
   // unknown id, so a stale reference still yields a usable generic ops session.
   let seedPrompt: string | undefined;
   let opsTitle = `Ops — ${os.hostname()}`;

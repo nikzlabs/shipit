@@ -549,20 +549,22 @@ Data flow (no new races, no new dispatch wiring):
    privilege gate is untouched. When the target resolves it (a) names
    the new session `Ops — debug: <title>` and (b) returns a
    `seedPrompt` built by `buildOpsInvestigationSeed` (`templates-ops.ts`),
-   which mirrors the `diagnose-stuck-session` recipe with the concrete
-   target id baked into the `docker ps --filter` / `journalctl | grep`
-   steps. An unknown id is silently ignored → generic ops session.
+   containing only the target identity and the read-only investigation
+   boundary. The operator adds the symptoms and desired investigation;
+   the starter does not assume Docker, journal, resource, or reporting
+   steps are relevant. An unknown id is silently ignored → generic ops
+   session.
 3. The store writes `seedPrompt` into the new session's composer draft
    via `saveDraftMessage(id, …)` **before** navigation. `MessageInput`
    loads the per-session draft on `focusKey` change, so the operator
-   lands in the new ops session with the investigation prompt already
-   typed. It is a *draft*, not an auto-dispatched turn: the operator
+   lands in the new ops session with the starter context already typed.
+   It is a *draft*, not an auto-dispatched turn: the operator
    reviews and presses send. That keeps a human in the loop on a
    privileged session and sidesteps any race with container boot /
    runner registration (no dependency on `/agent/dispatch`, which 404s
    until a runner exists).
 
-The session id is the right handle because container names embed it —
+The session id remains the stable handle for correlating the target —
 the agent filters on it directly (same convention the embedded
 prompts already use).
 
