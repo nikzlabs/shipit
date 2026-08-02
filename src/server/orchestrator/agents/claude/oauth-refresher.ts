@@ -310,34 +310,77 @@ export class ClaudeOAuthRefresher extends EventEmitter {
    * turn whose own account is fine. Callers that know which account they mean
    * must pass it — see `resolveTurnAccountId` on the turn deps. No-op (returns
    * `true`) outside containerized runtime, matching `refreshNow`.
+   *
+   * `opts.force` switches the call from "is the source healthy?" to "give me a
+   * token nobody has used yet", for the runtime-401 recovery path — see
+   * {@link ensureFreshOne}.
    */
-  async ensureFresh(accountId?: string): Promise<boolean> {
+  async ensureFresh(accountId?: string, opts?: { force?: boolean }): Promise<boolean> {
     if (this.deps.runtimeMode !== "containerized") return true;
-    if (accountId) return this.ensureFreshOne(accountId);
+    const force = opts?.force ?? false;
+    if (accountId) return this.ensureFreshOne(accountId, force);
     const accounts = this.deps.providerAccountManager.list("claude");
     if (accounts.length === 0) return true;
-    const results = await Promise.all(accounts.map((a) => this.ensureFreshOne(a.id)));
+    const results = await Promise.all(accounts.map((a) => this.ensureFreshOne(a.id, force)));
     return results.every(Boolean);
   }
 
-  private async ensureFreshOne(accountId: string): Promise<boolean> {
+  /**
+   * `force` is the difference between the two questions a caller can ask.
+   *
+   * **Unforced** (the proactive sweeps — env-prep step 2a, session naming) asks
+   * "is the SOURCE token healthy?" A token with margin left short-circuits with
+   * no CLI spawn, which is what keeps the call near-free on the hot path.
+   *
+   * **Forced** (the runtime-401 recovery, docs/179) asks "give me a token the
+   * failing session has not already tried." Source expiry cannot answer that:
+   * the 401 came from a session whose *synced copy* is dead — a single-use
+   * refresh token a sibling container rotated first (see the
+   * `prepareAgentEnv` note in `session-runner.ts`) — while the source itself
+   * still has hours of margin. The unforced short-circuit therefore returned
+   * `true` having done nothing, the executor re-dispatched the turn ~120ms
+   * later on byte-identical credentials, it 401'd again, and the single shared
+   * recovery budget was gone. Production bore that out: six `auth healed`
+   * events in a six-hour window with ZERO `[claude-oauth-refresh]` lines
+   * beside them.
+   *
+   * So the forced path skips the healthy short-circuit and runs a tick that
+   * always reaches Tier 2 — a real authenticated API call, which both *probes
+   * validity* (a dead grant surfaces `invalid_grant`, classified as `revoked`)
+   * and triggers refresh-on-use. Its verdict is the tick's classification, not
+   * the expiry timestamp: anything but a dead grant is a heal, because the
+   * recovery ALSO force-pushes the source token into the failing session
+   * (`repushSessionAgentToken`), which is what actually repairs a session
+   * holding a dead-but-later-dated copy. A `revoked` account is reported as
+   * unhealed so the caller surfaces the sign-in card instead of spending the
+   * single recovery budget on a turn that cannot succeed.
+   */
+  private async ensureFreshOne(accountId: string, force = false): Promise<boolean> {
     const before = this.readSourceExpiresAt(accountId);
     // No usable source on disk — a sign-in is required; nothing this path can
     // do. The caller falls back to whatever token (if any) is already synced.
     if (before === NO_EXPIRY) return false;
     const now = this.deps.now();
-    if (before - now > this.deps.safetyMarginMs) return true; // healthy; no work.
-    // Within margin or expired — heal it. `runTickForAccount` is single-flight,
-    // so a scheduled tick or a concurrent caller already refreshing is awaited
-    // rather than duplicated.
+    if (!force && before - now > this.deps.safetyMarginMs) return true; // healthy; no work.
+    // Within margin, expired, or forced — heal it. `runTickForAccount` is
+    // single-flight, so a scheduled tick or a concurrent caller already
+    // refreshing is awaited rather than duplicated.
+    let outcome: RefreshOutcome | null = null;
     try {
-      await this.runTickForAccount(accountId);
+      outcome = (await this.runTickForAccount(accountId, force)).outcome;
     } catch (err) {
       // runTickForAccount swallows its own errors; this is purely defensive.
       console.error(`[claude-oauth-refresh] ensureFresh tick for ${accountId} threw:`, err);
     }
     const after = this.readSourceExpiresAt(accountId);
-    return after !== NO_EXPIRY && after > this.deps.now();
+    if (after === NO_EXPIRY) return false;
+    if (force && (outcome === "revoked" || outcome === "missing_credentials")) {
+      console.log(
+        `[claude-oauth-refresh] account=${accountId} forced heal probe reported ${outcome} — not healed`,
+      );
+      return false;
+    }
+    return after > this.deps.now();
   }
 
   // ---- internal ----
@@ -406,11 +449,15 @@ export class ClaudeOAuthRefresher extends EventEmitter {
    * Single-flight gate for a refresh attempt on a specific account. Returns the
    * existing in-flight promise if one is already running, otherwise starts a
    * new attempt.
+   *
+   * A forced caller that joins an in-flight *unforced* tick can come back
+   * without a rotation; that's fine, because `ensureFreshOne` judges a forced
+   * heal by whether the expiry actually advanced rather than by this returning.
    */
-  private runTickForAccount(accountId: string): Promise<RefreshResult> {
+  private runTickForAccount(accountId: string, force = false): Promise<RefreshResult> {
     const state = this.ensureAccountState(accountId);
     if (state.inFlight) return state.inFlight;
-    const promise = this.executeTick(accountId).finally(() => {
+    const promise = this.executeTick(accountId, force).finally(() => {
       state.inFlight = null;
     });
     state.inFlight = promise;
@@ -422,8 +469,12 @@ export class ClaudeOAuthRefresher extends EventEmitter {
    * again. If Tier 1 didn't rotate AND the token is expired (or near expiry),
    * fall through to Tier 2. Classify the outcome and schedule the next tick
    * accordingly.
+   *
+   * `force` (runtime-401 recovery) makes Tier 2 unconditional: Tier 1 is
+   * read-only for a token that still has margin, so without it the tick would
+   * return `noop` for exactly the token that just produced a 401.
    */
-  private async executeTick(accountId: string): Promise<RefreshResult> {
+  private async executeTick(accountId: string, force = false): Promise<RefreshResult> {
     const state = this.ensureAccountState(accountId);
     const accountRoot = this.deps.providerAccountManager.resolveCredentialRoot("claude", accountId);
     const sourceFile = path.join(accountRoot, CLAUDE_CREDENTIALS_RELATIVE);
@@ -457,9 +508,13 @@ export class ClaudeOAuthRefresher extends EventEmitter {
     }
 
     const now = this.deps.now();
-    const nearExpiry = before <= now + this.deps.safetyMarginMs;
+    const isNearExpiry = before <= now + this.deps.safetyMarginMs;
+    // `force` (runtime-401 recovery) runs tier 2 regardless: tier 1 is
+    // read-only for a token with margin left, so without this the tick returns
+    // `noop` for exactly the token that just produced a 401.
+    const runTier2 = force || isNearExpiry;
 
-    if (!nearExpiry) {
+    if (!runTier2) {
       // Token's still healthy. Tier 1 was just read-only. Rearm on the
       // expiry-derived schedule.
       state.failureCount = 0;
@@ -494,7 +549,31 @@ export class ClaudeOAuthRefresher extends EventEmitter {
 
     // Neither tier rotated. Classify the failure from the combined CLI output.
     const combinedOutput = `${tier1Log}\n${tier2Log}`;
+    // A FORCED tick on a token that wasn't actually due ran tier 2 as a
+    // *validity probe*, not as a scheduled refresh (docs/179). A revocation is
+    // still terminal and must be classified — that's the signal the 401
+    // recovery is asking for — but "didn't rotate a token that wasn't near
+    // expiry" is not a scheduling failure, and letting it reach
+    // `handleFailure` would bump `failureCount` and replace this account's
+    // expiry-derived schedule with a backoff every time a session 401s.
+    if (force && !isNearExpiry && !this.outputIndicatesRevoked(combinedOutput)) {
+      state.failureCount = 0;
+      this.scheduleAccount(accountId);
+      return {
+        outcome: "noop",
+        accountId,
+        beforeExpiresAt: before,
+        afterExpiresAt: afterTier2,
+        reason: "forced validity probe found a live token that needed no rotation",
+      };
+    }
     return this.handleFailure(accountId, before, afterTier2, combinedOutput);
+  }
+
+  /** Shared with {@link handleFailure} — the only terminal "this grant is dead" test. */
+  private outputIndicatesRevoked(combinedOutput: string): boolean {
+    const lc = combinedOutput.toLowerCase();
+    return TERMINAL_AUTH_FAILURE_PATTERNS.some((phrase) => lc.includes(phrase));
   }
 
   /**
@@ -562,7 +641,7 @@ export class ClaudeOAuthRefresher extends EventEmitter {
     const lc = combinedOutput.toLowerCase();
     const isRateLimited =
       lc.includes("429") || lc.includes("rate_limit") || lc.includes("rate limited");
-    const isRevoked = TERMINAL_AUTH_FAILURE_PATTERNS.some((phrase) => lc.includes(phrase));
+    const isRevoked = this.outputIndicatesRevoked(combinedOutput);
 
     if (isRevoked) {
       console.log(`[claude-oauth-refresh] account=${accountId} revoked (${this.authFailureReason(lc)}) — emitting auth_required`);

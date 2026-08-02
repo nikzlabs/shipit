@@ -324,8 +324,11 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
    * the rotating-refresh-token stampede, so it registers no hook and resolves
    * to a no-op. Returns `true` when the token is usable after the call.
    */
-  const ensureTokenFreshHooks = new Map<AgentId, (accountId?: string) => Promise<boolean>>();
-  ensureTokenFreshHooks.set("claude", async (accountId?: string): Promise<boolean> => {
+  const ensureTokenFreshHooks = new Map<
+    AgentId,
+    (accountId?: string, opts?: { force?: boolean }) => Promise<boolean>
+  >();
+  ensureTokenFreshHooks.set("claude", async (accountId?: string, opts?: { force?: boolean }): Promise<boolean> => {
     const r = claudeOAuthRefresherRef.ref;
     // No refresher (test / local runtime) → nothing this path can heal. Return
     // false: the proactive callers ignore the boolean (they fail open and just
@@ -333,15 +336,22 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     // correctly surfaces the sign-in card instead of pointlessly re-dispatching.
     if (!r) return false;
     try {
-      return await r.ensureFresh(accountId);
+      return await r.ensureFresh(accountId, opts);
     } catch (err) {
       console.error("[claude-oauth-refresh] ensureFresh failed:", err);
       return false;
     }
   });
-  const ensureAgentTokenFresh = async (agentId: AgentId, accountId?: string): Promise<boolean> => {
+  // docs/179 — `opts.force` is set only by the runtime-401 recovery; the
+  // proactive callers (env-prep step 2a, session naming) omit it and keep the
+  // cheap expiry short-circuit.
+  const ensureAgentTokenFresh = async (
+    agentId: AgentId,
+    accountId?: string,
+    opts?: { force?: boolean },
+  ): Promise<boolean> => {
     const hook = ensureTokenFreshHooks.get(agentId);
-    return hook ? hook(accountId) : true;
+    return hook ? hook(accountId, opts) : true;
   };
   // docs/149 — same shape as the WS handler's readSystemPrompt, hoisted to
   // app scope so the system-turn hook can read it without per-connection state.

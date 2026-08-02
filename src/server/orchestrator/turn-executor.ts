@@ -32,7 +32,7 @@ import { resetRunnerTurnState } from "./session-runner.js";
 import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js";
 import { formatUnresolvedConflictNotice } from "./services/conflict-marker-notice.js";
 import { formatSecretScanNotice } from "./services/secret-scan-notice.js";
-import { emitNoticePostTurn } from "./chat-card-persistence.js";
+import { emitChatCard, emitNoticePostTurn } from "./chat-card-persistence.js";
 import { TURN_COMPLETED, turnErrored, turnNoResult, type TurnOutcome } from "./turn-settlement.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
 
@@ -332,15 +332,28 @@ export async function executeAgentTurn(
       // would be answering a question nobody asked: a bad API key would look
       // healed because the subscriptions are fine, or look unhealable because
       // one of them isn't. Don't heal; let the 401 surface.
+      //
+      // `force: true` is what makes this heal mean anything. Unforced,
+      // `ensureFresh` answers from the source token's `expiresAt` and
+      // short-circuits `true` for anything with margin left — but the 401 we
+      // are recovering from is itself evidence that the timestamp is lying
+      // (a single-use refresh token a sibling container rotated first is dead
+      // while its recorded expiry is still hours out). Production ran six
+      // "auth healed" events in six hours with zero refresher log lines
+      // beside them: every heal was a no-op that reported success, the turn
+      // was re-dispatched ~120ms later on byte-identical credentials, and the
+      // one shared recovery budget was spent for nothing.
       if (deps.resolveTurnAccountId) {
         const turnAccountId = deps.resolveTurnAccountId(sessionId);
         healed = turnAccountId && deps.ensureAgentTokenFresh
-          ? await deps.ensureAgentTokenFresh(agentId, turnAccountId)
+          ? await deps.ensureAgentTokenFresh(agentId, turnAccountId, { force: true })
           : false;
       } else {
         // No resolver wired (tests / local runtime): keep the pre-docs/150
         // provider-wide behaviour rather than silently disabling recovery.
-        healed = deps.ensureAgentTokenFresh ? await deps.ensureAgentTokenFresh(agentId) : false;
+        healed = deps.ensureAgentTokenFresh
+          ? await deps.ensureAgentTokenFresh(agentId, undefined, { force: true })
+          : false;
       }
     } catch (err) {
       console.error("[turn] auth heal failed:", err);
@@ -362,6 +375,17 @@ export async function executeAgentTurn(
     // prevents a second recovery (one quiet retry, then the card surfaces);
     // the shared `persistGuard` keeps the user row at exactly one copy.
     console.log(`[turn] auth healed for ${sessionId}; re-dispatching turn (quiet auth retry)`);
+    // Force the (possibly just-rotated) source token into THIS session before
+    // the retry spawns. The retry's env-prep runs the ordinary sync-in, whose
+    // guard skips a source that isn't strictly newer than the session's copy —
+    // which is exactly the state a sibling-rotated dead token leaves behind
+    // (later `expiresAt`, no longer valid). Without this the healed retry can
+    // still re-spawn on the credentials that just 401'd. Best-effort.
+    try {
+      deps.repushSessionAgentToken?.(sessionId, agentId);
+    } catch (err) {
+      console.warn("[turn] 401-recovery token repush failed:", err);
+    }
     if (runner) {
       // The retry starts by resetting every per-turn accumulator. Finalize any
       // output the first attempt already streamed before allowing that reset,
@@ -830,11 +854,43 @@ export async function executeAgentTurn(
       // Process exited without a result event — let the client clear its loading
       // state instead of hanging. WS-only; dispatch surfaces failures via the
       // listener's error rows.
-      if (input.emitErrorOnNoResult && !receivedResult && !(runner?.wasInterrupted ?? false)) {
-        emit({
-          type: "error",
-          message: code !== 0 ? `Agent process exited with code ${code}` : "Agent process ended without a response",
-        });
+      //
+      // Skipped on the auth path for the same reason `onInterruptedTurn` is
+      // (see the block below and the `sawAuthRequired` declaration): an
+      // auth-required turn legitimately ends without an `agent_result`, and the
+      // listener has already written the actionable, PERSISTED explanation.
+      // Adding a generic "Agent process ended without a response" beside it is
+      // both redundant and worse than redundant now — it is emit-only, so the
+      // transcript would show two errors live and one after a reload.
+      //
+      // PERSISTED, not merely emitted, for the same reason as the auth notice
+      // (CLAUDE.md "Chat transcript content MUST be persisted"). This is the
+      // whole user-visible outcome of a turn that produced nothing: emit-only,
+      // it reaches nobody when no viewer is attached at the exit instant and
+      // vanishes on the next switch/reload for everyone else — leaving a user
+      // message with no reply, which is the shape of the production incident.
+      // Recorded in-band (rather than appended) so the `onInterruptedTurn`
+      // finalize immediately below rebuilds it at its true position alongside
+      // whatever partial output the turn did stream.
+      if (
+        input.emitErrorOnNoResult
+        && !receivedResult
+        && !sawAuthRequired
+        && !(runner?.wasInterrupted ?? false)
+      ) {
+        const message = code !== 0
+          ? `Agent process exited with code ${code}`
+          : "Agent process ended without a response";
+        if (runner) {
+          emitChatCard(
+            runner,
+            { type: "error", message, sessionId },
+            { role: "assistant", text: `Error: ${message}`, isError: true },
+            { chatHistoryManager: deps.listenerDeps.chatHistoryManager, sessionId },
+          );
+        } else {
+          emit({ type: "error", message });
+        }
       }
       // Preserve the partial turn whenever the process ended without an
       // `agent_result` — whether the user interrupted (the "first turn erased

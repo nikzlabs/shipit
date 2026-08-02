@@ -693,6 +693,97 @@ describe("ClaudeOAuthRefresher", () => {
       expect(rig.spawnHandle.invocations.length).toBe(0);
     });
 
+    // ---- forced heal (docs/179 — the runtime-401 recovery path) ----
+    //
+    // The production failure this covers: six `auth healed` events in six hours
+    // with ZERO refresher log lines beside them. `expiresAt` still had margin,
+    // so the unforced short-circuit answered `true` having spawned nothing, the
+    // executor re-dispatched on byte-identical credentials, and it 401'd again.
+
+    it("forced: probes a healthy token with tier 2 instead of short-circuiting", async () => {
+      const now = 1_700_000_000_000;
+      const future = now + 8 * 60 * 60 * 1000; // 8h out — the unforced path returns true with no spawn
+      const rig = buildRig({
+        accounts: [makeAccount("claude-default")],
+        initialExpiries: { "claude-default": future },
+        initialNow: now,
+      });
+      rigs.push(rig);
+      rig.spawnHandle.effects = [{ /* tier1: read-only, no rotation */ }, { /* tier2: no rotation */ }];
+
+      const ok = await rig.refresher.ensureFresh("claude-default", { force: true });
+      expect(ok).toBe(true); // live token — the recovery's repush is what repairs the session
+      expect(rig.spawnHandle.invocations.length).toBe(2);
+      expect(rig.spawnHandle.invocations[0]!.args).toContain("status");
+      expect(rig.spawnHandle.invocations[1]!.args).toContain("--print"); // tier 2 ran
+    });
+
+    it("forced: a probe that rotates repushes the new token to pinned sessions", async () => {
+      const now = 1_700_000_000_000;
+      const future = now + 8 * 60 * 60 * 1000;
+      const rig = buildRig({
+        accounts: [makeAccount("claude-default")],
+        initialExpiries: { "claude-default": future },
+        initialNow: now,
+      });
+      rigs.push(rig);
+      rig.spawnHandle.effects = [{ rotateTo: now + 12 * 60 * 60 * 1000 }];
+
+      const ok = await rig.refresher.ensureFresh("claude-default", { force: true });
+      expect(ok).toBe(true);
+      expect(rig.repushCalls).toEqual([{ agentId: "claude", accountId: "claude-default" }]);
+    });
+
+    it("forced: reports NOT healed when the probe finds a revoked grant", async () => {
+      const now = 1_700_000_000_000;
+      // Future expiry — the timestamp says healthy, the grant is dead. This is
+      // the exact state expiry cannot detect and a live 401 proves.
+      const future = now + 8 * 60 * 60 * 1000;
+      const rig = buildRig({
+        accounts: [makeAccount("claude-default")],
+        initialExpiries: { "claude-default": future },
+        initialNow: now,
+      });
+      rigs.push(rig);
+      rig.spawnHandle.effects = [{ stderr: "invalid_grant" }, { stderr: "invalid_grant" }];
+
+      const ok = await rig.refresher.ensureFresh("claude-default", { force: true });
+      expect(ok).toBe(false); // caller surfaces the sign-in card instead of burning the retry
+    });
+
+    it("forced: a live-token probe does not push the account into refresh backoff", async () => {
+      const now = 1_700_000_000_000;
+      const future = now + 8 * 60 * 60 * 1000;
+      const rig = buildRig({
+        accounts: [makeAccount("claude-default")],
+        initialExpiries: { "claude-default": future },
+        initialNow: now,
+      });
+      rigs.push(rig);
+      rig.spawnHandle.effects = [{ /* tier1 */ }, { /* tier2, no rotation */ }];
+
+      await rig.refresher.ensureFresh("claude-default", { force: true });
+      // The tick ran tier 2 as a probe, not as a due refresh: a token that was
+      // never near expiry must not count as a failed rotation, or every 401 in
+      // any session would derail this account's expiry-derived schedule.
+      expect(rig.refresher._inspectForTest("claude-default").failureCount).toBe(0);
+    });
+
+    it("unforced: still short-circuits on a healthy token (proactive sweep unchanged)", async () => {
+      const now = 1_700_000_000_000;
+      const future = now + 8 * 60 * 60 * 1000;
+      const rig = buildRig({
+        accounts: [makeAccount("claude-default")],
+        initialExpiries: { "claude-default": future },
+        initialNow: now,
+      });
+      rigs.push(rig);
+
+      expect(await rig.refresher.ensureFresh("claude-default", { force: false })).toBe(true);
+      expect(await rig.refresher.ensureFresh("claude-default")).toBe(true);
+      expect(rig.spawnHandle.invocations.length).toBe(0);
+    });
+
     it("is a no-op returning true in local runtime mode", async () => {
       const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-ensure-local-"));
       const accounts = [makeAccount("claude-default")];

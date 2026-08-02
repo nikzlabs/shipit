@@ -1,7 +1,15 @@
 import type { WsServerMessage } from "../../shared/types.js";
 import type { AgentProcess } from "../../shared/types.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
+import { emitChatCard } from "../chat-card-persistence.js";
 import type { AgentListenerDeps, WireListenersOpts } from "./agent-listeners.js";
+
+/**
+ * The one actionable sentence a user gets when a turn dies on authentication.
+ * Exported so tests assert against the constant instead of a pasted copy.
+ */
+export const AGENT_NOT_AUTHENTICATED_MESSAGE =
+  "This agent is not authenticated. Open Settings → Agents to sign in, then resend your message.";
 
 /**
  * `auth_required` handling — auth-failure recovery / token refresh (docs/179),
@@ -40,6 +48,35 @@ export function wireAuthRequiredHandler(
     // recovers without the user seeing anything or re-sending.
     const willRecover = opts.willRecoverAuth?.() ?? false;
 
+    /**
+     * Emit + persist the "not authenticated" row. `emitChatCard` needs a runner
+     * (it records the row on `runner.recordedCards` so `buildTurnMessages`
+     * interleaves it at its true transcript position) and a session id; without
+     * either we can only fall back to the legacy emit, which is what the code
+     * did unconditionally before.
+     *
+     * `finalizeInProgress` after the emit is load-bearing on THIS path and only
+     * this one: `emitChatCard` persists the row as `in_progress=1`, and the
+     * auth path is the one turn ending that never finalizes — `turn-executor`'s
+     * `done` skips `onInterruptedTurn` when `sawAuthRequired` (it defers to
+     * "the listener already owns the visible row", which is us). Left
+     * in-progress, the row — and any partial output beside it — is deleted by
+     * the next turn's `replaceInProgress`, i.e. the docs/156 erasure bug.
+     */
+    const persistAuthErrorRow = (): void => {
+      if (!runner || !turnSessionId) {
+        emitToViewers({ type: "error", message: AGENT_NOT_AUTHENTICATED_MESSAGE });
+        return;
+      }
+      emitChatCard(
+        runner,
+        { type: "error", message: AGENT_NOT_AUTHENTICATED_MESSAGE, sessionId: turnSessionId },
+        { role: "assistant", text: `Error: ${AGENT_NOT_AUTHENTICATED_MESSAGE}`, isError: true },
+        { chatHistoryManager: deps.chatHistoryManager, sessionId: turnSessionId },
+      );
+      deps.chatHistoryManager.finalizeInProgress(turnSessionId);
+    };
+
     // The visible re-auth flow: tell the user (in the affected session only)
     // to re-authenticate via Settings, nudge the per-agent silent refresher,
     // and mark the turn ended.
@@ -52,11 +89,18 @@ export function wireAuthRequiredHandler(
       // attempt a silent heal (which, on a genuine revocation, broadcasts
       // `agent_auth_failed reason:revoked` → the "Sign in" toast that opens
       // Settings → Agents).
-      emitToViewers({
-        type: "error",
-        message:
-          "This agent is not authenticated. Open Settings → Agents to sign in, then resend your message.",
-      });
+      //
+      // PERSISTED, not merely emitted (CLAUDE.md "Chat transcript content MUST
+      // be persisted"). `emitToViewers` → `runner.emitMessage` is transport
+      // only: it broadcasts to attached viewers and buffers into the per-turn
+      // event log. In the production incident this notice was the user's ONLY
+      // signal that their turn had died, and it reached nobody — no viewer was
+      // attached at the failure instant, and idle-cleanup disposed the runner
+      // five seconds later, taking the replay buffer with it. The user saw a
+      // prompt with no reply and no error, twice. `emitChatCard` broadcasts,
+      // records the row in-band, and writes it to chat history in one call, so
+      // it now survives a detached viewer, a session switch, and a reload.
+      persistAuthErrorRow();
       // docs/153, docs/155 — let the per-agent module decide its side effect on
       // auth failure (Claude nudges the silent OAuth refresher; others register
       // their own hook or none). The listener doesn't know the agent — that's
