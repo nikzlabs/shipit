@@ -2014,6 +2014,36 @@ selection order is still "primary first, then stored order". Reqs 4–6 say the
 cutoff advances to the next account *in the user's priority order*, so this
 delivers the advancing half; the ordering half is the next piece.
 
+### Landed: there is no unscoped sign-in (req 19, Phase 5)
+
+`AgentAuthStartOptions` had `accountId` and `credentialDir` optional, with a
+docstring promising that "omitting both fields preserves the pre-150 singleton
+behavior". That promise had no callers left: the singleton endpoints were
+deleted with req 16, and `ProviderAccountManager.startAccountAuth` is the only
+thing that starts a flow. Both fields are now **required**.
+
+This is stricter than "unused code, delete it later", because the dormant path
+was not inert. The client files every challenge under an account row and drops
+an `agent_auth_*` event that names no account, so an unscoped flow would spawn
+a provider CLI waiting on a code the user could never be shown. Making the
+scope required means that state cannot be constructed, rather than merely not
+being constructed today.
+
+With `start` scoped, `getActiveAccountId()` is necessarily set when a manager
+emits `complete`, so `wireEventHandlers`' account-less branch is unreachable.
+That branch re-ran `migrateDefaultAccounts()` to re-register a default row
+after a singleton sign-in — a flow that no longer exists, and one a user
+signing in after a sign-out doesn't need, because "Add account" creates the row
+before the login starts. It is replaced by a warning: a completion with no
+scope means a manager emitted `complete` without a start, which is a bug worth
+seeing rather than papering over by inventing a row.
+
+One thing deliberately *not* tightened: `isConfigured` and `signOut` keep their
+optional scope. Both have honest unscoped callers — `AgentRegistry` probes the
+singleton credential path, and provider-wide sign-out clears credentials that
+may predate accounts entirely. Those are reads and teardown, not a second way
+to connect.
+
 ### Landed: one field for the order (req 19, Phase 5)
 
 `priority` and `isPrimary` both encoded the same fact, and two fields for one
