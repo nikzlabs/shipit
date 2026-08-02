@@ -36,6 +36,7 @@ import {
   StubAuthManager,
   FakeClaudeProcess,
   waitForClaude,
+  waitFor,
   createTestCredentialStore,
   createTestDatabaseManager,
 } from "./test-helpers.js";
@@ -703,9 +704,15 @@ describe("Integration: WebSocket disconnect resilience", () => {
     const status = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/status` });
     expect(status.json().running).toBe(false);
 
-    // Detach the LAST viewer — grace period timer arms.
+    // Detach the LAST viewer — grace period timer arms. Poll for the detach to
+    // land rather than betting on 50 ms: the close travels browser→server and
+    // `detachFromRunner()` runs on the socket's close handler, which a loaded
+    // event loop defers past that budget (observed as viewerCount still 1).
     clientA.close();
-    await settle(50);
+    await waitFor(async () => {
+      const r = await app.inject({ method: "GET", url: `/api/_test/runner/${sessionId}` });
+      return r.json().viewerCount === 0;
+    }, "last viewer detached");
     const stateGone = await app.inject({ method: "GET", url: `/api/_test/runner/${sessionId}` });
     expect(stateGone.json().viewerCount).toBe(0);
     expect(stateGone.json().lastViewerDetachAt).toBeGreaterThan(0);
@@ -787,12 +794,20 @@ describe("Integration: WebSocket disconnect resilience", () => {
     // Drive the agent to completion. The "done" handler runs postTurnCommit()
     // with `runner.turnSummary` captured at turn start.
     claude.finish("agent-pt-1");
-    await settle(300);
 
     // Reconnect and read history — the chat-history entry must be linked to
     // a commit whose message starts with the assistant text.
     const client2 = await TestClient.connect(port, sessionId);
-    await settle(50);
+
+    // Poll for the post-turn commit to be persisted rather than sleeping a
+    // fixed 300 ms + 50 ms. The commit runs `git add -A` + `git commit` plus
+    // chat-history bookkeeping, all of which a loaded machine stretches past
+    // that budget — observed as `expected 0 to be greater than 0` on the
+    // commitHash filter below.
+    await waitFor(async () => {
+      const r = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
+      return r.json().messages.some((m: AnyMsg) => m.commitHash);
+    }, "post-turn commit persisted to history");
 
     const historyRes = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
     expect(historyRes.statusCode).toBe(200);

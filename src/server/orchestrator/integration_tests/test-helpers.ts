@@ -193,6 +193,41 @@ export class TestClient {
     return messages;
   }
 
+  /**
+   * Collect messages until `predicate` matches one, then keep draining until
+   * the stream is quiet for `quietMs`. Returns everything collected.
+   *
+   * This is the right shape for a test that asserts BOTH that something
+   * happened AND that something else did not — e.g. "the push-failure log was
+   * emitted, and no successful `github_push_result` was". {@link drain} alone
+   * can't express that: it stops after the first quiet gap, so the awaited
+   * message is simply missing from the buffer if the work ran slow, and the
+   * positive half of the assertion fails under load. Waiting for the anchor
+   * first makes the positive half deterministic, while the quiet tail
+   * preserves the negative half's "let time pass with nothing happening".
+   */
+  async collectUntil(
+    predicate: (msg: WsServerMessage) => boolean,
+    opts: { timeoutMs?: number; quietMs?: number } = {},
+  ): Promise<WsServerMessage[]> {
+    const { timeoutMs = 10_000, quietMs = 250 } = opts;
+    const messages: WsServerMessage[] = [];
+    const deadline = Date.now() + timeoutMs;
+    let matched = false;
+    while (!matched && Date.now() < deadline) {
+      let msg: WsServerMessage;
+      try {
+        msg = await this.receive(deadline - Date.now());
+      } catch {
+        break;
+      }
+      messages.push(msg);
+      if (predicate(msg)) matched = true;
+    }
+    messages.push(...(await this.drain({ quietMs })));
+    return messages;
+  }
+
   /** Send a typed client message. */
   send(msg: WsClientMessage): void {
     this.ws.send(JSON.stringify(msg));
@@ -961,6 +996,44 @@ export async function createTestSession(
   await git.init();
   sessionManager.track(sessionId, title, sessionDir);
   return { sessionId, sessionDir };
+}
+
+/**
+ * Poll a condition until it becomes true, or throw at the deadline.
+ *
+ * WHY THIS EXISTS — the integration suite is full of `await new Promise((r) =>
+ * setTimeout(r, N))` followed by an assertion. A fixed sleep is a *bet* that
+ * the work lands within N ms: it passes on an idle machine and fails under
+ * load, which is exactly the intermittent-flake signature. Polling instead
+ * makes the test wait for the observable it actually cares about, so a slow
+ * machine costs latency rather than a red build.
+ *
+ * Use this ONLY when there is a condition to poll for. A test asserting that
+ * something did NOT happen ("no second turn was dispatched", "no event was
+ * emitted") legitimately needs a fixed sleep to let time pass with nothing
+ * occurring — converting one of those to a condition-wait silently makes it
+ * assert nothing. Those sleeps are load-bearing and must stay.
+ *
+ * The predicate may be sync or async; a throwing predicate is treated as
+ * "not yet true" so callers can dereference optional chains freely.
+ */
+export async function waitFor(
+  fn: () => boolean | Promise<boolean>,
+  label = "condition",
+  timeoutMs = 5000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    let ok: boolean;
+    try {
+      ok = await fn();
+    } catch {
+      ok = false;
+    }
+    if (ok) return;
+    if (Date.now() > deadline) throw new Error(`waitFor(${label}) timed out after ${timeoutMs}ms`);
+    await new Promise((r) => setTimeout(r, 10));
+  }
 }
 
 /**

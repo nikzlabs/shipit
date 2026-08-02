@@ -16,6 +16,7 @@ import { DatabaseManager } from "../../shared/database.js";
 import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { UsageManager } from "../usage.js";
+import type { WsServerMessage } from "../../shared/types.js";
 
 let tmpDir: string;
 let app: Awaited<ReturnType<typeof buildApp>>;
@@ -177,17 +178,20 @@ describe("auto-push: success and failure", () => {
     const claude2 = await waitForClaude(() => latestClaude, prevClaude);
     claude2.finish("test-session-1");
 
-    // Wait for the debounce period — push will fail but should emit a log entry.
-    // Drain with a short quiet period so the "no success message" assertion
-    // doesn't sit on a 3 s timeout.
-    const messages = await client.drain({ quietMs: 250 });
+    // The push runs on a debounce and then fails, emitting a log entry. Wait
+    // for that log rather than draining a fixed quiet period: a bare
+    // `drain({ quietMs: 250 })` returns as soon as the stream goes quiet for
+    // 250 ms, so on a loaded machine it hands back a buffer that predates the
+    // push attempt entirely and `failLog` is undefined. The quiet tail inside
+    // `collectUntil` still gives the "no success message" assertion below its
+    // let-time-pass window.
+    const isFailLog = (m: WsServerMessage) =>
+      m.type === "log_append" &&
+      m.channel === "agent" &&
+      m.records.some((r) => r.text.includes("Auto-push failed"));
+    const messages = await client.collectUntil(isFailLog, { quietMs: 250 });
 
-    const failLog = messages.find(
-      (m) =>
-        m.type === "log_append" &&
-        m.channel === "agent" &&
-        m.records.some((r) => r.text.includes("Auto-push failed")),
-    );
+    const failLog = messages.find(isFailLog);
     expect(failLog).toBeDefined();
 
     // Should NOT have a successful github_push_result
