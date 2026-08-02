@@ -21,6 +21,8 @@ import { GitHubRateLimitBanner } from "./components/GitHubRateLimitBanner.js";
 import { LocalModeBanner } from "./components/LocalModeBanner.js";
 import { Logo } from "./components/Logo.js";
 import { QuickCaptureOverlay } from "./components/QuickCaptureOverlay.js";
+import { MobileContentPanels } from "./components/MobileContentPanels.js";
+import { MobileSessionsPanel } from "./components/MobileSessionsPanel.js";
 
 interface AppLayoutProps {
   // Header
@@ -217,42 +219,32 @@ export function AppLayout({
               region (above the tab bar), not the whole viewport. This keeps the
               MobileTabBar visible and interactive while the session list is open. */}
           <div className="relative flex flex-col flex-1 min-h-0">
-            <div className="flex flex-col flex-1 min-h-0">
-              {(showHomeScreen && !showNewSessionView) || mobilePanel === "chat" ? <div data-chat-panel className="flex flex-col flex-1 min-h-0">{chatPanel}</div> : <div className="flex flex-col flex-1 min-h-0 bg-(--color-bg-secondary)">{rightPanel}</div>}
-            </div>
-            {mobileSidebarOpen && (
-              <div className="absolute inset-0 z-40 flex" role="dialog" aria-label="Sessions">
-                {/* Backdrop — tap to close */}
-                <button
-                  type="button"
-                  aria-label="Close sessions"
-                  onClick={onCloseMobileSidebar}
-                  className="absolute inset-0 bg-(--color-bg-overlay)"
-                />
-                {/* Drawer — full width on mobile. Toggled shut by re-tapping the
-                    bottom tab bar's Sessions button or by selecting a session;
-                    the drawer covers the full width, so there's no backdrop gutter.
-                    No slide-in animation: a full-width panel sliding from the left
-                    reads as the whole screen lurching, so the drawer just appears. */}
-                <div className="relative flex h-full w-full bg-(--color-bg-primary)">
-                  <SessionSidebar
-                    sessions={sessions}
-                    currentSessionId={currentSessionId}
-                    activeNewSessionRepoUrl={activeNewSessionRepoUrl}
-                    onResume={(sid) => { onResumeSession(sid); onCloseMobileSidebar(); }}
-                    onArchive={onArchiveSession}
-                    onNewSessionForRepo={(url) => { onNewSessionForRepo(url); onCloseMobileSidebar(); }}
-                    collapsed={false}
-                    onToggleCollapse={onCloseMobileSidebar}
-                    repos={repos}
-                    onAddRepo={() => { onAddRepo(); onCloseMobileSidebar(); }}
-                    onCreateNewRepo={() => { onCreateNewRepo(); onCloseMobileSidebar(); }}
-                    mobile
-                    onClose={onCloseMobileSidebar}
-                  />
-                </div>
-              </div>
-            )}
+            <MobileContentPanels
+              showHomeScreen={showHomeScreen}
+              showNewSessionView={showNewSessionView}
+              activePanel={mobilePanel}
+              chatPanel={chatPanel}
+              rightPanel={rightPanel}
+            />
+            {/* Full-width drawer with no slide animation. It stays mounted while
+                closed so list scroll and expanded navigation state are retained. */}
+            <MobileSessionsPanel open={mobileSidebarOpen} onClose={onCloseMobileSidebar}>
+              <SessionSidebar
+                sessions={sessions}
+                currentSessionId={currentSessionId}
+                activeNewSessionRepoUrl={activeNewSessionRepoUrl}
+                onResume={(sid) => { onResumeSession(sid); onCloseMobileSidebar(); }}
+                onArchive={onArchiveSession}
+                onNewSessionForRepo={(url) => { onNewSessionForRepo(url); onCloseMobileSidebar(); }}
+                collapsed={false}
+                onToggleCollapse={onCloseMobileSidebar}
+                repos={repos}
+                onAddRepo={() => { onAddRepo(); onCloseMobileSidebar(); }}
+                onCreateNewRepo={() => { onCreateNewRepo(); onCloseMobileSidebar(); }}
+                mobile
+                onClose={onCloseMobileSidebar}
+              />
+            </MobileSessionsPanel>
           </div>
           {/* The tab bar is always present on mobile so the Sessions drawer — now
               home to the repo switcher and the advanced "+" menu — stays reachable
