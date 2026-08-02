@@ -129,6 +129,9 @@ describe("buildAgentSystemInstructions", () => {
     expect(fragment).toContain("answer the question and perform that action");
     expect(fragment).toContain("genuine information-only questions read-only");
     expect(fragment).toContain("ambiguous, destructive, externally consequential");
+    expect(fragment).toContain("Treat that gate as an intermediate phase");
+    expect(fragment).toContain("without requiring the user to ping you");
+    expect(fragment).toContain("genuinely requires user input or new authority");
   });
 
   it("keeps Claude's pre-existing section boundary byte-for-byte unchanged", () => {

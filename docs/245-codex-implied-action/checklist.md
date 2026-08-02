@@ -5,6 +5,7 @@
 - [x] Identify the missing Codex contextual tie-breaker
 - [x] Add the smallest Codex-only instruction fragment
 - [x] Preserve information-only and authorization boundaries
+- [x] Keep required in-scope review and validation gates within the active turn
 - [x] Add focused Codex inclusion and Claude exclusion regression coverage
 - [x] Run `npm run lint:dev`
 - [x] Run `npm run typecheck`
