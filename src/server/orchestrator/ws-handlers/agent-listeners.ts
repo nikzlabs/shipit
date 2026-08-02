@@ -752,7 +752,7 @@ export function wireAgentListeners(
       // synchronous better-sqlite3 call in this same tick, so the row is
       // committed before this frame reaches the network.
       const wireEvent = opts.capturedSessionId
-        ? projectAgentEventForWire(opts.capturedSessionId, event, toolTracker.getToolName)
+        ? projectAgentEventForWire(opts.capturedSessionId, event, (id) => toolTracker.getToolName(id))
         : event;
       emitToViewers({ type: "agent_event", event: wireEvent });
     }

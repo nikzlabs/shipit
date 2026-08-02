@@ -48,6 +48,7 @@ const DIFF_INPUT_TOOLS = new Set(["Edit", "Write"]);
 
 /** Input keys holding a file body, stripped once the line stats are computed. */
 const DIFF_BODY_KEYS = ["content", "old_string", "new_string"] as const;
+const DIFF_BODY_KEY_SET = new Set<string>(DIFF_BODY_KEYS);
 
 export function imageUrl(sessionId: string, hash: string): string {
   return `/api/sessions/${encodeURIComponent(sessionId)}/images/${hash}`;
@@ -207,14 +208,18 @@ export function projectToolUse<T extends { name: string; input: Record<string, u
   tool: T,
 ): T & { bodyTruncated?: true; diffStats?: { added: number; removed: number } } {
   if (!DIFF_INPUT_TOOLS.has(tool.name)) return tool;
-  const hasBody = DIFF_BODY_KEYS.some((k) => typeof tool.input[k] === "string" && (tool.input[k] as string).length > 0);
-  if (!hasBody) return tool;
+  const str = (key: string): string => (typeof tool.input[key] === "string" ? tool.input[key] : "");
+  if (!DIFF_BODY_KEYS.some((k) => str(k).length > 0)) return tool;
 
-  const added = countLines((tool.input.new_string ?? tool.input.content ?? "") as string);
-  const removed = countLines((tool.input.old_string ?? "") as string);
+  const added = countLines(str("new_string") || str("content"));
+  const removed = countLines(str("old_string"));
 
-  const input: Record<string, unknown> = { ...tool.input };
-  for (const key of DIFF_BODY_KEYS) if (key in input) delete input[key];
+  // Rebuilt by filtering rather than `delete`-ing keys off a copy: a dynamic
+  // delete is both slower (it deoptimizes the object's shape) and banned by
+  // lint, and the projection runs over every tool_use in every served message.
+  const input = Object.fromEntries(
+    Object.entries(tool.input).filter(([k]) => !DIFF_BODY_KEY_SET.has(k)),
+  );
 
   return { ...tool, input, bodyTruncated: true, diffStats: { added, removed } };
 }
@@ -266,8 +271,10 @@ export function projectMessagesForWire(sessionId: string, messages: PersistedMes
         }
         return ev;
       }
-      const tools = ev.toolUse?.map((t) => projectToolUse(t));
-      if (tools?.some((t, i) => t !== ev.toolUse![i])) {
+      const original = ev.toolUse;
+      if (!original) return ev;
+      const tools = original.map((t) => projectToolUse(t));
+      if (tools.some((t, i) => t !== original[i])) {
         changed = true;
         return { ...ev, toolUse: tools };
       }
@@ -296,10 +303,10 @@ export function projectAgentEventForWire(
   toolNameOf: (id: string) => string | undefined,
 ): AgentEvent {
   if (event.type === "agent_tool_result") {
-    const content = (event as { content?: unknown }).content;
+    const content: unknown = (event as { content?: unknown }).content;
     if (!Array.isArray(content)) return event;
     let changed = false;
-    const blocks = content.map((b) => {
+    const blocks = (content as unknown[]).map((b): unknown => {
       if (typeof b !== "object" || b === null) return b;
       const block = b as Record<string, unknown>;
       if (block.type !== "tool_result" || typeof block.tool_use_id !== "string") return b;
@@ -321,20 +328,20 @@ export function projectAgentEventForWire(
         } : {}),
       };
     });
-    return changed ? ({ ...event, content: blocks } as AgentEvent) : event;
+    return changed ? { ...event, content: blocks } : event;
   }
 
   if (event.type === "agent_assistant") {
     const message = (event as { message?: { content?: unknown } }).message;
-    const content = message?.content;
+    const content: unknown = message?.content;
     if (!Array.isArray(content)) return event;
     let changed = false;
-    const blocks = content.map((b) => {
+    const blocks = (content as unknown[]).map((b): unknown => {
       if (typeof b !== "object" || b === null) return b;
       const block = b as Record<string, unknown>;
       if (block.type !== "tool_use" || typeof block.name !== "string") return b;
-      const projected = projectToolUse(block as unknown as { name: string; input: Record<string, unknown> });
-      if (projected === (block as unknown)) return b;
+      const projected: unknown = projectToolUse(block as unknown as { name: string; input: Record<string, unknown> });
+      if (projected === b) return b;
       changed = true;
       return projected;
     });

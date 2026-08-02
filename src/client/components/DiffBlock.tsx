@@ -6,6 +6,7 @@
  * The stats are clickable and open a modal showing the full diff.
  */
 
+// eslint-disable-next-line no-restricted-imports -- useEffect: fetches the file body the serve-path projection stripped (docs/244) when the modal mounts, with cancellation on close — an external-system read with cleanup.
 import { useState, useMemo, useEffect } from "react";
 import { type Icon, NotePencilIcon, PencilSimpleIcon, TrashIcon } from "@phosphor-icons/react";
 import hljs from "highlight.js";
@@ -37,7 +38,10 @@ export interface DiffBlockProps {
   stats?: { added: number; removed: number };
 }
 
-function countLines(text: string): number {
+// Exported so docs/244 can pin the server's stat computation against this one:
+// the `+N -M` summary is drawn from server-computed stats once the body is
+// stripped, so the two must agree exactly or the summary changes on reload.
+export function countLines(text: string): number {
   if (!text) return 0;
   const normalized = text.endsWith("\n") ? text.slice(0, -1) : text;
   return normalized ? normalized.split("\n").length : 0;
@@ -162,13 +166,20 @@ function DiffModal({ filePath, oldString, newString, isWrite, unifiedDiff, verb,
   const [fetched, setFetched] = useState<{ content?: string; oldString?: string; newString?: string } | null>(null);
   const [failed, setFailed] = useState(false);
 
+  // eslint-disable-next-line no-restricted-syntax -- the body is not in the transcript (docs/244); opening the modal IS the moment it has to be fetched, and the cleanup drops a response that lands after the user closed it.
   useEffect(() => {
     if (!lazyToolUseId || !sessionId) return;
     let cancelled = false;
-    fetch(`/api/sessions/${encodeURIComponent(sessionId)}/tool-inputs/${encodeURIComponent(lazyToolUseId)}`)
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
-      .then((body) => { if (!cancelled) setFetched(body as typeof fetched); })
-      .catch(() => { if (!cancelled) setFailed(true); });
+    void (async () => {
+      try {
+        const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/tool-inputs/${encodeURIComponent(lazyToolUseId)}`);
+        if (!res.ok) throw new Error(String(res.status));
+        const body = (await res.json()) as { content?: string; oldString?: string; newString?: string };
+        if (!cancelled) setFetched(body);
+      } catch {
+        if (!cancelled) setFailed(true);
+      }
+    })();
     return () => { cancelled = true; };
   }, [lazyToolUseId, sessionId]);
 

@@ -70,7 +70,7 @@ function* allImages(msg: PersistedMessage): Generator<{ data: string; mediaType:
 export function registerLazyBodyRoutes(app: FastifyInstance, deps: ApiDeps): void {
   const messagesFor = (sessionId: string): PersistedMessage[] | null => {
     if (!deps.sessionManager.get(sessionId)) return null;
-    return deps.chatHistoryManager.load(sessionId) as PersistedMessage[];
+    return deps.chatHistoryManager.load(sessionId);
   };
 
   // GET /api/sessions/:id/tool-results/:toolUseId — the full result body.

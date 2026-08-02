@@ -254,11 +254,24 @@ client has one code path and the per-turn event replay buffer gets lighter too.
 The client's existing 1 MB cap in `agent-event.ts` becomes redundant for sliced
 results but stays as a backstop for the exempt classes.
 
-Thumbnail generation happens once, at persist time, off the turn's critical
-path.
+The projection runs on a *copy* of the event for the emit only; the original
+flows on to `extractToolResults` and is persisted whole. A client cannot outrun
+that write: `replaceInProgress` is a synchronous better-sqlite3 call in the same
+tick as the emit, so the row is committed before the frame reaches the network.
 
 ## Key files
 
+Added by this feature:
+
+* `src/server/shared/transcript-slice.ts` — `sliceBody`, `TRANSCRIPT_SLICE_LINES` (40), `TRANSCRIPT_SLICE_BYTES` (16 KB); UTF-8-safe, dependency-free so the client can import the constants
+* `src/server/shared/transcript-slice-tools.ts` — `SUBAGENT_TOOL_NAMES`, the one exemption set, re-exported by `visual-elements.ts` so the renderer and the projection cannot disagree
+* `src/server/orchestrator/transcript-projection.ts` — the serve-path projection: `projectMessagesForWire` (history), `projectAgentEventForWire` (live), `projectToolResult`, `projectToolUse`, `imageHash`
+* `src/server/orchestrator/api-routes-lazy-bodies.ts` — the three fetch endpoints; scans top-level *and* `subagent_events`
+
+Touched:
+
+* `src/server/orchestrator/services/session.ts` — `getChatHistory`, where the projection is applied to the browser-facing read
+* `src/server/orchestrator/ws-handlers/agent-listeners.ts` — projects the wire copy only; `event` stays whole for persistence
 * `src/server/orchestrator/chat-history.ts` — `PersistedMessage`, `fromRow` (do not slice here)
 * `src/server/orchestrator/ws-handlers/agent-event-normalizer.ts` — `extractToolResults`, the uncapped persist path
 * `src/server/orchestrator/api-routes-session-spawn.ts:85` — `GET /api/sessions/:id/history`

@@ -353,7 +353,10 @@ interface PresentToolResult {
   title?: string;
 }
 
-function parsePresentToolResult(tool: ToolUseBlock, result: ToolResultBlock | undefined): PresentToolResult | null {
+// Exported for the docs/244 req-4 guard: the projection must never slice a
+// result these consumers read from, so the test drives the real parser rather
+// than a copy of its rules.
+export function parsePresentToolResult(tool: ToolUseBlock, result: ToolResultBlock | undefined): PresentToolResult | null {
   if (!isPresentTool(tool.name)) return null;
   if (!result) return null;
 

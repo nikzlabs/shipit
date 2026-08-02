@@ -192,6 +192,78 @@ describe("Integration: lazy transcript bodies (SHI-267)", () => {
     expect(revalidated.statusCode).toBe(304);
   });
 
+  it("resolves ids nested inside a subagent, not just top-level ones", async () => {
+    // A Task's innards are rendered by the same components as top-level tools,
+    // so they get sliced the same way — which means the fetch endpoints have to
+    // find them too. They live in the `subagent_events` column, not
+    // `tool_results`/`tool_use`, so a lookup that only scanned the top level
+    // would strip these bodies and then 404 on the expand.
+    history.append(sessionId, {
+      role: "assistant",
+      text: "delegating",
+      toolUse: [{ type: "tool_use", id: "task-2", name: "Task", input: { prompt: "go" } }],
+      subagentEvents: [
+        {
+          kind: "assistant",
+          parentToolUseId: "task-2",
+          text: "writing it",
+          toolUse: [
+            { type: "tool_use", id: "sub-bash-1", name: "Bash", input: { command: "ls" } },
+            { type: "tool_use", id: "sub-write-1", name: "Write", input: { file_path: "/b.ts", content: FILE_BODY } },
+          ],
+        },
+        {
+          kind: "tool_result",
+          parentToolUseId: "task-2",
+          toolResults: [{ toolUseId: "sub-bash-1", content: HEAVY_OUTPUT }],
+        },
+      ],
+    });
+
+    // Served light…
+    const { messages } = await loadHistory();
+    const nested = messages.at(-1) as unknown as {
+      subagentEvents: { kind: string; toolUse?: { id: string; bodyTruncated?: true; diffStats?: { added: number; removed: number } }[]; toolResults?: { toolUseId: string; truncated?: true; totalLines?: number }[] }[];
+    };
+    const nestedResult = nested.subagentEvents.find((e) => e.kind === "tool_result")!.toolResults![0]!;
+    expect(nestedResult.truncated).toBe(true);
+    expect(nestedResult.totalLines).toBe(40_000);
+
+    const nestedWrite = nested.subagentEvents.find((e) => e.kind === "assistant")!.toolUse!.find((t) => t.id === "sub-write-1")!;
+    expect(nestedWrite.bodyTruncated).toBe(true);
+    expect(nestedWrite.diffStats).toEqual({ added: 2_000, removed: 0 });
+
+    // …and both bodies are still reachable by their own tool-use ids.
+    const result = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/tool-results/sub-bash-1` });
+    expect(result.statusCode).toBe(200);
+    expect((result.json() as { content: string }).content).toBe(HEAVY_OUTPUT);
+
+    const input = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/tool-inputs/sub-write-1` });
+    expect(input.statusCode).toBe(200);
+    expect((input.json() as { content: string }).content).toBe(FILE_BODY);
+  });
+
+  it("a rewind takes the row and its body away together", async () => {
+    // The requirements resolved "what shows when a body is no longer
+    // fetchable?" as a false premise: a chat rewind deletes the rows, and the
+    // client drops the same rows from the transcript in the same handler, so
+    // the expand affordance disappears with the row it belonged to. That
+    // invariant is what makes a 404 an ordinary error rather than a state the
+    // UI has to design for — so it is worth pinning rather than assuming.
+    expect((await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/tool-results/bash-1` })).statusCode).toBe(200);
+
+    // Keep only the opening user message — the assistant row owning bash-1 goes.
+    history.truncate(sessionId, 1);
+
+    const { messages } = await loadHistory();
+    expect(messages).toHaveLength(1);
+    expect(messages.some((m) => m.toolResults?.some((r) => r.toolUseId === "bash-1"))).toBe(false);
+
+    // No visible row references it any more, so the now-404 is unreachable
+    // from the UI rather than a dangling affordance.
+    expect((await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/tool-results/bash-1` })).statusCode).toBe(404);
+  });
+
   it("404s on an unknown id rather than serving something else", async () => {
     for (const url of [
       `/api/sessions/${sessionId}/tool-results/nope`,

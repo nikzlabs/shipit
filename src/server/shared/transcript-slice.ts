@@ -44,14 +44,14 @@ const decoder = new TextDecoder("utf-8");
 function sliceUtf8(bytes: Uint8Array, max: number): string {
   if (bytes.length <= max) return decoder.decode(bytes);
   let end = max;
-  while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end--;
+  while (end > 0 && ((bytes[end] ?? 0) & 0xc0) === 0x80) end--;
   return decoder.decode(bytes.subarray(0, end));
 }
 
 /** Count lines the same way the client's `truncateLines` does. */
 function countLines(text: string): number {
   let lines = 1;
-  for (let i = 0; i < text.length; i++) if (text[i] === "\n") lines++;
+  for (const ch of text) if (ch === "\n") lines++;
   return lines;
 }
 

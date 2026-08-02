@@ -1,3 +1,4 @@
+// eslint-disable-next-line no-restricted-imports -- useEffect: resets the lazily-fetched body (docs/244) when a different tool result occupies the same slot after a session switch or rewind.
 import { useState, useMemo, useEffect, useCallback } from "react";
 import hljs from "highlight.js";
 import { Button } from "./ui/button.js";
@@ -356,6 +357,7 @@ function useLazyResultBody(result: ToolResultBlock): LazyResultBody | undefined 
 
   // A new tool result in the same slot (session switch, rewind) must not show
   // the previous one's body.
+  // eslint-disable-next-line no-restricted-syntax -- resets state owned by an external fetch when its identity key changes; there is no event to hang this on, since the component is re-pointed at a different result rather than interacted with.
   useEffect(() => {
     setFull(undefined);
     setLoading(false);
@@ -366,11 +368,18 @@ function useLazyResultBody(result: ToolResultBlock): LazyResultBody | undefined 
     if (!sessionId || !result.truncated) return;
     setLoading(true);
     setError(false);
-    fetch(`/api/sessions/${encodeURIComponent(sessionId)}/tool-results/${encodeURIComponent(result.toolUseId)}`)
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
-      .then((body: { content?: string }) => setFull(body.content ?? ""))
-      .catch(() => setError(true))
-      .finally(() => setLoading(false));
+    void (async () => {
+      try {
+        const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/tool-results/${encodeURIComponent(result.toolUseId)}`);
+        if (!res.ok) throw new Error(String(res.status));
+        const body = (await res.json()) as { content?: string };
+        setFull(body.content ?? "");
+      } catch {
+        setError(true);
+      } finally {
+        setLoading(false);
+      }
+    })();
   }, [sessionId, result.toolUseId, result.truncated]);
 
   if (!result.truncated) return undefined;
