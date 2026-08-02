@@ -1205,6 +1205,7 @@ export class ServiceManager extends EventEmitter {
     const autoNames = [...this.services.values()]
       .filter(s => s.preview === "auto")
       .map(s => s.name);
+    if (autoNames.length === 0) return;
     try {
       await this.compose.up(autoNames);
       await this.poller.pollOnce();

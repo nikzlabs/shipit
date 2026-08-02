@@ -826,6 +826,70 @@ services:
       .toContain("DATABASE_URL=postgres://new");
   });
 
+  it("refreshSecrets rewrites secrets without starting an all-manual stack", async () => {
+    const dir = setup();
+    writeCompose(dir, `
+services:
+  worker:
+    image: node:20
+    x-shipit-preview: manual
+    x-shipit-secrets:
+      - API_KEY
+`);
+    let secret = "old";
+    const composeRunner = vi.fn<ComposeRunner>(() => Promise.resolve());
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
+      secretsLoader: async () => ({ API_KEY: secret }),
+      pollIntervalMs: 0,
+    });
+
+    await mgr.start();
+    secret = "new";
+    await mgr.refreshSecrets();
+
+    expect(fs.readFileSync(path.join(dir, ".shipit/.env.worker"), "utf-8"))
+      .toContain("API_KEY=new");
+    expect(composeRunner.mock.calls.some(([args]) => args.includes("up"))).toBe(false);
+  });
+
+  it("refreshSecrets restarts only auto services in a mixed stack", async () => {
+    const dir = setup();
+    writeCompose(dir, `
+services:
+  api:
+    image: node:20
+    ports: ['3000:3000']
+    x-shipit-secrets:
+      - API_KEY
+  worker:
+    image: node:20
+    x-shipit-preview: manual
+    x-shipit-secrets:
+      - API_KEY
+`);
+    const composeRunner = vi.fn<ComposeRunner>(() => Promise.resolve());
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
+      secretsLoader: async () => ({ API_KEY: "value" }),
+      pollIntervalMs: 0,
+    });
+
+    await mgr.start();
+    composeRunner.mockClear();
+    await mgr.refreshSecrets();
+
+    const upCall = composeRunner.mock.calls.find(([args]) => args.includes("up"));
+    expect(upCall?.[0]).toContain("api");
+    expect(upCall?.[0]).not.toContain("worker");
+  });
+
   it("override file references env_file for services with secrets", async () => {
     const dir = setup();
     writeCompose(dir, `
