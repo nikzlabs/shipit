@@ -56,6 +56,9 @@ async function waitFor(predicate: () => boolean, timeoutMs = 10000, label = "con
   }
 }
 
+const isMergeWakePrompt = (prompt: string | undefined): boolean =>
+  prompt?.includes("Child PR #") === true && prompt.includes(" merged:");
+
 describe("Integration: notify-on-merge watch (docs/196)", () => {
   let app: FastifyInstance;
   let port: number;
@@ -212,11 +215,11 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
     // Drive the dispatched wake-turn to completion through the real
     // turn-executor; only its `onTurnComplete` advances the watch to `delivered`.
     await waitFor(
-      () => spawnedAgents.some((a) => a.runCalled && a.lastPrompt?.includes("MERGED")),
+      () => spawnedAgents.some((a) => a.runCalled && isMergeWakePrompt(a.lastPrompt)),
       10_000,
       "wake-turn agent started",
     );
-    spawnedAgents.find((a) => a.lastPrompt?.includes("MERGED"))!.finish();
+    spawnedAgents.find((a) => isMergeWakePrompt(a.lastPrompt))!.finish();
     await waitFor(
       () => sessionManager.getMergeWatch(childId)?.state === "delivered",
       10_000,
@@ -267,13 +270,13 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
     // `merge-observed` until a restart re-fired it (duplicate notification).
     userTurn.finish("parent-user-turn");
     await waitFor(
-      () => spawnedAgents.some((a) => a.runCalled && a.lastPrompt?.includes("MERGED")),
+      () => spawnedAgents.some((a) => a.runCalled && isMergeWakePrompt(a.lastPrompt)),
       10_000,
       "wake-turn started from the interactive drain",
     );
     expect(runner.systemTurnInProgress).toBe(true);
 
-    spawnedAgents.find((a) => a.lastPrompt?.includes("MERGED"))!.finish("parent-wake-turn");
+    spawnedAgents.find((a) => isMergeWakePrompt(a.lastPrompt))!.finish("parent-wake-turn");
     await waitFor(
       () => sessionManager.getMergeWatch(childId)?.state === "delivered",
       10_000,
@@ -303,12 +306,12 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
     // it complete — this models the orchestrator dying before the turn runs.
     await app.mergeWatchManager!.handleChildPrTerminal(info);
     await waitFor(
-      () => spawnedAgents.some((a) => a.runCalled && a.lastPrompt?.includes("MERGED")),
+      () => spawnedAgents.some((a) => a.runCalled && isMergeWakePrompt(a.lastPrompt)),
       10_000,
       "first wake-turn agent started",
     );
     expect(sessionManager.getMergeWatch(childId)?.state).toBe("merge-observed");
-    const firstWakeAgents = spawnedAgents.filter((a) => a.lastPrompt?.includes("MERGED")).length;
+    const firstWakeAgents = spawnedAgents.filter((a) => isMergeWakePrompt(a.lastPrompt)).length;
     expect(firstWakeAgents).toBe(1);
 
     // Simulate the restart: tear the parent runner down (the in-memory turn is
@@ -339,11 +342,11 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
     // Re-delivered (a second wake-turn agent), driven to completion → delivered,
     // and still exactly ONE card on the parent.
     await waitFor(
-      () => spawnedAgents.filter((a) => a.runCalled && a.lastPrompt?.includes("MERGED")).length >= 2,
+      () => spawnedAgents.filter((a) => a.runCalled && isMergeWakePrompt(a.lastPrompt)).length >= 2,
       10_000,
       "wake-turn re-dispatched after restart",
     );
-    [...spawnedAgents].reverse().find((a) => a.runCalled && a.lastPrompt?.includes("MERGED"))!.finish();
+    [...spawnedAgents].reverse().find((a) => a.runCalled && isMergeWakePrompt(a.lastPrompt))!.finish();
     await waitFor(
       () => sessionManager.getMergeWatch(childId)?.state === "delivered",
       10_000,
@@ -401,7 +404,7 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
     expect(failed?.state).toBe("merge-observed");
     expect(failed?.deliveryAttempts).toBe(1);
     expect(failed?.lastDeliveryError).toContain("could not be resumed");
-    expect(spawnedAgents.some((a) => a.lastPrompt?.includes("MERGED"))).toBe(false);
+    expect(spawnedAgents.some((a) => isMergeWakePrompt(a.lastPrompt))).toBe(false);
 
     // Container comes back. Backdate the attempt anchor past the backoff and let
     // the retry supervisor's pass run — the SAME process, no restart, no reconcile.
@@ -413,11 +416,11 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
     await app.mergeWatchManager!.retryStalledDeliveries();
 
     await waitFor(
-      () => spawnedAgents.some((a) => a.runCalled && a.lastPrompt?.includes("MERGED")),
+      () => spawnedAgents.some((a) => a.runCalled && isMergeWakePrompt(a.lastPrompt)),
       10_000,
       "wake-turn dispatched by the retry pass",
     );
-    spawnedAgents.find((a) => a.lastPrompt?.includes("MERGED"))!.finish();
+    spawnedAgents.find((a) => isMergeWakePrompt(a.lastPrompt))!.finish();
     await waitFor(
       () => sessionManager.getMergeWatch(childId)?.state === "delivered",
       10_000,
