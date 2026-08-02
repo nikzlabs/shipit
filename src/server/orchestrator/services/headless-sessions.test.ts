@@ -285,9 +285,15 @@ describe("createHeadlessSession", () => {
     // without standing up a real container runner. The two agents share the
     // exact same plumbing, so we exercise both to make sure the symmetry
     // doesn't drift.
+    // Real credential files, not bare directories: migration gates on a
+    // credential marker having content, because an empty `.claude` is something
+    // anything running with `HOME=/root` can create through the image-level
+    // symlink and is not evidence of an account.
     fs.mkdirSync(path.join(tmpDir, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, ".claude", ".credentials.json"), '{"accessToken":"live"}');
     fs.writeFileSync(path.join(tmpDir, ".claude.json"), "{}");
     fs.mkdirSync(path.join(tmpDir, ".codex"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, ".codex", "auth.json"), '{"tokens":{"access_token":"live"}}');
     const credentialStore = new CredentialStore(tmpDir);
     const providerAccountManager = new ProviderAccountManager({
       credentialsDir: tmpDir,

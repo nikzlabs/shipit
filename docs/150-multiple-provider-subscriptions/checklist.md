@@ -157,6 +157,7 @@
 - [x] Client: subscription limits render multiple accounts per provider, each named.
 - [ ] Client: session diagnostics renders the active account.
 - [x] Unit: boot retires a legacy alias that points into `provider-accounts/`, leaves a real empty dir behind for the directory-shaped ones, and does not touch a real (pre-migration) file or dir.
+- [x] Unit: boot-to-boot idempotence — a never-signed-in install gets no placeholder and no invented account across two boots; a migrated install keeps its placeholder but does not re-migrate it once every account is deleted; CLI config and a zero-byte credentials file are not mistaken for an account.
 - [x] Integration: provider-wide sign-out erases the on-disk credentials of every connected account, not just the migrated first one.
 - [x] Unit: transcript cleanup reads the OAuth bearer from the account root it was given, and stays unscoped for a reserved route.
 - [x] Unit: each account's plan label is read from that account's credentials.

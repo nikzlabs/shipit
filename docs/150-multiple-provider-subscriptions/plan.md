@@ -2066,13 +2066,41 @@ Two details are load-bearing:
 - **Only symlinks pointing into `provider-accounts/` are removed.** A real file
   or directory at a legacy path belongs to an install whose migration has not
   run yet — deleting it would destroy the only copy of its credentials.
-- **A directory-shaped legacy path is left as a real, empty directory.**
-  `/root/.claude` and `/root/.codex` are image-level symlinks to these paths
-  (`docker/Dockerfile.prod`), and `mkdir` through a *dangling* symlink fails
-  with EEXIST — so a CLI invocation on a reserved route (which legitimately runs
-  with `HOME=/root`) would lose its config dir and fail in exactly the quiet way
-  session naming used to. File-shaped paths need no placeholder: a write through
-  the dangling image symlink creates the target.
+- **A directory-shaped legacy path is left as a real, empty directory — but only
+  on an install that has an account.** `/root/.claude` and `/root/.codex` are
+  image-level symlinks to these paths (`docker/Dockerfile.prod`), and `mkdir`
+  through a *dangling* symlink fails with EEXIST — so a CLI invocation on a
+  reserved route (which legitimately runs with `HOME=/root`) would lose its
+  config dir and fail in exactly the quiet way session naming used to.
+  File-shaped paths need no placeholder: a write through the dangling image
+  symlink creates the target.
+
+**The sweep's output is the next boot's input, and that closed a loop.** The
+placeholder was first written unconditionally, including on an install that had
+never been signed in. `migrateProviderDefault` gated on `fs.existsSync` of a
+legacy path, so the *next* boot read that empty directory back as pre-account
+credentials and registered a `ready` `claude-default` / `codex-default` row with
+an empty credential root. That row is not inert: `hasAnyAuthForProvider` turns
+true (so onboarding and the startup log both report a connected account), and
+`selectAccountForTurn` prefers any `ready` account over the reserved route — req
+12's guard only covers the *failover* direction — so an install running on
+`ANTHROPIC_API_KEY` routed its turns to a directory with nothing in it. The same
+state was reachable by deleting every account and restarting.
+
+Two independent guards, because either alone leaves a hole:
+
+- **The placeholder is owed only to an install with accounts.** A never-signed-in
+  install keeps the legacy path absent, which is the state it had before req 19.
+- **Migration gates on a credential *marker* with content**
+  (`.claude/.credentials.json` and friends, `.codex/auth.json`), not on a legacy
+  path existing. Existence was never evidence: `.claude.json` is the CLI's user
+  config, and the directory itself is something any `HOME=/root` run creates
+  through the image symlink. This is the guard that covers an install whose
+  accounts were all deleted after a placeholder had already been written.
+
+Boot-to-boot idempotence is the property under test, and a single-boot assertion
+cannot see a violation of it — the regression tests run `migrateDefaultAccounts()`
+across two manager instances over one credentials root.
 
 **Sign-out was erasing one account's credentials, not the provider's.** The
 route deleted the account *rows*, then called the unscoped `signOut()`, which
