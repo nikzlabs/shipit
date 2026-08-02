@@ -458,6 +458,7 @@ describe("SubscriptionLimitPill", () => {
 
     const session = screen.getByText(/5h 30%/).closest("[data-meter-pct]");
     const weekly = screen.getByText(/7d 50%/).closest("[data-meter-pct]");
+    if (!session || !weekly) throw new Error("Expected both quota meter wrappers");
     expect(session).toHaveAttribute("title", expect.stringContaining("5h window: 30% used"));
     expect(session.getAttribute("title")).not.toContain("7d window");
     expect(weekly).toHaveAttribute("title", expect.stringContaining("7d window: 50% used"));
