@@ -573,6 +573,47 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       expect((deleted.json() as { error: string }).error).toMatch(/pinned/i);
     });
 
+    // docs/150 req 2 — the reorder control's whole job is to change the order
+    // the user *sees*. Writing `priority` while every wire response still
+    // carried storage order is what made the buttons read as broken, so this
+    // asserts the order over HTTP, where the client actually reads it.
+    it("PUT /order changes the order returned by the reorder response AND by GET", async () => {
+      const mk = async (label: string): Promise<string> => {
+        const res = await app.inject({
+          method: "POST", url: "/api/provider-accounts", payload: { provider: "claude", label },
+        });
+        return (res.json() as { account: { id: string } }).account.id;
+      };
+      const a = await mk("Account A");
+      const b = await mk("Account B");
+      const c = await mk("Account C");
+
+      const claudeIds = (payload: unknown): string[] =>
+        (payload as { accounts: { id: string; provider: string }[] }).accounts
+          .filter((row) => row.provider === "claude")
+          .map((row) => row.id);
+
+      // Creation order to start with.
+      expect(claudeIds((await app.inject({ method: "GET", url: "/api/provider-accounts" })).json()))
+        .toEqual([a, b, c]);
+
+      const reordered = await app.inject({
+        method: "PUT",
+        url: "/api/provider-accounts/claude/order",
+        payload: { accountIds: [c, a, b] },
+      });
+      expect(reordered.statusCode).toBe(200);
+      // The response the button's own fetch feeds straight into the store.
+      expect(claudeIds(reordered.json())).toEqual([c, a, b]);
+      // ...and a fresh read agrees, so a reload doesn't snap the rows back.
+      expect(claudeIds((await app.inject({ method: "GET", url: "/api/provider-accounts" })).json()))
+        .toEqual([c, a, b]);
+      // Position 0 owns the primary badge, so the order and the badge agree.
+      const rows = ((await app.inject({ method: "GET", url: "/api/provider-accounts" })).json() as
+        { accounts: { id: string; isPrimary?: boolean }[] }).accounts;
+      expect(rows.find((row) => row.id === c)?.isPrimary).toBe(true);
+    });
+
     it("starts, feeds a code to, and cancels an account-scoped login (docs/150)", async () => {
       // The Claude auth manager is the StubAuthManager here, so the scoped
       // login flow never spawns a real CLI.

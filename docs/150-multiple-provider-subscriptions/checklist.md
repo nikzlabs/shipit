@@ -87,7 +87,7 @@
 
 - [x] Persist a user-controlled priority order for authenticated accounts per provider (`ProviderAccount.priority`, ascending; legacy rows without one keep primary-then-stored order).
 - [x] Widen `selectRouteForTurn` into `selectAccountForTurn` with structured failures (`all_exhausted` / `auth_required`), which req 13 depends on.
-- [x] Add Settings controls to reorder provider accounts; newly connected accounts append to the fallback order.
+- [x] Add Settings controls to reorder provider accounts; newly connected accounts append to the fallback order. (Fixed: the controls wrote `priority` but every wire path returned raw storage order, so the rows never moved — `list()` is now the ordered accessor.)
 - [x] Persist per-provider short-window and weekly usage cutoffs with 90% defaults and 1–100 validation.
 - [x] Add Settings controls for both proactive failover cutoffs.
 - [x] Re-evaluate account eligibility before every turn, including existing-session, queued, and system-initiated turns.
@@ -141,6 +141,9 @@
 - [x] Integration: a second concurrent sign-in is 409 with the blocking row named, and cancel frees the provider.
 - [x] Unit: cancel / delete / failed-spawn all release the provider's login scope.
 - [x] Integration: provider-wide sign-out is refused mid-turn (409) and allowed once idle.
+- [x] Unit: `list()` — the accessor every wire path reads — reflects the user's order, not storage order.
+- [x] Integration: `PUT /order` changes the order in its own response and in a later `GET`.
+- [x] Manual: reorder buttons move rows in the preview, the primary badge follows, and the order survives a reload.
 - [x] Client: Add account / Connect are disabled while another row of the provider is authenticating.
 - [ ] Unit: API-key fallback configures only its reserved route and never marks a subscription account ready.
 - [x] Client: an authenticated primary row does not hide or overwrite a secondary row's pending flow or diagnostics.

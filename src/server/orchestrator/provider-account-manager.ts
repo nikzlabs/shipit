@@ -127,8 +127,39 @@ export class ProviderAccountManager {
     this.migrateProviderDefault("codex", "codex-default", "Primary ChatGPT account");
   }
 
+  /**
+   * docs/150 req 2 — every account for a provider, **in the user's fallback
+   * order**: ascending `priority`, ties broken by stored order so the sort is
+   * stable.
+   *
+   * The order lives here rather than at each call site because this is the only
+   * order an account list has. `reorder` writes `priority` and the router reads
+   * it, but the *storage* array never moves (`upsertProviderAccount` replaces
+   * in place), so a caller reading raw storage order sees the order the user
+   * had before they ever touched the control. That is exactly what went wrong:
+   * the reorder buttons wrote `priority` correctly — routing really did change
+   * — while the response and the `provider_accounts` broadcast both carried
+   * unsorted rows, so the list never moved and the control read as broken.
+   *
+   * Sorting at the source instead of at the ~8 wire boundaries means a new
+   * broadcast site cannot reintroduce it by forgetting to sort.
+   *
+   * Rows written before `priority` existed have none. Those keep exactly the
+   * previous behaviour — primary first, then stored order — so an install that
+   * has never used the reorder control sees no change in which account its
+   * turns run on. Once the user reorders, every row carries an explicit value
+   * and this mixed state is gone.
+   */
   list(provider?: AgentId): ProviderAccount[] {
-    return this.credentialStore.listProviderAccounts(provider);
+    if (!provider) {
+      return (["claude", "codex"] as AgentId[]).flatMap((id) => this.list(id));
+    }
+    const accounts = this.credentialStore.listProviderAccounts(provider);
+    const primaryId = this.credentialStore.getPrimaryProviderAccount(provider)?.id;
+    return accounts
+      .map((account, index) => ({ account, index }))
+      .sort((a, b) => rankForOrder(a, primaryId) - rankForOrder(b, primaryId) || a.index - b.index)
+      .map((entry) => entry.account);
   }
 
   get(provider: AgentId, accountId: string): ProviderAccount | undefined {
@@ -140,22 +171,12 @@ export class ProviderAccountManager {
   }
 
   /**
-   * docs/150 req 2 — this provider's accounts in the user's fallback order:
-   * ascending `priority`, ties broken by stored order so the sort is stable.
-   *
-   * Rows written before `priority` existed have none. Those keep exactly the
-   * previous behaviour — primary first, then stored order — so an install that
-   * has never used the reorder control sees no change in which account its
-   * turns run on. Once the user reorders, every row carries an explicit value
-   * and this mixed state is gone.
+   * docs/150 req 2 — kept as the name the router reads, so the intent is
+   * explicit at the call site. {@link list} is already this order; the two are
+   * deliberately the same list, because an account list has no other order.
    */
   accountsInSelectionOrder(provider: AgentId): ProviderAccount[] {
-    const accounts = this.list(provider);
-    const primaryId = this.getPrimary(provider)?.id;
-    return accounts
-      .map((account, index) => ({ account, index }))
-      .sort((a, b) => rankForOrder(a, primaryId) - rankForOrder(b, primaryId) || a.index - b.index)
-      .map((entry) => entry.account);
+    return this.list(provider);
   }
 
   /**

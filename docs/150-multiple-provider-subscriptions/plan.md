@@ -2014,6 +2014,37 @@ selection order is still "primary first, then stored order". Reqs 4–6 say the
 cutoff advances to the next account *in the user's priority order*, so this
 delivers the advancing half; the ordering half is the next piece.
 
+### Fixed: the reorder buttons wrote the order but never showed it (req 2)
+
+Reported as "buttons that change the order of accounts don't work". They half
+worked, which is worse: `reorder` wrote `priority` correctly and the **router
+honoured it immediately**, so which account a turn ran on really did change —
+but nothing the user could see moved.
+
+The split was between two accessors. `accountsInSelectionOrder()` sorted by
+`priority` and was what the router read. `list()` returned
+`credentialStore.listProviderAccounts()` — raw storage order — and was what
+every *wire* path read: the `PUT /order` response, the `provider_accounts` SSE
+broadcast, `GET /api/provider-accounts`, and bootstrap. Storage order never
+moves, because `upsertProviderAccount` replaces a row in place. So the rows
+stayed exactly where they were, the primary badge stayed on the old row, and
+the control read as dead.
+
+The fix is to delete the distinction: `list()` now returns selection order, and
+`accountsInSelectionOrder()` delegates to it. An account list has no other
+meaningful order, and sorting at the source means a future broadcast site
+cannot reintroduce the bug by forgetting to sort — which is exactly how eight
+call sites would have gone wrong one at a time.
+
+**Why the tests didn't catch it.** Every existing assertion went through
+`accountsInSelectionOrder` — the one accessor that was always right. Nothing
+asserted the order of what the client is actually handed. The regression test
+asserts `list()` (both the per-provider and all-providers forms the SSE
+broadcast uses), and an HTTP-level test asserts the order in the `PUT` response
+*and* in a subsequent `GET`, so a reload snapping the rows back would fail too.
+Verified in the browser as well: three rows, moved to the top one press at a
+time, primary badge following, order surviving a reload.
+
 ### Landed: the priority order (req 2)
 
 `ProviderAccount.priority` (ascending, 0 tried first) is now the authoritative
