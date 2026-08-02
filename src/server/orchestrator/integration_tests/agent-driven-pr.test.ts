@@ -71,6 +71,7 @@ beforeEach(async () => {
 
   app = await buildApp({
     credentialStore,
+    credentialsDir: path.join(tmpDir, "credentials"),
     workspaceDir: tmpDir,
     // Stub push + listRemoteBranches so agentCreatePr/quickCreatePr can run
     // without a real remote. Other GitManager calls (commit, addRemote,

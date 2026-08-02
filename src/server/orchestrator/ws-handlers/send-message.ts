@@ -8,6 +8,7 @@ import { runAgentWithMessage, saveImagesToUploadsDir, assembleAgentPrompt } from
 import { resolveRunner } from "./resolve-runner.js";
 import { shouldSteerMessage } from "../dispatch-steering.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
+import { agentAuthenticationError, isAgentAuthenticated } from "../services/agent-auth-gate.js";
 
 // Re-export all public symbols from sub-modules for backwards compatibility
 export { CONTEXT_WINDOW_TOKENS, wireAgentListeners, extractToolResults } from "./agent-listeners.js";
@@ -39,51 +40,15 @@ function parseCompactCommand(text: string): { match: boolean; instructions?: str
 function ensureActiveAgentAuthenticated(ctx: FullCtx): boolean {
   const activeAgentId = ctx.getActiveAgentId();
 
-  // docs/155: per-backend auth gate; mirrored in services/agent.ts (HTTP
-  // dispatch path). `AgentAuthManager.isConfigured()` + the
-  // `Map<AgentId, AgentAuthManager>` from `buildAgentRuntime()` could front
-  // this dispatch, but Claude's `checkCredentials()` (re-read on-disk creds)
-  // and Codex's `agentRegistry.refreshAuth("codex")` (re-read env-var) plus
-  // the per-backend error copy are still distinct. Consolidation tracked but
-  // not done; the disables below annotate the surviving branches.
-  // eslint-disable-next-line no-restricted-syntax -- docs/155: per-backend auth gate (see comment above)
-  if (activeAgentId === "claude") {
-    if (!ctx.authManager.authenticated) {
-      ctx.authManager.checkCredentials();
-    }
-    if (!ctx.authManager.authenticated) {
-      // We no longer auto-launch the OAuth flow here. That spawned `claude
-      // /login` and broadcast the verification URL over a global SSE event,
-      // which surfaced a blocking sign-in overlay in *every* open browser
-      // window — including tabs unrelated to the session that triggered it.
-      // Authentication lives in Settings → Agents (the selector already
-      // disables unauthenticated agents); mirror the Codex branch below and
-      // just block the turn with an actionable error.
-      ctx.send({
-        type: "error",
-        message:
-          "Claude is not authenticated. Sign in to Claude or add ANTHROPIC_API_KEY in Settings → Agents.",
-      });
-      return false;
-    }
-    return true;
+  // docs/150 — AgentRegistry's auth check is backed by ProviderAccountManager,
+  // so it sees every connected subscription account. The former Claude-only
+  // gate consulted the legacy singleton AuthManager and rejected a turn before
+  // routing whenever the usable credential lived in an added account row.
+  if (!isAgentAuthenticated(ctx.agentRegistry, activeAgentId)) {
+    ctx.send({ type: "error", message: agentAuthenticationError(activeAgentId) });
+    return false;
   }
-
-  // eslint-disable-next-line no-restricted-syntax -- docs/155: per-backend auth gate (see comment above)
-  if (activeAgentId === "codex") {
-    ctx.agentRegistry.refreshAuth("codex");
-    const info = ctx.agentRegistry.get("codex");
-    if (!info?.authConfigured) {
-      ctx.send({
-        type: "error",
-        message: "Codex is not authenticated. Sign in to Codex or add OPENAI_API_KEY in Settings -> Agents.",
-      });
-      return false;
-    }
-    return true;
-  }
-
-  return false;
+  return true;
 }
 
 // ---------------------------------------------------------------------------

@@ -36,8 +36,11 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
 
     sessionManager = new SessionManager(dbManager);
 
+    const credentialStore = createTestCredentialStore(tmpDir);
+
     app = await buildApp({
-      credentialStore: createTestCredentialStore(tmpDir),
+      credentialStore,
+      credentialsDir: path.join(tmpDir, "credentials"),
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       authManager: new StubAuthManager() as unknown as AuthManager,

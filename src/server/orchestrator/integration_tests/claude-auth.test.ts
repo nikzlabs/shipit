@@ -19,27 +19,62 @@ import {
   createTestDatabaseManager,
 } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
+import type { CredentialStore } from "../credential-store.js";
 
 describe("Integration: Claude auth (OAuth & API key)", () => {
   let app: FastifyInstance;
   let tmpDir: string;
   let dbManager: DatabaseManager;
+  let lastClaude: FakeClaudeProcess;
+  let credentialStore: CredentialStore;
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-auth-"));
 
     const sessionManager = new SessionManager(dbManager);
+    lastClaude = null as unknown as FakeClaudeProcess;
+    credentialStore = createTestCredentialStore(tmpDir);
+    const now = Date.now();
+    credentialStore.upsertProviderAccount({
+      id: "acct-added-claude",
+      provider: "claude",
+      label: "Added Claude subscription",
+      isPrimary: true,
+      status: "ready",
+      createdAt: now,
+      updatedAt: now,
+    });
 
     app = await buildApp({
-      credentialStore: createTestCredentialStore(tmpDir),
+      credentialStore,
+      credentialsDir: path.join(tmpDir, "credentials"),
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
-      agentFactory: () => new FakeClaudeProcess() as any,
+      agentFactory: () => {
+        lastClaude = new FakeClaudeProcess();
+        return lastClaude as any;
+      },
       workspaceDir: tmpDir,
       serveStatic: false,
     });
+  });
+
+  it("runs a WS turn from an added Claude account when legacy singleton auth is false", async () => {
+    const address = await app.listen({ port: 0, host: "127.0.0.1" });
+    const port = Number(new URL(address).port);
+    const client = await TestClient.connect(port);
+    await client.receive();
+
+    client.send({ type: "send_message", text: "continue on the added subscription" });
+    const deadline = Date.now() + 2_000;
+    while (!lastClaude?.lastPrompt && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    expect(lastClaude?.lastPrompt).toBe("continue on the added subscription");
+    client.close();
   });
 
   afterEach(async () => {
@@ -63,7 +98,8 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
     const unauthSessions = new SessionManager(dbManager);
 
     const unauthApp = await buildApp({
-      credentialStore: createTestCredentialStore(tmpDir),
+      credentialStore: createTestCredentialStore(unauthTmpDir),
+      credentialsDir: path.join(unauthTmpDir, "credentials"),
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager: unauthSessions,
       authManager: unauthStub,
@@ -114,7 +150,8 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
     delete process.env.ANTHROPIC_API_KEY;
 
     const unauthApp = await buildApp({
-      credentialStore: createTestCredentialStore(tmpDir),
+      credentialStore: createTestCredentialStore(unauthTmpDir),
+      credentialsDir: path.join(unauthTmpDir, "credentials"),
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager: unauthSessions,
       authManager: unauthStub,
