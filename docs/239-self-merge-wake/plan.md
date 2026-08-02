@@ -147,6 +147,10 @@ wake turn settles, so without it an old settlement marks the new watch delivered
 Delivery, retry and restart recovery are docs/196's, unchanged; `reconcilePending`
 branches on `kind`.
 
+The wake prompt stays terse: it names the merged PR, gives the guarded reset
+command and failure rule, then says how to continue and re-arm. The transcript
+and persisted lifecycle card already hold the surrounding context and PR URL.
+
 **Workspace:** call the existing `restoreSessionWorkspace` helper in
 `wakeSessionWithTurn` when the checkout is missing — one line, and it closes the same
 latent gap for docs/196. Preferred over exempting pending watches from disk reclaim,

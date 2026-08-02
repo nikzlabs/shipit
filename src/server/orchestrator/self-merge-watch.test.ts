@@ -229,6 +229,7 @@ describe("delivering a self merge wake (docs/239)", () => {
     // The prompt is self-describing and leads with the reset.
     expect(ctx.runner.dispatched[0]!.text).toContain("#43");
     expect(ctx.runner.dispatched[0]!.text).toContain("shipit branch reset-to-base");
+    expect(ctx.runner.dispatched[0]!.text.length).toBeLessThan(500);
 
     ctx.runner.completeTurns();
     expect(ctx.sessionManager.getMergeWatch(SESSION_ID)?.state).toBe("delivered");

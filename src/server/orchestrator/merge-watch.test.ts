@@ -175,8 +175,9 @@ describe("MergeWatchManager (docs/196)", () => {
     const parentRunner = ctx.runners.get("parent");
     expect(parentRunner?.dispatched).toHaveLength(1);
     expect(parentRunner?.dispatched[0].systemTurn).toBe(true);
-    expect(parentRunner?.dispatched[0].text).toContain("MERGED");
+    expect(parentRunner?.dispatched[0].text).toContain("merged");
     expect(parentRunner?.dispatched[0].text).toContain("child");
+    expect(parentRunner?.dispatched[0].text.length).toBeLessThan(240);
   });
 
   it("is fire-once: a re-poll after delivery is a no-op", async () => {
@@ -197,7 +198,7 @@ describe("MergeWatchManager (docs/196)", () => {
     const card = ctx.chatHistoryManager.load("parent").find((m) => m.childMerged)?.childMerged;
     expect(card?.outcome).toBe("closed-unmerged");
     const parentRunner = ctx.runners.get("parent");
-    expect(parentRunner?.dispatched[0].text).toContain("CLOSED WITHOUT MERGING");
+    expect(parentRunner?.dispatched[0].text).toContain("closed without merging");
   });
 
   it("drops the watch silently when the parent was archived", async () => {

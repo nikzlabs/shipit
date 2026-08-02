@@ -31,6 +31,11 @@ a human merge (which can take days) is the wrong model.
 This is the async primitive only. A blocking `wait --until merged` is explicitly
 out of scope.
 
+Wake-turn copy is intentionally compact: one event line, decision-critical
+metadata, and one action line. The persisted card retains the full PR details,
+so repeating URLs, SHAs, and lifecycle explanation in the agent prompt only
+wastes context.
+
 ## Watch state machine
 
 The watch is persisted on the **child** session row (`SessionMergeWatch`, keyed

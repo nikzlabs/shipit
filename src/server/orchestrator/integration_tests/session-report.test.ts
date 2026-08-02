@@ -191,11 +191,11 @@ describe("Integration: session report (docs/233)", () => {
 
     // And the parent's real runner is woken with a self-describing system turn.
     await waitFor(
-      () => spawnedAgents.some((a) => a.runCalled && a.lastPrompt?.includes("You received a REPORT")),
+      () => spawnedAgents.some((a) => a.runCalled && a.lastPrompt?.includes("report from child")),
       10_000,
       "parent wake-turn started",
     );
-    const wake = spawnedAgents.find((a) => a.lastPrompt?.includes("You received a REPORT"))!;
+    const wake = spawnedAgents.find((a) => a.lastPrompt?.includes("report from child"))!;
     expect(wake.lastPrompt).toContain("BLOCKER");
     expect(wake.lastPrompt).toContain("deletes every catalog");
   });

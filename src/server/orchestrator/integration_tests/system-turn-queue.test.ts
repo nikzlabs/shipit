@@ -51,7 +51,7 @@ import { TURN_COMPLETED } from "../turn-settlement.js";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyMsg = any;
 
-const WAKE_TEXT = "A child session you registered a merge-watch on has had its pull request MERGED.";
+const WAKE_TEXT = "Child PR #42 merged: child (child-id).";
 
 describe("Integration: a dispatched system turn behind a real turn (SHI-254/SHI-255)", () => {
   let app: FastifyInstance;
@@ -156,7 +156,7 @@ describe("Integration: a dispatched system turn behind a real turn (SHI-254/SHI-
     // The user turn ends → the queued wake-turn drains and runs…
     userTurn.finish("user-turn-session");
     const wakeTurn = await waitForClaude(() => lastClaude, userTurn);
-    expect(wakeTurn.lastPrompt).toContain("MERGED");
+    expect(wakeTurn.lastPrompt).toContain("merged");
 
     // …and only when it completes does the callback fire — exactly once.
     wakeTurn.finish("wake-turn-session");
@@ -193,7 +193,7 @@ describe("Integration: a dispatched system turn behind a real turn (SHI-254/SHI-
     // as an ordinary interactive turn: no `systemTurn`, no `onTurnComplete`.
     userTurn.finish("user-turn-session");
     const wakeTurn = await waitForClaude(() => lastClaude, userTurn);
-    expect(wakeTurn.lastPrompt).toContain("MERGED");
+    expect(wakeTurn.lastPrompt).toContain("merged");
 
     // It runs AS A SYSTEM TURN: the flag is set for its duration (so a message
     // arriving now is queued rather than steered into it), and it does not adopt
