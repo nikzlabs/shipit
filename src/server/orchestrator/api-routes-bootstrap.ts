@@ -23,6 +23,7 @@ import {
   createProviderAccount,
   renameProviderAccount,
   makePrimaryProviderAccount,
+  reorderProviderAccounts,
   deleteProviderAccount,
   startProviderAccountLogin,
   cancelProviderAccountLogin,
@@ -202,6 +203,28 @@ export async function registerBootstrapRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to rename provider account: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // docs/150 req 2 — persist the user's fallback order for a provider.
+  app.put<{ Params: { provider: AgentId }; Body: { accountIds?: unknown } }>(
+    "/api/provider-accounts/:provider/order",
+    async (request, reply) => {
+      try {
+        const result = reorderProviderAccounts(
+          deps.providerAccountManager,
+          request.params.provider,
+          request.body?.accountIds,
+        );
+        deps.sseBroadcast("provider_accounts", { accounts: result.accounts });
+        return result;
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to reorder provider accounts: ${getErrorMessage(err)}` });
       }
     },
   );

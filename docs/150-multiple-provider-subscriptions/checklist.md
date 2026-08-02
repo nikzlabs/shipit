@@ -82,13 +82,13 @@
 
 ## Phase 4 — Policy Controls
 
-- [ ] Persist a user-controlled priority order for authenticated accounts per provider (`ProviderAccount.priority`, ascending; backfill existing rows from `isPrimary`).
+- [x] Persist a user-controlled priority order for authenticated accounts per provider (`ProviderAccount.priority`, ascending; legacy rows without one keep primary-then-stored order).
 - [x] Widen `selectRouteForTurn` into `selectAccountForTurn` with structured failures (`all_exhausted` / `auth_required` / `no_model_eligible_account`), which reqs 13 and 17 depend on.
-- [ ] Add Settings controls to reorder provider accounts; newly connected accounts append to the fallback order.
+- [x] Add Settings controls to reorder provider accounts; newly connected accounts append to the fallback order.
 - [x] Persist per-provider short-window and weekly usage cutoffs with 90% defaults and 1–100 validation.
 - [x] Add Settings controls for both proactive failover cutoffs.
 - [x] Re-evaluate account eligibility before every turn, including existing-session, queued, and system-initiated turns.
-- [x] Switch an existing session to the next eligible account when either configured cutoff is reached (ordering by user priority is still req 2's work).
+- [x] Switch an existing session to the next eligible account when either configured cutoff is reached.
 - [x] Skip an account that cannot run the requested model and report no eligible account (req 17).
 - [ ] Add optional per-session account preference.
 - [ ] Add optional per-provider “do not auto-failover” setting.
@@ -107,7 +107,7 @@
 - [x] Unit: account-scoped Claude auth manager writes to the requested account root.
 - [x] Unit: account-scoped Codex auth manager writes to the requested account root.
 - [x] Unit: account selection prefers primary, skips exhausted accounts, and respects reset times (quota *ranking* still open).
-- [ ] Unit: account selection follows user priority and advances when either configurable cutoff is reached.
+- [x] Unit: account selection follows user priority and advances when either configurable cutoff is reached.
 - [ ] Integration: an existing pinned session switches accounts at the proactive cutoff and preserves local context.
 - [ ] Integration: first Claude turn pins `{ agent_id, provider_route_kind, provider_route_id }`.
 - [ ] Integration: first Codex turn pins `{ agent_id, provider_route_kind, provider_route_id }`.
