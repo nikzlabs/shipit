@@ -290,7 +290,7 @@ describe("Integration: Context window usage (105)", () => {
     expect(initModelInfo).toMatchObject({
       type: "model_info",
       model: "gpt-5.6-sol",
-      contextWindowTokens: 1_050_000,
+      contextWindowTokens: 272_000,
     });
 
     lastClaude.emit("event", {
@@ -352,8 +352,10 @@ describe("Integration: Context window usage (105)", () => {
     expect(getContextWindowForModel("claude-sonnet-4-20250514")).toBe(200_000);
     expect(getContextWindowForModel("gpt-5.4-mini-2025")).toBe(272_000);
     expect(getContextWindowForModel("claude-sonnet-5")).toBe(1_000_000);
-    expect(getContextWindowForModel("gpt-5.6-sol")).toBe(1_050_000);
-    expect(getContextWindowForModel("gpt-5.6-terra")).toBe(1_050_000);
+    // Codex assigns its own 272K window to GPT-5.6 profiles; do not display
+    // the models' larger API-advertised maximum before telemetry arrives.
+    expect(getContextWindowForModel("gpt-5.6-sol")).toBe(272_000);
+    expect(getContextWindowForModel("gpt-5.6-terra")).toBe(272_000);
     // Opus 4.8 has a 1M window. This is the static fallback for the first
     // frame; the authoritative window comes from the CLI's
     // `result.modelUsage.contextWindow` on the first turn.
