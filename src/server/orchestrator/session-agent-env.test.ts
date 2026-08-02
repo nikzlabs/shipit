@@ -9,7 +9,7 @@
  * cred-provision / agent-env push paths are covered.
  */
 
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -28,6 +28,10 @@ import {
 import { syncAgentTokenIn } from "./session-credentials.js";
 import { repoUrlToHash } from "./git-utils.js";
 import { ProviderRouteUnavailableError } from "./provider-route-preflight.js";
+import {
+  hasTokenWriteBackWatch,
+  stopAllTokenWriteBackWatches,
+} from "./session-token-publisher.js";
 
 /**
  * Minimal ContainerSessionRunner stand-in that satisfies the instanceof check
@@ -62,7 +66,7 @@ function makeFakeCredentialStore(
 function makeFakeSessionManager(opts: {
   agentPinned: boolean;
   agentSessionId?: string;
-  providerRouteKind?: "account";
+  providerRouteKind?: "account" | "reserved";
   providerRouteId?: string;
   remoteUrl?: string;
   model?: string;
@@ -1026,6 +1030,106 @@ describe("repushSessionAgentToken (docs/179 401 recovery)", () => {
     });
 
     expect(readToken(sessionRoot)).toContain("UNTOUCHED");
+  });
+});
+
+/**
+ * docs/153 — the mid-turn publisher's lifecycle is owned by the env-prep pair:
+ * armed on the turn's own pre-spawn step, torn down at turn end. Publication
+ * behavior itself is covered in `session-token-publisher.test.ts`; these tests
+ * only pin the wiring, which is where a route or lifecycle mistake would hide.
+ */
+describe("mid-turn token write-back watch wiring", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-env-watch-"));
+    fs.mkdirSync(path.join(tmpDir, ".claude"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, ".claude", ".credentials.json"),
+      JSON.stringify({ claudeAiOauth: { expiresAt: 2_000_000_000_000 } }),
+    );
+  });
+
+  afterEach(() => {
+    stopAllTokenWriteBackWatches();
+  });
+
+  async function prep(
+    opts: {
+      enforceAccountRouting?: boolean;
+      providerRouteKind?: "account" | "reserved";
+      providerRouteId?: string;
+    },
+  ): Promise<{ runner: FakeContainerRunner; sm: SessionManager }> {
+    const runner = new FakeContainerRunner();
+    const { sm } = makeFakeSessionManager({
+      agentPinned: true,
+      ...(opts.providerRouteKind ? { providerRouteKind: opts.providerRouteKind } : {}),
+      ...(opts.providerRouteId ? { providerRouteId: opts.providerRouteId } : {}),
+    });
+    await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+      sessionId: "s1",
+      agentId: "claude",
+      ...(opts.enforceAccountRouting ? { enforceAccountRouting: true } : {}),
+      deps: { credentialsDir: tmpDir, credentialStore: makeFakeCredentialStore(), sessionManager: sm },
+    });
+    return { runner, sm };
+  }
+
+  it("arms on the turn's own pre-spawn step and disarms at turn end", async () => {
+    const { runner, sm } = await prep({ enforceAccountRouting: true });
+    expect(hasTokenWriteBackWatch("s1")).toBe(true);
+
+    finalizeSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+      sessionId: "s1",
+      agentId: "claude",
+      deps: { credentialsDir: tmpDir, credentialStore: makeFakeCredentialStore(), sessionManager: sm },
+    });
+    expect(hasTokenWriteBackWatch("s1")).toBe(false);
+  });
+
+  it("does not arm on a pre-turn warm-up call (no turn to publish for yet)", async () => {
+    await prep({});
+    expect(hasTokenWriteBackWatch("s1")).toBe(false);
+  });
+
+  it("skips the reserved claude-env-oauth route, like the sync-in does", async () => {
+    await prep({
+      enforceAccountRouting: true,
+      providerRouteKind: "reserved",
+      providerRouteId: "claude-env-oauth",
+    });
+    expect(hasTokenWriteBackWatch("s1")).toBe(false);
+  });
+
+  it("arms against the pinned account's source for an account-routed session", async () => {
+    const accountSource = path.join(
+      tmpDir, "provider-accounts", "claude", "acct-work", ".claude", ".credentials.json",
+    );
+    fs.mkdirSync(path.dirname(accountSource), { recursive: true });
+    fs.writeFileSync(accountSource, JSON.stringify({ claudeAiOauth: { expiresAt: 1_000 } }));
+    // The session's CLI rotated mid-turn — ahead of the account source.
+    const sessionCreds = path.join(tmpDir, "sessions", "s1", ".claude", ".credentials.json");
+    fs.mkdirSync(path.dirname(sessionCreds), { recursive: true });
+    fs.writeFileSync(
+      sessionCreds,
+      JSON.stringify({ claudeAiOauth: { expiresAt: 2_000_000_000_000, accessToken: "rotated" } }),
+    );
+
+    await prep({
+      enforceAccountRouting: true,
+      providerRouteKind: "account",
+      providerRouteId: "acct-work",
+    });
+    expect(hasTokenWriteBackWatch("s1")).toBe(true);
+
+    // The arm-time catch-up publishes to the ACCOUNT source, never the legacy root.
+    await vi.waitFor(() => {
+      expect(fs.readFileSync(accountSource, "utf8")).toContain("rotated");
+    }, { timeout: 3_000, interval: 20 });
+    expect(fs.readFileSync(path.join(tmpDir, ".claude", ".credentials.json"), "utf8"))
+      .not.toContain("rotated");
   });
 });
 

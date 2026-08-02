@@ -5,6 +5,7 @@ import type { AgentId } from "../shared/types.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { SessionContainerManager } from "./session-container.js";
 import type { DatabaseManager } from "../shared/database.js";
+import { stopAllTokenWriteBackWatches } from "./session-token-publisher.js";
 
 // ---- Graceful shutdown ----
 
@@ -32,6 +33,10 @@ export function registerShutdownHook(
 ): void {
   app.addHook("onClose", async () => {
     clearTimeout(shutdownDeps.startupTimer);
+    // docs/153 — drop the mid-turn token watches before anything else. The
+    // per-runner `disposed` backstop below would catch them too, but only for
+    // runners the registry still holds; this is unconditional and cheap.
+    stopAllTokenWriteBackWatches();
     for (const mgr of shutdownDeps.authManagers.values()) {
       mgr.kill();
     }

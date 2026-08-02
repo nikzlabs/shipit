@@ -38,6 +38,10 @@ import {
   repushAgentToken,
   repushProviderAccountToken,
 } from "./session-credentials.js";
+import {
+  startTokenWriteBackWatch,
+  stopTokenWriteBackWatch,
+} from "./session-token-publisher.js";
 import { repoUrlToHash } from "./git-utils.js";
 import type { ProviderAccountManager, ProviderRoute } from "./provider-account-manager.js";
 import { routeFromSelection } from "./provider-route-preflight.js";
@@ -468,6 +472,30 @@ export async function prepareSessionAgentEnvironment(
     }
   }
 
+  // Step 2b (docs/153): publish a rotation the CLI performs DURING this turn
+  // as soon as it lands, instead of at turn end. `syncAgentTokenBack` alone
+  // leaves the source serving a token the rotation already invalidated
+  // upstream for the whole remainder of the turn — minutes, during which every
+  // sibling session's sync-in pulls the dead token and 401s. The watch runs
+  // the same sync-back, guard included; only the timing changes.
+  //
+  // Gated on `enforceAccountRouting` because that flag marks the turn's own
+  // pre-spawn step — the moment a CLI is about to start writing. The
+  // service-level warm-ups (child spawn, headless create, CI fix, wake) run
+  // before any turn exists and are followed by the executor's own call moments
+  // later, which is what arms the watch. Route branching mirrors Step 2's
+  // exactly, including skipping the reserved `claude-env-oauth` route.
+  if (runner instanceof ContainerSessionRunner && args.enforceAccountRouting) {
+    if (selectedRoute?.kind === "account") {
+      startTokenWriteBackWatch({
+        credentialsDir: deps.credentialsDir, sessionId, agentId,
+        accountId: selectedRoute.id, runner,
+      });
+    } else if (selectedRoute?.id !== "claude-env-oauth") {
+      startTokenWriteBackWatch({ credentialsDir: deps.credentialsDir, sessionId, agentId, runner });
+    }
+  }
+
   // Step 3: pre-emptively refresh any MCP OAuth tokens within the safety
   // margin of expiry, so the env we're about to push doesn't carry a token
   // that's about to die on the first MCP call. Fault-tolerant AND time-bounded
@@ -565,6 +593,11 @@ export function finalizeSessionAgentEnvironment(
   runner: SessionRunnerInterface | null,
   args: { sessionId: string; agentId: AgentId; deps: SessionAgentEnvDeps },
 ): void {
+  // docs/153 — the turn is over, so the CLI can no longer rotate. Drop the
+  // mid-turn watch (and any debounced publish still pending) first; the
+  // unconditional sync-back below is the authoritative final publication.
+  // Unconditional so a watch can never outlive its turn, whatever the runner.
+  stopTokenWriteBackWatch(args.sessionId);
   if (!(runner instanceof ContainerSessionRunner)) return;
   const session = args.deps.sessionManager.get(args.sessionId);
   try {
