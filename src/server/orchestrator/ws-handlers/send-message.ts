@@ -401,6 +401,9 @@ export async function handleSendMessage(
           prStatusPoller: ctx.prStatusPoller,
           sseBroadcast: ctx.sseBroadcast,
           ...(ctx.ensureAgentTokenFresh ? { ensureAgentTokenFresh: ctx.ensureAgentTokenFresh } : {}),
+          // docs/150 — AI naming runs on the account a turn would use.
+          ...(ctx.providerAccountManager ? { providerAccountManager: ctx.providerAccountManager } : {}),
+          ...(ctx.credentialsDir ? { credentialsDir: ctx.credentialsDir } : {}),
         },
         {
           sessionId: effectiveSessionId,

@@ -50,7 +50,7 @@
 - [x] Offer a replacement account inline when disconnecting an account that pinned sessions use.
 - [x] Do NOT route around model capability — removed the skip-and-report mechanism (req 17 reversed to a non-goal, 2026-08-02).
 - [ ] Add local/dogfood direct-run account-scoped HOME/config-root support or explicit unsupported diagnostic.
-- [ ] Scope the AI session-naming pre-flight heal to an account: `graduateSession` calls `ensureAgentTokenFresh(agentId)` with none, then names against the legacy root path, so a near-expiry sibling account is refreshed on every new session.
+- [x] Scope AI session naming to an account: it resolves the same route a turn would take and points `HOME` at that account's root (it forced `/root`, which aliases to the migrated default), and heals that account rather than the whole provider.
 
 ## Phase 2 — Inline Quota Per Account
 
@@ -149,6 +149,8 @@
 - [x] Manual: make-primary in the running app renumbers `priority`, moves the badge, and disables its own button.
 - [x] Unit: a completion with no account scope marks nothing ready and invents no row (the old singleton branch re-ran the migration here).
 - [x] Manual: a scoped sign-in still reaches its own row with the challenge after the contract was tightened.
+- [x] Unit: naming runs the CLI with `HOME` at the account root, and falls back to the singleton root for a reserved route.
+- [x] Unit: graduation resolves the naming account from the router and heals that account, not the provider.
 - [x] Client: Add account / Connect are disabled while another row of the provider is authenticating.
 - [ ] Unit: API-key fallback configures only its reserved route and never marks a subscription account ready.
 - [x] Client: an authenticated primary row does not hide or overwrite a secondary row's pending flow or diagnostics.
@@ -160,7 +162,11 @@
 Runs last: every shim below is load-bearing for an install that has not yet
 exercised the new path. The signal one is ready to go is that nothing reads it.
 
-- [ ] Remove the legacy root credential paths and alias symlinks once every read/write goes through an account root.
+- [ ] Remove the legacy root credential paths and alias symlinks once every read/write goes through an account root. **Blocked on the readers below** — the aliases are not inert (they leak into session containers; docs/153's repair exists because of them), so this is worth finishing, but not force-landing.
+  - [x] AI session naming (was `HOME=/root`).
+  - [ ] `AgentRegistry`'s auth probe — `isConfigured()` unscoped reads the singleton path.
+  - [ ] Codex `checkCredentials()` unscoped reads `CODEX_AUTH_FILE`.
+  - [ ] Provider-wide sign-out clears singleton paths (deliberately, for pre-account credentials).
 - [x] Give provider-wide sign-out the running-turn guard the per-account disconnect has. (An *idle* pinned session is deliberately left to re-route itself: a route whose row is gone reads unusable, so the next turn's preflight fails it over. Only the mid-turn case is unrecoverable.)
 - [x] Drop `AgentAuthManager.start`'s no-scope overload and the account-less `complete` branch in `wireEventHandlers`. `accountId`/`credentialDir` are now required, so an unscoped flow is unrepresentable rather than merely unused.
 - [x] ~~Remove `selectRouteForTurn`~~ — **not legacy after all.** It is a three-line convenience over `selectAccountForTurn` with two honest callers that genuinely want route-or-null (rate-limit attribution, sub-agent spawn). Removing it would inline the same wrapper twice.

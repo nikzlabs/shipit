@@ -182,6 +182,67 @@ describe("graduateSession", () => {
     expect(types).toContain("session_renamed");
   });
 
+  // docs/150 — naming is a real provider call, so it must run on the account a
+  // turn would use and heal that account's token. Previously it forced
+  // HOME=/root, which aliases to the migrated default account, and healed the
+  // provider (every account, aggregated with `every()`).
+  it("names on the account a turn would use, and heals that account", async () => {
+    const generateSessionName = vi.fn(async () => ({ slug: "s", title: "T" }));
+    vi.doMock("../session-namer.js", () => ({ generateSessionName }));
+    const { graduateSession } = await import("./graduate-session.js");
+    const { deps, state } = buildDeps({
+      id: "s1", title: "placeholder", branch: "shipit/abc123", workspaceDir: "/tmp/ws",
+    });
+    const ensureAgentTokenFresh = vi.fn(async () => true);
+
+    graduateSession(
+      {
+        ...deps,
+        ensureAgentTokenFresh,
+        credentialsDir: "/credentials",
+        providerAccountManager: {
+          selectRouteForTurn: () => ({ kind: "account", id: "acct_work" }),
+        } as never,
+      },
+      { sessionId: "s1", userText: "hi", agentId: "claude" },
+    );
+
+    await flush(() => state.branchRenamed === true);
+
+    expect(ensureAgentTokenFresh).toHaveBeenCalledWith("claude", "acct_work");
+    expect(generateSessionName).toHaveBeenCalledWith(
+      "hi",
+      "claude",
+      "/credentials/provider-accounts/claude/acct_work",
+    );
+  });
+
+  it("leaves naming on the singleton root for a reserved (API-key) route", async () => {
+    const generateSessionName = vi.fn(async () => ({ slug: "s", title: "T" }));
+    vi.doMock("../session-namer.js", () => ({ generateSessionName }));
+    const { graduateSession } = await import("./graduate-session.js");
+    const { deps, state } = buildDeps({
+      id: "s1", title: "placeholder", branch: "shipit/abc123", workspaceDir: "/tmp/ws",
+    });
+
+    graduateSession(
+      {
+        ...deps,
+        credentialsDir: "/credentials",
+        providerAccountManager: {
+          selectRouteForTurn: () => ({ kind: "reserved", id: "claude-api-key" }),
+        } as never,
+      },
+      { sessionId: "s1", userText: "hi", agentId: "claude" },
+    );
+
+    await flush(() => state.branchRenamed === true);
+
+    // A reserved route has no account root; `undefined` keeps the singleton
+    // path, which is what those routes legitimately use.
+    expect(generateSessionName).toHaveBeenCalledWith("hi", "claude", undefined);
+  });
+
   it("with skipBranchRename: true, AI naming updates the title but leaves the branch alone", async () => {
     vi.doMock("../session-namer.js", () => ({
       generateSessionName: vi.fn(async () => ({ slug: "fix-flaky", title: "Fix flaky test" })),

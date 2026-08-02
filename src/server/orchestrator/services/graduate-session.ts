@@ -40,6 +40,8 @@ import type { GitManager } from "../../shared/git.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { AgentId } from "../../shared/types.js";
 import { generateSessionName, type SessionName } from "../session-namer.js";
+import type { ProviderAccountManager } from "../provider-account-manager.js";
+import { providerAccountCredentialRoot } from "../provider-account-manager.js";
 import { getErrorMessage } from "../validation.js";
 
 export interface GraduateSessionDeps {
@@ -62,6 +64,14 @@ export interface GraduateSessionDeps {
    * first turn. A no-op for a healthy token. Optional — tests / local omit it.
    */
   ensureAgentTokenFresh?: (agentId: AgentId, accountId?: string) => Promise<boolean>;
+  /**
+   * docs/150 — forwarded to the naming CLI so it reads the account a turn for
+   * this agent would use, rather than the singleton root (which resolves via
+   * the legacy alias to the migrated default account). Optional; omitting them
+   * keeps the previous singleton behaviour.
+   */
+  providerAccountManager?: ProviderAccountManager;
+  credentialsDir?: string;
 }
 
 export interface GraduateSessionOpts {
@@ -132,7 +142,10 @@ export interface GraduateSessionOpts {
  *     intends `explicitBranch` semantics.
  */
 export function graduateSession(deps: GraduateSessionDeps, opts: GraduateSessionOpts): void {
-  const { sessionManager, runnerRegistry, repoStore, createGitManager, prStatusPoller, sseBroadcast, ensureAgentTokenFresh } = deps;
+  const {
+    sessionManager, runnerRegistry, repoStore, createGitManager, prStatusPoller, sseBroadcast,
+    ensureAgentTokenFresh, providerAccountManager, credentialsDir,
+  } = deps;
   const { sessionId, userText, agentId, explicitTitle, explicitBranch, skipBranchRename, model, reasoning, parentSessionId, spawnedByTurn, rootSessionId } = opts;
 
   // 1. Activation — flip warm to false (no-op when already active, e.g. fork).
@@ -166,7 +179,12 @@ export function graduateSession(deps: GraduateSessionDeps, opts: GraduateSession
   const shouldAutoName = !explicitTitle && !explicitBranch && session?.workspaceDir;
   if (shouldAutoName) {
     scheduleSessionNaming(
-      { sessionManager, runnerRegistry, createGitManager, prStatusPoller, sseBroadcast, ...(ensureAgentTokenFresh ? { ensureAgentTokenFresh } : {}) },
+      {
+        sessionManager, runnerRegistry, createGitManager, prStatusPoller, sseBroadcast,
+        ...(ensureAgentTokenFresh ? { ensureAgentTokenFresh } : {}),
+        ...(providerAccountManager ? { providerAccountManager } : {}),
+        ...(credentialsDir ? { credentialsDir } : {}),
+      },
       { sessionId, userText, agentId, skipBranchRename: skipBranchRename ?? false },
     );
   } else {
@@ -196,6 +214,16 @@ interface ScheduleSessionNamingDeps {
   prStatusPoller?: PrStatusPoller;
   sseBroadcast: (event: string, data: unknown) => void;
   ensureAgentTokenFresh?: (agentId: AgentId, accountId?: string) => Promise<boolean>;
+  /**
+   * docs/150 — resolves which provider account the naming CLI runs on. Without
+   * it, naming falls back to the singleton credential root, which resolves via
+   * the legacy alias to the *migrated default* account regardless of which
+   * account is actually primary — and stops working altogether once that
+   * account is disconnected. Optional so minimal setups (tests, local mode)
+   * keep the previous behaviour.
+   */
+  providerAccountManager?: ProviderAccountManager;
+  credentialsDir?: string;
 }
 
 interface ScheduleSessionNamingOpts {
@@ -212,8 +240,21 @@ interface ScheduleSessionNamingOpts {
 }
 
 function scheduleSessionNaming(deps: ScheduleSessionNamingDeps, opts: ScheduleSessionNamingOpts): void {
-  const { sessionManager, runnerRegistry, createGitManager, prStatusPoller, sseBroadcast, ensureAgentTokenFresh } = deps;
+  const {
+    sessionManager, runnerRegistry, createGitManager, prStatusPoller, sseBroadcast,
+    ensureAgentTokenFresh, providerAccountManager, credentialsDir,
+  } = deps;
   const { sessionId, userText, agentId, skipBranchRename } = opts;
+
+  // docs/150 — naming is a real provider call, so it runs on a real account:
+  // the same route a turn for this agent would pick. A reserved route
+  // (API key / env OAuth) has no account root, so `undefined` keeps the
+  // singleton path, which is what those routes legitimately use.
+  const namingRoute = providerAccountManager?.selectRouteForTurn(agentId) ?? null;
+  const namingAccountId = namingRoute?.kind === "account" ? namingRoute.id : undefined;
+  const namingCredentialRoot = namingAccountId && credentialsDir
+    ? providerAccountCredentialRoot(credentialsDir, agentId, namingAccountId)
+    : undefined;
 
   const finalizeBranchRenamed = async (): Promise<void> => {
     try {
@@ -254,12 +295,16 @@ function scheduleSessionNaming(deps: ScheduleSessionNamingDeps, opts: ScheduleSe
   const nameAfterHeal = async (): Promise<SessionName | null> => {
     if (ensureAgentTokenFresh) {
       try {
-        await ensureAgentTokenFresh(agentId);
+        // docs/150 — heal the account naming will actually use. Provider-wide,
+        // this refreshes every connected account and aggregates with `every()`,
+        // so an unrelated revoked account both wastes a refresh and reports
+        // failure for a token that was fine.
+        await ensureAgentTokenFresh(agentId, namingAccountId);
       } catch {
         // Best-effort — never block naming on a heal failure.
       }
     }
-    return generateSessionName(userText, agentId);
+    return generateSessionName(userText, agentId, namingCredentialRoot);
   };
 
   // eslint-disable-next-line no-restricted-syntax -- intentional fire-and-forget session naming

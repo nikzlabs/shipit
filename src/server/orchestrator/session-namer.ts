@@ -26,12 +26,23 @@ Respond with ONLY valid JSON, no markdown fences: {"slug": "...", "title": "..."
 export async function generateSessionName(
   userMessage: string,
   agentId: AgentId,
+  /**
+   * docs/150 — credential root (provider-account directory) the naming CLI
+   * should read, i.e. the account this naming call is billed against.
+   *
+   * Omitted means the singleton root, which resolves through the legacy alias
+   * symlink to the *migrated default* account — so naming ran on
+   * `claude-default` no matter which account was primary, and broke outright
+   * once that account was disconnected. Callers that know the route pass it;
+   * see `graduateSession`.
+   */
+  credentialRoot?: string,
 ): Promise<SessionName | null> {
   const truncated = userMessage.slice(0, 200);
   const prompt = PROMPT_TEMPLATE.replace("{MESSAGE}", truncated);
 
   try {
-    const text = await callAgentCli(agentId, prompt);
+    const text = await callAgentCli(agentId, prompt, credentialRoot);
     if (!text) return null;
 
     const jsonMatch = /\{[^}]*"slug"\s*:\s*"[^"]*"[^}]*"title"\s*:\s*"[^"]*"[^}]*\}/.exec(text);
@@ -57,25 +68,32 @@ export async function generateSessionName(
   }
 }
 
-function callAgentCli(agentId: AgentId, prompt: string): Promise<string | null> {
+function callAgentCli(agentId: AgentId, prompt: string, credentialRoot?: string): Promise<string | null> {
   switch (agentId) {
     case "claude":
-      return callCli("claude", ["-p", prompt, "--output-format", "text"], agentId);
+      return callCli("claude", ["-p", prompt, "--output-format", "text"], agentId, credentialRoot);
     case "codex":
       // We run from /tmp (a one-shot prompt unrelated to any repo). Codex >=0.130
       // refuses `exec` outside a trusted git repo unless this flag is passed.
-      return callCli("codex", ["exec", "--skip-git-repo-check", prompt], agentId);
+      return callCli("codex", ["exec", "--skip-git-repo-check", prompt], agentId, credentialRoot);
   }
 }
 
 /**
  * Invoke the locally installed provider CLI in non-interactive mode.
  *
- * HOME is forced to /root so provider CLIs find their credential directories
- * under the shared credentials mount. We do not pass resume/thread flags; this
- * is a one-shot prompt unrelated to the coding conversation.
+ * HOME selects the credentials: a provider-account root when the caller
+ * resolved one (docs/150 — the account layout mirrors `$HOME`, which is the
+ * same trick the scoped auth flows use), else `/root` for the singleton mount.
+ * We do not pass resume/thread flags; this is a one-shot prompt unrelated to
+ * the coding conversation.
  */
-function callCli(binary: string, args: string[], agentId: AgentId): Promise<string | null> {
+function callCli(
+  binary: string,
+  args: string[],
+  agentId: AgentId,
+  credentialRoot?: string,
+): Promise<string | null> {
   return new Promise((resolve) => {
     let settled = false;
     const finish = (value: string | null): void => {
@@ -91,7 +109,7 @@ function callCli(binary: string, args: string[], agentId: AgentId): Promise<stri
         {
           timeout: 15_000,
           cwd: "/tmp",
-          env: { ...process.env, HOME: process.env.HOME ?? "/root" },
+          env: { ...process.env, HOME: credentialRoot ?? process.env.HOME ?? "/root" },
           maxBuffer: 1024 * 1024,
         },
         (error, stdout, stderr) => {
