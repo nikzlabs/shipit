@@ -127,5 +127,5 @@
 - [x] Client: share the account-row auth shell across Claude code-paste and Codex device-code challenge variants.
 - [ ] Unit: API-key fallback configures only its reserved route and never marks a subscription account ready.
 - [x] Client: an authenticated primary row does not hide or overwrite a secondary row's pending flow or diagnostics.
-- [ ] Client: subscription limits render multiple accounts per provider.
+- [x] Client: subscription limits render multiple accounts per provider, each named.
 - [ ] Client: session diagnostics renders the active account.

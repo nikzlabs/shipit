@@ -2043,3 +2043,45 @@ complete `PUT` rather than a drag that has to be reconciled mid-gesture.
 With this, reqs 4-6's "advances to the next eligible account **in the user's
 priority order**" is satisfied in full — the cutoff mechanism already advanced,
 and this is the order it advances along.
+
+### Fixed: three ways the per-account quota pill was wrong
+
+Reported from a running instance: a single pill reading `Claude 5h · — 7d · —`,
+with no account name and a refresh button that did nothing. Three separate
+defects, all introduced by the Phase 2 per-account refactor — the route id was
+threaded through the caches but not through the three places that needed it.
+
+1. **The label counted snapshots, not accounts.** `entries.length > 1` gated the
+   account name on how many *snapshots* had arrived, and routes with no snapshot
+   are omitted from the map. Two connected accounts where only one had ever
+   reported quota therefore rendered one pill labelled "Claude" — silent about
+   which subscription it described. Beyond the counting bug, the rule itself
+   contradicted req 10, which asks for the account name outright; suppressing it
+   for the single-account case was an agent inference narrowing a stated
+   requirement. The name is now unconditional for account routes; reserved
+   env/API-key routes keep the provider label, since they are not accounts.
+
+2. **`routeIds()` could not name a route until it already had data.** It
+   returned the union of the cached maps' keys, so the once-per-sign-in seed
+   fetch (`refreshNow(agentId, "seed")`, which iterates `routeIds()`) ran zero
+   iterations for a freshly connected account — data was required in order to be
+   allowed to fetch data. It now unions the *connected accounts* with the cached
+   keys, so a new account is refreshable immediately and a reserved route that
+   only exists in the cache is still surfaced.
+
+3. **The usage fetch used the wrong credentials — this was the dead refresh
+   button.** `doRefresh(routeId)` called `authManager.getAccessToken()` with no
+   argument. That signature's account-scoped behaviour only engages when a
+   credential dir is passed; without one it prefers `ANTHROPIC_AUTH_TOKEN` and
+   otherwise reads the root config dir. For accounts stored under
+   `provider-accounts/claude/<acct>/` the token came back `null` and the refresh
+   returned silently, leaving the pill at "—" forever. In a dogfood/env-token
+   setup it was worse than silent: it fetched the env account's usage and
+   attributed it to whichever route it was called for. The route id now resolves
+   to that account's credential root, and `undefined` (the reserved-route case)
+   still selects the env/legacy path.
+
+The lesson for the remaining per-account work: threading an id through the data
+structures is the easy half. The half that bites is every *call* that still runs
+provider-wide — enumeration, credential lookup, and any UI rule that infers
+"how many accounts" from "how much data arrived".
