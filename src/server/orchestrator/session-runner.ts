@@ -626,7 +626,30 @@ export interface SystemTurnDeps {
    * call. Optional — when absent (tests / local runtime), the executor falls
    * back to the legacy visible re-auth flow with no retry.
    */
-  ensureAgentTokenFresh?: (agentId: AgentId, accountId?: string) => Promise<boolean>;
+  ensureAgentTokenFresh?: (
+    agentId: AgentId,
+    accountId?: string,
+    /**
+     * docs/179 — `force` switches the healer from "is the source token
+     * healthy?" (the cheap proactive question, answered from `expiresAt`) to
+     * "give me a token this session has not already tried." The runtime-401
+     * recovery MUST force: the 401 it is recovering from is itself proof that
+     * the expiry timestamp is lying, so the unforced short-circuit returns
+     * `true` having done nothing and the retry re-runs on identical
+     * credentials. Only this dep declares the parameter — the proactive
+     * callers' narrower two-argument type is deliberate.
+     */
+    opts?: { force?: boolean },
+  ) => Promise<boolean>;
+  /**
+   * docs/179 — force the orchestrator's source OAuth token into this session's
+   * credential subtree, bypassing the per-turn sync-in's expiry-ordering guard.
+   * Wired to `repushSessionAgentToken`; called only on the runtime-401 recovery
+   * path, after a successful heal and before the turn is re-dispatched, so the
+   * retry cannot spawn on the same dead token the sync-in's `srcExp <= dstExp`
+   * guard would have kept in place. Optional — omitted in tests / local runtime.
+   */
+  repushSessionAgentToken?: (sessionId: string, agentId: AgentId) => void;
   /**
    * docs/150 — the provider account this session's turn is running on, or
    * `undefined` when unpinned / on a reserved route.

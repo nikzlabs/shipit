@@ -340,10 +340,25 @@ export function wireAgentListeners(
         const invalidId = missingConversation[1];
         const recovering = opts.recoverMissingConversation?.(invalidId) ?? false;
         if (!recovering) {
-          emitToViewers({
-            type: "error",
-            message: "Couldn't resume the previous conversation. ShipIt could not start a fresh thread automatically; resend your message or open Settings → Agents if the problem continues.",
-          });
+          const message = "Couldn't resume the previous conversation. ShipIt could not start a fresh thread automatically; resend your message or open Settings → Agents if the problem continues.";
+          // Persisted, not merely emitted — same rule as the auth notice in
+          // `agent-auth-handler.ts`: this is the user's only explanation for a
+          // turn that produced nothing, so it has to survive a detached viewer,
+          // a session switch, and a reload. Recorded in-band (rather than
+          // appended) so the `done` handler's `onInterruptedTurn` finalize
+          // rebuilds it at its true position alongside any partial output,
+          // instead of the two racing to write separate rows.
+          const turnSessionId = opts.capturedSessionId;
+          if (runner && turnSessionId) {
+            emitChatCard(
+              runner,
+              { type: "error", message, sessionId: turnSessionId },
+              { role: "assistant", text: `Error: ${message}`, isError: true },
+              { chatHistoryManager: deps.chatHistoryManager, sessionId: turnSessionId },
+            );
+          } else {
+            emitToViewers({ type: "error", message });
+          }
         }
       }
     }

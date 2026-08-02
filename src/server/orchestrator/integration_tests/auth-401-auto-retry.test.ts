@@ -247,6 +247,122 @@ describe("runtime-401 auto-retry (docs/179)", () => {
 
     runner.dispose({ force: true });
   });
+  // ---- the heal has to actually heal something (docs/179, 2026-08-02) ----
+  //
+  // Production ran six `auth healed` events across three sessions in six hours
+  // with ZERO `[claude-oauth-refresh]` log lines beside them, and four of the
+  // six were followed by a surfaced failure anyway. Every heal was a no-op:
+  // `ensureFresh` short-circuited on the SOURCE token's `expiresAt`, which
+  // still had margin, so the turn was re-dispatched ~120ms later on
+  // byte-identical credentials. Two things make the retry mean something now —
+  // the heal is forced (expiry is not evidence when a live 401 says otherwise),
+  // and the source token is force-pushed into the session, bypassing the
+  // per-turn sync-in guard that refuses to overwrite a dead-but-later-dated
+  // copy.
+
+  it("forces the heal rather than letting it short-circuit on source expiry", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    const agents: FakeAgent[] = [];
+    const ensureAgentTokenFresh = vi.fn().mockResolvedValue(true);
+    const { deps } = makeDeps(agents, ensureAgentTokenFresh);
+    runner.setSystemTurnDeps(deps);
+
+    runner.dispatch(testDispatch({ text: "do work" }));
+    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first agent run");
+
+    agents[0]!.emit("auth_required");
+    agents[0]!.emit("done", 0);
+    await waitFor(() => agents.length === 2, "re-dispatched agent");
+
+    expect(ensureAgentTokenFresh).toHaveBeenCalledWith("claude", undefined, { force: true });
+
+    runner.dispose({ force: true });
+  });
+
+  it("force-pushes the source token into the session BEFORE the healed retry spawns", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    const agents: FakeAgent[] = [];
+    const ensureAgentTokenFresh = vi.fn().mockResolvedValue(true);
+    const { deps } = makeDeps(agents, ensureAgentTokenFresh);
+    const repushed: { sessionId: string; agentId: AgentId; agentsAtCall: number }[] = [];
+    deps.repushSessionAgentToken = (sessionId, agentId) => {
+      repushed.push({ sessionId, agentId, agentsAtCall: agents.length });
+    };
+    runner.setSystemTurnDeps(deps);
+
+    runner.dispatch(testDispatch({ text: "do work" }));
+    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first agent run");
+
+    agents[0]!.emit("auth_required");
+    agents[0]!.emit("done", 0);
+    await waitFor(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "healed retry");
+
+    // Ordering matters: the retry's env-prep runs the guarded sync-in, so the
+    // unconditional push has to land before the second agent is created.
+    expect(repushed).toEqual([{ sessionId: "s1", agentId: "claude", agentsAtCall: 1 }]);
+
+    runner.dispose({ force: true });
+  });
+
+  it("does not repush when the heal failed (no retry to prepare for)", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    const agents: FakeAgent[] = [];
+    const messages: { type: string }[] = [];
+    runner.on("message", (m) => messages.push(m as never));
+    const { deps } = makeDeps(agents, vi.fn().mockResolvedValue(false));
+    const repush = vi.fn();
+    deps.repushSessionAgentToken = repush;
+    runner.setSystemTurnDeps(deps);
+
+    runner.dispatch(testDispatch({ text: "do work" }));
+    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first agent run");
+
+    agents[0]!.emit("auth_required");
+    agents[0]!.emit("done", 0);
+    await waitFor(() => messages.some((m) => m.type === "error"), "re-auth error surfaced");
+
+    expect(repush).not.toHaveBeenCalled();
+
+    runner.dispose({ force: true });
+  });
+
+  // The other half of the incident: even when a viewer WAS attached, the
+  // sign-in notice was emit-only, so it vanished on the next session switch or
+  // reload. With no viewer attached — the production case, twice — it reached
+  // nobody at all and the user was left with a prompt and no reply.
+  it("leaves the surfaced sign-in notice in durable chat history", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDeps(agents, vi.fn().mockResolvedValue(false));
+    let durableHistory: any[] = [];
+    const history = deps.listenerDeps.chatHistoryManager as any;
+    history.replaceInProgress = vi.fn((_sid: string, messages: any[]) => {
+      durableHistory = [...durableHistory.filter((m) => !m.inProgress), ...messages];
+    });
+    history.finalizeInProgress = vi.fn(() => {
+      durableHistory = durableHistory.map((m) => ({ ...m, inProgress: false }));
+    });
+    history.append = vi.fn((_sid: string, message: any) => { durableHistory.push(message); });
+    runner.setSystemTurnDeps(deps);
+
+    runner.dispatch(testDispatch({ text: "do work" }));
+    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first agent run");
+
+    agents[0]!.emit("auth_required");
+    agents[0]!.emit("done", 0);
+    await waitFor(() => durableHistory.some((m) => m.isError), "durable sign-in notice");
+
+    const notice = durableHistory.find((m) => m.isError);
+    expect(String(notice.text)).toContain("Settings → Agents");
+    // Finalized, so the next turn's `replaceInProgress` can't delete it.
+    expect(durableHistory.every((m) => !m.inProgress)).toBe(true);
+    // And exactly one error row — the generic "ended without a response" is
+    // suppressed on the auth path rather than sitting beside it unpersisted.
+    expect(durableHistory.filter((m) => m.isError)).toHaveLength(1);
+
+    runner.dispose({ force: true });
+  });
+
   // docs/150 — with several accounts per provider, the heal has to name the
   // account this turn is pinned to. Provider-wide, `ensureAgentTokenFresh`
   // refreshes every account and returns `results.every(Boolean)`, so a second
@@ -274,7 +390,7 @@ describe("runtime-401 auto-retry (docs/179)", () => {
     agents[0]!.emit("done", 0);
 
     await waitFor(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "re-dispatched agent run");
-    expect(ensureAgentTokenFresh).toHaveBeenCalledWith("claude", "acct_healthy");
+    expect(ensureAgentTokenFresh).toHaveBeenCalledWith("claude", "acct_healthy", { force: true });
     // Quiet recovery — the revoked sibling never entered the picture.
     expect(startOAuthFlow).not.toHaveBeenCalled();
 

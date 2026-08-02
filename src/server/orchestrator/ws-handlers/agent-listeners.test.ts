@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import { SessionRunner } from "../session-runner.js";
 import { wireAgentListeners, buildTurnMessages, type AgentListenerDeps } from "./agent-listeners.js";
+import { AGENT_NOT_AUTHENTICATED_MESSAGE } from "./agent-auth-handler.js";
 import type { ChatMessageGroup, RecordedChatCard } from "../session-runner.js";
 import { routeVoiceNote } from "../voice/voice-note-router.js";
 import { ProviderRouteUnavailableError } from "../provider-route-preflight.js";
@@ -255,7 +256,7 @@ describe("wireAgentListeners", () => {
         persistUserMessage: vi.fn(),
         ...extra,
       });
-      return { agent, killSpy, runner, emitted };
+      return { agent, killSpy, runner, emitted, d };
     }
 
     it("stays quiet (no card, no OAuth) when recovery heals the token", async () => {
@@ -309,6 +310,123 @@ describe("wireAgentListeners", () => {
       expect(err?.message).toContain("Settings");
       // No recovery → running cleared as before.
       expect(runner.running).toBe(false);
+      runner.dispose({ force: true });
+    });
+
+    // The production incident: the sign-in notice was the user's ONLY signal
+    // that the turn had died, and it was emit-only. No viewer was attached at
+    // the failure instant and idle-cleanup disposed the runner five seconds
+    // later — so the message reached nobody and left no trace. It must now be
+    // in chat history, finalized, the moment it fires.
+    it("PERSISTS the re-auth notice into chat history, finalized", async () => {
+      const { agent, runner, d } = wireAuth({});
+
+      agent.emit("auth_required");
+      await tick();
+
+      const persisted = (d.chatHistoryManager.replaceInProgress as ReturnType<typeof vi.fn>).mock.calls.at(-1);
+      expect(persisted?.[0]).toBe("session-1");
+      expect(persisted?.[1]).toEqual([
+        expect.objectContaining({
+          role: "assistant",
+          text: `Error: ${AGENT_NOT_AUTHENTICATED_MESSAGE}`,
+          isError: true,
+        }),
+      ]);
+      // Recorded in-band so a rebuild re-interleaves it at its true position…
+      expect(runner.recordedCards).toHaveLength(1);
+      // …and finalized, because the auth path is the one turn ending that never
+      // reaches `onInterruptedTurn`. Left in-progress, the next turn's
+      // `replaceInProgress` would delete it (docs/156).
+      expect(d.chatHistoryManager.finalizeInProgress).toHaveBeenCalledWith("session-1");
+      runner.dispose({ force: true });
+    });
+
+    it("persists the notice on the failed-heal path too", async () => {
+      const { agent, runner, d } = wireAuth({
+        willRecoverAuth: () => true,
+        recoverAuth: vi.fn().mockResolvedValue(false),
+      });
+
+      agent.emit("auth_required");
+      await tick();
+
+      expect(runner.recordedCards).toHaveLength(1);
+      expect(d.chatHistoryManager.finalizeInProgress).toHaveBeenCalledWith("session-1");
+      expect(runner.recordedCards[0]!.message).toEqual(
+        expect.objectContaining({ isError: true, text: `Error: ${AGENT_NOT_AUTHENTICATED_MESSAGE}` }),
+      );
+      runner.dispose({ force: true });
+    });
+
+    it("records nothing extra on the quiet heal path (the turn is being retried)", async () => {
+      const { agent, runner, d } = wireAuth({
+        willRecoverAuth: () => true,
+        recoverAuth: vi.fn().mockResolvedValue(true),
+      });
+
+      agent.emit("auth_required");
+      await tick();
+
+      expect(runner.recordedCards).toHaveLength(0);
+      expect(d.chatHistoryManager.finalizeInProgress).not.toHaveBeenCalled();
+      runner.dispose({ force: true });
+    });
+  });
+
+  // docs/179 — the sibling of the auth notice: a rejected `--resume` that the
+  // executor could not auto-recover leaves the user with a turn that produced
+  // nothing, so its explanation has to be durable too.
+  describe("unrecoverable stale resume", () => {
+    it("persists the couldn't-resume error instead of only emitting it", async () => {
+      const agent = new FakeAgent();
+      const runner = new SessionRunner({
+        sessionId: "session-1",
+        sessionDir: "/tmp/session-1",
+        defaultAgentId: "codex",
+      });
+      const emitted: { type?: string; message?: string }[] = [];
+      runner.on("message", (m) => emitted.push(m as { type?: string; message?: string }));
+      const d = deps();
+      wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
+        capturedSessionId: "session-1",
+        isNewSession: false,
+        persistUserMessage: vi.fn(),
+        recoverMissingConversation: () => false, // executor declined (budget spent)
+      });
+
+      agent.emit("log", "stderr", "No conversation found with session ID: abc-123");
+
+      expect(emitted.find((m) => m.type === "error")?.message).toContain("Couldn't resume");
+      expect(runner.recordedCards).toHaveLength(1);
+      expect(runner.recordedCards[0]!.message).toEqual(
+        expect.objectContaining({ isError: true, text: expect.stringContaining("Couldn't resume") }),
+      );
+      expect(d.chatHistoryManager.replaceInProgress).toHaveBeenCalled();
+      runner.dispose({ force: true });
+    });
+
+    it("stays silent when the executor claims the recovery", () => {
+      const agent = new FakeAgent();
+      const runner = new SessionRunner({
+        sessionId: "session-1",
+        sessionDir: "/tmp/session-1",
+        defaultAgentId: "codex",
+      });
+      const emitted: { type?: string }[] = [];
+      runner.on("message", (m) => emitted.push(m as { type?: string }));
+      const d = deps();
+      wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
+        capturedSessionId: "session-1",
+        isNewSession: false,
+        persistUserMessage: vi.fn(),
+        recoverMissingConversation: () => true,
+      });
+
+      agent.emit("log", "stderr", "No conversation found with session ID: abc-123");
+
+      expect(emitted.find((m) => m.type === "error")).toBeUndefined();
+      expect(runner.recordedCards).toHaveLength(0);
       runner.dispose({ force: true });
     });
   });

@@ -14,6 +14,7 @@ import { startQueuedMessage } from "../queue-drain.js";
 import {
   prepareSessionAgentEnvironment,
   finalizeSessionAgentEnvironment,
+  repushSessionAgentToken,
   selectAgentEnvForPush,
 } from "../session-agent-env.js";
 import { buildAgentRunParams } from "../session-agent-run-params.js";
@@ -520,6 +521,15 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
           sessionManager: ctx.sessionManager,
           providerAccountManager: ctx.providerAccountManager,
         },
+      });
+    },
+    // docs/179 — the runtime-401 recovery's unconditional token push. Only the
+    // recovery path calls it; the ordinary per-turn sync-in stays guarded.
+    repushSessionAgentToken: (sessionId, id) => {
+      repushSessionAgentToken(runner, {
+        sessionId,
+        agentId: id,
+        deps: { credentialsDir: ctx.credentialsDir, sessionManager: ctx.sessionManager },
       });
     },
     commitTurn: ({ sessionDir, sessionId, summary, turnStartHeadHash: tsh, runner: r, emit }) =>

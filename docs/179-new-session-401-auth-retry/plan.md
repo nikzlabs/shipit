@@ -175,6 +175,102 @@ executor's retry), `GraduateSessionDeps` (naming), and the env-prep deps
 (`prepareSessionAgentEnvironment`). It is **optional everywhere** — tests and
 local runtime omit it and get the legacy visible re-auth flow with no retry.
 
+### 4. The quiet retry that healed nothing, and the failure nobody could see
+
+The 2026-08-02 production incident (session `bf04d140`) was a turn that died
+**twice** on a Claude CLI 401 while the user saw *nothing* in chat — a prompt
+with no reply, no error, no card. Two independent defects, one visible outcome.
+
+#### 4a. `expiresAt` is a proxy for ordering, never for validity
+
+Four guards key off one number — `syncAgentTokenIn`, `syncAgentTokenBack`,
+`ensureFreshOne`, and the refresher's tick scheduling all read `expiresAt` via
+`TOKEN_FRESHNESS` → `readClaudeTokenExpiry`. But a rotating **single-use**
+OAuth token's validity is *set membership*: only the newest token lives. Any
+invalidation that isn't expiry — a sibling container rotating first (the
+documented stampede at `session-runner.ts`'s `prepareAgentEnv` note), a
+revocation, an account change — leaves a perfectly future-dated timestamp on a
+token that is already dead. Every one of those guards is blind to it.
+
+`ensureFreshOne` therefore short-circuited `return true` ("healthy; no work")
+for exactly the token that had just produced a 401. Production: **six** `auth
+healed` events in a six-hour window with **zero** `[claude-oauth-refresh]` log
+lines beside them — every heal a no-op that reported success. The executor
+re-dispatched ~120ms later on byte-identical credentials, failed again, and the
+single shared `recoveryRetryUsed` budget was gone. Four of the six were
+followed by a surfaced failure.
+
+Worse, the guard actively **blocked** recovery: `syncAgentTokenInFromRoot`
+skips the copy when `srcExp <= dstExp`, so a session holding a *dead token with
+a later expiry than the source* never received the good source token. That is
+the state that turns a recoverable 401 into a dead turn.
+
+Three changes, all scoped to the **runtime-401 recovery path only** — the
+proactive env-prep sweep (Step 2a) keeps its cheap short-circuit, which is
+correct and near-free on the hot path:
+
+- **`ensureFresh(accountId, { force: true })`** — the 401 path asks a different
+  question ("give me a token nobody has used yet"), so it skips the healthy
+  short-circuit and runs a tick that always reaches **Tier 2**: a real
+  authenticated call that both *probes validity* (a dead grant surfaces
+  `invalid_grant` → classified `revoked`) and triggers refresh-on-use. Tier 1
+  is read-only for a token with margin, so without `force` the tick would
+  return `noop` for precisely the failing token. The verdict is the tick's
+  classification, not the timestamp: `revoked` / `missing_credentials` report
+  **unhealed** so the card surfaces instead of the recovery budget being spent
+  on a turn that cannot succeed.
+- **A forced probe is not a scheduling event.** A forced tick on a token that
+  wasn't near expiry and didn't rotate returns `noop` and re-arms the ordinary
+  expiry-derived schedule, rather than reaching `handleFailure` — otherwise
+  every session 401 would bump `failureCount` and replace that account's
+  schedule with a backoff.
+- **`repushSessionAgentToken`** (`session-agent-env.ts`) — force the source
+  token into the failing session's subtree before the retry spawns, bypassing
+  the sync-in's expiry-ordering guard. `repushAgentToken` /
+  `repushProviderAccountToken` are the escape hatch the credential layer
+  already ships for this state ("Distinct from `syncAgentTokenIn`, whose guard
+  would skip a session holding a later-expiry-but-dead token"), wired until now
+  only to the manual `auth_complete` re-login. Route-aware in the same way
+  `finalizeSessionAgentEnvironment` is: account-pinned sessions (docs/150) go
+  through `repushProviderAccountToken`, legacy null-route sessions through the
+  shared root, `claude-env-oauth` sessions are left alone. Best-effort.
+
+`syncAgentTokenBack` and its call sites are deliberately **untouched** — the
+write-back publication timing is a separate concern.
+
+#### 4b. The failure was invisible by construction
+
+`surfaceReauth` reported the auth failure with `emitToViewers` →
+`runner.emitMessage()`, which is **transport only**: it broadcasts to attached
+viewers and buffers into the per-turn event log, and never writes persisted
+chat history — the exact violation CLAUDE.md names under *"Chat transcript
+content MUST be persisted, not just emitted"*. In production the user had no WS
+viewer attached at either failure instant, and idle-cleanup disposed the runner
+**five seconds** after the first error, destroying even the in-memory replay
+buffer. Irrecoverable, and a switch/reload would have shown nothing either.
+
+All three of the turn-ending error notices now go through **`emitChatCard`**
+(`chat-card-persistence.ts`) — emit, record in-band, persist, in one call:
+
+- the `auth_required` notice (`agent-auth-handler.ts`, now the exported
+  `AGENT_NOT_AUTHENTICATED_MESSAGE` so tests assert the constant),
+- the stale-resume notice ("Couldn't resume the previous conversation…",
+  `agent-listeners.ts`),
+- the empty-retry / no-result error in `turn-executor`'s `done`.
+
+Recorded **in-band** (not appended) so `onInterruptedTurn`'s finalize rebuilds
+each at its true transcript position alongside whatever partial output the turn
+streamed, instead of the two racing to write separate rows. The auth path
+additionally calls `finalizeInProgress` right after its emit — it is the one
+turn ending that never finalizes (`done` skips `onInterruptedTurn` when
+`sawAuthRequired`), so an `in_progress=1` row would be deleted by the next
+turn's `replaceInProgress`, i.e. the docs/156 erasure bug.
+
+The no-result error is also **suppressed on the auth path**: an auth-required
+turn legitimately ends without an `agent_result`, and the listener has already
+written the actionable persisted explanation. Emitting the generic one beside
+it would show two errors live and one after a reload.
+
 ## Key files
 
 ### 2026-08-02 incident follow-up — rejected resume and retry transcript durability
@@ -207,13 +303,22 @@ existed on disk but could not be resumed from `/workspace`:
 - `shared/types/claude-types.ts` — `ClaudeResultEvent.is_error` /
   `terminal_reason`, `ClaudeAssistantEvent.is_api_error_message` / `error`.
 - `agents/claude/oauth-refresher.ts` — `ensureFresh` / `ensureFreshOne`
-  (single-flight pre-read heal).
+  (single-flight pre-read heal), the `force` validity-probe mode and its
+  `noop` classification; `outputIndicatesRevoked`.
 - `session-agent-env.ts` — Step 2a pre-spawn heal; `ENSURE_TOKEN_FRESH_TIMEOUT_MS`,
-  `ensureAgentTokenFresh` dep.
+  `ensureAgentTokenFresh` dep; `repushSessionAgentToken` (401-recovery
+  unconditional token push, route-aware).
 - `turn-executor.ts` — `willRecoverAuth` / `recoverAuth` / `authRecoveryInProgress`,
-  `isAuthRetry`, `persistGuard` (persist-once), the `done` stand-down.
+  `isAuthRetry`, `persistGuard` (persist-once), the `done` stand-down; the
+  forced heal + `repushSessionAgentToken` call; the persisted (and
+  auth-suppressed) no-result error.
+- `ws-handlers/agent-auth-handler.ts` — `AGENT_NOT_AUTHENTICATED_MESSAGE`,
+  `persistAuthErrorRow` (`emitChatCard` + `finalizeInProgress`).
 - `ws-handlers/agent-listeners.ts` — `auth_required` handler split into the
-  quiet recovery path vs. `surfaceReauth`.
+  quiet recovery path vs. `surfaceReauth`; persisted stale-resume notice.
+- `ws-handlers/agent-execution.ts`, `runner-registry-factory.ts`,
+  `bootstrap-managers.ts`, `session-runner.ts` — `repushSessionAgentToken` dep
+  plumbing and the `ensureAgentTokenFresh` `opts.force` signature.
 - `ws-handlers/types.ts`, `api-routes.ts`, `runner-registry-factory.ts`,
   `session-runner.ts`, `services/graduate-session.ts`,
   `ws-handlers/send-message.ts`, `ws-handlers/agent-execution.ts`,
@@ -239,4 +344,20 @@ existed on disk but could not be resumed from `/workspace`:
 - `integration_tests/auth-401-auto-retry.test.ts` — end-to-end dispatch path:
   heal succeeds → silent re-dispatch + completion; heal fails → card, no
   re-dispatch; bounded (second 401 on the retry surfaces the card, heal runs
-  once).
+  once). Plus the 2026-08-02 regressions: the heal is requested with
+  `force: true`; the source token is repushed **before** the healed retry
+  spawns and **not** repushed when the heal failed; the surfaced sign-in notice
+  is readable from `GET /history` after the runner is gone.
+- `session-agent-env.test.ts` — `repushSessionAgentToken`, including the state
+  no test covered before and the guard mishandles: **a session token whose
+  `expiresAt` is LATER than the source but is dead** — the source must win.
+  Also the account-routed root (docs/150) and the non-container no-op.
+- `agents/claude/oauth-refresher.test.ts` — forced mode: a healthy token is
+  probed via tier 2 instead of short-circuiting; a rotating probe repushes to
+  pinned sessions; a revoked grant reports **not** healed; a live-token probe
+  does not push the account into refresh backoff. And the guard that the
+  proactive sweep is unchanged: unforced still short-circuits.
+- `ws-handlers/agent-listeners.test.ts` — the re-auth notice is persisted and
+  finalized (both the surfaced and failed-heal paths), nothing extra is
+  recorded on the quiet heal path, and the stale-resume error is persisted
+  rather than only emitted.

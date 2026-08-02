@@ -21,9 +21,11 @@ import { ContainerSessionRunner } from "./container-session-runner.js";
 import {
   prepareSessionAgentEnvironment,
   finalizeSessionAgentEnvironment,
+  repushSessionAgentToken,
   selectAgentEnvForPush,
   PUSH_AGENT_SECRETS_TIMEOUT_MS,
 } from "./session-agent-env.js";
+import { syncAgentTokenIn } from "./session-credentials.js";
 import { repoUrlToHash } from "./git-utils.js";
 import { ProviderRouteUnavailableError } from "./provider-route-preflight.js";
 
@@ -939,6 +941,91 @@ describe("finalizeSessionAgentEnvironment", () => {
     });
 
     expect(fs.existsSync(path.join(tmpDir, "repo-memory"))).toBe(false);
+  });
+});
+
+// docs/179 — the runtime-401 recovery's unconditional token push.
+//
+// The state under test is the one the whole credential system is blind to: a
+// session token whose `expiresAt` is LATER than the source's but whose grant is
+// dead (a single-use refresh token a sibling container rotated first). Every
+// guard in the system keys off `expiresAt`, which is a proxy for ordering and
+// not for validity — so the ordinary per-turn sync-in reads the later timestamp
+// and REFUSES to hand the session the good source token, and the quiet retry
+// re-spawns on the identical dead credentials. That is the most likely reason
+// most of the observed quiet retries failed.
+describe("repushSessionAgentToken (docs/179 401 recovery)", () => {
+  let tmpDir: string;
+
+  const writeToken = (dir: string, marker: string, expiresAt: number): void => {
+    const credDir = path.join(dir, ".claude");
+    fs.mkdirSync(credDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(credDir, ".credentials.json"),
+      JSON.stringify({ claudeAiOauth: { expiresAt, accessToken: marker } }),
+    );
+  };
+  const readToken = (dir: string): string =>
+    fs.readFileSync(path.join(dir, ".claude", ".credentials.json"), "utf8");
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-env-repush-"));
+  });
+
+  it("forces the source token in over a session token with a LATER expiry", () => {
+    writeToken(tmpDir, "LIVE-SOURCE", 1_000_000_000_000);
+    const sessionRoot = path.join(tmpDir, "sessions", "s1");
+    writeToken(sessionRoot, "DEAD-BUT-LATER", 2_000_000_000_000);
+    const { sm } = makeFakeSessionManager({ agentPinned: true });
+
+    // Baseline: the guarded per-turn sync-in leaves the dead token in place —
+    // this is the trap the recovery has to step around, not a bug in sync-in.
+    syncAgentTokenIn(tmpDir, "s1", "claude");
+    expect(readToken(sessionRoot)).toContain("DEAD-BUT-LATER");
+
+    repushSessionAgentToken(new FakeContainerRunner() as unknown as SessionRunnerInterface, {
+      sessionId: "s1",
+      agentId: "claude",
+      deps: { credentialsDir: tmpDir, sessionManager: sm },
+    });
+
+    expect(readToken(sessionRoot)).toContain("LIVE-SOURCE");
+  });
+
+  it("repushes from the pinned account's root for an account-routed session", () => {
+    const accountRoot = path.join(tmpDir, "provider-accounts", "claude", "acct-a");
+    writeToken(accountRoot, "ACCOUNT-A", 1_000_000_000_000);
+    writeToken(tmpDir, "SHARED-ROOT", 1_000_000_000_000);
+    const sessionRoot = path.join(tmpDir, "sessions", "s1");
+    writeToken(sessionRoot, "DEAD-BUT-LATER", 2_000_000_000_000);
+    const { sm } = makeFakeSessionManager({
+      agentPinned: true,
+      providerRouteKind: "account",
+      providerRouteId: "acct-a",
+    });
+
+    repushSessionAgentToken(new FakeContainerRunner() as unknown as SessionRunnerInterface, {
+      sessionId: "s1",
+      agentId: "claude",
+      deps: { credentialsDir: tmpDir, sessionManager: sm },
+    });
+
+    expect(readToken(sessionRoot)).toContain("ACCOUNT-A");
+  });
+
+  it("is a no-op for a non-container runner", () => {
+    writeToken(tmpDir, "SOURCE", 1_000_000_000_000);
+    const sessionRoot = path.join(tmpDir, "sessions", "s1");
+    writeToken(sessionRoot, "UNTOUCHED", 2_000_000_000_000);
+    const { sm } = makeFakeSessionManager({ agentPinned: true });
+
+    repushSessionAgentToken(new EventEmitter() as unknown as SessionRunnerInterface, {
+      sessionId: "s1",
+      agentId: "claude",
+      deps: { credentialsDir: tmpDir, sessionManager: sm },
+    });
+
+    expect(readToken(sessionRoot)).toContain("UNTOUCHED");
   });
 });
 

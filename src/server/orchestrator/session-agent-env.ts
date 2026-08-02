@@ -35,6 +35,8 @@ import {
   syncAgentTokenBack,
   syncProviderAccountTokenBack,
   syncMemoryBack,
+  repushAgentToken,
+  repushProviderAccountToken,
 } from "./session-credentials.js";
 import { repoUrlToHash } from "./git-utils.js";
 import type { ProviderAccountManager, ProviderRoute } from "./provider-account-manager.js";
@@ -499,6 +501,55 @@ export async function prepareSessionAgentEnvironment(
   }
 
   return overrideAgentSessionId !== undefined ? { overrideAgentSessionId } : {};
+}
+
+/**
+ * docs/179 — force the orchestrator's source OAuth token into ONE session's
+ * credential subtree, bypassing the per-turn sync-in's expiry-ordering guard.
+ * Called only from the runtime-401 recovery, immediately before the healed turn
+ * is re-dispatched.
+ *
+ * Why the ordinary sync-in isn't enough. Every guard in the credential system —
+ * `syncAgentTokenIn`, `syncAgentTokenBack`, the refresher's schedule, and
+ * `ensureFresh` — keys off one number, `expiresAt`. That is a sound proxy for
+ * *ordering* and no proxy at all for *validity*: a rotating single-use OAuth
+ * token's validity is set membership (only the newest token lives), so a
+ * rotation on another machine, a revocation, or an account change leaves a
+ * perfectly future-dated `expiresAt` on a token that is already dead. The
+ * sync-in's guard then reads that dead-but-later timestamp
+ * (`srcExp <= dstExp` ⇒ `continue`) and *refuses* to hand the session the good
+ * source token — so the quiet retry re-spawns on the identical dead
+ * credentials and 401s again. `repushAgentToken` is the escape hatch the
+ * credential layer already ships for exactly this state (see its docstring),
+ * wired until now only to the manual `auth_complete` re-login.
+ *
+ * Route-aware in the same way `finalizeSessionAgentEnvironment` is: an
+ * account-pinned session (docs/150) is repushed from its account root, a
+ * legacy null-route session from the shared root, and a session on
+ * `claude-env-oauth` is left alone (its credentials aren't ours to write).
+ * Best-effort — a failure here just means the retry runs on whatever the
+ * ordinary sync-in provides, which is today's behavior.
+ */
+export function repushSessionAgentToken(
+  runner: SessionRunnerInterface | null,
+  args: { sessionId: string; agentId: AgentId; deps: Pick<SessionAgentEnvDeps, "credentialsDir" | "sessionManager"> },
+): void {
+  if (!(runner instanceof ContainerSessionRunner)) return;
+  const session = args.deps.sessionManager.get(args.sessionId);
+  try {
+    if (session?.providerRouteKind === "account" && session.providerRouteId) {
+      repushProviderAccountToken(
+        args.deps.credentialsDir,
+        args.sessionId,
+        args.agentId,
+        session.providerRouteId,
+      );
+    } else if (session?.providerRouteId !== "claude-env-oauth") {
+      repushAgentToken(args.deps.credentialsDir, args.sessionId, args.agentId);
+    }
+  } catch (err) {
+    console.warn("[credentials] 401-recovery token repush failed:", getErrorMessage(err));
+  }
 }
 
 /**

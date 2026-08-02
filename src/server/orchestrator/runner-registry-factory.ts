@@ -26,7 +26,11 @@ import { isNonFastForwardError } from "./services/git.js";
 import { getErrorMessage } from "./validation.js";
 import { applyShipitConfigChange, setupServiceManager } from "./service-manager-setup.js";
 import { buildAgentRunParams } from "./session-agent-run-params.js";
-import { finalizeSessionAgentEnvironment, prepareSessionAgentEnvironment } from "./session-agent-env.js";
+import {
+  finalizeSessionAgentEnvironment,
+  prepareSessionAgentEnvironment,
+  repushSessionAgentToken,
+} from "./session-agent-env.js";
 import { emitPrLifecycleAfterCommit } from "./services/pr-lifecycle.js";
 import { detectAndReArmMergedSession, detectAndReArmResetSession } from "./services/pr-rearm.js";
 import { postTurnCommit } from "./ws-handlers/post-turn.js";
@@ -434,6 +438,15 @@ export function createRunnerRegistry(
               sessionId,
               agentId,
               deps: { credentialsDir, credentialStore, sessionManager },
+            });
+          },
+          // docs/179 — the runtime-401 recovery's unconditional token push, at
+          // parity with the WS path. Only the recovery path calls it.
+          repushSessionAgentToken: (sessionId, agentId) => {
+            repushSessionAgentToken(runner, {
+              sessionId,
+              agentId,
+              deps: { credentialsDir, sessionManager },
             });
           },
           // Re-sync the freshest OAuth token immediately before spawn, the same
