@@ -132,6 +132,13 @@ describe("buildAgentSystemInstructions", () => {
     expect(fragment).toContain("Treat that gate as an intermediate phase");
     expect(fragment).toContain("without requiring the user to ping you");
     expect(fragment).toContain("genuinely requires user input or new authority");
+
+    // req 8 — the gate paragraph above covers a *pending* review; this covers
+    // the one that came back. Codex was relaying a cross-backend review's
+    // findings and ending the turn instead of fixing them.
+    expect(fragment).toContain("input to your work, not the deliverable");
+    expect(fragment).toContain("shipit agent run");
+    expect(fragment).toContain("do not relay them and stop");
   });
 
   it("keeps Claude's pre-existing section boundary byte-for-byte unchanged", () => {
