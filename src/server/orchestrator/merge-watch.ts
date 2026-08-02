@@ -1044,7 +1044,7 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** The self-describing wake-turn prompt — carries everything; depends on no in-memory state. */
+/** Compact, self-describing wake prompt; durable cards retain the full PR metadata. */
 function buildWakeTurnPrompt(
   child: SessionInfo,
   info: PrTerminalStateInfo,
@@ -1054,26 +1054,13 @@ function buildWakeTurnPrompt(
   const id = `${child.title} (${child.id})`;
   if (outcome === "merged") {
     lines.push(
-      `A child session you registered a merge-watch on has had its pull request MERGED.`,
-      ``,
-      `Child session: ${id}`,
-      ...(child.branch ? [`Branch:        ${child.branch}`] : []),
-      `Merged PR:     #${info.prNumber}${info.prTitle ? ` — ${info.prTitle}` : ""}`,
-      `PR URL:        ${info.prUrl}`,
-      ...(info.mergeSha ? [`Merge commit:  ${info.mergeSha}`] : []),
-      ``,
-      `You registered this watch because your own work depends on the child's. The merged change is now on the base branch. Proceed with the planned rebase / integration of it unless the user has since redirected you. If you're unsure what you were waiting on, review this session's earlier messages for why you spawned the child.`,
+      `Child PR #${info.prNumber} merged: ${id}${info.prTitle ? ` — ${info.prTitle}` : ""}.`,
+      `Continue the dependent work from this session's context unless the user redirected it.`,
     );
   } else {
     lines.push(
-      `A child session you registered a merge-watch on had its pull request CLOSED WITHOUT MERGING.`,
-      ``,
-      `Child session: ${id}`,
-      ...(child.branch ? [`Branch:        ${child.branch}`] : []),
-      `Closed PR:     #${info.prNumber}${info.prTitle ? ` — ${info.prTitle}` : ""}`,
-      `PR URL:        ${info.prUrl}`,
-      ``,
-      `The child's work did NOT ship — do NOT proceed as if it had merged. The change you were depending on is not on the base branch. Reassess: tell the user, and decide whether to redo the work here, reopen / redo the child, or take a different path.`,
+      `Child PR #${info.prNumber} closed without merging: ${id}${info.prTitle ? ` — ${info.prTitle}` : ""}.`,
+      `The dependency did not ship; reassess the plan and tell the user.`,
     );
   }
   return lines.join("\n");
@@ -1084,14 +1071,13 @@ function buildWakeTurnPrompt(
  * `prompts/self-merge-wake.md` (CLAUDE.md › Prompts: text is data, composition
  * is code); only the PR facts are filled in here.
  *
- * Self-describing like its parent→child sibling: it may run many turns — or a
- * restart — after the merge, so every fact it needs is in the text.
+ * It may run after a restart, so it retains the event and required actions but
+ * leaves redundant PR metadata to the durable lifecycle card.
  */
 function buildSelfWakeTurnPrompt(info: PrTerminalStateInfo): string {
   return fillPromptTokens(SELF_MERGE_WAKE_PROMPT, {
     PR_NUMBER: String(info.prNumber),
     PR_TITLE_SUFFIX: info.prTitle ? ` — ${info.prTitle}` : "",
-    PR_URL: info.prUrl,
     BRANCH_LINE: info.branch ? `\nBranch:        ${info.branch}` : "",
   });
 }

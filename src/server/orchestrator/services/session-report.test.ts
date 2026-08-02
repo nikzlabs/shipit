@@ -135,7 +135,8 @@ describe("deliverSessionReport (docs/233)", () => {
     expect(parent?.dispatched[0].systemTurn).toBe(true);
     expect(parent?.dispatched[0].text).toContain("BLOCKER");
     expect(parent?.dispatched[0].text).toContain("The shared regen command deletes every catalog.");
-    expect(parent?.dispatched[0].text).toContain("CHILD session you spawned");
+    expect(parent?.dispatched[0].text).toContain("report from child");
+    expect(parent?.dispatched[0].text.length).toBeLessThan(300);
     expect(parent?.dispatched[0].messageOrigin).toEqual({
       sessionId: "elementalist",
       sessionTitle: "Elementalist catalog",
@@ -163,7 +164,7 @@ describe("deliverSessionReport (docs/233)", () => {
     // The reporter never receives its own report.
     expect(ctx.chatHistoryManager.load("elementalist").filter((m) => m.sessionReport)).toHaveLength(0);
     // Each sibling is told the reporter is a SIBLING, not a child.
-    expect(ctx.runners.get("druid")?.dispatched[0].text).toContain("SIBLING session in your cohort");
+    expect(ctx.runners.get("druid")?.dispatched[0].text).toContain("report from sibling");
   });
 
   it("skips archived peers", async () => {
