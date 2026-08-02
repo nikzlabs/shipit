@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import type { DatabaseManager } from "../shared/database.js";
-import type { SubagentEvent } from "./session-runner.js";
+import type { SubagentEvent, ToolResultEntry } from "./session-runner.js";
 import type { IssueWriteCard, IssueRefCard, CompactionCard, ChildMergedCard, SelfMergeWatchCard, SessionReportCard, SubAgentConsultCard, AiReviewCard, ActionChecklistCard, BranchAutoResetCard, BranchSyncedCard, SessionMessageOrigin } from "../shared/types.js";
 import type { ReleaseStatusSummary } from "../shared/types/release-types.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
@@ -117,8 +117,15 @@ export interface PersistedMessage {
     input: Record<string, unknown>;
   }[];
   images?: {
-    data: string;
+    /**
+     * Base64 payload. Always present in storage; replaced by `src` on the
+     * serve path (docs/244) so a transcript load doesn't carry megabytes of
+     * base64 for a 96px thumbnail.
+     */
+    data?: string;
     mediaType: string;
+    /** docs/244 — content-addressed URL, set only on the serve path. */
+    src?: string;
   }[];
   files?: {
     path: string;
@@ -127,14 +134,14 @@ export interface PersistedMessage {
     endLine?: number;
   }[];
   isError?: boolean;
-  toolResults?: {
-    toolUseId: string;
-    content: string;
-    isError?: boolean;
-    /** Derived per-tool execution time in ms (docs/185). Round-trips via the
-     * `tool_results` JSON column, so no schema migration is needed. */
-    durationMs?: number;
-  }[];
+  /**
+   * Round-trips verbatim via the `tool_results` JSON column, so no schema
+   * migration is needed when a field is added. Shares `ToolResultEntry` with the
+   * live path rather than restating its shape: the two had already drifted once
+   * (docs/244's `truncated`/`totalLines` reached the runner type but not this
+   * one), and a structural copy makes that failure silent.
+   */
+  toolResults?: ToolResultEntry[];
   /** True while the agent turn that produced this message is still running. */
   inProgress?: boolean;
   /** Git commit hash produced by auto-commit after this assistant message. */

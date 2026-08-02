@@ -162,6 +162,12 @@ export interface AgentToolTracker {
    * `state: "crashed"`.
    */
   reportMcpCrashesFromResults(results: ToolResultEntry[]): void;
+  /**
+   * Name of the tool that produced a given tool_use id, for the docs/244 wire
+   * projection — a Task/Skill/Agent result carries the subagent's final report
+   * and is the one body never sliced.
+   */
+  getToolName(id: string): string | undefined;
   /** Per-tool start timestamps, consumed by `stampToolDurations`. */
   readonly toolUseStartTimes: Map<string, number>;
 }
@@ -213,5 +219,7 @@ export function createAgentToolTracker(
     }
   };
 
-  return { recordToolUses, reportMcpCrashesFromResults, toolUseStartTimes };
+  const getToolName = (id: string): string | undefined => toolUseIdToName.get(id);
+
+  return { recordToolUses, reportMcpCrashesFromResults, getToolName, toolUseStartTimes };
 }

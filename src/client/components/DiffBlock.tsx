@@ -6,7 +6,7 @@
  * The stats are clickable and open a modal showing the full diff.
  */
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { type Icon, NotePencilIcon, PencilSimpleIcon, TrashIcon } from "@phosphor-icons/react";
 import hljs from "highlight.js";
 import { Dialog, DialogContent } from "./ui/dialog.js";
@@ -28,6 +28,13 @@ export interface DiffBlockProps {
   unifiedDiff?: string;
   /** Override the leading verb ("Edit"/"Write"); used for Codex change kinds. */
   label?: string;
+  /**
+   * docs/244 — the file body was stripped on the serve path. The inline summary
+   * is drawn from `stats` instead of the (absent) strings, and the body is
+   * fetched when the modal opens. Only ever set together with `stats`.
+   */
+  toolUseId?: string;
+  stats?: { added: number; removed: number };
 }
 
 function countLines(text: string): number {
@@ -47,13 +54,16 @@ function countDiffLines(diff: string): { added: number; removed: number } {
   return { added, removed };
 }
 
-export function DiffBlock({ filePath, oldString, newString, isWrite, unifiedDiff, label }: DiffBlockProps) {
+export function DiffBlock({ filePath, oldString, newString, isWrite, unifiedDiff, label, toolUseId, stats }: DiffBlockProps) {
   const [showModal, setShowModal] = useState(false);
   const isUnified = unifiedDiff !== undefined;
   const sessionId = useSessionStore((s) => s.sessionId);
-  const { added, removed } = isUnified
+  // Server-computed stats when the body was stripped (docs/244) — computed from
+  // the same `countLines` before stripping, so the summary is byte-identical to
+  // what recomputing here would have produced.
+  const { added, removed } = stats ?? (isUnified
     ? countDiffLines(unifiedDiff)
-    : { added: countLines(newString ?? ""), removed: countLines(oldString ?? "") };
+    : { added: countLines(newString ?? ""), removed: countLines(oldString ?? "") });
   const hasContent = added > 0 || removed > 0;
   const verb = label ?? (isWrite ? "Write" : "Edit");
   const relativePath = sessionRelativePath(filePath);
@@ -98,6 +108,7 @@ export function DiffBlock({ filePath, oldString, newString, isWrite, unifiedDiff
           isWrite={isWrite}
           unifiedDiff={unifiedDiff}
           verb={verb}
+          {...(stats && toolUseId ? { lazyToolUseId: toolUseId } : {})}
           onClose={() => setShowModal(false)}
         />
       )}
@@ -136,15 +147,35 @@ function VerbBadge({ verb }: { verb: string }) {
   );
 }
 
-function DiffModal({ filePath, oldString, newString, isWrite, unifiedDiff, verb, onClose }: {
+function DiffModal({ filePath, oldString, newString, isWrite, unifiedDiff, verb, lazyToolUseId, onClose }: {
   filePath: string;
   oldString?: string;
   newString?: string;
   isWrite?: boolean;
   unifiedDiff?: string;
   verb: string;
+  /** docs/244 — when set, the body was stripped and is fetched on open. */
+  lazyToolUseId?: string;
   onClose: () => void;
 }) {
+  const sessionId = useSessionStore((s) => s.sessionId);
+  const [fetched, setFetched] = useState<{ content?: string; oldString?: string; newString?: string } | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    if (!lazyToolUseId || !sessionId) return;
+    let cancelled = false;
+    fetch(`/api/sessions/${encodeURIComponent(sessionId)}/tool-inputs/${encodeURIComponent(lazyToolUseId)}`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((body) => { if (!cancelled) setFetched(body as typeof fetched); })
+      .catch(() => { if (!cancelled) setFailed(true); });
+    return () => { cancelled = true; };
+  }, [lazyToolUseId, sessionId]);
+
+  const pending = !!lazyToolUseId && !fetched && !failed;
+  const resolvedOld = fetched?.oldString ?? oldString;
+  const resolvedNew = fetched?.newString ?? fetched?.content ?? newString;
+
   return (
     <Dialog open onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
     <DialogContent className="w-[min(90vw,56rem)] max-h-[80vh] flex flex-col" aria-label="Diff view">
@@ -153,12 +184,16 @@ function DiffModal({ filePath, oldString, newString, isWrite, unifiedDiff, verb,
       </div>
       <div className="flex-1 overflow-auto p-4">
         <pre className="text-xs text-(--color-text-secondary) font-mono whitespace-pre-wrap break-all mb-4 pb-4 border-b border-(--color-border-secondary)">{verb} {sessionRelativePath(filePath)}</pre>
-        {unifiedDiff !== undefined ? (
+        {pending ? (
+          <div className="text-xs text-(--color-text-secondary) italic" role="status">Loading diff…</div>
+        ) : failed ? (
+          <div className="text-xs text-(--color-error)" role="status">Couldn&apos;t load this diff.</div>
+        ) : unifiedDiff !== undefined ? (
           <UnifiedDiff diff={unifiedDiff} />
         ) : isWrite ? (
-          <WriteContent content={newString ?? ""} />
+          <WriteContent content={resolvedNew ?? ""} />
         ) : (
-          <EditDiff oldString={oldString} newString={newString} />
+          <EditDiff oldString={resolvedOld} newString={resolvedNew} />
         )}
       </div>
     </DialogContent>

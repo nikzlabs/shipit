@@ -23,6 +23,7 @@ import {
   isWellFormedAskUserQuestion,
   createAgentToolTracker,
 } from "./agent-event-normalizer.js";
+import { projectAgentEventForWire } from "../transcript-projection.js";
 import {
   accumulateAssistantGroups,
   attachSubagentAssistant,
@@ -742,7 +743,18 @@ export function wireAgentListeners(
     const isInternalStreamCompletion =
       event.type === "agent_assistant" && event.isStreamCompletion;
     if (!isInternalStreamCompletion) {
-      emitToViewers({ type: "agent_event", event });
+      // docs/244 — project heavy bodies out of the WIRE copy only. `event`
+      // itself must stay whole: it flows on to `extractToolResults` below and
+      // is what gets persisted, and the fetch endpoints read the persisted row.
+      // Projecting in place here would store the slice and destroy the tail.
+      //
+      // A client cannot outrun the write: `replaceInProgress` further down is a
+      // synchronous better-sqlite3 call in this same tick, so the row is
+      // committed before this frame reaches the network.
+      const wireEvent = opts.capturedSessionId
+        ? projectAgentEventForWire(opts.capturedSessionId, event, toolTracker.getToolName)
+        : event;
+      emitToViewers({ type: "agent_event", event: wireEvent });
     }
 
     if (event.type === "agent_init") {

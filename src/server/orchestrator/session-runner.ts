@@ -76,6 +76,17 @@ export interface ToolResultEntry {
    * for the tool (e.g. a result with no preceding recorded tool_use).
    */
   durationMs?: number;
+  /**
+   * docs/244 — `content` is a head slice and the full body is available from
+   * `GET /api/sessions/:id/tool-results/:toolUseId`. Absent (rather than
+   * `false`) on the common small result so it costs nothing on the wire. Set
+   * only on the serve path; the persisted row always holds the whole body.
+   */
+  truncated?: true;
+  /** True line count of the whole body — the "Show all N lines" label. */
+  totalLines?: number;
+  /** Byte length of the whole body. */
+  totalBytes?: number;
 }
 
 /**

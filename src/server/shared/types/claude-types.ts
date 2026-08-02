@@ -170,6 +170,14 @@ export interface ClaudeContentBlockToolUse {
   id: string;
   name: string;
   input: Record<string, unknown>;
+  /**
+   * docs/244 — the file body was stripped from `input` on the serve path and is
+   * available from `GET /api/sessions/:id/tool-inputs/:toolUseId`. The diff
+   * summary the transcript draws needs only `diffStats`; the body is modal-only.
+   */
+  bodyTruncated?: true;
+  /** Line stats for the `+N -M` summary, computed before the body was stripped. */
+  diffStats?: { added: number; removed: number };
 }
 
 export type ClaudeContentBlock = ClaudeContentBlockText | ClaudeContentBlockToolUse;

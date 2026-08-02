@@ -92,7 +92,7 @@ export async function registerSessionSpawnRoutes(
       reply.code(404).send({ error: "Session not found" });
       return;
     }
-    const messages = getChatHistory(deps.chatHistoryManager, request.params.id) as Record<string, unknown>[];
+    const messages = getChatHistory(deps.chatHistoryManager, request.params.id) as unknown as Record<string, unknown>[];
 
     let commits: Awaited<ReturnType<typeof getGitLog>> = [];
     let fileTree: Awaited<ReturnType<typeof getFileTree>> = [];

@@ -20,6 +20,14 @@ export interface ToolUseBlock {
   id: string;
   name: string;
   input: Record<string, unknown>;
+  /**
+   * docs/244 — the Edit/Write file body was stripped from `input` on the serve
+   * path; fetch it from `/api/sessions/:id/tool-inputs/:id` when the diff modal
+   * opens. The inline summary needs only `diffStats`.
+   */
+  bodyTruncated?: true;
+  /** Line stats for the `+N -M` summary, computed before the body was stripped. */
+  diffStats?: { added: number; removed: number };
 }
 
 export interface ToolResultBlock {
@@ -33,6 +41,15 @@ export interface ToolResultBlock {
    * start.
    */
   durationMs?: number;
+  /**
+   * docs/244 — `content` is a head slice; the full body comes from
+   * `/api/sessions/:id/tool-results/:toolUseId` when the user expands it.
+   */
+  truncated?: true;
+  /** True line count of the whole body — what the "Show all N lines" label reports. */
+  totalLines?: number;
+  /** Byte length of the whole body. */
+  totalBytes?: number;
 }
 
 /**
@@ -54,9 +71,15 @@ export type SubagentEvent =
     };
 
 export interface ChatMessageImage {
-  data: string;      // base64-encoded image data
+  /**
+   * Base64-encoded image data. Absent on anything served from history or a
+   * live turn (docs/244): the server sends `src` instead so a transcript load
+   * doesn't carry megabytes of base64 for a 96px thumbnail. Still present on
+   * optimistic messages the browser built locally.
+   */
+  data?: string;
   mediaType: string; // "image/png", etc.
-  /** Optional pre-built src URL (e.g. blob: URL for optimistic messages). When set, used directly instead of building a data: URI from data+mediaType. */
+  /** Pre-built src URL — a blob: URL for optimistic messages, or the content-addressed endpoint (docs/244). When set, used directly instead of building a data: URI. */
   src?: string;
 }
 

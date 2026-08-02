@@ -29,7 +29,17 @@ export const handleAgentEvent: Handler<WsAgentEvent> = (_ctx, data) => {
       .join("\n\n");
 
     const toolUseBlocks = (event.content ?? [])
-      .filter((b: AgentContentBlock): b is { type: "tool_use"; id: string; name: string; input: Record<string, unknown> } => b.type === "tool_use");
+      // docs/244 — `bodyTruncated`/`diffStats` are added by the orchestrator's
+      // wire projection for Edit/Write, whose file body is stripped. Named in
+      // the predicate so they survive as types, not just at runtime.
+      .filter((b: AgentContentBlock): b is {
+        type: "tool_use";
+        id: string;
+        name: string;
+        input: Record<string, unknown>;
+        bodyTruncated?: true;
+        diffStats?: { added: number; removed: number };
+      } => b.type === "tool_use");
 
     // Subagent events (Task tool nested events) — attach to the parent
     // message's `subagentEvents` instead of the main message stream so the
@@ -118,6 +128,9 @@ export const handleAgentEvent: Handler<WsAgentEvent> = (_ctx, data) => {
         } else {
           content = JSON.stringify(rawContent);
         }
+        // Backstop only. Since docs/244 the orchestrator already slices heavy
+        // results before emitting, so this fires for the bodies the projection
+        // exempts (a subagent's final report) rather than for ordinary output.
         if (content.length > 1_000_000) {
           content = `${content.slice(0, 1_000_000)  }\n... (output truncated — exceeded 1MB)`;
         }
@@ -128,6 +141,12 @@ export const handleAgentEvent: Handler<WsAgentEvent> = (_ctx, data) => {
           // docs/185 — per-tool duration the orchestrator stamped onto the
           // tool_result block before forwarding. Powers the detail-modal timing.
           ...(typeof block.duration_ms === "number" ? { durationMs: block.duration_ms } : {}),
+          // docs/244 — the orchestrator sliced this body; carry the markers so
+          // the "Show all N lines" label is honest and expanding fetches the
+          // tail from the persisted row.
+          ...(block.shipit_truncated === true ? { truncated: true as const } : {}),
+          ...(typeof block.shipit_total_lines === "number" ? { totalLines: block.shipit_total_lines } : {}),
+          ...(typeof block.shipit_total_bytes === "number" ? { totalBytes: block.shipit_total_bytes } : {}),
         });
       }
     }
