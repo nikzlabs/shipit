@@ -395,7 +395,9 @@ describe("session-credentials", () => {
   it("provisioning from a credentialsRoot whose .claude is a legacy-alias symlink materializes real files", () => {
     // Recreate the prod state: source-of-truth credentials live under
     // provider-accounts/..., and the legacy `<root>/.claude` is a SYMLINK to
-    // that subtree (docs/150 `ensureLegacyAlias`).
+    // that subtree. Migration stopped creating those aliases in docs/150
+    // req 19, but an install that migrated before then still has them on disk
+    // until its next boot retires them, so the repair stays load-bearing.
     const account = path.join(root, "provider-accounts", "claude", "claude-default");
     fs.rmSync(path.join(root, ".claude"), { recursive: true, force: true });
     fs.mkdirSync(path.join(account, ".claude"), { recursive: true });

@@ -29,11 +29,25 @@ import {
 } from "./services/voice.js";
 import { TtsCache } from "./voice/index.js";
 import { routeVoiceNote, sanitizeVoiceContext } from "./voice/voice-note-router.js";
+import { providerAccountCredentialRoot } from "./provider-account-manager.js";
 
 export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): Promise<void> {
   const { credentialStore, authManager } = deps;
   const cacheDir = path.join(deps.stateDir ?? deps.workspaceDir, ".voice-cache");
   const ttsCache = new TtsCache(cacheDir);
+
+  /**
+   * docs/150 req 19 — transcript cleanup is a real Claude call, so it reads a
+   * real account: the same route a turn would pick. Resolved per request rather
+   * than once at registration because the user can connect, reorder, or
+   * disconnect accounts while the server is up. `undefined` for a reserved
+   * route (API key / env OAuth), which legitimately uses the singleton path.
+   */
+  const cleanupCredentialRoot = (): string | undefined => {
+    const route = deps.providerAccountManager.selectRouteForTurn("claude");
+    if (route?.kind !== "account" || !deps.credentialsDir) return undefined;
+    return providerAccountCredentialRoot(deps.credentialsDir, "claude", route.id);
+  };
 
   function handleError(reply: FastifyReply, err: unknown, genericMsg: string): void {
     if (err instanceof ServiceError) {
@@ -69,7 +83,7 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
   });
 
   app.get("/api/voice/cleanup/status", async () => {
-    return getCleanupStatus(credentialStore, authManager);
+    return getCleanupStatus(credentialStore, authManager, fetch, cleanupCredentialRoot());
   });
 
   // ---- Transcription (STT + cleanup) ----
@@ -115,7 +129,7 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
         ...(mimeType ? { mimeType } : {}),
         ...(language ? { language } : {}),
         ...(sttProvider ? { sttProvider } : {}),
-      });
+      }, fetch, cleanupCredentialRoot());
     } catch (err) {
       handleError(reply, err, "Failed to transcribe");
     }

@@ -156,17 +156,25 @@
 - [x] Client: an authenticated primary row does not hide or overwrite a secondary row's pending flow or diagnostics.
 - [x] Client: subscription limits render multiple accounts per provider, each named.
 - [ ] Client: session diagnostics renders the active account.
+- [x] Unit: boot retires a legacy alias that points into `provider-accounts/`, leaves a real empty dir behind for the directory-shaped ones, and does not touch a real (pre-migration) file or dir.
+- [x] Integration: provider-wide sign-out erases the on-disk credentials of every connected account, not just the migrated first one.
+- [x] Unit: transcript cleanup reads the OAuth bearer from the account root it was given, and stays unscoped for a reserved route.
+- [x] Unit: each account's plan label is read from that account's credentials.
 
 ## Phase 5 — Legacy Removal (req 19)
 
 Runs last: every shim below is load-bearing for an install that has not yet
 exercised the new path. The signal one is ready to go is that nothing reads it.
 
-- [ ] Remove the legacy root credential paths and alias symlinks once every read/write goes through an account root. **Blocked on the readers below** — the aliases are not inert (they leak into session containers; docs/153's repair exists because of them), so this is worth finishing, but not force-landing.
+- [x] Remove the legacy root credential paths and alias symlinks once every read/write goes through an account root. Migration no longer creates them, and `migrateDefaultAccounts` retires any left by an earlier boot — only symlinks pointing into `provider-accounts/` are touched, and a directory-shaped one is replaced by a real empty dir because `/root/.claude` is an image-level symlink to it and `mkdir` through a *dangling* link fails EEXIST.
   - [x] AI session naming (was `HOME=/root`).
-  - [ ] `AgentRegistry`'s auth probe — `isConfigured()` unscoped reads the singleton path.
-  - [ ] Codex `checkCredentials()` unscoped reads `CODEX_AUTH_FILE`.
-  - [ ] Provider-wide sign-out clears singleton paths (deliberately, for pre-account credentials).
+  - [x] `AgentRegistry`'s auth probe — the registry never calls `isConfigured()` unscoped; `checkClaudeAuth`/`checkCodexAuth` are wired to `hasAnyAuthForProvider` at the DI boundary. The one surviving `isConfigured()` caller passes `{ credentialDir }`.
+  - [x] Codex `checkCredentials()` — a no-arg call during a scoped flow resolves through `activeCredentialDir`, so the login close-handler reads the account's `auth.json`. Unscoped only when no flow is active, which is the pre-account case.
+  - [x] Provider-wide sign-out clears singleton paths (deliberately, for pre-account credentials) *and* now walks every account row via `signOutProvider`.
+- [x] Follow the aliases out of the readers that were quietly leaning on them. Both read a *real* account root now, resolved the same way session naming resolves one:
+  - [x] Voice transcript cleanup (`pickCleanupProvider`) — the unscoped `getAccessToken()` would have dropped every migrated install to the OpenAI fallback, or to no cleanup provider at all.
+  - [x] The Claude limits pill's plan label (`ClaudeLimitsProvider.fetch`) — stayed unscoped when `doRefresh` was fixed, so it labelled every account with the migrated default's plan, and with nothing once the aliases went.
+  - [x] Startup credential logging asks the account manager, not the singleton path, so a multi-account install no longer boots claiming "no credentials found".
 - [x] Give provider-wide sign-out the running-turn guard the per-account disconnect has. (An *idle* pinned session is deliberately left to re-route itself: a route whose row is gone reads unusable, so the next turn's preflight fails it over. Only the mid-turn case is unrecoverable.)
 - [x] Drop `AgentAuthManager.start`'s no-scope overload and the account-less `complete` branch in `wireEventHandlers`. `accountId`/`credentialDir` are now required, so an unscoped flow is unrepresentable rather than merely unused.
 - [x] ~~Remove `selectRouteForTurn`~~ — **not legacy after all.** It is a three-line convenience over `selectAccountForTurn` with two honest callers that genuinely want route-or-null (rate-limit attribution, sub-agent spawn). Removing it would inline the same wrapper twice.

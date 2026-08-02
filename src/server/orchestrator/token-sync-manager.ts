@@ -523,8 +523,10 @@ function materializeLeakedSubtreeSymlinks(
       // Resolve the orphan the symlink points at *inside the agent
       // container's namespace*. Two target shapes are observed in the wild:
       //   - prod: absolute `/credentials/provider-accounts/...` (the literal
-      //     volume-mount path on the orchestrator side, baked in by
-      //     ensureLegacyAlias when credentialsDir = "/credentials").
+      //     volume-mount path on the orchestrator side, baked in by the legacy
+      //     alias when credentialsDir = "/credentials"). docs/150 req 19 stopped
+      //     creating those aliases and retires them at boot, but a session
+      //     provisioned before that still carries the leaked symlink.
       //   - test: absolute `<credentialsRoot>/provider-accounts/...` (the
       //     temp-dir path of the test fixture).
       // Both reduce to a "path relative to the credentials root"; prepending
