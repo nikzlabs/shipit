@@ -181,6 +181,33 @@ The 2026-08-02 production incident (session `bf04d140`) was a turn that died
 **twice** on a Claude CLI 401 while the user saw *nothing* in chat — a prompt
 with no reply, no error, no card. Two independent defects, one visible outcome.
 
+#### 4.0. Not the same bug as #1886 — how to tell them apart
+
+On the same day, PR #1886 fixed a *different* auth failure that killed several
+dogfooding sessions, and the two were conflated in the cohort's incident
+traffic. They are distinguishable by signature and by which credential root
+they touch, so record the discriminator rather than re-deriving it:
+
+| | #1886 (credential move) | docs/179 (dead-but-unexpired token) |
+|---|---|---|
+| Trigger | Running the test suite **inside a session container** | A production turn, no tests involved |
+| Mechanism | `migrateProviderDefault`'s `fs.renameSync` moved `/credentials/.claude` — the container's live agent home — into `provider-accounts/claude/claude-default/` | A rotating single-use grant was invalidated without its `expiresAt` moving |
+| Root touched | The **session's** `/credentials` bind mount | The **orchestrator's** account root, via `resolveCredentialRoot` (`oauth-refresher.ts:479`) |
+| Signature | `.credentials.json` absent; `Not logged in · Please run /login`; permanent until re-auth | `.credentials.json` present and future-dated; 401; retry ~120ms later on byte-identical credentials |
+| In the logs | One-shot kill | Six `auth healed` events in six hours, each reporting success with no `[claude-oauth-refresh]` line beside it |
+
+The last row is the cheapest discriminator. A moved `.claude` makes
+`readClaudeTokenExpiry` fail outright; it cannot produce a heal that reads a
+future-dated timestamp and reports success, let alone six of them recurring
+over hours. The two failures also never contend for the same file — the
+suite's move lands in a session mount the refresher never reads.
+
+Residual uncertainty, stated rather than resolved: the cohort's deaths and this
+incident fall in the same six-hour window, so it is possible that some
+surrounding auth noise from that window is #1886's and not this. The core
+evidence above is not — it requires a present, readable, future-dated source
+token, which is exactly the state #1886 destroys.
+
 #### 4a. `expiresAt` is a proxy for ordering, never for validity
 
 Four guards key off one number — `syncAgentTokenIn`, `syncAgentTokenBack`,
