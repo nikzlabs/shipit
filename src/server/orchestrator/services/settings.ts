@@ -455,6 +455,40 @@ export function reorderProviderAccounts(
  * and silently killing someone's in-flight turn to satisfy a Settings click is
  * not a trade this should make on their behalf.
  */
+/**
+ * docs/150 — provider-wide sign-out drops *every* account row for a provider,
+ * so it needs the same running-turn guard the per-account disconnect has.
+ *
+ * Only the running-turn half: a signed-out provider legitimately leaves its
+ * pinned sessions without an account, and they recover on their own — a route
+ * whose row is gone reads as unusable (`isRouteUsableForTurn`), so the next
+ * turn's preflight fails the session over to another account, or reports
+ * `auth_required` when the user really did sign out of everything. What does
+ * NOT recover is a turn that is running right now: sign-out rewrites the
+ * credentials under a live agent, and the user gets a mid-turn 401 instead of
+ * an answer.
+ */
+export function assertNoRunningPinnedSessions(
+  sessionManager: SessionManager,
+  runnerRegistry: SessionRunnerRegistry,
+  provider: AgentId,
+): void {
+  const running = sessionManager
+    .listAll()
+    .filter((session) =>
+      session.agentId === provider &&
+      !session.archived &&
+      session.providerRouteKind === "account" &&
+      runnerRegistry.get(session.id)?.running,
+    );
+  if (running.length > 0) {
+    throw new ServiceError(
+      409,
+      `Cannot sign out of ${provider} while ${running.length} session(s) are mid-turn on a connected account.`,
+    );
+  }
+}
+
 export function deleteProviderAccount(
   providerAccountManager: ProviderAccountManager,
   sessionManager: SessionManager,
