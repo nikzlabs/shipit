@@ -67,10 +67,21 @@ beforeEach(async () => {
   sessionManager = new SessionManager(dbManager);
   chatHistoryManager = new ChatHistoryManager(dbManager);
   credentialStore = createTestCredentialStore(tmpDir);
+  const now = Date.now();
+  credentialStore.upsertProviderAccount({
+    id: "acct-test-claude",
+    provider: "claude",
+    label: "Test Claude subscription",
+    isPrimary: true,
+    status: "ready",
+    createdAt: now,
+    updatedAt: now,
+  });
   repoStore = new RepoStore(dbManager);
 
   app = await buildApp({
     credentialStore,
+    credentialsDir: path.join(tmpDir, "credentials"),
     workspaceDir: tmpDir,
     // Stub push + listRemoteBranches so agentCreatePr/quickCreatePr can run
     // without a real remote. Other GitManager calls (commit, addRemote,
