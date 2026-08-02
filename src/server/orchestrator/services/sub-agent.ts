@@ -102,6 +102,13 @@ export interface RunSubAgentResult extends SubAgentRunResult {
   spawnId: string;
 }
 
+function allAccountsExhaustedMessage(providerName: string, earliestResetAt: string | null): string {
+  const reset = earliestResetAt
+    ? ` Earliest reset: ${new Date(earliestResetAt).toISOString()}.`
+    : "";
+  return `Every connected ${providerName} subscription account is out of quota.${reset}`;
+}
+
 /**
  * Run a one-shot sub-agent on behalf of a pinned session's primary agent and
  * return its final assistant text. Throws {@link ServiceError} for every
@@ -166,13 +173,7 @@ export async function runSubAgent(
   const selection = deps.providerAccountManager?.selectAccountForTurn(subAgentId);
   if (selection && !selection.ok) {
     if (selection.reason === "all_exhausted") {
-      const reset = selection.earliestResetAt
-        ? ` Earliest reset: ${new Date(selection.earliestResetAt).toISOString()}.`
-        : "";
-      throw new ServiceError(
-        429,
-        `Every connected ${info.name} subscription account is out of quota.${reset}`,
-      );
+      throw new ServiceError(429, allAccountsExhaustedMessage(info.name, selection.earliestResetAt));
     }
     throw new ServiceError(400, `${info.name} is not signed in. Connect it in Settings before spawning it.`);
   }
@@ -233,9 +234,9 @@ export async function runSubAgent(
 
     // docs/150 reqs 7, 14, 20 — one-shot reviews use the same persisted hard-
     // exhaustion signal and structured account router as ordinary turns. One
-    // fallback is deliberately bounded: a second provider/model error is
-    // returned truthfully instead of walking accounts indefinitely. API-key
-    // routes never enter this branch because only account routes are benched.
+    // fallback is bounded by the connected subscription set: every account is
+    // attempted at most once. API-key routes never enter this branch because
+    // only account routes are benched or accepted as fallbacks.
     const attemptedAccountIds = new Set(accountId ? [accountId] : []);
     let exhausted = result.status === "error" && result.error
       ? detectHardExhaustion(result.error)
@@ -250,7 +251,16 @@ export async function runSubAgent(
       const fallback = deps.providerAccountManager.selectAccountForTurn(subAgentId, {
         exclude: [...attemptedAccountIds],
       });
-      if (!fallback.ok || fallback.route.kind !== "account") break;
+      if (!fallback.ok) {
+        if (fallback.reason === "all_exhausted") {
+          result = {
+            ...result,
+            error: allAccountsExhaustedMessage(info.name, fallback.earliestResetAt),
+          };
+        }
+        break;
+      }
+      if (fallback.route.kind !== "account") break;
       if (provisioned && credentialsDir) {
         try {
           syncProviderAccountTokenBack(credentialsDir, sessionId, subAgentId, failedAccountId);

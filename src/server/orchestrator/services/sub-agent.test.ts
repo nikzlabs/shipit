@@ -12,6 +12,7 @@ import path from "node:path";
 import { getSubAgentResult, runSubAgent, sweepSubAgentCredentialsOnSignOut, SUB_AGENT_PER_TURN_CAP } from "./sub-agent.js";
 import { ServiceError } from "./types.js";
 import type { SubAgentRunResult } from "../../shared/sub-agent-run.js";
+import type { AccountSelection } from "../provider-account-manager.js";
 import {
   perSessionCredentialsDir,
   provisionSubAgentCredentials,
@@ -72,7 +73,7 @@ function makeDeps(opts: {
       },
     ),
   };
-  const selectAccountForTurn = vi.fn((_provider: string, selectOpts?: { exclude?: string[] }) => ({
+  const selectAccountForTurn = vi.fn((_provider: string, selectOpts?: { exclude?: string[] }): AccountSelection => ({
     ok: true as const,
     route: { kind: "account" as const, id: selectOpts?.exclude?.length ? "acct-secondary" : "acct-primary" },
   }));
@@ -306,6 +307,28 @@ describe("runSubAgent — happy path", () => {
       exclude: ["acct-primary", "acct-secondary"],
     });
     expect(result.text).toBe("third account worked");
+  });
+
+  it("reports the earliest reset after every eligible account is exhausted", async () => {
+    const earliestResetAt = "2099-08-02T11:00:00.000Z";
+    const { deps, runner, selectAccountForTurn } = makeDeps({
+      spawnResults: [
+        { status: "error", text: "", error: "Weekly usage limit reached", truncated: false, durationMs: 10, costUsd: 0 },
+        { status: "error", text: "", error: "Quota exhausted", truncated: false, durationMs: 10, costUsd: 0 },
+      ],
+    });
+    selectAccountForTurn
+      .mockReturnValueOnce({ ok: true, route: { kind: "account", id: "acct-primary" } })
+      .mockReturnValueOnce({ ok: true, route: { kind: "account", id: "acct-secondary" } })
+      .mockReturnValueOnce({ ok: false, reason: "all_exhausted", earliestResetAt });
+
+    const result = await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+
+    expect(runner.spawnSubAgent).toHaveBeenCalledTimes(2);
+    expect(result.status).toBe("error");
+    expect(result.error).toBe(
+      "Every connected Codex subscription account is out of quota. Earliest reset: 2099-08-02T11:00:00.000Z.",
+    );
   });
 
   it("does not retry a model-access error", async () => {
