@@ -1,5 +1,7 @@
 # Checklist
 
+- [x] Automatically recreate stale agent containers whose agent process is stopped after an orchestrator update
+
 - [x] Preserve the worker build ID on fresh and rediscovered `SessionContainer` records
 - [x] Centralize build-freshness classification and reuse it in adoption logging
 - [x] Add the session-scoped `session_container_freshness` WebSocket message

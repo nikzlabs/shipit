@@ -12,29 +12,29 @@
  *
  * This sweep closes that window at boot: it asks each rediscovered container
  * whether it still has a turn in flight and, for those that do, materializes
- * the runner immediately. Runner creation runs the identical path a viewer
- * attach would (`resumeInFlightTurn` → SSE connect → `adoptInFlightTurn`), so
- * the turn is adopted, the session shows as running in the sidebar, and the
- * post-turn flow lands — whether or not anyone is watching.
+ * the runner immediately. It also rotates a stale worker whose agent process
+ * is stopped, so an update does not require a manual "Restart agent" click.
+ * Runner creation runs the identical path a viewer attach would.
  *
- * Sessions with no live turn are left alone: creating a runner for every
- * rediscovered container would start compose stacks and installs for sessions
- * the user may never open. The probe is the whole point — it is cheap, and it
- * is the only thing that runs against an idle container.
+ * Current idle workers are left alone. A stale idle worker is the one exception:
+ * it is replaced from the newly built image, while Compose services remain
+ * untouched. Workers with a live turn are always adopted, never rotated.
  */
 
 import type { SessionContainerManager } from "./session-container.js";
-import type { SessionRunnerRegistry } from "./session-runner.js";
+import type { SessionRunnerInterface, SessionRunnerRegistry } from "./session-runner.js";
 import type { SessionManager } from "./sessions.js";
 import type { AgentId, WorkerAgentStatus } from "../shared/types.js";
 import { workerGet } from "./worker-http.js";
 import { getErrorMessage } from "./validation.js";
+import { getContainerFreshness } from "./container-freshness.js";
 
 export interface ReattachDeps {
   containerManager: SessionContainerManager | null;
   runnerRegistry: SessionRunnerRegistry;
   sessionManager: SessionManager;
   defaultAgentId: AgentId;
+  orchestratorBuildId?: string;
 }
 
 /**
@@ -50,7 +50,10 @@ const PROBE_TIMEOUT_MS = 3000;
  * session must not block boot or affect the others.
  */
 export async function reattachInFlightTurns(deps: ReattachDeps): Promise<number> {
-  const { containerManager, runnerRegistry, sessionManager, defaultAgentId } = deps;
+  const {
+    containerManager, runnerRegistry, sessionManager, defaultAgentId,
+    orchestratorBuildId = process.env.SHIPIT_BUILD_ID,
+  } = deps;
   if (!containerManager) return 0;
 
   const candidates = containerManager.getAll().filter((c) => {
@@ -58,8 +61,6 @@ export async function reattachInFlightTurns(deps: ReattachDeps): Promise<number>
     // A standby container has never been claimed by a session, so it cannot
     // have a user turn in flight.
     if (containerManager.isStandby(c.sessionId)) return false;
-    // A runner already exists (nothing to rebuild — it owns its own turn state).
-    if (runnerRegistry.get(c.sessionId)) return false;
     const session = sessionManager.get(c.sessionId);
     return !!session?.workspaceDir && !session.archived;
   });
@@ -76,10 +77,39 @@ export async function reattachInFlightTurns(deps: ReattachDeps): Promise<number>
         );
         return false;
       }
-      if (status.turnActive !== true) return false;
-
       const session = sessionManager.get(c.sessionId);
       if (!session?.workspaceDir) return false;
+      if (status.turnActive !== true) {
+        const freshness = getContainerFreshness(c.workerBuildId, orchestratorBuildId);
+        // `running` describes the resident agent CLI, not the Docker container.
+        // Rotate only an authoritatively stopped agent on an older worker. An
+        // unknown/legacy status or an idle resident process remains untouched.
+        if (status.running || freshness.state !== "stale") return false;
+        try {
+          const existingRunner = runnerRegistry.get(c.sessionId);
+          if (existingRunner) {
+            (existingRunner as SessionRunnerInterface & { preserveComposeOnDispose: boolean })
+              .preserveComposeOnDispose = true;
+            runnerRegistry.dispose(c.sessionId, { force: true });
+          }
+          await containerManager.destroyAgentContainer(c.sessionId);
+          runnerRegistry.getOrCreate(
+            c.sessionId,
+            session.workspaceDir,
+            session.agentId ?? defaultAgentId,
+          );
+          console.log(`[worker-rotate] Restarting stale idle agent container for ${c.sessionId}`);
+        } catch (err) {
+          console.error(
+            `[worker-rotate] failed to restart stale idle container for ${c.sessionId}: ${getErrorMessage(err)}`,
+          );
+        }
+        return false;
+      }
+
+      // A bootstrap subsystem may already have materialized the runner. It
+      // already owns the live turn, so there is nothing for this sweep to adopt.
+      if (runnerRegistry.get(c.sessionId)) return false;
       try {
         const runner = runnerRegistry.getOrCreate(
           c.sessionId,

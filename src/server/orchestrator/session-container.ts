@@ -852,6 +852,16 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     return destroyContainer(this.lifecycleDeps(), sessionId);
   }
 
+  /**
+   * Stop and remove only the agent container, preserving Compose services,
+   * networks, and volumes owned by the session. Used when rotating the worker
+   * image after an orchestrator update and by the manual Restart agent flow.
+   */
+  async destroyAgentContainer(sessionId: string): Promise<void> {
+    this.lastCreateErrors.delete(sessionId);
+    return destroyContainer(this.lifecycleDeps(), sessionId, { preserveChildResources: true });
+  }
+
   /** Stop and remove all session containers. Used for full_reset and shutdown. */
   async destroyAll(): Promise<void> {
     const sessionIds = [...this.containers.keys()];

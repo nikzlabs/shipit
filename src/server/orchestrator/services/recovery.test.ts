@@ -110,17 +110,20 @@ function makeStubContainerManager(opts: {
     // "pending" → leave existing as-is
   };
 
+  const destroy = async () => {
+    destroyCalls += 1;
+    order.push({ name: "destroy", at: Date.now() });
+    existing = null;
+    setTimeout(finalize, 50);
+  };
+
   return {
     get: (sid: string) => {
       void sid;
       return existing as never;
     },
-    destroy: async () => {
-      destroyCalls += 1;
-      order.push({ name: "destroy", at: Date.now() });
-      existing = null;
-      setTimeout(finalize, 50);
-    },
+    destroy,
+    destroyAgentContainer: destroy,
     reapOrphans: async () => {
       reapCalls += 1;
       order.push({ name: "reapOrphans", at: Date.now() });
@@ -616,4 +619,3 @@ describe("recovery clears BOTH the OOM breaker and the loop detector", () => {
     expect(loopDetector.countInWindow("rescue-1")).toBe(0);
   });
 });
-
