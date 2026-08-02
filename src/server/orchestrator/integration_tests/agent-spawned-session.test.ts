@@ -628,6 +628,12 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     const body = res.json() as { queuePosition: number; enqueued: boolean };
     expect(body.enqueued).toBe(true);
     expect(body.queuePosition).toBeGreaterThanOrEqual(1);
+    const runner = (app as unknown as { runnerRegistry: { get(id: string): { messageQueue: { messageOrigin?: unknown }[] } } }).runnerRegistry.get(childId);
+    expect(runner.messageQueue.at(-1)?.messageOrigin).toEqual({
+      sessionId: parentId,
+      sessionTitle: "Parent",
+      relation: "parent",
+    });
   });
 
   it("POST /children/:childId/message starts a turn directly when the child is idle", { timeout: 15_000 }, async () => {

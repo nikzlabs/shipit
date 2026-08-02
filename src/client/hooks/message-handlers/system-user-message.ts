@@ -28,10 +28,11 @@ export const handleSystemUserMessage: Handler<WsSystemUserMessage> = (_ctx, data
       const replaced = { ...tail };
       delete replaced.pendingDispatch;
       if (data.agentInterface) replaced.agentInterface = data.agentInterface;
+      if (data.messageOrigin) replaced.messageOrigin = data.messageOrigin;
       next[next.length - 1] = replaced;
       return next;
     }
-    return [...prev, { role: "user" as const, text: data.text, ...(data.agentInterface ? { agentInterface: data.agentInterface } : {}) }];
+    return [...prev, { role: "user" as const, text: data.text, ...(data.agentInterface ? { agentInterface: data.agentInterface } : {}), ...(data.messageOrigin ? { messageOrigin: data.messageOrigin } : {}) }];
   });
   session.setIsLoading(true);
   if (data.activity) {

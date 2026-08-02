@@ -96,6 +96,7 @@ export type PreparedDispatch = AgentDispatchOptions & { readonly [PREPARED]: tru
 export interface AgentDispatchInit {
   text: string;
   agentInterface: AgentInterfaceProvenance | undefined;
+  messageOrigin?: AgentDispatchOptions["messageOrigin"];
   execution: "interactive" | "dispatched" | undefined;
   activity: string | undefined;
   images: ImageAttachment[] | undefined;
@@ -133,6 +134,7 @@ export type _InitHasNoExtraFields = AssertNever<
 const DISPATCH_FIELDS: Record<keyof AgentDispatchOptions, true> = {
   text: true,
   agentInterface: true,
+  messageOrigin: true,
   execution: true,
   activity: true,
   images: true,
@@ -190,6 +192,7 @@ export function queuedMessageToDispatchOptions(next: QueuedMessage): PreparedDis
   return prepareDispatch({
     text: next.text,
     agentInterface: next.agentInterface,
+    messageOrigin: next.messageOrigin,
     execution: next.execution,
     activity: next.activity,
     images: next.images,

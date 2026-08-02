@@ -275,6 +275,7 @@ export async function runDispatchedTurn(
       // both already happened on the first attempt — so only the first run does.
       emitUserEcho: attempt === 0,
       ...(opts.agentInterface ? { agentInterface: opts.agentInterface } : {}),
+      ...(opts.messageOrigin ? { messageOrigin: opts.messageOrigin } : {}),
       persistUserMessage:
         attempt === 0
           ? (sid) =>
@@ -282,6 +283,7 @@ export async function runDispatchedTurn(
                 role: "user",
                 text,
                 ...(opts.agentInterface ? { agentInterface: opts.agentInterface } : {}),
+                ...(opts.messageOrigin ? { messageOrigin: opts.messageOrigin } : {}),
                 ...(historyImages ? { images: historyImages } : {}),
                 ...(historyFiles ? { files: historyFiles } : {}),
                 ...(uploadPaths && uploadPaths.length > 0 ? { uploadPaths } : {}),

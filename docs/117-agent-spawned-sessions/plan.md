@@ -37,7 +37,9 @@ Phases 1, 2, and 3 are live as of this revision. What works today:
 - **(Phase 3.)** `shipit session message <id> -m "TEXT"` sends a follow-up
   prompt to a child this parent spawned. The orchestrator either starts a
   turn directly (when the child is idle) or enqueues behind the running
-  turn; the shim prints the queue position.
+  turn; the shim prints the queue position. The receiving transcript labels
+  the prompt with its parent-session origin, including after a reload, so it
+  cannot be mistaken for a message typed directly by the user.
 - **(Phase 3.)** `shipit session wait <id> [--timeout SECONDS]` long-polls
   the orchestrator until the child reports idle
   (`running=false && queueLength=0`) or the timeout fires. Default 5

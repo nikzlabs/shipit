@@ -24,6 +24,7 @@ import type { AgentId } from "../shared/types.js";
 const FULL_INIT: AgentDispatchInit = {
   text: "everything",
   agentInterface: { source: "agent_interface_sdk", surface: "preview" },
+  messageOrigin: { sessionId: "parent", sessionTitle: "Parent", relation: "parent" },
   execution: "dispatched",
   activity: "Working…",
   images: [{ data: "abc", mediaType: "image/png" }],

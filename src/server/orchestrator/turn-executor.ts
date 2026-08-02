@@ -25,7 +25,7 @@
  * `session-runner.ts`.
  */
 
-import type { AgentId, AgentProcess, PermissionMode, AgentEvent, WsServerMessage } from "../shared/types.js";
+import type { AgentId, AgentProcess, PermissionMode, AgentEvent, WsServerMessage, SessionMessageOrigin } from "../shared/types.js";
 import { wireAgentListeners } from "./ws-handlers/agent-listeners.js";
 import { detectHardExhaustion } from "./ws-handlers/agent-rate-limits.js";
 import { resetRunnerTurnState } from "./session-runner.js";
@@ -51,6 +51,8 @@ export interface TurnInput {
   /** Raw user text — drives the echo bubble, persisted user row, and titles. */
   userText: string;
   agentInterface?: AgentInterfaceProvenance;
+  /** Another session's agent supplied this prompt, rather than the user. */
+  messageOrigin?: SessionMessageOrigin;
   /** Optional activity label (dispatch); used in the echo + commit-summary fallback. */
   activity?: string;
   permissionMode?: PermissionMode;
@@ -407,6 +409,7 @@ export async function executeAgentTurn(
       text: input.userText,
       activity,
       ...(input.agentInterface ? { agentInterface: input.agentInterface } : {}),
+      ...(input.messageOrigin ? { messageOrigin: input.messageOrigin } : {}),
     });
   }
   deps.listenerDeps.sseBroadcast("session_agent_started", { sessionId, activity });

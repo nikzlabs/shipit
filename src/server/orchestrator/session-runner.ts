@@ -7,7 +7,7 @@
  */
 
 import { EventEmitter } from "node:events";
-import type { AgentProcess, AgentId, TerminalProcess, AgentRunParams } from "../shared/types.js";
+import type { AgentProcess, AgentId, TerminalProcess, AgentRunParams, SessionMessageOrigin } from "../shared/types.js";
 import type { WsServerMessage, ImageAttachment, FileContextRef, UploadRef, PermissionMode, ClaudeContentBlockToolUse, SkillInfo } from "../shared/types.js";
 import type { PresentStateEntry } from "../shared/types/ws-server-messages.js";
 import type { ServiceManager } from "./service-manager.js";
@@ -178,6 +178,8 @@ export interface RecordedChatCard {
 export interface QueuedMessage {
   text: string;
   agentInterface?: AgentInterfaceProvenance;
+  /** Another session's agent supplied this prompt, rather than the user. */
+  messageOrigin?: SessionMessageOrigin;
   /**
    * SHI-255 — which executor must run this entry when it drains.
    *
@@ -243,6 +245,8 @@ export interface QueuedMessage {
 export interface AgentDispatchOptions {
   text: string;
   agentInterface?: AgentInterfaceProvenance;
+  /** Another session's agent supplied this prompt, rather than the user. */
+  messageOrigin?: SessionMessageOrigin;
   /**
    * SHI-255 — which executor must run this turn if it ends up queued behind a
    * running turn. Defaults to `"dispatched"` (this IS the dispatch path). The
@@ -474,6 +478,7 @@ export function toQueuedMessage(opts: PreparedDispatch): QueuedMessage {
   // untagged dispatch can never be narrowed away by the interactive drain.
   const queued: QueuedMessage = { text: opts.text, execution: opts.execution ?? "dispatched" };
   if (opts.agentInterface !== undefined) queued.agentInterface = opts.agentInterface;
+  if (opts.messageOrigin !== undefined) queued.messageOrigin = opts.messageOrigin;
   if (opts.activity !== undefined) queued.activity = opts.activity;
   if (opts.images !== undefined) queued.images = opts.images;
   if (opts.files !== undefined) queued.files = opts.files;

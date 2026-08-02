@@ -26,6 +26,20 @@ describe("handleSystemUserMessage (docs/150 dedupe)", () => {
     expect(messages[0].pendingDispatch).toBeUndefined();
   });
 
+  it("preserves inter-session provenance on the receiving bubble", () => {
+    handleSystemUserMessage(ctx, {
+      type: "system_user_message",
+      sessionId: "child",
+      text: "Check the shared parser",
+      messageOrigin: { sessionId: "parent", sessionTitle: "Parser plan", relation: "parent" },
+    });
+
+    expect(useSessionStore.getState().messages[0]).toMatchObject({
+      role: "user",
+      messageOrigin: { sessionId: "parent", sessionTitle: "Parser plan", relation: "parent" },
+    });
+  });
+
   it("dedupes against the tail pendingDispatch bubble (HTTP-dispatch path)", () => {
     // Simulate the optimistic append from `dispatchAgentMessage`.
     useSessionStore.setState({
