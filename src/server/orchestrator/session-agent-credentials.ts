@@ -14,6 +14,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { AgentId } from "../shared/types/agent-types.js";
+import { ensureClaudeUserConfigDefaults } from "./agents/claude/user-config.js";
 import { providerAccountCredentialRoot } from "./provider-account-manager.js";
 import { SUBTREE_STATE_SUBPATHS } from "./token-sync-manager.js";
 import {
@@ -108,6 +109,52 @@ function removeProviderSubtreeForReplacement(sessionDir: string, rel: string): v
   }
 }
 
+/**
+ * Per-agent normalization applied to a session's credential subtree after the
+ * source files have been copied in.
+ *
+ * A runtime table rather than an `agentId === "claude"` branch (docs/155): a new
+ * backend that needs its own post-copy config fixup adds a row here.
+ *
+ * Claude's entry writes the CLI's onboarding + workspace-trust defaults into the
+ * session's own `.claude.json`. Without it the container starts *untrusted* and
+ * the CLI silently drops the workspace's `.claude/settings.json`
+ * `permissions.allow` entries ("Ignoring N permissions.allow entries … this
+ * workspace has not been trusted"), so users get permission prompts for tools
+ * they explicitly allowlisted. The orchestrator-side equivalent runs only inside
+ * the login flow (`AuthManager.ensureOnboardingComplete`) and only on the
+ * orchestrator's own config, which is a different file from the one the
+ * container reads — hence writing it here, on the path every session takes
+ * regardless of when or how the account logged in.
+ */
+const POST_PROVISION_CONFIG: Partial<Record<AgentId, (sessionDir: string) => boolean>> = {
+  claude: (sessionDir) => ensureClaudeUserConfigDefaults(path.join(sessionDir, ".claude.json")),
+};
+
+/**
+ * Apply {@link POST_PROVISION_CONFIG} for `agentId` to a session's credentials
+ * dir. Idempotent, merge-only, and safe to call on every turn — the underlying
+ * writer only touches the file when a key is actually missing.
+ *
+ * Called both from provisioning (so a freshly-provisioned session container is
+ * correct from its first turn) and from per-turn env prep (so sessions
+ * provisioned *before* this existed are healed on their next turn instead of
+ * staying untrusted forever — provisioning runs once per session and never
+ * again).
+ */
+export function ensureSessionAgentUserConfig(
+  credentialsRoot: string,
+  sessionId: string,
+  agentId: AgentId,
+): void {
+  const wrote = POST_PROVISION_CONFIG[agentId]?.(perSessionCredentialsDir(credentialsRoot, sessionId));
+  // Only when the file was actually (re)written — a newly created config is
+  // `root:root` and the container's boot-time chown has long since run
+  // (docs/150 §7). Skipping the walk on the common no-op keeps this cheap
+  // enough to run every turn.
+  if (wrote) chownSessionCredentialsTree(credentialsRoot, sessionId);
+}
+
 function provisionAgentCredentialsFromRoot(
   credentialsRoot: string,
   sessionId: string,
@@ -131,6 +178,9 @@ function provisionAgentCredentialsFromRoot(
     }
     copyCredentialPath(sourceRoot, dir, rel);
   }
+  // Normalize the copied config (e.g. Claude's onboarding + workspace trust)
+  // before the chown, so the file it may create is handed over too.
+  POST_PROVISION_CONFIG[agentId]?.(dir);
   // Hand the freshly-written subtree to the unprivileged worker user (docs/150).
   chownSessionCredentialsTree(credentialsRoot, sessionId);
 }

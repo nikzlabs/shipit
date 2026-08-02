@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, statSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, statSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import * as pty from "node-pty";
 import type { IPty } from "node-pty";
@@ -19,6 +19,7 @@ import {
   probeNestedString,
   resolveSymlinkTarget,
 } from "../agent-auth-base.js";
+import { ensureClaudeUserConfigDefaults } from "./user-config.js";
 import type {
   AgentAuthManager,
   AgentAuthStartOptions,
@@ -206,44 +207,22 @@ const CODE_PASTE_TRIGGER = /paste\s*code\s*here(?:\s*if\s*prompted)?/i;
  * `userConfig` / `configDir` are passed in so the same routine works for the
  * singleton path (`/root/.claude.json`, `/root/.claude`) and for an
  * account-scoped flow whose HOME is a provider-account root (docs/150).
+ *
+ * The config write itself lives in {@link ensureClaudeUserConfigDefaults} —
+ * shared with per-session credential provisioning, which has to write the same
+ * keys into each session container's own `.claude.json`.
  */
 function ensureOnboardingComplete(userConfig: string, configDir: string): void {
   try {
-    let config: Record<string, unknown> = {};
-    if (existsSync(userConfig)) {
-      const raw = readFileSync(userConfig, "utf-8");
-      config = JSON.parse(raw) as Record<string, unknown>;
-    }
-
-    let changed = false;
-
-    if (!config.hasCompletedOnboarding) {
-      config.hasCompletedOnboarding = true;
-      changed = true;
-    }
-
-    // Pre-trust known directories so the CLI doesn't show the workspace trust prompt.
-    // /app is the container WORKDIR (where the server runs), /workspace is the data volume.
-    const projects = (config.projects ?? {}) as Record<string, Record<string, unknown>>;
-    for (const dir of ["/app", "/workspace"]) {
-      if (!projects[dir]?.hasTrustDialogAccepted) {
-        projects[dir] = { ...projects[dir], hasTrustDialogAccepted: true };
-        changed = true;
-      }
-    }
-    if (changed) config.projects = projects;
-
     // Ensure the CLI's config directory exists. In Docker, /root/.claude is a
     // symlink to /credentials/.claude — mkdirSync fails on a broken symlink, so
     // resolve the target and create that instead (see resolveSymlinkTarget).
     mkdirSync(resolveSymlinkTarget(configDir), { recursive: true });
-
-    if (changed) {
-      writeFileSync(userConfig, JSON.stringify(config, null, 2));
-      console.log("[auth] Updated", userConfig, "— onboarding + trust");
-    }
   } catch (err) {
-    console.warn("[auth] Failed to pre-create Claude config:", err);
+    console.warn("[auth] Failed to pre-create Claude config dir:", err);
+  }
+  if (ensureClaudeUserConfigDefaults(userConfig)) {
+    console.log("[auth] Updated", userConfig, "— onboarding + trust");
   }
 }
 

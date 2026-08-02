@@ -148,6 +148,19 @@ per session and avoids volume proliferation:
     `.gitconfig`. `shipit-credentials.json` is deliberately **not** copied — the
     agent gets its env via the 087/088 agent-env push, not by reading that file.
   - `removeSessionCredentials` / `sessionCredentialsRoot` — teardown helpers.
+- **Post-provision config normalization** (`session-agent-credentials.ts`
+  `POST_PROVISION_CONFIG` / `ensureSessionAgentUserConfig`) — a per-agent hook
+  run on the copied subtree, keyed by `AgentId` rather than an
+  `agentId === "claude"` branch (docs/155). Claude's entry writes the CLI's
+  onboarding + workspace-trust keys into the session's **own** `.claude.json`
+  (`agents/claude/user-config.ts`). Without it the container starts *untrusted*
+  and the CLI silently drops the workspace's `.claude/settings.json`
+  `permissions.allow` entries, so users get prompts for tools they explicitly
+  allowlisted. The login-flow equivalent (`AuthManager.ensureOnboardingComplete`)
+  writes a *different* file — the orchestrator's own config — so it can't cover
+  this. Provisioning is write-once, so `prepareSessionAgentEnvironment` also
+  re-asserts it on every later turn for already-pinned container sessions; the
+  writer is merge-only and only touches the file when a key is missing.
 - **`container-lifecycle.ts`** — `createContainer` scaffolds the per-session dir;
   `buildMounts` mounts `<credentialsDir>/sessions/<sid>` at `/credentials` (bind
   in dev, volume `Subpath` in prod) instead of the shared root. The image's
