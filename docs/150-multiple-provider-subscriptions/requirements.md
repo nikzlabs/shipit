@@ -39,13 +39,6 @@ with the ShipIt transcript and workspace context preserved across the switch.
 > all legacy behavior and code related to agent accounts need to be cleaned up
 > after all work is done.
 
-**Follow-up user requirement**, recorded 2026-08-02 after a cross-agent review
-stopped on an exhausted Claude account even though another Claude account was
-configured:
-
-> falling back to another account [must apply] not only for regular
-> conversations but also for reviews.
-
 **Requirement 17 reversed by the user**, 2026-08-02:
 
 > So this is a corner case that I'm not sure is important. Let's, instead of it
