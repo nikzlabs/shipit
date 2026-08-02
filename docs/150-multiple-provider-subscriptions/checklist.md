@@ -82,6 +82,7 @@
 - [x] Record failover as a chat-visible system event attached to the original turn (pre-turn failover; the same-turn retry's event lands with req 14).
 - [x] Ensure all turn entrypoints use shared provider-account preflight: chat, answer-question, system turns, CI auto-fix, child sessions, and rebase/conflict recovery.
 - [x] Re-check an already-pinned session's account before its turn; switch away from a known-exhausted or unusable account before spawning.
+- [x] Route brokered one-shot runs (`shipit agent run`) through structured account selection and one bounded hard-exhaustion fallback (req 20).
 
 ## Phase 4 — Policy Controls
 
@@ -120,6 +121,7 @@
 - [x] Unit: all-exhausted fails the turn with the earliest reset time, pins nothing, and provisions no credentials.
 - [ ] Integration: all-exhausted fails the turn with reset times, pins nothing, and schedules no timer.
 - [x] Integration: mid-turn exhaustion retries on secondary once, including after file edits or commands.
+- [x] Unit: one-shot reviews proactively select a healthy account, retry once after hard exhaustion, and do not retry model-access errors.
 - [x] Integration: switching a pinned session kills the persistent agent, reprovisions credentials, preserves `.claude/projects` / `.codex/sessions` and `agentSessionId`, and resumes the same conversation.
 - [ ] Integration: detached system turns recreate runners from persisted agent/provider route.
 - [ ] Integration: answer-question and rebase/conflict direct `agent.run` paths use provider preflight.

@@ -5,6 +5,25 @@ issue: https://linear.app/shipit-ai/issue/SHI-56
 
 # 150 — Multiple provider subscriptions and quota failover
 
+## Every provider-authenticated run (requirement 20)
+
+The account router is an execution invariant, not only a session-turn feature.
+Regular conversations preflight through `selectAccountForTurn` in the shared
+turn executor. Brokered one-shot runs (`shipit agent run`) now use the same
+structured selection before spawning and the same hard-exhaustion detector and
+persisted account benching as normal turns. A one-shot retry excludes the
+failed account, accepts only another connected subscription-account route, and
+is bounded to one fallback attempt. Reserved API-key routes are therefore never
+entered as quota failover, while non-quota provider errors (including model
+access errors) remain untouched and visible.
+
+Container one-shot runs provision the selected account for each attempt. For a
+same-provider consult, the parent CLI is blocked waiting for the child, so the
+selected account can temporarily occupy the shared provider subtree; the
+session's pinned account is restored before the parent resumes. Cross-provider
+runs continue to remove their temporary subtree at completion. Credentials
+remain orchestrator-owned and only the selected account reaches the worker.
+
 ## Usage-pill visibility follow-up (2026-08-02)
 
 Connected provider accounts define which subscription pills are visible; the

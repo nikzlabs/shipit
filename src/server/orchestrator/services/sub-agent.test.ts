@@ -31,6 +31,7 @@ function makeDeps(opts: {
   agentKnown?: boolean;
   subAgentSpawnsThisTurn?: number;
   spawnResult?: SubAgentRunResult;
+  spawnResults?: SubAgentRunResult[];
   runnerPresent?: boolean;
   subAgentDefaults?: { reasoningEffort?: string; model?: string };
 }) {
@@ -59,7 +60,7 @@ function makeDeps(opts: {
     steeredMessages: [] as never[],
     recordedCards: [] as never[],
     spawnSubAgent: vi.fn(async () =>
-      opts.spawnResult ?? {
+      opts.spawnResults?.shift() ?? opts.spawnResult ?? {
         status: "success",
         text: "2 bugs found",
         truncated: false,
@@ -71,6 +72,11 @@ function makeDeps(opts: {
       },
     ),
   };
+  const selectAccountForTurn = vi.fn((_provider: string, selectOpts?: { exclude?: string[] }) => ({
+    ok: true as const,
+    route: { kind: "account" as const, id: selectOpts?.exclude?.length ? "acct-secondary" : "acct-primary" },
+  }));
+  const markAccountExhausted = vi.fn();
   const deps = {
     sessionManager: {
       get: vi.fn((id: string) => (session?.id === id ? session : undefined)),
@@ -85,11 +91,12 @@ function makeDeps(opts: {
       get: vi.fn(() => (opts.agentKnown === false ? undefined : { name: "Codex", authConfigured: opts.authConfigured ?? true })),
     } as never,
     runnerRegistry: { get: vi.fn(() => (opts.runnerPresent === false ? undefined : runner)) } as never,
+    providerAccountManager: { selectAccountForTurn, markAccountExhausted } as never,
     usageManager: { record, getSessionUsage, getSessionTokenTotals } as never,
     recordAgentRateLimits,
     chatHistoryManager: { replaceInProgress } as never,
   };
-  return { deps, runner, emitMessage, record, replaceInProgress, recordAgentRateLimits };
+  return { deps, runner, emitMessage, record, replaceInProgress, recordAgentRateLimits, selectAccountForTurn, markAccountExhausted };
 }
 
 async function expectServiceError(p: Promise<unknown>, status: number): Promise<ServiceError> {
@@ -253,6 +260,38 @@ describe("runSubAgent — happy path", () => {
     });
     await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
     expect(recordAgentRateLimits).not.toHaveBeenCalled();
+  });
+
+  it("selects a healthy subscription account proactively for a one-shot run", async () => {
+    const { deps, runner, selectAccountForTurn } = makeDeps({});
+    await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+    expect(selectAccountForTurn).toHaveBeenCalledWith("codex");
+    expect(runner.spawnSubAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it("benches a hard-exhausted account and retries once on the next subscription", async () => {
+    const resetAt = "2099-08-02T12:00:00.000Z";
+    const { deps, runner, selectAccountForTurn, markAccountExhausted } = makeDeps({
+      spawnResults: [
+        { status: "error", text: "", error: `Weekly usage limit reached. It resets at ${resetAt}.`, truncated: false, durationMs: 10, costUsd: 0 },
+        { status: "success", text: "review complete", truncated: false, durationMs: 20, costUsd: 0 },
+      ],
+    });
+    const result = await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+    expect(markAccountExhausted).toHaveBeenCalledWith("codex", "acct-primary", Date.parse(resetAt));
+    expect(selectAccountForTurn).toHaveBeenLastCalledWith("codex", { exclude: ["acct-primary"] });
+    expect(runner.spawnSubAgent).toHaveBeenCalledTimes(2);
+    expect(result.text).toBe("review complete");
+  });
+
+  it("does not retry a model-access error", async () => {
+    const { deps, runner, markAccountExhausted } = makeDeps({
+      spawnResult: { status: "error", text: "", error: "This account cannot access model opus", truncated: false, durationMs: 10, costUsd: 0 },
+    });
+    const result = await runSubAgent(deps, "s1", { subAgentId: "claude", prompt: "review", depth: 0 });
+    expect(result.status).toBe("error");
+    expect(runner.spawnSubAgent).toHaveBeenCalledTimes(1);
+    expect(markAccountExhausted).not.toHaveBeenCalled();
   });
 
   it("omits outputMarkdown when the sub-agent returned empty text (docs/220)", async () => {
