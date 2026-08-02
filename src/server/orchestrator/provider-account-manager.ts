@@ -1,7 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import type { AgentId, ProviderAccount, ProviderRouteKind, SubscriptionLimitsMap } from "../shared/types.js";
+import type {
+  AgentId,
+  FailoverCutoffs,
+  ProviderAccount,
+  ProviderRouteKind,
+  SubscriptionLimitsMap,
+} from "../shared/types.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { AgentAuthManager } from "./agent-auth-manager.js";
 
@@ -273,12 +279,32 @@ export class ProviderAccountManager {
       modelEligible.push(account);
     }
 
+    // docs/150 reqs 4–6 — three tiers, not two. An account past its cutoff is
+    // still perfectly capable of running the turn; it has just stopped being
+    // the *first* choice. Collapsing "past cutoff" into "exhausted" would make
+    // a 90% setting strictly worse than no failover at all: once every account
+    // crossed 90%, every turn would fail with `all_exhausted` while ten percent
+    // of quota sat unused on each one.
+    const cutoffs = this.credentialStore.getFailoverCutoffs(provider);
+    const overCutoff: ProviderAccount[] = [];
     const exhaustedResets: number[] = [];
     for (const account of modelEligible) {
       const resetAt = exhaustedUntil(limits[account.id], account, now);
-      if (resetAt === null) return { ok: true, route: { kind: "account", id: account.id } };
-      exhaustedResets.push(resetAt);
+      if (resetAt !== null) {
+        exhaustedResets.push(resetAt);
+        continue;
+      }
+      if (isOverCutoff(limits[account.id], cutoffs)) {
+        overCutoff.push(account);
+        continue;
+      }
+      return { ok: true, route: { kind: "account", id: account.id } };
     }
+    // Nothing under its cutoff, but these still work. Preferring the first in
+    // priority order keeps the choice stable rather than hunting for whichever
+    // account is marginally least used.
+    const fallback = overCutoff[0];
+    if (fallback) return { ok: true, route: { kind: "account", id: fallback.id } };
 
     // req 12 — a *spent* subscription must never silently roll onto
     // pay-as-you-go billing. The reserved env/API-key route is only reachable
@@ -332,7 +358,31 @@ export class ProviderAccountManager {
     if (account.status !== "ready" && account.status !== "authenticating") return false;
     if (opts.model && !accountSupportsModel(account, opts.model)) return false;
     const limits = this.getSubscriptionLimits?.()?.[provider] ?? {};
-    return exhaustedUntil(limits[route.id], account, Date.now()) === null;
+    if (exhaustedUntil(limits[route.id], account, Date.now()) !== null) return false;
+
+    // docs/150 req 6 — past a cutoff, this session should move to the next
+    // eligible account. But only if there IS somewhere better: reporting
+    // "unusable" when every account is above its cutoff would hand
+    // `failoverPinnedSession` a different over-cutoff account each turn and
+    // churn the session between them for no benefit, killing the resident
+    // process every time. A cutoff is a preference, so it can only displace a
+    // session onto an account that is actually under one.
+    const cutoffs = this.credentialStore.getFailoverCutoffs(provider);
+    if (!isOverCutoff(limits[route.id], cutoffs)) return true;
+    // "Somewhere better" means an account genuinely UNDER its cutoff — not
+    // merely whichever account the selector would name first. Asking the
+    // selector here would compare against its over-cutoff fallback, so a
+    // session pinned to the second over-cutoff account would be displaced onto
+    // the first one, then back, killing the resident process each turn.
+    const now = Date.now();
+    const hasBetter = this.accountsInSelectionOrder(provider).some((candidate) => {
+      if (candidate.id === route.id) return false;
+      if (candidate.status !== "ready" && candidate.status !== "authenticating") return false;
+      if (opts.model && !accountSupportsModel(candidate, opts.model)) return false;
+      if (exhaustedUntil(limits[candidate.id], candidate, now) !== null) return false;
+      return !isOverCutoff(limits[candidate.id], cutoffs);
+    });
+    return !hasBetter;
   }
 
   hasAnyAuthForProvider(provider: AgentId): boolean {
@@ -570,4 +620,29 @@ function accountSupportsModel(account: ProviderAccount, model: string): boolean 
   const models = account.capabilities?.models;
   if (!models || models.length === 0) return true;
   return models.includes(model);
+}
+
+/**
+ * docs/150 reqs 4–6 — has this account crossed either proactive cutoff?
+ *
+ * Separate from {@link exhaustedUntil} on purpose: that answers "can this
+ * account run a turn at all", this answers "should it be the first choice".
+ * Conflating them is the bug that would make a configured cutoff fail turns
+ * that would otherwise have succeeded.
+ *
+ * A window with no reported percentage is NOT over its cutoff — the same
+ * "unknown counts as usable" rule the exhaustion check uses, for the same
+ * reason: Claude reports `usedPct` only above a warning threshold, so treating
+ * silence as "past 90%" would demote every healthy account.
+ */
+function isOverCutoff(
+  limits: { session?: unknown; weekly?: unknown } | undefined,
+  cutoffs: FailoverCutoffs,
+): boolean {
+  for (const [key, cutoff] of [["session", cutoffs.session], ["weekly", cutoffs.weekly]] as const) {
+    const window = limits?.[key] as { usedPct: number | null } | null | undefined;
+    if (window?.usedPct === null || window?.usedPct === undefined) continue;
+    if (window.usedPct >= cutoff) return true;
+  }
+  return false;
 }

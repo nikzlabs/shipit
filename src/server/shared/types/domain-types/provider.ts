@@ -26,3 +26,23 @@ export interface ProviderAccount {
   createdAt: number;
   updatedAt: number;
 }
+
+/**
+ * docs/150 reqs 4–6 — per-provider proactive failover cutoffs, as percentages
+ * of a quota window (1–100).
+ *
+ * A cutoff is a **preference, not a wall**. Reaching one moves new work to the
+ * next eligible account, but an account past its cutoff is still perfectly
+ * capable of running a turn — it only stops being the *first* choice. That
+ * distinction is what keeps a 90% setting from being worse than no failover at
+ * all once every account is above it.
+ */
+export interface FailoverCutoffs {
+  /** Short rolling window (Claude: 5h, Codex: 5h). */
+  session: number;
+  /** Weekly window. */
+  weekly: number;
+}
+
+/** req 5 — both cutoffs default to 90%. */
+export const DEFAULT_FAILOVER_CUTOFF = 90;

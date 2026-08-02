@@ -85,10 +85,10 @@
 - [ ] Persist a user-controlled priority order for authenticated accounts per provider (`ProviderAccount.priority`, ascending; backfill existing rows from `isPrimary`).
 - [x] Widen `selectRouteForTurn` into `selectAccountForTurn` with structured failures (`all_exhausted` / `auth_required` / `no_model_eligible_account`), which reqs 13 and 17 depend on.
 - [ ] Add Settings controls to reorder provider accounts; newly connected accounts append to the fallback order.
-- [ ] Persist per-provider short-window and weekly usage cutoffs with 90% defaults and 1–100 validation.
-- [ ] Add Settings controls for both proactive failover cutoffs.
+- [x] Persist per-provider short-window and weekly usage cutoffs with 90% defaults and 1–100 validation.
+- [x] Add Settings controls for both proactive failover cutoffs.
 - [x] Re-evaluate account eligibility before every turn, including existing-session, queued, and system-initiated turns.
-- [ ] Switch an existing session to the next ordered eligible account when either configured cutoff is reached.
+- [x] Switch an existing session to the next eligible account when either configured cutoff is reached (ordering by user priority is still req 2's work).
 - [x] Skip an account that cannot run the requested model and report no eligible account (req 17).
 - [ ] Add optional per-session account preference.
 - [ ] Add optional per-provider “do not auto-failover” setting.

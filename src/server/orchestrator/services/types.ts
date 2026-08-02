@@ -4,7 +4,7 @@
 
 import type { AgentId, PermissionMode } from "../../shared/types.js";
 import type { AgentReasoningCapability, SubAgentDefaults } from "../../shared/types/agent-types.js";
-import type { ProviderAccount, SessionInfo, ProjectTemplate, RepoInfo, RuntimeMode } from "../../shared/types.js";
+import type { FailoverCutoffs, ProviderAccount, SessionInfo, ProjectTemplate, RepoInfo, RuntimeMode } from "../../shared/types.js";
 import type { VoiceDeliveryMode } from "../../shared/types/voice-note-types.js";
 
 // ---- Types for service function results ----
@@ -69,6 +69,13 @@ export interface GlobalSettings {
   autoResolveConflicts: boolean;
   /** docs/169 — when true, the PR poller's auto-fix-CI loop fires on FAILURE while the agent is idle. */
   autoFixCi: boolean;
+  /**
+   * docs/150 reqs 4-6 — per-provider proactive failover cutoffs, keyed by agent
+   * id. Reaching either window's cutoff moves new work to the next eligible
+   * account; both default to 90%. Always populated for every registered agent,
+   * so the client never has to know the default.
+   */
+  failoverCutoffs: Record<string, FailoverCutoffs>;
   /** docs/218 — when true, resuming a merged, untouched session resets its branch to the latest base before the turn. Default on. */
   autoResetMergedBranch: boolean;
   /**

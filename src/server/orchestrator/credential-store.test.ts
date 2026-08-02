@@ -20,6 +20,45 @@ describe("CredentialStore", () => {
     return tmpDir;
   }
 
+  // ---- Proactive failover cutoffs (docs/150 reqs 4-6) ----
+
+  describe("failover cutoffs", () => {
+    it("defaults both windows to 90% (req 5)", () => {
+      const store = new CredentialStore(createTmpDir());
+      expect(store.getFailoverCutoffs("claude")).toEqual({ session: 90, weekly: 90 });
+    });
+
+    it("persists per provider, independently", () => {
+      const dir = createTmpDir();
+      const store = new CredentialStore(dir);
+      store.setFailoverCutoffs("claude", { session: 70 });
+
+      expect(store.getFailoverCutoffs("claude")).toEqual({ session: 70, weekly: 90 });
+      expect(store.getFailoverCutoffs("codex")).toEqual({ session: 90, weekly: 90 });
+      // Survives a reload — a restart must not silently revert the user's setting.
+      expect(new CredentialStore(dir).getFailoverCutoffs("claude")).toEqual({ session: 70, weekly: 90 });
+    });
+
+    it("leaves the other window alone on a partial update", () => {
+      const store = new CredentialStore(createTmpDir());
+      store.setFailoverCutoffs("claude", { session: 50, weekly: 60 });
+      store.setFailoverCutoffs("claude", { weekly: 80 });
+
+      expect(store.getFailoverCutoffs("claude")).toEqual({ session: 50, weekly: 80 });
+    });
+
+    // Clamping on READ as well as write: a hand-edited config with a bad value
+    // should still yield a working selector rather than throwing every turn.
+    it("clamps an out-of-range or non-numeric stored value instead of trusting it", () => {
+      const dir = createTmpDir();
+      fs.writeFileSync(
+        path.join(dir, "shipit-credentials.json"),
+        JSON.stringify({ failoverCutoffs: { claude: { session: 0, weekly: 150 } } }),
+      );
+      expect(new CredentialStore(dir).getFailoverCutoffs("claude")).toEqual({ session: 1, weekly: 100 });
+    });
+  });
+
   // ---- Sub-agent defaults (docs/217) ----
 
   describe("agentSubAgentDefaults", () => {

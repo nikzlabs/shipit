@@ -7,7 +7,8 @@ import type {
   OAuthTokens,
   McpOAuthRegisteredClient,
 } from "../shared/types/mcp-types.js";
-import type { AgentId, ProviderAccount, SubAgentDefaults, SubAgentDefaultsPatch } from "../shared/types.js";
+import type { AgentId, FailoverCutoffs, ProviderAccount, SubAgentDefaults, SubAgentDefaultsPatch } from "../shared/types.js";
+import { DEFAULT_FAILOVER_CUTOFF } from "../shared/types.js";
 import type { VoiceDeliveryMode } from "../shared/types/voice-note-types.js";
 import { DEFAULT_VOICE_DELIVERY_MODE } from "../shared/types/voice-note-types.js";
 
@@ -37,6 +38,8 @@ interface CredentialData {
    * supportsSteering: true. (docs/140)
    */
   liveSteering?: boolean;
+  /** docs/150 reqs 4–6 — per-provider proactive failover cutoffs. */
+  failoverCutoffs?: Partial<Record<AgentId, FailoverCutoffs>>;
   /**
    * When true, the PR poller's auto-resolve loop fires when a tracked PR
    * transitions to CONFLICTING while the agent is idle. (docs/146)
@@ -618,6 +621,32 @@ export class CredentialStore {
     this.save();
   }
 
+  // ---- Proactive failover cutoffs (docs/150 reqs 4-6) ----
+
+  /**
+   * Per-provider cutoffs, defaulting to 90% on both windows (req 5). Stored
+   * values are clamped on write, so a hand-edited config that slipped an
+   * out-of-range number in cannot make the selector behave nonsensically.
+   */
+  getFailoverCutoffs(provider: AgentId): FailoverCutoffs {
+    const stored = this.data.failoverCutoffs?.[provider];
+    return {
+      session: clampCutoff(stored?.session),
+      weekly: clampCutoff(stored?.weekly),
+    };
+  }
+
+  setFailoverCutoffs(provider: AgentId, cutoffs: Partial<FailoverCutoffs>): FailoverCutoffs {
+    const current = this.getFailoverCutoffs(provider);
+    const next: FailoverCutoffs = {
+      session: cutoffs.session === undefined ? current.session : clampCutoff(cutoffs.session),
+      weekly: cutoffs.weekly === undefined ? current.weekly : clampCutoff(cutoffs.weekly),
+    };
+    this.data.failoverCutoffs = { ...this.data.failoverCutoffs, [provider]: next };
+    this.save();
+    return next;
+  }
+
   // ---- Auto-resolve conflicts (docs/146) ----
 
   getAutoResolveConflicts(): boolean {
@@ -710,4 +739,15 @@ export class CredentialStore {
     this.data = {};
     this.save();
   }
+}
+
+/**
+ * docs/150 req 5 — a cutoff is a percentage, so anything outside 1–100 is
+ * meaningless. Clamped rather than rejected: this runs on read as well as
+ * write, and a config file that already holds a bad value should still yield a
+ * working selector rather than throwing on every turn.
+ */
+function clampCutoff(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_FAILOVER_CUTOFF;
+  return Math.min(100, Math.max(1, Math.round(value)));
 }

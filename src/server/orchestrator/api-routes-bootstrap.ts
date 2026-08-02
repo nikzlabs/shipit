@@ -78,6 +78,8 @@ export async function registerBootstrapRoutes(
     agentSubAgentDefaults?: Record<string, SubAgentDefaultsPatch>;
     /** docs/163 — voice-note delivery mode (native / external / both). */
     voiceDeliveryMode?: "native" | "external" | "both";
+    /** docs/150 reqs 4-6 — per-provider proactive failover cutoffs (1-100). */
+    failoverCutoffs?: Record<string, { session?: number; weekly?: number }>;
   } }>(
     "/api/settings",
     async (request, reply) => {
@@ -111,6 +113,7 @@ export async function registerBootstrapRoutes(
           ...(request.body.enableSubAgents !== undefined ? { enableSubAgents: request.body.enableSubAgents } : {}),
           ...(request.body.agentSubAgentDefaults !== undefined ? { agentSubAgentDefaults: request.body.agentSubAgentDefaults } : {}),
           ...(request.body.voiceDeliveryMode !== undefined ? { voiceDeliveryMode: request.body.voiceDeliveryMode } : {}),
+          ...(request.body.failoverCutoffs !== undefined ? { failoverCutoffs: request.body.failoverCutoffs } : {}),
         });
       } catch (err) {
         if (err instanceof ServiceError) {

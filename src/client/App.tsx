@@ -1083,6 +1083,8 @@ export default function App() {
             voiceDeliveryMode?: "native" | "external" | "both";
             voiceWebhookConfigured?: boolean;
             providerAccounts?: ProviderAccount[];
+            /** docs/150 reqs 4-6 — per-provider proactive failover cutoffs. */
+            failoverCutoffs?: Record<string, { session: number; weekly: number }>;
           };
         }>("/api/bootstrap");
         useGitStore.getState().setIdentity(data.settings.gitIdentity);
@@ -1123,6 +1125,11 @@ export default function App() {
             .setAutoResolveConflicts(data.settings.autoResolveConflicts);}
         if (data.settings.autoFixCi !== undefined)
           {useSettingsStore.getState().setAutoFixCi(data.settings.autoFixCi);}
+        if (data.settings.failoverCutoffs !== undefined) {
+          for (const [agentId, cutoffs] of Object.entries(data.settings.failoverCutoffs)) {
+            useSettingsStore.getState().setFailoverCutoffs(agentId, cutoffs);
+          }
+        }
         if (data.settings.autoResetMergedBranch !== undefined)
           {useSettingsStore
             .getState()

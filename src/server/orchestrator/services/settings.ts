@@ -8,7 +8,8 @@ import fs from "node:fs/promises";
 import type { CredentialStore } from "../credential-store.js";
 import type { AgentRegistry } from "../../shared/agent-registry.js";
 import { getAuthEnvKey, isAllowedAgentEnvKey } from "../../shared/agent-registry.js";
-import type { AgentId, ProviderAccount, SubAgentDefaultsPatch } from "../../shared/types.js";
+import type { AgentId, FailoverCutoffs, ProviderAccount, SubAgentDefaultsPatch } from "../../shared/types.js";
+import { DEFAULT_FAILOVER_CUTOFF } from "../../shared/types.js";
 import type { VoiceDeliveryMode } from "../../shared/types/voice-note-types.js";
 import { getGitIdentity, setGitIdentity as writeGitIdentity } from "../git-config.js";
 import { buildAgentSystemInstructions } from "../agent-instructions.js";
@@ -83,7 +84,15 @@ export async function getGlobalSettings(
   const providerAccounts = providerAccountManager?.list() ?? credentialStore?.listProviderAccounts() ?? [];
   const voiceDeliveryMode = credentialStore?.getVoiceDeliveryMode() ?? "native";
   const voiceWebhookConfigured = !!credentialStore?.getVoiceWebhook();
-  return { gitIdentity, systemPrompt, agents, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, agentSubAgentDefaults, voiceDeliveryMode, voiceWebhookConfigured, providerAccounts };
+  // docs/150 reqs 4-6 — per-provider proactive failover cutoffs, one entry per
+  // registered agent so the Settings control can render a row per provider
+  // without the client knowing the default.
+  const failoverCutoffs: Record<string, FailoverCutoffs> = {};
+  for (const agent of agentRegistry.list()) {
+    failoverCutoffs[agent.id] = credentialStore?.getFailoverCutoffs(agent.id)
+      ?? { session: DEFAULT_FAILOVER_CUTOFF, weekly: DEFAULT_FAILOVER_CUTOFF };
+  }
+  return { failoverCutoffs, gitIdentity, systemPrompt, agents, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, agentSubAgentDefaults, voiceDeliveryMode, voiceWebhookConfigured, providerAccounts };
 }
 
 // ---- Mutation operations ----
@@ -145,6 +154,8 @@ export interface SaveGlobalSettingsOptions {
    * against its registered models.
    */
   agentSubAgentDefaults?: Record<string, SubAgentDefaultsPatch>;
+  /** docs/150 reqs 4-6 — per-provider proactive failover cutoffs (1-100). */
+  failoverCutoffs?: Record<string, Partial<FailoverCutoffs>>;
   /** docs/163 — voice-note delivery mode (native / external / both). */
   voiceDeliveryMode?: VoiceDeliveryMode;
 }
@@ -158,6 +169,7 @@ export async function saveGlobalSettings(
     gitIdentity, systemPrompt, maxIdleContainers,
     agentSystemInstructionsEnabled, autoCreatePr, liveSteering,
     autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, agentSubAgentDefaults, voiceDeliveryMode,
+    failoverCutoffs,
   } = opts;
 
   // Save git identity if provided
@@ -210,6 +222,24 @@ export async function saveGlobalSettings(
   // docs/144 — save sub-agent spawning gate if provided
   if (enableSubAgents !== undefined) {
     credentialStore.setEnableSubAgents(enableSubAgents);
+  }
+
+  // docs/150 reqs 4-6 — validate rather than clamp at the API edge: a request
+  // carrying 0 or 150 is a caller bug, and silently accepting it as 1 or 100
+  // would hide it. The store still clamps on read, which covers a config file
+  // edited by hand.
+  if (failoverCutoffs !== undefined) {
+    for (const [agentId, patch] of Object.entries(failoverCutoffs)) {
+      if (!agentRegistry.get(agentId as AgentId)) throw new ServiceError(400, `Unknown agent: ${agentId}`);
+      for (const key of ["session", "weekly"] as const) {
+        const value = patch[key];
+        if (value === undefined) continue;
+        if (!Number.isInteger(value) || value < 1 || value > 100) {
+          throw new ServiceError(400, `${key} failover cutoff must be an integer between 1 and 100`);
+        }
+      }
+      credentialStore.setFailoverCutoffs(agentId as AgentId, patch);
+    }
   }
 
   // docs/217 — merge per-agent sub-agent defaults. Validate each agent id and
