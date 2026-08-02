@@ -302,29 +302,35 @@ function Meter({ shortLabel, longLabel, window, windowMs, fetchedAt, now }: Mete
   // along with its number and fill.
   return (
     <span
-      className={`relative inline-flex items-center whitespace-nowrap pb-0.5${display.stale ? " opacity-50" : ""}`}
+      className={`inline-flex items-center whitespace-nowrap${display.stale ? " opacity-50" : ""}`}
       data-meter-pct={Math.round(pct)}
       style={{ color }}
       title={title}
     >
-      {shortLabel} {formatPct(pct)}
-      {countdown && <span className="ml-1 text-(--color-text-secondary)">resets in {countdown}</span>}
-      <span className="absolute inset-x-0 bottom-0 h-0.5 rounded-full bg-(--color-text-secondary)/25">
+      <span className="relative inline-flex pb-0.5" data-meter-value>
+        {shortLabel} {formatPct(pct)}
         <span
           aria-hidden
-          data-meter-fill
-          className="absolute inset-y-0 left-0 rounded-full"
-          style={{ width: fillWidth, backgroundColor: color }}
-        />
-        {elapsedPct !== null && (
+          data-meter-track
+          className="absolute inset-x-0 bottom-0 h-0.5 rounded-full bg-(--color-text-secondary)/25"
+        >
           <span
             aria-hidden
-            data-time-marker
-            className="absolute -top-[1px] -bottom-[1px] w-0.5 -translate-x-1/2 rounded-full bg-(--color-text-primary)"
-            style={{ left: `${elapsedPct}%` }}
+            data-meter-fill
+            className="absolute inset-y-0 left-0 rounded-full"
+            style={{ width: fillWidth, backgroundColor: color }}
           />
-        )}
+          {elapsedPct !== null && (
+            <span
+              aria-hidden
+              data-time-marker
+              className="absolute -top-[1px] -bottom-[1px] w-0.5 -translate-x-1/2 rounded-full bg-(--color-text-primary)"
+              style={{ left: `${elapsedPct}%` }}
+            />
+          )}
+        </span>
       </span>
+      {countdown && <span className="ml-1 text-(--color-text-secondary)">resets in {countdown}</span>}
     </span>
   );
 }
