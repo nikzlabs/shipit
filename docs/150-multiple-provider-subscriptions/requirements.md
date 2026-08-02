@@ -39,6 +39,13 @@ with the ShipIt transcript and workspace context preserved across the switch.
 > all legacy behavior and code related to agent accounts need to be cleaned up
 > after all work is done.
 
+**Follow-up user requirement**, recorded 2026-08-02 after a cross-agent review
+stopped on an exhausted Claude account even though another Claude account was
+configured:
+
+> falling back to another account [must apply] not only for regular
+> conversations but also for reviews.
+
 **Requirement 17 reversed by the user**, 2026-08-02:
 
 > So this is a corner case that I'm not sure is important. Let's, instead of it
@@ -256,12 +263,14 @@ Requirements 1–9 are the user's words, restated as observable behavior.
 12–18 come from the user's answers and review feedback, each with a dated
 receipt under "Resolved questions" (16 came directly as a requirement, so it has
 no question to resolve). 19 came directly as a requirement on 2026-08-02 and
-likewise has no question to resolve. Requirement 20 came directly from the
-2026-08-02 parent review and is recorded above; *what* counts as legacy is design detail
-and lives in `plan.md`, not here. 21 and 22 come from the user's answers to the
-two Phase 0 questions on 2026-08-03, each with a receipt below; 21 is the user's
-own proposal (a setting rather than either fixed behavior) and is the reason 2
-and 6 were amended. 11 comes from the standing product principles in
+likewise has no question to resolve. 20 came directly from the user's
+2026-08-02 report that the brokered review path stopped at an exhausted Claude
+account despite another configured account; it explicitly closes the run-path
+scope gap in requirements 3 and 7. *What* counts as legacy is design detail and
+lives in `plan.md`, not here. 21 and 22 come from the user's answers to the two
+Phase 0 questions on 2026-08-03, each with a receipt below; 21 is the user's own
+proposal (a setting rather than either fixed behavior) and is the reason 2 and
+6 were amended. 11 comes from the standing product principles in
 `CLAUDE.md`; 10 started there and the user then specified its shape in review.
 Everything else
 in this feature — the account registry and credential layout, route pinning,
