@@ -157,6 +157,72 @@ req 7 quota-exhaustion stamp that makes the *next* turn fail over to another
 account. The adapter now normalizes `is_error` / non-success subtypes into its
 `success | error` status.
 
+### 4. The credential-topology half of the same incident
+
+Detection (§3) explains why the failure *looked* like the agent telling the
+user to run `/login`. It does not explain why the CLI was unauthenticated at
+all, on a session whose account was healthy. That half is the docs/153 leak
+repair running underneath a live CLI process.
+
+The repair is destructive by construction: unlink `<sessionDir>/.claude`,
+re-copy the subtree from the account root, merge the orphan tree back on top,
+`rmSync` the orphan root. Between the unlink and the copy there is a real
+window in which the session dir has no `.claude/.credentials.json` — and the
+Claude CLI re-reads that file per API call, so a resident process that spans
+the window reports itself unauthenticated. The incident's ordering matches
+exactly: `/compact` left a resident streaming process alive, the next turn's
+env-prep repaired the links again, and the turn came back
+`Not logged in · Please run /login`.
+
+**Fix — `reusingResidentAgent` (issue criterion 3).** Credential *topology*
+may only change at a spawn boundary. `turn-executor` is the one place that
+knows which kind of turn this is, so it passes
+`reusingResidentAgent: input.reuseExistingAgent === true` into `prepareAgentEnv`,
+and `prepareSessionAgentEnvironment` forwards it to the sync-in as
+`repairLeakedSubtrees: false`. Nothing a reuse turn consumes is lost by
+deferring: the on-disk convergence is for the next `--resume`, and the
+recovered `agentSessionId` is read by `buildRunParams`, which the reuse branch
+never calls. The **per-turn token copy still runs**, which is what keeps a
+long-lived process authenticated across a rotation (docs/142 A). Both
+transports inherit the one decision — the WS wrapper
+(`ws-handlers/agent-execution.ts`) and the dispatched/system wrapper
+(`runner-registry-factory.ts`) each just forward the flag.
+
+**Convergence (criterion 2).** The "still-unidentified writer" that recreated
+the legacy links between turns was ShipIt itself: `migrateDefaultAccounts`
+re-created the root-level alias symlinks (`<credentialsDir>/.claude` →
+`provider-accounts/claude/claude-default/.claude`) on **every boot**, and a
+session provisioned from that root inherited them. docs/150 req 19 stopped
+creating the aliases and retires any an earlier boot left behind, and
+`copyCredentialPath` dereferences, so a freshly provisioned session cannot
+acquire the symlink shape at all. What remains is one repair pass for sessions
+provisioned before that, after which the repair is a true no-op — asserted
+directly rather than assumed (`session-agent-env.test.ts`, "repairs a legacy
+default-account link once, then converges to a no-op").
+
+**Turn-path audit (criterion 4).** Every path that spawns an agent converges on
+the same enforcing preparation. Five services prepare the environment early —
+`wake-session.ts`, `services/headless-sessions.ts`,
+`services/child-sessions.ts` (create + follow-up), `services/github-ci-fix.ts` —
+and each then calls `runner.dispatch(...)`, which reaches `executeAgentTurn` and
+its `deps.prepareAgentEnv`. That callback is installed by
+`createRunnerRegistry` for *every* runner (container and in-process alike) with
+`enforceAccountRouting: true`. So the early call is a deliberately
+non-enforcing warm-up (a session being created must not be blocked before it
+has a route), and the enforcing call is the one immediately before spawn. The
+only case with no env prep at all is a build with neither `credentialsDir` nor
+`credentialStore` — minimal test setups — which is the pre-existing documented
+degradation, not a turn-path divergence.
+
+**Diagnostics (criterion 7).** `prepareSessionAgentEnvironment` logs one
+`[env-prep]` line per preparation with the resolved route, whether this call
+pinned it, whether the repair ran or was skipped for a resident agent, and any
+failover. Diagnosing this incident from production logs meant inferring all
+three from side effects — the repair announced itself only when it fired, so
+"repaired again" and "never converged" were indistinguishable from "ran and
+found nothing". Route ids are opaque account handles; no token material is
+logged.
+
 ## Wiring
 
 `buildApp` (index.ts) builds an `ensureAgentTokenFresh(agentId, accountId?)`
@@ -329,6 +395,15 @@ existed on disk but could not be resumed from `/workspace`:
   `Array.isArray` guards on `agent_tool_result.content`.
 - `shared/types/claude-types.ts` — `ClaudeResultEvent.is_error` /
   `terminal_reason`, `ClaudeAssistantEvent.is_api_error_message` / `error`.
+- `turn-executor.ts` — decides `reusingResidentAgent` from
+  `input.reuseExistingAgent` at the `prepareAgentEnv` call.
+- `session-agent-env.ts` — `reusingResidentAgent` → the sync-in's
+  `repairLeakedSubtrees`, plus the `[env-prep]` decision log.
+- `token-sync-manager.ts` — `SyncTokenInOptions.repairLeakedSubtrees`; the
+  repair itself (`materializeLeakedSubtreeSymlinks`) is unchanged.
+- `ws-handlers/agent-execution.ts`, `runner-registry-factory.ts`,
+  `session-runner.ts` — the two `prepareAgentEnv` wrappers and the
+  `SystemTurnDeps` signature that carries the flag.
 - `agents/claude/oauth-refresher.ts` — `ensureFresh` / `ensureFreshOne`
   (single-flight pre-read heal), the `force` validity-probe mode and its
   `noop` classification; `outputIndicatesRevoked`.
@@ -368,6 +443,14 @@ existed on disk but could not be resumed from `/workspace`:
 - `integration_tests/ask-user-question.test.ts` — a string-valued
   `tool_result.content` passes through intact while suppression is active
   instead of throwing.
+- `session-agent-env.test.ts` → "credential topology under a resident agent" —
+  a legacy default-account link repairs once then converges; the pinned
+  non-default account's token is the one synced; a reuse turn leaves the
+  subtree alone but still refreshes the token; and the suppression never
+  leaves a resident agent credential-less when the source subtree is missing.
+- `session-runner.test.ts` — the executor tells env prep which kind of turn
+  it is: `reusingResidentAgent: true` when the message is steered into a
+  resident streaming process, `false` on a fresh spawn.
 - `integration_tests/auth-401-auto-retry.test.ts` — end-to-end dispatch path:
   heal succeeds → silent re-dispatch + completion; heal fails → card, no
   re-dispatch; bounded (second 401 on the retry surfaces the card, heal runs

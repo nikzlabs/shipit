@@ -370,11 +370,14 @@ export async function prepareSessionAgentEnvironment(
   // indistinguishable from "ran and found nothing". Route ids are opaque
   // account handles (`acct_…`); no token material is logged here or anywhere
   // below.
+  const routeLabel = selectedRoute ? `${selectedRoute.kind}:${selectedRoute.id}` : "none";
+  const repairLabel = args.reusingResidentAgent ? "skipped(resident-agent)" : "run";
+  const failoverLabel = failover
+    ? ` failover=${failover.fromAccountId}->${failover.toAccountId}`
+    : "";
+  const pinLabel = routedSession.agentPinned ? "already" : "now";
   console.log(
-    `[env-prep] ${sessionId} agent=${agentId} route=${selectedRoute ? `${selectedRoute.kind}:${selectedRoute.id}` : "none"}`
-      + ` pinned=${routedSession.agentPinned ? "already" : "now"}`
-      + ` repair=${args.reusingResidentAgent ? "skipped(resident-agent)" : "run"}`
-      + (failover ? ` failover=${failover.fromAccountId}->${failover.toAccountId}` : ""),
+    `[env-prep] ${sessionId} agent=${agentId} route=${routeLabel} pinned=${pinLabel} repair=${repairLabel}${failoverLabel}`,
   );
 
   // Step 1: provision the pinned agent's credential subtree (write-once),
