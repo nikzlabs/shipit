@@ -989,8 +989,17 @@ export async function executeAgentTurn(
     // network await once stalled the whole turn before `agent.run()` fired
     // (the worker never saw `/agent/start`). prepareAgentEnv is internally
     // fail-open + time-bounded; the logs make any residual slowness visible.
+    //
+    // `reusingResidentAgent` is the one thing env-prep cannot work out for
+    // itself, and it decides whether the docs/153 leak repair may run: the
+    // repair rewrites the very subtree a resident CLI is reading from, which
+    // is how a mid-session turn came back `Not logged in · Please run /login`
+    // (nikzlabs/shipit#1874). Credential *topology* changes only at a spawn
+    // boundary; the token copy still happens either way.
     const envBegan = Date.now();
-    await deps.prepareAgentEnv?.(sessionId, agentId);
+    await deps.prepareAgentEnv?.(sessionId, agentId, {
+      reusingResidentAgent: input.reuseExistingAgent === true,
+    });
     console.log(`[turn] env-prep for ${sessionId} took ${Date.now() - envBegan}ms`);
     activeResumeSessionId = deps.listenerDeps.sessionManager.get(sessionId)?.agentSessionId ?? null;
 

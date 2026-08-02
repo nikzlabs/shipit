@@ -156,16 +156,41 @@ export type AgentSessionIdRecoveryCallback = (
   recoveredOrClear: string | null,
 ) => void;
 
+/**
+ * Per-turn sync options.
+ *
+ * `repairLeakedSubtrees` — run the docs/153 leak repair as part of this sync.
+ * Defaults to true; a caller passes **false** when a resident agent process is
+ * about to be REUSED rather than respawned. The repair is destructive by
+ * nature (unlink `.claude`, re-copy the subtree, merge the orphan, then
+ * `rmSync` the orphan root), and doing that under a live CLI is what produced
+ * `Not logged in · Please run /login` mid-session (nikzlabs/shipit#1874): the
+ * unlink→copy sequence has a real window in which `.claude/.credentials.json`
+ * does not exist at all, and if the source subtree is missing the copy never
+ * happens and the window never closes.
+ *
+ * Skipping it costs nothing on a reuse turn. Everything the repair produces is
+ * consumed at SPAWN time — the on-disk convergence matters to the next
+ * `claude --resume`, and the recovered `agentSessionId` is read by
+ * `buildRunParams`, which the reuse branch never calls. The token copy below
+ * still runs, because that IS how a long-lived process stays authenticated
+ * across a rotation (docs/142 A).
+ */
+export interface SyncTokenInOptions {
+  repairLeakedSubtrees?: boolean;
+}
+
 export function syncAgentTokenIn(
   credentialsRoot: string,
   sessionId: string,
   agentId: AgentId,
   onRecoverAgentSessionId?: AgentSessionIdRecoveryCallback,
   currentAgentSessionId?: string | null,
+  opts?: SyncTokenInOptions,
 ): void {
   syncAgentTokenInFromRoot(
     credentialsRoot, sessionId, agentId, credentialsRoot,
-    onRecoverAgentSessionId, currentAgentSessionId,
+    onRecoverAgentSessionId, currentAgentSessionId, opts,
   );
 }
 
@@ -176,6 +201,7 @@ export function syncProviderAccountTokenIn(
   accountId: string,
   onRecoverAgentSessionId?: AgentSessionIdRecoveryCallback,
   currentAgentSessionId?: string | null,
+  opts?: SyncTokenInOptions,
 ): void {
   syncAgentTokenInFromRoot(
     credentialsRoot,
@@ -184,6 +210,7 @@ export function syncProviderAccountTokenIn(
     providerAccountCredentialRoot(credentialsRoot, agentId, accountId),
     onRecoverAgentSessionId,
     currentAgentSessionId,
+    opts,
   );
 }
 
@@ -194,6 +221,7 @@ function syncAgentTokenInFromRoot(
   sourceRoot: string,
   onRecoverAgentSessionId?: AgentSessionIdRecoveryCallback,
   currentAgentSessionId?: string | null,
+  opts?: SyncTokenInOptions,
 ): void {
   const files = AGENT_TOKEN_FILES[agentId];
   if (!files) return;
@@ -201,17 +229,20 @@ function syncAgentTokenInFromRoot(
   const sessionDir = perSessionCredentialsDir(credentialsRoot, sessionId);
   // docs/153 — repair leaked subtree-root symlinks before the per-turn copy
   // so the orchestrator and the agent container converge on the same
-  // physical file. See `materializeLeakedSubtreeSymlinks` for the full why.
-  const repair = materializeLeakedSubtreeSymlinks(
-    credentialsRoot, sessionDir, agentId, sourceRoot, currentAgentSessionId,
-  );
-  if (repair.outcome !== "no-action" && onRecoverAgentSessionId) {
-    try {
-      onRecoverAgentSessionId(
-        repair.outcome === "recovered" ? repair.recoveredAgentSessionId : null,
-      );
-    } catch (err) {
-      console.warn("[session-credentials] recovered agent_session_id callback failed:", err);
+  // physical file. See `materializeLeakedSubtreeSymlinks` for the full why,
+  // and {@link SyncTokenInOptions} for why a reuse turn opts out.
+  if (opts?.repairLeakedSubtrees ?? true) {
+    const repair = materializeLeakedSubtreeSymlinks(
+      credentialsRoot, sessionDir, agentId, sourceRoot, currentAgentSessionId,
+    );
+    if (repair.outcome !== "no-action" && onRecoverAgentSessionId) {
+      try {
+        onRecoverAgentSessionId(
+          repair.outcome === "recovered" ? repair.recoveredAgentSessionId : null,
+        );
+      } catch (err) {
+        console.warn("[session-credentials] recovered agent_session_id callback failed:", err);
+      }
     }
   }
   for (const rel of files) {

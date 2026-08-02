@@ -609,7 +609,19 @@ export interface SystemTurnDeps {
    * Calling it again here is idempotent (provision/pin self-skip once pinned;
    * only the token re-syncs). Optional so minimal test setups can omit it.
    */
-  prepareAgentEnv?: (sessionId: string, agentId: AgentId) => Promise<void>;
+  prepareAgentEnv?: (
+    sessionId: string,
+    agentId: AgentId,
+    opts?: {
+      /**
+       * True when this turn reuses a resident agent process instead of
+       * spawning one. Suppresses the destructive docs/153 leak repair, which
+       * must not run under a live CLI — see
+       * `prepareSessionAgentEnvironment`'s `reusingResidentAgent`.
+       */
+      reusingResidentAgent?: boolean;
+    },
+  ) => Promise<void>;
   /**
    * docs/150 — whether the persisted provider account must change before the
    * next agent is captured. The dispatch adapter uses this to retire a

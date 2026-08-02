@@ -525,6 +525,75 @@ describe("SessionRunner", () => {
     runner.dispose({ force: true });
   });
 
+  it("tells env prep whether the turn reuses a resident agent or spawns a fresh one", async () => {
+    // nikzlabs/shipit#1874 — `reusingResidentAgent` is what stops the
+    // destructive docs/153 leak repair from running under a live CLI. The flag
+    // is decided by the shared executor (`turn-executor.ts`, at the
+    // `prepareAgentEnv` call immediately above its `reuseExistingAgent`
+    // branch), so every turn that can reuse a resident streaming process —
+    // a WS turn, a `/compact`, a queued merge-wake dispatch — inherits this
+    // one decision rather than each transport making its own.
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    const resident = {
+      on: vi.fn(),
+      run: vi.fn(),
+      kill: vi.fn(),
+      removeAllListeners: vi.fn(),
+      sendUserMessage: vi.fn(),
+    } as any;
+    const fresh = { on: vi.fn(), run: vi.fn(), kill: vi.fn(), removeAllListeners: vi.fn() } as any;
+    const prepareAgentEnv = vi.fn().mockResolvedValue(undefined);
+    runner.setAgent(resident);
+    runner.isStreamingActive = true;
+    runner.setSystemTurnDeps({
+      agentFactory: () => fresh,
+      autoCommit: vi.fn().mockResolvedValue({
+        commitHash: null,
+        parentHash: null,
+        conflictedFiles: [],
+        rebaseInProgress: false,
+        secretFindings: [],
+      }),
+      scheduleAutoPush: vi.fn(),
+      listenerDeps: {
+        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
+        chatHistoryManager: { replaceInProgress: vi.fn(), finalizeInProgress: vi.fn(), append: vi.fn() } as any,
+        usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as any,
+        sseBroadcast: vi.fn(),
+        broadcastLog: vi.fn(),
+        getSelectedModel: () => undefined,
+      },
+      prepareAgentEnv,
+      buildRunParams: vi.fn().mockResolvedValue({ prompt: "continue", cwd: "/tmp/s1" }),
+    });
+
+    // A resident streaming process is alive → the message is carried into it.
+    runner.dispatch(testDispatch({ text: "continue" }));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(resident.sendUserMessage).toHaveBeenCalledWith("continue");
+    expect(prepareAgentEnv).toHaveBeenLastCalledWith(
+      "s1", "claude", expect.objectContaining({ reusingResidentAgent: true }),
+    );
+
+    // No resident process → a fresh spawn, so the repair is free to run.
+    runner.running = false;
+    runner.setAgent(null);
+    runner.isStreamingActive = false;
+    runner.dispatch(testDispatch({ text: "again" }));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(prepareAgentEnv).toHaveBeenLastCalledWith(
+      "s1", "claude", expect.objectContaining({ reusingResidentAgent: false }),
+    );
+
+    runner.dispose({ force: true });
+  });
+
   it("dispatch still spawns the agent when env prep's network step hangs (warm-pool hang regression)", async () => {
     // The warm-pool quick-session hang (docs/162 follow-up): the install gate
     // resolved, but a pre-spawn env-prep await (an un-timed MCP-OAuth refresh /

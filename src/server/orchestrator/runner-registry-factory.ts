@@ -453,7 +453,7 @@ export function createRunnerRegistry(
           // late moment the WS path does. Closes the staleness window that let a
           // quick/child/CI-fix turn spawn with a sibling-rotated (dead) token →
           // "Not logged in". Idempotent with the service fn's earlier call.
-          prepareAgentEnv: async (sessionId, agentId) => {
+          prepareAgentEnv: async (sessionId, agentId, envOpts) => {
             await prepareSessionAgentEnvironment(runner, {
               sessionId,
               agentId,
@@ -461,6 +461,10 @@ export function createRunnerRegistry(
               // path's preflight, so a child, CI-fix, or wake turn is blocked
               // by an exhausted provider exactly like a user-typed one.
               enforceAccountRouting: true,
+              // A dispatched turn reuses the resident streaming process too
+              // (`dispatched-turn.ts` captures it), so it needs the same
+              // no-repair-under-a-live-CLI guarantee as the WS path.
+              ...(envOpts?.reusingResidentAgent ? { reusingResidentAgent: true } : {}),
               deps: {
                 credentialsDir, credentialStore, sessionManager, chatHistoryManager,
                 ...(providerAccountManager ? { providerAccountManager } : {}),
