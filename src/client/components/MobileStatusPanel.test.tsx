@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, cleanup, waitFor } from "@testing-library/react";
 import { MobileStatusPanel } from "./MobileStatusPanel.js";
+import { useSettingsStore } from "../stores/settings-store.js";
 import { resetAutoRefreshThrottle } from "./SubscriptionLimitsBadge.js";
 import type { SubscriptionLimits } from "../../server/shared/types.js";
 
@@ -12,6 +13,7 @@ function routed(...snaps: SubscriptionLimits[]): Record<string, SubscriptionLimi
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  useSettingsStore.getState().setProviderAccounts([]);
 });
 
 const FUTURE_SESSION_RESET = new Date(Date.now() + 60 * 60_000).toISOString();
@@ -87,5 +89,24 @@ describe("MobileStatusPanel", () => {
     );
     await Promise.resolve();
     expect(refreshCalls()).toHaveLength(0);
+  });
+
+  it("shows and refreshes a connected account that has no usage snapshot yet", async () => {
+    const now = Date.now();
+    useSettingsStore.getState().setProviderAccounts([
+      { id: "acct-quiet", provider: "claude", label: "Quiet account", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+    ]);
+
+    render(
+      <MobileStatusPanel
+        subscriptionLimits={{}}
+        dockerMemory={null}
+        processStartedAt={null}
+      />,
+    );
+
+    expect(screen.getByText("Subscription")).toBeInTheDocument();
+    expect(screen.getByText("Quiet account")).toBeInTheDocument();
+    await waitFor(() => expect(refreshCalls()).toHaveLength(1));
   });
 });

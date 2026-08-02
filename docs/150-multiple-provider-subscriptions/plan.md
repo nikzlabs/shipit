@@ -5,6 +5,16 @@ issue: https://linear.app/shipit-ai/issue/SHI-56
 
 # 150 — Multiple provider subscriptions and quota failover
 
+## Usage-pill visibility follow-up (2026-08-02)
+
+Connected provider accounts define which subscription pills are visible; the
+limits snapshot cache only fills in their readings. Accounts that have not run
+recently therefore remain visible with unknown 5h/7d meters and, where the
+provider supports on-demand quota fetching, a refresh control. Reserved routes
+have no account record and remain visible only when a limits snapshot identifies
+them. The mobile status affordance uses the same account-presence rule, so an
+empty snapshot cache cannot hide the only path to refresh usage.
+
 ## Problem
 
 ShipIt currently assumes **one subscription credential per agent provider**:

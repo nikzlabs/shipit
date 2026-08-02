@@ -167,9 +167,25 @@ describe("tierColor", () => {
 });
 
 describe("SubscriptionLimitsBadge group", () => {
-  it("renders nothing when the map is empty (no fetchable providers)", () => {
+  it("renders nothing when the map and connected account list are empty", () => {
     const { container } = render(<SubscriptionLimitsBadge limits={{}} />);
     expect(container.firstChild).toBeNull();
+  });
+
+  it("keeps every connected provider visible before either has reported usage", () => {
+    const now = Date.now();
+    useSettingsStore.getState().setProviderAccounts([
+      { id: "acct-claude", provider: "claude", label: "Claude work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+      { id: "acct-codex", provider: "codex", label: "Codex work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+    ]);
+
+    render(<SubscriptionLimitsBadge limits={{}} />);
+
+    expect(screen.getByText("Claude work")).toBeInTheDocument();
+    expect(screen.getByText("Codex work")).toBeInTheDocument();
+    expect(screen.getAllByText(/5h · —/)).toHaveLength(2);
+    expect(screen.getAllByText(/7d · —/)).toHaveLength(2);
+    expect(screen.getByRole("button", { name: "Refresh subscription usage" })).toBeInTheDocument();
   });
 
   it("renders one row for one provider", () => {
@@ -217,11 +233,7 @@ describe("SubscriptionLimitsBadge group", () => {
     expect(screen.getByText("Work")).toBeInTheDocument();
   });
 
-  // The regression this replaced: the old rule counted SNAPSHOTS, and routes
-  // with no snapshot are omitted from the map — so two connected accounts with
-  // one quiet account rendered a single pill labelled "Claude", saying nothing
-  // about which subscription it described.
-  it("names the account even when the other connected account has reported nothing yet", () => {
+  it("renders the quiet account alongside an account with a snapshot", () => {
     const now = Date.now();
     useSettingsStore.getState().setProviderAccounts([
       { id: "acct-work", provider: "claude", label: "Work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
@@ -230,7 +242,8 @@ describe("SubscriptionLimitsBadge group", () => {
     const limits: SubscriptionLimitsMap = { claude: routed(makeSnap({ routeId: "acct-work" })) };
     render(<SubscriptionLimitsBadge limits={limits} />);
     expect(screen.getByText("Work")).toBeInTheDocument();
-    expect(screen.queryByText("Claude")).toBeNull();
+    expect(screen.getByText("Personal")).toBeInTheDocument();
+    expect(screen.getAllByText(/5h · —/)).toHaveLength(1);
   });
 
   // Reserved env / API-key routes are not accounts, so they keep the provider

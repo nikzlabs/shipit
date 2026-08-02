@@ -23,6 +23,7 @@ import { Logo } from "./components/Logo.js";
 import { QuickCaptureOverlay } from "./components/QuickCaptureOverlay.js";
 import { MobileContentPanels } from "./components/MobileContentPanels.js";
 import { MobileSessionsPanel } from "./components/MobileSessionsPanel.js";
+import { useSettingsStore } from "./stores/settings-store.js";
 
 interface AppLayoutProps {
   // Header
@@ -141,6 +142,8 @@ export function AppLayout({
   onCreateNewRepo,
   toast,
 }: AppLayoutProps) {
+  const hasProviderAccounts = useSettingsStore((s) => s.providerAccounts.length > 0);
+
   return (
     <>
       <MemoryPressureBanner stats={dockerMemory} />
@@ -178,7 +181,7 @@ export function AppLayout({
             {processStartedAt !== null && <UptimeBadge processStartedAt={processStartedAt} />}
             {dockerMemory && <DockerMemoryBadge stats={dockerMemory} />}
           </div>
-          {(processStartedAt !== null || dockerMemory !== null || Object.values(subscriptionLimits).some((s) => s)) && (
+          {(processStartedAt !== null || dockerMemory !== null || hasProviderAccounts || Object.values(subscriptionLimits).some((s) => s)) && (
             <div className="sm:hidden">
               <Popover>
                 <PopoverTrigger asChild>

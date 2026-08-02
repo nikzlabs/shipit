@@ -78,9 +78,12 @@ export interface SubscriptionLimits {
  * The inner key is a provider-account id or a reserved route id, so a user with
  * two Anthropic subscriptions gets two independent entries under `claude`
  * rather than one that flickers between whichever account last took a turn.
- * Routes with no snapshot are **omitted** (not stored as `null`); a missing or
- * empty entry means "do not render a pill." The client replaces its store map
- * wholesale on each broadcast so sign-outs propagate naturally.
+ * Routes with no snapshot are **omitted** (not stored as `null`). Connected
+ * provider accounts still render an unknown-state pill from the account
+ * registry; this map supplies readings, not account visibility. Reserved
+ * routes have no account row, so their pill remains snapshot-driven. The
+ * client replaces its store map wholesale on each broadcast so stale readings
+ * and signed-out reserved routes propagate naturally.
  */
 export type SubscriptionLimitsMap = Partial<Record<AgentId, Record<string, SubscriptionLimits>>>;
 
