@@ -1261,6 +1261,7 @@ export async function cleanupSessionDockerResources(
 export async function destroyContainer(
   deps: LifecycleDeps,
   sessionId: string,
+  opts: { preserveChildResources?: boolean } = {},
 ): Promise<void> {
   // Diagnostic: emit a stack trace at every destroy entry. Field reports
   // show session containers receiving SIGTERM with exit 0 (consistent
@@ -1292,8 +1293,12 @@ export async function destroyContainer(
     // Container may already be gone
   }
 
-  // Clean up Docker resources created through the proxy (after session is stopped)
-  await cleanupSessionDockerResources(deps.docker, sessionId);
+  // A full session-container teardown owns its proxy/Compose children. The
+  // agent-only restart path deliberately leaves those resources alive so a
+  // worker refresh does not interrupt the user's preview stack.
+  if (!opts.preserveChildResources) {
+    await cleanupSessionDockerResources(deps.docker, sessionId);
+  }
 
   // Remove the session container
   try {

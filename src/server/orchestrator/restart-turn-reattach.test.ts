@@ -41,6 +41,7 @@ interface Harness {
   created: string[];
   resumed: string[];
   destroyed: string[];
+  disposed: string[];
 }
 
 function makeHarness(
@@ -50,12 +51,13 @@ function makeHarness(
   const created: string[] = [];
   const resumed: string[] = [];
   const destroyed: string[] = [];
+  const disposed: string[] = [];
   const sessions = opts.sessions ?? new Set(containers.map((c) => c.sessionId));
 
   const containerManager = {
     getAll: () => containers.map((c) => ({ ...c, status: c.status ?? "running" })),
     isStandby: (id: string) => opts.standby?.has(id) ?? false,
-    destroy: async (id: string) => { destroyed.push(id); },
+    destroyAgentContainer: async (id: string) => { destroyed.push(id); },
   } as unknown as SessionContainerManager;
 
   const runnerRegistry = {
@@ -69,6 +71,7 @@ function makeHarness(
         },
       } as unknown as SessionRunnerInterface;
     },
+    dispose: (id: string) => { disposed.push(id); },
   } as unknown as SessionRunnerRegistry;
 
   const sessionManager = {
@@ -84,6 +87,7 @@ function makeHarness(
     created,
     resumed,
     destroyed,
+    disposed,
   };
 }
 
@@ -130,6 +134,19 @@ describe("reattachInFlightTurns", () => {
     expect(h.resumed).toEqual([]);
   });
 
+  it("disposes an existing bootstrap runner before rotating its stale stopped agent", async () => {
+    const url = await worker({ running: false, turnActive: false });
+    const h = makeHarness(
+      [{ sessionId: "s1", workerUrl: url, workerBuildId: "old-build" }],
+      { existingRunners: new Set(["s1"]) },
+    );
+
+    expect(await reattachInFlightTurns(h.deps)).toBe(0);
+    expect(h.disposed).toEqual(["s1"]);
+    expect(h.destroyed).toEqual(["s1"]);
+    expect(h.created).toEqual(["s1"]);
+  });
+
   it("preserves a stale container while its turn is active", async () => {
     const url = await worker({ running: true, turnActive: true, latestSseSeq: 9 });
     const h = makeHarness([{ sessionId: "s1", workerUrl: url, workerBuildId: "old-build" }]);
@@ -152,7 +169,7 @@ describe("reattachInFlightTurns", () => {
     expect(h.created).toEqual([]);
   });
 
-  it("skips standby containers, archived/unknown sessions, and sessions that already have a runner", async () => {
+  it("skips standby containers, archived/unknown sessions, and live turns that already have a runner", async () => {
     const url = await worker({ running: true, turnActive: true });
     const h = makeHarness(
       [

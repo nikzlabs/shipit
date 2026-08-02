@@ -739,6 +739,22 @@ describe("destroyContainer — overlay volume teardown", () => {
     expect(removedContainers.at(-1)).toBe("cid-1");
   });
 
+  it("preserves Compose child resources during an agent-only container restart", async () => {
+    const removedContainers: string[] = [];
+    const listFilters: unknown[] = [];
+    const { deps } = makeDeps([], makeContainer(undefined), {
+      children: [{ Id: "compose-preview-1", State: "running" }],
+      removedContainers,
+      listFilters,
+    });
+
+    await destroyContainer(deps, "sess-x", { preserveChildResources: true });
+
+    expect(listFilters).toEqual([]);
+    expect(removedContainers).toEqual(["cid-1"]);
+    expect(deps.containers.has("sess-x")).toBe(false);
+  });
+
   // Round 5 (SHI-222) — with the crash-site reaper live, the die-triggered reap
   // races this sweep for the same two sidecars on EVERY healthy destroy, so a 404
   // on child remove is the routine "the reaper got there first" outcome. Warning

@@ -464,7 +464,7 @@ export async function restartAgent(
   if (existing) {
     try {
       await withTimeout(
-        deps.containerManager.destroy(sessionId),
+        deps.containerManager.destroyAgentContainer(sessionId),
         PHASE_TIMEOUT_MS.destroying_container,
       );
     } catch (err) {

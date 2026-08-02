@@ -22,7 +22,7 @@
  */
 
 import type { SessionContainerManager } from "./session-container.js";
-import type { SessionRunnerRegistry } from "./session-runner.js";
+import type { SessionRunnerInterface, SessionRunnerRegistry } from "./session-runner.js";
 import type { SessionManager } from "./sessions.js";
 import type { AgentId, WorkerAgentStatus } from "../shared/types.js";
 import { workerGet } from "./worker-http.js";
@@ -61,8 +61,6 @@ export async function reattachInFlightTurns(deps: ReattachDeps): Promise<number>
     // A standby container has never been claimed by a session, so it cannot
     // have a user turn in flight.
     if (containerManager.isStandby(c.sessionId)) return false;
-    // A runner already exists (nothing to rebuild — it owns its own turn state).
-    if (runnerRegistry.get(c.sessionId)) return false;
     const session = sessionManager.get(c.sessionId);
     return !!session?.workspaceDir && !session.archived;
   });
@@ -88,7 +86,13 @@ export async function reattachInFlightTurns(deps: ReattachDeps): Promise<number>
         // unknown/legacy status or an idle resident process remains untouched.
         if (status.running || freshness.state !== "stale") return false;
         try {
-          await containerManager.destroy(c.sessionId);
+          const existingRunner = runnerRegistry.get(c.sessionId);
+          if (existingRunner) {
+            (existingRunner as SessionRunnerInterface & { preserveComposeOnDispose: boolean })
+              .preserveComposeOnDispose = true;
+            runnerRegistry.dispose(c.sessionId, { force: true });
+          }
+          await containerManager.destroyAgentContainer(c.sessionId);
           runnerRegistry.getOrCreate(
             c.sessionId,
             session.workspaceDir,
@@ -103,6 +107,9 @@ export async function reattachInFlightTurns(deps: ReattachDeps): Promise<number>
         return false;
       }
 
+      // A bootstrap subsystem may already have materialized the runner. It
+      // already owns the live turn, so there is nothing for this sweep to adopt.
+      if (runnerRegistry.get(c.sessionId)) return false;
       try {
         const runner = runnerRegistry.getOrCreate(
           c.sessionId,
