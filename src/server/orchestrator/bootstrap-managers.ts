@@ -403,6 +403,33 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     }
   };
 
+  /**
+   * docs/150 req 7 — the provider failed a turn saying the subscription is
+   * spent. Stamp the account that turn ran on, so the router stops choosing it
+   * and the session fails over on its next turn.
+   *
+   * Resolved here for the same reason `recordAgentRateLimits` is: this is the
+   * one place that knows how a session maps to a provider account. Only a
+   * *pinned account* route is stamped — an unpinned session has no account to
+   * blame, and a reserved env/API-key route is metered billing with no
+   * subscription window to exhaust (req 12).
+   */
+  const markSessionAccountExhausted = (sessionId: string, until: number): void => {
+    const session = sessionManager.get(sessionId);
+    if (!session?.agentId || session.providerRouteKind !== "account" || !session.providerRouteId) return;
+    const marked = providerAccountManager?.markAccountExhausted(
+      session.agentId,
+      session.providerRouteId,
+      until,
+    );
+    if (marked) {
+      console.log(
+        `[quota] ${session.agentId} account ${session.providerRouteId} reported exhausted by session `
+        + `${sessionId}; benched until ${new Date(until).toISOString()}`,
+      );
+    }
+  };
+
   const runnerRegistry = createRunnerRegistry({
     effectiveRunnerFactory, sessionManager, repoStore, createGitManager,
     githubAuthManager, agentFactory, chatHistoryManager,
@@ -410,6 +437,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
     credentialStore, secretStore, runtimeMode, broadcastLog,
     usageManager, authManager, authManagers, runParamsPreps,
+    markSessionAccountExhausted,
     nudgeClaudeOAuthRefresh,
     onAgentAuthRequired,
     ensureAgentTokenFresh,
@@ -824,6 +852,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     releaseStatusPoller,
     limitsRegistry,
     recordAgentRateLimits,
+    markSessionAccountExhausted,
     createSessionDir,
     warmSessionForRepo, waitForWarmSession,
     migratedRepoUrls,

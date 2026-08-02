@@ -1097,6 +1097,55 @@ today.
 
 ### Quota and exhaustion detection
 
+#### Landed: the two exhaustion signals, and why the persisted one is needed
+
+`exhaustedUntil(limits, account, now)` in `provider-account-manager.ts` takes
+the **soonest** of two independent signals, and both are now written:
+
+1. **Live telemetry.** Both CLIs already push quota windows on the agent stream
+   (Claude's `rate_limit_event`, Codex's `account/rateLimits/updated`), which
+   `recordAgentRateLimits` attributes to the reporting turn's route. A window at
+   `usedPct >= 100` with a future reset benches the account for free.
+2. **A persisted `exhaustedUntil` stamp** (req 7), written when the provider
+   *fails a turn* saying the subscription is spent.
+
+The second exists because the first is telemetry, and telemetry is not a
+promise. It can lag the failure, Claude reports `usedPct: null` below a warning
+threshold, and a freshly connected account has no snapshot at all — so a turn
+can be refused for quota while the snapshot still says the account is fine.
+Without the stamp the router would keep choosing the account that just refused
+the work. The field was already read by the selector from the start of Phase 2;
+nothing wrote it until now.
+
+`detectHardExhaustion` (`ws-handlers/agent-rate-limits.ts`) classifies the
+`agent_result` error, and it is **deliberately narrow**: explicit quota language
+only, never a bare `429` or "rate limit", which upstream also uses for
+short-term throttling that a retry fixes. A false positive benches a working
+subscription, so the negative cases are as load-bearing as the positive ones and
+are tested as such.
+
+When the provider names a reset instant, that becomes the lockout. When it does
+not, `UNKNOWN_RESET_LOCKOUT_MS` (15 minutes) does. Neither extreme was
+acceptable: no stamp means the next turn walks into the same wall, which is the
+failure this detection exists to prevent; an indefinite stamp would strand a
+healthy subscription on one bad parse. A short self-expiring lockout gets the
+next turn onto another account while making a mistake cost minutes, and real
+telemetry supersedes it as soon as it lands because `exhaustedUntil` takes the
+soonest of the two. The stamp only ever moves *later*, so a second, vaguer
+failure cannot shorten a lockout whose true end the provider already gave.
+
+Resolution from "session X's turn died of quota" to "bench account Y" lives in
+`bootstrap-managers.ts` next to `recordAgentRateLimits`, for the same reason:
+that is the one place that knows how a session maps to a route. Only a pinned
+**account** route is stamped — an unpinned session has no account to blame, and
+a reserved env/API-key route is metered billing with no subscription window
+(req 12).
+
+**What this delivers, and what it does not.** Combined with the pre-turn
+failover, a turn killed for quota now benches its account, and the session's
+*next* turn moves to another one. The turn that hit the wall is still lost —
+retrying it in place is req 14, and lands next.
+
 Doc 135's limits map changes shape from a one-level agent-keyed record to a
 two-level agent → account-or-route record. This is a real wire-format change
 broadcast over SSE — the SSE payload that today carries `{ claude: {...},

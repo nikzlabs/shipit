@@ -347,6 +347,31 @@ export class ProviderAccountManager {
     return path.join(this.credentialsDir, PROVIDER_ACCOUNTS_SUBDIR, provider, accountId);
   }
 
+  /**
+   * docs/150 req 7 — stamp an account as out of quota until `until` (epoch ms).
+   *
+   * This is the *hard* exhaustion signal: the provider failed a turn saying the
+   * subscription is spent. It has to be persisted rather than inferred from the
+   * live quota snapshot, because that snapshot is telemetry — it can lag the
+   * failure, can report `usedPct: null` below a warning threshold, and for a
+   * freshly connected account may not exist at all. Without the stamp the
+   * router would keep choosing the account that just refused the turn.
+   *
+   * Only ever moves the stamp *later*, so a second failure carrying a vaguer
+   * reset can't shorten a lockout the provider already told us the end of.
+   * Reserved routes are not accounts and are silently ignored (req 12 — metered
+   * billing has no subscription window).
+   */
+  markAccountExhausted(provider: AgentId, accountId: string, until: number): ProviderAccount | null {
+    const account = this.get(provider, accountId);
+    if (!account) return null;
+    if (typeof account.exhaustedUntil === "number" && account.exhaustedUntil >= until) {
+      return account;
+    }
+    this.credentialStore.upsertProviderAccount({ ...account, exhaustedUntil: until });
+    return this.get(provider, accountId) ?? null;
+  }
+
   /** Overwrite the persisted status of an account (idempotent). */
   setAccountStatus(provider: AgentId, accountId: string, status: ProviderAccountStatus): ProviderAccount {
     const account = this.require(provider, accountId);

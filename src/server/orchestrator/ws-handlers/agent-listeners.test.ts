@@ -113,6 +113,60 @@ describe("wireAgentListeners", () => {
   // `executeAgentTurn` re-emits). It must inherit the terminal-turn cleanup but
   // NOT the "Agent process error" framing: nothing crashed, and the message
   // already tells the user what to do.
+  // docs/150 req 7 — a turn the provider killed for quota is the most reliable
+  // exhaustion signal there is: the account itself refusing work, not telemetry
+  // describing it. Stamping it is what makes the NEXT turn fail over.
+  describe("hard-exhaustion detection on agent_result (docs/150 req 7)", () => {
+    function wireForResult() {
+      const agent = new FakeAgent();
+      const runner = new SessionRunner({
+        sessionId: "session-1",
+        sessionDir: "/tmp/session-1",
+        defaultAgentId: "codex",
+      });
+      const d = deps();
+      const marked: { sessionId: string; until: number }[] = [];
+      d.markSessionAccountExhausted = (sessionId, until) => { marked.push({ sessionId, until }); };
+      wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
+        capturedSessionId: "session-1",
+        isNewSession: false,
+        persistUserMessage: vi.fn(),
+      });
+      return { agent, runner, marked };
+    }
+
+    it("benches the session's account until the reset the provider named", () => {
+      const { agent, runner, marked } = wireForResult();
+      const resetAt = new Date(Date.now() + 3_600_000).toISOString();
+
+      agent.emit("event", {
+        type: "agent_result",
+        error: `You've hit Codex's 5h usage limit. It resets at ${resetAt}.`,
+      } as AgentEvent);
+
+      expect(marked).toEqual([{ sessionId: "session-1", until: Date.parse(resetAt) }]);
+      runner.dispose({ force: true });
+    });
+
+    it("leaves the account alone for an ordinary turn failure", () => {
+      const { agent, runner, marked } = wireForResult();
+
+      agent.emit("event", { type: "agent_result", error: "API Error: 500" } as AgentEvent);
+
+      expect(marked).toEqual([]);
+      runner.dispose({ force: true });
+    });
+
+    it("does not bench anything on a clean result", () => {
+      const { agent, runner, marked } = wireForResult();
+
+      agent.emit("event", { type: "agent_result" } as AgentEvent);
+
+      expect(marked).toEqual([]);
+      runner.dispose({ force: true });
+    });
+  });
+
   describe("blocked-turn errors (docs/150 req 13)", () => {
     function wireForError() {
       const agent = new FakeAgent();

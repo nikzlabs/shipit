@@ -34,7 +34,11 @@ import {
 } from "./agent-message-builder.js";
 import { observeVoiceNotes } from "./agent-voice-handler.js";
 import { wireAuthRequiredHandler } from "./agent-auth-handler.js";
-import { normalizeAgentUsageLimitError } from "./agent-rate-limits.js";
+import {
+  detectHardExhaustion,
+  exhaustionLockoutUntil,
+  normalizeAgentUsageLimitError,
+} from "./agent-rate-limits.js";
 import { ProviderRouteUnavailableError } from "../provider-route-preflight.js";
 
 // `buildTurnMessages` / `persistTurnInProgress` now live in
@@ -96,6 +100,18 @@ export interface AgentListenerDeps {
   ) => void;
   /** Optional: latest subscription-limits snapshot, used to reclassify generic CLI errors. */
   getSubscriptionLimitsSnapshot?: () => SubscriptionLimitsMap;
+  /**
+   * docs/150 req 7 — the provider failed this turn saying the subscription is
+   * spent. Stamps the account the turn ran on so the router stops choosing it,
+   * which is what makes the *next* turn fail over instead of hitting the same
+   * wall. `until` is epoch ms.
+   *
+   * A callback rather than the manager itself: the listener knows only "the
+   * turn for session X died of quota", and resolving that to an account is the
+   * orchestrator's job, not this module's. Optional — tests and local runtime
+   * omit it, in which case the live quota telemetry remains the only signal.
+   */
+  markSessionAccountExhausted?: (sessionId: string, until: number) => void;
   /**
    * docs/153 — fire-and-forget nudge to the orchestrator-owned Claude OAuth
    * refresher. Triggered from the session-level `auth_required` handler so a
@@ -648,14 +664,23 @@ export function wireAgentListeners(
     }
 
     if (event.type === "agent_result" && event.error) {
-      event = {
-        ...event,
-        error: normalizeAgentUsageLimitError(
-          agent.agentId,
-          event.error,
-          deps.getSubscriptionLimitsSnapshot?.(),
-        ),
-      };
+      const normalizedError = normalizeAgentUsageLimitError(
+        agent.agentId,
+        event.error,
+        deps.getSubscriptionLimitsSnapshot?.(),
+      );
+      // docs/150 req 7 — a turn the provider killed for quota is the most
+      // reliable exhaustion signal there is: it is the account refusing work,
+      // not telemetry describing it. Stamp it against the NORMALIZED text,
+      // which is where the reset instant ends up when we could recover one.
+      const exhaustedSessionId = opts.capturedSessionId;
+      if (exhaustedSessionId && deps.markSessionAccountExhausted) {
+        const detected = detectHardExhaustion(normalizedError);
+        if (detected) {
+          deps.markSessionAccountExhausted(exhaustedSessionId, exhaustionLockoutUntil(detected));
+        }
+      }
+      event = { ...event, error: normalizedError };
     }
 
     // Drop auto-resolved tool_result blocks for AskUserQuestion calls we

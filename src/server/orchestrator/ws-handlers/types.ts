@@ -188,6 +188,14 @@ export interface AppCtx {
    */
   getSubscriptionLimitsSnapshot?: () => SubscriptionLimitsMap;
   /**
+   * docs/150 req 7 — bench the provider account a session is pinned to until
+   * `until` (epoch ms), because the provider just failed that session's turn
+   * saying the subscription is spent. Makes the router skip the account so the
+   * next turn fails over instead of hitting the same wall. Optional — test
+   * contexts and non-WS callers don't wire it.
+   */
+  markSessionAccountExhausted?: (sessionId: string, until: number) => void;
+  /**
    * docs/153 — fire-and-forget nudge to the orchestrator-owned Claude OAuth
    * refresher. Invoked from the session-level `auth_required` handler so that
    * a stale per-session token gets healed even if the next scheduled tick is
