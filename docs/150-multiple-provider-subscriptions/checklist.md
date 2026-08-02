@@ -131,6 +131,8 @@
 - [x] Integration: the retired singleton subscription auth endpoints 404.
 - [x] Integration: the Codex device flow runs end to end through the account-scoped login route, asserting `accountId` on pending/complete/failed.
 - [x] Client: onboarding's connect button hits the account-scoped endpoints, never a singleton one.
+- [x] Client: onboarding renders the card `compact` (no between-accounts explainer) so the fixed-height pane keeps "Get Started" above the fold.
+- [x] Manual: first-run onboarding in the dogfood preview — add account, challenge lands on its own row, cancel flips that row to `auth failed`.
 - [x] Unit: both OAuth refreshers name the revoked account on `agent_auth_failed`.
 - [ ] Unit: API-key fallback configures only its reserved route and never marks a subscription account ready.
 - [x] Client: an authenticated primary row does not hide or overwrite a secondary row's pending flow or diagnostics.

@@ -48,11 +48,20 @@ export function ProviderAccountsCard({
   agent,
   onSubmitApiKey,
   onClearApiKey,
+  compact = false,
 }: {
   provider: AgentId;
   agent: AgentOption | undefined;
   onSubmitApiKey: (key: string) => Promise<void> | void;
   onClearApiKey?: () => Promise<void> | void;
+  /**
+   * Density-only variant for the onboarding modal, which stacks two of these
+   * in a fixed-height pane. It drops the failover explainer — which describes
+   * what happens *between* accounts to a user who has none yet — and nothing
+   * else. Same rows, same endpoints, same state: req 16 is about the flow not
+   * diverging, and this changes only how much prose sits above it.
+   */
+  compact?: boolean;
 }) {
   const allAccounts = useSettingsStore((s) => s.providerAccounts);
   const setProviderAccounts = useSettingsStore((s) => s.setProviderAccounts);
@@ -327,11 +336,13 @@ export function ProviderAccountsCard({
             />
             <h3 className="text-sm font-medium text-(--color-text-primary)">{name} subscriptions</h3>
           </div>
-          <p className="mt-0.5 text-xs text-(--color-text-tertiary)">
-            {!installed
-              ? `${name} CLI is not installed.`
-              : "Connect one or more subscriptions. ShipIt fails over between them when one runs out."}
-          </p>
+          {(!installed || !compact) && (
+            <p className="mt-0.5 text-xs text-(--color-text-tertiary)">
+              {!installed
+                ? `${name} CLI is not installed.`
+                : "Connect one or more subscriptions. ShipIt fails over between them when one runs out."}
+            </p>
+          )}
         </div>
         <Button
           variant="secondary"

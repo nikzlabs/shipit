@@ -185,8 +185,14 @@ export function OnboardingWizard({
       {/* Fixed height on desktop so the modal never resizes when an agent's
           OAuth / device-auth flow or API-key field expands — the right pane
           scrolls internally instead (see the pane's overflow-y-auto + min-h-0).
-          Height is auto on mobile (single column), capped by max-h-[92vh]. */}
-      <div className="w-full max-w-3xl md:h-[520px] max-h-[92vh] overflow-hidden rounded-xl bg-(--color-bg-elevated) border border-(--color-border-secondary) grid md:grid-cols-2">
+          Height is auto on mobile (single column), capped by max-h-[92vh].
+
+          Step 2 is taller because it stacks two provider cards. It is still a
+          *fixed* height per step, so the no-resize-on-expand property holds;
+          it is just a different constant for a step whose content is bigger.
+          At 520 the "Get Started" button fell below the fold with no scroll
+          cue — a first-run user saw no way forward. */}
+      <div className={`w-full max-w-3xl ${step === 1 ? "md:h-[520px]" : "md:h-[600px]"} max-h-[92vh] overflow-hidden rounded-xl bg-(--color-bg-elevated) border border-(--color-border-secondary) grid md:grid-cols-2`}>
         {step === 1 ? (
           <WizardHero
             title={
@@ -242,12 +248,14 @@ export function OnboardingWizard({
                 <ProviderAccountsCard
                   provider="claude"
                   agent={claudeAgent}
+                  compact
                   onSubmitApiKey={apiKeySubmitter(onClaudeApiKeySubmit)}
                 />
 
                 <ProviderAccountsCard
                   provider="codex"
                   agent={codexAgent}
+                  compact
                   onSubmitApiKey={apiKeySubmitter(onCodexApiKeySubmit)}
                 />
 

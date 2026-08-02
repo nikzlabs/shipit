@@ -98,6 +98,9 @@ describe("Settings - Agent → Claude tab", () => {
     // The provider-wide singleton card is gone — connecting the first account
     // must not be a different flow from connecting the second.
     expect(screen.queryByTestId("claude-auth-card")).not.toBeInTheDocument();
+    // Settings is the full-density rendering: onboarding passes `compact` and
+    // drops this line, so pin that it is only dropped there.
+    expect(screen.getByText(/fails over between them/i)).toBeInTheDocument();
   });
 
   it("offers the same Add account affordance when no accounts exist yet", () => {

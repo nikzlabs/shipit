@@ -91,6 +91,22 @@ describe("OnboardingWizard", () => {
       expect(screen.queryByTestId("codex-auth-card")).not.toBeInTheDocument();
     });
 
+    // The card is rendered `compact` here. Two full-density cards overflowed
+    // the fixed-height pane by ~200px and pushed "Get Started" below the fold
+    // with no scroll cue — verified in the browser, not just in this test.
+    // Settings keeps the explainer; onboarding drops it, because it describes
+    // what happens *between* accounts to a user who has none.
+    it("omits the between-accounts failover explainer while there are no accounts", async () => {
+      renderStep2();
+      await waitFor(() => {
+        expect(screen.getByTestId("provider-accounts-card-claude")).toBeInTheDocument();
+      });
+      expect(screen.queryByText(/fails over between them/i)).not.toBeInTheDocument();
+      // The connect affordance itself must survive the trim.
+      expect(screen.getByTestId("provider-account-add-claude")).toBeInTheDocument();
+      expect(screen.getByTestId("provider-accounts-empty-claude")).toBeInTheDocument();
+    });
+
     // The point of req 16 is the *endpoint*, not the pixels: onboarding's
     // connect button must hit the same account-scoped route Settings does,
     // not a singleton `/api/auth/start`.

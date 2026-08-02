@@ -2171,6 +2171,24 @@ it: Claude wires `account_unauthenticated` → `markProviderAccountUnauthenticat
 `status: "ready"` and the router went on picking it over a healthy secondary —
 a req 3 failover hole with nothing to do with the UI. Wired.
 
+**Verified in a running preview, which the unit tests could not do.** With the
+Claude credential removed, the dogfood instance drops to first-run onboarding.
+Two things only the browser showed:
+
+- Two full-density cards overflowed the fixed-height pane by **206px**, putting
+  "Get Started" below the fold with no scroll cue — a first-run user saw no way
+  forward. The component test passed the whole time: it asserts elements exist,
+  and they did. Fixed by giving step 2 its own (still fixed) modal height and
+  adding a `compact` flag that drops the between-accounts failover explainer —
+  prose about what happens *between* accounts, shown to someone with none.
+  `compact` is density only: same rows, same endpoints, same state, so the
+  flows still do not diverge.
+- The end-to-end flow works: "Add account" created `acct_…`, started the login,
+  and the Claude OAuth URL + paste-code input rendered **on the row that started
+  it** — which is the account-scoped `agent_auth_pending` arriving with its
+  `accountId`. Cancelling flipped that row to `auth failed` with the message on
+  the row, not in a provider-wide slot.
+
 **Dead plumbing removed with it, and the trap in doing so.** `AgentListenerDeps`
 carried `authManager` and `authManagers` with comments claiming the
 `auth_required` handler used them to launch a sign-in flow. It does not — that
