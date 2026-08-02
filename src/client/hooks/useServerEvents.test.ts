@@ -113,7 +113,6 @@ describe("useServerEvents — Claude auth diagnostics", () => {
   beforeEach(() => {
     vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
     FakeEventSource.last = null;
-    useSessionStore.setState({ authUrl: null });
     useSettingsStore.setState({
       claudeAuthDiagnostics: {
         attemptId: null,
@@ -122,6 +121,8 @@ describe("useServerEvents — Claude auth diagnostics", () => {
         message: null,
         entries: [],
       },
+      providerAccountAuths: {},
+      providerAccountAuthErrors: {},
     });
   });
 
@@ -130,7 +131,10 @@ describe("useServerEvents — Claude auth diagnostics", () => {
     vi.unstubAllGlobals();
   });
 
-  it("stores progress and log events, then keeps diagnostics when failure clears authUrl", () => {
+  // Diagnostics are a provider-wide debug buffer, not a sign-in challenge, so
+  // they keep working for an event that carries no account (docs/150 req 19 —
+  // the provider-wide *challenge* slots are gone, diagnostics are not).
+  it("stores progress and log events and keeps diagnostics after a failure", () => {
     renderHook(() => useServerEvents());
     const es = FakeEventSource.last!;
 
@@ -161,7 +165,9 @@ describe("useServerEvents — Claude auth diagnostics", () => {
       });
     });
 
-    expect(useSessionStore.getState().authUrl).toBeNull();
+    // docs/150 req 19 — nowhere for an account-less challenge to go, and no
+    // provider-wide slot left to quietly absorb it.
+    expect(useSettingsStore.getState().providerAccountAuths).toEqual({});
     expect(useSettingsStore.getState().claudeAuthDiagnostics).toMatchObject({
       attemptId: "attempt-1",
       active: false,
@@ -183,7 +189,6 @@ describe("useServerEvents — Claude auth diagnostics", () => {
       });
     });
 
-    expect(useSessionStore.getState().authUrl).toBeNull();
     expect(useSettingsStore.getState().providerAccountAuths["claude:acct-secondary"]).toEqual({
       provider: "claude",
       accountId: "acct-secondary",

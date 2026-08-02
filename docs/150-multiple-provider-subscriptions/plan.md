@@ -2096,10 +2096,9 @@ design detail, deliberately kept out of `requirements.md`:
   symlinks that keep `~/.claude`, `~/.claude.json`, `~/.codex` working beside
   `provider-accounts/<provider>/<id>/`. Removing them means every read and write
   goes through an account root.
-- **The singleton subscription auth surface.** The pre-account login / code /
-  cancel / sign-out endpoints and the provider-wide pending client state they
-  drive, plus the onboarding cards that still use them instead of the account-row
-  flow. (Already tracked as three Phase 1 items.)
+- ~~**The singleton subscription auth surface.**~~ **Done** — see "Landed: one
+  connect surface, and only one" below. Sign-*out* is deliberately still
+  provider-wide.
 - **`selectRouteForTurn`.** The route-or-null wrapper kept for callers that had
   nothing to do with a reason; `selectAccountForTurn` is the real API.
 - **The `isPrimary`-only ordering fallback.** `accountsInSelectionOrder` still
@@ -2115,6 +2114,98 @@ Ordering matters: this is the **last** phase. Each shim is load-bearing for an
 install that has not yet exercised the new path, so removing one before the
 replacement is proven turns a migration into a regression. The signal that a
 shim is ready to go is that nothing reads it — not that the replacement exists.
+
+### Landed: one connect surface, and only one (reqs 16, 19)
+
+Req 16 was half-satisfied for a while: Settings connected every account through
+`ProviderAccountsCard`, but **first-run onboarding still rendered the singleton
+`ClaudeAuthCard` / `CodexAuthCard`**. So the very first account a user ever
+connected — the one most likely to be their primary — was created by different
+code, hitting different endpoints, than every account after it. That is exactly
+the divergence req 16 names, surviving in the one place a new user is guaranteed
+to hit.
+
+**The change is a substitution, not a new component.** Onboarding renders the
+same `ProviderAccountsCard` Settings does. Onboarding keeps only the props that
+are genuinely its own (GitHub token, agent list, refresh, complete); every
+sign-in prop it used to thread through — `authUrl`, `onStartClaudeAuth`,
+`onPasteAuthCode`, and the four Codex device-auth props — is gone, because the
+card owns that state.
+
+**What got deleted rather than left dormant** (req 19 — a shim nothing reads is
+the definition of ready to remove):
+
+| Removed | Replaced by |
+|---|---|
+| `POST /api/auth/start`, `POST /api/auth/code` | `POST /api/provider-accounts/:provider/:accountId/login[/code]` |
+| `POST /api/codex-auth/start`, `POST /api/codex-auth/cancel` | the same, plus `/login/cancel` |
+| `startAuth` / `submitAuthCode` services | `startProviderAccountLogin` / `submitProviderAccountCode` |
+| `ClaudeAuthCard`, `CodexAuthCard` (+ tests) | `ProviderAccountsCard` |
+| `sessionStore.authUrl`, `settingsStore.codexDeviceAuth{,Error}` | `providerAccountAuths`, keyed by account |
+
+Sign-**out** (`DELETE /api/auth/api-key`, `DELETE /api/codex-auth`) stays
+provider-wide on purpose: it clears credentials that may predate accounts
+entirely, and drops every row for the provider. It is not a second way to
+*connect*, which is what req 16 is about.
+
+**A latent bug the removal exposed.** With provider-wide slots gone, an
+`agent_auth_pending` event carrying no `accountId` has nowhere to land. The SSE
+*reconnect replay* in `route-registry.ts` was emitting exactly that — it
+rebuilt the event from `getPendingPayload()` and never included the account,
+unlike the live broadcast in `app-lifecycle.ts`. The pre-existing symptom was
+already wrong (reload mid-sign-in put the challenge in the singleton card
+instead of the row that started it); after the removal it would have been a
+silent drop. The replay now carries `accountId`.
+
+Claude's auth *diagnostics* remain provider-wide and still update for
+account-less events — they are a debug buffer, not a challenge, and keying them
+per account is a separate open Phase 1 item.
+
+**A second one, in the same class, that the review found.** Both OAuth
+refreshers detect revocation *per account* — they know the id, log it, and
+broadcast a per-account `claude_account_unauthenticated` /
+`codex_account_unauthenticated` — and then dropped it from the unified
+`agent_auth_failed`. Same fix: name the account. That exposed a third bug behind
+it: Claude wires `account_unauthenticated` → `markProviderAccountUnauthenticated`
+(docs/195) but **Codex never did**, so a revoked Codex account kept
+`status: "ready"` and the router went on picking it over a healthy secondary —
+a req 3 failover hole with nothing to do with the UI. Wired.
+
+**Dead plumbing removed with it, and the trap in doing so.** `AgentListenerDeps`
+carried `authManager` and `authManagers` with comments claiming the
+`auth_required` handler used them to launch a sign-in flow. It does not — that
+handler only refreshes tokens (docs/179), and the only interactive auth start in
+the process is `startProviderAccountLogin`. So both fields were dead, along with
+`RebaseDriverDeps.authManager` and `RunnerRegistryDeps.authManager`, which
+existed only to forward them.
+
+Deleting them broke auto-resolve-conflicts, and the way it broke is worth
+recording: `createPrStatusPoller` gated the whole auto-resolve callback on
+`if (createGitManager && chatHistoryManager && usageManager && authManager)`.
+Once `authManager` stopped being passed, that guard silently went false and the
+feature turned itself off — no type error, no failing unit test, just six
+integration tests timing out waiting for a card that would never arrive. A dep
+that is unused by the code it is handed to can still be load-bearing as a
+*presence check*; grep for the identifier in conditionals, not just in call
+positions.
+
+**What the review found that is real and deliberately not fixed here** — each is
+now a checklist item, because each is a different subsystem and folding them in
+would make this diff un-reviewable:
+
+- Provider-wide sign-out (`DELETE /api/auth/api-key`, `DELETE /api/codex-auth`)
+  drops every row for the provider with none of the pinned-session safeguards
+  the per-account disconnect has. Legacy, and destructive — but it is sign-*out*,
+  not a second way to connect, so it is a Phase 5 item rather than a req 16 one.
+- `ensureAgentTokenFresh(agentId)` refreshes *every* account and aggregates with
+  `every()`, so one revoked account fails a healthy account's turn.
+- Two rows of the same provider signing in at once share one CLI process, and
+  cancel/code don't check which row owns it. Not reachable from onboarding
+  (there is exactly one account there), so it doesn't gate req 16.
+- `AgentAuthManager.start` still accepts a call with no account scope. Nothing
+  calls it that way — `startProviderAccountLogin` is the only interactive
+  caller — but the overload and the account-less `complete` branch behind it
+  should go with the rest of Phase 5.
 
 ### Non-goal: routing around model capability (req 17, reversed 2026-08-02)
 

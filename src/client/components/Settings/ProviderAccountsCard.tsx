@@ -19,15 +19,17 @@ const apiKeyCopy: Record<AgentId, { label: string; placeholder: string; prefix: 
 };
 
 /**
- * Settings → Agent → {Claude,Codex} — the **single** subscription connect
- * surface (docs/150 req 16).
+ * The **single** subscription connect surface (docs/150 req 16) — rendered by
+ * Settings → Agent → {Claude,Codex} *and* by first-run onboarding.
  *
  * Before this, connecting the *first* account went through the provider-wide
  * `ClaudeAuthCard` / `CodexAuthCard` ("Sign in" on a singleton card) while
  * connecting a *second* account went through a per-account row — two different
  * flows, different endpoints, different state slots, for the same user intent.
  * Req 16 makes them one: every account, including the first, is a row, and
- * "Add account" is the only way to connect one.
+ * "Add account" is the only way to connect one. Both singleton cards and the
+ * endpoints behind them have since been deleted (req 19), so this is not just
+ * the preferred path — it is the only one.
  *
  * The row shell is shared across providers; only the challenge panel differs,
  * because the providers genuinely differ — Anthropic hands back an

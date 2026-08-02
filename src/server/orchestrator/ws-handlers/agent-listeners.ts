@@ -6,8 +6,6 @@ import { resetRunnerTurnState } from "../session-runner.js";
 import type { ChatHistoryManager, PersistedPermissionRequest } from "../chat-history.js";
 import type { SessionManager } from "../sessions.js";
 import type { UsageManager } from "../usage.js";
-import type { AuthManager } from "../agents/claude/auth-manager.js";
-import type { AgentAuthManager } from "../agent-auth-manager.js";
 import {
   getContextWindowForModel,
   DEFAULT_CONTEXT_WINDOW_TOKENS,
@@ -71,15 +69,6 @@ export interface AgentListenerDeps {
   sessionManager: SessionManager;
   chatHistoryManager: ChatHistoryManager;
   usageManager: UsageManager;
-  authManager: AuthManager;
-  /**
-   * Per-agent auth manager map. The `auth_required` handler looks up the
-   * turn's backend and calls `.start()` on the matching manager — so a
-   * Codex turn that fails on auth kicks off the Codex device flow, not
-   * Claude OAuth. Optional for tests; falls back to the legacy Claude-only
-   * `authManager.startOAuthFlow()` when absent. (docs/155 Phase 2c)
-   */
-  authManagers?: Map<AgentId, AgentAuthManager>;
   /** App-level SSE broadcaster (session_list, session_started, etc.). */
   sseBroadcast: (event: string, data: unknown) => void;
   /** Append a line to the per-session log buffer. */

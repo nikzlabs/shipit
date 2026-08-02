@@ -1,6 +1,5 @@
 import { OnboardingWizard } from "./components/OnboardingWizard.js";
 import type { AgentOption } from "./agent-types.js";
-import type { CodexDeviceAuthState } from "./components/CodexAuthCard.js";
 
 /**
  * Gates first-run onboarding. The standalone "Authentication Required" overlay
@@ -9,11 +8,13 @@ import type { CodexDeviceAuthState } from "./components/CodexAuthCard.js";
  * SSE broadcast), even tabs unrelated to the session that needed auth. Agent
  * authentication now lives in Settings → Agents — the model selector disables
  * unauthenticated agents, and an unauthenticated turn returns an error pointing
- * there. `authUrl` is still threaded through to the onboarding wizard's Claude
- * sign-in step (the one place an inline OAuth prompt is intentional).
+ * there.
+ *
+ * The wizard's agent step no longer takes sign-in props at all: it renders the
+ * same per-account connect surface as Settings, which owns its own challenge
+ * state keyed by account (docs/150 req 16).
  */
 interface AuthOverlayContainerProps {
-  authUrl: string | null;
   showOnboarding: boolean;
   // Onboarding props
   /** GitHub not yet connected — start the wizard at step 1 (Connect GitHub). */
@@ -22,32 +23,18 @@ interface AuthOverlayContainerProps {
   onGitHubTokenSubmit: (token: string) => Promise<boolean>;
   onClaudeApiKeySubmit: (key: string) => Promise<boolean>;
   onCodexApiKeySubmit: (key: string) => Promise<boolean>;
-  onStartClaudeAuth: () => void;
-  onPasteAuthCode: (code: string) => void;
   onRefreshAgents: () => Promise<void>;
-  // Codex (ChatGPT subscription) device-auth — feature 119.
-  codexDeviceAuth?: CodexDeviceAuthState | null;
-  codexDeviceAuthError?: string | null;
-  onStartCodexDeviceAuth?: () => void;
-  onCancelCodexDeviceAuth?: () => void;
   onComplete: () => void;
 }
 
 export function AuthOverlayContainer({
-  authUrl,
   showOnboarding,
   githubNeeded,
   agentList,
   onGitHubTokenSubmit,
   onClaudeApiKeySubmit,
   onCodexApiKeySubmit,
-  onStartClaudeAuth,
-  onPasteAuthCode,
   onRefreshAgents,
-  codexDeviceAuth,
-  codexDeviceAuthError,
-  onStartCodexDeviceAuth,
-  onCancelCodexDeviceAuth,
   onComplete,
 }: AuthOverlayContainerProps) {
   return (
@@ -59,14 +46,7 @@ export function AuthOverlayContainer({
           agents={agentList}
           onClaudeApiKeySubmit={onClaudeApiKeySubmit}
           onCodexApiKeySubmit={onCodexApiKeySubmit}
-          onStartClaudeAuth={onStartClaudeAuth}
-          authUrl={authUrl}
-          onPasteAuthCode={onPasteAuthCode}
           onRefreshAgents={onRefreshAgents}
-          codexDeviceAuth={codexDeviceAuth}
-          codexDeviceAuthError={codexDeviceAuthError}
-          onStartCodexDeviceAuth={onStartCodexDeviceAuth}
-          onCancelCodexDeviceAuth={onCancelCodexDeviceAuth}
           onComplete={onComplete}
         />
       )}

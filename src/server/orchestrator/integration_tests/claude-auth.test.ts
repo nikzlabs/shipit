@@ -213,22 +213,16 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
     expect(res.json()).toMatchObject({ error: "API key cannot be empty" });
   });
 
-  it("paste_auth_code rejects empty code via HTTP", async () => {
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/auth/code",
-      payload: { code: "  " },
-    });
-    expect(res.statusCode).toBe(400);
-  });
-
-  it("paste_auth_code sends code to auth manager via HTTP", async () => {
+  // docs/150 reqs 16, 19 — the account-less `POST /api/auth/code` is gone.
+  // Pasting an authorization code now names the account it authenticates, so
+  // the credentials land in that account's root rather than in a provider-wide
+  // one no row can manage. Covered in http-mutations.test.ts.
+  it("does not expose an account-less paste-code endpoint", async () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/auth/code",
       payload: { code: "test-auth-code-123" },
     });
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ success: true });
+    expect(res.statusCode).toBe(404);
   });
 });

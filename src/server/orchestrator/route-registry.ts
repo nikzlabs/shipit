@@ -170,10 +170,17 @@ export function registerSseEndpoint(app: FastifyInstance, rt: OrchestratorRuntim
     // until completion), so the in-flight state outlives any single tab.
     // Driven by the auth-manager map — adding a backend that wants replay
     // is one `getPendingPayload()` implementation. (docs/155 Phase 2b)
+    //
+    // The replay must carry `accountId` for the same reason the live broadcast
+    // does (app-lifecycle.ts): the client files a challenge under the account
+    // row that started it (docs/150 req 16), and there is no provider-wide slot
+    // to fall back to. Omitting it here — as this did before — meant a reload
+    // mid-sign-in replayed a challenge the UI had nowhere to put.
     for (const [agentId, mgr] of authManagers) {
       const details = mgr.getPendingPayload();
       if (details) {
-        client.write(`event: agent_auth_pending\ndata: ${JSON.stringify({ agentId, details })}\n\n`);
+        const accountId = mgr.getActiveAccountId() ?? undefined;
+        client.write(`event: agent_auth_pending\ndata: ${JSON.stringify({ agentId, ...(accountId ? { accountId } : {}), details })}\n\n`);
       }
     }
 

@@ -80,7 +80,6 @@ function makeListenerDeps(sseBroadcast = vi.fn()): SystemTurnDeps["listenerDeps"
       indexOfMessageId: vi.fn().mockReturnValue(-1),
     } as never,
     usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as never,
-    authManager: { startOAuthFlow: vi.fn() } as never,
     sseBroadcast,
     broadcastLog: vi.fn(),
     getSelectedModel: () => undefined,

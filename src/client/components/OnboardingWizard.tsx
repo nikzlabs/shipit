@@ -11,8 +11,7 @@ import {
 import { ICON_SIZE } from "../design-tokens.js";
 import type { AgentOption } from "../agent-types.js";
 import { Button } from "./ui/button.js";
-import { ClaudeAuthCard } from "./ClaudeAuthCard.js";
-import { CodexAuthCard, type CodexDeviceAuthState } from "./CodexAuthCard.js";
+import { ProviderAccountsCard } from "./Settings/ProviderAccountsCard.js";
 import { GitHubTokenForm } from "./GitHubTokenForm.js";
 import { Logo } from "./Logo.js";
 
@@ -23,16 +22,7 @@ export interface OnboardingWizardProps {
   agents: AgentOption[];
   onClaudeApiKeySubmit: (key: string) => Promise<boolean>;
   onCodexApiKeySubmit: (key: string) => Promise<boolean>;
-  onStartClaudeAuth: () => void;
-  authUrl: string | null;
-  onPasteAuthCode: (code: string) => void;
   onRefreshAgents: () => Promise<void>;
-  // Codex device-auth (feature 119) — optional so legacy callers / tests
-  // that only ever cared about the API-key path keep compiling.
-  codexDeviceAuth?: CodexDeviceAuthState | null;
-  codexDeviceAuthError?: string | null;
-  onStartCodexDeviceAuth?: () => void;
-  onCancelCodexDeviceAuth?: () => void;
   // Completion
   onComplete: () => void;
   // Skip step 1 if GitHub / git identity is already set
@@ -121,19 +111,26 @@ const STEP2_FEATURES: HeroFeature[] = [
   { Icon: ColumnsIcon, tint: "bg-(--color-pr-subtle) text-(--color-pr)", lead: "Run agents in parallel", rest: "— each session its own branch." },
 ];
 
+/**
+ * docs/150 req 16 — connecting an account uses the same UI for the first
+ * account and for every subsequent one.
+ *
+ * This step used to be the *other* half of the divergence req 16 names: it
+ * rendered the provider-wide `ClaudeAuthCard` / `CodexAuthCard`, whose "Sign
+ * in" button hit the singleton `/api/auth/start` and `/api/codex-auth/start`
+ * endpoints and parked the resulting challenge in a provider-wide store slot.
+ * A user's *first* account was therefore connected by different code, through
+ * different endpoints, than their second — and the first one connected here
+ * wasn't even reachable from the account rows afterwards. Onboarding now
+ * renders the same {@link ProviderAccountsCard} Settings does, so there is one
+ * connect flow with one endpoint family and one piece of state behind it.
+ */
 export function OnboardingWizard({
   onGitHubTokenSubmit,
   agents,
   onClaudeApiKeySubmit,
   onCodexApiKeySubmit,
-  onStartClaudeAuth,
-  authUrl,
-  onPasteAuthCode,
   onRefreshAgents,
-  codexDeviceAuth = null,
-  codexDeviceAuthError = null,
-  onStartCodexDeviceAuth,
-  onCancelCodexDeviceAuth,
   onComplete,
   initialStep = 1,
 }: OnboardingWizardProps) {
@@ -163,6 +160,14 @@ export function OnboardingWizard({
       setStep(2);
     }
     return success;
+  };
+
+  // `ProviderAccountsCard` reports API-key failures by catching a throw; the
+  // onboarding callbacks report them by resolving `false`. Bridge the two so a
+  // rejected key surfaces as the card's inline error instead of reading as
+  // success.
+  const apiKeySubmitter = (submit: (key: string) => Promise<boolean>) => async (key: string) => {
+    if (!(await submit(key))) throw new Error("API key was not accepted");
   };
 
   const handleRefresh = async () => {
@@ -233,22 +238,17 @@ export function OnboardingWizard({
                 </p>
               </div>
 
-              <div className="space-y-3">
-                <ClaudeAuthCard
+              <div className="space-y-5">
+                <ProviderAccountsCard
+                  provider="claude"
                   agent={claudeAgent}
-                  authUrl={authUrl}
-                  onStartAuth={onStartClaudeAuth}
-                  onApiKeySubmit={onClaudeApiKeySubmit}
-                  onPasteAuthCode={onPasteAuthCode}
+                  onSubmitApiKey={apiKeySubmitter(onClaudeApiKeySubmit)}
                 />
 
-                <CodexAuthCard
+                <ProviderAccountsCard
+                  provider="codex"
                   agent={codexAgent}
-                  deviceAuth={codexDeviceAuth}
-                  deviceAuthError={codexDeviceAuthError}
-                  onStartDeviceAuth={onStartCodexDeviceAuth}
-                  onCancelDeviceAuth={onCancelCodexDeviceAuth}
-                  onApiKeySubmit={onCodexApiKeySubmit}
+                  onSubmitApiKey={apiKeySubmitter(onCodexApiKeySubmit)}
                 />
 
                 {agents.filter((a) => a.id !== "claude" && a.id !== "codex").map((agent) => (

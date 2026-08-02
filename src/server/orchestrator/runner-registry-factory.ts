@@ -18,8 +18,6 @@ import type { DepDirPublishOutcome } from "./overlay-publish.js";
 import type { RuntimeMode } from "./app-di.js";
 import type { LogStore } from "./log-store.js";
 import type { UsageManager } from "./usage.js";
-import type { AuthManager } from "./agents/claude/auth-manager.js";
-import type { AgentAuthManager } from "./agent-auth-manager.js";
 import type { PrepareRunParamsFn } from "./agent-run-params-prep.js";
 import type { ProviderAccountManager } from "./provider-account-manager.js";
 import type { TurnOutcome } from "./turn-settlement.js";
@@ -185,13 +183,6 @@ export interface RunnerRegistryDeps {
    */
   usageManager: UsageManager;
   /**
-   * Claude auth manager — used by `wireAgentListeners` to kick off the OAuth
-   * flow when the CLI emits `auth_required`. Without it a system turn that
-   * runs into a stale token would just emit `auth_required` with no
-   * follow-up. Shared with the WS path.
-   */
-  authManager: AuthManager;
-  /**
    * Optional — push a fresh rate-limit snapshot for any agent (from an
    * `agent_rate_limits` AgentEvent) into the subscription-limits badge.
    * Mirrors the WS-path `AppCtx.recordAgentRateLimits`. Wired by
@@ -235,13 +226,6 @@ export interface RunnerRegistryDeps {
    * get the same pre-spawn heal the WS path does.
    */
   ensureAgentTokenFresh?: (agentId: AgentId, accountId?: string) => Promise<boolean>;
-  /**
-   * docs/155 Phase 2c — per-agent auth manager map. Forwarded to the
-   * `AgentListenerDeps` so a system-turn that hits `auth_required` restarts
-   * the failing backend's auth flow (not always Claude OAuth). Optional;
-   * absent in tests that don't construct a real auth manager.
-   */
-  authManagers?: Map<AgentId, AgentAuthManager>;
   /**
    * docs/155 Phase 3 — per-agent run-params prep hooks. Forwarded into the
    * system-turn `buildRunParams` so dispatched/CI-fix turns inject the same
@@ -297,7 +281,7 @@ export function createRunnerRegistry(
     getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
     credentialStore, secretStore, dockerSecretsConfig, serviceEnvDir, logStore, runtimeMode, broadcastLog,
     credentialsDir, providerAccountManager, readSystemPrompt, generateText, getPrStatusPoller, rebindDelivery,
-    usageManager, authManager, authManagers, recordAgentRateLimits, getSubscriptionLimitsSnapshot,
+    usageManager, recordAgentRateLimits, getSubscriptionLimitsSnapshot,
     markSessionAccountExhausted,
     nudgeClaudeOAuthRefresh, onAgentAuthRequired, ensureAgentTokenFresh, runParamsPreps,
     publishOverlayBases,
@@ -331,13 +315,11 @@ export function createRunnerRegistry(
         sessionManager,
         chatHistoryManager,
         usageManager,
-        authManager,
         sseBroadcast,
         broadcastLog: (source: LogSource, text: string) =>
           broadcastLog(runner.sessionId, source, text),
         getSelectedModel: () => sessionManager.get(runner.sessionId)?.model,
         getSelectedReasoning: () => sessionManager.get(runner.sessionId)?.reasoningEffort,
-        ...(authManagers ? { authManagers } : {}),
         ...(recordAgentRateLimits ? { recordAgentRateLimits } : {}),
         ...(getSubscriptionLimitsSnapshot ? { getSubscriptionLimitsSnapshot } : {}),
         ...(markSessionAccountExhausted ? { markSessionAccountExhausted } : {}),

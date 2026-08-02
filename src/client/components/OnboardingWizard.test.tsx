@@ -12,9 +12,6 @@ const defaultProps = () => ({
   ],
   onClaudeApiKeySubmit: vi.fn().mockResolvedValue(true),
   onCodexApiKeySubmit: vi.fn().mockResolvedValue(true),
-  onStartClaudeAuth: vi.fn(),
-  authUrl: null as string | null,
-  onPasteAuthCode: vi.fn(),
   onRefreshAgents: vi.fn().mockResolvedValue(undefined),
   onComplete: vi.fn(),
 });
@@ -78,12 +75,57 @@ describe("OnboardingWizard", () => {
       });
     });
 
-    it("renders ClaudeAuthCard and CodexAuthCard", async () => {
+    // docs/150 req 16 — onboarding connects an account through the same
+    // account-row surface Settings uses, not a separate singleton card.
+    it("renders the per-account connect surface for both providers", async () => {
       renderStep2();
       await waitFor(() => {
-        expect(screen.getByTestId("claude-auth-card")).toBeInTheDocument();
-        expect(screen.getByTestId("codex-auth-card")).toBeInTheDocument();
+        expect(screen.getByTestId("provider-accounts-card-claude")).toBeInTheDocument();
+        expect(screen.getByTestId("provider-accounts-card-codex")).toBeInTheDocument();
       });
+      // "Add account" is the only way in, exactly as in Settings — no separate
+      // first-account "Sign in" button.
+      expect(screen.getByTestId("provider-account-add-claude")).toBeInTheDocument();
+      expect(screen.getByTestId("provider-account-add-codex")).toBeInTheDocument();
+      expect(screen.queryByTestId("claude-auth-card")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("codex-auth-card")).not.toBeInTheDocument();
+    });
+
+    // The point of req 16 is the *endpoint*, not the pixels: onboarding's
+    // connect button must hit the same account-scoped route Settings does,
+    // not a singleton `/api/auth/start`.
+    it("connects a first account through the account-scoped endpoints", async () => {
+      const fetchMock = vi.fn(async (url: string) => ({
+        ok: true,
+        json: async () =>
+          url === "/api/provider-accounts"
+            ? { accounts: [{ id: "acct_new", provider: "claude", label: "Claude", status: "authenticating", isPrimary: true }] }
+            : { success: true },
+      }));
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderStep2();
+      await waitFor(() => {
+        expect(screen.getByTestId("provider-account-add-claude")).toBeInTheDocument();
+      });
+      fireEvent.click(screen.getByTestId("provider-account-add-claude"));
+
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith("/api/provider-accounts", expect.objectContaining({ method: "POST" }));
+      });
+      // Creating the row and starting its sign-in is one user action, so the
+      // login POST follows without a second click.
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith(
+          "/api/provider-accounts/claude/acct_new/login",
+          expect.objectContaining({ method: "POST" }),
+        );
+      });
+      const urls = fetchMock.mock.calls.map(([url]) => url);
+      expect(urls).not.toContain("/api/auth/start");
+      expect(urls).not.toContain("/api/codex-auth/start");
+
+      vi.unstubAllGlobals();
     });
 
     it("Get Started is enabled when at least one agent is ready", async () => {

@@ -26,7 +26,6 @@ import type { AutoResolveResult, RebaseAndResolveCb } from "./auto-conflict-reso
 import type { AutoFixResult } from "./auto-fix-manager.js";
 import type { ChatHistoryManager } from "./chat-history.js";
 import type { UsageManager } from "./usage.js";
-import type { AuthManager } from "./agents/claude/auth-manager.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { SessionManager } from "./sessions.js";
 import { repushAgentToken, repushProviderAccountToken } from "./session-credentials.js";
@@ -840,7 +839,6 @@ export interface PrPollerDeps {
    */
   chatHistoryManager?: ChatHistoryManager;
   usageManager?: UsageManager;
-  authManager?: AuthManager;
   credentialStore?: CredentialStore;
   /**
    * docs/146 — exposed for the wrapper's drain hook. When the rebase-driver's
@@ -870,7 +868,7 @@ export function createPrStatusPoller(
     deps, githubAuthManager, sessionManager, sseBroadcast,
     runnerRegistry, defaultAgentId, createRepoGit, getBareCacheDir, pruneSessionVolumes,
     onRepoMainAdvanced, containerManager, mergeWatchManager,
-    createGitManager, chatHistoryManager, usageManager, authManager, credentialStore,
+    createGitManager, chatHistoryManager, usageManager, credentialStore,
     drainQueueForSession, agentFactory,
   } = pollerDeps;
 
@@ -880,7 +878,7 @@ export function createPrStatusPoller(
   // and git manager per-call. Skipped in degraded test setups that omit any
   // of the deps — the auto-resolve feature stays inactive.
   let rebaseAndResolveCb: RebaseAndResolveCb | undefined;
-  if (createGitManager && chatHistoryManager && usageManager && authManager) {
+  if (createGitManager && chatHistoryManager && usageManager) {
     rebaseAndResolveCb = async (sessionId, baseBranch): Promise<AutoResolveResult> => {
       const runner = runnerRegistry.get(sessionId);
       if (!runner) {
@@ -897,7 +895,6 @@ export function createPrStatusPoller(
           sessionManager,
           chatHistoryManager,
           usageManager,
-          authManager,
           sseBroadcast,
           // Container runners supply `createAgent` themselves so this is
           // unused in production; in-process runners (tests, local mode)

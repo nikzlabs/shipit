@@ -345,22 +345,11 @@ export function setAgentEnv(
   return { agentId, key, agents: listAgents(agentRegistry) };
 }
 
-/** Start the OAuth flow for Claude CLI authentication. */
-export function startAuth(
-  authManager: { startOAuthFlow: () => void },
-): void {
-  authManager.startOAuthFlow();
-}
-
-/** Submit an OAuth authorization code. */
-export function submitAuthCode(
-  authManager: { sendCode: (code: string) => void },
-  code: string,
-): void {
-  const trimmed = typeof code === "string" ? code.trim() : "";
-  if (!trimmed) throw new ServiceError(400, "Authorization code cannot be empty");
-  authManager.sendCode(trimmed);
-}
+// docs/150 req 19 — `startAuth` / `submitAuthCode` are gone with the singleton
+// endpoints that were their only callers. The account-scoped equivalents live
+// in `provider-accounts.ts` (`startProviderAccountLogin`,
+// `submitProviderAccountCode`), which take the account whose credentials the
+// flow will write.
 
 /** Set API key. Returns true if valid. */
 export function setApiKey(

@@ -90,7 +90,6 @@ function makeDeps(
         indexOfMessageId: vi.fn().mockReturnValue(-1),
       } as never,
       usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as never,
-      authManager: { startOAuthFlow } as never,
       sseBroadcast,
       broadcastLog: vi.fn(),
       getSelectedModel: () => undefined,
