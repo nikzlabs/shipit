@@ -32,7 +32,8 @@
       the sidebar `+` menu (`handleCreateOps`) and the per-row `⋯` "Investigate in Ops
       session" entry are the ops-creation surfaces; the redundant Settings button is gone.
 - [x] Per-session `⋯` menu "Investigate in Ops session" entry point (any non-ops row);
-      seeds the new session's composer draft with a target-scoped investigation prompt.
+      seeds the new session's composer draft only with the target identity and read-only
+      boundary, leaving incident-specific investigation instructions to the operator.
 - [x] `createOpsSession(targetSessionId?)` store action centralizing ops creation
       (Settings + sidebar both use it); refactored the Settings inline fetch onto it.
 - [x] Per-kind right-panel tabs: hide Preview + PR, add read-only Host tab (`HostPanel`).

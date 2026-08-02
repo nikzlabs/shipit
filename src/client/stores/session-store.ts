@@ -259,9 +259,10 @@ interface SessionState {
    * docs/128 — create a privileged ops session via the ops template. When
    * `targetSessionId` is supplied (the "Investigate in Ops session" entry point
    * off another session's row), the server names the new session after its
-   * quarry and returns a `seedPrompt`, which we stash as the new session's
-   * composer draft so the operator lands with the investigation prompt
-   * pre-typed. Returns the new session id, or `null` on failure (caller toasts).
+   * quarry and returns a minimal `seedPrompt`, which we stash as the new
+   * session's composer draft. It identifies the target and read-only boundary;
+   * the operator supplies the incident-specific request. Returns the new
+   * session id, or `null` on failure (caller toasts).
    */
   createOpsSession: (targetSessionId?: string) => Promise<string | null>;
 
