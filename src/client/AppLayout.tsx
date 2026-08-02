@@ -21,6 +21,7 @@ import { GitHubRateLimitBanner } from "./components/GitHubRateLimitBanner.js";
 import { LocalModeBanner } from "./components/LocalModeBanner.js";
 import { Logo } from "./components/Logo.js";
 import { QuickCaptureOverlay } from "./components/QuickCaptureOverlay.js";
+import { MobileContentPanels } from "./components/MobileContentPanels.js";
 
 interface AppLayoutProps {
   // Header
@@ -217,9 +218,13 @@ export function AppLayout({
               region (above the tab bar), not the whole viewport. This keeps the
               MobileTabBar visible and interactive while the session list is open. */}
           <div className="relative flex flex-col flex-1 min-h-0">
-            <div className="flex flex-col flex-1 min-h-0">
-              {(showHomeScreen && !showNewSessionView) || mobilePanel === "chat" ? <div data-chat-panel className="flex flex-col flex-1 min-h-0">{chatPanel}</div> : <div className="flex flex-col flex-1 min-h-0 bg-(--color-bg-secondary)">{rightPanel}</div>}
-            </div>
+            <MobileContentPanels
+              showHomeScreen={showHomeScreen}
+              showNewSessionView={showNewSessionView}
+              activePanel={mobilePanel}
+              chatPanel={chatPanel}
+              rightPanel={rightPanel}
+            />
             {mobileSidebarOpen && (
               <div className="absolute inset-0 z-40 flex" role="dialog" aria-label="Sessions">
                 {/* Backdrop — tap to close */}
