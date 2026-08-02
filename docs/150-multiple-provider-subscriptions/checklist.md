@@ -36,10 +36,12 @@
 - [x] Share the account-row shell across Claude code-paste and Codex device-code challenge variants.
 - [x] Key pending challenge, failure, and completion state by provider account id.
 - [ ] Key Claude CLI auth *diagnostics* by account id too (still provider-wide; the row renders the shared buffer while it is mid-challenge).
-- [ ] Reuse the account-row flow in onboarding instead of singleton Claude/Codex auth cards.
+- [ ] Serialize concurrent per-provider sign-ins: two rows connecting at once share one CLI process, and cancel/code do not check which row owns it (Codex replays the first row's challenge; Claude kills the earlier flow without resetting its status). Not reachable from onboarding, where only one account exists.
+- [ ] Scope `ensureAgentTokenFresh` to the turn's account: it refreshes every account for the provider and aggregates with `every()`, so an unrelated revoked account fails a healthy account's turn.
+- [x] Reuse the account-row flow in onboarding instead of singleton Claude/Codex auth cards.
 - [x] Move Claude and Codex Platform API-key inputs into separate collapsed fallback sections with explicit metered-billing copy.
-- [ ] Migrate singleton Claude/Codex login, code, cancel, and sign-out callers to provider-account endpoints.
-- [ ] Remove singleton subscription auth endpoints and provider-wide pending client state after caller migration.
+- [x] Migrate singleton Claude/Codex login, code, and cancel callers to provider-account endpoints (sign-*out* stays provider-wide by design).
+- [x] Remove singleton subscription auth endpoints and provider-wide pending client state after caller migration.
 - [x] Block disconnect while an account is pinned to a running session unless replacement is selected.
 - [x] Implement account-switch runtime transition for pinned sessions: kill process, reprovision while preserving conversation-state subpaths, keep `agentSessionId`, resume (req 9).
 - [x] Hydrate persisted provider route for detached/system-turn runner recreation.
@@ -65,8 +67,8 @@
 - [ ] Render multi-account grouped/expanded quota state without layout overlap.
 - [ ] Render active provider account in session diagnostics.
 - [x] Skip known-exhausted accounts for new turns.
-- [x] Return `all_exhausted` / `auth_required` / `no_model_eligible_account` as distinct results from the router.
-- [x] Surface those three states to the user on a blocked turn (req 13's message).
+- [x] Return `all_exhausted` / `auth_required` as distinct results from the router (`no_model_eligible_account` removed with req 17's reversal).
+- [x] Surface those states to the user on a blocked turn (req 13's message).
 - [x] Fail an all-exhausted turn immediately with the earliest reset time, before any first-turn pinning or credential provisioning (req 13).
 
 ## Phase 3 — Automatic Failover
@@ -83,7 +85,7 @@
 ## Phase 4 — Policy Controls
 
 - [x] Persist a user-controlled priority order for authenticated accounts per provider (`ProviderAccount.priority`, ascending; legacy rows without one keep primary-then-stored order).
-- [x] Widen `selectRouteForTurn` into `selectAccountForTurn` with structured failures (`all_exhausted` / `auth_required` / `no_model_eligible_account`), which reqs 13 and 17 depend on.
+- [x] Widen `selectRouteForTurn` into `selectAccountForTurn` with structured failures (`all_exhausted` / `auth_required`), which req 13 depends on.
 - [x] Add Settings controls to reorder provider accounts; newly connected accounts append to the fallback order.
 - [x] Persist per-provider short-window and weekly usage cutoffs with 90% defaults and 1–100 validation.
 - [x] Add Settings controls for both proactive failover cutoffs.
@@ -125,6 +127,13 @@
 - [x] Client: render the migrated primary/default Claude subscription through the same account-row auth flow as secondary Claude subscriptions.
 - [x] Client: render the migrated primary/default Codex subscription through the same account-row device-auth flow as secondary Codex subscriptions.
 - [x] Client: share the account-row auth shell across Claude code-paste and Codex device-code challenge variants.
+- [x] Client: onboarding renders the same per-account connect surface as Settings, with no singleton card.
+- [x] Integration: the retired singleton subscription auth endpoints 404.
+- [x] Integration: the Codex device flow runs end to end through the account-scoped login route, asserting `accountId` on pending/complete/failed.
+- [x] Client: onboarding's connect button hits the account-scoped endpoints, never a singleton one.
+- [x] Client: onboarding renders the card `compact` (no between-accounts explainer) so the fixed-height pane keeps "Get Started" above the fold.
+- [x] Manual: first-run onboarding in the dogfood preview — add account, challenge lands on its own row, cancel flips that row to `auth failed`.
+- [x] Unit: both OAuth refreshers name the revoked account on `agent_auth_failed`.
 - [ ] Unit: API-key fallback configures only its reserved route and never marks a subscription account ready.
 - [x] Client: an authenticated primary row does not hide or overwrite a secondary row's pending flow or diagnostics.
 - [x] Client: subscription limits render multiple accounts per provider, each named.
@@ -136,7 +145,9 @@ Runs last: every shim below is load-bearing for an install that has not yet
 exercised the new path. The signal one is ready to go is that nothing reads it.
 
 - [ ] Remove the legacy root credential paths and alias symlinks once every read/write goes through an account root.
+- [ ] Give provider-wide sign-out (`DELETE /api/auth/api-key`, `DELETE /api/codex-auth`) the same pinned-session safeguards as per-account disconnect, or replace it with a per-account sweep. It currently drops every row with no replacement offered, stranding pinned sessions on dead route ids.
+- [ ] Drop `AgentAuthManager.start`'s no-scope overload and the account-less `complete` branch in `wireEventHandlers` once nothing can start an unscoped flow (nothing does today — `startProviderAccountLogin` is the only caller).
 - [ ] Remove `selectRouteForTurn` in favour of `selectAccountForTurn`.
 - [ ] Backfill `priority` onto stored rows, then drop the `isPrimary`-only ordering fallback in `accountsInSelectionOrder`.
 - [ ] Resolve `ProviderAccount.isPrimary` vs `priority` — drop whichever is no longer read independently.
-- [ ] Confirm no singleton subscription auth endpoint, client state, or onboarding card remains (covers the three Phase 1 migration items).
+- [x] Confirm no singleton subscription auth endpoint, client state, or onboarding card remains (covers the three Phase 1 migration items).

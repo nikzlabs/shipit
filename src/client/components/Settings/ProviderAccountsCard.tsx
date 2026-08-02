@@ -19,15 +19,17 @@ const apiKeyCopy: Record<AgentId, { label: string; placeholder: string; prefix: 
 };
 
 /**
- * Settings → Agent → {Claude,Codex} — the **single** subscription connect
- * surface (docs/150 req 16).
+ * The **single** subscription connect surface (docs/150 req 16) — rendered by
+ * Settings → Agent → {Claude,Codex} *and* by first-run onboarding.
  *
  * Before this, connecting the *first* account went through the provider-wide
  * `ClaudeAuthCard` / `CodexAuthCard` ("Sign in" on a singleton card) while
  * connecting a *second* account went through a per-account row — two different
  * flows, different endpoints, different state slots, for the same user intent.
  * Req 16 makes them one: every account, including the first, is a row, and
- * "Add account" is the only way to connect one.
+ * "Add account" is the only way to connect one. Both singleton cards and the
+ * endpoints behind them have since been deleted (req 19), so this is not just
+ * the preferred path — it is the only one.
  *
  * The row shell is shared across providers; only the challenge panel differs,
  * because the providers genuinely differ — Anthropic hands back an
@@ -46,11 +48,20 @@ export function ProviderAccountsCard({
   agent,
   onSubmitApiKey,
   onClearApiKey,
+  compact = false,
 }: {
   provider: AgentId;
   agent: AgentOption | undefined;
   onSubmitApiKey: (key: string) => Promise<void> | void;
   onClearApiKey?: () => Promise<void> | void;
+  /**
+   * Density-only variant for the onboarding modal, which stacks two of these
+   * in a fixed-height pane. It drops the failover explainer — which describes
+   * what happens *between* accounts to a user who has none yet — and nothing
+   * else. Same rows, same endpoints, same state: req 16 is about the flow not
+   * diverging, and this changes only how much prose sits above it.
+   */
+  compact?: boolean;
 }) {
   const allAccounts = useSettingsStore((s) => s.providerAccounts);
   const setProviderAccounts = useSettingsStore((s) => s.setProviderAccounts);
@@ -325,11 +336,13 @@ export function ProviderAccountsCard({
             />
             <h3 className="text-sm font-medium text-(--color-text-primary)">{name} subscriptions</h3>
           </div>
-          <p className="mt-0.5 text-xs text-(--color-text-tertiary)">
-            {!installed
-              ? `${name} CLI is not installed.`
-              : "Connect one or more subscriptions. ShipIt fails over between them when one runs out."}
-          </p>
+          {(!installed || !compact) && (
+            <p className="mt-0.5 text-xs text-(--color-text-tertiary)">
+              {!installed
+                ? `${name} CLI is not installed.`
+                : "Connect one or more subscriptions. ShipIt fails over between them when one runs out."}
+            </p>
+          )}
         </div>
         <Button
           variant="secondary"

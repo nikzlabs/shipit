@@ -17,8 +17,6 @@ import {
   clearApiKey,
   listAgents,
   fullReset,
-  startAuth,
-  submitAuthCode,
   listProviderAccounts,
   createProviderAccount,
   renameProviderAccount,
@@ -417,74 +415,18 @@ export async function registerBootstrapRoutes(
     },
   );
 
-  // POST /api/auth/start — initiate OAuth flow
-  app.post(
-    "/api/auth/start",
-    async (_request, reply) => {
-      try {
-        startAuth(deps.authManager);
-        reply.code(202).send({ success: true });
-      } catch (err) {
-        console.error("[auth] startAuth() threw:", err);
-        reply.code(500).send({ error: `Failed to start auth: ${getErrorMessage(err)}` });
-      }
-    },
-  );
-
-  // POST /api/auth/code — submit OAuth authorization code
-  app.post<{ Body: { code: string } }>(
-    "/api/auth/code",
-    async (request, reply) => {
-      try {
-        submitAuthCode(deps.authManager, request.body.code);
-        return { success: true };
-      } catch (err) {
-        if (err instanceof ServiceError) {
-          reply.code(err.statusCode).send({ error: err.message });
-          return;
-        }
-        reply.code(500).send({ error: `Failed to submit auth code: ${getErrorMessage(err)}` });
-      }
-    },
-  );
+  // docs/150 reqs 16/19 — the singleton subscription sign-in endpoints
+  // (`POST /api/auth/start`, `POST /api/auth/code`, `POST /api/codex-auth/start`,
+  // `POST /api/codex-auth/cancel`) are gone. They were the *other* way to
+  // connect a subscription: no account id, one implicit flow per provider, and
+  // a result the account rows couldn't manage. Every sign-in now goes through
+  // `/api/provider-accounts/:provider/:accountId/login[/cancel|/code]` above,
+  // which is the same path whether it's the user's first account or their
+  // fifth. Sign-*out* is unchanged and still provider-wide below — it clears
+  // credentials that predate accounts as well as the rows themselves.
 
   // ---- Codex (ChatGPT subscription) auth routes ----
   // See docs/119-codex-subscription-auth/plan.md.
-
-  /**
-   * POST /api/codex-auth/start — kick off `codex login --device-auth`.
-   * Idempotent: returning 202 even when a flow is already in flight is the
-   * documented behavior (the manager itself no-ops repeat calls). The actual
-   * URL + user code stream over SSE as a `codex_auth_pending` event.
-   */
-  app.post(
-    "/api/codex-auth/start",
-    async (_request, reply) => {
-      try {
-        deps.codexAuthManager.startDeviceFlow();
-        reply.code(202).send({ success: true, pending: deps.codexAuthManager.pending });
-      } catch (err) {
-        console.error("[codex-auth] startDeviceFlow() threw:", err);
-        reply.code(500).send({ error: `Failed to start Codex auth: ${getErrorMessage(err)}` });
-      }
-    },
-  );
-
-  /**
-   * POST /api/codex-auth/cancel — abort an in-flight device flow. SIGTERMs
-   * the underlying `codex login` so it stops polling. Idempotent.
-   */
-  app.post(
-    "/api/codex-auth/cancel",
-    async (_request, reply) => {
-      try {
-        deps.codexAuthManager.cancel();
-        return { success: true };
-      } catch (err) {
-        reply.code(500).send({ error: `Failed to cancel Codex auth: ${getErrorMessage(err)}` });
-      }
-    },
-  );
 
   /**
    * DELETE /api/codex-auth — sign out of the ChatGPT subscription. Removes

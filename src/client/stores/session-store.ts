@@ -69,7 +69,6 @@ interface SessionState {
   selectedRepoUrl: string | null;
   creatingRepo: boolean;
   sessions: SessionInfo[];
-  authUrl: string | null;
   activeRunnerSessions: Set<string>;
   /** docs/193 (Thread C) — sessions blocked awaiting a permission answer. */
   awaitingPermissionSessions: Set<string>;
@@ -198,7 +197,6 @@ interface SessionState {
    * reconciles.
    */
   reorderPins: (remoteUrl: string, ids: string[]) => Promise<void>;
-  setAuthUrl: (url: string | null) => void;
   setSelectedRepoUrl: (url: string | null) => void;
   setCreatingRepo: (creating: boolean) => void;
   setActiveRunnerSessions: (
@@ -314,7 +312,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   sessionId: undefined,
   ...initialResettableState,
   sessions: [] as SessionInfo[],
-  authUrl: null,
   activeRunnerSessions: new Set<string>(),
   awaitingPermissionSessions: new Set<string>(),
   backgroundTaskSessions: new Map<string, string[]>(),
@@ -495,8 +492,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }));
     }
   },
-
-  setAuthUrl: (authUrl) => set({ authUrl }),
 
   setSelectedRepoUrl: (selectedRepoUrl) => set({ selectedRepoUrl }),
 

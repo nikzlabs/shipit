@@ -6,8 +6,9 @@ import { SubAgentDefaultsSection } from "../SubAgentDefaultsSection.js";
  * docs/150 req 16 — this tab used to stack a provider-wide `ClaudeAuthCard`
  * (the only way to connect the *first* subscription) on top of a per-account
  * section (the only way to connect *subsequent* ones). `ProviderAccountsCard`
- * replaces both with a single account-row flow. `ClaudeAuthCard` still backs
- * first-run onboarding until that path is migrated too.
+ * replaces both with a single account-row flow. Onboarding renders this same
+ * card now, so no surface connects a first account differently — and
+ * `ClaudeAuthCard` itself is gone.
  */
 export function ClaudeTab({
   agent,

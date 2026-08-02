@@ -209,13 +209,20 @@ export function useServerEvents(): void {
     // `codex_auth_*`) are gone; adding a new backend is one variant added to
     // the discriminated `details.kind` union, not three new listeners here.
     // docs/155: the three SSE auth handlers below dispatch on the runtime
-    // event's `agentId` + `details.kind` to route each backend's payload into
-    // a different store slice (sessionStore.setAuthUrl vs
-    // settingsStore.setCodexDeviceAuth*). That's discriminated-union
-    // narrowing of received wire data, not abstraction-leaking dispatch —
-    // adding a backend means adding one more `else if` here that targets
-    // whatever store slice owns its sign-in card. The disables sit inline
-    // so a new backend wires its narrowing without re-tripping the leak guard.
+    // event's `agentId` + `details.kind` to shape each backend's payload into
+    // the account-keyed challenge slice. That's discriminated-union narrowing
+    // of received wire data, not abstraction-leaking dispatch — adding a
+    // backend means adding one more `else if` here for its payload shape. The
+    // disables sit inline so a new backend wires its narrowing without
+    // re-tripping the leak guard.
+    //
+    // docs/150 req 16/19: every subscription sign-in is account-scoped, so an
+    // event without `accountId` has no home and is ignored rather than
+    // falling back to a provider-wide slot. The provider-wide slots
+    // (`sessionStore.authUrl`, `settingsStore.codexDeviceAuth*`) are gone with
+    // the singleton endpoints that fed them. Claude's *diagnostics* are still
+    // provider-wide and are updated regardless — they're a debug buffer, not a
+    // challenge.
     es.addEventListener("agent_auth_pending", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as {
         agentId: AgentId;
@@ -233,8 +240,6 @@ export function useServerEvents(): void {
             verificationUri: data.details.verificationUri,
           });
           useSettingsStore.getState().setProviderAccountAuthError("claude", data.accountId, null);
-        } else {
-          useSessionStore.getState().setAuthUrl(data.details.verificationUri);
         }
         const currentAttemptId = useSettingsStore.getState().claudeAuthDiagnostics.attemptId;
         if (currentAttemptId) {
@@ -259,13 +264,6 @@ export function useServerEvents(): void {
             userCode: data.details.userCode,
           });
           useSettingsStore.getState().setProviderAccountAuthError("codex", data.accountId, null);
-        } else {
-          useSettingsStore.getState().setCodexDeviceAuth({
-            verificationUri: data.details.verificationUri,
-            userCode: data.details.userCode,
-            expiresInSec: data.details.expiresInSec,
-          });
-          useSettingsStore.getState().setCodexDeviceAuthError(null);
         }
       }
     });
@@ -277,8 +275,6 @@ export function useServerEvents(): void {
         if (data.accountId) {
           useSettingsStore.getState().setProviderAccountAuth("claude", data.accountId, null);
           useSettingsStore.getState().setProviderAccountAuthError("claude", data.accountId, null);
-        } else {
-          useSessionStore.getState().setAuthUrl(null);
         }
         useSettingsStore.getState().finishClaudeAuthDiagnostics("complete", "Claude sign-in completed.");
       // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
@@ -286,9 +282,6 @@ export function useServerEvents(): void {
         if (data.accountId) {
           useSettingsStore.getState().setProviderAccountAuth("codex", data.accountId, null);
           useSettingsStore.getState().setProviderAccountAuthError("codex", data.accountId, null);
-        } else {
-          useSettingsStore.getState().setCodexDeviceAuth(null);
-          useSettingsStore.getState().setCodexDeviceAuthError(null);
         }
       }
     });
@@ -310,8 +303,6 @@ export function useServerEvents(): void {
         if (data.accountId) {
           useSettingsStore.getState().setProviderAccountAuth("claude", data.accountId, null);
           useSettingsStore.getState().setProviderAccountAuthError("claude", data.accountId, claudeFailure);
-        } else {
-          useSessionStore.getState().setAuthUrl(null);
         }
         useSettingsStore.getState().finishClaudeAuthDiagnostics("failed", claudeFailure);
         if (data.reason === "revoked") {
@@ -337,9 +328,6 @@ export function useServerEvents(): void {
         if (data.accountId) {
           useSettingsStore.getState().setProviderAccountAuth("codex", data.accountId, null);
           useSettingsStore.getState().setProviderAccountAuthError("codex", data.accountId, data.message ?? fallback);
-        } else {
-          useSettingsStore.getState().setCodexDeviceAuth(null);
-          useSettingsStore.getState().setCodexDeviceAuthError(data.message ?? fallback);
         }
       }
     });

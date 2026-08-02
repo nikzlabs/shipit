@@ -31,7 +31,6 @@ import type { GitHubAuthManager } from "../github-auth.js";
 import type { ChatHistoryManager } from "../chat-history.js";
 import type { SessionManager } from "../sessions.js";
 import type { UsageManager } from "../usage.js";
-import type { AuthManager } from "../agents/claude/auth-manager.js";
 
 /**
  * Fake agent for rebase tests. The test injects a "resolution function" that
@@ -200,9 +199,6 @@ function makeStubUsageManager(): UsageManager {
   } as unknown as UsageManager;
 }
 
-function makeStubAuthManager(): AuthManager {
-  return { startOAuthFlow: () => {} } as unknown as AuthManager;
-}
 
 /**
  * docs/169 — the conflict-resolution turn now runs through `runner.dispatch`,
@@ -224,7 +220,6 @@ async function runFlow(
       sessionManager: deps.sessionManager,
       chatHistoryManager: deps.chatHistoryManager,
       usageManager: deps.usageManager,
-      authManager: deps.authManager,
       sseBroadcast: deps.sseBroadcast,
       broadcastLog: () => { /* rebase flow doesn't surface CLI log lines */ },
       getSelectedModel: () => deps.sessionManager.get(deps.runner.sessionId)?.model,
@@ -282,7 +277,6 @@ describe("rebase-driver: runRebaseFlow", () => {
       chatHistoryManager: makeStubHistory(captured),
       agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
       usageManager: makeStubUsageManager(),
-      authManager: makeStubAuthManager(),
       sseBroadcast: () => {},
     }, "main");
 
@@ -316,7 +310,6 @@ describe("rebase-driver: runRebaseFlow", () => {
       chatHistoryManager: makeStubHistory([]),
       agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
       usageManager: makeStubUsageManager(),
-      authManager: makeStubAuthManager(),
       sseBroadcast: () => {},
     }, "main");
 
@@ -370,7 +363,6 @@ describe("rebase-driver: runRebaseFlow", () => {
       chatHistoryManager: makeStubHistory([]),
       agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
       usageManager: makeStubUsageManager(),
-      authManager: makeStubAuthManager(),
       sseBroadcast: () => {},
     }, "main");
 
@@ -397,7 +389,6 @@ describe("rebase-driver: runRebaseFlow", () => {
       chatHistoryManager: makeStubHistory([]),
       agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
       usageManager: makeStubUsageManager(),
-      authManager: makeStubAuthManager(),
       sseBroadcast: () => {},
     }, "main");
 
@@ -431,7 +422,6 @@ describe("rebase-driver: runRebaseFlow", () => {
         chatHistoryManager: makeStubHistory([]),
         agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
         usageManager: makeStubUsageManager(),
-      authManager: makeStubAuthManager(),
       sseBroadcast: () => {},
       }, "main");
 
@@ -473,7 +463,6 @@ describe("rebase-driver: runRebaseFlow", () => {
       chatHistoryManager: makeStubHistory([]),
       agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
       usageManager: makeStubUsageManager(),
-      authManager: makeStubAuthManager(),
       sseBroadcast: () => {},
     }, "main");
 
@@ -514,7 +503,6 @@ describe("rebase-driver: runRebaseFlow", () => {
         return "Resolved shared.txt by merging both edits.";
       }) as unknown as AgentProcess,
       usageManager: makeStubUsageManager(),
-      authManager: makeStubAuthManager(),
       sseBroadcast: () => {},
     }, "main");
 
@@ -623,7 +611,6 @@ describe("rebase-driver: runRebaseFlow", () => {
       agentFactory: () =>
         new FakeToolUsingAgent(path.join(workDir, "shared.txt"), "merged result\n") as unknown as AgentProcess,
       usageManager: makeStubUsageManager(),
-      authManager: makeStubAuthManager(),
       sseBroadcast: () => {},
     }, "main");
 
@@ -673,7 +660,6 @@ describe("rebase-driver: runRebaseFlow", () => {
         chatHistoryManager: makeStubHistory([]),
         agentFactory: () => new FakeRebaseAgent(() => "ok") as unknown as AgentProcess,
         usageManager: makeStubUsageManager(),
-      authManager: makeStubAuthManager(),
       sseBroadcast: () => {},
       }, "main"),
     ).rejects.toThrow(/Cannot rebase while an agent turn is in progress/);
@@ -696,7 +682,6 @@ describe("rebase-driver: runRebaseFlow", () => {
         chatHistoryManager: makeStubHistory([]),
         agentFactory: () => new FakeRebaseAgent(() => "ok") as unknown as AgentProcess,
         usageManager: makeStubUsageManager(),
-      authManager: makeStubAuthManager(),
       sseBroadcast: () => {},
       }, "nonexistent-branch-xyz"),
     ).rejects.toThrow(/Cannot resolve base branch/);
@@ -720,7 +705,6 @@ describe("rebase-driver: runRebaseFlow", () => {
       chatHistoryManager: makeStubHistory([]),
       agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
       usageManager: makeStubUsageManager(),
-      authManager: makeStubAuthManager(),
       sseBroadcast: () => {},
     }, "main");
 
@@ -742,7 +726,6 @@ describe("rebase-driver: runRebaseFlow", () => {
       chatHistoryManager: makeStubHistory([]),
       agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
       usageManager: makeStubUsageManager(),
-      authManager: makeStubAuthManager(),
       sseBroadcast: () => {},
     }, "main");
 
@@ -773,7 +756,6 @@ describe("rebase-driver: runRebaseFlow", () => {
         return "Resolved.";
       }) as unknown as AgentProcess,
       usageManager: makeStubUsageManager(),
-      authManager: makeStubAuthManager(),
       sseBroadcast: () => {},
     }, "main");
 
@@ -797,7 +779,6 @@ describe("rebase-driver: runRebaseFlow", () => {
         chatHistoryManager: makeStubHistory([]),
         agentFactory: () => new FakeRebaseAgent(() => "ok") as unknown as AgentProcess,
         usageManager: makeStubUsageManager(),
-        authManager: makeStubAuthManager(),
         sseBroadcast: () => {},
       }, "nonexistent-branch-xyz"),
     ).rejects.toThrow(/Cannot resolve base branch/);
@@ -851,7 +832,6 @@ describe("rebase-driver: docs/221 sync card + local base move", () => {
     chatHistoryManager: makeStubHistory(captured),
     agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
     usageManager: makeStubUsageManager(),
-    authManager: makeStubAuthManager(),
     sseBroadcast: () => {},
   });
 

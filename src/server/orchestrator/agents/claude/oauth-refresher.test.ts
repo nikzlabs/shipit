@@ -334,7 +334,9 @@ describe("ClaudeOAuthRefresher", () => {
     // `reason: "revoked"`. Replaces the legacy `auth_required` broadcast.
     expect(sseEvents).toContain("agent_auth_failed");
     const failed = rig.sseCalls.find((c) => c.event === "agent_auth_failed");
-    expect(failed!.data).toEqual({ agentId: "claude", reason: "revoked" });
+    // docs/150 req 19 — names the revoked account; the client has no
+    // provider-wide slot left to absorb an unqualified failure.
+    expect(failed!.data).toEqual({ agentId: "claude", accountId: "claude-default", reason: "revoked" });
 
     const perAccount = rig.sseCalls.find((c) => c.event === "claude_account_unauthenticated");
     expect(perAccount!.data).toEqual({ accountId: "claude-default" });

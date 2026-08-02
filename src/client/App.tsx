@@ -178,7 +178,6 @@ export default function App() {
   const isLoading = useSessionStore((s) => s.isLoading);
   const activity = useSessionStore((s) => s.activity);
   const sessions = useSessionStore((s) => s.sessions);
-  const authUrl = useSessionStore((s) => s.authUrl);
   const queuedMessages = useSessionStore((s) => s.queuedMessages);
   const historyLoaded = useSessionStore((s) => s.historyLoaded);
   // Per-turn usage for the active session — feeds the UsageModal's per-turn
@@ -276,8 +275,6 @@ export default function App() {
     (s) => s.agentSystemInstructions,
   );
   const maxIdleContainers = useSettingsStore((s) => s.maxIdleContainers);
-  const codexDeviceAuth = useSettingsStore((s) => s.codexDeviceAuth);
-  const codexDeviceAuthError = useSettingsStore((s) => s.codexDeviceAuthError);
 
   const rightTabRaw = useUiStore((s) => s.rightTab);
   const runtimeMode = useUiStore((s) => s.runtimeMode);
@@ -1966,7 +1963,6 @@ export default function App() {
     <TooltipProvider delayDuration={300}>
       <div className="flex flex-col h-[100dvh] bg-(--color-bg-primary) text-(--color-text-primary)">
         <AuthOverlayContainer
-          authUrl={authUrl}
           showOnboarding={showOnboarding}
           githubNeeded={githubNeeded}
           agentList={agentList}
@@ -2004,25 +2000,11 @@ export default function App() {
               return false;
             }
           }}
-          onStartClaudeAuth={() => {
-            apiPost("/api/auth/start", {}).catch(() => {});
-          }}
-          onPasteAuthCode={(code: string) => {
-            apiPost("/api/auth/code", { code }).catch(() => {});
-          }}
           onRefreshAgents={async () => {
             const data = await apiGet<{ agents: AgentOption[] }>(
               "/api/bootstrap",
             );
             useUiStore.getState().setAgentList(data.agents);
-          }}
-          codexDeviceAuth={codexDeviceAuth}
-          codexDeviceAuthError={codexDeviceAuthError}
-          onStartCodexDeviceAuth={() => {
-            apiPost("/api/codex-auth/start", {}).catch(() => {});
-          }}
-          onCancelCodexDeviceAuth={() => {
-            apiPost("/api/codex-auth/cancel", {}).catch(() => {});
           }}
           onComplete={() => {
             setOnboardingDismissed(true);

@@ -443,7 +443,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
     getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
     credentialStore, secretStore, runtimeMode, broadcastLog,
-    usageManager, authManager, authManagers, runParamsPreps,
+    usageManager, runParamsPreps,
     markSessionAccountExhausted,
     nudgeClaudeOAuthRefresh,
     onAgentAuthRequired,
@@ -537,7 +537,6 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     // passed above for the diff-stats override.)
     chatHistoryManager,
     usageManager,
-    authManager,
     credentialStore,
     drainQueueForSession,
     ...(agentFactory ? { agentFactory } : {}),
@@ -670,6 +669,19 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     });
     codexOAuthRefresherRef.ref = codexRefresher;
     codexRefresher.start();
+    // docs/150 req 3 — mirror Claude's wiring above. Without this, a revoked
+    // Codex account kept `status: "ready"`, so the router went on choosing it
+    // over a healthy secondary and every turn failed on the same dead token.
+    // Claude has had this listener since docs/195; Codex was simply missed.
+    codexRefresher.on("account_unauthenticated", (accountId: string) => {
+      markProviderAccountUnauthenticated({
+        agentId: "codex",
+        accountId,
+        providerAccountManager,
+        agentRegistry,
+        sseBroadcast,
+      });
+    });
     // Recovery counterpart (mirrors the Claude wiring above): a background
     // rotation that heals a `auth_failed` Codex row clears the selector's
     // stale "needs auth". `markProviderAccountReauthenticated` is a no-op when

@@ -34,8 +34,6 @@ import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { UsageManager } from "../usage.js";
 import { DatabaseManager } from "../../shared/database.js";
-import { StubAuthManager } from "./test-helpers.js";
-import type { AuthManager } from "../agents/claude/auth-manager.js";
 import type { SystemTurnDeps } from "../session-runner.js";
 import type {
   AgentProcess,
@@ -169,7 +167,6 @@ describe("Integration: adopting a turn that outlived the orchestrator (docs/240)
         sessionManager,
         chatHistoryManager,
         usageManager,
-        authManager: new StubAuthManager() as unknown as AuthManager,
         sseBroadcast: (event, data) => { sseEvents.push({ event, data }); },
         broadcastLog: () => {},
         getSelectedModel: () => undefined,

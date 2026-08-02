@@ -57,9 +57,6 @@ function deps(): AgentListenerDeps {
       getSessionUsage: vi.fn(() => null),
       getSessionTokenTotals: vi.fn(() => null),
     } as any,
-    authManager: {
-      startOAuthFlow: vi.fn(),
-    } as any,
     sseBroadcast: vi.fn(),
     broadcastLog: vi.fn(),
     getSelectedModel: vi.fn(() => "gpt-test"),
@@ -258,12 +255,12 @@ describe("wireAgentListeners", () => {
         persistUserMessage: vi.fn(),
         ...extra,
       });
-      return { agent, killSpy, runner, emitted, d };
+      return { agent, killSpy, runner, emitted };
     }
 
     it("stays quiet (no card, no OAuth) when recovery heals the token", async () => {
       const recoverAuth = vi.fn().mockResolvedValue(true);
-      const { agent, killSpy, runner, emitted, d } = wireAuth({
+      const { agent, killSpy, runner, emitted } = wireAuth({
         willRecoverAuth: () => true,
         recoverAuth,
       });
@@ -275,7 +272,6 @@ describe("wireAgentListeners", () => {
       expect(recoverAuth).toHaveBeenCalledTimes(1);
       // No sign-in card, no OAuth flow — the recovery re-dispatches silently.
       expect(emitted.find((m) => m.type === "auth_required")).toBeUndefined();
-      expect(d.authManager.startOAuthFlow).not.toHaveBeenCalled();
       // running is left set on the quiet path so the client doesn't flicker.
       expect(runner.running).toBe(true);
       runner.dispose({ force: true });
@@ -283,7 +279,7 @@ describe("wireAgentListeners", () => {
 
     it("surfaces a re-auth error pointing to Settings (no OAuth popup) when the heal fails", async () => {
       const recoverAuth = vi.fn().mockResolvedValue(false);
-      const { agent, killSpy, emitted, d } = wireAuth({
+      const { agent, killSpy, emitted } = wireAuth({
         willRecoverAuth: () => true,
         recoverAuth,
       });
@@ -298,12 +294,11 @@ describe("wireAgentListeners", () => {
       const err = emitted.find((m) => m.type === "error") as { message?: string } | undefined;
       expect(err).toBeDefined();
       expect(err?.message).toContain("Settings");
-      expect(d.authManager.startOAuthFlow).not.toHaveBeenCalled();
       // restore mocked timers/spies via dispose handled by GC; runner local.
     });
 
     it("surfaces a re-auth error when no recovery hooks are wired", async () => {
-      const { agent, killSpy, runner, emitted, d } = wireAuth({});
+      const { agent, killSpy, runner, emitted } = wireAuth({});
 
       agent.emit("auth_required");
       await tick();
@@ -312,7 +307,6 @@ describe("wireAgentListeners", () => {
       const err = emitted.find((m) => m.type === "error") as { message?: string } | undefined;
       expect(err).toBeDefined();
       expect(err?.message).toContain("Settings");
-      expect(d.authManager.startOAuthFlow).not.toHaveBeenCalled();
       // No recovery → running cleared as before.
       expect(runner.running).toBe(false);
       runner.dispose({ force: true });

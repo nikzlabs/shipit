@@ -20,19 +20,20 @@ import { getKeybindingDef, type KeybindingId } from "../keybindings/registry.js"
 import type { AgentAuthPhase } from "../../server/shared/types/ws-server-messages/auth.js";
 
 /**
- * In-flight `codex login --device-auth` state. Server pushes this via SSE
- * as an `agent_auth_pending` event with `agentId: "codex"` +
- * `details.kind: "device-code"` when the CLI prints the verification URL +
- * user code; cleared on `agent_auth_complete` / `agent_auth_failed` for the
- * same `agentId`. See docs/119-codex-subscription-auth/plan.md and
- * docs/155 Phase 2b for the unified event family.
+ * An in-flight sign-in challenge for one connected account.
+ *
+ * docs/150 req 19 — this replaced a pair of provider-wide slots
+ * (`codexDeviceAuth` for Codex's device code, `sessionStore.authUrl` for
+ * Claude's paste URL) that could only ever describe *one* sign-in per
+ * provider. Two rows connecting at once overwrote each other, and neither slot
+ * could say which account it belonged to. Both are gone; every challenge is
+ * keyed by {@link providerAccountAuthKey}.
+ *
+ * The server still pushes them as `agent_auth_pending` with `details.kind`
+ * `"device-code"` (Codex) or `"code-paste-url"` (Claude), cleared on
+ * `agent_auth_complete` / `agent_auth_failed`. See
+ * docs/119-codex-subscription-auth/plan.md and docs/155 Phase 2b.
  */
-export interface CodexDeviceAuth {
-  verificationUri: string;
-  userCode: string;
-  expiresInSec: number;
-}
-
 export interface ProviderAccountAuth {
   provider: AgentId;
   accountId: string;
@@ -165,10 +166,6 @@ interface SettingsState {
    * (Control A), keyed by agent id. Hydrated from bootstrap / settings broadcast.
    */
   agentSubAgentDefaults: Record<string, SubAgentDefaults>;
-  /** Active Codex device-auth flow state — `null` when no flow is running. */
-  codexDeviceAuth: CodexDeviceAuth | null;
-  /** Last device-auth failure message — `null` when no error. */
-  codexDeviceAuthError: string | null;
   claudeAuthDiagnostics: ClaudeAuthDiagnostics;
   providerAccounts: ProviderAccount[];
   /**
@@ -212,8 +209,6 @@ interface SettingsState {
   setEnableSubAgents: (enabled: boolean) => void;
   /** docs/217 — replace the per-agent sub-agent defaults map (Control A). */
   setAgentSubAgentDefaults: (map: Record<string, SubAgentDefaults>) => void;
-  setCodexDeviceAuth: (state: CodexDeviceAuth | null) => void;
-  setCodexDeviceAuthError: (message: string | null) => void;
   setClaudeAuthProgress: (progress: {
     attemptId: string;
     phase: AgentAuthPhase;
@@ -289,8 +284,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   enableSubAgents: false,
   failoverCutoffs: {},
   agentSubAgentDefaults: {},
-  codexDeviceAuth: null,
-  codexDeviceAuthError: null,
   claudeAuthDiagnostics: {
     attemptId: null,
     active: false,
@@ -415,9 +408,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setEnableSubAgents: (enabled) => set({ enableSubAgents: enabled }),
   setAgentSubAgentDefaults: (map) => set({ agentSubAgentDefaults: map }),
 
-  setCodexDeviceAuth: (state) => set({ codexDeviceAuth: state }),
-
-  setCodexDeviceAuthError: (message) => set({ codexDeviceAuthError: message }),
   setClaudeAuthProgress: (progress) =>
     set((state) => {
       const isNewAttempt = state.claudeAuthDiagnostics.attemptId !== progress.attemptId;

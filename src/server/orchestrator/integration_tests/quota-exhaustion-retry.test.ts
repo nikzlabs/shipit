@@ -76,7 +76,6 @@ function makeDeps(agents: FakeAgent[]): {
         indexOfMessageId: vi.fn().mockReturnValue(-1),
       } as never,
       usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as never,
-      authManager: { startOAuthFlow: vi.fn() } as never,
       sseBroadcast: vi.fn(),
       broadcastLog: vi.fn(),
       getSelectedModel: () => undefined,

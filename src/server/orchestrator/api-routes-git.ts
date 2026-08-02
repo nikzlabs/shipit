@@ -375,7 +375,6 @@ export async function registerGitRoutes(
             sessionManager: deps.sessionManager,
             chatHistoryManager: deps.chatHistoryManager,
             usageManager: deps.usageManager,
-            authManager: deps.authManager,
             agentFactory: deps.agentFactory,
             sseBroadcast: deps.sseBroadcast,
             // docs/221 — manual "Sync with <base>" records a persisted card; the

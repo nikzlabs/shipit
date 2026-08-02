@@ -2,14 +2,14 @@
  * Integration test for the Codex (ChatGPT subscription) device-auth flow.
  *
  * Covers the full HTTP -> SSE -> agent_list cycle that doc 119 Phase 2.3
- * specified, exercising the real `CodexAuthManager`, the
- * `/api/codex-auth/*` routes, the `wireEventHandlers` SSE re-broadcast, and
- * the `AgentRegistry` auth refresh — only the `codex` binary itself is faked:
+ * specified, exercising the real `CodexAuthManager`, the account-scoped login
+ * routes, the `wireEventHandlers` SSE re-broadcast, and the `AgentRegistry`
+ * auth refresh — only the `codex` binary itself is faked:
  *
- *   POST /api/codex-auth/start
+ *   POST /api/provider-accounts/codex/:accountId/login
  *     -> CodexAuthManager spawns (faked) `codex login --device-auth`
  *     -> stdout prints the verification URL + user code
- *     -> SSE `agent_auth_pending` { agentId: "codex", details: { kind: "device-code", ... } }
+ *     -> SSE `agent_auth_pending` { agentId: "codex", accountId, details: { kind: "device-code", ... } }
  *   fake codex writes auth.json + exits 0
  *     -> SSE `agent_auth_complete` { agentId: "codex" }
  *     -> agentRegistry.refreshAuth("codex") flips authConfigured
@@ -17,6 +17,10 @@
  *
  * The SSE event family is unified (docs/155 Phase 2b) — payload-shape
  * differences across backends live in the discriminated `details` field.
+ *
+ * docs/150 req 16 — the singleton `POST /api/codex-auth/start` this used to
+ * drive is gone; connecting the first Codex subscription goes through the same
+ * per-account route as the second.
  *
  * The credentials file lands in a temp dir that the manager's injected
  * `checkAuthFile` probe points at, mirroring the real
@@ -190,6 +194,30 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
   let savedOpenAIKey: string | undefined;
   let sse: SseTestClient | null = null;
 
+  /**
+   * docs/150 req 16 — connecting a subscription is "create the row, start its
+   * login", identically for the first account and the fifth. There is no
+   * account-less start any more, so every flow below begins here.
+   */
+  const createCodexAccount = async (): Promise<string> => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/provider-accounts",
+      payload: { provider: "codex" },
+    });
+    expect(res.statusCode).toBe(200);
+    const { account } = res.json() as { account: { id: string } };
+    // A scoped flow spawns the CLI with HOME pointed at the account root, so
+    // the credentials the fake "writes" have to land there — that is the path
+    // both the manager's close-handler check and the registry probe read.
+    authFilePath = path.join(tmpDir, "provider-accounts", "codex", account.id, ".codex", "auth.json");
+    fs.mkdirSync(path.dirname(authFilePath), { recursive: true });
+    return account.id;
+  };
+
+  const startAccountLogin = (accountId: string) =>
+    app.inject({ method: "POST", url: `/api/provider-accounts/codex/${accountId}/login` });
+
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-codex-auth-"));
@@ -227,6 +255,10 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
       authManager: new StubAuthManager() as unknown as AuthManager,
       agentRegistry: registry,
       codexAuthManager,
+      // Account creation writes a credential root, so it has to land in the
+      // temp dir — without this the provider-account manager defaults to the
+      // real `/credentials` and the test mutates the host's accounts.
+      credentialsDir: tmpDir,
       workspaceDir: tmpDir,
       serveStatic: false,
     });
@@ -263,10 +295,11 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
     // reconnect (session switch / tab refocus) until an auth broadcast re-sent it.
     expect(findCodex(initial)?.reasoning?.options.length).toBeGreaterThan(0);
 
-    // Kick off the flow.
-    const start = await app.inject({ method: "POST", url: "/api/codex-auth/start" });
+    // Kick off the flow through the one connect path (docs/150 req 16).
+    const accountId = await createCodexAccount();
+    const start = await startAccountLogin(accountId);
     expect(start.statusCode).toBe(202);
-    expect(start.json()).toMatchObject({ success: true, pending: true });
+    expect(start.json()).toMatchObject({ success: true });
 
     // CLI prints the verification URL + user code -> SSE agent_auth_pending.
     // docs/155 Phase 2b — unified event family; the per-agent payload lives
@@ -275,7 +308,11 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
     const pending = await sse.waitFor(
       "agent_auth_pending",
       (d) => (d as { agentId?: string }).agentId === "codex",
-    ) as { agentId: string; details: { kind: string; verificationUri: string; userCode: string; expiresInSec: number } };
+    ) as { agentId: string; accountId?: string; details: { kind: string; verificationUri: string; userCode: string; expiresInSec: number } };
+    // docs/150 reqs 16/19 — the challenge must name its account. The client
+    // files it under that row and has no provider-wide slot to fall back to,
+    // so an unqualified event is dropped and the row sits blank forever.
+    expect(pending.accountId).toBe(accountId);
     expect(pending.details.kind).toBe("device-code");
     expect(pending.details.verificationUri).toBe("https://auth.openai.com/codex/device");
     expect(pending.details.userCode).toBe("K8RE-8MIGC");
@@ -287,10 +324,11 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
     fakeProc.emit("close", 0);
 
     // Completion broadcast, then agent_list with codex authConfigured: true.
-    await sse.waitFor(
+    const complete = await sse.waitFor(
       "agent_auth_complete",
       (d) => (d as { agentId?: string }).agentId === "codex",
-    );
+    ) as { agentId: string; accountId?: string };
+    expect(complete.accountId).toBe(accountId);
     const after = await sse.waitFor(
       "agent_list",
       (d) => findCodex(d)?.authConfigured === true,
@@ -305,7 +343,7 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
     sse = await SseTestClient.connect(port);
     await sse.waitFor("agent_list", (d) => !!findCodex(d));
 
-    const start = await app.inject({ method: "POST", url: "/api/codex-auth/start" });
+    const start = await startAccountLogin(await createCodexAccount());
     expect(start.statusCode).toBe(202);
 
     fakeProc.stdout.push(Buffer.from(CANONICAL_OUTPUT, "utf-8"));
@@ -320,7 +358,8 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
     const failed = await sse.waitFor(
       "agent_auth_failed",
       (d) => (d as { agentId?: string }).agentId === "codex",
-    ) as { agentId: string; reason: string; message: string };
+    ) as { agentId: string; accountId?: string; reason: string; message: string };
+    expect(failed.accountId).toBeDefined();
     expect(failed.reason).toBe("error");
     expect(failed.message).toMatch(/code 1/);
 
@@ -333,7 +372,8 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
   it("start is idempotent while a device flow is already in flight", async () => {
     sse = await SseTestClient.connect(port);
 
-    const first = await app.inject({ method: "POST", url: "/api/codex-auth/start" });
+    const accountId = await createCodexAccount();
+    const first = await startAccountLogin(accountId);
     expect(first.statusCode).toBe(202);
 
     fakeProc.stdout.push(Buffer.from(CANONICAL_OUTPUT, "utf-8"));
@@ -344,9 +384,8 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
 
     // A second start against the running flow re-emits the cached pending
     // event (page-reload recovery) rather than spawning a second process.
-    const second = await app.inject({ method: "POST", url: "/api/codex-auth/start" });
+    const second = await startAccountLogin(accountId);
     expect(second.statusCode).toBe(202);
-    expect(second.json()).toMatchObject({ pending: true });
 
     const replay = await sse.waitFor(
       "agent_auth_pending",

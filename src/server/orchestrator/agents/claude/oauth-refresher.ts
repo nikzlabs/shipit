@@ -620,7 +620,9 @@ export class ClaudeOAuthRefresher extends EventEmitter {
     state.emittedUnauthenticated = true;
     this.emit("account_unauthenticated", accountId);
     this.deps.sseBroadcast("claude_account_unauthenticated", { accountId });
-    this.deps.sseBroadcast("agent_auth_failed", { agentId: "claude", reason: "revoked" });
+    // docs/150 req 19 — see the matching comment in the Codex refresher: the
+    // client drops an `agent_auth_failed` that names no account.
+    this.deps.sseBroadcast("agent_auth_failed", { agentId: "claude", accountId, reason: "revoked" });
   }
 
   /**

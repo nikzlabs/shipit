@@ -32,8 +32,6 @@ import { ChatHistoryManager } from "../chat-history.js";
 import { UsageManager } from "../usage.js";
 import { MergeWatchManager } from "../merge-watch.js";
 import { DatabaseManager } from "../../shared/database.js";
-import { StubAuthManager } from "./test-helpers.js";
-import type { AuthManager } from "../agents/claude/auth-manager.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry, SystemTurnDeps } from "../session-runner.js";
 import type { PrStatusSummary } from "../../shared/types/github-types.js";
 import type {
@@ -205,7 +203,6 @@ describe("Integration: durable delivery identity across a restart (SHI-264)", ()
         sessionManager,
         chatHistoryManager,
         usageManager,
-        authManager: new StubAuthManager() as unknown as AuthManager,
         sseBroadcast: () => {},
         broadcastLog: () => {},
         getSelectedModel: () => undefined,

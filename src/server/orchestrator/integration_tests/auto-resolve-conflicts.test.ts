@@ -321,7 +321,6 @@ describe("auto-resolve-conflicts integration", () => {
           sessionManager: app.sessionManager,
           chatHistoryManager: app.chatHistoryManager,
           usageManager: app.usageManager,
-          authManager: new StubAuthManager() as unknown as never,
           sseBroadcast: () => { /* noop */ },
           // Match the production wrapper closure: in-process runners need
           // the fallback factory because they don't supply `createAgent`.

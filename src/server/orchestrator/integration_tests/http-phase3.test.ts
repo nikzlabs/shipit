@@ -322,39 +322,22 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
     });
   });
 
-  // ---- POST /api/auth/start ----
-
-  describe("POST /api/auth/start", () => {
-    it("returns 202 and starts OAuth flow", async () => {
-      const res = await app.inject({
-        method: "POST",
-        url: "/api/auth/start",
-      });
-      expect(res.statusCode).toBe(202);
-      expect(res.json()).toMatchObject({ success: true });
-    });
-  });
-
-  // ---- POST /api/auth/code ----
-
-  describe("POST /api/auth/code", () => {
-    it("submits auth code successfully", async () => {
-      const res = await app.inject({
-        method: "POST",
-        url: "/api/auth/code",
-        payload: { code: "test-auth-code-123" },
-      });
-      expect(res.statusCode).toBe(200);
-      expect(res.json()).toMatchObject({ success: true });
-    });
-
-    it("returns 400 for empty code", async () => {
-      const res = await app.inject({
-        method: "POST",
-        url: "/api/auth/code",
-        payload: { code: "  " },
-      });
-      expect(res.statusCode).toBe(400);
+  // ---- Retired singleton subscription sign-in (docs/150 reqs 16, 19) ----
+  //
+  // These were the "connect your first account" endpoints. They took no
+  // account id, so whatever they authenticated could not afterwards be
+  // renamed, reordered, or failed over — a second way for provider auth to
+  // work, which req 19 says must not survive the migration. The account-scoped
+  // replacements are covered in http-mutations.test.ts.
+  describe("singleton subscription auth endpoints are gone", () => {
+    it.each([
+      ["POST", "/api/auth/start"],
+      ["POST", "/api/auth/code"],
+      ["POST", "/api/codex-auth/start"],
+      ["POST", "/api/codex-auth/cancel"],
+    ])("%s %s is not registered", async (method, url) => {
+      const res = await app.inject({ method: method as "POST", url, payload: {} });
+      expect(res.statusCode).toBe(404);
     });
   });
 });

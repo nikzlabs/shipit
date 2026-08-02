@@ -26,7 +26,6 @@ import type { AgentProcess, AgentId, BranchSyncedCard } from "../../shared/types
 import type { ChatHistoryManager } from "../chat-history.js";
 import type { SessionManager } from "../sessions.js";
 import type { UsageManager } from "../usage.js";
-import type { AuthManager } from "../agents/claude/auth-manager.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
 import { ServiceError } from "./types.js";
 import { agentLogAppend } from "../log-emit.js";
@@ -67,7 +66,6 @@ export interface RebaseDriverDeps {
    * `runRebaseResolutionTurn`.
    */
   usageManager: UsageManager;
-  authManager: AuthManager;
   /** Factory for creating agents. Falls back to runner.createAgent if available. */
   agentFactory?: (agentId: AgentId) => AgentProcess;
   sseBroadcast: (event: string, data: unknown) => void;
