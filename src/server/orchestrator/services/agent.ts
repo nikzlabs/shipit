@@ -31,6 +31,7 @@ import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js
 import { ServiceError } from "./types.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
 import type { AgentInterfaceProvenance } from "../../shared/agent-interface-sdk/protocol.js";
+import { agentAuthenticationError, isAgentAuthenticated } from "./agent-auth-gate.js";
 
 const PERMISSION_MODES: ReadonlySet<PermissionMode> = new Set<PermissionMode>([
   "auto",
@@ -139,35 +140,9 @@ export async function dispatchAgentMessage(
   //    Without this, the dispatched run would hang the same way an
   //    unauthenticated `send_message` would.
   //
-  //    docs/155: per-backend auth gate. `AgentAuthManager.isConfigured()`
-  //    exists and could front a `Map<AgentId, …>` dispatch, but the
-  //    per-backend behavior still differs (Claude refreshes from disk via
-  //    `checkCredentials()`; Codex re-reads its env-var via
-  //    `agentRegistry.refreshAuth`) and the error copy differs per backend.
-  //    Consolidating both is tracked but not done; the disables below
-  //    annotate the surviving branches.
   const activeAgentId = runner.agentId;
-  // eslint-disable-next-line no-restricted-syntax -- docs/155: per-backend auth gate (see comment above)
-  if (activeAgentId === "claude") {
-    if (!deps.authManager.authenticated) {
-      deps.authManager.checkCredentials();
-    }
-    if (!deps.authManager.authenticated) {
-      throw new ServiceError(
-        401,
-        "Claude is not authenticated. Sign in to Claude or add ANTHROPIC_API_KEY in Settings → Agents.",
-      );
-    }
-  // eslint-disable-next-line no-restricted-syntax -- docs/155: per-backend auth gate (see comment above)
-  } else if (activeAgentId === "codex") {
-    deps.agentRegistry.refreshAuth("codex");
-    const info = deps.agentRegistry.get("codex");
-    if (!info?.authConfigured) {
-      throw new ServiceError(
-        401,
-        "Codex is not authenticated. Sign in to Codex or add OPENAI_API_KEY in Settings.",
-      );
-    }
+  if (!isAgentAuthenticated(deps.agentRegistry, activeAgentId)) {
+    throw new ServiceError(401, agentAuthenticationError(activeAgentId));
   }
 
   // 4. Resolve file attachments + upload refs against the runner's session dir

@@ -1732,6 +1732,18 @@ environment preflight just killed. Unit coverage exercises account switching,
 conversation preservation, process termination, healthy secondary affinity,
 reserved-route isolation, and the all-exhausted failure.
 
+**Follow-up — turn admission is account-aware too.** The interactive WebSocket
+and HTTP dispatch gates previously checked Claude's legacy singleton
+`AuthManager` even though account creation and the model picker use
+`ProviderAccountManager`. A newly connected Claude subscription could therefore
+be visible and ready in Settings but every turn failed with “Claude is not
+authenticated” before provider-account preflight ran. Both ingress paths now
+refresh and read `AgentRegistry.authConfigured`, whose production callback is
+backed by `ProviderAccountManager.hasAnyAuthForProvider`. One shared gate covers
+Claude and Codex and recognizes stored subscription accounts as well as explicit
+reserved auth routes. Regression coverage holds the obsolete singleton state at
+false while the account-aware registry is true and verifies the turn dispatches.
+
 Planned authentication-surface consolidation:
 
 - **One row model for both providers.** `ProviderAccountsCard` owns every
