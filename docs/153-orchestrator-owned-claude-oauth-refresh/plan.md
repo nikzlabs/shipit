@@ -225,6 +225,64 @@ The source path for account `claude-default` resolves via:
 The refresher writes the new token to the account-aware path. The symlink ensures
 legacy readers still see the rotated content.
 
+### Publication latency: a rotation must reach the source mid-turn (2026-08 fix)
+
+Moving refresh ownership to the orchestrator removed the *stampede*. It did not
+remove the case where a session CLI rotates anyway — and when that happens, the
+write-back path was too slow.
+
+`syncAgentTokenBack` ran from exactly two places: `finalizeSessionAgentEnvironment`
+(turn end) and sub-agent teardown. So a rotation performed by a session's CLI at
+minute 1 of a twelve-minute turn stayed private to that session for eleven
+minutes, while the rotating refresh token it replaced was already invalid
+upstream. Every other session that started a turn in that window ran
+`syncAgentTokenIn`, pulled the dead source token, and 401'd with
+"Not logged in · Please run /login". With ~12 concurrent agent containers on one
+provider account, a single mid-turn rotation could poison every session that
+started during the rest of that turn. This was the widest stale window left in
+the credential design (production incident, 2026-08-02).
+
+The fix is publication timing only, in `session-token-publisher.ts`:
+
+- While a turn is running, the session's token file(s) are watched with
+  `fs.watchFile` (stat polling, 3 s). Stat polling rather than `fs.watch`
+  because the file is written by a *different container* into a shared Docker
+  volume and replaced by atomic rename — path-based polling sees both the
+  in-place rewrite and the rename-over with no inode-identity failure mode and
+  no dependency on inotify events crossing the mount.
+- On a detected change, a 750 ms debounce, then the **existing**
+  `syncAgentTokenBack` / `syncProviderAccountTokenBack` — unchanged, expiry
+  guard included. A session that FAILED to refresh still cannot clobber a
+  fresher source.
+- `sessionTokenIsAheadOfSource` (a read-only twin of that same guard, exported
+  from `token-sync-manager.ts`) pre-checks before every publish. The CLI
+  rewrites `.credentials.json` for reasons other than rotation — the `mcpOAuth`
+  key churns during a turn — and without the pre-check each of those would
+  drive a sync-back whose *copy* is guarded away but whose trailing recursive
+  `chownSessionCredentialsTree` is not. Debounce + pre-check is what keeps this
+  from becoming a write storm.
+- The watch also publishes once at arm time. `fs.watchFile` takes its baseline
+  stat asynchronously, so a write landing in that window would otherwise be
+  invisible forever; the same pass recovers a rotation stranded by a previous
+  turn whose finalize never ran.
+
+Lifecycle — armed in `prepareSessionAgentEnvironment` gated on
+`enforceAccountRouting`, which is precisely the flag marking the turn's own
+pre-spawn step (the service-level warm-ups run before any turn exists and are
+followed moments later by the executor's own call). Torn down unconditionally at
+the top of `finalizeSessionAgentEnvironment`, so the turn-end sync-back remains
+the authoritative final publication, with the runner's `disposed` event as a
+backstop for a turn cut short by idle container cleanup. Route branching mirrors
+the sync-in exactly: account routes publish to that account's credential root,
+and the reserved `claude-env-oauth` route is skipped.
+
+Nothing here is awaited by turn execution and every failure is logged and
+swallowed — credential syncing must never block or fail a turn.
+
+Scope note: this addresses publication **latency**. The separate gap that the
+`TOKEN_FRESHNESS` guards key off `expiresAt`, which tracks ordering but cannot
+detect *revocation*, is not addressed here.
+
 ## Wiring
 
 ### New module
@@ -467,3 +525,18 @@ history that was moved into the orphan.
 - `src/server/orchestrator/token-sync-manager.ts` — orphan discovery + rescue
 - `src/server/orchestrator/session-credentials-scaffold.ts` — never write through a
   symlink at a credential destination
+
+### Key files (mid-turn publication)
+
+- `src/server/orchestrator/session-token-publisher.ts` — the watch: arm/disarm,
+  debounce, publish via the existing sync-back
+- `src/server/orchestrator/session-token-publisher.test.ts` — publication,
+  expiry-guard preservation, no-op-on-churn, account routing, teardown
+- `src/server/orchestrator/token-sync-manager.ts` — adds the read-only
+  `agentTokenFilePaths` / `sessionTokenIsAheadOfSource`; the sync-back functions
+  themselves are unchanged
+- `src/server/orchestrator/session-agent-env.ts` — arms the watch in
+  `prepareSessionAgentEnvironment` (Step 2b), disarms it in
+  `finalizeSessionAgentEnvironment`
+- `src/server/orchestrator/shutdown-manager.ts` — drops every remaining watch
+  on `onClose`

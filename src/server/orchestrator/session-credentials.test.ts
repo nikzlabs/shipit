@@ -564,8 +564,13 @@ describe("session-credentials", () => {
     // pre-trust seeding (85bb9eae) and grow keys over time. Pinning the literal
     // bytes here made this test fail the moment pre-trust landed, even though
     // the leak it guards never reopened.
-    const materialized = JSON.parse(fs.readFileSync(dest, "utf-8"));
+    const materialized = JSON.parse(fs.readFileSync(dest, "utf-8")) as {
+      projects: Record<string, unknown>;
+    };
     expect(Object.keys(materialized.projects)).not.toContain("leaked");
+    // ...and it IS the provisioned scaffold, not an empty or partial file.
+    // `toMatchObject`, so adding a pre-trusted dir doesn't break this again.
+    expect(materialized.projects).toMatchObject({ "/workspace": { hasTrustDialogAccepted: true } });
     // The link target is left alone — it may hold the only copy of state.
     expect(fs.readFileSync(path.join(nested, ".claude.json"), "utf-8"))
       .toBe('{"projects":{"leaked":{}}}');

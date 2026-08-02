@@ -1190,6 +1190,65 @@ function findLatestAgentSessionId(projectsRoot: string): string | null {
 }
 
 /**
+ * Absolute paths of a session's rotating-token files — the exact set
+ * {@link syncAgentTokenBack} would consider writing back. Exposed so the
+ * mid-turn publisher (docs/153) can watch precisely those files without
+ * duplicating the per-agent layout table. Paths are returned whether or not
+ * they exist yet; a token file is created by the sync-in on the first turn.
+ */
+export function agentTokenFilePaths(
+  credentialsRoot: string,
+  sessionId: string,
+  agentId: AgentId,
+): string[] {
+  const files = AGENT_TOKEN_FILES[agentId];
+  if (!files) return [];
+  const sessionDir = perSessionCredentialsDir(credentialsRoot, sessionId);
+  return files.map((rel) => path.join(sessionDir, rel));
+}
+
+/**
+ * Does the session hold a strictly fresher token than the orchestrator source?
+ *
+ * Pure read, and deliberately the same comparison {@link syncAgentTokenBack}
+ * uses for its write guard — exposed so a caller can cheaply answer "would
+ * calling the sync-back write anything?" without calling it. The mid-turn
+ * publisher (docs/153) needs that: the agent CLI rewrites `.credentials.json`
+ * for reasons other than an OAuth rotation (the `mcpOAuth` key churns), so
+ * every file-change event would otherwise drive a sync-back whose copy is
+ * guarded away but whose trailing `chownSessionCredentialsTree` is not.
+ *
+ * This is a *pre*-check, never a replacement: the authoritative guard stays
+ * inside the sync-back, so a race between this read and the write can only
+ * cost a redundant call, never a stale-token clobber.
+ */
+export function sessionTokenIsAheadOfSource(
+  credentialsRoot: string,
+  sessionId: string,
+  agentId: AgentId,
+  accountId?: string,
+): boolean {
+  const files = AGENT_TOKEN_FILES[agentId];
+  if (!files) return false;
+  const sourceRoot = accountId
+    ? providerAccountCredentialRoot(credentialsRoot, agentId, accountId)
+    : credentialsRoot;
+  const freshness = TOKEN_FRESHNESS[agentId] ?? (() => null);
+  const sessionDir = perSessionCredentialsDir(credentialsRoot, sessionId);
+  for (const rel of files) {
+    const sessionFile = path.join(sessionDir, rel);
+    if (!fs.existsSync(sessionFile)) continue;
+    const sessionExp = freshness(sessionFile);
+    if (sessionExp === null) continue; // can't prove it's newer
+    const sourceFile = path.join(sourceRoot, rel);
+    const sourceExp = fs.existsSync(sourceFile) ? freshness(sourceFile) : null;
+    if (sourceExp !== null && sessionExp <= sourceExp) continue;
+    return true;
+  }
+  return false;
+}
+
+/**
  * After a turn: if the session's CLI refreshed the rotating token (its token
  * file now carries a strictly later expiry than the orchestrator source), write
  * it back so the source — and every future session — stays fresh. The expiry
