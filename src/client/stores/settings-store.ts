@@ -154,6 +154,13 @@ interface SettingsState {
   /** docs/144 — global gate for sub-agent spawning. */
   enableSubAgents: boolean;
   /**
+   * docs/150 reqs 4-6 — per-provider proactive failover cutoffs, keyed by agent
+   * id. Reaching either window's cutoff moves new work to the next eligible
+   * account. Server always sends an entry per registered agent, so the client
+   * never has to know the 90% default.
+   */
+  failoverCutoffs: Record<string, { session: number; weekly: number }>;
+  /**
    * docs/217 — per-agent defaults applied when an agent runs as a sub-agent
    * (Control A), keyed by agent id. Hydrated from bootstrap / settings broadcast.
    */
@@ -200,6 +207,7 @@ interface SettingsState {
   setLiveSteering: (enabled: boolean) => void;
   setAutoResolveConflicts: (enabled: boolean) => void;
   setAutoFixCi: (enabled: boolean) => void;
+  setFailoverCutoffs: (agentId: string, cutoffs: { session: number; weekly: number }) => void;
   setAutoResetMergedBranch: (enabled: boolean) => void;
   setEnableSubAgents: (enabled: boolean) => void;
   /** docs/217 — replace the per-agent sub-agent defaults map (Control A). */
@@ -279,6 +287,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   autoFixCi: false,
   autoResetMergedBranch: true,
   enableSubAgents: false,
+  failoverCutoffs: {},
   agentSubAgentDefaults: {},
   codexDeviceAuth: null,
   codexDeviceAuthError: null,
@@ -400,6 +409,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setAutoResolveConflicts: (enabled) => set({ autoResolveConflicts: enabled }),
 
   setAutoFixCi: (enabled) => set({ autoFixCi: enabled }),
+  setFailoverCutoffs: (agentId, cutoffs) =>
+    set((s) => ({ failoverCutoffs: { ...s.failoverCutoffs, [agentId]: cutoffs } })),
   setAutoResetMergedBranch: (enabled) => set({ autoResetMergedBranch: enabled }),
   setEnableSubAgents: (enabled) => set({ enableSubAgents: enabled }),
   setAgentSubAgentDefaults: (map) => set({ agentSubAgentDefaults: map }),

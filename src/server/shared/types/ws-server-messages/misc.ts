@@ -47,6 +47,11 @@ export interface WsGlobalSettings {
   }[];
   /** When true, mid-turn messages steer the running agent. (docs/140) */
   liveSteering: boolean;
+  /**
+   * docs/150 reqs 4-6 — per-provider proactive failover cutoffs, keyed by agent
+   * id. Optional so an older orchestrator's payload still parses.
+   */
+  failoverCutoffs?: Record<string, { session: number; weekly: number }>;
   /** docs/146 — global gate for the auto-resolve-conflicts loop. */
   autoResolveConflicts?: boolean;
   /** docs/169 — global gate for the auto-fix-CI loop. */

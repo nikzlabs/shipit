@@ -99,6 +99,8 @@ interface BootstrapResponse {
     autoResetMergedBranch?: boolean;
     enableSubAgents?: boolean;
     providerAccounts?: ProviderAccount[];
+    /** docs/150 reqs 4-6 — per-provider proactive failover cutoffs, keyed by agent id. */
+    failoverCutoffs?: Record<string, { session: number; weekly: number }>;
   };
   /** Orchestrator runtime mode (feature 118). Defaults to "containerized". */
   runtimeMode?: RuntimeMode;

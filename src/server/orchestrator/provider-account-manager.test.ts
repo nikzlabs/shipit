@@ -302,6 +302,114 @@ describe("ProviderAccountManager", () => {
     });
   });
 
+  /**
+   * docs/150 reqs 4-6 — the proactive cutoff. The load-bearing property is that
+   * a cutoff is a PREFERENCE, not a wall: crossing it demotes an account, it
+   * does not make it unusable. Collapsing the two would make a 90% setting
+   * strictly worse than no failover at all.
+   */
+  describe("proactive failover cutoffs (docs/150 reqs 4-6)", () => {
+    const win = (usedPct: number | null) => ({
+      usedPct,
+      resetAt: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+
+    function mgrWith(limits: Record<string, { session?: unknown; weekly?: unknown }>): ProviderAccountManager {
+      return new ProviderAccountManager({
+        credentialsDir: root,
+        credentialStore: store,
+        getSubscriptionLimits: () => ({ claude: limits as never }),
+      });
+    }
+
+    function twoReadyAccounts(): { a: string; b: string } {
+      const seed = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
+      const a = seed.create("claude", "A");
+      const b = seed.create("claude", "B");
+      seed.setAccountStatus("claude", a.id, "ready");
+      seed.setAccountStatus("claude", b.id, "ready");
+      return { a: a.id, b: b.id };
+    }
+
+    it("defaults both cutoffs to 90% (req 5)", () => {
+      expect(store.getFailoverCutoffs("claude")).toEqual({ session: 90, weekly: 90 });
+    });
+
+    it("moves new work off an account past the short-window cutoff (req 6)", () => {
+      const { a, b } = twoReadyAccounts();
+      const mgr = mgrWith({ [a]: { session: win(92) }, [b]: { session: win(10) } });
+
+      expect(mgr.selectAccountForTurn("claude")).toEqual({ ok: true, route: { kind: "account", id: b } });
+    });
+
+    it("moves new work off an account past the weekly cutoff too (req 4)", () => {
+      const { a, b } = twoReadyAccounts();
+      const mgr = mgrWith({ [a]: { session: win(10), weekly: win(95) }, [b]: { session: win(10) } });
+
+      expect(mgr.selectAccountForTurn("claude")).toEqual({ ok: true, route: { kind: "account", id: b } });
+    });
+
+    // The whole point of the three-tier split. At 92% an account still has 8%
+    // of its window left; failing the turn would waste it.
+    it("still uses an over-cutoff account when every account is over its cutoff", () => {
+      const { a, b } = twoReadyAccounts();
+      const mgr = mgrWith({ [a]: { session: win(92) }, [b]: { session: win(97) } });
+
+      expect(mgr.selectAccountForTurn("claude")).toEqual({ ok: true, route: { kind: "account", id: a } });
+    });
+
+    it("still reports all_exhausted when accounts are genuinely spent, not merely over cutoff", () => {
+      const { a, b } = twoReadyAccounts();
+      const mgr = mgrWith({ [a]: { session: win(100) }, [b]: { session: win(100) } });
+
+      expect(mgr.selectAccountForTurn("claude")).toMatchObject({ ok: false, reason: "all_exhausted" });
+    });
+
+    it("honours a configured cutoff instead of the default", () => {
+      const { a, b } = twoReadyAccounts();
+      store.setFailoverCutoffs("claude", { session: 50 });
+      const mgr = mgrWith({ [a]: { session: win(60) }, [b]: { session: win(10) } });
+
+      expect(mgr.selectAccountForTurn("claude")).toEqual({ ok: true, route: { kind: "account", id: b } });
+    });
+
+    // Claude reports usedPct only above a warning threshold, so silence must
+    // not read as "past 90%" — that would demote every healthy account.
+    it("treats an unreported percentage as under the cutoff", () => {
+      const { a } = twoReadyAccounts();
+      const mgr = mgrWith({ [a]: { session: win(null) } });
+
+      expect(mgr.selectAccountForTurn("claude")).toEqual({ ok: true, route: { kind: "account", id: a } });
+    });
+
+    describe("isRouteUsableForTurn", () => {
+      it("displaces a pinned session that is over its cutoff when a better account exists (reqs 6, 8)", () => {
+        const { a, b } = twoReadyAccounts();
+        const mgr = mgrWith({ [a]: { session: win(92) }, [b]: { session: win(10) } });
+
+        expect(mgr.isRouteUsableForTurn("claude", { kind: "account", id: a })).toBe(false);
+      });
+
+      // Without this, `failoverPinnedSession` would hand the session a
+      // different over-cutoff account every turn, killing the resident process
+      // each time for no benefit.
+      it("leaves a pinned session alone when every account is over its cutoff (no churn)", () => {
+        const { a, b } = twoReadyAccounts();
+        const mgr = mgrWith({ [a]: { session: win(92) }, [b]: { session: win(97) } });
+
+        expect(mgr.isRouteUsableForTurn("claude", { kind: "account", id: a })).toBe(true);
+        expect(mgr.isRouteUsableForTurn("claude", { kind: "account", id: b })).toBe(true);
+      });
+
+      it("still reports a genuinely spent account as unusable", () => {
+        const { a, b } = twoReadyAccounts();
+        const mgr = mgrWith({ [a]: { session: win(100) }, [b]: { session: win(100) } });
+
+        expect(mgr.isRouteUsableForTurn("claude", { kind: "account", id: a })).toBe(false);
+      });
+    });
+  });
+
   describe("selectAccountForTurn (docs/150 reqs 13, 14, 17)", () => {
     const READY = "ready" as const;
 

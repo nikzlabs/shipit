@@ -1970,3 +1970,46 @@ Planned authentication-surface consolidation:
   `http-mutations.test.ts`.
 - Client: subscription limits render multiple accounts per provider without
   layout overlap.
+
+### Landed: proactive cutoffs are a third tier, not a lower exhaustion threshold
+
+Reqs 4–6 add a per-provider cutoff on each window, defaulting to 90% (req 5).
+The obvious implementation — lower the "is this account exhausted?" threshold
+from 100 to the cutoff — is **wrong**, and wrong in a way that makes the feature
+worse than not having it: once every connected account crossed 90%, every turn
+would fail with `all_exhausted` while ten percent of each account's window sat
+unused. A cutoff is a *preference*, not a wall.
+
+So selection has three tiers, not two:
+
+1. **Under its cutoff** — chosen first, in priority order.
+2. **Over its cutoff but not spent** — still perfectly capable; used when
+   nothing is under a cutoff. Picking the first in priority order (rather than
+   the least-used) keeps the choice stable instead of hunting.
+3. **Spent** (`usedPct >= 100`, or a persisted `exhaustedUntil`) — unusable, and
+   only this tier produces req 13's `all_exhausted`.
+
+`isRouteUsableForTurn` — which drives whether an existing session gets moved —
+needs the same distinction, plus one more. A pinned session over its cutoff
+should move **only if there is an account genuinely under one**. Comparing
+against `selectAccountForTurn`'s answer is not enough: when every account is
+over its cutoff the selector returns its tier-2 fallback, which is merely the
+*first* over-cutoff account, so a session pinned to the second one would be
+displaced onto the first, then back again — killing the resident process every
+turn for no benefit. The check therefore looks for an under-cutoff alternative
+directly. (This was caught by the churn test, not by review.)
+
+Storage clamps to 1–100 on read as well as write, so a hand-edited config yields
+a working selector rather than throwing on every turn; the API edge *validates*
+instead, because a request carrying 0 or 150 is a caller bug and silently
+accepting it as 1 or 100 would hide it.
+
+The Settings control lives on the provider's accounts card rather than in
+Advanced, and only appears once a provider has two or more accounts — with one
+account there is nowhere to fail over to, so the number could never do anything
+(req 15: connecting a second account is what turns failover on).
+
+**Still open in Phase 4:** the user-controlled priority order itself (req 2) —
+selection order is still "primary first, then stored order". Reqs 4–6 say the
+cutoff advances to the next account *in the user's priority order*, so this
+delivers the advancing half; the ordering half is the next piece.

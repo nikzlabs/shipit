@@ -505,6 +505,14 @@ export function ProviderAccountsCard({
         </div>
       )}
 
+      {/* docs/150 reqs 4-6 — proactive failover cutoffs. Only rendered with two
+          or more accounts: with one there is nowhere to fail over to, so the
+          control would set a number that can never do anything (req 15 —
+          connecting a second account is what turns failover on). */}
+      {accounts.length > 1 && (
+        <FailoverCutoffControls provider={provider} name={name} />
+      )}
+
       {/* Escape hatch: stored-but-unverifiable credentials leave the agent
           reading as unauthenticated with no per-account row able to clear them. */}
       {onClearApiKey && accounts.length > 0 && !authed && (
@@ -563,6 +571,77 @@ export function ProviderAccountsCard({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * docs/150 reqs 4-6 — the two proactive cutoffs for one provider.
+ *
+ * Deliberately worded as "start using the next account at N%", not "limit":
+ * crossing a cutoff moves *new* work, it does not stop the account working. An
+ * account past its cutoff is still used when no account is under one, which is
+ * what keeps a low setting from stranding quota.
+ */
+function FailoverCutoffControls({ provider, name }: { provider: AgentId; name: string }) {
+  const stored = useSettingsStore((s) => s.failoverCutoffs[provider]);
+  const cutoffs = stored ?? { session: 90, weekly: 90 };
+  const [saving, setSaving] = useState(false);
+
+  const save = async (key: "session" | "weekly", raw: string): Promise<void> => {
+    const value = Number.parseInt(raw, 10);
+    // The server validates 1-100 and 400s otherwise; don't send a value the
+    // user is still mid-typing (an empty field parses to NaN).
+    if (!Number.isInteger(value) || value < 1 || value > 100) return;
+    if (value === cutoffs[key]) return;
+    const previous = cutoffs;
+    const next = { ...cutoffs, [key]: value };
+    useSettingsStore.getState().setFailoverCutoffs(provider, next);
+    setSaving(true);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ failoverCutoffs: { [provider]: { [key]: value } } }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      useSettingsStore.getState().setFailoverCutoffs(provider, previous);
+      useUiStore.getState().setToast({ message: `Failed to update ${name} failover cutoff` });
+      console.error("[settings] failover cutoff save failed:", err);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const field = (key: "session" | "weekly", label: string) => (
+    <label className="flex items-center justify-between gap-3 text-xs">
+      <span className="text-(--color-text-secondary)">{label}</span>
+      <span className="flex items-center gap-1">
+        <input
+          type="number"
+          min={1}
+          max={100}
+          defaultValue={cutoffs[key]}
+          disabled={saving}
+          onBlur={(e) => void save(key, e.target.value)}
+          aria-label={`${name} ${label} failover cutoff, percent`}
+          className="w-16 rounded-md bg-(--color-bg-secondary) border border-(--color-border-secondary) px-2 py-1 text-right text-xs text-(--color-text-primary) focus:outline-none focus:border-(--color-border-focus)"
+          data-testid={`failover-cutoff-${provider}-${key}`}
+        />
+        <span className="text-(--color-text-tertiary)">%</span>
+      </span>
+    </label>
+  );
+
+  return (
+    <div className="px-1 space-y-2" data-testid={`failover-cutoffs-${provider}`}>
+      <p className="text-xs text-(--color-text-tertiary)">
+        Start new work on the next account once an account passes these. Accounts past their
+        cutoff are still used when no other account is below one, so nothing is stranded.
+      </p>
+      {field("session", "Short window")}
+      {field("weekly", "Weekly")}
     </div>
   );
 }
