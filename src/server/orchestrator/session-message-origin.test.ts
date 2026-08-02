@@ -10,7 +10,7 @@ describe("formatSessionMessagePrompt", () => {
     });
 
     expect(prompt).toBe(
-      '[Agent message from PARENT session "Parser plan" (parent-1); not from the user]\nAlso update the parser\n',
+      '[Agent message from PARENT session "Parser plan" (parent-1)]\nAlso update the parser\n',
     );
   });
 });

@@ -861,7 +861,6 @@ describe("Integration: live steering (docs/140)", () => {
     expect(steered).toMatchObject({ type: "message_steered", text: "Programmatic steer" });
     // Injected into the running agent — the fake records sendUserMessage under stdinData.
     expect(claude.stdinData.some((input) => input.includes("Programmatic steer"))).toBe(true);
-    expect(claude.stdinData.some((input) => input.includes("not from the user"))).toBe(true);
     expect(claude.stdinData.some((input) => input.includes('Agent message from PARENT session "Parent" (parent)'))).toBe(true);
     // And it was NOT queued.
     expect(runner.queueLength).toBe(0);
