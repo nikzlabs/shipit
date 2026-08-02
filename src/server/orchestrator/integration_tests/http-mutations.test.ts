@@ -729,6 +729,40 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       const claude = body.agents.find((a: { id: string }) => a.id === "claude");
       expect(claude?.authConfigured).toBe(false);
     });
+
+    // docs/150 — provider-wide sign-out drops every account row, so it needs
+    // the running-turn guard the per-account disconnect already has. Signing
+    // out mid-turn rewrites credentials under a live agent, and the user gets
+    // a 401 instead of an answer.
+    it("refuses while a pinned session is mid-turn, and allows it once idle", async () => {
+      await createSession("signout-1", "Mid-turn session");
+      sessionManager.setAgentId("signout-1", "claude");
+      sessionManager.setProviderRoute("signout-1", "account", "acct_live");
+      const runner = app.runnerRegistry.getOrCreate("signout-1", "/tmp/signout-1", "claude");
+      runner.running = true;
+
+      const blocked = await app.inject({ method: "DELETE", url: "/api/auth/api-key" });
+      expect(blocked.statusCode).toBe(409);
+      expect((blocked.json() as { error: string }).error).toMatch(/mid-turn/i);
+
+      // The turn ends; sign-out proceeds.
+      runner.running = false;
+      expect((await app.inject({ method: "DELETE", url: "/api/auth/api-key" })).statusCode).toBe(200);
+    });
+
+    // A session pinned to an account that sign-out removed is NOT stranded:
+    // the route reads as unusable, so its next turn's preflight fails it over
+    // (or reports auth_required if nothing is connected). Only the mid-turn
+    // case is unrecoverable, which is why that is the only thing guarded.
+    it("still signs out with an idle pinned session, leaving it to re-route", async () => {
+      await createSession("signout-2", "Idle pinned session");
+      sessionManager.setAgentId("signout-2", "claude");
+      sessionManager.setProviderRoute("signout-2", "account", "acct_gone");
+
+      expect((await app.inject({ method: "DELETE", url: "/api/auth/api-key" })).statusCode).toBe(200);
+      // The pin is left in place on purpose — the preflight re-routes it.
+      expect(sessionManager.get("signout-2")?.providerRouteId).toBe("acct_gone");
+    });
   });
 
   // ---- GitHub mutations ----

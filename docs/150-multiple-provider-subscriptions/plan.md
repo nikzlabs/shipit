@@ -2281,14 +2281,55 @@ each was a different subsystem, and folding them in would have made one diff
 un-reviewable. Two have since landed (see "auth operations are per-account"
 below); these two have not:
 
-- Provider-wide sign-out (`DELETE /api/auth/api-key`, `DELETE /api/codex-auth`)
-  drops every row for the provider with none of the pinned-session safeguards
-  the per-account disconnect has. Legacy, and destructive — but it is sign-*out*,
-  not a second way to connect, so it is a Phase 5 item rather than a req 16 one.
+- ~~Provider-wide sign-out lacks the pinned-session safeguards.~~ **Done, and
+  smaller than it looked** — see "Landed: sign-out's real hole" below.
 - `AgentAuthManager.start` still accepts a call with no account scope. Nothing
   calls it that way — `startProviderAccountLogin` is the only interactive
   caller — but the overload and the account-less `complete` branch behind it
   should go with the rest of Phase 5.
+
+### Landed: sign-out's real hole was one case, not four
+
+The review of the previous change reported provider-wide sign-out as broadly
+unsafe: it drops every account row for a provider with none of the safeguards
+per-account disconnect has, "stranding pinned sessions on dead route ids".
+Checking that against the code rather than taking it as read, most of it does
+not bite:
+
+- **A session pinned to a deleted account is not stranded.** A route whose row
+  is gone reads unusable (`isRouteUsableForTurn` returns `false` for an unknown
+  account), so `sessionNeedsAccountFailover` is true and the next turn's
+  enforcing preflight moves it to another account — conversation intact (req 9)
+  — or reports `auth_required` if the user really did sign out of everything.
+  Which is the correct outcome. The failover machinery built for reqs 3/8
+  already covers the case.
+- **Offering a replacement account makes no sense here.** Per-account
+  disconnect asks "move these sessions where?" because other accounts remain.
+  Sign-out removes them all; there is nowhere to move to.
+
+What genuinely does not recover is a turn that is **running right now**:
+sign-out rewrites credentials under a live agent, and the user gets a mid-turn
+401 instead of an answer. That is the one case guarded, mirroring the identical
+refusal in `deleteProviderAccount`, and it is the whole fix. Both sign-out
+routes also surface the `ServiceError` instead of flattening it into a 500, so
+the refusal arrives as an actionable 409.
+
+The general point: a reported gap between two code paths is a hypothesis about
+behavior, not a defect list. Three of the four differences here were correct by
+design once the failover path was accounted for.
+
+### Not legacy after all: `selectRouteForTurn`
+
+Phase 5 listed "remove `selectRouteForTurn` in favour of `selectAccountForTurn`"
+as compat-shim cleanup. It isn't one. It is a three-line convenience —
+`selection.ok ? selection.route : null` — with two callers that genuinely want
+route-or-null and have no use for a failure reason: rate-limit attribution
+(`bootstrap-managers.ts`, which needs a route id to key a quota snapshot) and
+sub-agent spawn (`sub-agent.ts`, which provisions from whatever account the
+router would pick). Neither is a turn that can be blocked, so neither has
+anything to do with reqs 13/17. Removing it would inline the same wrapper at
+both sites and call the result cleanup. The checklist item is retired as
+mistaken rather than executed.
 
 ### Non-goal: routing around model capability (req 17, reversed 2026-08-02)
 

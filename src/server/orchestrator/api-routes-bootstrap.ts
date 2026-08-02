@@ -26,6 +26,7 @@ import {
   startProviderAccountLogin,
   cancelProviderAccountLogin,
   submitProviderAccountCode,
+  assertNoRunningPinnedSessions,
   ServiceError,
 } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
@@ -390,6 +391,9 @@ export async function registerBootstrapRoutes(
     "/api/auth/api-key",
     async (_request, reply) => {
       try {
+        // docs/150 — same guard the per-account disconnect has: never rewrite
+        // credentials under a live agent.
+        assertNoRunningPinnedSessions(deps.sessionManager, deps.runnerRegistry, "claude");
         clearApiKey();
         deps.authManager.signOut();
         // Drop the stored Claude provider-account rows so authConfigured
@@ -410,6 +414,11 @@ export async function registerBootstrapRoutes(
         deps.sseBroadcast("provider_accounts", { accounts: deps.providerAccountManager.list() });
         return { success: true, agents };
       } catch (err) {
+        // The running-turn refusal is a 409 the user can act on, not a fault.
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
         reply.code(500).send({ error: `Failed to sign out of Claude: ${getErrorMessage(err)}` });
       }
     },
@@ -438,6 +447,7 @@ export async function registerBootstrapRoutes(
     "/api/codex-auth",
     async (_request, reply) => {
       try {
+        assertNoRunningPinnedSessions(deps.sessionManager, deps.runnerRegistry, "codex");
         deps.codexAuthManager.cancel();
         deps.codexAuthManager.signOut();
         // Mirror the Claude sign-out: drop stored Codex provider-account rows
@@ -460,6 +470,11 @@ export async function registerBootstrapRoutes(
         deps.sseBroadcast("provider_accounts", { accounts: deps.providerAccountManager.list() });
         return { success: true, agents };
       } catch (err) {
+        // The running-turn refusal is a 409 the user can act on, not a fault.
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
         reply.code(500).send({ error: `Failed to sign out of Codex: ${getErrorMessage(err)}` });
       }
     },

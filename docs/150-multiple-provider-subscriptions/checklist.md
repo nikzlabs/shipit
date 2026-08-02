@@ -140,6 +140,7 @@
 - [x] Integration: a reserved-route turn is not healed off other accounts' tokens.
 - [x] Integration: a second concurrent sign-in is 409 with the blocking row named, and cancel frees the provider.
 - [x] Unit: cancel / delete / failed-spawn all release the provider's login scope.
+- [x] Integration: provider-wide sign-out is refused mid-turn (409) and allowed once idle.
 - [x] Client: Add account / Connect are disabled while another row of the provider is authenticating.
 - [ ] Unit: API-key fallback configures only its reserved route and never marks a subscription account ready.
 - [x] Client: an authenticated primary row does not hide or overwrite a secondary row's pending flow or diagnostics.
@@ -152,9 +153,9 @@ Runs last: every shim below is load-bearing for an install that has not yet
 exercised the new path. The signal one is ready to go is that nothing reads it.
 
 - [ ] Remove the legacy root credential paths and alias symlinks once every read/write goes through an account root.
-- [ ] Give provider-wide sign-out (`DELETE /api/auth/api-key`, `DELETE /api/codex-auth`) the same pinned-session safeguards as per-account disconnect, or replace it with a per-account sweep. It currently drops every row with no replacement offered, stranding pinned sessions on dead route ids.
+- [x] Give provider-wide sign-out the running-turn guard the per-account disconnect has. (An *idle* pinned session is deliberately left to re-route itself: a route whose row is gone reads unusable, so the next turn's preflight fails it over. Only the mid-turn case is unrecoverable.)
 - [ ] Drop `AgentAuthManager.start`'s no-scope overload and the account-less `complete` branch in `wireEventHandlers` once nothing can start an unscoped flow (nothing does today — `startProviderAccountLogin` is the only caller).
-- [ ] Remove `selectRouteForTurn` in favour of `selectAccountForTurn`.
+- [x] ~~Remove `selectRouteForTurn`~~ — **not legacy after all.** It is a three-line convenience over `selectAccountForTurn` with two honest callers that genuinely want route-or-null (rate-limit attribution, sub-agent spawn). Removing it would inline the same wrapper twice.
 - [ ] Backfill `priority` onto stored rows, then drop the `isPrimary`-only ordering fallback in `accountsInSelectionOrder`.
 - [ ] Resolve `ProviderAccount.isPrimary` vs `priority` — drop whichever is no longer read independently.
 - [x] Confirm no singleton subscription auth endpoint, client state, or onboarding card remains (covers the three Phase 1 migration items).
