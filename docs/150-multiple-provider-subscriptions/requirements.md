@@ -39,6 +39,14 @@ with the ShipIt transcript and workspace context preserved across the switch.
 > all legacy behavior and code related to agent accounts need to be cleaned up
 > after all work is done.
 
+**Requirement 17 reversed by the user**, 2026-08-02:
+
+> So this is a corner case that I'm not sure is important. Let's, instead of it
+> being a requirement, mark it as a non-go. So essentially, if the user adds two
+> accounts with different model capabilities, it's kind of their own issue and
+> should not automatically work around it. But the error should be clear when we
+> try to use a model that's not supported, without automatic recovery.
+
 ## User-sourced requirements
 
 (Numbers are stable IDs, not an ordering. 10 and 11 live in the next section;
@@ -79,9 +87,11 @@ with the ShipIt transcript and workspace context preserved across the switch.
     account is enough to enable it; no separate opt-in.
 16. Connecting an account uses the same UI for the first account and for every
     subsequent account. The two flows must not diverge as they do today.
-17. If the next account in priority order cannot run the requested model, ShipIt
-    skips it and reports that no account can serve the turn. It does not
-    silently substitute a model that account does support.
+17. ShipIt does not route around an account that cannot run the requested
+    model. Connecting accounts with different model access is the user's own
+    choice to manage. When a turn runs on an account that cannot serve the
+    requested model, the failure is reported clearly, and is not automatically
+    retried, substituted, or worked around.
 18. An agent-spawned child session picks its own account through the normal
     priority order. It does not inherit the parent session's account.
 19. When the feature is finished, the legacy single-account behaviour and the
@@ -127,6 +137,18 @@ None. Implementation is unblocked.
 - 2026-08-01 — If the next account cannot run the requested model, skip it and
   report, or substitute a model it does support? **Skip it and report.** Became
   requirement 17.
+- 2026-08-02 — **Requirement 17 reversed.** Skip-and-report is now a non-goal:
+  "if the user adds two accounts with different model capabilities, it's kind of
+  their own issue and should not automatically work around it. But the error
+  should be clear when we try to use a model that's not supported, without
+  automatic recovery." Prompted by the finding that nothing can populate
+  per-account model capability without lying about it — `agent_init` reports
+  only the model that *ran*, and writing that into the capability whitelist
+  would make one observation refuse every other model. Rather than build a
+  second-guessing mechanism for a corner case, ShipIt does nothing and surfaces
+  the provider's error. Requirement 17 rewritten above; the previous
+  skip-and-report wording, the `no_model_eligible_account` selection failure,
+  and the `capabilities.models` check are removed rather than left dormant.
 - 2026-08-01 — Do child sessions inherit the parent's account or route
   independently? **Normal priority order.** Became requirement 18; closes the
   Phase 0 checklist item that had this undecided.

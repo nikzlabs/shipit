@@ -251,20 +251,19 @@ export interface PrepareSessionAgentEnvironmentResult {
  * Resolve the provider route for a turn that has not pinned one yet.
  *
  * With `enforce`, throws {@link ProviderRouteUnavailableError} when no
- * connected account can serve the turn (docs/150 reqs 13, 17). Returns
+ * connected account can serve the turn (docs/150 req 13). Returns
  * `undefined` — today's behavior — when there is no router wired at all
  * (tests, local runtime), when the only problem is that nothing is signed in
  * (which has its own UX), or when this call isn't the turn's own preflight.
  */
 function selectRouteForNewTurn(
   agentId: AgentId,
-  model: string | undefined,
   deps: SessionAgentEnvDeps,
   enforce: boolean,
 ): ProviderRoute | undefined {
   const manager = deps.providerAccountManager;
   if (!manager) return undefined;
-  const selection = manager.selectAccountForTurn(agentId, model === undefined ? {} : { model });
+  const selection = manager.selectAccountForTurn(agentId);
   if (!enforce) return selection.ok ? selection.route : undefined;
   return routeFromSelection(agentId, selection);
 }
@@ -322,7 +321,7 @@ export async function prepareSessionAgentEnvironment(
   const selectedRoute =
     routedSession.providerRouteKind && routedSession.providerRouteId
       ? { kind: routedSession.providerRouteKind, id: routedSession.providerRouteId }
-      : selectRouteForNewTurn(agentId, session.model, deps, args.enforceAccountRouting ?? false);
+      : selectRouteForNewTurn(agentId, deps, args.enforceAccountRouting ?? false);
 
   // req 11 — say it in the session, where the user is already looking, and
   // persist it: a switch the transcript forgets on reload is not a record.

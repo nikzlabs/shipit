@@ -2116,42 +2116,47 @@ install that has not yet exercised the new path, so removing one before the
 replacement is proven turns a migration into a regression. The signal that a
 shim is ready to go is that nothing reads it — not that the replacement exists.
 
-### Finding: `agent_init` cannot populate `capabilities.models` (req 17 blocked)
+### Non-goal: routing around model capability (req 17, reversed 2026-08-02)
 
-The Phase 1 item "add `agent_init` provider-account metadata decoration at the
-orchestrator boundary" was written on the assumption that `agent_init` carries
-enough to fill `ProviderAccount.capabilities`, which is what req 17's
-`accountSupportsModel` reads. Checked at the source: it does not.
+Requirement 17 originally said ShipIt should skip an account that cannot run the
+requested model and report that no account can serve the turn. The user reversed
+it: mixing accounts with different model access is theirs to manage, ShipIt must
+not work around it, and the error simply has to be clear with no automatic
+recovery. See `requirements.md` for the rewritten requirement and its receipt.
 
-`AgentInitEvent` (`shared/types/agent-types.ts`) carries a single `model` — the
-one that just started — plus `tools`, `sessionId`, and `permissionMode`. Both
-adapters construct it that way (`codex-event-handler.ts:729`,
-`claude/adapter.ts`). There is no enumeration of *supported* models anywhere in
-it.
+**What prompted the reversal.** The mechanism was built and tested but dormant,
+because nothing populated `ProviderAccount.capabilities.models`. The planned
+source — an `agent_init` decoration — cannot do it: `AgentInitEvent` carries a
+single `model`, the one that just *started*, plus tools and permission mode.
+Both adapters construct it that way (`codex/codex-event-handler.ts:729`,
+`claude/adapter.ts`). Nothing in it enumerates *supported* models.
 
-Writing the observed model into `capabilities.models` would be worse than
-leaving it empty. `accountSupportsModel` treats that array as a **whitelist**:
-absent or empty means "assume capable", but non-empty means "only these". So the
-first turn an account ran on Sonnet would set `models: ["sonnet"]`, and req 17
-would thereafter *skip that account and report no eligible account* the moment
-the user asked for Opus — refusing a model the account very likely supports. One
-positive observation would be silently promoted into an exhaustive capability
-list.
+Writing the observed model in would have been worse than leaving it empty.
+`accountSupportsModel` read that array as a **whitelist**: absent or empty meant
+"assume capable", non-empty meant "only these". The first turn an account ran on
+Sonnet would have set `models: ["sonnet"]`, and the feature would then have
+refused Opus on an account that very likely supports it — a single positive
+observation silently promoted into an exhaustive capability list, failing in a
+way that looks like the feature working.
 
-So req 17 stays dormant until a source of real per-account model eligibility
-exists. Three candidates, none free:
+The remaining options were a static plan→models table (stale the moment a
+provider changes tiers, and mis-refusing silently when it does) or detecting
+refusals from turn failures (sound, but real mechanism for a corner case). The
+user's call was neither: **do nothing.**
 
-1. **Detect from turn failures**, mirroring req 7's hard-exhaustion detection:
-   when a turn dies because the model is not available on that plan, record that
-   account+model pair as refused. Negative evidence is sound where positive
-   observation is not — an account that refused Opus genuinely cannot run it —
-   and it errs toward "try it", matching the default this feature already uses
-   for unknown quota and unknown capabilities.
-2. **Derive from plan tier.** The plan string is already read from credentials.
-   Needs a static plan→models table, which goes stale every time a provider
-   changes its tiers, and would silently mis-refuse when it does.
-3. **Leave req 17 dormant** and say so, rather than shipping a mechanism with no
-   data behind it.
+**What that means in code.** Removed rather than left dormant, per req 19's
+spirit — a mechanism with no data behind it is exactly the kind of second way of
+working that requirement exists to prevent:
 
-Recorded here rather than acted on, because the three lead to materially
-different implementations and (3) is a decision not to build.
+- `AccountSelectionFailure`'s `no_model_eligible_account` variant
+- `SelectAccountOptions.model` and the `accountSupportsModel` helper
+- the model filter in `selectAccountForTurn` and in `isRouteUsableForTurn`
+- the model plumbing through `selectRouteForNewTurn` and
+  `sessionNeedsAccountFailover`
+
+**What provides the "clear error".** Nothing new. The turn runs on the selected
+account, the provider rejects the model, and that error reaches the transcript
+through the existing `agent_result` error path. The req-14 same-turn retry does
+not fire, because `detectHardExhaustion` matches quota language only — verified,
+not assumed: none of its patterns match a model-unavailable message. So "no
+automatic recovery" holds by construction rather than by a new guard.

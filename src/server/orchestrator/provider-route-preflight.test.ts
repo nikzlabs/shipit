@@ -16,9 +16,8 @@ import {
 } from "./provider-route-preflight.js";
 
 describe("isTurnBlockingFailure", () => {
-  it("blocks the turn when quota is spent or no account can run the model", () => {
+  it("blocks the turn when quota is spent", () => {
     expect(isTurnBlockingFailure({ reason: "all_exhausted", earliestResetAt: null })).toBe(true);
-    expect(isTurnBlockingFailure({ reason: "no_model_eligible_account", model: "opus" })).toBe(true);
   });
 
   // Not-signed-in already has a guided surface (authConfigured, the Settings
@@ -62,13 +61,6 @@ describe("describeAccountSelectionFailure", () => {
     expect(message).not.toContain("Invalid Date");
   });
 
-  it("names the model it refused to substitute (req 17)", () => {
-    const message = describeAccountSelectionFailure("claude", {
-      reason: "no_model_eligible_account",
-      model: "claude-opus-5",
-    });
-    expect(message).toContain("claude-opus-5");
-  });
 });
 
 describe("routeFromSelection", () => {

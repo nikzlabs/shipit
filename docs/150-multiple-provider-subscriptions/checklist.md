@@ -46,7 +46,7 @@
 - [x] Route child-session first turns through the normal account router (req 18).
 - [ ] Route child follow-up turns through persisted agent and provider route, not default agent fallback.
 - [x] Offer a replacement account inline when disconnecting an account that pinned sessions use.
-- [ ] Populate per-account model eligibility so req 17 stops being dormant. NOT via `agent_init` — it carries only the model that ran, and writing that into the `capabilities.models` whitelist would make one observation refuse every other model. See plan.md "Finding: `agent_init` cannot populate `capabilities.models`".
+- [x] Do NOT route around model capability — removed the skip-and-report mechanism (req 17 reversed to a non-goal, 2026-08-02).
 - [ ] Add local/dogfood direct-run account-scoped HOME/config-root support or explicit unsupported diagnostic.
 
 ## Phase 2 — Inline Quota Per Account
@@ -89,7 +89,7 @@
 - [x] Add Settings controls for both proactive failover cutoffs.
 - [x] Re-evaluate account eligibility before every turn, including existing-session, queued, and system-initiated turns.
 - [x] Switch an existing session to the next eligible account when either configured cutoff is reached.
-- [x] Skip an account that cannot run the requested model and report no eligible account (req 17) — mechanism built and tested, but **dormant**: nothing populates `capabilities.models`.
+- [x] Leave a model-ineligible account in place and let the provider's error surface, with no automatic recovery (req 17, reversed to a non-goal).
 - [ ] Add optional per-session account preference.
 - [ ] Add optional per-provider “do not auto-failover” setting.
 - [ ] Add optional provider-profile label refresh where stable.

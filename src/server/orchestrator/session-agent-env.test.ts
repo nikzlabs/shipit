@@ -290,7 +290,7 @@ describe("prepareSessionAgentEnvironment", () => {
       },
     });
 
-    expect(selectAccountForTurn).toHaveBeenCalledWith("claude", {});
+    expect(selectAccountForTurn).toHaveBeenCalledWith("claude");
     expect(state.setProviderRouteCalls).toEqual([
       { id: "s1", kind: "account", routeId: "acct-primary" },
     ]);
@@ -363,29 +363,34 @@ describe("prepareSessionAgentEnvironment", () => {
     expect(fs.existsSync(path.join(tmpDir, "sessions", "s1"))).toBe(false);
   });
 
-  it("passes the session's model to the router so req 17 can skip ineligible accounts", async () => {
+  // Routing around an account that cannot run the requested model is a
+  // NON-GOAL (docs/150). The router is therefore never told which model the
+  // turn wants: mixing accounts with different model access is the user's
+  // choice to manage, and the provider's own error is the clear signal.
+  it("does not consult the model when choosing an account", async () => {
+    fs.mkdirSync(path.join(tmpDir, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, ".claude.json"), "{}");
+
     const runner = new FakeContainerRunner();
     const credentialStore = makeFakeCredentialStore();
     const { sm } = makeFakeSessionManager({ agentPinned: false, model: "claude-opus-5" });
     const selectAccountForTurn = vi
       .fn()
-      .mockReturnValue({ ok: false, reason: "no_model_eligible_account", model: "claude-opus-5" });
+      .mockReturnValue({ ok: true, route: { kind: "account", id: "acct-a" } });
 
-    await expect(
-      prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
-        sessionId: "s1",
-        agentId: "claude",
-        enforceAccountRouting: true,
-        deps: {
-          credentialsDir: tmpDir,
-          credentialStore,
-          sessionManager: sm,
-          providerAccountManager: { selectAccountForTurn } as never,
-        },
-      }),
-    ).rejects.toThrow(/claude-opus-5/);
+    await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+      sessionId: "s1",
+      agentId: "claude",
+      enforceAccountRouting: true,
+      deps: {
+        credentialsDir: tmpDir,
+        credentialStore,
+        sessionManager: sm,
+        providerAccountManager: { selectAccountForTurn } as never,
+      },
+    });
 
-    expect(selectAccountForTurn).toHaveBeenCalledWith("claude", { model: "claude-opus-5" });
+    expect(selectAccountForTurn).toHaveBeenCalledWith("claude");
   });
 
   // Not-signed-in has its own guided surface; env-prep must not convert it

@@ -606,31 +606,7 @@ describe("ProviderAccountManager", () => {
       });
     });
 
-    it("skips an account that cannot run the requested model and reports it (req 17)", () => {
-      const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
-      const a = mgr.create("claude", "A");
-      mgr.setAccountStatus("claude", a.id, READY);
-      store.upsertProviderAccount({
-        ...mgr.list("claude")[0],
-        capabilities: { models: ["claude-sonnet"], source: "agent_init", refreshedAt: Date.now() },
-      });
 
-      expect(mgr.selectAccountForTurn("claude", { model: "claude-opus" })).toEqual({
-        ok: false,
-        reason: "no_model_eligible_account",
-        model: "claude-opus",
-      });
-      // ...but the model it *does* support still routes.
-      expect(mgr.selectAccountForTurn("claude", { model: "claude-sonnet" }).ok).toBe(true);
-    });
-
-    it("assumes an account with no capability snapshot can run the model", () => {
-      const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
-      const a = mgr.create("claude", "A");
-      mgr.setAccountStatus("claude", a.id, READY);
-
-      expect(mgr.selectAccountForTurn("claude", { model: "anything" }).ok).toBe(true);
-    });
 
     it("reports auth_required when nothing is connected", () => {
       const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
