@@ -37,16 +37,6 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
     sessionManager = new SessionManager(dbManager);
 
     const credentialStore = createTestCredentialStore(tmpDir);
-    const now = Date.now();
-    credentialStore.upsertProviderAccount({
-      id: "acct-test-claude",
-      provider: "claude",
-      label: "Test Claude subscription",
-      isPrimary: true,
-      status: "ready",
-      createdAt: now,
-      updatedAt: now,
-    });
 
     app = await buildApp({
       credentialStore,

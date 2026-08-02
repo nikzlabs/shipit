@@ -335,7 +335,15 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
 
   // ---- Agent registry ----
   const agentRegistry = deps.agentRegistry ?? new AgentRegistry({
-    checkClaudeAuth: () => providerAccountManager.hasAnyAuthForProvider("claude"),
+    checkClaudeAuth: () =>
+      providerAccountManager.hasAnyAuthForProvider("claude")
+      // Explicit dependency injection is itself an auth source for tests and
+      // custom runtimes that do not persist provider-account rows. Production
+      // never takes this branch: its AuthManager is built below rather than
+      // supplied through AppDeps. Keeping the fallback at the DI boundary
+      // preserves those fixtures without reintroducing the legacy singleton
+      // gate in either turn-ingress path.
+      || (deps.authManager?.authenticated ?? false),
     checkCodexAuth: () => providerAccountManager.hasAnyAuthForProvider("codex"),
   });
   await agentRegistry.detect();

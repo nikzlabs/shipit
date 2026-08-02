@@ -151,6 +151,7 @@ describe("Integration: POST /api/sessions/:id/agent/dispatch", () => {
     const client = await TestClient.connect(port);
     await client.receive();
     credentialStore.deleteProviderAccount("claude", "acct-added-claude");
+    stubAuth.authenticated = false;
     const res = await app.inject({
       method: "POST",
       url: `/api/sessions/${client.sessionId}/agent/dispatch`,
