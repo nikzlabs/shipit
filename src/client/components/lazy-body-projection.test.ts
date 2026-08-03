@@ -99,7 +99,7 @@ describe("the constraint consumers still resolve from a projected result (req 4)
     // it as markdown in full, so a slice here would cut a report with no way
     // to get the rest back.
     const report = Array.from({ length: 5_000 }, (_, i) => `finding ${i}`).join("\n");
-    for (const parent of ["Task", "Skill", "Agent"]) {
+    for (const parent of ["Task", "Agent"]) {
       const projected = projectToolResult("s1", { toolUseId: "t1", content: report }, parent);
       expect(projected.content).toBe(report);
       expect(projected.truncated).toBeUndefined();

@@ -1,3 +1,8 @@
+---
+issue: https://linear.app/shipit-ai/issue/SHI-276
+title: Subagent transparency
+description: Render a subagent's prompt, work timeline, and final report inline instead of an opaque tool call.
+---
 
 # 109 — Subagent / Task Tool Transparency
 
@@ -106,7 +111,9 @@ Component tests for `SubagentCall` covering each disclosure level.
 | `src/server/orchestrator/chat-history.ts` | Persist parent ids |
 | `src/client/components/ToolCall/SubagentCall.tsx` | New component |
 | `src/client/utils/group-events-by-parent.ts` | New util |
-| `src/client/components/MessageList.tsx` | Use treed rendering for Task |
+| `src/client/components/MessageList/MessageToolUse.tsx` | Route subagent tools to `SubagentCall` |
+| `src/server/shared/transcript-slice-tools.ts` | `SUBAGENT_TOOL_NAMES` (layout) + `SUBAGENT_REPORT_TOOL_NAMES` (report / slice exemption) |
+| `src/server/orchestrator/transcript-projection.ts` | Exempt the report set from docs/244 slicing |
 
 ## Implementation notes (post-shipping)
 
@@ -127,9 +134,11 @@ The shipped implementation matches the plan with a few clarifications:
   list of subagent events by parent id. `SubagentCall.tsx` (new component)
   renders the four disclosure layers from the plan: header, prompt
   (collapsed), work timeline (auto-collapses once the final report arrives —
-  user toggle wins), and the markdown final report. `MessageList` swaps the
-  legacy "Subagent: <description>" strip for `SubagentCall` whenever it sees
-  a Task tool.
+  user toggle wins), and the markdown final report. `MessageToolUse` swaps the
+  legacy "Subagent: <description>" strip for `SubagentCall` whenever the tool
+  name is in `SUBAGENT_REPORT_TOOL_NAMES` (`Task`, `Agent`) — see
+  [What actually shipped broken](#what-actually-shipped-broken-and-the-fix);
+  gating this on the literal `"Task"` is what kept the feature dark.
 - **Live updates.** The "work" view streams in real time because each nested
   `agent_event` is emitted to viewers via the same `runner.emitMessage`
   path. The renderer just attaches each new event to the parent message in
@@ -151,6 +160,117 @@ The shipped implementation matches the plan with a few clarifications:
   the same standalone subagent block instead of grouping it with ordinary
   shell/read/edit tools. Other collab tools (`send_input`, `wait_agent`,
   `close_agent`, etc.) still render as regular tool calls.
+
+## What actually shipped broken (and the fix)
+
+Everything above describes the design as if it worked. It did not. From the day
+this feature shipped until the fix below, **no subagent's work was ever visible
+in the ShipIt transcript.** The user saw a subagent get called, then nothing,
+then the main agent acting on results they never saw.
+
+### The gate mismatch
+
+`MessageToolUse.tsx` routed to `SubagentCall` only when the tool was named
+**`Task`**:
+
+```jsx
+if (tool.name === "Task") { return <SubagentCall … subagentEvents={…} /> }   // the real view
+if (tool.name === "Agent") { … return <div>{label}{description}{prompt}</div> }  // never reads subagentEvents
+```
+
+**The Claude Code CLI emits the tool as `Agent`, not `Task`.** Verified directly
+against CLI 2.1.219 by running the same invocation ShipIt uses
+(`claude -p … --output-format stream-json --verbose`) and reading the raw NDJSON:
+
+```
+assistant :: tool_use[Agent] id=toolu_01B8iW…
+  input = {description, prompt, subagent_type, run_in_background}
+assistant PARENT=toolu_01B8iW… :: tool_use[Bash] id=toolu_012fPv…
+user     PARENT=toolu_01B8iW… :: tool_result for=toolu_012fPv…
+user                          :: tool_result for=toolu_01B8iW…   ← the final report
+```
+
+So every real subagent call took the second branch, which renders a label, a
+description and the prompt — and drops `subagentEvents` on the floor.
+
+Nothing else in the pipeline was wrong. `ClaudeAdapter.mapEvent` maps
+`parent_tool_use_id` on both event types, `agent-listeners.ts` routes nested
+events into the parent group's `subagentEvents`, and the message builder
+attaches them. The data arrived at the client correctly and was then discarded
+by the renderer.
+
+### Why the tests stayed green
+
+`integration_tests/subagent-transparency.test.ts` injected **synthetic** events
+named `Task` into a fake CLI process — a name the real CLI never sends. It
+exercised the one branch production never reached, so the suite proved the
+feature worked on an input that does not exist. The tests now use `Agent`, and
+`MessageList.test.tsx` carries the client-side regression cases (they fail
+against the pre-fix renderer).
+
+This is the general hazard: a fake that invents its own protocol constants can
+only ever test the fake. Where a fixture stands in for an external CLI, the
+constants in it should be copied from a captured real run.
+
+### The fix
+
+One shared set replaces the hardcoded name, and the two jobs the old
+`SUBAGENT_TOOL_NAMES` was doing get split apart
+(`src/server/shared/transcript-slice-tools.ts`):
+
+| Set | Members | Job |
+|---|---|---|
+| `SUBAGENT_TOOL_NAMES` | `Task`, `Skill`, `Agent` | **Layout** — render as a standalone top-level element rather than inside the clipped tool-call group. |
+| `SUBAGENT_REPORT_TOOL_NAMES` | `Task`, `Agent` | **Report** — route to `SubagentCall` *and* exempt the result body from docs/244 slicing. |
+
+`MessageToolUse` gates on the report set; `transcript-projection` exempts the
+report set. Reading the same constant is what makes them unable to drift: a name
+that renders a full report but gets sliced loses text irrecoverably, and a name
+that is exempted but renders nothing ships an unbounded body for no reason.
+
+### The three design decisions
+
+1. **`Agent` routes into `SubagentCall`, and nothing is dropped.** The CLI's
+   `Agent` input is `{description, prompt, subagent_type}` — exactly the fields
+   `SubagentCall` already reads. The header renders
+   `Subagent (general-purpose): <description>`, covering both fields the old
+   strip showed. The only change for a user is that the prompt moves from an
+   always-visible clipped preview into the same collapsed disclosure `Task`
+   used, which is the consistent treatment.
+
+2. **`Task` is kept, not deleted.** Chat history persists tool names verbatim
+   (`chat-history.ts` → the `tool_use` JSON column), so sessions recorded before
+   this fix still hold `Task` rows and must keep rendering. It is dead on the
+   live path and alive on the reload path.
+
+3. **`Skill` stays compact and loses its slice exemption.** Verified against CLI
+   2.1.219: an in-context skill invocation emits **no** nested
+   `parent_tool_use_id` events and a ~33-character `tool_result` (a
+   base-directory acknowledgement) — the skill's actual content arrives as a
+   separate top-level user message, not as a report under the tool. There is no
+   work timeline and no report to disclose, so `SubagentCall` would draw an
+   empty shell. Meanwhile the old exemption meant `Skill` bodies were exempt
+   from *every* size bound while rendering nothing — an unbounded payload
+   shipped for no reader (the docs/244 finding). Removing `Skill` from the
+   report set fixes both halves.
+
+   *Not verified:* whether a **subagent-backed** skill (one the CLI runs in its
+   own agent) attaches nested events to the `Skill` tool id. The observable
+   evidence points away from it — a background skill returns an agent name and
+   its result arrives as a separate task notification — but this was not
+   exercised against a live run. If such a shape turns up, the fix is to add
+   `Skill` to `SUBAGENT_REPORT_TOOL_NAMES` and give `SubagentCall` a skill-shaped
+   header; the sets exist precisely so that is a one-line change.
+
+### Verified how
+
+- Raw CLI NDJSON captured from a live `claude -p` run (above) — the tool name,
+  the input shape, and the `parent_tool_use_id` threading.
+- A real browser render of the real `MessageList` against the captured event
+  shape, showing all four disclosure layers for an `Agent` call: header +
+  status badge, collapsed prompt, expanded work timeline with the subagent's
+  own `Bash` call, and the markdown final report.
+- Client regression tests that fail against the pre-fix renderer.
 
 ## Future extensions
 

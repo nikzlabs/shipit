@@ -1,6 +1,6 @@
 import { ToolCallGroup, ToolUseItem } from "../message-tools.js";
-import { MarkdownTooltip } from "../message-markdown.js";
 import { SubagentCall } from "../SubagentCall.js";
+import { SUBAGENT_REPORT_TOOL_NAMES } from "../../../server/shared/transcript-slice-tools.js";
 import type { VisualElement } from "../visual-elements.js";
 import type { ChatMessage } from "./types.js";
 
@@ -38,8 +38,19 @@ export function MessageToolElement({
   if (el.kind === "subagent") {
     const tool = el.tool;
     const parentMsg = messages[el.messageIndex];
-    if (tool.name === "Task") {
-      // Full transparency view — prompt, work timeline, final report (109)
+    // Full transparency view — prompt, work timeline, final report (109).
+    //
+    // Gate on the shared set, NOT on a hardcoded `"Task"`. Claude Code's CLI
+    // emits this tool as `Agent` (verified against 2.1.219: `tool_use` name
+    // `Agent`, input `{description, prompt, subagent_type}`, nested events
+    // carrying `parent_tool_use_id`) — so a `=== "Task"` gate sent every real
+    // subagent call down a fallback branch that dropped `subagentEvents` on
+    // the floor, which is why subagent work never appeared in the transcript.
+    // `Task` stays in the set because chat history persists tool names
+    // verbatim, so sessions recorded before this fix still hold `Task` rows.
+    // Codex's `spawn_agent` is normalized to `Agent` by `CodexAdapter` and
+    // lands here too.
+    if (SUBAGENT_REPORT_TOOL_NAMES.has(tool.name)) {
       return (
         <SubagentCall
           tool={tool}
@@ -49,26 +60,9 @@ export function MessageToolElement({
         />
       );
     }
-    if (tool.name === "Agent") {
-      const description = (tool.input.description as string) ?? "Running agent...";
-      const subagentType = typeof tool.input.subagent_type === "string" ? tool.input.subagent_type : "";
-      const prompt = typeof tool.input.prompt === "string" ? tool.input.prompt : "";
-      const label = subagentType ? `Agent (${subagentType}):` : "Agent:";
-      return (
-        <div data-testid="subagent-agent" className="border-l-2 border-(--color-success)/40 pl-3 space-y-1">
-          <div className="flex items-center gap-2 text-sm">
-            <span className="font-semibold text-(--color-success)">{label}</span>
-            <span className="text-(--color-text-primary)">{description}</span>
-          </div>
-          {prompt && (
-            <MarkdownTooltip content={prompt}>
-              <div className="text-xs text-(--color-text-secondary) font-mono whitespace-pre-wrap overflow-hidden max-h-15 leading-5">{prompt}</div>
-            </MarkdownTooltip>
-          )}
-        </div>
-      );
-    }
-    // Skill
+    // Skill — stays compact. An in-context skill invocation emits no nested
+    // events and a trivial tool_result (the skill's content arrives as its own
+    // top-level message), so there is no work timeline or report to disclose.
     const skillName = (tool.input.skill as string) ?? "unknown";
     const args = tool.input.args ? (tool.input.args as string) : "";
     return (
