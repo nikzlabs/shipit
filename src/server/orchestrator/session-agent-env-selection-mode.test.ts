@@ -8,9 +8,9 @@
  * buildApp-level test would drive a lot of transport to observe the same two
  * branches.
  *
- * Lives beside `session-agent-env.test.ts` rather than inside it because that
- * file is not writable by the session user in this container (see the note in
- * the PR); the harness here is deliberately minimal for the same reason.
+ * Lives beside `session-agent-env.test.ts` rather than inside it because the
+ * mode is one self-contained decision with its own harness, and that file is
+ * already ~1200 lines across six unrelated concerns.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";

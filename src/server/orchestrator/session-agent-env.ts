@@ -356,13 +356,8 @@ export async function prepareSessionAgentEnvironment(
   // `selectRouteForTurn` wrapper), and an account merely *considered* has not
   // been used. Covers the pinned branch too, deliberately: an account carrying
   // an active session should keep sorting last while that work continues.
-  //
-  // Optional-called to match the contract `markAccountUsed` states for itself:
-  // a stamp is a sort key, and skipping one must never be able to fail a turn.
-  // The failure it tolerates here — a collaborator without the method — has the
-  // same consequence the method's own no-op branch has, a slightly stale order.
   if (selectedRoute?.kind === "account" && deps.providerAccountManager) {
-    deps.providerAccountManager.markAccountUsed?.(agentId, selectedRoute.id);
+    deps.providerAccountManager.markAccountUsed(agentId, selectedRoute.id);
   }
 
   // req 11 — say it in the session, where the user is already looking, and

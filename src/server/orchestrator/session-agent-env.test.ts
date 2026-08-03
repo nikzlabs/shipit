@@ -292,7 +292,7 @@ describe("prepareSessionAgentEnvironment", () => {
         credentialsDir: tmpDir,
         credentialStore,
         sessionManager: sm,
-        providerAccountManager: { selectAccountForTurn } as never,
+        providerAccountManager: { selectAccountForTurn, markAccountUsed: vi.fn() } as never,
       },
     });
 
@@ -327,7 +327,7 @@ describe("prepareSessionAgentEnvironment", () => {
         credentialsDir: tmpDir,
         credentialStore,
         sessionManager: sm,
-        providerAccountManager: { selectAccountForTurn } as never,
+        providerAccountManager: { selectAccountForTurn, markAccountUsed: vi.fn() } as never,
       },
     });
 
@@ -356,7 +356,7 @@ describe("prepareSessionAgentEnvironment", () => {
           credentialsDir: tmpDir,
           credentialStore,
           sessionManager: sm,
-          providerAccountManager: { selectAccountForTurn } as never,
+          providerAccountManager: { selectAccountForTurn, markAccountUsed: vi.fn() } as never,
         },
       }),
     ).rejects.toThrow(ProviderRouteUnavailableError);
@@ -392,7 +392,7 @@ describe("prepareSessionAgentEnvironment", () => {
         credentialsDir: tmpDir,
         credentialStore,
         sessionManager: sm,
-        providerAccountManager: { selectAccountForTurn } as never,
+        providerAccountManager: { selectAccountForTurn, markAccountUsed: vi.fn() } as never,
       },
     });
 
@@ -418,7 +418,7 @@ describe("prepareSessionAgentEnvironment", () => {
         credentialsDir: tmpDir,
         credentialStore,
         sessionManager: sm,
-        providerAccountManager: { selectAccountForTurn } as never,
+        providerAccountManager: { selectAccountForTurn, markAccountUsed: vi.fn() } as never,
       },
     });
 
@@ -448,7 +448,7 @@ describe("prepareSessionAgentEnvironment", () => {
         credentialsDir: tmpDir,
         credentialStore,
         sessionManager: sm,
-        providerAccountManager: { selectAccountForTurn } as never,
+        providerAccountManager: { selectAccountForTurn, markAccountUsed: vi.fn() } as never,
       },
     });
 
