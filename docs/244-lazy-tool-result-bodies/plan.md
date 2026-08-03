@@ -253,47 +253,78 @@ Req 6 puts live turns, reconnects, *and* history loads inside the bound, and
 those are three different code paths — only one of which reads through
 `getChatHistory`:
 
-| Path | Site | Tool results / images | Tool inputs |
-|---|---|---|---|
-| History load, session switch | `getChatHistory` (`services/session.ts`) | stripped | stripped |
-| Live turn | `projectAgentEventForWire` (`agent-listeners.ts`) | stripped | **inline** |
-| Reconnect mid-turn | `projectTurnSnapshotForWire` (`route-registry.ts`) | stripped | **inline** |
+| Path | Site | Top-level results / images | Tool inputs | Nested subagent results |
+|---|---|---|---|---|
+| History load, session switch | `getChatHistory` (`services/session.ts`) | stripped | stripped | stripped |
+| Live turn | `projectAgentEventForWire` (`agent-listeners.ts`) | stripped | **inline** | **inline** |
+| Reconnect mid-turn | `projectTurnSnapshotForWire` (`route-registry.ts`) | stripped | **inline** | **inline** |
 
 The reconnect site is the easy one to miss: `turn_snapshot` is built from
 `runner.chatMessageGroups` in memory, so it never touches the history read and
 an early version of this feature re-sent on reconnect every megabyte the
 history path had just removed.
 
-### Why tool inputs are stripped on one path only
+### Why only the history path may strip everything
 
 **A body may only leave the wire once the row holding it is committed** —
-otherwise the fetch the client makes on click 404s, which breaks req 2. The two
-classes are persisted at different moments:
+otherwise the fetch the client makes on click 404s, which breaks req 2. Exactly
+one payload class is committed in the same tick as its emit:
 
-* **Tool results** are committed by `replaceInProgress` inside the
-  `agent_tool_result` handler, synchronously in the same tick as the emit. A
-  client cannot outrun that write, so results can be stripped everywhere.
+* **Top-level tool results** are committed by `replaceInProgress` inside the
+  `agent_tool_result` handler, synchronously before the frame reaches the
+  network. Strippable everywhere.
+* **User-row images** are persisted when the turn opens. Strippable everywhere.
 * **Edit/Write inputs** arrive on an `agent_assistant` event, and nothing
-  commits the row until the *next* tool-result boundary. Between those two
-  moments the body is on neither the wire nor disk — and the diff modal can be
-  opened the instant the summary renders, i.e. exactly inside that window.
+  commits the row until the *next* tool-result boundary. The diff modal can be
+  opened the instant the summary renders — i.e. exactly inside that window.
+* **Nested subagent results** are the worst case: the `parentToolUseId` branch
+  of the same handler calls `attachSubagentToolResults` and **returns**,
+  skipping the `replaceInProgress` below it entirely. They reach disk only at
+  the next *top-level* boundary, which for a long Task is many tool calls later.
 
-So tool inputs are stripped on the history path only, where the whole turn is on
+So the last two are stripped on the history path only, where every row is on
 disk by construction. This costs part of the live-path saving; it is the right
 trade, because an unfetchable body is a visible failure and a fatter live frame
-is not. The bytes accumulate across reloads, not within one turn, so the saving
-that matters is preserved.
+is not. The bytes accumulate across reloads, not within one turn.
 
-This was originally written the other way round, with a comment asserting the
-same-tick guarantee covered both event types. It does not — the guarantee was
-verified on the `agent_tool_result` path and then stated generally. Recorded
-here because the failure mode (a claim inherited across paths without
-re-checking) is the one `CLAUDE.md` calls out.
+**Rejected alternative: persist nested results before emitting them.** That
+would make the guarantee true everywhere and keep the saving. But
+`replaceInProgress` deletes and re-inserts *every row in the turn*,
+re-serializing the whole `subagent_events` blob each time — so calling it per
+nested result is quadratic in the number of subagent tool calls, and the blob it
+keeps re-stringifying is made of exactly the heavy bodies this feature exists to
+stop moving around. The cost lands hardest on Task-heavy turns, which is the
+case the feature targets. Making persistence incremental would change the trade,
+but that is `ChatHistoryManager` work, not this feature's.
+
+This section has been wrong twice, the same way both times: a guarantee was
+verified on one code path and then written up as general — first claiming the
+same-tick commit covered `agent_assistant`, then claiming it covered nested
+results. Both were caught by independent review, not by the tests. That failure
+mode is the one `CLAUDE.md` calls out, and it is why the distinction is now a
+required argument (`allRowsPersisted`) rather than a comment.
 
 The projection always runs on a *copy* for the emit; the original event flows on
 to `extractToolResults` and is persisted whole. The client's existing 1 MB cap
 in `agent-event.ts` becomes redundant for sliced results but stays as a backstop
 for the exempt classes.
+
+### Transcript paths deliberately NOT projected
+
+An independent review enumerated every server→browser message that can carry
+transcript content. Beyond the three sites above, two carry a scoped heavy field
+and are knowingly left alone in this pass — recorded here so the next reader
+does not have to rediscover them:
+
+* **`message_steered`** (`ws-handlers/send-message.ts`) echoes a live steer,
+  including full base64 `images`. The row is persisted *before* the emit, so URL
+  projection would be safe here — this is a gap, not a hazard.
+* **`sub_agent_consult_card.outputMarkdown`** — a brokered `shipit agent run`
+  result, shown as one preview line until clicked, but transferred whole.
+
+Every other transcript-bearing message (the persisted card rows, user/error
+rows, `fork_breadcrumb`, and the mutation-only messages) carries no field in
+this feature's scope.
 
 ## Key files
 

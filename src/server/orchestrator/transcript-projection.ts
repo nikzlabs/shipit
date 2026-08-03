@@ -22,18 +22,23 @@
  * would make every one of those silently persist the truncation, permanently
  * destroying the bodies this design is careful to keep. `load()` also has
  * internal consumers (rollback handlers, agent env, PR-description building)
- * that need the real content. Hence a separate function, applied at the two
- * places the browser is on the other end: `getChatHistory` and the live
- * `agent_event` emit.
+ * that need the real content. Hence a separate function, applied at the three
+ * places the browser is on the other end:
  *
- * ## Ordering, and why the live path is safe
+ *   1. `getChatHistory` — history loads, reloads, session switches.
+ *   2. The live `agent_event` emit (`agent-listeners.ts`).
+ *   3. The reconnect `turn_snapshot` (`route-registry.ts`), which is built from
+ *      the runner's in-memory groups and so bypasses (1) entirely.
+ *
+ * ## What each path may strip
+ *
+ * Not all three may strip the same things — see {@link WireProjectionOptions}.
+ * The rule is that a body may only leave the wire once the row holding it is
+ * committed, and the payload classes reach disk at different moments. Only path
+ * (1) can strip everything.
  *
  * On the live path the projection runs on a *copy* for the emit only; the
  * original event flows on to `extractToolResults` and is persisted whole.
- * A client that immediately requests a stripped body cannot outrun the write:
- * `replaceInProgress` is a synchronous better-sqlite3 call in the same tick as
- * the emit, so the row is committed before the WebSocket frame reaches the
- * network.
  */
 
 import { createHash } from "node:crypto";
@@ -235,31 +240,58 @@ function toolNamesFor(msg: PersistedMessage): Map<string, string> {
 }
 
 /**
- * Whether it is safe to strip Edit/Write file bodies as well as tool results.
+ * # The one rule: a body may only leave the wire once its row is committed
  *
- * A body may only leave the wire once the row that holds it is committed —
- * otherwise the fetch the client makes on click 404s, which breaks req 2 ("a
- * body that is not transferred up front must be fetchable on demand"). The two
- * classes are persisted at different moments, so they get different answers:
+ * Stripping a body replaces it with a fetch. If the row holding it is not on
+ * disk yet, that fetch 404s — which breaks req 2 ("a body that is not
+ * transferred up front must be fetchable on demand"). So what is safe to strip
+ * depends entirely on *when the payload's row gets written*, and the classes
+ * differ:
  *
- *   - **Tool results** are committed by `replaceInProgress` inside the
- *     `agent_tool_result` handler, synchronously in the same tick as the emit
- *     (`agent-listeners.ts`). Always safe.
+ *   - **Top-level tool results** are committed by `replaceInProgress` inside
+ *     the `agent_tool_result` handler, synchronously in the same tick as the
+ *     emit (`agent-listeners.ts`). Safe everywhere.
+ *   - **User-row images** are persisted when the turn opens. Safe everywhere.
  *   - **Edit/Write inputs** arrive on an `agent_assistant` event, and nothing
- *     commits the row until the *next* tool-result boundary. Between those two
- *     moments the body is on neither the wire nor disk, and the diff modal —
- *     which the user can open the instant the summary renders — has nothing to
- *     fetch.
+ *     commits that row until the *next* tool-result boundary.
+ *   - **Results nested under a subagent** are worse: the `parentToolUseId`
+ *     branch of the `agent_tool_result` handler calls
+ *     `attachSubagentToolResults` and **returns**, skipping the
+ *     `replaceInProgress` below it. They reach disk only at the next
+ *     *top-level* boundary, which for a long Task is many tool calls later.
  *
- * So tool inputs are projected only on the history path, where the whole turn
- * is already on disk by construction. On the live emit and the reconnect
- * snapshot they stay inline, exactly as they are today. That costs part of the
- * live-path saving and keeps the guarantee true, which is the right trade: an
- * unfetchable body is a visible failure, a fatter live frame is not.
+ * The last two are therefore stripped on the **history path only**, where every
+ * row is on disk by construction because the read came from the database. On
+ * the live emit and the reconnect snapshot they stay inline, exactly as they
+ * are today.
+ *
+ * That gives up part of the live-path saving. It is the right trade twice over:
+ * an unfetchable body is a visible failure while a fatter live frame is not,
+ * and the bytes this feature exists to remove accumulate across *reloads* — a
+ * transcript is loaded many times and lived through once.
+ *
+ * The alternative — persisting nested results before emitting them — was
+ * considered and rejected: `replaceInProgress` deletes and re-inserts every row
+ * in the turn, re-serializing the whole `subagent_events` blob each time, so
+ * calling it per nested result is quadratic in the number of subagent tool
+ * calls. That cost lands hardest on exactly the Task-heavy turns this feature
+ * targets. Making persistence incremental would change the trade, but that is
+ * `ChatHistoryManager` work, not this feature's.
+ *
+ * Both earlier versions of this module got this wrong the same way: a guarantee
+ * was verified on one code path and then written up as general. That is the
+ * failure `CLAUDE.md` warns about, and it is why this is one explicit flag
+ * rather than a comment asserting the paths are equivalent.
  */
 export interface WireProjectionOptions {
-  /** Strip Edit/Write bodies too. Only for rows known to be persisted. */
-  projectToolInputs?: boolean;
+  /**
+   * Whether every row in `messages` is already committed to SQLite.
+   *
+   * True on the history path (the messages *came from* the database). False for
+   * an in-flight turn — the live emit and the reconnect snapshot — where the
+   * most recent groups may not be written yet.
+   */
+  allRowsPersisted?: boolean;
 }
 
 /**
@@ -270,7 +302,7 @@ export interface WireProjectionOptions {
 export function projectMessagesForWire(
   sessionId: string,
   messages: PersistedMessage[],
-  { projectToolInputs = true }: WireProjectionOptions = {},
+  { allRowsPersisted = true }: WireProjectionOptions = {},
 ): PersistedMessage[] {
   return messages.map((msg) => {
     const names = toolNamesFor(msg);
@@ -282,7 +314,7 @@ export function projectMessagesForWire(
       return projected;
     });
 
-    const toolUse = projectToolInputs
+    const toolUse = allRowsPersisted
       ? msg.toolUse?.map((t) => {
         const projected = projectToolUse(t);
         if (projected !== t) changed = true;
@@ -298,6 +330,9 @@ export function projectMessagesForWire(
 
     const subagentEvents = msg.subagentEvents?.map((ev) => {
       if (ev.kind === "tool_result") {
+        // Nested results skip the `replaceInProgress` their top-level siblings
+        // run through, so on an in-flight turn they may exist only in memory.
+        if (!allRowsPersisted) return ev;
         const results = ev.toolResults.map((r) => projectToolResult(sessionId, r, names.get(r.toolUseId)));
         if (results.some((r, i) => r !== ev.toolResults[i])) {
           changed = true;
@@ -306,7 +341,7 @@ export function projectMessagesForWire(
         return ev;
       }
       const original = ev.toolUse;
-      if (!original || !projectToolInputs) return ev;
+      if (!original || !allRowsPersisted) return ev;
       const tools = original.map((t) => projectToolUse(t));
       if (tools.some((t, i) => t !== original[i])) {
         changed = true;
@@ -331,12 +366,17 @@ export function projectMessagesForWire(
  * nothing changed — the caller must keep using the ORIGINAL event for
  * persistence, since the stored row has to hold the full body.
  *
- * Tool RESULTS only. An `agent_assistant` carrying an Edit/Write body is
- * deliberately left whole: nothing commits that row until the next tool-result
- * boundary, so stripping it here would open a window where the diff modal has
- * nothing to fetch. See {@link WireProjectionOptions}. The body is still
- * stripped on every subsequent history load, which is where the bytes actually
- * accumulate.
+ * TOP-LEVEL tool results only — the one payload class this handler commits in
+ * the same tick as the emit. Two neighbours are deliberately left whole:
+ *
+ *   - An `agent_assistant` carrying an Edit/Write body, which nothing commits
+ *     until the next tool-result boundary.
+ *   - A nested (`parentToolUseId`) result, whose handler branch returns before
+ *     `replaceInProgress` runs at all.
+ *
+ * Strip either here and the fetch behind it 404s. Both are still stripped on
+ * every subsequent history load, which is where the bytes accumulate. See
+ * {@link WireProjectionOptions} for the full rule.
  */
 export function projectAgentEventForWire(
   sessionId: string,
@@ -344,6 +384,8 @@ export function projectAgentEventForWire(
   toolNameOf: (id: string) => string | undefined,
 ): AgentEvent {
   if (event.type === "agent_tool_result") {
+    // Nested subagent result: `attachSubagentToolResults` + `return`, no commit.
+    if (event.parentToolUseId) return event;
     const content: unknown = (event as { content?: unknown }).content;
     if (!Array.isArray(content)) return event;
     let changed = false;
@@ -383,12 +425,19 @@ export function projectAgentEventForWire(
  * `getChatHistory` entirely. Without this a reconnect mid-turn re-sent every
  * megabyte the projection had just removed.
  *
- * Tool inputs stay inline here for the same reason as the live emit: the
- * snapshot describes an in-flight turn, and its most recent assistant group may
- * not be committed yet. Everything else — results, images, subagent results —
- * reached the snapshot through a tool-result boundary that persisted it, so it
- * is safe to strip.
+ * The snapshot describes an **in-flight** turn, so it is projected as
+ * not-fully-persisted: top-level results and images are stripped, tool inputs
+ * and nested subagent results are not. An earlier version claimed everything
+ * here "reached the snapshot through a tool-result boundary that persisted it";
+ * that is false for both of those classes, and stripping them handed the client
+ * a lazy affordance backed by no row.
+ *
+ * This does resend some already-committed bodies — an Edit in an older group is
+ * on disk by now, but the flag is per-call rather than per-group. Tightening it
+ * needs a committed-prefix marker on the runner (`lastPersistedBufferIndex` is
+ * a buffer index, not a group boundary), which is more machinery than the
+ * duplicate bytes on a mid-turn reconnect are worth.
  */
 export function projectTurnSnapshotForWire(sessionId: string, messages: PersistedMessage[]): PersistedMessage[] {
-  return projectMessagesForWire(sessionId, messages, { projectToolInputs: false });
+  return projectMessagesForWire(sessionId, messages, { allRowsPersisted: false });
 }

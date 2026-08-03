@@ -133,13 +133,17 @@ export function registerLazyBodyRoutes(app: FastifyInstance, deps: ApiDeps): voi
         reply.code(404).send({ error: "Session not found" });
         return;
       }
-      if (request.headers["if-none-match"] === `"${request.params.hash}"`) {
-        reply.code(304).send();
-        return;
-      }
+      // The 304 short-circuit must come AFTER proving the hash resolves —
+      // matching on the request's own ETag alone would answer "not modified"
+      // for an image that does not exist, turning a 404 into a hit.
+      const revalidating = request.headers["if-none-match"] === `"${request.params.hash}"`;
       for (const msg of messages) {
         for (const img of allImages(msg)) {
           if (imageHash(img.data) !== request.params.hash) continue;
+          if (revalidating) {
+            reply.code(304).send();
+            return;
+          }
           reply
             .header("Content-Type", img.mediaType)
             .header("Cache-Control", "public, max-age=31536000, immutable")

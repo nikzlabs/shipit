@@ -239,16 +239,19 @@ describe("projectMessagesForWire", () => {
 
 describe("a body only leaves the wire once its row is on disk", () => {
   /**
-   * The rule that keeps req 1 from breaking req 2. Tool results are committed
-   * by `replaceInProgress` in the same tick as their emit, so they can be
-   * stripped anywhere. Edit/Write bodies arrive on an `agent_assistant` and
-   * nothing commits them until the *next* tool-result boundary — strip one on
-   * that path and the diff modal, which the user can open the instant the
-   * summary renders, has nothing to fetch.
+   * The rule that keeps req 1 from breaking req 2. Only ONE payload class is
+   * committed in the same tick as its emit — a top-level tool result. The other
+   * two reach disk later:
    *
-   * These tests are the reason the projection takes an option at all. Deleting
-   * it and projecting everything everywhere passes every other test in this
-   * file.
+   *   - Edit/Write bodies arrive on an `agent_assistant`; nothing commits that
+   *     row until the next tool-result boundary.
+   *   - Nested subagent results are worse: their handler branch calls
+   *     `attachSubagentToolResults` and RETURNS, skipping `replaceInProgress`
+   *     entirely, so they land only at the next *top-level* boundary.
+   *
+   * Strip either early and the fetch behind it 404s. These tests are the reason
+   * the projection takes an option at all — delete it, project everything
+   * everywhere, and every other test in this file still passes.
    */
   const writeMsg = (): PersistedMessage => ({
     role: "assistant",
@@ -256,20 +259,48 @@ describe("a body only leaves the wire once its row is on disk", () => {
     toolUse: [{ type: "tool_use", id: "w1", name: "Write", input: { file_path: "/a.ts", content: bigOutput } }],
     toolResults: [{ toolUseId: "b1", content: bigOutput }],
     images: [{ data: png, mediaType: "image/png" }],
+    subagentEvents: [
+      { kind: "tool_result", parentToolUseId: "task-1", toolResults: [{ toolUseId: "sub-1", content: bigOutput }] },
+    ],
   });
 
-  it("the reconnect snapshot strips results and images but keeps the file body", () => {
+  it("the reconnect snapshot strips only what a boundary already committed", () => {
     const [projected] = projectTurnSnapshotForWire("s1", [writeMsg()]);
 
-    // Committed at a tool-result boundary before the snapshot was built.
+    // Committed in the same tick as its emit.
     expect(projected!.toolResults![0]!.truncated).toBe(true);
+    // Persisted when the turn opened.
     expect(projected!.images![0]!.data).toBeUndefined();
     expect(projected!.images![0]!.src).toBe(imageUrl("s1", imageHash(png)));
 
-    // NOT necessarily committed yet — must stay inline.
+    // NOT committed yet — must stay inline.
     const tool = projected!.toolUse![0]!;
     expect(tool.input.content).toBe(bigOutput);
     expect((tool as { bodyTruncated?: true }).bodyTruncated).toBeUndefined();
+
+    // Nested results skip `replaceInProgress` altogether.
+    const nested = projected!.subagentEvents![0] as { toolResults: { content: string; truncated?: true }[] };
+    expect(nested.toolResults[0]!.content).toBe(bigOutput);
+    expect(nested.toolResults[0]!.truncated).toBeUndefined();
+  });
+
+  it("the history path strips the nested result too, because it is on disk by then", () => {
+    const [projected] = projectMessagesForWire("s1", [writeMsg()]);
+    const nested = projected!.subagentEvents![0] as { toolResults: { truncated?: true; totalLines?: number }[] };
+    expect(nested.toolResults[0]!.truncated).toBe(true);
+    expect(nested.toolResults[0]!.totalLines).toBe(500);
+  });
+
+  it("a live nested tool_result event is left whole", () => {
+    // The `parentToolUseId` is the whole signal: the same event shape without
+    // it IS committed in this tick and does get sliced (next test).
+    const event = {
+      type: "agent_tool_result",
+      parentToolUseId: "task-1",
+      content: [{ type: "tool_result", tool_use_id: "sub-1", content: bigOutput }],
+    } as unknown as Parameters<typeof projectAgentEventForWire>[1];
+
+    expect(projectAgentEventForWire("s1", event, () => "Bash")).toBe(event);
   });
 
   it("the history path strips the file body, because the turn is on disk by then", () => {

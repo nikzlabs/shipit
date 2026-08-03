@@ -264,6 +264,18 @@ describe("Integration: lazy transcript bodies (SHI-267)", () => {
     expect((await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/tool-results/bash-1` })).statusCode).toBe(404);
   });
 
+  it("does not 304 an image that doesn't exist", async () => {
+    // A conditional request carries the client's own ETag, so matching on it
+    // alone answers "not modified" for anything — including a hash the session
+    // has never held. The existence check has to come first.
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/sessions/${sessionId}/images/${"0".repeat(64)}`,
+      headers: { "if-none-match": `"${"0".repeat(64)}"` },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
   it("404s on an unknown id rather than serving something else", async () => {
     for (const url of [
       `/api/sessions/${sessionId}/tool-results/nope`,
@@ -272,6 +284,29 @@ describe("Integration: lazy transcript bodies (SHI-267)", () => {
     ]) {
       expect((await app.inject({ method: "GET", url })).statusCode).toBe(404);
     }
+  });
+
+  it("a read-modify-write updater does not write back a sliced body", async () => {
+    // The specific mechanism the design is built to avoid, exercised rather
+    // than argued: `updateLastMessage` decodes a row via `fromRow`, mutates one
+    // field, and writes the WHOLE row back through `toRow`. If the projection
+    // ever moved into `fromRow`, this single unrelated card update would
+    // silently persist the truncation and destroy the tail forever — and every
+    // other test here would still pass, because they only read.
+    await loadHistory();
+
+    history.updateLastMessage(sessionId, { commitHash: "abc123" });
+
+    const stored = history.load(sessionId);
+    const last = stored[stored.length - 1] as {
+      commitHash?: string;
+      toolResults?: { toolUseId: string; content: string }[];
+      toolUse?: { id: string; input: Record<string, unknown> }[];
+    };
+    expect(last.commitHash).toBe("abc123");
+    // The mutation landed AND the bodies in that same row are still whole.
+    expect(last.toolResults!.find((r) => r.toolUseId === "bash-1")!.content).toBe(HEAVY_OUTPUT);
+    expect(last.toolUse!.find((t) => t.id === "write-1")!.input.content).toBe(FILE_BODY);
   });
 
   it("does not persist the projection — serving must not narrow storage", async () => {
