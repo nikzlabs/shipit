@@ -29,7 +29,7 @@ import path from "node:path";
 import simpleGit from "simple-git";
 import type { SessionInfo } from "../shared/types.js";
 import { resolveShipitConfig, DEFAULT_DEP_DIRS } from "../shared/shipit-config.js";
-import { INSTALL_MARKER_FILE } from "./session-state-dir.js";
+import { INSTALL_MARKER_FILE, sessionSharedStateDir } from "./session-state-dir.js";
 import { overlayScopeHash, overlayVolumeName, overlayBaseGenDir, type OverlaySpec } from "./overlay-volume.js";
 import { readBasePointerByHash, type BasePointer, type OverlayScope } from "./overlay-base.js";
 import { makeMarker, serializeMarker } from "../shared/install-marker.js";
@@ -501,8 +501,10 @@ export async function preStampInstallMarker(args: {
   const readPointer = args.readPointer ?? readBasePointerByHash;
   const chown = args.chown ?? chownToSessionWorker;
 
+  // The marker must land in the slice the container mounts, or the worker (which
+  // sees only `/session-state`) and this host-side pre-stamp write two files.
   const markerFile = args.sessionStateDir
-    ? path.join(args.sessionStateDir, INSTALL_MARKER_FILE)
+    ? path.join(sessionSharedStateDir(args.sessionStateDir), INSTALL_MARKER_FILE)
     : path.join(workspaceDir, ".shipit", INSTALL_MARKER_FILE);
   if (fs.existsSync(markerFile)) return false;
 

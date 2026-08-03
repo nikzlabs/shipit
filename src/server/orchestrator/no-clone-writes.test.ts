@@ -25,8 +25,19 @@ import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = path.resolve(fileURLToPath(import.meta.url), "../../../..");
 
-/** A generated artifact name composed with an in-clone `.shipit` path. */
-const IN_CLONE_ARTIFACT = String.raw`"\.shipit"[^)]*(INSTALL_MARKER_FILE|AGENT_ENV_FILE|COMPOSE_OVERRIDE_FILE|CI_LOGS_SUBDIR|"\.install-done"|"\.env\.agent"|"ci-logs"|"compose\.override\.yml")|"\.shipit/(compose\.override\.yml|ci-logs|\.env\.agent|\.install-done)`;
+
+/**
+ * Any source expression that composes a `.shipit` path under a workspace/clone
+ * path — regardless of which artifact goes in it.
+ *
+ * The earlier version enumerated the four current artifact names AND required
+ * them in the same expression as `.shipit`. Codex defeated it twice over: a
+ * future `runtime.json` was invisible, and `service-manager.ts` already computed
+ * `path.join(opts.workspaceDir, ".shipit")` on one line and passed that
+ * directory to the writer on another, so no single expression matched. Matching
+ * the DIRECTORY join is the invariant — what gets written into it is irrelevant.
+ */
+const IN_CLONE_SHIPIT_PATH = String.raw`(workspaceDir|sessionDir|clone|repoDir|cwd)\s*,\s*"\.shipit"|"\.shipit/`;
 
 /**
  * Sites still permitted to name an in-clone artifact path — every one of them
@@ -34,16 +45,35 @@ const IN_CLONE_ARTIFACT = String.raw`"\.shipit"[^)]*(INSTALL_MARKER_FILE|AGENT_E
  * hasn't threaded a state dir. None of them creates a new file in a clone.
  */
 const ALLOWED: Record<string, string> = {
-  "src/server/orchestrator/compose-cli.ts":
-    "legacy default override path for callers that don't thread one",
-  "src/server/orchestrator/overlay-session.ts":
-    "legacy fallback when the layout can't identify the session dir",
-  "src/server/orchestrator/secret-resolver.ts":
-    "unlinks a pre-246 .env.agent (and legacy fallback target)",
-  "src/server/orchestrator/services/claim-session.ts":
-    "unlinks a pre-246 marker copy",
-  "src/server/session/install-controller.ts":
-    "unlinks a pre-246 marker copy",
+  // --- Not a clone at all: the APP-SCOPE workspaceDir (the orchestrator's own
+  // workspace root), where the GLOBAL system-prompt.md lives, one level above
+  // every session. Nothing here touches a user's repository. ---
+  "src/server/orchestrator/bootstrap-managers.ts": "app-scope system-prompt.md",
+  "src/server/orchestrator/route-registry.ts": "app-scope system-prompt.md",
+  "src/server/orchestrator/services/settings.ts": "app-scope system-prompt.md",
+
+  // --- Removes a pre-246 copy, never creates one. ---
+  "src/server/orchestrator/session-state-dir.ts": "owns the sweep",
+  "src/server/orchestrator/services/claim-session.ts": "unlinks a pre-246 marker",
+  "src/server/session/install-controller.ts": "unlinks a pre-246 marker",
+
+  // --- Back-compat fallbacks for a session with no state dir (legacy flat
+  // layout). These keep such a session working where it already is; they never
+  // move a modern session's artifact into a clone. ---
+  "src/server/orchestrator/compose-cli.ts": "legacy default override path",
+  "src/server/orchestrator/service-manager.ts": "legacy fallback override dir",
+  "src/server/orchestrator/overlay-session.ts": "legacy fallback marker path",
+  "src/server/orchestrator/secret-resolver.ts": "unlink + legacy fallback .env.agent",
+
+  // --- KNOWN GAP (docs/246): Docker-secrets mode copies a generated
+  // `secrets-entrypoint.sh` into the clone, because the compose override hands
+  // SERVICE containers a workspace-RELATIVE path and they mount the workspace,
+  // not the state dir. Moving it means switching that reference to an absolute
+  // state-dir path the way docs/183 did for `env_file:`. Opt-in mode
+  // (SHIPIT_SECRETS_INTERNAL_DIR) and not exercised here, so it is recorded
+  // rather than changed blind. See the feature's checklist. ---
+  "src/server/orchestrator/service-secrets-resolver.ts":
+    "KNOWN GAP — Docker-secrets entrypoint still written into the clone",
 };
 
 /** Source files (excluding tests) that compose an in-clone artifact path. */
@@ -52,7 +82,7 @@ function filesComposingInCloneArtifacts(): string[] {
   try {
     out = execFileSync(
       "git",
-      ["grep", "-l", "-E", IN_CLONE_ARTIFACT, "--", "src/**/*.ts", ":!src/**/*.test.ts"],
+      ["grep", "-l", "-E", IN_CLONE_SHIPIT_PATH, "--", "src/**/*.ts", ":!src/**/*.test.ts"],
       { cwd: REPO_ROOT, encoding: "utf-8" },
     );
   } catch (err: unknown) {

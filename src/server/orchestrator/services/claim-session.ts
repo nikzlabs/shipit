@@ -16,7 +16,7 @@
  */
 
 import { existsSync, unlinkSync } from "node:fs";
-import { sessionStateDirForWorkspace, INSTALL_MARKER_FILE } from "../session-state-dir.js";
+import { sessionStateDirForWorkspace, sessionSharedStateDir, INSTALL_MARKER_FILE } from "../session-state-dir.js";
 import { rm } from "node:fs/promises";
 import path from "node:path";
 import simpleGit from "simple-git";
@@ -248,7 +248,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
       // this change doesn't keep a stale (and committable) copy.
       const stateDir = sessionStateDirForWorkspace(sessionDir);
       if (stateDir) {
-        try { unlinkSync(path.join(stateDir, INSTALL_MARKER_FILE)); } catch { /* marker may not exist */ }
+        try { unlinkSync(path.join(sessionSharedStateDir(stateDir), INSTALL_MARKER_FILE)); } catch { /* marker may not exist */ }
       }
       try { unlinkSync(path.join(sessionDir, ".shipit", INSTALL_MARKER_FILE)); } catch { /* marker may not exist */ }
     }

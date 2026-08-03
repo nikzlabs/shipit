@@ -8,6 +8,7 @@
 import fs from "node:fs";
 import {
   sessionStateDirForWorkspace,
+  sessionSharedStateDir,
   CI_LOGS_SUBDIR,
   CONTAINER_SESSION_STATE_DIR,
 } from "../session-state-dir.js";
@@ -46,7 +47,7 @@ export async function fetchCIFailureLogs(
   // ShipIt's own logs wouldn't be committed. That mutation is gone with the
   // files it existed for.
   const stateDir = sessionDir ? sessionStateDirForWorkspace(sessionDir) : null;
-  const logDir = stateDir ? path.join(stateDir, CI_LOGS_SUBDIR) : null;
+  const logDir = stateDir ? path.join(sessionSharedStateDir(stateDir), CI_LOGS_SUBDIR) : null;
   if (logDir) {
     fs.mkdirSync(logDir, { recursive: true });
     // docs/150 §7 — written by the root orchestrator, read by the agent's

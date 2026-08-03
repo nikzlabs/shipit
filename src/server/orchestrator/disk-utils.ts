@@ -10,6 +10,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { OVERLAY_SESSION_SUBDIR } from "./overlay-session.js";
+import { SESSION_STATE_SUBDIR } from "./session-state-dir.js";
 
 /**
  * docs/161 — default free-disk probe for the disk-pressure pass. Returns bytes
@@ -82,7 +83,18 @@ export function getMessage(err: unknown): string {
  * the session root would take `uploads/` with it, and the allowlist is
  * future-proof against new durable siblings.
  */
-export const REGENERABLE_SESSION_SUBDIRS = ["workspace", OVERLAY_SESSION_SUBDIR] as const;
+export const REGENERABLE_SESSION_SUBDIRS = [
+  "workspace",
+  OVERLAY_SESSION_SUBDIR,
+  // docs/246 — ShipIt's own generated state. Every artifact in it is
+  // regenerated (compose override, agent env file, CI logs) and, critically,
+  // the install marker DESCRIBES the checkout: leaving it behind when
+  // `workspace/` is reclaimed makes it outlive the clone it refers to, so the
+  // restored session matches a marker whose `node_modules` no longer exists and
+  // `/install` returns `{ skipped: true }` — a dep-less session. Before the
+  // marker moved out of the clone, deleting the checkout necessarily deleted it.
+  SESSION_STATE_SUBDIR,
+] as const;
 
 /**
  * SHI-192 — reclaim a session's REGENERABLE on-disk tiers while PRESERVING its
