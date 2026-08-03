@@ -1,7 +1,7 @@
 import type { WsServerMessage } from "../../shared/types.js";
 import type { AgentProcess } from "../../shared/types.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
-import { emitChatCard } from "../chat-card-persistence.js";
+import { emitChatCard, persistTurnInProgress } from "../chat-card-persistence.js";
 import type { AgentListenerDeps, WireListenersOpts } from "./agent-listeners.js";
 
 /**
@@ -76,18 +76,29 @@ export function wireAuthRequiredHandler(
      * did unconditionally before.
      *
      * `finalizeInProgress` after the emit is load-bearing on THIS path and only
-     * this one: `emitChatCard` persists the row as `in_progress=1`, and the
-     * auth path is the one turn ending that never finalizes — `turn-executor`'s
-     * `done` skips `onInterruptedTurn` when `sawAuthRequired` (it defers to
-     * "the listener already owns the visible row", which is us). Left
-     * in-progress, the row — and any partial output beside it — is deleted by
-     * the next turn's `replaceInProgress`, i.e. the docs/156 erasure bug.
+     * this one: the row and the turn's partial output are written as
+     * `in_progress=1`, and the auth path is the one turn ending that never
+     * finalizes — `turn-executor`'s `done` skips `onInterruptedTurn` when
+     * `sawAuthRequired` (it defers to "the listener already owns the visible
+     * row", which is us). Left in-progress, the row — and any partial output
+     * beside it — is deleted by the next turn's `replaceInProgress`, i.e. the
+     * docs/156 erasure bug.
+     *
+     * The explicit `persistTurnInProgress` flush is load-bearing for the same
+     * reason. On the no-recovery path the teardown above has ALREADY cleared
+     * `runner.running`, so `emitChatCard` takes its post-turn branch and appends
+     * the error row on its own — correct for the row, but it no longer flushes
+     * whatever the turn streamed since the last tool-result boundary. Flushing
+     * first keeps that partial output in history, and leaves the appended error
+     * row sorting after it. On the recover-then-fail path (`running` still set)
+     * the flush is redundant with `emitChatCard`'s own persist, and harmless.
      */
     const persistAuthErrorRow = (): void => {
       if (!runner || !turnSessionId) {
         emitToViewers({ type: "error", message: AGENT_NOT_AUTHENTICATED_MESSAGE });
         return;
       }
+      persistTurnInProgress(deps.chatHistoryManager, runner, turnSessionId);
       emitChatCard(
         runner,
         { type: "error", message: AGENT_NOT_AUTHENTICATED_MESSAGE, sessionId: turnSessionId },

@@ -49,6 +49,7 @@ function deps(): AgentListenerDeps {
     } as any,
     chatHistoryManager: {
       replaceInProgress: vi.fn(),
+      append: vi.fn(),
       finalizeInProgress: vi.fn(),
       updateLastMessage: vi.fn(() => null),
       indexOfMessageId: vi.fn(() => -1),
@@ -324,20 +325,21 @@ describe("wireAgentListeners", () => {
       agent.emit("auth_required");
       await tick();
 
-      const persisted = (d.chatHistoryManager.replaceInProgress as ReturnType<typeof vi.fn>).mock.calls.at(-1);
-      expect(persisted?.[0]).toBe("session-1");
-      expect(persisted?.[1]).toEqual([
+      // On this path the teardown clears `running` before the notice fires, so
+      // it lands as a directly-appended, already-final row. That is the whole
+      // guarantee: it is in chat history, not parked in an in-progress set the
+      // next turn's `replaceInProgress` would delete (docs/156).
+      expect(d.chatHistoryManager.append).toHaveBeenCalledWith(
+        "session-1",
         expect.objectContaining({
           role: "assistant",
           text: `Error: ${AGENT_NOT_AUTHENTICATED_MESSAGE}`,
           isError: true,
         }),
-      ]);
-      // Recorded in-band so a rebuild re-interleaves it at its true position…
-      expect(runner.recordedCards).toHaveLength(1);
-      // …and finalized, because the auth path is the one turn ending that never
-      // reaches `onInterruptedTurn`. Left in-progress, the next turn's
-      // `replaceInProgress` would delete it (docs/156).
+      );
+      // The turn's partial output is flushed and finalized alongside it — this
+      // is the one turn ending that never reaches `onInterruptedTurn`.
+      expect(d.chatHistoryManager.replaceInProgress).toHaveBeenCalledWith("session-1", expect.any(Array));
       expect(d.chatHistoryManager.finalizeInProgress).toHaveBeenCalledWith("session-1");
       runner.dispose({ force: true });
     });
@@ -385,6 +387,7 @@ describe("wireAgentListeners", () => {
         sessionDir: "/tmp/session-1",
         defaultAgentId: "codex",
       });
+      runner.running = true; // the stderr line arrives mid-turn
       const emitted: { type?: string; message?: string }[] = [];
       runner.on("message", (m) => emitted.push(m as { type?: string; message?: string }));
       const d = deps();
@@ -438,6 +441,7 @@ describe("wireAgentListeners", () => {
       sessionDir: "/tmp/session-1",
       defaultAgentId: "codex",
     });
+    runner.running = true; // compaction fires mid-turn
     const emitted: any[] = [];
     runner.on("message", (m) => emitted.push(m));
 
@@ -563,7 +567,7 @@ describe("wireAgentListeners", () => {
       // relay), and the authored headline must win over the derived one.
       const credentialStore = { getVoiceDeliveryMode: () => "native", getVoiceWebhook: () => null } as unknown as CredentialStore;
       const deliverVoiceNote = (payload: { summary: string }, r: SessionRunner, source: "authored" | "ask" | "plan") =>
-        void routeVoiceNote(payload, { runner: r, sessionId: "session-1", credentialStore, source, chatHistoryManager: { replaceInProgress: () => {} } });
+        void routeVoiceNote(payload, { runner: r, sessionId: "session-1", credentialStore, source, chatHistoryManager: { replaceInProgress: () => {}, append: () => {} } });
       const { agent, runner } = wire({ deliverVoiceNote: deliverVoiceNote as unknown as AgentListenerDeps["deliverVoiceNote"] });
 
       const cards: { headline: string }[] = [];
@@ -605,6 +609,7 @@ describe("wireAgentListeners", () => {
         deliverVoiceNote: deliverVoiceNote as unknown as AgentListenerDeps["deliverVoiceNote"],
         chatHistoryManager,
       });
+      runner.running = true; // the agent authors the note mid-turn
 
       // ONLY the voice_note tool event — no tool_result, no trailing reply, so
       // the only thing that could persist the card is the eager persist.
@@ -653,7 +658,7 @@ describe("wireAgentListeners", () => {
       const credentialStore = { getVoiceDeliveryMode: () => "native", getVoiceWebhook: () => null } as unknown as CredentialStore;
       await routeVoiceNote(
         { summary: "I have a question coming up." },
-        { runner, sessionId: "session-1", credentialStore, source: "authored", chatHistoryManager: { replaceInProgress: () => {} } },
+        { runner, sessionId: "session-1", credentialStore, source: "authored", chatHistoryManager: { replaceInProgress: () => {}, append: () => {} } },
       );
 
       agent.emit("event", {

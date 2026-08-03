@@ -19,6 +19,9 @@ function fakeRunner(
   const emitted: WsServerMessage[] = [];
   const runner = {
     emitMessage: (m: WsServerMessage) => emitted.push(m),
+    // The agent authors a voice note from inside its own turn, so the card
+    // rides the in-progress turn rather than `emitChatCard`'s post-turn append.
+    running: true,
     chatMessageGroups: groups,
     recordedCards: [],
     steeredMessages: [],
@@ -30,7 +33,7 @@ function fakeRunner(
 // `routeVoiceNote` call needs a chat-history sink. A no-op satisfies the
 // contract for cases that don't assert on persistence; `route` injects it so
 // each test case's deps stay terse.
-const noopHistory = { replaceInProgress: () => {} };
+const noopHistory = { replaceInProgress: () => {}, append: () => {} };
 const route = (
   payload: Parameters<typeof routeVoiceNote>[0],
   deps: Omit<Parameters<typeof routeVoiceNote>[1], "chatHistoryManager">,

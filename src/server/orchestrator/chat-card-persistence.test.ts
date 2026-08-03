@@ -15,13 +15,19 @@ function fakeRunner(groups: { text: string; toolUse: unknown[] }[] = []): {
   runner: SessionRunnerInterface;
   emitted: WsServerMessage[];
   persisted: { sessionId: string; messages: PersistedMessage[] }[];
-  chatHistoryManager: { replaceInProgress(sessionId: string, messages: PersistedMessage[]): void };
+  appended: { sessionId: string; message: PersistedMessage }[];
+  chatHistoryManager: {
+    replaceInProgress(sessionId: string, messages: PersistedMessage[]): void;
+    append(sessionId: string, message: PersistedMessage): void;
+  };
 } {
   const emitted: WsServerMessage[] = [];
   const persisted: { sessionId: string; messages: PersistedMessage[] }[] = [];
+  const appended: { sessionId: string; message: PersistedMessage }[] = [];
   const chatHistoryManager = {
     replaceInProgress: (sessionId: string, messages: PersistedMessage[]) =>
       persisted.push({ sessionId, messages }),
+    append: (sessionId: string, message: PersistedMessage) => appended.push({ sessionId, message }),
   };
   // Model the turn-event replay buffer: `emitMessage` buffers (as the real
   // runner does), so a test can assert `emitChatCard` advances the persisted
@@ -29,13 +35,17 @@ function fakeRunner(groups: { text: string; toolUse: unknown[] }[] = []): {
   const turnEventBuffer: WsServerMessage[] = [];
   const runner = {
     emitMessage: (m: WsServerMessage) => { emitted.push(m); turnEventBuffer.push(m); },
+    // The fake models ONE turn in flight, which is the mid-turn case every card
+    // below exercises. `running` is what `emitChatCard` branches on, so a test
+    // for the post-turn (append) path flips it to false explicitly.
+    running: true,
     chatMessageGroups: groups,
     recordedCards: [],
     steeredMessages: [],
     getTurnEventBuffer: () => [...turnEventBuffer],
     lastPersistedBufferIndex: 0,
   } as unknown as SessionRunnerInterface;
-  return { runner, emitted, persisted, chatHistoryManager };
+  return { runner, emitted, persisted, appended, chatHistoryManager };
 }
 
 describe("chat-card-persistence", () => {
@@ -89,6 +99,72 @@ describe("chat-card-persistence", () => {
     // the cursor must point past BOTH so neither is replayed over the snapshot.
     expect(runner.getTurnEventBuffer()).toHaveLength(emitted.length);
     expect(runner.lastPersistedBufferIndex).toBe(runner.getTurnEventBuffer().length);
+  });
+
+  describe("emitChatCard — a card that lands AFTER its turn finalized", () => {
+    /**
+     * The `shipit agent run` data-loss bug. A backgrounded consult outlives the
+     * turn that launched it (which `shipit-docs/agent.md` tells the agent to do),
+     * so its card fires with `running === false`. Routed through the in-progress
+     * path it was written into a turn that had already finalized, and the next
+     * turn's first `replaceInProgress` — which deletes every `in_progress=1` row
+     * for the session — took it with it. Symptom: `shipit agent result <id>`
+     * answering "No sub-agent runs in this session yet" for a run that had just
+     * printed that id.
+     */
+    const card: PersistedMessage = {
+      role: "assistant",
+      text: "",
+      subAgentConsult: {
+        cardId: "c1",
+        spawnId: "ecb1fc11",
+        subAgentId: "codex",
+        status: "success",
+        outputMarkdown: "## Findings\n- a real bug",
+        createdAt: "2026-08-03T00:00:00.000Z",
+      },
+    } as unknown as PersistedMessage;
+
+    it("appends it as a finalized row instead of reviving the finished turn as in-progress", () => {
+      const { runner, emitted, persisted, appended, chatHistoryManager } = fakeRunner([
+        { text: "launching codex in the background", toolUse: [{}] },
+      ]);
+      runner.running = false; // the launching turn already finalized
+
+      emitChatCard(
+        runner,
+        { type: "sub_agent_consult_card", sessionId: "s1" } as unknown as WsServerMessage,
+        card,
+        { chatHistoryManager, sessionId: "s1" },
+      );
+
+      // Still emitted live for attached viewers.
+      expect(emitted).toHaveLength(1);
+      // Persisted as a standalone finalized row at the end of history...
+      expect(appended).toEqual([{ sessionId: "s1", message: card }]);
+      // ...and NOT via the in-progress rebuild, which would (a) duplicate the
+      // finished turn's rows and (b) make the card deletable by the next turn.
+      expect(persisted).toHaveLength(0);
+      // Not recorded either: the next turn start clears `recordedCards`, and
+      // recording would re-insert the card into that turn's rebuilt rows.
+      expect(runner.recordedCards).toHaveLength(0);
+    });
+
+    it("still takes the in-progress path while a turn IS running", () => {
+      const { runner, persisted, appended, chatHistoryManager } = fakeRunner([{ text: "x", toolUse: [{}] }]);
+      runner.running = true; // a foreground consult: the agent is blocked waiting
+
+      emitChatCard(
+        runner,
+        { type: "sub_agent_consult_card", sessionId: "s1" } as unknown as WsServerMessage,
+        card,
+        { chatHistoryManager, sessionId: "s1" },
+      );
+
+      expect(appended).toHaveLength(0);
+      expect(persisted).toHaveLength(1);
+      expect(runner.recordedCards).toHaveLength(1);
+    });
   });
 
   it("anchors the card after the persistable assistant groups produced so far", () => {

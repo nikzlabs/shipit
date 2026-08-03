@@ -12,6 +12,11 @@
 - [x] `shipit-docs/agent.md`: parity, background-run guidance, `agent result`
 - [x] Tests: multi-message capture, card/stdout parity, lookup, shim, broker,
       chat-history read
+- [x] Fix: a card emitted after its turn finalized is appended as a final row
+      instead of being written into (and then deleted with) a revived
+      in-progress turn — the backgrounded-consult data loss. Complements SHI-278
+      below: that moved card creation mid-turn, this covers a launch that is
+      itself post-turn (a background shell started in an earlier turn).
 
 ## Follow-on (SHI-278 — tracked in docs/144 §7a)
 

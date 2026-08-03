@@ -11,6 +11,9 @@ import os from "node:os";
 import path from "node:path";
 import { getSubAgentResult, runSubAgent, sweepSubAgentCredentialsOnSignOut, SUB_AGENT_PER_TURN_CAP } from "./sub-agent.js";
 import { ServiceError } from "./types.js";
+import { DatabaseManager } from "../../shared/database.js";
+import { ChatHistoryManager } from "../chat-history.js";
+import { persistTurnInProgress } from "../chat-card-persistence.js";
 import type { SubAgentRunResult } from "../../shared/sub-agent-run.js";
 import { SUB_AGENT_TRANSPORT_TIMEOUT_MS } from "../../shared/sub-agent-run.js";
 import { WorkerAbortedError, WorkerTimeoutError } from "../worker-http.js";
@@ -57,10 +60,15 @@ function makeDeps(opts: {
   // SHI-278 — the pending → terminal transition patches the finalized DB row
   // whenever the originating turn is no longer holding the card.
   const updateSubAgentConsultCard = vi.fn(() => true);
+  const append = vi.fn();
   // emitChatCard reads chatMessageGroups/steeredMessages and mutates recordedCards,
   // then persists via chatHistoryManager.replaceInProgress — stub all four.
   const runner = {
     subAgentSpawnsThisTurn: opts.subAgentSpawnsThisTurn ?? 0,
+    // A FOREGROUND consult: the invoking agent is blocked waiting, so its turn
+    // is still in flight and the card rides the in-progress turn. The
+    // backgrounded (post-turn) case has its own describe block below.
+    running: true,
     emitMessage,
     chatMessageGroups: [] as never[],
     steeredMessages: [] as never[],
@@ -100,10 +108,10 @@ function makeDeps(opts: {
     providerAccountManager: { selectAccountForTurn, markAccountExhausted } as never,
     usageManager: { record, getSessionUsage, getSessionTokenTotals } as never,
     recordAgentRateLimits,
-    chatHistoryManager: { replaceInProgress, updateSubAgentConsultCard } as never,
+    chatHistoryManager: { replaceInProgress, append, updateSubAgentConsultCard } as never,
   };
   return {
-    deps, runner, emitMessage, record, replaceInProgress, updateSubAgentConsultCard,
+    deps, runner, emitMessage, record, replaceInProgress, append, updateSubAgentConsultCard,
     recordAgentRateLimits, selectAccountForTurn, markAccountExhausted,
   };
 }
@@ -392,6 +400,10 @@ describe("runSubAgent — happy path", () => {
   it("finalizes the pending card as an error when the spawn throws (never left pending)", async () => {
     const { deps, runner, emitMessage, updateSubAgentConsultCard } = makeDeps({});
     runner.spawnSubAgent = vi.fn(async () => {
+      // The backgrounded shape docs/236 recommends: the launching turn ends
+      // while the consult is still in flight, so the terminal state has to land
+      // via the finalized-DB-row patch rather than this turn's recorded card.
+      runner.running = false;
       throw new Error("worker unreachable");
     });
     await expect(runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 })).rejects.toThrow(
@@ -532,6 +544,7 @@ describe("runSubAgent — durable in-flight consult card", () => {
   it("finalizes as a timeout when the transport backstop fires", async () => {
     const { deps, runner, updateSubAgentConsultCard } = makeDeps({});
     runner.spawnSubAgent = vi.fn(async () => {
+      runner.running = false; // backgrounded: the launching turn ended first
       throw new WorkerTimeoutError("/agent/spawn", SUB_AGENT_TRANSPORT_TIMEOUT_MS);
     });
     await expect(
@@ -584,6 +597,149 @@ describe("getSubAgentResult (SHI-245)", () => {
     expect(() => getSubAgentResult(reader([]), "s1")).toThrow(/No sub-agent runs/);
     expect(() => getSubAgentResult(reader([card("aaa1", "x")]), "s1", "zzz")).toThrow(/No sub-agent run with id/);
   });
+});
+
+/**
+ * The guarantee `getSubAgentResult`'s docstring makes: **the result outlives the
+ * call**. A `shipit agent run` launched in the background — which
+ * `shipit-docs/agent.md` actively tells the agent to do, because a long consult
+ * outlasts the invoking agent's foreground shell cap — finishes server-side
+ * after the launching turn has ended, and its output must still be re-readable
+ * afterwards.
+ *
+ * It was not. The consult card went through `emitChatCard`'s in-progress path,
+ * which re-inserted the ALREADY-FINALIZED turn as a second `in_progress=1` copy
+ * with the card inside it; the next turn's first `replaceInProgress` deletes
+ * every `in_progress=1` row for the session and deleted the card with it. In
+ * production `shipit agent result ecb1fc11-…` answered "No sub-agent runs in
+ * this session yet" for a run that had just printed that very id, and an
+ * 18-minute Codex review was gone.
+ *
+ * These run against a REAL `ChatHistoryManager` on purpose: the failure lives
+ * entirely in the delete/re-insert semantics of `replaceInProgress`, which a
+ * `vi.fn()` stub cannot express. They assert the guarantee (the output is still
+ * there) rather than which persistence path produced it.
+ */
+describe("a backgrounded consult that finishes AFTER its launching turn (SHI-245)", () => {
+  const OUTPUT = "## Findings\n\n- `foo.ts:42` — a real bug\n";
+  const TURN_ONE_TEXT = "Launching a Codex review in the background…";
+
+  /**
+   * Two shapes a backgrounded consult actually takes, differing in whether the
+   * launching turn is still open when the shim POSTs:
+   *
+   *  - `mid-turn` — the ordinary case. The agent runs `shipit agent run &`
+   *    inside its turn, so the pending card rides that turn; the turn finalizes
+   *    while the consult is still going, and only the terminal patch is
+   *    post-turn.
+   *  - `post-turn` — the shim fires from a background shell started in an
+   *    EARLIER turn, so even the pending card arrives with no turn in flight.
+   *    This is the shape `emitChatCard`'s post-turn append exists for: routed
+   *    through the in-progress path the pending row is deleted by the next
+   *    turn's `replaceInProgress`, and the terminal patch then has no row to
+   *    find.
+   *
+   * Either way the run must still be re-readable afterwards.
+   */
+  function consultScenario(launch: "mid-turn" | "post-turn") {
+    const dbManager = new DatabaseManager(":memory:");
+    const chatHistoryManager = new ChatHistoryManager(dbManager);
+    const finalizeTurnOne = () => {
+      persistTurnInProgress(chatHistoryManager, runner as never, "s1");
+      chatHistoryManager.finalizeInProgress("s1");
+      runner.running = false;
+    };
+    const runner = {
+      subAgentSpawnsThisTurn: 0,
+      running: launch === "mid-turn",
+      emitMessage: vi.fn(),
+      chatMessageGroups: [{ text: TURN_ONE_TEXT, toolUse: [] }],
+      steeredMessages: [],
+      recordedCards: [],
+      spawnSubAgent: vi.fn(async () => {
+        // The launching turn ends while the consult is still in flight — the
+        // whole reason the agent was told to background it.
+        if (launch === "mid-turn") finalizeTurnOne();
+        return {
+          status: "success" as const,
+          text: OUTPUT,
+          truncated: false,
+          durationMs: 1_100_000,
+          costUsd: 0,
+        };
+      }),
+    };
+
+    chatHistoryManager.append("s1", { role: "user", text: "get Codex's read on this diff" });
+    // In the post-turn shape the turn is already over before the shim POSTs.
+    if (launch === "post-turn") finalizeTurnOne();
+
+    const deps = {
+      sessionManager: { get: () => ({ id: "s1", agentId: "claude", agentPinned: true }), list: () => [] },
+      credentialStore: { getEnableSubAgents: () => true, getAgentSubAgentDefaults: () => ({}) },
+      agentRegistry: { refreshAuth: vi.fn(), get: () => ({ name: "Codex", authConfigured: true }) },
+      runnerRegistry: { get: () => runner },
+      usageManager: { record: vi.fn(), getSessionUsage: () => null, getSessionTokenTotals: () => null },
+      chatHistoryManager,
+    } as never;
+    return { dbManager, chatHistoryManager, runner, deps };
+  }
+
+  /** Turn 2 begins: accumulators reset, then the first tool-result boundary. */
+  function startTurnTwo(chatHistoryManager: ChatHistoryManager, runner: Record<string, unknown>) {
+    runner.chatMessageGroups = [];
+    runner.recordedCards = [];
+    runner.steeredMessages = [];
+    runner.running = true;
+    chatHistoryManager.append("s1", { role: "user", text: "what did it say?" });
+    runner.chatMessageGroups = [{ text: "Reading the run's result…", toolUse: [{}] }];
+    persistTurnInProgress(chatHistoryManager, runner as never, "s1");
+  }
+
+  for (const launch of ["mid-turn", "post-turn"] as const) {
+    describe(`launched ${launch}`, () => {
+      it("is still re-readable by `shipit agent result <id>` a turn later", async () => {
+        const { dbManager, chatHistoryManager, runner, deps } = consultScenario(launch);
+        const res = await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+
+        startTurnTwo(chatHistoryManager, runner as never);
+
+        // The whole point of the feature: the invoking agent can recover the
+        // output it may never have received, by the id the run printed.
+        const byId = getSubAgentResult({ chatHistoryManager }, "s1", res.spawnId);
+        expect(byId.outputMarkdown).toBe(OUTPUT);
+        // …and with no id at all, which is the common recovery invocation.
+        expect(getSubAgentResult({ chatHistoryManager }, "s1").spawnId).toBe(res.spawnId);
+        dbManager.close();
+      });
+
+      it("is still in the transcript a session switch / full reload rehydrates from", async () => {
+        const { dbManager, chatHistoryManager, runner, deps } = consultScenario(launch);
+        await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+        startTurnTwo(chatHistoryManager, runner as never);
+
+        // Both rehydration paths CLAUDE.md calls out read `load()`. Exactly one
+        // card: the pending row patched in place, never a second copy.
+        const cards = chatHistoryManager.load("s1").filter((m) => m.subAgentConsult);
+        expect(cards).toHaveLength(1);
+        expect(cards[0].subAgentConsult?.status).toBe("success");
+        expect(cards[0].subAgentConsult?.outputMarkdown).toBe(OUTPUT);
+        dbManager.close();
+      });
+
+      it("does not duplicate the finished turn it landed after", async () => {
+        const { dbManager, chatHistoryManager, deps } = consultScenario(launch);
+        await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+
+        // The in-progress path revived the finished turn's assistant row as a
+        // second copy, so the user saw the same message twice until the next
+        // turn swept it — and the card — away.
+        const echoes = chatHistoryManager.load("s1").filter((m) => m.text === TURN_ONE_TEXT);
+        expect(echoes).toHaveLength(1);
+        dbManager.close();
+      });
+    });
+  }
 });
 
 describe("sweepSubAgentCredentialsOnSignOut", () => {
