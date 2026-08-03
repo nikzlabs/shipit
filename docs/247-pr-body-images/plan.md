@@ -24,11 +24,12 @@ Four routes exist in principle. All four are closed.
 
 ## What was built
 
-Documentation in three places, chosen so the agent learns the constraint at the moment it would otherwise plan around it:
+Documentation in two on-demand docs, and **deliberately nothing in the always-on prompt**:
 
-- **`src/server/orchestrator/prompts/pull-requests.md`** — one paragraph in the always-on PR instructions. This is the load-bearing one for requirement 1: it is in the system prompt every session, so an agent taking on a visual task knows before it starts, rather than after reading `github.md` (which it may never open). Kept to a single paragraph because this file is in every prompt.
-- **`src/server/shipit-docs/github.md`** — the full reasoning under a new "Images and screenshots in a PR (not possible)" section, placed directly after the supported-subcommands table, where an agent looking for an attach verb will land. Covers all four closed routes, so an agent that has already started hunting stops (requirement 2), plus the alternatives (requirement 3) and the explicit "don't commit throwaway screenshots" (requirement 4). The `gh api` entry under "intentionally unavailable" now cross-references it, since that is the bullet the issue's author reasoned from.
-- **`src/server/shipit-docs/present.md`** — a cross-reference from the `present` tool's before/after guidance, because an agent that has just produced a before/after pair is exactly the one about to try to attach it.
+- **`src/server/shipit-docs/github.md`** — a short "Images in a PR (not possible)" section placed directly after the supported-subcommands table, where an agent looking for an attach verb will land. Says all routes are closed and why in one paragraph, so an agent that has started hunting stops rather than reaching for `gh api` (requirement 2), then the alternatives (requirement 3) and the explicit "don't commit throwaway screenshots" (requirement 4). The `gh api` entry under "intentionally unavailable" cross-references it, since that is the bullet the issue's author reasoned from.
+- **`src/server/shipit-docs/present.md`** — a one-line cross-reference from the `present` tool's before/after guidance, because an agent that has just produced a before/after pair is exactly the one about to try to attach it.
+
+An earlier revision also put a two-sentence warning in `prompts/pull-requests.md`, the always-on PR instructions, so an agent would know *before* starting a visual task. That was removed: the always-on prompt is paid for by every turn of every session, and this has come up once. The cost of finding out late is one turn of rework, not a broken pull request. `prompts/pull-requests.md` is unchanged by this feature.
 
 ## What to do instead
 
@@ -44,6 +45,7 @@ Note for whoever picks that up: there is currently **no container → orchestrat
 
 | File | Role |
 |---|---|
-| `src/server/orchestrator/prompts/pull-requests.md` | Always-on PR instructions; carries the up-front warning |
-| `src/server/shipit-docs/github.md` | Agent-facing `gh` reference; the full reasoning and alternatives |
+| `src/server/shipit-docs/github.md` | Agent-facing `gh` reference; the constraint and the alternatives |
 | `src/server/shipit-docs/present.md` | Cross-reference from the before/after guidance |
+
+`src/server/orchestrator/prompts/pull-requests.md` is intentionally **not** in this list — see "What was built".

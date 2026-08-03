@@ -14,7 +14,7 @@ The issue asked for a way to publish an image so it renders in a pull request. R
 
 ## Requirements
 
-1. An agent asked to put screenshots in a pull request learns that this is not possible **before** it starts the work, not when it is writing the pull request body. It learns this from the instructions it always has, without having to go looking.
+1. An agent asked to put screenshots in a pull request learns that this is not possible from the pull-request documentation it reads when doing pull-request work — at the latest when it goes looking for an attach verb, rather than after trying and failing. It does not learn this from the always-on instructions: see the resolved question below for why that was rejected.
 
 2. The agent is told **why** it is not possible, in enough detail that it does not go looking for a workaround, try `gh api`, or conclude it used the tool wrong.
 
@@ -33,6 +33,8 @@ The issue's actual request — publishing an image so it renders inline in a pul
 If GitHub ever ships an attachment API, the shape to build is in the resolved questions below.
 
 ## Resolved questions
+
+- 2026-08-03 — Should the "you can't attach an image" warning go in the always-on pull-request instructions, so an agent knows before it starts a visual task, or only in the on-demand documentation? **Chosen: documentation only** — "it happened only once when an agent wanted to attach an image, so not worth polluting the prompt". The always-on instructions are paid for by every turn of every session; this task shape is rare enough that it doesn't earn a permanent line there. Requirement 1 was weakened to match: the agent finds out when it reads the pull-request docs, which is later than "before it starts" but still before it ships a broken image.
 
 - 2026-08-03 — Given that publishing works only for public repositories, should ShipIt ship it for public repositories with a clear refusal on private ones, or document the gap and build nothing? **Chosen: document the gap and build nothing**, and close the issue. Requirements 1–5 of the original draft (publish an image; the same for comments; no token handling; no repository pollution; the URL outlives the session) were dropped and are recorded under "Asked for but not delivered" above; the surviving requirements are the documentation ones, renumbered 1–4.
 - 2026-08-03 — Where would the image bytes live (a side branch in the project repository, or a separate per-user assets repository)? **Moot** — nothing is being published. Recorded so a future attempt starts from the same two options rather than re-deriving them.
