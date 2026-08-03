@@ -35,7 +35,7 @@
 - [x] Replace provider-wide Claude/Codex subscription cards with one account-row authentication surface for all stored subscriptions (req 16 — first and subsequent accounts use the same connect UI).
 - [x] Share the account-row shell across Claude code-paste and Codex device-code challenge variants.
 - [x] Key pending challenge, failure, and completion state by provider account id.
-- [ ] Key Claude CLI auth *diagnostics* by account id too (still provider-wide; the row renders the shared buffer while it is mid-challenge).
+- [x] Key Claude CLI auth *diagnostics* by account id too. `claudeAuthDiagnostics` is now `Record<accountId, …>` and each row renders its own buffer. Hardening, not a bug fix: the SSE payloads already carried `accountId`, the store cleared on every `attemptId` change, and `startAccountAuth` refuses a second concurrent per-provider sign-in (409) — so only one row could ever be mid-challenge. The scoping now lives in the data instead of depending on that guard. An unscoped payload is dropped rather than pooled (no sign-in flow is unscoped since Phase 5).
 - [x] Serialize concurrent per-provider sign-ins: start refuses (409) while another row owns the flow, cancel only kills the owning row's process, and a pasted code is rejected on a row that doesn't own the challenge.
 - [x] Scope the runtime-401 heal to the turn's account (`resolveTurnAccountId`), so a revoked sibling account can't make a healthy account's turn look unhealable.
 - [x] Reuse the account-row flow in onboarding instead of singleton Claude/Codex auth cards.
@@ -49,7 +49,7 @@
 - [x] Route child follow-up turns through the persisted agent, not the default-agent fallback. The *route* half of this item was never broken — the provider route is read from the session record inside `prepareSessionAgentEnvironment`, so it cannot go stale. The agent half was: `getOrCreate` applies its agentId argument only when it *constructs* a runner, so a runner seeded with the global default by container rescue or the warm pool was returned as-is and used for the turn (`reconcile-runner-agent.ts`).
 - [x] Offer a replacement account inline when disconnecting an account that pinned sessions use.
 - [x] Do NOT route around model capability — removed the skip-and-report mechanism (req 17 reversed to a non-goal, 2026-08-02).
-- [ ] Add local/dogfood direct-run account-scoped HOME/config-root support or explicit unsupported diagnostic.
+- [x] Add local/dogfood direct-run account-scoped HOME/config-root support. Took the real fix, not the diagnostic: the local agent factory now takes a per-spawn `AgentHomeResolver`, and each in-process runner's `createAgent` binds it to `resolveLocalAgentHome`, which resolves the session's pinned account to `provider-accounts/<provider>/<accountId>` — the same root the auth and refresh subprocesses already use. Both adapters honour it (Claude's `HOME`, Codex's `HOME` + `CODEX_HOME`), and a scoped spawn also drops the env credentials that would otherwise beat the on-disk ones (`ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN`; `OPENAI_API_KEY` for Codex, req 12). Containerized mode is untouched — no resolver, so `agentHome()` resolves exactly as before. Residual, in plan.md: local mode interposes no per-session copy, so a mid-session switch does not carry the CLI-side conversation file to the new account root.
 - [x] Scope AI session naming to an account: it resolves the same route a turn would take and points `HOME` at that account's root (it forced `/root`, which aliases to the migrated default), and heals that account rather than the whole provider.
 
 ## Phase 2 — Inline Quota Per Account
@@ -219,6 +219,15 @@ nothing records today, and 21 turns a decision nobody made into a user setting.
 - [x] Unit: `balanced` still skips exhausted and over-cutoff accounts rather than balancing onto them.
 - [x] Unit: an unrecognized stored mode falls back to `strict` rather than reaching the routing path.
 - [x] Unit: the mode changes what a newly created session pins, and a session already pinned is not re-routed (asserted at `prepareSessionAgentEnvironment`, which is the pin point).
+
+## Local-mode account scoping (req 19 residuals)
+
+- [x] Unit: `resolveLocalAgentHome` maps a pinned session to its account root, gives two sessions on different accounts different roots, keeps the process-global home for a reserved route, and resolves a cross-provider sub-agent spawn through the provider's own selection.
+- [x] Unit: a local runner's `createAgent` resolves the session's own account root, and re-reads it per spawn so a mid-session failover is picked up.
+- [x] Unit: containerized/worker spawns are unchanged — with no resolver, Claude keeps `agentHome()` and Codex leaves `HOME`/`CODEX_HOME` as inherited.
+- [x] Unit: a scoped Claude spawn drops `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN`, and an unscoped one keeps them (they are a reserved route's auth).
+- [x] Unit: a scoped Codex spawn probes the account root's own `auth.json` and refuses to fall back to `OPENAI_API_KEY` (req 12).
+- [x] Client: one Claude row's CLI diagnostics do not render on another row, and two accounts' buffers stay apart.
 
 ## Req 23 — the last account is always disconnectable
 

@@ -80,6 +80,21 @@ export interface ClaudeAuthDiagnostics {
   entries: ClaudeAuthDiagnosticEntry[];
 }
 
+/**
+ * The empty diagnostics an account with no sign-in attempt yet reads as.
+ *
+ * A module-level frozen constant, not an object literal in the selector: a
+ * fresh object every render would give `useSyncExternalStore` a new snapshot
+ * each time and loop forever.
+ */
+export const EMPTY_CLAUDE_AUTH_DIAGNOSTICS: ClaudeAuthDiagnostics = Object.freeze({
+  attemptId: null,
+  active: false,
+  phase: null,
+  message: null,
+  entries: [] as ClaudeAuthDiagnosticEntry[],
+});
+
 const MAX_CLAUDE_AUTH_DIAGNOSTIC_ENTRIES = 200;
 
 interface SettingsState {
@@ -172,7 +187,17 @@ interface SettingsState {
    * (Control A), keyed by agent id. Hydrated from bootstrap / settings broadcast.
    */
   agentSubAgentDefaults: Record<string, SubAgentDefaults>;
-  claudeAuthDiagnostics: ClaudeAuthDiagnostics;
+  /**
+   * Claude CLI sign-in diagnostics, keyed by provider account id (docs/150).
+   *
+   * One buffer per provider was correct only for as long as two things held at
+   * once: `startAccountAuth` refuses a second concurrent per-provider sign-in
+   * (409), and the buffer clears whenever `attemptId` changes. Under those, at
+   * most one Claude row is ever mid-challenge. Keying by account makes the
+   * scoping a property of the DATA instead of a consequence of that
+   * serialization guard, so a row can only render its own attempt's output.
+   */
+  claudeAuthDiagnostics: Record<string, ClaudeAuthDiagnostics>;
   providerAccounts: ProviderAccount[];
   /**
    * In-flight account-scoped sign-in challenges, keyed by
@@ -216,14 +241,18 @@ interface SettingsState {
   setEnableSubAgents: (enabled: boolean) => void;
   /** docs/217 — replace the per-agent sub-agent defaults map (Control A). */
   setAgentSubAgentDefaults: (map: Record<string, SubAgentDefaults>) => void;
-  setClaudeAuthProgress: (progress: {
+  setClaudeAuthProgress: (accountId: string, progress: {
     attemptId: string;
     phase: AgentAuthPhase;
     message: string;
     elapsedMs?: number;
   }) => void;
-  appendClaudeAuthLog: (entry: Omit<ClaudeAuthDiagnosticEntry, "id">) => void;
-  finishClaudeAuthDiagnostics: (status: "complete" | "failed", message?: string) => void;
+  appendClaudeAuthLog: (accountId: string, entry: Omit<ClaudeAuthDiagnosticEntry, "id">) => void;
+  finishClaudeAuthDiagnostics: (
+    accountId: string,
+    status: "complete" | "failed",
+    message?: string,
+  ) => void;
   setProviderAccounts: (accounts: ProviderAccount[]) => void;
   /** Set (or clear, with `null`) one account's in-flight sign-in challenge. */
   setProviderAccountAuth: (provider: AgentId, accountId: string, auth: ProviderAccountAuth | null) => void;
@@ -292,13 +321,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   failoverCutoffs: {},
   accountSelectionMode: {},
   agentSubAgentDefaults: {},
-  claudeAuthDiagnostics: {
-    attemptId: null,
-    active: false,
-    phase: null,
-    message: null,
-    entries: [],
-  },
+  claudeAuthDiagnostics: {},
   providerAccounts: [],
   providerAccountAuths: {},
   providerAccountAuthErrors: {},
@@ -418,46 +441,65 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setEnableSubAgents: (enabled) => set({ enableSubAgents: enabled }),
   setAgentSubAgentDefaults: (map) => set({ agentSubAgentDefaults: map }),
 
-  setClaudeAuthProgress: (progress) =>
+  setClaudeAuthProgress: (accountId, progress) =>
     set((state) => {
-      const isNewAttempt = state.claudeAuthDiagnostics.attemptId !== progress.attemptId;
+      const current = state.claudeAuthDiagnostics[accountId] ?? EMPTY_CLAUDE_AUTH_DIAGNOSTICS;
+      const isNewAttempt = current.attemptId !== progress.attemptId;
       return {
         claudeAuthDiagnostics: {
-          attemptId: progress.attemptId,
-          active: progress.phase !== "complete" && progress.phase !== "failed",
-          phase: progress.phase,
-          message: progress.message,
-          ...(progress.elapsedMs !== undefined ? { elapsedMs: progress.elapsedMs } : {}),
-          entries: isNewAttempt ? [] : state.claudeAuthDiagnostics.entries,
+          ...state.claudeAuthDiagnostics,
+          [accountId]: {
+            attemptId: progress.attemptId,
+            active: progress.phase !== "complete" && progress.phase !== "failed",
+            phase: progress.phase,
+            message: progress.message,
+            ...(progress.elapsedMs !== undefined ? { elapsedMs: progress.elapsedMs } : {}),
+            entries: isNewAttempt ? [] : current.entries,
+          },
         },
       };
     }),
-  appendClaudeAuthLog: (entry) =>
+  appendClaudeAuthLog: (accountId, entry) =>
     set((state) => {
-      const isNewAttempt = state.claudeAuthDiagnostics.attemptId !== entry.attemptId;
+      const current = state.claudeAuthDiagnostics[accountId] ?? EMPTY_CLAUDE_AUTH_DIAGNOSTICS;
+      const isNewAttempt = current.attemptId !== entry.attemptId;
+      const kept = isNewAttempt ? [] : current.entries;
       const entries = [
-        ...(isNewAttempt ? [] : state.claudeAuthDiagnostics.entries),
-        { ...entry, id: `${entry.attemptId}:${entry.timestamp}:${state.claudeAuthDiagnostics.entries.length}` },
+        ...kept,
+        { ...entry, id: `${entry.attemptId}:${entry.timestamp}:${kept.length}` },
       ].slice(-MAX_CLAUDE_AUTH_DIAGNOSTIC_ENTRIES);
       return {
         claudeAuthDiagnostics: {
           ...state.claudeAuthDiagnostics,
-          attemptId: entry.attemptId,
-          active: isNewAttempt ? true : state.claudeAuthDiagnostics.active,
-          entries,
+          [accountId]: {
+            ...current,
+            attemptId: entry.attemptId,
+            active: isNewAttempt ? true : current.active,
+            entries,
+          },
         },
       };
     }),
-  finishClaudeAuthDiagnostics: (status, message) =>
-    set((state) => ({
-      claudeAuthDiagnostics: {
-        ...state.claudeAuthDiagnostics,
-        active: false,
-        phase: status,
-        message: message ?? (status === "complete" ? "Claude sign-in completed." : "Claude sign-in failed."),
-        ...(status === "failed" && message ? { failedMessage: message } : {}),
-      },
-    })),
+  finishClaudeAuthDiagnostics: (accountId, status, message) =>
+    set((state) => {
+      const current = state.claudeAuthDiagnostics[accountId];
+      // Nothing was recorded for this account, so there is no attempt to
+      // finish — inventing one would render an empty diagnostics block on a row
+      // that never ran a challenge.
+      if (!current) return {};
+      return {
+        claudeAuthDiagnostics: {
+          ...state.claudeAuthDiagnostics,
+          [accountId]: {
+            ...current,
+            active: false,
+            phase: status,
+            message: message ?? (status === "complete" ? "Claude sign-in completed." : "Claude sign-in failed."),
+            ...(status === "failed" && message ? { failedMessage: message } : {}),
+          },
+        },
+      };
+    }),
   setProviderAccounts: (accounts) => set({ providerAccounts: accounts }),
   setProviderAccountAuth: (provider, accountId, auth) =>
     set((state) => ({

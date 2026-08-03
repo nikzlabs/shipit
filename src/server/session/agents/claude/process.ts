@@ -6,7 +6,30 @@ import type { ChildProcess } from "node:child_process";
 import { killChild } from "../../../shared/kill-child.js";
 import type { ClaudeEvent, ImageAttachment, PermissionMode } from "../../../shared/types.js";
 import { stripAnsi } from "../../../shared/strip-ansi.js";
-import { agentHome } from "../../../shared/agent-home.js";
+import type { AgentHomeResolver } from "../../../shared/agent-home.js";
+import { resolveAgentHome } from "../../../shared/agent-home.js";
+
+/**
+ * docs/150 — when a spawn is scoped to a provider account, drop the env-based
+ * Anthropic credentials from its environment.
+ *
+ * Pointing HOME at an account root is not enough on its own: the CLI prefers
+ * `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` over the OAuth credentials on
+ * disk, so an orchestrator that has either configured (the dogfood `dev`
+ * service does — see CLAUDE.md) would keep billing metered API usage while the
+ * router believed the turn ran on the selected subscription. Selection would be
+ * ignored a second way, silently.
+ *
+ * Deliberately only when a scoped home applies: a session pinned to the
+ * RESERVED `claude-api-key` / `claude-env-oauth` route resolves no account root
+ * and must keep exactly those vars — they are its auth. Same shape as the Codex
+ * adapter's existing `delete env.OPENAI_API_KEY` when file auth wins.
+ */
+function scrubEnvAuthForScopedHome(env: Record<string, string>, scopedHome: string | undefined): void {
+  if (!scopedHome) return;
+  delete env.ANTHROPIC_API_KEY;
+  delete env.ANTHROPIC_AUTH_TOKEN;
+}
 
 /**
  * Phrases that signal an auth failure in CLI output. Used both for non-JSON
@@ -225,6 +248,15 @@ export class ClaudeProcess extends EventEmitter {
   private authRaisedThisTurn = false;
 
   /**
+   * docs/150 — optional per-spawn HOME override. Set only by the local-mode
+   * agent factory, which points it at the provider account this session was
+   * routed to. Undefined (production, tests) keeps `agentHome()`.
+   */
+  constructor(private readonly resolveHome?: AgentHomeResolver) {
+    super();
+  }
+
+  /**
    * Raise `auth_required` at most once per turn. One auth failure emits two
    * auth-shaped events plus (on a PTY) possibly a raw stderr line; the signal's
    * consumers re-dispatch the turn, so raising it twice runs the turn twice.
@@ -368,13 +400,19 @@ export class ClaudeProcess extends EventEmitter {
     // (e.g. when this orchestrator is itself dogfooded under an outer ShipIt
     // that has the var set) the hook would activate even when `autoCreatePr`
     // is false. Always overwrite with the value derived from this call.
+    // docs/150 — the worker runs as the unprivileged `shipit` user whose home
+    // is /home/shipit; agentHome() resolves to /root in local mode. A scoped
+    // home overrides both in local mode, where it points at the provider
+    // account this session was routed to (there is no per-session credentials
+    // mount to make the process-global home account-correct). Resolved once
+    // per spawn, never at construction.
+    const scopedHome = this.resolveHome?.();
     const spawnEnv: Record<string, string> = {
       ...process.env,
-      // docs/150 — the worker runs as the unprivileged `shipit` user whose
-      // home is /home/shipit; agentHome() resolves to /root in local mode.
-      HOME: agentHome(),
+      HOME: resolveAgentHome(scopedHome),
       NODE_ENV: "development",
     };
+    scrubEnvAuthForScopedHome(spawnEnv, scopedHome);
     if (autoCreatePr) {
       spawnEnv.SHIPIT_AUTO_CREATE_PR = "1";
     } else {
@@ -541,6 +579,11 @@ export class StreamingClaudeProcess extends EventEmitter {
   private buffer = "";
   private watchdog: ReturnType<typeof setTimeout> | null = null;
   private requestIdCounter = 0;
+
+  /** See {@link ClaudeProcess}'s constructor — same per-spawn HOME override. */
+  constructor(private readonly resolveHome?: AgentHomeResolver) {
+    super();
+  }
   /**
    * Per-TURN latch — see {@link consumeAuthFailureEvent}. This process is
    * resident across turns, so unlike {@link ClaudeProcess} the reset is
@@ -604,13 +647,19 @@ export class StreamingClaudeProcess extends EventEmitter {
       args.push("--exclude-dynamic-system-prompt-sections");
     }
 
+    // docs/150 — the worker runs as the unprivileged `shipit` user whose home
+    // is /home/shipit; agentHome() resolves to /root in local mode. A scoped
+    // home overrides both in local mode, where it points at the provider
+    // account this session was routed to (there is no per-session credentials
+    // mount to make the process-global home account-correct). Resolved once
+    // per spawn, never at construction.
+    const scopedHome = this.resolveHome?.();
     const spawnEnv: Record<string, string> = {
       ...process.env,
-      // docs/150 — the worker runs as the unprivileged `shipit` user whose
-      // home is /home/shipit; agentHome() resolves to /root in local mode.
-      HOME: agentHome(),
+      HOME: resolveAgentHome(scopedHome),
       NODE_ENV: "development",
     };
+    scrubEnvAuthForScopedHome(spawnEnv, scopedHome);
     if (autoCreatePr) {
       spawnEnv.SHIPIT_AUTO_CREATE_PR = "1";
     } else {

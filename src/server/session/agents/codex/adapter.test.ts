@@ -1740,6 +1740,59 @@ describe("CodexAdapter / dual-mode auth (feature 119)", () => {
     expect(lastSpawnEnv?.OPENAI_API_KEY).toBe("sk-platform-billing");
   });
 
+  // docs/150 — in local mode the CLI must read the account this session was
+  // routed to. The default (no resolver) is the containerized path and must
+  // leave HOME/CODEX_HOME exactly as inherited.
+  it("leaves HOME and CODEX_HOME untouched when no resolver is given", async () => {
+    process.env.OPENAI_API_KEY = "sk-platform-billing";
+    const inheritedHome = process.env.HOME;
+
+    const adapter = new CodexAdapter(() => false);
+    adapter.on("event", () => { /* drain */ });
+    adapter.run({ prompt: "Hello", cwd: "/workspace" });
+
+    await vi.waitFor(() => expect(lastSpawnEnv).toBeDefined());
+    expect(lastSpawnEnv?.HOME).toBe(inheritedHome);
+    expect(lastSpawnEnv?.CODEX_HOME).toBe(process.env.CODEX_HOME);
+  });
+
+  it("spawns against the resolved account root, and probes that root's auth.json", async () => {
+    const root = "/credentials/provider-accounts/codex/acct-a";
+    const probed: (string | undefined)[] = [];
+
+    const adapter = new CodexAdapter(
+      (configDir) => { probed.push(configDir); return true; },
+      { resolveHome: () => root },
+    );
+    adapter.on("event", () => { /* drain */ });
+    adapter.run({ prompt: "Hello", cwd: "/workspace" });
+
+    await vi.waitFor(() => expect(lastSpawnEnv).toBeDefined());
+    expect(lastSpawnEnv?.HOME).toBe(root);
+    // CODEX_HOME too: the CLI prefers it over HOME, so an inherited one would
+    // otherwise win over the account we just selected.
+    expect(lastSpawnEnv?.CODEX_HOME).toBe(`${root}/.codex`);
+    // The subscription probe reads the SAME root, so an account with a
+    // credentials file is not mistaken for an unauthenticated one.
+    expect(probed).toContain(`${root}/.codex`);
+  });
+
+  // docs/150 req 12 — failover moves work between subscriptions only.
+  it("does not fall back to the env key for a scoped account with no auth.json", () => {
+    process.env.OPENAI_API_KEY = "sk-platform-billing";
+
+    const adapter = new CodexAdapter(
+      () => false,
+      { resolveHome: () => "/credentials/provider-accounts/codex/acct-a" },
+    );
+    let authRequired = false;
+    adapter.on("auth_required", () => { authRequired = true; });
+    adapter.run({ prompt: "Hello", cwd: "/workspace" });
+
+    expect(authRequired).toBe(true);
+    expect(lastSpawnEnv).toBeUndefined();
+  });
+
   it("logs the auth path it chose (Platform API)", async () => {
     process.env.OPENAI_API_KEY = "sk-platform-billing";
 

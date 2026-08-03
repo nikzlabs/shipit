@@ -64,13 +64,7 @@ describe("useServerEvents — session_agent_started", () => {
     useSettingsStore.setState({
       providerAccountAuths: {},
       providerAccountAuthErrors: {},
-      claudeAuthDiagnostics: {
-        attemptId: null,
-        active: false,
-        phase: null,
-        message: null,
-        entries: [],
-      },
+      claudeAuthDiagnostics: {},
     });
   });
 
@@ -114,13 +108,7 @@ describe("useServerEvents — Claude auth diagnostics", () => {
     vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
     FakeEventSource.last = null;
     useSettingsStore.setState({
-      claudeAuthDiagnostics: {
-        attemptId: null,
-        active: false,
-        phase: null,
-        message: null,
-        entries: [],
-      },
+      claudeAuthDiagnostics: {},
       providerAccountAuths: {},
       providerAccountAuthErrors: {},
     });
@@ -131,16 +119,14 @@ describe("useServerEvents — Claude auth diagnostics", () => {
     vi.unstubAllGlobals();
   });
 
-  // Diagnostics are a provider-wide debug buffer, not a sign-in challenge, so
-  // they keep working for an event that carries no account (docs/150 req 19 —
-  // the provider-wide *challenge* slots are gone, diagnostics are not).
-  it("stores progress and log events and keeps diagnostics after a failure", () => {
+  it("stores progress and log events under the account they name, and keeps them after a failure", () => {
     renderHook(() => useServerEvents());
     const es = FakeEventSource.last!;
 
     act(() => {
       es.emit("agent_auth_progress", {
         agentId: "claude",
+        accountId: "acct-a",
         attemptId: "attempt-1",
         phase: "waiting_for_url",
         message: "Waiting for Claude CLI to print an authentication link.",
@@ -148,6 +134,7 @@ describe("useServerEvents — Claude auth diagnostics", () => {
       });
       es.emit("agent_auth_log", {
         agentId: "claude",
+        accountId: "acct-a",
         attemptId: "attempt-1",
         timestamp: "2026-07-11T00:00:00.000Z",
         level: "info",
@@ -156,25 +143,100 @@ describe("useServerEvents — Claude auth diagnostics", () => {
       });
       es.emit("agent_auth_pending", {
         agentId: "claude",
+        accountId: "acct-a",
         details: { kind: "code-paste-url", verificationUri: "https://claude.ai/oauth/authorize?code=true" },
       });
       es.emit("agent_auth_failed", {
         agentId: "claude",
+        accountId: "acct-a",
         reason: "error",
         message: "Claude sign-in failed.",
       });
     });
 
-    // docs/150 req 19 — nowhere for an account-less challenge to go, and no
-    // provider-wide slot left to quietly absorb it.
-    expect(useSettingsStore.getState().providerAccountAuths).toEqual({});
-    expect(useSettingsStore.getState().claudeAuthDiagnostics).toMatchObject({
+    const diagnostics = useSettingsStore.getState().claudeAuthDiagnostics;
+    expect(diagnostics["acct-a"]).toMatchObject({
       attemptId: "attempt-1",
       active: false,
       phase: "failed",
       message: "Claude sign-in failed.",
     });
-    expect(useSettingsStore.getState().claudeAuthDiagnostics.entries).toHaveLength(1);
+    expect(diagnostics["acct-a"]?.entries).toHaveLength(1);
+    // docs/150 — the buffer is keyed by account, so nothing leaks into a
+    // sibling row's slot.
+    expect(Object.keys(diagnostics)).toEqual(["acct-a"]);
+  });
+
+  // docs/150 — a second account's attempt gets its own buffer. It cannot happen
+  // concurrently today (`startAccountAuth` refuses a second per-provider
+  // sign-in with a 409), which is exactly why the scoping has to live in the
+  // data rather than depend on that guard holding.
+  it("keeps two accounts' diagnostics apart", () => {
+    renderHook(() => useServerEvents());
+    const es = FakeEventSource.last!;
+
+    act(() => {
+      es.emit("agent_auth_log", {
+        agentId: "claude",
+        accountId: "acct-a",
+        attemptId: "attempt-a",
+        timestamp: "2026-07-11T00:00:00.000Z",
+        level: "info",
+        source: "claude_stdout",
+        message: "A's output.",
+      });
+      es.emit("agent_auth_log", {
+        agentId: "claude",
+        accountId: "acct-b",
+        attemptId: "attempt-b",
+        timestamp: "2026-07-11T00:00:01.000Z",
+        level: "info",
+        source: "claude_stdout",
+        message: "B's output.",
+      });
+      es.emit("agent_auth_failed", {
+        agentId: "claude",
+        accountId: "acct-b",
+        reason: "error",
+        message: "B failed.",
+      });
+    });
+
+    const diagnostics = useSettingsStore.getState().claudeAuthDiagnostics;
+    expect(diagnostics["acct-a"]?.entries.map((e) => e.message)).toEqual(["A's output."]);
+    expect(diagnostics["acct-b"]?.entries.map((e) => e.message)).toEqual(["B's output."]);
+    // Only B's attempt ended.
+    expect(diagnostics["acct-a"]?.phase).toBeNull();
+    expect(diagnostics["acct-b"]?.phase).toBe("failed");
+  });
+
+  // Every sign-in flow is account-scoped since docs/150 req 19, so an unscoped
+  // payload names no row that could render it. Dropping it is what keeps the
+  // buffer's key meaningful.
+  it("drops an unscoped diagnostics payload rather than pooling it", () => {
+    renderHook(() => useServerEvents());
+    const es = FakeEventSource.last!;
+
+    act(() => {
+      es.emit("agent_auth_progress", {
+        agentId: "claude",
+        attemptId: "attempt-unscoped",
+        phase: "waiting_for_url",
+        message: "Waiting for Claude CLI to print an authentication link.",
+      });
+      es.emit("agent_auth_log", {
+        agentId: "claude",
+        attemptId: "attempt-unscoped",
+        timestamp: "2026-07-11T00:00:00.000Z",
+        level: "info",
+        source: "claude_stdout",
+        message: "Browser did not open.",
+      });
+    });
+
+    expect(useSettingsStore.getState().claudeAuthDiagnostics).toEqual({});
+    // docs/150 req 19 — nowhere for an account-less challenge to go either.
+    expect(useSettingsStore.getState().providerAccountAuths).toEqual({});
   });
 
   it("keeps an account-scoped Claude login attached to its provider-account row", () => {

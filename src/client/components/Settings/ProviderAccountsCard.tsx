@@ -5,7 +5,12 @@ import type { AgentOption } from "../../agent-types.js";
 import type { AgentId, ProviderAccount } from "../../../server/shared/types.js";
 import { Button } from "../ui/button.js";
 import { useUiStore } from "../../stores/ui-store.js";
-import { useSettingsStore, providerAccountAuthKey } from "../../stores/settings-store.js";
+import type { ClaudeAuthDiagnostics } from "../../stores/settings-store.js";
+import {
+  useSettingsStore,
+  providerAccountAuthKey,
+  EMPTY_CLAUDE_AUTH_DIAGNOSTICS,
+} from "../../stores/settings-store.js";
 
 const providerNames: Record<AgentId, string> = {
   claude: "Claude",
@@ -68,7 +73,7 @@ export function ProviderAccountsCard({
   const accountAuths = useSettingsStore((s) => s.providerAccountAuths);
   const accountAuthErrors = useSettingsStore((s) => s.providerAccountAuthErrors);
   const setProviderAccountAuth = useSettingsStore((s) => s.setProviderAccountAuth);
-  const diagnostics = useSettingsStore((s) => s.claudeAuthDiagnostics);
+  const allDiagnostics = useSettingsStore((s) => s.claudeAuthDiagnostics);
 
   const accounts = allAccounts.filter((account) => account.provider === provider);
   const [savingId, setSavingId] = useState<string | null>(null);
@@ -84,6 +89,10 @@ export function ProviderAccountsCard({
   const [replacementChoice, setReplacementChoice] = useState("");
 
   const name = providerNames[provider];
+
+  /** This row's own Claude sign-in diagnostics (docs/150), empty if it has none. */
+  const diagnosticsFor = (accountId: string): ClaudeAuthDiagnostics =>
+    allDiagnostics[accountId] ?? EMPTY_CLAUDE_AUTH_DIAGNOSTICS;
 
   /** Accounts a pinned session could be moved to — connected, and not this one. */
   const otherReadyAccounts = (excludeId: string) =>
@@ -540,15 +549,16 @@ export function ProviderAccountsCard({
                 )}
 
                 {/* Claude's CLI-driven sign-in is the one that strands users, so
-                    its diagnostics stay reachable. They're provider-wide today;
-                    scoping them per account is a Phase 1 follow-up. */}
-                {provider === "claude" && pendingAuth && diagnostics.entries.length > 0 && (
+                    its diagnostics stay reachable. docs/150 — read this row's
+                    own buffer: the output belongs to the account whose attempt
+                    produced it, not to the provider. */}
+                {provider === "claude" && pendingAuth && diagnosticsFor(account.id).entries.length > 0 && (
                   <details className="group" data-testid={`provider-account-diagnostics-${account.id}`}>
                     <summary className="cursor-pointer select-none text-xs text-(--color-text-link) hover:text-(--color-accent) transition-colors">
-                      Claude CLI output ({diagnostics.entries.length})
+                      Claude CLI output ({diagnosticsFor(account.id).entries.length})
                     </summary>
                     <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded-md bg-(--color-bg-primary) border border-(--color-border-secondary) p-2 font-mono text-[var(--font-size-code)] text-(--color-text-secondary)">
-                      {diagnostics.entries.map((entry) =>
+                      {diagnosticsFor(account.id).entries.map((entry) =>
                         `${entry.timestamp} ${entry.level.toUpperCase()} ${entry.source}: ${entry.message}`,
                       ).join("\n")}
                     </pre>

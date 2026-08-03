@@ -20,7 +20,7 @@ import { CredentialStore } from "./credential-store.js";
 import { ProviderAccountManager } from "./provider-account-manager.js";
 import { SessionManager } from "./sessions.js";
 import { createTestDatabaseManager } from "./integration_tests/test-helpers.js";
-import type { AgentId } from "../shared/types.js";
+import type { AgentId, AgentProcess, SessionInfo } from "../shared/types.js";
 import type { AgentAuthManager } from "./agent-auth-manager.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { AgentRegistry } from "../shared/agent-registry.js";
@@ -581,11 +581,78 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
     });
     expect(runner).toBeInstanceOf(SessionRunner);
     expect(runner).not.toBeInstanceOf(ContainerSessionRunner);
-    // Local runners have no in-container agent worker — `createAgent` should
-    // be undefined so the registry's onRunnerCreated wiring falls through to
-    // the process-level agentFactory.
+    // No `localAgentFactory` was passed, so there is nothing to bind an
+    // account-scoped spawn to and `createAgent` stays unset — the registry's
+    // onRunnerCreated wiring falls through to the process-level agentFactory.
     expect(runner.createAgent).toBeUndefined();
     runner.dispose({ force: true });
+  });
+
+  // docs/150 — local mode has no per-session credentials mount, so the account
+  // the router selected reaches the CLI only if the spawn is told which HOME to
+  // use. `createAgent` is the per-session hook every spawn path already prefers.
+  describe("account-scoped local spawns (docs/150)", () => {
+    const account = (sessionId: string, accountId: string): SessionInfo => ({
+      id: sessionId,
+      agentId: "claude" as AgentId,
+      providerRouteKind: "account",
+      providerRouteId: accountId,
+    } as SessionInfo);
+
+    function localFactoryWith(sessions: Record<string, SessionInfo>) {
+      const calls: { agentId: AgentId; home: string | undefined }[] = [];
+      const localAgentFactory = vi.fn((agentId: AgentId, resolveHome?: () => string | undefined) => {
+        calls.push({ agentId, home: resolveHome?.() });
+        return { agentId } as unknown as AgentProcess;
+      });
+      const factory = buildRunnerFactory({
+        deps: {},
+        containerManager: null,
+        credentialsDir: "/credentials",
+        sessionManager: { get: (id: string) => sessions[id] } as unknown as SessionManager,
+        runtimeMode: "local",
+        localAgentFactory,
+      });
+      return { factory: factory!, calls };
+    }
+
+    it("resolves each session's own account root", () => {
+      const { factory, calls } = localFactoryWith({
+        s1: account("s1", "acct-a"),
+        s2: account("s2", "acct-b"),
+      });
+
+      const r1 = factory({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+      const r2 = factory({ sessionId: "s2", sessionDir: "/tmp/s2", defaultAgentId: "claude" as AgentId });
+      r1.createAgent!("claude");
+      r2.createAgent!("claude");
+
+      // Two sessions pinned to different accounts spawn against different
+      // credential roots — the whole point, and what a single process-global
+      // HOME could not express.
+      expect(calls[0].home).toBe("/credentials/provider-accounts/claude/acct-a");
+      expect(calls[1].home).toBe("/credentials/provider-accounts/claude/acct-b");
+      r1.dispose({ force: true });
+      r2.dispose({ force: true });
+    });
+
+    it("re-reads the route on each spawn so a failover is picked up", () => {
+      const sessions: Record<string, SessionInfo> = { s1: account("s1", "acct-a") };
+      const { factory, calls } = localFactoryWith(sessions);
+      const runner = factory({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+
+      runner.createAgent!("claude");
+      // The turn hits its cutoff and env-prep moves the session; the retry
+      // spawns from the same runner.
+      sessions.s1 = account("s1", "acct-b");
+      runner.createAgent!("claude");
+
+      expect(calls.map((c) => c.home)).toEqual([
+        "/credentials/provider-accounts/claude/acct-a",
+        "/credentials/provider-accounts/claude/acct-b",
+      ]);
+      runner.dispose({ force: true });
+    });
   });
 
   it("local mode wins over a non-null containerManager", () => {

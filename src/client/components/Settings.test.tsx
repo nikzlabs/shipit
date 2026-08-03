@@ -17,7 +17,11 @@ afterEach(() => {
     missingRequired: [],
   });
   useSettingsStore.getState().setProviderAccounts([]);
-  useSettingsStore.setState({ providerAccountAuths: {}, providerAccountAuthErrors: {} });
+  useSettingsStore.setState({
+    providerAccountAuths: {},
+    providerAccountAuthErrors: {},
+    claudeAuthDiagnostics: {},
+  });
 });
 
 const claudeAuthed = { id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: ["claude-sonnet"], supportsReview: true };
@@ -157,6 +161,41 @@ describe("Settings - Agent → Claude tab", () => {
     expect(screen.getByTestId("provider-account-connect-acct-b")).toBeDisabled();
     // ...and the one that is keeps its own way out.
     expect(screen.getByTestId("provider-account-cancel-login-acct-a")).toBeEnabled();
+  });
+
+  // docs/150 — the Claude CLI-output buffer is keyed by account id, so a row
+  // can only ever render its OWN attempt's output. It was one provider-wide
+  // buffer before, which read correctly only because the server refuses a
+  // second concurrent per-provider sign-in; the scoping now lives in the data.
+  it("renders a row's Claude CLI output only on the account that produced it", () => {
+    const now = Date.now();
+    const base = { provider: "claude" as const, isPrimary: false, status: "ready" as const, createdAt: now, updatedAt: now };
+    useSettingsStore.getState().setProviderAccounts([
+      { ...base, id: "acct-a", label: "Account A", isPrimary: true },
+      { ...base, id: "acct-b", label: "Account B" },
+    ]);
+    // Both rows carry a live challenge — the condition under which the shared
+    // buffer would have rendered twice.
+    for (const id of ["acct-a", "acct-b"]) {
+      useSettingsStore.getState().setProviderAccountAuth("claude", id, {
+        provider: "claude",
+        accountId: id,
+        verificationUri: `https://claude.ai/oauth/authorize?${id}`,
+      });
+    }
+    useSettingsStore.getState().appendClaudeAuthLog("acct-a", {
+      attemptId: "attempt-a",
+      timestamp: "2026-08-03T00:00:00.000Z",
+      level: "info",
+      source: "claude_stdout",
+      message: "A's CLI output.",
+    });
+
+    render(<Settings {...defaultProps} agentList={[claudeUnauthed]} />);
+
+    expect(screen.getByTestId("provider-account-diagnostics-acct-a")).toBeInTheDocument();
+    expect(screen.queryByTestId("provider-account-diagnostics-acct-b")).not.toBeInTheDocument();
+    expect(screen.getByText(/A's CLI output\./)).toBeInTheDocument();
   });
 
   it("asks which account to move pinned sessions to instead of dead-ending on the refusal", async () => {

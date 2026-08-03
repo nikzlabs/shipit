@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { agentHome, codexHome, DEFAULT_AGENT_HOME } from "./agent-home.js";
+import { agentHome, codexHome, resolveAgentHome, DEFAULT_AGENT_HOME } from "./agent-home.js";
 
 describe("agent-home (docs/150)", () => {
   const prevAgentHome = process.env.AGENT_HOME;
@@ -37,5 +37,24 @@ describe("agent-home (docs/150)", () => {
   it("codexHome() honors an explicit CODEX_HOME override", () => {
     process.env.CODEX_HOME = "/custom/codex";
     expect(codexHome()).toBe("/custom/codex");
+  });
+
+  // The per-spawn override local mode uses to carry provider-account selection
+  // into a CLI that has no per-session credentials mount to read it from.
+  describe("resolveAgentHome", () => {
+    it("falls back to agentHome() when no account root applies", () => {
+      process.env.AGENT_HOME = "/root";
+      expect(resolveAgentHome()).toBe("/root");
+      expect(resolveAgentHome(undefined)).toBe("/root");
+      // An empty string is not a usable home either — a spawn with HOME="" is
+      // worse than the process-global one.
+      expect(resolveAgentHome("")).toBe("/root");
+    });
+
+    it("uses the account root when one is given", () => {
+      process.env.AGENT_HOME = "/root";
+      expect(resolveAgentHome("/credentials/provider-accounts/claude/acct-a"))
+        .toBe("/credentials/provider-accounts/claude/acct-a");
+    });
   });
 });
