@@ -42,6 +42,7 @@ import {
   startTokenWriteBackWatch,
   stopTokenWriteBackWatch,
 } from "./session-token-publisher.js";
+import { isLocalRuntime, linkAgentHomeToCredentials } from "./local-agent-credentials.js";
 import { repoUrlToHash } from "./git-utils.js";
 import type { ProviderAccountManager, ProviderRoute } from "./provider-account-manager.js";
 import { routeFromSelection } from "./provider-route-preflight.js";
@@ -429,6 +430,35 @@ export async function prepareSessionAgentEnvironment(
       ensureSessionAgentUserConfig(deps.credentialsDir, sessionId, agentId);
     } catch (err) {
       console.warn("[credentials] agent user-config normalization failed:", getErrorMessage(err));
+    }
+  }
+
+  // Step 1b (SHI-282): the local-mode twin of Step 1. Every branch above is
+  // gated on `ContainerSessionRunner`, and in local mode there is no container
+  // — so a dogfood turn spawned a CLI whose HOME had never been given
+  // credentials at all, for either agent. Point the agent home at the routed
+  // account's subtree instead of copying into a per-session dir; see
+  // `local-agent-credentials.ts` for why linking rather than copying.
+  //
+  // Runs on every turn, not just at pin time: local sessions share one home,
+  // so a sibling on another account may have repointed it since.
+  if (isLocalRuntime()) {
+    try {
+      const accountId = selectedRoute?.kind === "account" ? selectedRoute.id : undefined;
+      const outcomes = linkAgentHomeToCredentials({
+        credentialsDir: deps.credentialsDir,
+        agentId,
+        ...(accountId ? { accountId } : {}),
+      });
+      const changed = Object.entries(outcomes).filter(([, o]) => o === "linked");
+      if (changed.length > 0) {
+        console.log(
+          `[local-credentials] ${sessionId} agent=${agentId} linked ${changed.map(([rel]) => rel).join(", ")}`
+            + ` from ${accountId ? `account:${accountId}` : "the flat credentials root"}`,
+        );
+      }
+    } catch (err) {
+      console.warn("[local-credentials] linking agent home failed:", getErrorMessage(err));
     }
   }
 
