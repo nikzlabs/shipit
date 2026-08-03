@@ -486,9 +486,17 @@ export function MessageList({
         </div>
       )}
 
-      {Object.values(subAgentSpawns).map((chip) => (
-        <SubAgentSpawnChipRow key={chip.spawnId} chip={chip} />
-      ))}
+      {/*
+        SHI-278 — the durable pending consult card (inline, at the call site) is
+        now the primary in-flight surface. The transient chip is only shown for a
+        spawn that has no card in the transcript yet, so the two can never render
+        two spinners for the same consult.
+      */}
+      {Object.values(subAgentSpawns)
+        .filter((chip) => !messages.some((m) => m.subAgentConsult?.spawnId === chip.spawnId))
+        .map((chip) => (
+          <SubAgentSpawnChipRow key={chip.spawnId} chip={chip} />
+        ))}
 
       {!isLoading && messages.length > 0 && renderRewindPoint(messages.length, true)}
     </div>

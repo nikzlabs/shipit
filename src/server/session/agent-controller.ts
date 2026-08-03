@@ -190,14 +190,23 @@ export class AgentController {
       async (request, reply) => {
         const { agentId, prompt, spawnId, depth, model, reasoningEffort, timeoutMs, maxOutputChars } = request.body ?? {};
         if (!agentId || typeof prompt !== "string" || !spawnId) {
+          console.warn("[sub-agent] worker rejected spawn: agentId, prompt, and spawnId are required");
           return reply.code(400).send({ error: "agentId, prompt, and spawnId are required" });
         }
         let agent: AgentProcess;
         try {
           agent = this.deps.agentFactory(agentId);
         } catch (err) {
+          console.warn(`[sub-agent] worker rejected spawn=${spawnId}: unknown agent ${agentId}`);
           return reply.code(400).send({ error: `Unknown agent: ${agentId} (${getErrorMessage(err)})` });
         }
+        // SHI-278 — this whole path used to be silent, so a consult that never
+        // produced an artifact left nothing in the worker logs either.
+        console.log(
+          `[sub-agent] worker spawn=${spawnId} agent=${agentId} depth=${depth ?? 0} `
+          + `promptBytes=${Buffer.byteLength(prompt)} model=${model ?? "default"} `
+          + `effort=${reasoningEffort ?? "default"}`,
+        );
 
         const runOpts = {
           prompt,
@@ -219,8 +228,15 @@ export class AgentController {
           this.withTemporaryEnv({ SHIPIT_AGENT_DEPTH: childDepth }, () => {
             agent.run(buildSubAgentRunParams(runOpts));
           });
-          return await handle.promise;
+          const result = await handle.promise;
+          console.log(
+            `[sub-agent] worker done spawn=${spawnId} status=${result.status} `
+            + `durationMs=${result.durationMs} outputChars=${result.text.length} `
+            + `truncated=${result.truncated}`,
+          );
+          return result;
         } catch (err) {
+          console.warn(`[sub-agent] worker failed spawn=${spawnId}: ${getErrorMessage(err)}`);
           return await reply.code(500).send({ error: getErrorMessage(err) });
         } finally {
           this.spawnedAgents.delete(spawnId);
@@ -397,7 +413,8 @@ export class AgentController {
 
   /** docs/144 — SIGTERM every in-flight sub-agent spawn (symmetric cancel). */
   private cancelAllSpawns(): void {
-    for (const handle of this.spawnedAgents.values()) {
+    for (const [spawnId, handle] of this.spawnedAgents) {
+      console.warn(`[sub-agent] worker cancelling spawn=${spawnId} (primary interrupt/kill)`);
       try { handle.cancel(); } catch { /* best-effort */ }
     }
   }

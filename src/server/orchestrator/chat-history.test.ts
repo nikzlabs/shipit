@@ -425,6 +425,65 @@ describe("ChatHistoryManager", () => {
     });
   });
 
+  describe("updateSubAgentConsultCard (SHI-278)", () => {
+    const pending = (spawnId: string): PersistedMessage => ({
+      role: "assistant",
+      text: "",
+      subAgentConsult: {
+        cardId: `card-${spawnId}`,
+        spawnId,
+        subAgentId: "codex",
+        status: "pending",
+        createdAt: "2026-08-03T00:00:00.000Z",
+      },
+    });
+
+    it("flips a pending card to its terminal state on a FINALIZED row", () => {
+      // The common shape after docs/236: the consult was backgrounded, so its
+      // originating turn finalized long before the run ended. There is no
+      // in-progress turn to re-record into — the row patch is the only path.
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", { role: "user", text: "review the PR with codex" });
+      mgr.append("sess-1", pending("spawn-a"));
+      mgr.append("sess-1", { role: "assistant", text: "a later, unrelated turn" });
+
+      expect(mgr.updateSubAgentConsultCard("sess-1", "card-spawn-a", {
+        status: "success",
+        durationMs: 900_000,
+        outputMarkdown: "## Findings",
+      })).toBe(true);
+
+      // Read back through a fresh manager — this is the reload path.
+      const cards = new ChatHistoryManager(dbManager).listSubAgentConsultCards("sess-1");
+      expect(cards).toHaveLength(1);
+      expect(cards[0]).toMatchObject({
+        cardId: "card-spawn-a",
+        spawnId: "spawn-a",
+        status: "success",
+        durationMs: 900_000,
+        outputMarkdown: "## Findings",
+        // untouched fields survive the merge
+        createdAt: "2026-08-03T00:00:00.000Z",
+      });
+      // patched in place — one card, not a second row appended
+      const all = new ChatHistoryManager(dbManager).load("sess-1");
+      expect(all.filter((m) => m.subAgentConsult)).toHaveLength(1);
+    });
+
+    it("returns false when no card matches the given id", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", pending("spawn-a"));
+      expect(mgr.updateSubAgentConsultCard("sess-1", "missing", { status: "error" })).toBe(false);
+    });
+
+    it("is scoped to the session", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", pending("spawn-a"));
+      expect(mgr.updateSubAgentConsultCard("sess-2", "card-spawn-a", { status: "error" })).toBe(false);
+      expect(mgr.listSubAgentConsultCards("sess-1")[0].status).toBe("pending");
+    });
+  });
+
   describe("upsertReleaseCard (docs/171)", () => {
     const proposed = (cardId = "release:sess-1:v0.3.0") => ({
       sessionId: "sess-1",

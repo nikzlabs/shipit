@@ -12,3 +12,9 @@
 - [x] `shipit-docs/agent.md`: parity, background-run guidance, `agent result`
 - [x] Tests: multi-message capture, card/stdout parity, lookup, shim, broker,
       chat-history read
+
+## Follow-on (SHI-278 — tracked in docs/144 §7a)
+
+- [x] Backgrounding needed a durable in-flight surface; the emit-only spinner
+      §5's guidance relied on did not survive a session switch. Fixed in
+      `docs/144-cross-agent-review` §7a — see that doc's checklist.

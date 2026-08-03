@@ -12,6 +12,8 @@ import path from "node:path";
 import { getSubAgentResult, runSubAgent, sweepSubAgentCredentialsOnSignOut, SUB_AGENT_PER_TURN_CAP } from "./sub-agent.js";
 import { ServiceError } from "./types.js";
 import type { SubAgentRunResult } from "../../shared/sub-agent-run.js";
+import { SUB_AGENT_TRANSPORT_TIMEOUT_MS } from "../../shared/sub-agent-run.js";
+import { WorkerAbortedError, WorkerTimeoutError } from "../worker-http.js";
 import type { AccountSelection } from "../provider-account-manager.js";
 import {
   perSessionCredentialsDir,
@@ -52,6 +54,9 @@ function makeDeps(opts: {
   }));
   const recordAgentRateLimits = vi.fn();
   const replaceInProgress = vi.fn();
+  // SHI-278 — the pending → terminal transition patches the finalized DB row
+  // whenever the originating turn is no longer holding the card.
+  const updateSubAgentConsultCard = vi.fn(() => true);
   // emitChatCard reads chatMessageGroups/steeredMessages and mutates recordedCards,
   // then persists via chatHistoryManager.replaceInProgress — stub all four.
   const runner = {
@@ -95,9 +100,12 @@ function makeDeps(opts: {
     providerAccountManager: { selectAccountForTurn, markAccountExhausted } as never,
     usageManager: { record, getSessionUsage, getSessionTokenTotals } as never,
     recordAgentRateLimits,
-    chatHistoryManager: { replaceInProgress } as never,
+    chatHistoryManager: { replaceInProgress, updateSubAgentConsultCard } as never,
   };
-  return { deps, runner, emitMessage, record, replaceInProgress, recordAgentRateLimits, selectAccountForTurn, markAccountExhausted };
+  return {
+    deps, runner, emitMessage, record, replaceInProgress, updateSubAgentConsultCard,
+    recordAgentRateLimits, selectAccountForTurn, markAccountExhausted,
+  };
 }
 
 async function expectServiceError(p: Promise<unknown>, status: number): Promise<ServiceError> {
@@ -168,21 +176,25 @@ describe("runSubAgent — happy path", () => {
       subAgentId: "codex",
       contextTokens: 1200,
     });
-    // transient running spinner, then the live bill refresh, then the terminal
-    // persisted consult card.
+    // transient running spinner, the DURABLE pending card (SHI-278), the live
+    // bill refresh, then the terminal consult card.
     const msgs = emitMessage.mock.calls.map((c) => c[0] as { type: string });
     // The spinner carries the OWNING session id so the client can drop it when
     // it arrives for a session other than the one being viewed.
     expect(msgs[0]).toMatchObject({ type: "sub_agent_spawn", sessionId: "s1", subAgentId: "codex" });
-    // the bill update is flagged subAgent so it doesn't move the context dial
     expect(msgs[1]).toMatchObject({
+      type: "sub_agent_consult_card",
+      card: expect.objectContaining({ subAgentId: "codex", status: "pending" }),
+    });
+    // the bill update is flagged subAgent so it doesn't move the context dial
+    expect(msgs[2]).toMatchObject({
       type: "usage_update",
       sessionId: "s1",
       subAgent: true,
       cumulativeInputTokens: 1000,
       cumulativeOutputTokens: 200,
     });
-    expect(msgs[2]).toMatchObject({
+    expect(msgs[3]).toMatchObject({
       type: "sub_agent_consult_card",
       // docs/220 — the card carries the sub-agent's verbatim output so the
       // brokered consult is visible, not just attested.
@@ -195,8 +207,13 @@ describe("runSubAgent — happy path", () => {
       }),
     });
     // the spinner and the card share a spawnId (the card clears the spinner)
-    expect((msgs[2] as unknown as { card: { spawnId: string } }).card.spawnId).toBe(
+    expect((msgs[3] as unknown as { card: { spawnId: string } }).card.spawnId).toBe(
       (msgs[0] as unknown as { spawnId: string }).spawnId,
+    );
+    // SHI-278 — the pending and terminal deliveries are ONE card, patched in
+    // place. Two ids would render two rows for one consult.
+    expect((msgs[3] as unknown as { card: { cardId: string } }).card.cardId).toBe(
+      (msgs[1] as unknown as { card: { cardId: string } }).card.cardId,
     );
     // the card was persisted in-band (not emit-only) — survives switch/reload
     expect(replaceInProgress).toHaveBeenCalled();
@@ -216,9 +233,11 @@ describe("runSubAgent — happy path", () => {
     });
     const res = await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
 
+    // the LAST consult-card emission is the terminal one (the first is pending)
     const card = emitMessage.mock.calls
       .map((c) => c[0] as { type: string; card?: { spawnId: string; outputMarkdown?: string } })
-      .find((m) => m.type === "sub_agent_consult_card")?.card;
+      .filter((m) => m.type === "sub_agent_consult_card")
+      .at(-1)?.card;
     // What the agent acts on and what the user reads are one document, named by
     // one id — divergence here is the SHI-245 failure, silent and undetectable.
     expect(card?.outputMarkdown).toBe(res.text);
@@ -348,11 +367,12 @@ describe("runSubAgent — happy path", () => {
     await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
     const card = emitMessage.mock.calls
       .map((c) => c[0] as { type: string; card?: { outputMarkdown?: string } })
-      .find((m) => m.type === "sub_agent_consult_card")?.card;
+      .filter((m) => m.type === "sub_agent_consult_card")
+      .at(-1)?.card;
     expect(card?.outputMarkdown).toBeUndefined();
   });
 
-  it("gives each brokered call its own card id — no patch-in-place (docs/220)", async () => {
+  it("gives each brokered call its own card id — one card per run, patched in place", async () => {
     const { deps, emitMessage } = makeDeps({});
     await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
     await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "re-review", depth: 0 });
@@ -360,12 +380,17 @@ describe("runSubAgent — happy path", () => {
       .map((c) => c[0] as { type: string; card?: { cardId?: string } })
       .filter((m) => m.type === "sub_agent_consult_card")
       .map((m) => m.card?.cardId);
-    expect(cardIds).toHaveLength(2);
-    expect(cardIds[0]).not.toBe(cardIds[1]);
+    // SHI-278 — two runs × (pending + terminal) = 4 emissions, but only TWO
+    // distinct cards: each run's pending row is patched, not duplicated.
+    expect(cardIds).toHaveLength(4);
+    expect(new Set(cardIds).size).toBe(2);
+    expect(cardIds[0]).toBe(cardIds[1]);
+    expect(cardIds[2]).toBe(cardIds[3]);
+    expect(cardIds[0]).not.toBe(cardIds[2]);
   });
 
-  it("emits an error consult card when the spawn throws (spinner never left spinning)", async () => {
-    const { deps, runner, emitMessage } = makeDeps({});
+  it("finalizes the pending card as an error when the spawn throws (never left pending)", async () => {
+    const { deps, runner, emitMessage, updateSubAgentConsultCard } = makeDeps({});
     runner.spawnSubAgent = vi.fn(async () => {
       throw new Error("worker unreachable");
     });
@@ -376,10 +401,20 @@ describe("runSubAgent — happy path", () => {
     expect(msgs[0]).toMatchObject({ type: "sub_agent_spawn" });
     expect(msgs[1]).toMatchObject({
       type: "sub_agent_consult_card",
+      card: expect.objectContaining({ status: "pending" }),
+    });
+    expect(msgs[2]).toMatchObject({
+      type: "sub_agent_consult_card",
       card: expect.objectContaining({ status: "error" }),
     });
     // a transport failure produced no result, so there is no output to carry
-    expect((msgs[1] as unknown as { card: { outputMarkdown?: string } }).card.outputMarkdown).toBeUndefined();
+    expect((msgs[2] as unknown as { card: { outputMarkdown?: string } }).card.outputMarkdown).toBeUndefined();
+    // the terminal state landed in the DB too — the transcript can't stay pending
+    expect(updateSubAgentConsultCard).toHaveBeenCalledWith(
+      "s1",
+      expect.any(String),
+      expect.objectContaining({ status: "error" }),
+    );
   });
 
   it("allows a same-provider spawn (no extra credentials needed)", async () => {
@@ -397,6 +432,116 @@ describe("runSubAgent — happy path", () => {
     await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "c", depth: 0 });
     expect(runner.subAgentSpawnsThisTurn).toBe(3);
     await expectServiceError(runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "d", depth: 0 }), 429);
+  });
+});
+
+/**
+ * SHI-278 — the in-flight consult card's lifecycle. The incident: a
+ * backgrounded Codex consult ran for 15 minutes, the user switched sessions
+ * (wiping the transient spinner), then hit Restart agent. Nothing survived — no
+ * in-flight surface, no terminal card, and `shipit agent result` was empty.
+ */
+describe("runSubAgent — durable in-flight consult card", () => {
+  it("persists a pending card at spawn time, before the run finishes", async () => {
+    let cardAtSpawn: { status: string } | undefined;
+    const { deps, runner, replaceInProgress } = makeDeps({});
+    runner.spawnSubAgent = vi.fn(async () => {
+      // Observed from INSIDE the run: what a session switch would rehydrate.
+      cardAtSpawn = (runner.recordedCards as unknown as { message: { subAgentConsult: { status: string } } }[])
+        .at(-1)?.message.subAgentConsult;
+      expect(replaceInProgress).toHaveBeenCalled();
+      return { status: "success", text: "done", truncated: false, durationMs: 10, costUsd: 0 };
+    });
+    await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+    expect(cardAtSpawn).toMatchObject({ status: "pending" });
+  });
+
+  it("patches the finalized DB row when the originating turn already ended", async () => {
+    // The common shape after docs/236: the agent backgrounds a long consult, its
+    // turn finalizes, and the result lands during a LATER turn. Re-recording
+    // into that later turn would both misplace the card and revive a finalized
+    // turn as a duplicate in-progress row.
+    const { deps, runner, updateSubAgentConsultCard, replaceInProgress } = makeDeps({});
+    let persistsAtSpawn = 0;
+    runner.spawnSubAgent = vi.fn(async () => {
+      // The turn that issued the consult has finalized; its recorded cards are
+      // cleared by the next turn's `resetRunnerTurnState`.
+      persistsAtSpawn = replaceInProgress.mock.calls.length;
+      (runner as unknown as { running: boolean }).running = false;
+      runner.recordedCards = [] as never[];
+      return { status: "success", text: "9 findings", truncated: false, durationMs: 900_000, costUsd: 0 };
+    });
+
+    await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+
+    expect(updateSubAgentConsultCard).toHaveBeenCalledWith(
+      "s1",
+      expect.any(String),
+      expect.objectContaining({ status: "success", outputMarkdown: "9 findings" }),
+    );
+    // no FURTHER in-progress rebuild after the pending persist — the finalized
+    // turn is not revived as a duplicate in-progress row
+    expect(replaceInProgress.mock.calls.length).toBe(persistsAtSpawn);
+  });
+
+  it("lands a cancelled card through the LIVE runner when the original was disposed", async () => {
+    // Restart agent force-disposes the runner and destroys the container under
+    // the in-flight spawn. Emitting through the disposed runner drops the live
+    // card AND clobbers persisted rows from its stale turn state — so the runner
+    // is re-resolved from the registry at completion time.
+    const { deps, runner, emitMessage, updateSubAgentConsultCard } = makeDeps({});
+    const liveEmit = vi.fn();
+    const liveRunner = {
+      running: false,
+      emitMessage: liveEmit,
+      chatMessageGroups: [] as never[],
+      steeredMessages: [] as never[],
+      recordedCards: [] as never[],
+    };
+    runner.spawnSubAgent = vi.fn(async () => {
+      // The registry hands out the REPLACEMENT runner once the old one is gone.
+      (deps.runnerRegistry as unknown as { get: ReturnType<typeof vi.fn> }).get =
+        vi.fn(() => liveRunner);
+      throw new WorkerAbortedError("/agent/spawn", "runner disposed");
+    });
+
+    await expect(
+      runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 }),
+    ).rejects.toBeInstanceOf(WorkerAbortedError);
+
+    // An abort is a cancellation, not a fault.
+    expect(liveEmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "sub_agent_consult_card",
+        card: expect.objectContaining({ status: "cancelled" }),
+      }),
+    );
+    // and NOT through the disposed runner, whose viewers are gone
+    const staleTerminal = emitMessage.mock.calls
+      .map((c) => c[0] as { type: string; card?: { status?: string } })
+      .filter((m) => m.type === "sub_agent_consult_card" && m.card?.status !== "pending");
+    expect(staleTerminal).toHaveLength(0);
+    // the cancellation is durable — a reload shows "Cancelled", not "Asking…"
+    expect(updateSubAgentConsultCard).toHaveBeenCalledWith(
+      "s1",
+      expect.any(String),
+      expect.objectContaining({ status: "cancelled" }),
+    );
+  });
+
+  it("finalizes as a timeout when the transport backstop fires", async () => {
+    const { deps, runner, updateSubAgentConsultCard } = makeDeps({});
+    runner.spawnSubAgent = vi.fn(async () => {
+      throw new WorkerTimeoutError("/agent/spawn", SUB_AGENT_TRANSPORT_TIMEOUT_MS);
+    });
+    await expect(
+      runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 }),
+    ).rejects.toBeInstanceOf(WorkerTimeoutError);
+    expect(updateSubAgentConsultCard).toHaveBeenCalledWith(
+      "s1",
+      expect.any(String),
+      expect.objectContaining({ status: "timeout" }),
+    );
   });
 });
 

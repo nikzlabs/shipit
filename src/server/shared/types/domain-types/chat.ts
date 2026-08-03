@@ -39,6 +39,14 @@ export interface CompactionCard {
  * inline at the spawn position, persisted in chat history). Renders for every
  * terminal status, not just success (a cancelled/timed-out/failed consult is
  * still a fact the transcript should keep).
+ *
+ * SHI-278 — the card is now created in a `pending` state at SPAWN time and
+ * patched to its terminal status on completion, so an in-flight consult has a
+ * DURABLE surface. The transient `sub_agent_spawn` chip is live activity only
+ * and dies on the first session switch; since docs/236 tells agents to
+ * background long consults, the in-flight state routinely outlives both its
+ * turn and every switch the user makes, and a spawn whose container was
+ * restarted mid-flight used to leave no trace at all.
  */
 export interface SubAgentConsultCard {
   /** Stable id — keeps the live append + history rehydration idempotent. */
@@ -47,8 +55,11 @@ export interface SubAgentConsultCard {
   spawnId: string;
   /** The agent that was consulted (display: "Consulted Codex"). */
   subAgentId: AgentId;
-  /** Terminal status — drives the verb ("Consulted" / "Cancelled" / …). */
-  status: "success" | "error" | "timeout" | "cancelled";
+  /**
+   * `pending` while the spawn is in flight; otherwise the terminal status,
+   * which drives the verb ("Consulted" / "Cancelled" / …).
+   */
+  status: "pending" | "success" | "error" | "timeout" | "cancelled";
   durationMs?: number;
   costUsd?: number;
   /** True when the sub-agent's output hit the wall-clock or character cap. */

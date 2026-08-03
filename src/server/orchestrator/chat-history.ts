@@ -783,6 +783,37 @@ export class ChatHistoryManager {
   }
 
   /**
+   * SHI-278 — patch a persisted sub-agent consult card in place, keyed by
+   * `cardId`. The card is created `pending` at spawn time and patched to its
+   * terminal status when the run finishes; because docs/236 tells agents to
+   * background long consults, that finish is usually AFTER the originating turn
+   * finalized, so this finalized-row patch — not a re-record — is the common
+   * path. It is the `patchDb` half of `persistCardTransition`; while the
+   * originating turn is still in flight and still holds the card in
+   * `recordedCards`, that helper patches the recorded copy instead so the turn's
+   * own finalize can't clobber the transition. Returns true if a card matched.
+   */
+  updateSubAgentConsultCard(
+    sessionId: string,
+    cardId: string,
+    patch: Partial<SubAgentConsultCard>,
+  ): boolean {
+    return this.db.transaction(() => {
+      const rows = this.stmtLoadAll.all(sessionId) as MessageRow[];
+      for (const row of rows) {
+        if (!row.sub_agent_consult) continue;
+        const card = JSON.parse(row.sub_agent_consult) as SubAgentConsultCard;
+        if (card.cardId !== cardId) continue;
+        const msg = this.fromRow(row);
+        msg.subAgentConsult = { ...card, ...patch };
+        this.stmtUpdate.run({ ...this.toRow(sessionId, msg), id: row.id });
+        return true;
+      }
+      return false;
+    })();
+  }
+
+  /**
    * docs/177 — find a persisted issue-write provenance card by `cardId`. The
    * undo WS handler reads it to recover the tracker + undo snapshot (the card
    * is the source of truth, not client-supplied state). Returns null if absent.

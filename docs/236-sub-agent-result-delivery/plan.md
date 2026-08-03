@@ -111,11 +111,29 @@ a foreground shell cap (10 min in Claude Code) is shorter than the consult cap
 (30 min), and documents `shipit agent result`. The foreground ceiling was
 previously undiscoverable until it bit.
 
+## Follow-on: backgrounding needed a durable in-flight surface (SHI-278)
+
+§5's "launch long consults in the background" landed before the UI had anywhere
+to *show* a backgrounded consult. docs/144 §7 built the in-flight spinner as
+emit-only transient state on the reasoning that a consult blocks the primary
+turn ("no assistant content streams for the duration"), which this doc's guidance
+made false: the in-flight state now routinely outlives its turn and every session
+switch the user makes.
+
+In the field that produced a 15-minute Codex review that left **no trace at all**
+— the switch wiped the spinner, the user read the session as stuck and hit
+Restart agent, and the force-dispose killed the spawn without landing any card,
+so `shipit agent result` was empty too. Fixed in `docs/144` §7a: the consult card
+is created `pending` at spawn time and patched to terminal on completion, in-flight
+spawns are cancelled at `dispose` with a terminal card, and the transport is
+bounded. That section, not this one, is the reference.
+
 ## Deliberate non-changes
 
-- **No UI change.** The card already renders the verbatim output; the parity
-  guarantee is server-side. A run-id chip on the card would be noise for the
-  common single-consult case.
+- **No UI change** *(superseded by SHI-278 — see above; the card is now created
+  at spawn time and renders a pending state)*. The card already renders the
+  verbatim output; the parity guarantee is server-side. A run-id chip on the card
+  would be noise for the common single-consult case.
 - **A killed shim does not cancel the spawn.** Cancelling would throw away a
   long, expensive consult to avoid a card the caller didn't see; making the
   result *recoverable* is strictly better. (Marking a card "not delivered to the

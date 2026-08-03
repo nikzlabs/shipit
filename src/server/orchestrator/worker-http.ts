@@ -83,6 +83,14 @@ export interface WorkerHttpOpts {
    * doesn't make the orchestrator hang on aggregation requests.
    */
   timeoutMs?: number;
+  /**
+   * SHI-278 — abort an in-flight request from outside. Used by
+   * `ContainerSessionRunner.dispose` to cancel a long-lived sub-agent spawn
+   * whose container is about to be destroyed, so the awaiting caller learns the
+   * run is over (and can land a terminal card) instead of hanging on a socket
+   * nobody will ever answer. Rejects with {@link WorkerAbortedError}.
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -98,6 +106,22 @@ export class WorkerTimeoutError extends Error {
     this.name = "WorkerTimeoutError";
     this.path = path;
     this.timeoutMs = timeoutMs;
+  }
+}
+
+/**
+ * SHI-278 — thrown when a worker request was aborted via {@link WorkerHttpOpts.signal}.
+ * Distinguishable from a timeout or a generic transport error so the caller can
+ * report "cancelled" rather than "failed".
+ */
+export class WorkerAbortedError extends Error {
+  readonly path: string;
+  readonly reason: string | undefined;
+  constructor(path: string, reason?: string) {
+    super(reason ? `Worker request aborted: ${path} (${reason})` : `Worker request aborted: ${path}`);
+    this.name = "WorkerAbortedError";
+    this.path = path;
+    this.reason = reason;
   }
 }
 
@@ -168,6 +192,19 @@ export async function workerPost(baseUrl: string, path: string, body?: unknown, 
       req.on("timeout", () => {
         req.destroy(new WorkerTimeoutError(path, timeoutMs));
       });
+    }
+
+    const signal = opts?.signal;
+    if (signal) {
+      const abortReason = () =>
+        typeof signal.reason === "string" ? signal.reason : undefined;
+      if (signal.aborted) {
+        req.destroy(new WorkerAbortedError(path, abortReason()));
+      } else {
+        const onAbort = () => req.destroy(new WorkerAbortedError(path, abortReason()));
+        signal.addEventListener("abort", onAbort, { once: true });
+        req.on("close", () => signal.removeEventListener("abort", onAbort));
+      }
     }
 
     req.on("error", reject);

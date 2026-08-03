@@ -1,11 +1,13 @@
 import { describe, it, expect, afterEach } from "vitest";
 import http from "node:http";
+import type { Socket } from "node:net";
 import {
   workerGet,
   workerPost,
   workerPut,
   PLACEHOLDER_WORKER_URL,
   WorkerUnavailableError,
+  WorkerAbortedError,
 } from "./worker-http.js";
 
 /**
@@ -122,5 +124,68 @@ describe("placeholder worker URL is never dialed", () => {
   it("carries the recorded cause when one is supplied", () => {
     const err = new WorkerUnavailableError("/agent/start", "no space left on device");
     expect(err.message).toContain("no space left on device");
+  });
+});
+
+/**
+ * SHI-278 — the abort channel that lets `ContainerSessionRunner.dispose` cancel
+ * a long-lived `/agent/spawn` whose container is about to be destroyed. Without
+ * it a torn-down consult leaves the caller pending on a socket nobody answers.
+ */
+describe("workerPost — abort signal", () => {
+  let close: (() => Promise<void>) | undefined;
+  afterEach(async () => {
+    if (close) await close();
+    close = undefined;
+  });
+
+  /** A worker that accepts the request and never answers — the wedged case. */
+  async function startSilentWorker(): Promise<{ baseUrl: string; close: () => Promise<void> }> {
+    const sockets: Socket[] = [];
+    const server = http.createServer(() => { /* never respond */ });
+    server.on("connection", (s) => sockets.push(s));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const addr = server.address();
+    if (typeof addr === "string" || !addr) throw new Error("no server address");
+    return {
+      baseUrl: `http://127.0.0.1:${addr.port}`,
+      close: () => new Promise<void>((resolve) => {
+        for (const s of sockets) s.destroy();
+        server.close(() => resolve());
+      }),
+    };
+  }
+
+  it("rejects with WorkerAbortedError when the signal fires mid-request", async () => {
+    const worker = await startSilentWorker();
+    close = worker.close;
+    const controller = new AbortController();
+    const p = workerPost(worker.baseUrl, "/agent/spawn", { a: 1 }, {
+      timeoutMs: 0,
+      signal: controller.signal,
+    });
+    setTimeout(() => controller.abort("runner disposed"), 20);
+    await expect(p).rejects.toBeInstanceOf(WorkerAbortedError);
+    await expect(p).rejects.toThrow(/runner disposed/);
+  });
+
+  it("rejects immediately when the signal is already aborted", async () => {
+    const worker = await startSilentWorker();
+    close = worker.close;
+    await expect(
+      workerPost(worker.baseUrl, "/agent/spawn", { a: 1 }, {
+        timeoutMs: 0,
+        signal: AbortSignal.abort("already gone"),
+      }),
+    ).rejects.toBeInstanceOf(WorkerAbortedError);
+  });
+
+  it("leaves an un-aborted request alone", async () => {
+    const worker = await startWorker(200, JSON.stringify({ ok: true }));
+    close = worker.close;
+    const controller = new AbortController();
+    await expect(
+      workerPost(worker.baseUrl, "/x", { a: 1 }, { signal: controller.signal }),
+    ).resolves.toEqual({ ok: true });
   });
 });

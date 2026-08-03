@@ -44,6 +44,40 @@
       everywhere (docs, shim help, code comments, the in-flight spinner) — the
       cap was raised 5 → 30 min because real consults overran it
 
+## Post-v0 — durable in-flight consult (SHI-278, plan.md §7a)
+
+The incident: a backgrounded Codex review ran ~15 min with no durable in-flight
+surface; a session switch wiped the transient chip, the user hit **Restart
+agent**, and the consult vanished — no card, no `shipit agent result`, no logs.
+
+- [x] `[sub-agent]` logging across the whole path — `runSubAgent` entry, EVERY
+      rejection gate (with a stable `reason=` token), account-exhaustion
+      fallback, credential provision + wipe, terminal (status/duration/cost/
+      output size/emitted/persisted), the catch, and cancellation with who
+      cancelled. Worker side (`/agent/spawn`, `cancelAllSpawns`) too. Ids and
+      sizes only — never prompt or output text.
+- [x] `SubAgentConsultCard.status` gains `"pending"`; the card is emitted via
+      `emitChatCard` at SPAWN time and patched to terminal on completion
+- [x] `ChatHistoryManager.updateSubAgentConsultCard` — the finalized-row patch
+      (`persistCardTransition`'s `patchDb` half), which is the COMMON path now
+      that docs/236 makes backgrounding the recommended shape
+- [x] Terminal card lands through a runner **re-resolved from the registry**, so
+      a disposed runner can neither swallow the live emit nor clobber the rows
+- [x] `ContainerSessionRunner.dispose` aborts in-flight spawns (`_subAgentAborts`
+      + `WorkerHttpOpts.signal`), so restart/destroy yields a `cancelled` card —
+      one chokepoint instead of patching `restartAgent`/`restartContainer`/Rescue
+- [x] A NON-forced dispose (idle cleanup, WS lifecycle) now defers while a spawn
+      is in flight, same as it already did for a running agent — a backgrounded
+      consult outlives its turn, so `running: false` alone would have reaped a
+      healthy 30-minute review
+- [x] `SUB_AGENT_TRANSPORT_TIMEOUT_MS` replaces `{ timeoutMs: 0 }` on the
+      orchestrator→worker leg; a half-open socket now yields a `timeout` card
+      instead of a promise that never settles. Worker cap stays authoritative.
+- [x] Client: card patched in place by `cardId` (one row, not two); pending row
+      renders a spinner; the transient chip is suppressed once a card exists
+- [x] Tests: post-turn-finalize persistence, dispose-while-in-flight →
+      cancelled card, transport bound + abort wiring, pending → terminal patch
+
 ## Deferred / follow-up
 
 - [ ] Ground consult duration in real data rather than a characterisation: the

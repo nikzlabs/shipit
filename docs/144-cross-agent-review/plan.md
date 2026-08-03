@@ -11,6 +11,12 @@ issue: https://linear.app/shipit-ai/issue/SHI-37
 > consult that finished while the browser was away therefore leaves only its
 > persisted, correctly interleaved terminal card; one still running restores
 > the chip against the current transcript instead of retaining a stale footer.
+>
+> **SHI-278 supersedes the chip as the in-flight surface.** The consult card is
+> now created `pending` at spawn time and patched to its terminal status on
+> completion, so an in-flight consult is durable — it survives a session switch,
+> a reload, and a container restart. See §7a; the chip remains only as live
+> activity in the moments before the card exists.
 
 ## Summary
 
@@ -490,9 +496,11 @@ draws:
   while the `shipit agent` call is in flight. Emit-only (`sub_agent_spawn` WS +
   the `subAgentSpawns` store), correctly disappears on reload — it is live
   activity, not transcript content. Cleared when the terminal card lands.
+  **Superseded as the in-flight surface by §7a (SHI-278)** — it is now shown only
+  in the brief window before the durable pending card exists.
 - **The "Consulted Codex · 47s" card (persisted transcript content).** The
-  terminal record of a completed spawn IS transcript content — the user expects
-  it to stay *where the consultation happened* and survive a session switch and
+  record of a spawn IS transcript content — the user expects it to stay
+  *where the consultation happened* and survive a session switch and
   a full reload (the previous emit-only chip floated to the bottom and vanished
   on switch — the recurring ephemeral-card bug class). So it follows CLAUDE.md's
   side-channel-card contract: emitted via `emitChatCard` (live WS
@@ -508,18 +516,81 @@ draws:
   inside the existing `sub_agent_consult` JSON blob — no migration). The row shows
   a stripped-down preview and opens the full markdown in a read-only viewer, so a
   brokered consult is *visible*, not just attested — ShipIt renders what it
-  brokers. **Why anchored-inline works live:**
-  in the foreground case the primary is blocked on the `shipit agent` Bash call,
-  so no assistant content streams for the duration — appending the card at the
-  current end of the transcript lands it right after the triggering tool call,
-  and the persisted `afterGroupIndex` keeps it there on reload. A
-  **backgrounded** run (now the recommended shape for a long consult — see §3's
-  survives-the-caller contract) breaks that quiet window: the primary keeps
-  working while the spawn is in flight, so the card anchors after whatever group
-  was current when the consult *finished*, not at the call site. It stays in the
-  transcript and its position is stable across reloads; it is just less precisely
-  placed. Not worth anchoring off the spawn's own start index today — the drift
-  is cosmetic — but noted so the next reader doesn't rediscover it as a bug.
+  brokers.
+
+#### 7a. The card is created at SPAWN time, not at completion (SHI-278)
+
+The two bullets above described the state before SHI-278, when the card existed
+only once the run finished. That was defensible while a consult *blocked* the
+primary turn: the user watched a spinner for the duration and the card landed a
+moment later. docs/236 broke the assumption by making **backgrounding the
+recommended shape** for any long consult, and the failure showed up in the field:
+
+> A user asked for a Codex review, the agent backgrounded it, and for the whole
+> 15 minutes the only in-flight signal was the transient `sub_agent_spawn` chip.
+> The first session switch wiped it. The session looked stuck, so they hit
+> **Restart agent** — which force-disposed the runner and destroyed the
+> container out from under the still-pending `/agent/spawn` request. No terminal
+> card was ever emitted, nothing was persisted, and `shipit agent result` was
+> empty. Fifteen minutes of review work left no trace anywhere.
+
+So the card now spans the whole lifecycle:
+
+- **At spawn**, `runSubAgent` emits a `status: "pending"` card through
+  `emitChatCard` — same contract, same anchoring, just earlier. This is the
+  durable in-flight surface: it survives a session switch, a full reload, and a
+  container restart.
+- **At completion**, the SAME `cardId` is re-emitted with its terminal status and
+  the row is patched, via `persistCardTransition`. The client patches its message
+  in place, so one consult is one transcript row that transitions — never two.
+- **The transient chip stays**, but only as belt-and-braces live activity:
+  `MessageList` hides it once a card exists for that `spawnId`, so the two never
+  render two spinners for one consult.
+
+Two hazards this navigates, both from the incident:
+
+- **The runner may be gone by completion.** Emitting through a disposed runner
+  drops the live card (no attached viewers) *and* `persistTurnInProgress` would
+  rebuild `in_progress=1` rows from its stale turn state, which the next turn
+  then clobbers — the "no live card AND no persisted card" outcome. So the runner
+  is **re-resolved from the registry** at completion time.
+- **The originating turn is usually already finalized.** `persistCardTransition`
+  splits on exactly that: patch the recorded card while the turn still holds it,
+  else patch the finalized DB row (`ChatHistoryManager.updateSubAgentConsultCard`).
+  A post-finalize `persistTurnInProgress` would revive the finished turn as a
+  duplicate in-progress row.
+
+This also **fixes the positional drift** the previous text called cosmetic: the
+anchor is now taken when the consult is *issued*, so a backgrounded run's card
+sits at the call site rather than wherever the transcript happened to be when it
+finished.
+
+**Cancellation and the transport bound.** `restartAgent` / `restartContainer`
+kill the *primary* agent on the worker and then force-dispose the runner; nothing
+on that path used to notice an in-flight spawn. `ContainerSessionRunner.dispose`
+— the chokepoint every force-teardown funnels through — now aborts each in-flight
+`/agent/spawn` request (`_subAgentAborts`, mirroring the local runner's
+`_subAgentHandles`), so `runSubAgent` lands a **cancelled** card instead of
+hanging or failing silently. And the request itself is no longer `{ timeoutMs: 0 }`:
+`SUB_AGENT_TRANSPORT_TIMEOUT_MS` (the worker's own wall-clock cap plus a margin)
+is a backstop for a half-open socket or a destroyed container, producing a
+**timeout** card rather than a promise that never settles. The worker's cap stays
+authoritative.
+
+The same `dispose` also grew the mirror-image guard: a **non-forced** dispose
+(idle cleanup, a WS lifecycle event) now *defers* while a spawn is in flight,
+exactly as it already did for a running agent. Without it, a backgrounded consult
+— whose primary turn has ended, so `running` is false — was reapable by routine
+idle cleanup. An explicit teardown (`{ force: true }`) still proceeds and cancels.
+
+**Observability.** The whole path — `runSubAgent`, every one of its rejection
+gates, the account-exhaustion fallback, the credential provision/wipe,
+`ContainerSessionRunner.spawnSubAgent`, and the worker's `/agent/spawn` — was
+*completely unlogged*, so the incident had to be reconstructed from a git commit
+message. Every stage now logs under a `[sub-agent]` prefix (ids and sizes only,
+never prompt or output text), matching the `[spawn-child]` / `[turn]` /
+`[steer-send]` house style of the paths next to it. A silent 403/409 was the
+worst case: "codex just didn't run", with nothing in the logs to say why.
 
 **Both surfaces are session-scoped, and the client enforces that centrally.**
 The browser holds exactly one transcript in memory (the active session's
