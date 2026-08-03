@@ -1928,11 +1928,14 @@ Planned authentication-surface consolidation:
 
 ## Open questions
 
-- **Claude account identity:** investigate whether `auth.ts` exposes a
-  Claude-side equivalent of the Codex `chatgpt_account_id` claim, and whether
-  the Claude OAuth profile endpoint already returns a stable user id. If
-  neither does, fall back to OAuth-flow-time `email` plus a stored
-  `account_label` for de-duplication.
+- ~~Claude account identity~~: **closed 2026-08-03.** There is no Claude-side
+  equivalent in `.credentials.json` — its `claudeAiOauth` object carries
+  `subscriptionType` and `rateLimitTier`, which are *plan* fields (they draw the
+  "Max 20x" label via `extractPlanLabel`) and cannot tell two accounts on the
+  same plan apart. The identity lives in the CLI's *other* file: `.claude.json`'s
+  `oauthAccount`, with `emailAddress` and `accountUuid`. ShipIt already preserves
+  that file across reprovisioning without reading it. Became req 22; design
+  below.
 - ~~Codex account identity~~: **closed.** `src/server/orchestrator/codex-auth.ts`
   already decodes the `https://api.openai.com/auth` claim out of the
   ChatGPT-issued JWT and exposes `chatgpt_account_id` and `chatgpt_plan_type`
@@ -1941,9 +1944,10 @@ Planned authentication-surface consolidation:
   from existing credentials with no extra endpoint.
 - ~~Provider terms / default posture~~: **closed.** Req 15 — automatic failover
   is on by default for every provider.
-- **Concurrent turns on one account:** decide whether ShipIt should avoid routing
-  multiple simultaneous heavy turns to the same provider account when another
-  account has more remaining quota.
+- ~~Concurrent turns on one account~~: **closed 2026-08-03.** Not decided as a
+  fixed behavior — it became a per-provider user setting (req 21), because the
+  right answer depends on whether the user's accounts are unequal (an ordered
+  list already says so) or peers (an ordered list cannot say so). Design below.
 - **Warm pool timing:** confirm account selection happens before credential
   provisioning for every runner path, including claimed warm sessions.
 - ~~Child-session inheritance policy~~: **closed.** Req 18 — spawned sessions run
@@ -2618,3 +2622,64 @@ through the existing `agent_result` error path. The req-14 same-turn retry does
 not fire, because `detectHardExhaustion` matches quota language only — verified,
 not assumed: none of its patterns match a model-unavailable message. So "no
 automatic recovery" holds by construction rather than by a new guard.
+
+### Designed, not built: account identity and selection mode (reqs 21, 22)
+
+Both trace to the two Phase 0 questions that stayed open through every phase
+below. They are recorded here as design; the work is Phase 6 in `checklist.md`.
+
+**Account identity (req 22).** Codex identity was never the problem —
+`chatgpt_account_id` is already decoded out of the `id_token` claim for plan
+extraction. Claude's is in a place the design had not looked. `.credentials.json`
+carries `claudeAiOauth.subscriptionType` / `rateLimitTier`, which are plan
+fields: `extractPlanLabel` turns them into "Max 20x", and two different Anthropic
+accounts on the same plan produce byte-identical values. The identity is in the
+CLI's other file, `.claude.json` → `oauthAccount` (`emailAddress`,
+`accountUuid`). `session-credentials.ts` already preserves that file across
+reprovisioning, so nothing new has to be kept alive for it — only read.
+
+`accountUuid` is the stored key and `emailAddress` is what the user sees, because
+an email can change while the row should not lose its identity. Both are read
+defensively: an absent `oauthAccount` (older CLI, env-only auth) degrades to
+today's generated `Claude account N` label rather than failing the connect. The
+external id is what makes the duplicate check possible at all — today two rows
+can be the same account, sharing one quota pool, which turns req 3's failover
+into a no-op that burns a retry and surfaces a confusing error.
+
+**Selection mode (req 21).** The scope here is much smaller than "concurrent
+turn scheduling" suggests, because of two properties verified in code rather
+than assumed:
+
+- Turns are **serialized per session** — `turn-executor.ts` guards on
+  `runner.running` and queues the rest. A session never has two turns in flight.
+- A session **pins its route on the first turn** and reuses it
+  (`session-agent-env.ts:349`), re-checking only whether the pinned account is
+  still usable.
+
+Together those mean "concurrent turns" is always "turns in different sessions",
+and the only decision the mode changes is **which account a session pins at pin
+time**. So the branch is one function — `strict` keeps today's first-eligible
+walk, `balanced` takes the least-recently-used eligible account via the
+`lastUsedAt` field that already exists. No new runtime state, and every
+downstream path (exhaustion, retry exclusion, cutoff re-check, mid-turn failover)
+is shared between the modes.
+
+Two consequences worth stating, because both are places a reader would expect
+extra mechanism:
+
+- **Req 11 is not engaged.** A new session pinning account 2 under `balanced` is
+  an *initial pin*, not a switch, so there is nothing to announce. Balancing
+  per-*turn* instead of per-*session* would have engaged it, and would have
+  narrated an account change on essentially every turn.
+- **An in-flight-turn counter was considered and dropped.** The argument for one
+  was that polled quota lets several turns be admitted against a stale snapshot
+  and collectively overshoot a cutoff. But the per-turn re-check of a pinned
+  account already bounds that overshoot and corrects it at the next turn
+  boundary, and the cutoff is deliberately a preference rather than a wall. The
+  counter would have been the only piece here needing correct decrement on every
+  terminal path including crashes — cost with no behavior behind it.
+
+**What is still open.** What happens when a completed connect resolves to an
+already-connected external id — adopt onto the existing row, refuse, or warn and
+allow — is a user decision, recorded under `## Open questions` in
+`requirements.md`. Req 22 fixes only that a duplicate is not created *silently*.
