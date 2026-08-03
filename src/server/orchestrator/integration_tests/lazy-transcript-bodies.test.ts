@@ -264,6 +264,38 @@ describe("Integration: lazy transcript bodies (SHI-267)", () => {
     expect((await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/tool-results/bash-1` })).statusCode).toBe(404);
   });
 
+  it("serves a tool-result image whose block omits source.type", async () => {
+    // The projection substitutes any image block carrying `source.data`, so the
+    // lookup has to recognise the same set. It used to pre-filter on the
+    // literal text "base64" — which this shape does not contain — so the
+    // projection handed the client an /images/ URL that then 404'd forever.
+    // MCP image results in the wild take this shape (see ToolResult.test.tsx).
+    const png = Buffer.from("nested-png-bytes").toString("base64");
+    history.append(sessionId, {
+      role: "assistant",
+      text: "shot",
+      toolUse: [{ type: "tool_use", id: "shot-1", name: "mcp__playwright__browser_take_screenshot", input: {} }],
+      toolResults: [{
+        toolUseId: "shot-1",
+        content: JSON.stringify([
+          { type: "text", text: "captured" },
+          { type: "image", source: { data: png, media_type: "image/png" } },
+        ]),
+      }],
+    });
+
+    // The URL the client is actually handed, taken from the served transcript
+    // rather than reconstructed — so this fails if the two ever disagree.
+    const { messages } = await loadHistory();
+    const served = messages.at(-1)!.toolResults!.find((r) => r.toolUseId === "shot-1")!;
+    const url = (JSON.parse(served.content) as { source?: { shipit_url?: string } }[])
+      .find((b) => b.source?.shipit_url)!.source!.shipit_url!;
+
+    const res = await app.inject({ method: "GET", url });
+    expect(res.statusCode).toBe(200);
+    expect(res.rawPayload.toString("base64")).toBe(png);
+  });
+
   it("does not 304 an image that doesn't exist", async () => {
     // A conditional request carries the client's own ETag, so matching on it
     // alone answers "not modified" for anything — including a hash the session

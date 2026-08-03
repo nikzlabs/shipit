@@ -65,26 +65,33 @@ describe("handleAgentEvent — card carrier message is never a merge target (SHI
 describe("the 1 MB client cap is fetchable, not a dead end (docs/244)", () => {
   /**
    * The cap is a backstop for the classes the serve-path projection leaves
-   * inline — a subagent's exempt final report, and nested subagent results
-   * before their row is committed. It used to clip the body and say nothing:
-   * no `truncated`, no line count, so `ToolResult` rendered a silently
-   * shortened body with no expand affordance and no way to recover the rest.
+   * inline, and what it does depends on whether the clipped body can be got
+   * back. Three cases, and getting any of them wrong is a visible bug:
    *
-   * The full body is in the persisted row regardless, so the cap's job is to
-   * hand the expand path the same markers the server would have set.
+   *   - a subagent FINAL REPORT is never capped (nothing renders an expand
+   *     affordance for it, so clipping it destroys it);
+   *   - a NESTED result is capped but not marked (its row isn't committed yet,
+   *     so a fetch marker would promise a 404);
+   *   - an ordinary result is capped AND marked, and the fetch resolves.
    */
-  const resultEvent = (content: string): WsAgentEvent => ({
+  const resultEvent = (content: string, opts: { id?: string; parent?: string } = {}): WsAgentEvent => ({
     type: "agent_event",
     event: {
       type: "agent_tool_result",
-      content: [{ type: "tool_result", tool_use_id: "tu-big", content }],
+      ...(opts.parent ? { parentToolUseId: opts.parent } : {}),
+      content: [{ type: "tool_result", tool_use_id: opts.id ?? "tu-big", content }],
     },
   } as unknown as WsAgentEvent);
 
+  const line = "x".repeat(49);
+  const overCap = Array.from({ length: 30_000 }, () => line).join("\n");
+
   // Results attach to the trailing assistant message, so the calling tool_use
   // has to already be on screen — same order the real event stream produces.
+  // `tu-big` is a Bash call: an ORDINARY result, which is the capped-and-marked
+  // case. The subagent cases seed their own tool_use.
   beforeEach(() => {
-    handleAgentEvent(ctx, assistantEvent("", [{ id: "tu-big", name: "Task", input: { prompt: "audit" } }]));
+    handleAgentEvent(ctx, assistantEvent("", [{ id: "tu-big", name: "Bash", input: { command: "ls" } }]));
   });
 
   const resultFor = (id: string) =>
@@ -92,10 +99,9 @@ describe("the 1 MB client cap is fetchable, not a dead end (docs/244)", () => {
       .flatMap((m) => m.toolResults ?? [])
       .find((r) => r.toolUseId === id);
 
-  it("marks a capped body truncated and reports the TRUE line count", () => {
+  it("marks a capped ordinary body truncated and reports the TRUE line count", () => {
     // 1.5 M chars across 30k lines — over the cap either way you measure it.
-    const line = "x".repeat(49);
-    const huge = Array.from({ length: 30_000 }, () => line).join("\n");
+    const huge = overCap;
     expect(huge.length).toBeGreaterThan(CLIENT_CONTENT_CAP);
 
     handleAgentEvent(ctx, resultEvent(huge));
@@ -155,5 +161,54 @@ describe("the 1 MB client cap is fetchable, not a dead end (docs/244)", () => {
     expect(result.truncated).toBe(true);
     expect(result.totalLines).toBe(4_242);
     expect(result.totalBytes).toBe(999_999);
+  });
+});
+
+describe("what the cap must NOT do (docs/244 round-3)", () => {
+  const line = "x".repeat(49);
+  const overCap = Array.from({ length: 30_000 }, () => line).join("\n");
+
+  const resultFor = (id: string) =>
+    useSessionStore.getState().messages
+      .flatMap((m) => [...(m.toolResults ?? []), ...(m.subagentEvents ?? []).flatMap((e) => e.kind === "tool_result" ? e.toolResults : [])])
+      .find((r) => r.toolUseId === id);
+
+  const resultEvent = (id: string, content: string, parent?: string): WsAgentEvent => ({
+    type: "agent_event",
+    event: {
+      type: "agent_tool_result",
+      ...(parent ? { parentToolUseId: parent } : {}),
+      content: [{ type: "tool_result", tool_use_id: id, content }],
+    },
+  } as unknown as WsAgentEvent);
+
+  for (const parentTool of ["Task", "Skill", "Agent"]) {
+    it(`never caps a ${parentTool} final report, however big`, () => {
+      // `SubagentCall` renders the final report whole, as markdown, with no
+      // expand affordance and no fetch. The server exempts it from slicing for
+      // exactly that reason — so capping it here would re-truncate the one body
+      // the exemption exists to protect, permanently and invisibly.
+      handleAgentEvent(ctx, assistantEvent("", [{ id: "tu-task", name: parentTool, input: { prompt: "audit" } }]));
+      handleAgentEvent(ctx, resultEvent("tu-task", overCap));
+
+      const result = resultFor("tu-task")!;
+      expect(result.content).toBe(overCap);
+      expect(result.content.length).toBeGreaterThan(CLIENT_CONTENT_CAP);
+      expect(result.truncated).toBeUndefined();
+    });
+  }
+
+  it("caps a nested subagent result but does not advertise a fetch for it", () => {
+    // A nested result takes the `parentToolUseId` branch server-side, which
+    // returns before `replaceInProgress` — so its row does not exist yet and
+    // `/tool-results/:id` would 404. Clipping is acceptable (memory bound);
+    // claiming the rest is one click away is not.
+    handleAgentEvent(ctx, assistantEvent("", [{ id: "tu-task", name: "Task", input: { prompt: "go" } }]));
+    handleAgentEvent(ctx, resultEvent("tu-nested", overCap, "tu-task"));
+
+    const result = resultFor("tu-nested")!;
+    expect(result.content.length).toBeLessThanOrEqual(CLIENT_CONTENT_CAP);
+    expect(result.truncated).toBeUndefined();
+    expect(result.totalLines).toBeUndefined();
   });
 });

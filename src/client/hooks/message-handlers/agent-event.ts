@@ -1,7 +1,7 @@
 import type { WsAgentEvent, AgentContentBlock } from "../../../server/shared/types.js";
 import type { ChatMessage, ToolResultBlock } from "../../components/MessageList.js";
 import { activityFromTool } from "../../components/StreamingIndicator.js";
-import { CARD_MESSAGE_FIELDS } from "../../components/visual-elements.js";
+import { CARD_MESSAGE_FIELDS, SUBAGENT_TOOLS } from "../../components/visual-elements.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import type { Handler } from "./types.js";
@@ -25,6 +25,20 @@ function safeCutAt(text: string, max: number): number {
   const code = text.charCodeAt(max - 1);
   // High surrogate at the boundary means its pair starts here — drop it.
   return code >= 0xd800 && code <= 0xdbff ? max - 1 : max;
+}
+
+/**
+ * Name of the tool that produced `toolUseId`, searched over the transcript the
+ * result is about to be attached to. Needed to tell a subagent's final report
+ * (never capped) from an ordinary result, since the tool_result block itself
+ * carries only the id.
+ */
+function toolNameForResult(messages: ChatMessage[], toolUseId: string): string | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const found = messages[i].toolUse?.find((t) => t.id === toolUseId);
+    if (found) return found.name;
+  }
+  return undefined;
 }
 
 export const handleAgentEvent: Handler<WsAgentEvent> = (_ctx, data) => {
@@ -150,22 +164,34 @@ export const handleAgentEvent: Handler<WsAgentEvent> = (_ctx, data) => {
           content = JSON.stringify(rawContent);
         }
         // Backstop only. Since docs/244 the orchestrator already slices heavy
-        // results before emitting, so this fires for the classes the projection
-        // leaves inline: a subagent's final report (exempt, so it is never
-        // sliced) and nested subagent results (held back until their row is
-        // committed).
+        // results before emitting, so this fires only for the classes the
+        // projection leaves inline — and what to do differs per class, because
+        // clipping is only acceptable when the body can be got back.
         //
-        // When it does fire it must set the same markers the server projection
-        // sets. Clipping without them was silent data loss — the body was cut,
-        // nothing on screen said so, and there was no affordance to get the rest
-        // back. The full body is in the persisted row either way, so handing the
-        // expand path a `truncated` flag turns a dead-end truncation into a
-        // fetchable one.
+        //   - A subagent FINAL REPORT is exempt server-side precisely because
+        //     `SubagentCall` renders it whole with no expand affordance and no
+        //     fetch. Capping it here would re-truncate, permanently, the one
+        //     body the whole exemption exists to protect — so it is not capped
+        //     at all. That is a deliberate unbounded case: the alternative is
+        //     silently destroying the report.
+        //   - A NESTED result is capped, but NOT marked `truncated`. Its row is
+        //     not committed until the next top-level boundary, so a fetch
+        //     marker here would promise a body the endpoint would 404 on.
+        //   - Everything else is capped AND marked, because a top-level result
+        //     is committed in the same tick as its emit, so the fetch resolves.
+        //
+        // Marking without fetchability and clipping without marking are both
+        // wrong; which of the two a result gets depends on where its row is.
+        const toolName = toolNameForResult(session.messages, block.tool_use_id as string);
+        const isFinalReport = !!toolName && SUBAGENT_TOOLS.has(toolName);
+        const isNested = typeof (event as { parentToolUseId?: string }).parentToolUseId === "string";
+
         let capped: { totalLines: number } | undefined;
-        if (content.length > CLIENT_CONTENT_CAP) {
+        if (!isFinalReport && content.length > CLIENT_CONTENT_CAP) {
           capped = { totalLines: content.split("\n").length };
           content = content.slice(0, safeCutAt(content, CLIENT_CONTENT_CAP));
         }
+        const cappedAndFetchable = capped && !isNested;
         results.push({
           toolUseId: block.tool_use_id as string,
           content,
@@ -176,11 +202,11 @@ export const handleAgentEvent: Handler<WsAgentEvent> = (_ctx, data) => {
           // docs/244 — the orchestrator sliced this body; carry the markers so
           // the "Show all N lines" label is honest and expanding fetches the
           // tail from the persisted row.
-          ...(block.shipit_truncated === true || capped ? { truncated: true as const } : {}),
+          ...(block.shipit_truncated === true || cappedAndFetchable ? { truncated: true as const } : {}),
           ...(typeof block.shipit_total_lines === "number"
             ? { totalLines: block.shipit_total_lines }
-            : capped
-              ? { totalLines: capped.totalLines }
+            : cappedAndFetchable
+              ? { totalLines: capped!.totalLines }
               : {}),
           // Only the server sets `totalBytes` — it measures UTF-8 bytes, and the
           // client cap counts UTF-16 units, so filling it in here would report a

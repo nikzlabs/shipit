@@ -34,6 +34,14 @@ visible without a click*. There is no byte target to tune against.
 
 ## What the UI actually draws
 
+> **The `tool_results` row of this table is out of date.** It described the UI
+> as it was when this design was written. The transcript no longer previews tool
+> output at all — it draws a one-line summary from the tool's *input*, and the
+> output moved into the click-opened modal. The issue's original premise
+> ("not directly displayed… they sit behind a click") turns out to be *more*
+> true than this analysis concluded. See *Requirement 1 is not met* below; the
+> rest of the table still holds.
+
 The issue's premise is that the heavy columns "are not directly displayed in the
 conversation UI — they sit behind a click". Checked against the render paths,
 that is broadly right — but each column draws a small *derived* artifact inline,
@@ -41,7 +49,7 @@ and it is that artifact, not raw metadata, that has to stay on the wire.
 
 | Column | What renders inline | What's behind a click |
 |---|---|---|
-| `tool_results` | First 15–30 lines (`ToolResult.tsx`: Bash 30, Read 20, Grep 20, generic 15) + a "Show all N lines" button | The tail |
+| `tool_results` | ~~First 15–30 lines + a "Show all N lines" button~~ — **nothing**; see the note above | The whole body, in the modal |
 | `tool_use` (Write/Edit) | One line: verb, path, `+40 -12` (`DiffBlock.tsx:66–92`) | The whole diff body, in a modal |
 | `images` (user rows) | A 96×96 thumbnail (`w-24 h-24 object-cover`, `message-media.tsx:53`) | Full-size preview |
 | `subagent_events` | A `Disclosure` — "Subagent's work (N actions)" — open by default, containing ordinary tool calls | Per-step detail, via the same components |
@@ -123,12 +131,24 @@ common (small) case stays absent from the JSON.
 **Slice size: the first 40 lines, hard-capped at 16 KB** — whichever comes
 first.
 
-The line cap does the real work, and 40 is derived rather than picked: the
-largest inline preview is Bash at 30 lines (`ToolResult.tsx:11–14`), so 40
-covers every render path with headroom. A pure byte cap was the first proposal
+> **The justification below no longer holds. 40 is now a provisional bound, not
+> a derived one.** It was derived from the transcript's inline previews — but
+> the transcript no longer has any. `<ToolResult>` is rendered in exactly one
+> production place, `message-tools.tsx:500`, which is *inside the click-opened
+> modal*; the transcript itself draws a one-line summary built only from the
+> tool's **input** (`command` truncated to 80 chars, `file_path`, `pattern`,
+> `query`, `url`) plus a hover "Show output" button. No tool output is visible
+> without a click. That means the 40 lines this ships are 40 lines nobody can
+> see, which is precisely what req 1 forbids — see *Requirement 1 is not met*
+> below. The number is retained as-is for now because changing it is a
+> redesign, not a tuning exercise.
+
+The line cap does the real work, and 40 was derived rather than picked: the
+largest inline preview was Bash at 30 lines (`ToolResult.tsx:11–14`), so 40
+covered every render path with headroom. A pure byte cap was the first proposal
 and is worse: at 16 KB it transfers roughly eight times what is drawn, and a
 page of 50 results still moves ~800 KB — which is exactly the outcome req 1
-rules out. Deriving the cap from what the UI draws is what makes it principled.
+rules out.
 
 The byte cap is a backstop for the case a line cap cannot bound: one
 pathological line (minified JSON, a base64 blob) can be megabytes on its own.
@@ -140,7 +160,42 @@ button already there is the recovery path.
 
 `SLICE_LINES` lives in shared code with a guard test asserting it is ≥ every
 `*_MAX_LINES` in `ToolResult.tsx`, so a future render path that shows more
-lines fails the build rather than silently rendering a short preview.
+lines fails the build rather than silently rendering a short preview. That guard
+is still meaningful, but its subject moved: those previews now render inside the
+output modal rather than in the transcript.
+
+## Requirement 1 is not met, and why that is recorded rather than fixed here
+
+Req 1 is the completion criterion: *do not transfer information that is not
+visible without a click.* As built, this feature ships the first 40 lines of
+every ordinary tool result, and — since the UI change described above — **none
+of those lines is visible until the user opens the modal.** So the feature
+reduces the payload substantially while still failing its own headline
+requirement.
+
+The four things that *do* render result content without a click are exactly the
+consumers req 4 names:
+
+| What | Renders | Size |
+|---|---|---|
+| Subagent final report (`SubagentCall.tsx:132`) | full markdown, no expand affordance | can be large — already exempt |
+| `AskUserQuestion` (`message-tools.tsx:137`) | the chosen answer, from result content | short |
+| Present (`message-tools.tsx:171`) | `presentId` parsed from result content | short |
+| `ExitPlanMode` (`message-tools.tsx:162`) | existence only, never content | none |
+
+So the correct shape is: carry **no** result content for anything outside that
+list — only the metadata req 3 requires — and fetch the body when the modal
+opens, exactly as `DiffBlock` already fetches when *its* modal opens. That
+also retires the 16 KB byte backstop and the derived-slice guard for ordinary
+results, since there would be no inline preview left to bound, and it needs the
+fetch endpoint to substitute image URLs so the modal fetch does not simply
+become the new heavy payload.
+
+That is a redesign of the projection rather than a tuning change, and it landed
+as a finding on an already long-lived branch, so it is deliberately **deferred
+to a follow-up** and tracked in `checklist.md`. What ships here is a large byte
+reduction with an honestly-documented requirement gap, not a claim that req 1 is
+satisfied.
 
 The cut lands on a UTF-8 character boundary so a preview never ends
 mid-codepoint.

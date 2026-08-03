@@ -47,7 +47,14 @@ function* allImages(msg: PersistedMessage): Generator<{ data: string; mediaType:
     if (img.data) yield { data: img.data, mediaType: img.mediaType };
   }
   for (const r of allToolResults(msg)) {
-    if (!r.content.startsWith("[") || !r.content.includes("base64")) continue;
+    // Cheap pre-filter, and it must match what the PROJECTION treats as an
+    // image — which is any block with `source.data`, regardless of whether
+    // `source.type` says "base64". Filtering on the literal text "base64" (the
+    // previous guard) skipped exactly the shapes that omit that field, so the
+    // projection would hand the client an `/images/:hash` URL that this lookup
+    // then permanently 404'd. Keyed on the block type instead, which
+    // `JSON.stringify` always emits for an image block.
+    if (!r.content.startsWith("[") || !r.content.includes("\"image\"")) continue;
     let blocks: unknown;
     try {
       blocks = JSON.parse(r.content);

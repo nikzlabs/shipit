@@ -72,7 +72,13 @@
 - [x] Correct the module header ("two places" → three) and document the two knowingly-unprojected paths (`message_steered`, `sub_agent_consult_card`)
 
 ## Review fixes (round 3)
-- [x] Client 1 MB cap now sets `truncated` + the true `totalLines` when it fires, so a capped body gets the ordinary expand-and-fetch affordance instead of being silently cut (req 3/4). Cut is surrogate-safe; `totalBytes` deliberately left to the server, which measures UTF-8 rather than UTF-16 units.
+- [x] Client 1 MB cap sets `truncated` + the true `totalLines` for an **ordinary** result, so a capped body gets the expand-and-fetch affordance instead of being silently cut (req 3/4). Cut is surrogate-safe; `totalBytes` deliberately left to the server, which measures UTF-8 rather than UTF-16 units.
+- [x] **Correction to the line above, from round 3's review:** the first version of that fix applied to *every* result, which was wrong twice over — it still clipped subagent final reports (which `SubagentCall` renders whole, with no expand affordance, so the marker did nothing), and it advertised a fetch for nested results whose row is not committed yet. Now: a final report is never capped; a nested result is capped but not marked; only an ordinary result is capped and marked. The test for the original fix used a `Task` tool, so it had codified the very violation it should have caught.
+- [x] Image lookup pre-filtered on the literal text `"base64"`, which the projection never requires — an MCP image block carrying `source.data` without `source.type` got an `/images/:hash` URL that then 404'd forever. Keyed on the block type instead.
+
+## Requirement 1 is not met — deferred, not fixed
+- [ ] **The transcript no longer previews tool output at all**, so the 40 lines this ships are invisible until the modal opens — exactly what req 1 forbids. `<ToolResult>` renders only inside the click-opened modal (`message-tools.tsx:500`); the transcript line is built from the tool's *input*. The fix is to carry no result content outside the four consumers req 4 names (subagent final report, AskUserQuestion, Present, ExitPlanMode) and fetch on modal open — a redesign of the projection, deliberately deferred. Full analysis in `plan.md` → *Requirement 1 is not met*.
+- [ ] Once that lands, the 16 KB byte backstop and the `TRANSCRIPT_SLICE_LINES` ≥ `*_MAX_LINES` guard become moot for ordinary results, and the fetch endpoint needs to substitute image URLs so the modal fetch isn't the new heavy payload.
 
 ## Known gaps (recorded, not addressed in this PR)
 - [ ] Req 5 says "tool inputs"; only Edit/Write are projected, other tool inputs ship whole
@@ -83,10 +89,11 @@
 - [ ] Reconnect snapshot resends already-committed tool inputs; tightening needs a committed-prefix marker on the runner
 
 ## Follow-up work (separate from this PR)
+- [ ] **File the Linear issue for the req-1 redesign above.** Attempted during this PR; Linear returned `usage limit exceeded` twice. The full write-up is in `plan.md` → *Requirement 1 is not met*, so nothing is lost — but the tracker item still needs creating.
 - [ ] Subagent activity does not appear in the UI in practice (docs/109) — plumbing is complete and tested with synthetic events, but never verified against a live CLI, and both attach points silently no-op when the parent group isn't found. Investigate after this merges.
 
 ## Verification
 - [x] `npm run typecheck`
 - [x] `npm run lint:dev`
-- [x] Feature test files green (63 tests across 5 files)
+- [x] Feature test files green (74 tests across 6 files)
 - [ ] Independent requirements review by a fresh context (CLAUDE.md step 5) — round 2 found real bugs; needs a clean pass

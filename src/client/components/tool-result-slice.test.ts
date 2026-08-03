@@ -10,12 +10,17 @@ import { SUBAGENT_TOOLS } from "./visual-elements.js";
 import { SUBAGENT_TOOL_NAMES } from "../../server/shared/transcript-slice-tools.js";
 
 /**
- * docs/244 — the guard that makes the server slice *derived* rather than
- * guessed. The orchestrator ships only the first `TRANSCRIPT_SLICE_LINES` lines
- * of a heavy tool result; if any preview here draws more than that, the
- * transcript would render a short body as though it were the whole thing, with
- * no visible signal. Failing here is the intended outcome — raise
+ * docs/244 — the orchestrator ships only the first `TRANSCRIPT_SLICE_LINES`
+ * lines of a heavy tool result; if any preview here draws more than that, it
+ * would render a short body as though it were the whole thing, with no visible
+ * signal. Failing here is the intended outcome — raise
  * `TRANSCRIPT_SLICE_LINES` alongside the preview.
+ *
+ * These previews used to be what the *transcript* drew, which is where the
+ * slice size came from. They now render inside the click-opened output modal
+ * (`message-tools.tsx:500`) — the transcript itself shows no output at all. So
+ * the relationship this guard pins is still real, but it no longer justifies
+ * the slice size: see `plan.md` → *Requirement 1 is not met*.
  */
 describe("inline previews fit inside the server slice", () => {
   const caps = {
