@@ -26,12 +26,21 @@ function installShipItPageSdk(): void {
     rejectReady = reject;
   });
 
+  // Learned from the host's first envelope message, never guessed. `document.referrer`
+  // looks like the parent's origin only until the page navigates within itself (a link,
+  // a form post, a dev-server full reload) — after that it is the preview's OWN origin,
+  // and posting there throws "target origin does not match the recipient window's
+  // origin", killing the handshake for the rest of the document's life.
   let parentOrigin: string | null = null;
-  try {
-    parentOrigin = document.referrer ? new URL(document.referrer).origin : null;
-  } catch {
-    parentOrigin = null;
-  }
+
+  // The handshake carries no page data, so it can go to "*" before the host's origin is
+  // known. Everything after it — including page-composed text — is pinned to the origin
+  // the host itself proved. "null" is an opaque origin: it cannot be named as a target
+  // (postMessage would throw), so a sandboxed host falls back to "*", matching what the
+  // ShipIt side already does when replying into an opaque-origin frame.
+  const postToHost = (message: unknown) => {
+    hostWindow.postMessage(message, parentOrigin && parentOrigin !== "null" ? parentOrigin : "*");
+  };
 
   const failHandshake = (message: string) => {
     if (embedded) return;
@@ -45,7 +54,7 @@ function installShipItPageSdk(): void {
   }, timeoutMs);
 
   const onMessage = (event: MessageEvent) => {
-    if (event.source !== hostWindow || !parentOrigin || event.origin !== parentOrigin) return;
+    if (event.source !== hostWindow) return;
     const data = event.data as {
       source?: unknown;
       type?: unknown;
@@ -56,6 +65,11 @@ function installShipItPageSdk(): void {
       error?: unknown;
     } | null;
     if (data?.source !== source) return;
+    // `event.source === hostWindow` is browser-supplied and unspoofable, so the first
+    // envelope message from the embedder establishes the host origin; later messages
+    // must match it.
+    if (parentOrigin === null) parentOrigin = event.origin;
+    else if (event.origin !== parentOrigin) return;
 
     if (data.type === "visibility" && typeof data.visible === "boolean") {
       currentVisibility = data.visible;
@@ -103,7 +117,6 @@ function installShipItPageSdk(): void {
           throw new Error("ShipIt agent messages cannot exceed 50000 characters");
         }
         await ready;
-        if (!parentOrigin) throw new Error("ShipIt parent origin is unavailable");
         const requestId = crypto.randomUUID();
         return await new Promise<{ status: "submitted" }>((resolve, reject) => {
           const timeout = window.setTimeout(() => {
@@ -111,12 +124,12 @@ function installShipItPageSdk(): void {
             reject(new Error("ShipIt agent message timed out"));
           }, 30_000);
           pending.set(requestId, { resolve, reject, timeout });
-          hostWindow.postMessage({
+          postToHost({
             source,
             type: "agent_message",
             requestId,
             payload: { text: input.text },
-          }, parentOrigin);
+          });
         });
       },
     },
@@ -129,14 +142,34 @@ function installShipItPageSdk(): void {
     writable: false,
   });
 
-  if (hostWindow === window || !parentOrigin) {
+  if (hostWindow === window) {
     window.clearTimeout(timeout);
     failHandshake("This page is not embedded in ShipIt");
     return;
   }
-  hostWindow.postMessage({ source, type: "ready" }, parentOrigin);
+  postToHost({ source, type: "ready" });
 }
 
 export const AGENT_INTERFACE_SDK_MARKER = "data-shipit-agent-interface-sdk";
-export const AGENT_INTERFACE_SDK_SOURCE = `(${installShipItPageSdk.toString()})();`;
+
+/**
+ * Serialized runtime.
+ *
+ * The `__name` shim is load-bearing, not defensive dressing. Production runs the
+ * orchestrator through tsx (`node --import tsx`, docker/Dockerfile.prod), and esbuild's
+ * `keepNames` rewrites every inner function to `__name(fn, "fn")` — a helper defined at
+ * *module* scope, which `Function.prototype.toString()` does not carry along. The
+ * injected script then died on `ReferenceError: __name is not defined` at its first
+ * statement, so `window.shipit` never existed on any proxied service preview. Present
+ * artifacts were unaffected because they are served from the Vite client bundle, which
+ * does not keep names — which is also why no test caught it: vitest's transform matches
+ * the client, not production. `bootstrap-browser.test.ts` now runs the string production
+ * actually emits.
+ *
+ * An identity `__name` is exactly the semantics keepNames wants (it only re-labels the
+ * function it wraps), and shadowing it in an outer IIFE is harmless when the transpiler
+ * emitted no wrappers at all.
+ */
+export const AGENT_INTERFACE_SDK_SOURCE =
+  `(function(){var __name=function(value){return value};(${installShipItPageSdk.toString()})()})();`;
 export const AGENT_INTERFACE_SDK_SCRIPT = `<script ${AGENT_INTERFACE_SDK_MARKER}>${AGENT_INTERFACE_SDK_SOURCE}</script>`;

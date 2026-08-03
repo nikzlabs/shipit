@@ -20,16 +20,16 @@ describe("window.shipit browser runtime", () => {
         agent: { sendMessage(input: { text: string }): Promise<{ status: "submitted" }> };
       };
     };
-    Object.defineProperty(child.document, "referrer", { value: window.location.href, configurable: true });
+    // The page navigated within the preview, so the referrer is its OWN origin rather
+    // than the host's. The handshake must not depend on it.
+    Object.defineProperty(child.document, "referrer", { value: "https://session--3001.example.test/app", configurable: true });
     const parentOrigin = window.location.origin;
     const parentPost = vi.spyOn(child.parent, "postMessage").mockImplementation(() => undefined);
     child.eval(AGENT_INTERFACE_SDK_SOURCE);
 
     expect(child.shipit?.embedded).toBe(false);
-    expect(parentPost).toHaveBeenCalledWith(
-      { source: "shipit-preview", type: "ready" },
-      parentOrigin,
-    );
+    // The handshake carries no page data and the host origin is not yet known.
+    expect(parentPost).toHaveBeenCalledWith({ source: "shipit-preview", type: "ready" }, "*");
 
     child.dispatchEvent(new child.MessageEvent("message", {
       source: child.parent,
@@ -45,9 +45,12 @@ describe("window.shipit browser runtime", () => {
 
     const sent = child.shipit!.agent.sendMessage({ text: "Build it" });
     await Promise.resolve();
-    const request = parentPost.mock.calls.find(([message]) =>
-      (message as { type?: string }).type === "agent_message")?.[0] as { requestId: string };
+    const agentCall = parentPost.mock.calls.find(([message]) =>
+      (message as { type?: string }).type === "agent_message");
+    const request = agentCall?.[0] as { requestId: string };
     expect(request.requestId).toBeTruthy();
+    // Page-composed text goes to the origin the host proved, never to "*".
+    expect(agentCall?.[1]).toBe(parentOrigin);
     child.dispatchEvent(new child.MessageEvent("message", {
       source: child.parent,
       origin: parentOrigin,
@@ -60,5 +63,29 @@ describe("window.shipit browser runtime", () => {
       },
     }));
     await expect(sent).resolves.toEqual({ status: "submitted" });
+  });
+
+  it("pins the host origin after the first handshake message", async () => {
+    const iframe = document.createElement("iframe");
+    document.body.append(iframe);
+    const child = iframe.contentWindow as Window & {
+      eval(source: string): unknown;
+      MessageEvent: typeof MessageEvent;
+      shipit?: { visibility: { current: boolean | null } };
+    };
+    vi.spyOn(child.parent, "postMessage").mockImplementation(() => undefined);
+    child.eval(AGENT_INTERFACE_SDK_SOURCE);
+
+    const post = (origin: string, visible: boolean) => child.dispatchEvent(new child.MessageEvent("message", {
+      source: child.parent,
+      origin,
+      data: { source: "shipit-preview", type: "visibility", visible },
+    }));
+
+    post(window.location.origin, true);
+    expect(child.shipit?.visibility.current).toBe(true);
+    // A later message claiming a different origin cannot move the pinned host.
+    post("https://attacker.example", false);
+    expect(child.shipit?.visibility.current).toBe(true);
   });
 });

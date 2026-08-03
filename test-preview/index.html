@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>ShipIt Agent Interface SDK — preview test page</title>
+    <!--shipit-sdk-->
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        margin: 0;
+        padding: 24px;
+        font: 14px/1.5 ui-sans-serif, system-ui, sans-serif;
+        background: #030712;
+        color: #e5e7eb;
+      }
+      h1 { font-size: 18px; margin: 0 0 4px; }
+      p.sub { margin: 0 0 20px; color: #9ca3af; }
+      dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0 0 20px; }
+      dt { color: #9ca3af; }
+      dd { margin: 0; font-family: ui-monospace, monospace; word-break: break-all; }
+      .ok { color: #4ade80; }
+      .bad { color: #f87171; }
+      .idle { color: #fbbf24; }
+      button, a.button {
+        font: inherit; padding: 6px 12px; border-radius: 6px; cursor: pointer;
+        background: #1f2937; color: #e5e7eb; border: 1px solid #374151;
+        text-decoration: none; display: inline-block;
+      }
+      button:hover, a.button:hover { background: #374151; }
+      input { font: inherit; padding: 6px 10px; border-radius: 6px; background: #111827; color: #e5e7eb; border: 1px solid #374151; min-width: 320px; }
+      pre { background: #0b1220; border: 1px solid #1f2937; border-radius: 6px; padding: 10px; max-height: 220px; overflow: auto; margin: 0; }
+      section { margin-bottom: 20px; }
+      h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: #9ca3af; margin: 0 0 8px; }
+    </style>
+  </head>
+  <body>
+    <h1>Agent Interface SDK — preview test page</h1>
+    <p class="sub">Served by <code>test-preview/server.ts</code>. Verifies that <code>window.shipit</code> works inside a ShipIt service preview.</p>
+
+    <section>
+      <h2>Handshake</h2>
+      <dl>
+        <dt>window.shipit</dt><dd id="present">—</dd>
+        <dt>ready</dt><dd id="ready">—</dd>
+        <dt>embedded</dt><dd id="embedded">—</dd>
+        <dt>visibility.current</dt><dd id="visibility">—</dd>
+        <dt>document.referrer</dt><dd id="referrer">—</dd>
+        <dt>location.origin</dt><dd id="origin">—</dd>
+      </dl>
+    </section>
+
+    <section>
+      <h2>Send a message to the agent</h2>
+      <form id="send">
+        <input name="text" value="Hello from the preview test page" required />
+        <button type="submit">sendMessage</button>
+      </form>
+      <p id="send-status" class="idle">not sent yet</p>
+    </section>
+
+    <section>
+      <h2>Reproduce the referrer regression</h2>
+      <p class="sub">
+        Follow this same-origin link. The reloaded document's <code>document.referrer</code> becomes this
+        page instead of the ShipIt host, which is what broke the handshake.
+      </p>
+      <a class="button" id="nav" href="?nav=1">Navigate within the preview, then re-check</a>
+    </section>
+
+    <section>
+      <h2>Log</h2>
+      <pre id="log"></pre>
+    </section>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const logEl = $("log");
+      const log = (line) => {
+        logEl.textContent += `${new Date().toISOString().slice(11, 23)}  ${line}\n`;
+        logEl.scrollTop = logEl.scrollHeight;
+      };
+      const set = (id, text, cls) => {
+        const el = $(id);
+        el.textContent = text;
+        el.className = cls || "";
+      };
+
+      // Preserve the ?nav= marker across the same-origin navigation so the link
+      // keeps toggling instead of becoming a no-op.
+      const nav = Number(new URLSearchParams(location.search).get("nav") || 0);
+      $("nav").href = `?nav=${nav + 1}`;
+
+      set("referrer", document.referrer || "(none)");
+      set("origin", location.origin);
+      window.addEventListener("error", (event) => log(`window.onerror: ${event.message}`));
+
+      if (!window.shipit) {
+        set("present", "missing — the SDK bootstrap was not injected", "bad");
+        log("window.shipit is undefined: no proxy injection and no inline bootstrap.");
+      } else {
+        set("present", "installed", "ok");
+        set("ready", "pending", "idle");
+        set("embedded", String(window.shipit.embedded));
+        set("visibility", String(window.shipit.visibility.current));
+
+        window.shipit.ready.then(
+          () => {
+            set("ready", "resolved", "ok");
+            set("embedded", String(window.shipit.embedded), "ok");
+            log("ready resolved — the ShipIt host completed the handshake.");
+          },
+          (error) => {
+            set("ready", `rejected: ${error && error.message}`, "bad");
+            log(`ready rejected: ${error && error.message}`);
+          },
+        );
+
+        window.shipit.visibility.subscribe((visible) => {
+          set("visibility", String(visible), visible ? "ok" : "idle");
+          log(`visibility → ${visible}`);
+        });
+      }
+
+      $("send").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const text = new FormData(event.currentTarget).get("text");
+        set("send-status", "sending…", "idle");
+        try {
+          if (!window.shipit) throw new Error("window.shipit is unavailable");
+          await window.shipit.ready;
+          const result = await window.shipit.agent.sendMessage({ text: String(text) });
+          set("send-status", `submitted (${result.status})`, "ok");
+          log(`sendMessage resolved: ${JSON.stringify(result)}`);
+        } catch (error) {
+          set("send-status", `failed: ${error && error.message}`, "bad");
+          log(`sendMessage failed: ${error && error.message}`);
+        }
+      });
+    </script>
+  </body>
+</html>

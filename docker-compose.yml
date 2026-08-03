@@ -155,6 +155,47 @@ services:
       - { name: ANTHROPIC_AUTH_TOKEN }
       - { name: GITHUB_TOKEN }
 
+  # Agent Interface SDK test preview (docs/242).
+  #
+  # A ~40-line static server whose page reports the live state of `window.shipit`
+  # — installed? handshake resolved? visibility? — and can send a real message to
+  # this session's agent. It exists because the SDK's Preview path can only be
+  # exercised through an actual proxied service: the bootstrap is injected by
+  # `preview-proxy.ts` into a cross-origin iframe, which no unit test reproduces.
+  # Both bugs it caught (a `__name` reference that killed the script under the
+  # production tsx transform, and a `document.referrer`-derived parent origin that
+  # broke after any in-preview navigation) were invisible from the client bundle.
+  #
+  # Manual, like `dev` — it's cheap to run but it would otherwise claim the
+  # preview pane on every session. Start it with `shipit service start sdk-test`.
+  #
+  # The page inlines the bootstrap itself (the proxy skips a response that already
+  # carries the marker), so it exercises the bootstrap from the *checkout* rather
+  # than from the orchestrator serving the preview. That's deliberate: a bootstrap
+  # fix can be verified in production ShipIt before the orchestrator ships it.
+  sdk-test:
+    image: node:24-slim
+    working_dir: /workspace
+    init: true
+    # tsx comes from the agent container's bind-mounted node_modules, populated by
+    # `agent.install`; wait for it rather than racing that install (feature 137).
+    command: >
+      sh -c "
+      while [ ! -x node_modules/.bin/tsx ]; do
+        echo '[sdk-test] waiting for agent.install to populate node_modules…'; sleep 1;
+      done &&
+      exec node --import tsx test-preview/server.ts
+      "
+    environment:
+      # Matches the production orchestrator's own loader, so the injected
+      # bootstrap here is transpiled exactly the way production transpiles it.
+      PORT: "3002"
+    volumes:
+      - .:/workspace
+    ports:
+      - "3002:3002"
+    x-shipit-preview: manual
+
   # Android emulator preview — dogfoods docs/213's interactive-preview tier on
   # the in-repo native test app (`android-snapshot-test/`). The old `android/`
   # WebView wrapper was removed (superseded by the PWA, docs/222); the test app
