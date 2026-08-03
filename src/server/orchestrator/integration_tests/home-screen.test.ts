@@ -3,8 +3,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { buildApp } from "../index.js";
-import { GitManager } from "../../shared/git.js";
-import { RepoGit } from "../repo-git.js";
 import { SessionManager } from "../sessions.js";
 import type { AuthManager } from "../agents/claude/auth-manager.js";
 import type { GitHubAuthManager } from "../github-auth.js";
@@ -16,6 +14,8 @@ import {
   FakeClaudeProcess,
   createTestCredentialStore,
   createTestDatabaseManager,
+  createTemplateRepoGitFactories,
+  pinGitToLocalTransports,
 } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
 
@@ -28,29 +28,25 @@ describe("Integration: home_create_repo_with_template (HTTP)", () => {
   let tmpDir: string;
   let dbManager: DatabaseManager;
   let githubAuthManager: StubGitHubAuthManager;
+  let restoreGitTransports: () => void;
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-home-create-"));
 
+    // `POST /api/repos` warms a session, and the warm pool fetches the
+    // workspace clone's origin for real against the fake github.com URL.
+    restoreGitTransports = pinGitToLocalTransports();
+
     const sessionManager = new SessionManager(dbManager);
 
     githubAuthManager = new StubGitHubAuthManager();
 
+    const { createGitManager, createRepoGit } = createTemplateRepoGitFactories();
     app = await buildApp({
       credentialStore: createTestCredentialStore(tmpDir),
-      createGitManager: (dir: string) => {
-        const gm = new GitManager(dir);
-        // Stub push so it doesn't attempt a real remote push
-        gm.push = async () => "pushed (stub)";
-        return gm;
-      },
-      createRepoGit: (dir: string) => {
-        const rg = new RepoGit(dir);
-        // Stub fetchCache to avoid network calls to fake GitHub URLs
-        rg.fetchCache = async () => {};
-        return rg;
-      },
+      createGitManager,
+      createRepoGit,
       sessionManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       githubAuthManager: githubAuthManager as unknown as GitHubAuthManager,
@@ -61,6 +57,7 @@ describe("Integration: home_create_repo_with_template (HTTP)", () => {
   });
 
   afterEach(async () => {
+    restoreGitTransports();
     await app.close();
     dbManager.close();
     await new Promise((r) => setTimeout(r, 50));

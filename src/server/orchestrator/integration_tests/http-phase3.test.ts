@@ -4,7 +4,6 @@ import os from "node:os";
 import path from "node:path";
 import { buildApp } from "../index.js";
 import { GitManager } from "../../shared/git.js";
-import { RepoGit } from "../repo-git.js";
 import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { AuthManager } from "../agents/claude/auth-manager.js";
@@ -16,6 +15,8 @@ import {
   StubGitHubAuthManager,
   FakeClaudeProcess,
   createTestDatabaseManager,
+  createTemplateRepoGitFactories,
+  pinGitToLocalTransports,
 } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
 import { GitHubAuthManager } from "../github-auth.js";
@@ -32,11 +33,16 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
   let stubAuthManager: StubAuthManager;
   let generateTextResult: string;
   let dbManager: DatabaseManager;
+  let restoreGitTransports: () => void;
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-http-phase3-"));
     generateTextResult = "## Summary\nTest PR description";
+
+    // `POST /api/repos` warms a session, and the warm pool fetches the
+    // workspace clone's origin for real against the fake github.com URL.
+    restoreGitTransports = pinGitToLocalTransports();
 
     sessionManager = new SessionManager(dbManager);
     githubAuthManager = new StubGitHubAuthManager();
@@ -46,19 +52,10 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
     chatHistoryManager = new ChatHistoryManager(dbManager);
     stubAuthManager = new StubAuthManager();
 
+    const { createGitManager, createRepoGit } = createTemplateRepoGitFactories();
     app = await buildApp({
-      createGitManager: (dir: string) => {
-        const gm = new GitManager(dir);
-        // Stub push so it doesn't attempt a real remote push
-        gm.push = async () => "pushed (stub)";
-        return gm;
-      },
-      createRepoGit: (dir: string) => {
-        const rg = new RepoGit(dir);
-        // Stub fetchCache to avoid network calls to fake GitHub URLs
-        rg.fetchCache = async () => {};
-        return rg;
-      },
+      createGitManager,
+      createRepoGit,
       sessionManager,
       authManager: stubAuthManager as unknown as AuthManager,
       githubAuthManager: githubAuthManager as unknown as GitHubAuthManager,
@@ -72,6 +69,7 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
   });
 
   afterEach(async () => {
+    restoreGitTransports();
     await app.close();
     dbManager.close();
     await new Promise((r) => setTimeout(r, 50));
