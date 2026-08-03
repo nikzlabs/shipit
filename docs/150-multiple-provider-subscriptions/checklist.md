@@ -2,11 +2,11 @@
 
 ## Phase 0 — Research and Preconditions
 
-- [ ] Confirm stable provider account identity fields for Claude.
+- [x] Confirm stable provider account identity fields for Claude — `.claude.json`'s `oauthAccount` (`accountUuid` as the stable key, `emailAddress` as the default label). Not `.credentials.json`, which carries only plan data (req 22).
 - [x] Confirm stable provider account identity fields for Codex.
 - [x] Decide default failover posture — on by default for every provider (req 15).
 - [x] Decide child-session inheritance policy for provider routes — normal priority order, no inheritance (req 18).
-- [ ] Decide whether concurrent turns should spread across accounts or keep primary affinity.
+- [x] Decide whether concurrent turns should spread across accounts or keep primary affinity — neither is fixed; the user picks per provider, defaulting to strict priority (req 21).
 
 ## Phase 1 — Account Registry and Manual Routing
 
@@ -184,3 +184,28 @@ exercised the new path. The signal one is ready to go is that nothing reads it.
 - [x] Backfill `priority` onto stored rows (idempotent, runs from `migrateDefaultAccounts`), then drop the `isPrimary`-only ordering fallback from the read path.
 - [x] Resolve `ProviderAccount.isPrimary` vs `priority` — `isPrimary` is derived from position on read and no longer persisted or maintained by the credential store. The wire shape is unchanged.
 - [x] Confirm no singleton subscription auth endpoint, client state, or onboarding card remains (covers the three Phase 1 migration items).
+
+## Phase 6 — Account identity and selection mode (reqs 21, 22)
+
+Both come from the 2026-08-03 answers to the two open Phase 0 questions. Neither
+is a refinement of an existing mechanism: 22 adds a fact about an account that
+nothing records today, and 21 turns a decision nobody made into a user setting.
+
+### Account identity (req 22)
+
+- [ ] Read `oauthAccount` from `.claude.json` on connect; store `accountUuid` as the stable external key and tolerate its absence (older CLI, env-only auth) by falling back to today's behavior.
+- [ ] Record the Codex equivalent (`chatgpt_account_id`) on the account row too — it is already decoded for plan extraction but never persisted as identity.
+- [ ] Default a newly connected account's label to the reported email instead of `Claude account N` / `Codex account N`, leaving rename intact.
+- [ ] Detect a connect that resolves to an already-connected external id. **Blocked** on the open question in `requirements.md` — adopt onto the existing row, refuse, or warn-and-allow.
+- [ ] Unit: an account row records the external id at connect time, and a missing `oauthAccount` degrades to the generated label rather than failing the connect.
+- [ ] Unit: a second connect resolving to an existing external id does not produce a second row.
+
+### Selection mode (req 21)
+
+- [ ] Persist a per-provider selection mode (`strict` | `balanced`), defaulting to `strict`, alongside the existing per-provider cutoffs.
+- [ ] Branch `selectAccountForTurn` on the mode: `strict` keeps today's first-eligible walk; `balanced` picks the least-recently-used eligible account via the existing `lastUsedAt`.
+- [ ] Add the Settings control beside the two cutoff inputs, wording the choice in terms of unequal vs peer accounts.
+- [ ] Unit: `balanced` spreads consecutive pins across eligible accounts; `strict` pins them all to the highest-ranked one.
+- [ ] Unit: both modes fail over identically on exhaustion and honour the retry exclusion list (req 15 — the mode does not gate failover).
+- [ ] Unit: `balanced` still skips exhausted and over-cutoff accounts rather than balancing onto them.
+- [ ] Integration: switching the mode changes what a newly created session pins, and does not disturb sessions already pinned.
