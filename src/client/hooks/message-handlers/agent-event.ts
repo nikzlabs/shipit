@@ -6,6 +6,27 @@ import { useSettingsStore } from "../../stores/settings-store.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import type { Handler } from "./types.js";
 
+/**
+ * Hard ceiling on how much of a single tool result the live path keeps in
+ * memory. A backstop, not the primary bound — docs/244's serve-path projection
+ * slices heavy results before they are emitted. What still reaches this are the
+ * classes that projection deliberately leaves inline (a subagent's exempt final
+ * report, and nested subagent results before their row is committed).
+ *
+ * Exported for the test that pins the cap's markers.
+ */
+export const CLIENT_CONTENT_CAP = 1_000_000;
+
+/**
+ * Largest index ≤ `max` that does not split a UTF-16 surrogate pair, so a
+ * clipped body never ends in a lone surrogate (which renders as `�`).
+ */
+function safeCutAt(text: string, max: number): number {
+  const code = text.charCodeAt(max - 1);
+  // High surrogate at the boundary means its pair starts here — drop it.
+  return code >= 0xd800 && code <= 0xdbff ? max - 1 : max;
+}
+
 export const handleAgentEvent: Handler<WsAgentEvent> = (_ctx, data) => {
   const session = useSessionStore.getState();
   // Guard: skip agent events until HTTP history is loaded. On WS reconnect,
@@ -129,10 +150,21 @@ export const handleAgentEvent: Handler<WsAgentEvent> = (_ctx, data) => {
           content = JSON.stringify(rawContent);
         }
         // Backstop only. Since docs/244 the orchestrator already slices heavy
-        // results before emitting, so this fires for the bodies the projection
-        // exempts (a subagent's final report) rather than for ordinary output.
-        if (content.length > 1_000_000) {
-          content = `${content.slice(0, 1_000_000)  }\n... (output truncated — exceeded 1MB)`;
+        // results before emitting, so this fires for the classes the projection
+        // leaves inline: a subagent's final report (exempt, so it is never
+        // sliced) and nested subagent results (held back until their row is
+        // committed).
+        //
+        // When it does fire it must set the same markers the server projection
+        // sets. Clipping without them was silent data loss — the body was cut,
+        // nothing on screen said so, and there was no affordance to get the rest
+        // back. The full body is in the persisted row either way, so handing the
+        // expand path a `truncated` flag turns a dead-end truncation into a
+        // fetchable one.
+        let capped: { totalLines: number } | undefined;
+        if (content.length > CLIENT_CONTENT_CAP) {
+          capped = { totalLines: content.split("\n").length };
+          content = content.slice(0, safeCutAt(content, CLIENT_CONTENT_CAP));
         }
         results.push({
           toolUseId: block.tool_use_id as string,
@@ -144,8 +176,16 @@ export const handleAgentEvent: Handler<WsAgentEvent> = (_ctx, data) => {
           // docs/244 — the orchestrator sliced this body; carry the markers so
           // the "Show all N lines" label is honest and expanding fetches the
           // tail from the persisted row.
-          ...(block.shipit_truncated === true ? { truncated: true as const } : {}),
-          ...(typeof block.shipit_total_lines === "number" ? { totalLines: block.shipit_total_lines } : {}),
+          ...(block.shipit_truncated === true || capped ? { truncated: true as const } : {}),
+          ...(typeof block.shipit_total_lines === "number"
+            ? { totalLines: block.shipit_total_lines }
+            : capped
+              ? { totalLines: capped.totalLines }
+              : {}),
+          // Only the server sets `totalBytes` — it measures UTF-8 bytes, and the
+          // client cap counts UTF-16 units, so filling it in here would report a
+          // different quantity under the same name. `totalLines` is what the
+          // "Show all N lines" label reads; nothing renders `totalBytes`.
           ...(typeof block.shipit_total_bytes === "number" ? { totalBytes: block.shipit_total_bytes } : {}),
         });
       }

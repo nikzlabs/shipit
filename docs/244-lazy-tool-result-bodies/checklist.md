@@ -71,8 +71,10 @@
 - [x] Add the read-modify-write guard that the checklist previously claimed but no test performed
 - [x] Correct the module header ("two places" → three) and document the two knowingly-unprojected paths (`message_steered`, `sub_agent_consult_card`)
 
+## Review fixes (round 3)
+- [x] Client 1 MB cap now sets `truncated` + the true `totalLines` when it fires, so a capped body gets the ordinary expand-and-fetch affordance instead of being silently cut (req 3/4). Cut is surrogate-safe; `totalBytes` deliberately left to the server, which measures UTF-8 rather than UTF-16 units.
+
 ## Known gaps (recorded, not addressed in this PR)
-- [ ] Client 1 MB cap clips without setting `truncated`, so an exempt subagent report over 1 MB is cut with no expand affordance (req 3/4)
 - [ ] Req 5 says "tool inputs"; only Edit/Write are projected, other tool inputs ship whole
 - [ ] Byte backstop on a single long line removes text that used to render inline, and labels it "Show all 1 lines" (reqs 1/8)
 - [ ] A >16 KB free-form AskUserQuestion answer would be sliced (req 4)
