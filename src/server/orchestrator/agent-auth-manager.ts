@@ -30,8 +30,15 @@ import type {
 
 /** Optional payload accompanying the {@link AgentAuthManager} `failed` event. */
 export interface AgentAuthFailedPayload {
-  /** Coarse failure category — drives the next-step copy in the UI. */
-  reason?: "timeout" | "denied" | "error" | "revoked";
+  /**
+   * Coarse failure category — drives the next-step copy in the UI.
+   *
+   * `duplicate` is never emitted by a manager: it is ShipIt refusing an
+   * otherwise-successful sign-in that resolved to an already-connected account
+   * (docs/150 req 22). It shares this payload so the client has one failure
+   * channel per provider flow.
+   */
+  reason?: "timeout" | "denied" | "error" | "revoked" | "duplicate";
   /** Human-readable detail. Surfaced in the sign-in card error toast. */
   message?: string;
 }

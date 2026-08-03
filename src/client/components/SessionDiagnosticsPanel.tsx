@@ -102,6 +102,14 @@ interface OomBreakerState {
   windowMs: number;
 }
 
+/** docs/150 req 11 — the provider account this session is running on. */
+interface ProviderRouteDiagnostic {
+  agentId: string | null;
+  kind: "account" | "reserved" | null;
+  routeId: string | null;
+  label: string;
+}
+
 interface DiagnosticsPayload {
   sessionId: string;
   generatedAt: number;
@@ -112,6 +120,7 @@ interface DiagnosticsPayload {
   recentLogs: LogEntry[];
   parsedConfig: ParsedShipitConfig | null;
   oomBreaker: OomBreakerState | null;
+  providerRoute: ProviderRouteDiagnostic | null;
 }
 
 const POLL_INTERVAL_MS = 2000;
@@ -204,6 +213,10 @@ export function SessionDiagnosticsPanel({ sessionId, open, onOpenChange }: Sessi
                       : null
                   }
                 />
+              </Section>
+
+              <Section title="Provider account">
+                <ProviderRouteRows route={data.providerRoute} />
               </Section>
 
               <Section title="OOM circuit breaker">
@@ -435,6 +448,32 @@ function ParsedConfigRows({
           ))}
         </div>
       )}
+    </>
+  );
+}
+
+/**
+ * docs/150 req 11 — "which account is this session on right now?".
+ *
+ * The account's *name* is the answer; `route id` is below it for bug reports,
+ * where the opaque `acct_…` is what correlates with the server logs.
+ */
+function ProviderRouteRows({ route }: { route: ProviderRouteDiagnostic | null }) {
+  if (!route) {
+    return <p className="text-(--color-text-tertiary)">Not wired (test mode / local runtime).</p>;
+  }
+  return (
+    <>
+      <KvRow label="agent" value={route.agentId ?? "—"} />
+      <KvRow
+        label="account"
+        value={route.label}
+        valueClass={route.kind === null ? "text-(--color-text-tertiary)" : undefined}
+      />
+      <KvRow
+        label="route"
+        value={route.routeId === null ? "—" : `${route.kind} / ${route.routeId}`}
+      />
     </>
   );
 }

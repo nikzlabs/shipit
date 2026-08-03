@@ -290,9 +290,23 @@ export function useServerEvents(): void {
       const data = JSON.parse(e.data as string) as {
         agentId: AgentId;
         accountId?: string;
-        reason?: "timeout" | "denied" | "error" | "revoked";
+        reason?: "timeout" | "denied" | "error" | "revoked" | "duplicate";
         message?: string;
       };
+      // docs/150 req 22 — a refused duplicate connect usually DELETES the row
+      // it names, so the per-row error below has nowhere to land. Toast it
+      // first, for every provider, and skip the retry-flavoured copy: retrying
+      // this sign-in would only be refused again.
+      if (data.reason === "duplicate") {
+        useUiStore.getState().setToast({
+          message: data.message ?? "That account is already connected.",
+          duration: 12000,
+        });
+        if (data.accountId) {
+          useSettingsStore.getState().setProviderAccountAuth(data.agentId, data.accountId, null);
+        }
+        return;
+      }
       // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
       if (data.agentId === "claude") {
         // Clear the URL so the sign-in card flips back to "Sign in" — also

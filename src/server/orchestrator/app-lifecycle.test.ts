@@ -892,6 +892,43 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
     expect(complete?.data).toMatchObject({ agentId: "claude", accountId: account.id });
   });
 
+  /** Write what a completed Claude sign-in leaves in an account's root. */
+  function writeClaudeSignIn(
+    providerAccountManager: ProviderAccountManager,
+    accountId: string,
+    uuid: string,
+    email: string,
+  ): void {
+    const dir = providerAccountManager.resolveCredentialRoot("claude", accountId);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, ".claude.json"),
+      JSON.stringify({ oauthAccount: { accountUuid: uuid, emailAddress: email } }),
+    );
+  }
+
+  // docs/150 req 22 — the refusal has to happen on this event, not later. Once
+  // the row goes `ready` it is selectable, and a duplicate is worst exactly
+  // when it is picked as the failover target for the account it duplicates.
+  it("refuses a completion that resolves to an already-connected account", () => {
+    const { providerAccountManager, mgr, events, account } = setup();
+    writeClaudeSignIn(providerAccountManager, account.id, "uuid-1", "dev@example.com");
+    mgr.activeAccountId = account.id;
+    mgr.emit("complete");
+
+    const second = providerAccountManager.create("claude");
+    writeClaudeSignIn(providerAccountManager, second.id, "uuid-1", "dev@example.com");
+    mgr.activeAccountId = second.id;
+    mgr.emit("complete");
+
+    // No "connected" signal for the refused flow, and no second row.
+    expect(events.filter((e) => e.event === "agent_auth_complete")).toHaveLength(1);
+    expect(providerAccountManager.list("claude").map((a) => a.id)).toEqual([account.id]);
+    const failed = events.filter((e) => e.event === "agent_auth_failed").at(-1);
+    expect(failed?.data).toMatchObject({ agentId: "claude", accountId: second.id, reason: "duplicate" });
+    expect(String(failed?.data.message)).toContain("already connected");
+  });
+
   it("scoped failure marks the row auth_failed and qualifies the SSE", () => {
     const { providerAccountManager, mgr, events, account } = setup();
     mgr.activeAccountId = account.id;

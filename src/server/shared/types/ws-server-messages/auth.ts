@@ -82,13 +82,19 @@ export interface WsAgentAuthComplete {
  * persisted credentials were revoked. `reason` lets the UI tailor the next
  * step (retry on `timeout`/`denied`/`error`, prompt re-sign-in on
  * `revoked`). (docs/155 Phase 2b)
+ *
+ * `duplicate` (docs/150 req 22) is the odd one out: the sign-in itself
+ * *succeeded*, and was then refused because the account is already connected.
+ * It needs its own reason because retrying is exactly the wrong next step, and
+ * because the refusal usually removes the row it names — so the UI has to
+ * surface `message` somewhere other than that row.
  */
 export interface WsAgentAuthFailed {
   type: "agent_auth_failed";
   agentId: AgentId;
   /** Provider-account id whose flow failed (docs/150), when scoped. */
   accountId?: string;
-  reason?: "timeout" | "denied" | "error" | "revoked";
+  reason?: "timeout" | "denied" | "error" | "revoked" | "duplicate";
   message?: string;
 }
 

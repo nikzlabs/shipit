@@ -39,6 +39,7 @@ import type {
 } from "./agents/claude/auth-diagnostics.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { ProviderAccountManager } from "./provider-account-manager.js";
+import { refuseIfAlreadyConnected } from "./provider-account-identity.js";
 import type { AgentRegistry } from "../shared/agent-registry.js";
 import type { AgentId, AgentProcess, LogSource, LogRingEntry } from "../shared/types.js";
 import type { AppDeps, RuntimeMode } from "./app-di.js";
@@ -1313,6 +1314,24 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
       // than papering over with a migration.
       const accountId = mgr.getActiveAccountId() ?? undefined;
       if (accountId) {
+        // docs/150 req 22 — the CLI has written credentials; find out WHOSE
+        // before anything treats the row as connected. A refusal must happen
+        // here rather than on the next turn: once the row goes `ready` it is
+        // selectable, and a duplicate account is worst precisely when it gets
+        // picked as a failover target for the account it duplicates.
+        const refusal = refuseIfAlreadyConnected(agentId, accountId, providerAccountManager);
+        if (refusal) {
+          agentRegistry.refreshAuth(agentId);
+          sseBroadcast("agent_auth_failed", {
+            agentId,
+            accountId,
+            reason: "duplicate",
+            message: refusal,
+          });
+          sseBroadcast("agent_list", agentListPayload());
+          sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
+          return;
+        }
         // A scoped login finished: flip the row to `ready` and re-push the
         // fresh token only into sessions pinned to this account.
         try {

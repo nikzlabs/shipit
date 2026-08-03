@@ -372,10 +372,14 @@ export class ProviderAccountManager {
   create(provider: AgentId, label?: string): ProviderAccount {
     const now = Date.now();
     const existing = this.list(provider);
+    const supplied = normalizeLabel(label);
     const account: ProviderAccount = {
       id: `acct_${randomUUID()}`,
       provider,
-      label: normalizeLabel(label) ?? `${PROVIDER_LABEL[provider]} account ${existing.length + 1}`,
+      label: supplied ?? `${PROVIDER_LABEL[provider]} account ${existing.length + 1}`,
+      // req 22 — a generated label is ShipIt's placeholder until the provider
+      // reports who this account actually is; a supplied one is the user's.
+      labelIsGenerated: supplied === null,
       // req 19 — derived from position on read; see `list`.
       isPrimary: false,
       // req 2 — a newly connected account APPENDS to the fallback order. If it
@@ -400,8 +404,95 @@ export class ProviderAccountManager {
     const normalized = normalizeLabel(label);
     if (!normalized) throw new Error("Provider account label cannot be empty");
     if (normalized.length > 120) throw new Error("Provider account label is too long (max 120 characters)");
-    this.credentialStore.upsertProviderAccount({ ...account, label: normalized });
+    // req 22 — once the user names a row, a later connect must not rename it
+    // back to the provider's email.
+    this.credentialStore.upsertProviderAccount({
+      ...account,
+      label: normalized,
+      labelIsGenerated: false,
+    });
     return this.require(provider, accountId);
+  }
+
+  // ---- Account identity (docs/150 req 22) ----
+
+  /**
+   * The row already holding this provider-reported account id, if any.
+   *
+   * `exceptAccountId` is what lets a stale row re-authenticate: a row signing
+   * back into its *own* account necessarily matches itself, and treating that
+   * as a duplicate would make the refusal a permanent lockout for exactly the
+   * rows that most need to reconnect.
+   */
+  findByExternalId(
+    provider: AgentId,
+    externalId: string,
+    exceptAccountId?: string,
+  ): ProviderAccount | undefined {
+    return this.list(provider).find(
+      (account) => account.externalId === externalId && account.id !== exceptAccountId,
+    );
+  }
+
+  /**
+   * Record the identity a completed sign-in reported, and adopt the reported
+   * email as the row's label while the label is still ShipIt's own.
+   *
+   * Idempotent — re-authenticating the same account rewrites the same values.
+   */
+  recordAccountIdentity(
+    provider: AgentId,
+    accountId: string,
+    identity: { externalId: string; email?: string },
+  ): ProviderAccount {
+    const account = this.require(provider, accountId);
+    const adoptLabel = account.labelIsGenerated === true && identity.email !== undefined;
+    this.credentialStore.upsertProviderAccount({
+      ...account,
+      externalId: identity.externalId,
+      ...(adoptLabel ? { label: identity.email! } : {}),
+    });
+    return this.require(provider, accountId);
+  }
+
+  /**
+   * req 22 — undo a sign-in that turned out to be an account ShipIt already
+   * has. Returns how the row was disposed of, for the message the user sees.
+   *
+   * The credentials the CLI just wrote are always destroyed: leaving them would
+   * make the row a working duplicate, which is the outcome the refusal exists
+   * to prevent. What happens to the *row* depends on whether it existed before
+   * this sign-in:
+   *
+   *   - Never authenticated (`"deleted"`) — the row was created by this "Add
+   *     account" click and has nothing else in it, so keeping it would leave
+   *     a dead row the user has to clean up by hand.
+   *   - Previously authenticated (`"reset"`) — the user signed a *different*
+   *     account into a row they had been using. Deleting it would take its
+   *     priority position and name with it, so the row stays, marked
+   *     `auth_failed`, with its recorded identity intact.
+   *
+   * The matched row is not touched at all, in either case (req 22: ShipIt does
+   * not quietly move credentials onto it either).
+   */
+  refuseDuplicateConnect(
+    provider: AgentId,
+    accountId: string,
+    matched: ProviderAccount,
+  ): "deleted" | "reset" {
+    const account = this.require(provider, accountId);
+    console.warn(
+      `[provider-accounts] refusing ${provider} sign-in on ${accountId}: `
+      + `already connected as "${matched.label}" (${matched.id})`,
+    );
+    if (account.externalId === undefined) {
+      this.delete(provider, accountId);
+      return "deleted";
+    }
+    fs.rmSync(this.resolveCredentialRoot(provider, accountId), { recursive: true, force: true });
+    fs.mkdirSync(this.resolveCredentialRoot(provider, accountId), { recursive: true });
+    this.setAccountStatus(provider, accountId, "auth_failed");
+    return "reset";
   }
 
   /**

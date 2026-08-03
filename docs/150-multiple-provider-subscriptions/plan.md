@@ -2623,6 +2623,94 @@ not fire, because `detectHardExhaustion` matches quota language only — verifie
 not assumed: none of its patterns match a model-unavailable message. So "no
 automatic recovery" holds by construction rather than by a new guard.
 
+### Resolved: the four "optional" Phase 4 items (2026-08-03)
+
+Phase 4 carried four items marked *optional* since the plan was first written.
+They had never been decided, so they read as planned work indefinitely. All four
+are resolved here as **non-goals of this feature**. None is claimed to be a bad
+idea; the claim is narrower and the same in each case: no requirement asks for
+it, and requirements are the human's to write. Anything below that the user
+wants starts at `requirements.md`, not here.
+
+**Per-session account preference — non-goal.** A session already gets an
+account without being told: it pins one on its first turn (req 3), keeps it
+(req 9), and is moved only by a cutoff (req 6), hard exhaustion (req 14), or the
+user disconnecting the account it was on. A per-session override is a *fourth*
+input to that decision, which every one of those paths would then have to
+respect — the "needs new primitives to support it" smell. Requirements 1–22
+never ask for it.
+
+**Per-provider "do not auto-failover" — non-goal, and it contradicts a
+requirement.** Requirement 15: "Automatic failover is on by default for every
+provider. Connecting a second account is enough to enable it; no separate
+opt-in." A toggle to disable it is the opt-in that requirement forbids, wearing
+a different sign. The legitimate user control over account choice is
+requirement 21's selection mode, which governs where work *starts* and
+deliberately does not govern *whether* failover happens. Struck the same way
+req 17's skip-and-report mechanism was struck.
+
+**Provider-profile label refresh — subsumed by req 22.** The item predates
+identity: with nothing to read a label *from*, "refresh where stable" was the
+only way a row could ever be named after its account. Req 22 does that at
+connect, and `labelIsGenerated` records whether the name is ShipIt's or the
+user's. What is left of the item is a *periodic* refresh, which would rename
+rows behind the user's back — including rows they deliberately named, unless it
+re-derived the same ownership distinction req 22 already stores. Nothing to
+build.
+
+**Account/billing links as overflow escape hatches — non-goal.** `CLAUDE.md` §3
+does permit these: account and billing pages are one of the narrow legitimate
+reasons to open a tab. But permitted is not required, and no requirement asks
+for it. Requirement 10 exists precisely so checking an account's quota does not
+mean opening a provider dashboard; adding provider links now would put the first
+link-out into the feature built to remove the need for one. If a user hits
+something they can only do upstream, that is the moment to add the escape hatch
+— with a requirement naming what it is.
+
+### Struck: model-specific quota windows (2026-08-03)
+
+A Phase 2 checklist item read "Compute Claude model-specific quota state using
+`weeklyOpus`, `weeklySonnet`, or `weekly`". It is struck on two independent
+grounds, and the first one alone would not have been enough to strike it — which
+is why both are recorded.
+
+**The field names are wrong.** None of `weeklyOpus`, `weeklySonnet`, or
+`weekly` appears anywhere in `src/`. The Claude CLI's `rate_limit_event`
+carries one window per event, discriminated by `rateLimitType`, whose real
+values are typed in `claude-types.ts:340`: `five_hour`, `seven_day`,
+`seven_day_opus`, `seven_day_sonnet`, `overage`. So the item names a shape that
+never existed, but the *data* it was reaching for does arrive — the item was
+stale, not imaginary.
+
+**And the mechanism it implies is req 17's, which was struck.** ShipIt receives
+`seven_day_opus` / `seven_day_sonnet` and deliberately drops them
+(`adapter.ts:329`, pinned by `adapter.test.ts` "ignores rate_limit_event for
+sub-quotas", per docs/135's refresh strategy); the `/api/oauth/usage` parser
+likewise reads only the two headline windows (`limits-provider.ts:332`). Acting
+on a per-model window means the router must know the turn's model and evaluate a
+model-specific cutoff — which is exactly the routing-around-model-capability
+mechanism requirement 17 was reversed to forbid. "This account's Opus window is
+spent" is a specific case of "this account cannot run the requested model", and
+req 17's answer to that is: leave it in place and let the provider's error
+surface.
+
+**What happens today, then.** The account's headline windows stay under their
+cutoffs, so req 6's proactive failover does not move the session; the turn runs
+and the provider refuses it. Whether that refusal is then classified as hard
+exhaustion (benching the account under req 7, so req 14's retry moves to the
+next one) or surfaces as a plain error was **not** verified here — it depends on
+whether the provider's model-quota message matches `detectHardExhaustion`'s
+patterns, which is checked against real message text, not against these window
+types. Both outcomes are consistent with req 17: the failure is reported, and
+nothing is worked around.
+
+The **honest gap**, stated as a gap rather than as a plan: a user on a plan with
+separate per-model weekly limits gets no proactive failover for that limit. It
+is a requirement-level question ("should ShipIt treat a per-model window as a
+quota window for cutoff purposes?"), not a bug in an existing requirement, so it
+belongs in `requirements.md` if the user ever wants it — not in a checklist item
+implying it was already agreed.
+
 ### Fixed: a rescued runner ran the wrong agent (req 18)
 
 `SessionRunnerRegistry.getOrCreate(sessionId, sessionDir, defaultAgentId)`
@@ -2661,12 +2749,13 @@ it is read from the session record inside `prepareSessionAgentEnvironment`
 the same way. The checklist item that prompted this said "persisted agent *and
 provider route*"; the route half was already correct.
 
-### Designed, not built: account identity and selection mode (reqs 21, 22)
+### Landed: account identity and selection mode (reqs 21, 22)
 
 Both trace to the two Phase 0 questions that stayed open through every phase
-below. They are recorded here as design; the work is Phase 6 in `checklist.md`.
+below. Both are now built; the section keeps the design reasoning, with the
+implementation notes marked where they correct it.
 
-**Account identity (req 22).** Codex identity was never the problem —
+**Account identity (req 22) — landed.** Codex identity was never the problem —
 `chatgpt_account_id` is already decoded out of the `id_token` claim for plan
 extraction. Claude's is in a place the design had not looked. `.credentials.json`
 carries `claudeAiOauth.subscriptionType` / `rateLimitTier`, which are plan
@@ -2751,3 +2840,34 @@ That is already how the account-row auth surface works (a failed row offers its
 own connect action, scoped to its own `accountId`), so this is a constraint to
 preserve rather than something to build — but a future change that routes all
 sign-in through a single "add account" entry point would break it.
+
+**How req 22 is implemented.** Key files: `provider-account-identity.ts` (read
++ policy), `provider-account-manager.ts` (`findByExternalId`,
+`recordAccountIdentity`, `refuseDuplicateConnect`), `app-lifecycle.ts` (the
+wiring), `ProviderAccount.externalId` / `.labelIsGenerated`.
+
+- **The refusal fires on the auth manager's `complete` event**, before the row
+  is flipped to `ready`. That is the last moment at which the row is not yet
+  selectable, and a duplicate account is worst precisely when it is picked as
+  the failover target for the account it duplicates.
+- **Two dispositions, not one.** A row that has never held an identity was
+  created by *this* "Add account" click and is deleted, so the refusal leaves no
+  dead row behind. A row that already has a different `externalId` — the user
+  signed the wrong account into an established row — keeps its position and
+  name, loses the credentials that would have made it a working duplicate, and
+  goes `auth_failed`. Deleting that one would take its priority position and
+  any pinned sessions with it.
+- **`labelIsGenerated` is what protects a user-typed name.** `create` sets it
+  when it generated the label, `rename` clears it, and only a generated label is
+  replaced by the reported email. A row predating the field is treated as
+  user-owned: leaving a stale label alone is recoverable, overwriting a
+  deliberate one is not.
+- **Unidentifiable connects proceed.** No `oauthAccount` (older CLI, env-only
+  auth), unparseable JSON, or a provider that stops reporting the field all
+  degrade to the pre-req-22 behaviour: generated label, no duplicate detection.
+  Refusing what ShipIt cannot identify would trade a rare confusing duplicate
+  for being unable to connect an account at all.
+- **`reason: "duplicate"`** is a new `agent_auth_failed` reason rather than
+  reuse of `denied`, for two reasons: retrying is exactly the wrong next step,
+  and the refusal usually deletes the row the event names, so the client has to
+  surface `message` as a toast instead of as that row's error.
