@@ -205,11 +205,20 @@ function IssueLabels({ labels }: { labels?: IssueLabel[] }) {
  * the independent header and row grids resolve to identical column tracks (with
  * `auto`, the header sized it to "Action" while rows sized it to the wider
  * button, and the `1fr` title absorbed the difference — misaligning the two).
+ *
+ * That fixed width MUST fit the widest form of the action button, because the
+ * cell centers its content: anything wider overflows the track by half the
+ * excess on each side, and the right-hand overflow eats the row's `pr-3` and
+ * runs off the panel edge (there is no column to its right to absorb it). The
+ * split repo-picker control (docs/236) measures ~164px — 138px for the main
+ * half ("Start session" + rocket at `size="md"`) plus a 26px caret half sharing
+ * one border — so the track is 168px, not the 134px that fit the pre-picker
+ * plain button. Re-measure it if the label, the icon, or the button size change.
  */
 const ROW_GRID =
   "grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 " +
   "[grid-template-areas:'id_pri'_'title_title'_'meta_meta'_'nested_nested'_'action_action'] " +
-  "@md:grid-cols-[56px_minmax(96px,1fr)_84px_96px_92px_134px] @md:gap-x-2.5 @md:items-start " +
+  "@md:grid-cols-[56px_minmax(96px,1fr)_84px_96px_92px_168px] @md:gap-x-2.5 @md:items-start " +
   "@md:[grid-template-areas:'id_title_pri_status_assignee_action']";
 
 // Every cell's FIRST line shares one fixed-height band, vertically centered, so
