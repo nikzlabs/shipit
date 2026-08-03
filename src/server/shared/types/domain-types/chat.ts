@@ -144,6 +144,20 @@ export interface BranchAutoResetCard {
   toSha: string;
   /** Emit time — doubles as the provenance stamp. */
   createdAt: string;
+  /**
+   * SHI-277 — this reset ran under `shipit branch reset-to-base --force`, which
+   * bypasses the "this branch is exactly what merged" safety clause. The forced
+   * path is trust-based rather than gated, so the transcript record IS the
+   * accountability: absent these two fields the card describes a reset that
+   * passed the full gate, which is a materially different claim.
+   *
+   * Both optional, and the whole card serializes to ONE json column
+   * (`messages.branch_auto_reset`), so this needs no migration and no
+   * `CARD_MESSAGE_FIELDS` change — existing rows simply parse without them.
+   */
+  forced?: boolean;
+  /** The operator-supplied justification, required whenever `forced` is true. */
+  forceReason?: string;
 }
 
 /**

@@ -231,8 +231,16 @@ for (const seg of segments(command)) {
         "merge in progress) and refuses otherwise.\n\n" +
         "If it already refused, that refusal is the signal: the branch is " +
         "carrying something a reset would destroy, and there is no reflog " +
-        "entry for uncommitted edits. Report what it said and continue " +
-        "without resetting — do not reproduce the reset by hand.\n",
+        "entry for uncommitted edits. Report what it said and let the user " +
+        "decide — do not reproduce the reset by hand.\n\n" +
+        "SHI-277: if the user tells you to go ahead anyway, the sanctioned " +
+        "override is `shipit branch reset-to-base --force --reason \"<why>\"`, " +
+        "not a manual reset. That path is brokered, so it still refuses over " +
+        "an uncommitted tree (the one loss with no reflog entry) and it " +
+        "records the reason in the transcript. It is also not blocked here — " +
+        "this hook only inspects `git` invocations, so the shim passes " +
+        "through untouched. A hand-rolled reset does the same damage with no " +
+        "check and no record, which is why it stays blocked.\n",
     );
     process.exit(2);
   }
