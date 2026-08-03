@@ -3,6 +3,11 @@
  * `master` repo it told the user their branch was behind a branch that doesn't
  * exist, and "Update branch" rebased onto an unresolvable ref. These cover the
  * branch name it renders and the one it hands to `startRebase`.
+ *
+ * The same claim is invented wholesale on a session that has no base branch at
+ * all — an ops session (docs/128) reported "Branch is behind `main`" despite
+ * having no remote and no PR lifecycle — so the nudge is gated on the session
+ * actually being repo-backed.
  */
 
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
@@ -26,13 +31,14 @@ function repo(defaultBranch?: string): RepoInfo {
   };
 }
 
-function session(): SessionInfo {
+function session(overrides: Partial<SessionInfo> = {}): SessionInfo {
   return {
     id: "s1",
     title: "s1",
     createdAt: "2026-01-01T00:00:00.000Z",
     lastUsedAt: "2026-01-01T00:00:00.000Z",
     remoteUrl: REPO_URL,
+    ...overrides,
   } as SessionInfo;
 }
 
@@ -110,5 +116,49 @@ describe("RebaseBanner", () => {
     render(<RebaseBanner sessionId="s1" />);
 
     expect(screen.getByText("main")).toBeInTheDocument();
+  });
+
+  it("shows no branch-behind nudge on an ops session", () => {
+    useSessionStore.setState({ sessions: [session({ kind: "ops", remoteUrl: undefined })] });
+    useGitStore.setState({ pushRejected: true });
+    const { container } = render(<RebaseBanner sessionId="s1" />);
+
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("shows no branch-behind nudge on an ops session that acquired a remote", () => {
+    useSessionStore.setState({ sessions: [session({ kind: "ops" })] });
+    useRepoStore.setState({ repos: [repo("main")] });
+    useGitStore.setState({ pushRejected: true });
+    const { container } = render(<RebaseBanner sessionId="s1" />);
+
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("shows no branch-behind nudge on a sandbox session", () => {
+    useSessionStore.setState({ sessions: [session({ kind: "sandbox", remoteUrl: undefined })] });
+    useGitStore.setState({ pushRejected: true });
+    const { container } = render(<RebaseBanner sessionId="s1" />);
+
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("shows no branch-behind nudge on a session with no remote", () => {
+    useSessionStore.setState({ sessions: [session({ remoteUrl: undefined })] });
+    useGitStore.setState({ pushRejected: true });
+    const { container } = render(<RebaseBanner sessionId="s1" />);
+
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("still reports a rebase failure on a session with no base branch", () => {
+    // The nudge is suppressed, not the whole banner: a rebase that did run
+    // reports its outcome, minus the Retry button that has nothing to rebase.
+    useSessionStore.setState({ sessions: [session({ kind: "ops", remoteUrl: undefined })] });
+    useGitStore.setState({ pushRejected: true, rebaseError: "boom" });
+    render(<RebaseBanner sessionId="s1" />);
+
+    expect(screen.getByText("Rebase failed")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Retry/ })).toBeNull();
   });
 });

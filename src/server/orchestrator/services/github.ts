@@ -3,6 +3,7 @@
  * (PR create/merge, token, logout, quick PR creation).
  */
 
+import path from "node:path";
 import type { GitManager } from "../../shared/git.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { WorkflowRunSummary, WorkflowJobSummary, WorkflowSummary } from "../github-auth-actions.js";
@@ -27,6 +28,28 @@ import { emitNoticePostTurn } from "../chat-card-persistence.js";
  * since local clones from the bare cache may have a filesystem path as origin.
  *
  * Returns `{ owner, repo }` on success, or `{ error }` explaining the failure.
+ *
+ * **This must not give the workspace an `origin` it didn't have.** It is on the
+ * read path of ~15 GitHub operations, including `gh pr list` / `gh pr view`, and
+ * `remoteUrl` is frequently NOT the session's own repo: `resolvePrTarget` maps an
+ * explicit `gh --repo owner/name` straight through to it. It used to
+ * `addRemote("origin", remoteUrl)` on any mismatch, so a *read* naming another
+ * repo wired that repo into the workspace as `origin` — permanently, and
+ * invisibly to the caller that did it.
+ *
+ * That is how an ops session ended up pointed at the ShipIt repo: `gh pr list
+ * --repo nikzlabs/shipit` created `origin` in its throwaway template workspace,
+ * and the next post-turn auto-push — which had been correctly inert on a
+ * remote-less session — sailed past `pushToOrigin`'s no-origin guard and tried to
+ * push the ops workspace's `main` at the real repo. It failed only because the
+ * two histories are unrelated; a workspace seeded from a clone would have pushed.
+ *
+ * So the repair is narrowed to the single case it was written for: an origin that
+ * is a **local filesystem path**, i.e. the `git clone --local` artifact pointing
+ * at the bare cache (`RepoGit.cloneFromCache` normally rewrites it, so this is the
+ * legacy-clone safety net). Repointing that at the GitHub URL loses nothing — a
+ * cache path was never a push target. Anything else is left alone: an absent
+ * origin stays absent, and a real remote is never silently swapped for another.
  */
 async function resolveGitHubRemote(
   git: GitManager,
@@ -35,11 +58,9 @@ async function resolveGitHubRemote(
   if (remoteUrl) {
     const parsed = parseGitHubRemote(remoteUrl);
     if (parsed) {
-      // Fix the git remote if it doesn't match (e.g., points to bare cache path).
-      // This makes subsequent git push/pull operations work correctly.
       const remotes = await git.getRemotes();
       const origin = remotes.find((r) => r.name === "origin");
-      if (origin?.url !== remoteUrl) {
+      if (origin && origin.url !== remoteUrl && path.isAbsolute(origin.url)) {
         await git.addRemote("origin", remoteUrl);
       }
       return parsed;

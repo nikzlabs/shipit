@@ -4,6 +4,7 @@ import {
   findRepoByUrl,
   resolveDefaultBranch,
   useSessionDefaultBranch,
+  useSessionHasBaseBranch,
   FALLBACK_DEFAULT_BRANCH,
 } from "./default-branch.js";
 import { useRepoStore } from "../stores/repo-store.js";
@@ -107,5 +108,41 @@ describe("useSessionDefaultBranch", () => {
       .toBe(FALLBACK_DEFAULT_BRANCH);
     expect(renderHook(() => useSessionDefaultBranch("nope")).result.current)
       .toBe(FALLBACK_DEFAULT_BRANCH);
+  });
+});
+
+describe("useSessionHasBaseBranch", () => {
+  function kindSession(id: string, kind?: "ops" | "sandbox", remoteUrl?: string): SessionInfo {
+    return {
+      id,
+      title: id,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      lastUsedAt: "2026-01-01T00:00:00.000Z",
+      ...(remoteUrl ? { remoteUrl } : {}),
+      ...(kind ? { kind } : {}),
+    } as SessionInfo;
+  }
+
+  it("is true for a repo-backed session", () => {
+    useSessionStore.setState({ sessions: [kindSession("s1", undefined, MASTER_REPO)] });
+    expect(renderHook(() => useSessionHasBaseBranch("s1")).result.current).toBe(true);
+  });
+
+  it("is false without a remote", () => {
+    useSessionStore.setState({ sessions: [kindSession("s1")] });
+    expect(renderHook(() => useSessionHasBaseBranch("s1")).result.current).toBe(false);
+  });
+
+  it("is false for ops and sandbox sessions even with a remote", () => {
+    useSessionStore.setState({
+      sessions: [kindSession("s1", "ops", MASTER_REPO), kindSession("s2", "sandbox", MASTER_REPO)],
+    });
+    expect(renderHook(() => useSessionHasBaseBranch("s1")).result.current).toBe(false);
+    expect(renderHook(() => useSessionHasBaseBranch("s2")).result.current).toBe(false);
+  });
+
+  it("fails closed for an undefined / unhydrated session", () => {
+    expect(renderHook(() => useSessionHasBaseBranch(undefined)).result.current).toBe(false);
+    expect(renderHook(() => useSessionHasBaseBranch("nope")).result.current).toBe(false);
   });
 });
