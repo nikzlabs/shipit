@@ -218,6 +218,85 @@ describe("autoResetMergedBranchOnContinue", () => {
     const out = await autoResetMergedBranchOnContinue(makeDeps({ createGitManager: () => git }), "s1", "/ws", undefined);
     expect(out.moved).toBe(true);
   });
+
+  /**
+   * The reset runs as ROOT against a worktree the uid-1000 worker owns, so every
+   * file it re-materializes lands `root:root` and the agent EACCESes on its first
+   * edit of this very turn. Nothing else repairs it (the boot chown is
+   * sentinel-skipped on warm reuse, `selfHealWorkspaceOwnership` runs only on
+   * container re-create, and the post-turn handback is `.git`-only), so these pin
+   * the handback on every path that could have re-rooted the tree — and pin the
+   * deliberate *absence* of the walk on the read-only paths.
+   */
+  describe("workspace ownership handback", () => {
+    it("hands back after a successful reset", async () => {
+      vi.mocked(handWorkspaceBackToWorker).mockClear();
+      const out = await autoResetMergedBranchOnContinue(makeDeps({ createGitManager: () => makeGit() }), "s1", "/ws");
+      expect(out.moved).toBe(true);
+      expect(handWorkspaceBackToWorker).toHaveBeenCalledWith("/ws");
+    });
+
+    it("hands back when the reset THROWS (the fail-safe catch must not skip it)", async () => {
+      // The worst version of the bug: the tree may already be re-rooted, the catch
+      // swallows the error and returns NOT_MOVED, and the turn then runs on a
+      // workspace the agent cannot write to. The `finally` is what closes it.
+      vi.mocked(handWorkspaceBackToWorker).mockClear();
+      const git = makeGit({ resetHardToRemoteBase: vi.fn().mockRejectedValue(new Error("origin/main missing")) });
+      const out = await autoResetMergedBranchOnContinue(makeDeps({ createGitManager: () => git }), "s1", "/ws");
+      expect(out.moved).toBe(false);
+      expect(handWorkspaceBackToWorker).toHaveBeenCalledWith("/ws");
+    });
+
+    it("hands back when the remote-heal force-push fails (reset already landed)", async () => {
+      vi.mocked(handWorkspaceBackToWorker).mockClear();
+      const git = makeGit({ forcePush: vi.fn().mockRejectedValue(new Error("(stale info)")) });
+      const out = await autoResetMergedBranchOnContinue(makeDeps({ createGitManager: () => git }), "s1", "/ws");
+      expect(out.moved).toBe(true);
+      expect(handWorkspaceBackToWorker).toHaveBeenCalledWith("/ws");
+    });
+
+    it("hands back on a post-fetch TOCTOU bail (the fetch's own root writes count)", async () => {
+      // No reset ran, but `git fetch` as root already wrote FETCH_HEAD, remote
+      // refs and new objects into `.git` — hence the flag is set before the fetch,
+      // not before the reset.
+      vi.mocked(handWorkspaceBackToWorker).mockClear();
+      const getHeadHash = vi
+        .fn()
+        .mockResolvedValueOnce(MERGED_SHA)
+        .mockResolvedValue("deadbeef0000000000000000000000000000beef");
+      const out = await autoResetMergedBranchOnContinue(
+        makeDeps({ createGitManager: () => makeGit({ getHeadHash }) }),
+        "s1",
+        "/ws",
+      );
+      expect(out.moved).toBe(false);
+      expect(handWorkspaceBackToWorker).toHaveBeenCalledWith("/ws");
+    });
+
+    /**
+     * Deliberately scoped, not unconditional: this helper runs on EVERY
+     * interactive turn, and the handback is a full worktree walk. Paths that bail
+     * before the fetch only ever READ git, so they cannot have re-rooted anything
+     * — charging every turn of every session for a no-op walk is the cost this
+     * avoids. Pinned so the scoping is explicit rather than incidental.
+     */
+    it.each([
+      ["the global setting is off", { getAutoResetMergedBranch: () => false }, undefined],
+      ["the per-send intent is false", {}, false],
+    ] as const)("does NOT walk the worktree when %s (never touched git)", async (_label, over, intent) => {
+      vi.mocked(handWorkspaceBackToWorker).mockClear();
+      await autoResetMergedBranchOnContinue(makeDeps(over), "s1", "/ws", intent);
+      expect(handWorkspaceBackToWorker).not.toHaveBeenCalled();
+    });
+
+    it("does NOT walk the worktree when the pre-fetch gate fails (never touched git)", async () => {
+      vi.mocked(handWorkspaceBackToWorker).mockClear();
+      const git = makeGit({ isClean: vi.fn().mockResolvedValue(false) });
+      await autoResetMergedBranchOnContinue(makeDeps({ createGitManager: () => git }), "s1", "/ws");
+      expect(git.fetch).not.toHaveBeenCalled();
+      expect(handWorkspaceBackToWorker).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe("isResetEligible (composer-control signal)", () => {

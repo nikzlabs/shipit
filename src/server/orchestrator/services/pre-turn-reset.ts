@@ -168,6 +168,11 @@ export async function autoResetMergedBranchOnContinue(
    */
   intent?: boolean,
 ): Promise<ResetOutcome> {
+  // Set the instant before the first git call that WRITES, so the `finally`
+  // handback below can tell "we may have re-rooted this workspace" from "we
+  // bailed without touching it". See the `finally` for why that distinction has
+  // to be made here rather than by handing back unconditionally.
+  let mutatedWorkspace = false;
   try {
     // Gate on the global setting AND an explicit per-send opt-out.
     if (!deps.getAutoResetMergedBranch()) return NOT_MOVED;
@@ -181,6 +186,7 @@ export async function autoResetMergedBranchOnContinue(
     const base = prStatus!.baseBranch;
 
     // Fetch the latest base, then RE-validate the full gate (TOCTOU window).
+    mutatedWorkspace = true;
     await git.fetch("origin");
     if (!(await computeResetEligible(session, prStatus, git))) return NOT_MOVED;
 
@@ -229,6 +235,31 @@ export async function autoResetMergedBranchOnContinue(
   } catch (err) {
     console.error(`[pre-turn-reset] auto-reset failed for ${sessionId} (running turn on the un-moved branch):`, err);
     return NOT_MOVED;
+  } finally {
+    // The orchestrator ran that git work as ROOT, so every file the reset
+    // re-materialized landed `root:root` — in a worktree the non-root worker
+    // (uid 1000) owns. Without this handback the agent EACCESes on its first
+    // edit of the very turn the reset exists to enable, and nothing repairs it:
+    // the entrypoint's boot chown is sentinel-skipped on warm reuse,
+    // `selfHealWorkspaceOwnership` runs only on container (re)create, and the
+    // post-turn handback is `.git`-only — so git keeps working while the
+    // worktree stays unwritable, which is what made this silent for six weeks.
+    // (docs/218 shipped without it; docs/239's `resetBranchToBaseExplicit`
+    // added it to its own path only.)
+    //
+    // In a `finally`, not after the success return, because the `catch` above is
+    // fail-safe: a reset that succeeds and THEN throws in the heal has already
+    // re-rooted the tree, and returning NOT_MOVED would run the turn on a
+    // workspace the agent cannot write to — the worst version of this bug.
+    //
+    // Scoped to `mutatedWorkspace` rather than unconditional because this helper
+    // runs on EVERY interactive turn (`ws-handlers/agent-execution.ts`), and the
+    // handback is a full worktree walk; charging every turn of every session for
+    // it to cover paths that only ever *read* git is not worth it. The flag is
+    // set before `fetch`, not before the reset, so the fetch's own root-owned
+    // `.git` writes (FETCH_HEAD, remote refs, new objects) are covered too — a
+    // post-fetch TOCTOU bail still hands back.
+    if (mutatedWorkspace) handWorkspaceBackToWorker(sessionDir);
   }
 }
 
