@@ -637,6 +637,61 @@ describe("session-credentials", () => {
     expect(readTail(path.join(sessionDir, ".claude", ".credentials.json"))).toBe("FRESH");
   });
 
+  // docs/179 §4 — the guarantee the resident-process fix leans on: suppressing
+  // the destructive repair must NOT also suppress the token copy. The earlier
+  // "still refreshes the token" coverage used a real `.claude` directory plus a
+  // separate orphan, where the naive destination is already correct. On the
+  // ACTUAL leaked shape, `<sessionDir>/.claude` resolves back to the shared
+  // source on the orchestrator, so the freshness guard saw source and
+  // destination as one file and skipped the copy — leaving the resident CLI on
+  // a dead token with nothing in the logs to say so.
+  it("delivers a rotated token to the path the container reads, with the leak repair suppressed", () => {
+    const account = path.join(root, "provider-accounts", "claude", "claude-default");
+    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("ROTATED", 9_000));
+    const sessionDir = perSessionCredentialsDir(root, sid);
+    fs.mkdirSync(sessionDir, { recursive: true });
+    // The leak: an absolute symlink that resolves to the shared source here,
+    // but to the session's own orphan inside the subpath-mounted container.
+    fs.symlinkSync(path.join(account, ".claude"), path.join(sessionDir, ".claude"));
+    const containerVisible = path.join(sessionDir, "provider-accounts", "claude", "claude-default", ".claude");
+    fs.mkdirSync(containerVisible, { recursive: true });
+    fs.writeFileSync(path.join(containerVisible, ".credentials.json"), claudeCreds("STALE", 1_000));
+
+    syncProviderAccountTokenIn(
+      root, sid, "claude", "claude-default", undefined, undefined,
+      { repairLeakedSubtrees: false },
+    );
+
+    // Topology untouched — a resident CLI never saw its credentials vanish.
+    expect(fs.lstatSync(path.join(sessionDir, ".claude")).isSymbolicLink()).toBe(true);
+    // ...and the rotated token still reached the file that CLI actually reads.
+    expect(readTail(path.join(containerVisible, ".credentials.json"))).toBe("ROTATED");
+  });
+
+  it("repushProviderAccountToken reaches the container-visible token with repair suppressed", () => {
+    const account = path.join(root, "provider-accounts", "claude", "claude-default");
+    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
+    const sessionDir = perSessionCredentialsDir(root, sid);
+    fs.mkdirSync(sessionDir, { recursive: true });
+    fs.symlinkSync(path.join(account, ".claude"), path.join(sessionDir, ".claude"));
+    const containerVisible = path.join(sessionDir, "provider-accounts", "claude", "claude-default", ".claude");
+    fs.mkdirSync(containerVisible, { recursive: true });
+    // A LATER expiry than the source: the re-push path is deliberately
+    // unguarded, so this must still be overwritten (docs/142 A3).
+    fs.writeFileSync(path.join(containerVisible, ".credentials.json"), claudeCreds("DEAD", 99_000));
+
+    const wrote = repushProviderAccountToken(
+      root, sid, "claude", "claude-default", undefined, undefined,
+      { repairLeakedSubtrees: false },
+    );
+
+    expect(wrote).toBe(true);
+    expect(fs.lstatSync(path.join(sessionDir, ".claude")).isSymbolicLink()).toBe(true);
+    expect(readTail(path.join(containerVisible, ".credentials.json"))).toBe("FRESH");
+  });
+
   it("syncProviderAccountTokenIn repairs a leaked symlink on the per-turn sync-in path", () => {
     const account = path.join(root, "provider-accounts", "claude", "claude-default");
     fs.mkdirSync(path.join(account, ".claude"), { recursive: true });

@@ -31,7 +31,27 @@ export function wireAuthRequiredHandler(
   opts: WireListenersOpts,
   emitToViewers: (msg: WsServerMessage) => void,
 ): void {
+  // docs/179 — turn-scoped idempotence latch. `StreamingClaudeProcess` already
+  // raises `auth_required` at most once per turn, but that guarantee covers one
+  // emitter; this handler must be safe against a duplicate from anywhere,
+  // because everything below is destructive or user-visible exactly once —
+  // it kills the turn's agent, and on the surface path emits an error bubble,
+  // nudges the refresher, and broadcasts `session_agent_finished`.
+  //
+  // Crucially this is NOT the same as making `willRecoverAuth` return false on
+  // a second call: `false` means "will not recover", which routes the duplicate
+  // into `surfaceReauth()` and pops a sign-in card *during* a recovery that is
+  // about to succeed silently. A duplicate must do nothing at all.
+  //
+  // Safe as a per-turn closure: `agent-execution.ts` calls
+  // `existingAgent.removeAllListeners()` before re-wiring a reused process, so
+  // exactly one of these handlers is registered per turn.
+  let handledThisTurn = false;
+
   agent.on("auth_required", () => {
+    if (handledThisTurn) return;
+    handledThisTurn = true;
+
     const turnSession = opts.capturedSessionId
       ? deps.sessionManager.get(opts.capturedSessionId)
       : null;

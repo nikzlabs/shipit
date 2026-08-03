@@ -7,6 +7,7 @@ import { LogStore } from "./log-store.js";
 import type { PrStatusPoller } from "./pr-status-poller.js";
 import { ReleaseStatusPoller } from "./release-status-poller.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
+import { sessionHasLiveAgent } from "./session-runner.js";
 import { queuedMessageToDispatchOptions } from "./queue-drain.js";
 import type { ServiceManager } from "./service-manager.js";
 import type { ResolvedEgressConfig } from "./egress-allowlist.js";
@@ -592,6 +593,9 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     githubAuthManager, agentRegistry,
     providerAccountManager,
     sseBroadcast, credentialsDir, sessionManager,
+    // docs/179 §4 — never let the post-sign-in re-push rewrite credential
+    // topology under a live CLI process.
+    hasLiveAgent: (sessionId) => sessionHasLiveAgent(runnerRegistry, sessionId),
   });
 
   // ---- Claude OAuth refresher (docs/153) ----
@@ -618,10 +622,16 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
           (session.providerRouteKind === null || session.providerRouteKind === undefined);
         if (!accountMatches) continue;
         try {
+          // docs/179 §4 — the refresher fires on a wall clock, so it can land
+          // mid-turn or under an idle-but-resident streaming process. Push the
+          // rotated token (that is the point), but never rewrite credential
+          // topology underneath a live CLI: the repair's unlink→copy window
+          // makes the process report itself unauthenticated.
+          const opts = { repairLeakedSubtrees: !sessionHasLiveAgent(runnerRegistry, session.id) };
           const wrote =
             session.providerRouteKind === "account" && session.providerRouteId
-              ? repushProviderAccountToken(credentialsDir, session.id, agentId, session.providerRouteId)
-              : repushAgentToken(credentialsDir, session.id, agentId);
+              ? repushProviderAccountToken(credentialsDir, session.id, agentId, session.providerRouteId, undefined, undefined, opts)
+              : repushAgentToken(credentialsDir, session.id, agentId, undefined, undefined, opts);
           if (wrote) healed++;
         } catch (err) {
           console.error(`[${logPrefix}] repush failed for session ${session.id}:`, err);

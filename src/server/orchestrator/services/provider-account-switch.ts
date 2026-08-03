@@ -9,11 +9,27 @@
  *
  * ## Why the agent process has to die
  *
- * Both CLIs read their credentials **once**, at process start, from `$HOME`.
- * The per-session credentials dir is bind-mounted into the container, so
- * rewriting the files on disk is visible immediately — but a *running* agent
- * already holds the old account's token in memory and will keep using it until
- * it exits. So the order is: kill, rewrite, then let the next turn spawn fresh.
+ * This docstring used to claim both CLIs read their credentials **once**, at
+ * process start, and that a running agent therefore holds the outgoing token
+ * in memory until it exits. That is **false** for Claude, and the opposite of
+ * the truth is what makes the kill necessary. Verified against CLI 2.1.219 by
+ * driving one resident `--input-format stream-json` process through three
+ * turns on an isolated `$HOME`: turn 1 with the credentials file present
+ * succeeded, turn 2 with the file deleted underneath the live process failed
+ * with `Not logged in · Please run /login`, and turn 3 after restoring the
+ * file succeeded again — `ok → fail → ok`, no restart. The CLI re-reads
+ * `.claude/.credentials.json` per request. (Claude only; Codex is untested and
+ * this module makes no claim about it.)
+ *
+ * So a live process does **not** insulate the switch — it is exposed to every
+ * intermediate state the rewrite passes through. `provisionProviderAccountCredentials`
+ * is not atomic across the subtree, so a resident agent could serve a request
+ * against a half-written mix of the two accounts, or against a momentarily
+ * absent file. Killing first is what makes the rewrite unobservable. The order
+ * is: kill, rewrite, then let the next turn spawn fresh.
+ *
+ * This is the same hazard docs/179 §4 fixes for the leak repair, and the same
+ * reason a credential rewrite must never run under a resident process.
  *
  * ## Why the conversation survives anyway
  *

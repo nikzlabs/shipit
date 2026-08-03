@@ -126,7 +126,16 @@ The fix, in `agents/claude/process.ts`:
   `error_during_execution` (an interrupt) and `error_max_turns`.
 - **`resultEventIndicatesAuthFailure`** uses it, still ignoring *successful*
   results: `AUTH_ERROR_PATTERNS` contains generic words ("oauth", "sign in") a
-  legitimate final answer could contain.
+  legitimate final answer could contain. Two structural exclusions run before
+  any text match, because a failed result is not automatically an *API* failure
+  and only an API failure can be an auth failure: `error_max_turns` and
+  `error_during_execution` (the turn cap and an interrupt, whose `result`
+  carries the conversation's trailing text), and a `terminal_reason` that is
+  present and not `api_error`. Without them, a session *implementing* OAuth
+  that hit the turn cap would be read as unauthenticated — the real error
+  swallowed, the turn silently "healed" and re-run. Absent `terminal_reason` is
+  not disqualifying: older CLIs omit it, and a missed detection is the failure
+  this path exists to prevent.
 - **`assistantEventIndicatesAuthFailure`** — new. Requires
   `is_api_error_message`, so a model that merely talks about signing in can't
   trip it, and matches on the `error` code (`authentication_failed`) or the
@@ -138,6 +147,30 @@ The fix, in `agents/claude/process.ts`:
   a turn dying on the stderr auth path emits no `agent_result` either, and
   `turn-executor` documents that an auth-required turn legitimately ends
   without one.
+
+**One failure, one signal.** Swallowing both events is right; raising
+`auth_required` twice is not. The signal's consumers are emphatically not
+idempotent — the quiet recovery heals the token and **re-dispatches the whole
+turn** — so the two-event payload made one auth failure re-run the user's turn
+twice, side effects included. That was a regression introduced *by* §3: the old
+detector fired on neither event, so there was nothing to double.
+
+De-duplication lives at the **emitter**: both process classes latch
+`auth_required` to one raise per turn. The two-event shape is a CLI protocol
+detail, and a consumer taking a semantic "this turn failed auth" signal should
+not have to know the wire format produced it twice — nor should the fix have to
+be repeated at each consumer with side effects (the re-dispatch; the visible
+path's error message, refresher nudge and `session_agent_finished`) and
+re-repeated at the next one added. The latch is per-**turn**, not per-process:
+`StreamingClaudeProcess` is resident across turns, so it re-arms in
+`sendUserMessage`, or a session that failed auth once would never raise the
+signal again. The listener keeps its own turn latch as well
+(`agent-auth-handler.ts`), because the emitter's gate cannot cover a duplicate
+from a *different* source — the non-JSON branch of each drain loop raises from
+raw stderr text too. `willRecoverAuth` is deliberately **not** the gate: its
+return value means "will this turn auto-recover", and returning `false` for
+"already recovering" would route the caller into `surfaceReauth()`, popping a
+sign-in card in the middle of a recovery about to succeed quietly.
 
 **Adjacent, from the same incident report:** an `agent_tool_result` whose
 `content` is a bare string (permitted by the Anthropic message schema; the
@@ -167,12 +200,34 @@ repair running underneath a live CLI process.
 The repair is destructive by construction: unlink `<sessionDir>/.claude`,
 re-copy the subtree from the account root, merge the orphan tree back on top,
 `rmSync` the orphan root. Between the unlink and the copy there is a real
-window in which the session dir has no `.claude/.credentials.json` — and the
-Claude CLI re-reads that file per API call, so a resident process that spans
-the window reports itself unauthenticated. The incident's ordering matches
-exactly: `/compact` left a resident streaming process alive, the next turn's
-env-prep repaired the links again, and the turn came back
-`Not logged in · Please run /login`.
+window in which the session dir has no `.claude/.credentials.json`.
+
+**That window is observable to a live process — verified, not assumed.** The
+mechanism turns entirely on whether the CLI re-reads its credentials or caches
+them at startup, and the repo asserted *both*: this doc said "per API call"
+while `services/provider-account-switch.ts` said "**once**, at process start"
+and built its kill-first ordering on that. Neither was tested. Settled by
+driving one resident `--input-format stream-json` process (CLI 2.1.219) through
+three turns against an isolated `$HOME`:
+
+| turn | `.claude/.credentials.json` | result |
+|---|---|---|
+| 1 | present | `subtype: success`, `is_error: false` |
+| 2 | **deleted underneath the live process** | `is_error: true`, `terminal_reason: api_error`, `Not logged in · Please run /login` |
+| 3 | restored | `subtype: success`, `is_error: false` |
+
+`ok → fail → ok` on one process with no restart. The CLI re-reads the file per
+request, and a missing file produces **the exact string this incident reported**
+— which also explains the user-visible shape of the bug, that re-sending the
+message "just works". `provider-account-switch.ts` has been corrected; its
+kill-first ordering is still right, but because a resident process is exposed
+to every intermediate state of a non-atomic rewrite, not because it is insulated
+from them. (Claude only — Codex was not tested, and neither doc now claims
+anything about it.)
+
+The incident's ordering then matches exactly: `/compact` left a resident
+streaming process alive, the next turn's env-prep repaired the links again, and
+the turn came back `Not logged in · Please run /login`.
 
 **Fix — `reusingResidentAgent` (issue criterion 3).** Credential *topology*
 may only change at a spawn boundary. `turn-executor` is the one place that
@@ -188,17 +243,82 @@ transports inherit the one decision — the WS wrapper
 (`ws-handlers/agent-execution.ts`) and the dispatched/system wrapper
 (`runner-registry-factory.ts`) each just forward the flag.
 
-**Convergence (criterion 2).** The "still-unidentified writer" that recreated
-the legacy links between turns was ShipIt itself: `migrateDefaultAccounts`
-re-created the root-level alias symlinks (`<credentialsDir>/.claude` →
-`provider-accounts/claude/claude-default/.claude`) on **every boot**, and a
-session provisioned from that root inherited them. docs/150 req 19 stopped
-creating the aliases and retires any an earlier boot left behind, and
-`copyCredentialPath` dereferences, so a freshly provisioned session cannot
-acquire the symlink shape at all. What remains is one repair pass for sessions
-provisioned before that, after which the repair is a true no-op — asserted
-directly rather than assumed (`session-agent-env.test.ts`, "repairs a legacy
-default-account link once, then converges to a no-op").
+**The other two windows.** `reusingResidentAgent` closes the per-turn sync-in
+and nothing else; a live process can be exposed to a rewrite from two more
+directions, so all three are closed together.
+
+- **A system turn** (merge wake, rebase, CI fix) is never steered, so it
+  answers "not reusing" *truthfully* and the repair is free to run — while the
+  resident process it declined to adopt is still running in the worker.
+  `dispatched-turn` now **retires** it before env prep, mirroring the docs/150
+  account-failover block a few lines above. That is criterion 3's own wording
+  ("retire the old process first rather than swapping the subtree beneath it"),
+  and "topology changes only at a spawn boundary" is only true if the boundary
+  is real. It is also tidier than the status quo, where `createAgent` displaced
+  the slot, orphaned the process, and let the worker's `/agent/start` 409 into
+  a kill+restart. Reachable only with no turn in flight (`dispatchOnRunner`
+  enqueues while `running`).
+- **The wall-clock re-push** — the scheduled OAuth refresher
+  (`bootstrap-managers.ts`) and the post-sign-in re-push (`app-lifecycle.ts`) —
+  ran `repushAgentTokenFromRoot`, which reached the same destructive repair
+  unconditionally. It now takes the same `repairLeakedSubtrees` opt-out, and
+  both callers derive it from **`sessionHasLiveAgent(registry, sessionId)`**.
+  The predicate is deliberately neither `runner.running` (a streaming process
+  outlives its turn, which is what `/compact` leaves behind) nor
+  `reusingResidentAgent` (these callers fire on a clock, with no turn in view).
+  Actual process liveness is the only thing that answers "could a CLI read
+  these files while I rewrite them?". It over-approximates at a spawn boundary
+  — the incoming agent is already in the slot before it runs — which is why the
+  turn path keeps its own predicate and does not use this one.
+
+**The guarantee the suppression leans on — the token copy must still land.**
+"Topology frozen, token still refreshed" is only true if the copy reaches the
+file the CLI reads. The freshness guard compared the source against
+`<sessionDir>/<rel>`; on the *actual* leaked shape that path is an absolute
+symlink back into the shared account root, so on the orchestrator it resolves
+to the source itself, `srcExp <= dstExp`, and the copy was skipped — silently,
+while inside the subpath-mounted container the same symlink resolves to the
+session's own orphan and the resident CLI keeps reading a dead token. Both copy
+loops now resolve the destination to what the container would read
+(the orphan under `<sessionDir>/provider-accounts/<provider>/<account>/`) before
+comparing or writing. The earlier "reuse turn still refreshes the token" test
+could not have caught this: it used a real directory plus a separate orphan,
+the one shape where the naive destination is already correct.
+
+*Not fixed here, deliberately:* the **write-back** direction still uses the
+naive path — `syncAgentTokenBack`, `agentTokenFilePaths` /
+`sessionTokenIsAheadOfSource` and the mid-turn publisher built on them
+(docs/153). On the leaked shape those resolve to the source itself, so a
+rotation the container performs is compared against, and copied over, that same
+file: a no-op rather than a corruption. The consequence is bounded — a
+pre-req-19 session's *own* refresh is not published to its siblings until the
+repair runs — and the fix belongs with the sync-back owner, not in a change
+whose subject is not writing under a live process.
+
+**Convergence (criterion 2) — NOT closed; the writer is still unidentified.**
+An earlier revision of this doc named `migrateDefaultAccounts` as the writer,
+claiming it re-created the root-level alias symlinks on **every boot**. That is
+false. `migrateProviderDefault` opens with `if (this.list(provider).length > 0)
+return;` and the `symlinkSync` sat *below* that guard (confirmed present in
+`95a44dc6^` as well), so it created the aliases exactly once, at first
+migration, and returned immediately on every boot thereafter. It cannot explain
+repair-then-recreation between ordinary turns on an already-migrated install.
+
+What *is* established is narrower, and only about **newly provisioned**
+sessions: docs/150 req 19 stopped creating the root aliases and retires any an
+earlier boot left behind, and `copyCredentialPath` dereferences rather than
+preserving symlinks, so a session provisioned today cannot acquire the leaked
+shape at all. An audit of the current tree found no remaining production path
+that writes a symlink at `<sessionDir>/.claude`. For sessions provisioned
+*before* req 19, the repair converges after one pass —
+`session-agent-env.test.ts` ("repairs a legacy default-account link once, then
+converges to a no-op") asserts that directly.
+
+None of that identifies what recreated the links between turns on the
+production install in the incident. Repeated repair there remains unexplained,
+so criterion 2 stays open (issue #1874). The §4 fix does not depend on the
+answer: it makes repair-under-a-resident-process impossible whether or not the
+repair ever converges.
 
 **Turn-path audit (criterion 4).** Every path that spawns an agent converges on
 the same enforcing preparation. Five services prepare the environment early —
@@ -386,9 +506,14 @@ existed on disk but could not be resumed from `/workspace`:
   a duplicate prompt.
 
 - `session/agents/claude/process.ts` — `resultEventIsError`,
-  `resultEventIndicatesAuthFailure`, `assistantEventIndicatesAuthFailure`,
+  `resultEventIndicatesAuthFailure` (incl. the `error_max_turns` /
+  `terminal_reason` exclusions), `assistantEventIndicatesAuthFailure`,
   `consumeAuthFailureEvent` (the drain-loop gate that raises `auth_required`
-  and swallows the CLI's error copy).
+  and swallows the CLI's error copy), and `raiseAuthRequiredOnce` — the
+  per-turn latch on both process classes, re-armed in `run()` /
+  `sendUserMessage`.
+- `ws-handlers/agent-auth-handler.ts` — the listener's own turn latch, for a
+  duplicate arriving from the raw-stderr path rather than the JSON drain.
 - `session/agents/claude/adapter.ts` — `is_error`-based `agent_result` status /
   error mapping.
 - `ws-handlers/agent-event-normalizer.ts`, `ws-handlers/agent-listeners.ts` —
@@ -399,7 +524,14 @@ existed on disk but could not be resumed from `/workspace`:
   `input.reuseExistingAgent` at the `prepareAgentEnv` call.
 - `session-agent-env.ts` — `reusingResidentAgent` → the sync-in's
   `repairLeakedSubtrees`, plus the `[env-prep]` decision log.
-- `token-sync-manager.ts` — `SyncTokenInOptions.repairLeakedSubtrees`; the
+- `dispatched-turn.ts` — retires a resident process before env prep on a system
+  turn (the boundary the reuse flag alone doesn't make real).
+- `session-runner.ts` — `sessionHasLiveAgent`, the process-liveness predicate
+  for the wall-clock callers (and why it is not `runner.running`).
+- `bootstrap-managers.ts`, `app-lifecycle.ts` — the scheduled refresher and the
+  post-sign-in re-push consult that predicate for `repairLeakedSubtrees`.
+- `token-sync-manager.ts` — `repairLeakedSubtrees` on both the sync-in and the
+  re-push; the container-visible destination resolution in both copy loops. The
   repair itself (`materializeLeakedSubtreeSymlinks`) is unchanged.
 - `ws-handlers/agent-execution.ts`, `runner-registry-factory.ts`,
   `session-runner.ts` — the two `prepareAgentEnv` wrappers and the
@@ -436,21 +568,40 @@ existed on disk but could not be resumed from `/workspace`:
 - `session/agents/claude/auth-detection.test.ts` — the real CLI payloads
   (`subtype:"success"` + `is_error`, the synthetic assistant envelope), the
   no-false-positive cases (a model reply that discusses signing in; a non-auth
-  API error), and `resultEventIsError`.
-- `session/agents/claude/process.test.ts` — the drain loop raises
-  `auth_required` for both events and forwards neither, while a normal
-  assistant message + clean result still pass through.
+  API error; a turn-cap or interrupted failure whose text mentions OAuth; a
+  non-`api_error` `terminal_reason`), that an absent `terminal_reason` still
+  detects, and `resultEventIsError`.
+- `session/agents/claude/process.test.ts` — the drain loop forwards **neither**
+  auth event and raises `auth_required` exactly **once** across the pair, on
+  both process classes; the streaming latch re-arms on the next
+  `sendUserMessage`; a normal assistant message + clean result still pass
+  through.
+- `integration_tests/auth-401-auto-retry.test.ts` → the real two-event payload —
+  injects what the CLI actually emits (not a synthetic single `auth_required`)
+  and asserts exactly one heal and one re-dispatch. Pre-fix this test sees two
+  heals and three agents.
 - `integration_tests/ask-user-question.test.ts` — a string-valued
-  `tool_result.content` passes through intact while suppression is active
-  instead of throwing.
+  `tool_result.content` passes through intact while suppression is active, and
+  the **turn survives**: the broadcast happens before the extraction that threw,
+  so the assertions that matter are the ones after — the follow-up steer is
+  honored in order and the turn reaches a terminal state.
+- `ws-handlers/agent-event-normalizer.test.ts` — direct non-array `content`
+  cases for `extractToolResults` and `stampToolDurations`.
 - `session-agent-env.test.ts` → "credential topology under a resident agent" —
   a legacy default-account link repairs once then converges; the pinned
   non-default account's token is the one synced; a reuse turn leaves the
   subtree alone but still refreshes the token; and the suppression never
   leaves a resident agent credential-less when the source subtree is missing.
+- `session-credentials.test.ts` → the **genuine leaked shape** (an absolute
+  symlink into the shared root, not a real dir + orphan): with the repair
+  suppressed, sync-in and re-push both still land the rotated token at the path
+  the container reads, and neither touches the topology.
 - `session-runner.test.ts` — the executor tells env prep which kind of turn
   it is: `reusingResidentAgent: true` when the message is steered into a
-  resident streaming process, `false` on a fresh spawn.
+  resident streaming process, `false` on a fresh spawn; a **system turn**
+  (merge wake) kills the resident process *before* env prep runs, asserted as
+  an ordering; and `sessionHasLiveAgent` is true for an idle session holding a
+  resident process (the case `runner.running` gets wrong).
 - `integration_tests/auth-401-auto-retry.test.ts` — end-to-end dispatch path:
   heal succeeds → silent re-dispatch + completion; heal fails → card, no
   re-dispatch; bounded (second 401 on the retry surfaces the card, heal runs

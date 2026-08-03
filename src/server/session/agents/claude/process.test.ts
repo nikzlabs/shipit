@@ -294,9 +294,50 @@ describe("ClaudeProcess", () => {
         })}\n`,
       );
 
-      expect(authRequiredCount).toBe(2);
-      // Neither is forwarded: ShipIt owns the recovery and the sign-in copy.
+      // ONE signal for one failure, even though the CLI describes it twice.
+      // `auth_required` consumers heal the token and re-dispatch the whole
+      // turn, so a second raise re-runs the user's turn — see
+      // `consumeAuthFailureEvent`.
+      expect(authRequiredCount).toBe(1);
+      // But BOTH events are still swallowed: ShipIt owns the recovery and the
+      // sign-in copy, and either one reaching the transcript renders the CLI's
+      // "run /login" line as the agent's reply.
       expect(events).toEqual([]);
+    });
+
+    it("raises auth_required again on a later turn of a resident streaming process", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      const claude = new StreamingClaudeProcess();
+      let authRequiredCount = 0;
+      claude.on("auth_required", () => { authRequiredCount += 1; });
+
+      const authFailure = `${JSON.stringify({
+        type: "assistant",
+        message: { content: [{ type: "text", text: "Not logged in · Please run /login" }] },
+        error: "authentication_failed",
+        is_api_error_message: true,
+      })}\n${JSON.stringify({
+        type: "result",
+        subtype: "success",
+        is_error: true,
+        terminal_reason: "api_error",
+        session_id: "abc",
+        result: "Not logged in · Please run /login",
+      })}\n`;
+
+      claude.run({ prompt: "first" });
+      mockProc.stdout.emit("data", Buffer.from(authFailure));
+      expect(authRequiredCount).toBe(1);
+
+      // The latch is per-turn, not per-process. This process is resident across
+      // turns, so a failure on a LATER turn must raise the signal again —
+      // otherwise one auth failure would permanently disable recovery for the
+      // life of the session.
+      claude.sendUserMessage("second");
+      mockProc.stdout.emit("data", Buffer.from(authFailure));
+      expect(authRequiredCount).toBe(2);
     });
 
     it("still forwards a normal assistant message and a clean result", () => {

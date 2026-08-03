@@ -727,6 +727,34 @@ export function resetRunnerTurnState(runner: SessionRunnerInterface): void {
   resetVoiceNoteTurnState(runner);
 }
 
+/**
+ * docs/179 §4 — is there a CLI process alive for this session right now?
+ *
+ * The predicate for "may I rewrite this session's credential topology?". It is
+ * deliberately NOT `runner.running` and NOT the turn-executor's
+ * `reusingResidentAgent`:
+ *
+ *   - `runner.running` asks whether a TURN is in flight. A streaming Claude
+ *     process outlives its turn — that is the whole point of live steering —
+ *     so an idle session can still hold a process that re-reads its
+ *     credentials on the next request.
+ *   - `reusingResidentAgent` asks what the NEXT turn intends to do. It is the
+ *     right question at a spawn boundary, where the executor is choosing; it
+ *     is the wrong question for the OAuth refresher and post-sign-in re-push,
+ *     which fire on a wall clock with no turn in view. A system turn that
+ *     declines to reuse the resident process still leaves it running until
+ *     something kills it.
+ *
+ * Actual process liveness is the only thing that answers "could a CLI read
+ * these files while I am rewriting them?".
+ */
+export function sessionHasLiveAgent(
+  registry: SessionRunnerRegistry | null | undefined,
+  sessionId: string,
+): boolean {
+  return (registry?.get(sessionId)?.getAgent() ?? null) !== null;
+}
+
 // ---------------------------------------------------------------------------
 // SessionRunnerInterface — shared contract for direct and container runners
 // ---------------------------------------------------------------------------

@@ -724,6 +724,56 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
     }
     expect(sawStringToolResult).toBe(true);
 
+    // Everything above only proves the event was BROADCAST, and the broadcast
+    // happens before the downstream extraction that actually threw. So the
+    // assertions that matter come after: the reported failure was not "the
+    // event went missing", it was that the TypeError escaped mid-listener and
+    // stranded the turn — leaving the steer that followed unacknowledged and
+    // the session wedged. Drive exactly that sequence.
+    const strandedClaude = lastClaude;
+    client.send({
+      type: "answer_question",
+      toolUseId: "ask-string-1",
+      answers: { "0": "Redis" },
+      text: "Redis",
+    });
+
+    // The steer is honored: this build has live steering off, so the
+    // interrupted process has already exited (the interrupt ends a non-
+    // streaming turn) and the answer resumes on a FRESH agent carrying it as
+    // the prompt. A listener that died on the malformed event never gets here —
+    // the turn would still be marked running and the answer dropped as a
+    // duplicate.
+    await waitForClaude(() => lastClaude, strandedClaude);
+    expect(lastClaude).not.toBe(strandedClaude);
+    expect(lastClaude.lastPrompt).toBe("Redis");
+
+    // And the answered turn still reaches a terminal state rather than
+    // spinning forever.
+    lastClaude.initSession("string-content-session");
+    lastClaude.emit("event", {
+      type: "agent_result",
+      status: "success",
+      sessionId: "string-content-session",
+    });
+    lastClaude.emit("done", 0);
+
+    let sawFinished = false;
+    const finishDeadline = Date.now() + 500;
+    while (Date.now() < finishDeadline) {
+      let msg;
+      try {
+        msg = await client.receive(120);
+      } catch {
+        break;
+      }
+      if (msg.type === "session_status" && (msg as { running?: boolean }).running === false) {
+        sawFinished = true;
+        break;
+      }
+    }
+    expect(sawFinished).toBe(true);
+
     client.close();
   });
 });

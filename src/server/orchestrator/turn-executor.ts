@@ -313,6 +313,14 @@ export async function executeAgentTurn(
   let automaticRecoveryInProgress = false;
   const recoveryRetryUsed = input.recoveryRetryUsed ?? input.isAuthRetry ?? false;
   const canRecoverAuth = !recoveryRetryUsed && !!deps.ensureAgentTokenFresh;
+  // Deliberately NOT gated on `automaticRecoveryInProgress`. It is tempting to read
+  // "already recovering → return false" as the de-duplication point, but the
+  // return value means "will this turn auto-recover", and `false` routes the
+  // caller into `surfaceReauth()` — popping a sign-in card in the middle of a
+  // recovery that is about to succeed quietly. De-duplication of a repeated
+  // `auth_required` belongs to the emitter (`process.ts`, one raise per turn)
+  // and to the listener's own turn latch (`agent-auth-handler.ts`), both of
+  // which drop the duplicate before it reaches this gate at all.
   const willRecoverAuth = (): boolean => {
     if (!canRecoverAuth) return false;
     automaticRecoveryInProgress = true;
