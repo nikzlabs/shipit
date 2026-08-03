@@ -5,7 +5,7 @@
  * orphan cleanup, and health monitoring without a real Docker daemon.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
@@ -193,12 +193,33 @@ function createMockDocker() {
 // Test helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * A writable stand-in for the production `/workspace/sessions/<id>` layout:
+ * session dir, the clone at its `workspace/` child, ShipIt's state dir at its
+ * `state/` sibling.
+ *
+ * These have to be REAL paths, not the `/workspace/...` literals they used to
+ * be: `createContainer` mkdirs the state dir, and since SHI-286 it does so
+ * unconditionally (there is no "session without a state dir" left to skip for),
+ * so a non-writable literal is an EACCES rather than a no-op.
+ */
+const TEST_SESSION_DIR = path.join(
+  fs.mkdtempSync(path.join(os.tmpdir(), "session-container-cfg-")),
+  "sessions",
+  "test-session-1",
+);
+const TEST_WORKSPACE_DIR = path.join(TEST_SESSION_DIR, "workspace");
+
+afterAll(() => {
+  fs.rmSync(path.dirname(path.dirname(TEST_SESSION_DIR)), { recursive: true, force: true });
+});
+
 function buildConfig(overrides?: Partial<ContainerConfig>): ContainerConfig {
   return {
     sessionId: "test-session-1",
-    sessionDir: "/workspace/sessions/test-session-1",
-    workspaceDir: "/workspace/sessions/test-session-1/workspace",
-    sessionStateDir: "/workspace/sessions/test-session-1/state",
+    sessionDir: TEST_SESSION_DIR,
+    workspaceDir: TEST_WORKSPACE_DIR,
+    sessionStateDir: path.join(TEST_SESSION_DIR, "state"),
     credentialsDir: "/credentials",
     imageName: "shipit-session-worker:test",
     memoryLimit: 512 * 1024 * 1024,
@@ -346,7 +367,7 @@ describe("SessionContainerManager", () => {
           HostConfig: expect.objectContaining({
             Binds: expect.arrayContaining([
               // The CLONE is what lands at /workspace — `<sessionDir>/workspace`.
-              "/workspace/sessions/test-session-1/workspace:/workspace:rw",
+              `${TEST_WORKSPACE_DIR}:/workspace:rw`,
               // docs/138 — the container gets its private per-session credentials
               // subtree, never the shared root.
               "/credentials/sessions/test-session-1:/credentials:rw",

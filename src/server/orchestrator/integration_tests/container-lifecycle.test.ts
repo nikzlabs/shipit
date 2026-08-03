@@ -214,13 +214,16 @@ describe("container lifecycle integration", () => {
   });
 
   it("orphan cleanup removes stale containers", async () => {
-    // Simulate an orphan container from a previous orchestrator run
+    // Simulate an orphan container from a previous orchestrator run. Real paths:
+    // `create` mkdirs the state dir, unconditionally since SHI-286, so a
+    // `/workspace/...` literal is an EACCES wherever that isn't writable.
+    const orphanDir = path.join(sessionsDir, "orphan");
     await containerManager.create({
       sessionId: "orphan-session",
-      sessionDir: "/workspace/sessions/orphan",
-      workspaceDir: "/workspace/sessions/orphan/workspace",
-      sessionStateDir: "/workspace/sessions/orphan/state",
-      credentialsDir: "/credentials",
+      sessionDir: orphanDir,
+      workspaceDir: path.join(orphanDir, "workspace"),
+      sessionStateDir: path.join(orphanDir, "state"),
+      credentialsDir: tmpDir,
       imageName: "shipit-session-worker:test",
       memoryLimit: 512 * 1024 * 1024,
       cpuQuota: 50_000,
