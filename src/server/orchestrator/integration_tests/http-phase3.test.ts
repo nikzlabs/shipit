@@ -261,6 +261,15 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
   // ---- POST /api/repos ----
 
   describe("POST /api/repos", () => {
+    // The only test in this file that drives the whole template-creation path,
+    // and the only one that needs a raised timeout. Network is already stubbed
+    // (`push` and `fetchCache` in `beforeEach`, docs 5809d53d), so what is left
+    // is ~8 real git subprocesses — init, addRemote, autoCommit, cloneBare,
+    // setRemoteUrl — plus scaffolding and a session clone. That is ~1s on an
+    // idle box and comfortably over Vitest's 5s default on a CI runner sharing
+    // cores with 600+ other test files, most of which also shell out to git.
+    // A raised limit is the fix rather than a mask: the work is genuinely
+    // serial process spawns, and a real hang still fails, just later.
     it("creates a repo with template when authenticated", async () => {
       // Authenticate with GitHub first via HTTP
       await app.inject({ method: "POST", url: "/api/github/token", payload: { token: "ghp_test" } });
@@ -280,7 +289,7 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
       expect(body.success).toBe(true);
       expect(body.repoUrl).toBeDefined();
       expect(body.sessionId).toBeDefined();
-    });
+    }, 20000);
 
     it("returns 400 for empty repo name", async () => {
       await app.inject({ method: "POST", url: "/api/github/token", payload: { token: "ghp_test" } });
