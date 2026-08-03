@@ -37,6 +37,7 @@ import { serveStaticClient } from "./app-assembly.js";
 import type { OrchestratorRuntime } from "./bootstrap-managers.js";
 import type { StartupMonitors } from "./startup-monitors.js";
 import { getContainerFreshness } from "./container-freshness.js";
+import { buildComposeAttachReplay } from "./compose-attach-replay.js";
 
 /**
  * Register the long-lived `/api/events` SSE endpoint. Kept as its own step so
@@ -665,30 +666,12 @@ export async function registerRoutes(
         if (runner.running || runner.queueLength > 0) {
           send({ type: "session_status", sessionId: runner.sessionId, running: runner.running, queueLength: runner.queueLength });
         }
-        // Replay current service/compose state so the UI is correct after reload
+        // Replay current compose state (stack error, services, declared
+        // secrets) so the UI is correct after a reload / session switch — none
+        // of it is re-emitted on its own. See `compose-attach-replay.ts`.
         const mgr = serviceManagers.get(runner.sessionId);
         if (mgr) {
-          if (mgr.startError) {
-            send({
-              type: "compose_error",
-              sessionId: runner.sessionId,
-              message: mgr.startError,
-            });
-          }
-          const services = mgr.getServices();
-          if (services.length > 0) {
-            send({
-              type: "service_list",
-              sessionId: runner.sessionId,
-              services: services.map(s => ({
-                name: s.name,
-                status: s.status,
-                port: s.port,
-                preview: s.preview,
-                error: s.error,
-              })),
-            });
-          }
+          for (const msg of buildComposeAttachReplay(mgr, runner.sessionId)) send(msg);
         }
         // Replay agent-emitted presentations (docs/093) so the Present tab
         // hydrates from the runner's authoritative cache. Without this, a tab

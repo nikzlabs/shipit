@@ -136,6 +136,16 @@ export class ServiceSecretsResolver {
     agentNames: [],
     agentValues: {},
   };
+  /**
+   * Whether `sync()` has completed at least once. Distinguishes "no secrets
+   * are declared" from "we haven't looked yet" — both of which leave
+   * {@link snapshot} at its empty initial value. The WS attach replay keys off
+   * this: once a sync has run, the snapshot is authoritative and is replayed
+   * even when empty (a compose file that DROPPED its `x-shipit-secrets` must
+   * clear the client's declared list); before that, there is nothing to say.
+   */
+  private synced = false;
+
   private dockerSecretsBuild?: DockerSecretsBuild;
   /**
    * docs/183 — service-name → absolute env-file path from the most recent
@@ -182,6 +192,11 @@ export class ServiceSecretsResolver {
    */
   getSnapshot(): SecretsStatusInternalSnapshot {
     return cloneSnapshot(this.snapshot);
+  }
+
+  /** Whether {@link sync} has run — i.e. whether the snapshot means anything. */
+  get hasSynced(): boolean {
+    return this.synced;
   }
 
   /**
@@ -269,6 +284,7 @@ export class ServiceSecretsResolver {
       agentNames: Object.keys(mergedAgentValues).sort(),
       agentValues: mergedAgentValues,
     };
+    this.synced = true;
     this.onSnapshot?.(cloneSnapshot(this.snapshot));
 
     if (this.dockerSecretsConfig) {
