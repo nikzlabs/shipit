@@ -272,10 +272,12 @@ export function createWarmPool(
                 console.log(`[warm:install:${appSessionId}] Skipping pre-install for untrusted remote ${repoUrl} — awaiting first-clone trust`);
               } else {
                 // Pre-run agent.install so the user doesn't wait for it on activation.
-                // The standby's workspace is bind-mounted from `workspaceDir`, so the
-                // success marker (`.shipit/.install-done`) persists for the future
-                // runner: on activation, `runner.runInstall()` hits the worker, sees
-                // the marker, and short-circuits with `{ skipped: true }`. If the
+                // docs/246 — the success marker is written to the session's STATE dir
+                // (mounted at `/session-state`), not into the clone. The standby and
+                // the activated session are the same session, hence the same session
+                // dir, so it persists for the future runner exactly as before: on
+                // activation, `runner.runInstall()` hits the worker, sees the marker,
+                // and short-circuits with `{ skipped: true }`. If the
                 // user activates *during* pre-install, the worker's /install endpoint
                 // joins the in-flight run (no longer 409s) and the orchestrator-side
                 // SSE listener resolves on the same `install_done`/`install_error`.

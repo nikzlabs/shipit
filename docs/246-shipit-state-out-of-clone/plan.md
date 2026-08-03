@@ -34,6 +34,17 @@ stamp over the existing `POST /install` call — is a real refactor of the
 install-skip logic and the overlay publish gate, both load-bearing, and buys
 nothing the mount doesn't.
 
+### The worker's state dir is injected, not read from the environment
+
+`InstallController` first hardcoded the container mount path. That is wrong
+outside a container: every in-process integration test (and any non-container
+worker) then tries to create `/session-state` at the filesystem root, the marker
+write throws, and the install hangs rather than failing loudly — which is
+exactly how CI caught it. The path is now a dependency
+(`SessionWorkerDeps.stateDir` → `InstallControllerDeps.stateDir`) defaulting to
+`SHIPIT_SESSION_STATE_DIR` then the `/session-state` mount, so tests point it at
+a temp dir and exercise the real mechanism.
+
 ### The state dir is threaded, never derived
 
 `ServiceManager` holds only `workspaceDir` (`service-manager.ts:245`) and the

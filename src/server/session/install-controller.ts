@@ -34,13 +34,18 @@ import { formatInstallFailureMessage, INSTALL_STDERR_TAIL_BYTES } from "./instal
 import { computeInstallDepsHash } from "../shared/deps-hash.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { createDepSnapshotTar, safeDepDirRelpath } from "./dep-snapshot.js";
-import {
-  CONTAINER_SESSION_STATE_DIR,
-  INSTALL_MARKER_FILE,
-} from "../shared/fs-constants.js";
+import { INSTALL_MARKER_FILE } from "../shared/fs-constants.js";
 
 export interface InstallControllerDeps {
   workspaceDir: string;
+  /**
+   * docs/246 — where the install marker lives, in the container's own path
+   * namespace (`/session-state`, a mount of the session's state dir). Injected
+   * rather than read from the environment here so a worker running WITHOUT the
+   * mount — every in-process integration test — can point it at a real
+   * directory instead of failing to create one at the filesystem root.
+   */
+  stateDir: string;
   broadcast: (event: WorkerSSEEvent) => void;
   mcpConfig: McpConfigController;
 }
@@ -72,17 +77,8 @@ export class InstallController {
     return this.deps.workspaceDir;
   }
 
-  /**
-   * docs/246 — where the install marker lives, in the container's own path
-   * namespace. `/session-state` is a mount of the session's state dir, a
-   * sibling of the clone — so the marker is no longer inside the user's
-   * repository, where the post-turn `git add -A` used to stage it.
-   *
-   * `SHIPIT_SESSION_STATE_DIR` overrides it for setups without the mount (the
-   * same shape as `WORKSPACE_DIR` in `session-worker.ts`).
-   */
   private get stateDir(): string {
-    return process.env.SHIPIT_SESSION_STATE_DIR || CONTAINER_SESSION_STATE_DIR;
+    return this.deps.stateDir;
   }
 
   private broadcastSSE(event: WorkerSSEEvent): void {

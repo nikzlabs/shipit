@@ -49,16 +49,19 @@ class FakeAgent extends EventEmitter<AgentProcessEvents> implements AgentProcess
 
 describe("warm-pool runPreInstall", () => {
   let workspaceDir: string;
+  let stateDir: string;
   let worker: SessionWorker;
   let workerUrl: string;
 
   beforeEach(async () => {
     workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-preinstall-test-"));
+    stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-preinstall-state-"));
     worker = new SessionWorker({
       agentFactory: () => new FakeAgent(),
       port: 0,
       host: "127.0.0.1",
       workspaceDir,
+      stateDir,
     });
     const addr = await worker.start();
     const match = /:(\d+)$/.exec(addr);
@@ -68,13 +71,14 @@ describe("warm-pool runPreInstall", () => {
   afterEach(async () => {
     await worker.stop();
     fs.rmSync(workspaceDir, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
     await new Promise((r) => setTimeout(r, 20));
   });
 
   it("is a no-op when shipit.yaml is absent (no install commands)", async () => {
     await runPreInstall(workspaceDir, workerUrl, "test");
     // No marker should have been written.
-    expect(fs.existsSync(path.join(workspaceDir, ".shipit", ".install-done"))).toBe(false);
+    expect(fs.existsSync(path.join(stateDir, ".install-done"))).toBe(false);
   });
 
   it("runs declared agent.install commands and writes the marker", async () => {
@@ -85,11 +89,12 @@ describe("warm-pool runPreInstall", () => {
 
     await runPreInstall(workspaceDir, workerUrl, "test");
 
-    // Marker means the worker ran the command(s) to completion. The
-    // on-activation `runner.runInstall()` will hit this same workspace
-    // (it's bind-mounted from the host), see the marker, and short-circuit
-    // with `{ skipped: true }` — that's the user-visible "instant" path.
-    expect(fs.existsSync(path.join(workspaceDir, ".shipit", ".install-done"))).toBe(true);
+    // Marker means the worker ran the command(s) to completion. docs/246 moved
+    // it out of the clone into the session state dir; the standby and the
+    // activated session share the same session dir, so it still persists for
+    // the future runner, which sees it and short-circuits with
+    // `{ skipped: true }` — the user-visible "instant" path.
+    expect(fs.existsSync(path.join(stateDir, ".install-done"))).toBe(true);
   });
 
   it("doesn't throw when shipit.yaml is malformed (best-effort)", async () => {
