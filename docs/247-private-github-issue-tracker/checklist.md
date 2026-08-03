@@ -14,7 +14,6 @@
 - [ ] Choose deployment-wide or per-Project repository binding.
 - [ ] Choose existing-repository selection only or ShipIt-managed repository creation.
 - [ ] Decide whether public PR bodies may expose qualified private tracker pointers.
-- [ ] Decide whether private tracker issues replace or coexist with code-repository GitHub Issues.
 
 ## Implementation
 
@@ -25,5 +24,6 @@
 - [ ] Add same-numbered code/tracker repository regression coverage.
 - [ ] Add repository-qualified deduplication, lifecycle-card, and persisted effect keys.
 - [ ] Preserve repository targets through agent operations and persisted Undo cards.
+- [ ] Keep public user bug reports routed to ShipIt's public repository while private planning issues use the private tracker.
 - [ ] Run focused tests, `npm run test:dev`, `npm run lint:dev`, and `npm run typecheck`.
 - [ ] Complete a fresh-context requirements review.

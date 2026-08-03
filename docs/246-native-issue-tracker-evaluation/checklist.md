@@ -16,6 +16,7 @@
 - [x] Record that issues must stay private and outside ShipIt's public repository; a dedicated private GitHub repository is acceptable.
 - [x] Add falsifiable gates for the dedicated-private-GitHub, Vikunja, and first-party decision sequence.
 - [x] Extract the dedicated private-GitHub option into a focused requirements, design, and checklist document.
+- [x] Record that public user bug reports and private owner planning issues are separate coexisting tracker destinations.
 
 ## Decision and implementation
 

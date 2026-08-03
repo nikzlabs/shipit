@@ -32,6 +32,13 @@ to each ShipIt Project is an unresolved product decision. The first release
 should not offer both models unless the user selects both: one authoritative
 binding is easier to explain and safer to route.
 
+The private planning tracker coexists with ShipIt's public issue tracker. User
+bug reports — including reports submitted through ShipIt's existing bug-report
+flow — continue to be created in the public ShipIt repository. Owner planning
+issues use the private binding. These are distinct tracker destinations with
+distinct UI labels and routing identities; configuring the private tracker must
+not redirect, hide, or change the privacy of public bug reports.
+
 ## Existing foundation
 
 `src/server/orchestrator/trackers/github/adapter.ts` already lists and reads
@@ -68,8 +75,9 @@ The resolver follows these rules:
 2. A fully qualified `owner/repo#number` pointer retains that repository as
    authoritative routing data.
 3. A tracker pointer whose repository conflicts with the configured binding is
-   rejected with a clear error unless explicit multi-repository behavior is
-   selected later. It is never rewritten to the active code repository.
+   routed only when its tracker destination explicitly permits that repository;
+   otherwise it is rejected with a clear error. It is never rewritten to the
+   active code repository or the other tracker destination.
 4. Bare issue numbers are accepted only in a context with one unambiguous
    configured tracker repository.
 5. Missing configuration or repository access fails closed; there is no code
@@ -102,6 +110,18 @@ from a coding session. Two scopes are still under consideration:
 |---|---|---|
 | Deployment-wide | Smallest first release; one global issue workspace | All projects share one tracker and its labels/workflow |
 | Per ShipIt Project | Natural isolation and stable project-to-tracker routing | Depends on the Projects configuration model and needs unbound-project UX |
+
+Binding scope is independent from tracker purpose. The private binding selects
+the owner's planning repository. The public bug-report destination remains the
+public ShipIt repository and is selected by the bug-report workflow, not by the
+private planning setting.
+
+The two destinations require separate stable tracker identities in ShipIt's
+domain model and registry rather than overloading the single `github` key. Each
+issue reference, persisted card, agent request, and lifecycle effect carries
+which destination it belongs to as well as `owner/repo#number`. Public bug
+reports and private planning issues can therefore share the same issue number
+without colliding or being displayed as interchangeable records.
 
 Likewise, selecting an existing repository is the recommended provisioning
 path for the first release. Creating a private repository manually is a small
@@ -162,6 +182,9 @@ tracker entry points:
   making a wrong-repository assumption.
 - tracker configuration resolves the selected private repository independently
   of the active session's code remote.
+- the tracker domain model and registry distinguish the public ShipIt bug
+  tracker from the private planning tracker instead of constructing one
+  session-derived `github` adapter for both purposes.
 - `src/server/orchestrator/api-routes-issues.ts` uses that binding for list,
   detail, create, edit, comment, label, assignee, and status operations.
 - `src/server/orchestrator/ws-handlers/issue-write-handlers.ts` records enough
@@ -198,6 +221,8 @@ issue is unchanged. Coverage includes:
 - Undo of a legacy persisted card created before repository targets were stored;
 - missing binding, repository mismatch, insufficient permission, and revoked
   access, all failing without fallback;
+- public bug reports continuing to target the public ShipIt repository before
+  and after private planning tracker configuration;
 - every C1–C18 capability ultimately classified Required, with Optional gaps
   represented explicitly.
 
@@ -217,6 +242,8 @@ coding sessions, Git operations, or access to locally persisted chat history.
 - Storing issues in ShipIt's public source repository.
 - Making GitHub's web UI the primary issue workflow.
 - Inferring the tracker repository from the active code remote.
+- Redirecting Shipit's public user bug-report flow into the private planning
+  repository.
 - Silently routing arbitrary cross-repository pointers.
 - Depending on paid GitHub plans or paid GitHub features.
 - Implementing continuous two-way synchronization with Linear.
@@ -225,7 +252,9 @@ coding sessions, Git operations, or access to locally persisted chat history.
 ## Decision boundary
 
 Implementation may begin only after the user classifies C1–C18 and chooses the
-binding, provisioning, public-PR disclosure, and replace-versus-coexist models.
+binding, provisioning, and public-PR disclosure models. Public user bug reports
+and private owner planning issues are required to coexist as distinct tracker
+destinations.
 If C15 is Required, the C6 writable workflow convention is necessarily part of
 the implementation. The option passes its design gate only if all Required
 capabilities can be implemented without weakening the repository routing
