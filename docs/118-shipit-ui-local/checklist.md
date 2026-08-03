@@ -142,6 +142,23 @@ The previous fix renamed the spinner from "Starting dev server..." to "Connectin
 - [x] Add a wall-clock `deadline = Date.now() + 15_000` check at the top of the for-loop so cumulative slow fetches can't drag the total past ~15s; after that the iframe slot is created unconditionally and the spinner clears.
 - [x] Regression test in `PreviewFrame.test.tsx` verifying the fetch is invoked with an `AbortSignal`.
 
+## Dogfood could never run a turn (landed)
+
+Two independent, stacked failures. The first killed the turn before the model
+was reached, which hid the second entirely.
+
+- [x] `docker/Dockerfile.dogfood` installs `/etc/shipit/managed-settings.json` and the two hooks it references. `prepareClaudeRunParams` hardcodes `--settings /etc/shipit/managed-settings.json`; a missing settings file is fatal to the Claude CLI, so every turn died on `Error: Settings file not found`. Both session-worker images already installed it; this one never did.
+- [x] **SHI-282** — local mode could never authenticate *any* agent. Credential provisioning in `session-agent-env.ts` is gated on `runner instanceof ContainerSessionRunner`, and `buildRunnerFactory` returns a plain `SessionRunner` in local mode, so the gate was always false: no per-session credentials dir was ever created and the CLI spawned against an empty `${agentHome()}`. Keyed on the runner type rather than the agent, so Claude and Codex failed identically.
+- [x] `local-agent-credentials.ts` links `${agentHome()}`'s `.claude` / `.claude.json` / `.codex` at the routed account's subtree, on every turn. Symlink not copy — a copy needs the container-gated per-turn token sync to survive refresh-token rotation. See the degraded-behaviors bullet in `plan.md` for the accepted shared-home trade-off.
+- [x] Unit tests: link/relink/idempotence, dangling and missing sources, Codex's subtree, the legacy flat root and its docs/150 alias, a real path renamed aside rather than deleted, and `isLocalRuntime()` pinned against `resolveRuntimeMode()` (duplicated to avoid an import cycle) plus asserted false under the suite.
+- [x] `AGENT_HOME` moved off `/root`. The linking fix immediately hit `EACCES: permission denied, lstat '/root/.codex'` — the `dev` service is **not** root, because `compose-generator` forces `user: <uid>:<uid>` on any service without an explicit `user:` when `SHIPIT_SESSION_WORKER_UID` is set. Now `${SHIPIT_STATE_DIR}/agent-home`; `plan.md`'s "runs as root" bullet corrected.
+- [x] Verified live in the dogfood: `[local-credentials] … linked .claude, .claude.json from account:acct_…`, links present on disk pointing at the account roots, and the `Agent CLI requires authentication` failure gone for the linked-credentials reason.
+
+### Follow-up (not done here)
+- [ ] Normalize `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` out of the local agent spawn env when the turn routed to an *account*. The agent inherits `process.env`, and the CLI prefers an env credential over its own login, so a stale env token silently beats a working account — ShipIt's router ranks those vars below accounts, but the CLI is what decides. Same leak shape as the `SHIPIT_AUTO_CREATE_PR` normalization already in `claude/process.ts`. Until then, leave both unset on the `dev` service.
+- [ ] Local-mode workspace trust: the CLI drops `permissions.allow` entries because `CLAUDE_PRE_TRUSTED_DIRS` covers `/workspace` but an inner session lives at `/workspace/sessions/<id>/workspace`. Cosmetic-ish (permission prompts, not a dead turn), pre-existing.
+- [ ] Codex turns in local mode exit 1 after credentials link successfully — a separate failure, not investigated.
+
 ## Phase 2 — inner-session preview (deferred design)
 
 Goal: let the user preview an app they're building inside an inner session, despite the inner orch not having Docker.

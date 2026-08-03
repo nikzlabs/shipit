@@ -70,7 +70,7 @@ services:
     # requiring a `vite build` round-trip.
     command: >
       sh -c "
-      mkdir -p $${SHIPIT_STATE_DIR:-/workspace/.inner-shipit} &&
+      mkdir -p $${SHIPIT_STATE_DIR:-/workspace/.inner-shipit} $${AGENT_HOME:-/root} &&
       while [ ! -x node_modules/.bin/vite ]; do
         echo '[dev] waiting for agent.install to populate node_modules…'; sleep 1;
       done &&
@@ -86,11 +86,23 @@ services:
     init: true
     environment:
       RUNTIME_MODE: local
-      # docs/150 §9 — local mode hosts agent processes in-process and keeps the
-      # orchestrator on root with HOME=/root. Pin AGENT_HOME so agentHome()
-      # (whose default is now /home/shipit) resolves to /root here, matching the
-      # dogfood image. Belt-and-suspenders over the image ENV.
-      AGENT_HOME: /root
+      # docs/150 §9 — local mode hosts agent processes in-process, so agentHome()
+      # (default /home/shipit, a user this image doesn't have) has to be pinned
+      # to something the runtime user can actually write.
+      #
+      # This used to be `/root`, on the premise that local mode "keeps the
+      # orchestrator on root". That stopped being true: with
+      # SHIPIT_SESSION_WORKER_UID set on the deployment, `compose-generator`
+      # forces `user: <uid>:<uid>` onto every service without an explicit
+      # `user:` — including this one. So the inner orch runs as uid 1000 against
+      # HOME=/root and every credential write failed with
+      # `EACCES: permission denied, lstat '/root/.codex'` (SHI-282).
+      #
+      # The state dir is the natural home: bind-mounted, owned by the same uid,
+      # already gitignored, and it survives a service restart. Kept out of
+      # Dockerfile.dogfood's ENV on purpose — the image can't know the mount
+      # path, so compose is the only place that can be right.
+      AGENT_HOME: /workspace/.inner-shipit/agent-home
       # Note: the orchestrator's PORT (4000) and Vite's port (3000) are set
       # inline in the `command:` above, not here, because we run two
       # processes with different ports inside this single service.

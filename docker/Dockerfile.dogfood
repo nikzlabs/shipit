@@ -83,12 +83,17 @@ COPY docker/agent-hooks/block-branch-ops.mjs /etc/shipit/agent-hooks/block-branc
 COPY docker/agent-hooks/managed-settings.json /etc/shipit/managed-settings.json
 RUN chmod 0755 /etc/shipit/agent-hooks/stop-pr-check.sh /etc/shipit/agent-hooks/block-branch-ops.mjs
 
-# docs/150 §9 — local mode (RUNTIME_MODE=local) keeps the orchestrator on root.
-# It hosts the agent processes in-process (claude-adapter / codex-adapter), which
-# resolve their HOME via agentHome(). Since DEFAULT_AGENT_HOME is /home/shipit,
-# we MUST pin AGENT_HOME=/root here (no `shipit` user exists in this image) or
-# the agent CLIs would read credentials from a non-existent home and auth would
-# break. The non-root hardening intentionally does not apply to dogfood/local
-# mode — see docs/118-shipit-ui-local/plan.md.
+# docs/150 §9 — local mode (RUNTIME_MODE=local) hosts the agent processes
+# in-process (claude-adapter / codex-adapter), which resolve their HOME via
+# agentHome(). DEFAULT_AGENT_HOME is /home/shipit, a user this image does not
+# have, so AGENT_HOME must be pinned to something that exists and is writable.
+#
+# `/root` is the image-level fallback only. The real value comes from
+# docker-compose.yml, which points AGENT_HOME at a dir under the bind-mounted
+# state dir — because this image cannot know the mount path, and because the
+# container does NOT necessarily run as root: with SHIPIT_SESSION_WORKER_UID set
+# on the deployment, the compose generator forces `user: <uid>:<uid>` onto every
+# service that doesn't declare its own, and a non-root process cannot write
+# /root (SHI-282). Read the compose comment before changing either value.
 ENV HOME=/root
 ENV AGENT_HOME=/root
