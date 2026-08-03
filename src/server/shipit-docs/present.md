@@ -20,6 +20,10 @@ all**: write each to its own file and call `present` once per file. Don't show a
 single variant and point the user elsewhere for the rest; that limitation
 doesn't exist.
 
+Before/after screenshots belong here, not on a PR — an image can't go in a PR
+body at all ([github.md](github.md)), so present them and describe the change in
+words in the PR body.
+
 ## Throwaway vs. tracked — it's just where you write the file
 
 `present` renders whatever file you point it at. The path's location is the

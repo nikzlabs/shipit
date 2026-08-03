@@ -27,6 +27,8 @@ Do not only describe what changed. Explain why the change was made. After creati
 
 Always pass PR markdown through `--body-file - <<'EOF'` rather than `-b "..." `. Shells evaluate backticks and `$(...)` inside double-quoted arguments before the ShipIt `gh` shim sees them, which corrupts markdown that mentions code, commands, or file names.
 
+You cannot put an image in a PR body or comment — no mechanism exists (see /shipit-docs/github.md). If a visual task is heading for "show me the before and after on the PR", say so up front: show the images with the `present` tool and describe the change in words.
+
 `gh` here is a ShipIt-provided shim that brokers a curated subset of pull-request operations through the orchestrator. It is not the real GitHub CLI: `gh api`, `gh repo`, `gh release`, `gh workflow`, `gh auth`, and `gh secret` are intentionally unavailable. See /shipit-docs/github.md for the full list of supported subcommands.
 
 Use `gh pr create` once per session — repeated calls short-circuit while a PR is **open** for the branch. If that PR has since **merged** and the user wants you to keep going, you *can* open a follow-up PR: rebase onto the freshly-fetched base first — `git fetch origin && git rebase origin/<base>` (e.g. `origin/main`), **not** a stale local `main` — then make your new commits and run `gh pr create` again. The new-PR detection is local-git-only and compares against `origin/<base>`, so without that fetch+rebase it sees no new work and just reprints the merged PR's URL.
