@@ -130,6 +130,20 @@ Every PR subcommand also accepts `--repo OWNER/NAME` (alias `-R`) to target a
 specific repo — useful in a Sandbox session where you've cloned more than one.
 Without it, the op targets the repo of the directory you ran `gh` in.
 
+### Images in a PR (not possible)
+
+You cannot put an image in a PR body or comment — no attach verb exists, and no
+URL renders. GitHub's only inline-image path is the browser's drag-and-drop
+upload, which needs a logged-in session cookie and rejects API tokens (so `gh
+api` wouldn't help either); a URL into the repo renders broken on private repos;
+a container path isn't a URL. If a visual task is heading for "show me the
+before and after on the PR", say so up front, not when writing the body.
+
+Instead: show the user the images in the session with the `present` tool (see
+[present.md](present.md)), and describe the visual change precisely in the PR
+body. Don't commit throwaway screenshots to work around it — they'd be
+permanent, land in the diff, and still not render on a private repo.
+
 ### Merging PRs (`gh pr merge`)
 
 Merging is an outward-facing, effectively-irreversible action and the verb most
@@ -182,7 +196,8 @@ run view --json jobs` includes the jobs array).
 These are blocked because they widen the surface beyond pull-request review,
 or because the corresponding action belongs to the user, not the agent:
 
-- `gh api` — arbitrary GitHub API access is out of scope.
+- `gh api` — arbitrary GitHub API access is out of scope. (It also wouldn't
+  unlock image attachments — see "Images in a PR" above.)
 - `gh repo create|delete|edit|fork|sync|view|list` — repo lifecycle is owned
   by the orchestrator and the user.
 - `gh release …` — releases are deliberate human acts.
