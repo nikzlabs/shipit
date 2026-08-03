@@ -19,6 +19,7 @@ import type { ProviderAccountManager } from "../provider-account-manager.js";
 import type { SessionManager } from "../sessions.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import { switchSessionProviderAccount } from "./provider-account-switch.js";
+import { revokeSessionProviderCredentials } from "../session-agent-credentials.js";
 
 // ---- Read operations ----
 
@@ -468,13 +469,45 @@ export function reorderProviderAccounts(
  * another turn, so this used to refuse outright ("until account switching is
  * available"). Account switching now exists, so the refusal becomes a choice:
  * pass `replacementAccountId` and the pinned sessions move there first,
- * conversation intact (req 9). Without one, the caller still gets a 409 — but
- * now it is a question with an answer rather than a dead end.
+ * conversation intact (req 9). Without one — but with somewhere to move them —
+ * the caller gets a 409 that lists the candidates, which is a question with an
+ * answer rather than a dead end.
  *
- * A *running* session is still refused unconditionally. Reprovisioning
- * credentials under a live agent is the one case the switch itself declines,
- * and silently killing someone's in-flight turn to satisfy a Settings click is
- * not a trade this should make on their behalf.
+ * With **nowhere** to move them it is not a question at all, so it no longer
+ * refuses (req 23). That branch used to 409 with "there is no other connected
+ * account to move them to", which is terminal by construction: the last
+ * connected account for a provider could never be disconnected while any
+ * unarchived session was pinned to it, and connecting a second account just to
+ * disconnect the first is not a workflow.
+ *
+ * Those sessions have to actually *lose* the account, which takes more than
+ * deleting the row. Each one holds its own copy of the OAuth token in its
+ * per-session credentials dir, and that copy is what the CLI reads: first-turn
+ * provisioning is guarded on `agentPinned` so it never re-runs, and the only
+ * thing that overwrites it is a switch to another account — which is exactly
+ * the path not taken here. So this walks the same two steps
+ * `switchSessionProviderAccount` takes before it rewrites credentials: retire
+ * any resident agent process (it holds the token in memory, where no on-disk
+ * change can reach it) and remove the session's credential subtree, preserving
+ * the conversation-state files so a later reconnect resumes rather than
+ * restarts.
+ *
+ * The now-dangling `provider_route_id` is left in place on purpose. It reads
+ * unusable (`isRouteUsableForTurn`), which is what makes `failoverPinnedSession`
+ * re-route the session — and re-provision its credentials — the moment another
+ * account is connected. Clearing it would look tidier and would break that
+ * recovery: env prep only provisions credentials for a session that is not yet
+ * pinned. Until then the session simply has no credentials to run on, which is
+ * the honest state and the one req 23 asks for.
+ *
+ * They come back in `strandedSessionIds` so the caller can say how many.
+ *
+ * A *running* session is still refused (the user chose this over disconnecting
+ * through a live turn, 2026-08-03). Reprovisioning credentials under a live
+ * agent is the one case the switch itself declines, and silently killing
+ * someone's in-flight turn to satisfy a Settings click is not a trade this
+ * should make on their behalf. Unlike the refusal above, waiting clears it — so
+ * the message names the sessions to wait for.
  */
 /**
  * docs/150 — provider-wide sign-out drops *every* account row for a provider,
@@ -517,7 +550,7 @@ export function deleteProviderAccount(
   provider: AgentId,
   accountId: string,
   opts: { credentialsDir?: string; replacementAccountId?: string } = {},
-): { accounts: ProviderAccount[]; switchedSessionIds: string[] } {
+): { accounts: ProviderAccount[]; switchedSessionIds: string[]; strandedSessionIds: string[] } {
   validateProvider(provider);
   validateAccountId(accountId);
   const pinned = sessionManager
@@ -530,41 +563,79 @@ export function deleteProviderAccount(
     );
   const running = pinned.filter((session) => runnerRegistry.get(session.id)?.running);
   if (running.length > 0) {
-    throw new ServiceError(409, "Cannot disconnect an account while a pinned session is running");
+    // Name them: this refusal is a wait, and the user can only wait for
+    // something they can identify. Cap the list so a mass-running install gets
+    // a message rather than a paragraph.
+    const named = running.slice(0, 3).map((session) => `"${session.title || session.id}"`).join(", ");
+    const rest = running.length - Math.min(running.length, 3);
+    throw new ServiceError(
+      409,
+      `Cannot disconnect an account while a pinned session is running: ${named}${rest > 0 ? ` and ${rest} more` : ""}. `
+        + "Let the turn finish or stop it, then disconnect.",
+    );
   }
 
   const switchedSessionIds: string[] = [];
+  let strandedSessionIds: string[] = [];
   if (pinned.length > 0) {
     const { replacementAccountId, credentialsDir } = opts;
+    const usable = providerAccountManager
+      .list(provider)
+      .filter((account) => account.id !== accountId && account.status === "ready")
+      .map((account) => account.id);
     if (!replacementAccountId || !credentialsDir) {
-      const usable = providerAccountManager
-        .list(provider)
-        .filter((account) => account.id !== accountId && account.status === "ready")
-        .map((account) => account.id);
-      throw new ServiceError(
-        409,
-        usable.length > 0
-          ? `${pinned.length} session(s) are pinned to this account. Choose a replacement account to move them to (available: ${usable.join(", ")}).`
-          : `${pinned.length} session(s) are pinned to this account and there is no other connected ${provider} account to move them to.`,
-      );
-    }
-    if (replacementAccountId === accountId) {
-      throw new ServiceError(400, "Replacement account must differ from the account being disconnected");
-    }
-    for (const session of pinned) {
-      switchSessionProviderAccount(session.id, replacementAccountId, {
-        sessionManager,
-        runnerRegistry,
-        providerAccountManager,
-        credentialsDir,
-      });
-      switchedSessionIds.push(session.id);
+      // req 23 — only ask when the question has an answer. With no usable
+      // account to move to, disconnecting is the user's call and the pinned
+      // sessions simply come back without one.
+      if (usable.length > 0) {
+        throw new ServiceError(
+          409,
+          `${pinned.length} session(s) are pinned to this account. Choose a replacement account to move them to (available: ${usable.join(", ")}).`,
+        );
+      }
+      for (const session of pinned) {
+        // In-memory first, then on disk — the reverse order leaves a live CLI
+        // spending the account it was just disconnected from.
+        const runner = runnerRegistry.get(session.id);
+        const agent = runner?.getAgent() ?? null;
+        if (agent) {
+          try {
+            agent.kill();
+          } catch {
+            // Already dead is the state we wanted; the revoke below is what
+            // matters and must not be skipped because a stale handle threw.
+          }
+          runner?.setAgent(null);
+        }
+        if (credentialsDir) {
+          revokeSessionProviderCredentials(credentialsDir, session.id, provider);
+        } else {
+          console.warn(
+            `[provider-accounts] no credentialsDir: session ${session.id} keeps its copy of `
+              + `disconnected ${provider} account ${accountId}`,
+          );
+        }
+      }
+      strandedSessionIds = pinned.map((session) => session.id);
+    } else {
+      if (replacementAccountId === accountId) {
+        throw new ServiceError(400, "Replacement account must differ from the account being disconnected");
+      }
+      for (const session of pinned) {
+        switchSessionProviderAccount(session.id, replacementAccountId, {
+          sessionManager,
+          runnerRegistry,
+          providerAccountManager,
+          credentialsDir,
+        });
+        switchedSessionIds.push(session.id);
+      }
     }
   }
 
   try {
     providerAccountManager.delete(provider, accountId);
-    return { accounts: providerAccountManager.list(), switchedSessionIds };
+    return { accounts: providerAccountManager.list(), switchedSessionIds, strandedSessionIds };
   } catch (err) {
     throw providerAccountServiceError(err);
   }

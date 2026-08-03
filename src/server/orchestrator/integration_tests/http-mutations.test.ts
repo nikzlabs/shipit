@@ -552,7 +552,11 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
         .map((account) => account.id)).toEqual([secondId]);
     });
 
-    it("rejects disconnecting an account pinned to an existing session", async () => {
+    // docs/150 req 23 — this used to 409. With no other connected account there
+    // is nowhere to move the pinned session to, and refusing made the last
+    // subscription undisconnectable, so the disconnect goes through and reports
+    // the session it left without an account.
+    it("disconnects the last account over HTTP, reporting the sessions it stranded", async () => {
       const created = await app.inject({
         method: "POST",
         url: "/api/provider-accounts",
@@ -569,8 +573,41 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
         url: `/api/provider-accounts/codex/${accountId}`,
       });
 
+      expect(deleted.statusCode).toBe(200);
+      const body = deleted.json() as {
+        accounts: { provider: string; id: string }[];
+        switchedSessionIds: string[];
+        strandedSessionIds: string[];
+      };
+      expect(body.strandedSessionIds).toEqual(["pinned-session"]);
+      expect(body.switchedSessionIds).toEqual([]);
+      expect(body.accounts.filter((account) => account.provider === "codex")).toEqual([]);
+    });
+
+    // The refusal that remains: a session mid-turn. Unlike the one above,
+    // waiting clears it, so it names what to wait for.
+    it("still refuses to disconnect an account whose pinned session is mid-turn", async () => {
+      const created = await app.inject({
+        method: "POST",
+        url: "/api/provider-accounts",
+        payload: { provider: "codex", label: "Team ChatGPT" },
+      });
+      const accountId = (created.json() as { account: { id: string } }).account.id;
+      const session = sessionManager.track("running-session", "Running session", path.join(tmpDir, "session"));
+      sessionManager.setAgentId(session.id, "codex");
+      sessionManager.setProviderRoute(session.id, "account", accountId);
+      sessionManager.setAgentPinned(session.id);
+      const runner = app.runnerRegistry.getOrCreate(session.id, path.join(tmpDir, "session"), "codex");
+      runner.running = true;
+
+      const deleted = await app.inject({
+        method: "DELETE",
+        url: `/api/provider-accounts/codex/${accountId}`,
+      });
+
       expect(deleted.statusCode).toBe(409);
-      expect((deleted.json() as { error: string }).error).toMatch(/pinned/i);
+      expect((deleted.json() as { error: string }).error).toMatch(/"Running session"/);
+      runner.running = false;
     });
 
     // docs/150 req 2 — the reorder control's whole job is to change the order

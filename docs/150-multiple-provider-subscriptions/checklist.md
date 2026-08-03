@@ -219,3 +219,24 @@ nothing records today, and 21 turns a decision nobody made into a user setting.
 - [x] Unit: `balanced` still skips exhausted and over-cutoff accounts rather than balancing onto them.
 - [x] Unit: an unrecognized stored mode falls back to `strict` rather than reaching the routing path.
 - [x] Unit: the mode changes what a newly created session pins, and a session already pinned is not re-routed (asserted at `prepareSessionAgentEnvironment`, which is the pin point).
+
+## Req 23 — the last account is always disconnectable
+
+Came directly as a requirement on 2026-08-03, from hitting the refusal in the UI
+("2 session(s) are pinned to this account and there is no other connected claude
+account to move them to").
+
+- [x] Drop the no-replacement refusal in `deleteProviderAccount`: with nothing usable to move pinned sessions to, disconnect proceeds and returns them as `strandedSessionIds`.
+- [x] Leave the stranded sessions' `provider_route_id` pointing at the gone account rather than rewriting it — the same state provider-wide sign-out leaves, recovered by `isRouteUsableForTurn` on the next turn.
+- [x] Keep the running-turn refusal (user's choice over a mid-turn 401 or aborting live turns), but name the sessions in it so it reads as a wait.
+- [x] Report the consequence in the card: a toast naming how many sessions now have no connected account.
+- [x] Unit: the last account disconnects with sessions pinned to it, reports them, and leaves the route dangling-but-unusable.
+- [x] Unit: an unconnected sibling account is not a replacement, so that case disconnects too.
+- [x] Unit: a usable replacement still produces the picker refusal rather than stranding.
+- [x] Unit: a running pinned session on the last account still refuses, naming the session.
+- [x] Client: the last-account disconnect shows no replacement picker and toasts the stranded count.
+- [x] **Actually take the account away from the stranded sessions**, not just delete the row: retire any resident agent process and `revokeSessionProviderCredentials` their per-session credential subtree (conversation state preserved). Caught by cross-agent review — the first version left a working OAuth token on disk for every "disconnected" session, since first-turn provisioning never re-runs and only a switch overwrites the copy.
+- [x] Unit: the per-session token file is gone and the resident agent is killed and cleared after a last-account disconnect.
+- [x] Unit: the resume files survive the revoke (req 9 — a disconnect is not a reason to end the conversation).
+- [x] Integration: `DELETE /api/provider-accounts/...` on the last account returns 200 with `strandedSessionIds` (this test previously asserted the 409), and a mid-turn pinned session still gets a 409 naming the session.
+- [x] Follow-up, not req 23: provider-wide sign-out (`signOutProvider`) has the same per-session-copy gap — it erases source credentials only. Filed as [SHI-283](https://linear.app/shipit-ai/issue/SHI-283); the fix belongs to that issue, not this branch.

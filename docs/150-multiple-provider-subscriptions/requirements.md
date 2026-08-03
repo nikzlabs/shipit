@@ -39,6 +39,14 @@ with the ShipIt transcript and workspace context preserved across the switch.
 > all legacy behavior and code related to agent accounts need to be cleaned up
 > after all work is done.
 
+**Follow-up user requirement**, 2026-08-03:
+
+> new requirement for subscription management: should be possible to disconnect
+> the last subscription no matter what. Now the ui shows:
+>
+> 2 session(s) are pinned to this account and there is no other connected claude
+> account to move them to.
+
 **Requirement 17 reversed by the user**, 2026-08-02:
 
 > So this is a corner case that I'm not sure is important. Let's, instead of it
@@ -126,6 +134,16 @@ displayed number has to be the real one. Keep new requirements in this form.)
     Strict priority is the default, so an install that never touches the setting
     behaves as it does today. The mode governs which account work *starts* on;
     it does not govern *whether* failover happens, which is always on (req 15).
+- **23.** Disconnecting an account is never blocked by there being nowhere to move
+    the sessions pinned to it. The last connected account for a provider can
+    always be disconnected, and so can any account whose pinned sessions have no
+    other connected account to move to. Those sessions lose their account rather
+    than holding it hostage, and ShipIt says how many sessions that leaves
+    without one.
+
+    The one refusal that remains is a session that is *running a turn at that
+    moment*: the user is told which sessions, and resolves it by letting the turn
+    finish or stopping it. That is a wait, not a dead end.
 - **22.** ShipIt distinguishes connected accounts by the provider's own account
     identity, not only by a name the user typed.
     - A newly connected account is labelled with the identity the provider
@@ -157,6 +175,17 @@ request for this feature.
 None. Implementation is unblocked.
 
 ## Resolved questions
+
+- 2026-08-03 — Does "disconnect the last subscription no matter what" also
+  override the mid-turn refusal, or only the "nowhere to move the pinned
+  sessions to" refusal? **Only the nowhere-to-move one.** Two different
+  conditions were producing the same dead-end-shaped message; the one the user
+  hit is terminal (with no second account, no amount of waiting makes it
+  disconnectable), while a running turn clears itself in minutes. So the
+  no-replacement refusal is removed outright, and the running-turn refusal stays
+  but has to name the sessions so the user knows what to wait for. The user
+  declined the two stronger readings — disconnecting *through* a live turn
+  (mid-turn 401) and aborting live turns first. Became requirement 23.
 
 - 2026-08-03 — When a completed connect resolves to an account that already has
   a row, should ShipIt adopt the credentials onto that row, refuse the connect,
@@ -267,6 +296,8 @@ two Phase 0 questions on 2026-08-03, each with a receipt below; 21 is the user's
 own proposal (a setting rather than either fixed behavior) and is the reason 2
 and 6 were amended. 11 comes from the standing product principles in
 `CLAUDE.md`; 10 started there and the user then specified its shape in review.
+23 came directly as a requirement on 2026-08-03, with its one ambiguity (whether
+it overrides the mid-turn refusal too) resolved by the user the same day.
 Everything else
 in this feature — the account registry and credential layout, route pinning,
 capability snapshots, migration, quota-polling shape, and phasing — is design
