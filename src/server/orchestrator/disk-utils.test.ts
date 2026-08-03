@@ -65,7 +65,14 @@ describe("reclaimRegenerableSessionDirs (SHI-192)", () => {
     expect(failed).toEqual([]);
   });
 
+  // The allowlist is the safety property (SHI-192: never blanket-`rm` the
+  // session root and take `uploads/` with it), so every addition is deliberate
+  // and lands here. `state` joined it in docs/246: ShipIt's generated state is
+  // regenerable, and the install marker DESCRIBES the checkout — leaving it
+  // behind when `workspace/` is reclaimed makes it outlive the clone it refers
+  // to, so the restored session skips an install it needs and comes back
+  // dep-less.
   it("only ever targets the allowlisted regenerable subdirs", () => {
-    expect(REGENERABLE_SESSION_SUBDIRS).toEqual(["workspace", "overlay"]);
+    expect(REGENERABLE_SESSION_SUBDIRS).toEqual(["workspace", "overlay", "state"]);
   });
 });

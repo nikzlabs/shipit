@@ -22,6 +22,7 @@ import { CONTAINER_WORKSPACE_DIR } from "../shared/fs-constants.js";
 import {
   CONTAINER_SESSION_STATE_DIR,
   resolveContainerStateDir,
+  sessionSharedStateDir,
   sweepLegacyCloneArtifacts,
 } from "./session-state-dir.js";
 import { agentHome } from "../shared/agent-home.js";
@@ -327,7 +328,7 @@ export function buildMounts(
   // entrypoint chown loop, same as /persist.
   if (config.sessionStateDir) {
     if (workspaceVolume) {
-      const stateRelPath = config.sessionStateDir.replace(/^\/workspace\//, "");
+      const stateRelPath = sessionSharedStateDir(config.sessionStateDir).replace(/^\/workspace\//, "");
       mounts.push({
         Type: "volume",
         Source: workspaceVolume,
@@ -336,7 +337,7 @@ export function buildMounts(
         VolumeOptions: { Subpath: stateRelPath },
       });
     } else {
-      binds.push(`${config.sessionStateDir}:${CONTAINER_SESSION_STATE_DIR}:rw`);
+      binds.push(`${sessionSharedStateDir(config.sessionStateDir)}:${CONTAINER_SESSION_STATE_DIR}:rw`);
     }
   }
 
@@ -736,6 +737,9 @@ export async function createContainer(
   // mount resolves.
   if (config.sessionStateDir) {
     fs.mkdirSync(config.sessionStateDir, { recursive: true });
+    // The mounted slice must exist before the mount resolves, or Docker creates
+    // it root-owned and the entrypoint chown races the worker's first write.
+    fs.mkdirSync(sessionSharedStateDir(config.sessionStateDir), { recursive: true });
   }
 
   // docs/246 req 6 — shed what earlier versions left inside the clone. Runs on
@@ -1442,7 +1446,7 @@ export function buildContainerConfig(
     // flat layout, where sessionDir === workspaceDir). No mount then; the
     // worker keeps the legacy in-clone marker via SHIPIT_SESSION_STATE_DIR.
     sessionStateDir: opts.sessionStateDir
-      ?? resolveContainerStateDir(opts.sessionDir, opts.workspaceDir) ?? undefined,
+      ?? resolveContainerStateDir(opts.workspaceDir) ?? undefined,
     imageName: deps.imageName,
     memoryLimit: opts.memoryLimit ?? deps.defaultMemoryLimit,
     cpuQuota: opts.cpuQuota ?? deps.defaultCpuQuota,

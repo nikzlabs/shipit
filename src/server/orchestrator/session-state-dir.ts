@@ -29,6 +29,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import {
   COMPOSE_OVERRIDE_FILE,
   INSTALL_MARKER_FILE,
@@ -87,32 +88,53 @@ export function sessionStateDirForWorkspace(workspaceDir: string): string | null
 }
 
 /**
- * Resolve the state dir for a container, or `null` when it cannot be placed
- * outside the clone.
+ * Resolve the state dir a CONTAINER should mount, or `null` when the session's
+ * layout can't place one safely.
  *
- * `sessionStateDir(sessionDir)` is only safe when the clone is a SUBDIRECTORY of
- * the session dir. Under the legacy flat layout the two are the same path
- * (`ContainerConfig.workspaceDir`: "Falls back to sessionDir for legacy
- * sessions"), so the naive form yields `<clone>/state` — a ShipIt directory
- * created INSIDE the user's repository, which `git add -A` would commit. That is
- * strictly worse than the bug this feature fixes: it isn't under `.shipit/`, so
- * neither {@link sweepLegacyCloneArtifacts} nor the req-7 guard test would ever
- * notice it.
+ * Deliberately derived from the **clone path only**, via the same
+ * {@link sessionStateDirForWorkspace} contract the host-side callers use, so the
+ * two can never disagree about where a session's state lives.
  *
- * Returning `null` means "don't mount one" — the caller keeps the legacy in-clone
- * placement for that session, which is where those sessions already are. Same
- * posture as `assertServiceEnvRootOutsideWorkspace` (docs/183): a containment
- * check at the boundary rather than trust in the caller's path arithmetic.
+ * The earlier version took the caller's `sessionDir` and only checked that the
+ * result wasn't *inside* the clone. That check passed for a shape production
+ * actually produces: the runner factory derives `sessionDir =
+ * path.dirname(session.workspaceDir)` (`app-lifecycle.ts`), so a legacy FLAT
+ * session (clone = `<sessionsRoot>/<id>`) resolved to `<sessionsRoot>/state` —
+ * outside that clone, so it passed, but **shared by every flat session on the
+ * host**. Every such session would have mounted one directory and shared a
+ * single `.install-done`, while host callers (which use the clone-path contract)
+ * looked somewhere else entirely.
+ *
+ * Deriving from one place removes the whole class: either a session has a state
+ * dir that both sides agree on, or it has none and keeps its legacy in-clone
+ * placement.
  */
-export function resolveContainerStateDir(
-  sessionDir: string,
-  workspaceDir: string | undefined,
-): string | null {
-  const clone = path.resolve(workspaceDir ?? sessionDir);
-  const candidate = path.resolve(sessionStateDir(sessionDir));
-  const rel = path.relative(clone, candidate);
+export function resolveContainerStateDir(workspaceDir: string | undefined): string | null {
+  if (!workspaceDir) return null;
+  const resolved = sessionStateDirForWorkspace(workspaceDir);
+  if (!resolved) return null;
+  // Belt and braces: never hand back a path inside the clone.
+  const rel = path.relative(path.resolve(workspaceDir), path.resolve(resolved));
   const insideClone = rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
-  return insideClone ? null : candidate;
+  return insideClone ? null : resolved;
+}
+
+/**
+ * The subdirectory of the state dir that is MOUNTED into the session container
+ * at {@link CONTAINER_SESSION_STATE_DIR}.
+ *
+ * Only the artifacts the worker or the agent must reach live here — the install
+ * marker and fetched CI logs. The orchestrator-only artifacts (the compose
+ * override, `.env.agent`) stay in the state dir's root, which is NOT mounted, so
+ * "orchestrator-side only" is a property of the layout rather than a claim in a
+ * doc. Mounting the whole state dir would have put `.env.agent` inside the
+ * container namespace while the design said it wasn't.
+ */
+export const SESSION_STATE_SHARED_SUBDIR = "shared";
+
+/** Host path of the container-visible slice of a session's state dir. */
+export function sessionSharedStateDir(stateDir: string): string {
+  return path.join(stateDir, SESSION_STATE_SHARED_SUBDIR);
 }
 
 /**
@@ -138,11 +160,40 @@ export const LEGACY_CLONE_ARTIFACTS: readonly string[] = [
  * Only the names in {@link LEGACY_CLONE_ARTIFACTS} are removed, never the
  * directory wholesale: a user is free to keep their own files under `.shipit/`,
  * and an `rm -rf` of a directory in someone's repo is not a cleanup we get to
- * do on their behalf. Best-effort throughout — a sweep failure must never block
- * session boot.
+ * do on their behalf.
+ *
+ * **Tracked paths are never swept.** Matching on filename alone is not proof of
+ * provenance — a repository may legitimately commit a `.shipit/ci-logs/` or a
+ * `.shipit/compose.override.yml` of its own. Deleting one would be silent (the
+ * next auto-commit records the deletion) and unrecoverable from the user's point
+ * of view. `git ls-files` is the provenance check: anything git tracks belongs
+ * to the user, whatever it is called. ShipIt's own leftovers are untracked in
+ * every repo that didn't commit them, which is the case this sweep exists for.
+ *
+ * Best-effort throughout — a sweep failure must never block session boot.
  *
  * Returns the names actually removed (for logging/tests).
  */
+/**
+ * Does git track anything at `relPath` (a file, or any path under it)? Errors —
+ * not a repo, no git binary, no HEAD — answer "unknown", and we treat unknown as
+ * TRACKED: refusing to delete is always recoverable, deleting is not.
+ */
+function isTrackedByGit(workspaceDir: string, relPath: string): boolean {
+  try {
+    const out = execFileSync("git", ["ls-files", "--error-unmatch", "--", relPath], {
+      cwd: workspaceDir,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return out.trim().length > 0;
+  } catch (err) {
+    // Exit 1 with no match is the common, expected case: untracked → sweepable.
+    if ((err as { status?: number }).status === 1) return false;
+    return true; // anything else is unknown → keep the file
+  }
+}
+
 export function sweepLegacyCloneArtifacts(workspaceDir: string): string[] {
   const shipitDir = path.join(workspaceDir, ".shipit");
   const removed: string[] = [];
@@ -151,6 +202,12 @@ export function sweepLegacyCloneArtifacts(workspaceDir: string): string[] {
     const target = path.join(shipitDir, name);
     try {
       if (!fs.existsSync(target)) continue;
+      if (isTrackedByGit(workspaceDir, `.shipit/${name}`)) {
+        console.warn(
+          `[session-state] not sweeping tracked path .shipit/${name} — it belongs to the repo, not ShipIt`,
+        );
+        continue;
+      }
       fs.rmSync(target, { recursive: true, force: true });
       removed.push(name);
     } catch (err) {
