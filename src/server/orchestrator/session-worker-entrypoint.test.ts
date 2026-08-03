@@ -60,8 +60,19 @@ interface RunOpts {
   journalDirs?: string[];
   /** GID `stat -c %g` reports for those mounts — stands in for the HOST's GID. */
   journalGid?: string;
-  /** Override the `getent passwd <uid>` line; "NONE" makes the lookup fail. */
+  /**
+   * Override the `getent passwd <uid>` line; "NONE" makes the lookup fail.
+   * Defaults to a synthetic `shipit` entry whose primary GID matches the worker
+   * UID — the name and GID MUST NOT come from the machine running the suite (CI
+   * runs as `packer`, dev boxes as `shipit`, and uid 1000 resolves differently
+   * on each).
+   */
   passwdLine?: string;
+  /**
+   * Override the `getent group <gid>` line; default is "no such group", so the
+   * group-creation branch is reached deterministically everywhere.
+   */
+  groupLine?: string;
 }
 
 function runEntrypoint(dirs: string[], workerUid: string, opts: RunOpts = {}): RunResult {
@@ -132,12 +143,18 @@ function runEntrypoint(dirs: string[], workerUid: string, opts: RunOpts = {}): R
     join(bin, "getent"),
     [
       "#!/bin/sh",
-      'if [ "$1" = "passwd" ] && [ -n "$FAKE_PASSWD_LINE" ]; then',
-      '  if [ "$FAKE_PASSWD_LINE" = "NONE" ]; then exit 2; fi',
-      '  echo "$FAKE_PASSWD_LINE"',
-      "  exit 0",
-      "fi",
-      'exec /usr/bin/getent "$@"',
+      // Both lookups the entrypoint makes are answered from the fixture, never
+      // from the host's real passwd/group databases — otherwise the assertions
+      // depend on who the CI runner happens to be.
+      'case "$1" in',
+      "  passwd)",
+      '    if [ "$FAKE_PASSWD_LINE" = "NONE" ]; then exit 2; fi',
+      '    echo "$FAKE_PASSWD_LINE"; exit 0 ;;',
+      "  group)",
+      '    if [ -z "$FAKE_GROUP_LINE" ]; then exit 2; fi',
+      '    echo "$FAKE_GROUP_LINE"; exit 0 ;;',
+      "esac",
+      "exit 2",
       "",
     ].join("\n"),
     { mode: 0o755 },
@@ -162,8 +179,11 @@ function runEntrypoint(dirs: string[], workerUid: string, opts: RunOpts = {}): R
       // journal is unaffected by whether the HOST running the suite happens to
       // have /var/log/journal.
       SHIPIT_JOURNAL_DIRS: (opts.journalDirs ?? [join(root, "no-journal")]).join(" "),
-      ...(opts.journalGid ? { FAKE_JOURNAL_GID: opts.journalGid } : {}),
-      ...(opts.passwdLine ? { FAKE_PASSWD_LINE: opts.passwdLine } : {}),
+      FAKE_JOURNAL_GID: opts.journalGid ?? "",
+      // Synthetic by default so `usermod`'s target user is `shipit` on every
+      // machine, and so the drop takes the user form (passwd GID == worker UID).
+      FAKE_PASSWD_LINE: opts.passwdLine ?? `shipit:x:${workerUid}:${workerUid}::/home/shipit:/bin/sh`,
+      FAKE_GROUP_LINE: opts.groupLine ?? "",
     },
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
@@ -279,15 +299,17 @@ describe("host journal readability (#1917)", () => {
   it("reuses an existing group when one already carries the host GID", () => {
     const mount = journalDir();
 
-    // GID 1000 resolves to a real group in this image, so no group is created.
+    // A container group already carries GID 143 — the image's own
+    // `systemd-journal` happening to line up with the host's. Nothing is created.
     const result = runEntrypoint([tempDir()], "1000", {
       journalDirs: [mount],
-      journalGid: "1000",
+      journalGid: "143",
+      groupLine: "systemd-journal:x:143:",
     });
 
     expect(result.status).toBe(0);
     expect(result.groupOps.some((c) => c.startsWith("groupadd"))).toBe(false);
-    expect(result.groupOps).toContain("usermod -aG shipit shipit");
+    expect(result.groupOps).toContain("usermod -aG systemd-journal shipit");
   });
 
   it("covers every mounted journal path, not just the first", () => {
