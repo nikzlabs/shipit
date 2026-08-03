@@ -913,7 +913,7 @@ describe("generateComposeOverride — Docker-secrets mode", () => {
       secretNames: allNames,
       perService,
       filePathFor: (name: string) => `/host/secrets/test-session-123/${name}`,
-      entrypointWorkspacePath: ".shipit/secrets-entrypoint.sh",
+      entrypointHostPath: "/host/secrets/_entrypoint/secrets-entrypoint.sh",
     };
   }
 
@@ -990,6 +990,51 @@ describe("generateComposeOverride — Docker-secrets mode", () => {
     // redis service block shouldn't contain the entrypoint hijack
     const afterRedis = override.slice(redisIdx, redisIdx + 200);
     expect(afterRedis).not.toContain("secrets-entrypoint");
+  });
+
+  // SHI-285 — the wrapper mount used to come out of the workspace volume, which
+  // is why a generated `secrets-entrypoint.sh` had to be copied into the user's
+  // git clone (docs/246 req 1). It is now bind-mounted from its staged absolute
+  // path, so the mount is identical whether or not a workspace volume exists.
+  it("bind-mounts the wrapper from its absolute staged path, even with a workspace volume", () => {
+    const override = generateComposeOverride(
+      [{ name: "api", secrets: ["DATABASE_URL"], volumes: [".:/app"] }],
+      {
+        ...baseOpts,
+        workspaceVolume: "shipit-dev_workspace",
+        workspaceSubpath: "sessions/test-session-123/workspace",
+        dockerSecrets: dockerSecretsOpts({ api: ["DATABASE_URL"] }),
+      },
+    );
+    const parsed = parseYaml(override) as {
+      services: Record<string, { volumes?: Record<string, unknown>[]; entrypoint?: string[] }>;
+    };
+    const wrapper = parsed.services.api!.volumes!.find(
+      (v) => v.target === "/shipit/secrets-entrypoint.sh",
+    );
+    expect(wrapper).toEqual({
+      type: "bind",
+      source: "/host/secrets/_entrypoint/secrets-entrypoint.sh",
+      target: "/shipit/secrets-entrypoint.sh",
+      read_only: true,
+    });
+    expect(parsed.services.api!.entrypoint).toEqual(["/shipit/secrets-entrypoint.sh"]);
+    // Nothing anchors the wrapper to the clone any more.
+    expect(override).not.toContain(".shipit/secrets-entrypoint.sh");
+  });
+
+  it("omits the entrypoint hijack when the wrapper could not be staged", () => {
+    const { entrypointHostPath: _dropped, ...noEntrypoint } = dockerSecretsOpts({
+      api: ["DATABASE_URL"],
+    });
+    const override = generateComposeOverride(
+      [{ name: "api", secrets: ["DATABASE_URL"] }],
+      { ...baseOpts, dockerSecrets: noEntrypoint },
+    );
+    // Secrets are still delivered as files; only the env-var wrapper is absent,
+    // so the service boots rather than failing on a mount source that isn't there.
+    expect(override).toContain("shipit-DATABASE_URL");
+    expect(override).not.toContain("secrets-entrypoint");
   });
 });
 

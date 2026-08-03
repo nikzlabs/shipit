@@ -147,6 +147,12 @@ export const LEGACY_CLONE_ARTIFACTS: readonly string[] = [
   INSTALL_MARKER_FILE,
   CI_LOGS_SUBDIR,
   AGENT_ENV_FILE,
+  // SHI-285 — Docker-secrets mode used to copy its entrypoint wrapper here so
+  // the compose override could mount it through the workspace volume; it is
+  // staged in the secrets root now. Deliberately a literal, not the constant
+  // the staging code uses: this is the name OLD versions wrote, and renaming
+  // the current file must not silently change what the sweep removes.
+  "secrets-entrypoint.sh",
 ];
 
 /**

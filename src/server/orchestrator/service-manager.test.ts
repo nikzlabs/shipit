@@ -1052,14 +1052,111 @@ services:
     // No .env.api in the workspace — agent can't read it
     expect(fs.existsSync(path.join(dir, ".shipit/.env.api"))).toBe(false);
 
-    // Entrypoint wrapper copied into workspace .shipit/
-    expect(fs.existsSync(path.join(dir, ".shipit/secrets-entrypoint.sh"))).toBe(true);
+    // SHI-285 — the entrypoint wrapper is staged in the secrets root, NOT in
+    // the clone, where the post-turn `git add -A` would commit it into the
+    // user's repository (docs/246 req 1).
+    const stagedWrapper = path.join(secretsRoot, "_entrypoint", "secrets-entrypoint.sh");
+    expect(fs.existsSync(stagedWrapper)).toBe(true);
+    expect(fs.statSync(stagedWrapper).mode & 0o777).toBe(0o755);
+    expect(fs.existsSync(path.join(dir, ".shipit/secrets-entrypoint.sh"))).toBe(false);
 
-    // Override references Docker secrets, not env_file
+    // Override references Docker secrets, not env_file, and mounts the wrapper
+    // from its absolute staged path.
     const override = fs.readFileSync(path.join(dir, ".shipit/compose.override.yml"), "utf-8");
     expect(override).toContain("shipit-DATABASE_URL");
     expect(override).toContain("/shipit/secrets-entrypoint.sh");
+    expect(override).toContain(stagedWrapper);
     expect(override).not.toContain("env_file");
+
+    fs.rmSync(secretsRoot, { recursive: true, force: true });
+  });
+
+  // SHI-285 / docs/246 req 1 — the whole point: on the layout production uses
+  // (a threaded state dir), a Docker-secrets session leaves the git clone
+  // untouched. Before the fix this test failed on `.shipit/secrets-entrypoint.sh`.
+  it("Docker-secrets mode writes nothing into the clone when a state dir is threaded", async () => {
+    const dir = setup();
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "session-state-"));
+    const secretsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "isolated-secrets-root-"));
+    const entrypointPath = path.join(secretsRoot, "baked-secrets-entrypoint.sh");
+    fs.writeFileSync(entrypointPath, "#!/bin/sh\nexec \"$@\"\n", { mode: 0o755 });
+    writeCompose(dir, `
+services:
+  api:
+    image: node:20
+    ports: ['3000:3000']
+    x-shipit-secrets:
+      - DATABASE_URL
+`);
+    const fakeRunner: ComposeRunner = () => Promise.reject(new Error("no docker"));
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      sessionStateDir: stateDir,
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner: fakeRunner,
+      secretsLoader: async () => ({ DATABASE_URL: "postgres://x" }),
+      pollIntervalMs: 0,
+      dockerSecretsConfig: {
+        internalDir: secretsRoot,
+        entrypointSourcePath: entrypointPath,
+      },
+    });
+
+    try { await mgr.start(); } catch { /* expected */ }
+
+    // The clone holds exactly what the user put there.
+    expect(fs.readdirSync(dir).sort()).toEqual(["docker-compose.yml"]);
+
+    // Everything ShipIt generated is elsewhere, and the override points the
+    // service at the staged wrapper by absolute path.
+    const override = fs.readFileSync(path.join(stateDir, "compose.override.yml"), "utf-8");
+    expect(override).toContain(path.join(secretsRoot, "_entrypoint", "secrets-entrypoint.sh"));
+
+    fs.rmSync(secretsRoot, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  });
+
+  // The staged wrapper is bind-mounted by the DAEMON, so a containerized
+  // orchestrator must express its path in host terms — the same `hostDir`
+  // mapping the top-level `secrets: file:` references already use.
+  it("Docker-secrets mode maps the staged wrapper through hostDir", async () => {
+    const dir = setup();
+    const secretsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "isolated-secrets-root-"));
+    const entrypointPath = path.join(secretsRoot, "baked-secrets-entrypoint.sh");
+    fs.writeFileSync(entrypointPath, "#!/bin/sh\nexec \"$@\"\n", { mode: 0o755 });
+    writeCompose(dir, `
+services:
+  api:
+    image: node:20
+    ports: ['3000:3000']
+    x-shipit-secrets:
+      - DATABASE_URL
+`);
+    const fakeRunner: ComposeRunner = () => Promise.reject(new Error("no docker"));
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner: fakeRunner,
+      secretsLoader: async () => ({ DATABASE_URL: "postgres://x" }),
+      pollIntervalMs: 0,
+      dockerSecretsConfig: {
+        internalDir: secretsRoot,
+        hostDir: "/var/lib/shipit/secrets",
+        entrypointSourcePath: entrypointPath,
+      },
+    });
+
+    try { await mgr.start(); } catch { /* expected */ }
+
+    // Written where the orchestrator can reach it...
+    expect(fs.existsSync(path.join(secretsRoot, "_entrypoint", "secrets-entrypoint.sh"))).toBe(true);
+    // ...referenced where the daemon can, alongside the secret files themselves.
+    const override = fs.readFileSync(path.join(dir, ".shipit/compose.override.yml"), "utf-8");
+    expect(override).toContain("/var/lib/shipit/secrets/_entrypoint/secrets-entrypoint.sh");
+    expect(override).toContain("/var/lib/shipit/secrets/test-session/DATABASE_URL");
+    expect(override).not.toContain(secretsRoot);
 
     fs.rmSync(secretsRoot, { recursive: true, force: true });
   });

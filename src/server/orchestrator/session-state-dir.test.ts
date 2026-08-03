@@ -90,11 +90,14 @@ describe("sweepLegacyCloneArtifacts (docs/246 req 6)", () => {
     fs.writeFileSync(path.join(shipitDir(), ".env.agent"), "A=1");
     fs.mkdirSync(path.join(shipitDir(), "ci-logs"));
     fs.writeFileSync(path.join(shipitDir(), "ci-logs", "1.log"), "boom");
+    // SHI-285 — a session upgraded from a ShipIt that ran Docker-secrets mode
+    // has this one too; req 6 covers what earlier versions left behind.
+    fs.writeFileSync(path.join(shipitDir(), "secrets-entrypoint.sh"), "#!/bin/sh\n");
 
     const removed = sweepLegacyCloneArtifacts(clone);
 
     expect(removed.sort()).toEqual(
-      [".env.agent", ".install-done", "ci-logs", "compose.override.yml"].sort(),
+      [".env.agent", ".install-done", "ci-logs", "compose.override.yml", "secrets-entrypoint.sh"].sort(),
     );
     expect(fs.existsSync(shipitDir())).toBe(false);
   });

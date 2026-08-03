@@ -156,14 +156,17 @@ the workspace volume; compose mounts it as a tmpfs file at
 `/run/secrets/shipit-<NAME>` inside only the service containers that
 declared the secret. A small entrypoint wrapper baked into the
 orchestrator image (`secrets-entrypoint.sh`) reads those files and
-exports them as env vars before exec'ing the original command.
+exports them as env vars before exec'ing the original command. The wrapper is
+staged next to the secret files (`<SHIPIT_SECRETS_INTERNAL_DIR>/_entrypoint/`)
+and bind-mounted into each service container from there — never into your git
+clone, so it can't be committed to your repository.
 
 Required environment variables on the orchestrator:
 
 | Variable | Purpose |
 |----------|---------|
 | `SHIPIT_SECRETS_INTERNAL_DIR` | Orchestrator-side directory where secret files are written (e.g. `/var/shipit/secrets`). |
-| `SHIPIT_SECRETS_HOST_DIR` | Host-side path the Docker daemon sees for the same directory. Required when the orchestrator runs in a container; omit for orchestrator-on-host setups. |
+| `SHIPIT_SECRETS_HOST_DIR` | Host-side path the Docker daemon sees for the same directory. Required when the orchestrator runs in a container; omit for orchestrator-on-host setups. Covers both the per-secret `file:` references and the staged entrypoint wrapper's bind mount. |
 | `SHIPIT_SECRETS_ENTRYPOINT` | Path to `secrets-entrypoint.sh` inside the orchestrator image. Defaults to `/usr/local/share/shipit/secrets-entrypoint.sh`. |
 
 Tradeoff: the agent loses the ability to casually `cat .shipit/.env.<svc>`

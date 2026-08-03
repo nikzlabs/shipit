@@ -14,6 +14,7 @@ import {
   writeAgentEnvFile,
   writeIsolatedSecretFiles,
   composeSecretFilePath,
+  stageSecretsEntrypoint,
 } from "./secret-resolver.js";
 import type { ComposeService } from "./compose-generator.js";
 
@@ -704,6 +705,94 @@ describe("composeSecretFilePath (Phase 1 follow-up)", () => {
       sessionId: "abc",
       name: "DATABASE_URL",
     })).toBe("/var/shipit/secrets/abc/DATABASE_URL");
+  });
+});
+
+describe("stageSecretsEntrypoint (SHI-285)", () => {
+  let tmpDir: string;
+
+  function setup() {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "entrypoint-staging-"));
+    return tmpDir;
+  }
+
+  afterEach(() => {
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function bakedWrapper(dir: string): string {
+    const src = path.join(dir, "baked.sh");
+    fs.writeFileSync(src, "#!/bin/sh\nexec \"$@\"\n", { mode: 0o755 });
+    return src;
+  }
+
+  it("copies the wrapper to <rootDir>/_entrypoint/ and returns that path", () => {
+    const dir = setup();
+    const root = path.join(dir, "secrets");
+    const hostPath = stageSecretsEntrypoint({
+      rootDir: root,
+      sessionId: "abc123",
+      sourcePath: bakedWrapper(dir),
+    });
+    const staged = path.join(root, "_entrypoint", "secrets-entrypoint.sh");
+    expect(hostPath).toBe(staged);
+    expect(fs.readFileSync(staged, "utf-8")).toContain("exec \"$@\"");
+    // Service containers execute it, so it has to be executable by everyone.
+    expect(fs.statSync(staged).mode & 0o777).toBe(0o755);
+  });
+
+  it("maps the returned path through hostDir (orchestrator-in-container)", () => {
+    const dir = setup();
+    const root = path.join(dir, "secrets");
+    const hostPath = stageSecretsEntrypoint({
+      rootDir: root,
+      hostDir: "/var/lib/shipit/secrets",
+      sessionId: "abc123",
+      sourcePath: bakedWrapper(dir),
+    });
+    expect(hostPath).toBe("/var/lib/shipit/secrets/_entrypoint/secrets-entrypoint.sh");
+    // ...while the copy still lands where the orchestrator can write it.
+    expect(fs.existsSync(path.join(root, "_entrypoint", "secrets-entrypoint.sh"))).toBe(true);
+  });
+
+  // The staging dir is a SIBLING of the per-session secret dirs, never inside
+  // one: writeIsolatedSecretFiles() sweeps every entry of a session dir that
+  // isn't a declared secret, and teardown removes the dir wholesale.
+  it("survives a session's secret sweep and teardown", () => {
+    const dir = setup();
+    const root = path.join(dir, "secrets");
+    const staged = stageSecretsEntrypoint({
+      rootDir: root,
+      sessionId: "abc123",
+      sourcePath: bakedWrapper(dir),
+    })!;
+    writeIsolatedSecretFiles({ rootDir: root, sessionId: "abc123", values: { K: "v" } });
+    writeIsolatedSecretFiles({ rootDir: root, sessionId: "abc123", values: {} });
+    fs.rmSync(path.join(root, "abc123"), { recursive: true, force: true });
+    expect(fs.existsSync(staged)).toBe(true);
+  });
+
+  it("is idempotent across reconciles and refreshes a changed wrapper", () => {
+    const dir = setup();
+    const root = path.join(dir, "secrets");
+    const src = bakedWrapper(dir);
+    stageSecretsEntrypoint({ rootDir: root, sessionId: "s1", sourcePath: src });
+    fs.writeFileSync(src, "#!/bin/sh\n# v2\nexec \"$@\"\n", { mode: 0o755 });
+    const staged = stageSecretsEntrypoint({ rootDir: root, sessionId: "s2", sourcePath: src })!;
+    expect(fs.readFileSync(staged, "utf-8")).toContain("# v2");
+    // No temp files left behind for either session.
+    expect(fs.readdirSync(path.join(root, "_entrypoint"))).toEqual(["secrets-entrypoint.sh"]);
+  });
+
+  it("returns null (rather than throwing) when the source is missing", () => {
+    const dir = setup();
+    const root = path.join(dir, "secrets");
+    expect(stageSecretsEntrypoint({
+      rootDir: root,
+      sessionId: "s1",
+      sourcePath: path.join(dir, "does-not-exist.sh"),
+    })).toBeNull();
+    expect(fs.readdirSync(path.join(root, "_entrypoint"))).toEqual([]);
   });
 });
 
