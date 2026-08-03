@@ -113,12 +113,23 @@ export interface ComposeOverrideOptions {
     /** Returns the compose-side `file:` path for a given secret name. */
     filePathFor: (name: string) => string;
     /**
-     * Workspace-relative path to the entrypoint wrapper script
-     * (`secrets-entrypoint.sh`), e.g. `.shipit/secrets-entrypoint.sh`.
-     * The override mounts it into each service container at
+     * SHI-285 — absolute, DAEMON-SIDE path of the staged entrypoint wrapper
+     * (`stageSecretsEntrypoint()`), e.g.
+     * `/var/lib/shipit/secrets/_entrypoint/secrets-entrypoint.sh`. The override
+     * bind-mounts it into each secret-consuming service container at
      * `/shipit/secrets-entrypoint.sh` and sets it as the entrypoint.
+     *
+     * It used to be a workspace-RELATIVE path mounted through the workspace
+     * volume, which required the wrapper to live inside the user's git clone.
+     * The daemon resolves this path the same way it resolves the `file:`
+     * references in the top-level `secrets:` block, so both come from the same
+     * `hostDir` mapping and are correct together or wrong together.
+     *
+     * Absent when staging failed — the service then gets its `secrets:`
+     * references without the wrapper rather than a mount of a path that
+     * doesn't exist.
      */
-    entrypointWorkspacePath: string;
+    entrypointHostPath?: string;
   };
   /**
    * docs/183 — service-name → absolute env-file path for services that
@@ -804,28 +815,25 @@ export function generateComposeOverride(
       const consumed = (ds.perService[svc.name] ?? []).filter((n) => ds.secretNames.includes(n));
       if (consumed.length > 0) {
         entry.secrets = consumed.map((n) => `shipit-${n}`);
-        // Mount the entrypoint wrapper read-only into the container. We
-        // reuse the workspace-volume mount (the wrapper is copied into
-        // .shipit/) so this works on both volume-backed and bind-mount
-        // setups without changing the host bind path.
-        const existingVolumes = (entry.volumes as unknown[] | undefined) ?? [];
-        const wrapperMount: Record<string, unknown> = opts.workspaceVolume
-          ? {
-            type: "volume",
-            source: "shipit-workspace",
+        // SHI-285 — bind-mount the wrapper read-only from its staged absolute
+        // path. One mount shape for every setup: the wrapper no longer rides
+        // the workspace volume (which is what forced it to live inside the
+        // user's git clone), and the daemon resolves this source exactly as it
+        // resolves the `secrets: file:` paths above it.
+        if (ds.entrypointHostPath) {
+          const existingVolumes = (entry.volumes as unknown[] | undefined) ?? [];
+          entry.volumes = [...existingVolumes, {
+            type: "bind",
+            source: ds.entrypointHostPath,
             target: "/shipit/secrets-entrypoint.sh",
             read_only: true,
-            volume: { subpath: opts.workspaceSubpath
-              ? `${opts.workspaceSubpath}/${ds.entrypointWorkspacePath}`
-              : ds.entrypointWorkspacePath },
-          }
-          : { type: "bind", source: `./${ds.entrypointWorkspacePath}`, target: "/shipit/secrets-entrypoint.sh", read_only: true };
-        entry.volumes = [...existingVolumes, wrapperMount];
-        // Override the entrypoint to the wrapper. The wrapper exec's
-        // "$@" so the user's command runs unchanged. We don't touch
-        // `command:` here — leaving it unset means compose merges the
-        // user's compose-file value, which is what we want.
-        entry.entrypoint = ["/shipit/secrets-entrypoint.sh"];
+          }];
+          // Override the entrypoint to the wrapper. The wrapper exec's
+          // "$@" so the user's command runs unchanged. We don't touch
+          // `command:` here — leaving it unset means compose merges the
+          // user's compose-file value, which is what we want.
+          entry.entrypoint = ["/shipit/secrets-entrypoint.sh"];
+        }
       }
     } else if (svc.secrets && svc.secrets.length > 0) {
       // Inject the per-service secrets env file if the service declared any

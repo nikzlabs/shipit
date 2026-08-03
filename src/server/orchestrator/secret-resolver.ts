@@ -769,6 +769,76 @@ export function composeSecretFilePath(opts: {
 }
 
 /**
+ * Subdirectory of the Docker-secrets root that holds the staged entrypoint
+ * wrapper. Sits BESIDE the per-session `<rootDir>/<sessionId>/` directories,
+ * never inside one: {@link writeIsolatedSecretFiles} sweeps every entry of a
+ * session dir that isn't a currently-declared secret name, and
+ * `removeSessionSecretsDir()` drops the whole thing on teardown — either would
+ * take the wrapper with it. The leading underscore can't collide with a session
+ * id (they're uuids).
+ */
+const SECRETS_ENTRYPOINT_SUBDIR = "_entrypoint";
+
+/** Filename of the staged wrapper. Matches the baked source for greppability. */
+const SECRETS_ENTRYPOINT_FILE = "secrets-entrypoint.sh";
+
+/**
+ * SHI-285 — stage the Docker-secrets entrypoint wrapper where the Docker
+ * **daemon** can bind-mount it into service containers, and return the path to
+ * reference from the compose override.
+ *
+ * The wrapper is baked into the orchestrator image
+ * (`/usr/local/share/shipit/secrets-entrypoint.sh`), which is a path inside the
+ * orchestrator's own container — not something the daemon can resolve. So it has
+ * to be copied somewhere with a known daemon-side path. ShipIt used to copy it
+ * into the session's git clone and mount it through the workspace volume, which
+ * put a generated file where the post-turn `git add -A` commits it into the
+ * user's repository (docs/246 req 1).
+ *
+ * The Docker-secrets root is the natural home: it is the one directory this mode
+ * already requires a daemon-side mapping for (`hostDir`, used by
+ * {@link composeSecretFilePath} for every `secrets: file:` reference), so the
+ * wrapper needs no configuration the mode doesn't already have. One shared copy
+ * serves every session — the file is a static asset, identical for all of them,
+ * not per-session state.
+ *
+ * Written via write-temp-then-rename so a concurrent reconcile in another
+ * session can never expose a half-written script to a starting container. The
+ * temp name is session-scoped for the same reason.
+ *
+ * Returns the compose-side (daemon-visible) absolute path, or `null` if staging
+ * failed — the caller decides what to do without a wrapper.
+ */
+export function stageSecretsEntrypoint(opts: {
+  /** Orchestrator-internal Docker-secrets root. */
+  rootDir: string;
+  /** Daemon-side view of `rootDir`, when the orchestrator runs in a container. */
+  hostDir?: string;
+  /** Session staging this copy — used only to make the temp filename unique. */
+  sessionId: string;
+  /** Baked wrapper inside the orchestrator image. */
+  sourcePath: string;
+}): string | null {
+  const dir = path.join(opts.rootDir, SECRETS_ENTRYPOINT_SUBDIR);
+  const dest = path.join(dir, SECRETS_ENTRYPOINT_FILE);
+  const tmp = `${dest}.${opts.sessionId}.tmp`;
+  try {
+    // 0755 on the directory, not the 0700 the per-session secret dirs get: this
+    // holds no secret, and the traversal happens daemon-side at mount time.
+    fs.mkdirSync(dir, { recursive: true, mode: 0o755 });
+    fs.copyFileSync(opts.sourcePath, tmp);
+    fs.chmodSync(tmp, 0o755);
+    fs.renameSync(tmp, dest);
+  } catch (err) {
+    try { fs.unlinkSync(tmp); } catch { /* nothing to clean up */ }
+    console.warn(`[secrets] failed to stage entrypoint wrapper:`, (err as Error).message);
+    return null;
+  }
+  const base = opts.hostDir ?? opts.rootDir;
+  return path.join(base, SECRETS_ENTRYPOINT_SUBDIR, SECRETS_ENTRYPOINT_FILE);
+}
+
+/**
  * Write (or remove) the agent-container env file at `.shipit/.env.agent`
  * inside `workspaceDir`. Phase 3 — agent gets the subset of secrets marked
  * `agent: true`.

@@ -64,16 +64,6 @@ const ALLOWED: Record<string, string> = {
   "src/server/orchestrator/service-manager.ts": "legacy fallback override dir",
   "src/server/orchestrator/overlay-session.ts": "legacy fallback marker path",
   "src/server/orchestrator/secret-resolver.ts": "unlink + legacy fallback .env.agent",
-
-  // --- KNOWN GAP (docs/246): Docker-secrets mode copies a generated
-  // `secrets-entrypoint.sh` into the clone, because the compose override hands
-  // SERVICE containers a workspace-RELATIVE path and they mount the workspace,
-  // not the state dir. Moving it means switching that reference to an absolute
-  // state-dir path the way docs/183 did for `env_file:`. Opt-in mode
-  // (SHIPIT_SECRETS_INTERNAL_DIR) and not exercised here, so it is recorded
-  // rather than changed blind. See the feature's checklist. ---
-  "src/server/orchestrator/service-secrets-resolver.ts":
-    "KNOWN GAP — Docker-secrets entrypoint still written into the clone",
 };
 
 /** Source files (excluding tests) that compose an in-clone artifact path. */
