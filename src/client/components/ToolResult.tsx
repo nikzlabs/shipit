@@ -1,5 +1,5 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: resets the lazily-fetched body (docs/244) when a different tool result occupies the same slot after a session switch or rewind.
-import { useState, useMemo, useEffect, useCallback } from "react";
+import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import hljs from "highlight.js";
 import { Button } from "./ui/button.js";
 import type { ToolResultBlock } from "./MessageList.js";
@@ -80,8 +80,10 @@ function extractFilePathFromReadContent(content: string): string | null {
  * `useExpandable` so the fetch lives in one place rather than four.
  */
 export interface LazyResultBody {
-  /** `content` is a server slice with more available behind a fetch. */
+  /** `content` is a server slice (or empty) with the body available behind a fetch. */
   serverTruncated: boolean;
+  /** The fetch has resolved — `full` is the authoritative body. */
+  fetched: boolean;
   /** True line count of the whole body. */
   totalLines?: number;
   /** The full body, once fetched. */
@@ -103,7 +105,11 @@ function useExpandable(content: string, maxLines: number, lazy?: LazyResultBody)
     () => truncateLines(source, maxLines),
     [source, maxLines]
   );
-  const serverTruncated = lazy?.serverTruncated ?? false;
+  // Once the fetch resolves, `source` IS the whole body, so ordinary
+  // client-side truncation takes over and the server's metadata is no longer
+  // the authority — using it would keep claiming a body is short when we now
+  // hold all of it.
+  const serverTruncated = (lazy?.serverTruncated ?? false) && !(lazy?.fetched ?? false);
 
   return {
     expanded,
@@ -112,7 +118,7 @@ function useExpandable(content: string, maxLines: number, lazy?: LazyResultBody)
     // fetch-in-flight doesn't render a short body as if it were complete.
     clipped: !expanded && (truncated || serverTruncated),
     showToggle: truncated || serverTruncated,
-    totalLines: lazy?.totalLines ?? totalLines,
+    totalLines: lazy?.fetched ? totalLines : (lazy?.totalLines ?? totalLines),
     loading: lazy?.loading ?? false,
     error: lazy?.error ?? false,
     toggle: () => {
@@ -354,6 +360,7 @@ function useLazyResultBody(result: ToolResultBlock): LazyResultBody | undefined 
   const [full, setFull] = useState<string | undefined>(undefined);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
+  const fetchFullRef = useRef<(() => void) | undefined>(undefined);
 
   // A new tool result in the same slot (session switch, rewind) must not show
   // the previous one's body.
@@ -363,6 +370,15 @@ function useLazyResultBody(result: ToolResultBlock): LazyResultBody | undefined 
     setLoading(false);
     setError(false);
   }, [result.toolUseId, sessionId]);
+
+  // Fetch as soon as the result is shown. `ToolResult` renders only inside
+  // `ToolCallModal`, so mounting IS the click that requirement 8 licenses a
+  // loading state for — and since docs/244 strips the body of a modal-only
+  // result to nothing, there is no preview to show while waiting.
+  // eslint-disable-next-line no-restricted-syntax -- loads data owned by an external endpoint when the view that displays it mounts; the mount is the user's click, there is no earlier event to hang it on.
+  useEffect(() => {
+    if (result.truncated) fetchFullRef.current?.();
+  }, [result.toolUseId, result.truncated]);
 
   const fetchFull = useCallback(() => {
     if (!sessionId || !result.truncated) return;
@@ -381,10 +397,12 @@ function useLazyResultBody(result: ToolResultBlock): LazyResultBody | undefined 
       }
     })();
   }, [sessionId, result.toolUseId, result.truncated]);
+  fetchFullRef.current = fetchFull;
 
   if (!result.truncated) return undefined;
   return {
     serverTruncated: true,
+    fetched: full !== undefined,
     ...(result.totalLines !== undefined ? { totalLines: result.totalLines } : {}),
     ...(full !== undefined ? { full } : {}),
     loading,
@@ -400,10 +418,30 @@ export function ToolResult({ tool, result }: { tool: string; result: ToolResultB
     [lazy?.full, result.content],
   );
 
-  const displayContent = parsed?.text ?? result.content;
+  const displayContent = parsed?.text ?? (lazy?.full ?? result.content);
   const images = parsed?.images ?? [];
   const hasImages = images.length > 0;
   const hasContent = !!displayContent;
+
+  // docs/244 — a modal-only result arrives with an EMPTY body and a `truncated`
+  // marker, because nothing renders its content until this modal opens. Show
+  // the fetch rather than "(no output)", which would be a lie about a result
+  // that has plenty.
+  const awaitingBody = !!lazy && !lazy.fetched && !lazy.error;
+  if (!hasContent && !hasImages && awaitingBody) {
+    return (
+      <div className="mt-1 text-xs text-(--color-text-tertiary) font-mono italic" role="status">
+        Loading output…
+      </div>
+    );
+  }
+  if (!hasContent && !hasImages && lazy?.error) {
+    return (
+      <div className="mt-1 text-xs text-(--color-error)" role="status">
+        Couldn&apos;t load this output.
+      </div>
+    );
+  }
 
   if (!hasContent && !result.isError && !hasImages) {
     return (

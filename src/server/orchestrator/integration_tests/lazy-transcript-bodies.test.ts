@@ -33,11 +33,14 @@ import {
 import type { DatabaseManager } from "../../shared/database.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { imageHash } from "../transcript-projection.js";
-import { TRANSCRIPT_SLICE_LINES } from "../../shared/transcript-slice.js";
 
 const HEAVY_OUTPUT = Array.from({ length: 40_000 }, (_, i) => `stdout line ${i}`).join("\n");
 const FILE_BODY = Array.from({ length: 2_000 }, (_, i) => `const x${i} = ${i};`).join("\n");
 const SCREENSHOT = Buffer.from("x".repeat(200_000)).toString("base64");
+// Distinct from HEAVY_OUTPUT on purpose: the Task result is the exempt subagent
+// report and MUST still ship whole, so the assertions below can only tell the
+// two cases apart if their bodies differ.
+const SUBAGENT_REPORT = Array.from({ length: 5_000 }, (_, i) => `finding ${i}`).join("\n");
 
 describe("Integration: lazy transcript bodies (SHI-267)", () => {
   let app: FastifyInstance;
@@ -86,7 +89,7 @@ describe("Integration: lazy transcript bodies (SHI-267)", () => {
       toolResults: [
         { toolUseId: "bash-1", content: HEAVY_OUTPUT },
         { toolUseId: "write-1", content: "ok" },
-        { toolUseId: "task-1", content: HEAVY_OUTPUT },
+        { toolUseId: "task-1", content: SUBAGENT_REPORT },
       ],
     });
   });
@@ -125,26 +128,36 @@ describe("Integration: lazy transcript bodies (SHI-267)", () => {
     // dominates the served size; everything else is bounded by the slice.
     expect(served).toBeLessThan(stored / 2);
 
-    // And none of the three heavy bodies appears in the payload beyond its slice.
+    // None of the three heavy bodies appears in the payload at all. The Bash
+    // output can now be asserted absolutely rather than "beyond its slice":
+    // nothing renders it without a click, so not one line of it ships.
     const body = res.rawPayload.toString("utf8");
     expect(body).not.toContain(SCREENSHOT.slice(0, 200));
     expect(body).not.toContain(FILE_BODY.slice(-200));
+    expect(body).not.toContain("stdout line 0");
+    expect(body).not.toContain("stdout line 39999");
+    // ...while the exempt subagent report still ships whole, since the
+    // transcript renders it inline with no expand affordance.
+    expect(body).toContain("finding 4999");
   });
 
-  it("slices a heavy tool result and keeps the metadata the UI needs", async () => {
+  it("ships no body at all for a modal-only result, keeping only its metadata", async () => {
+    // Requirement 1 at full strength: a Bash result is drawn nowhere until the
+    // tool-call modal opens, so the transcript carries none of it. What stays
+    // is exactly the metadata requirement 3 names, plus the line count the
+    // modal's expander needs.
     const { messages } = await loadHistory();
     const bash = messages[1]!.toolResults!.find((r) => r.toolUseId === "bash-1")!;
+    expect(bash.content).toBe("");
     expect(bash.truncated).toBe(true);
     expect(bash.totalLines).toBe(40_000);
-    expect(bash.content.split("\n")).toHaveLength(TRANSCRIPT_SLICE_LINES);
-    expect(HEAVY_OUTPUT.startsWith(bash.content)).toBe(true);
   });
 
   it("never slices the subagent final report", async () => {
     const { messages } = await loadHistory();
     const task = messages[1]!.toolResults!.find((r) => r.toolUseId === "task-1")!;
     expect(task.truncated).toBeUndefined();
-    expect(task.content).toBe(HEAVY_OUTPUT);
+    expect(task.content).toBe(SUBAGENT_REPORT);
   });
 
   it("strips the Write body but keeps the +N -M the diff summary draws", async () => {

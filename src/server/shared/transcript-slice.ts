@@ -24,6 +24,23 @@ export const TRANSCRIPT_SLICE_LINES = 40;
 /** Hard byte backstop for pathologically long single lines. */
 export const TRANSCRIPT_SLICE_BYTES = 16 * 1024;
 
+/**
+ * Below this, a modal-only result body is left on the wire instead of being
+ * stripped.
+ *
+ * Requirement 1 is absolute in principle — don't transfer what isn't visible
+ * without a click — but stripping is not free: an emptied body is replaced by
+ * `truncated` + `totalLines` + `totalBytes`, which is roughly 60 bytes of JSON.
+ * For a result like `"ok"` that makes the payload strictly *larger*, and buys a
+ * network round-trip to fetch two characters. This floor is where the mechanism
+ * stops paying for itself.
+ *
+ * Deliberately small: at 200 bytes, even a transcript of 50 short results
+ * carries under 10 KB of un-stripped bodies, which is noise against the
+ * megabytes this feature exists to remove.
+ */
+export const RESULT_STRIP_FLOOR_BYTES = 200;
+
 export interface SlicedBody {
   /** The head slice — a prefix of the original. */
   content: string;
