@@ -12,7 +12,9 @@
 - [x] Guard test: no generated artifact name composed with an in-clone `.shipit` path (`no-clone-writes.test.ts`)
 - [x] `shipit-docs/shipit-yaml.md` + `secrets.md` updated for the new paths; the "add `.shipit` to your `.gitignore`" onboarding step is gone
 - [x] Worker state dir injected (`SessionWorkerDeps.stateDir`) rather than hardcoded to the mount — the first CI run caught the in-process case
-- [x] Full suite green: 626 files, 8759 tests
+- [x] Containment check (`resolveContainerStateDir`) — never mount a state dir inside the clone; `SHIPIT_SESSION_STATE_DIR` tells the worker where to write when there is no mount
+- [x] Sweep gated on having a state dir, so a live in-clone marker isn't deleted every boot
+- [x] Full suite green (one pre-existing, environment-only failure in `mcp-bridge-bundle.test.ts` — reproduces on clean `main`)
 - [ ] Fresh-context review of the branch diff against every numbered requirement — running via `shipit agent run --agent codex`
 
 ## Known gap

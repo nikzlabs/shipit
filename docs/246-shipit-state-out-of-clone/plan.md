@@ -45,6 +45,40 @@ exactly how CI caught it. The path is now a dependency
 `SHIPIT_SESSION_STATE_DIR` then the `/session-state` mount, so tests point it at
 a temp dir and exercise the real mechanism.
 
+### The state dir is never placed inside the clone (containment check)
+
+`sessionStateDir(sessionDir)` is only safe when the clone is a *subdirectory* of
+the session dir. Under the legacy flat layout the two are the same path
+(`ContainerConfig.workspaceDir`: "Falls back to sessionDir for legacy
+sessions"), so the naive form yields `<clone>/state` — a ShipIt directory
+created **inside the user's repository**, which `git add -A` would commit. That
+is strictly worse than the bug this feature fixes: it isn't under `.shipit/`, so
+neither the sweep nor the req-7 guard test would notice it.
+
+`resolveContainerStateDir()` therefore performs a containment check and returns
+`null` when the candidate would land inside the clone — the same posture as
+`assertServiceEnvRootOutsideWorkspace` (docs/183). `null` means "no mount"; the
+worker is then told, via `SHIPIT_SESSION_STATE_DIR` in the container env, to keep
+the legacy in-clone location. Without that env the worker would try to create
+`/session-state` at the container's filesystem root and hang, which is the same
+failure CI caught in-process.
+
+Two consequences that fall out of it:
+
+- **The sweep is gated on having a state dir.** For a session with no state dir
+  the in-clone files are still *live*, not leftovers — sweeping them would
+  delete the real install marker on every container create and re-run
+  `agent.install` every boot.
+- **Grandfathered containers degrade safely.** `deploy.sh` stopped killing
+  session containers on update (docs/113), so a container adopted across a
+  deploy runs the OLD worker against the NEW orchestrator. That worker writes
+  the marker in the clone and never sees the host-side pre-stamp, so the
+  pre-stamp stops suppressing installs (a redundant install — slow, correct)
+  rather than skipping one that was needed. `claim-session` unlinks both the
+  state-dir and the in-clone marker, so HEAD-change invalidation keeps working
+  either way, and the clone's leftovers get swept when the container is next
+  recreated.
+
 ### The state dir is threaded, never derived
 
 `ServiceManager` holds only `workspaceDir` (`service-manager.ts:245`) and the

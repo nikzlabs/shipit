@@ -87,6 +87,35 @@ export function sessionStateDirForWorkspace(workspaceDir: string): string | null
 }
 
 /**
+ * Resolve the state dir for a container, or `null` when it cannot be placed
+ * outside the clone.
+ *
+ * `sessionStateDir(sessionDir)` is only safe when the clone is a SUBDIRECTORY of
+ * the session dir. Under the legacy flat layout the two are the same path
+ * (`ContainerConfig.workspaceDir`: "Falls back to sessionDir for legacy
+ * sessions"), so the naive form yields `<clone>/state` — a ShipIt directory
+ * created INSIDE the user's repository, which `git add -A` would commit. That is
+ * strictly worse than the bug this feature fixes: it isn't under `.shipit/`, so
+ * neither {@link sweepLegacyCloneArtifacts} nor the req-7 guard test would ever
+ * notice it.
+ *
+ * Returning `null` means "don't mount one" — the caller keeps the legacy in-clone
+ * placement for that session, which is where those sessions already are. Same
+ * posture as `assertServiceEnvRootOutsideWorkspace` (docs/183): a containment
+ * check at the boundary rather than trust in the caller's path arithmetic.
+ */
+export function resolveContainerStateDir(
+  sessionDir: string,
+  workspaceDir: string | undefined,
+): string | null {
+  const clone = path.resolve(workspaceDir ?? sessionDir);
+  const candidate = path.resolve(sessionStateDir(sessionDir));
+  const rel = path.relative(clone, candidate);
+  const insideClone = rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+  return insideClone ? null : candidate;
+}
+
+/**
  * The generated names earlier ShipIt versions wrote into `<clone>/.shipit/`.
  * Used by {@link sweepLegacyCloneArtifacts} — NOT a list of current write
  * targets.

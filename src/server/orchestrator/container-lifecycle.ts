@@ -21,7 +21,7 @@ import {
 import { CONTAINER_WORKSPACE_DIR } from "../shared/fs-constants.js";
 import {
   CONTAINER_SESSION_STATE_DIR,
-  sessionStateDir,
+  resolveContainerStateDir,
   sweepLegacyCloneArtifacts,
 } from "./session-state-dir.js";
 import { agentHome } from "../shared/agent-home.js";
@@ -432,6 +432,14 @@ export function buildEnv(
   const env: string[] = [
     `SESSION_ID=${config.sessionId}`,
     `WORKSPACE_DIR=${workspaceDir}`,
+    // docs/246 — where the worker writes the install marker. `/session-state`
+    // when the state dir is mounted; otherwise the legacy in-clone location, so
+    // a session that can't get a mount (flat layout) keeps working instead of
+    // failing to create a directory at the container's filesystem root — the
+    // exact hang the first CI run caught.
+    `SHIPIT_SESSION_STATE_DIR=${
+      config.sessionStateDir ? CONTAINER_SESSION_STATE_DIR : `${workspaceDir}/.shipit`
+    }`,
     `WORKER_PORT=${workerPort}`,
     "WORKER_MODE=session",
     // docs/150 — the worker drops to the unprivileged `shipit` user whose home
@@ -736,7 +744,11 @@ export async function createContainer(
   // Working tree only: copies already committed to the user's history are
   // deliberately left alone (ShipIt can't rewrite someone's history, and the
   // files are inert once it stops writing them).
-  if (config.workspaceDir) {
+  // Only when this session HAS a state dir. Without one (legacy flat layout)
+  // the in-clone files are still LIVE, not leftovers — sweeping them would
+  // delete the session's real install marker on every container create and
+  // re-run `agent.install` every boot.
+  if (config.workspaceDir && config.sessionStateDir) {
     const swept = sweepLegacyCloneArtifacts(config.workspaceDir);
     if (swept.length > 0) {
       console.log(
@@ -1426,9 +1438,11 @@ export function buildContainerConfig(
     pnpmStoreDir: opts.pnpmStoreDir,
     uploadsDir: opts.uploadsDir ?? path.join(opts.sessionDir, "uploads"),
     scratchDir: opts.scratchDir ?? path.join(opts.sessionDir, "scratch"),
-    // docs/246 — no layout heuristic needed here: this is the real session dir,
-    // so the state dir is an unambiguous sibling of `workspace/`.
-    sessionStateDir: opts.sessionStateDir ?? sessionStateDir(opts.sessionDir),
+    // docs/246 — null when the state dir would land inside the clone (legacy
+    // flat layout, where sessionDir === workspaceDir). No mount then; the
+    // worker keeps the legacy in-clone marker via SHIPIT_SESSION_STATE_DIR.
+    sessionStateDir: opts.sessionStateDir
+      ?? resolveContainerStateDir(opts.sessionDir, opts.workspaceDir) ?? undefined,
     imageName: deps.imageName,
     memoryLimit: opts.memoryLimit ?? deps.defaultMemoryLimit,
     cpuQuota: opts.cpuQuota ?? deps.defaultCpuQuota,

@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   sessionStateDir,
   sessionStateDirForWorkspace,
+  resolveContainerStateDir,
   sweepLegacyCloneArtifacts,
   SESSION_STATE_SUBDIR,
 } from "./session-state-dir.js";
@@ -28,6 +29,29 @@ describe("sessionStateDirForWorkspace (docs/246)", () => {
     expect(sessionStateDirForWorkspace(path.join(sessionDir, "workspace"))).toBe(
       sessionStateDir(sessionDir),
     );
+  });
+});
+
+describe("resolveContainerStateDir (docs/246)", () => {
+  it("resolves the sibling state dir for the standard layout", () => {
+    expect(resolveContainerStateDir("/data/sessions/abc", "/data/sessions/abc/workspace")).toBe(
+      path.resolve("/data/sessions/abc/state"),
+    );
+  });
+
+  // The legacy flat layout would otherwise put `<clone>/state` INSIDE the user's
+  // repository — worse than the bug this feature fixes, since it isn't under
+  // `.shipit/` and neither the sweep nor the req-7 guard would notice it.
+  it("returns null when the state dir would land inside the clone (flat layout)", () => {
+    expect(resolveContainerStateDir("/data/sessions/abc", "/data/sessions/abc")).toBeNull();
+  });
+
+  it("returns null when workspaceDir is absent and so defaults to the session dir", () => {
+    expect(resolveContainerStateDir("/data/sessions/abc", undefined)).toBeNull();
+  });
+
+  it("is not fooled by a non-normalized clone path", () => {
+    expect(resolveContainerStateDir("/data/sessions/abc", "/data/sessions/abc/")).toBeNull();
   });
 });
 
