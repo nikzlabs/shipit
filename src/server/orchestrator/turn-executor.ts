@@ -372,9 +372,9 @@ export async function executeAgentTurn(
       // `done` handler stood down for us, so run the same terminal teardown it
       // would have, then return false so the listener surfaces the sign-in card.
       if (runner) runner.running = false;
-      await tryDrain();
-      await runCommitAndPr();
-      emitFinishedIfIdle();
+      await postTurnStep("drain", tryDrain);
+      await postTurnStep("commit", runCommitAndPr);
+      await postTurnStep("finished", emitFinishedIfIdle);
       finishTurn();
       return false;
     }
@@ -559,8 +559,8 @@ export async function executeAgentTurn(
     onError: async () => {
       agentErrored = true;
       finishTurn();
-      await tryDrain();
-      await runCommitAndPr();
+      await postTurnStep("drain", tryDrain);
+      await postTurnStep("commit", runCommitAndPr);
     },
     ...(input.useStreaming !== undefined ? { useStreaming: input.useStreaming } : {}),
   });
@@ -582,6 +582,50 @@ export async function executeAgentTurn(
   // --- post-turn plumbing (first-wins guards so whichever of agent_result /
   // done arrives first advances state and the other becomes a no-op) ---
   let receivedResult = false;
+
+  /**
+   * SHI-277 — run ONE step of a turn's terminal sequence so that its failure
+   * cannot skip the steps after it. Above all: it cannot skip the commit.
+   *
+   * `7f6aeb85` made `runCommitAndPr` REACHABLE from every terminal path. It did
+   * not make it UNSKIPPABLE on those paths, and on all four it is sequenced
+   * LAST — behind the token sync-back, the queue drain, the no-result chat row,
+   * the interrupted-turn finalize and the finished-SSE broadcast:
+   *
+   *     trySyncToken(); await tryDrain(); broadcastFinishedIfIdle(); await runCommitAndPr();
+   *
+   * Every one of those touches something that throws in the field — SQLite (the
+   * WS adapter already catches a literal `"database connection is not open"`
+   * from the same manager), the credentials tree, a viewer transport. They run
+   * inside an un-awaited `async` event listener, so a throw becomes an unhandled
+   * rejection: the remaining statements are abandoned silently, with no error
+   * shown to anyone.
+   *
+   * That is unrecoverable in a way the other steps are not. By the time the
+   * commit is skipped, `agent-listeners` has already persisted the transcript,
+   * cleared `running` and told every viewer the turn finished, so nothing looks
+   * wrong and nothing runs again: the resident streaming process does not exit,
+   * so `done` never fires, and the runner's `verifyRunningState` reconciler only
+   * acts while `running` is still true. The turn's edits simply stay in the
+   * working tree — with no reflog entry — until a later turn's `git add -A`
+   * happens to sweep them up under the WRONG summary, or the branch's pull
+   * request merges first and ships without them (which is exactly what
+   * happened to PR #1890: the work landed 65s after the squash, under the next
+   * turn's message, and had to be recovered by a second PR).
+   *
+   * So: no step of a terminal sequence may prevent a later one. A failure is
+   * logged and the sequence continues. The ORDER is unchanged and still
+   * load-bearing (SHI-262 drain-after-commit, finished-SSE before the commit,
+   * the runner "idle" signal after it) — this only removes the implicit
+   * "…if everything before it succeeded".
+   */
+  const postTurnStep = async (label: string, run: () => void | Promise<void>): Promise<void> => {
+    try {
+      await run();
+    } catch (err) {
+      console.error(`[turn] post-turn step "${label}" failed for ${sessionId} (continuing):`, err);
+    }
+  };
 
   // An auth-required turn legitimately ends without an `agent_result` — the
   // listener already wrote a visible row and kicked off the OAuth flow, so it
@@ -827,19 +871,24 @@ export async function executeAgentTurn(
     if (useStreaming) {
       if (streamingPostTurnFired) return;
       streamingPostTurnFired = true;
-      trySyncToken();
+      // SHI-277 — every step runs through `postTurnStep`, so a throw in the
+      // token sync-back, the drain or the finished-SSE broadcast can no longer
+      // abandon the rest of the sequence (and with it the commit). This is the
+      // path the ordinary streaming turn ends on, so it is the one that
+      // silently dropped a completed turn's work.
+      await postTurnStep("token-sync", trySyncToken);
       // agent-listeners already set running=false; the resident process is NOT
       // cleared (the next top-level turn reuses it via reuseExistingAgent).
       // Drain through the guarded `tryDrain` (not `input.drainNext` directly)
       // so the streaming `done` handler's drain — added for the abnormal-exit
       // case below — can't double-drain after this normal end-of-turn drain.
-      await tryDrain();
-      broadcastFinishedIfIdle();
-      await runCommitAndPr();
-      signalIdleIfIdle();
+      await postTurnStep("drain", tryDrain);
+      await postTurnStep("finished-sse", broadcastFinishedIfIdle);
+      await postTurnStep("commit", runCommitAndPr);
+      await postTurnStep("idle", signalIdleIfIdle);
     } else {
-      trySyncToken();
-      await tryDrain();
+      await postTurnStep("token-sync", trySyncToken);
+      await postTurnStep("drain", tryDrain);
     }
   });
 
@@ -883,8 +932,10 @@ export async function executeAgentTurn(
       }
 
       // Non-streaming captures the token here too (fallback if agent_result was
-      // lost); streaming already synced in the agent_result block.
-      if (!useStreaming) trySyncToken();
+      // lost); streaming already synced in the agent_result block. SHI-277 —
+      // guarded: a credentials-tree failure here must not skip the commit far
+      // below.
+      if (!useStreaming) await postTurnStep("token-sync", trySyncToken);
 
       // Process exited without a result event — let the client clear its loading
       // state instead of hanging. WS-only; dispatch surfaces failures via the
@@ -916,16 +967,21 @@ export async function executeAgentTurn(
         const message = code !== 0
           ? `Agent process exited with code ${code}`
           : "Agent process ended without a response";
-        if (runner) {
-          emitChatCard(
-            runner,
-            { type: "error", message, sessionId },
-            { role: "assistant", text: `Error: ${message}`, isError: true },
-            { chatHistoryManager: deps.listenerDeps.chatHistoryManager, sessionId },
-          );
-        } else {
-          emit({ type: "error", message });
-        }
+        // SHI-277 — this writes a chat row; a SQLite failure here must not skip
+        // the commit below (a dead turn's partial edits are the whole reason
+        // this path commits at all).
+        await postTurnStep("no-result-row", () => {
+          if (runner) {
+            emitChatCard(
+              runner,
+              { type: "error", message, sessionId },
+              { role: "assistant", text: `Error: ${message}`, isError: true },
+              { chatHistoryManager: deps.listenerDeps.chatHistoryManager, sessionId },
+            );
+          } else {
+            emit({ type: "error", message });
+          }
+        });
       }
       // Preserve the partial turn whenever the process ended without an
       // `agent_result` — whether the user interrupted (the "first turn erased
@@ -940,7 +996,9 @@ export async function executeAgentTurn(
       // already owns the visible row. WS-only: dispatch leaves `onInterruptedTurn`
       // unset and surfaces no-result exits via `onNoResultExit` instead.
       if (!receivedResult && !sawAuthRequired) {
-        input.onInterruptedTurn?.();
+        // SHI-277 — guarded for the same reason as the row above: it rewrites
+        // chat-history rows, and its failure must not cost the turn its commit.
+        await postTurnStep("finalize-partial-turn", () => input.onInterruptedTurn?.());
       }
 
       // Process exited without ever producing a turn result (the dispatched
@@ -960,7 +1018,13 @@ export async function executeAgentTurn(
         !sawAuthRequired &&
         !(runner?.wasInterrupted ?? false)
       ) {
-        const handled = await input.onNoResultExit(code);
+        // SHI-277 — a hook that THROWS has not claimed the turn, so fall
+        // through to the normal teardown (which commits) rather than
+        // abandoning the sequence. Only a clean `true` hands the turn over.
+        let handled = false;
+        await postTurnStep("no-result-exit-hook", async () => {
+          handled = await input.onNoResultExit!(code);
+        });
         if (handled) return;
       }
 
@@ -997,10 +1061,10 @@ export async function executeAgentTurn(
         // memoized (already-settled) flow and the two idle signals no-op behind
         // their `running` guards.
         if (runner) runner.running = false;
-        await tryDrain();
-        broadcastFinishedIfIdle();
-        await runCommitAndPr();
-        signalIdleIfIdle();
+        await postTurnStep("drain", tryDrain);
+        await postTurnStep("finished-sse", broadcastFinishedIfIdle);
+        await postTurnStep("commit", runCommitAndPr);
+        await postTurnStep("idle", signalIdleIfIdle);
         finishTurn();
         return;
       }
@@ -1011,10 +1075,10 @@ export async function executeAgentTurn(
       // agent_result that already drained/synced makes these no-ops — including
       // `runCommitAndPr`, whose `commitOnce` returns the commit `tryDrain`
       // already made when it had a queued turn to start (SHI-262).
-      await tryDrain();
-      broadcastFinishedIfIdle();
-      await runCommitAndPr();
-      signalIdleIfIdle();
+      await postTurnStep("drain", tryDrain);
+      await postTurnStep("finished-sse", broadcastFinishedIfIdle);
+      await postTurnStep("commit", runCommitAndPr);
+      await postTurnStep("idle", signalIdleIfIdle);
       // docs/169 — hand control back to a multi-turn driver (rebase loop) and
       // clear the system-turn flag, after all post-turn work has settled.
       finishTurn();
