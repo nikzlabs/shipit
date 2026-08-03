@@ -51,7 +51,9 @@ workspace root, one level above every clone — not in a repo.
 
 6. Sessions that already have these files in their clone stop having them —
    an upgraded ShipIt cleans up what earlier versions left behind, rather than
-   only changing where new files go.
+   only changing where new files go. The cleanup covers the working tree only;
+   copies already committed to a user's history are left alone and not
+   announced.
 
 7. A future artifact written into a session clone by mistake is caught
    mechanically, not by review. (`.shipit/` inside a clone becomes a bug with no
@@ -59,21 +61,7 @@ workspace root, one level above every clone — not in a repo.
 
 ## Open questions
 
-- **Req 6 — how far should cleanup go?** ShipIt can remove these files from a
-  session's working tree on the next boot, but it cannot un-commit them from
-  repos where they were already committed and pushed. Options: (a) sweep the
-  working tree only, and say nothing about already-committed copies;
-  (b) sweep, and have the agent surface a one-time note in affected sessions so
-  the user can decide whether to remove them from history themselves.
-  Recommendation: (a) — (b) spends a turn on something the user may not care
-  about, and the files are inert once ShipIt stops writing them.
-
-- **Req 4 — is `.env.agent` in scope for this change or its own?** It carries
-  secrets and is read on the container-create path, so moving it touches session
-  startup rather than just service startup. It can ship here, or as a follow-up
-  once the cheaper three have landed. Recommendation: ship it here — it is the
-  requirement with actual security weight, and splitting it leaves the stated
-  guarantee (req 4) unmet in the interim.
+_None._
 
 ## Resolved questions
 
@@ -81,3 +69,15 @@ workspace root, one level above every clone — not in a repo.
   move only the compose override, the override plus the install marker, or
   everything ShipIt generates. Answer: **everything ShipIt generates**. Recorded
   as req 3.
+
+- **2026-08-03 — How far should cleanup go for repos that already committed
+  these files?** Asked whether to sweep the working tree silently, sweep plus a
+  one-time note so the user could strip them from history, or not clean up at
+  all. Answer: **sweep the working tree only**, say nothing about
+  already-committed copies. Recorded in req 6.
+
+- **2026-08-03 — Is `.env.agent` in this change or a follow-up?** Asked whether
+  the plaintext-secrets env file should ship with the other three artifacts
+  (touching the container-create path) or land separately afterwards. Answer:
+  **ship it here**. Req 4 stands as written and is met by this change rather
+  than a later one.
