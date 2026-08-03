@@ -28,6 +28,24 @@ dist/
 sessions/
 .inner-shipit/
 
+# Orchestrator runtime state written under `<stateDir>` (app-di.ts).
+# `stateDir` falls back to `workspaceDir` (= "/workspace") when SHIPIT_STATE_DIR
+# is unset, so an orchestrator started by hand from a checkout mounted at
+# /workspace — e.g. `npm run dev` inside a dogfood session container, where
+# RUNTIME_MODE is unset so it resolves to "containerized" — writes its state
+# INTO the source tree, where the post-turn `git add -A` sweeps it up. That is
+# how `.shipit-worker-uid` (the docs/150 worker-UID boot marker) got committed
+# in 18df8025. These are orchestrator state, never repo content.
+.shipit-worker-uid
+.voice-cache/
+repo-cache/
+dep-cache/
+marketplace-cache/
+service-env/
+overlay-base/
+overlay-base-meta/
+pnpm-store/
+
 # Android service caches (Gradle/adb HOME for the `android` compose service)
 .gradle-android/
 .android-home/
