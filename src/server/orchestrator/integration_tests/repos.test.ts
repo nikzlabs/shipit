@@ -11,7 +11,7 @@ import { SessionManager } from "../sessions.js";
 import { RepoStore } from "../repo-store.js";
 import type { AuthManager } from "../agents/claude/auth-manager.js";
 import type { GitHubAuthManager } from "../github-auth.js";
-import { StubAuthManager, StubGitHubAuthManager, createTestCredentialStore, createTestDatabaseManager } from "./test-helpers.js";
+import { StubAuthManager, StubGitHubAuthManager, createTestCredentialStore, createTestDatabaseManager, pinGitToLocalTransports } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
 
 let tmpDir: string;
@@ -20,7 +20,7 @@ let sessionManager: SessionManager;
 let repoStore: RepoStore;
 let dbManager: DatabaseManager;
 let githubStub: StubGitHubAuthManager;
-let origGitTerminalPrompt: string | undefined;
+let restoreGitTransports: () => void;
 
 beforeEach(async () => {
   dbManager = createTestDatabaseManager();
@@ -28,13 +28,12 @@ beforeEach(async () => {
   sessionManager = new SessionManager(dbManager);
   repoStore = new RepoStore(dbManager);
 
-  // Prevent git from prompting for credentials (hangs in CI/test). The
-  // claim-session slow path now re-clones a missing bare cache from the
-  // remote (ensureBareCache); against a nonexistent repo that would block
-  // on a credential prompt without this. GIT_TERMINAL_PROMPT=0 makes it
-  // fail fast so the route returns 500.
-  origGitTerminalPrompt = process.env.GIT_TERMINAL_PROMPT;
-  process.env.GIT_TERMINAL_PROMPT = "0";
+  // The claim-session slow path re-clones a missing bare cache from the remote
+  // (`ensureBareCache`). Against these nonexistent repos that means a real
+  // round-trip to github.com plus, without GIT_TERMINAL_PROMPT=0, a blocking
+  // credential prompt. Pinning git to local transports fails it in ~5 ms so the
+  // route returns its 500 immediately instead of at the mercy of the network.
+  restoreGitTransports = pinGitToLocalTransports();
 
   const credentialStore = createTestCredentialStore(tmpDir);
 
@@ -55,11 +54,7 @@ beforeEach(async () => {
 afterEach(async () => {
   await app.close();
   dbManager.close();
-  if (origGitTerminalPrompt === undefined) {
-    delete process.env.GIT_TERMINAL_PROMPT;
-  } else {
-    process.env.GIT_TERMINAL_PROMPT = origGitTerminalPrompt;
-  }
+  restoreGitTransports();
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 

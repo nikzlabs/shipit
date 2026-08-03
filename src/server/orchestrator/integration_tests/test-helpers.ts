@@ -10,11 +10,13 @@ import { EventEmitter } from "node:events";
 import crypto from "node:crypto";
 import { execSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import WebSocket from "ws";
 import type { WsServerMessage, WsClientMessage } from "../../shared/types.js";
 import type { SessionManager } from "../sessions.js";
 import { GitManager } from "../../shared/git.js";
+import { RepoGit } from "../repo-git.js";
 import { DatabaseManager } from "../../shared/database.js";
 import { CredentialStore } from "../credential-store.js";
 import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
@@ -1198,4 +1200,141 @@ export function seedRepoCacheWithLocalBare(opts: {
     `git config --file "${gitConfigGlobal}" "url.file://${repoDir}/.insteadOf" "${repoUrl}"`,
     { stdio: "ignore" },
   );
+}
+
+/**
+ * Pin git's own transport allowlist to local paths for the duration of a suite,
+ * and return the restore function to call in `afterEach`.
+ *
+ * Several routes fetch or clone the workspace's `origin` for real —
+ * `fetchAndResolveDefaultBranch` behind the warm pool, `ensureBareCache` on the
+ * claim-session slow path — and neither is covered by the usual `push` /
+ * `fetchCache` stubs. The URLs in tests are fake, so the request always fails;
+ * the question is only how expensively. On a dev box a DNS + TLS round-trip to
+ * github.com costs ~230 ms and hides; on a shared CI runner it is unbounded, and
+ * it is why these suites time out in CI and never locally.
+ *
+ * `GIT_ALLOW_PROTOCOL=file` makes git refuse https/ssh in ~5 ms with
+ * `transport 'https' not allowed`, before any packet leaves. Local paths and
+ * `file://` remotes — what every legitimate git operation in the server suite
+ * uses, including `seedRepoCacheWithLocalBare`'s `insteadOf` redirect — are
+ * untouched. `GIT_TERMINAL_PROMPT=0` rides along so a fetch can't stall on a
+ * credential prompt either.
+ */
+export function pinGitToLocalTransports(): () => void {
+  const origAllowProtocol = process.env.GIT_ALLOW_PROTOCOL;
+  const origTerminalPrompt = process.env.GIT_TERMINAL_PROMPT;
+  process.env.GIT_ALLOW_PROTOCOL = "file";
+  process.env.GIT_TERMINAL_PROMPT = "0";
+  return () => {
+    if (origAllowProtocol === undefined) delete process.env.GIT_ALLOW_PROTOCOL;
+    else process.env.GIT_ALLOW_PROTOCOL = origAllowProtocol;
+    if (origTerminalPrompt === undefined) delete process.env.GIT_TERMINAL_PROMPT;
+    else process.env.GIT_TERMINAL_PROMPT = origTerminalPrompt;
+  };
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/repos (create-with-template) — fast git stand-ins
+// ---------------------------------------------------------------------------
+
+/**
+ * `createRepoWithTemplate` mkdtemp's its throwaway scaffold worktree as
+ * `${os.tmpdir()}/shipit-template-XXXXXX` (see `services/templates.ts`). The
+ * factories below key off that prefix so only the scaffold's git is faked and
+ * every other directory — session workspaces, the bare cache clone the warm
+ * pool cuts from — keeps a real {@link GitManager}.
+ */
+function isTemplateScaffoldDir(dir: string): boolean {
+  return path.basename(dir).startsWith("shipit-template-");
+}
+
+/**
+ * A tiny bare repo with one commit on `main`, built once per worker process and
+ * reused by every {@link createTemplateRepoGitFactories} stub. Stands in for the
+ * `git clone --bare <scaffold>` the create-with-template path performs, so the
+ * clone becomes an `fs.cpSync` instead of a subprocess.
+ *
+ * Shape matches what `RepoGit.cloneBare` leaves behind: bare, `main` present,
+ * and `remote.origin.fetch` set (the refspec `ensureFetchRefspec` writes, without
+ * which a later cache fetch never advances `refs/heads/*`).
+ */
+let cachedBareFixtureDir: string | null = null;
+function templateBareFixture(): string {
+  if (cachedBareFixtureDir && fs.existsSync(cachedBareFixtureDir)) return cachedBareFixtureDir;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-bare-fixture-"));
+  const workDir = path.join(root, "work");
+  const bareDir = path.join(root, "cache.git");
+  fs.mkdirSync(workDir);
+  execSync("git init -q -b main", { cwd: workDir, stdio: "ignore" });
+  fs.writeFileSync(path.join(workDir, "index.html"), "<!doctype html>\n");
+  execSync(
+    'git add -A && git -c user.email=t@t.com -c user.name=Test commit -q -m "Initial setup" --no-gpg-sign',
+    { cwd: workDir, stdio: "ignore" },
+  );
+  execSync(`git clone -q --bare "${workDir}" "${bareDir}"`, { stdio: "ignore" });
+  execSync('git config remote.origin.fetch "+refs/heads/*:refs/heads/*"', { cwd: bareDir, stdio: "ignore" });
+  fs.rmSync(workDir, { recursive: true, force: true });
+  cachedBareFixtureDir = bareDir;
+  process.on("exit", () => fs.rmSync(root, { recursive: true, force: true }));
+  return bareDir;
+}
+
+/**
+ * `createGitManager` / `createRepoGit` factories for suites that drive
+ * `POST /api/repos` with a `templateId`.
+ *
+ * That route runs ~13 real `git` subprocesses (scaffold `init` + `addRemote` +
+ * `autoCommit`, then `clone --bare` into the shared cache) purely to produce a
+ * bare cache the warm pool can clone from — none of which any HTTP-level
+ * assertion inspects. `services/templates.test.ts` already covers that git work
+ * end-to-end against a real local origin (bare-ness, pushed refs, origin URL,
+ * owner threading), so replaying it per integration test buys nothing and costs
+ * ~380 ms a test — enough to blow Vitest's default timeout on a CI runner under
+ * full-suite load.
+ *
+ * So: the scaffold's git is a no-op and `cloneBare` copies {@link
+ * templateBareFixture} into the cache dir. Everything downstream stays real —
+ * `setRemoteUrl` still points the cache at the created repo, and the warm pool
+ * still cuts a genuine `git clone` + `checkout -b` from that cache, which is
+ * what makes the route's `sessionId` in the response meaningful.
+ *
+ * The warm pool's own workspace fetch is a separate cost — pair this with
+ * {@link pinGitToLocalTransports} to keep that off the network too.
+ *
+ * Caveat for future assertions: the cache carries the fixture's commit, not the
+ * requested template's files. A suite that needs to inspect what the template
+ * actually scaffolded belongs in `services/templates.test.ts`, against real git.
+ */
+export function createTemplateRepoGitFactories(): {
+  createGitManager: (dir: string) => GitManager;
+  createRepoGit: (dir: string) => RepoGit;
+} {
+  return {
+    createGitManager: (dir: string) => {
+      const gm = new GitManager(dir);
+      // Stub push so it doesn't attempt a real remote push
+      gm.push = async () => "pushed (stub)";
+      if (isTemplateScaffoldDir(dir)) {
+        gm.init = async () => {};
+        gm.addRemote = async () => {};
+        gm.autoCommit = async () => ({
+          commitHash: null,
+          conflictedFiles: [],
+          rebaseInProgress: false,
+          secretFindings: [],
+        });
+      }
+      return gm;
+    },
+    createRepoGit: (dir: string) => {
+      const rg = new RepoGit(dir);
+      // Stub fetchCache to avoid network calls to fake GitHub URLs
+      rg.fetchCache = async () => {};
+      rg.cloneBare = async () => {
+        fs.cpSync(templateBareFixture(), dir, { recursive: true });
+      };
+      return rg;
+    },
+  };
 }
