@@ -296,6 +296,33 @@ describe("Integration: lazy transcript bodies (SHI-267)", () => {
     expect(res.rawPayload.toString("base64")).toBe(png);
   });
 
+  it("serves an image whose block type is JSON-escaped", async () => {
+    // The projection's test is semantic — parse, then check `type === "image"`.
+    // Any lexical pre-filter in the lookup is therefore a different predicate,
+    // and the gap between them is a permanent 404. `"image"` is valid JSON
+    // that parses to exactly "image", so it is projected but was invisible to a
+    // substring check. This is the shape that proves the two agree.
+    const png = Buffer.from("escaped-png-bytes").toString("base64");
+    history.append(sessionId, {
+      role: "assistant",
+      text: "shot",
+      toolUse: [{ type: "tool_use", id: "shot-2", name: "mcp__playwright__browser_take_screenshot", input: {} }],
+      toolResults: [{
+        toolUseId: "shot-2",
+        content: `[{"type":"im\\u0061ge","source":{"data":"${png}","media_type":"image/png"}}]`,
+      }],
+    });
+
+    const { messages } = await loadHistory();
+    const served = messages.at(-1)!.toolResults!.find((r) => r.toolUseId === "shot-2")!;
+    const url = (JSON.parse(served.content) as { source?: { shipit_url?: string } }[])
+      .find((b) => b.source?.shipit_url)!.source!.shipit_url!;
+
+    const res = await app.inject({ method: "GET", url });
+    expect(res.statusCode).toBe(200);
+    expect(res.rawPayload.toString("base64")).toBe(png);
+  });
+
   it("does not 304 an image that doesn't exist", async () => {
     // A conditional request carries the client's own ETag, so matching on it
     // alone answers "not modified" for anything — including a hash the session

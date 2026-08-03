@@ -16,7 +16,7 @@
 - [x] Confirm persist path is uncapped and the 1 MB cap is client-only
 - [x] Determine whether the SHI-266 / `rowId` dependency is real (it isn't)
 - [x] Decide: project the live WS path as well as history
-- [x] Confirm slice size → 40 lines, capped at 16 KB (derived from Bash's 30)
+- [x] Confirm slice size → 40 lines, capped at 16 KB (derived from Bash's 30 — **that derivation has since expired**, see *Requirement 1 is not met* below)
 - [x] Confirm thumbnail size → no thumbnail; serve at stored resolution
 - [x] Decide thumbnail storage → no new store; bytes stay in SQLite
 
@@ -76,9 +76,16 @@
 - [x] **Correction to the line above, from round 3's review:** the first version of that fix applied to *every* result, which was wrong twice over — it still clipped subagent final reports (which `SubagentCall` renders whole, with no expand affordance, so the marker did nothing), and it advertised a fetch for nested results whose row is not committed yet. Now: a final report is never capped; a nested result is capped but not marked; only an ordinary result is capped and marked. The test for the original fix used a `Task` tool, so it had codified the very violation it should have caught.
 - [x] Image lookup pre-filtered on the literal text `"base64"`, which the projection never requires — an MCP image block carrying `source.data` without `source.type` got an `/images/:hash` URL that then 404'd forever. Keyed on the block type instead.
 
+## Review fixes (round 4)
+- [x] **Inner Task final reports were still being capped.** A subagent can spawn a subagent, and the inner `Task`'s `tool_use` lands in `subagentEvents`, not `message.toolUse` — so `toolNameForResult` returned `undefined` and its final report took the ordinary nested branch and got clipped. The round-3 nested test never recorded an inner tool use, so it passed the whole time. Lookup now searches nested assistant events; both the inner-Task and inner-ordinary cases are pinned.
+- [x] **Image lookup pre-filter removed entirely.** Two lexical filters have now been wrong (`includes("base64")`, then `includes("\"image\"")` — which misses `"image"`, valid JSON parsing to the same block). A lexical test can never equal the projection's semantic one, so there is no content pre-filter left: only the structural `startsWith("[")`, then parse and ask the same question.
+- [x] Fixed a test asserting against `message.content` on a live assistant event — the adapter normalizes that to `content` on the event itself, so the test asserted "unchanged" about a shape the projection never reads.
+- [x] Doc corrections: `plan.md` no longer calls 40 "derived" in one place while calling it provisional in another; the modal is described as showing a slice then the full body behind its own expand, not "the whole body".
+
 ## Requirement 1 is not met — deferred, not fixed
-- [ ] **The transcript no longer previews tool output at all**, so the 40 lines this ships are invisible until the modal opens — exactly what req 1 forbids. `<ToolResult>` renders only inside the click-opened modal (`message-tools.tsx:500`); the transcript line is built from the tool's *input*. The fix is to carry no result content outside the four consumers req 4 names (subagent final report, AskUserQuestion, Present, ExitPlanMode) and fetch on modal open — a redesign of the projection, deliberately deferred. Full analysis in `plan.md` → *Requirement 1 is not met*.
+- [ ] **The transcript no longer previews tool output at all**, so the 40 lines this ships are invisible until the modal opens — exactly what req 1 forbids. `<ToolResult>` renders only inside the click-opened modal (`message-tools.tsx:500`); the transcript line is built from the tool's *input*. The fix is to carry no result content outside the consumers req 4 names (`Task` final report, AskUserQuestion, Present; ExitPlanMode reads existence only) and fetch on modal open — a redesign of the projection, deliberately deferred. Full analysis in `plan.md` → *Requirement 1 is not met*.
 - [ ] Once that lands, the 16 KB byte backstop and the `TRANSCRIPT_SLICE_LINES` ≥ `*_MAX_LINES` guard become moot for ordinary results, and the fetch endpoint needs to substitute image URLs so the modal fetch isn't the new heavy payload.
+- [ ] **`Skill` and `Agent` are exempt from every size bound while rendering no result content at all** — only `Task` routes to `SubagentCall` (`MessageToolUse.tsx:41`); the other two draw a label + prompt and never read the result (`:52`). So they transfer arbitrarily large bodies that are never shown — a worse req-1 violation than the 40-line slice. Fixing it means splitting `SUBAGENT_TOOL_NAMES`'s two jobs ("renders as its own element" vs "is a final report"), which belongs with the redesign.
 
 ## Known gaps (recorded, not addressed in this PR)
 - [ ] Req 5 says "tool inputs"; only Edit/Write are projected, other tool inputs ship whole
@@ -95,5 +102,5 @@
 ## Verification
 - [x] `npm run typecheck`
 - [x] `npm run lint:dev`
-- [x] Feature test files green (74 tests across 6 files)
+- [x] Feature test files green (77 tests across 6 files)
 - [ ] Independent requirements review by a fresh context (CLAUDE.md step 5) — round 2 found real bugs; needs a clean pass
