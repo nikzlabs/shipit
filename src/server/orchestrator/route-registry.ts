@@ -13,6 +13,7 @@ import { notableFilesForBranch } from "./services/notable-files.js";
 import { isResetEligible } from "./services/pre-turn-reset.js";
 import { AgentTurnAdmissionError, type SessionRunnerInterface } from "./session-runner.js";
 import { registerPreviewProxy } from "./preview-proxy.js";
+import { projectTurnSnapshotForWire } from "./transcript-projection.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./ws-handlers/types.js";
 import * as terminalHandlers from "./ws-handlers/terminal-handlers.js";
 import * as miscHandlers from "./ws-handlers/misc-handlers.js";
@@ -609,11 +610,19 @@ export async function registerRoutes(
           send({
             type: "turn_snapshot",
             sessionId: runner.sessionId,
-            messages: buildTurnMessages(
-              runner.chatMessageGroups,
-              runner.steeredMessages,
-              runner.recordedCards,
-              { inProgress: true },
+            // docs/244 req 6 — the byte bound applies to reconnects too. This
+            // snapshot is built from the runner's in-memory groups, not read
+            // through `getChatHistory`, so it is its own projection site;
+            // without this a mid-turn reconnect re-sent every heavy body the
+            // history path had just stripped.
+            messages: projectTurnSnapshotForWire(
+              runner.sessionId,
+              buildTurnMessages(
+                runner.chatMessageGroups,
+                runner.steeredMessages,
+                runner.recordedCards,
+                { inProgress: true },
+              ),
             ),
           });
         }

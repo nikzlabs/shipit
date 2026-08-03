@@ -235,11 +235,43 @@ function toolNamesFor(msg: PersistedMessage): Map<string, string> {
 }
 
 /**
+ * Whether it is safe to strip Edit/Write file bodies as well as tool results.
+ *
+ * A body may only leave the wire once the row that holds it is committed —
+ * otherwise the fetch the client makes on click 404s, which breaks req 2 ("a
+ * body that is not transferred up front must be fetchable on demand"). The two
+ * classes are persisted at different moments, so they get different answers:
+ *
+ *   - **Tool results** are committed by `replaceInProgress` inside the
+ *     `agent_tool_result` handler, synchronously in the same tick as the emit
+ *     (`agent-listeners.ts`). Always safe.
+ *   - **Edit/Write inputs** arrive on an `agent_assistant` event, and nothing
+ *     commits the row until the *next* tool-result boundary. Between those two
+ *     moments the body is on neither the wire nor disk, and the diff modal —
+ *     which the user can open the instant the summary renders — has nothing to
+ *     fetch.
+ *
+ * So tool inputs are projected only on the history path, where the whole turn
+ * is already on disk by construction. On the live emit and the reconnect
+ * snapshot they stay inline, exactly as they are today. That costs part of the
+ * live-path saving and keeps the guarantee true, which is the right trade: an
+ * unfetchable body is a visible failure, a fatter live frame is not.
+ */
+export interface WireProjectionOptions {
+  /** Strip Edit/Write bodies too. Only for rows known to be persisted. */
+  projectToolInputs?: boolean;
+}
+
+/**
  * Project a whole persisted transcript for delivery to the browser. Returns new
  * objects only where something changed, so untouched messages keep their
  * identity and the common all-small transcript allocates nothing.
  */
-export function projectMessagesForWire(sessionId: string, messages: PersistedMessage[]): PersistedMessage[] {
+export function projectMessagesForWire(
+  sessionId: string,
+  messages: PersistedMessage[],
+  { projectToolInputs = true }: WireProjectionOptions = {},
+): PersistedMessage[] {
   return messages.map((msg) => {
     const names = toolNamesFor(msg);
     let changed = false;
@@ -250,11 +282,13 @@ export function projectMessagesForWire(sessionId: string, messages: PersistedMes
       return projected;
     });
 
-    const toolUse = msg.toolUse?.map((t) => {
-      const projected = projectToolUse(t);
-      if (projected !== t) changed = true;
-      return projected;
-    });
+    const toolUse = projectToolInputs
+      ? msg.toolUse?.map((t) => {
+        const projected = projectToolUse(t);
+        if (projected !== t) changed = true;
+        return projected;
+      })
+      : msg.toolUse;
 
     const images = msg.images?.map((img) => {
       if (!img.data) return img;
@@ -272,7 +306,7 @@ export function projectMessagesForWire(sessionId: string, messages: PersistedMes
         return ev;
       }
       const original = ev.toolUse;
-      if (!original) return ev;
+      if (!original || !projectToolInputs) return ev;
       const tools = original.map((t) => projectToolUse(t));
       if (tools.some((t, i) => t !== original[i])) {
         changed = true;
@@ -296,6 +330,13 @@ export function projectMessagesForWire(sessionId: string, messages: PersistedMes
  * Project a live `agent_event` for the emit. Returns the same reference when
  * nothing changed — the caller must keep using the ORIGINAL event for
  * persistence, since the stored row has to hold the full body.
+ *
+ * Tool RESULTS only. An `agent_assistant` carrying an Edit/Write body is
+ * deliberately left whole: nothing commits that row until the next tool-result
+ * boundary, so stripping it here would open a window where the diff modal has
+ * nothing to fetch. See {@link WireProjectionOptions}. The body is still
+ * stripped on every subsequent history load, which is where the bytes actually
+ * accumulate.
  */
 export function projectAgentEventForWire(
   sessionId: string,
@@ -331,22 +372,23 @@ export function projectAgentEventForWire(
     return changed ? { ...event, content: blocks } : event;
   }
 
-  if (event.type === "agent_assistant") {
-    const message = (event as { message?: { content?: unknown } }).message;
-    const content: unknown = message?.content;
-    if (!Array.isArray(content)) return event;
-    let changed = false;
-    const blocks = (content as unknown[]).map((b): unknown => {
-      if (typeof b !== "object" || b === null) return b;
-      const block = b as Record<string, unknown>;
-      if (block.type !== "tool_use" || typeof block.name !== "string") return b;
-      const projected: unknown = projectToolUse(block as unknown as { name: string; input: Record<string, unknown> });
-      if (projected === b) return b;
-      changed = true;
-      return projected;
-    });
-    return changed ? ({ ...event, message: { ...message, content: blocks } } as AgentEvent) : event;
-  }
-
   return event;
+}
+
+/**
+ * Project the reconnect / session-switch `turn_snapshot` (req 6).
+ *
+ * This is the third browser-facing path, and it is easy to miss: it is built
+ * from `runner.chatMessageGroups` rather than read from the DB, so it bypasses
+ * `getChatHistory` entirely. Without this a reconnect mid-turn re-sent every
+ * megabyte the projection had just removed.
+ *
+ * Tool inputs stay inline here for the same reason as the live emit: the
+ * snapshot describes an in-flight turn, and its most recent assistant group may
+ * not be committed yet. Everything else — results, images, subagent results —
+ * reached the snapshot through a tool-result boundary that persisted it, so it
+ * is safe to strip.
+ */
+export function projectTurnSnapshotForWire(sessionId: string, messages: PersistedMessage[]): PersistedMessage[] {
+  return projectMessagesForWire(sessionId, messages, { projectToolInputs: false });
 }

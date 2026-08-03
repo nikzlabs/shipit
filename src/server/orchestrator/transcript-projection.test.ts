@@ -1,10 +1,13 @@
 import { describe, it, expect } from "vitest";
 import {
   projectMessagesForWire,
+  projectTurnSnapshotForWire,
+  projectAgentEventForWire,
   projectToolResult,
   projectToolUse,
   substituteResultImages,
   imageHash,
+  imageUrl,
 } from "./transcript-projection.js";
 import { TRANSCRIPT_SLICE_LINES } from "../shared/transcript-slice.js";
 import type { PersistedMessage } from "./chat-history.js";
@@ -231,5 +234,77 @@ describe("projectMessagesForWire", () => {
 
     expect(before).toBeGreaterThan(10_000_000);
     expect(after).toBeLessThan(250_000);
+  });
+});
+
+describe("a body only leaves the wire once its row is on disk", () => {
+  /**
+   * The rule that keeps req 1 from breaking req 2. Tool results are committed
+   * by `replaceInProgress` in the same tick as their emit, so they can be
+   * stripped anywhere. Edit/Write bodies arrive on an `agent_assistant` and
+   * nothing commits them until the *next* tool-result boundary — strip one on
+   * that path and the diff modal, which the user can open the instant the
+   * summary renders, has nothing to fetch.
+   *
+   * These tests are the reason the projection takes an option at all. Deleting
+   * it and projecting everything everywhere passes every other test in this
+   * file.
+   */
+  const writeMsg = (): PersistedMessage => ({
+    role: "assistant",
+    text: "writing",
+    toolUse: [{ type: "tool_use", id: "w1", name: "Write", input: { file_path: "/a.ts", content: bigOutput } }],
+    toolResults: [{ toolUseId: "b1", content: bigOutput }],
+    images: [{ data: png, mediaType: "image/png" }],
+  });
+
+  it("the reconnect snapshot strips results and images but keeps the file body", () => {
+    const [projected] = projectTurnSnapshotForWire("s1", [writeMsg()]);
+
+    // Committed at a tool-result boundary before the snapshot was built.
+    expect(projected!.toolResults![0]!.truncated).toBe(true);
+    expect(projected!.images![0]!.data).toBeUndefined();
+    expect(projected!.images![0]!.src).toBe(imageUrl("s1", imageHash(png)));
+
+    // NOT necessarily committed yet — must stay inline.
+    const tool = projected!.toolUse![0]!;
+    expect(tool.input.content).toBe(bigOutput);
+    expect((tool as { bodyTruncated?: true }).bodyTruncated).toBeUndefined();
+  });
+
+  it("the history path strips the file body, because the turn is on disk by then", () => {
+    const [projected] = projectMessagesForWire("s1", [writeMsg()]);
+    const tool = projected!.toolUse![0]! as { input: Record<string, unknown>; bodyTruncated?: true };
+    expect(tool.bodyTruncated).toBe(true);
+    expect(tool.input.content).toBeUndefined();
+  });
+
+  it("a live assistant event keeps its Edit body whole", () => {
+    const event = {
+      type: "agent_assistant",
+      message: {
+        content: [
+          { type: "tool_use", id: "w1", name: "Write", input: { file_path: "/a.ts", content: bigOutput } },
+        ],
+      },
+    } as unknown as Parameters<typeof projectAgentEventForWire>[1];
+
+    // Same reference: nothing about an assistant event is projectable, so the
+    // emit path must not even allocate a copy.
+    expect(projectAgentEventForWire("s1", event, () => "Write")).toBe(event);
+  });
+
+  it("a live tool_result event is still sliced", () => {
+    const event = {
+      type: "agent_tool_result",
+      content: [{ type: "tool_result", tool_use_id: "b1", content: bigOutput }],
+    } as unknown as Parameters<typeof projectAgentEventForWire>[1];
+
+    const projected = projectAgentEventForWire("s1", event, () => "Bash") as unknown as {
+      content: { content: string; shipit_truncated?: true; shipit_total_lines?: number }[];
+    };
+    expect(projected.content[0]!.shipit_truncated).toBe(true);
+    expect(projected.content[0]!.shipit_total_lines).toBe(500);
+    expect(projected.content[0]!.content.length).toBeLessThan(bigOutput.length);
   });
 });

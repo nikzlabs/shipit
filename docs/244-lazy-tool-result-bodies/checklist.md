@@ -59,6 +59,18 @@
 - [x] Rewind invariant: after a chat rewind the client holds no row whose body was deleted
 - [x] Req 1 assertion: a synthetic 1 MB-result transcript transfers nothing that isn't visible without a click
 
+## Review fixes (round 1)
+- [x] Project the reconnect `turn_snapshot` — third browser-facing path, was bypassing the projection entirely (req 6)
+- [x] Stop stripping Edit/Write bodies on the live path; their row isn't committed until the next tool-result boundary, so the diff modal could 404 (req 2)
+- [x] Correct the same-tick persistence claim in code comment, `plan.md`, and the PR body — it holds for tool results only
+- [x] Tests pinning both: snapshot strips results/images but not inputs, history strips inputs, live assistant event untouched
+
+## Known gaps from the independent review (not yet addressed)
+- [ ] Client 1 MB cap clips without setting `truncated`, so an exempt subagent report over 1 MB is cut with no expand affordance (req 3/4)
+- [ ] Req 5 says "tool inputs"; only Edit/Write are projected, other tool inputs ship whole
+- [ ] A one-line result cut by the byte backstop renders "Show all 1 lines"
+- [ ] A >16 KB free-form AskUserQuestion answer would be sliced (req 4)
+
 ## Verification
 - [x] `npm run typecheck`
 - [x] Feature test files green (53 tests across 5 files)

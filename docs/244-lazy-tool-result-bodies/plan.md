@@ -247,17 +247,53 @@ truncation, permanently destroying the bodies this design is careful to keep.
 This is the single most dangerous way to implement the feature and the reason
 the projection is a separate function.
 
-### Live path
+### Three projection sites, not one
 
-The same projection applies to the live WS path as well as history loads, so the
-client has one code path and the per-turn event replay buffer gets lighter too.
-The client's existing 1 MB cap in `agent-event.ts` becomes redundant for sliced
-results but stays as a backstop for the exempt classes.
+Req 6 puts live turns, reconnects, *and* history loads inside the bound, and
+those are three different code paths — only one of which reads through
+`getChatHistory`:
 
-The projection runs on a *copy* of the event for the emit only; the original
-flows on to `extractToolResults` and is persisted whole. A client cannot outrun
-that write: `replaceInProgress` is a synchronous better-sqlite3 call in the same
-tick as the emit, so the row is committed before the frame reaches the network.
+| Path | Site | Tool results / images | Tool inputs |
+|---|---|---|---|
+| History load, session switch | `getChatHistory` (`services/session.ts`) | stripped | stripped |
+| Live turn | `projectAgentEventForWire` (`agent-listeners.ts`) | stripped | **inline** |
+| Reconnect mid-turn | `projectTurnSnapshotForWire` (`route-registry.ts`) | stripped | **inline** |
+
+The reconnect site is the easy one to miss: `turn_snapshot` is built from
+`runner.chatMessageGroups` in memory, so it never touches the history read and
+an early version of this feature re-sent on reconnect every megabyte the
+history path had just removed.
+
+### Why tool inputs are stripped on one path only
+
+**A body may only leave the wire once the row holding it is committed** —
+otherwise the fetch the client makes on click 404s, which breaks req 2. The two
+classes are persisted at different moments:
+
+* **Tool results** are committed by `replaceInProgress` inside the
+  `agent_tool_result` handler, synchronously in the same tick as the emit. A
+  client cannot outrun that write, so results can be stripped everywhere.
+* **Edit/Write inputs** arrive on an `agent_assistant` event, and nothing
+  commits the row until the *next* tool-result boundary. Between those two
+  moments the body is on neither the wire nor disk — and the diff modal can be
+  opened the instant the summary renders, i.e. exactly inside that window.
+
+So tool inputs are stripped on the history path only, where the whole turn is on
+disk by construction. This costs part of the live-path saving; it is the right
+trade, because an unfetchable body is a visible failure and a fatter live frame
+is not. The bytes accumulate across reloads, not within one turn, so the saving
+that matters is preserved.
+
+This was originally written the other way round, with a comment asserting the
+same-tick guarantee covered both event types. It does not — the guarantee was
+verified on the `agent_tool_result` path and then stated generally. Recorded
+here because the failure mode (a claim inherited across paths without
+re-checking) is the one `CLAUDE.md` calls out.
+
+The projection always runs on a *copy* for the emit; the original event flows on
+to `extractToolResults` and is persisted whole. The client's existing 1 MB cap
+in `agent-event.ts` becomes redundant for sliced results but stays as a backstop
+for the exempt classes.
 
 ## Key files
 
@@ -270,8 +306,9 @@ Added by this feature:
 
 Touched:
 
-* `src/server/orchestrator/services/session.ts` — `getChatHistory`, where the projection is applied to the browser-facing read
-* `src/server/orchestrator/ws-handlers/agent-listeners.ts` — projects the wire copy only; `event` stays whole for persistence
+* `src/server/orchestrator/services/session.ts` — `getChatHistory`, the history projection site
+* `src/server/orchestrator/ws-handlers/agent-listeners.ts` — live emit site; projects the wire copy only, `event` stays whole for persistence
+* `src/server/orchestrator/route-registry.ts` — `turn_snapshot`, the reconnect projection site (req 6)
 * `src/server/orchestrator/chat-history.ts` — `PersistedMessage`, `fromRow` (do not slice here)
 * `src/server/orchestrator/ws-handlers/agent-event-normalizer.ts` — `extractToolResults`, the uncapped persist path
 * `src/server/orchestrator/api-routes-session-spawn.ts:85` — `GET /api/sessions/:id/history`
