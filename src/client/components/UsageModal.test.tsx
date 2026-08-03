@@ -28,10 +28,11 @@ const mockAllUsage: UsageStats = {
   totalTurns: 19,
   // Values deliberately distinct from the session/total figures above so the
   // chart's hover tooltips and avg label don't collide with exact-text queries.
-  monthly: [
-    { month: "2026-04", costUsd: 0.15, turns: 2 },
-    { month: "2026-05", costUsd: 0.55, turns: 4 },
-    { month: "2026-06", costUsd: 0.65, turns: 5 },
+  // 2026-06-01 / -08 / -15 are consecutive Mondays.
+  weekly: [
+    { week: "2026-06-01", costUsd: 0.15, turns: 2 },
+    { week: "2026-06-08", costUsd: 0.55, turns: 4 },
+    { week: "2026-06-15", costUsd: 0.65, turns: 5 },
   ],
 };
 
@@ -102,7 +103,7 @@ describe("UsageModal", () => {
     expect(screen.getByText("19")).toBeInTheDocument();
   });
 
-  it("renders the monthly trend chart with a bar and label per month", () => {
+  it("renders the weekly trend chart with a bar and label per week", () => {
     render(
       <UsageModal
         currentSessionUsage={mockCurrentUsage}
@@ -111,16 +112,17 @@ describe("UsageModal", () => {
         onClose={() => {}}
       />
     );
-    expect(screen.getByText("Monthly trend")).toBeInTheDocument();
-    const chart = screen.getByTestId("monthly-usage-chart");
-    // One column per month + the average baseline overlay (last child).
-    expect(chart.querySelectorAll("[title]")).toHaveLength(mockAllUsage.monthly.length);
-    expect(screen.getByText("Apr '26")).toBeInTheDocument();
-    expect(screen.getByText("Jun '26")).toBeInTheDocument();
-    expect(screen.getByTestId("monthly-usage-avg")).toBeInTheDocument();
+    expect(screen.getByText("Weekly trend")).toBeInTheDocument();
+    const chart = screen.getByTestId("weekly-usage-chart");
+    // One column per week + the average baseline overlay (last child).
+    expect(chart.querySelectorAll("[title]")).toHaveLength(mockAllUsage.weekly.length);
+    // X-axis labels are the week's Monday.
+    expect(screen.getByText("Jun 1")).toBeInTheDocument();
+    expect(screen.getByText("Jun 15")).toBeInTheDocument();
+    expect(screen.getByTestId("weekly-usage-avg")).toBeInTheDocument();
   });
 
-  it("shows a persistent cost label above each monthly bar", () => {
+  it("shows a persistent cost label above each weekly bar", () => {
     render(
       <UsageModal
         currentSessionUsage={mockCurrentUsage}
@@ -129,8 +131,8 @@ describe("UsageModal", () => {
         onClose={() => {}}
       />
     );
-    const labels = screen.getAllByTestId("monthly-usage-bar-label");
-    expect(labels).toHaveLength(mockAllUsage.monthly.length);
+    const labels = screen.getAllByTestId("weekly-usage-bar-label");
+    expect(labels).toHaveLength(mockAllUsage.weekly.length);
     expect(labels.map((l) => l.textContent)).toEqual(["$0.15", "$0.55", "$0.65"]);
   });
 
@@ -144,13 +146,13 @@ describe("UsageModal", () => {
         onClose={() => {}}
       />
     );
-    const section = screen.getByTestId("monthly-usage-section");
+    const section = screen.getByTestId("weekly-usage-section");
     await user.click(within(section).getByRole("button", { name: "turns" }));
-    const labels = screen.getAllByTestId("monthly-usage-bar-label");
+    const labels = screen.getAllByTestId("weekly-usage-bar-label");
     expect(labels.map((l) => l.textContent)).toEqual(["2", "4", "5"]);
   });
 
-  it("toggles the monthly chart between cost and turns", async () => {
+  it("toggles the weekly chart between cost and turns", async () => {
     const user = userEvent.setup();
     render(
       <UsageModal
@@ -160,22 +162,27 @@ describe("UsageModal", () => {
         onClose={() => {}}
       />
     );
-    const chart = screen.getByTestId("monthly-usage-chart");
-    // Cost mode (default): the most-recent bar's tooltip shows the formatted cost.
-    expect(chart.querySelector('[title="Jun \'26: $0.65"]')).not.toBeNull();
+    const chart = screen.getByTestId("weekly-usage-chart");
+    // Cost mode (default): the most-recent bar's tooltip shows the Mon–Sun span
+    // and the formatted cost.
+    expect(chart.querySelector('[title="Jun 15 – Jun 21: $0.65"]')).not.toBeNull();
     // Within the chart section, click the Turns toggle.
-    const section = screen.getByTestId("monthly-usage-section");
+    const section = screen.getByTestId("weekly-usage-section");
     await user.click(within(section).getByRole("button", { name: "turns" }));
-    expect(chart.querySelector('[title="Jun \'26: 5"]')).not.toBeNull();
+    expect(chart.querySelector('[title="Jun 15 – Jun 21: 5"]')).not.toBeNull();
   });
 
-  it("windows the monthly chart to the most recent 12 months", () => {
+  it("windows the weekly chart to the most recent 12 weeks by default", () => {
+    // 20 consecutive Mondays starting 2026-01-05. Without a ResizeObserver
+    // (jsdom) the chart falls back to its 12-week default window.
     const many: UsageStats = {
       sessions: [],
       totalCostUsd: 10,
       totalTurns: 100,
-      monthly: Array.from({ length: 18 }, (_, i) => ({
-        month: `2025-${String((i % 12) + 1).padStart(2, "0")}`,
+      weekly: Array.from({ length: 20 }, (_, i) => ({
+        week: new Date(Date.parse("2026-01-05T00:00:00Z") + i * 7 * 86400000)
+          .toISOString()
+          .slice(0, 10),
         costUsd: i + 1,
         turns: i + 1,
       })),
@@ -183,8 +190,68 @@ describe("UsageModal", () => {
     render(
       <UsageModal currentSessionUsage={null} allUsage={many} sessions={[]} onClose={() => {}} />
     );
-    const chart = screen.getByTestId("monthly-usage-chart");
+    const chart = screen.getByTestId("weekly-usage-chart");
     expect(chart.querySelectorAll("[title]")).toHaveLength(12);
+    // The window keeps the NEWEST weeks: 2026-01-05 + 19 weeks = 2026-05-18.
+    expect(screen.getByText("May 18")).toBeInTheDocument();
+    expect(screen.getByTestId("weekly-usage-window")).toHaveTextContent("last 12 weeks");
+  });
+
+  it("shows average cost per turn for the session and across all sessions", () => {
+    render(
+      <UsageModal
+        currentSessionUsage={mockCurrentUsage}
+        allUsage={mockAllUsage}
+        sessions={mockSessions}
+        onClose={() => {}}
+      />
+    );
+    // $0.42 / 7 turns, $1.35 / 19 turns.
+    expect(screen.getByTestId("usage-session-avg")).toHaveTextContent("$0.06");
+    expect(screen.getByTestId("usage-all-avg")).toHaveTextContent("$0.07");
+    expect(screen.getByTestId("usage-session-count")).toHaveTextContent("2");
+  });
+
+  it("hides the per-turn average on a single-turn session", () => {
+    render(
+      <UsageModal
+        currentSessionUsage={{ ...mockCurrentUsage, turnCount: 1 }}
+        allUsage={null}
+        sessions={mockSessions}
+        onClose={() => {}}
+      />
+    );
+    expect(screen.queryByTestId("usage-session-avg")).toBeNull();
+  });
+
+  it("orders the session breakdown by cost, highest first", () => {
+    render(
+      <UsageModal
+        currentSessionUsage={mockCurrentUsage}
+        allUsage={mockAllUsage}
+        sessions={mockSessions}
+        onClose={() => {}}
+      />
+    );
+    const rows = within(screen.getByTestId("recent-sessions-section")).getAllByTitle(/sess-/);
+    expect(rows.map((r) => r.textContent)).toEqual(["Fix API routes", "Build landing page"]);
+  });
+
+  it("shows cache token totals when turns carry them", () => {
+    const turnUsage: TurnUsage[] = [
+      { inputTokens: 5000, outputTokens: 1200, costUsd: 0.05, durationMs: 3000, timestamp: "2026-01-01T00:00:00Z", cacheRead: 40000, cacheCreate: 2000 },
+    ];
+    render(
+      <UsageModal
+        currentSessionUsage={mockCurrentUsage}
+        allUsage={mockAllUsage}
+        sessions={[]}
+        onClose={vi.fn()}
+        turnUsage={turnUsage}
+      />
+    );
+    expect(screen.getByTestId("usage-cache-read")).toHaveTextContent("40.0K");
+    expect(screen.getByTestId("usage-cache-create")).toHaveTextContent("2.0K");
   });
 
   it("displays per-session breakdown with titles", () => {
@@ -209,7 +276,7 @@ describe("UsageModal", () => {
       ],
       totalCostUsd: 0.10,
       totalTurns: 1,
-      monthly: [],
+      weekly: [],
     };
     render(
       <UsageModal
@@ -276,7 +343,7 @@ describe("UsageModal", () => {
     render(
       <UsageModal
         currentSessionUsage={zeroUsage}
-        allUsage={{ sessions: [], totalCostUsd: 0, totalTurns: 0, monthly: [] }}
+        allUsage={{ sessions: [], totalCostUsd: 0, totalTurns: 0, weekly: [] }}
         sessions={mockSessions}
         onClose={() => {}}
       />

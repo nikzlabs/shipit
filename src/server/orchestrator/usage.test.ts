@@ -19,24 +19,39 @@ describe("UsageManager", () => {
     expect(stats.totalCostUsd).toBe(0);
     expect(stats.totalTurns).toBe(0);
     expect(stats.sessions).toEqual([]);
-    expect(stats.monthly).toEqual([]);
+    expect(stats.weekly).toEqual([]);
   });
 
-  it("buckets cost and turns by calendar month, oldest → newest", () => {
+  it("buckets cost and turns by calendar week, keyed on the week's Monday", () => {
     const mgr = new UsageManager(dbManager);
-    // Insert with explicit created_at so we span multiple months deterministically.
+    // Insert with explicit created_at so we span multiple weeks deterministically.
+    // 2026-06-01 is a Monday; 2026-06-07 is the Sunday that closes the same week.
     const insert = dbManager.db.prepare(
       "INSERT INTO usage_turns (session_id, cost_usd, duration_ms, created_at) VALUES (?, ?, ?, ?)",
     );
-    insert.run("sess-1", 1.0, 1000, "2026-04-10T12:00:00Z");
-    insert.run("sess-1", 2.0, 1000, "2026-04-20T12:00:00Z");
-    insert.run("sess-2", 5.0, 1000, "2026-06-01T12:00:00Z");
+    insert.run("sess-1", 1.0, 1000, "2026-06-01T12:00:00Z");
+    insert.run("sess-1", 2.0, 1000, "2026-06-07T23:30:00Z");
+    insert.run("sess-2", 5.0, 1000, "2026-06-15T12:00:00Z");
 
-    const { monthly } = mgr.getStats();
-    expect(monthly).toEqual([
-      { month: "2026-04", costUsd: 3.0, turns: 2 },
-      { month: "2026-06", costUsd: 5.0, turns: 1 },
+    const { weekly } = mgr.getStats();
+    // The idle week (Jun 8–14) is zero-filled so the chart's x-axis stays evenly
+    // spaced instead of putting two non-adjacent weeks side by side.
+    expect(weekly).toEqual([
+      { week: "2026-06-01", costUsd: 3.0, turns: 2 },
+      { week: "2026-06-08", costUsd: 0, turns: 0 },
+      { week: "2026-06-15", costUsd: 5.0, turns: 1 },
     ]);
+  });
+
+  it("keeps weekly buckets bounded by the data, not the wall clock", () => {
+    const mgr = new UsageManager(dbManager);
+    dbManager.db
+      .prepare("INSERT INTO usage_turns (session_id, cost_usd, duration_ms, created_at) VALUES (?, ?, ?, ?)")
+      .run("sess-1", 1.0, 1000, "2026-06-03T12:00:00Z");
+
+    // A single active week yields exactly one bucket — `getStats()` must not
+    // extend the series to "now", which would make it clock-dependent.
+    expect(mgr.getStats().weekly).toEqual([{ week: "2026-06-01", costUsd: 1.0, turns: 1 }]);
   });
 
   it("records a turn", () => {
