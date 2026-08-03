@@ -20,3 +20,6 @@
       `resolvePrBaseBranch`, client resolver + hook, RebaseBanner, PrActionsMenu
 - [x] Audit the remaining `"main"` literals; confirm each is a documented
       fallback, a probe pair, or not a repo-default-branch concern
+- [x] Don't apply the fallback where there is no base at all —
+      `useSessionHasBaseBranch` gates the RebaseBanner's push-rejected nudge so
+      an ops/sandbox/remote-less session is never told "Branch is behind main"

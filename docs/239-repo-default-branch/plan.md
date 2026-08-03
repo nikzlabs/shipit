@@ -80,7 +80,7 @@ they agree because they read the same underlying HEAD.
 | `src/server/orchestrator/bootstrap-managers.ts` | Boot sweep. |
 | `src/server/orchestrator/api-routes-session-repos.ts` | Post-clone resolution + `repo_list` broadcast. |
 | `src/server/orchestrator/api-routes-git.ts` | `diff-vs-branch` resolves the base when the query param is absent. |
-| `src/client/utils/default-branch.ts` | `useSessionDefaultBranch(sessionId)` and the pure resolvers. |
+| `src/client/utils/default-branch.ts` | `useSessionDefaultBranch(sessionId)`, `useSessionHasBaseBranch(sessionId)`, and the pure resolvers. |
 | `src/server/orchestrator/services/git.ts` | `resolvePrBaseBranch(git, remoteBranches)` — the base a new PR targets. |
 
 Client call sites now reading the real branch: `RebaseBanner`, `PrActionsMenu`,
@@ -105,6 +105,32 @@ of three things, and none of them is the bug above:
    *ShipIt repo's own* `main` for the edge update channel; `services/templates.ts`
    pushes `main` for a repo ShipIt itself just created with
    `git init --initial-branch=main`. Both are self-consistent by construction.
+
+## The fallback is for an *unknown* base, not for *no* base
+
+`FALLBACK_DEFAULT_BRANCH` answers "this repo's default branch hasn't loaded
+yet." It cannot answer "this session has no repo," and a surface that asks it
+anyway invents the whole claim rather than just the branch name: an **ops
+session** (docs/128 — no remote, no PR lifecycle) rendered the RebaseBanner's
+"Branch is behind `main`. Update to resolve." with an **Update branch** button
+that would have rebased onto a ref that doesn't exist. Same for a **sandbox**
+session (docs/211).
+
+So `useSessionHasBaseBranch(sessionId)` sits beside `useSessionDefaultBranch`
+and gates the nudge: a session has a base branch only when it has a `remoteUrl`
+and its `kind` is neither `"ops"` nor `"sandbox"`. It fails closed — a session
+row that hasn't hydrated yet reads as "no base," and the nudge appears once the
+session list arrives.
+
+`RebaseBanner` was the only surface needing the new gate. Every other
+`useSessionDefaultBranch` caller (`PrActionsMenu`, `PrLifecycleCard` + `shared`,
+`pr-detail/PrFilesSection`) renders inside a PR surface that `App.tsx` already
+hides for `kind: "ops" | "sandbox"`. Only the push-rejected nudge lives in the
+chat bottom-stack, outside that gate.
+
+Note the suppression is of the *nudge*, not the banner: rebase progress,
+conflicts, and errors still render, so a rebase that did somehow start still
+reports its outcome.
 
 ## Notes
 

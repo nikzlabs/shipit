@@ -61,3 +61,27 @@ export function useSessionDefaultBranch(sessionId: string | undefined): string {
   const repos = useRepoStore((s) => s.repos);
   return resolveDefaultBranch(repos, remoteUrl);
 }
+
+/**
+ * Does this session sit on a branch that has a base at all?
+ *
+ * Only a repo-backed session does. A session with no remote has nothing to be
+ * behind, and `kind: "ops"` / `"sandbox"` sessions (docs/128, docs/211) are
+ * deliberately outside the branch/PR lifecycle — `App.tsx` already hides the PR
+ * tab and PR card for them.
+ *
+ * Any surface that would otherwise fall back to {@link FALLBACK_DEFAULT_BRANCH}
+ * must check this first. The fallback is a reasonable guess for a repo whose
+ * default branch hasn't loaded yet, but on a session with no repo at all it
+ * invents both halves of the claim: an ops session told "Branch is behind
+ * `main`" is being named a base branch that doesn't exist and offered a rebase
+ * onto an unresolvable ref.
+ */
+export function useSessionHasBaseBranch(sessionId: string | undefined): boolean {
+  return useSessionStore((s) => {
+    if (!sessionId) return false;
+    const session = s.sessions.find((sess) => sess.id === sessionId);
+    if (!session?.remoteUrl) return false;
+    return session.kind !== "ops" && session.kind !== "sandbox";
+  });
+}
