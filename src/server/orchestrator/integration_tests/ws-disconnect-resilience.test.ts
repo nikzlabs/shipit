@@ -445,14 +445,17 @@ describe("Integration: WebSocket disconnect resilience", () => {
     await settle(150);
 
     // Server-side proof: the replay buffer must not retain the turn's agent
-    // content after the terminal error. The buffer holds at most the trailing
-    // `session_status` (running=false) emitted after the clear — the same
-    // harmless tail the clean `agent_result` path leaves. Before the fix the
-    // buffer still carried the assistant `agent_event`, so the count was
-    // higher and that content got re-emitted on reconnect.
+    // content after the terminal error. What remains is the harmless tail every
+    // terminal path emits AFTER the clear — the trailing `session_status`
+    // (running=false), plus `git_committed` once the error path started
+    // auto-committing the dead turn's edits, which is exactly the tail the
+    // clean `agent_result` path leaves. Asserted on TYPES rather than a
+    // count: the count now has a legitimate reason to exceed 1, but an
+    // `agent_event` in here is the docs/163 regression — it is the turn itself,
+    // and it gets re-emitted on every reconnect.
     const state = await app.inject({ method: "GET", url: `/api/_test/runner/${sessionId}` });
     expect(state.statusCode).toBe(200);
-    expect(state.json().turnEventBufferSize).toBeLessThanOrEqual(1);
+    expect(state.json().turnEventBufferTypes).not.toContain("agent_event");
 
     // Drop the WS and reconnect (the browser-reload path). The reconnecting
     // client must NOT receive the assistant event a second time — it already

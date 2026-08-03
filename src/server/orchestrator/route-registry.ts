@@ -406,10 +406,16 @@ export async function registerRoutes(
           lastViewerDetachAt: runner.lastViewerDetachAt,
           disposed: runner.disposed,
           queueLength: runner.queueLength,
-          // Size of the post-turn replay buffer. A terminal turn (result,
-          // error, interrupt) must leave this at 0 so a reconnect doesn't
-          // re-emit a completed turn (docs/163).
+          // The post-turn replay buffer. A terminal turn (result, error,
+          // interrupt) must leave no AGENT CONTENT in it, so a reconnect can't
+          // re-emit a completed turn (docs/163). The message types matter more
+          // than the raw count: every terminal path legitimately emits a short
+          // tail AFTER clearing the buffer (the trailing `session_status`, and
+          // the post-turn `git_committed` when the turn's edits were committed),
+          // so a count alone can't tell "harmless tail" from "the turn is still
+          // in there".
           turnEventBufferSize: runner.getTurnEventBuffer().length,
+          turnEventBufferTypes: runner.getTurnEventBuffer().map((m) => m.type),
         };
       },
     );
