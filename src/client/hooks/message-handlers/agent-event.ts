@@ -35,8 +35,18 @@ function safeCutAt(text: string, max: number): number {
  */
 function toolNameForResult(messages: ChatMessage[], toolUseId: string): string | undefined {
   for (let i = messages.length - 1; i >= 0; i--) {
-    const found = messages[i].toolUse?.find((t) => t.id === toolUseId);
-    if (found) return found.name;
+    const msg = messages[i];
+    const top = msg.toolUse?.find((t) => t.id === toolUseId);
+    if (top) return top.name;
+    // A subagent can spawn a subagent, and the inner Task's tool_use lands in
+    // `subagentEvents` rather than `toolUse`. Searching only the top level
+    // resolved the inner Task to `undefined`, so its final report — nested AND
+    // a final report at once — fell into the ordinary branch and was clipped.
+    for (const ev of msg.subagentEvents ?? []) {
+      if (ev.kind !== "assistant") continue;
+      const nested = ev.toolUse?.find((t) => t.id === toolUseId);
+      if (nested) return nested.name;
+    }
   }
   return undefined;
 }

@@ -212,3 +212,79 @@ describe("what the cap must NOT do (docs/244 round-3)", () => {
     expect(result.totalLines).toBeUndefined();
   });
 });
+
+describe("a subagent's subagent (docs/244 round-4)", () => {
+  const line = "x".repeat(49);
+  const overCap = Array.from({ length: 30_000 }, () => line).join("\n");
+
+  const findResult = (id: string) =>
+    useSessionStore.getState().messages
+      .flatMap((m) => [...(m.toolResults ?? []), ...(m.subagentEvents ?? []).flatMap((e) => e.kind === "tool_result" ? e.toolResults : [])])
+      .find((r) => r.toolUseId === id);
+
+  /**
+   * The overlap case that slipped through round 3: an INNER Task's result is
+   * simultaneously a nested result (it carries `parentToolUseId`) and a
+   * subagent final report (its own tool is a Task). The two rules disagree —
+   * "cap nested results" vs "never cap a final report" — and the final report
+   * rule has to win, because nothing renders an expand affordance for it.
+   *
+   * The bug was that the inner Task's `tool_use` lives in the parent's
+   * `subagentEvents`, not in `message.toolUse`, so the name lookup returned
+   * `undefined` and the result took the ordinary nested branch. The earlier
+   * nested test never recorded an inner tool use, so it passed throughout.
+   */
+  it("never caps an inner Task's final report", () => {
+    // outer Task…
+    handleAgentEvent(ctx, assistantEvent("", [{ id: "outer", name: "Task", input: { prompt: "audit" } }]));
+    // …which spawns an inner Task, recorded under the outer one's subagentEvents…
+    handleAgentEvent(ctx, {
+      type: "agent_event",
+      event: {
+        type: "agent_assistant",
+        parentToolUseId: "outer",
+        content: [{ type: "tool_use", id: "inner", name: "Task", input: { prompt: "sub-audit" } }],
+      },
+    } as unknown as WsAgentEvent);
+    // …whose own final report is over the cap.
+    handleAgentEvent(ctx, {
+      type: "agent_event",
+      event: {
+        type: "agent_tool_result",
+        parentToolUseId: "outer",
+        content: [{ type: "tool_result", tool_use_id: "inner", content: overCap }],
+      },
+    } as unknown as WsAgentEvent);
+
+    const result = findResult("inner")!;
+    expect(result.content).toBe(overCap);
+    expect(result.content.length).toBeGreaterThan(CLIENT_CONTENT_CAP);
+    expect(result.truncated).toBeUndefined();
+  });
+
+  it("still caps an inner ordinary tool's result", () => {
+    // The counterpart: same nesting depth, but a Bash call — no final report to
+    // protect, so the nested rule applies (capped, and not marked fetchable).
+    handleAgentEvent(ctx, assistantEvent("", [{ id: "outer", name: "Task", input: { prompt: "audit" } }]));
+    handleAgentEvent(ctx, {
+      type: "agent_event",
+      event: {
+        type: "agent_assistant",
+        parentToolUseId: "outer",
+        content: [{ type: "tool_use", id: "inner-bash", name: "Bash", input: { command: "ls" } }],
+      },
+    } as unknown as WsAgentEvent);
+    handleAgentEvent(ctx, {
+      type: "agent_event",
+      event: {
+        type: "agent_tool_result",
+        parentToolUseId: "outer",
+        content: [{ type: "tool_result", tool_use_id: "inner-bash", content: overCap }],
+      },
+    } as unknown as WsAgentEvent);
+
+    const result = findResult("inner-bash")!;
+    expect(result.content.length).toBeLessThanOrEqual(CLIENT_CONTENT_CAP);
+    expect(result.truncated).toBeUndefined();
+  });
+});

@@ -47,14 +47,18 @@ function* allImages(msg: PersistedMessage): Generator<{ data: string; mediaType:
     if (img.data) yield { data: img.data, mediaType: img.mediaType };
   }
   for (const r of allToolResults(msg)) {
-    // Cheap pre-filter, and it must match what the PROJECTION treats as an
-    // image — which is any block with `source.data`, regardless of whether
-    // `source.type` says "base64". Filtering on the literal text "base64" (the
-    // previous guard) skipped exactly the shapes that omit that field, so the
-    // projection would hand the client an `/images/:hash` URL that this lookup
-    // then permanently 404'd. Keyed on the block type instead, which
-    // `JSON.stringify` always emits for an image block.
-    if (!r.content.startsWith("[") || !r.content.includes("\"image\"")) continue;
+    // This must recognise EXACTLY what the projection rewrites, or it hands the
+    // client an `/images/:hash` URL it can never resolve. The projection's test
+    // is semantic — parse the JSON, look for `b.type === "image"` with
+    // `source.data` — so any *lexical* pre-filter here is a different predicate
+    // wearing the same name, and the gap between them is a permanent 404. Two
+    // versions of this have already been wrong: `includes("base64")` missed
+    // blocks omitting `source.type`, and `includes("\"image\"")` misses
+    // `"image"`, which is valid JSON that parses to exactly the same
+    // block. So there is no content pre-filter at all — only the structural
+    // check that this could be a block array, after which we parse and ask the
+    // same question the projection asks.
+    if (!r.content.startsWith("[")) continue;
     let blocks: unknown;
     try {
       blocks = JSON.parse(r.content);

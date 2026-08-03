@@ -49,7 +49,7 @@ and it is that artifact, not raw metadata, that has to stay on the wire.
 
 | Column | What renders inline | What's behind a click |
 |---|---|---|
-| `tool_results` | ~~First 15–30 lines + a "Show all N lines" button~~ — **nothing**; see the note above | The whole body, in the modal |
+| `tool_results` | ~~First 15–30 lines + a "Show all N lines" button~~ — **nothing**; see the note above | A slice in the modal, then the whole body behind the modal's own "Show all N lines" |
 | `tool_use` (Write/Edit) | One line: verb, path, `+40 -12` (`DiffBlock.tsx:66–92`) | The whole diff body, in a modal |
 | `images` (user rows) | A 96×96 thumbnail (`w-24 h-24 object-cover`, `message-media.tsx:53`) | Full-size preview |
 | `subagent_events` | A `Disclosure` — "Subagent's work (N actions)" — open by default, containing ordinary tool calls | Per-step detail, via the same components |
@@ -178,10 +178,27 @@ consumers req 4 names:
 
 | What | Renders | Size |
 |---|---|---|
-| Subagent final report (`SubagentCall.tsx:132`) | full markdown, no expand affordance | can be large — already exempt |
+| **`Task`** final report (`SubagentCall.tsx:132`) | full markdown, no expand affordance | can be large — already exempt |
 | `AskUserQuestion` (`message-tools.tsx:137`) | the chosen answer, from result content | short |
 | Present (`message-tools.tsx:171`) | `presentId` parsed from result content | short |
 | `ExitPlanMode` (`message-tools.tsx:162`) | existence only, never content | none |
+
+### The exemption set is wider than the renderer
+
+`SUBAGENT_TOOL_NAMES` is `{Task, Skill, Agent}` and is used for two different
+jobs: deciding which tools render as their own top-level element, and deciding
+which results are exempt from every size bound. Only the first is true of all
+three. **Only `Task` routes to `SubagentCall` and renders a final report**
+(`MessageToolUse.tsx:41`); `Skill` and `Agent` fall to the branch below it,
+which draws a label, a description and the prompt, and never touches result
+content at all (`MessageToolUse.tsx:52`).
+
+So `Skill` and `Agent` results are exempt from the server slice *and* from the
+client cap while rendering nothing — meaning an arbitrarily large body is
+transferred and then never shown. That is a strictly worse req-1 violation than
+the documented 40-line slice, and it is not fixed here: splitting the set means
+separating "renders as its own element" from "is a final report", which belongs
+with the redesign rather than bolted onto it. Recorded in `checklist.md`.
 
 So the correct shape is: carry **no** result content for anything outside that
 list — only the metadata req 3 requires — and fetch the body when the modal
@@ -424,7 +441,11 @@ No open decisions remain; implementation is unblocked.
   backfill, and no new disk surface for the janitor (SHI-196) to own.
 
 The through-line: each of the three resolutions removes mechanism rather than
-adding it. The first replaces an arbitrary byte budget with a number derived
-from what the UI draws; the second and third delete a thumbnail pipeline, a
-native dependency, and a storage decision by observing that the requirement
-they were meant to serve is already met by not inlining the bytes.
+adding it. The first replaced an arbitrary byte budget with a number derived
+from what the UI drew *at the time*; the second and third delete a thumbnail
+pipeline, a native dependency, and a storage decision by observing that the
+requirement they were meant to serve is already met by not inlining the bytes.
+
+The first of those has since expired — the UI it was derived from no longer
+exists, so 40 is now a provisional number awaiting the redesign described under
+*Requirement 1 is not met*. The second and third still hold.

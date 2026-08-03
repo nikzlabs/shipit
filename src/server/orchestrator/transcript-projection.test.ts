@@ -311,18 +311,26 @@ describe("a body only leaves the wire once its row is on disk", () => {
   });
 
   it("a live assistant event keeps its Edit body whole", () => {
+    // NOTE the shape: the adapter normalizes `raw.message.content` up to
+    // `content` on the event itself (`agents/claude/adapter.ts`). An earlier
+    // version of this test used `message.content`, which the projection never
+    // reads — so it asserted "unchanged" about a shape that could not have
+    // changed, and would have passed straight through a real regression.
     const event = {
       type: "agent_assistant",
-      message: {
-        content: [
-          { type: "tool_use", id: "w1", name: "Write", input: { file_path: "/a.ts", content: bigOutput } },
-        ],
-      },
+      content: [
+        { type: "tool_use", id: "w1", name: "Write", input: { file_path: "/a.ts", content: bigOutput } },
+      ],
     } as unknown as Parameters<typeof projectAgentEventForWire>[1];
 
     // Same reference: nothing about an assistant event is projectable, so the
     // emit path must not even allocate a copy.
-    expect(projectAgentEventForWire("s1", event, () => "Write")).toBe(event);
+    const projected = projectAgentEventForWire("s1", event, () => "Write");
+    expect(projected).toBe(event);
+    // And the body is still there — the assertion the reference check alone
+    // does not actually make.
+    const block = (projected as unknown as { content: { input: Record<string, unknown> }[] }).content[0]!;
+    expect(block.input.content).toBe(bigOutput);
   });
 
   it("a live tool_result event is still sliced", () => {
