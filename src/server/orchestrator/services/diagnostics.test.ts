@@ -6,7 +6,7 @@ import type { SessionContainerManager, SessionContainer } from "../session-conta
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
 import type { ServiceManager, ManagedService } from "../service-manager.js";
 import type { LogRingEntry, WsServerMessage } from "../../shared/types.js";
-import { getSessionDiagnostics } from "./diagnostics.js";
+import { getSessionDiagnostics, describeProviderRoute } from "./diagnostics.js";
 
 // Pin host detection to a large host so the host-relative default resource
 // ceilings (used when no MAX_SESSION_* env var is set) don't clamp the
@@ -397,5 +397,85 @@ describe("getSessionDiagnostics", () => {
     expect(result.recentLogs).toHaveLength(50);
     expect(result.recentLogs[0]?.text).toBe("msg26");
     expect(result.recentLogs[49]?.text).toBe("msg75");
+  });
+
+  // docs/150 req 11 — "which account is this session on right now?" is not the
+  // same question as the chat-visible failover notice, which only covers the
+  // moment of a switch.
+  describe("provider route (docs/150 req 11)", () => {
+    const labels: Record<string, string> = { acct_1: "Work" };
+    const lookup = (_provider: string, id: string) => labels[id];
+
+    it("names a pinned account rather than its id", () => {
+      expect(
+        describeProviderRoute(
+          { agentId: "claude", providerRouteKind: "account", providerRouteId: "acct_1" },
+          lookup,
+        ),
+      ).toEqual({ agentId: "claude", kind: "account", routeId: "acct_1", label: "Work" });
+    });
+
+    it("spells out a reserved route so metered billing is legible", () => {
+      // `claude-api-key` in a panel does not tell the user they are paying per
+      // token — which is the one thing that route means (req 12).
+      expect(
+        describeProviderRoute(
+          { agentId: "claude", providerRouteKind: "reserved", providerRouteId: "claude-api-key" },
+          lookup,
+        )?.label,
+      ).toBe("Anthropic API key — metered billing");
+    });
+
+    it("reports an unpinned session as pending, not as an error", () => {
+      const route = describeProviderRoute({ agentId: null }, lookup);
+      expect(route?.kind).toBeNull();
+      expect(route?.label).toMatch(/not pinned yet/);
+    });
+
+    it("says so when the pinned account has been disconnected", () => {
+      // Disconnecting an account leaves an idle session's pin dangling; the
+      // next turn's preflight re-routes it. Worth naming, because it explains a
+      // session that is about to change account on its own.
+      expect(
+        describeProviderRoute(
+          { agentId: "claude", providerRouteKind: "account", providerRouteId: "acct_gone" },
+          lookup,
+        )?.label,
+      ).toBe("account no longer connected");
+    });
+
+    it("is null when the build has no session wiring", async () => {
+      const result = await getSessionDiagnostics(
+        {
+          containerManager: fakeContainerManager({ container: null }),
+          runnerRegistry: fakeRegistry(fakeRunner()),
+          serviceManagers: new Map(),
+          getLogBuffer: () => [],
+          getWorkspaceDir: () => null,
+        },
+        "sess-1",
+      );
+      expect(result.providerRoute).toBeNull();
+    });
+
+    it("threads the session's stored route into the payload", async () => {
+      const result = await getSessionDiagnostics(
+        {
+          containerManager: fakeContainerManager({ container: null }),
+          runnerRegistry: fakeRegistry(fakeRunner()),
+          serviceManagers: new Map(),
+          getLogBuffer: () => [],
+          getWorkspaceDir: () => null,
+          getSessionRoute: () => ({
+            agentId: "claude",
+            providerRouteKind: "account",
+            providerRouteId: "acct_1",
+          }),
+          getAccountLabel: lookup,
+        },
+        "sess-1",
+      );
+      expect(result.providerRoute).toMatchObject({ routeId: "acct_1", label: "Work" });
+    });
   });
 });

@@ -20,7 +20,7 @@ import type { SessionContainerManager } from "../session-container.js";
 import { deriveSessionMemorySizing, type SessionMemorySizing } from "../session-container.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
 import type { ServiceManager, ManagedService } from "../service-manager.js";
-import type { LogRingEntry } from "../../shared/types.js";
+import type { AgentId, LogRingEntry, ProviderRouteKind } from "../../shared/types.js";
 import { getContainerHealth, type ContainerHealth } from "./health.js";
 import { ServiceError } from "./types.js";
 import {
@@ -46,6 +46,78 @@ export interface ServiceDiagnostic {
   error: string | null;
   /** Tail of stdout/stderr captured by `docker compose logs -f`. */
   logTail: string;
+}
+
+/**
+ * docs/150 req 11 — which provider account this session is running on, right
+ * now.
+ *
+ * The chat-visible failover notice covers the *moment* a session changes
+ * account. It does not answer "which account is this session on?", which is the
+ * question after a proactive cutoff or a hard-exhaustion retry has quietly
+ * moved it — and until now nothing in the client read `providerRouteId` at all,
+ * so the answer existed only in the database.
+ *
+ * `label` is always renderable: an account's name, the reserved route's
+ * description, or an explanation of why there is neither.
+ */
+export interface ProviderRouteDiagnostic {
+  /** The agent this session is pinned to, or null before its first turn. */
+  agentId: AgentId | null;
+  kind: ProviderRouteKind | null;
+  /** Account id (`acct_…`) or reserved route id. Null before the first turn. */
+  routeId: string | null;
+  /** What to show the user. Never the opaque id when a name is available. */
+  label: string;
+}
+
+/**
+ * Reserved routes are metered billing or an environment-supplied token, not
+ * account rows — so they have no label to look up and need their own copy.
+ * Spelled out rather than shown as the raw id because "claude-api-key" in a
+ * diagnostics panel does not tell the user they are spending money per token.
+ */
+const RESERVED_ROUTE_LABEL: Record<string, string> = {
+  "claude-env-oauth": "Anthropic OAuth token from the environment",
+  "claude-api-key": "Anthropic API key — metered billing",
+  "codex-api-key": "OpenAI API key — metered billing",
+};
+
+/** Session fields {@link describeProviderRoute} reads. */
+export interface ProviderRouteSession {
+  agentId?: AgentId | null;
+  providerRouteKind?: ProviderRouteKind;
+  providerRouteId?: string;
+}
+
+/**
+ * Resolve a session's stored route into something displayable. Pure, so the
+ * three states that matter — pinned account, reserved route, not yet pinned —
+ * are testable without a database.
+ */
+export function describeProviderRoute(
+  session: ProviderRouteSession | undefined,
+  getAccountLabel: (provider: AgentId, accountId: string) => string | undefined,
+): ProviderRouteDiagnostic | null {
+  if (!session) return null;
+  const agentId = session.agentId ?? null;
+  const kind = session.providerRouteKind ?? null;
+  const routeId = session.providerRouteId ?? null;
+
+  // A session that has never taken a turn has no route: it picks one at its
+  // first turn, under whatever the selection mode says then (req 21). Saying
+  // "none" would read as an error rather than as "nothing has happened yet".
+  if (!kind || !routeId) {
+    return { agentId, kind: null, routeId: null, label: "not pinned yet — the next turn selects an account" };
+  }
+  if (kind === "reserved") {
+    return { agentId, kind, routeId, label: RESERVED_ROUTE_LABEL[routeId] ?? routeId };
+  }
+  const label = agentId ? getAccountLabel(agentId, routeId) : undefined;
+  // A pinned account can be disconnected while the session is idle — the row
+  // goes, the pin stays, and the next turn's preflight re-routes it. Worth
+  // naming, since it explains a session that is about to change account.
+  return { agentId, kind, routeId, label: label ?? "account no longer connected" };
 }
 
 export interface RunnerDiagnostic {
@@ -123,6 +195,11 @@ export interface SessionDiagnostics {
    * session" / agent-container-restart.
    */
   oomBreaker: OomBreakerState | null;
+  /**
+   * docs/150 req 11 — the provider account this session runs on. `null` when
+   * the build has no session/account wiring (test mode).
+   */
+  providerRoute: ProviderRouteDiagnostic | null;
 }
 
 export interface DiagnosticsDeps {
@@ -141,6 +218,16 @@ export interface DiagnosticsDeps {
    * when present, its per-session state is included in the payload.
    */
   oomBreaker?: SessionOomCircuitBreaker;
+  /**
+   * docs/150 req 11 — the session's stored provider route, and a way to turn an
+   * account id into the name the user gave it. Two narrow accessors rather than
+   * the session manager and account manager themselves, matching how
+   * `getWorkspaceDir` is injected here: the service stays free of both.
+   *
+   * Optional; omitted in test-mode builds, where `providerRoute` is null.
+   */
+  getSessionRoute?: (sessionId: string) => ProviderRouteSession | undefined;
+  getAccountLabel?: (provider: AgentId, accountId: string) => string | undefined;
 }
 
 /**
@@ -202,6 +289,13 @@ export async function getSessionDiagnostics(
   const workspaceDir = getWorkspaceDir(sessionId);
   const parsedConfig = workspaceDir ? readParsedConfig(workspaceDir) : null;
 
+  const providerRoute = deps.getSessionRoute
+    ? describeProviderRoute(
+        deps.getSessionRoute(sessionId),
+        deps.getAccountLabel ?? (() => undefined),
+      )
+    : null;
+
   return {
     sessionId,
     generatedAt: Date.now(),
@@ -212,6 +306,7 @@ export async function getSessionDiagnostics(
     recentLogs,
     parsedConfig,
     oomBreaker: oomBreaker ? oomBreaker.getState(sessionId) : null,
+    providerRoute,
   };
 }
 

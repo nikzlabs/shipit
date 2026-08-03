@@ -29,6 +29,26 @@ export interface ProviderAccount {
    * which account existing work runs on.
    */
   priority?: number;
+  /**
+   * docs/150 req 22 — the provider's own id for this account
+   * (Claude `oauthAccount.accountUuid`, Codex `chatgpt_account_id`), recorded
+   * when a sign-in completes.
+   *
+   * This is what makes two rows distinguishable as *accounts* rather than as
+   * labels. Optional because it is unknowable for a row that has never
+   * completed a sign-in, and for an install whose CLI does not report one —
+   * both degrade to the pre-req-22 behaviour rather than failing the connect.
+   */
+  externalId?: string;
+  /**
+   * req 22 — true while `label` is ShipIt's, not the user's.
+   *
+   * A connect replaces a generated label with the email the provider reports,
+   * and must not touch one the user typed. `undefined` (every row written
+   * before this field existed) is treated as user-owned: leaving a stale label
+   * alone is recoverable, overwriting a deliberate one is not.
+   */
+  labelIsGenerated?: boolean;
   status: ProviderAccountStatus;
   plan?: string | null;
   capabilities?: ProviderAccountCapabilities;

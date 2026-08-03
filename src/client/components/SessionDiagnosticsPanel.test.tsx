@@ -86,6 +86,12 @@ const samplePayload = {
     threshold: 3,
     windowMs: 5 * 60 * 1000,
   },
+  providerRoute: {
+    agentId: "claude",
+    kind: "account",
+    routeId: "acct_1234",
+    label: "Work",
+  },
 };
 
 function mockOk(payload: unknown) {
@@ -234,6 +240,58 @@ describe("SessionDiagnosticsPanel", () => {
     );
     await waitFor(() => {
       expect(screen.getByText(/capped to 1024 MiB by MAX_SESSION_MEMORY_MB/)).toBeTruthy();
+    });
+  });
+
+  // docs/150 req 11 — after a proactive cutoff or a hard-exhaustion retry has
+  // moved a session, this panel is where "which account am I on?" gets
+  // answered. The account's NAME is the answer; the opaque id is supporting
+  // detail for a bug report, not the thing the user reads.
+  it("renders the active provider account by name, with the route id alongside", async () => {
+    mockOk(samplePayload);
+    render(
+      <SessionDiagnosticsPanel sessionId="sess-1" open={true} onOpenChange={() => {}} />,
+    );
+    await waitFor(() => {
+      expect(screen.getByText("Provider account")).toBeTruthy();
+    });
+    expect(screen.getByText("Work")).toBeTruthy();
+    expect(screen.getByText("account / acct_1234")).toBeTruthy();
+  });
+
+  it("names a reserved route instead of showing its id", async () => {
+    mockOk({
+      ...samplePayload,
+      providerRoute: {
+        agentId: "claude",
+        kind: "reserved",
+        routeId: "claude-api-key",
+        label: "Anthropic API key — metered billing",
+      },
+    });
+    render(
+      <SessionDiagnosticsPanel sessionId="sess-1" open={true} onOpenChange={() => {}} />,
+    );
+    await waitFor(() => {
+      expect(screen.getByText("Anthropic API key — metered billing")).toBeTruthy();
+    });
+  });
+
+  it("says a session with no turns yet is not pinned, rather than showing an error", async () => {
+    mockOk({
+      ...samplePayload,
+      providerRoute: {
+        agentId: null,
+        kind: null,
+        routeId: null,
+        label: "not pinned yet — the next turn selects an account",
+      },
+    });
+    render(
+      <SessionDiagnosticsPanel sessionId="sess-1" open={true} onOpenChange={() => {}} />,
+    );
+    await waitFor(() => {
+      expect(screen.getByText(/not pinned yet/)).toBeTruthy();
     });
   });
 

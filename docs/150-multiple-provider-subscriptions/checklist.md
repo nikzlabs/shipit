@@ -60,13 +60,13 @@
 - [x] Preserve `claude-env-oauth` as a quota-bearing reserved route keyed by `claude-env-oauth`.
 - [x] Associate Codex `agent_rate_limits` events with the account used by the current runner.
 - [ ] Persist quota snapshots and plan labels onto provider accounts where appropriate.
-- [ ] Compute Claude model-specific quota state using `weeklyOpus`, `weeklySonnet`, or `weekly`.
+- [x] ~~Compute Claude model-specific quota state using `weeklyOpus`, `weeklySonnet`, or `weekly`.~~ **Struck 2026-08-03 — mistaken twice over.** Those field names exist nowhere; the CLI's real sub-quota types are `seven_day_opus` / `seven_day_sonnet` (`claude-types.ts:340`), and they are deliberately dropped (`adapter.ts:329`, docs/135). Acting on them means model-aware routing, which req 17's reversal made a non-goal. See plan.md → "Struck: model-specific quota windows".
 - [x] Treat unknown quota as selectable (ranking below known-healthy quota is still open).
 - [x] Render header subscription limits as one existing-style pill per account, labelled with the account name (req 10).
 - [x] Keep the 1-account badge layout visually stable.
 - [x] Reclassify "monthly usage limit" only when *every* connected account is exhausted, reporting the soonest reset.
 - [ ] Render multi-account grouped/expanded quota state without layout overlap.
-- [ ] Render active provider account in session diagnostics.
+- [x] Render active provider account in session diagnostics. Threaded through the diagnostics payload (`services/diagnostics.ts` → `describeProviderRoute`) rather than the session bootstrap: the panel already polls that endpoint, and the resolution — account label, reserved-route copy, or "not pinned yet" — is one pure function to test.
 - [x] Skip known-exhausted accounts for new turns.
 - [x] Return `all_exhausted` / `auth_required` as distinct results from the router (`no_model_eligible_account` removed with req 17's reversal).
 - [x] Surface those states to the user on a blocked turn (req 13's message).
@@ -94,10 +94,15 @@
 - [x] Re-evaluate account eligibility before every turn, including existing-session, queued, and system-initiated turns.
 - [x] Switch an existing session to the next eligible account when either configured cutoff is reached.
 - [x] Leave a model-ineligible account in place and let the provider's error surface, with no automatic recovery (req 17, reversed to a non-goal).
-- [ ] Add optional per-session account preference.
-- [ ] Add optional per-provider “do not auto-failover” setting.
-- [ ] Add optional provider-profile label refresh where stable.
-- [ ] Add account billing/account links as overflow escape hatches only.
+All four "optional" items below are resolved as **non-goals**, 2026-08-03 —
+reasoning in plan.md → "Resolved: the four 'optional' Phase 4 items". Common
+thread: no requirement asks for any of them, and requirements are the human's to
+write. Each would start at `requirements.md` if wanted.
+
+- [x] ~~Add optional per-session account preference.~~ Non-goal — a fourth input to a route decision reqs 3/9/6/14 already settle, asked for by nothing.
+- [x] ~~Add optional per-provider "do not auto-failover" setting.~~ Non-goal — it *is* the separate opt-in req 15 forbids. Req 21's selection mode is the sanctioned control over account choice.
+- [x] ~~Add optional provider-profile label refresh where stable.~~ Subsumed by req 22: the label comes from the provider at connect, and `labelIsGenerated` records whose name it is. A periodic refresh would rename rows behind the user's back.
+- [x] ~~Add account billing/account links as overflow escape hatches only.~~ Non-goal — `CLAUDE.md` §3 permits such links but nothing requires them, and req 10 exists so quota never needs the provider dashboard.
 
 ## Tests
 
@@ -157,7 +162,7 @@
 - [x] Unit: API-key fallback configures only its reserved route, creates no account row, is outranked by a subscription, and is *not* rolled onto when the subscription is spent (req 12).
 - [x] Client: an authenticated primary row does not hide or overwrite a secondary row's pending flow or diagnostics.
 - [x] Client: subscription limits render multiple accounts per provider, each named.
-- [ ] Client: session diagnostics renders the active account. **Blocked on the feature, not the test** — nothing in `src/client/` reads `providerRouteId` yet (the unchecked Phase 2 item above), so there is no surface to assert on.
+- [x] Client: session diagnostics renders the active account — by name, with the opaque route id alongside for bug reports, and with the reserved-route and not-yet-pinned cases each asserted separately.
 - [x] Unit: boot retires a legacy alias that points into `provider-accounts/`, leaves a real empty dir behind for the directory-shaped ones, and does not touch a real (pre-migration) file or dir.
 - [x] Unit: boot-to-boot idempotence — a never-signed-in install gets no placeholder and no invented account across two boots; a migrated install keeps its placeholder but does not re-migrate it once every account is deleted; CLI config and a zero-byte credentials file are not mistaken for an account.
 - [x] Integration: provider-wide sign-out erases the on-disk credentials of every connected account, not just the migrated first one.
@@ -193,13 +198,14 @@ nothing records today, and 21 turns a decision nobody made into a user setting.
 
 ### Account identity (req 22)
 
-- [ ] Read `oauthAccount` from `.claude.json` on connect; store `accountUuid` as the stable external key and tolerate its absence (older CLI, env-only auth) by falling back to today's behavior.
-- [ ] Record the Codex equivalent (`chatgpt_account_id`) on the account row too — it is already decoded for plan extraction but never persisted as identity.
-- [ ] Default a newly connected account's label to the reported email instead of `Claude account N` / `Codex account N`, leaving rename intact.
-- [ ] Refuse a connect that resolves to an already-connected external id, naming the matched account. Leave the existing row's credentials untouched (decided 2026-08-03; unblocked).
-- [ ] Confirm a failed/stale row can still re-authenticate through its own per-account action — refusal means re-connecting via "add account" is no longer a repair path.
-- [ ] Unit: an account row records the external id at connect time, and a missing `oauthAccount` degrades to the generated label rather than failing the connect.
-- [ ] Unit: a second connect resolving to an existing external id does not produce a second row.
+- [x] Read `oauthAccount` from `.claude.json` on connect; store `accountUuid` as the stable external key and tolerate its absence (older CLI, env-only auth) by falling back to today's behavior (`provider-account-identity.ts`).
+- [x] Record the Codex equivalent (`chatgpt_account_id`) on the account row too — it is already decoded for plan extraction but never persisted as identity (`extractCodexIdentity`).
+- [x] Default a newly connected account's label to the reported email instead of `Claude account N` / `Codex account N`, leaving rename intact. `labelIsGenerated` is what tells the two apart; `rename` clears it, and a row predating the field is treated as user-owned (overwriting a deliberate label is the unrecoverable direction).
+- [x] Refuse a connect that resolves to an already-connected external id, naming the matched account. Leave the existing row's credentials untouched (decided 2026-08-03). The refusal fires on the auth manager's `complete` event, before the row is marked `ready` — once it is `ready` it is selectable, and a duplicate is worst exactly when it is picked as the failover target for the account it duplicates.
+- [x] Confirm a failed/stale row can still re-authenticate through its own per-account action — refusal means re-connecting via "add account" is no longer a repair path. Confirmed: the row's own Connect/Reconnect button posts `.../${account.id}/login` (`ProviderAccountsCard.tsx:564` → `startLogin`), and `findByExternalId` excludes the row being authenticated, so a self-match is not a duplicate.
+- [x] Unit: an account row records the external id at connect time, and a missing `oauthAccount` degrades to the generated label rather than failing the connect.
+- [x] Unit: a second connect resolving to an existing external id does not produce a second row.
+- [x] Unit: the refusal is reached from the real `complete` event, emits `reason: "duplicate"`, and emits no `agent_auth_complete` (`app-lifecycle.test.ts`).
 
 ### Selection mode (req 21)
 
