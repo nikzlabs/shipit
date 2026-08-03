@@ -29,6 +29,7 @@ import path from "node:path";
 import simpleGit from "simple-git";
 import type { SessionInfo } from "../shared/types.js";
 import { resolveShipitConfig, DEFAULT_DEP_DIRS } from "../shared/shipit-config.js";
+import { INSTALL_MARKER_FILE } from "./session-state-dir.js";
 import { overlayScopeHash, overlayVolumeName, overlayBaseGenDir, type OverlaySpec } from "./overlay-volume.js";
 import { readBasePointerByHash, type BasePointer, type OverlayScope } from "./overlay-base.js";
 import { makeMarker, serializeMarker } from "../shared/install-marker.js";
@@ -471,8 +472,16 @@ export function isPnpmRepo(workspaceDir: string): boolean {
 export async function preStampInstallMarker(args: {
   /** Orchestrator-visible state dir holding `overlay-base-meta/` (pointers). */
   stateDir: string;
-  /** The session's host clone (where `.shipit/.install-done` lives). */
+  /** The session's host clone (HEAD, shipit.yaml, dep-file hashing). */
   workspaceDir: string;
+  /**
+   * docs/246 — the session's state dir, where the install marker lives. The
+   * marker used to sit in `<clone>/.shipit/`, inside the user's repository,
+   * where the post-turn `git add -A` staged it. Null on the legacy flat layout
+   * (the session dir isn't identifiable from the clone), which keeps the old
+   * in-clone placement rather than guessing.
+   */
+  sessionStateDir?: string | null;
   /** The overlay specs the container was created with. */
   specs: DepDirOverlaySpec[];
   /** Pointer reader — injected for tests; defaults to the real by-hash read. */
@@ -492,7 +501,9 @@ export async function preStampInstallMarker(args: {
   const readPointer = args.readPointer ?? readBasePointerByHash;
   const chown = args.chown ?? chownToSessionWorker;
 
-  const markerFile = path.join(workspaceDir, ".shipit", ".install-done");
+  const markerFile = args.sessionStateDir
+    ? path.join(args.sessionStateDir, INSTALL_MARKER_FILE)
+    : path.join(workspaceDir, ".shipit", INSTALL_MARKER_FILE);
   if (fs.existsSync(markerFile)) return false;
 
   let head: string;
@@ -558,9 +569,11 @@ export async function preStampInstallMarker(args: {
   const markerDir = path.dirname(markerFile);
   fs.mkdirSync(markerDir, { recursive: true });
   fs.writeFileSync(markerFile, serializeMarker(marker));
-  // Hand the just-written `.shipit/` dir + marker back to the worker uid so the
+  // Hand the just-written marker dir + file back to the worker uid so the
   // non-root agent can later overwrite the marker (worker `writeMarker`) when a
-  // HEAD change invalidates it. No-op in legacy root runtime.
+  // HEAD change invalidates it. Still required after docs/246: the state dir IS
+  // mounted into the container (`/session-state`) and the worker writes the
+  // marker there. No-op in legacy root runtime.
   chown(markerDir);
   chown(markerFile);
   return true;

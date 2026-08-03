@@ -6,6 +6,11 @@
  */
 
 import fs from "node:fs";
+import {
+  sessionStateDirForWorkspace,
+  CI_LOGS_SUBDIR,
+  CONTAINER_SESSION_STATE_DIR,
+} from "../session-state-dir.js";
 import path from "node:path";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
@@ -34,17 +39,19 @@ export async function fetchCIFailureLogs(
   failedChecks: { databaseId: number; name: string; conclusion: string; title: string }[],
   sessionDir?: string,
 ): Promise<CIFailureLog[]> {
-  // Prepare log directory and ensure .shipit is gitignored
-  const logDir = sessionDir ? path.join(sessionDir, ".shipit", "ci-logs") : null;
+  // docs/246 — logs go to the session's state dir, mounted at `/session-state`
+  // in the container. They used to land in `<clone>/.shipit/ci-logs/`, inside
+  // the user's repository, which forced the old `ensureShipitGitignored()`
+  // workaround: appending `.shipit` to the user's TRACKED `.gitignore` so
+  // ShipIt's own logs wouldn't be committed. That mutation is gone with the
+  // files it existed for.
+  const stateDir = sessionDir ? sessionStateDirForWorkspace(sessionDir) : null;
+  const logDir = stateDir ? path.join(stateDir, CI_LOGS_SUBDIR) : null;
   if (logDir) {
     fs.mkdirSync(logDir, { recursive: true });
-    ensureShipitGitignored(sessionDir!);
-    // docs/150 §7 — these dirs/files are written by the root orchestrator into
-    // the workspace mount but read by the agent's `shipit` user. Hand the
-    // `.shipit` tree and `.gitignore` to the worker UID (no-op unless
-    // SHIPIT_SESSION_WORKER_UID is set).
-    chownTreeToSessionWorker(path.join(sessionDir!, ".shipit"));
-    chownToSessionWorker(path.join(sessionDir!, ".gitignore"));
+    // docs/150 §7 — written by the root orchestrator, read by the agent's
+    // `shipit` user through the mount. No-op unless the flag is set.
+    chownTreeToSessionWorker(logDir);
   }
 
   const logs: CIFailureLog[] = [];
@@ -84,8 +91,10 @@ export async function fetchCIFailureLogs(
       const absPath = path.join(logDir, fileName);
       fs.writeFileSync(absPath, cleanLog, "utf-8");
       chownToSessionWorker(absPath); // docs/150 §7 — agent reads as `shipit`
-      // Store relative path — the agent runs from the workspace root
-      logFilePath = `.shipit/ci-logs/${fileName}`;
+      // docs/246 — an ABSOLUTE container path. The agent used to get a
+      // workspace-relative path because the logs lived in its clone; they now
+      // live on the `/session-state` mount, which is outside `/workspace`.
+      logFilePath = `${CONTAINER_SESSION_STATE_DIR}/${CI_LOGS_SUBDIR}/${fileName}`;
     }
     const errorLines = extractErrorLines(cleanLog);
     const lines = cleanLog.split("\n");
@@ -195,19 +204,6 @@ export function extractErrorLines(cleanLog: string, maxLines = 30): string[] {
   }
 
   return errors.slice(0, maxLines);
-}
-
-/** Ensure .shipit is listed in .gitignore so CI logs don't get committed. */
-function ensureShipitGitignored(dir: string): void {
-  const gitignorePath = path.join(dir, ".gitignore");
-  try {
-    const content = fs.existsSync(gitignorePath) ? fs.readFileSync(gitignorePath, "utf-8") : "";
-    if (!content.split("\n").some((line) => line.trim() === ".shipit")) {
-      fs.appendFileSync(gitignorePath, `${content.endsWith("\n") ? "" : "\n"}.shipit\n`);
-    }
-  } catch {
-    // Best-effort — don't fail CI fix if gitignore can't be written
-  }
 }
 
 /** Build a fix prompt from CI failure logs. */

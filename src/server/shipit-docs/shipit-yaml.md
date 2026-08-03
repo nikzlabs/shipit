@@ -76,7 +76,7 @@ sizing is fully automatic.
 
 - Steps run sequentially in the agent container before services start.
 - If any step fails, subsequent steps are skipped and the error is reported.
-- The `.shipit/.install-done` marker is only written after all steps succeed.
+- The `/session-state/.install-done` marker is only written after all steps succeed.
   It is *stamped* with the source commit, the container's runtime fingerprint,
   and the install commands it ran.
 - On resume, install is skipped when the stamp still matches. The runtime and
@@ -226,15 +226,17 @@ inside ShipIt). Other security policies still apply.
 
 ## Onboarding a repository
 
-When onboarding a repository, also add `.shipit` to the project's
-`.gitignore`. ShipIt uses the `.shipit/` directory for internal
-state (e.g., `.shipit/.install-done`) and its contents should not be
-committed.
+Nothing to add to `.gitignore` for ShipIt's sake. ShipIt keeps its own
+per-session state (the install marker, fetched CI logs, the generated compose
+override, the agent env file) **outside your repository**, in a directory that
+is a sibling of the clone rather than inside it. The parts the agent needs are
+mounted at `/session-state`.
 
-```
-# .gitignore
-.shipit
-```
+Earlier versions wrote that state to `.shipit/` in the repo root, which is why
+older projects often carry a `.shipit` line in `.gitignore` — it is no longer
+needed, and ShipIt sweeps any leftover files from the working tree on session
+start. (Copies already committed to your history are left alone; remove them
+yourself if you want them gone.)
 
 ## Config changes at runtime
 

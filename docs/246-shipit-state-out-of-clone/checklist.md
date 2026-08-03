@@ -1,22 +1,17 @@
 # Checklist — ShipIt state out of the session clone
 
-## Landed
-
 - [x] `<sessionDir>/state/` in `session-dir-factory.ts` + `session-state-dir.ts` owning every artifact path
 - [x] Resolve the state dir via the shared `workspace/` contract (`sessionStateDirForWorkspace`), never a bare `dirname` — threaded into `ServiceManager` as `sessionStateDir`
-- [x] `compose.override.yml` → state dir, absolute `-f` via `ComposeCli.overrideFile`; docs/150 chown handoff dropped (nothing in-container reads it now)
-- [x] `.env.agent` → state dir, orchestrator-side only (restores docs/087 §403), sweeping any pre-246 in-clone copy
-- [x] `sweepLegacyCloneArtifacts()` implemented + tested (working tree only, keeps user files, idempotent)
-
-## Remaining
-
-- [ ] `/session-state` mount in `container-lifecycle.ts`; entrypoint chown coverage
-- [ ] `.install-done` → `/session-state` (install-controller, `preStampInstallMarker`, claim-session)
-- [ ] `ci-logs/` → state dir; CI-fix prompt cites the in-container path; drop `ensureShipitGitignored` (req 2 forbids editing the user's tracked `.gitignore`)
-- [ ] Call `sweepLegacyCloneArtifacts()` on session boot — implemented but not yet wired to a caller
-- [ ] Guard test: no writer composes `path.join(workspaceDir, ".shipit", …)`
-- [ ] Update `shipit-docs/secrets.md` (says `.env.agent` "lives in the workspace") + `shipit-yaml.md` (cites `.shipit/.install-done`)
-- [ ] Fresh-context review of the branch diff against every numbered requirement
+- [x] Container mount point + artifact filenames in `shared/fs-constants.ts` (session code may not import from `orchestrator/`)
+- [x] `/session-state` mount in `container-lifecycle.ts`; entrypoint chown coverage
+- [x] `compose.override.yml` → state dir, absolute `-f` via `ComposeCli.overrideFile`; docs/150 chown handoff dropped
+- [x] `.env.agent` → state dir, orchestrator-side only (restores docs/087 §403)
+- [x] `.install-done` → `/session-state` (install-controller, `preStampInstallMarker`, claim-session)
+- [x] `ci-logs/` → state dir; CI-fix prompt cites the absolute container path; `ensureShipitGitignored` deleted (req 2 forbids editing the user's tracked `.gitignore`)
+- [x] `sweepLegacyCloneArtifacts()` wired into container create — working tree only, keeps user files, idempotent
+- [x] Guard test: no generated artifact name composed with an in-clone `.shipit` path (`no-clone-writes.test.ts`)
+- [x] `shipit-docs/shipit-yaml.md` + `secrets.md` updated for the new paths; the "add `.shipit` to your `.gitignore`" onboarding step is gone
+- [ ] Fresh-context review of the branch diff against every numbered requirement — running via `shipit agent run --agent codex`
 
 ## Known gap
 
@@ -24,4 +19,5 @@
   placement: the session dir can't be identified from the clone path, and
   guessing would collide every session's state in `sessionsRoot`. The durable
   fix is a `stateDir` column on the session record. No session created by the
-  current `createSessionDirFactory` is affected.
+  current `createSessionDirFactory` is affected, and the boot sweep still
+  removes leftovers from those clones.

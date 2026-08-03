@@ -16,6 +16,7 @@
  */
 
 import { existsSync, unlinkSync } from "node:fs";
+import { sessionStateDirForWorkspace, INSTALL_MARKER_FILE } from "../session-state-dir.js";
 import { rm } from "node:fs/promises";
 import path from "node:path";
 import simpleGit from "simple-git";
@@ -242,7 +243,14 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
     const headAfter = await sessionGit.getHeadHash();
     const headChanged = headBefore !== headAfter;
     if (headChanged) {
-      try { unlinkSync(path.join(sessionDir, ".shipit", ".install-done")); } catch { /* marker may not exist */ }
+      // docs/246 — the marker now lives in the session state dir, outside the
+      // clone. The in-clone path is still cleared so a session upgrading across
+      // this change doesn't keep a stale (and committable) copy.
+      const stateDir = sessionStateDirForWorkspace(sessionDir);
+      if (stateDir) {
+        try { unlinkSync(path.join(stateDir, INSTALL_MARKER_FILE)); } catch { /* marker may not exist */ }
+      }
+      try { unlinkSync(path.join(sessionDir, ".shipit", INSTALL_MARKER_FILE)); } catch { /* marker may not exist */ }
     }
     return { headChanged, fetched, fetchDurationMs };
   }

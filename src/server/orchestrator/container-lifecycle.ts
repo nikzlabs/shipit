@@ -19,6 +19,11 @@ import {
   CONTAINER_SESSION_ID_LABEL,
 } from "./session-container.js";
 import { CONTAINER_WORKSPACE_DIR } from "../shared/fs-constants.js";
+import {
+  CONTAINER_SESSION_STATE_DIR,
+  sessionStateDir,
+  sweepLegacyCloneArtifacts,
+} from "./session-state-dir.js";
 import { agentHome } from "../shared/agent-home.js";
 import type { HostMount } from "../shared/shipit-config.js";
 import { DEFAULT_DEP_DIRS, resolveShipitConfig } from "../shared/shipit-config.js";
@@ -306,6 +311,32 @@ export function buildMounts(
       });
     } else {
       binds.push(`${config.scratchDir}:/persist:rw`);
+    }
+  }
+
+  // docs/246 — Mount ShipIt's own per-session state dir at /session-state
+  // **read-write**. This is what keeps ShipIt's generated artifacts out of the
+  // user's git clone: the install marker is written here by the worker after
+  // `agent.install`, and the agent reads fetched CI logs from here during a CI
+  // fix. Both used to live in `<clone>/.shipit/`, where the post-turn
+  // `git add -A` staged them into the user's repository.
+  //
+  // Not everything in the state dir is exposed by this mount being present —
+  // the compose override and `.env.agent` are orchestrator-only and simply
+  // aren't read from inside the container. Worker-UID ownership comes from the
+  // entrypoint chown loop, same as /persist.
+  if (config.sessionStateDir) {
+    if (workspaceVolume) {
+      const stateRelPath = config.sessionStateDir.replace(/^\/workspace\//, "");
+      mounts.push({
+        Type: "volume",
+        Source: workspaceVolume,
+        Target: CONTAINER_SESSION_STATE_DIR,
+        ReadOnly: false,
+        VolumeOptions: { Subpath: stateRelPath },
+      });
+    } else {
+      binds.push(`${config.sessionStateDir}:${CONTAINER_SESSION_STATE_DIR}:rw`);
     }
   }
 
@@ -689,6 +720,29 @@ export async function createContainer(
   // worker can write to it.
   if (config.scratchDir) {
     fs.mkdirSync(config.scratchDir, { recursive: true });
+  }
+
+  // docs/246 — same for ShipIt's per-session state dir. Created here as well as
+  // in `createSessionDirFactory` because a session whose dir predates the state
+  // dir (or a warm clone claimed into place) must still get one before the
+  // mount resolves.
+  if (config.sessionStateDir) {
+    fs.mkdirSync(config.sessionStateDir, { recursive: true });
+  }
+
+  // docs/246 req 6 — shed what earlier versions left inside the clone. Runs on
+  // every container create, so a session that predates the move sheds its
+  // leftovers the next time it boots rather than only on fresh sessions.
+  // Working tree only: copies already committed to the user's history are
+  // deliberately left alone (ShipIt can't rewrite someone's history, and the
+  // files are inert once it stops writing them).
+  if (config.workspaceDir) {
+    const swept = sweepLegacyCloneArtifacts(config.workspaceDir);
+    if (swept.length > 0) {
+      console.log(
+        `[container:${config.sessionId}] swept pre-246 ShipIt artifacts from the clone: ${swept.join(", ")}`,
+      );
+    }
   }
 
   // Ensure the dep cache directory exists on the host before mounting.
@@ -1093,6 +1147,9 @@ export async function createContainer(
         const stamped = await preStampInstallMarker({
           stateDir: deps.stateDir,
           workspaceDir: config.workspaceDir,
+          // docs/246 — `config.sessionStateDir` is the SESSION state dir (where
+          // the marker lives); `deps.stateDir` above is the orchestrator's.
+          ...(config.sessionStateDir ? { sessionStateDir: config.sessionStateDir } : {}),
           specs: config.overlaySpecs,
         });
         if (stamped) {
@@ -1345,6 +1402,8 @@ export function buildContainerConfig(
     uploadsDir?: string;
     /** docs/217 — persistent scratch host dir; defaults to a `sessionDir` sibling. */
     scratchDir?: string;
+    /** docs/246 — ShipIt's per-session state dir; defaults to a `sessionDir` sibling. */
+    sessionStateDir?: string;
     env?: Record<string, string>;
     memoryLimit?: number;
     cpuQuota?: number;
@@ -1367,6 +1426,9 @@ export function buildContainerConfig(
     pnpmStoreDir: opts.pnpmStoreDir,
     uploadsDir: opts.uploadsDir ?? path.join(opts.sessionDir, "uploads"),
     scratchDir: opts.scratchDir ?? path.join(opts.sessionDir, "scratch"),
+    // docs/246 — no layout heuristic needed here: this is the real session dir,
+    // so the state dir is an unambiguous sibling of `workspace/`.
+    sessionStateDir: opts.sessionStateDir ?? sessionStateDir(opts.sessionDir),
     imageName: deps.imageName,
     memoryLimit: opts.memoryLimit ?? deps.defaultMemoryLimit,
     cpuQuota: opts.cpuQuota ?? deps.defaultCpuQuota,

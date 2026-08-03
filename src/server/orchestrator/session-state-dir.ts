@@ -29,6 +29,12 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import {
+  COMPOSE_OVERRIDE_FILE,
+  INSTALL_MARKER_FILE,
+  CI_LOGS_SUBDIR,
+  AGENT_ENV_FILE,
+} from "../shared/fs-constants.js";
 
 /** Directory name of the per-session state dir (sibling of `workspace/`). */
 export const SESSION_STATE_SUBDIR = "state";
@@ -40,21 +46,16 @@ export const SESSION_STATE_SUBDIR = "state";
  */
 export const SESSION_WORKSPACE_SUBDIR = "workspace";
 
-/**
- * Mount point of the state dir inside the session container. Only the artifacts
- * the *worker* or the *agent* must reach are exposed here; orchestrator-only
- * artifacts (the compose override, the agent env file) stay unmounted.
- */
-export const CONTAINER_SESSION_STATE_DIR = "/session-state";
-
-/** Generated compose merge file (`docker compose -f … -f <this>`). */
-export const COMPOSE_OVERRIDE_FILE = "compose.override.yml";
-/** Install-skip marker, written in-container after `agent.install` succeeds. */
-export const INSTALL_MARKER_FILE = ".install-done";
-/** Fetched CI failure logs, read by the agent during a CI fix. */
-export const CI_LOGS_SUBDIR = "ci-logs";
-/** Agent-container env file (`agent: true` values + MCP credentials). */
-export const AGENT_ENV_FILE = ".env.agent";
+// The container mount point + artifact filenames live in `shared/fs-constants.ts`
+// because the session layer needs them too and may not import from
+// `orchestrator/`. Re-exported here so orchestrator callers have one import.
+export {
+  CONTAINER_SESSION_STATE_DIR,
+  COMPOSE_OVERRIDE_FILE,
+  INSTALL_MARKER_FILE,
+  CI_LOGS_SUBDIR,
+  AGENT_ENV_FILE,
+} from "../shared/fs-constants.js";
 
 /** Host path of a session's state dir, given its session dir. */
 export function sessionStateDir(sessionDir: string): string {
