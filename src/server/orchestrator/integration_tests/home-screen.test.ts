@@ -23,6 +23,23 @@ import { DatabaseManager } from "../../shared/database.js";
 // home_create_repo_with_template
 // ---------------------------------------------------------------------------
 
+/**
+ * The three tests that actually scaffold a repo run the full create path:
+ * `buildApp`, a `git init`, the template copy, and a commit. That is a few
+ * hundred ms on an idle box but highly variable in CI, where ~600 test files
+ * compete for the same disk — and it timed out at the 5 s default there while
+ * passing locally.
+ *
+ * The remaining tests in this file assert validation errors and return before
+ * any of that, so they keep the default: a generous timeout on a fast test
+ * hides a real hang, which is exactly what the default is protecting.
+ *
+ * Same treatment as the other IO-heavy integration suites (`standby-container`,
+ * `warm-pool-staleness`, `warm-sessions`), which set 15-30 s for the same
+ * reason.
+ */
+const HEAVY_TIMEOUT_MS = 15_000;
+
 describe("Integration: home_create_repo_with_template (HTTP)", () => {
   let app: FastifyInstance;
   let tmpDir: string;
@@ -94,7 +111,7 @@ describe("Integration: home_create_repo_with_template (HTTP)", () => {
     const created = (list.json().repos as { url: string; trusted?: boolean }[])
       .find((r) => r.url === body.repoUrl);
     expect(created?.trusted).toBe(true);
-  });
+  }, HEAVY_TIMEOUT_MS);
 
   it("creates the repo under an organization when owner is supplied", async () => {
     await app.inject({ method: "POST", url: "/api/github/token", payload: { token: "ghp_test" } });
@@ -117,7 +134,7 @@ describe("Integration: home_create_repo_with_template (HTTP)", () => {
     // And the org login was threaded all the way to createRepo's options.
     expect(githubAuthManager.createRepoCalls).toHaveLength(1);
     expect(githubAuthManager.createRepoCalls[0].options.owner).toBe("acme");
-  });
+  }, HEAVY_TIMEOUT_MS);
 
   it("omits owner from createRepo when none is supplied (personal account)", async () => {
     await app.inject({ method: "POST", url: "/api/github/token", payload: { token: "ghp_test" } });
@@ -129,7 +146,7 @@ describe("Integration: home_create_repo_with_template (HTTP)", () => {
     });
     expect(res.statusCode).toBe(200);
     expect(githubAuthManager.createRepoCalls[0].options.owner).toBeUndefined();
-  });
+  }, HEAVY_TIMEOUT_MS);
 
   it("returns 400 for empty repoName", async () => {
     await app.inject({ method: "POST", url: "/api/github/token", payload: { token: "ghp_test" } });
