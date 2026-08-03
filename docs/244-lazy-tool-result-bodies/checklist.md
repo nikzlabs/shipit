@@ -100,7 +100,36 @@
 - [ ] Reconnect snapshot resends already-committed tool inputs; tightening needs a committed-prefix marker on the runner
 
 ## Follow-up work (separate from this PR)
-- [ ] Subagent activity does not appear in the UI in practice (docs/109) — plumbing is complete and tested with synthetic events, but never verified against a live CLI, and both attach points silently no-op when the parent group isn't found. Investigate after this merges.
+
+### Live-CLI verification — the next thing to do
+
+Every test in this feature drives **synthetic** events. That is the one class of
+bug the suite structurally cannot catch: if the real CLI emits a shape the
+projection doesn't recognise, the tests stay green and the UI is wrong. Two of
+this feature's four review rounds fixed exactly that kind of mismatch (a lookup
+keyed on `"base64"`; a test asserting `message.content` on an event the adapter
+normalises to `content`), which is the argument for doing this at all.
+
+Run against a live agent turn in the dogfood preview, checking the network
+payload rather than only the rendered page:
+
+- [ ] A turn with a **large `Bash` output**: the `/history` payload carries
+      `content: ""` with `truncated` + `totalLines`, and the modal fetches and
+      renders the body on open.
+- [ ] A **live turn** (WS, not reload) does the same, and the modal opened
+      *during* that turn doesn't 404 — the same-tick commit claim is the one
+      load-bearing assumption no unit test exercises for real.
+- [ ] A **screenshot** result: the image renders from `shipit_url`, and the
+      transcript payload contains no base64.
+- [ ] A **subagent** (`Agent`) turn: the final report renders in full, and
+      docs/109's open question — whether nested activity appears in the UI at
+      all — is answered. Both attach points silently no-op when the parent group
+      isn't found, so a miss here looks like "nothing rendered", not an error.
+- [ ] An **`AskUserQuestion`** and a **`present`** call: both still resolve from
+      inline content, since these are the tools whose bodies are deliberately
+      kept.
+
+- [ ] Subagent activity does not appear in the UI in practice (docs/109) — plumbing is complete and tested with synthetic events, but never verified against a live CLI, and both attach points silently no-op when the parent group isn't found. Folded into the checks above.
 
 ## Verification
 - [x] `npm run typecheck`
