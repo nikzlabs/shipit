@@ -271,15 +271,34 @@ export abstract class AutoRemediationManager<TSignal> {
    *  2. cache the signal (subclass) BEFORE the enable check.
    *  3. global enable check.
    *  4. first-seen init.
-   *  5. running / exhausted short-circuits.
-   *  6. head-SHA-change budget reset.
-   *  7. resolved signal → drop state.
+   *  5. resolved signal → drop state (UNCONDITIONALLY — see below).
+   *  6. running / exhausted short-circuits.
+   *  7. head-SHA-change budget reset.
    *  8. arbiter stale-signal guard (Workstream C).
    *  9. cap gate.
    * 10. cooldown gate.
    * 11. pre-attempt runner gate (the load-bearing deferred-emit-before-verify
    *     ordering).
    * 12. arbiter claim + fire.
+   *
+   * Steps 5 and 6 are in the opposite order to docs/146's original listing, and
+   * deliberately so. The resolved-signal cleanup used to sit BEHIND the
+   * `status === "running"` short-circuit, which made `running` a terminal trap:
+   * the only exit from `running` is the subclass's terminal write, so an attempt
+   * that never settled left the state — and its arbiter claim — wedged forever,
+   * and the trigger going away could not clear it. Observed in production as a PR
+   * card stuck on "Auto-fixing…" over a green CI, with managed auto-merge and
+   * auto-resolve-conflicts both silently disabled for that session by the leaked
+   * claim. The trigger is gone; that fact does not become less true because an
+   * attempt is in flight, so it is now acted on first. The same reordering also
+   * clears a stale `exhausted` banner once CI goes green.
+   *
+   * The in-flight attempt is ABANDONED rather than cancelled: it is a real agent
+   * turn already running in the session container, and killing it mid-way would
+   * strand partial work. Its terminal write finds no state and takes each
+   * subclass's documented no-state branch, which releases the arbiter claim.
+   * Everything below step 6 is untouched — in particular step 11's
+   * deferred-emit-before-verify contract.
    */
   protected async runTransition(sessionId: string, signal: TSignal, headSha: string): Promise<void> {
     // 1.
@@ -310,11 +329,21 @@ export abstract class AutoRemediationManager<TSignal> {
       this.states.set(sessionId, state);
     }
 
-    // 5.
+    // 5 — trigger no longer active: drop state so the maps shrink. Runs BEFORE
+    // the status short-circuits so a `running` (or `exhausted`) status can never
+    // outlive the condition that created it — see the ordering note above.
+    if (kind !== "fire") {
+      this.states.delete(sessionId);
+      this.onDelete(sessionId);
+      this.onChange(sessionId);
+      return;
+    }
+
+    // 6.
     if (state.status === "running") return;
     if (state.status === "exhausted") return;
 
-    // 6 — head-SHA-change budget reset. A new head normally means fresh
+    // 7 — head-SHA-change budget reset. A new head normally means fresh
     // external code, so reset the per-head attempt budget. BUT a head change
     // inside an open settle window is almost certainly OUR own force-push
     // landing: the upstream verdict for the new head hasn't been recomputed yet
@@ -335,14 +364,6 @@ export abstract class AutoRemediationManager<TSignal> {
       }
     }
     state.lastHeadSha = headSha;
-
-    // 7 — trigger no longer active: drop state so the maps shrink.
-    if (kind !== "fire") {
-      this.states.delete(sessionId);
-      this.onDelete(sessionId);
-      this.onChange(sessionId);
-      return;
-    }
 
     if (
       state.postPushSettledHeadSha !== undefined

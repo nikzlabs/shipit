@@ -662,12 +662,30 @@ export class PrStatusPoller {
   private attachAutomationState(summary: PrStatusSummary): PrStatusSummary {
     let result = summary;
     const fixState = this.autoFix.get(summary.sessionId);
-    if (fixState) {
+    // Never attach auto-fix state over a GREEN rollup. The manager's state is
+    // the loop's bookkeeping, not a display flag: green means there is nothing
+    // to fix, so an "Auto-fixing…" spinner or an "Auto-fix exhausted" note on a
+    // passing card is wrong however the state got there. The state machine now
+    // settles itself on a resolved poll (`runTransition` step 5); this is the
+    // belt-and-suspenders half, the same shape docs/146 applies to auto-resolve.
+    // Deliberately only `success` — a `pending` rollup (CI re-running after the
+    // fix turn pushed) must keep showing the line, or it would flicker away
+    // mid-attempt.
+    if (fixState && summary.checks.state !== "success") {
       result = {
         ...result,
         autoFix: {
+          // The 1-based number of the attempt being DISPLAYED. `attemptCount`
+          // counts COMPLETED attempts — it is incremented post-turn, in
+          // `completeTurn` — so while one is in flight the card would otherwise
+          // read "attempt 0/3" for the first attempt. The manager already
+          // computes this number for `fireAttempt`; publishing it here keeps the
+          // client from reconstructing it in each of the two places that render
+          // the line. Never exceeds `maxAttempts`: the cap gate refuses to fire
+          // once `attemptCount >= maxAttempts`.
+          attemptCount:
+            fixState.status === "running" ? fixState.attemptCount + 1 : fixState.attemptCount,
           status: fixState.status,
-          attemptCount: fixState.attemptCount,
           maxAttempts: MAX_AUTO_FIX_ATTEMPTS,
         },
       };

@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeEach } from "vitest";
-import { RemediationArbiter } from "./auto-remediation-arbiter.js";
+import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
+import { RemediationArbiter, CLAIM_TTL_MS } from "./auto-remediation-arbiter.js";
 
 describe("RemediationArbiter", () => {
   let arb: RemediationArbiter;
   beforeEach(() => { arb = new RemediationArbiter(); });
+  afterEach(() => { vi.restoreAllMocks(); });
 
   it("grants a single claim and reports it held", () => {
     expect(arb.claim("s1", "sha1", "auto-fix")).toBe(true);
@@ -87,5 +88,55 @@ describe("RemediationArbiter", () => {
     arb.claim("s1", "sha1", "auto-fix");
     expect(arb.isClaimed("s2")).toBe(false);
     expect(arb.claim("s2", "sha9", "auto-resolve")).toBe(true);
+  });
+
+  // The TTL backstop. Guarantee 1 ("released on EVERY terminal path") is
+  // convention, and convention failed in production: an auto-fix attempt whose
+  // fix turn was dispatched into a runner that then went away never reached its
+  // terminal write, so the claim never released — and with no TTL that wedged
+  // managed auto-merge and auto-resolve for the session indefinitely.
+  describe("claim TTL backstop", () => {
+    let now: number;
+    let ttlArb: RemediationArbiter;
+    beforeEach(() => {
+      now = 1_000_000;
+      ttlArb = new RemediationArbiter(() => now);
+    });
+
+    it("a claim held past the TTL stops suppressing and stops reading as held", () => {
+      vi.spyOn(console, "warn").mockImplementation(() => { /* expected */ });
+      ttlArb.claim("s1", "sha1", "auto-fix");
+      expect(ttlArb.isClaimed("s1")).toBe(true);
+      expect(ttlArb.shouldSuppress("s1", "sha1")).toBe(true);
+
+      // Just under the TTL: still a live claim (a slow attempt is not a leak).
+      now += CLAIM_TTL_MS - 1;
+      expect(ttlArb.isClaimed("s1")).toBe(true);
+
+      now += 2;
+      expect(ttlArb.isClaimed("s1")).toBe(false);
+      expect(ttlArb.shouldSuppress("s1", "sha1")).toBe(false);
+    });
+
+    it("the other automation can claim once an abandoned claim expires", () => {
+      vi.spyOn(console, "warn").mockImplementation(() => { /* expected */ });
+      ttlArb.claim("s1", "sha1", "auto-fix");
+      expect(ttlArb.claim("s1", "sha1", "auto-resolve")).toBe(false);
+
+      now += CLAIM_TTL_MS + 1;
+
+      expect(ttlArb.claim("s1", "sha1", "auto-resolve")).toBe(true);
+      expect(ttlArb.isClaimed("s1")).toBe(true);
+    });
+
+    it("a released-and-reclaimed slot restarts the TTL clock", () => {
+      ttlArb.claim("s1", "sha1", "auto-fix");
+      now += CLAIM_TTL_MS - 1;
+      ttlArb.release("s1", "auto-fix", { pushed: false });
+      ttlArb.claim("s1", "sha1", "auto-fix");
+      now += 2;
+      // The second claim is young — the first claim's age must not carry over.
+      expect(ttlArb.isClaimed("s1")).toBe(true);
+    });
   });
 });

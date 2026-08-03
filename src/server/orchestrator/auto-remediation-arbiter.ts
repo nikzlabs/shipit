@@ -30,13 +30,33 @@
  *
  * Single-threaded JS makes `claim()` atomic, so the first of two same-tick
  * claimants wins and the second defers — no lock needed.
+ *
+ * Guarantee 1 is enforced by convention (every terminal path releases) and
+ * BACKSTOPPED by {@link CLAIM_TTL_MS}: a claim held longer than the TTL is
+ * treated as abandoned. The convention has already failed once in production —
+ * an auto-fix attempt whose fix turn was dispatched into a runner that then went
+ * away never reached its terminal write, so the claim never released and, with
+ * no TTL, silently disabled managed auto-merge AND auto-resolve-conflicts for
+ * that session for the lifetime of the orchestrator. The stranded turn itself is
+ * fixed at the source (a dispatched turn now settles when its runner is
+ * disposed — `dispatchOnRunner`), but "no claim leak can wedge a session
+ * indefinitely" should not depend on every future terminal path remembering.
  */
+
+/**
+ * How long a claim may be held before it is considered abandoned. Sized well
+ * beyond any real remediation attempt (a CI-fix or rebase-resolution agent turn)
+ * so expiry means "something went wrong", never "this attempt is slow".
+ */
+export const CLAIM_TTL_MS = 30 * 60 * 1000;
 
 interface ArbiterEntry {
   /** Current claim holder ("auto-resolve" / "auto-fix"), if any. */
   owner?: string;
   /** Head SHA the current claim is acting on. */
   claimedHeadSha?: string;
+  /** Epoch ms the current claim was taken — the TTL backstop's clock. */
+  claimedAt?: number;
   /**
    * Head SHA of the last attempt that pushed. While the observed head still
    * equals this, ALL automations are suppressed (GitHub hasn't recomputed yet).
@@ -47,11 +67,39 @@ interface ArbiterEntry {
 
 export class RemediationArbiter {
   private entries = new Map<string, ArbiterEntry>();
+  private readonly now: () => number;
+
+  /** @param now Injectable clock so the TTL backstop is testable. */
+  constructor(now: () => number = () => Date.now()) {
+    this.now = now;
+  }
 
   private entry(sessionId: string): ArbiterEntry {
     let e = this.entries.get(sessionId);
     if (!e) { e = {}; this.entries.set(sessionId, e); }
     return e;
+  }
+
+  /**
+   * Drop a claim that has outlived {@link CLAIM_TTL_MS}. Called at the top of
+   * every read/claim so an abandoned claim can't hold the session's automations
+   * shut forever. Loud on purpose: reaching this means some terminal path failed
+   * to release, which is a bug worth seeing in the logs rather than a routine
+   * expiry.
+   */
+  private reapExpired(sessionId: string): void {
+    const e = this.entries.get(sessionId);
+    if (!e) return;
+    if (e.owner === undefined || e.claimedAt === undefined) return;
+    if (this.now() - e.claimedAt < CLAIM_TTL_MS) return;
+    console.warn(
+      `[remediation-arbiter] claim by "${e.owner}" for ${sessionId} exceeded the ` +
+        `${CLAIM_TTL_MS}ms TTL — treating as abandoned and releasing`,
+    );
+    delete e.owner;
+    delete e.claimedAt;
+    delete e.claimedHeadSha;
+    this.gc(sessionId, e);
   }
 
   /**
@@ -64,6 +112,7 @@ export class RemediationArbiter {
    * since the poller calls this with the freshly-observed head every transition).
    */
   shouldSuppress(sessionId: string, headSha: string): boolean {
+    this.reapExpired(sessionId);
     const e = this.entries.get(sessionId);
     if (!e) return false;
 
@@ -90,6 +139,7 @@ export class RemediationArbiter {
    * prior push is still awaiting a fresh signal on this head.
    */
   claim(sessionId: string, headSha: string, owner: string): boolean {
+    this.reapExpired(sessionId);
     const e = this.entry(sessionId);
     if (e.owner !== undefined && e.owner !== owner) return false;
     // Re-entrant claim by the same owner is a no-op success (a multi-turn
@@ -99,6 +149,7 @@ export class RemediationArbiter {
     if (e.actedHeadSha !== undefined && headSha === e.actedHeadSha) return false;
     e.owner = owner;
     e.claimedHeadSha = headSha;
+    e.claimedAt = this.now();
     return true;
   }
 
@@ -117,6 +168,7 @@ export class RemediationArbiter {
     const acted = e.claimedHeadSha;
     delete e.owner;
     delete e.claimedHeadSha;
+    delete e.claimedAt;
     if (opts.pushed && acted) {
       e.actedHeadSha = acted;
     } else {
@@ -136,6 +188,7 @@ export class RemediationArbiter {
 
   /** True when a remediation claim is currently held (cheap precondition for auto-merge). */
   isClaimed(sessionId: string): boolean {
+    this.reapExpired(sessionId);
     return this.entries.get(sessionId)?.owner !== undefined;
   }
 

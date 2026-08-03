@@ -286,8 +286,13 @@ export class AutoFixManager extends AutoRemediationManager<CiSignal> {
       const result = await cb(sessionId, signal.owner, signal.repo, toSend);
       // Record the dispatched runs only when a fix turn actually ran (the agent
       // saw these logs). A "noop" sent nothing — leave them un-recorded so the
-      // next eligible poll retries.
-      if (result.outcome === "fixed") this.recordDispatched(sessionId, toSend);
+      // next eligible poll retries. And only while the session still HAS state:
+      // if the loop settled mid-attempt (CI went green, or the PR was untracked)
+      // the base already cleared these caches via `onDelete`, and re-seeding them
+      // here would resurrect a per-session cache with no state behind it.
+      if (result.outcome === "fixed" && this.states.has(sessionId)) {
+        this.recordDispatched(sessionId, toSend);
+      }
       this.completeTurn(sessionId, result);
     } catch (err: unknown) {
       // A throw from the callback is almost always pre-flight (log fetch
@@ -306,6 +311,9 @@ export class AutoFixManager extends AutoRemediationManager<CiSignal> {
   private completeTurn(sessionId: string, result: AutoFixResult): void {
     const state = this.states.get(sessionId);
     if (!state) {
+      // State was dropped while this attempt was in flight — the PR was
+      // untracked, or (the common case) CI went green and the base's step 5
+      // settled the loop. The attempt's accounting is moot; the claim is not.
       this.releaseClaim(sessionId, { pushed: false });
       return;
     }
