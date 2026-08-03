@@ -24,6 +24,8 @@ import { SessionContainerManager } from "./session-container.js";
 import type { SessionRunnerFactory } from "./session-runner.js";
 import { PrStatusPoller } from "./pr-status-poller.js";
 import type { AgentId, AgentEvent, AgentProcess, RuntimeMode } from "../shared/types.js";
+import type { AgentHomeResolver } from "../shared/agent-home.js";
+import type { LocalAgentFactory } from "./local-agent-home.js";
 
 /**
  * Runtime mode for the orchestrator. Selected via the `RUNTIME_MODE` env var.
@@ -238,6 +240,12 @@ export interface ManagerSet {
   autoPushDebounceMs: number;
   sessionsRoot: string;
   agentFactory: ((agentId: AgentId) => AgentProcess) | undefined;
+  /**
+   * docs/150 — local mode only: the same factory, but able to scope a spawn's
+   * HOME to a provider account. Undefined in containerized mode and whenever a
+   * test injects `deps.agentFactory`.
+   */
+  localAgentFactory: LocalAgentFactory | undefined;
   createGitManager: (dir: string) => GitManager;
   createRepoGit: (dir: string) => RepoGit;
   databaseManager: DatabaseManager;
@@ -310,8 +318,17 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   // in-process, since there is no container worker to forward to. Local-mode
   // adapters live in session/ — we resolve them via dynamic import so the
   // prod image (which omits session/) never has to load them.
+  //
+  // docs/150 — the local factory takes a per-spawn HOME resolver so each
+  // session's CLI reads the provider account it was routed to. The plain
+  // `agentFactory` below keeps its one-argument shape (every existing caller
+  // has an agentId and nothing else); the account-scoped wiring goes through
+  // `localAgentFactory`, which `buildRunnerFactory` hands to each local
+  // runner's `createAgent`.
+  const localAgentFactory: LocalAgentFactory | undefined =
+    !deps.agentFactory && runtimeMode === "local" ? await buildLocalAgentFactory() : undefined;
   const agentFactory: ((agentId: AgentId) => AgentProcess) | undefined =
-    deps.agentFactory ?? (runtimeMode === "local" ? await buildLocalAgentFactory() : undefined);
+    deps.agentFactory ?? (localAgentFactory ? (agentId: AgentId): AgentProcess => localAgentFactory(agentId) : undefined);
 
   // ---- Per-session directory root ----
   // Inner-session clones still live under the visible workspace (the user
@@ -505,6 +522,7 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
     autoPushDebounceMs,
     sessionsRoot,
     agentFactory,
+    localAgentFactory,
     createGitManager,
     createRepoGit,
     databaseManager,
@@ -540,18 +558,26 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
  * orchestrator/session boundary) never has to resolve them. Only the dev
  * image — used for the dogfooding `RUNTIME_MODE=local` path — actually loads
  * these.
+ *
+ * docs/150 — `resolveHome` is how account selection reaches the CLI here.
+ * A containerized session gets its account through the per-session credentials
+ * mount; local mode has no mount, so the adapter is told which HOME to spawn
+ * with instead. It is a path, not credential material: the orchestrator still
+ * owns what is written under it. Omitted (tests, sub-agent paths with no
+ * session context) ⇒ the process-global `agentHome()`, i.e. today's behavior.
  */
-async function buildLocalAgentFactory(): Promise<(agentId: AgentId) => AgentProcess> {
+async function buildLocalAgentFactory(): Promise<LocalAgentFactory> {
   const [{ ClaudeAdapter }, { CodexAdapter }] = await Promise.all([
     import("../session/agents/claude/adapter.js"),
     import("../session/agents/codex/adapter.js"),
   ]);
-  return (agentId: AgentId): AgentProcess => {
+  return (agentId: AgentId, resolveHome?: AgentHomeResolver): AgentProcess => {
+    const opts = resolveHome ? { resolveHome } : undefined;
     switch (agentId) {
       case "claude":
-        return new ClaudeAdapter();
+        return new ClaudeAdapter(undefined, opts);
       case "codex":
-        return new CodexAdapter();
+        return new CodexAdapter(undefined, opts);
       default: {
         const _exhaustive: never = agentId;
         throw new Error(`No local agent adapter for agentId: ${_exhaustive as string}`);

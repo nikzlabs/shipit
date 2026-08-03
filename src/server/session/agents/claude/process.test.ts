@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import { ClaudeProcess, StreamingClaudeProcess } from "./process.js";
+import { agentHome } from "../../../shared/agent-home.js";
 
 // Mock node-pty
 vi.mock("node-pty", () => {
@@ -571,6 +572,78 @@ describe("ClaudeProcess", () => {
       expect(spawnOpts.env.SHIPIT_GUARD_DESTRUCTIVE_GIT).toBeUndefined();
     });
 
+    // docs/150 — account selection reaches a local-mode CLI through HOME.
+    // The default (no resolver) is the containerized/worker path and MUST keep
+    // resolving `agentHome()`; that is the regression that would matter most.
+    it("spawns with the process-global agentHome() when no resolver is given", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "test" });
+
+      const spawnOpts = mockPtySpawn.mock.calls[0][2] as { env: Record<string, string> };
+      expect(spawnOpts.env.HOME).toBe(agentHome());
+    });
+
+    it("spawns with the resolver's home when one is given, resolved per spawn", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      let home = "/credentials/provider-accounts/claude/acct-a";
+      const claude = new ClaudeProcess(() => home);
+      claude.run({ prompt: "test" });
+      expect((mockPtySpawn.mock.calls[0][2] as { env: Record<string, string> }).env.HOME)
+        .toBe("/credentials/provider-accounts/claude/acct-a");
+
+      // A mid-session failover repoints the session at another account under
+      // the same process object, so the answer is re-read on the next spawn
+      // rather than captured at construction.
+      home = "/credentials/provider-accounts/claude/acct-b";
+      claude.run({ prompt: "again" });
+      expect((mockPtySpawn.mock.calls[1][2] as { env: Record<string, string> }).env.HOME)
+        .toBe("/credentials/provider-accounts/claude/acct-b");
+    });
+
+    // docs/150 — the CLI prefers an env key/token over the OAuth credentials at
+    // HOME, so pointing HOME at an account root without this would keep billing
+    // metered API usage while the router believed the turn ran on the account.
+    it("drops the env-based Anthropic credentials when scoped to an account", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+      process.env.ANTHROPIC_API_KEY = "sk-metered";
+      process.env.ANTHROPIC_AUTH_TOKEN = "oauth-token";
+      try {
+        new ClaudeProcess(() => "/credentials/provider-accounts/claude/acct-a")
+          .run({ prompt: "test" });
+        const env = (mockPtySpawn.mock.calls[0][2] as { env: Record<string, string> }).env;
+        expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+        expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+
+        // A reserved route resolves no account root and must KEEP them — they
+        // are its auth.
+        new ClaudeProcess().run({ prompt: "test" });
+        const unscoped = (mockPtySpawn.mock.calls[1][2] as { env: Record<string, string> }).env;
+        expect(unscoped.ANTHROPIC_API_KEY).toBe("sk-metered");
+        expect(unscoped.ANTHROPIC_AUTH_TOKEN).toBe("oauth-token");
+      } finally {
+        delete process.env.ANTHROPIC_API_KEY;
+        delete process.env.ANTHROPIC_AUTH_TOKEN;
+      }
+    });
+
+    it("falls back to agentHome() when the resolver has no account to name", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      // A reserved route (API key / env OAuth) has no account root.
+      const claude = new ClaudeProcess(() => undefined);
+      claude.run({ prompt: "test" });
+
+      const spawnOpts = mockPtySpawn.mock.calls[0][2] as { env: Record<string, string> };
+      expect(spawnOpts.env.HOME).toBe(agentHome());
+    });
+
     it("maps guarded mode to --permission-mode auto (docs/138)", () => {
       // Deliberate inversion: ShipIt `guarded` → CLI `auto` (classifier-gated).
       const mockProc = createMockPty();
@@ -992,6 +1065,24 @@ describe("StreamingClaudeProcess", () => {
       const args = mockChildSpawn.mock.calls[0][1] as string[];
       const tools = args[args.indexOf("--allowedTools") + 1];
       expect(tools.split(",")).toContain("ExitPlanMode");
+    });
+  });
+
+  // docs/150 — same contract as ClaudeProcess: the resident streaming process
+  // is what a live-steering local-mode session actually spawns.
+  describe("account-scoped HOME", () => {
+    it("uses agentHome() by default and the resolver's home when scoped", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as never);
+
+      new StreamingClaudeProcess().run({ prompt: "first" });
+      expect((mockChildSpawn.mock.calls[0][2] as { env: Record<string, string> }).env.HOME)
+        .toBe(agentHome());
+
+      const scoped = new StreamingClaudeProcess(() => "/credentials/provider-accounts/claude/acct-a");
+      scoped.run({ prompt: "first" });
+      expect((mockChildSpawn.mock.calls[1][2] as { env: Record<string, string> }).env.HOME)
+        .toBe("/credentials/provider-accounts/claude/acct-a");
     });
   });
 

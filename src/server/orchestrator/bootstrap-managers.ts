@@ -104,7 +104,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   const { deps, mgrs, resolveEgressConfig, meta } = args;
   const {
     defaultAgentId, workspaceDir, stateDir, credentialsDir, shouldServeStatic,
-    autoPushDebounceMs, sessionsRoot, agentFactory,
+    autoPushDebounceMs, sessionsRoot, agentFactory, localAgentFactory,
     createGitManager, createRepoGit, databaseManager, sessionManager,
     repoStore, chatHistoryManager, usageManager, authManager, codexAuthManager,
     credentialStore, providerAccountManager, agentRegistry, githubAuthManager,
@@ -183,7 +183,14 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   const loopDetector = createSessionLoopDetector();
 
   // ---- Runner factory ----
-  const effectiveRunnerFactory = buildRunnerFactory({ deps, containerManager, credentialsDir, sessionManager, runtimeMode, broadcastLog, oomBreaker, presentStore });
+  // docs/150 — `localAgentFactory` + `providerAccountManager` let a local-mode
+  // runner spawn its CLI against the account this session was routed to.
+  const effectiveRunnerFactory = buildRunnerFactory({
+    deps, containerManager, credentialsDir, sessionManager, runtimeMode, broadcastLog,
+    oomBreaker, presentStore,
+    ...(localAgentFactory ? { localAgentFactory } : {}),
+    providerAccountManager,
+  });
 
   // ---- Service manager registry (per-session compose stacks) ----
   const serviceManagers = new Map<string, ServiceManager>();
@@ -861,7 +868,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     deps,
     // ---- Manager set (re-surfaced so consumers destructure off the runtime) ----
     defaultAgentId, workspaceDir, stateDir, credentialsDir, shouldServeStatic,
-    autoPushDebounceMs, sessionsRoot, agentFactory,
+    autoPushDebounceMs, sessionsRoot, agentFactory, localAgentFactory,
     createGitManager, createRepoGit, databaseManager, sessionManager,
     repoStore, chatHistoryManager, usageManager, authManager, codexAuthManager,
     credentialStore, providerAccountManager, agentRegistry, githubAuthManager,

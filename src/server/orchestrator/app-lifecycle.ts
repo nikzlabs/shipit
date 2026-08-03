@@ -39,6 +39,8 @@ import type {
 } from "./agents/claude/auth-diagnostics.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { ProviderAccountManager } from "./provider-account-manager.js";
+import type { LocalAgentFactory } from "./local-agent-home.js";
+import { resolveLocalAgentHome } from "./local-agent-home.js";
 import { refuseIfAlreadyConnected } from "./provider-account-identity.js";
 import type { AgentRegistry } from "../shared/agent-registry.js";
 import type { AgentId, AgentProcess, LogSource, LogRingEntry } from "../shared/types.js";
@@ -299,6 +301,17 @@ export interface RunnerFactoryDeps {
    * can re-register artifacts with the new worker to serve their bytes again.
    */
   presentStore?: PresentStore;
+  /**
+   * docs/150 — local mode only. The account-scoped agent factory; each
+   * in-process runner gets a `createAgent` bound to it so its CLI spawns
+   * against the provider account THIS session was routed to. Absent (or with
+   * no `providerAccountManager`) the local runner keeps no `createAgent` and
+   * callers fall through to the process-wide `agentFactory`, i.e. the
+   * process-global home.
+   */
+  localAgentFactory?: LocalAgentFactory;
+  /** docs/150 — resolves a cross-provider sub-agent spawn's account. */
+  providerAccountManager?: ProviderAccountManager;
 }
 
 interface CreateContainerForRunnerOpts {
@@ -531,23 +544,45 @@ async function attemptContainerCreate(
 export function buildRunnerFactory(
   factoryDeps: RunnerFactoryDeps,
 ): SessionRunnerFactory | undefined {
-  const { deps, containerManager, credentialsDir, sessionManager, runtimeMode, broadcastLog, oomBreaker, presentStore } = factoryDeps;
+  const {
+    deps, containerManager, credentialsDir, sessionManager, runtimeMode, broadcastLog,
+    oomBreaker, presentStore, localAgentFactory, providerAccountManager,
+  } = factoryDeps;
 
   // Explicit injection always wins (tests, custom orchestrations).
   if (deps.runnerFactory) return deps.runnerFactory;
 
   // Local mode: in-process SessionRunner. Agent subprocesses are launched via
-  // the process-level `agentFactory` (claude-adapter / codex-adapter) — there
-  // is no `runner.createAgent` because there is no container worker to proxy
-  // to. The registry's onRunnerCreated wiring falls through to `agentFactory`
-  // when `runner.createAgent` is undefined.
+  // the local agent factory (claude-adapter / codex-adapter) — there is no
+  // container worker to proxy to.
+  //
+  // docs/150 — the runner still gets a `createAgent`, not because there is
+  // anything to proxy, but because it is the ONE per-session hook every spawn
+  // path already prefers over the process-wide `agentFactory` (the WS handler
+  // context, system turns, the rebase driver, `spawnSubAgent`). Binding the
+  // session's account-scoped HOME here reaches all of them without widening a
+  // single factory signature. Without a `sessionManager` there is no session to
+  // resolve a route from, so we leave `createAgent` unset and behave as before.
   if (runtimeMode === "local") {
     return (o: Parameters<SessionRunnerFactory>[0]) => {
-      return new SessionRunner({
+      const runner = new SessionRunner({
         sessionId: o.sessionId,
         sessionDir: o.sessionDir,
         defaultAgentId: o.defaultAgentId,
       });
+      if (localAgentFactory && sessionManager) {
+        const homeDeps = {
+          sessionManager,
+          credentialsDir,
+          ...(providerAccountManager ? { providerAccountManager } : {}),
+        };
+        runner.createAgent = (agentId: AgentId): AgentProcess =>
+          // Resolved lazily, inside the spawn: `createAgent` runs before
+          // `prepareSessionAgentEnvironment` has pinned the route, and a
+          // failover repoints an already-pinned session under this same runner.
+          localAgentFactory(agentId, () => resolveLocalAgentHome(o.sessionId, agentId, homeDeps));
+      }
+      return runner;
     };
   }
 

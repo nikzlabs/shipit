@@ -1033,6 +1033,11 @@ explicitly — do not silently mix the two paths.
 Multi-account routing must work in both full container mode and local/dogfood
 mode.
 
+> **Landed** — see "Landed: local mode honours the selected account (req 19
+> residual)" at the end of this document for what was actually built, including
+> which parts of the sketch below were adopted (the env-var scrub) and which
+> were not (the curated-env rewrite, the `AgentRunParams` field).
+
 In full container mode, account selection is implemented by writing the selected
 account's credential subtree into the session's mounted `/credentials/sessions`
 directory before worker `/agent/start`.
@@ -2927,3 +2932,108 @@ wiring), `ProviderAccount.externalId` / `.labelIsGenerated`.
   reuse of `denied`, for two reasons: retrying is exactly the wrong next step,
   and the refusal usually deletes the row the event names, so the client has to
   surface `message` as a toast instead of as that row's error.
+
+### Landed: local mode honours the selected account (req 19 residual)
+
+The last two unchecked items in `checklist.md` were the two places still not
+account-scoped. Only one of them was a defect.
+
+**The defect: `RUNTIME_MODE=local` computed a route and then ignored it.**
+In local mode (dogfood, docs/118) there is no session container, so
+`buildLocalAgentFactory` spawns the CLI in-process. It returned a bare
+`new ClaudeAdapter()` / `new CodexAdapter()`, and both spawn with the
+process-global `agentHome()` — one value for every session in the process. So
+the router selected an account, `prepareSessionAgentEnvironment` pinned
+`provider_route_kind` / `provider_route_id`, `markAccountUsed` stamped it, the
+diagnostics panel reported it — and the CLI then read whatever the
+orchestrator's own HOME happened to hold. A dogfood install with two connected
+accounts behaved exactly like a single-account install.
+
+Container mode never had this: the worker image symlinks `~/.claude` /
+`~/.codex` into `/credentials`, which is a per-session mount holding a copy of
+the selected account's subtree (docs/138). The account reaches the CLI through
+the filesystem, and the CLI never learns accounts exist.
+
+**How local mode resolves a per-account HOME now.** A three-part path, none of
+which touches the containerized one:
+
+1. `buildLocalAgentFactory` takes an optional per-spawn `AgentHomeResolver`
+   (`shared/agent-home.ts`) and passes it to the adapter. It carries a *path*,
+   not credential material — the orchestrator still owns what is written there,
+   which is why nothing was added to `AgentRunParams`.
+2. `buildRunnerFactory`'s local branch assigns each in-process `SessionRunner` a
+   `createAgent` bound to that factory. `createAgent` is the one per-session
+   hook every spawn path already prefers over the process-wide `agentFactory` —
+   the WS handler context, `SystemTurnDeps`, the rebase driver, and
+   `spawnSubAgent` all read `runner.createAgent ?? agentFactory` — so this
+   reaches all of them without widening a single factory signature.
+3. `resolveLocalAgentHome` (`orchestrator/local-agent-home.ts`) answers **at
+   spawn time**, never at construction: the agent object is created before
+   env-prep pins the route, and a mid-session failover repoints an
+   already-pinned session under the same runner. It returns
+   `provider-accounts/<provider>/<accountId>` for the session's pinned account,
+   `undefined` for a reserved route (which authenticates from the environment
+   and has no account root), and for a cross-provider sub-agent spawn it
+   resolves that provider's own selection the way session naming does.
+
+The HOME is the **account root itself**, with no per-session copy interposed.
+That is the same directory the account-scoped auth and OAuth-refresh
+subprocesses already run against, and it is right for local mode: the
+per-session copy exists to stop one container reading another's credentials,
+and in local mode every session is already the same process and the same OS
+user. It also means a token the CLI rotates lands directly on the source, so
+none of the per-turn sync-in / sync-back machinery is needed here. (That
+machinery is gated on `runner instanceof ContainerSessionRunner` throughout
+`session-agent-env.ts`, so local mode has no per-session credentials subtree at
+all — an earlier reading of this code that assumed it did was wrong.)
+
+**Swapping HOME alone is not sufficient — the design section above said so, and
+it was right.** A provider CLI prefers an env-supplied key/token over the
+credentials on disk, so a scoped spawn also drops the ones that do not belong to
+the selected route: `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` for Claude
+(`scrubEnvAuthForScopedHome`), and for Codex the existing subscription-wins
+branch, tightened so a scoped account never falls back to `OPENAI_API_KEY` (req
+12 — failover moves work between subscriptions only; a scoped account with no
+`auth.json` reports `auth_required`, which is honest). Without this a dogfood
+install with a configured API key would have kept billing metered usage while
+the router believed the turn ran on the subscription — selection ignored a
+second way, silently. The design's stronger form — spawn from a curated env
+rather than `...process.env` — was not adopted: the CLI inherits PATH, proxy
+config, `PLAYWRIGHT_BROWSERS_PATH` and the ShipIt gates from the parent, and
+enumerating that allowlist is a much larger change than the leak it would close.
+
+**Two local-mode-only consequences, accepted and recorded:**
+
+- Sessions sharing an account share its `.claude` tree. Conversation state is
+  keyed by workspace path and conversation id and each session has its own
+  workspace, so they do not collide.
+- A mid-session account switch does not carry the CLI-side conversation file
+  across to the new account root, so the CLI starts a fresh thread. ShipIt's own
+  transcript and the workspace are untouched — req 9's user-visible half holds —
+  but the container path additionally preserves the CLI file (the
+  `SUBTREE_STATE_SUBPATHS` allowlist), and this does not. Closing it would mean
+  giving local mode a per-session subtree, which is the copy this design
+  deliberately does not interpose.
+- Cross-provider sub-agent credential *provisioning* stays container-only
+  (`sub-agent.ts` is explicit about that); what changed is only which root such
+  a spawn reads.
+
+**The hardening: Claude auth diagnostics are keyed by account.**
+`claudeAuthDiagnostics` was a single provider-wide buffer that
+`ProviderAccountsCard` rendered on any row with a live challenge. This was **not
+reachable as a bug** and should not be described as one: the SSE payloads
+already carried `accountId`, the store cleared the buffer on every `attemptId`
+change, and `startAccountAuth` refuses a second concurrent per-provider sign-in
+with a 409 — so at most one Claude row is ever mid-challenge and each attempt
+starts empty. The change is that the correctness no longer *depends* on that
+serialization guard holding: the store is `Record<accountId, ClaudeAuthDiagnostics>`
+and the card reads its own row's entry. A payload with no `accountId` is dropped
+rather than pooled — no sign-in flow has been unscoped since Phase 5, so an
+unscoped payload names no row that could render it.
+
+**Key files:** `shared/agent-home.ts` (`AgentHomeResolver`, `resolveAgentHome`),
+`orchestrator/local-agent-home.ts`, `orchestrator/app-di.ts`
+(`buildLocalAgentFactory`), `orchestrator/app-lifecycle.ts`
+(`buildRunnerFactory` local branch), `session/agents/claude/process.ts`,
+`session/agents/codex/adapter.ts`, `client/stores/settings-store.ts`,
+`client/components/Settings/ProviderAccountsCard.tsx`.

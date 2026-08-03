@@ -1243,6 +1243,18 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   /** docs/144 — in-flight sub-agent run handles, cancelled on dispose. */
   private _subAgentHandles = new Set<SubAgentRunHandle>();
 
+  /**
+   * Per-session agent factory (see `SessionRunnerInterface.createAgent`).
+   *
+   * A container runner implements this as a method that proxies to its worker.
+   * An in-process runner has nothing to proxy to and normally leaves it unset,
+   * so callers fall through to the process-wide `agentFactory`. docs/150 —
+   * `buildRunnerFactory` assigns it in `RUNTIME_MODE=local` so the spawn is
+   * scoped to the provider account THIS session was routed to; there is no
+   * per-session credentials mount in local mode to carry that for us.
+   */
+  createAgent?: (agentId: AgentId) => AgentProcess;
+
   constructor(opts: {
     sessionId: string;
     sessionDir: string;

@@ -241,9 +241,14 @@ export function useServerEvents(): void {
           });
           useSettingsStore.getState().setProviderAccountAuthError("claude", data.accountId, null);
         }
-        const currentAttemptId = useSettingsStore.getState().claudeAuthDiagnostics.attemptId;
-        if (currentAttemptId) {
-          useSettingsStore.getState().setClaudeAuthProgress({
+        // docs/150 — advance only THIS account's diagnostics, and only if it
+        // already has an attempt in flight to advance.
+        const accountId = data.accountId;
+        const currentAttemptId = accountId
+          ? useSettingsStore.getState().claudeAuthDiagnostics[accountId]?.attemptId
+          : undefined;
+        if (accountId && currentAttemptId) {
+          useSettingsStore.getState().setClaudeAuthProgress(accountId, {
             attemptId: currentAttemptId,
             phase: "waiting_for_code",
             message: "Authentication link received. Paste the authorization code after signing in.",
@@ -276,7 +281,10 @@ export function useServerEvents(): void {
           useSettingsStore.getState().setProviderAccountAuth("claude", data.accountId, null);
           useSettingsStore.getState().setProviderAccountAuthError("claude", data.accountId, null);
         }
-        useSettingsStore.getState().finishClaudeAuthDiagnostics("complete", "Claude sign-in completed.");
+        if (data.accountId) {
+          useSettingsStore.getState()
+            .finishClaudeAuthDiagnostics(data.accountId, "complete", "Claude sign-in completed.");
+        }
       // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
       } else if (data.agentId === "codex") {
         if (data.accountId) {
@@ -317,8 +325,8 @@ export function useServerEvents(): void {
         if (data.accountId) {
           useSettingsStore.getState().setProviderAccountAuth("claude", data.accountId, null);
           useSettingsStore.getState().setProviderAccountAuthError("claude", data.accountId, claudeFailure);
+          useSettingsStore.getState().finishClaudeAuthDiagnostics(data.accountId, "failed", claudeFailure);
         }
-        useSettingsStore.getState().finishClaudeAuthDiagnostics("failed", claudeFailure);
         if (data.reason === "revoked") {
           useUiStore.getState().setToast({
             message: data.message ?? "Claude authentication expired. Sign in again.",
@@ -349,14 +357,17 @@ export function useServerEvents(): void {
     es.addEventListener("agent_auth_progress", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as {
         agentId: AgentId;
+        accountId?: string;
         attemptId: string;
         phase: "starting" | "waiting_for_cli" | "skipping_setup" | "waiting_for_url" | "waiting_for_code" | "checking_credentials" | "complete" | "failed";
         message: string;
         elapsedMs?: number;
       };
+      // docs/150 — diagnostics are per account. An unscoped payload has no row
+      // that could render it, so it is dropped rather than pooled provider-wide.
       // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing for unified auth events.
-      if (data.agentId === "claude") {
-        useSettingsStore.getState().setClaudeAuthProgress({
+      if (data.agentId === "claude" && data.accountId) {
+        useSettingsStore.getState().setClaudeAuthProgress(data.accountId, {
           attemptId: data.attemptId,
           phase: data.phase,
           message: data.message,
@@ -368,15 +379,17 @@ export function useServerEvents(): void {
     es.addEventListener("agent_auth_log", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as {
         agentId: AgentId;
+        accountId?: string;
         attemptId: string;
         timestamp: string;
         level: "debug" | "info" | "warn" | "error";
         source: "shipit" | "claude_stdout" | "claude_stderr" | "claude_control";
         message: string;
       };
+      // See `agent_auth_progress` above for why an unscoped payload is dropped.
       // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing for unified auth events.
-      if (data.agentId === "claude") {
-        useSettingsStore.getState().appendClaudeAuthLog({
+      if (data.agentId === "claude" && data.accountId) {
+        useSettingsStore.getState().appendClaudeAuthLog(data.accountId, {
           attemptId: data.attemptId,
           timestamp: data.timestamp,
           level: data.level,

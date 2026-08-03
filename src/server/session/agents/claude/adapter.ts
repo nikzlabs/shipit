@@ -23,6 +23,7 @@ import type {
   AgentProcessEvents,
   AgentRunParams,
 } from "../agent-process.js";
+import type { AgentHomeResolver } from "../../../shared/agent-home.js";
 import type { McpServerStatus } from "../../../shared/types/mcp-types.js";
 import type { SubscriptionLimitsWindow } from "../../../shared/types/usage-limits-types.js";
 import { resolveMcpServer } from "../../mcp-resolve.js";
@@ -102,9 +103,18 @@ export class ClaudeAdapter
    */
   private _permissionPromptTool: string | undefined;
 
-  constructor(inner?: ClaudeProcess) {
+  /**
+   * docs/150 — the local-mode agent factory passes `resolveHome` so the CLI
+   * spawns with HOME at the provider account this session was routed to. Held
+   * on the adapter (not only on `inner`) because the streaming swap in `run()`
+   * constructs a second process, which needs the same override.
+   */
+  private readonly resolveHome: AgentHomeResolver | undefined;
+
+  constructor(inner?: ClaudeProcess, opts?: { resolveHome?: AgentHomeResolver }) {
     super();
-    this.inner = inner ?? new ClaudeProcess();
+    this.resolveHome = opts?.resolveHome;
+    this.inner = inner ?? new ClaudeProcess(this.resolveHome);
     this.wireEvents(this.inner);
   }
 
@@ -355,7 +365,7 @@ export class ClaudeAdapter
         return;
       }
       // First turn with streaming: swap in a StreamingClaudeProcess.
-      const streaming = new StreamingClaudeProcess();
+      const streaming = new StreamingClaudeProcess(this.resolveHome);
       // Remove previous inner process listeners before replacing
       this.inner.removeAllListeners();
       this.inner = streaming;
