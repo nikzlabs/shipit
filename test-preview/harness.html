@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>ShipIt host harness</title>
+    <style>
+      :root { color-scheme: dark; }
+      body { margin: 0; font: 14px/1.5 ui-sans-serif, system-ui, sans-serif; background: #111827; color: #e5e7eb; display: flex; height: 100vh; }
+      #side { width: 340px; padding: 16px; border-right: 1px solid #374151; display: flex; flex-direction: column; gap: 10px; }
+      iframe { flex: 1; border: 0; background: #030712; }
+      pre { background: #0b1220; border: 1px solid #1f2937; border-radius: 6px; padding: 8px; flex: 1; overflow: auto; margin: 0; font-size: 12px; }
+      h1 { font-size: 14px; margin: 0; }
+      p { margin: 0; color: #9ca3af; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <div id="side">
+      <h1>ShipIt host harness</h1>
+      <p>
+        Stands in for <code>PreviewFrame</code> when running the preview test page outside ShipIt:
+        it answers the <code>ready</code> handshake with an authoritative visibility value and
+        acknowledges <code>agent_message</code> requests. Cross-origin by construction — the child
+        is served from a different port.
+      </p>
+      <pre id="log"></pre>
+    </div>
+    <iframe id="frame"></iframe>
+
+    <script>
+      const params = new URLSearchParams(location.search);
+      const childUrl = params.get("child");
+      const childOrigin = new URL(childUrl, location.href).origin;
+      const frame = document.getElementById("frame");
+      const logEl = document.getElementById("log");
+      const log = (line) => {
+        logEl.textContent += `${new Date().toISOString().slice(11, 23)}  ${line}\n`;
+        logEl.scrollTop = logEl.scrollHeight;
+      };
+      frame.src = childUrl;
+
+      // Mirrors PreviewFrame: match event.source against the live contentWindow,
+      // require the exact expected origin, and target replies at that origin.
+      window.addEventListener("message", (event) => {
+        const data = event.data;
+        if (!data || data.source !== "shipit-preview") return;
+        if (event.source !== frame.contentWindow) return log(`ignored ${data.type}: unknown frame`);
+        if (event.origin !== childOrigin) return log(`ignored ${data.type}: origin ${event.origin}`);
+
+        if (data.type === "ready") {
+          log("ready ← child; replying with visibility=true");
+          frame.contentWindow.postMessage(
+            { source: "shipit-preview", type: "visibility", visible: true },
+            childOrigin,
+          );
+          return;
+        }
+        if (data.type === "agent_message") {
+          log(`agent_message ← child: ${JSON.stringify(data.payload)}`);
+          frame.contentWindow.postMessage(
+            { source: "shipit-preview", type: "agent_message_result", requestId: data.requestId, ok: true, status: "submitted" },
+            childOrigin,
+          );
+          return;
+        }
+        log(`${data.type} ← child`);
+      });
+    </script>
+  </body>
+</html>

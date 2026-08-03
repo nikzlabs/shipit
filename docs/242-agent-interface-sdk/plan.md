@@ -16,6 +16,45 @@ provenance travels through HTTP dispatch, steering/queue conversion, SQLite
 chat history, WebSocket echoes, and the user-bubble badge. Agent-facing usage is
 documented in `src/server/shipit-docs/agent-interface-sdk.md`.
 
+## Preview-path defects found in production
+
+The Preview surface shipped broken while every test passed, for two reasons that the
+unit tests structurally could not see. Both are fixed; the notes below are what makes
+the fixes non-obvious.
+
+**The serialized bootstrap referenced a helper it could not carry.**
+`AGENT_INTERFACE_SDK_SOURCE` is built with `Function.prototype.toString()`, which
+captures what the running transpiler emitted *inside* the function but never the
+module-scope helpers that emission references. Production serves previews from
+`node --import tsx` (`docker/Dockerfile.prod`), and esbuild's `keepNames` rewrites every
+inner function to `__name(fn, "fn")`. The injected script therefore died on
+`ReferenceError: __name is not defined` at its first statement, before defining
+`window.shipit` — so the SDK was entirely absent from every proxied service preview.
+Present was unaffected because it is served from the Vite client bundle, which does not
+keep names. That is also why nothing caught it: vitest's transform matches the client,
+so importing the module in a test never reproduces what production emits. The source now
+shadows an identity `__name`, and `bootstrap-transpile.test.ts` spawns the real
+production loader and executes the string it produces.
+
+**The parent origin was derived from `document.referrer`.** That equals the host's origin
+only until the page navigates within itself — a link, a form post, a dev-server full
+reload — after which it is the *preview's own* origin. Posting the handshake there throws
+`The target origin provided … does not match the recipient window's origin`, and because
+the throw happens in the bootstrap's last statement, the handshake is never sent and
+`ready` rejects on timeout for the rest of the document's life. The origin is now
+*learned*: the data-free `ready` handshake is posted to `"*"`, and the first envelope
+message from the embedder — `event.source === window.parent` is browser-supplied and
+unspoofable — pins the origin that every later post, including page-composed text, is
+targeted at. Messages claiming a different origin afterwards are dropped. This is not a
+security relaxation: on a page that had not navigated, the referrer *was* the embedder's
+URL, so the old check accepted exactly the same window.
+
+The general lesson is in the shape of the gap, not the two bugs: the Preview path is a
+proxy-injected, transpiler-dependent script running cross-origin in a pooled iframe, and
+none of those four properties exist in a unit test. `test-preview/` (the `sdk-test`
+Compose service) is the fixture that does have them — a page reporting live
+`window.shipit` state, plus a stand-in host for driving the protocol in a plain browser.
+
 ## Overview
 
 ShipIt can already render interactive pages in two places relevant to this
@@ -628,6 +667,9 @@ Expected implementation touchpoints:
   proxied HTML.
 - `src/server/shipit-docs/agent-interface-sdk.md` — agent-facing SDK reference.
 - `src/server/shipit-docs/present.md` and `preview.md` — discovery links.
+- `test-preview/` + the `sdk-test` service in `docker-compose.yml` — the live Preview
+  fixture: a page reporting `window.shipit` state and sending a real agent message, plus
+  a `--harness` stand-in host for exercising the protocol cross-origin without ShipIt.
 
 No new agent runner or queue implementation is expected; the design reuses
 docs/150's dispatch funnel.

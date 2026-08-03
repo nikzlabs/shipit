@@ -66,3 +66,11 @@
 - [x] Run `npm run typecheck`
 - [x] Run `bash .claude/skills/docs-navigator/index.sh` and confirm docs/242 is discoverable with a checklist
 - [x] Update `plan.md` key files and mark all completed checklist items
+
+## Preview-path defects found in production
+
+- [x] Serialize the bootstrap so it survives the production `node --import tsx` transform
+- [x] Guard that serialization with a test that runs the production loader, not vitest's
+- [x] Learn the host origin from the handshake instead of deriving it from `document.referrer`
+- [x] Keep page-composed text targeted at a proven origin (only the data-free handshake uses `"*"`)
+- [x] Add the `sdk-test` Compose preview so the Preview path can be exercised as a real service
