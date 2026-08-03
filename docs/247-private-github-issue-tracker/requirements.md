@@ -9,9 +9,10 @@
 
 ## Open questions
 
-- Classify capabilities C1–C18 in the [parent product requirements](../246-native-issue-tracker-evaluation/requirements.md) as **Required**, **Optional**, or **Not needed**.
 - Choose the binding scope: one private tracker repository for the ShipIt deployment, or a separate tracker repository per ShipIt Project.
 - Choose repository provisioning: select an existing private repository for the first release, or also let ShipIt create and initialize one.
+- Choose what public code-repository PR bodies may disclose: use bare tracker issue numbers resolved through ShipIt's private binding, or permit fully qualified private-repository pointers such as `owner/private-repo#42` to appear publicly.
+- Choose whether the configured private GitHub tracker replaces code-repository GitHub Issues in ShipIt's Issues surface, or coexists as a second separately identified tracker.
 
 ## Resolved questions
 

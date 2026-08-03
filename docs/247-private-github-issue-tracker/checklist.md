@@ -11,9 +11,10 @@
 
 ## Product decisions
 
-- [ ] Classify C1–C18 as Required, Optional, or Not needed.
 - [ ] Choose deployment-wide or per-Project repository binding.
 - [ ] Choose existing-repository selection only or ShipIt-managed repository creation.
+- [ ] Decide whether public PR bodies may expose qualified private tracker pointers.
+- [ ] Decide whether private tracker issues replace or coexist with code-repository GitHub Issues.
 
 ## Implementation
 
@@ -22,5 +23,7 @@
 - [ ] Add private tracker repository configuration and permission validation.
 - [ ] Implement every Required capability and expose Optional gaps.
 - [ ] Add same-numbered code/tracker repository regression coverage.
+- [ ] Add repository-qualified deduplication, lifecycle-card, and persisted effect keys.
+- [ ] Preserve repository targets through agent operations and persisted Undo cards.
 - [ ] Run focused tests, `npm run test:dev`, `npm run lint:dev`, and `npm run typecheck`.
 - [ ] Complete a fresh-context requirements review.

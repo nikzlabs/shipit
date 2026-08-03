@@ -9,8 +9,9 @@ description: Use a dedicated private GitHub repository as ShipIt's issue backend
 
 This is the focused design for the private-GitHub option identified by the
 [issue tracker evaluation](../246-native-issue-tracker-evaluation/plan.md).
-It is not yet approved for implementation. The capability classifications and
-two configuration choices in [requirements.md](./requirements.md) remain open.
+It is not yet approved for implementation. The parent capability classification
+and the configuration/privacy choices in [requirements.md](./requirements.md)
+remain open.
 
 The likely first increment is small: reuse ShipIt's existing GitHub adapter and
 bind it to a dedicated private repository. The hard part is not CRUD; it is
@@ -72,12 +73,25 @@ The resolver follows these rules:
 4. Bare issue numbers are accepted only in a context with one unambiguous
    configured tracker repository.
 5. Missing configuration or repository access fails closed; there is no code
-   repository fallback.
+   repository fallback. Legacy persisted cards that lack repository identity
+   also fail closed when undone; they are never retroactively aimed at the
+   active session remote.
+6. Every identity key derived from an issue — parser deduplication, persisted
+   merge-effect guards, and deterministic card IDs — includes the qualified
+   repository as well as the issue number.
 
 These rules apply equally to reads and mutations, including Undo and delayed
 effects after a PR merge. The binding is resolved at the operation boundary and
 captured for asynchronous work rather than reread from whichever session later
 happens to be active.
+
+Public PR bodies need a separate pointer rule. A fully qualified private tracker
+pointer in a public code-repository PR discloses the private repository slug and
+issue number. If that disclosure is not acceptable, PR lifecycle syntax must
+use a bare issue number that `parsePrBodyIssueRefs` resolves only through the
+single configured private binding. Today's parser deliberately rejects bare
+`#42`, so this is a real parser and ambiguity change, not merely documentation.
+The choice remains open in requirements.
 
 ## Configuration and authentication
 
@@ -89,16 +103,23 @@ from a coding session. Two scopes are still under consideration:
 | Deployment-wide | Smallest first release; one global issue workspace | All projects share one tracker and its labels/workflow |
 | Per ShipIt Project | Natural isolation and stable project-to-tracker routing | Depends on the Projects configuration model and needs unbound-project UX |
 
-Likewise, selecting an existing repository is the smallest provisioning path.
-Creating a repository from ShipIt would add permission scopes, naming and
-ownership choices, collision handling, and an externally consequential create
-action. It should be added only if selected as a requirement.
+Likewise, selecting an existing repository is the recommended provisioning
+path for the first release. Creating a private repository manually is a small
+one-time administrative action, while creation from ShipIt adds permission
+scopes, naming and ownership choices, collision handling, and an externally
+consequential create action. It should be added only if the user explicitly
+selects it as a requirement.
 
-The orchestrator uses the existing brokered GitHub identity and verifies that
-it can read and write Issues in the selected private repository. Credentials
-remain outside session containers. Setup must distinguish repository-not-found
-from insufficient access as far as GitHub permits without revealing private
-repository existence to an unauthorized identity.
+The orchestrator acquires a token explicitly scoped for the selected tracker
+repository. For GitHub App authentication, the App must be installed on that
+repository and ShipIt must mint a repository-scoped token for it; a code-repo
+token is not reused. For a user token, the token must grant Issues read/write
+access to the tracker repository. Credentials remain outside session
+containers. A repository-scope `403` is reported as an access/configuration
+failure and must not invalidate otherwise valid GitHub credentials; only an
+authentication failure may do that. Every ShipIt user who performs attributed
+tracker writes needs repository access, which also constrains available
+assignees.
 
 GitHub Free currently advertises unlimited private repositories and Issues, so
 this option meets the free/no-subscription constraint today. Pricing and
@@ -117,7 +138,9 @@ Known adapter gaps that matter only if their capabilities are marked Required:
 - workflow beyond Open/Closed needs an explicit status convention;
 - priority writes need an agreed label convention;
 - parent/sub-issue reads and writes need GitHub API mapping;
-- automatic Started depends on the selected workflow convention.
+- automatic Started cannot be represented by native GitHub Open/Closed state:
+  starting from an open issue is otherwise a no-op. Therefore C15 can be
+  Required only together with the writable C6 status-label/project convention.
 
 ShipIt-owned capabilities such as session creation, tracker-neutral commands,
 provenance cards, Undo, and PR lifecycle automation remain feasible only after
@@ -131,15 +154,28 @@ tracker entry points:
 - `src/server/shared/issue-ref.ts` preserves qualified GitHub repository data in
   the parsed value rather than only its display form.
 - `src/server/shared/pr-issue-refs.ts` preserves the same data for `Refs`,
-  `Closes`, `Fixes`, and `Resolves` pointers.
+  `Closes`, `Fixes`, and `Resolves` pointers, and implements the selected safe
+  public-PR pointer syntax.
+- parser deduplication, deterministic lifecycle card IDs, and the persisted
+  applied-merge-effect keys qualify issue numbers with `owner/repo`; migration
+  handling for existing bare-number keys must prevent duplicate effects without
+  making a wrong-repository assumption.
 - tracker configuration resolves the selected private repository independently
   of the active session's code remote.
 - `src/server/orchestrator/api-routes-issues.ts` uses that binding for list,
   detail, create, edit, comment, label, assignee, and status operations.
 - `src/server/orchestrator/ws-handlers/issue-write-handlers.ts` records enough
-  target data for Undo to address the original repository.
+  target data for Undo to address the original repository. Because issue-write
+  cards persist in chat history, the repository target must round-trip through
+  the typed persisted message, database row/migration, history rehydration, and
+  optional-field guard fixtures; old cards without a target fail closed.
 - `src/server/orchestrator/issue-lifecycle.ts` carries the target through seeded
-  Started effects and PR progress/completion effects.
+  Started effects and PR progress/completion effects; the session manager's
+  applied-effect store and card IDs use qualified identity keys.
+- `src/server/session/agent-shim/shipit-issue.ts`, the `/agent-ops/issue/*`
+  request schema, and orchestrator validation preserve a qualified pointer
+  rather than reducing it to a bare ID. `--tracker github 42` remains legal only
+  when one configured binding makes it unambiguous.
 - the Issues UI displays unavailable Optional capabilities honestly and setup
   failures inline, without directing normal work to GitHub.
 
@@ -156,7 +192,10 @@ issue is unchanged. Coverage includes:
 - agent writes and their provenance Undo operation;
 - starting a session from an issue and any automatic Started transition;
 - PR `Refs` comments and merged `Closes` completion/comment effects;
+- a PR body containing tracker and code-repository issues with the same number,
+  including deduplication, persisted effect-guard keys, and card IDs;
 - reload or session switching before delayed lifecycle work finishes;
+- Undo of a legacy persisted card created before repository targets were stored;
 - missing binding, repository mismatch, insufficient permission, and revoked
   access, all failing without fallback;
 - every C1–C18 capability ultimately classified Required, with Optional gaps
@@ -164,9 +203,9 @@ issue is unchanged. Coverage includes:
 
 ## Migration and operations
 
-The initial design does not require continuous Linear synchronization. If
-migration is selected later, it should be a dry-run-capable, one-way import with
-stable source IDs and idempotency. Linear remains unchanged.
+Linear migration is owned by the
+[broader evaluation](../246-native-issue-tracker-evaluation/plan.md); continuous
+two-way synchronization is not part of this option.
 
 GitHub owns storage durability, backups, availability, and API rate limits.
 ShipIt owns target configuration, permission diagnostics, pagination, retry
@@ -186,7 +225,9 @@ coding sessions, Git operations, or access to locally persisted chat history.
 ## Decision boundary
 
 Implementation may begin only after the user classifies C1–C18 and chooses the
-binding and provisioning models. The option passes its design gate only if all
-Required capabilities can be implemented without weakening the repository
-routing invariant. Otherwise the broader evaluation proceeds to the Vikunja
-spike rather than accumulating fragile GitHub conventions.
+binding, provisioning, public-PR disclosure, and replace-versus-coexist models.
+If C15 is Required, the C6 writable workflow convention is necessarily part of
+the implementation. The option passes its design gate only if all Required
+capabilities can be implemented without weakening the repository routing
+invariant. Otherwise the broader evaluation proceeds to the Vikunja spike
+rather than accumulating fragile GitHub conventions.
