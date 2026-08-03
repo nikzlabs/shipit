@@ -1229,9 +1229,38 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     await workerPost(this.workerUrl, "/agent/interrupt");
   }
 
-  /** Kill the agent running on the worker. */
+  /**
+   * Kill the agent running on the worker.
+   *
+   * SHI-288 — the slot clear is IDENTITY-GUARDED against the proxy that was in
+   * the slot when the kill was requested. `ProxyAgentProcess.kill()` is
+   * fire-and-forget, so this POST is routinely still in flight while the caller
+   * synchronously moves on. Both retirement blocks in `dispatched-turn.ts` do
+   * exactly that:
+   *
+   *     outgoing.kill(); runner.setAgent(null); createAgent(); // → new proxy
+   *
+   * An unconditional `this._agent = null` here then landed tens of ms LATER, on
+   * the slot that by then held the INCOMING proxy — and nothing reinstalls it.
+   * Every event of the new turn, including its own `agent_init` and
+   * `agent_result`, was dropped `(no _agent)` by the SSE relay for the rest of
+   * the turn. In prod that hung `runRebaseResolutionTurn` until its 10-minute
+   * timeout, which then aborted a conflict resolution the agent had already
+   * completed.
+   *
+   * Capturing the victim synchronously (before the first await) and comparing on
+   * resolve makes the clear a no-op once the slot has moved on. When the victim
+   * IS still in the slot, the clear happens exactly as before.
+   */
   async killAgentOnWorker(opts?: { timeoutMs?: number }): Promise<void> {
+    const victim = this._agent;
     await workerPost(this.workerUrl, "/agent/kill", undefined, opts);
+    if (this._agent !== victim) {
+      console.warn(
+        `[container-runner:${this.sessionId}] /agent/kill resolved after the slot moved on — not clearing the incoming agent`,
+      );
+      return;
+    }
     this._agent = null;
   }
 
@@ -1889,13 +1918,20 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * existing object-identity guards and `verifyRunningState` safety net still
    * apply, and the "missed agent_done" SSE-drop resilience path is preserved.
    */
-  private isStaleSpawnEvent(eventType: string, data: Record<string, unknown>): boolean {
+  private isStaleSpawnEvent(
+    eventType: string,
+    data: Record<string, unknown>,
+    // SHI-288 — `agent_event` may be routed to the tracked streaming proxy
+    // rather than the slot occupant (the docs/146 re-adopt branch), so the
+    // comparison is against whichever proxy would actually receive it.
+    target: ProxyAgentProcess | null = this._agent,
+  ): boolean {
     const incoming = data.runToken;
-    const current = this._agent?.runToken;
+    const current = target?.runToken;
     if (typeof incoming !== "string" || typeof current !== "string") return false;
     if (incoming === current) return false;
     console.warn(
-      `[sse-drop:${this.sessionId}] ${eventType} runToken=${incoming} != current ${current} — stale spawn exit ignored (slot reused)`,
+      `[sse-drop:${this.sessionId}] ${eventType} runToken=${incoming} != current ${current} — stale spawn ignored (slot reused)`,
     );
     return true;
   }
@@ -1908,21 +1944,17 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       switch (event.type) {
         // --- Agent events ---
 
-        case "agent_event":
-          if (this._agent) {
-            this._agent.emit("event", data as unknown as AgentEvent);
-          } else if (this._isStreamingActive && this._streamingProxy) {
-            // docs/146 follow-up — the slot is null but a resident streaming
-            // process is still mid-turn. This is the prod stranding: a stale /
-            // one-shot spawn displaced the streaming proxy and then exited,
-            // nulling `_agent`, while the live streaming process kept emitting.
-            // Re-adopt the tracked streaming proxy so its assistant/tool_result/
-            // result events are routed to the live turn instead of being dropped.
-            // A genuinely-orphaned stream has `isStreamingActive === false` (the
-            // streaming `done` clears it), so this never resurrects a dead turn.
-            this._agent = this._streamingProxy;
-            this._agent.emit("event", data as unknown as AgentEvent);
-          } else {
+        case "agent_event": {
+          // docs/146 follow-up — when the slot is null but a resident streaming
+          // process is still mid-turn, re-adopt the tracked streaming proxy
+          // instead of dropping. That is the prod stranding: a stale / one-shot
+          // spawn displaced the streaming proxy and then exited, nulling
+          // `_agent`, while the live streaming process kept emitting. A
+          // genuinely-orphaned stream has `isStreamingActive === false` (the
+          // streaming `done` clears it), so this never resurrects a dead turn.
+          const target = this._agent
+            ?? (this._isStreamingActive ? this._streamingProxy : null);
+          if (!target) {
             // docs/140 diag — events arriving with no orchestrator-side agent
             // ref AND no live streaming turn mean a genuinely-orphaned stale
             // streaming process in the worker is still emitting after the
@@ -1931,8 +1963,19 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
             // double-spawn / double-bubble repro.
             const eventType = (data as { type?: string }).type ?? "unknown";
             console.warn(`[sse-drop:${this.sessionId}] agent_event type=${eventType} dropped (no _agent)`);
+            break;
           }
+          // SHI-288 — a retired spawn's late event must not be routed into the
+          // turn that replaced it. Unstamped events (the permission broker's
+          // frames, a legacy worker) fall through as before.
+          if (this.isStaleSpawnEvent("agent_event", data, target)) break;
+          this._agent = target;
+          // The token is transport-level correlation, not part of the event
+          // contract — strip it so `AgentEvent` consumers see what they always did.
+          const { runToken: _staleGuardToken, ...payload } = data;
+          target.emit("event", payload as unknown as AgentEvent);
           break;
+        }
 
         case "agent_done":
           if (this._agent && !this.isStaleSpawnEvent("agent_done", data)) {

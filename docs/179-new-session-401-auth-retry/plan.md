@@ -258,6 +258,24 @@ directions, so all three are closed together.
   the slot, orphaned the process, and let the worker's `/agent/start` 409 into
   a kill+restart. Reachable only with no turn in flight (`dispatchOnRunner`
   enqueues while `running`).
+
+  **Correction (SHI-288, prod incident 2026-08-03).** "Reachable only with no
+  turn in flight" was read at the time as "nothing live is interrupted." It is
+  not the same claim, and the difference caused an outage: `running === false`
+  does not mean nothing is alive, because a resident streaming process outlives
+  its turn — which is precisely why `sessionHasLiveAgent` exists two bullets
+  down. The retirement block is correct to retire that process; what broke was
+  *how*. `ProxyAgentProcess.kill()` is fire-and-forget, and
+  `killAgentOnWorker` then cleared the `_agent` slot unconditionally when its
+  POST resolved — tens of milliseconds later, on a slot the very next statements
+  had already refilled with the incoming proxy. Every event of the new turn was
+  then `sse-dropped (no _agent)`, including its own `agent_init` and
+  `agent_result`; on `5641de92` that hung `runRebaseResolutionTurn` to its
+  10-minute timeout and threw away a conflict resolution the agent had already
+  completed. The same shape existed in the account-failover block above, so the
+  hole was never system-turn-specific. Fixed by identity-guarding the slot clear
+  (capture the victim before the first await, compare on resolve) — see
+  `killAgentOnWorker` in `container-session-runner.ts`.
 - **The wall-clock re-push** — the scheduled OAuth refresher
   (`bootstrap-managers.ts`) and the post-sign-in re-push (`app-lifecycle.ts`) —
   ran `repushAgentTokenFromRoot`, which reached the same destructive repair
