@@ -23,17 +23,42 @@ function imageResultContent(): string {
 }
 
 describe("projectToolResult", () => {
-  it("slices a heavy result and reports the true line count", () => {
+  it("ships NO body for a modal-only result (req 1)", () => {
+    // `ToolResult` renders only inside `ToolCallModal`, so nothing draws a Bash
+    // result's content until the user clicks. The transcript therefore carries
+    // none of it — not even a slice, which is what the first implementation
+    // shipped and what made requirement 1 unmet.
     const projected = projectToolResult("s1", { toolUseId: "t1", content: bigOutput }, "Bash");
+    expect(projected.content).toBe("");
     expect(projected.truncated).toBe(true);
     expect(projected.totalLines).toBe(500);
+    expect(projected.totalBytes).toBe(Buffer.byteLength(bigOutput, "utf8"));
+  });
+
+  it("leaves a short body in place rather than paying more metadata than it saves", () => {
+    // Stripping `"ok"` would replace 2 bytes with ~60 of markers AND buy a
+    // fetch round-trip. Below the floor the mechanism costs more than it saves.
+    const result = { toolUseId: "t1", content: "ok" };
+    expect(projectToolResult("s1", result, "Bash")).toBe(result);
+  });
+
+  it("still SLICES a result whose tool name can't be resolved", () => {
+    // The conservative fallback: an unknown name might be one of the three the
+    // transcript renders inline, so its body is bounded rather than emptied.
+    const projected = projectToolResult("s1", { toolUseId: "t1", content: bigOutput }, undefined);
+    expect(projected.truncated).toBe(true);
     expect(projected.content.split("\n")).toHaveLength(TRANSCRIPT_SLICE_LINES);
     expect(bigOutput.startsWith(projected.content)).toBe(true);
   });
 
-  it("leaves a small result completely untouched, same reference", () => {
-    const result = { toolUseId: "t1", content: "ok" };
-    expect(projectToolResult("s1", result, "Bash")).toBe(result);
+  it("keeps the body for each tool the transcript renders inline", () => {
+    // AskUserQuestion's chosen answer and the present card's artifact id are
+    // both read straight from result content, with no modal and no fetch.
+    for (const tool of ["AskUserQuestion", "mcp__shipit__present", "present"]) {
+      const projected = projectToolResult("s1", { toolUseId: "t1", content: "pres_abc123" }, tool);
+      expect(projected.content).toBe("pres_abc123");
+      expect(projected.truncated).toBeUndefined();
+    }
   });
 
   it("preserves the metadata the transcript needs without a fetch", () => {
@@ -81,16 +106,25 @@ describe("projectToolResult", () => {
     expect(source.data).toBeUndefined();
   });
 
-  it("bounds an image result whose text half is also huge", () => {
-    // The substitution runs BEFORE the slice, which is what lets image-bearing
-    // results go through the ordinary path instead of being exempted from it.
+  it("empties the text of an image result but keeps its image URLs", () => {
+    // The image blocks are modal-only too, but their URLs are ~100 bytes and
+    // keeping them means the screenshot paints as soon as the modal opens,
+    // while the text is still in flight. Emptying the array instead would blank
+    // it until the fetch lands.
     const content = JSON.stringify([
       { type: "text", text: bigOutput },
       { type: "image", source: { type: "base64", media_type: "image/png", data: png } },
     ]);
     const projected = projectToolResult("s1", { toolUseId: "t1", content }, "SomeTool");
     expect(projected.truncated).toBe(true);
+    expect(projected.totalLines).toBe(500);
     expect(projected.content).not.toContain(png);
+    expect(projected.content).not.toContain("line 12");
+
+    const blocks = JSON.parse(projected.content) as Record<string, unknown>[];
+    expect((blocks[0] as { text: string }).text).toBe("");
+    expect((blocks[1]!.source as Record<string, unknown>).shipit_url)
+      .toBe(`/api/sessions/s1/images/${imageHash(png)}`);
   });
 });
 

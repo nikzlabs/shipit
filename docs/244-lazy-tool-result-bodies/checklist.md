@@ -16,7 +16,7 @@
 - [x] Confirm persist path is uncapped and the 1 MB cap is client-only
 - [x] Determine whether the SHI-266 / `rowId` dependency is real (it isn't)
 - [x] Decide: project the live WS path as well as history
-- [x] Confirm slice size → 40 lines, capped at 16 KB (derived from Bash's 30 — **that derivation has since expired**, see *Requirement 1 is not met* below)
+- [x] Confirm slice size → 40 lines, capped at 16 KB (derived from Bash's 30). That derivation expired when the previews moved into the modal; the slice now governs only the unknown-tool fallback and image-result text — see *Requirement 1 — met* below.
 - [x] Confirm thumbnail size → no thumbnail; serve at stored resolution
 - [x] Decide thumbnail storage → no new store; bytes stay in SQLite
 
@@ -39,7 +39,7 @@
 - [x] Apply to image-bearing tool results as well as user rows
 
 ## Client
-- [x] Fetch-on-expand in `ToolResult.tsx`; spinner while loading
+- [x] Fetch-on-mount in `ToolResult.tsx` (the modal open is the click); "Loading output…" while in flight, error line on failure
 - [x] `totalLines` from metadata for the "Show all N lines" label
 - [x] `DiffBlock` reads stats from metadata; fetches body when the modal opens
 - [x] `data` optional on `ChatMessageImage`; `src` added to `ToolResultImage`
@@ -57,7 +57,8 @@
 - [x] Same image in two rows resolves to one hash (dedupe)
 - [x] Constraint consumers still resolve from a sliced result (req 4)
 - [x] Rewind invariant: after a chat rewind the client holds no row whose body was deleted
-- [x] Req 1: a >1 MB stored transcript serves a small fraction of its size, with none of the three heavy bodies present beyond their slice
+- [x] Req 1: a >1 MB stored transcript serves a small fraction of its size, with none of the three heavy bodies present *at all* — while the exempt subagent report still ships whole (distinct fixture bodies, so the assertion discriminates)
+- [x] Drift guard: `rendersResultContentInline` pinned per call site — the three inline readers true, ordinary tools / `ExitPlanMode` / `Skill` false, unknown name true
 
 ## Review fixes (round 1)
 - [x] Project the reconnect `turn_snapshot` — third browser-facing path, was bypassing the projection entirely (req 6)
@@ -82,10 +83,13 @@
 - [x] Fixed a test asserting against `message.content` on a live assistant event — the adapter normalizes that to `content` on the event itself, so the test asserted "unchanged" about a shape the projection never reads.
 - [x] Doc corrections: `plan.md` no longer calls 40 "derived" in one place while calling it provisional in another; the modal is described as showing a slice then the full body behind its own expand, not "the whole body".
 
-## Requirement 1 is not met — deferred, not fixed
-- [ ] **The transcript no longer previews tool output at all**, so the 40 lines this ships are invisible until the modal opens — exactly what req 1 forbids. `<ToolResult>` renders only inside the click-opened modal (`message-tools.tsx:500`); the transcript line is built from the tool's *input*. The fix is to carry no result content outside the consumers req 4 names (`Task` final report, AskUserQuestion, Present; ExitPlanMode reads existence only) and fetch on modal open — a redesign of the projection, deliberately deferred. Full analysis in `plan.md` → *Requirement 1 is not met*.
-- [ ] Once that lands, the 16 KB byte backstop and the `TRANSCRIPT_SLICE_LINES` ≥ `*_MAX_LINES` guard become moot for ordinary results, and the fetch endpoint needs to substitute image URLs so the modal fetch isn't the new heavy payload.
-- [ ] **`Skill` and `Agent` are exempt from every size bound while rendering no result content at all** — only `Task` routes to `SubagentCall` (`MessageToolUse.tsx:41`); the other two draw a label + prompt and never read the result (`:52`). So they transfer arbitrarily large bodies that are never shown — a worse req-1 violation than the 40-line slice. Fixing it means splitting `SUBAGENT_TOOL_NAMES`'s two jobs ("renders as its own element" vs "is a final report"), which belongs with the redesign.
+## Requirement 1 — met
+- [x] **Carry no result content for anything the transcript doesn't draw.** `rendersResultContentInline` is the predicate; a modal-only result now ships `content: ""` plus the metadata req 3 names, and `ToolResult` fetches the body when the modal mounts (the mount IS the click req 8 licenses a loading state for).
+- [x] The three inline readers keep their bodies, each pinned to its call site by a guard test: `SUBAGENT_REPORT_TOOL_NAMES` (exempt), `AskUserQuestion` (chosen answer), the `present` tool (artifact id). `ExitPlanMode` reads existence only, so it needs nothing.
+- [x] **Floor at 200 bytes** (`RESULT_STRIP_FLOOR_BYTES`) — below it, stripping costs more markers than it saves and buys a round-trip for a few characters.
+- [x] Image-bearing results keep their substituted URLs and lose only their text, so the screenshot paints on modal open instead of blanking until the fetch lands.
+- [x] The 16 KB backstop and the `TRANSCRIPT_SLICE_LINES` ≥ `*_MAX_LINES` guard stay meaningful: they now bound the unknown-tool fallback and image-result text rather than ordinary results.
+- [x] **`Skill` and `Agent`** — resolved. `SUBAGENT_REPORT_TOOL_NAMES` (`Task`, `Agent`) is the exemption and `SUBAGENT_TOOL_NAMES` stays the layout set; `Skill` renders no result content, so it now ships none.
 
 ## Known gaps (recorded, not addressed in this PR)
 - [ ] Req 5 says "tool inputs"; only Edit/Write are projected, other tool inputs ship whole
@@ -96,7 +100,6 @@
 - [ ] Reconnect snapshot resends already-committed tool inputs; tightening needs a committed-prefix marker on the runner
 
 ## Follow-up work (separate from this PR)
-- [ ] **File the Linear issue for the req-1 redesign above.** Attempted during this PR; Linear returned `usage limit exceeded` twice. The full write-up is in `plan.md` → *Requirement 1 is not met*, so nothing is lost — but the tracker item still needs creating.
 - [ ] Subagent activity does not appear in the UI in practice (docs/109) — plumbing is complete and tested with synthetic events, but never verified against a live CLI, and both attach points silently no-op when the parent group isn't found. Investigate after this merges.
 
 ## Verification

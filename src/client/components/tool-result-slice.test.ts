@@ -7,7 +7,11 @@ import {
 } from "./ToolResult.js";
 import { TRANSCRIPT_SLICE_LINES } from "../../server/shared/transcript-slice.js";
 import { SUBAGENT_TOOLS } from "./visual-elements.js";
-import { SUBAGENT_TOOL_NAMES, SUBAGENT_REPORT_TOOL_NAMES } from "../../server/shared/transcript-slice-tools.js";
+import {
+  SUBAGENT_TOOL_NAMES,
+  SUBAGENT_REPORT_TOOL_NAMES,
+  rendersResultContentInline,
+} from "../../server/shared/transcript-slice-tools.js";
 
 /**
  * docs/244 — the orchestrator ships only the first `TRANSCRIPT_SLICE_LINES`
@@ -16,11 +20,11 @@ import { SUBAGENT_TOOL_NAMES, SUBAGENT_REPORT_TOOL_NAMES } from "../../server/sh
  * signal. Failing here is the intended outcome — raise
  * `TRANSCRIPT_SLICE_LINES` alongside the preview.
  *
- * These previews used to be what the *transcript* drew, which is where the
- * slice size came from. They now render inside the click-opened output modal
- * (`message-tools.tsx:500`) — the transcript itself shows no output at all. So
- * the relationship this guard pins is still real, but it no longer justifies
- * the slice size: see `plan.md` → *Requirement 1 is not met*.
+ * These previews render inside the click-opened output modal, not the
+ * transcript — which is why a modal-only result now ships NO body at all
+ * (`rendersResultContentInline`, asserted below) rather than a 40-line slice.
+ * The slice still governs the cases that DO render inline and the conservative
+ * unknown-tool fallback, so this relationship stays load-bearing.
  */
 describe("inline previews fit inside the server slice", () => {
   const caps = {
@@ -72,5 +76,54 @@ describe("subagent tool set", () => {
 
   it("excludes Skill, which renders no report", () => {
     expect(SUBAGENT_REPORT_TOOL_NAMES.has("Skill")).toBe(false);
+  });
+});
+
+/**
+ * The drift guard for the requirement-1 fix. `rendersResultContentInline` is the
+ * projection's answer to "does anything draw this result's content without a
+ * click?" — and getting it wrong is silent in both directions: a `false` for a
+ * tool the transcript renders blanks a card with no fetch path behind it, and a
+ * `true` for one it doesn't ships bytes nobody ever sees.
+ *
+ * Each case below is pinned to the call site that reads the content, so a
+ * renderer that stops reading it (or starts) shows up here.
+ */
+describe("rendersResultContentInline matches what the transcript actually reads", () => {
+  it("is true for the subagent report tools — SubagentCall renders it in full", () => {
+    for (const name of SUBAGENT_REPORT_TOOL_NAMES) {
+      expect(rendersResultContentInline(name)).toBe(true);
+    }
+  });
+
+  it("is true for AskUserQuestion — the chosen answer comes from result content", () => {
+    expect(rendersResultContentInline("AskUserQuestion")).toBe(true);
+  });
+
+  it("is true for every present-tool name form — the artifact id is parsed from the result", () => {
+    for (const name of ["present", "mcp__shipit__present", "mcp__shipit-present__present"]) {
+      expect(rendersResultContentInline(name)).toBe(true);
+    }
+  });
+
+  it("is false for ordinary tools, whose output only ever renders in the modal", () => {
+    for (const name of ["Bash", "Read", "Grep", "Glob", "Edit", "Write", "WebFetch"]) {
+      expect(rendersResultContentInline(name)).toBe(false);
+    }
+  });
+
+  it("is false for ExitPlanMode, which reads result EXISTENCE and not content", () => {
+    // `resolved={!!result}` survives an emptied body, so there is nothing to keep.
+    expect(rendersResultContentInline("ExitPlanMode")).toBe(false);
+  });
+
+  it("is true for an unresolvable tool name — the safe direction is to ship it", () => {
+    expect(rendersResultContentInline(undefined)).toBe(true);
+  });
+
+  it("is false for Skill, which renders no result content at all", () => {
+    // Skill sits in the layout set but renders neither a report nor a preview.
+    expect(SUBAGENT_TOOL_NAMES.has("Skill")).toBe(true);
+    expect(rendersResultContentInline("Skill")).toBe(false);
   });
 });

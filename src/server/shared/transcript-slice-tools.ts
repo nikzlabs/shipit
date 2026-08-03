@@ -1,3 +1,5 @@
+import { isPresentTool } from "./tool-names.js";
+
 /**
  * Tools that spawn a subagent, and thus render as their own top-level element
  * in the transcript instead of being folded into the clipped tool-call group.
@@ -28,3 +30,38 @@ export const SUBAGENT_TOOL_NAMES = new Set(["Task", "Skill", "Agent"]);
  * from every size bound bought nothing.
  */
 export const SUBAGENT_REPORT_TOOL_NAMES = new Set(["Task", "Agent"]);
+
+/**
+ * Tools whose result *content* is read by something the transcript draws
+ * without a click. For every other tool the content is modal-only, so the
+ * transcript may carry none of it at all.
+ *
+ * This is the predicate requirement 1 actually turns on. The original design
+ * shipped the first 40 lines of every result, a number derived from the inline
+ * previews in `ToolResult.tsx` — but `ToolResult` renders *only* inside
+ * `ToolCallModal` (`message-tools.tsx`), which is a click. The transcript line
+ * is built from the tool's **input**. So those 40 lines were 40 lines of
+ * something nobody sees, which is precisely what requirement 1 forbids.
+ *
+ * The three inline readers, each verified at its call site:
+ *
+ *   - `SUBAGENT_REPORT_TOOL_NAMES` — `SubagentCall` renders the final report in
+ *     full as markdown (`SubagentCall.tsx:132`), no expand affordance.
+ *   - `AskUserQuestion` — the chosen answer comes from result content
+ *     (`resolvedAnswer={result?.content}`, `message-tools.tsx:149`).
+ *   - the `present` tool — the artifact id is parsed out of the result
+ *     (`extractPresentPayload`, `message-tools.tsx:370/380`).
+ *
+ * `ExitPlanMode` is deliberately absent: it reads `resolved={!!result}`, result
+ * *existence* only, which survives an emptied body.
+ *
+ * An unknown or unresolvable tool name is treated as inline-rendering. Being
+ * wrong in that direction ships bytes; being wrong in the other direction
+ * blanks a card that has no fetch path to recover it.
+ */
+export function rendersResultContentInline(toolName: string | undefined): boolean {
+  if (!toolName) return true;
+  if (SUBAGENT_REPORT_TOOL_NAMES.has(toolName)) return true;
+  if (toolName === "AskUserQuestion") return true;
+  return isPresentTool(toolName);
+}

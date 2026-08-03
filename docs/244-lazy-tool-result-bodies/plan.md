@@ -39,8 +39,9 @@ visible without a click*. There is no byte target to tune against.
 > output at all — it draws a one-line summary from the tool's *input*, and the
 > output moved into the click-opened modal. The issue's original premise
 > ("not directly displayed… they sit behind a click") turns out to be *more*
-> true than this analysis concluded. See *Requirement 1 is not met* below; the
-> rest of the table still holds.
+> true than this analysis concluded. The projection now acts on that: a result
+> nothing draws inline ships no body at all. See *How requirement 1 is met*
+> below; the rest of the table still holds.
 
 The issue's premise is that the heavy columns "are not directly displayed in the
 conversation UI — they sit behind a click". Checked against the render paths,
@@ -109,14 +110,15 @@ The two issues can ship in either order.
 
 ## Design
 
-### 1. Tool results — head slice, lazy tail
+### 1. Tool results — no body for anything modal-only
 
 Each tool result gains three fields:
 
 ```ts
 {
   toolUseId: string;
-  content: string;      // head slice when `truncated`, else the whole body
+  content: string;      // "" when nothing draws it inline; a head slice for the
+                        // unknown-tool fallback; else the whole body
   isError?: boolean;
   durationMs?: number;
   truncated?: true;     // content is a prefix; full body available on demand
@@ -139,9 +141,9 @@ first.
 > tool's **input** (`command` truncated to 80 chars, `file_path`, `pattern`,
 > `query`, `url`) plus a hover "Show output" button. No tool output is visible
 > without a click. That means the 40 lines this ships are 40 lines nobody can
-> see, which is precisely what req 1 forbids — see *Requirement 1 is not met*
-> below. The number is retained as-is for now because changing it is a
-> redesign, not a tuning exercise.
+> see, which is precisely what req 1 forbids. That is fixed: an ordinary result
+> now ships no body at all, and the number below governs only the unknown-tool
+> fallback and image-result text. See *How requirement 1 is met* below.
 
 The line cap does the real work, and 40 was derived rather than picked: the
 largest inline preview was Bash at 30 lines (`ToolResult.tsx:11–14`), so 40
@@ -164,239 +166,68 @@ lines fails the build rather than silently rendering a short preview. That guard
 is still meaningful, but its subject moved: those previews now render inside the
 output modal rather than in the transcript.
 
-## Requirement 1 is not met, and why that is recorded rather than fixed here
+## How requirement 1 is met
 
 Req 1 is the completion criterion: *do not transfer information that is not
-visible without a click.* As built, this feature ships the first 40 lines of
-every ordinary tool result, and — since the UI change described above — **none
-of those lines is visible until the user opens the modal.** So the feature
-reduces the payload substantially while still failing its own headline
-requirement.
+visible without a click.* The first implementation did **not** meet it, and said
+so. It shipped the first 40 lines of every ordinary tool result — a number
+derived from the inline previews in `ToolResult.tsx` — but `ToolResult` renders
+only inside `ToolCallModal`. The transcript line is built from the tool's
+*input*. So those 40 lines were 40 lines of something nobody sees.
 
-The four things that *do* render result content without a click are exactly the
-consumers req 4 names:
+The fix is the shape that section predicted: carry **no** result content for
+anything the transcript doesn't draw, and let the modal fetch the body when it
+opens. `rendersResultContentInline` (`shared/transcript-slice-tools.ts`) is the
+predicate, and there are exactly three inline readers, each pinned to its call
+site by a guard test:
 
-| What | Renders | Size |
+| What | Renders | Treatment |
 |---|---|---|
-| **`Task`** final report (`SubagentCall.tsx:132`) | full markdown, no expand affordance | can be large — already exempt |
-| `AskUserQuestion` (`message-tools.tsx:137`) | the chosen answer, from result content | short |
-| Present (`message-tools.tsx:171`) | `presentId` parsed from result content | short |
-| `ExitPlanMode` (`message-tools.tsx:162`) | existence only, never content | none |
+| `SUBAGENT_REPORT_TOOL_NAMES` (`Task`, `Agent`) | the final report, full markdown, no expand affordance (`SubagentCall.tsx:132`) | exempt from every bound |
+| `AskUserQuestion` | the chosen answer, from result content (`message-tools.tsx:149`) | body kept (short) |
+| the `present` tool, any name form | `presentId` parsed from the result (`message-tools.tsx:370`) | body kept (short) |
+| **everything else** | nothing, until the modal opens | **body emptied**; metadata only |
 
-### The exemption set is wider than the renderer
+`ExitPlanMode` is deliberately not in the list: it reads `resolved={!!result}`,
+existence rather than content, which survives an emptied body.
 
-`SUBAGENT_TOOL_NAMES` is `{Task, Skill, Agent}` and is used for two different
-jobs: deciding which tools render as their own top-level element, and deciding
-which results are exempt from every size bound. Only the first is true of all
-three. **Only `Task` routes to `SubagentCall` and renders a final report**
-(`MessageToolUse.tsx:41`); `Skill` and `Agent` fall to the branch below it,
-which draws a label, a description and the prompt, and never touches result
-content at all (`MessageToolUse.tsx:52`).
+### Two deliberate deviations
 
-So `Skill` and `Agent` results are exempt from the server slice *and* from the
-client cap while rendering nothing — meaning an arbitrarily large body is
-transferred and then never shown. That is a strictly worse req-1 violation than
-the documented 40-line slice, and it is not fixed here: splitting the set means
-separating "renders as its own element" from "is a final report", which belongs
-with the redesign rather than bolted onto it. Recorded in `checklist.md`.
+* **A floor** (`RESULT_STRIP_FLOOR_BYTES`, 200 bytes). Stripping replaces a body
+  with `truncated` + `totalLines` + `totalBytes` — about 60 bytes of JSON — so
+  for a result like `"ok"` it makes the payload *larger* and buys a round-trip
+  to fetch two characters. Below the floor the body stays. At 200 bytes even 50
+  short results carry under 10 KB, which is noise against the megabytes removed.
+* **Image URLs stay.** An image-bearing result has its text emptied but keeps
+  its substituted image URLs (~100 bytes each), so the screenshot paints as soon
+  as the modal opens instead of blanking until the fetch lands.
 
-So the correct shape is: carry **no** result content for anything outside that
-list — only the metadata req 3 requires — and fetch the body when the modal
-opens, exactly as `DiffBlock` already fetches when *its* modal opens. That
-also retires the 16 KB byte backstop and the derived-slice guard for ordinary
-results, since there would be no inline preview left to bound, and it needs the
-fetch endpoint to substitute image URLs so the modal fetch does not simply
-become the new heavy payload.
+### What the slice is still for
 
-That is a redesign of the projection rather than a tuning change, and it landed
-as a finding on an already long-lived branch, so it is deliberately **deferred
-to a follow-up** and tracked in `checklist.md`. What ships here is a large byte
-reduction with an honestly-documented requirement gap, not a claim that req 1 is
-satisfied.
+The 40-line slice and its 16 KB backstop are no longer what bounds an ordinary
+result — that body is now simply absent. They still govern two cases:
 
-The cut lands on a UTF-8 character boundary so a preview never ends
-mid-codepoint.
+* a result whose **tool name can't be resolved** from the message's tool_use
+  blocks. An unknown name might be one of the three above, so the conservative
+  answer is to ship a bounded body rather than blank a card that has no fetch
+  path behind it;
+* the **text inside an image-bearing result** on the paths that slice rather
+  than empty.
 
-Exempt: Task-parent results (final report). Image-bearing results are **not**
-exempt — see below.
+So the derived-cap guard test still holds, and still fails the build if a
+preview grows past the slice.
 
-### 2. Write/Edit inputs — store the stats, lazy body
+### The exemption set, resolved
 
-Persist `added` / `removed` alongside the tool input and drop `content` /
-`old_string` / `new_string` from the wire, replacing them with a `truncated`
-marker. `DiffBlock` reads the stats from metadata instead of recomputing them,
-and fetches the body when the user opens the modal — which is already an
-explicit click with a loading state to hang a spinner on.
+An earlier revision flagged a second, wider instance: `SUBAGENT_TOOL_NAMES` is
+`{Task, Skill, Agent}` and was used both for layout and for the size exemption,
+so `Skill` and `Agent` results were exempt from every bound while rendering
+nothing. That split landed separately: `SUBAGENT_REPORT_TOOL_NAMES` (`Task`,
+`Agent`) is the exemption, `SUBAGENT_TOOL_NAMES` stays the layout set, and
+`Skill` — which emits a ~33-character acknowledgement and no report — now goes
+through the ordinary bound. With this change it goes further and ships no body
+at all, since nothing renders its result content either.
 
-### 3. Images — serve by URL, no thumbnail
-
-Replace the inline base64 with a URL to a content-addressed endpoint, and mark
-the `<img>` `loading="lazy"`. No downscaling, no thumbnail, no new artifact to
-store: the bytes stay exactly where they are today, and only the *wire format*
-changes.
-
-This is a deliberate reversal of the earlier "stored thumbnail" proposal, for
-three reasons:
-
-* **Downscaling tool-result images would be an unrecoverable quality loss.**
-  They render at up to 256px (`max-h-64`) and have **no click-to-full-size
-  affordance at all** (`ToolResult.tsx:242–255`) — unlike user-row images, there
-  is no second view to load the full resolution into. A thumbnail there is
-  simply a permanently worse screenshot, which req 8 forbids.
-* **Req 9 permits reduced resolution; it does not require it.** The completion
-  criterion is req 1 — do not transfer what is not visible without a click. A
-  lazily-fetched URL satisfies that directly: an image scrolled off-screen
-  transfers *nothing*, and an image on screen is, by definition, visible.
-* **There is no image library in the tree** (no `sharp`, `jimp`, or `canvas`).
-  Downscaling means a new native dependency in every session image — a real
-  cost, and by the two points above it buys no requirement.
-
-What the URL buys on its own: the transcript JSON stops carrying megabytes of
-base64 (which also inflates the bytes by ~33%); off-screen images cost nothing;
-on-screen ones load in parallel without blocking the transcript render; and
-content-addressing means a screenshot that appears twenty times is fetched
-once. The `<img>` boxes are fixed-size (`w-24 h-24`, `max-h-64`), so lazy
-loading introduces no layout shift.
-
-The client change is close to nothing: `MessageImages` already prefers
-`img.src` over a `data:` URI (`message-media.tsx:41`), and the preview modal is
-handed that same `src` — so one URL serves both the inline render and the
-full-size view, with the browser cache making the second free. `data` becomes
-optional on `ChatMessageImage`; `ToolResultImage` gains the same optional `src`.
-
-If a future measurement shows on-screen image bytes still dominate, downscaling
-can be added *behind the same URL* (`?w=192`) with no client change and no
-change to what is stored. That is the reason to leave it out now rather than a
-reason it is unnecessary forever.
-
-Because image blocks are substituted rather than left intact, image-bearing
-tool results no longer need the head-slice exemption they had in the earlier
-draft — the base64 is gone before the slice is applied, so what remains is
-ordinary text that slices safely and stays valid JSON.
-
-### Fetch endpoints
-
-* `GET /api/sessions/:id/tool-results/:toolUseId` → full result content
-* `GET /api/sessions/:id/tool-inputs/:toolUseId` → full Write/Edit body
-* `GET /api/sessions/:id/images/:hash` → the image, at its stored resolution
-
-Lookup scans the session's `tool_results` / `tool_use` columns and, on a miss,
-`subagent_events`.
-
-The image hash is computed **at serve time**, over the base64 payload, during
-the same projection that strips it. Nothing is persisted for it and nothing is
-backfilled, so existing transcripts get the benefit on their next load. A hash
-is also what lets images avoid the row id that SHI-267 was thought to need: it
-addresses an image by what it *is* rather than where it sits, so it survives
-rewind renumbering and dedupes a screenshot that appears in many rows.
-
-Image responses are immutable by construction — the hash *is* the content — so
-they carry `Cache-Control: immutable` and a matching `ETag`. Each distinct image
-is fetched at most once per browser, which is what keeps the scan-based lookup
-affordable; if profiling later says otherwise, a per-session `hash → row`
-index is the fix, not a schema change.
-
-A miss is not a state to design for. A chat rewind deletes rows
-(`ChatHistoryManager.truncate`) and the client drops the same rows from the
-transcript in the same handler (`rewind-complete.ts` →
-`setMessages(prev.slice(0, gapPosition))`), so the expand affordance disappears
-with the row; a code rewind only sets `rolled_back = 1` and deletes nothing, so
-those rows keep both their affordance and their body. A visible row therefore
-always has a fetchable body. The endpoint 404s and the client surfaces an
-ordinary error, with no bespoke "no longer available" affordance.
-
-### Where the projection happens — and where it must not
-
-The slice is a **serve-path projection**. Full bodies stay in SQLite; no data
-loss, and an existing transcript benefits immediately.
-
-**It must not live in `ChatHistoryManager.fromRow`.** `fromRow` feeds six
-read-modify-write paths (`chat-history.ts:630, 659, 686, 716, 745, 808` —
-`updateLastMessage`, `updateBugReportCard`, `upsertReleaseCard`, and siblings)
-that decode a row, mutate one field, and write the whole row back via `toRow`.
-Slicing in `fromRow` would make every one of those silently persist the
-truncation, permanently destroying the bodies this design is careful to keep.
-This is the single most dangerous way to implement the feature and the reason
-the projection is a separate function.
-
-### Three projection sites, not one
-
-Req 6 puts live turns, reconnects, *and* history loads inside the bound, and
-those are three different code paths — only one of which reads through
-`getChatHistory`:
-
-| Path | Site | Top-level results / images | Tool inputs | Nested subagent results |
-|---|---|---|---|---|
-| History load, session switch | `getChatHistory` (`services/session.ts`) | stripped | stripped | stripped |
-| Live turn | `projectAgentEventForWire` (`agent-listeners.ts`) | stripped | **inline** | **inline** |
-| Reconnect mid-turn | `projectTurnSnapshotForWire` (`route-registry.ts`) | stripped | **inline** | **inline** |
-
-The reconnect site is the easy one to miss: `turn_snapshot` is built from
-`runner.chatMessageGroups` in memory, so it never touches the history read and
-an early version of this feature re-sent on reconnect every megabyte the
-history path had just removed.
-
-### Why only the history path may strip everything
-
-**A body may only leave the wire once the row holding it is committed** —
-otherwise the fetch the client makes on click 404s, which breaks req 2. Exactly
-one payload class is committed in the same tick as its emit:
-
-* **Top-level tool results** are committed by `replaceInProgress` inside the
-  `agent_tool_result` handler, synchronously before the frame reaches the
-  network. Strippable everywhere.
-* **User-row images** are persisted when the turn opens. Strippable everywhere.
-* **Edit/Write inputs** arrive on an `agent_assistant` event, and nothing
-  commits the row until the *next* tool-result boundary. The diff modal can be
-  opened the instant the summary renders — i.e. exactly inside that window.
-* **Nested subagent results** are the worst case: the `parentToolUseId` branch
-  of the same handler calls `attachSubagentToolResults` and **returns**,
-  skipping the `replaceInProgress` below it entirely. They reach disk only at
-  the next *top-level* boundary, which for a long Task is many tool calls later.
-
-So the last two are stripped on the history path only, where every row is on
-disk by construction. This costs part of the live-path saving; it is the right
-trade, because an unfetchable body is a visible failure and a fatter live frame
-is not. The bytes accumulate across reloads, not within one turn.
-
-**Rejected alternative: persist nested results before emitting them.** That
-would make the guarantee true everywhere and keep the saving. But
-`replaceInProgress` deletes and re-inserts *every row in the turn*,
-re-serializing the whole `subagent_events` blob each time — so calling it per
-nested result is quadratic in the number of subagent tool calls, and the blob it
-keeps re-stringifying is made of exactly the heavy bodies this feature exists to
-stop moving around. The cost lands hardest on Task-heavy turns, which is the
-case the feature targets. Making persistence incremental would change the trade,
-but that is `ChatHistoryManager` work, not this feature's.
-
-This section has been wrong twice, the same way both times: a guarantee was
-verified on one code path and then written up as general — first claiming the
-same-tick commit covered `agent_assistant`, then claiming it covered nested
-results. Both were caught by independent review, not by the tests. That failure
-mode is the one `CLAUDE.md` calls out, and it is why the distinction is now a
-required argument (`allRowsPersisted`) rather than a comment.
-
-The projection always runs on a *copy* for the emit; the original event flows on
-to `extractToolResults` and is persisted whole. The client's existing 1 MB cap
-in `agent-event.ts` becomes redundant for sliced results but stays as a backstop
-for the exempt classes.
-
-### Transcript paths deliberately NOT projected
-
-An independent review enumerated every server→browser message that can carry
-transcript content. Beyond the three sites above, two carry a scoped heavy field
-and are knowingly left alone in this pass — recorded here so the next reader
-does not have to rediscover them:
-
-* **`message_steered`** (`ws-handlers/send-message.ts`) echoes a live steer,
-  including full base64 `images`. The row is persisted *before* the emit, so URL
-  projection would be safe here — this is a gap, not a hazard.
-* **`sub_agent_consult_card.outputMarkdown`** — a brokered `shipit agent run`
-  result, shown as one preview line until clicked, but transferred whole.
-
-Every other transcript-bearing message (the persisted card rows, user/error
-rows, `fork_breadcrumb`, and the mutation-only messages) carries no field in
-this feature's scope.
 
 ## Key files
 

@@ -42,8 +42,8 @@
  */
 
 import { createHash } from "node:crypto";
-import { sliceBody } from "../shared/transcript-slice.js";
-import { SUBAGENT_REPORT_TOOL_NAMES } from "../shared/transcript-slice-tools.js";
+import { sliceBody, RESULT_STRIP_FLOOR_BYTES } from "../shared/transcript-slice.js";
+import { SUBAGENT_REPORT_TOOL_NAMES, rendersResultContentInline } from "../shared/transcript-slice-tools.js";
 import type { PersistedMessage } from "./chat-history.js";
 import type { AgentEvent } from "../shared/types.js";
 import type { ToolResultEntry } from "./session-runner.js";
@@ -81,7 +81,7 @@ function countLines(text: string): number {
  * it, so the overwhelming majority of results pay only a `startsWith` check.
  */
 export function substituteResultImages(sessionId: string, content: string): string {
-  const projected = projectBlockArray(sessionId, content, false);
+  const projected = projectBlockArray(sessionId, content, "keep");
   return projected ? projected.content : content;
 }
 
@@ -106,7 +106,7 @@ export function substituteResultImages(sessionId: string, content: string): stri
 function projectBlockArray(
   sessionId: string,
   content: string,
-  slice: boolean,
+  mode: "keep" | "slice" | "empty",
 ): { content: string; sliced: ReturnType<typeof sliceBody> } | null {
   if (!content.startsWith("[")) return null;
   let blocks: unknown;
@@ -130,7 +130,18 @@ function projectBlockArray(
   if (!sawImage) return null;
 
   const joined = texts.join("\n");
-  const sliced = slice ? sliceBody(joined) : null;
+  // "empty" is the modal-only case: nothing draws this text until the modal
+  // opens, so none of it ships. The image URLs stay — they are ~100 bytes each
+  // and keeping them means the screenshot paints immediately on open while the
+  // text is still in flight.
+  // The same floor the plain-body path uses: below it, emptying the text costs
+  // more in markers than it saves and buys a round-trip for a few characters.
+  const belowFloor = Buffer.byteLength(joined, "utf8") <= RESULT_STRIP_FLOOR_BYTES;
+  const sliced = mode === "keep" || !joined || belowFloor
+    ? null
+    : mode === "empty"
+      ? { content: "", totalLines: countLines(joined), totalBytes: Buffer.byteLength(joined, "utf8") }
+      : sliceBody(joined);
   const text = sliced ? sliced.content : joined;
 
   let textEmitted = false;
@@ -176,9 +187,44 @@ export function projectToolResult(
 ): ToolResultEntry {
   const exempt = !!toolName && SUBAGENT_REPORT_TOOL_NAMES.has(toolName);
 
+  // Requirement 1, applied at full strength: nothing renders this result's
+  // content without a click, so the transcript carries none of it. The slice
+  // below is the weaker fallback for the results something *does* draw inline.
+  //
+  // The metadata requirement 3 names is what stays — tool-use id, existence,
+  // error state, duration — plus the flag and line count the modal needs. An
+  // image-bearing result still goes through the block path first: its URLs are
+  // tiny and the modal renders them from the same substituted JSON.
+  if (!exempt && !rendersResultContentInline(toolName)) {
+    const blocks = projectBlockArray(sessionId, result.content, "empty");
+    if (blocks) {
+      if (!blocks.sliced) {
+        return blocks.content === result.content ? result : { ...result, content: blocks.content };
+      }
+      return {
+        ...result,
+        content: blocks.content,
+        truncated: true,
+        totalLines: blocks.sliced.totalLines,
+        totalBytes: blocks.sliced.totalBytes,
+      };
+    }
+    // Below the floor, stripping makes the payload BIGGER than leaving the body
+    // in — `truncated`/`totalLines`/`totalBytes` outweigh a short result, and it
+    // would buy a fetch round-trip to retrieve a handful of characters.
+    if (Buffer.byteLength(result.content, "utf8") <= RESULT_STRIP_FLOOR_BYTES) return result;
+    return {
+      ...result,
+      content: "",
+      truncated: true,
+      totalLines: countLines(result.content),
+      totalBytes: Buffer.byteLength(result.content, "utf8"),
+    };
+  }
+
   // Block arrays (MCP image results) take the structure-preserving path, which
   // slices the text inside the blocks rather than the JSON string around them.
-  const blocks = projectBlockArray(sessionId, result.content, !exempt);
+  const blocks = projectBlockArray(sessionId, result.content, exempt ? "keep" : "slice");
   if (blocks) {
     if (exempt || !blocks.sliced) {
       return blocks.content === result.content ? result : { ...result, content: blocks.content };
