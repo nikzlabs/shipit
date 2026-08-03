@@ -58,6 +58,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # exist first (`groupadd -rf` is a no-op if present), add membership per-group so
 # one missing group can't drop the other, and assert the result so a regression
 # fails the build loudly instead of silently disabling the journal pillar.
+#
+# NECESSARY BUT NOT SUFFICIENT (#1917) — two runtime steps finish the job, both
+# in docker/session-worker/entrypoint.sh; do not read this block as the whole
+# fix:
+#   1. GID alignment. The host's journal files are 0640 root:systemd-journal and
+#      a bind mount carries the *numeric* GID through, but `groupadd` here picks
+#      whatever GID is free in THIS image — unrelated to the host's. The
+#      entrypoint stats the mount and joins the group that actually owns it.
+#   2. Surviving the privilege drop. `gosu <uid>:<gid>` calls setgroups() with an
+#      empty list, discarding everything usermod set below. The entrypoint uses
+#      the `gosu <uid>` user form so the supplementary set is initialized from
+#      /etc/group.
+# The membership below still matters (it is what step 2 preserves, and `adm`
+# comes only from here), which is why the assertion stays.
 RUN groupadd -rf systemd-journal \
  && groupadd -rf adm \
  && usermod -aG systemd-journal shipit \

@@ -120,3 +120,11 @@
       auto-pushes (plan §4d — `resolveGitHubRemote` no longer writes git config;
       `postTurnCommit` gates the post-turn push on `kind === "ops"`). Diagnosed
       on host `shipit-16gb` from the ops session at `41699b37`.
+- [x] **The journal pillar survives the non-root runtime (#1917).** The docs/150
+      gosu drop silently un-did the image's journal-group membership, so ops
+      sessions read an empty journal while `id` showed `groups=1000(shipit)`.
+      Fixed in `docker/session-worker/entrypoint.sh`: align to the mount's real
+      (host) GID, then drop with the `gosu <uid>` user form so the supplementary
+      set survives. See plan.md → "Journal access has two runtime preconditions".
+      Verified by `session-worker-entrypoint.test.ts`, which executes the real
+      script; end-to-end confirmation needs a deploy (no Docker daemon in-session).

@@ -96,4 +96,70 @@ if [ "${SHIPIT_READONLY_HOME:-0}" = "1" ]; then
   '
 fi
 
+# docs/128 (#1917) — make the host's systemd journal readable to the worker.
+#
+# Ops sessions bind-mount the host journal read-only (/var/log/journal,
+# /run/log/journal). Those files are 0640 root:systemd-journal on the HOST, and
+# a bind mount carries the *numeric* GID through unchanged — the kernel checks
+# that number, never the group name. So the image's build-time
+# `groupadd -rf systemd-journal && usermod -aG systemd-journal shipit`
+# (Dockerfile.session-worker.docker) is necessary but NOT sufficient: `groupadd`
+# allocates whatever GID is free in the image, which has nothing to do with the
+# host's. Read the real number off the mount instead, and make sure some group
+# in this container carries it.
+#
+# Best-effort by design: no journal mount (every non-ops session), an unwritable
+# /etc (SESSION_READONLY_ROOTFS=1), or a missing groupadd each leave the
+# container exactly as it was rather than failing the boot. Failures are logged
+# to stderr — the session container's `docker logs` — so a broken journal pillar
+# is diagnosable instead of silently empty, which is how #1917 stayed hidden.
+worker_user=$(getent passwd "$UID_GID" 2>/dev/null | cut -d: -f1 || true)
+# Unquoted on purpose — the override is a space-separated path list. It exists
+# so a host whose journal lives elsewhere can point at it (and so the test can
+# run this block against temp dirs); the default is the pair ops sessions mount.
+for journal_dir in ${SHIPIT_JOURNAL_DIRS:-/var/log/journal /run/log/journal}; do
+  [ -n "$worker_user" ] || break
+  [ -d "$journal_dir" ] || continue
+  journal_gid=$(stat -c '%g' "$journal_dir" 2>/dev/null || true)
+  # Skip a non-numeric stat and GID 0: a root-owned journal grants nothing to a
+  # supplementary group, and adding the worker to GID 0 would be a privilege
+  # gain rather than a read grant.
+  case "$journal_gid" in
+    '' | 0 | *[!0-9]*) continue ;;
+  esac
+  journal_group=$(getent group "$journal_gid" 2>/dev/null | cut -d: -f1 || true)
+  if [ -z "$journal_group" ]; then
+    journal_group="shipit-journal-${journal_gid}"
+    groupadd -g "$journal_gid" "$journal_group" 2>/dev/null || {
+      echo "shipit-entrypoint: could not create a group for ${journal_dir} (gid ${journal_gid}); it will be unreadable" >&2
+      continue
+    }
+  fi
+  usermod -aG "$journal_group" "$worker_user" 2>/dev/null \
+    || echo "shipit-entrypoint: could not add ${worker_user} to ${journal_group} (gid ${journal_gid}); ${journal_dir} will be unreadable" >&2
+done
+
+# The privilege drop MUST preserve supplementary groups (#1917).
+#
+# `gosu <uid>:<gid>` takes runc's explicit-group path: it resolves the primary
+# GID from the argument and then calls setgroups() with an EMPTY list, so every
+# supplementary group — the image's baked-in `systemd-journal`/`adm` and
+# everything aligned above — is discarded. That is exactly why #1917 observed
+# `groups=1000(shipit)` inside an image whose build *asserts* membership in both
+# groups. The user form (`gosu <uid>`) takes the other path: it resolves the
+# passwd entry and initializes the supplementary set from /etc/group.
+#
+# Only take the user form when it is otherwise byte-identical to the old
+# behavior — the passwd entry must exist AND its primary GID must already equal
+# UID_GID, because the user form takes the primary GID from passwd rather than
+# from the argument. Both hold for the image's `shipit` account. If a custom UID
+# ever breaks that, keep the old form and say so on stderr: running with the
+# wrong primary group would be a worse failure than an unreadable journal.
+# A non-empty field 4 also proves the passwd entry itself exists, so this is the
+# only lookup the drop needs.
+worker_gid=$(getent passwd "$UID_GID" 2>/dev/null | cut -d: -f4 || true)
+if [ -n "$worker_gid" ] && [ "$worker_gid" = "$UID_GID" ]; then
+  exec gosu "$UID_GID" "$@"
+fi
+echo "shipit-entrypoint: uid ${UID_GID} has no passwd entry with a matching primary gid (got '${worker_gid}'); dropping privileges without supplementary groups — the host journal will be unreadable" >&2
 exec gosu "${UID_GID}:${UID_GID}" "$@"

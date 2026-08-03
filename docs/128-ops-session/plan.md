@@ -521,6 +521,39 @@ independently.)
    - Gating: the Settings "Create ops session" button is hidden/
      disabled for a non-operator.
 
+## Journal access has two runtime preconditions (#1917)
+
+Mounting `/var/log/journal` read-only is necessary but nowhere near
+sufficient. The host's journal files are `0640 root:systemd-journal`, and
+the original live re-audit passed only because the worker still ran as
+root. Once docs/150 dropped the worker to `shipit`, ops sessions silently
+went back to reading nothing — `journalctl -D /var/log/journal` returned
+four lines of user-scoped noise and `id` reported `groups=1000(shipit)`,
+from an image whose build *asserts* membership in `systemd-journal` and
+`adm`. Two independent things have to hold, both handled in
+`docker/session-worker/entrypoint.sh`:
+
+1. **The GID must match numerically, not by name.** A bind mount carries
+   the host's *numeric* GID through unchanged and the kernel checks that
+   number, so the image's build-time `groupadd -rf systemd-journal`
+   (which allocates whatever GID is free in the image) grants nothing.
+   The entrypoint stats each mounted journal dir and joins whichever
+   group actually owns it, creating one at that exact GID if none does.
+2. **The membership must survive the privilege drop.** `gosu <uid>:<gid>`
+   takes runc's explicit-group path, which resolves the primary GID and
+   then calls `setgroups()` with an empty list — discarding every
+   supplementary group microseconds before the agent starts. The
+   entrypoint uses the `gosu <uid>` user form, which initializes the
+   supplementary set from `/etc/group`. (This is the same distinction as
+   `docker run --user 1000:1000` vs `--user shipit`; gosu links runc's
+   `libcontainer/user`, so the semantics are shared.)
+
+Both steps are best-effort and log to stderr on failure: an unreadable
+journal must never fail a container boot, but it must also never fail
+*silently* again — that is what let this regression sit unnoticed.
+`session-worker-entrypoint.test.ts` executes the real script against
+stubbed `stat`/`getent`/`groupadd`/`usermod`/`gosu` to pin both.
+
 ## Risks / open questions
 
 - **Read-only journal access is platform-specific.** `/var/log/journal`
