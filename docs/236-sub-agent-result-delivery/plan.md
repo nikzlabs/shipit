@@ -140,12 +140,81 @@ bounded. That section, not this one, is the reference.
   agent" would need disconnect detection across two relay legs and an ack from
   the shim — real work, speculative value. Noted, not built.)
 
+## Follow-up: the persisted card was being deleted (2026-08-03)
+
+§3's recovery guarantee — "the result outlives the call" — did not hold in
+practice, for the exact usage §5 tells the agent to prefer. A **backgrounded**
+`shipit agent run` outlives the turn that launched it, so its consult card fired
+with `runner.running === false`. `emitChatCard`'s only path was the *mid-turn*
+one: record on the runner, then rebuild the in-progress row set. Post-turn that
+is not merely misplaced but destructive — `finalizeInProgress` had already
+cleared the turn's rows, so `persistTurnInProgress` re-inserted the whole
+finished turn as a second `in_progress=1` copy with the card inside it, and the
+**next turn's first `replaceInProgress` deletes every `in_progress=1` row for the
+session**, taking the card with it.
+
+Observed in production: a run printed
+`shipit agent result ecb1fc11-…`, and that exact command answered *"No sub-agent
+runs in this session yet."* An 18-minute Codex review was unrecoverable — the
+precise failure this feature exists to prevent. (Secondary symptom: until the
+next turn swept it away, the finished turn's assistant message rendered twice.)
+
+**The fix is in `emitChatCard`, not in `runSubAgent`.** The defect belongs to the
+primitive: *any* side-channel card that can land after its turn ended hit it, and
+the sub-agent consult is simply the one that did so by design. When no turn is
+running, `emitChatCard` now appends the card as an already-final history row —
+its correct transcript position (it happened after the turn), the same choice
+`emitNoticePostTurn` already made for notices, and no longer deletable.
+`runner.running` is a sound discriminator because `agent-listeners` always calls
+`finalizeInProgress` *before* clearing `running`, so `running === false`
+guarantees there is no in-progress set to join.
+
+### How this sits with SHI-278 (docs/144 §7a)
+
+SHI-278 landed in parallel and moved consult-card *creation* to spawn time: a
+`pending` card is emitted through `emitChatCard` when the run starts, and the
+terminal status is applied later through `persistCardTransition` — which already
+carried the `running` guard, for the same reason described here ("a post-finalize
+`persistTurnInProgress` would revive the finished turn as a duplicate in-progress
+row"). Between them the two changes close the hole from both ends, and neither
+subsumes the other:
+
+- SHI-278 removes the *ordinary* backgrounded consult from the hazard: the launch
+  happens mid-turn, so the pending card legitimately rides the in-progress turn,
+  and only the terminal patch is post-turn.
+- This fix covers the emit that SHI-278's guard does not reach: **a launch that is
+  itself post-turn** — the shim firing from a background shell started in an
+  earlier turn. There the *pending* card is what lands with no turn in flight, and
+  without the append path it is deleted by the next turn, after which the terminal
+  patch has no row to find and reports `persisted=false`.
+
+The regression tests run both shapes (`launched mid-turn` / `launched post-turn`)
+against the same assertions; only the post-turn variant fails without this
+change, which is the correct division of labour between the two fixes.
+
+Two call sites are affected beyond the consult card, both for the better:
+
+- **User-filed bug reports** (`POST /api/sessions/:id/bug-report` from the UI)
+  fire with no turn running and had the identical defect — the card vanished on
+  the user's next message. Now appended.
+- **The auth-failure notice** (`agent-auth-handler`) is emitted *after* the
+  teardown clears `running`, so it now appends instead of riding the in-progress
+  set. It flushes the turn's partial output explicitly first (`persistTurnInProgress`),
+  which `emitChatCard` used to do for it as a side effect.
+
+Guard tests assert the *guarantee* (the output is still re-readable a turn
+later, and still in the transcript both rehydration paths load) rather than which
+persistence path produced it: `services/sub-agent.test.ts` runs them against a
+real `ChatHistoryManager`, since the failure lives entirely in the
+delete/re-insert semantics of `replaceInProgress` that a stub cannot express.
+
 ## Key files
 
 | File | Role |
 |---|---|
 | `src/server/shared/sub-agent-run.ts` | `runAgentToCompletion` — multi-message capture |
 | `src/server/orchestrator/services/sub-agent.ts` | `runSubAgent` returns `spawnId`; `getSubAgentResult` lookup |
+| `src/server/orchestrator/chat-card-persistence.ts` | `emitChatCard` — mid-turn record/rebuild vs post-turn append |
 | `src/server/orchestrator/chat-history.ts` | `listSubAgentConsultCards` — the persisted-card read |
 | `src/server/orchestrator/api-routes-agent.ts` | `GET /api/sessions/:id/agent/result` |
 | `src/server/session/agent-ops-routes.ts` | `GET /agent-ops/agent/result` broker leg |

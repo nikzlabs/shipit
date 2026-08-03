@@ -149,7 +149,7 @@ export interface SessionAgentEnvDeps {
    * session can never get stuck resume-looping), the new conversation just
    * starts without the prior transcript.
    */
-  chatHistoryManager?: Pick<ChatHistoryManager, "load" | "replaceInProgress">;
+  chatHistoryManager?: Pick<ChatHistoryManager, "load" | "replaceInProgress" | "append">;
 }
 
 /**

@@ -646,6 +646,7 @@ describe("prepareSessionAgentEnvironment", () => {
         { role: "assistant" as const, text: "Fixed it in foo.test.ts." },
       ],
       replaceInProgress: () => {},
+      append: () => 0,
     };
 
     const result = await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {

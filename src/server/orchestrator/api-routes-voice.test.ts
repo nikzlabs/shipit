@@ -54,6 +54,9 @@ function makeRunnerRegistry(sessionId: string) {
   // reads chatMessageGroups for the anchor and pushes onto recordedCards.
   const runner = {
     emitMessage: (m: { type: string }) => emitted.push(m),
+    // The `voice_note` tool fires from inside the agent's turn, so the card
+    // rides the in-progress turn rather than `emitChatCard`'s post-turn append.
+    running: true,
     chatMessageGroups: [] as { text: string; toolUse: unknown[] }[],
     steeredMessages: [] as unknown[],
     recordedCards: [] as unknown[],
@@ -104,7 +107,10 @@ async function buildApp(overrides?: {
   credentialStore?: ReturnType<typeof makeCredentialStore>;
   authManager?: ReturnType<typeof makeAuthManager>;
   runnerRegistry?: { get: (id: string) => unknown };
-  chatHistoryManager?: { replaceInProgress: (sessionId: string, messages: unknown[]) => void };
+  chatHistoryManager?: {
+    replaceInProgress: (sessionId: string, messages: unknown[]) => void;
+    append: (sessionId: string, message: unknown) => void;
+  };
   providerAccountManager?: {
     selectRouteForTurn: (agentId: string) => unknown;
     resolveCredentialRoot?: (agentId: string, accountId: string) => string;
@@ -124,7 +130,7 @@ async function buildApp(overrides?: {
     workspaceDir: tmpDir,
     stateDir: tmpDir,
     runnerRegistry: overrides?.runnerRegistry ?? { get: () => undefined },
-    chatHistoryManager: overrides?.chatHistoryManager ?? { replaceInProgress: vi.fn() },
+    chatHistoryManager: overrides?.chatHistoryManager ?? { replaceInProgress: vi.fn(), append: vi.fn() },
     // docs/150 req 19 — cleanup resolves the account whose credentials it reads.
     // Defaults to a reserved route (no account root), which is the pre-account
     // shape the rest of these tests assume.
@@ -572,7 +578,7 @@ describe("POST /api/sessions/:sessionId/voice-note (docs/163)", () => {
     const replaceInProgress = vi.fn();
     const { app } = await buildApp({
       runnerRegistry: registry,
-      chatHistoryManager: { replaceInProgress },
+      chatHistoryManager: { replaceInProgress, append: vi.fn() },
     });
     const res = await app.inject({
       method: "POST",

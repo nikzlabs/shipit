@@ -55,12 +55,19 @@ import type {
 import type { PersistedMessage } from "./chat-history.js";
 
 /**
- * Minimal chat-history surface the card/turn persistence needs: just the
- * in-progress replace. Kept structural so non-WS callers and tests can pass a
- * stub without the full `ChatHistoryManager`.
+ * Minimal chat-history surface the card/turn persistence needs. Kept structural
+ * so non-WS callers and tests can pass a stub without the full
+ * `ChatHistoryManager`.
+ *
+ * Both writes are required because `emitChatCard` picks between them by whether
+ * a turn is in flight: `replaceInProgress` for a mid-turn card (rebuilt at its
+ * anchor on every boundary), `append` for one that lands after the turn already
+ * finalized — see `emitChatCard` for why the in-progress path is actively wrong
+ * there.
  */
 export interface InProgressPersister {
   replaceInProgress(sessionId: string, messages: PersistedMessage[]): void;
+  append(sessionId: string, message: PersistedMessage): unknown;
 }
 
 /**
@@ -163,7 +170,7 @@ export function buildTurnMessages(
  * `emitChatCard` (so a side-channel card is durable the instant it fires).
  */
 export function persistTurnInProgress(
-  chatHistoryManager: InProgressPersister,
+  chatHistoryManager: Pick<InProgressPersister, "replaceInProgress">,
   runner: { chatMessageGroups: ChatMessageGroup[]; steeredMessages: SteeredMessage[]; recordedCards: RecordedChatCard[] },
   sessionId: string,
 ): void {
@@ -205,11 +212,41 @@ export function recordChatCard(
  * on an already-persisted card (e.g. filed/failed, undone) patch the DB row in
  * place via the relevant `ChatHistoryManager` method — they are not re-recorded
  * here.
+ *
+ * ## A card that lands AFTER its turn ended takes the append path
+ *
+ * The record-and-rebuild machinery above is a *mid-turn* mechanism: it works by
+ * rewriting the in-progress row set, which only exists while a turn is in
+ * flight. Some side-channel cards routinely arrive later — the canonical case is
+ * `shipit agent run` launched in the background (which `shipit-docs/agent.md`
+ * actively tells the agent to do for long consults), whose HTTP call outlives
+ * the turn that started it and emits its consult card minutes after that turn
+ * finalized.
+ *
+ * Run through the in-progress path, such a card is not merely misplaced — it is
+ * DESTROYED. `finalizeInProgress` has already cleared the turn's rows, so
+ * `persistTurnInProgress` re-inserts the whole finished turn as a *second*,
+ * `in_progress=1` copy with the card inside it; the next turn's first
+ * `replaceInProgress` deletes every `in_progress=1` row for the session and the
+ * card goes with it. Observed in production as `shipit agent result <id>`
+ * answering "No sub-agent runs in this session yet" for a run that had just
+ * printed its own id — the long consult's entire output, unrecoverable.
+ *
+ * So when no turn is running, append the card as a finalized row at the current
+ * end of history. That is also its correct transcript position (it happened
+ * after the turn), and it is the same choice `emitNoticePostTurn` makes for
+ * notices. `runner.running` is a safe discriminator because
+ * `finalizeInProgress` always precedes `running = false` (`agent-listeners`),
+ * so `running === false` guarantees there is no in-progress set to join.
+ * `recordedCards` is deliberately NOT touched on this path: the next turn start
+ * clears it anyway, and recording would re-insert the card into that turn's
+ * rebuilt rows as a duplicate.
  */
 export function emitChatCard(
   runner: Pick<
     SessionRunnerInterface,
     | "emitMessage"
+    | "running"
     | "chatMessageGroups"
     | "recordedCards"
     | "steeredMessages"
@@ -221,6 +258,12 @@ export function emitChatCard(
   persist: CardPersistCtx,
 ): void {
   runner.emitMessage(wsMessage);
+
+  if (!runner.running) {
+    persist.chatHistoryManager.append(persist.sessionId, persisted);
+    return;
+  }
+
   recordChatCard(runner, persisted);
   persistTurnInProgress(persist.chatHistoryManager, runner, persist.sessionId);
 
@@ -371,6 +414,7 @@ export function emitNoticeInTurn(
   runner: Pick<
     SessionRunnerInterface,
     | "emitMessage"
+    | "running"
     | "chatMessageGroups"
     | "recordedCards"
     | "steeredMessages"
