@@ -23,10 +23,29 @@ describe("deleteProviderAccount", () => {
   let accounts: ProviderAccountManager;
   let sessions: SessionManager;
   let runningSessionIds: Set<string>;
+  /** Sessions holding a resident (idle but alive) agent process, id → kill spy. */
+  let residentAgents: Map<string, { killed: boolean; cleared: boolean }>;
 
   const registry = () => ({
-    get: (id: string) => (runningSessionIds.has(id) ? { running: true, getAgent: () => null, setAgent: () => {} } : undefined),
+    get: (id: string) => {
+      const resident = residentAgents.get(id);
+      if (!resident && !runningSessionIds.has(id)) return undefined;
+      return {
+        running: runningSessionIds.has(id),
+        getAgent: () => (resident ? { kill: () => { resident.killed = true; } } : null),
+        setAgent: (agent: unknown) => { if (resident && agent === null) resident.cleared = true; },
+      };
+    },
   }) as unknown as SessionRunnerRegistry;
+
+  /** The per-session copy of the account's token — what the CLI actually reads. */
+  const sessionTokenPath = (sessionId: string): string =>
+    path.join(root, "sessions", sessionId, ".claude", ".credentials.json");
+
+  function seedSessionCredentials(sessionId: string, token: string): void {
+    fs.mkdirSync(path.dirname(sessionTokenPath(sessionId)), { recursive: true });
+    fs.writeFileSync(sessionTokenPath(sessionId), token);
+  }
 
   function seedAccount(accountId: string, token: string): void {
     const accountRoot = providerAccountCredentialRoot(root, "claude", accountId);
@@ -48,6 +67,7 @@ describe("deleteProviderAccount", () => {
     });
     sessions = new SessionManager(createTestDatabaseManager());
     runningSessionIds = new Set();
+    residentAgents = new Map();
   });
 
   afterEach(() => {
@@ -99,11 +119,51 @@ describe("deleteProviderAccount", () => {
     expect(accounts.list("claude")).toEqual([]);
     expect(result.switchedSessionIds).toEqual([]);
     expect(result.strandedSessionIds.sort()).toEqual(["s1", "s2"]);
-    // The route is left pointing at the gone account rather than rewritten:
-    // that reads unusable, which is the same recovery path provider-wide
-    // sign-out relies on.
+    // The route is left pointing at the gone account rather than rewritten: it
+    // reads unusable, which is what makes `failoverPinnedSession` re-route and
+    // re-provision the session once another account is connected.
     expect(sessions.get("s1")?.providerRouteId).toBe(a.id);
     expect(accounts.isRouteUsableForTurn("claude", { kind: "account", id: a.id })).toBe(false);
+  });
+
+  /**
+   * The row is not where the token lives. Each pinned session holds its own
+   * copy, first-turn provisioning never re-runs (`agentPinned`), and only a
+   * switch to another account overwrites it — so without an explicit revoke a
+   * "disconnected" session keeps a working subscription token on disk and can
+   * go on spending the account. Found by cross-agent review of this change.
+   */
+  it("takes the account away from the sessions, not just the row", () => {
+    const a = accounts.create("claude", "A");
+    accounts.setAccountStatus("claude", a.id, "ready");
+    seedAccount(a.id, "token-a");
+    pinSession("s1", a.id);
+    seedSessionCredentials("s1", "token-a");
+    // A resident process holds the token in memory, where deleting files can't
+    // reach it. It is idle, so the running-turn refusal does not apply.
+    residentAgents.set("s1", { killed: false, cleared: false });
+
+    deleteProviderAccount(accounts, sessions, registry(), "claude", a.id, { credentialsDir: root });
+
+    expect(fs.existsSync(sessionTokenPath("s1"))).toBe(false);
+    expect(residentAgents.get("s1")).toEqual({ killed: true, cleared: true });
+  });
+
+  it("keeps the conversation when it revokes the credentials", () => {
+    const a = accounts.create("claude", "A");
+    accounts.setAccountStatus("claude", a.id, "ready");
+    pinSession("s1", a.id);
+    seedSessionCredentials("s1", "token-a");
+    // Claude's resume file — deleting this is what would strand the user
+    // mid-conversation (req 9), and a disconnect is not a reason to.
+    const resume = path.join(root, "sessions", "s1", ".claude", "projects", "-workspace", "abc.jsonl");
+    fs.mkdirSync(path.dirname(resume), { recursive: true });
+    fs.writeFileSync(resume, "{}");
+
+    deleteProviderAccount(accounts, sessions, registry(), "claude", a.id, { credentialsDir: root });
+
+    expect(fs.existsSync(sessionTokenPath("s1"))).toBe(false);
+    expect(fs.existsSync(resume)).toBe(true);
   });
 
   it("disconnects when the only other account is not connected yet", () => {

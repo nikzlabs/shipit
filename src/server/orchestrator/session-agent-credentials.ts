@@ -61,6 +61,37 @@ export function provisionProviderAccountCredentials(
 }
 
 /**
+ * Take a session's copy of a provider account's credentials away, with no
+ * replacement to copy in (docs/150 req 23).
+ *
+ * Disconnecting the account only removes the *source* subtree under
+ * `provider-accounts/<provider>/<accountId>/`. Every session pinned to that
+ * account already holds its own copy of the OAuth token — that copy is what the
+ * CLI in the container actually reads — and nothing else deletes it: the
+ * account-switch path overwrites it (`provisionProviderAccountCredentials` with
+ * `replace = true`), and first-turn provisioning is guarded on
+ * `session.agentPinned` so it never runs again. Without this, "disconnected"
+ * sessions kept a working subscription token on disk indefinitely.
+ *
+ * Deliberately the removal half of a replacement and nothing more: it preserves
+ * the conversation-state subpaths (see
+ * {@link removeProviderSubtreeForReplacement}), so reconnecting an account
+ * resumes the same conversation rather than starting a new one. No chown — this
+ * only deletes.
+ */
+export function revokeSessionProviderCredentials(
+  credentialsRoot: string,
+  sessionId: string,
+  agentId: AgentId,
+): void {
+  const dir = perSessionCredentialsDir(credentialsRoot, sessionId);
+  if (!fs.existsSync(dir)) return;
+  for (const rel of AGENT_CREDENTIAL_PATHS[agentId]) {
+    removeProviderSubtreeForReplacement(dir, rel);
+  }
+}
+
+/**
  * Clear a session's existing provider subtree so a *different* account's
  * subtree can be copied over it — **without** deleting the agent's
  * conversation state.

@@ -19,6 +19,7 @@ import type { ProviderAccountManager } from "../provider-account-manager.js";
 import type { SessionManager } from "../sessions.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import { switchSessionProviderAccount } from "./provider-account-switch.js";
+import { revokeSessionProviderCredentials } from "../session-agent-credentials.js";
 
 // ---- Read operations ----
 
@@ -477,12 +478,29 @@ export function reorderProviderAccounts(
  * account to move them to", which is terminal by construction: the last
  * connected account for a provider could never be disconnected while any
  * unarchived session was pinned to it, and connecting a second account just to
- * disconnect the first is not a workflow. The sessions are not stranded
- * unrecoverably either — this is exactly the state provider-wide sign-out has
- * always left them in, and they recover the same way: a route whose row is gone
- * reads unusable (`isRouteUsableForTurn`), so the next turn either re-routes to
- * another account or reports `auth_required`. They come back in
- * `strandedSessionIds` so the caller can say how many that was.
+ * disconnect the first is not a workflow.
+ *
+ * Those sessions have to actually *lose* the account, which takes more than
+ * deleting the row. Each one holds its own copy of the OAuth token in its
+ * per-session credentials dir, and that copy is what the CLI reads: first-turn
+ * provisioning is guarded on `agentPinned` so it never re-runs, and the only
+ * thing that overwrites it is a switch to another account — which is exactly
+ * the path not taken here. So this walks the same two steps
+ * `switchSessionProviderAccount` takes before it rewrites credentials: retire
+ * any resident agent process (it holds the token in memory, where no on-disk
+ * change can reach it) and remove the session's credential subtree, preserving
+ * the conversation-state files so a later reconnect resumes rather than
+ * restarts.
+ *
+ * The now-dangling `provider_route_id` is left in place on purpose. It reads
+ * unusable (`isRouteUsableForTurn`), which is what makes `failoverPinnedSession`
+ * re-route the session — and re-provision its credentials — the moment another
+ * account is connected. Clearing it would look tidier and would break that
+ * recovery: env prep only provisions credentials for a session that is not yet
+ * pinned. Until then the session simply has no credentials to run on, which is
+ * the honest state and the one req 23 asks for.
+ *
+ * They come back in `strandedSessionIds` so the caller can say how many.
  *
  * A *running* session is still refused (the user chose this over disconnecting
  * through a live turn, 2026-08-03). Reprovisioning credentials under a live
@@ -574,6 +592,29 @@ export function deleteProviderAccount(
           409,
           `${pinned.length} session(s) are pinned to this account. Choose a replacement account to move them to (available: ${usable.join(", ")}).`,
         );
+      }
+      for (const session of pinned) {
+        // In-memory first, then on disk — the reverse order leaves a live CLI
+        // spending the account it was just disconnected from.
+        const runner = runnerRegistry.get(session.id);
+        const agent = runner?.getAgent() ?? null;
+        if (agent) {
+          try {
+            agent.kill();
+          } catch {
+            // Already dead is the state we wanted; the revoke below is what
+            // matters and must not be skipped because a stale handle threw.
+          }
+          runner?.setAgent(null);
+        }
+        if (credentialsDir) {
+          revokeSessionProviderCredentials(credentialsDir, session.id, provider);
+        } else {
+          console.warn(
+            `[provider-accounts] no credentialsDir: session ${session.id} keeps its copy of `
+              + `disconnected ${provider} account ${accountId}`,
+          );
+        }
       }
       strandedSessionIds = pinned.map((session) => session.id);
     } else {

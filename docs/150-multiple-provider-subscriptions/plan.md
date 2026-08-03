@@ -268,11 +268,43 @@ sibling never finished signing in — disconnect proceeds and returns the pinned
 sessions as `strandedSessionIds`, which the card reports in a toast. That branch
 used to 409 ("there is no other connected account to move them to"), which was
 terminal by construction: nothing the user could do satisfied it except
-connecting an account solely in order to disconnect another. The sessions keep
-their now-dangling `provider_route_id` rather than having it rewritten, which is
-the same state provider-wide sign-out leaves behind and recovers the same way —
-`isRouteUsableForTurn` reads an unknown account as unusable, so the next turn
-re-routes or reports `auth_required`.
+connecting an account solely in order to disconnect another.
+
+**Deleting the row is not enough to take the account away from those sessions.**
+Each pinned session holds its own copy of the OAuth token in its per-session
+credentials dir, and that copy — not the source subtree — is what the CLI in the
+container reads. Nothing else removes it: first-turn provisioning is guarded on
+`session.agentPinned` so it never re-runs, and the only writer that replaces it
+is a switch to *another* account, which is exactly the path a strand does not
+take. So the strand branch walks the same two steps
+`switchSessionProviderAccount` takes before rewriting credentials — retire any
+resident agent process (it holds the token in memory, out of reach of any
+on-disk change) and `revokeSessionProviderCredentials` the session's subtree,
+preserving the conversation-state files so a later reconnect resumes rather than
+restarts. Without this, a "disconnected" session kept a working subscription
+token indefinitely. (Cross-agent review of the req-23 change caught this; the
+first version shipped the row deletion alone.)
+
+The now-dangling `provider_route_id` is deliberately left in place. It reads
+unusable (`isRouteUsableForTurn`), which is what lets `failoverPinnedSession`
+re-route the session *and re-provision its credentials* as soon as another
+account is connected. Clearing it would look tidier and break that recovery,
+because env prep only provisions for a session that is not yet pinned. Until an
+account exists the session has no credentials to run on, which is the honest
+state — note that `auth_required` is a deliberately *non-blocking* selection
+failure (`routeFromSelection`), so no preflight turns that into a clean refusal
+for an already-pinned session.
+
+**Known adjacent gap (not this change):** provider-wide sign-out
+(`DELETE /api/auth/api-key` → `signOutProvider`) erases every account's *source*
+credentials but never the per-session copies, so its pinned sessions keep a live
+token in exactly the way described above. Same defect, different entry point; it
+predates req 23 and is asserted as current behavior by
+`http-mutations.test.ts` ("still signs out with an idle pinned session").
+Tracked as [SHI-283](https://linear.app/shipit-ai/issue/SHI-283), which carries
+the fix sketch — reuse `revokeSessionProviderCredentials`, keep the running-turn
+guard, and scope the revoke to `account`-route sessions so a `claude-env-oauth`
+session's own credentials are not caught in it.
 
 On disconnect (two ordered paths depending on whether the user already picked a
 replacement):
