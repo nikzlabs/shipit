@@ -50,63 +50,71 @@ with the ShipIt transcript and workspace context preserved across the switch.
 ## User-sourced requirements
 
 (Numbers are stable IDs, not an ordering. 10 and 11 live in the next section;
-12–18 were added later than 10–11 and keep their original IDs.)
+12–18 were added later than 10–11 and keep their original IDs.
 
-1. A user can connect more than one subscription account for the same agent
+These are written as literal IDs in a bullet list rather than as a markdown
+ordered list **on purpose**. A renderer takes an ordered list's numbering from
+its first item and renumbers the rest sequentially, ignoring what is written —
+which silently displayed every requirement from 12 onward two lower than its real
+ID, and made 10 and 11 appear twice in the document with different content. Since
+`plan.md`, `checklist.md`, and the code comments all cite these as `(req N)`, the
+displayed number has to be the real one. Keep new requirements in this form.)
+
+- **1.** A user can connect more than one subscription account for the same agent
    provider — for example two Anthropic accounts, or two ChatGPT accounts.
-2. The connected accounts for a provider form an ordered list whose order the
+- **2.** The connected accounts for a provider form an ordered list whose order the
    user controls. What that order *means* is set by the provider's account
    selection mode (req 21): under strict priority it is the order accounts are
    tried in; under peer balancing it is the display and tie-break order, not a
    statement about which account should run the work.
-3. When the account in use is exhausted, ShipIt continues the user's work on
+- **3.** When the account in use is exhausted, ShipIt continues the user's work on
    another connected account for the same provider automatically. The user does
    not sign out, switch browser profiles, restart containers, or move
    credentials by hand.
-4. Each provider has a user-configurable short-window usage cutoff and a
+- **4.** Each provider has a user-configurable short-window usage cutoff and a
    user-configurable weekly usage cutoff.
-5. Both cutoffs default to 90%.
-6. Reaching either cutoff moves work to the next eligible account, chosen by the
+- **5.** Both cutoffs default to 90%.
+- **6.** Reaching either cutoff moves work to the next eligible account, chosen by the
    provider's account selection mode (req 21). Failover is proactive at the
    cutoff, not only on hard exhaustion.
-7. Hard exhaustion reported by the provider fails over immediately, regardless
+- **7.** Hard exhaustion reported by the provider fails over immediately, regardless
    of where the configured cutoffs are set.
-8. Failover applies to turns in existing sessions, not only to newly created
+- **8.** Failover applies to turns in existing sessions, not only to newly created
    sessions.
-9. When an existing session moves to another account, its ShipIt transcript and
+- **9.** When an existing session moves to another account, its ShipIt transcript and
    workspace context are preserved. Quota pressure never forces the user to
    abandon a conversation and start a new session.
 
-12. Failover only ever moves a turn between connected subscription accounts for
+- **12.** Failover only ever moves a turn between connected subscription accounts for
     the same provider. ShipIt never switches a turn onto pay-as-you-go API
     billing (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`) because a subscription ran
     out. Those remain a manually chosen auth path.
-13. When no connected account for the provider can run the turn, ShipIt fails
+- **13.** When no connected account for the provider can run the turn, ShipIt fails
     the turn immediately and tells the user when the earliest window resets. It
     does not hold the prompt for later.
-14. When hard exhaustion happens partway through a turn, ShipIt retries on the
+- **14.** When hard exhaustion happens partway through a turn, ShipIt retries on the
     next eligible account regardless of what that turn has already done.
-15. Automatic failover is on by default for every provider. Connecting a second
+- **15.** Automatic failover is on by default for every provider. Connecting a second
     account is enough to enable it; no separate opt-in.
-16. Connecting an account uses the same UI for the first account and for every
+- **16.** Connecting an account uses the same UI for the first account and for every
     subsequent account. The two flows must not diverge as they do today.
-17. ShipIt does not route around an account that cannot run the requested
+- **17.** ShipIt does not route around an account that cannot run the requested
     model. Connecting accounts with different model access is the user's own
     choice to manage. When a turn runs on an account that cannot serve the
     requested model, the failure is reported clearly, and is not automatically
     retried, substituted, or worked around.
-18. An agent-spawned child session picks its own account through the normal
+- **18.** An agent-spawned child session picks its own account through the normal
     priority order. It does not inherit the parent session's account.
-19. When the feature is finished, the legacy single-account behaviour and the
+- **19.** When the feature is finished, the legacy single-account behaviour and the
     code supporting it are gone. The compatibility shims kept while migrating
     are a migration step, not a permanent second way for provider accounts to
     work.
-20. Provider-account selection and quota failover apply to every
+- **20.** Provider-account selection and quota failover apply to every
     provider-authenticated agent run, including regular session turns and
     brokered one-shot runs used for cross-agent reviews (`shipit agent run`). A
     review does not fail on an exhausted account while another eligible
     subscription account for the same provider is configured.
-21. Each provider has a user-selectable account selection mode, with two
+- **21.** Each provider has a user-selectable account selection mode, with two
     settings:
     - **Strict priority** — work starts on the highest-ranked eligible account,
       and a lower-ranked account is used only while the ones above it are not
@@ -118,7 +126,7 @@ with the ShipIt transcript and workspace context preserved across the switch.
     Strict priority is the default, so an install that never touches the setting
     behaves as it does today. The mode governs which account work *starts* on;
     it does not govern *whether* failover happens, which is always on (req 15).
-22. ShipIt distinguishes connected accounts by the provider's own account
+- **22.** ShipIt distinguishes connected accounts by the provider's own account
     identity, not only by a name the user typed.
     - A newly connected account is labelled with the identity the provider
       reports — the account's email where the provider gives one — rather than a
@@ -133,12 +141,12 @@ with the ShipIt transcript and workspace context preserved across the switch.
 Sourced from `CLAUDE.md` §1–§2 (human-authored, repo-wide), not from a specific
 request for this feature.
 
-10. Each connected account's quota state is visible inside ShipIt as a
+- **10.** Each connected account's quota state is visible inside ShipIt as a
     subscription-limits pill, the same pill that works today, labelled with the
     account's name. Checking how much quota an account has left does not require
     opening a provider dashboard. (Confirmed by the user in review; the pill
     shape and per-account naming are their words, not an inference.)
-11. When ShipIt changes which account a session runs on, it says so where the
+- **11.** When ShipIt changes which account a session runs on, it says so where the
     user is already looking — in the session, not in an external tool.
 
 ## Open questions
