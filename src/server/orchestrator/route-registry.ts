@@ -922,7 +922,7 @@ export async function registerRoutes(
                   prStatusPoller.getStatus(sid)?.baseBranch
                   ?? s.previousMergedPr?.baseBranch
                   ?? await git.getDefaultBranch();
-                const notableFiles = await notableFilesForBranch(git, seedDir, base);
+                const notableFiles = await notableFilesForBranch(git, base);
                 send({
                   type: "pr_notable_files",
                   sessionId: sid,

@@ -89,7 +89,7 @@ describe("emitPrLifecycleAfterCommit — changed-docs strip refresh", () => {
     expect(notable[0]).toMatchObject({
       sessionId: "s1",
       cardId: "pr-card-s1",
-      notableFiles: [{ path: "docs/210-thing/plan.md", kind: "doc", title: "A Thing", status: "A" }],
+      notableFiles: [{ path: "docs/210-thing/plan.md", kind: "doc", label: "210/plan.md", status: "A" }],
     });
     // Poller owns phase/status for a tracked PR, so no lifecycle card is emitted.
     expect(emitted.some((m) => m.type === "pr_lifecycle_update")).toBe(false);
@@ -111,7 +111,7 @@ describe("emitPrLifecycleAfterCommit — changed-docs strip refresh", () => {
     const notable = emitted.filter((m) => m.type === "pr_notable_files");
     expect(notable).toHaveLength(1);
     expect(notable[0]).toMatchObject({
-      notableFiles: [{ path: "docs/210-thing/plan.md", kind: "doc", title: "A Thing", status: "A" }],
+      notableFiles: [{ path: "docs/210-thing/plan.md", kind: "doc", label: "210/plan.md", status: "A" }],
     });
     // No tracked PR + unauthenticated → the ready card is also emitted.
     expect(emitted.some((m) => m.type === "pr_lifecycle_update")).toBe(true);

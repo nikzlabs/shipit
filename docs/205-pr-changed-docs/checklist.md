@@ -11,7 +11,7 @@
 ## Server
 - [x] Add `NotableFileChange` type + `WsPrLifecycleUpdate.notableFiles`
 - [x] Compute notable list in `pr-lifecycle.ts` (ready + auto-create open phases) via `notableFilesForBranch` (`diffNameStatus` vs base, same ref fallback as `diffStatVsBranch`)
-- [x] Filter classifier (`.md` docs + config allowlist) and attach resolved frontmatter `title` (`services/notable-files.ts` + `markdown.resolveDocTitle`)
+- [x] Filter classifier (`.md` docs + config allowlist) and attach a chip label (`services/notable-files.ts`) — originally the resolved frontmatter `title`, since replaced by a compact path label (docs/210 follow-up 3)
 
 ## Client
 - [x] `notableFiles` on `PrCardState` + `updateCard` / handler passthrough (preserved across poller `applyPrStatusUpdates` so it stays sticky)

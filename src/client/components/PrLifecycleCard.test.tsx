@@ -1453,8 +1453,8 @@ describe("PrLifecycleCard — changed-docs strip", () => {
   });
 
   const docFiles: NotableFileChange[] = [
-    { path: "docs/205-pr-changed-docs/plan.md", title: "PR-scoped changed docs", kind: "doc", status: "A" },
-    { path: "shipit.yaml", title: "shipit.yaml", kind: "config", status: "M" },
+    { path: "docs/205-pr-changed-docs/plan.md", label: "205/plan.md", kind: "doc", status: "A" },
+    { path: "shipit.yaml", label: "shipit.yaml", kind: "config", status: "M" },
   ];
   // docs/210 — the strip is sourced from the standalone `notableFilesBySession`
   // slice, so a card + a slice entry together drive it.
@@ -1484,7 +1484,7 @@ describe("PrLifecycleCard — changed-docs strip", () => {
     expect(toggle).toBeInTheDocument();
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     // Strip is expanded → chips rendered.
-    expect(screen.getByText("PR-scoped changed docs")).toBeInTheDocument();
+    expect(screen.getByText("205/plan.md")).toBeInTheDocument();
   });
 
   it("defaults to collapsed on mobile, where header height is precious", () => {
@@ -1493,7 +1493,7 @@ describe("PrLifecycleCard — changed-docs strip", () => {
     render(<PrLifecycleCard sessionId="s1" />);
     const toggle = screen.getByLabelText("Related issues and changed docs in this PR");
     expect(toggle).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByText("PR-scoped changed docs")).not.toBeInTheDocument();
+    expect(screen.queryByText("205/plan.md")).not.toBeInTheDocument();
   });
 
   it("lets a stored collapse preference win over the desktop default", () => {
@@ -1511,7 +1511,7 @@ describe("PrLifecycleCard — changed-docs strip", () => {
     seedDocs("s1");
     const { unmount } = render(<PrLifecycleCard sessionId="s1" />);
     fireEvent.click(screen.getByLabelText("Related issues and changed docs in this PR"));
-    expect(screen.getByText("PR-scoped changed docs")).toBeInTheDocument();
+    expect(screen.getByText("205/plan.md")).toBeInTheDocument();
     expect(screen.getByLabelText("Related issues and changed docs in this PR")).toHaveAttribute("aria-expanded", "true");
 
     // Remount (e.g. page reload) — the expanded state is restored from storage.
@@ -1519,7 +1519,7 @@ describe("PrLifecycleCard — changed-docs strip", () => {
     seedDocs("s1");
     render(<PrLifecycleCard sessionId="s1" />);
     expect(screen.getByLabelText("Related issues and changed docs in this PR")).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByText("PR-scoped changed docs")).toBeInTheDocument();
+    expect(screen.getByText("205/plan.md")).toBeInTheDocument();
   });
 
   it("keeps collapse state independent across sessions", () => {

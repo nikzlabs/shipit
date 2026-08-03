@@ -161,6 +161,99 @@ with the hoisted patch). Guard: `services/pr-lifecycle.test.ts` asserts
 - `src/server/orchestrator/services/pr-lifecycle.test.ts` (new) — pins the
   unconditional emit.
 
+## Follow-up 3: cross-feature title collapse dropped chips (the fifth gap)
+
+Two confirmed reports of the strip rendering **fewer chips than the PR changed**.
+
+- **PR #1877** (branch `shipit/review-done-linear-issues-m_1ljv`) changed **8**
+  markdown files and rendered **6**. `docs/150-…/requirements.md`,
+  `docs/246-…/requirements.md` and `docs/247-…/requirements.md` all resolve to
+  the literal title "Requirements" (`requirements` is not in `GENERIC_FILENAMES`,
+  so `titleFromPath` → `kebabToTitle("requirements")`).
+- **Branch `shipit/brxzvw`** changed **3** files in *one* feature dir and
+  rendered **2**: `plan.md` and `requirements.md` there carry an **identical
+  author-written frontmatter `title:`** (same feature, so sharing a title is
+  reasonable authoring under docs/241 spec-discipline).
+
+### Root cause
+
+`dedupeNotableDocs` keyed the collapse on **title alone, globally across the
+whole diff, ignoring the directory**. It was added for one narrow case (a
+feature dir's `plan.md` + `checklist.md` both deriving the *directory* title),
+but docs/241 made `requirements.md` a standard per-feature file, so the
+collision became systemic.
+
+Worse than a miscount: with equal `docFilenameRank`, **first-seen won**, so the
+single surviving "Requirements" chip on #1877 pointed at
+`docs/150-multiple-provider-subscriptions/requirements.md` — clicking it opened
+an unrelated feature's document. It also violated this doc's own invariant that
+the strip and the Docs panel cannot drift: the panel keys by **path**, so it
+listed docs the strip was hiding.
+
+The two reports also rule out the obvious narrower fixes. `brxzvw`'s collision
+is **same-directory** and comes from an **explicit author-chosen** title, so
+neither rescoping the dedupe to same-directory nor restricting it to
+path-derived titles would have helped. The collapse itself had to go.
+
+### Fix — compact path labels, and no dedupe at all
+
+Chips are now labelled by a **compact path** instead of a document title
+(`compactPathLabel` in `services/notable-files.ts`):
+
+- `<parent>/<basename>`, with a `NNN-slug` feature dir shortened to its number
+  — `docs/246-native-issue-tracker-evaluation/plan.md` → `246/plan.md`.
+- A non-numbered parent stays verbatim (`shipit-docs/environment.md`); a
+  repo-root file is its bare basename (`shipit.yaml`). Only the immediate
+  parent appears — the full path is still in the chip's `title=` tooltip.
+- Applied to **all three tiers**, not just docs: it resolves the identical
+  ambiguity for a monorepo's `api/package.json` vs root `package.json` and for
+  `a/diagram.png` vs `b/diagram.png`.
+
+This is the right identity for this surface: the strip is a **flat PR file
+list**, not a document browser. A feature's `plan.md` and `checklist.md` are
+indistinguishable when both render as the feature's title (and #1877 showed the
+near-miss variant — "Native Issue Tracker Evaluation" vs "Native issue tracker
+evaluation", differing only in case because one came from the directory and one
+from frontmatter). The **Docs panel stays the title-and-description surface**;
+`resolveDocTitle` / `titleFromPath` / `GENERIC_FILENAMES` are untouched.
+
+Because a path is unique within a diff, labels can no longer collide — which
+removes the entire reason `dedupeNotableDocs` existed. It and
+`DOC_FILENAME_RANK` / `docFilenameRank` were **deleted**, making the chip set a
+pure **1:1 projection** of the classified changed-file set and strip/Docs-panel
+drift structurally impossible.
+
+Deliberate behavior change: a feature dir with both `plan.md` and `checklist.md`
+changed now shows **two** chips (`246/plan.md`, `246/checklist.md`) rather than
+one. That is the point — the user asked to be able to tell the checklist apart
+from the design doc.
+
+Two consequences fall out:
+
+- `NotableFileChange.title` was renamed to **`label`** — it no longer holds a
+  title. (Transient per-session state, re-pushed on every connect, so an
+  orchestrator/client version skew self-heals on reconnect.)
+- `computeNotableFiles` no longer reads frontmatter, so it needs no
+  `workspaceDir` and does **no disk I/O** — dropping a per-changed-file
+  `fs.open` from both the post-turn recompute and the `activateSession`
+  re-seed. `notableFilesForBranch(git, baseBranch)` lost its `workspaceDir`
+  parameter too.
+
+### Key files (follow-up 3)
+
+- `src/server/orchestrator/services/notable-files.ts` — `compactPathLabel` (new);
+  `dedupeNotableDocs` / `docFilenameRank` / `DOC_FILENAME_RANK` and the
+  `resolveDocTitle` import deleted; `computeNotableFiles` is now synchronous and
+  `workspaceDir`-free.
+- `src/server/shared/types/github-types.ts` — `NotableFileChange.title` → `label`.
+- `src/client/components/ChangedDocsStrip.tsx` — chip renders `file.label`.
+- `src/server/orchestrator/services/pr-lifecycle.ts`,
+  `src/server/orchestrator/route-registry.ts` — dropped the `workspaceDir` argument.
+- `services/notable-files.test.ts` — regression tests for both reported shapes
+  (#1877's 8 files, `brxzvw`'s shared-frontmatter-title trio) plus
+  `compactPathLabel` unit coverage (root file, non-numbered parent, deep nesting,
+  deleted file).
+
 ### Key files (follow-up)
 
 - `src/server/orchestrator/route-registry.ts` — `activateSession` re-seed.
