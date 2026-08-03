@@ -34,6 +34,14 @@ visible without a click*. There is no byte target to tune against.
 
 ## What the UI actually draws
 
+> **The `tool_results` row of this table is out of date.** It described the UI
+> as it was when this design was written. The transcript no longer previews tool
+> output at all — it draws a one-line summary from the tool's *input*, and the
+> output moved into the click-opened modal. The issue's original premise
+> ("not directly displayed… they sit behind a click") turns out to be *more*
+> true than this analysis concluded. See *Requirement 1 is not met* below; the
+> rest of the table still holds.
+
 The issue's premise is that the heavy columns "are not directly displayed in the
 conversation UI — they sit behind a click". Checked against the render paths,
 that is broadly right — but each column draws a small *derived* artifact inline,
@@ -41,7 +49,7 @@ and it is that artifact, not raw metadata, that has to stay on the wire.
 
 | Column | What renders inline | What's behind a click |
 |---|---|---|
-| `tool_results` | First 15–30 lines (`ToolResult.tsx`: Bash 30, Read 20, Grep 20, generic 15) + a "Show all N lines" button | The tail |
+| `tool_results` | ~~First 15–30 lines + a "Show all N lines" button~~ — **nothing**; see the note above | The whole body, in the modal |
 | `tool_use` (Write/Edit) | One line: verb, path, `+40 -12` (`DiffBlock.tsx:66–92`) | The whole diff body, in a modal |
 | `images` (user rows) | A 96×96 thumbnail (`w-24 h-24 object-cover`, `message-media.tsx:53`) | Full-size preview |
 | `subagent_events` | A `Disclosure` — "Subagent's work (N actions)" — open by default, containing ordinary tool calls | Per-step detail, via the same components |
@@ -123,12 +131,24 @@ common (small) case stays absent from the JSON.
 **Slice size: the first 40 lines, hard-capped at 16 KB** — whichever comes
 first.
 
-The line cap does the real work, and 40 is derived rather than picked: the
-largest inline preview is Bash at 30 lines (`ToolResult.tsx:11–14`), so 40
-covers every render path with headroom. A pure byte cap was the first proposal
+> **The justification below no longer holds. 40 is now a provisional bound, not
+> a derived one.** It was derived from the transcript's inline previews — but
+> the transcript no longer has any. `<ToolResult>` is rendered in exactly one
+> production place, `message-tools.tsx:500`, which is *inside the click-opened
+> modal*; the transcript itself draws a one-line summary built only from the
+> tool's **input** (`command` truncated to 80 chars, `file_path`, `pattern`,
+> `query`, `url`) plus a hover "Show output" button. No tool output is visible
+> without a click. That means the 40 lines this ships are 40 lines nobody can
+> see, which is precisely what req 1 forbids — see *Requirement 1 is not met*
+> below. The number is retained as-is for now because changing it is a
+> redesign, not a tuning exercise.
+
+The line cap does the real work, and 40 was derived rather than picked: the
+largest inline preview was Bash at 30 lines (`ToolResult.tsx:11–14`), so 40
+covered every render path with headroom. A pure byte cap was the first proposal
 and is worse: at 16 KB it transfers roughly eight times what is drawn, and a
 page of 50 results still moves ~800 KB — which is exactly the outcome req 1
-rules out. Deriving the cap from what the UI draws is what makes it principled.
+rules out.
 
 The byte cap is a backstop for the case a line cap cannot bound: one
 pathological line (minified JSON, a base64 blob) can be megabytes on its own.
@@ -140,7 +160,42 @@ button already there is the recovery path.
 
 `SLICE_LINES` lives in shared code with a guard test asserting it is ≥ every
 `*_MAX_LINES` in `ToolResult.tsx`, so a future render path that shows more
-lines fails the build rather than silently rendering a short preview.
+lines fails the build rather than silently rendering a short preview. That guard
+is still meaningful, but its subject moved: those previews now render inside the
+output modal rather than in the transcript.
+
+## Requirement 1 is not met, and why that is recorded rather than fixed here
+
+Req 1 is the completion criterion: *do not transfer information that is not
+visible without a click.* As built, this feature ships the first 40 lines of
+every ordinary tool result, and — since the UI change described above — **none
+of those lines is visible until the user opens the modal.** So the feature
+reduces the payload substantially while still failing its own headline
+requirement.
+
+The four things that *do* render result content without a click are exactly the
+consumers req 4 names:
+
+| What | Renders | Size |
+|---|---|---|
+| Subagent final report (`SubagentCall.tsx:132`) | full markdown, no expand affordance | can be large — already exempt |
+| `AskUserQuestion` (`message-tools.tsx:137`) | the chosen answer, from result content | short |
+| Present (`message-tools.tsx:171`) | `presentId` parsed from result content | short |
+| `ExitPlanMode` (`message-tools.tsx:162`) | existence only, never content | none |
+
+So the correct shape is: carry **no** result content for anything outside that
+list — only the metadata req 3 requires — and fetch the body when the modal
+opens, exactly as `DiffBlock` already fetches when *its* modal opens. That
+also retires the 16 KB byte backstop and the derived-slice guard for ordinary
+results, since there would be no inline preview left to bound, and it needs the
+fetch endpoint to substitute image URLs so the modal fetch does not simply
+become the new heavy payload.
+
+That is a redesign of the projection rather than a tuning change, and it landed
+as a finding on an already long-lived branch, so it is deliberately **deferred
+to a follow-up** and tracked in `checklist.md`. What ships here is a large byte
+reduction with an honestly-documented requirement gap, not a claim that req 1 is
+satisfied.
 
 The cut lands on a UTF-8 character boundary so a preview never ends
 mid-codepoint.
@@ -247,18 +302,99 @@ truncation, permanently destroying the bodies this design is careful to keep.
 This is the single most dangerous way to implement the feature and the reason
 the projection is a separate function.
 
-### Live path
+### Three projection sites, not one
 
-The same projection applies to the live WS path as well as history loads, so the
-client has one code path and the per-turn event replay buffer gets lighter too.
-The client's existing 1 MB cap in `agent-event.ts` becomes redundant for sliced
-results but stays as a backstop for the exempt classes.
+Req 6 puts live turns, reconnects, *and* history loads inside the bound, and
+those are three different code paths — only one of which reads through
+`getChatHistory`:
 
-Thumbnail generation happens once, at persist time, off the turn's critical
-path.
+| Path | Site | Top-level results / images | Tool inputs | Nested subagent results |
+|---|---|---|---|---|
+| History load, session switch | `getChatHistory` (`services/session.ts`) | stripped | stripped | stripped |
+| Live turn | `projectAgentEventForWire` (`agent-listeners.ts`) | stripped | **inline** | **inline** |
+| Reconnect mid-turn | `projectTurnSnapshotForWire` (`route-registry.ts`) | stripped | **inline** | **inline** |
+
+The reconnect site is the easy one to miss: `turn_snapshot` is built from
+`runner.chatMessageGroups` in memory, so it never touches the history read and
+an early version of this feature re-sent on reconnect every megabyte the
+history path had just removed.
+
+### Why only the history path may strip everything
+
+**A body may only leave the wire once the row holding it is committed** —
+otherwise the fetch the client makes on click 404s, which breaks req 2. Exactly
+one payload class is committed in the same tick as its emit:
+
+* **Top-level tool results** are committed by `replaceInProgress` inside the
+  `agent_tool_result` handler, synchronously before the frame reaches the
+  network. Strippable everywhere.
+* **User-row images** are persisted when the turn opens. Strippable everywhere.
+* **Edit/Write inputs** arrive on an `agent_assistant` event, and nothing
+  commits the row until the *next* tool-result boundary. The diff modal can be
+  opened the instant the summary renders — i.e. exactly inside that window.
+* **Nested subagent results** are the worst case: the `parentToolUseId` branch
+  of the same handler calls `attachSubagentToolResults` and **returns**,
+  skipping the `replaceInProgress` below it entirely. They reach disk only at
+  the next *top-level* boundary, which for a long Task is many tool calls later.
+
+So the last two are stripped on the history path only, where every row is on
+disk by construction. This costs part of the live-path saving; it is the right
+trade, because an unfetchable body is a visible failure and a fatter live frame
+is not. The bytes accumulate across reloads, not within one turn.
+
+**Rejected alternative: persist nested results before emitting them.** That
+would make the guarantee true everywhere and keep the saving. But
+`replaceInProgress` deletes and re-inserts *every row in the turn*,
+re-serializing the whole `subagent_events` blob each time — so calling it per
+nested result is quadratic in the number of subagent tool calls, and the blob it
+keeps re-stringifying is made of exactly the heavy bodies this feature exists to
+stop moving around. The cost lands hardest on Task-heavy turns, which is the
+case the feature targets. Making persistence incremental would change the trade,
+but that is `ChatHistoryManager` work, not this feature's.
+
+This section has been wrong twice, the same way both times: a guarantee was
+verified on one code path and then written up as general — first claiming the
+same-tick commit covered `agent_assistant`, then claiming it covered nested
+results. Both were caught by independent review, not by the tests. That failure
+mode is the one `CLAUDE.md` calls out, and it is why the distinction is now a
+required argument (`allRowsPersisted`) rather than a comment.
+
+The projection always runs on a *copy* for the emit; the original event flows on
+to `extractToolResults` and is persisted whole. The client's existing 1 MB cap
+in `agent-event.ts` becomes redundant for sliced results but stays as a backstop
+for the exempt classes.
+
+### Transcript paths deliberately NOT projected
+
+An independent review enumerated every server→browser message that can carry
+transcript content. Beyond the three sites above, two carry a scoped heavy field
+and are knowingly left alone in this pass — recorded here so the next reader
+does not have to rediscover them:
+
+* **`message_steered`** (`ws-handlers/send-message.ts`) echoes a live steer,
+  including full base64 `images`. The row is persisted *before* the emit, so URL
+  projection would be safe here — this is a gap, not a hazard.
+* **`sub_agent_consult_card.outputMarkdown`** — a brokered `shipit agent run`
+  result, shown as one preview line until clicked, but transferred whole.
+
+Every other transcript-bearing message (the persisted card rows, user/error
+rows, `fork_breadcrumb`, and the mutation-only messages) carries no field in
+this feature's scope.
 
 ## Key files
 
+Added by this feature:
+
+* `src/server/shared/transcript-slice.ts` — `sliceBody`, `TRANSCRIPT_SLICE_LINES` (40), `TRANSCRIPT_SLICE_BYTES` (16 KB); UTF-8-safe, dependency-free so the client can import the constants
+* `src/server/shared/transcript-slice-tools.ts` — `SUBAGENT_TOOL_NAMES`, the one exemption set, re-exported by `visual-elements.ts` so the renderer and the projection cannot disagree
+* `src/server/orchestrator/transcript-projection.ts` — the serve-path projection: `projectMessagesForWire` (history), `projectAgentEventForWire` (live), `projectToolResult`, `projectToolUse`, `imageHash`
+* `src/server/orchestrator/api-routes-lazy-bodies.ts` — the three fetch endpoints; scans top-level *and* `subagent_events`
+
+Touched:
+
+* `src/server/orchestrator/services/session.ts` — `getChatHistory`, the history projection site
+* `src/server/orchestrator/ws-handlers/agent-listeners.ts` — live emit site; projects the wire copy only, `event` stays whole for persistence
+* `src/server/orchestrator/route-registry.ts` — `turn_snapshot`, the reconnect projection site (req 6)
 * `src/server/orchestrator/chat-history.ts` — `PersistedMessage`, `fromRow` (do not slice here)
 * `src/server/orchestrator/ws-handlers/agent-event-normalizer.ts` — `extractToolResults`, the uncapped persist path
 * `src/server/orchestrator/api-routes-session-spawn.ts:85` — `GET /api/sessions/:id/history`

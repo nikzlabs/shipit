@@ -5,7 +5,13 @@ import { isPresentTool } from "./tool-names.js";
 export const STANDALONE_TOOLS = new Set(["AskUserQuestion", "TodoWrite", "EnterPlanMode", "ExitPlanMode"]);
 
 // Tools extracted into their own top-level visual elements (not grouped, not inside message bubbles)
-export const SUBAGENT_TOOLS = new Set(["Task", "Skill", "Agent"]);
+//
+// Re-exported from shared rather than redeclared: the orchestrator's docs/244
+// projection exempts exactly this set from slicing, because a subagent's final
+// report renders in full here with no expand affordance. A drift between the
+// two lists would silently truncate a report with no way to get it back.
+export { SUBAGENT_TOOL_NAMES as SUBAGENT_TOOLS } from "../../server/shared/transcript-slice-tools.js";
+import { SUBAGENT_TOOL_NAMES as SUBAGENT_TOOLS } from "../../server/shared/transcript-slice-tools.js";
 
 /**
  * A tool that must NOT be folded into the clipped `ToolCallGroup` container

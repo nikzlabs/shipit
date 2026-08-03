@@ -12,7 +12,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import simpleGit from "simple-git";
 import type { SessionManager } from "../sessions.js";
-import type { ChatHistoryManager } from "../chat-history.js";
+import type { ChatHistoryManager, PersistedMessage } from "../chat-history.js";
+import { projectMessagesForWire } from "../transcript-projection.js";
 import type { UsageManager } from "../usage.js";
 import type { GitManager } from "../../shared/git.js";
 import type { RepoGit } from "../repo-git.js";
@@ -97,12 +98,22 @@ export function getSessionStatus(
   };
 }
 
-/** Get chat messages for a session (read-only, no activation side effects). */
+/**
+ * Get chat messages for a session (read-only, no activation side effects).
+ *
+ * This is the browser-facing read, so it is where the docs/244 lazy-body
+ * projection is applied: heavy tool outputs, file bodies behind a `+N -M`
+ * summary, and base64 images are replaced by metadata plus a fetch URL. The
+ * projection deliberately does NOT live in `ChatHistoryManager.load` — that has
+ * internal consumers (rollback handlers, agent env, PR-description building)
+ * which need the real content, and `fromRow` feeds read-modify-write paths that
+ * would persist the truncation.
+ */
 export function getChatHistory(
   chatHistoryManager: { load: (sessionId: string) => unknown[] },
   sessionId: string,
 ) {
-  return chatHistoryManager.load(sessionId);
+  return projectMessagesForWire(sessionId, chatHistoryManager.load(sessionId) as PersistedMessage[]);
 }
 
 /** Get sibling sessions sharing the same repo. */

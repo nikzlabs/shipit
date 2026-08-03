@@ -81,7 +81,13 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
     const newString = tool.input.new_string !== null && tool.input.new_string !== undefined ? (tool.input.new_string as string) : undefined;
     return (
       <div>
-        <DiffBlock filePath={filePath} oldString={oldString} newString={newString} />
+        <DiffBlock
+          filePath={filePath}
+          oldString={oldString}
+          newString={newString}
+          toolUseId={tool.id}
+          {...(tool.diffStats ? { stats: tool.diffStats } : {})}
+        />
         {inProgress && <ToolProgressBar tool={tool.name} />}
       </div>
     );
@@ -92,7 +98,13 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
     const content = tool.input.content !== null && tool.input.content !== undefined ? (tool.input.content as string) : "";
     return (
       <div>
-        <DiffBlock filePath={filePath} newString={content} isWrite />
+        <DiffBlock
+          filePath={filePath}
+          newString={content}
+          isWrite
+          toolUseId={tool.id}
+          {...(tool.diffStats ? { stats: tool.diffStats } : {})}
+        />
         {inProgress && <ToolProgressBar tool={tool.name} />}
       </div>
     );
@@ -341,7 +353,10 @@ interface PresentToolResult {
   title?: string;
 }
 
-function parsePresentToolResult(tool: ToolUseBlock, result: ToolResultBlock | undefined): PresentToolResult | null {
+// Exported for the docs/244 req-4 guard: the projection must never slice a
+// result these consumers read from, so the test drives the real parser rather
+// than a copy of its rules.
+export function parsePresentToolResult(tool: ToolUseBlock, result: ToolResultBlock | undefined): PresentToolResult | null {
   if (!isPresentTool(tool.name)) return null;
   if (!result) return null;
 

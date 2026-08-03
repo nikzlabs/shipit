@@ -23,6 +23,7 @@ import {
   isWellFormedAskUserQuestion,
   createAgentToolTracker,
 } from "./agent-event-normalizer.js";
+import { projectAgentEventForWire } from "../transcript-projection.js";
 import {
   accumulateAssistantGroups,
   attachSubagentAssistant,
@@ -742,7 +743,24 @@ export function wireAgentListeners(
     const isInternalStreamCompletion =
       event.type === "agent_assistant" && event.isStreamCompletion;
     if (!isInternalStreamCompletion) {
-      emitToViewers({ type: "agent_event", event });
+      // docs/244 — project heavy bodies out of the WIRE copy only. `event`
+      // itself must stay whole: it flows on to `extractToolResults` below and
+      // is what gets persisted, and the fetch endpoints read the persisted row.
+      // Projecting in place here would store the slice and destroy the tail.
+      //
+      // A client cannot outrun the write, but only because this projects tool
+      // RESULTS and nothing else: the `replaceInProgress` that commits them is
+      // a synchronous better-sqlite3 call in the `agent_tool_result` branch
+      // below, in this same tick, so the row lands before the frame reaches the
+      // network. That does NOT extend to `agent_assistant` — an Edit/Write body
+      // arriving there is not committed until the *next* tool-result boundary,
+      // so stripping it here would leave the diff modal with nothing to fetch
+      // for as long as the tool takes to run. Hence tool inputs are projected
+      // on the history path only; see `WireProjectionOptions`.
+      const wireEvent = opts.capturedSessionId
+        ? projectAgentEventForWire(opts.capturedSessionId, event, (id) => toolTracker.getToolName(id))
+        : event;
+      emitToViewers({ type: "agent_event", event: wireEvent });
     }
 
     if (event.type === "agent_init") {

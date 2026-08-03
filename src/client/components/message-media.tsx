@@ -38,6 +38,11 @@ export function MessageImages({ images, isUserMessage }: { images: ChatMessageIm
   return (
     <div className={`flex gap-2 flex-wrap ${images.length > 0 && isUserMessage ? "mt-2" : "mb-2"}`} data-testid="message-images">
       {images.map((img, i) => {
+        // `src` is the content-addressed endpoint for anything served from the
+        // orchestrator (docs/244) and a blob: URL for optimistic local
+        // messages; `data` only survives on the latter. One URL serves both the
+        // 96px render and the full-size preview below — the browser cache makes
+        // the second free, which is why no separate thumbnail is stored.
         const src = img.src ?? `data:${img.mediaType};base64,${img.data}`;
         const alt = `Attached image ${i + 1}`;
         return (
@@ -50,9 +55,12 @@ export function MessageImages({ images, isUserMessage }: { images: ChatMessageIm
             title="Click to view full size"
             aria-label={`View image ${i + 1} full size`}
           >
+            {/* Fixed 96×96 box, so lazy loading costs no layout shift while
+                keeping scrolled-away images off the wire entirely. */}
             <img
               src={src}
               alt={alt}
+              loading="lazy"
               className="w-24 h-24 object-cover"
             />
           </button>

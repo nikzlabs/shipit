@@ -1,7 +1,7 @@
 # Lazy row bodies — checklist
 
 > Under requirements discipline — see `requirements.md`. No open questions and
-> no open design decisions remain; implementation is unblocked.
+> no open design decisions remain.
 
 ## Requirements
 - [x] Draft `requirements.md` from the issue and the chat
@@ -21,40 +21,79 @@
 - [x] Decide thumbnail storage → no new store; bytes stay in SQLite
 
 ## Server — tool results
-- [ ] Add `truncated` / `totalLines` / `totalBytes` to the tool-result type
-- [ ] Shared `SLICE_LINES` constant (40) + 16 KB byte backstop, UTF-8 safe
-- [ ] Serve-path slice projection, separate from `fromRow`
-- [ ] Exempt Task-parent results (final report)
-- [ ] Substitute image blocks *before* slicing, so image results need no exemption
-- [ ] `GET /api/sessions/:id/tool-results/:toolUseId`
+- [x] Add `truncated` / `totalLines` / `totalBytes` to the tool-result type
+- [x] Shared `SLICE_LINES` constant (40) + 16 KB byte backstop, UTF-8 safe
+- [x] Serve-path slice projection, separate from `fromRow`
+- [x] Exempt Task-parent results (final report)
+- [x] Substitute image blocks *before* slicing, so image results need no exemption
+- [x] `GET /api/sessions/:id/tool-results/:toolUseId`
 
 ## Server — Write/Edit inputs
-- [ ] Persist `added` / `removed` line stats
-- [ ] Strip body from the wire behind a `truncated` marker
-- [ ] `GET /api/sessions/:id/tool-inputs/:toolUseId`
+- [x] Persist `added` / `removed` line stats
+- [x] Strip body from the wire behind a `truncated` marker
+- [x] `GET /api/sessions/:id/tool-inputs/:toolUseId`
 
 ## Server — images
-- [ ] Hash + strip base64 in the projection; populate `src` with the URL
-- [ ] `GET /api/sessions/:id/images/:hash`, `Cache-Control: immutable` + `ETag`
-- [ ] Apply to image-bearing tool results as well as user rows
+- [x] Hash + strip base64 in the projection; populate `src` with the URL
+- [x] `GET /api/sessions/:id/images/:hash`, `Cache-Control: immutable` + `ETag`
+- [x] Apply to image-bearing tool results as well as user rows
 
 ## Client
-- [ ] Fetch-on-expand in `ToolResult.tsx`; spinner while loading
-- [ ] `totalLines` from metadata for the "Show all N lines" label
-- [ ] `DiffBlock` reads stats from metadata; fetches body when the modal opens
-- [ ] `data` optional on `ChatMessageImage`; `src` added to `ToolResultImage`
-- [ ] `loading="lazy"` on both image render paths
-- [ ] Ordinary error surfaced on a 404
+- [x] Fetch-on-expand in `ToolResult.tsx`; spinner while loading
+- [x] `totalLines` from metadata for the "Show all N lines" label
+- [x] `DiffBlock` reads stats from metadata; fetches body when the modal opens
+- [x] `data` optional on `ChatMessageImage`; `src` added to `ToolResultImage`
+- [x] `loading="lazy"` on both image render paths
+- [x] Ordinary error surfaced on a 404
 
 ## Tests
-- [ ] Slice boundary: UTF-8 safety, 40-line cut, 16 KB backstop on a long line
-- [ ] Guard: `SLICE_LINES` ≥ every `*_MAX_LINES` in `ToolResult.tsx`
-- [ ] Image-bearing result still parses via `parseContentForImages` after substitution
-- [ ] Exemption: subagent final report stays whole
-- [ ] Diff stats match `countLines` on the full body
-- [ ] Regression guard: a `fromRow` read-modify-write round-trip does **not** persist a sliced body
-- [ ] Endpoints: hit, subagent-nested hit, 404 on unknown id
-- [ ] Same image in two rows resolves to one hash (dedupe)
-- [ ] Constraint consumers still resolve from a sliced result (req 4)
-- [ ] Rewind invariant: after a chat rewind the client holds no row whose body was deleted
-- [ ] Req 1 assertion: a synthetic 1 MB-result transcript transfers nothing that isn't visible without a click
+- [x] Slice boundary: UTF-8 safety, 40-line cut, 16 KB backstop on a long line
+- [x] Guard: `SLICE_LINES` ≥ every `*_MAX_LINES` in `ToolResult.tsx`
+- [x] Image-bearing result still parses via `parseContentForImages` after substitution
+- [x] Exemption: subagent final report stays whole
+- [x] Diff stats match `countLines` on the full body
+- [x] Regression guard: `updateLastMessage` (a real `fromRow` read-modify-write updater) does **not** write back a sliced body
+- [x] Endpoints: hit, subagent-nested hit, 404 on unknown id
+- [x] Same image in two rows resolves to one hash (dedupe)
+- [x] Constraint consumers still resolve from a sliced result (req 4)
+- [x] Rewind invariant: after a chat rewind the client holds no row whose body was deleted
+- [x] Req 1: a >1 MB stored transcript serves a small fraction of its size, with none of the three heavy bodies present beyond their slice
+
+## Review fixes (round 1)
+- [x] Project the reconnect `turn_snapshot` — third browser-facing path, was bypassing the projection entirely (req 6)
+- [x] Stop stripping Edit/Write bodies on the live path; their row isn't committed until the next tool-result boundary, so the diff modal could 404 (req 2)
+- [x] Correct the same-tick persistence claim in code comment, `plan.md`, and the PR body — it holds for tool results only
+
+## Review fixes (round 2)
+- [x] Stop stripping **nested subagent results** on the live emit and the snapshot — their handler branch returns before `replaceInProgress`, so they reach disk only at the next top-level boundary (req 2)
+- [x] Collapse both exceptions into one `allRowsPersisted` flag expressing the actual invariant, rather than two ad-hoc opt-outs
+- [x] Image endpoint: check the hash resolves *before* honouring `If-None-Match`, so a nonexistent image 404s instead of 304-ing
+- [x] Add the read-modify-write guard that the checklist previously claimed but no test performed
+- [x] Correct the module header ("two places" → three) and document the two knowingly-unprojected paths (`message_steered`, `sub_agent_consult_card`)
+
+## Review fixes (round 3)
+- [x] Client 1 MB cap sets `truncated` + the true `totalLines` for an **ordinary** result, so a capped body gets the expand-and-fetch affordance instead of being silently cut (req 3/4). Cut is surrogate-safe; `totalBytes` deliberately left to the server, which measures UTF-8 rather than UTF-16 units.
+- [x] **Correction to the line above, from round 3's review:** the first version of that fix applied to *every* result, which was wrong twice over — it still clipped subagent final reports (which `SubagentCall` renders whole, with no expand affordance, so the marker did nothing), and it advertised a fetch for nested results whose row is not committed yet. Now: a final report is never capped; a nested result is capped but not marked; only an ordinary result is capped and marked. The test for the original fix used a `Task` tool, so it had codified the very violation it should have caught.
+- [x] Image lookup pre-filtered on the literal text `"base64"`, which the projection never requires — an MCP image block carrying `source.data` without `source.type` got an `/images/:hash` URL that then 404'd forever. Keyed on the block type instead.
+
+## Requirement 1 is not met — deferred, not fixed
+- [ ] **The transcript no longer previews tool output at all**, so the 40 lines this ships are invisible until the modal opens — exactly what req 1 forbids. `<ToolResult>` renders only inside the click-opened modal (`message-tools.tsx:500`); the transcript line is built from the tool's *input*. The fix is to carry no result content outside the four consumers req 4 names (subagent final report, AskUserQuestion, Present, ExitPlanMode) and fetch on modal open — a redesign of the projection, deliberately deferred. Full analysis in `plan.md` → *Requirement 1 is not met*.
+- [ ] Once that lands, the 16 KB byte backstop and the `TRANSCRIPT_SLICE_LINES` ≥ `*_MAX_LINES` guard become moot for ordinary results, and the fetch endpoint needs to substitute image URLs so the modal fetch isn't the new heavy payload.
+
+## Known gaps (recorded, not addressed in this PR)
+- [ ] Req 5 says "tool inputs"; only Edit/Write are projected, other tool inputs ship whole
+- [ ] Byte backstop on a single long line removes text that used to render inline, and labels it "Show all 1 lines" (reqs 1/8)
+- [ ] A >16 KB free-form AskUserQuestion answer would be sliced (req 4)
+- [ ] `message_steered` echoes full base64 images unprojected — safe to fix (row is persisted first), just not done here
+- [ ] `sub_agent_consult_card.outputMarkdown` is modal-only content shipped whole
+- [ ] Reconnect snapshot resends already-committed tool inputs; tightening needs a committed-prefix marker on the runner
+
+## Follow-up work (separate from this PR)
+- [ ] **File the Linear issue for the req-1 redesign above.** Attempted during this PR; Linear returned `usage limit exceeded` twice. The full write-up is in `plan.md` → *Requirement 1 is not met*, so nothing is lost — but the tracker item still needs creating.
+- [ ] Subagent activity does not appear in the UI in practice (docs/109) — plumbing is complete and tested with synthetic events, but never verified against a live CLI, and both attach points silently no-op when the parent group isn't found. Investigate after this merges.
+
+## Verification
+- [x] `npm run typecheck`
+- [x] `npm run lint:dev`
+- [x] Feature test files green (74 tests across 6 files)
+- [ ] Independent requirements review by a fresh context (CLAUDE.md step 5) — round 2 found real bugs; needs a clean pass

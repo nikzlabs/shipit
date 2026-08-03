@@ -46,6 +46,7 @@ import { registerGitRoutes } from "./api-routes-git.js";
 import { registerSessionCrudRoutes } from "./api-routes-session-crud.js";
 import { registerSessionReposRoutes } from "./api-routes-session-repos.js";
 import { registerSessionSpawnRoutes } from "./api-routes-session-spawn.js";
+import { registerLazyBodyRoutes } from "./api-routes-lazy-bodies.js";
 import { createClaimSessionService, type ClaimSessionService } from "./services/claim-session.js";
 import { registerPreviewRoutes } from "./api-routes-preview.js";
 import { registerGitHubRoutes } from "./api-routes-github.js";
@@ -360,6 +361,7 @@ export async function registerApiRoutes(
   await registerSessionCrudRoutes(app, deps2);
   await registerSessionReposRoutes(app, deps2);
   await registerSessionSpawnRoutes(app, deps2);
+  registerLazyBodyRoutes(app, deps2);
   await registerContainerRoutes(app, deps);
   await registerHostRoutes(app, deps);
   await registerSourceRoutes(app, deps);

@@ -221,8 +221,11 @@ export interface WsChatHistoryMessage {
     input: Record<string, unknown>;
   }[];
   images?: {
-    data: string;      // base64 image data (inlined for small images)
+    /** Base64 payload. Replaced by `src` on the serve path (docs/244). */
+    data?: string;
     mediaType: string;
+    /** docs/244 — content-addressed URL, set instead of `data` on the wire. */
+    src?: string;
   }[];
   files?: {
     path: string;
