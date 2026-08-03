@@ -350,6 +350,16 @@ export async function prepareSessionAgentEnvironment(
       ? { kind: routedSession.providerRouteKind, id: routedSession.providerRouteId }
       : selectRouteForNewTurn(agentId, deps, args.enforceAccountRouting ?? false);
 
+  // docs/150 req 21 — stamp the account this turn actually resolved onto, which
+  // is what `balanced` sorts by. Here rather than inside `selectAccountForTurn`
+  // because that function also answers probe questions (route usability, the
+  // `selectRouteForTurn` wrapper), and an account merely *considered* has not
+  // been used. Covers the pinned branch too, deliberately: an account carrying
+  // an active session should keep sorting last while that work continues.
+  if (selectedRoute?.kind === "account" && deps.providerAccountManager) {
+    deps.providerAccountManager.markAccountUsed(agentId, selectedRoute.id);
+  }
+
   // req 11 — say it in the session, where the user is already looking, and
   // persist it: a switch the transcript forgets on reload is not a record.
   const chatHistory = deps.chatHistoryManager;

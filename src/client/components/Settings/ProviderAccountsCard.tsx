@@ -594,7 +594,10 @@ export function ProviderAccountsCard({
           control would set a number that can never do anything (req 15 —
           connecting a second account is what turns failover on). */}
       {accounts.length > 1 && (
-        <FailoverCutoffControls provider={provider} name={name} />
+        <>
+          <SelectionModeControl provider={provider} name={name} />
+          <FailoverCutoffControls provider={provider} name={name} />
+        </>
       )}
 
       {/* Escape hatch: stored-but-unverifiable credentials leave the agent
@@ -655,6 +658,79 @@ export function ProviderAccountsCard({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * docs/150 req 21 — how this provider's accounts relate to each other.
+ *
+ * Worded around the accounts, not the algorithm: the real question a user can
+ * answer is "are these two the same kind of account or not?", and the ordering
+ * behavior follows from that. Naming the mechanism instead ("least recently
+ * used") would ask them to reason about scheduling to pick correctly.
+ *
+ * Rendered above the cutoffs because it changes what the cutoffs *mean*: under
+ * balancing, work moves between accounts continuously and a cutoff is the point
+ * an account drops out of the rotation, rather than the point work leaves it.
+ */
+function SelectionModeControl({ provider, name }: { provider: AgentId; name: string }) {
+  const stored = useSettingsStore((s) => s.accountSelectionMode[provider]);
+  const mode = stored ?? "strict";
+  const [saving, setSaving] = useState(false);
+
+  const save = async (next: "strict" | "balanced"): Promise<void> => {
+    if (next === mode) return;
+    const previous = mode;
+    useSettingsStore.getState().setAccountSelectionMode(provider, next);
+    setSaving(true);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accountSelectionMode: { [provider]: next } }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      useSettingsStore.getState().setAccountSelectionMode(provider, previous);
+      useUiStore.getState().setToast({ message: `Failed to update ${name} account order` });
+      console.error("[settings] account selection mode save failed:", err);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const option = (value: "strict" | "balanced", label: string, hint: string) => (
+    <label className="flex items-start gap-2 text-xs cursor-pointer">
+      <input
+        type="radio"
+        name={`selection-mode-${provider}`}
+        checked={mode === value}
+        disabled={saving}
+        onChange={() => void save(value)}
+        aria-label={`${name} account selection: ${label}`}
+        className="mt-0.5 accent-(--color-accent)"
+        data-testid={`selection-mode-${provider}-${value}`}
+      />
+      <span>
+        <span className="text-(--color-text-secondary)">{label}</span>
+        <span className="block text-(--color-text-tertiary)">{hint}</span>
+      </span>
+    </label>
+  );
+
+  return (
+    <div className="px-1 space-y-2" data-testid={`selection-mode-${provider}`}>
+      {option(
+        "strict",
+        "Use in order",
+        "New sessions start on the first account that has quota. Best when the accounts differ — a bigger plan first, a smaller one as backup.",
+      )}
+      {option(
+        "balanced",
+        "Spread across accounts",
+        "New sessions go to whichever account has been used least, so quota drains evenly. Best when the accounts are equivalent.",
+      )}
     </div>
   );
 }

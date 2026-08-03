@@ -7,7 +7,8 @@ import type {
   OAuthTokens,
   McpOAuthRegisteredClient,
 } from "../shared/types/mcp-types.js";
-import type { AgentId, FailoverCutoffs, ProviderAccount, SubAgentDefaults, SubAgentDefaultsPatch } from "../shared/types.js";
+import type { AgentId, AccountSelectionMode, FailoverCutoffs, ProviderAccount, SubAgentDefaults, SubAgentDefaultsPatch } from "../shared/types.js";
+import { DEFAULT_SELECTION_MODE } from "../shared/types.js";
 import { DEFAULT_FAILOVER_CUTOFF } from "../shared/types.js";
 import type { VoiceDeliveryMode } from "../shared/types/voice-note-types.js";
 import { DEFAULT_VOICE_DELIVERY_MODE } from "../shared/types/voice-note-types.js";
@@ -40,6 +41,8 @@ interface CredentialData {
   liveSteering?: boolean;
   /** docs/150 reqs 4–6 — per-provider proactive failover cutoffs. */
   failoverCutoffs?: Partial<Record<AgentId, FailoverCutoffs>>;
+  /** docs/150 req 21 — per-provider account selection mode. */
+  accountSelectionMode?: Partial<Record<AgentId, AccountSelectionMode>>;
   /**
    * When true, the PR poller's auto-resolve loop fires when a tracked PR
    * transitions to CONFLICTING while the agent is idle. (docs/146)
@@ -638,6 +641,25 @@ export class CredentialStore {
     this.data.failoverCutoffs = { ...this.data.failoverCutoffs, [provider]: next };
     this.save();
     return next;
+  }
+
+  // ---- Account selection mode (docs/150 req 21) ----
+
+  /**
+   * Unrecognized stored values fall back to the default rather than being
+   * surfaced: this is read on the turn-routing path, where an unknown mode has
+   * no sensible behavior and failing the turn over a bad settings value would
+   * be worse than routing the way an untouched install does.
+   */
+  getSelectionMode(provider: AgentId): AccountSelectionMode {
+    const stored = this.data.accountSelectionMode?.[provider];
+    return stored === "strict" || stored === "balanced" ? stored : DEFAULT_SELECTION_MODE;
+  }
+
+  setSelectionMode(provider: AgentId, mode: AccountSelectionMode): AccountSelectionMode {
+    this.data.accountSelectionMode = { ...this.data.accountSelectionMode, [provider]: mode };
+    this.save();
+    return mode;
   }
 
   // ---- Auto-resolve conflicts (docs/146) ----

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type {
+  AccountSelectionMode,
   AgentId,
   FailoverCutoffs,
   ProviderAccount,
@@ -404,6 +405,49 @@ export class ProviderAccountManager {
   }
 
   /**
+   * docs/150 req 21 — stamp an account as used, now.
+   *
+   * This is the write that makes `balanced` mean anything: `lastUsedAt` was
+   * declared on `ProviderAccount` from the start but never written by anything,
+   * so an LRU order over it would have been a no-op sort over a field that was
+   * `undefined` everywhere.
+   *
+   * Called when a turn *resolves onto* an account, not when one is merely
+   * *considered*. `selectAccountForTurn` is also used for probing (route
+   * usability, the `selectRouteForTurn` wrapper), and stamping there would mark
+   * accounts that never ran a thing.
+   *
+   * Deliberately called on **every** turn, not only the first turn that pins a
+   * session. Balancing is about spreading load, so an account carrying active
+   * work should keep sorting last for as long as that work continues — and a
+   * pin-time-only stamp would let a long-lived busy session look idle forever.
+   *
+   * Cheap and best-effort: a missing account (deleted mid-turn) is a no-op
+   * rather than a throw, because failing a turn over a bookkeeping write would
+   * be a strictly worse outcome than a slightly stale sort key.
+   */
+  markAccountUsed(provider: AgentId, accountId: string): void {
+    const account = this.get(provider, accountId);
+    if (!account) return;
+    // Strictly greater than every sibling's stamp, not simply `Date.now()`.
+    // `Date.now()` is millisecond-granular, so two sessions pinning inside the
+    // same millisecond would tie — and a tie falls back to priority order,
+    // handing both to the same account. That is precisely the pile-up
+    // `balanced` exists to prevent, and burst-safety is the reason LRU was
+    // chosen over ranking by polled quota in the first place; a stamp that
+    // cannot separate a burst would have quietly given up that advantage.
+    //
+    // The value stays a wall-clock timestamp in the ordinary case and only
+    // runs ahead during a burst, by at most the burst's length in
+    // milliseconds — it is a sort key, and nothing displays it.
+    const peak = this.list(provider).reduce((max, a) => Math.max(max, a.lastUsedAt ?? 0), 0);
+    this.credentialStore.upsertProviderAccount({
+      ...account,
+      lastUsedAt: Math.max(Date.now(), peak + 1),
+    });
+  }
+
+  /**
    * Promote an account to the front of the fallback order. Kept as its own verb
    * (rather than "reorder with this id first") because it is the one-click
    * affordance the account rows already offer, and expressing it through
@@ -494,10 +538,13 @@ export class ProviderAccountManager {
    */
   selectAccountForTurn(provider: AgentId, opts: SelectAccountOptions = {}): AccountSelection {
     const exclude = new Set(opts.exclude ?? []);
-    const connected = this.accountsInSelectionOrder(provider).filter(
-      (account) =>
-        (account.status === "ready" || account.status === "authenticating") &&
-        !exclude.has(account.id),
+    const connected = orderForSelectionMode(
+      this.accountsInSelectionOrder(provider).filter(
+        (account) =>
+          (account.status === "ready" || account.status === "authenticating") &&
+          !exclude.has(account.id),
+      ),
+      this.credentialStore.getSelectionMode(provider),
     );
 
     const limits = this.getSubscriptionLimits?.()?.[provider] ?? {};
@@ -525,8 +572,10 @@ export class ProviderAccountManager {
       return { ok: true, route: { kind: "account", id: account.id } };
     }
     // Nothing under its cutoff, but these still work. Preferring the first in
-    // priority order keeps the choice stable rather than hunting for whichever
-    // account is marginally least used.
+    // the mode's own order keeps the choice stable rather than hunting for
+    // whichever account is marginally least used — and under `balanced` that
+    // order is already least-recently-used, so the tier degrades the same way
+    // the tier above it does.
     const fallback = overCutoff[0];
     if (fallback) return { ok: true, route: { kind: "account", id: fallback.id } };
 
@@ -937,6 +986,40 @@ function isNonEmptyFile(filePath: string): boolean {
  * toward "try it" costs one failed turn; erring the other way makes the account
  * unusable forever.
  */
+/**
+ * docs/150 req 21 — reorder the eligible accounts according to the provider's
+ * selection mode. Called once, before the eligibility walk, so every tier of
+ * that walk (under-cutoff, then over-cutoff) inherits the same order.
+ *
+ * `strict` is the identity: the caller already handed us the user's priority
+ * order, which under that mode *is* the preference.
+ *
+ * `balanced` sorts least-recently-used first. Two reasons that beats ranking by
+ * current quota usage, which looks like the more direct read of "drain at a
+ * comparable rate":
+ *
+ *   - Quota is **polled**, so a burst of new sessions would all see the same
+ *     stale snapshot and all pin to whichever account looked least used —
+ *     precisely the pile-up `balanced` exists to avoid. `lastUsedAt` is stamped
+ *     synchronously when a turn resolves onto an account, so the second session
+ *     in a burst already sees the first one's effect.
+ *   - Ranking accounts by *known* quota against accounts whose quota is unknown
+ *     is a genuinely open question (see the checklist's "ranking below
+ *     known-healthy quota is still open"). Deciding it as a side effect of this
+ *     mode would settle it by accident.
+ *
+ * `Array.prototype.sort` is stable, so accounts that tie — including the whole
+ * list on an install where nothing has run yet — keep the user's priority order.
+ * That makes `balanced` degrade to `strict` rather than to something arbitrary.
+ */
+export function orderForSelectionMode(
+  accounts: ProviderAccount[],
+  mode: AccountSelectionMode,
+): ProviderAccount[] {
+  if (mode !== "balanced") return accounts;
+  return [...accounts].sort((a, b) => (a.lastUsedAt ?? 0) - (b.lastUsedAt ?? 0));
+}
+
 function exhaustedUntil(
   limits: { session?: unknown; weekly?: unknown } | undefined,
   account: ProviderAccount,

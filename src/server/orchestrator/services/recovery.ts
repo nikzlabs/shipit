@@ -322,7 +322,11 @@ export async function restartContainer(
 
   // ---- Phase: creating_container ----
   emit("creating_container");
-  deps.runnerRegistry.getOrCreate(sessionId, session.workspaceDir, deps.defaultAgentId);
+  // Seed with the session's OWN agent, not the global default. A runner seeded
+  // wrong here stays wrong for every turn that never goes through a WS connect
+  // (child follow-up, wake, CI fix) — see `reconcile-runner-agent.ts`, which is
+  // the backstop for runners this path already created.
+  deps.runnerRegistry.getOrCreate(sessionId, session.workspaceDir, session.agentId ?? deps.defaultAgentId);
 
   const { newContainerState, error } = await waitForContainerReady(
     deps.containerManager,
@@ -483,7 +487,11 @@ export async function restartAgent(
 
   // ---- Phase: creating_container ----
   emit("creating_container");
-  deps.runnerRegistry.getOrCreate(sessionId, session.workspaceDir, deps.defaultAgentId);
+  // Seed with the session's OWN agent, not the global default. A runner seeded
+  // wrong here stays wrong for every turn that never goes through a WS connect
+  // (child follow-up, wake, CI fix) — see `reconcile-runner-agent.ts`, which is
+  // the backstop for runners this path already created.
+  deps.runnerRegistry.getOrCreate(sessionId, session.workspaceDir, session.agentId ?? deps.defaultAgentId);
 
   const { newContainerState, error } = await waitForContainerReady(
     deps.containerManager,
