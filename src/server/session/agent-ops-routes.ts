@@ -629,9 +629,13 @@ export function registerAgentOpsRoutes(
   // POST /agent-ops/branch/reset-to-base — docs/239. The explicit branch reset
   // the self-merge wake turn runs first. Destructive-looking but gated: the
   // orchestrator refuses unless the branch provably carries nothing unmerged.
-  app.post(
+  //
+  // SHI-277 — `{ force, reason }` carries the break-glass through. Forwarded
+  // verbatim and validated ORCHESTRATOR-side: this relay is not a checkpoint,
+  // it just moves the body across the container boundary.
+  app.post<{ Body: { force?: boolean; reason?: string } }>(
     "/agent-ops/branch/reset-to-base",
-    async (_request, reply) => relay("POST", "/branch/reset-to-base", {}, reply),
+    async (request, reply) => relay("POST", "/branch/reset-to-base", request.body ?? {}, reply),
   );
 
   // ---------------------------------------------------------------------------

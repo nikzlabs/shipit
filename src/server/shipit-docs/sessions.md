@@ -369,17 +369,31 @@ merged, a rebase in progress). Report what it said and let the user decide. Do
 **not** hand-roll `git reset --hard` / `git checkout -f` / `git push --force`
 instead — that is precisely the data loss the check exists to prevent.
 
-A refusal is not a dead end, though, and one shape of it is permanent: once this
-branch's work has shipped under a *different* commit (a cherry-pick recovery, or
-a squash merge you then built on), the check's "this branch is exactly what
-merged" clause can never hold again and there is no `--force`. **Rebase instead
-of resetting** — `git fetch origin && git rebase origin/<base>`. It is not
-blocked, and unlike a reset it is safe by construction: commits whose content is
-already upstream drop out, and anything genuinely unshipped survives. If
-everything was already upstream the branch lands exactly on the base and ShipIt
-clears the merged state on that same turn; if something was not, it is still
-there and becomes the next PR. Either way the session opens its next pull
-request normally.
+One shape of refusal is permanent: once this branch's work has shipped under a
+*different* commit — a cherry-pick recovery, or the squash merge you then built
+on — the check's "this branch is exactly what merged" clause can never hold
+again, and without an override the session can never open another pull request.
+
+For that case, and only with the user's say-so, there is a break-glass:
+
+```sh
+shipit branch reset-to-base --force --reason "<why>"
+```
+
+It overrides that one clause and nothing else. It **still** refuses over an
+uncommitted working tree — the single loss with no reflog entry — and over a
+detached HEAD or an in-progress rebase/merge. The reason is required and is
+recorded in the session transcript, so the override is accountable rather than
+silent. Use it when the user tells you to proceed after a refusal; do not reach
+for it on your own initiative.
+
+**Do not rebase onto the base instead.** It looks like the safe alternative and
+it is not: after a squash merge the base holds your branch as one commit
+containing its *final* state, while your branch's first commit adds the same
+files in their *initial* state, so `git rebase origin/<base>` hits add/add
+conflicts rather than dropping the already-shipped commits. And a hand-rolled
+`git reset --hard` is worse than the `--force` above, not equivalent: no
+clean-tree check, no recorded reason, no transcript card. It is also blocked.
 
 That last point is **enforced, not just advised**: while a session sits on a
 merged branch (ShipIt has recorded the merged head commit), `git reset --hard`,

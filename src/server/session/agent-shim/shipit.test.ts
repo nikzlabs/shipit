@@ -2462,3 +2462,73 @@ describe("runShim — agent result", () => {
     expect(out.calls).toHaveLength(0);
   });
 });
+
+/**
+ * SHI-277 — the `--force` break-glass. The shim's job is the flag contract and
+ * the request body; the safety decision is the orchestrator's (and is re-checked
+ * there, because the HTTP route is container-reachable on its own).
+ */
+describe("shipit branch reset-to-base --force", () => {
+  const RESET = "POST /agent-ops/branch/reset-to-base";
+
+  it("sends no force fields on an ordinary reset", async () => {
+    const { run } = makeRunner();
+    const out = await run(["branch", "reset-to-base"], {
+      [RESET]: { status: 200, body: { outcome: "reset", base: "main", fromSha: "a".repeat(40), toSha: "b".repeat(40) } },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toEqual({});
+  });
+
+  it("forwards force + reason", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["branch", "reset-to-base", "--force", "--reason", "shipped via cherry-pick; branch stranded"],
+      {
+        [RESET]: {
+          status: 200,
+          body: { outcome: "reset", base: "main", fromSha: "a".repeat(40), toSha: "b".repeat(40), forced: true },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toEqual({ force: true, reason: "shipped via cherry-pick; branch stranded" });
+    // The agent must be able to tell a forced reset from a gated one.
+    expect(out.stdout).toContain("FORCED");
+    expect(out.stdout).toContain("recorded in the transcript");
+  });
+
+  it("refuses --force without a reason, before reaching the broker", async () => {
+    const { run } = makeRunner();
+    const out = await run(["branch", "reset-to-base", "--force"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("--force requires --reason");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("refuses a whitespace-only reason", async () => {
+    const { run } = makeRunner();
+    const out = await run(["branch", "reset-to-base", "--force", "--reason", "   "]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("refuses --reason without --force, rather than silently ignoring it", async () => {
+    const { run } = makeRunner();
+    const out = await run(["branch", "reset-to-base", "--reason", "because"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("only meaningful with --force");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("names the override in the refusal guidance, so a refusal is not a dead end", async () => {
+    const { run } = makeRunner();
+    const out = await run(["branch", "reset-to-base"], {
+      [RESET]: { status: 200, body: { outcome: "refused", reason: "carries unmerged work" } },
+    });
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("--force --reason");
+    // …but still forbids the hand-rolled equivalent.
+    expect(out.stderr).toContain("git reset --hard");
+  });
+});

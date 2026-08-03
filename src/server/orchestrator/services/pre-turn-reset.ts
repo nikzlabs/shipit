@@ -259,6 +259,52 @@ export interface ExplicitResetOutcome {
   base?: string;
   fromSha?: string;
   toSha?: string;
+  /** SHI-277 — this reset ran under `--force`, bypassing the SHA clause. */
+  forced?: boolean;
+  /** SHI-277 — the operator-supplied justification for a forced reset. */
+  forceReason?: string;
+}
+
+/**
+ * SHI-277 — the structural preconditions an explicit reset requires REGARDLESS
+ * of `--force`. Two kinds, and neither is about trust:
+ *
+ *   - **The clean-tree check is the one unrecoverable case.** A committed but
+ *     unshipped commit is discarded by a reset yet stays in the reflog; an
+ *     uncommitted edit has no reflog entry and is simply gone. Forcing over a
+ *     dirty tree is the single thing no amount of operator intent can undo, and
+ *     it is exactly what the first refusal in the production incident caught.
+ *   - **The coherence checks** (on the session branch, not detached, no
+ *     rebase/merge/cherry-pick in progress) answer "is this operation even
+ *     well-defined here", not "do we trust the caller". A reset on a detached
+ *     HEAD doesn't move the session branch at all, and one over a half-finished
+ *     sequencer clobbers its recovery state.
+ *
+ * Returns a refusal reason, or null when the branch is in a resettable state.
+ * Called BEFORE the fetch and, on the force path, again after it — `git fetch`
+ * yields to the event loop, so a terminal edit can dirty the tree in between
+ * (the non-force path gets the same re-check via `computeResetEligible`).
+ */
+async function checkResetPreconditions(
+  session: SessionInfo,
+  git: GitManager,
+): Promise<string | null> {
+  if (!(await git.isClean())) {
+    return "The working tree has uncommitted changes. A reset would discard them permanently "
+      + "(uncommitted edits have no reflog entry).";
+  }
+  const branch = await git.currentBranchOrNull();
+  if (!branch) return "HEAD is detached, so a reset would not move the session branch.";
+  if (session.branch && branch !== session.branch) {
+    return `HEAD is on '${branch}', not the session branch '${session.branch}'.`;
+  }
+  if (await git.isRebaseInProgress()) {
+    return "A rebase is in progress. Finish or abort it first — a reset would clobber the recovery state.";
+  }
+  if (await git.isMergeOrSequencerInProgress()) {
+    return "A merge / cherry-pick / revert is in progress. Finish or abort it first.";
+  }
+  return null;
 }
 
 /**
@@ -271,31 +317,37 @@ export interface ExplicitResetOutcome {
  * softening this sentence re-opens the hole the gate closes.
  *
  * SHI-277 — it also has to name the way FORWARD, because a refusal that reads as
- * a dead end is exactly what makes an agent reach for the reset anyway. A branch
- * whose commits already shipped under different SHAs (a cherry-pick recovery, a
- * squash) fails the `HEAD === mergedHeadSha` clause forever, and there is no
- * `--force`. It is still not stuck: `git rebase` is not blocked by the
- * `block-branch-ops` hook, it is non-destructive where a reset is not (an
- * unshipped commit survives a rebase and is discarded by a reset), and it proves
- * containment by replaying the patches rather than trusting a heuristic. If
- * every commit is already upstream the rebase drops them all and HEAD lands
- * exactly on `origin/<base>` — which flips {@link GitManager.headIsAtBase} and
- * makes `detectAndReArmResetSession` (verified at `services/pr-rearm.ts:185`,
- * reached from `turn-executor`'s `postTurnReArmReset`, which runs whether or not
- * the turn committed) clear the merged state on that same turn. If something is
- * genuinely unshipped it survives the rebase, the session correctly stays
- * merged, and the next commit re-arms it via `detectAndReArmMergedSession`
- * instead. Either way the session opens its next pull request normally, and
- * nothing had to weaken this gate.
+ * a dead end is exactly what makes an agent reach for the reset anyway. Once a
+ * branch's work has shipped under a DIFFERENT commit — a cherry-pick recovery, or
+ * the ordinary squash merge — the `HEAD === mergedHeadSha` clause can never hold
+ * again, and without a bypass the session can never open another pull request.
+ *
+ * `git rebase` is NOT that way forward, and the refusal must not suggest it. An
+ * earlier revision of this comment claimed it was; it is wrong. Under a squash
+ * merge the base gains the whole branch as ONE commit holding its FINAL state,
+ * while the branch's first commit adds the same paths in their INITIAL state — so
+ * the replay is an add/add conflict, not an already-applied patch that drops.
+ * Reproduced on the stranded branch this bug produced (`shipit/shi-267-…`, HEAD
+ * `f8e889b7`, content fully contained in `main` via cherry-pick `b7222c34`):
+ * `git rebase origin/main` conflicts across 8 files, twice out of two attempts.
+ * Patch-dropping only works when the base's history literally contains the
+ * branch's commits — a merge-commit strategy, or a single-commit branch — which
+ * is precisely what ShipIt's squash flow does not produce.
+ *
+ * The way forward is {@link resetBranchToBaseExplicit}'s `force` mode: a
+ * brokered, audited break-glass that bypasses the SHA clause and nothing else.
+ * It is the only sanctioned bypass, deliberately — a hand-rolled
+ * `git reset --hard` does the same damage with no clean-tree check, no recorded
+ * reason and no transcript card.
  */
 export const RESET_REFUSAL_GUIDANCE =
   "Do NOT work around this — do not run `git reset --hard`, `git checkout -f`, "
   + "`git push --force`, or any other manual reset. The check refused because a reset "
   + "here would destroy work that is not recoverable (uncommitted edits have no reflog "
-  + "entry, and unmerged commits would be discarded). If you need this branch back on "
-  + "its base, rebase instead: `git fetch origin && git rebase origin/<base>` keeps "
-  + "anything that has not actually shipped, and drops the commits that have. Otherwise "
-  + "report what this said and let the user decide.";
+  + "entry, and unmerged commits would be discarded). Report what this said and let the "
+  + "user decide. If the user tells you to proceed anyway, use the brokered override — "
+  + "`shipit branch reset-to-base --force --reason \"<why>\"` — never a manual reset: it "
+  + "still refuses over an unclean tree, and it records the reason in the transcript.";
 
 function refuse(reason: string): ExplicitResetOutcome {
   return { outcome: "refused", reason };
@@ -378,12 +430,46 @@ function resolveResetBase(session: SessionInfo, prStatus: PrStatusSummary | null
  * The safety gate itself is retained exactly. It is what makes a duplicate wake,
  * a late wake, or a wake landing behind uncommitted work refuse rather than
  * destroy.
+ *
+ * ## SHI-277 — the `force` break-glass
+ *
+ * `opts.force` bypasses exactly ONE clause: `HEAD === mergedHeadSha`. Everything
+ * in {@link checkResetPreconditions} still applies, and is re-checked after the
+ * fetch.
+ *
+ * It exists because that clause is not merely strict, it is *terminal*. A branch
+ * whose work shipped under a different commit — the ordinary squash merge, or a
+ * cherry-pick recovery — can never satisfy it again, so without a bypass the
+ * session is permanently unable to open another pull request. Rebasing back onto
+ * the base is not an alternative: a squash gives the base one commit holding the
+ * final state while the branch's first commit adds the same paths in their
+ * initial state, so the replay conflicts rather than dropping (reproduced twice
+ * on the branch this bug stranded).
+ *
+ * The bypass is TRUST-BASED by explicit product decision — the user chose "trust
+ * the agent in the recovery process" over both a containment check (patch-id
+ * equivalence is fail-open: a deliberately re-applied revert reads as "already
+ * upstream") and a per-use confirmation card. What replaces the gate is
+ * accountability, not permission: a required `reason`, a `console.warn`, and a
+ * persisted transcript card marked as forced. Note the trade this accepts —
+ * unshipped COMMITS can now be discarded by a caller who says so. They remain
+ * reflog-recoverable inside the session clone; uncommitted edits would not be,
+ * which is why the clean-tree check is not part of the bypass.
  */
 export async function resetBranchToBaseExplicit(
   deps: ResetEligibleSignalDeps,
   sessionId: string,
   sessionDir: string,
+  opts?: {
+    /**
+     * Bypass the `HEAD === mergedHeadSha` clause. `reason` is required by the
+     * caller (route + shim validate it), recorded in the orchestrator log and
+     * surfaced on the transcript card.
+     */
+    force?: { reason: string };
+  },
 ): Promise<ExplicitResetOutcome> {
+  const force = opts?.force;
   try {
     const session = deps.getSession(sessionId);
     if (!session) return refuse("Session not found.");
@@ -391,24 +477,9 @@ export async function resetBranchToBaseExplicit(
     const git = deps.createGitManager(sessionDir);
 
     // Structural safety first — these refuse both outcomes, so they precede the
-    // already-at-base short-circuit.
-    if (!(await git.isClean())) {
-      return refuse(
-        "The working tree has uncommitted changes. A reset would discard them permanently "
-        + "(uncommitted edits have no reflog entry).",
-      );
-    }
-    const branch = await git.currentBranchOrNull();
-    if (!branch) return refuse("HEAD is detached, so a reset would not move the session branch.");
-    if (session.branch && branch !== session.branch) {
-      return refuse(`HEAD is on '${branch}', not the session branch '${session.branch}'.`);
-    }
-    if (await git.isRebaseInProgress()) {
-      return refuse("A rebase is in progress. Finish or abort it first — a reset would clobber the recovery state.");
-    }
-    if (await git.isMergeOrSequencerInProgress()) {
-      return refuse("A merge / cherry-pick / revert is in progress. Finish or abort it first.");
-    }
+    // already-at-base short-circuit, and `--force` does not skip them.
+    const unsafe = await checkResetPreconditions(session, git);
+    if (unsafe) return refuse(unsafe);
 
     const base = resolveResetBase(session, prStatus);
     if (!base) {
@@ -435,10 +506,27 @@ export async function resetBranchToBaseExplicit(
     // The destructive move. Full docs/218 gate, evaluated AFTER the fetch (the
     // fetch yields to the event loop, so a terminal edit could have moved the
     // branch since the checks above).
-    if (!(await computeResetEligible(session, prStatus, git))) {
+    //
+    // SHI-277 — `--force` swaps the gate for the preconditions alone. The
+    // re-check is not optional on this path either: the fetch yielded, so the
+    // tree could have been dirtied since the first one, and the clean-tree
+    // clause is the case `--force` explicitly does NOT cover.
+    if (force) {
+      const unsafeNow = await checkResetPreconditions(session, git);
+      if (unsafeNow) return refuse(unsafeNow);
+      console.warn(
+        `[branch-reset] FORCED reset for ${sessionId} onto origin/${base} — `
+        + `bypassing the merged-head check (HEAD=${(await git.getHeadHash()) ?? "?"}, `
+        + `mergedHeadSha=${session.mergedHeadSha ?? "none"}). Reason: ${force.reason}`,
+      );
+    } else if (!(await computeResetEligible(session, prStatus, git))) {
       return refuse(
         "This branch carries work that is not on the merged pull request, so a reset would "
-        + "discard commits that were never shipped.",
+        + "discard commits that were never shipped. If that work has already shipped some "
+        + "other way (a cherry-pick, or a squash merge you then built on), this check can "
+        + "never pass again — re-run with `--force --reason \"<why>\"` to override it. Do not "
+        + "rebase onto the base to work around this: after a squash merge the replay "
+        + "conflicts rather than dropping the already-shipped commits.",
       );
     }
 
@@ -459,7 +547,13 @@ export async function resetBranchToBaseExplicit(
       );
     }
 
-    return { outcome: "reset", base, fromSha: from, toSha: to };
+    return {
+      outcome: "reset",
+      base,
+      fromSha: from,
+      toSha: to,
+      ...(force ? { forced: true, forceReason: force.reason } : {}),
+    };
   } catch (err) {
     return refuse(`The reset could not be completed: ${err instanceof Error ? err.message : String(err)}`);
   } finally {

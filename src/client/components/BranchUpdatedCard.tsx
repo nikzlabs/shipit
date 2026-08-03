@@ -37,12 +37,29 @@ export function BranchUpdatedCard({ card }: BranchUpdatedCardProps) {
         </span>
         <div className="min-w-0 flex-1">
           <div className="font-medium text-(--color-text-primary)">
-            Branch updated to latest <code className="px-1.5 py-0.5 rounded bg-(--color-bg-tertiary)">{card.base}</code>
+            Branch {card.forced ? "force-reset" : "updated"} to latest{" "}
+            <code className="px-1.5 py-0.5 rounded bg-(--color-bg-tertiary)">{card.base}</code>
           </div>
-          <div className="mt-1 text-(--color-text-secondary)">
-            Your previous PR #{card.prNumber} merged, so this branch was automatically reset to the latest{" "}
-            <code className="px-1.5 py-0.5 rounded bg-(--color-bg-tertiary)">{card.base}</code> before continuing.
-          </div>
+          {/* SHI-277 — a forced reset skipped the "this branch is exactly what
+              merged" safety check, so it must not read as the routine automatic
+              move. The recorded reason is the whole accountability story for a
+              trust-based override, so it is shown, not tucked away. */}
+          {card.forced ? (
+            <div className="mt-1 text-(--color-text-secondary)">
+              This branch was reset to the latest{" "}
+              <code className="px-1.5 py-0.5 rounded bg-(--color-bg-tertiary)">{card.base}</code> with{" "}
+              <span className="font-medium text-(--color-text-primary)">--force</span>, overriding the check that the
+              branch carries nothing beyond merged PR #{card.prNumber}.
+              {card.forceReason ? (
+                <span className="block mt-1 italic">Reason given: {card.forceReason}</span>
+              ) : null}
+            </div>
+          ) : (
+            <div className="mt-1 text-(--color-text-secondary)">
+              Your previous PR #{card.prNumber} merged, so this branch was automatically reset to the latest{" "}
+              <code className="px-1.5 py-0.5 rounded bg-(--color-bg-tertiary)">{card.base}</code> before continuing.
+            </div>
+          )}
         </div>
       </div>
       <div className="flex items-center gap-3 px-3 pb-2.5 pl-[3.25rem] text-(--color-text-tertiary)">

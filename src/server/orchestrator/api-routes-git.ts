@@ -41,6 +41,15 @@ interface ExplicitResetPresentationDeps {
   chatHistoryManager: ChatHistoryManager;
   sessionId: string;
   prStatus: PrStatusSummary | null | undefined;
+  /**
+   * SHI-277 — durable PR identity for the card when the live snapshot is gone.
+   * `PrStatusPoller.reArm` nulls `prStatus` on any merged session that gained
+   * new work, which is the ordinary state of a session needing a forced reset —
+   * and without a fallback the destructive move would leave NO transcript
+   * record, which is the one thing the forced path cannot afford. Same durable
+   * source `resolveResetBase` uses (`session.previousMergedPr`).
+   */
+  fallbackPr?: { prNumber: number; prUrl: string } | undefined;
   outcome: ExplicitResetOutcome;
   reArmResetSession: () => Promise<void>;
 }
@@ -63,17 +72,21 @@ export async function presentExplicitResetSuccess(
   });
   await deps.reArmResetSession();
 
-  if (deps.outcome.outcome !== "reset" || !deps.runner || !deps.prStatus
+  const pr = deps.prStatus ?? deps.fallbackPr;
+  if (deps.outcome.outcome !== "reset" || !deps.runner || !pr
     || !deps.outcome.base || !deps.outcome.fromSha || !deps.outcome.toSha) return;
 
   const card: BranchAutoResetCard = {
     cardId: `branch-reset-${randomUUID()}`,
     base: deps.outcome.base,
-    prNumber: deps.prStatus.prNumber,
-    prUrl: deps.prStatus.prUrl,
+    prNumber: pr.prNumber,
+    prUrl: pr.prUrl,
     fromSha: deps.outcome.fromSha,
     toSha: deps.outcome.toSha,
     createdAt: new Date().toISOString(),
+    ...(deps.outcome.forced
+      ? { forced: true, ...(deps.outcome.forceReason ? { forceReason: deps.outcome.forceReason } : {}) }
+      : {}),
   };
   emitChatCard(
     deps.runner,
@@ -95,7 +108,7 @@ export async function registerGitRoutes(
   // Container-reachable so the shim can broker it; own-session scoped (the worker
   // injects the caller's id), and the full safety gate still applies — the arming
   // is the consent, not a bypass.
-  app.post<{ Params: { id: string } }>(
+  app.post<{ Params: { id: string }; Body: { force?: boolean; reason?: string } }>(
     "/api/sessions/:id/branch/reset-to-base",
     { config: { containerAccessible: true } },
     async (request, reply) => {
@@ -103,6 +116,21 @@ export async function registerGitRoutes(
       if (!dir) return;
       const sessionId = request.params.id;
       const prStatus = sessionManager.getPrStatus(sessionId);
+      // SHI-277 — the break-glass. A force with no stated reason is not a
+      // break-glass, it is a silent bypass: the reason IS what replaces the gate
+      // this mode removes, so it is validated here rather than trusted from the
+      // shim (the HTTP route is container-reachable in its own right).
+      const force = request.body?.force === true;
+      const reason = typeof request.body?.reason === "string" ? request.body.reason.trim() : "";
+      if (force && !reason) {
+        reply.code(400).send({
+          outcome: "refused",
+          reason: "A forced reset requires --reason: it bypasses the check that this branch "
+            + "carries nothing beyond its merged PR, so the transcript record of WHY is the "
+            + "only account of the override.",
+        });
+        return;
+      }
       const outcome = await resetBranchToBaseExplicit(
         {
           getSession: (id: string) => sessionManager.get(id),
@@ -111,12 +139,15 @@ export async function registerGitRoutes(
         },
         sessionId,
         dir,
+        ...(force ? [{ force: { reason } }] as const : []),
       );
+      const previous = sessionManager.get(sessionId)?.previousMergedPr;
       await presentExplicitResetSuccess({
         runner: deps.runnerRegistry.get(sessionId),
         chatHistoryManager: deps.chatHistoryManager,
         sessionId,
         prStatus,
+        fallbackPr: previous ? { prNumber: previous.number, prUrl: previous.url } : undefined,
         outcome,
         reArmResetSession: async () => {
           if (!deps.prStatusPoller) return;
