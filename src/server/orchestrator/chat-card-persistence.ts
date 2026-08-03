@@ -304,23 +304,40 @@ export function updateRecordedCard(
  * `matches` selects the recorded card by its stable id; `patchRecorded` returns
  * the patched `PersistedMessage`; `patchDb` performs the finalized-row
  * `ChatHistoryManager.update*Card` fallback.
+ *
+ * Returns true when the in-flight (recorded-card) branch was taken.
  */
 export function persistCardTransition(
   runner: Pick<
     SessionRunnerInterface,
-    "running" | "recordedCards" | "chatMessageGroups" | "steeredMessages"
+    | "running"
+    | "recordedCards"
+    | "chatMessageGroups"
+    | "steeredMessages"
+    | "getTurnEventBuffer"
+    | "lastPersistedBufferIndex"
   >,
   persist: CardPersistCtx,
   matches: (m: PersistedMessage) => boolean,
   patchRecorded: (m: PersistedMessage) => PersistedMessage,
   patchDb: () => void,
-): void {
+): boolean {
   const patchedInFlight = runner.running && updateRecordedCard(runner, matches, patchRecorded);
   if (patchedInFlight) {
     persistTurnInProgress(persist.chatHistoryManager, runner, persist.sessionId);
+    // Same replay-cursor advance `emitChatCard` performs, and for the same
+    // reason: `persistTurnInProgress` just wrote a complete snapshot of the
+    // turn, so leaving the cursor behind it lets a later reconnect replay the
+    // buffered pre-card events ON TOP of that snapshot — which merges the
+    // preceding `agent_assistant` into the card's carrier message and drops the
+    // card field. Guarded for partial test stubs that don't model the buffer.
+    if (typeof runner.getTurnEventBuffer === "function") {
+      runner.lastPersistedBufferIndex = runner.getTurnEventBuffer().length;
+    }
   } else {
     patchDb();
   }
+  return patchedInFlight;
 }
 
 /**

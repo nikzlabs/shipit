@@ -39,6 +39,24 @@ export const DEFAULT_SUB_AGENT_TIMEOUT_MS = parseTimeoutEnv(
   30 * 60_000,
 );
 
+/**
+ * SHI-278 — backstop bound on the orchestrator→worker `/agent/spawn` leg.
+ *
+ * That leg used to be sent with `{ timeoutMs: 0 }` on the theory that the
+ * worker's own wall-clock cap ({@link DEFAULT_SUB_AGENT_TIMEOUT_MS}) always
+ * bounds the run and a primary-turn interrupt always cancels it. Neither holds
+ * when the container is destroyed underneath the request (a Restart agent, an
+ * idle teardown) or the socket goes half-open: the worker's timer dies with the
+ * worker, so `runSubAgent` stays pending forever — no card, no error, nothing
+ * in `shipit agent result`.
+ *
+ * The worker cap stays authoritative; this only fires when the worker never
+ * answers at all, hence the generous margin. Both sides read the same
+ * `SHIPIT_SUB_AGENT_TIMEOUT_MS`, but they are different containers with
+ * possibly different env, so the margin also absorbs a modest mismatch.
+ */
+export const SUB_AGENT_TRANSPORT_TIMEOUT_MS = DEFAULT_SUB_AGENT_TIMEOUT_MS + 5 * 60_000;
+
 /** Parse a positive-integer ms env override, falling back to `fallback`. */
 function parseTimeoutEnv(raw: string | undefined, fallback: number): number {
   if (!raw) return fallback;

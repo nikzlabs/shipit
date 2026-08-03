@@ -97,6 +97,37 @@ describe("consult card survival (docs/144, docs/220)", () => {
     expect(cardVisible()).toBe(true);
   });
 
+  it("patches the pending card in place on completion — one row, not two (SHI-278)", () => {
+    handleSubAgentSpawn(ctx, spawnEvent);
+    // At spawn the card lands `pending`; the transient chip stays up alongside
+    // it only until the durable row exists.
+    handleSubAgentConsultCard(ctx, {
+      ...consultCardEvent,
+      card: card({ status: "pending", durationMs: undefined, costUsd: undefined, outputMarkdown: undefined }),
+    } as unknown as WsSubAgentConsultCard);
+    expect(useSessionStore.getState().subAgentSpawns["sp-1"]).toBeDefined();
+    expect(useSessionStore.getState().messages).toHaveLength(1);
+    expect(useSessionStore.getState().messages[0].subAgentConsult?.status).toBe("pending");
+
+    // Completion re-delivers the SAME cardId with a terminal status.
+    handleSubAgentConsultCard(ctx, consultCardEvent);
+    const { messages, subAgentSpawns } = useSessionStore.getState();
+    expect(messages).toHaveLength(1);
+    expect(messages[0].subAgentConsult).toMatchObject({
+      status: "success",
+      outputMarkdown: "Favorite: Strong and specific.",
+    });
+    // the terminal card clears the transient spinner
+    expect(subAgentSpawns["sp-1"]).toBeUndefined();
+    expect(cardVisible()).toBe(true);
+  });
+
+  it("stays idempotent when the terminal card is replayed on reconnect", () => {
+    handleSubAgentConsultCard(ctx, consultCardEvent);
+    handleSubAgentConsultCard(ctx, consultCardEvent);
+    expect(useSessionStore.getState().messages).toHaveLength(1);
+  });
+
   it("survives a full reload (clean server structure: bash group, card, relayed prose)", () => {
     useSessionStore.setState({
       messages: [

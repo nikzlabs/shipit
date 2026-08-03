@@ -110,6 +110,13 @@ shipit agent result <RUN-ID>   # a specific run (a unique id prefix works)
 That prints the same artifact the user sees in the card. Use it to recover a
 lost result, or to double-check that what you acted on is what was rendered.
 
+A run that is **still in flight** has a card too — `shipit agent result` reports
+it with status `pending` rather than pretending it doesn't exist. The user sees
+the same thing: the consult card appears in the transcript the moment the run
+starts, shows an in-progress row for the duration, and turns into the finished
+record when the run ends. So a backgrounded consult is visible to the user the
+whole time, and neither of you has to guess whether it is still going.
+
 ## What to expect
 
 - **It blocks, and how long is not predictable.** The command runs until the

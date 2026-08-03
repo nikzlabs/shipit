@@ -31,6 +31,7 @@ import type { PresentStateEntry } from "../shared/types/ws-server-messages.js";
 import type { PresentStore } from "./present-store.js";
 import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps, ChatMessageGroup, SteeredMessage, RecordedChatCard } from "./session-runner.js";
 import type { SubAgentSpawnRequest, SubAgentRunResult } from "../shared/sub-agent-run.js";
+import { SUB_AGENT_TRANSPORT_TIMEOUT_MS } from "../shared/sub-agent-run.js";
 import { AgentTurnAdmissionError, runDispatchedTurn, dispatchOnRunner } from "./session-runner.js";
 import type { PreparedDispatch } from "./prepared-dispatch.js";
 import type { TurnHandle } from "./turn-settlement.js";
@@ -231,6 +232,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _disposed = false;
   pendingCommitLink: { commitHash: string; parentCommitHash: string } | null = null;
   private _subAgentSpawnsThisTurn = 0;
+  /**
+   * SHI-278 — in-flight sub-agent spawns brokered to the worker, keyed by
+   * spawnId. The container runner's counterpart to `SessionRunner`'s
+   * `_subAgentHandles`: a container spawn is an HTTP request, not a local
+   * process handle, so cancelling it means aborting the request. Aborted on
+   * dispose so a force-teardown can't leave one hanging.
+   */
+  private readonly _subAgentAborts = new Map<string, AbortController>();
   private _workerResourcesStarted = false;
   /**
    * docs/240 — in-flight one-time worker-resource start. Concurrent callers
@@ -415,27 +424,73 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * `/agent/spawn`, which runs a fresh adapter subprocess OUTSIDE the agent slot
    * and returns the accumulated final text synchronously. No SSE involvement —
    * the result flows back over this HTTP response, so the runner's `_agent`
-   * accumulators are untouched. The request is unbounded (`timeoutMs: 0`); the
-   * worker's own wall-clock cap bounds the run, and a primary-turn interrupt
-   * (which hits the worker's `/agent/interrupt`) cancels it.
+   * accumulators are untouched. The worker's own wall-clock cap stays
+   * authoritative for the run itself; a primary-turn interrupt (which hits the
+   * worker's `/agent/interrupt`) cancels it.
+   *
+   * SHI-278 — two things the original `{ timeoutMs: 0 }` got wrong:
+   *  - **Unbounded.** An interrupt is not the only way this request can be
+   *    orphaned. Destroy the container under it (Restart agent, idle teardown)
+   *    and the worker's timer dies with the worker, leaving this promise pending
+   *    forever. {@link SUB_AGENT_TRANSPORT_TIMEOUT_MS} is the backstop.
+   *  - **Uncancellable.** The request is now registered in `_subAgentAborts` so
+   *    {@link dispose} can abort it, which is what lets `runSubAgent` land a
+   *    terminal "cancelled" card instead of vanishing with the container.
    */
   async spawnSubAgent(req: SubAgentSpawnRequest): Promise<SubAgentRunResult> {
-    const result = await workerPost(
-      this.workerUrl,
-      "/agent/spawn",
-      {
-        agentId: req.agentId,
-        prompt: req.prompt,
-        spawnId: req.spawnId,
-        depth: req.depth,
-        ...(req.model !== undefined ? { model: req.model } : {}),
-        ...(req.reasoningEffort !== undefined ? { reasoningEffort: req.reasoningEffort } : {}),
-        ...(req.timeoutMs !== undefined ? { timeoutMs: req.timeoutMs } : {}),
-        ...(req.maxOutputChars !== undefined ? { maxOutputChars: req.maxOutputChars } : {}),
-      },
-      { timeoutMs: 0 },
+    const controller = new AbortController();
+    this._subAgentAborts.set(req.spawnId, controller);
+    const startedAt = Date.now();
+    console.log(
+      `[sub-agent] worker-post session=${this.sessionId} spawn=${req.spawnId} agent=${req.agentId} `
+      + `promptBytes=${Buffer.byteLength(req.prompt)} transportTimeoutMs=${SUB_AGENT_TRANSPORT_TIMEOUT_MS}`,
     );
-    return result as SubAgentRunResult;
+    try {
+      const result = await workerPost(
+        this.workerUrl,
+        "/agent/spawn",
+        {
+          agentId: req.agentId,
+          prompt: req.prompt,
+          spawnId: req.spawnId,
+          depth: req.depth,
+          ...(req.model !== undefined ? { model: req.model } : {}),
+          ...(req.reasoningEffort !== undefined ? { reasoningEffort: req.reasoningEffort } : {}),
+          ...(req.timeoutMs !== undefined ? { timeoutMs: req.timeoutMs } : {}),
+          ...(req.maxOutputChars !== undefined ? { maxOutputChars: req.maxOutputChars } : {}),
+        },
+        { timeoutMs: SUB_AGENT_TRANSPORT_TIMEOUT_MS, signal: controller.signal },
+      );
+      const r = result as SubAgentRunResult;
+      console.log(
+        `[sub-agent] worker-returned session=${this.sessionId} spawn=${req.spawnId} `
+        + `status=${r.status} transportMs=${Date.now() - startedAt}`,
+      );
+      return r;
+    } catch (err) {
+      console.warn(
+        `[sub-agent] worker-failed session=${this.sessionId} spawn=${req.spawnId} `
+        + `transportMs=${Date.now() - startedAt}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      throw err;
+    } finally {
+      this._subAgentAborts.delete(req.spawnId);
+    }
+  }
+
+  /**
+   * SHI-278 — abort every in-flight sub-agent spawn brokered by this runner.
+   * Called from {@link dispose} (the one chokepoint every force-teardown path
+   * funnels through: Restart agent, Restart container, Rescue, archive, full
+   * reset), so no caller has to remember to cancel spawns. `reason` reaches
+   * `runSubAgent`'s catch via `WorkerAbortedError` and names who cancelled.
+   */
+  private cancelInFlightSubAgents(reason: string): void {
+    for (const [spawnId, controller] of this._subAgentAborts) {
+      console.warn(`[sub-agent] cancelled session=${this.sessionId} spawn=${spawnId} by=${reason}`);
+      try { controller.abort(reason); } catch { /* best-effort */ }
+    }
+    this._subAgentAborts.clear();
   }
 
   getAgent(): AgentProcess | null { return this._agent; }
@@ -2307,7 +2362,26 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       console.log(`[container-runner:${this.sessionId}] dispose() skipped — agent is running`);
       return;
     }
+    // SHI-278 — same protection for a BACKGROUNDED sub-agent consult. docs/236
+    // tells agents to background long consults, so the primary turn routinely
+    // finishes while the spawn keeps running — `_isRunning` is false and idle
+    // cleanup would otherwise reap a live 30-minute review that nothing is
+    // wrong with. An explicit teardown (`{ force: true }`) still proceeds and
+    // cancels it below; only the lifecycle-driven paths defer.
+    if (this._subAgentAborts.size > 0 && !opts?.force) {
+      console.log(
+        `[container-runner:${this.sessionId}] dispose() skipped — ${this._subAgentAborts.size} sub-agent spawn(s) in flight`,
+      );
+      return;
+    }
     this._disposed = true;
+
+    // SHI-278 — cancel in-flight sub-agent spawns BEFORE the container goes
+    // away. Their HTTP requests are the only handle we have on them; without
+    // this abort the awaiting `runSubAgent` either hangs on a half-open socket
+    // or rejects minutes later, and either way the consult vanishes from the
+    // transcript with no terminal card.
+    this.cancelInFlightSubAgents("runner disposed");
 
     // Kill agent on worker (fire and forget)
     if (this._agent) {

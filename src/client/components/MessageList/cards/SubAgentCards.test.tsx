@@ -44,4 +44,14 @@ describe("SubAgentConsultCardRow (docs/220)", () => {
     expect(screen.queryByTestId("sub-agent-consult-preview")).toBeNull();
     expect(screen.queryByTestId("sub-agent-consult-output")).toBeNull();
   });
+
+  // SHI-278 — the same card also carries the DURABLE in-flight state, so a
+  // backgrounded consult still shows up after a switch/reload/restart.
+  it("renders the pending state as an in-progress row", () => {
+    render(<SubAgentConsultCardRow card={card({ status: "pending", durationMs: undefined, costUsd: undefined })} />);
+    const row = screen.getByTestId("sub-agent-consult-card");
+    expect(row.textContent).toContain("Asking Codex");
+    expect(row.textContent).toContain("in progress");
+    expect(row.getAttribute("data-pending")).toBe("true");
+  });
 });

@@ -32,10 +32,11 @@ function previewLine(markdown: string): string {
   return flat.length > 140 ? `${flat.slice(0, 140)}…` : flat;
 }
 
-/** The verb that opens the summary line, derived from the terminal status. */
+/** The verb that opens the summary line, derived from the card's status. */
 function statusVerb(status: SubAgentConsultCardData["status"]): string {
   return (
-    status === "success" ? "Consulted"
+    status === "pending" ? "Asking"
+    : status === "success" ? "Consulted"
     : status === "cancelled" ? "Cancelled"
     : status === "timeout" ? "Timed out asking"
     : "Asked"
@@ -61,14 +62,33 @@ export function SubAgentConsultCardRow({ card }: { card: SubAgentConsultCardData
   const secs = card.durationMs ? Math.round(card.durationMs / 1000) : null;
   const cost = card.costUsd && card.costUsd > 0 ? `$${card.costUsd.toFixed(2)}` : null;
   const verb = statusVerb(card.status);
+  const pending = card.status === "pending";
 
   const parts = [`${verb} ${name}`];
+  if (pending) parts.push("in progress");
   if (secs !== null) parts.push(`${secs}s`);
   if (cost) parts.push(cost);
   if (card.truncated) parts.push("truncated");
   const summary = parts.join(" · ");
 
   const output = card.outputMarkdown?.trim() ? card.outputMarkdown : null;
+
+  // SHI-278 — the durable in-flight row. Unlike the transient spinner chip this
+  // is persisted, so it stays put across a session switch, a reload, and a
+  // container restart, and it is anchored at the call site rather than pinned to
+  // the bottom of the transcript.
+  if (pending) {
+    return (
+      <div
+        data-testid="sub-agent-consult-card"
+        data-pending="true"
+        className="flex items-center gap-2 rounded-lg border border-(--color-border-primary) bg-(--color-bg-tertiary) px-3 py-1.5 text-xs text-(--color-text-tertiary)"
+      >
+        <CircleNotchIcon size={14} className="animate-spin text-(--color-text-tertiary)" />
+        {summary}
+      </div>
+    );
+  }
 
   // No output (e.g. a transport failure or empty result) — keep the compact,
   // non-interactive one-liner exactly as before.
