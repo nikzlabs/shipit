@@ -131,10 +131,13 @@ displayed number has to be the real one. Keep new requirements in this form.)
     - A newly connected account is labelled with the identity the provider
       reports — the account's email where the provider gives one — rather than a
       generic "account 2". The user can still rename it afterwards.
-    - Connecting an account that is already connected does not silently produce
-      a second row for it. Two rows that are secretly the same provider account
-      share one quota pool, which makes failover between them a no-op that burns
-      a retry and reports a confusing error.
+    - Connecting an account that is already connected is **refused**, naming the
+      existing account it matched. ShipIt does not create a second row for it,
+      and does not quietly move the credentials onto the existing row either —
+      the user is told the account is already connected and nothing changes. Two
+      rows that are secretly the same provider account share one quota pool,
+      which makes failover between them a no-op that burns a retry and reports a
+      confusing error.
 
 ## Requirements from standing product principles
 
@@ -151,18 +154,19 @@ request for this feature.
 
 ## Open questions
 
-- **When a completed connect resolves to an account that already has a row, what
-  should happen to it (req 22)?** Adopting the new credentials onto the existing
-  row looks strictly better than the alternatives — it avoids discarding a
-  sign-in the user has already completed, and it doubles as the repair path for a
-  row whose token went stale — but refusing the connect outright and warning
-  while creating the duplicate anyway are both defensible, and the choice is the
-  user's rather than an inference to make here. Requirement 22 states only that a
-  duplicate row is not created *silently*.
-  *Scope: this gates implementing req 22 only. Requirements 1–21 are unaffected
-  and their implementation is unblocked.*
+None. Implementation is unblocked.
 
 ## Resolved questions
+
+- 2026-08-03 — When a completed connect resolves to an account that already has
+  a row, should ShipIt adopt the credentials onto that row, refuse the connect,
+  or warn and create the duplicate anyway? **Refuse, naming the account it
+  matched.** The agent had recommended adopting; the user chose refusal, so req
+  22's second bullet now states refusal rather than the weaker "not silently".
+  Note the consequence, which adopting would have absorbed: re-connecting the
+  same account is *not* a repair path for a row whose token went stale, so
+  whatever heals a stale row has to be its own path rather than a side effect of
+  connecting.
 
 - 2026-08-03 — Does ShipIt read a Claude account's real identity, and what for?
   **Read it, and use it for both labelling and duplicate detection.** Codex

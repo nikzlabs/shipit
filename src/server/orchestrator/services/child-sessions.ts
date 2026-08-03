@@ -17,6 +17,7 @@ import type { SessionContainerManager } from "../session-container.js";
 import { ContainerSessionRunner } from "../container-session-runner.js";
 import { agentIdForModel, getAgentCapabilities, KNOWN_AGENT_IDS } from "../../shared/agent-registry.js";
 import { prepareSessionAgentEnvironment } from "../session-agent-env.js";
+import { reconcileRunnerAgent } from "../reconcile-runner-agent.js";
 import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js";
 import { ServiceError } from "./types.js";
 import type { ClaimSessionService } from "./claim-session.js";
@@ -728,6 +729,13 @@ export async function sendChildMessage(
   // right fallback.
   const runner = runnerRegistry.getOrCreate(childSessionId, child.workspaceDir, child.agentId ?? defaultAgentId);
 
+  // ...but `getOrCreate` honours that argument only when it CONSTRUCTS a
+  // runner. An existing one — seeded with the global default by container
+  // rescue or the warm pool — comes back carrying that default, and everything
+  // below reads `runner.agentId`. Reconcile before env-prep so a Codex child
+  // does not run Claude (and get Claude's credentials provisioned to match).
+  const effectiveAgentId = reconcileRunnerAgent(runner, child.agentId);
+
   // docs/149 — refresh per-session credentials + OAuth + MCP env before the
   // follow-up turn fires. Mirrors the spawn path; idempotent so re-running
   // it on every message is fine. Without this, a child whose OAuth token
@@ -738,7 +746,7 @@ export async function sendChildMessage(
   if (!wasRunning && credentialsDir && credentialStore) {
     await prepareSessionAgentEnvironment(runner, {
       sessionId: childSessionId,
-      agentId: runner.agentId,
+      agentId: effectiveAgentId,
       deps: {
         credentialsDir,
         credentialStore,

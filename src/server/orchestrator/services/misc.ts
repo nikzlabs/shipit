@@ -95,6 +95,8 @@ export async function getBootstrapData(deps: {
         // not be read" fallback, and the client renders the per-provider rows
         // from whatever it gets rather than inventing cutoffs of its own.
         failoverCutoffs: {},
+        // req 21 — same reasoning: no invented modes in the fallback shape.
+        accountSelectionMode: {},
         maxIdleContainers: deps.credentialStore?.getMaxIdleContainers() ?? 5,
         agentSystemInstructionsEnabled: true,
         agentSystemInstructions: "",

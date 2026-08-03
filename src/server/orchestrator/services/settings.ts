@@ -8,8 +8,8 @@ import fs from "node:fs/promises";
 import type { CredentialStore } from "../credential-store.js";
 import type { AgentRegistry } from "../../shared/agent-registry.js";
 import { getAuthEnvKey, isAllowedAgentEnvKey } from "../../shared/agent-registry.js";
-import type { AgentId, FailoverCutoffs, ProviderAccount, SubAgentDefaultsPatch } from "../../shared/types.js";
-import { DEFAULT_FAILOVER_CUTOFF } from "../../shared/types.js";
+import type { AccountSelectionMode, AgentId, FailoverCutoffs, ProviderAccount, SubAgentDefaultsPatch } from "../../shared/types.js";
+import { DEFAULT_FAILOVER_CUTOFF, DEFAULT_SELECTION_MODE } from "../../shared/types.js";
 import type { VoiceDeliveryMode } from "../../shared/types/voice-note-types.js";
 import { getGitIdentity, setGitIdentity as writeGitIdentity } from "../git-config.js";
 import { buildAgentSystemInstructions } from "../agent-instructions.js";
@@ -88,11 +88,15 @@ export async function getGlobalSettings(
   // registered agent so the Settings control can render a row per provider
   // without the client knowing the default.
   const failoverCutoffs: Record<string, FailoverCutoffs> = {};
+  // docs/150 req 21 — same shape and the same reason: one entry per registered
+  // agent so the client renders the control without knowing the default.
+  const accountSelectionMode: Record<string, AccountSelectionMode> = {};
   for (const agent of agentRegistry.list()) {
     failoverCutoffs[agent.id] = credentialStore?.getFailoverCutoffs(agent.id)
       ?? { session: DEFAULT_FAILOVER_CUTOFF, weekly: DEFAULT_FAILOVER_CUTOFF };
+    accountSelectionMode[agent.id] = credentialStore?.getSelectionMode(agent.id) ?? DEFAULT_SELECTION_MODE;
   }
-  return { failoverCutoffs, gitIdentity, systemPrompt, agents, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, agentSubAgentDefaults, voiceDeliveryMode, voiceWebhookConfigured, providerAccounts };
+  return { failoverCutoffs, accountSelectionMode, gitIdentity, systemPrompt, agents, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, agentSubAgentDefaults, voiceDeliveryMode, voiceWebhookConfigured, providerAccounts };
 }
 
 // ---- Mutation operations ----
@@ -156,6 +160,8 @@ export interface SaveGlobalSettingsOptions {
   agentSubAgentDefaults?: Record<string, SubAgentDefaultsPatch>;
   /** docs/150 reqs 4-6 — per-provider proactive failover cutoffs (1-100). */
   failoverCutoffs?: Record<string, Partial<FailoverCutoffs>>;
+  /** docs/150 req 21 — per-provider account selection mode. */
+  accountSelectionMode?: Record<string, AccountSelectionMode>;
   /** docs/163 — voice-note delivery mode (native / external / both). */
   voiceDeliveryMode?: VoiceDeliveryMode;
 }
@@ -169,7 +175,7 @@ export async function saveGlobalSettings(
     gitIdentity, systemPrompt, maxIdleContainers,
     agentSystemInstructionsEnabled, autoCreatePr, liveSteering,
     autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, agentSubAgentDefaults, voiceDeliveryMode,
-    failoverCutoffs,
+    failoverCutoffs, accountSelectionMode,
   } = opts;
 
   // Save git identity if provided
@@ -239,6 +245,21 @@ export async function saveGlobalSettings(
         }
       }
       credentialStore.setFailoverCutoffs(agentId as AgentId, patch);
+    }
+  }
+
+  // docs/150 req 21 — validated the same way as the cutoffs above: reject an
+  // unknown agent or an unrecognized mode rather than coercing it. The store
+  // falls back to the default on *read*, which covers a hand-edited config
+  // file; a bad value arriving through the API is a caller bug and should say
+  // so.
+  if (accountSelectionMode !== undefined) {
+    for (const [agentId, mode] of Object.entries(accountSelectionMode)) {
+      if (!agentRegistry.get(agentId as AgentId)) throw new ServiceError(400, `Unknown agent: ${agentId}`);
+      if (mode !== "strict" && mode !== "balanced") {
+        throw new ServiceError(400, `Account selection mode must be "strict" or "balanced"`);
+      }
+      credentialStore.setSelectionMode(agentId as AgentId, mode);
     }
   }
 

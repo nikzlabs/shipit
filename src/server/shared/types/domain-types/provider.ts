@@ -57,3 +57,28 @@ export interface FailoverCutoffs {
 
 /** req 5 — both cutoffs default to 90%. */
 export const DEFAULT_FAILOVER_CUTOFF = 90;
+
+/**
+ * docs/150 req 21 — how a provider's accounts relate to each other, which an
+ * ordered list alone cannot say.
+ *
+ * - `strict` — the order IS a preference. Work starts on the highest-ranked
+ *   eligible account; a lower-ranked one runs only while the accounts above it
+ *   are ineligible. Right when the accounts are unequal (Max 20x before Pro,
+ *   work before personal), which is what ordering them already expressed.
+ * - `balanced` — the accounts are peers. Work is spread so their quota drains
+ *   at a comparable rate, and the order degrades to a display/tie-break order
+ *   (req 2). Right when the accounts are interchangeable, where `strict` would
+ *   drive one to its cutoff while the other sat unused.
+ *
+ * This decides where work *starts*, never *whether* failover happens — req 15
+ * keeps that on unconditionally, and both modes fail over identically.
+ *
+ * The choice only ever applies at the moment a session pins its route: turns
+ * are serialized per session and a session reuses its pinned account, so
+ * "spreading work" means spreading *sessions*, not turns within one.
+ */
+export type AccountSelectionMode = "strict" | "balanced";
+
+/** req 21 — strict is the default, so an untouched install is unchanged. */
+export const DEFAULT_SELECTION_MODE: AccountSelectionMode = "strict";

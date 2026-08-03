@@ -46,7 +46,7 @@
 - [x] Implement account-switch runtime transition for pinned sessions: kill process, reprovision while preserving conversation-state subpaths, keep `agentSessionId`, resume (req 9).
 - [x] Hydrate persisted provider route for detached/system-turn runner recreation.
 - [x] Route child-session first turns through the normal account router (req 18).
-- [ ] Route child follow-up turns through persisted agent and provider route, not default agent fallback.
+- [x] Route child follow-up turns through the persisted agent, not the default-agent fallback. The *route* half of this item was never broken — the provider route is read from the session record inside `prepareSessionAgentEnvironment`, so it cannot go stale. The agent half was: `getOrCreate` applies its agentId argument only when it *constructs* a runner, so a runner seeded with the global default by container rescue or the warm pool was returned as-is and used for the turn (`reconcile-runner-agent.ts`).
 - [x] Offer a replacement account inline when disconnecting an account that pinned sessions use.
 - [x] Do NOT route around model capability — removed the skip-and-report mechanism (req 17 reversed to a non-goal, 2026-08-02).
 - [ ] Add local/dogfood direct-run account-scoped HOME/config-root support or explicit unsupported diagnostic.
@@ -113,13 +113,13 @@
 - [x] Unit: account selection prefers primary, skips exhausted accounts, and respects reset times (quota *ranking* still open).
 - [x] Unit: account selection follows user priority and advances when either configurable cutoff is reached.
 - [ ] Integration: an existing pinned session switches accounts at the proactive cutoff and preserves local context.
-- [ ] Integration: first Claude turn pins `{ agent_id, provider_route_kind, provider_route_id }`.
-- [ ] Integration: first Codex turn pins `{ agent_id, provider_route_kind, provider_route_id }`.
+- [x] Integration: first Claude turn pins `{ agent_id, provider_route_kind, provider_route_id }` (`provider-route-pinning.test.ts`, against the real account manager + credential store + SQLite session manager).
+- [x] Integration: first Codex turn pins `{ agent_id, provider_route_kind, provider_route_id }`.
 - [ ] Integration: auth-complete for account X re-pushes only to sessions pinned to account X.
 - [x] Unit: a turn the provider kills for quota benches its account, and the stamp survives a restart and expires on its own.
-- [ ] Integration: exhausted primary starts a new turn on a secondary account.
+- [x] Integration: exhausted primary starts a new turn on a secondary account; a pinned session does not drift onto a newer account.
 - [x] Unit: all-exhausted fails the turn with the earliest reset time, pins nothing, and provisions no credentials.
-- [ ] Integration: all-exhausted fails the turn with reset times, pins nothing, and schedules no timer.
+- [x] Integration: all-exhausted fails the turn with the *earliest* reset time, pins nothing, and provisions no credential subtree. ("Schedules no timer" has nothing to assert against — req 13's resolution removed the delayed-turn timer rather than leaving one to check.)
 - [x] Integration: mid-turn exhaustion retries on secondary once, including after file edits or commands.
 - [x] Unit: one-shot reviews proactively select a healthy account, retry once after hard exhaustion, and do not retry model-access errors.
 - [x] Integration: switching a pinned session kills the persistent agent, reprovisions credentials, preserves `.claude/projects` / `.codex/sessions` and `agentSessionId`, and resumes the same conversation.
@@ -154,10 +154,10 @@
 - [x] Unit: naming runs the CLI with `HOME` at the account root, and falls back to the singleton root for a reserved route.
 - [x] Unit: graduation resolves the naming account from the router and heals that account, not the provider.
 - [x] Client: Add account / Connect are disabled while another row of the provider is authenticating.
-- [ ] Unit: API-key fallback configures only its reserved route and never marks a subscription account ready.
+- [x] Unit: API-key fallback configures only its reserved route, creates no account row, is outranked by a subscription, and is *not* rolled onto when the subscription is spent (req 12).
 - [x] Client: an authenticated primary row does not hide or overwrite a secondary row's pending flow or diagnostics.
 - [x] Client: subscription limits render multiple accounts per provider, each named.
-- [ ] Client: session diagnostics renders the active account.
+- [ ] Client: session diagnostics renders the active account. **Blocked on the feature, not the test** — nothing in `src/client/` reads `providerRouteId` yet (the unchecked Phase 2 item above), so there is no surface to assert on.
 - [x] Unit: boot retires a legacy alias that points into `provider-accounts/`, leaves a real empty dir behind for the directory-shaped ones, and does not touch a real (pre-migration) file or dir.
 - [x] Unit: boot-to-boot idempotence — a never-signed-in install gets no placeholder and no invented account across two boots; a migrated install keeps its placeholder but does not re-migrate it once every account is deleted; CLI config and a zero-byte credentials file are not mistaken for an account.
 - [x] Integration: provider-wide sign-out erases the on-disk credentials of every connected account, not just the migrated first one.
@@ -196,16 +196,20 @@ nothing records today, and 21 turns a decision nobody made into a user setting.
 - [ ] Read `oauthAccount` from `.claude.json` on connect; store `accountUuid` as the stable external key and tolerate its absence (older CLI, env-only auth) by falling back to today's behavior.
 - [ ] Record the Codex equivalent (`chatgpt_account_id`) on the account row too — it is already decoded for plan extraction but never persisted as identity.
 - [ ] Default a newly connected account's label to the reported email instead of `Claude account N` / `Codex account N`, leaving rename intact.
-- [ ] Detect a connect that resolves to an already-connected external id. **Blocked** on the open question in `requirements.md` — adopt onto the existing row, refuse, or warn-and-allow.
+- [ ] Refuse a connect that resolves to an already-connected external id, naming the matched account. Leave the existing row's credentials untouched (decided 2026-08-03; unblocked).
+- [ ] Confirm a failed/stale row can still re-authenticate through its own per-account action — refusal means re-connecting via "add account" is no longer a repair path.
 - [ ] Unit: an account row records the external id at connect time, and a missing `oauthAccount` degrades to the generated label rather than failing the connect.
 - [ ] Unit: a second connect resolving to an existing external id does not produce a second row.
 
 ### Selection mode (req 21)
 
-- [ ] Persist a per-provider selection mode (`strict` | `balanced`), defaulting to `strict`, alongside the existing per-provider cutoffs.
-- [ ] Branch `selectAccountForTurn` on the mode: `strict` keeps today's first-eligible walk; `balanced` picks the least-recently-used eligible account via the existing `lastUsedAt`.
-- [ ] Add the Settings control beside the two cutoff inputs, wording the choice in terms of unequal vs peer accounts.
-- [ ] Unit: `balanced` spreads consecutive pins across eligible accounts; `strict` pins them all to the highest-ranked one.
-- [ ] Unit: both modes fail over identically on exhaustion and honour the retry exclusion list (req 15 — the mode does not gate failover).
-- [ ] Unit: `balanced` still skips exhausted and over-cutoff accounts rather than balancing onto them.
-- [ ] Integration: switching the mode changes what a newly created session pins, and does not disturb sessions already pinned.
+- [x] Persist a per-provider selection mode (`strict` | `balanced`), defaulting to `strict`, alongside the existing per-provider cutoffs.
+- [x] Branch `selectAccountForTurn` on the mode: `strict` keeps today's first-eligible walk; `balanced` picks the least-recently-used eligible account via `lastUsedAt`.
+- [x] **Write `lastUsedAt`.** The field existed on `ProviderAccount` from the start but nothing ever set it, so an LRU order over it would have been a no-op sort over `undefined`. `markAccountUsed` stamps the account a turn resolves onto, from env-prep.
+- [x] Make the stamp strictly monotonic across a provider's accounts. `Date.now()` is millisecond-granular, so sessions pinning in the same millisecond tied and the tie-break handed the whole burst to one account — losing the burst-safety that motivated LRU over quota-ranking.
+- [x] Add the Settings control beside the two cutoff inputs, wording the choice in terms of unequal vs peer accounts.
+- [x] Unit: `balanced` spreads consecutive pins across eligible accounts; `strict` pins them all to the highest-ranked one.
+- [x] Unit: both modes fail over identically on exhaustion and honour the retry exclusion list (req 15 — the mode does not gate failover).
+- [x] Unit: `balanced` still skips exhausted and over-cutoff accounts rather than balancing onto them.
+- [x] Unit: an unrecognized stored mode falls back to `strict` rather than reaching the routing path.
+- [x] Unit: the mode changes what a newly created session pins, and a session already pinned is not re-routed (asserted at `prepareSessionAgentEnvironment`, which is the pin point).

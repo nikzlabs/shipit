@@ -34,6 +34,7 @@ import type { SessionContainerManager } from "./session-container.js";
 import type { AgentId, SessionInfo, SessionMessageOrigin } from "../shared/types.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import { prepareSessionAgentEnvironment } from "./session-agent-env.js";
+import { reconcileRunnerAgent } from "./reconcile-runner-agent.js";
 
 /** Collaborators the wake needs — all orchestrator-side. */
 export interface WakeSessionDeps {
@@ -149,13 +150,19 @@ export async function wakeSessionWithTurn(
     session.agentId ?? defaultAgentId,
   );
 
+  // That argument only applies when `getOrCreate` CONSTRUCTS the runner; an
+  // existing one still carries whatever it was seeded with (the global default,
+  // for a rescued container or a warm-pool runner). Reconcile before env-prep,
+  // which reads the agent id to decide whose credentials to provision.
+  const effectiveAgentId = reconcileRunnerAgent(runner, session.agentId);
+
   // Refresh credentials/OAuth/MCP before the turn fires (idempotent). Skipped
   // while the agent is already running — the next-starting turn's env-prep
   // covers it, and we must not race a live turn's environment.
   if (!runner.running && credentialsDir && credentialStore) {
     await prepareSessionAgentEnvironment(runner, {
       sessionId: session.id,
-      agentId: runner.agentId,
+      agentId: effectiveAgentId,
       deps: {
         credentialsDir,
         credentialStore,

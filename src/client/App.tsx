@@ -1082,6 +1082,8 @@ export default function App() {
             providerAccounts?: ProviderAccount[];
             /** docs/150 reqs 4-6 — per-provider proactive failover cutoffs. */
             failoverCutoffs?: Record<string, { session: number; weekly: number }>;
+            /** docs/150 req 21 — per-provider account selection mode. */
+            accountSelectionMode?: Record<string, "strict" | "balanced">;
           };
         }>("/api/bootstrap");
         useGitStore.getState().setIdentity(data.settings.gitIdentity);
@@ -1125,6 +1127,11 @@ export default function App() {
         if (data.settings.failoverCutoffs !== undefined) {
           for (const [agentId, cutoffs] of Object.entries(data.settings.failoverCutoffs)) {
             useSettingsStore.getState().setFailoverCutoffs(agentId, cutoffs);
+          }
+        }
+        if (data.settings.accountSelectionMode !== undefined) {
+          for (const [agentId, mode] of Object.entries(data.settings.accountSelectionMode)) {
+            useSettingsStore.getState().setAccountSelectionMode(agentId, mode);
           }
         }
         if (data.settings.autoResetMergedBranch !== undefined)

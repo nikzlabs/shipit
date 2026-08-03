@@ -162,6 +162,12 @@ interface SettingsState {
    */
   failoverCutoffs: Record<string, { session: number; weekly: number }>;
   /**
+   * docs/150 req 21 — per-provider account selection mode, keyed by agent id.
+   * Same contract as `failoverCutoffs`: the server sends an entry per
+   * registered agent, so the client never encodes the "strict" default.
+   */
+  accountSelectionMode: Record<string, "strict" | "balanced">;
+  /**
    * docs/217 — per-agent defaults applied when an agent runs as a sub-agent
    * (Control A), keyed by agent id. Hydrated from bootstrap / settings broadcast.
    */
@@ -205,6 +211,7 @@ interface SettingsState {
   setAutoResolveConflicts: (enabled: boolean) => void;
   setAutoFixCi: (enabled: boolean) => void;
   setFailoverCutoffs: (agentId: string, cutoffs: { session: number; weekly: number }) => void;
+  setAccountSelectionMode: (agentId: string, mode: "strict" | "balanced") => void;
   setAutoResetMergedBranch: (enabled: boolean) => void;
   setEnableSubAgents: (enabled: boolean) => void;
   /** docs/217 — replace the per-agent sub-agent defaults map (Control A). */
@@ -283,6 +290,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   autoResetMergedBranch: true,
   enableSubAgents: false,
   failoverCutoffs: {},
+  accountSelectionMode: {},
   agentSubAgentDefaults: {},
   claudeAuthDiagnostics: {
     attemptId: null,
@@ -404,6 +412,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setAutoFixCi: (enabled) => set({ autoFixCi: enabled }),
   setFailoverCutoffs: (agentId, cutoffs) =>
     set((s) => ({ failoverCutoffs: { ...s.failoverCutoffs, [agentId]: cutoffs } })),
+  setAccountSelectionMode: (agentId, mode) =>
+    set((s) => ({ accountSelectionMode: { ...s.accountSelectionMode, [agentId]: mode } })),
   setAutoResetMergedBranch: (enabled) => set({ autoResetMergedBranch: enabled }),
   setEnableSubAgents: (enabled) => set({ enableSubAgents: enabled }),
   setAgentSubAgentDefaults: (map) => set({ agentSubAgentDefaults: map }),

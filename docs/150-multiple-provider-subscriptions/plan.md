@@ -2623,6 +2623,44 @@ not fire, because `detectHardExhaustion` matches quota language only — verifie
 not assumed: none of its patterns match a model-unavailable message. So "no
 automatic recovery" holds by construction rather than by a new guard.
 
+### Fixed: a rescued runner ran the wrong agent (req 18)
+
+`SessionRunnerRegistry.getOrCreate(sessionId, sessionDir, defaultAgentId)`
+applies its third argument **only when it constructs a runner**; an existing,
+non-disposed runner is returned as-is. Both non-WS turn entrypoints —
+`sendChildMessage` and `wakeSession` — correctly passed
+`session.agentId ?? defaultAgentId`, and both silently lost it whenever a runner
+was already in the registry.
+
+Runners get seeded with the *global default* by the paths that have no session
+agent in hand: container rescue (`services/recovery.ts`) and the warm pool. The
+WS path repairs this on connect — `activateSession` assigns
+`existingRunner.agentId = sessionAgentId`, and its comment describes the original
+symptom (`claude --model gpt-5.5`, rejected by the CLI). Nothing repaired it for
+turns that never involve a WS connect.
+
+The consequence was not cosmetic. Downstream reads `runner.agentId`:
+`prepareSessionAgentEnvironment` provisions that agent's credential subtree, and
+`runDispatchedTurn(this, deps, this._agentId, …)` is handed it as the agent to
+run. So a Codex child whose container had been rescued ran Claude *with Claude's
+credentials provisioned to match* — self-consistent, and therefore not obviously
+a bug from the outside.
+
+Fixed in two places, because they fail differently:
+
+- `reconcile-runner-agent.ts` — a shared backstop both non-WS entrypoints call
+  before env-prep. It refuses to touch a **running** runner (the process is
+  already spawned under the old id) and returns the id the caller should use, so
+  a caller cannot reconcile and then go on using the stale value.
+- `services/recovery.ts` now seeds with `session.agentId ?? deps.defaultAgentId`
+  at both rescue sites, so the wrong value is not written in the first place.
+
+**Only the agent id needed this.** The provider route is not runner-held state —
+it is read from the session record inside `prepareSessionAgentEnvironment`
+(`routedSession.providerRouteKind` / `providerRouteId`), so it cannot go stale
+the same way. The checklist item that prompted this said "persisted agent *and
+provider route*"; the route half was already correct.
+
 ### Designed, not built: account identity and selection mode (reqs 21, 22)
 
 Both trace to the two Phase 0 questions that stayed open through every phase
@@ -2646,9 +2684,29 @@ external id is what makes the duplicate check possible at all — today two rows
 can be the same account, sharing one quota pool, which turns req 3's failover
 into a no-op that burns a retry and surfaces a confusing error.
 
-**Selection mode (req 21).** The scope here is much smaller than "concurrent
-turn scheduling" suggests, because of two properties verified in code rather
-than assumed:
+**Selection mode (req 21) — landed, with one correction to the design below.**
+The sketch here said "no new runtime state, only the existing `lastUsedAt`".
+`lastUsedAt` was declared on `ProviderAccount` from the first commit of this
+feature and **written by nothing**, so ordering by it would have compared
+`undefined` to `undefined` and silently degraded `balanced` into `strict`. The
+implementation adds `markAccountUsed`, called from env-prep when a turn resolves
+onto an account — no new *field*, but a new write, which is not what the sketch
+claimed.
+
+Two details that only surfaced in implementation:
+
+- **The stamp is strictly monotonic across a provider's accounts**, not plain
+  `Date.now()`. Millisecond granularity let two sessions pinning in the same
+  millisecond tie, and the stable-sort tie-break then handed the whole burst to
+  one account — which is exactly the pile-up `balanced` exists to prevent, and
+  burst-safety was the stated reason for choosing LRU over ranking by polled
+  quota. `markAccountUsed` stamps `max(Date.now(), peakSibling + 1)`.
+- **The stamp fires on every turn, not only the pinning turn.** An account
+  carrying a long-lived busy session must keep sorting last for as long as that
+  work continues; a pin-time-only stamp would let it age into looking idle.
+
+The scope is much smaller than "concurrent turn scheduling" suggests, because of
+two properties verified in code rather than assumed:
 
 - Turns are **serialized per session** — `turn-executor.ts` guards on
   `runner.running` and queues the rest. A session never has two turns in flight.
@@ -2679,7 +2737,17 @@ extra mechanism:
   counter would have been the only piece here needing correct decrement on every
   terminal path including crashes — cost with no behavior behind it.
 
-**What is still open.** What happens when a completed connect resolves to an
-already-connected external id — adopt onto the existing row, refuse, or warn and
-allow — is a user decision, recorded under `## Open questions` in
-`requirements.md`. Req 22 fixes only that a duplicate is not created *silently*.
+**Duplicate connects are refused** (user decision, 2026-08-03). A connect whose
+external id matches an existing row fails with a message naming that row; no
+second row is created and the existing row is left untouched. The agent had
+recommended adopting the credentials onto the matched row; refusal was chosen.
+
+One consequence to design around, since adopting would have absorbed it:
+**re-connecting an account is not a repair path for a stale row.** A row whose
+token expired cannot be fixed by signing in again through "add account" — that
+now hits the duplicate refusal. The existing per-account re-authentication path
+is what has to heal it, and it must stay reachable from a row in a failed state.
+That is already how the account-row auth surface works (a failed row offers its
+own connect action, scoped to its own `accountId`), so this is a constraint to
+preserve rather than something to build — but a future change that routes all
+sign-in through a single "add account" entry point would break it.

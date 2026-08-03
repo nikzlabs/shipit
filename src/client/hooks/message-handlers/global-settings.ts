@@ -23,4 +23,9 @@ export const handleGlobalSettings: Handler<WsGlobalSettings> = (_ctx, data) => {
       settings.setFailoverCutoffs(agentId, cutoffs);
     }
   }
+  if (data.accountSelectionMode !== undefined) {
+    for (const [agentId, mode] of Object.entries(data.accountSelectionMode)) {
+      settings.setAccountSelectionMode(agentId, mode);
+    }
+  }
 };

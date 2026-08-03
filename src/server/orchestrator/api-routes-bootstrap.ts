@@ -80,6 +80,8 @@ export async function registerBootstrapRoutes(
     voiceDeliveryMode?: "native" | "external" | "both";
     /** docs/150 reqs 4-6 — per-provider proactive failover cutoffs (1-100). */
     failoverCutoffs?: Record<string, { session?: number; weekly?: number }>;
+    /** docs/150 req 21 — per-provider account selection mode. */
+    accountSelectionMode?: Record<string, "strict" | "balanced">;
   } }>(
     "/api/settings",
     async (request, reply) => {
@@ -114,6 +116,7 @@ export async function registerBootstrapRoutes(
           ...(request.body.agentSubAgentDefaults !== undefined ? { agentSubAgentDefaults: request.body.agentSubAgentDefaults } : {}),
           ...(request.body.voiceDeliveryMode !== undefined ? { voiceDeliveryMode: request.body.voiceDeliveryMode } : {}),
           ...(request.body.failoverCutoffs !== undefined ? { failoverCutoffs: request.body.failoverCutoffs } : {}),
+          ...(request.body.accountSelectionMode !== undefined ? { accountSelectionMode: request.body.accountSelectionMode } : {}),
         });
       } catch (err) {
         if (err instanceof ServiceError) {

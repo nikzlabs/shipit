@@ -52,6 +52,12 @@ export interface WsGlobalSettings {
    * id. Optional so an older orchestrator's payload still parses.
    */
   failoverCutoffs?: Record<string, { session: number; weekly: number }>;
+  /**
+   * docs/150 req 21 — per-provider account selection mode, keyed by agent id.
+   * Optional for the same reason as the cutoffs above: an older orchestrator's
+   * payload must still parse, and its absence means "strict".
+   */
+  accountSelectionMode?: Record<string, "strict" | "balanced">;
   /** docs/146 — global gate for the auto-resolve-conflicts loop. */
   autoResolveConflicts?: boolean;
   /** docs/169 — global gate for the auto-fix-CI loop. */
