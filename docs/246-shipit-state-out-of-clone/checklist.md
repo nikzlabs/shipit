@@ -51,6 +51,12 @@
   `no-clone-writes.test.ts` no longer holds a single site that writes a docs/246
   artifact into a clone.
 
+- **The sweep never runs in local/dogfood mode** — SHI-289. `sweepLegacyCloneArtifacts`'s only
+  caller is `createContainer`, and `RUNTIME_MODE=local` creates no container, so a local-mode
+  session keeps an untracked pre-246 `.shipit/.env.agent` forever and the post-turn `git add -A`
+  can commit it. Req 6 is stated unconditionally but wired to the container path only. Pre-existing
+  (identical on `main` before SHI-286); found by the SHI-286 review.
+
 ## Out of scope, surfaced by SHI-286
 
 - **docs/183's in-clone per-service env fallback.** `writePerServiceEnvFiles`

@@ -728,7 +728,9 @@ describe("SessionContainerManager", () => {
         expect(fs.existsSync(specs[0].orchDirs!.lowerdir)).toBe(false);
         await mgr.create(mgr.buildConfigForWorkspace({
           sessionId: "cold-scope-1",
-          sessionDir: dir,
+          // `dir` is the CLONE; the session dir is its parent, so `uploadsDir`
+          // and `scratchDir` default to siblings of the clone as in production.
+          sessionDir: path.dirname(dir),
           workspaceDir: dir,
           credentialsDir: "/credentials",
           overlaySpecs: specs,
@@ -774,7 +776,7 @@ describe("SessionContainerManager", () => {
       const overlaySpecs = await ovlManager.prepareOverlaySpecs({ sessionId: "e2e-session-1", workspaceDir: dir, session: eligible });
       const config = ovlManager.buildConfigForWorkspace({
         sessionId: "e2e-session-1",
-        sessionDir: dir,
+        sessionDir: path.dirname(dir),
         workspaceDir: dir,
         credentialsDir: "/credentials",
         overlaySpecs,
@@ -805,7 +807,7 @@ describe("SessionContainerManager", () => {
       });
       expect(overlaySpecs).toHaveLength(1);
       const config = ovlManager.buildConfigForWorkspace({
-        sessionId: appSessionId, sessionDir: dir, workspaceDir: dir,
+        sessionId: appSessionId, sessionDir: path.dirname(dir), workspaceDir: dir,
         credentialsDir: "/credentials", overlaySpecs,
       });
       const sc = await ovlManager.createStandby(config);
@@ -826,7 +828,7 @@ describe("SessionContainerManager", () => {
       });
       expect(overlaySpecs).toEqual([]);
       const config = ovlManager.buildConfigForWorkspace({
-        sessionId: "warm-off-1", sessionDir: dir, workspaceDir: dir,
+        sessionId: "warm-off-1", sessionDir: path.dirname(dir), workspaceDir: dir,
         credentialsDir: "/credentials", overlaySpecs,
       });
       await ovlManager.createStandby(config);
@@ -936,7 +938,7 @@ describe("SessionContainerManager", () => {
         expect(overlaySpecs).toEqual([]);
         const pnpmStoreDir = mgr.preparePnpmStore({ workspaceDir: dir, session: eligible });
         const config = mgr.buildConfigForWorkspace({
-          sessionId: "pnpm-e2e-1", sessionDir: dir, workspaceDir: dir,
+          sessionId: "pnpm-e2e-1", sessionDir: path.dirname(dir), workspaceDir: dir,
           credentialsDir: "/credentials", overlaySpecs, pnpmStoreDir,
         });
         await mgr.create(config);

@@ -36,8 +36,29 @@ const REPO_ROOT = path.resolve(fileURLToPath(import.meta.url), "../../../..");
  * `path.join(opts.workspaceDir, ".shipit")` on one line and passed that
  * directory to the writer on another, so no single expression matched. Matching
  * the DIRECTORY join is the invariant — what gets written into it is irrelevant.
+ *
+ * SHI-286 closed a third bypass, and it was not hypothetical: the version that
+ * recognised only a DOUBLE-quoted `.shipit` never saw `buildEnv`'s
+ * `` `${workspaceDir}/.shipit` `` — a live in-clone path that sat green in CI
+ * for the whole of docs/246. So `\}/\.shipit` now catches a template
+ * interpolation followed by the directory, and the quote class accepts `'` as
+ * well as `"`.
+ *
+ * **Backticks are deliberately NOT in that class.** In this codebase a
+ * backticked `.shipit/...` is nearly always a markdown code span in a JSDoc
+ * comment — adding it matches ~20 files of pure prose, and a guard whose output
+ * is mostly noise is one nobody reads. The dangerous shape is a path composed
+ * from a clone variable, and that always shows up as either the `path.join`
+ * form or the `${…}/` interpolation, both of which are covered.
+ *
+ * **Known limitation — granularity is per FILE, not per line.** A file in
+ * {@link ALLOWED} is exempt wholesale, so a NEW forbidden writer added to, say,
+ * `secret-resolver.ts` would pass. Closing that means allowlisting individual
+ * matched lines; recorded as a follow-up rather than fixed here. The check is
+ * still the difference between "someone has to catch it in review" and "CI
+ * names the file".
  */
-const IN_CLONE_SHIPIT_PATH = String.raw`(workspaceDir|sessionDir|clone|repoDir|cwd)\s*,\s*"\.shipit"|"\.shipit/`;
+const IN_CLONE_SHIPIT_PATH = String.raw`(workspaceDir|sessionDir|clone|repoDir|cwd)\s*,\s*['"]\.shipit['"]|"\.shipit/|\}/\.shipit`;
 
 /**
  * Sites still permitted to name an in-clone artifact path.

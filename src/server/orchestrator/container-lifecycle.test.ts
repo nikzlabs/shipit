@@ -650,15 +650,24 @@ describe("buildContainerConfig", () => {
     expect(config.sessionStateDir).toBe("/workspace/sessions/s1/state");
   });
 
-  it("passes through an explicit sessionStateDir", () => {
+  // SHI-286 — unlike `scratchDir`/`uploadsDir`, the state dir is NOT
+  // overridable. The old `sessionStateDir?` opt was dead in production, and it
+  // would now silently diverge: the container would mount `<custom>/shared`
+  // while `preStampInstallMarker` (which derives from the clone path) wrote the
+  // marker to `<sessionDir>/state/shared`, so the worker could not see it and a
+  // valid overlay base hit would run a full `agent.install` anyway.
+  it("always derives the state dir from the clone, ignoring any sibling override", () => {
     const config = buildContainerConfig(deps, {
       sessionId: "s1",
       sessionDir: "/workspace/sessions/s1",
       workspaceDir: "/workspace/sessions/s1/workspace",
-      sessionStateDir: "/custom/state",
+      scratchDir: "/custom/scratch",
       credentialsDir: "/credentials",
     });
-    expect(config.sessionStateDir).toBe("/custom/state");
+    // The overridable siblings still honour their overrides...
+    expect(config.scratchDir).toBe("/custom/scratch");
+    // ...the state dir does not have one to honour.
+    expect(config.sessionStateDir).toBe("/workspace/sessions/s1/state");
   });
 
   // SHI-286 — a pre-`workspace/` flat session (clone === session dir) is refused

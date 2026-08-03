@@ -1408,8 +1408,6 @@ export function buildContainerConfig(
     uploadsDir?: string;
     /** docs/217 — persistent scratch host dir; defaults to a `sessionDir` sibling. */
     scratchDir?: string;
-    /** docs/246 — ShipIt's per-session state dir; defaults to a `sessionDir` sibling. */
-    sessionStateDir?: string;
     env?: Record<string, string>;
     memoryLimit?: number;
     cpuQuota?: number;
@@ -1432,10 +1430,18 @@ export function buildContainerConfig(
     pnpmStoreDir: opts.pnpmStoreDir,
     uploadsDir: opts.uploadsDir ?? path.join(opts.sessionDir, "uploads"),
     scratchDir: opts.scratchDir ?? path.join(opts.sessionDir, "scratch"),
-    // docs/246 — resolved from the clone path via the one contract the host-side
-    // callers share, so the mount and every host writer agree on where this
-    // session's state lives. Throws for a clone that isn't `<sessionDir>/workspace`.
-    sessionStateDir: opts.sessionStateDir ?? sessionStateDirForWorkspace(opts.workspaceDir),
+    // docs/246 — ALWAYS resolved from the clone path via the one contract the
+    // host-side callers share, so the mount and every host writer agree on where
+    // this session's state lives. Throws for a clone that isn't
+    // `<sessionDir>/workspace`.
+    //
+    // Deliberately NOT overridable (SHI-286). It used to accept an explicit
+    // `sessionStateDir`, which no production caller ever passed and which the
+    // overlay pre-stamp would now ignore: `preStampInstallMarker` derives the
+    // marker's home from the clone path, so an override would mount
+    // `<custom>/shared` while the pre-stamp wrote `<sessionDir>/state/shared` —
+    // an unreadable marker and a full `agent.install` on every base hit.
+    sessionStateDir: sessionStateDirForWorkspace(opts.workspaceDir),
     imageName: deps.imageName,
     memoryLimit: opts.memoryLimit ?? deps.defaultMemoryLimit,
     cpuQuota: opts.cpuQuota ?? deps.defaultCpuQuota,
