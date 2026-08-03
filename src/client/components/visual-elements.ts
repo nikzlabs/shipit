@@ -6,10 +6,11 @@ export const STANDALONE_TOOLS = new Set(["AskUserQuestion", "TodoWrite", "EnterP
 
 // Tools extracted into their own top-level visual elements (not grouped, not inside message bubbles)
 //
-// Re-exported from shared rather than redeclared: the orchestrator's docs/244
-// projection exempts exactly this set from slicing, because a subagent's final
-// report renders in full here with no expand affordance. A drift between the
-// two lists would silently truncate a report with no way to get it back.
+// Re-exported from shared rather than redeclared so the layout decision has one
+// definition. The narrower `SUBAGENT_REPORT_TOOL_NAMES` (Task/Agent) is what
+// `MessageToolUse` routes to `SubagentCall` and what the docs/244 projection
+// exempts from slicing — those two must not drift, which is why they read the
+// same set.
 export { SUBAGENT_TOOL_NAMES as SUBAGENT_TOOLS } from "../../server/shared/transcript-slice-tools.js";
 import { SUBAGENT_TOOL_NAMES as SUBAGENT_TOOLS } from "../../server/shared/transcript-slice-tools.js";
 

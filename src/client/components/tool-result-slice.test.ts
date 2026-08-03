@@ -7,7 +7,7 @@ import {
 } from "./ToolResult.js";
 import { TRANSCRIPT_SLICE_LINES } from "../../server/shared/transcript-slice.js";
 import { SUBAGENT_TOOLS } from "./visual-elements.js";
-import { SUBAGENT_TOOL_NAMES } from "../../server/shared/transcript-slice-tools.js";
+import { SUBAGENT_TOOL_NAMES, SUBAGENT_REPORT_TOOL_NAMES } from "../../server/shared/transcript-slice-tools.js";
 
 /**
  * docs/244 — the orchestrator ships only the first `TRANSCRIPT_SLICE_LINES`
@@ -43,11 +43,34 @@ describe("inline previews fit inside the server slice", () => {
 
 describe("subagent tool set", () => {
   /**
-   * The projection exempts exactly this set from slicing because the final
-   * report renders in full with no expand affordance. One definition, so the
-   * exemption and the renderer cannot disagree.
+   * Layout set: one definition shared by the renderer's element extraction and
+   * anything server-side that reasons about subagent calls.
    */
-  it("is the same object the projection exempts", () => {
+  it("is the same object the client extracts standalone elements from", () => {
     expect(SUBAGENT_TOOLS).toBe(SUBAGENT_TOOL_NAMES);
+  });
+
+  /**
+   * docs/109 — the report set is what `MessageToolUse` routes to `SubagentCall`
+   * AND what the projection exempts from slicing. Those two jobs read the same
+   * constant on purpose: a name that renders a full report but gets sliced
+   * loses text irrecoverably, and a name that is exempted but renders nothing
+   * ships an unbounded body for no reason (which is what `Skill` did).
+   */
+  it("is a subset of the tools that render as standalone elements", () => {
+    for (const name of SUBAGENT_REPORT_TOOL_NAMES) {
+      expect(SUBAGENT_TOOLS.has(name)).toBe(true);
+    }
+  });
+
+  it("covers the tool name the Claude CLI actually emits for a subagent", () => {
+    // Verified against Claude Code CLI 2.1.219: the tool arrives as `Agent`,
+    // never `Task`. `Task` stays for transcripts persisted before docs/109.
+    expect(SUBAGENT_REPORT_TOOL_NAMES.has("Agent")).toBe(true);
+    expect(SUBAGENT_REPORT_TOOL_NAMES.has("Task")).toBe(true);
+  });
+
+  it("excludes Skill, which renders no report", () => {
+    expect(SUBAGENT_REPORT_TOOL_NAMES.has("Skill")).toBe(false);
   });
 });

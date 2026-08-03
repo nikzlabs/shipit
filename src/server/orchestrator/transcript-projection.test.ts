@@ -51,11 +51,23 @@ describe("projectToolResult", () => {
   it("never slices a subagent final report", () => {
     // `SubagentCall` renders this in full as markdown with no expand
     // affordance, so a slice would cut the report with no way to recover it.
-    for (const tool of ["Task", "Skill", "Agent"]) {
+    // `Agent` is the name the Claude CLI actually emits; `Task` covers
+    // transcripts persisted before docs/109.
+    for (const tool of ["Task", "Agent"]) {
       const projected = projectToolResult("s1", { toolUseId: "t1", content: bigOutput }, tool);
       expect(projected.truncated).toBeUndefined();
       expect(projected.content).toBe(bigOutput);
     }
+  });
+
+  it("does slice a Skill result, which renders no report", () => {
+    // docs/109 — `Skill` sits in the layout set (its own top-level element) but
+    // not the report set: the compact renderer shows name + args and never
+    // touches the body, so exempting it from every size bound shipped an
+    // unbounded payload that nothing could display.
+    const projected = projectToolResult("s1", { toolUseId: "t1", content: bigOutput }, "Skill");
+    expect(projected.truncated).toBe(true);
+    expect(projected.content).not.toBe(bigOutput);
   });
 
   it("substitutes image payloads, and the result still parses as JSON blocks", () => {

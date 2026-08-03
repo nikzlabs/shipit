@@ -43,7 +43,7 @@
 
 import { createHash } from "node:crypto";
 import { sliceBody } from "../shared/transcript-slice.js";
-import { SUBAGENT_TOOL_NAMES } from "../shared/transcript-slice-tools.js";
+import { SUBAGENT_REPORT_TOOL_NAMES } from "../shared/transcript-slice-tools.js";
 import type { PersistedMessage } from "./chat-history.js";
 import type { AgentEvent } from "../shared/types.js";
 import type { ToolResultEntry } from "./session-runner.js";
@@ -163,17 +163,18 @@ function projectBlockArray(
 
 /**
  * Project one tool result. `toolName` is the name of the tool that produced it,
- * used for the single exemption: a Task/Skill/Agent result carries the
- * subagent's final report, which `SubagentCall` renders in full as markdown
- * with no expand affordance — slicing it would visibly cut the report with no
- * way to get the rest back.
+ * used for the single exemption: a Task/Agent result carries the subagent's
+ * final report, which `SubagentCall` renders in full as markdown with no expand
+ * affordance — slicing it would visibly cut the report with no way to get the
+ * rest back. `Skill` is NOT exempt: it renders no report, so its body goes
+ * through the ordinary bound like any other tool result.
  */
 export function projectToolResult(
   sessionId: string,
   result: ToolResultEntry,
   toolName: string | undefined,
 ): ToolResultEntry {
-  const exempt = !!toolName && SUBAGENT_TOOL_NAMES.has(toolName);
+  const exempt = !!toolName && SUBAGENT_REPORT_TOOL_NAMES.has(toolName);
 
   // Block arrays (MCP image results) take the structure-preserving path, which
   // slices the text inside the blocks rather than the JSON string around them.
