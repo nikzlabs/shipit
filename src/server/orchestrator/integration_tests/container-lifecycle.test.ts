@@ -88,14 +88,21 @@ function createFakeDocker() {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Create a session directory + git repo and track it in the session manager. */
+/**
+ * Create a session directory + git repo and track it in the session manager.
+ *
+ * Mirrors `createSessionDirFactory`: the clone is `<sessionDir>/workspace`, with
+ * ShipIt's state dir as its sibling. Container creation resolves the state dir
+ * from the clone path and refuses anything else (docs/246 / SHI-286), so the
+ * layout is load-bearing here, not cosmetic.
+ */
 async function createSession(
   sessionManager: SessionManager,
   sessionsDir: string,
   title: string,
 ): Promise<{ id: string; dir: string }> {
   const id = `test-session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const dir = path.join(sessionsDir, id);
+  const dir = path.join(sessionsDir, id, "workspace");
   fs.mkdirSync(dir, { recursive: true });
   const git = new GitManager(dir);
   await git.init();
@@ -211,6 +218,8 @@ describe("container lifecycle integration", () => {
     await containerManager.create({
       sessionId: "orphan-session",
       sessionDir: "/workspace/sessions/orphan",
+      workspaceDir: "/workspace/sessions/orphan/workspace",
+      sessionStateDir: "/workspace/sessions/orphan/state",
       credentialsDir: "/credentials",
       imageName: "shipit-session-worker:test",
       memoryLimit: 512 * 1024 * 1024,

@@ -29,7 +29,11 @@ import path from "node:path";
 import simpleGit from "simple-git";
 import type { SessionInfo } from "../shared/types.js";
 import { resolveShipitConfig, DEFAULT_DEP_DIRS } from "../shared/shipit-config.js";
-import { INSTALL_MARKER_FILE, sessionSharedStateDir } from "./session-state-dir.js";
+import {
+  INSTALL_MARKER_FILE,
+  sessionSharedStateDir,
+  sessionStateDirForWorkspace,
+} from "./session-state-dir.js";
 import { overlayScopeHash, overlayVolumeName, overlayBaseGenDir, type OverlaySpec } from "./overlay-volume.js";
 import { readBasePointerByHash, type BasePointer, type OverlayScope } from "./overlay-base.js";
 import { makeMarker, serializeMarker } from "../shared/install-marker.js";
@@ -432,7 +436,7 @@ export function isPnpmRepo(workspaceDir: string): boolean {
 // ---------------------------------------------------------------------------
 
 /**
- * Write a `.shipit/.install-done` marker into a FRESH clone whose overlay
+ * Write an `.install-done` marker into a FRESH session's state dir whose overlay
  * mounts a base that already holds the right deps — so the worker's `/install`
  * gate skips and a "main unchanged" session pays ~0 instead of a full install.
  *
@@ -472,16 +476,13 @@ export function isPnpmRepo(workspaceDir: string): boolean {
 export async function preStampInstallMarker(args: {
   /** Orchestrator-visible state dir holding `overlay-base-meta/` (pointers). */
   stateDir: string;
-  /** The session's host clone (HEAD, shipit.yaml, dep-file hashing). */
-  workspaceDir: string;
   /**
-   * docs/246 — the session's state dir, where the install marker lives. The
-   * marker used to sit in `<clone>/.shipit/`, inside the user's repository,
-   * where the post-turn `git add -A` staged it. Null on the legacy flat layout
-   * (the session dir isn't identifiable from the clone), which keeps the old
-   * in-clone placement rather than guessing.
+   * The session's host clone (HEAD, shipit.yaml, dep-file hashing). Also
+   * resolves the session's state dir, where docs/246 put the install marker —
+   * it used to sit in `<clone>/.shipit/`, inside the user's repository, where
+   * the post-turn `git add -A` staged it.
    */
-  sessionStateDir?: string | null;
+  workspaceDir: string;
   /** The overlay specs the container was created with. */
   specs: DepDirOverlaySpec[];
   /** Pointer reader — injected for tests; defaults to the real by-hash read. */
@@ -490,7 +491,7 @@ export async function preStampInstallMarker(args: {
    * Hand a node back to the worker uid — injected for tests; defaults to
    * `chownToSessionWorker` (a no-op when `SHIPIT_SESSION_WORKER_UID` is unset).
    * The marker dir + file are created by the **root** orchestrator here, so
-   * without this handoff `.shipit/` is left `root:root` — and the worker's
+   * without this handoff the marker dir is left `root:root` — and the worker's
    * uid-1000 `writeMarker` then EACCESes when a later HEAD change invalidates
    * this marker and a real install tries to re-stamp it.
    */
@@ -503,9 +504,10 @@ export async function preStampInstallMarker(args: {
 
   // The marker must land in the slice the container mounts, or the worker (which
   // sees only `/session-state`) and this host-side pre-stamp write two files.
-  const markerFile = args.sessionStateDir
-    ? path.join(sessionSharedStateDir(args.sessionStateDir), INSTALL_MARKER_FILE)
-    : path.join(workspaceDir, ".shipit", INSTALL_MARKER_FILE);
+  const markerFile = path.join(
+    sessionSharedStateDir(sessionStateDirForWorkspace(workspaceDir)),
+    INSTALL_MARKER_FILE,
+  );
   if (fs.existsSync(markerFile)) return false;
 
   let head: string;

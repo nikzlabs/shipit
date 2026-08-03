@@ -12,13 +12,14 @@
  * docs/217 used for `scratch/` (`/persist`) and docs/138 for the per-session
  * credentials subtree (`/credentials`).
  *
- * **Threaded, never derived.** `ServiceManager` holds only `workspaceDir`, so
- * the tempting shortcut is `path.dirname(workspaceDir)`. That is wrong: the
- * legacy flat layout has `sessionDir === workspaceDir`
- * (`container-lifecycle.ts`), where `dirname` yields `sessionsRoot` and every
- * session's state collides in one directory. Callers that know the session dir
- * resolve the path with {@link sessionStateDir} and pass it down explicitly,
- * exactly as docs/183 threaded `serviceEnvDir`.
+ * **Derived from the clone path, and only from a layout that proves it.** A bare
+ * `path.dirname(workspaceDir)` is not enough: the pre-`workspace/` flat layout
+ * had `sessionDir === workspaceDir`, where `dirname` yields `sessionsRoot` and
+ * every session's state would collide in one directory. So
+ * {@link sessionStateDirForWorkspace} derives only when the clone sits at
+ * `<sessionDir>/workspace` — the shape `createSessionDirFactory` guarantees —
+ * and REFUSES anything else (SHI-286). One resolver, so the host side and the
+ * container mount can never disagree about where a session's state lives.
  *
  * Nothing user-authored ever lived in a clone's `.shipit/`: the per-repo config
  * a human writes is `shipit.yaml` at the repo root, and `.shipit/system-prompt.md`
@@ -64,59 +65,39 @@ export function sessionStateDir(sessionDir: string): string {
 }
 
 /**
- * Resolve a session's state dir from its **clone** path, or `null` when the
- * layout doesn't prove where the session dir is.
+ * Resolve a session's state dir from its **clone** path.
  *
- * Most call sites (`ServiceManager`, the runner) only ever receive the clone
- * path — `runner.sessionDir` is itself the workspace dir, since runners are
- * created with `session.workspaceDir` (`route-registry.ts`). A bare
- * `path.dirname` is unsafe there: under the legacy flat layout
- * (`sessionDir === workspaceDir`) it yields `sessionsRoot`, and every session's
- * state would collide in one directory.
+ * Most call sites (`ServiceManager`, the runner, the container mount) only ever
+ * receive the clone path — `runner.sessionDir` is itself the workspace dir,
+ * since runners are created with `session.workspaceDir`
+ * (`route-registry.ts`) — so this is the single contract all of them share.
  *
- * So this derives ONLY when the clone sits at `<sessionDir>/workspace`, which
- * `createSessionDirFactory` guarantees for every session it creates — the two
- * sides share {@link SESSION_WORKSPACE_SUBDIR}. Anything else returns `null`,
- * and the caller keeps its legacy behavior rather than writing state to a
- * guessed location. The right long-term fix is a `stateDir` on the session
- * record; this contract avoids a schema migration for the same guarantee on
- * every session the current factory creates.
+ * It derives ONLY when the clone sits at `<sessionDir>/workspace`, which
+ * `createSessionDirFactory` guarantees for every session it creates: the two
+ * sides share {@link SESSION_WORKSPACE_SUBDIR}.
+ *
+ * **Anything else throws** (SHI-286). The two alternatives were both worse. A
+ * bare `path.dirname` fallback re-creates the bug this contract was written to
+ * kill: a flat-layout clone (`<sessionsRoot>/<id>`) resolves to
+ * `<sessionsRoot>/state`, one directory shared by every such session on the
+ * host, with a single `.install-done` between them. And the fallback this
+ * replaced — return `null`, let the caller keep writing into the clone — is the
+ * placement docs/246 exists to end; it is what forced req 1 to carry an
+ * allowlist. A production census (SHI-286: 307 rows, `flat == 0`, archived
+ * included) found no session of that shape, and the accepted consequence of
+ * refusing is that a database carrying one would be **unserviceable rather than
+ * degraded**. Failing here names that at the point of resolution instead of
+ * silently handing back a path that is wrong for every caller.
  */
-export function sessionStateDirForWorkspace(workspaceDir: string): string | null {
-  if (path.basename(workspaceDir) !== SESSION_WORKSPACE_SUBDIR) return null;
+export function sessionStateDirForWorkspace(workspaceDir: string): string {
+  if (path.basename(workspaceDir) !== SESSION_WORKSPACE_SUBDIR) {
+    throw new Error(
+      `[session-state] cannot resolve a state dir for clone ${workspaceDir}: expected it to sit at `
+        + `<sessionDir>/${SESSION_WORKSPACE_SUBDIR}. Sessions created before that layout are no longer `
+        + "serviceable (SHI-286).",
+    );
+  }
   return sessionStateDir(path.dirname(workspaceDir));
-}
-
-/**
- * Resolve the state dir a CONTAINER should mount, or `null` when the session's
- * layout can't place one safely.
- *
- * Deliberately derived from the **clone path only**, via the same
- * {@link sessionStateDirForWorkspace} contract the host-side callers use, so the
- * two can never disagree about where a session's state lives.
- *
- * The earlier version took the caller's `sessionDir` and only checked that the
- * result wasn't *inside* the clone. That check passed for a shape production
- * actually produces: the runner factory derives `sessionDir =
- * path.dirname(session.workspaceDir)` (`app-lifecycle.ts`), so a legacy FLAT
- * session (clone = `<sessionsRoot>/<id>`) resolved to `<sessionsRoot>/state` —
- * outside that clone, so it passed, but **shared by every flat session on the
- * host**. Every such session would have mounted one directory and shared a
- * single `.install-done`, while host callers (which use the clone-path contract)
- * looked somewhere else entirely.
- *
- * Deriving from one place removes the whole class: either a session has a state
- * dir that both sides agree on, or it has none and keeps its legacy in-clone
- * placement.
- */
-export function resolveContainerStateDir(workspaceDir: string | undefined): string | null {
-  if (!workspaceDir) return null;
-  const resolved = sessionStateDirForWorkspace(workspaceDir);
-  if (!resolved) return null;
-  // Belt and braces: never hand back a path inside the clone.
-  const rel = path.relative(path.resolve(workspaceDir), path.resolve(resolved));
-  const insideClone = rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
-  return insideClone ? null : resolved;
 }
 
 /**

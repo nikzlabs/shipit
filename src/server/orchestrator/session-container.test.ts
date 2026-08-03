@@ -197,6 +197,8 @@ function buildConfig(overrides?: Partial<ContainerConfig>): ContainerConfig {
   return {
     sessionId: "test-session-1",
     sessionDir: "/workspace/sessions/test-session-1",
+    workspaceDir: "/workspace/sessions/test-session-1/workspace",
+    sessionStateDir: "/workspace/sessions/test-session-1/state",
     credentialsDir: "/credentials",
     imageName: "shipit-session-worker:test",
     memoryLimit: 512 * 1024 * 1024,
@@ -343,7 +345,8 @@ describe("SessionContainerManager", () => {
           },
           HostConfig: expect.objectContaining({
             Binds: expect.arrayContaining([
-              "/workspace/sessions/test-session-1:/workspace:rw",
+              // The CLONE is what lands at /workspace — `<sessionDir>/workspace`.
+              "/workspace/sessions/test-session-1/workspace:/workspace:rw",
               // docs/138 — the container gets its private per-session credentials
               // subtree, never the shared root.
               "/credentials/sessions/test-session-1:/credentials:rw",
@@ -638,9 +641,15 @@ describe("SessionContainerManager", () => {
       await ovlManager.dispose();
     });
 
+    /**
+     * A real session layout — the clone at `<sessionDir>/workspace`, which is
+     * what the state dir is resolved from (docs/246 / SHI-286). Returns the clone.
+     */
     async function ws(opts: { gitignore?: string; shipitYaml?: string; dirs?: string[] } = {}): Promise<string> {
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "prep-overlay-"));
-      tmpDirs.push(dir);
+      const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), "prep-overlay-"));
+      tmpDirs.push(sessionDir);
+      const dir = path.join(sessionDir, "workspace");
+      fs.mkdirSync(dir, { recursive: true });
       const git = (await import("simple-git")).default;
       await git(dir).init();
       if (opts.gitignore !== undefined) fs.writeFileSync(path.join(dir, ".gitignore"), opts.gitignore);
@@ -1048,6 +1057,7 @@ describe("SessionContainerManager", () => {
       const config = manager.buildConfig({
         sessionId: "s1",
         sessionDir: "/ws/s1",
+        workspaceDir: "/ws/s1/workspace",
         credentialsDir: "/creds",
       });
 
@@ -1061,6 +1071,7 @@ describe("SessionContainerManager", () => {
       const config = manager.buildConfig({
         sessionId: "s1",
         sessionDir: "/ws/s1",
+        workspaceDir: "/ws/s1/workspace",
         credentialsDir: "/creds",
         memoryLimit: 1024 * 1024 * 1024,
         cpuQuota: 100_000,
@@ -1390,6 +1401,9 @@ describe("buildConfigForWorkspace — sandbox Docker capability (docs/211)", () 
     // An empty sandbox workspace has NO shipit.yaml, so the workspace-derived
     // dockerAccess is always false — the capability grant is the only source.
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sandbox-docker-"));
+    // Sandboxes come from `createSessionDir` like every other session, so the
+    // clone is `<sessionDir>/workspace` — the layout the state dir resolves from.
+    fs.mkdirSync(path.join(tmpDir, "workspace"), { recursive: true });
   });
   afterEach(async () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -1400,7 +1414,7 @@ describe("buildConfigForWorkspace — sandbox Docker capability (docs/211)", () 
     mgr.buildConfigForWorkspace({
       sessionId: "sbx123456789",
       sessionDir: tmpDir,
-      workspaceDir: tmpDir,
+      workspaceDir: path.join(tmpDir, "workspace"),
       credentialsDir: "/credentials",
       ...(dockerAccess !== undefined ? { dockerAccess } : {}),
     });

@@ -33,6 +33,8 @@ function baseConfig(overrides?: Partial<ContainerConfig>): ContainerConfig {
   return {
     sessionId: "sess-1",
     sessionDir: "/workspace/sessions/sess-1",
+    workspaceDir: "/workspace/sessions/sess-1/workspace",
+    sessionStateDir: "/workspace/sessions/sess-1/state",
     credentialsDir: "/credentials",
     imageName: "shipit-worker:test",
     memoryLimit: 512 * 1024 * 1024,
@@ -49,11 +51,17 @@ function baseConfig(overrides?: Partial<ContainerConfig>): ContainerConfig {
 describe("buildMounts", () => {
   it("returns basic session + per-session credentials bind mounts without optional dirs", () => {
     const result = buildMounts(baseConfig(), undefined, undefined);
-    expect(result.binds).toContain("/workspace/sessions/sess-1:/workspace:rw");
+    // The clone — `<sessionDir>/workspace` — is what lands at /workspace.
+    expect(result.binds).toContain("/workspace/sessions/sess-1/workspace:/workspace:rw");
     // docs/138 — the container gets its PRIVATE credentials subtree, never the
     // shared root, so a Claude session can't read Codex's creds and vice versa.
     expect(result.binds).toContain("/credentials/sessions/sess-1:/credentials:rw");
     expect(result.binds).not.toContain("/credentials:/credentials:rw");
+    // docs/246 / SHI-286 — every session mounts the container-visible slice of
+    // its state dir; there is no "no state dir" case left to skip it for.
+    expect(result.binds).toContain(
+      "/workspace/sessions/sess-1/state/shared:/session-state:rw",
+    );
     expect(result.mounts).toHaveLength(0);
   });
 
@@ -210,7 +218,7 @@ describe("buildMounts — overlay session (docs/183)", () => {
     const wsMounts = result.mounts.filter((m) => m.Target === "/workspace");
     expect(wsMounts).toHaveLength(1);
     expect(wsMounts[0].Source).toBe("shipit-workspace");
-    expect(wsMounts[0].VolumeOptions?.Subpath).toBe("sessions/sess-1");
+    expect(wsMounts[0].VolumeOptions?.Subpath).toBe("sessions/sess-1/workspace");
 
     // Each dep dir is mounted at its nested /workspace/<dep-dir> target.
     for (const spec of depSpecs) {
@@ -246,7 +254,7 @@ describe("buildMounts — overlay session (docs/183)", () => {
     const result = buildMounts(config, "shipit-workspace", undefined);
     const wsMount = result.mounts.find((m) => m.Target === "/workspace");
     expect(wsMount!.Source).toBe("shipit-workspace");
-    expect(wsMount!.VolumeOptions?.Subpath).toBe("sessions/sess-1");
+    expect(wsMount!.VolumeOptions?.Subpath).toBe("sessions/sess-1/workspace");
     // No nested /workspace/* mounts.
     expect(result.mounts.some((m) => m.Target.startsWith("/workspace/"))).toBe(false);
   });
@@ -334,6 +342,18 @@ describe("buildMounts — ops session host mounts (docs/128)", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildEnv", () => {
+  // docs/246 / SHI-286 — the worker writes its install marker here, and the
+  // state dir is ALWAYS mounted, so this is unconditional. It used to fall back
+  // to an in-clone `${workspaceDir}/.shipit` for a session with no mountable
+  // state dir (the flat layout); nothing has that shape any more, and the
+  // fallback put a generated file where `git add -A` would stage it.
+  it("always points SHIPIT_SESSION_STATE_DIR at the container mount, never into the clone", () => {
+    const env = buildEnv(baseConfig(), "/workspace", 9100, undefined, undefined);
+    expect(env).toContain("SHIPIT_SESSION_STATE_DIR=/session-state");
+    expect(env.some((e) => e.startsWith("SHIPIT_SESSION_STATE_DIR=") && e.includes(".shipit")))
+      .toBe(false);
+  });
+
   it("includes package manager cache env vars when depCacheDir is set", () => {
     const config = baseConfig({ depCacheDir: "/workspace/dep-cache/abc123" });
     const env = buildEnv(config, "/workspace", 9100, undefined, undefined);
@@ -544,6 +564,7 @@ describe("buildContainerConfig", () => {
     const config = buildContainerConfig(deps, {
       sessionId: "s1",
       sessionDir: "/workspace/sessions/s1",
+      workspaceDir: "/workspace/sessions/s1/workspace",
       credentialsDir: "/credentials",
       depCacheDir: "/workspace/dep-cache/hash",
     });
@@ -554,6 +575,7 @@ describe("buildContainerConfig", () => {
     const config = buildContainerConfig(deps, {
       sessionId: "s1",
       sessionDir: "/workspace/sessions/s1",
+      workspaceDir: "/workspace/sessions/s1/workspace",
       credentialsDir: "/credentials",
     });
     expect(config.depCacheDir).toBeUndefined();
@@ -566,6 +588,7 @@ describe("buildContainerConfig", () => {
     const config = buildContainerConfig(deps, {
       sessionId: "s1",
       sessionDir: "/workspace/sessions/s1",
+      workspaceDir: "/workspace/sessions/s1/workspace",
       credentialsDir: "/credentials",
     });
     expect(config.scratchDir).toBe("/workspace/sessions/s1/scratch");
@@ -577,6 +600,7 @@ describe("buildContainerConfig", () => {
     const config = buildContainerConfig(deps, {
       sessionId: "s1",
       sessionDir: "/workspace/sessions/s1",
+      workspaceDir: "/workspace/sessions/s1/workspace",
       credentialsDir: "/credentials",
       scratchDir: "/custom/scratch",
     });
@@ -593,6 +617,7 @@ describe("buildContainerConfig", () => {
     const config = buildContainerConfig(deps, {
       sessionId: "s1",
       sessionDir: "/workspace/sessions/s1",
+      workspaceDir: "/workspace/sessions/s1/workspace",
       credentialsDir: "/credentials",
       dockerAccess: true,
       opsSession: true,
@@ -605,10 +630,51 @@ describe("buildContainerConfig", () => {
     const config = buildContainerConfig(deps, {
       sessionId: "s1",
       sessionDir: "/workspace/sessions/s1",
+      workspaceDir: "/workspace/sessions/s1/workspace",
       credentialsDir: "/credentials",
       dockerAccess: true,
     });
     expect(config.dockerAccess).toBe(true);
+  });
+
+  // docs/246 — derived from the CLONE path via the one contract the host-side
+  // writers share, so the mount and every host writer agree on where a session's
+  // state lives.
+  it("derives sessionStateDir as a `state/` sibling of the clone", () => {
+    const config = buildContainerConfig(deps, {
+      sessionId: "s1",
+      sessionDir: "/workspace/sessions/s1",
+      workspaceDir: "/workspace/sessions/s1/workspace",
+      credentialsDir: "/credentials",
+    });
+    expect(config.sessionStateDir).toBe("/workspace/sessions/s1/state");
+  });
+
+  it("passes through an explicit sessionStateDir", () => {
+    const config = buildContainerConfig(deps, {
+      sessionId: "s1",
+      sessionDir: "/workspace/sessions/s1",
+      workspaceDir: "/workspace/sessions/s1/workspace",
+      sessionStateDir: "/custom/state",
+      credentialsDir: "/credentials",
+    });
+    expect(config.sessionStateDir).toBe("/custom/state");
+  });
+
+  // SHI-286 — a pre-`workspace/` flat session (clone === session dir) is refused
+  // outright. The two rejected alternatives: a bare `dirname` gives every flat
+  // session on the host the SAME `<sessionsRoot>/state` (one shared install
+  // marker), and the previous "no state dir" answer let ShipIt keep writing its
+  // artifacts inside the user's clone. Such a row is unserviceable by decision.
+  it("refuses a flat-layout session rather than sharing or in-clone placement", () => {
+    expect(() =>
+      buildContainerConfig(deps, {
+        sessionId: "s1",
+        sessionDir: "/workspace/sessions/s1",
+        workspaceDir: "/workspace/sessions/s1",
+        credentialsDir: "/credentials",
+      }),
+    ).toThrow(/<sessionDir>\/workspace/);
   });
 });
 
@@ -885,12 +951,6 @@ describe("selfHealWorkspaceOwnership", () => {
   it("skips entirely in dev bind-mount mode (no workspaceVolume) — never chowns the host source", () => {
     const handBack = vi.fn();
     selfHealWorkspaceOwnership({ workspaceDir: WS_DIR }, undefined, handBack);
-    expect(handBack).not.toHaveBeenCalled();
-  });
-
-  it("skips when the session has no workspaceDir", () => {
-    const handBack = vi.fn();
-    selfHealWorkspaceOwnership({ workspaceDir: undefined }, WS_VOLUME, handBack);
     expect(handBack).not.toHaveBeenCalled();
   });
 

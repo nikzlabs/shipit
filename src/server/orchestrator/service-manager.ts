@@ -41,7 +41,7 @@ import {
   type ComposeService,
   type OverlayDepDirVolume,
 } from "./compose-generator.js";
-import { COMPOSE_OVERRIDE_FILE } from "./session-state-dir.js";
+import { COMPOSE_OVERRIDE_FILE, sessionStateDirForWorkspace } from "./session-state-dir.js";
 import {
   ServiceSecretsResolver,
   type SecretsStatusInternalSnapshot,
@@ -201,17 +201,6 @@ export interface ServiceManagerOptions {
    */
   serviceEnvDir?: string;
   /**
-   * docs/246 — the session's state dir (`<sessionDir>/state/`), where ShipIt's
-   * generated compose override is written instead of `<clone>/.shipit/`, so the
-   * post-turn `git add -A` can never stage it into the user's repository.
-   *
-   * **Resolved by the caller, never derived here.** `dirname(workspaceDir)` is
-   * wrong under the legacy flat layout (`sessionDir === workspaceDir`), where it
-   * yields `sessionsRoot` and every session's state collides. Omit for tests /
-   * non-container setups, which keep the legacy in-clone placement.
-   */
-  sessionStateDir?: string;
-  /**
    * docs/183 Phase 5 — per-session overlay dep-dir volumes for an overlay-eligible
    * session. Forwarded into `generateComposeOverride` so services that share the
    * workspace also mount the same dep-dir overlay volumes nested at
@@ -285,8 +274,8 @@ export class ServiceManager extends EventEmitter {
   /** docs/183 — external service-env root, for teardown cleanup. */
   private readonly serviceEnvDir?: string;
   /**
-   * docs/246 — where the generated compose override is written. Falls back to
-   * the legacy in-clone `.shipit/` when the caller didn't thread a state dir.
+   * docs/246 — where the generated compose override is written: the session's
+   * state dir, always outside the clone.
    */
   private readonly overrideDir: string;
   /**
@@ -364,17 +353,17 @@ export class ServiceManager extends EventEmitter {
     this.sessionId = opts.sessionId;
     this.workspaceDir = opts.workspaceDir;
     this.composeConfig = opts.composeConfig;
-    // docs/246 — the override lives in the session state dir when the caller
-    // threaded one; otherwise keep the legacy in-clone placement so existing
-    // non-container callers are unaffected.
-    this.overrideDir = opts.sessionStateDir ?? path.join(opts.workspaceDir, ".shipit");
+    // docs/246 — the override lives in the session's state dir, outside the
+    // clone, so the post-turn `git add -A` can never stage it into the user's
+    // repository. Derived from the clone path via the one contract every side
+    // of the feature shares; a clone that isn't `<sessionDir>/workspace` throws
+    // rather than falling back into the clone (SHI-286).
+    this.overrideDir = sessionStateDirForWorkspace(opts.workspaceDir);
     this.compose = new ComposeCli({
       sessionId: opts.sessionId,
       workspaceDir: opts.workspaceDir,
       composeFile: opts.composeConfig.file,
-      ...(opts.sessionStateDir
-        ? { overrideFile: path.join(opts.sessionStateDir, COMPOSE_OVERRIDE_FILE) }
-        : {}),
+      overrideFile: path.join(this.overrideDir, COMPOSE_OVERRIDE_FILE),
       ...(opts.composeRunner ? { composeRunner: opts.composeRunner } : {}),
       ...(opts.composeQuery ? { composeQuery: opts.composeQuery } : {}),
     });

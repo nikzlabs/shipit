@@ -35,7 +35,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { ComposeService } from "./compose-generator.js";
-import { AGENT_ENV_FILE } from "./session-state-dir.js";
+import { AGENT_ENV_FILE, sessionStateDirForWorkspace } from "./session-state-dir.js";
 import type { SecretRequirement } from "../shared/types/domain-types.js";
 import type { CredentialStore } from "./credential-store.js";
 
@@ -839,44 +839,41 @@ export function stageSecretsEntrypoint(opts: {
 }
 
 /**
- * Write (or remove) the agent-container env file at `.shipit/.env.agent`
- * inside `workspaceDir`. Phase 3 — agent gets the subset of secrets marked
- * `agent: true`.
+ * Write (or remove) the agent-container env file (`.env.agent`) in the session's
+ * state dir. Phase 3 — agent gets the subset of secrets marked `agent: true`.
+ *
+ * docs/246 moved it out of `<clone>/.shipit/`, restoring what docs/087 §403
+ * specified ("this file is on the orchestrator's filesystem, not the workspace
+ * volume"); the state dir's root is not part of the container's `/session-state`
+ * mount, so the placement is orchestrator-only by layout rather than by claim.
  *
  * - Empty `body` removes the file (no agent entries currently resolved).
  *   The agent's process.env is also cleaned up via the worker `/secrets`
  *   endpoint with a delete-keys list.
- * - Non-empty `body` writes the file with mode 0600. The file lives in the
- *   workspace volume, NOT on a separate orchestrator-only volume — see the
- *   security note in the plan: `agent: true` entries are intentionally
- *   reserved for connection strings, not real secrets, so workspace-volume
- *   visibility is acceptable.
+ * - Non-empty `body` writes the file with mode 0600.
  *
- * Returns the relative path written, or `null` when the file was removed.
+ * Returns the path written relative to `workspaceDir`, or `null` when the file
+ * was removed.
  */
 export function writeAgentEnvFile(opts: {
-  workspaceDir: string;
   /**
-   * docs/246 — the session's state dir. When set, the file is written there
-   * (orchestrator-side, outside the clone). When null the legacy in-clone
-   * `.shipit/.env.agent` placement is used, and the legacy copy is swept when a
-   * state dir IS available.
+   * The session's clone. Resolves the session state dir the file is written to
+   * (orchestrator-side, outside the clone) — there is no in-clone placement any
+   * more (SHI-286).
    */
-  sessionStateDir?: string | null;
+  workspaceDir: string;
   body: string;
 }): string | null {
   const { workspaceDir, body } = opts;
-  const targetDir = opts.sessionStateDir ?? path.join(workspaceDir, ".shipit");
+  const targetDir = sessionStateDirForWorkspace(workspaceDir);
   const filePath = path.join(targetDir, AGENT_ENV_FILE);
 
   // Drop any pre-246 copy left inside the clone, so a session upgrading to the
   // new placement doesn't keep a stale committable file next to the live one.
-  if (opts.sessionStateDir) {
-    try {
-      fs.unlinkSync(path.join(workspaceDir, ".shipit", AGENT_ENV_FILE));
-    } catch {
-      // Absent — the normal case after the first pass.
-    }
+  try {
+    fs.unlinkSync(path.join(workspaceDir, ".shipit", AGENT_ENV_FILE));
+  } catch {
+    // Absent — the normal case after the first pass.
   }
 
   if (!body) {

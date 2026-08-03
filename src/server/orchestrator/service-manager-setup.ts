@@ -17,7 +17,6 @@ import { collectMcpAgentEnv } from "./secret-resolver.js";
 import { getErrorMessage } from "./validation.js";
 import { formatOverlayMeasurement, type DepDirPublishOutcome } from "./overlay-publish.js";
 import { isOverlayEligible } from "./overlay-session.js";
-import { sessionStateDirForWorkspace } from "./session-state-dir.js";
 
 /**
  * Route a `stack_error` from a session's ServiceManager to the per-session
@@ -307,7 +306,6 @@ export function setupServiceManager(
   } = deps;
   const session = sessionManager.get(runner.sessionId);
   const workspaceDir = session?.workspaceDir ?? runner.sessionDir;
-  const resolvedSessionStateDir = sessionStateDirForWorkspace(workspaceDir);
 
   // docs/178 — trust gate. Defer ALL repo-declared auto-execution
   // (`agent.install` + compose `command:`/`build:`) until the user trusts the
@@ -517,12 +515,6 @@ export function setupServiceManager(
     mcpAgentEnvLoader,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
     ...(serviceEnvDir ? { serviceEnvDir } : {}),
-    // docs/246 — write the generated compose override to the session's state
-    // dir instead of `<clone>/.shipit/`, so the post-turn `git add -A` can't
-    // stage it into the user's repo. Null on the legacy flat layout, where the
-    // session dir can't be identified from the clone path; that keeps its
-    // current behavior rather than guessing.
-    ...(resolvedSessionStateDir ? { sessionStateDir: resolvedSessionStateDir } : {}),
     ...(logStore ? { logStore } : {}),
     networkJoinFn: containerManager
       ? async (networkName: string) => {
