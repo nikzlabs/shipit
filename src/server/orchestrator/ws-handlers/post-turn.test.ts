@@ -55,7 +55,7 @@ describe("postTurnCommit — sandbox invariant", () => {
     expect(autoCommit).toHaveBeenCalledTimes(1);
   });
 
-  it("runs the normal commit flow for an ops session (only sandbox is gated here)", async () => {
+  it("still commits for an ops session — only sandbox skips the commit", async () => {
     const { ctx, autoCommit } = makeCtx("ops");
     await postTurnCommit(ctx, {
       sessionDir: "/workspace",
@@ -64,6 +64,75 @@ describe("postTurnCommit — sandbox invariant", () => {
       turnSummary: "did stuff",
     });
     expect(autoCommit).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * docs/128 — an ops session commits but never auto-pushes. Its workspace is a
+ * throwaway cockpit with no remote and no branch lifecycle; a `gh pr list --repo`
+ * that wired an `origin` into it once got its template commits pushed at the real
+ * ShipIt repo (rejected only because the histories were unrelated).
+ */
+describe("postTurnCommit — ops sessions never auto-push", () => {
+  function makeCommittingCtx(kind?: SessionInfo["kind"]) {
+    const autoCommit = vi.fn(async () => ({
+      commitHash: "abc1234", conflictedFiles: [], rebaseInProgress: false, secretFindings: [],
+    }));
+    const getHeadHash = vi.fn(async () => "oldhead");
+    const scheduleAutoPush = vi.fn();
+    const createGitManager = vi.fn(() => ({ autoCommit, getHeadHash }));
+    const ctx = {
+      createGitManager,
+      chatHistoryManager: { updateLastMessage: vi.fn(() => null), indexOfMessageId: vi.fn(() => -1) },
+      sessionManager: { get: vi.fn(() => (kind ? ({ id: "s1", kind } as SessionInfo) : undefined)) },
+      scheduleAutoPush,
+    } as unknown as Parameters<typeof postTurnCommit>[0];
+    return { ctx, autoCommit, scheduleAutoPush };
+  }
+
+  it("commits an ops session's turn but schedules no push", async () => {
+    const emit = vi.fn();
+    const { ctx, autoCommit, scheduleAutoPush } = makeCommittingCtx("ops");
+    const hash = await postTurnCommit(ctx, {
+      sessionDir: "/workspace", sessionId: "s1", emit, turnSummary: "investigated",
+    });
+    expect(hash).toBe("abc1234");
+    expect(autoCommit).toHaveBeenCalledTimes(1);
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ type: "git_committed" }));
+    expect(scheduleAutoPush).not.toHaveBeenCalled();
+  });
+
+  it("pushes an ordinary session's turn as before", async () => {
+    const { ctx, scheduleAutoPush } = makeCommittingCtx(undefined);
+    await postTurnCommit(ctx, {
+      sessionDir: "/workspace", sessionId: "s1", emit: vi.fn(), turnSummary: "did stuff",
+    });
+    expect(scheduleAutoPush).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips the moved-HEAD push for an ops session too", async () => {
+    // The agent ran its own `git commit`, so autoCommit finds a clean tree and
+    // the push is armed off the HEAD move instead. Same gate applies.
+    const autoCommit = vi.fn(async () => ({
+      commitHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [],
+    }));
+    const scheduleAutoPush = vi.fn();
+    const ctx = {
+      createGitManager: vi.fn(() => ({
+        autoCommit,
+        getHeadHash: vi.fn(async () => "newhead"),
+        isAncestor: vi.fn(async () => true),
+        diffRange: vi.fn(async () => "diff --git a/ok.ts b/ok.ts\n+const x = 1;"),
+      })),
+      chatHistoryManager: { updateLastMessage: vi.fn(), indexOfMessageId: vi.fn(), append: vi.fn() },
+      sessionManager: { get: vi.fn(() => ({ id: "s1", kind: "ops" } as SessionInfo)) },
+      scheduleAutoPush,
+    } as unknown as Parameters<typeof postTurnCommit>[0];
+
+    await postTurnCommit(ctx, {
+      sessionDir: "/workspace", sessionId: "s1", emit: vi.fn(), turnSummary: "x", turnStartHeadHash: "oldhead",
+    });
+    expect(scheduleAutoPush).not.toHaveBeenCalled();
   });
 });
 

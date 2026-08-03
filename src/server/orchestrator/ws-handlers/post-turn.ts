@@ -64,6 +64,25 @@ export async function postTurnCommit(
   if (opts.sessionId && ctx.sessionManager.get(opts.sessionId)?.kind === "sandbox") {
     return null;
   }
+  // docs/128 — an ops session's workspace is a throwaway cockpit (the ops
+  // template's README + prompts, plus whatever the investigation writes). It
+  // has no remote, no branch lifecycle and no PR card, and the way it fixes a
+  // ShipIt bug is by spawning a `--shipit-source` session or filing an issue —
+  // never by pushing itself. So it COMMITS (the workspace is a real repo and
+  // the history is part of the incident log) but never auto-pushes.
+  //
+  // This is the second half of the ops-session push bug: `resolveGitHubRemote`
+  // is no longer able to hand this workspace an `origin` behind a `gh pr list`,
+  // and even if some other path does, the push never fires. Worth having both,
+  // because the failure mode is an ops session pushing its template commits at
+  // whatever repo it acquired, on branch `main` — that one was caught by
+  // unrelated histories, which is luck, not a guarantee.
+  //
+  // Only the debounced POST-TURN push is gated. An explicit agent-driven
+  // `gh pr create` still pushes through its own path, so a cwd-scoped clone
+  // inside an ops workspace is unaffected.
+  const isOpsSession =
+    !!opts.sessionId && ctx.sessionManager.get(opts.sessionId)?.kind === "ops";
   return withWorkspaceLock(opts.sessionDir, async () => {
     try {
       return await commitInLock();
@@ -144,7 +163,7 @@ export async function postTurnCommit(
             return null;
           }
         }
-        ctx.scheduleAutoPush(git, opts.sessionId);
+        if (!isOpsSession) ctx.scheduleAutoPush(git, opts.sessionId);
       }
       return null;
     }
@@ -157,7 +176,7 @@ export async function postTurnCommit(
     // after explicit confirmation (the agent's `git push origin vX.Y.Z`, see
     // /shipit-docs/release.md). A published tag is outward-facing and effectively
     // irreversible, so it is never an automatic side-effect of a turn.
-    ctx.scheduleAutoPush(git, opts.sessionId);
+    if (!isOpsSession) ctx.scheduleAutoPush(git, opts.sessionId);
 
     if (opts.sessionId && parentHash) {
       // Stash the link info on the runner FIRST so the agent_result handler

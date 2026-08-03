@@ -116,3 +116,7 @@
 
 - [x] Confirm `kind: "ops"` server-side creation path is wired to the Settings button end-to-end
       in a live environment (live re-audit on the branch-deployed host passed — see "Live re-audit").
+- [x] An ops session can't acquire a remote behind a `gh` read, and never
+      auto-pushes (plan §4d — `resolveGitHubRemote` no longer writes git config;
+      `postTurnCommit` gates the post-turn push on `kind === "ops"`). Diagnosed
+      on host `shipit-16gb` from the ops session at `41699b37`.

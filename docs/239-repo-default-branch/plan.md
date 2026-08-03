@@ -132,6 +132,12 @@ Note the suppression is of the *nudge*, not the banner: rebase progress,
 conflicts, and errors still render, so a rebase that did somehow start still
 reports its outcome.
 
+**How the ops session got a push rejection at all** is a separate defect, fixed
+alongside this one: a GitHub *read* (`gh pr list --repo …`) was writing `origin`
+into the workspace, which un-guarded the post-turn auto-push. See docs/128 §4d.
+The client gate stands on its own — it is the reason a session with no base
+branch can't be told it's behind one, whatever set the flag.
+
 ## Notes
 
 - `git-store.fetchDiffVsBranch` no longer defaults `baseBranch` to `"main"`.

@@ -1,4 +1,5 @@
 ---
+issue: https://linear.app/shipit-ai/issue/SHI-280
 description: Special session type letting operators debug the production ShipIt host (stuck containers, OOM, Docker state) without leaving the ShipIt UI.
 ---
 
@@ -398,6 +399,47 @@ independently.)
       are minted fresh with `kind="ops"` and **no `remoteUrl`**, so they never enter
       the warm pool and always take the fresh-create path with the ops gate set. No
       code change needed; the invariant is load-bearing and noted in the code.
+
+4d. **An ops session must never acquire a remote, and never auto-push.** Found on
+    the live host: the ops session at `41699b37` had
+    `origin → https://github.com/nikzlabs/shipit.git` in its throwaway template
+    workspace, and the orchestrator log showed the remote being added *mid-turn*,
+    53 ms after `.git/config`'s mtime — followed by a post-turn commit with no
+    matching `[git] Pushed to origin/...` line, which is the silent signature of
+    the non-fast-forward branch.
+
+    The chain: `resolveGitHubRemote` (`services/github.ts`) sits on the read path
+    of every brokered `gh` operation and repaired `origin` on any mismatch with
+    the caller's `remoteUrl`. But `remoteUrl` is often **not** the session's repo
+    — `resolvePrTarget` maps an explicit `gh --repo owner/name` straight through
+    — so `gh pr list --repo nikzlabs/shipit` *wrote* that repo into the ops
+    workspace as `origin`. `pushToOrigin`'s no-origin early return, the thing that
+    kept a remote-less session inert, then no longer applied: the next post-turn
+    auto-push tried to push the ops workspace's `main` at the real ShipIt repo. It
+    was rejected — the histories are unrelated — and the rejection is emitted
+    silently as `git_push_rejected`, which is what put a "Branch is behind `main`.
+    Update to resolve." banner in an ops session's chat.
+
+    Two fixes, both load-bearing, because the near-miss is worse than the symptom:
+    a workspace seeded from a clone rather than a fresh `git init` would have
+    *succeeded* in pushing an ops session's commits to `main` on the target repo.
+
+    - **Reads don't write.** `resolveGitHubRemote` no longer creates an `origin`,
+      and no longer repoints an existing one at a `--repo` target. The repair is
+      narrowed to the case it was written for: an origin that is still a local
+      filesystem path (the `git clone --local` bare-cache artifact), which was
+      never a push target.
+    - **Ops sessions commit but never auto-push.** `postTurnCommit`
+      (`ws-handlers/post-turn.ts`) gates both `scheduleAutoPush` call sites on
+      `kind === "ops"`, alongside the existing sandbox gate. An ops session's
+      history is part of the incident log so the commit stays; pushing was never
+      part of the design (a ShipIt fix goes out through a spawned
+      `--shipit-source` session or a filed issue). Only the debounced post-turn
+      push is gated — an explicit agent-driven `gh pr create` is unaffected.
+
+    Tests: `services/github-remote-resolution.test.ts`,
+    `ws-handlers/post-turn.test.ts`. The client half — never rendering a
+    "Branch is behind" nudge on a session with no base branch — is in docs/239.
 
 5. **Session `kind` + sidebar group** — add a `kind?: "ops"` field to
    `SessionInfo` (`src/server/shared/types/domain-types.ts`); there is
