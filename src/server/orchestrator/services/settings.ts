@@ -543,6 +543,120 @@ export function assertNoRunningPinnedSessions(
   }
 }
 
+/**
+ * Take a provider account away from one session that is pinned to it, in the
+ * order that matters: **in memory first, then on disk**. The reverse leaves a
+ * live CLI spending the account it was just cut off from.
+ *
+ * Shared by the two entry points that leave a session without the account it
+ * was running on — the per-account disconnect (docs/150 req 23) and the
+ * provider-wide sign-out (SHI-283). Deleting the account row is not enough on
+ * its own: the session holds its *own* copy of the OAuth token, and that copy is
+ * what the CLI in the container reads.
+ *
+ * `context` names the account for the no-`credentialsDir` warning, which is the
+ * one case where the copy survives (a caller that has no credentials root to
+ * revoke from — only reachable in tests and legacy wiring).
+ */
+function retireSessionProviderAccount(
+  runnerRegistry: SessionRunnerRegistry,
+  sessionId: string,
+  provider: AgentId,
+  credentialsDir: string | undefined,
+  context: string,
+): void {
+  const runner = runnerRegistry.get(sessionId);
+  const agent = runner?.getAgent() ?? null;
+  if (agent) {
+    try {
+      agent.kill();
+    } catch {
+      // Already dead is the state we wanted; the revoke below is what matters
+      // and must not be skipped because a stale handle threw.
+    }
+    runner?.setAgent(null);
+  }
+  if (credentialsDir) {
+    revokeSessionProviderCredentials(credentialsDir, sessionId, provider);
+  } else {
+    console.warn(
+      `[provider-accounts] no credentialsDir: session ${sessionId} keeps its copy of ${context}`,
+    );
+  }
+}
+
+/**
+ * SHI-283 — sign out of a provider entirely: every connected account's row and
+ * source credentials, **plus** every pinned session's own copy of the token.
+ *
+ * `ProviderAccountManager.signOutProvider` deletes the account rows and the
+ * source subtrees under `provider-accounts/<provider>/<accountId>/`. It never
+ * reaches `<credentialsDir>/sessions/<sessionId>/.claude|.codex`, which is the
+ * copy the CLI inside the container actually reads — and nothing else removes
+ * it either: first-turn provisioning is guarded on `agentPinned` so it never
+ * re-runs, and the only writer that replaces the copy is a switch to *another*
+ * account, which sign-out does not perform. So "sign out of Claude" removed the
+ * accounts from the UI while every session pinned to one kept a working
+ * subscription token on disk, free to go on spending that subscription.
+ *
+ * Same two steps the disconnect path takes, for the same reasons
+ * ({@link retireSessionProviderAccount}), scoped deliberately:
+ *
+ *   - **Only account-route sessions on an account being signed out.** A session
+ *     on a reserved route (`claude-env-oauth`) has no account row and its
+ *     credentials came from env OAuth, not from anything this deletes; revoking
+ *     there would break a path that does not depend on the signed-out accounts.
+ *     A dangling pin to an account that is already gone is likewise left alone —
+ *     there is no account here to take away from it.
+ *   - **Archived sessions included.** They cannot be running, but their
+ *     credential subtree survives archival and comes back with them, so leaving
+ *     the copy in place is the same leak on a delay.
+ *
+ * The dangling `provider_route_id` is left in place on purpose, exactly as the
+ * disconnect path leaves it: it reads unusable (`isRouteUsableForTurn`), which
+ * is what makes the next turn's preflight fail the session over — and
+ * re-provision its credentials — once an account is connected again. Clearing it
+ * would break that recovery, since env prep only provisions for a session that
+ * is not yet pinned.
+ *
+ * The running-turn guard runs here rather than at the call site so the invariant
+ * travels with the operation: nothing rewrites credentials under a live agent.
+ * Callers still do their own provider-specific teardown (clearing the stored API
+ * key, cancelling an in-flight device flow) *after* this returns, so a 409
+ * refusal leaves all of it untouched.
+ */
+export function signOutProvider(
+  providerAccountManager: ProviderAccountManager,
+  sessionManager: SessionManager,
+  runnerRegistry: SessionRunnerRegistry,
+  provider: AgentId,
+  opts: { credentialsDir?: string } = {},
+): void {
+  validateProvider(provider);
+  assertNoRunningPinnedSessions(sessionManager, runnerRegistry, provider);
+
+  const signedOut = new Set(providerAccountManager.list(provider).map((account) => account.id));
+  const pinned = sessionManager
+    .listAll()
+    .filter((session) =>
+      session.agentId === provider &&
+      session.providerRouteKind === "account" &&
+      !!session.providerRouteId &&
+      signedOut.has(session.providerRouteId),
+    );
+  for (const session of pinned) {
+    retireSessionProviderAccount(
+      runnerRegistry,
+      session.id,
+      provider,
+      opts.credentialsDir,
+      `signed-out ${provider} account ${session.providerRouteId}`,
+    );
+  }
+
+  providerAccountManager.signOutProvider(provider);
+}
+
 export function deleteProviderAccount(
   providerAccountManager: ProviderAccountManager,
   sessionManager: SessionManager,
@@ -594,27 +708,13 @@ export function deleteProviderAccount(
         );
       }
       for (const session of pinned) {
-        // In-memory first, then on disk — the reverse order leaves a live CLI
-        // spending the account it was just disconnected from.
-        const runner = runnerRegistry.get(session.id);
-        const agent = runner?.getAgent() ?? null;
-        if (agent) {
-          try {
-            agent.kill();
-          } catch {
-            // Already dead is the state we wanted; the revoke below is what
-            // matters and must not be skipped because a stale handle threw.
-          }
-          runner?.setAgent(null);
-        }
-        if (credentialsDir) {
-          revokeSessionProviderCredentials(credentialsDir, session.id, provider);
-        } else {
-          console.warn(
-            `[provider-accounts] no credentialsDir: session ${session.id} keeps its copy of `
-              + `disconnected ${provider} account ${accountId}`,
-          );
-        }
+        retireSessionProviderAccount(
+          runnerRegistry,
+          session.id,
+          provider,
+          credentialsDir,
+          `disconnected ${provider} account ${accountId}`,
+        );
       }
       strandedSessionIds = pinned.map((session) => session.id);
     } else {

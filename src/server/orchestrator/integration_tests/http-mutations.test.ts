@@ -832,12 +832,34 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
     // the route reads as unusable, so its next turn's preflight fails it over
     // (or reports auth_required if nothing is connected). Only the mid-turn
     // case is unrecoverable, which is why that is the only thing guarded.
-    it("still signs out with an idle pinned session, leaving it to re-route", async () => {
+    //
+    // SHI-283 — but it does have to actually *lose* the account. The row is not
+    // where the token lives: the session holds its own copy, that copy is what
+    // the CLI in its container reads, and nothing else ever deletes it (first-
+    // turn provisioning is guarded on `agentPinned`, and only a switch to
+    // another account overwrites it). Scoping detail is covered by
+    // `services/provider-signout.test.ts`.
+    it("still signs out with an idle pinned session, revoking its copy and leaving it to re-route", async () => {
+      const now = Date.now();
+      credentialStore.upsertProviderAccount({
+        id: "acct_gone", provider: "claude", label: "Gone", isPrimary: true,
+        priority: 0, status: "ready", createdAt: now, updatedAt: now,
+      });
       await createSession("signout-2", "Idle pinned session");
       sessionManager.setAgentId("signout-2", "claude");
       sessionManager.setProviderRoute("signout-2", "account", "acct_gone");
+      const sessionToken = path.join(tmpDir, "sessions", "signout-2", ".claude", ".credentials.json");
+      const resume = path.join(tmpDir, "sessions", "signout-2", ".claude", "projects", "abc.jsonl");
+      fs.mkdirSync(path.dirname(resume), { recursive: true });
+      fs.writeFileSync(sessionToken, '{"accessToken":"live"}');
+      fs.writeFileSync(resume, "{}");
 
       expect((await app.inject({ method: "DELETE", url: "/api/auth/api-key" })).statusCode).toBe(200);
+
+      // Signed out has to mean the CLI can no longer spend the subscription.
+      expect(fs.existsSync(sessionToken)).toBe(false);
+      // The conversation is not collateral damage — reconnecting resumes it.
+      expect(fs.existsSync(resume)).toBe(true);
       // The pin is left in place on purpose — the preflight re-routes it.
       expect(sessionManager.get("signout-2")?.providerRouteId).toBe("acct_gone");
     });

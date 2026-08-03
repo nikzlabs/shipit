@@ -26,7 +26,7 @@ import {
   startProviderAccountLogin,
   cancelProviderAccountLogin,
   submitProviderAccountCode,
-  assertNoRunningPinnedSessions,
+  signOutProvider,
   ServiceError,
 } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
@@ -394,17 +394,26 @@ export async function registerBootstrapRoutes(
     "/api/auth/api-key",
     async (_request, reply) => {
       try {
-        // docs/150 — same guard the per-account disconnect has: never rewrite
-        // credentials under a live agent.
-        assertNoRunningPinnedSessions(deps.sessionManager, deps.runnerRegistry, "claude");
-        clearApiKey();
         // docs/150 req 19 — one call that clears every connected account's
         // credentials *and* rows, then the singleton path for pre-account
         // installs. Dropping only the rows (what this did before) left the
         // OAuth tokens of every account past the migrated default on disk with
         // no row left to reach them from. Signing back in goes through "Add
         // account", which creates a fresh row.
-        deps.providerAccountManager.signOutProvider("claude");
+        //
+        // SHI-283 — it also takes the account away from the sessions pinned to
+        // it (resident agent retired, per-session credential copy revoked), and
+        // carries the running-turn guard the per-account disconnect has: never
+        // rewrite credentials under a live agent. It throws before touching
+        // anything, so the API key below is cleared only once sign-out commits.
+        signOutProvider(
+          deps.providerAccountManager,
+          deps.sessionManager,
+          deps.runnerRegistry,
+          "claude",
+          { credentialsDir: deps.credentialsDir },
+        );
+        clearApiKey();
         deps.agentRegistry.refreshAuth("claude");
         const agents = listAgents(deps.agentRegistry);
         deps.sseBroadcast("agent_list", { agents });
@@ -444,11 +453,21 @@ export async function registerBootstrapRoutes(
     "/api/codex-auth",
     async (_request, reply) => {
       try {
-        assertNoRunningPinnedSessions(deps.sessionManager, deps.runnerRegistry, "codex");
-        deps.codexAuthManager.cancel();
         // Mirror the Claude sign-out — see the matching block in
-        // DELETE /api/auth/api-key for why the per-account walk is required.
-        deps.providerAccountManager.signOutProvider("codex");
+        // DELETE /api/auth/api-key for why the per-account walk, the
+        // per-session revoke and the running-turn guard are all required.
+        signOutProvider(
+          deps.providerAccountManager,
+          deps.sessionManager,
+          deps.runnerRegistry,
+          "codex",
+          { credentialsDir: deps.credentialsDir },
+        );
+        // After the walk: `signOutProvider` already cancels the device flow of
+        // any row it deletes, so this only catches a flow with no row behind it
+        // (legacy). Running it before the guard would abort someone's sign-in
+        // for a sign-out that then 409s.
+        deps.codexAuthManager.cancel();
         deps.agentRegistry.refreshAuth("codex");
         const agents = deps.agentRegistry.list().map((a) => ({
           id: a.id, name: a.name, installed: a.installed,

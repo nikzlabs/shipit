@@ -295,16 +295,24 @@ state — note that `auth_required` is a deliberately *non-blocking* selection
 failure (`routeFromSelection`), so no preflight turns that into a clean refusal
 for an already-pinned session.
 
-**Known adjacent gap (not this change):** provider-wide sign-out
-(`DELETE /api/auth/api-key` → `signOutProvider`) erases every account's *source*
-credentials but never the per-session copies, so its pinned sessions keep a live
-token in exactly the way described above. Same defect, different entry point; it
-predates req 23 and is asserted as current behavior by
-`http-mutations.test.ts` ("still signs out with an idle pinned session").
-Tracked as [SHI-283](https://linear.app/shipit-ai/issue/SHI-283), which carries
-the fix sketch — reuse `revokeSessionProviderCredentials`, keep the running-turn
-guard, and scope the revoke to `account`-route sessions so a `claude-env-oauth`
-session's own credentials are not caught in it.
+**The same removal on the sign-out path
+([SHI-283](https://linear.app/shipit-ai/issue/SHI-283)):** provider-wide sign-out
+(`DELETE /api/auth/api-key`, `DELETE /api/codex-auth`) had the same defect at a
+different entry point — `ProviderAccountManager.signOutProvider` erased every
+account's *source* credentials and rows but never the per-session copies, so
+every pinned session kept a live token exactly as described above. Both routes
+now go through the service-layer `signOutProvider` (`services/settings.ts`),
+which runs the running-turn guard, then the same two steps per affected session
+via the shared `retireSessionProviderAccount` helper (retire the resident agent,
+`revokeSessionProviderCredentials`), and only then drops the rows. Scope is
+deliberate: `account`-route sessions whose `providerRouteId` is an account being
+signed out — a `claude-env-oauth` session's credentials came from env OAuth and
+are not touched, a dangling pin to an already-gone account has no account left to
+take away, and archived sessions *are* included because their subtree survives
+archival and comes back with them. As on the disconnect path, the dangling
+`provider_route_id` is left in place so the next turn's preflight re-routes and
+re-provisions. Coverage: `services/provider-signout.test.ts` plus the updated
+`http-mutations.test.ts` sign-out cases.
 
 On disconnect (two ordered paths depending on whether the user already picked a
 replacement):

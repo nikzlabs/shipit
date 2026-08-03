@@ -240,3 +240,6 @@ account to move them to").
 - [x] Unit: the resume files survive the revoke (req 9 — a disconnect is not a reason to end the conversation).
 - [x] Integration: `DELETE /api/provider-accounts/...` on the last account returns 200 with `strandedSessionIds` (this test previously asserted the 409), and a mid-turn pinned session still gets a 409 naming the session.
 - [x] Follow-up, not req 23: provider-wide sign-out (`signOutProvider`) has the same per-session-copy gap — it erases source credentials only. Filed as [SHI-283](https://linear.app/shipit-ai/issue/SHI-283); the fix belongs to that issue, not this branch.
+- [x] SHI-283 landed: both sign-out routes go through the service-layer `signOutProvider` (guard → retire agent → revoke per-session copy → drop rows), sharing `retireSessionProviderAccount` with the disconnect path. Scoped to `account`-route sessions on an account being signed out (reserved routes untouched, archived sessions included).
+- [x] Unit (`services/provider-signout.test.ts`): per-session copies revoked, resident agent retired, conversation state preserved, reserved/other-provider/dangling routes untouched, archived included, mid-turn refusal revokes nothing.
+- [x] Integration: the sign-out test that encoded the leak now asserts the per-session token is gone, the resume file survives, and the dangling pin is still left in place.
