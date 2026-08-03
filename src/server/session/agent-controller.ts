@@ -432,7 +432,13 @@ export class AgentController {
    */
   private wireAgentEvents(agent: AgentProcess, runToken?: string): void {
     agent.on("event", (event: AgentEvent) => {
-      this.deps.broadcast({ type: "agent_event", data: event });
+      // SHI-288 — the event channel carries the spawn token too. It used to be
+      // the only channel that didn't, so a retired process's late `agent_result`
+      // (the canonical turn-ended signal) was routed into whatever proxy held
+      // the orchestrator's slot, settling a turn that had just started. The
+      // orchestrator strips the token back off before handing the event to the
+      // proxy, so `AgentEvent` consumers never see it.
+      this.deps.broadcast({ type: "agent_event", data: { ...event, runToken } });
       // docs/240 — `agent_result` is the canonical turn-ended signal (the same
       // one the orchestrator keys its post-turn flow off). A resident streaming
       // process stays in the slot afterwards, so `running` alone can't tell an
