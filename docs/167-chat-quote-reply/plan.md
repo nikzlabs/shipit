@@ -21,9 +21,22 @@ chat surface (CLAUDE.md §1) — no copy-paste round-trip.
 
 ## UX
 
-- Select text inside a message bubble → a `Reply` pill appears just above the
-  selection (falls back to below when there isn't room above), with a quotes
-  icon.
+- Select text inside a message bubble → a `Reply` pill appears near the
+  selection, with a quotes icon.
+  - **Desktop**: just above the selection (falls back to below when there isn't
+    room above).
+  - **Mobile** (`useIsMobile()`, `<768px`): *below* the selection, because
+    iOS/Android draw their own Copy/Cut/Paste callout directly above it and an
+    above-placement lands on top of the native bar. The pill also gets a roomier
+    hit target (`px-3 py-2 text-sm`) since it's tapped, not clicked. When the
+    selection sits near the *top* of the screen the native callout flips below
+    and can overlap — accepted rather than guessing at another platform's
+    layout.
+  - Either way the final position is clamped into the **visible** viewport
+    (`visualViewport` when available, so pinch-zoom and the on-screen keyboard
+    are accounted for), so a selection at the very bottom of the conversation
+    still gets a fully visible pill — it floats over the composer rather than
+    running off-screen.
 - Click it → the passage is appended to the composer as a blockquote:
 
   ```
@@ -94,4 +107,5 @@ reimplemented rather than abstracted — a shared base would be thin and leaky.
   out-of-list selection and when the selection collapses; click sets the store
   blockquote and clears the native selection; end-to-end click inserts the
   blockquote into the real composer and appends rather than replaces an existing
-  draft.
+  draft; placement — above the selection on desktop, below on mobile, and
+  clamped into the viewport for a selection at the bottom of the conversation.

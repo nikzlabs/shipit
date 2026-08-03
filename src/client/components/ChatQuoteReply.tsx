@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useLayoutEffect } from "react";
 import { useEventListener } from "../hooks/useEventListener.js";
+import { useIsMobile } from "../hooks/useMediaQuery.js";
 import type { RefObject } from "react";
 import { QuotesIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
@@ -44,6 +45,7 @@ export function ChatQuoteReply({
 }) {
   const [snapshot, setSnapshot] = useState<QuoteSnapshot | null>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
+  const isMobile = useIsMobile();
 
   // Track the live selection inside the message list and surface a small
   // "Reply" button near it. The selected text is captured on every change so
@@ -71,10 +73,26 @@ export function ChatQuoteReply({
     setSnapshot({ rect: range.getBoundingClientRect(), text });
   });
 
-  // Position the button (fixed, viewport-relative) above the selection,
-  // centred horizontally, clamped to the viewport. Falls back to below the
-  // selection when there isn't room above. Runs in a layout effect so we can
-  // measure the button's own size before placing it.
+  // Position the button (fixed, viewport-relative) near the selection, centred
+  // horizontally and clamped to the visible viewport. Runs in a layout effect
+  // so we can measure the button's own size before placing it.
+  //
+  // Vertical placement is platform-dependent:
+  //  - Desktop: above the selection (falling back to below when there isn't
+  //    room), which keeps it out of the text the user is reading.
+  //  - Touch (`isMobile`): *below* the selection. iOS/Android draw their own
+  //    Copy/Cut/Paste callout directly above the selection, and an above-
+  //    placement lands on top of it — the whole reason this branch exists.
+  //    (When the selection is close to the top of the screen the native callout
+  //    itself flips below; we accept the rarer overlap there rather than
+  //    guessing at another platform's layout.)
+  //
+  // Either way the final top is clamped into the visible viewport, so a
+  // selection at the very bottom of the conversation still gets a fully
+  // visible button — it floats over the composer instead of running off-screen.
+  // We measure against `visualViewport` when available so pinch-zoom and the
+  // on-screen keyboard (which shrink the visual viewport without changing
+  // `innerHeight`) don't push the button out of view.
   useLayoutEffect(() => {
     const el = buttonRef.current;
     if (!el || !snapshot) return;
@@ -84,17 +102,26 @@ export function ChatQuoteReply({
     const bH = el.offsetHeight;
     const { rect } = snapshot;
 
-    const placeAbove = rect.top >= bH + margin + pad;
-    const top = placeAbove ? rect.top - bH - margin : rect.bottom + margin;
+    const vv = typeof window !== "undefined" ? window.visualViewport : null;
+    const viewportW = vv?.width ?? (typeof window !== "undefined" ? window.innerWidth : 0);
+    const viewportH = vv?.height ?? (typeof window !== "undefined" ? window.innerHeight : 0);
+    const viewportTop = vv?.offsetTop ?? 0;
+    const viewportLeft = vv?.offsetLeft ?? 0;
 
-    const viewportW = typeof window !== "undefined" ? window.innerWidth : 0;
+    const placeAbove = !isMobile && rect.top >= bH + margin + pad;
+    const desiredTop = placeAbove ? rect.top - bH - margin : rect.bottom + margin;
+    const minTop = viewportTop + pad;
+    const maxTop = Math.max(minTop, viewportTop + viewportH - bH - pad);
+    const top = Math.min(Math.max(desiredTop, minTop), maxTop);
+
     const desiredLeft = rect.left + rect.width / 2 - bW / 2;
-    const maxLeft = Math.max(pad, viewportW - bW - pad);
-    const left = Math.max(pad, Math.min(desiredLeft, maxLeft));
+    const minLeft = viewportLeft + pad;
+    const maxLeft = Math.max(minLeft, viewportLeft + viewportW - bW - pad);
+    const left = Math.min(Math.max(desiredLeft, minLeft), maxLeft);
 
-    el.style.top = `${Math.max(pad, top)}px`;
+    el.style.top = `${top}px`;
     el.style.left = `${left}px`;
-  }, [snapshot]);
+  }, [snapshot, isMobile]);
 
   const handleReply = useCallback(() => {
     if (!snapshot) return;
@@ -123,7 +150,10 @@ export function ChatQuoteReply({
         e.stopPropagation();
         handleReply();
       }}
-      className="fixed z-50 flex items-center gap-1 px-2 py-1 rounded-md bg-(--color-bg-elevated) border border-(--color-border-secondary) text-xs text-(--color-text-primary) shadow-lg hover:brightness-125 hover:border-(--color-border-primary) cursor-pointer"
+      // Roomier hit target on touch, where the button is tapped rather than clicked.
+      className={`fixed z-50 flex items-center gap-1 rounded-md bg-(--color-bg-elevated) border border-(--color-border-secondary) text-(--color-text-primary) shadow-lg hover:brightness-125 hover:border-(--color-border-primary) cursor-pointer ${
+        isMobile ? "px-3 py-2 text-sm" : "px-2 py-1 text-xs"
+      }`}
       title="Quote this passage in your reply"
       data-testid="chat-quote-reply"
     >

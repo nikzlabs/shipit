@@ -5,14 +5,27 @@ import { ChatQuoteReply } from "./ChatQuoteReply.js";
 import { MessageInput } from "./MessageInput.js";
 import { useSessionStore } from "../stores/session-store.js";
 
-afterEach(cleanup);
+const JSDOM_INNER_HEIGHT = window.innerHeight;
 
-/** Stub matchMedia so MessageInput's `useIsMobile()` resolves to desktop. */
-function mockMatchMedia() {
+afterEach(() => {
+  cleanup();
+  // One placement test shrinks the viewport; put it back for the others.
+  Object.defineProperty(window, "innerHeight", {
+    writable: true,
+    value: JSDOM_INNER_HEIGHT,
+  });
+});
+
+/**
+ * Stub matchMedia so `useIsMobile()` (in this component and in MessageInput)
+ * resolves deterministically. Defaults to desktop; pass `true` to simulate the
+ * narrow/touch layout.
+ */
+function mockMatchMedia(isMobile = false) {
   Object.defineProperty(window, "matchMedia", {
     writable: true,
     value: vi.fn().mockImplementation((query: string) => ({
-      matches: false,
+      matches: isMobile,
       media: query,
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
@@ -31,7 +44,7 @@ beforeEach(() => {
  * spying on it lets us drive the whole flow without a real browser selection
  * (jsdom has no layout / live selection).
  */
-function mockSelection(node: Node, text: string) {
+function mockSelection(node: Node, text: string, rect?: Partial<DOMRect>) {
   const removeAllRanges = vi.fn();
   const range = {
     commonAncestorContainer: node,
@@ -39,6 +52,7 @@ function mockSelection(node: Node, text: string) {
       ({
         top: 120, bottom: 140, left: 60, right: 260, width: 200, height: 20, x: 60, y: 120,
         toJSON: () => ({}),
+        ...rect,
       }) as DOMRect,
   };
   vi.spyOn(window, "getSelection").mockReturnValue({
@@ -157,6 +171,46 @@ describe("ChatQuoteReply", () => {
     expect(textarea.value).toBe(`> ${PASSAGE}\n\n`);
     // The relay field is cleared once consumed.
     expect(useSessionStore.getState().quoteReplyText).toBeUndefined();
+  });
+
+  // Placement. jsdom reports offsetWidth/offsetHeight as 0, so the button
+  // measures as a zero-size box — the assertions below check which side of the
+  // selection rect it lands on and that it stays inside the viewport, not exact
+  // pixel offsets of a laid-out button.
+  describe("placement", () => {
+    it("places the button above the selection on desktop", () => {
+      render(<ListHarness />);
+      const passage = screen.getByText(PASSAGE);
+      mockSelection(passage, PASSAGE, { top: 120, bottom: 140 });
+      fireSelectionChange();
+
+      // 120 (selection top) - 0 (button height) - 6 (margin)
+      expect(screen.getByTestId("chat-quote-reply").style.top).toBe("114px");
+    });
+
+    it("places the button BELOW the selection on mobile, clear of the native selection callout", () => {
+      mockMatchMedia(true);
+      render(<ListHarness />);
+      const passage = screen.getByText(PASSAGE);
+      mockSelection(passage, PASSAGE, { top: 120, bottom: 140 });
+      fireSelectionChange();
+
+      // 140 (selection bottom) + 6 (margin) — the native Copy/Cut bar sits above.
+      expect(screen.getByTestId("chat-quote-reply").style.top).toBe("146px");
+    });
+
+    it("keeps the button on screen for a selection at the bottom of the conversation", () => {
+      mockMatchMedia(true);
+      // Short viewport so a below-placement would otherwise run off-screen.
+      Object.defineProperty(window, "innerHeight", { writable: true, value: 600 });
+      render(<ListHarness />);
+      const passage = screen.getByText(PASSAGE);
+      mockSelection(passage, PASSAGE, { top: 570, bottom: 596 });
+      fireSelectionChange();
+
+      // Wanted 602; clamped to viewportH - buttonH - pad = 600 - 0 - 4.
+      expect(screen.getByTestId("chat-quote-reply").style.top).toBe("596px");
+    });
   });
 
   it("appends to existing draft text rather than replacing it", () => {
