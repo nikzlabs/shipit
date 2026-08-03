@@ -42,7 +42,11 @@ import {
   startTokenWriteBackWatch,
   stopTokenWriteBackWatch,
 } from "./session-token-publisher.js";
-import { isLocalRuntime, linkAgentHomeToCredentials } from "./local-agent-credentials.js";
+import {
+  clearAgentHomeCredentialLinks,
+  isLocalRuntime,
+  linkAgentHomeToCredentials,
+} from "./local-agent-credentials.js";
 import { repoUrlToHash } from "./git-utils.js";
 import type { ProviderAccountManager, ProviderRoute } from "./provider-account-manager.js";
 import { routeFromSelection } from "./provider-route-preflight.js";
@@ -436,29 +440,51 @@ export async function prepareSessionAgentEnvironment(
   // Step 1b (SHI-282): the local-mode twin of Step 1. Every branch above is
   // gated on `ContainerSessionRunner`, and in local mode there is no container
   // — so a dogfood turn spawned a CLI whose HOME had never been given
-  // credentials at all, for either agent. Point the agent home at the routed
-  // account's subtree instead of copying into a per-session dir; see
-  // `local-agent-credentials.ts` for why linking rather than copying.
+  // credentials at all, for either agent.
+  //
+  // This maintains the process-global *fallback* home only. A session turn's
+  // own spawn gets `HOME` pointed straight at its account root by
+  // `local-agent-home.ts`, so it does not read these links; what does is a
+  // spawn with no session route to resolve (`generateText`, and the cases
+  // `resolveLocalAgentHome` deliberately answers `undefined` for). See
+  // `local-agent-credentials.ts` for why linking rather than copying, and for
+  // the one-physical-file invariant that lets both point at the same account.
   //
   // Runs on every turn, not just at pin time: local sessions share one home,
   // so a sibling on another account may have repointed it since.
+  //
+  // A RESERVED route (`claude-api-key` / `claude-env-oauth` / `codex-api-key`)
+  // authenticates from the environment and has no account subtree, so it
+  // *clears* instead of linking. Leaving an earlier account turn's link behind
+  // meant the home held one route's subscription credentials while the turn ran
+  // on another; the CLI's env-beats-disk preference picked the right one by
+  // luck, not by design (docs/150 req 12).
   if (isLocalRuntime()) {
     try {
       const accountId = selectedRoute?.kind === "account" ? selectedRoute.id : undefined;
-      const outcomes = linkAgentHomeToCredentials({
-        credentialsDir: deps.credentialsDir,
-        agentId,
-        ...(accountId ? { accountId } : {}),
-      });
-      const changed = Object.entries(outcomes).filter(([, o]) => o === "linked");
-      if (changed.length > 0) {
+      const outcomes = selectedRoute?.kind === "reserved"
+        ? clearAgentHomeCredentialLinks({ agentId })
+        : linkAgentHomeToCredentials({
+          credentialsDir: deps.credentialsDir,
+          agentId,
+          ...(accountId ? { accountId } : {}),
+        });
+      const linked = Object.entries(outcomes).filter(([, o]) => o === "linked");
+      if (linked.length > 0) {
         console.log(
-          `[local-credentials] ${sessionId} agent=${agentId} linked ${changed.map(([rel]) => rel).join(", ")}`
+          `[local-credentials] ${sessionId} agent=${agentId} linked ${linked.map(([rel]) => rel).join(", ")}`
             + ` from ${accountId ? `account:${accountId}` : "the flat credentials root"}`,
         );
       }
+      const cleared = Object.entries(outcomes).filter(([, o]) => o === "unlinked");
+      if (cleared.length > 0) {
+        console.log(
+          `[local-credentials] ${sessionId} agent=${agentId} cleared ${cleared.map(([rel]) => rel).join(", ")}`
+            + ` — routed to reserved:${selectedRoute?.id ?? "?"}, which authenticates from the environment`,
+        );
+      }
     } catch (err) {
-      console.warn("[local-credentials] linking agent home failed:", getErrorMessage(err));
+      console.warn("[local-credentials] updating agent home links failed:", getErrorMessage(err));
     }
   }
 

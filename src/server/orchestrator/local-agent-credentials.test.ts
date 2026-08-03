@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  clearAgentHomeCredentialLinks,
   isLocalRuntime,
   linkAgentHomeToCredentials,
 } from "./local-agent-credentials.js";
@@ -228,5 +229,81 @@ describe("linkAgentHomeToCredentials", () => {
     linkAgentHomeToCredentials({ credentialsDir: credentials, agentId: "claude", accountId: ACCOUNT_A, home: fresh });
 
     expect(fs.readFileSync(path.join(fresh, ".claude.json"), "utf8")).toBe("{}");
+  });
+});
+
+/**
+ * The reserved-route seam left behind when `local-agent-home.ts` and this
+ * module landed four minutes apart. `resolveLocalAgentHome` answers `undefined`
+ * for a reserved route, so `scrubEnvAuthForScopedHome` does not run and the env
+ * credential (correctly) stays — but Step 1b used to leave whatever an earlier
+ * account-routed turn had linked. The home then carried one route's
+ * subscription credentials while the turn ran on another, and only the CLI's
+ * env-beats-disk preference kept the billing right. docs/150 req 12.
+ */
+describe("clearAgentHomeCredentialLinks", () => {
+  it("removes a previous account turn's links so an env-authenticated turn has no account credentials", () => {
+    seedAccount("claude", ACCOUNT_A, { ".claude/.credentials.json": "{}", ".claude.json": "{}" });
+    linkAgentHomeToCredentials({ credentialsDir: credentials, agentId: "claude", accountId: ACCOUNT_A, home });
+
+    const outcomes = clearAgentHomeCredentialLinks({ agentId: "claude", home });
+
+    expect(outcomes).toEqual({ ".claude": "unlinked", ".claude.json": "unlinked" });
+    expect(fs.existsSync(path.join(home, ".claude"))).toBe(false);
+    expect(fs.existsSync(path.join(home, ".claude.json"))).toBe(false);
+  });
+
+  /**
+   * The property that makes clearing safe to run on every reserved-route turn:
+   * unlinking the LINK never touches the one physical credentials file, so the
+   * account is still signed in and still refreshable afterwards.
+   */
+  it("leaves the account's own credentials intact", () => {
+    const root = seedAccount("claude", ACCOUNT_A, { ".claude/.credentials.json": "{\"token\":\"live\"}" });
+    linkAgentHomeToCredentials({ credentialsDir: credentials, agentId: "claude", accountId: ACCOUNT_A, home });
+
+    clearAgentHomeCredentialLinks({ agentId: "claude", home });
+
+    expect(fs.readFileSync(path.join(root, ".claude/.credentials.json"), "utf8")).toBe("{\"token\":\"live\"}");
+  });
+
+  it("is idempotent and reports nothing to clear on a home that was never linked", () => {
+    expect(clearAgentHomeCredentialLinks({ agentId: "codex", home })).toEqual({ ".codex": "absent" });
+
+    seedAccount("codex", ACCOUNT_A, { ".codex/auth.json": "{}" });
+    linkAgentHomeToCredentials({ credentialsDir: credentials, agentId: "codex", accountId: ACCOUNT_A, home });
+    clearAgentHomeCredentialLinks({ agentId: "codex", home });
+
+    expect(clearAgentHomeCredentialLinks({ agentId: "codex", home })).toEqual({ ".codex": "absent" });
+  });
+
+  /**
+   * Same stance as the link path's rename-aside: a real path here is a
+   * pre-docs/150 singleton login whose conversation jsonl we cannot recreate.
+   * Only links this module made are ours to remove.
+   */
+  it("does not touch a real credential directory", () => {
+    fs.mkdirSync(path.join(home, ".claude/projects"), { recursive: true });
+    fs.writeFileSync(path.join(home, ".claude/projects/old.jsonl"), "legacy conversation");
+
+    const outcomes = clearAgentHomeCredentialLinks({ agentId: "claude", home });
+
+    expect(outcomes[".claude"]).toBe("absent");
+    expect(fs.readFileSync(path.join(home, ".claude/projects/old.jsonl"), "utf8")).toBe("legacy conversation");
+  });
+
+  /**
+   * The reconciled invariant: a link and a scoped spawn address the same bytes,
+   * so the two mechanisms can coexist without a copy to go stale. Both sides
+   * compute the path with `providerAccountCredentialRoot`; this pins that they
+   * agree.
+   */
+  it("links resolve to the same file a scoped spawn's HOME would read", () => {
+    const root = seedAccount("claude", ACCOUNT_B, { ".claude/.credentials.json": "{\"v\":1}" });
+    linkAgentHomeToCredentials({ credentialsDir: credentials, agentId: "claude", accountId: ACCOUNT_B, home });
+
+    // The scoped spawn's HOME *is* the account root (`resolveLocalAgentHome`).
+    expect(fs.realpathSync(path.join(home, ".claude/.credentials.json")))
+      .toBe(fs.realpathSync(path.join(root, ".claude/.credentials.json")));
   });
 });
