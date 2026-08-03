@@ -269,13 +269,33 @@ export interface ExplicitResetOutcome {
  * and the data loss the gate exists to prevent is the agent understanding *why*
  * it was refused and being told, explicitly, not to route around it. Deleting or
  * softening this sentence re-opens the hole the gate closes.
+ *
+ * SHI-277 — it also has to name the way FORWARD, because a refusal that reads as
+ * a dead end is exactly what makes an agent reach for the reset anyway. A branch
+ * whose commits already shipped under different SHAs (a cherry-pick recovery, a
+ * squash) fails the `HEAD === mergedHeadSha` clause forever, and there is no
+ * `--force`. It is still not stuck: `git rebase` is not blocked by the
+ * `block-branch-ops` hook, it is non-destructive where a reset is not (an
+ * unshipped commit survives a rebase and is discarded by a reset), and it proves
+ * containment by replaying the patches rather than trusting a heuristic. If
+ * every commit is already upstream the rebase drops them all and HEAD lands
+ * exactly on `origin/<base>` — which flips {@link GitManager.headIsAtBase} and
+ * makes `detectAndReArmResetSession` (verified at `services/pr-rearm.ts:185`,
+ * reached from `turn-executor`'s `postTurnReArmReset`, which runs whether or not
+ * the turn committed) clear the merged state on that same turn. If something is
+ * genuinely unshipped it survives the rebase, the session correctly stays
+ * merged, and the next commit re-arms it via `detectAndReArmMergedSession`
+ * instead. Either way the session opens its next pull request normally, and
+ * nothing had to weaken this gate.
  */
 export const RESET_REFUSAL_GUIDANCE =
   "Do NOT work around this — do not run `git reset --hard`, `git checkout -f`, "
   + "`git push --force`, or any other manual reset. The check refused because a reset "
   + "here would destroy work that is not recoverable (uncommitted edits have no reflog "
-  + "entry, and unmerged commits would be discarded). Report what this said and let the "
-  + "user decide.";
+  + "entry, and unmerged commits would be discarded). If you need this branch back on "
+  + "its base, rebase instead: `git fetch origin && git rebase origin/<base>` keeps "
+  + "anything that has not actually shipped, and drops the commits that have. Otherwise "
+  + "report what this said and let the user decide.";
 
 function refuse(reason: string): ExplicitResetOutcome {
   return { outcome: "refused", reason };

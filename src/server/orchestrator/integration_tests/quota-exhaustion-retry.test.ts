@@ -196,7 +196,12 @@ describe("same-turn quota failover (docs/150 req 14)", () => {
     agents[1]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
     agents[1]!.emit("done", 0);
     await waitFor(() => !runner.running, "turn finished");
-    expect(autoCommit).toHaveBeenCalled();
+    // Wait for the commit itself rather than assuming it lands in the same tick
+    // `running` clears. It deliberately does not: the finished-SSE broadcast is
+    // sequenced between them so other tabs update without waiting out the git
+    // work (`broadcastFinishedIfIdle`). What this test pins is WHICH attempt
+    // commits — asserted above for the exhausted one, here for the retry.
+    await waitFor(() => autoCommit.mock.calls.length > 0, "retry committed");
 
     runner.dispose({ force: true });
   });

@@ -369,6 +369,18 @@ merged, a rebase in progress). Report what it said and let the user decide. Do
 **not** hand-roll `git reset --hard` / `git checkout -f` / `git push --force`
 instead — that is precisely the data loss the check exists to prevent.
 
+A refusal is not a dead end, though, and one shape of it is permanent: once this
+branch's work has shipped under a *different* commit (a cherry-pick recovery, or
+a squash merge you then built on), the check's "this branch is exactly what
+merged" clause can never hold again and there is no `--force`. **Rebase instead
+of resetting** — `git fetch origin && git rebase origin/<base>`. It is not
+blocked, and unlike a reset it is safe by construction: commits whose content is
+already upstream drop out, and anything genuinely unshipped survives. If
+everything was already upstream the branch lands exactly on the base and ShipIt
+clears the merged state on that same turn; if something was not, it is still
+there and becomes the next PR. Either way the session opens its next pull
+request normally.
+
 That last point is **enforced, not just advised**: while a session sits on a
 merged branch (ShipIt has recorded the merged head commit), `git reset --hard`,
 `git checkout -f` and force-pushes are blocked before they run, and the refusal
