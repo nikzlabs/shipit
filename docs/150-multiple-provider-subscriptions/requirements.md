@@ -80,7 +80,11 @@ displayed number has to be the real one. Keep new requirements in this form.)
    not sign out, switch browser profiles, restart containers, or move
    credentials by hand.
 - **4.** Each provider has a user-configurable short-window usage cutoff and a
-   user-configurable weekly usage cutoff.
+   user-configurable weekly usage cutoff. The controls for them are surfaced
+   only while the provider has more than one connected account: with one
+   account there is nowhere to fail over to, so the setting could not change
+   anything. The cutoffs still exist and still apply — a provider that has
+   never shown its controls uses the defaults from requirement 5.
 - **5.** Both cutoffs default to 90%.
 - **6.** Reaching either cutoff moves work to the next eligible account, chosen by the
    provider's account selection mode (req 21). Failover is proactive at the
@@ -175,6 +179,17 @@ request for this feature.
 None. Implementation is unblocked.
 
 ## Resolved questions
+
+- 2026-08-03 — Requirement 4 says "each provider has a user-configurable
+  cutoff" with no qualifier, but the shipped controls render only with two or
+  more connected accounts. Is the gate a defect or the intent? **The intent —
+  the cutoffs should not be shown for a single account.** Raised by the agent
+  during a per-requirement review of the implementation; the user agreed the
+  gate is right and asked for the requirement to say so, rather than for the
+  code to change. Requirement 4 amended above. Note what did *not* change: the
+  cutoffs themselves are unconditional, so a single-account provider still
+  carries requirement 5's 90% defaults and starts honouring them the moment a
+  second account is connected.
 
 - 2026-08-03 — Does "disconnect the last subscription no matter what" also
   override the mid-turn refusal, or only the "nowhere to move the pinned
@@ -298,6 +313,10 @@ and 6 were amended. 11 comes from the standing product principles in
 `CLAUDE.md`; 10 started there and the user then specified its shape in review.
 23 came directly as a requirement on 2026-08-03, with its one ambiguity (whether
 it overrides the mid-turn refusal too) resolved by the user the same day.
+Requirement 4's "only while there is more than one connected account" qualifier
+was added on 2026-08-03 from the user's answer to a review finding, with a
+receipt below; the agent had flagged the shipped gate as a possible defect and
+the user confirmed it as the intent.
 Everything else
 in this feature — the account registry and credential layout, route pinning,
 capability snapshots, migration, quota-polling shape, and phasing — is design
