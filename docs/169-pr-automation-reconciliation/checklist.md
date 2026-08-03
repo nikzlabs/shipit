@@ -48,3 +48,12 @@
 
 ## Notes / follow-ups
 - CI fix releases the arbiter with `pushed: false` (it does not arm await-fresh-signal). The conflict automation's own UNKNOWN-mergeability gating covers the brief post-CI-push window; the conflict→CI direction (the one prone to acting on a stale `failure` verdict) is fully covered. Tightening CI→conflict suppression to key on the actual post-fix push is a possible follow-up.
+
+## Follow-up — the `running` wedge (PR #1904)
+- [x] Bound a dispatched turn by its runner's lifetime (`dispatchOnRunner` settles `dropped` on `"disposed"`)
+- [x] `fetchAndFixCb` awaits the owned settlement; `dropped`/`steered` ⇒ noop (no budget burned)
+- [x] Handle a resolved signal BEFORE the `running`/`exhausted` short-circuits (`runTransition` step 5)
+- [x] Conflict manager's no-state terminal write releases with the true `pushed` value
+- [x] `CLAIM_TTL_MS` backstop on the arbiter claim
+- [x] Publish the 1-based in-flight attempt number; never attach auto-fix state over a green rollup
+- [x] Tests: disposed runner settles the in-flight turn; green clears `running` + releases the claim; TTL reap; attempt label

@@ -324,4 +324,69 @@ describe("dispatched-turn settlement (docs/240 Fix B)", () => {
 
     runner.dispose({ force: true });
   });
+
+  // A turn that had already STARTED used to have nothing bounding it: only
+  // QUEUED entries were settled on teardown (`settleDroppedQueueEntries`), and
+  // dispose kills the agent without any terminal agent event, so the executor's
+  // settling `finally` never ran. The CI auto-fix loop awaits this settlement,
+  // so a runner that went away mid-fix-turn parked `AutoFixManager` in
+  // `running` — its only exit is the post-turn write — and leaked the arbiter
+  // claim for the lifetime of the orchestrator (PR #1904).
+  it("a runner disposed mid-turn settles the IN-FLIGHT dispatched turn as `dropped`", async () => {
+    const runner = newRunner();
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDispatchTurnDeps(agents, []);
+    runner.setSystemTurnDeps(deps);
+
+    const outcomes: TurnOutcome[] = [];
+    const handle = runner.dispatch(testDispatch({
+      text: "CI is red — fix it",
+      systemTurn: true,
+      onTurnComplete: (o) => outcomes.push(o),
+    }));
+    void (async () => { outcomes.push({ ...(await handle.settled), detail: "via-handle" }); })();
+
+    await waitForTurn(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "fix turn start");
+    await flushTurn();
+    // Genuinely in flight — nothing has settled yet.
+    expect(outcomes).toHaveLength(0);
+
+    // The runner goes away under the running turn (container restart, archive,
+    // shutdown). No `done`, no `error`, no `agent_result` will ever arrive.
+    runner.dispose({ force: true });
+
+    const outcome = await handle.settled;
+    expect(outcome.status).toBe("dropped");
+    expect(outcome.errored).toBe(true);
+    await flushTurn();
+    // Exactly once, and through the callback adapter too (the pre-docs/240
+    // consumers read that, not the handle).
+    expect(outcomes.filter((o) => o.detail !== "via-handle")).toHaveLength(1);
+    expect(outcomes.filter((o) => o.detail === "via-handle")).toHaveLength(1);
+  });
+
+  it("a turn that completes normally is NOT re-settled when its runner is later disposed", async () => {
+    const runner = newRunner();
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDispatchTurnDeps(agents, []);
+    runner.setSystemTurnDeps(deps);
+
+    const outcomes: TurnOutcome[] = [];
+    runner.dispatch(testDispatch({
+      text: "CI is red — fix it",
+      systemTurn: true,
+      onTurnComplete: (o) => outcomes.push(o),
+    }));
+    await waitForTurn(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "fix turn start");
+
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    agents[0]!.emit("done", 0);
+    await waitForTurn(() => outcomes.length > 0, "settlement");
+
+    runner.dispose({ force: true });
+    await flushTurn();
+
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]!.status).toBe("completed");
+  });
 });

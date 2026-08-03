@@ -949,22 +949,40 @@ export function createPrStatusPoller(
       if (logs.length === 0) return { outcome: "noop", lastError: "no_logs" };
       const prompt = buildCIFixPrompt(logs);
 
-      await new Promise<void>((resolve) => {
-        runner.dispatch(prepareDispatch({
-          text: prompt,
-          agentInterface: undefined,
-          activity: "Auto-fixing CI...",
-          systemTurn: true,
-          onTurnComplete: () => resolve(),
-          execution: undefined,
-          images: undefined,
-          files: undefined,
-          uploads: undefined,
-          permissionMode: undefined,
-          postTurn: undefined,
-          deliveryId: undefined,
-        }));
-      });
+      // docs/240 — await the OWNED settlement the dispatch hands back rather
+      // than a hand-rolled `new Promise(resolve => onTurnComplete: resolve)`.
+      // The raw callback fires only from a real turn's completion, so a turn
+      // whose runner went away never resolved it and this `await` never
+      // returned — leaving `AutoFixManager` parked in `running` (its only exit
+      // is the post-turn write) with the arbiter claim held, which silently
+      // disabled managed auto-merge and auto-resolve for the session. The
+      // settlement resolves on every terminal outcome, including `dropped` when
+      // the runner is disposed mid-turn.
+      const outcome = await runner.dispatch(prepareDispatch({
+        text: prompt,
+        agentInterface: undefined,
+        activity: "Auto-fixing CI...",
+        systemTurn: true,
+        onTurnComplete: undefined,
+        execution: undefined,
+        images: undefined,
+        files: undefined,
+        uploads: undefined,
+        permissionMode: undefined,
+        postTurn: undefined,
+        deliveryId: undefined,
+      })).settled;
+      // A turn that NEVER RAN doesn't burn budget: `dropped` (runner disposed
+      // mid-turn, queue cleared) and `steered` (unreachable for a system turn,
+      // mapped for completeness) are "noop", so the loop re-arms on the shorter
+      // deferred cooldown with the budget intact. `errored` / `no-result` DID
+      // consume an attempt — they are counted, exactly as before this call site
+      // learned to tell the outcomes apart, so a session whose fix turns keep
+      // dying still exhausts after MAX_AUTO_FIX_ATTEMPTS instead of retrying
+      // forever.
+      if (outcome.status === "dropped" || outcome.status === "steered") {
+        return { outcome: "noop", lastError: `fix turn ${outcome.status}` };
+      }
       return { outcome: "fixed" };
     },
     // docs/194 — drive the issue-lifecycle "→ completed" transition off the

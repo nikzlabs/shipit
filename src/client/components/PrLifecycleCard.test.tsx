@@ -642,7 +642,11 @@ describe("PrLifecycleCard", () => {
     expect(screen.queryByText("Auto-fix")).toBeNull();
   });
 
-  it("shows auto-fix running state with attempt counter", () => {
+  // `attemptCount` on the wire is the 1-BASED number of the attempt being
+  // DISPLAYED: the manager only increments its counter post-turn, so the poller
+  // adds the in-flight attempt in `attachAutomationState`. The card renders it
+  // exactly as received — a `+ 1` here would double-count it.
+  it("shows auto-fix running state with the attempt counter as sent", () => {
     setCard("s1", {
       ...openPrCard,
       checks: { state: "failure", total: 3, passed: 1, failed: 2, pending: 0 },
@@ -652,6 +656,20 @@ describe("PrLifecycleCard", () => {
     render(<PrLifecycleCard sessionId="s1" />);
 
     expect(screen.getByText(/Auto-fixing \(attempt 2\/3\)/)).toBeInTheDocument();
+  });
+
+  it("renders the FIRST in-flight attempt as 1/3, never 0/3", () => {
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "failure", total: 3, passed: 1, failed: 2, pending: 0 },
+      // What the poller now sends while the first fix turn is in flight.
+      autoFix: { status: "running", attemptCount: 1, maxAttempts: 3 },
+    });
+
+    render(<PrLifecycleCard sessionId="s1" />);
+
+    expect(screen.getByText(/Auto-fixing \(attempt 1\/3\)/)).toBeInTheDocument();
+    expect(screen.queryByText(/attempt 0\/3/)).toBeNull();
   });
 
   it("shows auto-fix exhausted state", () => {

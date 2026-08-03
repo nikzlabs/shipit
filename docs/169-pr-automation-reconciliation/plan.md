@@ -355,3 +355,77 @@ Both arms live in `auto-fix-manager.ts` (`isStaleFire` + `notYetDispatched` + pa
 `auto-fix-manager.test.ts` ("does NOT fire a failure on a superseded run once the ref tip
 advances", "re-injects ONLY the new run"). Key files: `pr-status-parser.ts` (`headRefOid`
 selection + `extractCurrentHeadOid`), `auto-fix-manager.ts`, `auto-fix-manager.test.ts`.
+
+## Follow-up: the `running` wedge — a fix turn that never settles (PR #1904)
+
+A session's PR card kept showing `Auto-fixing (attempt 0/3)...` long after CI went
+green. Four defects, each independently reproducible, compounded into one wedge.
+
+**The stranding (root cause).** `fetchAndFixCb` (`app-lifecycle.ts`) awaited a
+hand-rolled `new Promise(resolve => runner.dispatch({ onTurnComplete: resolve }))`.
+That callback fires only from a real turn's teardown, and nothing bounded it: the
+runner's `"disposed"` event had listeners for the registry map, the service
+manager and the overlay abort, but **none settled an in-flight dispatched turn**.
+`settleDroppedQueueEntries` covered only entries still sitting in the QUEUE. So a
+runner that went away mid-fix-turn (container restart, archive, shutdown) left the
+promise pending forever.
+
+Fix — one shared settlement path, not a per-caller guard. `dispatchOnRunner`
+(`session-runner.ts`) registers a one-shot `"disposed"` listener for the turn it
+starts and settles it as `dropped`, removing the listener when the turn settles on
+its own. This is owned in the same place setup-failure settlement (SHI-263) is,
+for the same reason: there is one place a dispatched turn starts, so there is one
+place it can lose its runner. Every dispatched turn benefits, not just CI fix.
+`fetchAndFixCb` then awaits the OWNED settlement (`dispatch(...).settled`) instead
+of a raw callback, and maps the outcome: `dropped` / `steered` ⇒ `noop` (never
+ran — defer without burning budget), everything else ⇒ `fixed` (an `errored` /
+`no-result` turn still consumes an attempt, so a session whose fix turns keep
+dying exhausts instead of retrying forever).
+
+**`running` was a terminal trap.** In `runTransition` the resolved-signal cleanup
+(old step 7) sat BEHIND the `status === "running"` short-circuit (old step 5), and
+the only other exit from `running` is the subclass's post-turn write. So a state
+whose attempt never settled could never be cleared by CI going green — the two
+defects together are what made the wedge permanent. The cleanup is now **step 5**,
+ahead of the status short-circuits: the trigger going away does not become less
+true because an attempt is in flight. This also clears a stale `exhausted` banner
+once CI turns green. Everything below is untouched, including step 11's
+deferred-emit-before-verify contract.
+
+The in-flight attempt is ABANDONED, not cancelled — it is a real agent turn in the
+container and killing it mid-way would strand partial work. Its terminal write
+finds no state and takes each manager's no-state branch, which releases the arbiter
+claim. That branch in `AutoConflictResolveManager.writeBack` now releases with the
+TRUE `pushed` value instead of a hard-coded `false`, so an attempt that force-pushed
+after its state was dropped still arms await-fresh-signal (docs/146's spin guard).
+
+**The claim leak.** `releaseClaim` is reachable only from those terminal writes, so
+a stranded attempt leaked the arbiter claim — which has no TTL. A leaked claim
+silently disables managed auto-merge (`pr-status-poller.ts` gates on
+`!remediationArbiter.isClaimed`) and auto-resolve-conflicts for that session, with
+no UI indication. The arbiter's own header comment named this exact failure. It now
+has a `CLAIM_TTL_MS` (30 min) backstop: a claim held longer is reaped as abandoned,
+loudly. This does not replace releasing on every terminal path; it stops a future
+missed release from wedging a session indefinitely.
+
+**The off-by-one.** The card rendered `autoFix.attemptCount` while `running`, but
+that counter is incremented POST-turn (`completeTurn`), so the first attempt read
+"attempt 0/3". `attachAutomationState` now publishes the 1-based number of the
+attempt being displayed (`attemptCount + 1` while `running`) — one place, rather
+than each of the two client render sites reconstructing it. The same function also
+refuses to attach auto-fix state over a **green** rollup at all: state is the
+loop's bookkeeping, not a display flag, and a spinner over a passing card is wrong
+however it got there (it also suppressed `FailedChecksList`). Only `success` is
+gated — a `pending` rollup (CI re-running after the fix turn pushed) keeps the line
+so it doesn't flicker away mid-attempt.
+
+Key files: `session-runner.ts` (`dispatchOnRunner`), `app-lifecycle.ts`
+(`fetchAndFixCb`), `auto-remediation-manager.ts` (step 5/6 ordering),
+`auto-remediation-arbiter.ts` (TTL), `auto-conflict-resolve-manager.ts` (no-state
+release), `pr-status-poller.ts` (`attachAutomationState`). Regression coverage:
+`integration_tests/turn-settlement.test.ts` (a disposed runner settles the
+in-flight turn — it HANGS without the fix), `auto-fix-manager.test.ts` (green
+clears `running` + `exhausted`; the abandoned attempt releases the claim),
+`auto-remediation-arbiter.test.ts` (TTL), `pr-status-poller.test.ts` (1-based
+attempt number; nothing attached over green), `PrLifecycleCard.test.tsx` (first
+attempt renders 1/3).

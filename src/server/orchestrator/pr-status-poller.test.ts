@@ -2110,8 +2110,34 @@ describe("PrStatusPoller — auto-fix state", () => {
     });
   }
 
+  /** The same PR, now passing — used to drive the red → green transition. */
+  function makePassingNode() {
+    return makeGraphQLPrNode({
+      commits: {
+        nodes: [{
+          commit: {
+            oid: "sha-fail",
+            statusCheckRollup: {
+              state: "SUCCESS",
+              contexts: {
+                nodes: [
+                  { databaseId: 1, name: "test", status: "COMPLETED", conclusion: "SUCCESS", title: "all good", detailsUrl: "https://example.com" },
+                ],
+              },
+            },
+          },
+        }],
+      },
+    });
+  }
+
   /** A poller wired so the auto-fix loop fires and parks in `running`. */
   function makeRunningAutoFixPoller() {
+    return makeRunningAutoFixHarness().poller;
+  }
+
+  /** As above, but exposes the GitHub stub so a test can change the CI verdict. */
+  function makeRunningAutoFixHarness() {
     const githubAuth = makeGitHubAuth({
       data: { repository: { pullRequests: { nodes: [makeFailingNode()] } } },
     });
@@ -2121,7 +2147,7 @@ describe("PrStatusPoller — auto-fix state", () => {
     const registry = makeFakeRegistry();
     registry.setViewers("s1", 1); // open the poll gate
     registry.setRunning("s1", false); // idle runner → pre-attempt gate passes
-    return new PrStatusPoller({
+    const poller = new PrStatusPoller({
       githubAuth,
       sessionManager,
       sseBroadcast: sseBroadcastAF,
@@ -2130,6 +2156,7 @@ describe("PrStatusPoller — auto-fix state", () => {
       // Never resolves → the attempt stays in flight, so status stays "running".
       fetchAndFixCb: () => new Promise<never>(() => { /* hang */ }),
     });
+    return { poller, githubAuth };
   }
 
   it("auto-fix loop flips state to running on a failing-CI poll", async () => {
@@ -2152,6 +2179,47 @@ describe("PrStatusPoller — auto-fix state", () => {
     const statuses = poller2.getAllStatuses();
     expect(statuses).toHaveLength(1);
     expect(statuses[0].autoFix).toMatchObject({ status: "running", maxAttempts: 3 });
+    poller2.destroy();
+    vi.useRealTimers();
+  });
+
+  // `attemptCount` is incremented POST-turn (`completeTurn`), so publishing it
+  // raw made the card read "Auto-fixing (attempt 0/3)…" for the whole first
+  // attempt. The state machine already knows the 1-based number — it passes
+  // `attemptCount + 1` to `fireAttempt` — so the wire carries the displayed
+  // number rather than each of the two client render sites reconstructing it.
+  it("publishes the 1-BASED in-flight attempt number, not the completed count", async () => {
+    vi.useFakeTimers();
+    const poller2 = makeRunningAutoFixPoller();
+    poller2.trackSession("s1", "https://github.com/owner/repo");
+    await vi.advanceTimersByTimeAsync(0);
+
+    // The loop is on its FIRST attempt and has completed none.
+    expect(poller2.getAutoFixState("s1")).toMatchObject({ status: "running", attemptCount: 0 });
+    expect(poller2.getAllStatuses()[0].autoFix).toMatchObject({ attemptCount: 1, maxAttempts: 3 });
+
+    poller2.destroy();
+    vi.useRealTimers();
+  });
+
+  it("does NOT attach auto-fix state over a green rollup", async () => {
+    vi.useFakeTimers();
+    const { poller: poller2, githubAuth } = makeRunningAutoFixHarness();
+    poller2.trackSession("s1", "https://github.com/owner/repo");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(poller2.getAllStatuses()[0].autoFix).toBeDefined();
+
+    // CI goes green while the fix turn is still in flight (the callback above
+    // never resolves). The card must not keep spinning on "Auto-fixing…" — and
+    // the state machine itself settles on the resolved signal.
+    (githubAuth.graphqlQuery as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: { repository: { pullRequests: { nodes: [makePassingNode()] } } },
+    });
+    await vi.advanceTimersByTimeAsync(31_000);
+
+    expect(poller2.getAllStatuses()[0].autoFix).toBeUndefined();
+    expect(poller2.getAutoFixState("s1")).toBeUndefined();
+
     poller2.destroy();
     vi.useRealTimers();
   });

@@ -45,6 +45,7 @@ import {
 import {
   createTurnSettlement,
   settleDroppedQueueEntries,
+  turnDropped,
   turnErrored,
   TURN_STEERED,
   type TurnHandle,
@@ -355,7 +356,9 @@ export class AgentTurnAdmissionError extends Error {
  *   - **enqueued** — the settlement is chained onto the entry's
  *     `onTurnComplete`, which rides the in-memory queue, so it resolves when the
  *     entry later drains and runs (or `dropped` if the queue is cleared).
- *   - **started now** — chained the same way onto the running turn.
+ *   - **started now** — chained the same way onto the running turn, and
+ *     additionally bounded by the runner's lifetime: a runner disposed mid-turn
+ *     settles the handle as `dropped` rather than leaving it pending forever.
  */
 export function dispatchOnRunner(
   runner: SessionRunnerInterface,
@@ -416,6 +419,33 @@ export function dispatchOnRunner(
   // retry supervisor fire a duplicate at exactly the slowest sessions.
   if (opts.deliveryId !== undefined) runner.activeDeliveryId = opts.deliveryId;
   const chained = withSettlement(opts, settlement);
+  // A started turn's settlement is bounded by the RUNNER'S LIFETIME, not just by
+  // the turn machinery. `settleDroppedQueueEntries` already covers the entries a
+  // disposed runner throws away, but a turn that had already STARTED had nothing
+  // covering it: dispose kills the agent (or the container's worker) without any
+  // terminal agent event, so the executor's settling `finally` never runs and the
+  // handle resolves never. A consumer awaiting it waits forever — which is how a
+  // CI auto-fix attempt dispatched into a runner that then went away wedged its
+  // state machine in `running` and leaked the arbiter claim for the whole
+  // process lifetime. `dropped` is exactly the outcome docs/240 defined for
+  // "discarded before it could finish", and reporting it through the chained
+  // callback (not `settlement.settle`) keeps the pre-docs/240 `onTurnComplete`
+  // consumers in the loop, as the setup-failure path below does.
+  //
+  // Owned here for the same reason completion and setup failure are: one place
+  // starts a dispatched turn, so one place can observe it losing its runner.
+  const onRunnerDisposed = (): void => {
+    if (settlement.isSettled) return;
+    console.warn(
+      `[dispatch] runner for ${runner.sessionId} was disposed mid-turn — settling the dispatched turn as dropped`,
+    );
+    chained.onTurnComplete?.(turnDropped("runner disposed mid-turn"));
+  };
+  runner.on("disposed", onRunnerDisposed);
+  void (async () => {
+    await settlement.settled;
+    runner.off("disposed", onRunnerDisposed);
+  })();
   void runner.runDispatchedTurn(chained).catch((err: unknown) => {
     // SHI-263 — the setup half of a dispatched turn (attachment preparation,
     // `createAgent`, run-param assembly) runs BEFORE `executeAgentTurn` owns the

@@ -11,6 +11,7 @@ import {
 import type { PrStatusSummary } from "../shared/types/github-types.js";
 import type { GraphQLPrNode } from "./pr-status-parser.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
+import { RemediationArbiter } from "./auto-remediation-arbiter.js";
 
 // ---- Scaffolding ---------------------------------------------------------
 
@@ -107,7 +108,7 @@ function recordingCb(outcome: () => AutoFixResult | Promise<AutoFixResult>): Rec
   return cb as RecordingCb;
 }
 
-function makeFixture(opts?: { enabled?: boolean; runner?: RunnerStub; cb?: RecordingCb; paused?: boolean; ensureRunner?: () => Promise<RunnerStub | undefined> }) {
+function makeFixture(opts?: { enabled?: boolean; runner?: RunnerStub; cb?: RecordingCb; paused?: boolean; ensureRunner?: () => Promise<RunnerStub | undefined>; arbiter?: RemediationArbiter }) {
   let time = 1_000_000;
   let enabled = opts?.enabled ?? true;
   let paused = opts?.paused ?? false;
@@ -120,7 +121,7 @@ function makeFixture(opts?: { enabled?: boolean; runner?: RunnerStub; cb?: Recor
     () => enabled,
     cb,
     () => time,
-    undefined,
+    opts?.arbiter,
     () => !paused, // docs/186 — per-session pause gate
     opts?.ensureRunner
       ? async () => await opts.ensureRunner!() as unknown as SessionRunnerInterface | undefined
@@ -255,6 +256,63 @@ describe("AutoFixManager", () => {
     await tick();
     expect(fx.manager.get("s1")).toBeDefined();
     await fx.transition("success");
+    expect(fx.manager.get("s1")).toBeUndefined();
+  });
+
+  // The `running` terminal trap. The resolved-signal cleanup used to sit BEHIND
+  // the `status === "running"` short-circuit, and the ONLY other exit from
+  // `running` is the post-turn write — so an attempt that never completed left
+  // the card spinning on "Auto-fixing…" over a green CI forever, with the
+  // arbiter claim held (which silently disables managed auto-merge and
+  // auto-resolve for the session). Observed in production on PR #1904.
+  it("a green-CI poll clears a state sitting in `running`", async () => {
+    const cb = recordingCb(() => new Promise<AutoFixResult>(() => { /* never settles */ }));
+    fx = makeFixture({ cb });
+
+    await fx.fail();
+    await tick();
+    expect(fx.manager.get("s1")).toMatchObject({ status: "running" });
+
+    await fx.transition("success");
+    await tick();
+
+    expect(fx.manager.get("s1")).toBeUndefined();
+  });
+
+  it("the abandoned attempt's terminal write releases the arbiter claim", async () => {
+    const arbiter = new RemediationArbiter();
+    let settle: (r: AutoFixResult) => void = () => { /* set below */ };
+    const cb = recordingCb(() => new Promise<AutoFixResult>((r) => { settle = r; }));
+    fx = makeFixture({ cb, arbiter });
+
+    await fx.fail();
+    await tick();
+    expect(arbiter.isClaimed("s1")).toBe(true);
+
+    // CI goes green while the fix turn is still in flight: the state goes...
+    await fx.transition("success");
+    await tick();
+    expect(fx.manager.get("s1")).toBeUndefined();
+    // ...but the claim is still held by the attempt that hasn't finished yet —
+    // it is released by that attempt's own terminal path, not stolen here.
+    expect(arbiter.isClaimed("s1")).toBe(true);
+
+    settle({ outcome: "fixed" });
+    await tick();
+    expect(arbiter.isClaimed("s1")).toBe(false);
+  });
+
+  it("a green-CI poll also clears an `exhausted` state (the banner must not outlive the red CI)", async () => {
+    for (let i = 0; i < MAX_AUTO_FIX_ATTEMPTS; i++) {
+      await fx.fail();
+      await tick();
+      fx.advance(AUTO_FIX_COOLDOWN_MS + 1);
+    }
+    expect(fx.manager.get("s1")?.status).toBe("exhausted");
+
+    await fx.transition("success");
+    await tick();
+
     expect(fx.manager.get("s1")).toBeUndefined();
   });
 
