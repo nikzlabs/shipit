@@ -904,6 +904,13 @@ export class ProviderAccountManager {
    * in-flight login for the row, removes the credential root, and drops the
    * row. The unscoped `signOut()` still runs afterwards for installs that never
    * migrated (and, for Claude, to re-derive the singleton authenticated flag).
+   *
+   * **Not the whole sign-out.** This clears *source* credentials only; every
+   * session pinned to one of these accounts holds its own copy, which is what
+   * the CLI in its container actually reads. Call the service-layer
+   * `signOutProvider` (`services/settings.ts`) instead — it carries the
+   * running-turn guard, retires resident agent processes, revokes the
+   * per-session copies, and then calls this (SHI-283).
    */
   signOutProvider(provider: AgentId): void {
     for (const account of this.list(provider)) {
