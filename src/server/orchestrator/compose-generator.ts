@@ -14,7 +14,8 @@ import path from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import type { ComposeConfig } from "../shared/shipit-config.js";
 import type { SecretRequirement } from "../shared/types/domain-types.js";
-import { chownToSessionWorker, sessionWorkerUid } from "./session-worker-uid.js";
+import { sessionWorkerUid } from "./session-worker-uid.js";
+import { COMPOSE_OVERRIDE_FILE } from "./session-state-dir.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -921,24 +922,26 @@ export function generateComposeOverride(
 }
 
 /**
- * Write the compose override file to `.shipit/compose.override.yml`
- * in the given workspace directory. Creates the `.shipit/` directory
- * if it doesn't exist.
+ * Write the compose override into `targetDir`, creating it if needed, and
+ * return the absolute path written.
+ *
+ * docs/246 — `targetDir` is the session's **state dir**
+ * (`<sessionDir>/state/`), NOT the clone. The override is a ShipIt-generated
+ * artifact: the root orchestrator writes it and the orchestrator's own `docker
+ * compose` reads it via an absolute `-f`. Nothing inside the session container
+ * touches it, which is why the docs/150 §7 chown handoff this function used to
+ * do is gone — the state dir is not mounted into the container, so there is no
+ * worker uid to hand it to.
+ *
+ * Callers that still pass a clone path (legacy tests) get the old placement;
+ * see `ComposeCli`'s `overrideFile` for the matching read side.
  */
 export function writeComposeOverride(
-  workspaceDir: string,
+  targetDir: string,
   content: string,
 ): string {
-  const shipitDir = path.join(workspaceDir, ".shipit");
-  fs.mkdirSync(shipitDir, { recursive: true });
-  const overridePath = path.join(shipitDir, "compose.override.yml");
+  fs.mkdirSync(targetDir, { recursive: true });
+  const overridePath = path.join(targetDir, COMPOSE_OVERRIDE_FILE);
   fs.writeFileSync(overridePath, content, "utf-8");
-  // docs/150 §7 addendum: this runs in the root orchestrator but the file lives
-  // inside the worker-owned (uid 1000) workspace. Without the handoff it lands
-  // root:root and the agent's own `docker compose` invocation (run as the
-  // worker uid) can't read it. Chown the dir too — `mkdir` may have just
-  // created `.shipit` as root. No-op unless SHIPIT_SESSION_WORKER_UID is set.
-  chownToSessionWorker(shipitDir);
-  chownToSessionWorker(overridePath);
   return overridePath;
 }

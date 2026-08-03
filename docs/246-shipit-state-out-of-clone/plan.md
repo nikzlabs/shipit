@@ -55,7 +55,18 @@ consumer re-derives it from a workspace path.
 | `compose.override.yml` | `<sessionDir>/state/` | no | Orchestrator writes it, orchestrator's `docker compose` reads it. Passed as an **absolute** `-f`. |
 | `.install-done` | `<sessionDir>/state/` | yes (`/session-state`) | Written in-container by the worker; pre-stamped and deleted by the orchestrator. |
 | `ci-logs/` | `<sessionDir>/state/ci-logs/` | yes (`/session-state`) | Prompt must cite the new in-container path. |
-| `.env.agent` | `<sessionDir>/state/` | yes (`/session-state`) | No reader in `src/`; kept agent-readable to preserve the documented affordance. |
+| `.env.agent` | `<sessionDir>/state/` | **no** | Orchestrator-side only — see below. |
+
+**`.env.agent` is not exposed in the container**, which restores what docs/087
+§403 specified — "Orchestrator passes `--env-file .shipit/.env.agent` on `docker
+create`. This file is on the orchestrator's filesystem, **not the workspace
+volume**." The workspace placement was an implementation divergence (087's
+`checklist.md:40`), and the `--env-file` wiring it existed for was never built:
+the file has no reader in `src/` or `docker/` outside tests, and `agent: true`
+values actually reach the agent through the worker `PUT /secrets` endpoint into
+`process.env` (docs/088 §260). So nothing observable changes, and the earlier
+draft's "keep it agent-readable" rationale — preserving a hand-sourcing
+affordance — was hypothesising a consumer that does not exist.
 
 **The compose override stays correct as an absolute `-f`** because the project
 directory is anchored by the *first* `-f` — the user's compose file, still

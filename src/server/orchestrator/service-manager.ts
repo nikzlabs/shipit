@@ -41,6 +41,7 @@ import {
   type ComposeService,
   type OverlayDepDirVolume,
 } from "./compose-generator.js";
+import { COMPOSE_OVERRIDE_FILE } from "./session-state-dir.js";
 import {
   ServiceSecretsResolver,
   type SecretsStatusInternalSnapshot,
@@ -200,6 +201,17 @@ export interface ServiceManagerOptions {
    */
   serviceEnvDir?: string;
   /**
+   * docs/246 — the session's state dir (`<sessionDir>/state/`), where ShipIt's
+   * generated compose override is written instead of `<clone>/.shipit/`, so the
+   * post-turn `git add -A` can never stage it into the user's repository.
+   *
+   * **Resolved by the caller, never derived here.** `dirname(workspaceDir)` is
+   * wrong under the legacy flat layout (`sessionDir === workspaceDir`), where it
+   * yields `sessionsRoot` and every session's state collides. Omit for tests /
+   * non-container setups, which keep the legacy in-clone placement.
+   */
+  sessionStateDir?: string;
+  /**
    * docs/183 Phase 5 — per-session overlay dep-dir volumes for an overlay-eligible
    * session. Forwarded into `generateComposeOverride` so services that share the
    * workspace also mount the same dep-dir overlay volumes nested at
@@ -272,6 +284,11 @@ export class ServiceManager extends EventEmitter {
   private readonly networkHealFn?: (networkName: string) => Promise<void>;
   /** docs/183 — external service-env root, for teardown cleanup. */
   private readonly serviceEnvDir?: string;
+  /**
+   * docs/246 — where the generated compose override is written. Falls back to
+   * the legacy in-clone `.shipit/` when the caller didn't thread a state dir.
+   */
+  private readonly overrideDir: string;
   /**
    * docs/087 Phase 1 follow-up — Docker-secrets orchestrator-internal root, for
    * teardown cleanup. The same `<internalDir>/<sessionId>/` directory
@@ -347,10 +364,17 @@ export class ServiceManager extends EventEmitter {
     this.sessionId = opts.sessionId;
     this.workspaceDir = opts.workspaceDir;
     this.composeConfig = opts.composeConfig;
+    // docs/246 — the override lives in the session state dir when the caller
+    // threaded one; otherwise keep the legacy in-clone placement so existing
+    // non-container callers are unaffected.
+    this.overrideDir = opts.sessionStateDir ?? path.join(opts.workspaceDir, ".shipit");
     this.compose = new ComposeCli({
       sessionId: opts.sessionId,
       workspaceDir: opts.workspaceDir,
       composeFile: opts.composeConfig.file,
+      ...(opts.sessionStateDir
+        ? { overrideFile: path.join(opts.sessionStateDir, COMPOSE_OVERRIDE_FILE) }
+        : {}),
       ...(opts.composeRunner ? { composeRunner: opts.composeRunner } : {}),
       ...(opts.composeQuery ? { composeQuery: opts.composeQuery } : {}),
     });
@@ -819,7 +843,7 @@ export class ServiceManager extends EventEmitter {
       ...(this.overlayDepDirs.length > 0 ? { overlayDepDirs: this.overlayDepDirs } : {}),
     };
     const overrideContent = generateComposeOverride(parsedServices, overrideOpts);
-    writeComposeOverride(this.workspaceDir, overrideContent);
+    writeComposeOverride(this.overrideDir, overrideContent);
 
     // Mark auto services as starting (silently — _startupComplete is false)
     const autoServices = [...this.services.values()].filter(s => s.preview === "auto");
@@ -1195,7 +1219,7 @@ export class ServiceManager extends EventEmitter {
         dockerSecrets: dockerSecretsBuild,
       };
       const overrideContent = generateComposeOverride(parsedServices, overrideOpts);
-      writeComposeOverride(this.workspaceDir, overrideContent);
+      writeComposeOverride(this.overrideDir, overrideContent);
     }
 
     if (!this._started) return;

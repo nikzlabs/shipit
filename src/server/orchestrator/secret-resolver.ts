@@ -35,6 +35,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { ComposeService } from "./compose-generator.js";
+import { AGENT_ENV_FILE } from "./session-state-dir.js";
 import type { SecretRequirement } from "../shared/types/domain-types.js";
 import type { CredentialStore } from "./credential-store.js";
 
@@ -785,11 +786,29 @@ export function composeSecretFilePath(opts: {
  */
 export function writeAgentEnvFile(opts: {
   workspaceDir: string;
+  /**
+   * docs/246 — the session's state dir. When set, the file is written there
+   * (orchestrator-side, outside the clone). When null the legacy in-clone
+   * `.shipit/.env.agent` placement is used, and the legacy copy is swept when a
+   * state dir IS available.
+   */
+  sessionStateDir?: string | null;
   body: string;
 }): string | null {
   const { workspaceDir, body } = opts;
-  const shipitDir = path.join(workspaceDir, ".shipit");
-  const filePath = path.join(shipitDir, ".env.agent");
+  const targetDir = opts.sessionStateDir ?? path.join(workspaceDir, ".shipit");
+  const filePath = path.join(targetDir, AGENT_ENV_FILE);
+
+  // Drop any pre-246 copy left inside the clone, so a session upgrading to the
+  // new placement doesn't keep a stale committable file next to the live one.
+  if (opts.sessionStateDir) {
+    try {
+      fs.unlinkSync(path.join(workspaceDir, ".shipit", AGENT_ENV_FILE));
+    } catch {
+      // Absent — the normal case after the first pass.
+    }
+  }
+
   if (!body) {
     try {
       fs.unlinkSync(filePath);
@@ -798,7 +817,7 @@ export function writeAgentEnvFile(opts: {
     }
     return null;
   }
-  fs.mkdirSync(shipitDir, { recursive: true });
+  fs.mkdirSync(targetDir, { recursive: true });
   fs.writeFileSync(filePath, body, { mode: 0o600 });
   return path.relative(workspaceDir, filePath);
 }
