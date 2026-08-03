@@ -539,7 +539,21 @@ export async function executeAgentTurn(
     // docs/169 — mark the turn errored and fire the completion signal here too,
     // so a multi-turn driver (rebase loop) unblocks-and-aborts even when the
     // process errors without a subsequent `done` event.
-    onError: () => { agentErrored = true; finishTurn(); return tryDrain(); },
+    // ...and commit. An adapter-level `error` can be terminal with no
+    // following `done` (spawn failure, an `agent_error` SSE from the worker
+    // whose `agent_done` never arrives), so this is the turn's last chance to
+    // get its partial edits into git. `tryDrain` only commits when a turn is
+    // queued behind this one, so an errored turn with an empty queue committed
+    // nothing. Ordered after the drain for the SHI-262 reason: with a queue,
+    // `tryDrain` has already committed and this reuses that commit; with none,
+    // `drainNext` starts nothing, so no later turn's edits can be swept into
+    // this turn's commit.
+    onError: async () => {
+      agentErrored = true;
+      finishTurn();
+      await tryDrain();
+      await runCommitAndPr();
+    },
     ...(input.useStreaming !== undefined ? { useStreaming: input.useStreaming } : {}),
   });
 
@@ -690,7 +704,7 @@ export async function executeAgentTurn(
   let commitPromise: Promise<string | null> | null = null;
   const commitOnce = (): Promise<string | null> => (commitPromise ??= runCommit());
 
-  const runCommitAndPr = async (): Promise<void> => {
+  const runCommitAndPrInner = async (): Promise<void> => {
     // docs/169 — rebase turns commit via `git rebase --continue` and force-push
     // after the whole flow; auto-committing here would corrupt the rebase.
     if (postTurn === "none") return;
@@ -723,6 +737,19 @@ export async function executeAgentTurn(
       }
     }
   };
+
+  /**
+   * Run the post-turn flow at most once per turn, whichever terminal path
+   * reaches it first. `commitOnce` already made the COMMIT single-shot, but
+   * the PR / re-arm / release flows around it were not, and this turn now has
+   * four terminal paths that need them (clean end, streaming abnormal exit,
+   * agent error, failed auth heal) instead of the two it had when only the
+   * commit needed guarding. Memoizing the promise — not the completion — means a
+   * second caller arriving mid-flight awaits the same flow rather than starting a
+   * duplicate PR round-trip.
+   */
+  let commitAndPrPromise: Promise<void> | null = null;
+  const runCommitAndPr = (): Promise<void> => (commitAndPrPromise ??= runCommitAndPrInner());
 
   // The SSE `session_agent_finished` broadcast is a pure UI signal aimed at
   // OTHER tabs/viewers — the active viewer already learned `running=false` over
@@ -943,11 +970,29 @@ export async function executeAgentTurn(
         // SHI-262 — on that abnormal-exit path `tryDrain` also runs the local
         // auto-commit first when something is queued, so the crashed turn's
         // partial edits are in git before the queued turn (which may reset the
-        // working tree) starts. Previously this branch drained with the tree
-        // still uncommitted and no commit ever ran for the turn at all.
+        // working tree) starts.
+        //
+        // But `tryDrain` commits ONLY when something is queued, which left the
+        // ordinary shape of "the agent process died" — crash, OOM kill,
+        // SIGTERM from a container restart, with an EMPTY queue — running no
+        // commit at all. Everything the turn wrote before it died stayed
+        // uncommitted and unpushed until some later turn happened to sweep it up
+        // with `git add -A`; if the session was never resumed, or the next turn
+        // began by discarding working-tree state, it was simply lost. Streaming
+        // is the default whenever live steering is on, so this was the common
+        // case, not a corner. Run the same three steps the non-streaming branch
+        // below runs, in the same order (finished-SSE → commit/PR → idle, so
+        // remediation never starts against a pre-commit tree). Both are
+        // first-wins guarded, so the normal path — where `agent_result` already
+        // ran the whole post-turn flow and this `done` is just the resident
+        // process exiting later — is unchanged: `runCommitAndPr` returns the
+        // memoized (already-settled) flow and the two idle signals no-op behind
+        // their `running` guards.
         if (runner) runner.running = false;
         await tryDrain();
-        emitFinishedIfIdle();
+        broadcastFinishedIfIdle();
+        await runCommitAndPr();
+        signalIdleIfIdle();
         finishTurn();
         return;
       }
