@@ -79,10 +79,10 @@ export interface SessionUsage {
   turnCount: number;
 }
 
-/** Cost + turns aggregated into a single calendar month, for the trend chart. */
-export interface MonthlyUsage {
-  /** Month bucket as `YYYY-MM` (UTC). */
-  month: string;
+/** Cost + turns aggregated into a single calendar week, for the trend chart. */
+export interface WeeklyUsage {
+  /** Week bucket keyed by its MONDAY as `YYYY-MM-DD` (UTC). */
+  week: string;
   costUsd: number;
   turns: number;
 }
@@ -91,8 +91,11 @@ export interface UsageStats {
   sessions: SessionUsage[];
   totalCostUsd: number;
   totalTurns: number;
-  /** Per-month buckets, oldest → newest, for the usage trend chart. */
-  monthly: MonthlyUsage[];
+  /**
+   * Per-week buckets, oldest → newest, for the usage trend chart. Gaps between
+   * active weeks are zero-filled so the chart's x-axis stays evenly spaced.
+   */
+  weekly: WeeklyUsage[];
 }
 
 // ---- Usage tracking messages ----
