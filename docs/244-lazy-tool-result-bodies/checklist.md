@@ -101,38 +101,52 @@
 
 ## Follow-up work (separate from this PR)
 
-### Live-CLI verification — the next thing to do
+### Live-CLI verification — results
 
-Every test in this feature drives **synthetic** events. That is the one class of
-bug the suite structurally cannot catch: if the real CLI emits a shape the
-projection doesn't recognise, the tests stay green and the UI is wrong. Two of
-this feature's four review rounds fixed exactly that kind of mismatch (a lookup
-keyed on `"base64"`; a test asserting `message.content` on an event the adapter
-normalises to `content`), which is the argument for doing this at all.
+Run after the req-1 fix merged. Two of the five checks are done and are now
+**automated** rather than manual; the rest are blocked on credentials.
 
-Run against a live agent turn in the dogfood preview, checking the network
-payload rather than only the rendered page:
+- [x] **Real CLI event shapes.** The projection was run over this session's own
+      Claude CLI transcript — 244 real `tool_result` blocks across 8 tool names,
+      not synthetic fixtures. Every tool name resolved (0 fell to the
+      unknown-name fallback), `AskUserQuestion` results were kept whole as
+      intended, and result bodies on the wire went **282.7 KB → 13.8 KB (95.1%
+      removed)**. Results under the 200-byte floor stayed inline, which is the
+      floor behaving as designed on real data.
+- [x] **The same-tick commit claim, end-to-end** — `lazy-bodies-live-turn.test.ts`.
+      Drives a real agent turn through the WS path and fetches the body the
+      instant the emit is observable. This was the one load-bearing assumption
+      argued from reading the code rather than asserted; it is now a test. It
+      also pins the two deliberate exceptions (Edit/Write inputs and nested
+      subagent results arrive whole on the live path, because their rows are not
+      committed yet) and that the persisted row keeps the full body.
+- [x] **The modal actually renders the fetched body** — `ToolResult.test.tsx`.
+      Server tests prove the payload is stripped, not that the UI puts the body
+      back on screen: loading state instead of a false "(no output)", fetch on
+      mount, the body rendered, an error surfaced on 404, and no fetch at all
+      for a result that arrived whole.
 
-- [ ] A turn with a **large `Bash` output**: the `/history` payload carries
-      `content: ""` with `truncated` + `totalLines`, and the modal fetches and
-      renders the body on open.
-- [ ] A **live turn** (WS, not reload) does the same, and the modal opened
-      *during* that turn doesn't 404 — the same-tick commit claim is the one
-      load-bearing assumption no unit test exercises for real.
-- [ ] A **screenshot** result: the image renders from `shipit_url`, and the
-      transcript payload contains no base64.
-- [ ] A **subagent** (`Agent`) turn: the final report renders in full, and
-      docs/109's open question — whether nested activity appears in the UI at
-      all — is answered. Both attach points silently no-op when the parent group
-      isn't found, so a miss here looks like "nothing rendered", not an error.
-- [ ] An **`AskUserQuestion`** and a **`present`** call: both still resolve from
-      inline content, since these are the tools whose bodies are deliberately
-      kept.
+Blocked, with the reason:
 
-- [ ] Subagent activity does not appear in the UI in practice (docs/109) — plumbing is complete and tested with synthetic events, but never verified against a live CLI, and both attach points silently no-op when the parent group isn't found. Folded into the checks above.
+- [ ] **A screenshot result end-to-end.** Neither local CLI transcript contains
+      a single image block, so there is no real-shape data to run against. The
+      synthetic coverage is good (including two block shapes that previously
+      broke a lexical pre-filter), but "the real MCP screenshot shape" is still
+      unconfirmed.
+- [ ] **A subagent (`Agent`) turn end-to-end**, and with it docs/109's standing
+      question of whether nested subagent activity renders in the UI at all.
+      Same reason: no `Task`/`Agent` calls in either local transcript.
+- [ ] Both need a live agent turn in the dogfood preview. The inner ShipIt
+      starts and serves, but reports **no agent subscription connected** — the
+      `dev` service's `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` are
+      user-supplied secrets (outer Settings → Secrets, `docs/184`). The outer
+      orchestrator's `/history` is deliberately closed to session containers, so
+      there is no way around it from in here.
+
 
 ## Verification
 - [x] `npm run typecheck`
 - [x] `npm run lint:dev`
-- [x] Feature test files green (77 tests across 6 files)
+- [x] Feature test files green
+- [x] Post-merge live verification (see above): real-CLI shapes, same-tick commit, modal render
 - [ ] Independent requirements review by a fresh context (CLAUDE.md step 5) — round 2 found real bugs; needs a clean pass
