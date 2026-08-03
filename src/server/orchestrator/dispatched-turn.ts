@@ -234,6 +234,30 @@ export async function runDispatchedTurn(
     const resident =
       !opts.systemTurn && attempt === 0 && runner.isStreamingActive ? runner.getAgent() : null;
     const reuse = resident !== null;
+    // docs/179 §4 (issue criterion 3) — a system turn declines to ADOPT the
+    // resident process, but declining does not make it go away: it is still
+    // running in the worker, and env prep (a few lines below, inside
+    // `executeAgentTurn`) is about to rewrite the credential subtree it reads
+    // from on every request. `reusingResidentAgent: false` is the honest answer
+    // to "will this turn reuse it", so the repair correctly believes it may
+    // run — which leaves exactly the window this doc exists to close.
+    //
+    // Retire it here instead, before env prep, mirroring the account-failover
+    // block above. "Topology changes only at a spawn boundary" is only true if
+    // the boundary is real, and it is real once the old process is gone. This
+    // is also strictly tidier than the status quo: `createAgent` would displace
+    // the slot and orphan the process anyway, and the worker's `/agent/start`
+    // would then 409 into a kill+restart (the SIGTERM-143 noise docs/140 fixed
+    // elsewhere). Only reachable with no turn in flight — `dispatchOnRunner`
+    // enqueues while `running` — so nothing live is interrupted.
+    if (opts.systemTurn && !reuse) {
+      const outgoing = runner.getAgent();
+      if (outgoing) {
+        try { outgoing.kill(); } catch { /* already gone */ }
+        runner.setAgent(null);
+        runner.isStreamingActive = false;
+      }
+    }
     const agent = resident ?? createAgent(agentId);
     // A reused process IS the resident streaming process, so this turn streams
     // (and the post-turn handler must key on streaming) even if `useStreaming`

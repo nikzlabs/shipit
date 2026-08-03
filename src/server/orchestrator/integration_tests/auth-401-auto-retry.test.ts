@@ -30,6 +30,66 @@ import type { SystemTurnDeps } from "../session-runner.js";
 import type { AgentId } from "../../shared/types.js";
 import { testDispatch } from "./dispatch-test-helpers.js";
 
+// Only needed by the end-to-end test below, which drives the REAL session-side
+// drain loop rather than emitting a synthetic `auth_required`. Everything else
+// in this file uses a bare fake agent.
+vi.mock("node:child_process", async () => {
+  // eslint-disable-next-line no-restricted-syntax -- vitest's blessed form
+  const real = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  return { ...real, spawn: vi.fn() };
+});
+
+import * as childProcess from "node:child_process";
+import { StreamingClaudeProcess } from "../../session/agents/claude/process.js";
+
+const mockChildSpawn = vi.mocked(childProcess.spawn);
+
+/**
+ * The two events CLI 2.1.219 actually emits for one auth failure, captured from
+ * a real unauthenticated run: a synthetic assistant envelope, then a result
+ * whose `subtype` is "success" and whose `is_error` is true.
+ */
+const REAL_AUTH_FAILURE_NDJSON = `${JSON.stringify({
+  type: "assistant",
+  message: { content: [{ type: "text", text: "Not logged in · Please run /login" }] },
+  error: "authentication_failed",
+  is_api_error_message: true,
+})}\n${JSON.stringify({
+  type: "result",
+  subtype: "success",
+  is_error: true,
+  terminal_reason: "api_error",
+  session_id: "abc",
+  result: "Not logged in · Please run /login",
+})}\n`;
+
+/**
+ * Wire the REAL session-side detection in front of a fake orchestrator agent.
+ *
+ * The other tests here emit one synthetic `auth_required`, which is precisely
+ * the assumption that hid this bug: the real CLI describes a single failure
+ * with TWO events, and each used to raise the signal independently. This helper
+ * runs a genuine `StreamingClaudeProcess` (with `spawn` mocked) so raw CLI bytes
+ * go through the production drain loop, and forwards whatever it raises to the
+ * agent the executor is listening to. How many `auth_required`s the executor
+ * sees is therefore decided by production code, not by the test.
+ */
+function feedRealCliOutput(agent: FakeAgent): (raw: string) => void {
+  const stdout = new EventEmitter();
+  const proc = new EventEmitter() as EventEmitter & Record<string, unknown>;
+  proc.stdout = stdout;
+  proc.stderr = new EventEmitter();
+  proc.stdin = { write: vi.fn(() => true), writable: true, destroyed: false, writableEnded: false };
+  proc.kill = vi.fn();
+  mockChildSpawn.mockReturnValue(proc as never);
+
+  const cli = new StreamingClaudeProcess();
+  cli.on("auth_required", () => agent.emit("auth_required"));
+  cli.run({ prompt: "do work" });
+
+  return (raw: string) => stdout.emit("data", Buffer.from(raw));
+}
+
 interface FakeAgent extends EventEmitter {
   run: ReturnType<typeof vi.fn>;
   kill: ReturnType<typeof vi.fn>;
@@ -150,6 +210,53 @@ describe("runtime-401 auto-retry (docs/179)", () => {
     agents[1]!.emit("done", 0);
     await waitFor(() => !runner.running, "turn finished");
     // Bounded: exactly two agents (original + one retry).
+    expect(agents).toHaveLength(2);
+
+    runner.dispose({ force: true });
+  });
+
+  // The bug this test exists for: the CLI reports ONE auth failure with TWO
+  // events, and both used to raise `auth_required` independently. Nothing
+  // downstream was idempotent — each raise healed the token and re-dispatched
+  // the turn on its own fresh agent — so a single 401 ran the user's whole
+  // turn twice, side effects included. Every other test in this file emits one
+  // synthetic `auth_required` and cannot see it.
+  it("runs the turn exactly once when the real CLI reports one failure as two events", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    const agents: FakeAgent[] = [];
+    const messages: { type: string; [k: string]: unknown }[] = [];
+    runner.on("message", (m) => messages.push(m as never));
+    const ensureAgentTokenFresh = vi.fn().mockResolvedValue(true);
+    const { deps, startOAuthFlow } = makeDeps(agents, ensureAgentTokenFresh);
+    runner.setSystemTurnDeps(deps);
+
+    runner.dispatch(testDispatch({ text: "do work" }));
+    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first agent run");
+
+    // Raw CLI bytes → real drain loop → however many signals production raises.
+    const feed = feedRealCliOutput(agents[0]!);
+    feed(REAL_AUTH_FAILURE_NDJSON);
+    agents[0]!.emit("done", 0);
+
+    await waitFor(() => agents.length >= 2 && agents[1]!.run.mock.calls.length === 1, "re-dispatched agent run");
+    // Settle everything a second (now-suppressed) raise would have started, so
+    // an extra heal or extra agent would have shown up by the assertions below.
+    for (let i = 0; i < 20; i++) await flush();
+
+    // One heal, one fresh agent, one run of the user's prompt. Measured against
+    // the pre-fix code, this same payload produced 2 heals and 3 agents, with
+    // the user's turn dispatched twice.
+    expect(ensureAgentTokenFresh).toHaveBeenCalledTimes(1);
+    expect(agents).toHaveLength(2);
+    expect(agents[1]!.run).toHaveBeenCalledTimes(1);
+    // Still quiet: the duplicate must not surface a sign-in card mid-recovery.
+    expect(messages.some((m) => m.type === "error")).toBe(false);
+    expect(messages.some((m) => m.type === "auth_required")).toBe(false);
+    expect(startOAuthFlow).not.toHaveBeenCalled();
+
+    agents[1]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    agents[1]!.emit("done", 0);
+    await waitFor(() => !runner.running, "turn finished");
     expect(agents).toHaveLength(2);
 
     runner.dispose({ force: true });

@@ -297,6 +297,26 @@ export async function prepareSessionAgentEnvironment(
      * preflight, moments later, is what stops the turn and tells the user.
      */
     enforceAccountRouting?: boolean;
+    /**
+     * True when this turn will REUSE a resident agent process rather than
+     * spawn a fresh one (live steering, docs/140). Set by the turn executor,
+     * which is the only caller that knows.
+     *
+     * It suppresses the docs/153 leak repair, and only that. The repair is
+     * destructive — unlink `.claude`, re-copy the subtree, merge the orphan,
+     * `rmSync` the orphan root — and running it under a live CLI is what
+     * produced `Not logged in · Please run /login` mid-session
+     * (nikzlabs/shipit#1874): between the unlink and the copy there is a real
+     * window with no `.claude/.credentials.json` on disk, and the CLI re-reads
+     * that file per API call. Nothing the repair produces is consumed by a
+     * reuse turn — the on-disk convergence is for the next `--resume`, and the
+     * recovered `agentSessionId` is read by `buildRunParams`, which the reuse
+     * branch never calls — so deferring it to the next spawn loses nothing.
+     *
+     * The per-turn token copy still runs: that is what keeps a long-lived
+     * process authenticated across a rotation (docs/142 A).
+     */
+    reusingResidentAgent?: boolean;
   },
 ): Promise<PrepareSessionAgentEnvironmentResult> {
   const { sessionId, agentId, deps } = args;
@@ -341,6 +361,24 @@ export async function prepareSessionAgentEnvironment(
       chatHistory,
     );
   }
+
+  // One line per preparation recording the decisions that shaped it: which
+  // route the turn resolved to, whether this call pins it, and whether the
+  // leak repair ran. Diagnosing nikzlabs/shipit#1874 from production logs meant
+  // inferring all three from their side effects — the repair announced itself
+  // only when it fired, so "repaired again" and "never converged" were
+  // indistinguishable from "ran and found nothing". Route ids are opaque
+  // account handles (`acct_…`); no token material is logged here or anywhere
+  // below.
+  const routeLabel = selectedRoute ? `${selectedRoute.kind}:${selectedRoute.id}` : "none";
+  const repairLabel = args.reusingResidentAgent ? "skipped(resident-agent)" : "run";
+  const failoverLabel = failover
+    ? ` failover=${failover.fromAccountId}->${failover.toAccountId}`
+    : "";
+  const pinLabel = routedSession.agentPinned ? "already" : "now";
+  console.log(
+    `[env-prep] ${sessionId} agent=${agentId} route=${routeLabel} pinned=${pinLabel} repair=${repairLabel}${failoverLabel}`,
+  );
 
   // Step 1: provision the pinned agent's credential subtree (write-once),
   // then mark the session as pinned. After the first turn `session.agentPinned`
@@ -459,13 +497,19 @@ export async function prepareSessionAgentEnvironment(
       // disk, but a different one is the latest) and recover by reading
       // the existing `<sessionDir>/.claude/projects/` tree.
       const currentAgentSessionId = session.agentSessionId ?? null;
+      // See `reusingResidentAgent` — the repair is a spawn-time concern and
+      // must not run under a live CLI.
+      const syncOpts = { repairLeakedSubtrees: !args.reusingResidentAgent };
       if (selectedRoute?.kind === "account") {
         syncProviderAccountTokenIn(
           deps.credentialsDir, sessionId, agentId, selectedRoute.id,
-          onRecover, currentAgentSessionId,
+          onRecover, currentAgentSessionId, syncOpts,
         );
       } else if (selectedRoute?.id !== "claude-env-oauth") {
-        syncAgentTokenIn(deps.credentialsDir, sessionId, agentId, onRecover, currentAgentSessionId);
+        syncAgentTokenIn(
+          deps.credentialsDir, sessionId, agentId,
+          onRecover, currentAgentSessionId, syncOpts,
+        );
       }
     } catch (err) {
       console.warn("[credentials] token sync-in failed:", getErrorMessage(err));

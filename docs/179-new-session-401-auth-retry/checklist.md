@@ -28,3 +28,39 @@
 - [x] Regression test: session token with a **later** `expiresAt` than the source but dead
 - [x] Regression tests: forced-heal semantics, repush ordering, notice durability via `GET /history`
 - [x] `syncAgentTokenBack` and its call sites deliberately untouched (sibling session owns write-back timing)
+
+## §3 detection — one failure, one signal (nikzlabs/shipit#1874)
+
+- [x] `resultEventIndicatesAuthFailure` excludes `error_max_turns` /
+      `error_during_execution` and a non-`api_error` `terminal_reason` before any
+      text match (a turn-cap failure whose text mentions OAuth is not an auth failure)
+- [x] Absent `terminal_reason` still detects — older CLIs omit it
+- [x] `raiseAuthRequiredOnce` on both process classes: one auth failure emits two
+      auth-shaped events, but the signal re-dispatches the turn, so it may raise once
+- [x] Latch is per-**turn**, re-armed in `run()` / `sendUserMessage` (the streaming
+      process is resident across turns)
+- [x] Listener-side turn latch in `agent-auth-handler.ts` for a duplicate arriving
+      from the raw-stderr path; `willRecoverAuth` deliberately NOT used as the gate
+- [x] Non-array `tool_result.content` handled in `extractToolResults` /
+      `stampToolDurations` (the TypeError that stranded the turn)
+- [x] Tests: real two-event payload → exactly one heal + one re-dispatch; no-false-
+      positive cases; the string-content turn survives and honors the follow-up steer
+
+## §4 credential rewrites under a live process
+
+- [x] Verified against CLI 2.1.219 that Claude re-reads `.credentials.json` **per
+      request** (`ok → fail → ok` on one resident process); corrected the opposite
+      claim in `services/provider-account-switch.ts`
+- [x] `reusingResidentAgent` → `repairLeakedSubtrees: false` on the per-turn sync-in
+- [x] System turns retire the resident process **before** env prep (`dispatched-turn.ts`)
+      so "topology changes only at a spawn boundary" is a real boundary
+- [x] `sessionHasLiveAgent` predicate; scheduled OAuth refresher (`bootstrap-managers.ts`)
+      and post-sign-in re-push (`app-lifecycle.ts`) derive `repairLeakedSubtrees` from it
+- [x] Both copy loops resolve the destination to the **container-visible** path, so a
+      suppressed repair still lands the rotated token (the leaked absolute-symlink shape)
+- [x] Tests: genuine leaked shape (symlink into the shared root), system-turn retire
+      asserted as an ordering, `sessionHasLiveAgent` true for an idle session holding a
+      resident process
+- [ ] Convergence (criterion 2) — the writer recreating the links between turns on the
+      production install is **still unidentified**; tracked on nikzlabs/shipit#1874. The
+      §4 fix does not depend on it.

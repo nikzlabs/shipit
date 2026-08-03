@@ -59,8 +59,20 @@ describe("createHeadlessSession", () => {
   let registry: FakeRunnerRegistry;
   let nextSession = 0;
   let graduationDeps: GraduateSessionDeps;
+  /**
+   * `migrateDefaultAccounts` refuses to run when `SHIPIT_SESSION_ID` is set —
+   * inside a session container `credentialsDir` is the live agent home, not the
+   * orchestrator's credentials volume. That var is genuinely set whenever this
+   * suite runs inside ShipIt (dogfooding), so the credential-routing test below
+   * migrated nothing and failed on the *host it ran on* rather than on the
+   * code. CI leaves it unset, so this only ever broke the in-box run. Same
+   * treatment as `provider-account-manager.test.ts`: pin it off, restore after.
+   */
+  let savedSessionId: string | undefined;
 
   beforeEach(() => {
+    savedSessionId = process.env.SHIPIT_SESSION_ID;
+    delete process.env.SHIPIT_SESSION_ID;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-headless-svc-"));
     dbManager = new DatabaseManager(":memory:");
     sessionManager = new SessionManager(dbManager);
@@ -80,6 +92,8 @@ describe("createHeadlessSession", () => {
   afterEach(() => {
     dbManager.close();
     fs.rmSync(tmpDir, { recursive: true, force: true });
+    if (savedSessionId === undefined) delete process.env.SHIPIT_SESSION_ID;
+    else process.env.SHIPIT_SESSION_ID = savedSessionId;
   });
 
   // Minimal stand-ins for the auto-merge arm path (docs/175). `toggleAutoMerge`

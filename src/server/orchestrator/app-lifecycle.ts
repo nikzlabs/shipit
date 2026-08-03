@@ -1148,6 +1148,17 @@ export interface EventWiringDeps {
   credentialsDir: string;
   /** Session metadata — used to find sessions pinned to an agent on re-auth (A3). */
   sessionManager: SessionManager;
+  /**
+   * docs/179 §4 — true when a CLI process is alive for this session right now.
+   * The A3 re-push below still writes the rotated token when it returns true,
+   * but must not rewrite credential *topology* underneath a live process.
+   *
+   * Optional so minimal test setups keep working; when absent the re-push
+   * behaves exactly as it did before (repair always allowed), which is correct
+   * for a build with no runner registry — there are no agent processes to
+   * disturb.
+   */
+  hasLiveAgent?: (sessionId: string) => boolean;
 }
 
 export function markProviderAccountUnauthenticated(opts: {
@@ -1209,7 +1220,7 @@ export function markProviderAccountReauthenticated(opts: {
 
 /** Wire auth event handlers. */
 export function wireEventHandlers(eventDeps: EventWiringDeps): void {
-  const { authManagers, githubAuthManager, agentRegistry, providerAccountManager, sseBroadcast, credentialsDir, sessionManager } = eventDeps;
+  const { authManagers, githubAuthManager, agentRegistry, providerAccountManager, sseBroadcast, credentialsDir, sessionManager, hasLiveAgent } = eventDeps;
 
   /**
    * A3 (docs/142): after a Claude/Codex re-auth, force the fresh source token
@@ -1226,9 +1237,14 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
       if (!session.agentPinned || session.agentId !== agentId) continue;
       if (accountId && (session.providerRouteKind !== "account" || session.providerRouteId !== accountId)) continue;
       try {
+        // docs/179 §4 — a sign-in can complete at any moment, including while
+        // a streaming CLI is resident. Deliver the fresh token, but leave
+        // credential topology alone under a live process: the leak repair's
+        // unlink→copy window makes that process report itself unauthenticated.
+        const opts = { repairLeakedSubtrees: !hasLiveAgent?.(session.id) };
         const wrote = accountId
-          ? repushProviderAccountToken(credentialsDir, session.id, agentId, accountId)
-          : repushAgentToken(credentialsDir, session.id, agentId);
+          ? repushProviderAccountToken(credentialsDir, session.id, agentId, accountId, undefined, undefined, opts)
+          : repushAgentToken(credentialsDir, session.id, agentId, undefined, undefined, opts);
         if (wrote) healed++;
       } catch (err) {
         console.error(`[auth] A3 token re-push failed for session ${session.id}:`, err);

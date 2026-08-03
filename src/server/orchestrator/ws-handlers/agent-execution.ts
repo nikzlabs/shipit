@@ -493,7 +493,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
         ...(opts.compact ? { compact: true } : {}),
       });
     },
-    prepareAgentEnv: async (sessionId, id) => {
+    prepareAgentEnv: async (sessionId, id, envOpts) => {
       await prepareSessionAgentEnvironment(runner, {
         sessionId,
         agentId: id,
@@ -501,6 +501,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
         // unroutable turn fails here rather than spawning against an
         // exhausted account.
         enforceAccountRouting: true,
+        ...(envOpts?.reusingResidentAgent ? { reusingResidentAgent: true } : {}),
         deps: {
           credentialsDir: ctx.credentialsDir,
           credentialStore: ctx.credentialStore,

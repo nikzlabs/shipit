@@ -64,6 +64,25 @@ export function resultEventIsError(event: ClaudeEvent): boolean {
  */
 export function resultEventIndicatesAuthFailure(event: ClaudeEvent): boolean {
   if (!resultEventIsError(event) || event.type !== "result") return false;
+
+  // Not every FAILED result is an API failure, and only an API failure can be
+  // an auth failure. Two structural exclusions run before any text matching,
+  // because {@link AUTH_ERROR_PATTERNS} deliberately contains generic words
+  // ("oauth", "sign in") that a *conversation* can contain:
+  //
+  //   - `error_max_turns` / `error_during_execution` are the turn cap and an
+  //     interrupt. Their `result` carries the conversation's trailing text
+  //     rather than a CLI error string, so a session doing OAuth work that
+  //     hit the turn cap would otherwise be misread as unauthenticated —
+  //     swallowed, "healed", and silently re-dispatched, hiding the real
+  //     failure and re-running the turn.
+  //   - a `terminal_reason` that is present and is not `api_error` says
+  //     outright that the upstream call is not what ended the turn. Absent is
+  //     not treated as disqualifying: older CLIs omit it, and failing to
+  //     detect a genuine auth failure is the bug this whole path exists for.
+  if (event.subtype === "error_max_turns" || event.subtype === "error_during_execution") return false;
+  if (typeof event.terminal_reason === "string" && event.terminal_reason !== "api_error") return false;
+
   return typeof event.result === "string" && textIndicatesAuthFailure(event.result);
 }
 
@@ -100,12 +119,39 @@ export function assistantEventIndicatesAuthFailure(event: ClaudeEvent): boolean 
  * the shape the rest of the system expects: a turn that dies on the stderr auth
  * path emits no `agent_result` either, and `turn-executor` documents that an
  * auth-required turn legitimately ends without one.
+ *
+ * ## Every event is swallowed, but the raise is latched
+ *
+ * One auth failure produces TWO auth-shaped events (verified, CLI 2.1.219): the
+ * synthetic assistant envelope, then the `is_error` result. Both must be
+ * swallowed — each carries the CLI's "Please run /login" copy, and either one
+ * reaching the transcript is the bug §3 fixed. But `auth_required` must be
+ * raised only ONCE per turn. It is a semantic "this turn failed auth" signal,
+ * and its consumers are emphatically not idempotent: the quiet recovery heals
+ * the token and re-dispatches the entire turn, so a second raise re-runs the
+ * user's turn a second time, side effects and all.
+ *
+ * De-duplication belongs HERE, at the emitter, rather than in each consumer.
+ * The two-event shape is a CLI protocol detail; a consumer receiving a
+ * semantic event should not have to know the wire format produced it twice.
+ * And there is more than one consumer with non-idempotent side effects — the
+ * re-dispatch, plus the visible surface path's error message, refresher nudge
+ * and `session_agent_finished` broadcast — so a consumer-side fix would have
+ * to be repeated at each of them, and re-repeated at the next one added.
+ * Consumers still latch their own turn-scoped work (see
+ * `wireAuthRequiredHandler`), because this gate cannot cover a duplicate
+ * arriving from a *different* source: the non-JSON branch of each drain loop
+ * raises `auth_required` from raw stderr text as well.
+ *
+ * The latch is per-TURN, not per-process: `StreamingClaudeProcess` is resident
+ * across turns, so it resets on each outbound user message. A session that
+ * fails auth, recovers, and fails again later must raise the signal again.
  */
-function consumeAuthFailureEvent(event: ClaudeEvent, emitAuthRequired: () => void): boolean {
+function consumeAuthFailureEvent(event: ClaudeEvent, raiseAuthRequiredOnce: () => void): boolean {
   if (!assistantEventIndicatesAuthFailure(event) && !resultEventIndicatesAuthFailure(event)) {
     return false;
   }
-  emitAuthRequired();
+  raiseAuthRequiredOnce();
   return true;
 }
 
@@ -175,6 +221,19 @@ export class ClaudeProcess extends EventEmitter {
   private proc: IPty | null = null;
   private buffer = "";
   private watchdog: ReturnType<typeof setTimeout> | null = null;
+  /** Per-turn latch — see {@link consumeAuthFailureEvent}. */
+  private authRaisedThisTurn = false;
+
+  /**
+   * Raise `auth_required` at most once per turn. One auth failure emits two
+   * auth-shaped events plus (on a PTY) possibly a raw stderr line; the signal's
+   * consumers re-dispatch the turn, so raising it twice runs the turn twice.
+   */
+  private raiseAuthRequiredOnce(): void {
+    if (this.authRaisedThisTurn) return;
+    this.authRaisedThisTurn = true;
+    this.emit("auth_required");
+  }
 
   /**
    * Send a prompt to Claude CLI in print mode with streaming JSON output.
@@ -188,6 +247,9 @@ export class ClaudeProcess extends EventEmitter {
    */
   run(opts: ClaudeRunOptions): void {
     const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, reasoningEffort, settingsPath, autoCreatePr, sandbox, guardDestructiveGit, permissionPromptTool } = opts;
+    // New turn — this process is one-shot, but reset explicitly so the latch's
+    // scope is stated at the turn boundary rather than inferred from lifetime.
+    this.authRaisedThisTurn = false;
 
     // `Skill` is allowlisted in both modes — including plan — so an explicit
     // `/my-skill` invocation is honored in every permission mode. This accepts
@@ -448,13 +510,13 @@ export class ClaudeProcess extends EventEmitter {
         // "Please run /login" text, then a result flagged `is_error`. Surface it
         // as an auth failure so the session heals + retries, and swallow the
         // CLI's own error copy.
-        if (consumeAuthFailureEvent(event, () => this.emit("auth_required"))) continue;
+        if (consumeAuthFailureEvent(event, () => this.raiseAuthRequiredOnce())) continue;
         this.emit("event", event);
       } catch {
         // Not valid JSON — relay as log output.
         // With a PTY, auth-related messages also arrive here (merged stream).
         if (textIndicatesAuthFailure(trimmed)) {
-          this.emit("auth_required");
+          this.raiseAuthRequiredOnce();
         }
         console.warn("[claude] non-JSON line:", trimmed.slice(0, 120));
         this.emit("log", "stdout", trimmed);
@@ -479,6 +541,26 @@ export class StreamingClaudeProcess extends EventEmitter {
   private buffer = "";
   private watchdog: ReturnType<typeof setTimeout> | null = null;
   private requestIdCounter = 0;
+  /**
+   * Per-TURN latch — see {@link consumeAuthFailureEvent}. This process is
+   * resident across turns, so unlike {@link ClaudeProcess} the reset is
+   * load-bearing: it happens in {@link sendUserMessage}, the one place a new
+   * turn begins. Without it, a session that failed auth once would never raise
+   * the signal again and every later auth failure would go unrecovered.
+   */
+  private authRaisedThisTurn = false;
+
+  /**
+   * Raise `auth_required` at most once per turn. One auth failure emits two
+   * auth-shaped events, and the raw-stderr checkers can add a third; the
+   * signal's consumers re-dispatch the turn, so raising it twice runs the
+   * user's turn twice.
+   */
+  private raiseAuthRequiredOnce(): void {
+    if (this.authRaisedThisTurn) return;
+    this.authRaisedThisTurn = true;
+    this.emit("auth_required");
+  }
 
   run(opts: ClaudeRunOptions): void {
     const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, reasoningEffort, settingsPath, autoCreatePr, sandbox, guardDestructiveGit, permissionPromptTool } = opts;
@@ -601,6 +683,10 @@ export class StreamingClaudeProcess extends EventEmitter {
   }
 
   sendUserMessage(text: string, _opts?: { images?: ImageAttachment[] }): void {
+    // A new turn starts here — re-arm the auth latch so a later auth failure on
+    // this resident process raises `auth_required` again. `run()` reaches this
+    // method too, so this is the single reset point for both entry paths.
+    this.authRaisedThisTurn = false;
     const msg = {
       type: "user",
       message: { role: "user", content: [{ type: "text", text }] },
@@ -734,7 +820,7 @@ export class StreamingClaudeProcess extends EventEmitter {
       lc.includes("oauth") ||
       lc.includes("sign in")
     ) {
-      this.emit("auth_required");
+      this.raiseAuthRequiredOnce();
     }
   }
 
@@ -760,11 +846,11 @@ export class StreamingClaudeProcess extends EventEmitter {
         // events (synthetic assistant message + `is_error` result), not as
         // stderr; surface it as an auth failure so the session re-auths instead
         // of the turn "succeeding" with the CLI's /login text as its reply.
-        if (consumeAuthFailureEvent(event, () => this.emit("auth_required"))) continue;
+        if (consumeAuthFailureEvent(event, () => this.raiseAuthRequiredOnce())) continue;
         this.emit("event", event);
       } catch {
         if (textIndicatesAuthFailure(trimmed)) {
-          this.emit("auth_required");
+          this.raiseAuthRequiredOnce();
         }
         console.warn("[streaming-claude] non-JSON line:", trimmed.slice(0, 120));
         this.emit("log", "stdout", trimmed);

@@ -1162,5 +1162,212 @@ describe("selectAgentEnvForPush (relocated from agent-execution.ts)", () => {
   });
 });
 
+/**
+ * nikzlabs/shipit#1874 — the docs/153 leak repair is destructive (unlink
+ * `.claude`, re-copy from the source, merge the orphan, drop the orphan root).
+ * That is fine immediately before a spawn and unsafe under a resident CLI,
+ * which re-reads `.claude/.credentials.json` on every API call. These cover
+ * the acceptance matrix: a legacy default-account link, a pinned non-default
+ * account, repeated preparation (convergence), and streaming reuse.
+ */
+describe("credential topology under a resident agent (nikzlabs/shipit#1874)", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-env-topology-"));
+  });
+
+  const CONVERSATION_ID = "c0ffee00-dead-beef-cafe-000000000001";
+
+  /** A source account subtree holding a fresh, valid Claude token. */
+  function seedAccount(accountId: string, accessToken: string): string {
+    const root = path.join(tmpDir, "provider-accounts", "claude", accountId);
+    fs.mkdirSync(path.join(root, ".claude"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, ".claude", ".credentials.json"),
+      JSON.stringify({ claudeAiOauth: { expiresAt: Date.now() + 3_600_000, accessToken } }),
+    );
+    return root;
+  }
+
+  /** A resumable conversation jsonl, as the CLI writes it. */
+  function seedConversation(claudeDir: string, id: string): void {
+    const projects = path.join(claudeDir, "projects", "-workspace");
+    fs.mkdirSync(projects, { recursive: true });
+    fs.writeFileSync(
+      path.join(projects, `${id}.jsonl`),
+      `${JSON.stringify({ sessionId: id, type: "user", message: { content: "hi" } })}\n`
+      + `${JSON.stringify({ sessionId: id, type: "assistant", message: { content: "hello" } })}\n`,
+    );
+  }
+
+  function prepare(
+    sessionManager: SessionManager,
+    opts: { reusingResidentAgent?: boolean; accountId?: string } = {},
+  ): Promise<{ overrideAgentSessionId?: string | null }> {
+    return prepareSessionAgentEnvironment(
+      new FakeContainerRunner() as unknown as SessionRunnerInterface,
+      {
+        sessionId: "s1",
+        agentId: "claude",
+        deps: {
+          credentialsDir: tmpDir,
+          credentialStore: makeFakeCredentialStore(),
+          sessionManager,
+        },
+        ...(opts.reusingResidentAgent ? { reusingResidentAgent: true } : {}),
+      },
+    );
+  }
+
+  it("repairs a legacy default-account link once, then converges to a no-op", async () => {
+    // The shape docs/153 describes: provisioning preserved the legacy alias as
+    // a symlink, so the CLI — resolving it inside its Subpath-mounted namespace
+    // — wrote its conversation into `<sessionDir>/provider-accounts/...`.
+    seedAccount("claude-default", "FRESH");
+    const sessionDir = path.join(tmpDir, "sessions", "s1");
+    fs.mkdirSync(sessionDir, { recursive: true });
+    const orphanClaude = path.join(
+      sessionDir, "provider-accounts", "claude", "claude-default", ".claude",
+    );
+    fs.mkdirSync(orphanClaude, { recursive: true });
+    seedConversation(orphanClaude, CONVERSATION_ID);
+    fs.symlinkSync(
+      path.join(tmpDir, "provider-accounts", "claude", "claude-default", ".claude"),
+      path.join(sessionDir, ".claude"),
+    );
+
+    const { sm, state } = makeFakeSessionManager({
+      agentPinned: true,
+      agentSessionId: CONVERSATION_ID,
+      providerRouteKind: "account",
+      providerRouteId: "claude-default",
+    });
+
+    const first = await prepare(sm);
+
+    // Converged: a real dir carrying the recovered conversation, orphan gone.
+    expect(fs.lstatSync(path.join(sessionDir, ".claude")).isSymbolicLink()).toBe(false);
+    expect(fs.existsSync(path.join(sessionDir, "provider-accounts"))).toBe(false);
+    expect(fs.existsSync(
+      path.join(sessionDir, ".claude", "projects", "-workspace", `${CONVERSATION_ID}.jsonl`),
+    )).toBe(true);
+    expect(first.overrideAgentSessionId).toBe(CONVERSATION_ID);
+
+    // Criterion 2: a second preparation finds nothing to repair. The DB
+    // pointer is left alone, which is what "at most once" looks like from the
+    // caller's side — a repeat firing would re-report an override.
+    const callsAfterFirst = state.setAgentSessionIdCalls.length;
+    const second = await prepare(sm);
+    expect(second.overrideAgentSessionId).toBeUndefined();
+    expect(state.setAgentSessionIdCalls).toHaveLength(callsAfterFirst);
+    expect(state.clearAgentSessionIdCalls).toHaveLength(0);
+  });
+
+  it("syncs the pinned non-default account's token, not the default's", async () => {
+    seedAccount("claude-default", "DEFAULT-TOKEN");
+    seedAccount("acct_second", "SECOND-TOKEN");
+    const sessionDir = path.join(tmpDir, "sessions", "s1");
+    fs.mkdirSync(path.join(sessionDir, ".claude"), { recursive: true });
+    seedConversation(path.join(sessionDir, ".claude"), CONVERSATION_ID);
+
+    const { sm } = makeFakeSessionManager({
+      agentPinned: true,
+      agentSessionId: CONVERSATION_ID,
+      providerRouteKind: "account",
+      providerRouteId: "acct_second",
+    });
+
+    await prepare(sm);
+
+    const synced = JSON.parse(
+      fs.readFileSync(path.join(sessionDir, ".claude", ".credentials.json"), "utf8"),
+    ) as { claudeAiOauth: { accessToken: string } };
+    expect(synced.claudeAiOauth.accessToken).toBe("SECOND-TOKEN");
+  });
+
+  it("does not touch the subtree under a resident agent, but still refreshes the token", async () => {
+    // A leftover orphan tree (docs/153 Case 3) alongside a healthy real
+    // `.claude` — the state a session sits in between repairs. On a reuse turn
+    // the repair must stand down entirely; the token copy must not.
+    seedAccount("claude-default", "ROTATED");
+    const sessionDir = path.join(tmpDir, "sessions", "s1");
+    fs.mkdirSync(path.join(sessionDir, ".claude"), { recursive: true });
+    seedConversation(path.join(sessionDir, ".claude"), CONVERSATION_ID);
+    fs.writeFileSync(
+      path.join(sessionDir, ".claude", ".credentials.json"),
+      JSON.stringify({ claudeAiOauth: { expiresAt: Date.now() + 60_000, accessToken: "OLD" } }),
+    );
+    const orphanClaude = path.join(
+      sessionDir, "provider-accounts", "claude", "claude-default", ".claude",
+    );
+    fs.mkdirSync(orphanClaude, { recursive: true });
+    seedConversation(orphanClaude, CONVERSATION_ID);
+
+    const { sm, state } = makeFakeSessionManager({
+      agentPinned: true,
+      agentSessionId: CONVERSATION_ID,
+      providerRouteKind: "account",
+      providerRouteId: "claude-default",
+    });
+
+    const result = await prepare(sm, { reusingResidentAgent: true });
+
+    // Repair stood down: the orphan survives and the DB pointer is untouched.
+    expect(fs.existsSync(orphanClaude)).toBe(true);
+    expect(result.overrideAgentSessionId).toBeUndefined();
+    expect(state.setAgentSessionIdCalls).toHaveLength(0);
+    // ...but the rotated token still reached the live process (docs/142 A).
+    const synced = JSON.parse(
+      fs.readFileSync(path.join(sessionDir, ".claude", ".credentials.json"), "utf8"),
+    ) as { claudeAiOauth: { accessToken: string } };
+    expect(synced.claudeAiOauth.accessToken).toBe("ROTATED");
+
+    // The very next spawn-shaped preparation does the deferred repair.
+    await prepare(sm);
+    expect(fs.existsSync(path.join(sessionDir, "provider-accounts"))).toBe(false);
+  });
+
+  it("never leaves a resident agent without credentials when the source subtree is missing", async () => {
+    // The failure mechanism behind the report. On the repair path a leaked
+    // symlink is unlinked FIRST and only then re-copied from the source — so a
+    // source with no `.claude` leaves the session with no credentials at all,
+    // and a CLI that re-reads the file mid-turn answers
+    // `Not logged in · Please run /login`. Under reuse the repair never runs,
+    // so the file the live process is reading stays where it is.
+    fs.mkdirSync(path.join(tmpDir, "provider-accounts", "claude", "claude-default"), {
+      recursive: true,
+    });
+    const sessionDir = path.join(tmpDir, "sessions", "s1");
+    fs.mkdirSync(sessionDir, { recursive: true });
+    const leakedTarget = path.join(
+      sessionDir, "provider-accounts", "claude", "claude-default", ".claude",
+    );
+    fs.mkdirSync(leakedTarget, { recursive: true });
+    fs.writeFileSync(
+      path.join(leakedTarget, ".credentials.json"),
+      JSON.stringify({ claudeAiOauth: { expiresAt: Date.now() + 60_000, accessToken: "LIVE" } }),
+    );
+    seedConversation(leakedTarget, CONVERSATION_ID);
+    fs.symlinkSync(
+      path.join(tmpDir, "provider-accounts", "claude", "claude-default", ".claude"),
+      path.join(sessionDir, ".claude"),
+    );
+
+    const { sm } = makeFakeSessionManager({
+      agentPinned: true,
+      agentSessionId: CONVERSATION_ID,
+      providerRouteKind: "account",
+      providerRouteId: "claude-default",
+    });
+
+    await prepare(sm, { reusingResidentAgent: true });
+
+    // The live CLI's credentials are still readable through the path it opened.
+    expect(fs.existsSync(path.join(leakedTarget, ".credentials.json"))).toBe(true);
+    expect(fs.lstatSync(path.join(sessionDir, ".claude")).isSymbolicLink()).toBe(true);
+  });
+});
+
 // Silence vi import lint when no `vi` calls remain after refactors.
 void vi;

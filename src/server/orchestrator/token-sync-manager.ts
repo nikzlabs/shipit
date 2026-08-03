@@ -156,16 +156,41 @@ export type AgentSessionIdRecoveryCallback = (
   recoveredOrClear: string | null,
 ) => void;
 
+/**
+ * Per-turn sync options.
+ *
+ * `repairLeakedSubtrees` — run the docs/153 leak repair as part of this sync.
+ * Defaults to true; a caller passes **false** when a resident agent process is
+ * about to be REUSED rather than respawned. The repair is destructive by
+ * nature (unlink `.claude`, re-copy the subtree, merge the orphan, then
+ * `rmSync` the orphan root), and doing that under a live CLI is what produced
+ * `Not logged in · Please run /login` mid-session (nikzlabs/shipit#1874): the
+ * unlink→copy sequence has a real window in which `.claude/.credentials.json`
+ * does not exist at all, and if the source subtree is missing the copy never
+ * happens and the window never closes.
+ *
+ * Skipping it costs nothing on a reuse turn. Everything the repair produces is
+ * consumed at SPAWN time — the on-disk convergence matters to the next
+ * `claude --resume`, and the recovered `agentSessionId` is read by
+ * `buildRunParams`, which the reuse branch never calls. The token copy below
+ * still runs, because that IS how a long-lived process stays authenticated
+ * across a rotation (docs/142 A).
+ */
+export interface SyncTokenInOptions {
+  repairLeakedSubtrees?: boolean;
+}
+
 export function syncAgentTokenIn(
   credentialsRoot: string,
   sessionId: string,
   agentId: AgentId,
   onRecoverAgentSessionId?: AgentSessionIdRecoveryCallback,
   currentAgentSessionId?: string | null,
+  opts?: SyncTokenInOptions,
 ): void {
   syncAgentTokenInFromRoot(
     credentialsRoot, sessionId, agentId, credentialsRoot,
-    onRecoverAgentSessionId, currentAgentSessionId,
+    onRecoverAgentSessionId, currentAgentSessionId, opts,
   );
 }
 
@@ -176,6 +201,7 @@ export function syncProviderAccountTokenIn(
   accountId: string,
   onRecoverAgentSessionId?: AgentSessionIdRecoveryCallback,
   currentAgentSessionId?: string | null,
+  opts?: SyncTokenInOptions,
 ): void {
   syncAgentTokenInFromRoot(
     credentialsRoot,
@@ -184,7 +210,71 @@ export function syncProviderAccountTokenIn(
     providerAccountCredentialRoot(credentialsRoot, agentId, accountId),
     onRecoverAgentSessionId,
     currentAgentSessionId,
+    opts,
   );
+}
+
+/**
+ * Where the AGENT CONTAINER will actually read `<sessionDir>/<rel>`.
+ *
+ * Normally that is just `<sessionDir>/<rel>`. But a session provisioned before
+ * docs/150 req 19 can carry a *leaked subtree-root symlink* — `<sessionDir>/.claude`
+ * pointing at an absolute `/credentials/provider-accounts/...` path — and that
+ * one path resolves to two different physical files:
+ *
+ *   - **orchestrator** (`credentialsRoot` mounted at its own path): back to the
+ *     SHARED account source.
+ *   - **agent container** (`<sessionDir>` subpath-mounted at `/credentials`):
+ *     to `<sessionDir>/provider-accounts/...`, the session's own orphan copy.
+ *
+ * Writing "the session's token" through the naive path therefore writes to the
+ * source the orchestrator already read it from, while the CLI keeps reading a
+ * stale orphan. Worse, the freshness guard sees source and destination as the
+ * same file and skips the copy entirely — so the token silently never rotates
+ * for exactly the sessions that most need it.
+ *
+ * That is only masked, not fixed, by the leak repair: a turn that suppresses
+ * repair to protect a resident process (docs/179 §4) still has to deliver a
+ * rotated token to it. Resolving the destination here is what makes "the
+ * per-turn token copy still runs" true rather than aspirational.
+ *
+ * Returns the naive path unchanged when there is no leak, so the repaired and
+ * never-leaked cases are byte-identical to before.
+ */
+function containerVisibleCredentialPath(
+  credentialsRoot: string,
+  sessionDir: string,
+  rel: string,
+): string {
+  const naive = path.join(sessionDir, rel);
+  const segments = rel.split("/");
+  const subtreeRoot = segments[0];
+  const rest = segments.slice(1);
+  // Only a subtree ROOT (`.claude`, `.codex`) is ever leaked as a symlink; a
+  // rel with no nesting has no subtree root to resolve through.
+  if (!subtreeRoot || rest.length === 0) return naive;
+
+  let target: string;
+  try {
+    if (!fs.lstatSync(path.join(sessionDir, subtreeRoot)).isSymbolicLink()) return naive;
+    target = fs.readlinkSync(path.join(sessionDir, subtreeRoot));
+  } catch {
+    return naive; // Missing or unreadable — nothing to resolve through.
+  }
+
+  // Same two target shapes `materializeLeakedSubtreeSymlinks` handles: the
+  // production `/credentials/...` mount path and the test fixture's
+  // `<credentialsRoot>/...` temp path. Both reduce to a path relative to the
+  // credentials volume root, which is what `<sessionDir>` maps to in-container.
+  let relativeFromVolume: string | null = null;
+  if (target.startsWith(CREDENTIALS_MOUNT_PREFIX)) {
+    relativeFromVolume = target.slice(CREDENTIALS_MOUNT_PREFIX.length);
+  } else if (target.startsWith(`${credentialsRoot}${path.sep}`)) {
+    relativeFromVolume = target.slice(credentialsRoot.length + 1);
+  }
+  if (!relativeFromVolume) return naive;
+
+  return path.join(sessionDir, relativeFromVolume, ...rest);
 }
 
 function syncAgentTokenInFromRoot(
@@ -194,6 +284,7 @@ function syncAgentTokenInFromRoot(
   sourceRoot: string,
   onRecoverAgentSessionId?: AgentSessionIdRecoveryCallback,
   currentAgentSessionId?: string | null,
+  opts?: SyncTokenInOptions,
 ): void {
   const files = AGENT_TOKEN_FILES[agentId];
   if (!files) return;
@@ -201,23 +292,30 @@ function syncAgentTokenInFromRoot(
   const sessionDir = perSessionCredentialsDir(credentialsRoot, sessionId);
   // docs/153 — repair leaked subtree-root symlinks before the per-turn copy
   // so the orchestrator and the agent container converge on the same
-  // physical file. See `materializeLeakedSubtreeSymlinks` for the full why.
-  const repair = materializeLeakedSubtreeSymlinks(
-    credentialsRoot, sessionDir, agentId, sourceRoot, currentAgentSessionId,
-  );
-  if (repair.outcome !== "no-action" && onRecoverAgentSessionId) {
-    try {
-      onRecoverAgentSessionId(
-        repair.outcome === "recovered" ? repair.recoveredAgentSessionId : null,
-      );
-    } catch (err) {
-      console.warn("[session-credentials] recovered agent_session_id callback failed:", err);
+  // physical file. See `materializeLeakedSubtreeSymlinks` for the full why,
+  // and {@link SyncTokenInOptions} for why a reuse turn opts out.
+  if (opts?.repairLeakedSubtrees ?? true) {
+    const repair = materializeLeakedSubtreeSymlinks(
+      credentialsRoot, sessionDir, agentId, sourceRoot, currentAgentSessionId,
+    );
+    if (repair.outcome !== "no-action" && onRecoverAgentSessionId) {
+      try {
+        onRecoverAgentSessionId(
+          repair.outcome === "recovered" ? repair.recoveredAgentSessionId : null,
+        );
+      } catch (err) {
+        console.warn("[session-credentials] recovered agent_session_id callback failed:", err);
+      }
     }
   }
   for (const rel of files) {
     const src = path.join(sourceRoot, rel);
     if (!fs.existsSync(src)) continue;
-    const dst = path.join(sessionDir, rel);
+    // Resolve through a leaked subtree symlink so both the freshness compare
+    // and the copy land on the file the CLI reads — see
+    // {@link containerVisibleCredentialPath}. Identical to `sessionDir/rel`
+    // whenever there is no leak.
+    const dst = containerVisibleCredentialPath(credentialsRoot, sessionDir, rel);
     // Expiry guard (mirrors syncAgentTokenBack): only pull when the source is
     // strictly newer than the session's current token. Without this, an
     // unconditional copy clobbers a token the session refreshed locally with a
@@ -257,10 +355,11 @@ export function repushAgentToken(
   agentId: AgentId,
   onRecoverAgentSessionId?: AgentSessionIdRecoveryCallback,
   currentAgentSessionId?: string | null,
+  opts?: SyncTokenInOptions,
 ): boolean {
   return repushAgentTokenFromRoot(
     credentialsRoot, sessionId, agentId, credentialsRoot,
-    onRecoverAgentSessionId, currentAgentSessionId,
+    onRecoverAgentSessionId, currentAgentSessionId, opts,
   );
 }
 
@@ -271,6 +370,7 @@ export function repushProviderAccountToken(
   accountId: string,
   onRecoverAgentSessionId?: AgentSessionIdRecoveryCallback,
   currentAgentSessionId?: string | null,
+  opts?: SyncTokenInOptions,
 ): boolean {
   return repushAgentTokenFromRoot(
     credentialsRoot,
@@ -279,6 +379,7 @@ export function repushProviderAccountToken(
     providerAccountCredentialRoot(credentialsRoot, agentId, accountId),
     onRecoverAgentSessionId,
     currentAgentSessionId,
+    opts,
   );
 }
 
@@ -289,6 +390,7 @@ function repushAgentTokenFromRoot(
   sourceRoot: string,
   onRecoverAgentSessionId?: AgentSessionIdRecoveryCallback,
   currentAgentSessionId?: string | null,
+  opts?: SyncTokenInOptions,
 ): boolean {
   const files = AGENT_TOKEN_FILES[agentId];
   if (!files) return false;
@@ -304,16 +406,28 @@ function repushAgentTokenFromRoot(
   // agent-side stale copy never gets touched, so the agent keeps 401'ing on a
   // dead token. Replace any such symlink with a real materialized subtree so
   // both namespaces converge on the same file again. See docs/153.
-  const repair = materializeLeakedSubtreeSymlinks(
-    credentialsRoot, sessionDir, agentId, sourceRoot, currentAgentSessionId,
-  );
-  if (repair.outcome !== "no-action" && onRecoverAgentSessionId) {
-    try {
-      onRecoverAgentSessionId(
-        repair.outcome === "recovered" ? repair.recoveredAgentSessionId : null,
-      );
-    } catch (err) {
-      console.warn("[session-credentials] recovered agent_session_id callback failed:", err);
+  //
+  // docs/179 §4 — but NOT under a live CLI. This path runs from the scheduled
+  // OAuth refresher and from post-sign-in, neither of which is tied to a turn
+  // boundary, so it can fire at any moment including mid-turn. The repair is
+  // destructive (unlink → re-copy → merge → `rmSync`), and the CLI re-reads
+  // its credentials per request (verified — see the docs/179 plan), so a
+  // resident process spanning the window reports itself unauthenticated. The
+  // callers pass `repairLeakedSubtrees: false` when the session has a live
+  // agent; the token write below still happens, and now lands on the
+  // container-visible path even while the leak is left in place.
+  if (opts?.repairLeakedSubtrees ?? true) {
+    const repair = materializeLeakedSubtreeSymlinks(
+      credentialsRoot, sessionDir, agentId, sourceRoot, currentAgentSessionId,
+    );
+    if (repair.outcome !== "no-action" && onRecoverAgentSessionId) {
+      try {
+        onRecoverAgentSessionId(
+          repair.outcome === "recovered" ? repair.recoveredAgentSessionId : null,
+        );
+      } catch (err) {
+        console.warn("[session-credentials] recovered agent_session_id callback failed:", err);
+      }
     }
   }
 
@@ -321,7 +435,12 @@ function repushAgentTokenFromRoot(
   for (const rel of files) {
     const src = path.join(sourceRoot, rel);
     if (!fs.existsSync(src)) continue;
-    const dst = path.join(sessionDir, rel);
+    // Resolve through a leaked subtree symlink — see
+    // {@link containerVisibleCredentialPath}. This also makes the non-holder
+    // check below ask the right question: whether the file the CLI *reads*
+    // exists, not whether the symlink happens to resolve back to the source
+    // (which it always does, on the orchestrator side).
+    const dst = containerVisibleCredentialPath(credentialsRoot, sessionDir, rel);
     if (!fs.existsSync(dst)) continue; // don't seed creds into a non-holder
     atomicCopyFile(src, dst);
     wrote = true;
