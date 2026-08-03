@@ -1,3 +1,7 @@
+---
+issue: https://linear.app/shipit-ai/issue/SHI-281
+description: Resolve x-shipit-secrets from a repo's compose file against the user's saved secrets and inject them into services, the agent container, and the Settings panel.
+---
 
 # 087 — Reusable Preview Secrets
 
@@ -247,6 +251,21 @@ Flow:
 - **Per-service display.** Show which services need each secret.
 - **Platform credentials.** Read-only rows showing source label, not editable.
 - **Undeclared secrets.** User-added secrets not in any `x-shipit-secrets` still work — shown in a "Custom" section, injected into all services (backward compat).
+
+#### The declared/custom split depends on a snapshot the client must be *given*
+
+The UI derives "declared vs custom" entirely from `preview-store.secrets.declared`, which only ever arrives over the `secrets_status` WS message. That message is emitted when `syncSecrets()` runs — compose start, reconcile, or a secret save — and **not** on viewer attach. So a viewer that connects later (page reload, session switch, WS reconnect, a second tab) had an empty `declared` and the tab filed every compose-declared secret under **Custom variables**, with the actively wrong copy "not yet referenced by any compose service." The preview's missing-required banner was silently suppressed the same way. It looked intermittent because the per-turn event buffer replayed at attach still held the stack-start emit until the next turn cleared it — and saving any secret "fixed" it, because that runs `refreshSecrets()` → a fresh emit.
+
+Two things close it:
+
+**1. Replay at attach.** `buildComposeAttachReplay()` (`compose-attach-replay.ts`) rebuilds `service_list` + `compose_error` + `secrets_status` from the live `ServiceManager` for every attaching viewer. The first two were already replayed inline in `route-registry.ts`; extracting all three into one helper is what pins the two invariants that were wrong or unpinned when the code was inline:
+
+- **The secrets message is built field-by-field and never spreads the snapshot.** `getSecretsSnapshot()` returns the *internal* variant, which carries `agentValues` — resolved secret **values** the runner pushes into the agent container and the browser must never see.
+- **`compose_error` goes AFTER `service_list`.** The client's `setServices` clears `composeError` (a fresh list means the stack is talking again), so the reverse order swallowed the banner in exactly the case that matters: a reconcile that failed on a stack which already has services. The live path emits the two independently, so only the replay ever had to order them.
+
+Gating is per-message, and deliberately *not* "send only when non-empty" for secrets: the client restores per-session preview state from its own in-memory snapshot on a switch, so sending nothing is not neutral — it leaves whatever was there. An empty declared list after a sync is a real answer (the user deleted `x-shipit-secrets`) and must clear the client's stale rows; the same empty value *before* the first sync means "not resolved yet." `ServiceSecretsResolver.hasSynced` (surfaced as `ServiceManager.secretsSynced`) is what tells them apart.
+
+**2. A render-time filter in the tab.** `SecretsTab` pins `customRows` on the first edit, so a *later* `secrets_status` would otherwise leave a key rendering in both sections. The rule the component follows: **state always holds every stored key; the declared filter is applied at render and nowhere else.** That is load-bearing rather than tidy — `declared` moves in both directions, and a key omitted from the pinned state is gone for good, so if it later becomes undeclared it lands in neither section, Save puts it in neither `set` nor `keep`, and the server **deletes** the stored secret. Concretely: `inferredCustomRows` no longer pre-filters declared names, `visibleCustomIdx` maps rendered positions back to state indices, and the row handlers write through that mapping.
 
 ### ShipIt-in-ShipIt example
 
@@ -502,6 +521,7 @@ Deferred to a follow-up (still tracked in this doc and the checklist):
 - `src/server/orchestrator/secret-resolver.ts` — merges user + platform secrets, writes per-secret files
 - `src/server/orchestrator/secrets-entrypoint.sh` — POSIX shell wrapper that exports `/run/secrets/shipit-*` as env vars
 - `src/server/shipit-docs/secrets.md` — agent-facing docs for secrets in compose
+- `src/server/orchestrator/compose-attach-replay.ts` — rebuilds `compose_error` / `service_list` / `secrets_status` for an attaching viewer, none of which are re-emitted on their own
 
 **Modify (from 086):**
 - `src/server/orchestrator/service-manager.ts` — call secret resolver before compose up
@@ -516,6 +536,8 @@ Deferred to a follow-up (still tracked in this doc and the checklist):
 - `src/server/shared/types/ws-server-messages.ts` — `secrets_missing` message
 - `src/server/orchestrator/credential-store.ts` — platform credential lookup
 - `src/client/components/` — secrets panel enhancements
+- `src/server/orchestrator/route-registry.ts` — WS attach calls `buildComposeAttachReplay()`
+- `src/client/components/SecretsTab.tsx` — re-filters declared names out of the custom section on every render
 
 **Delete (post-086):**
 - `ContainerSessionRunner.pushSecretsToPreview()` — replaced by Docker secrets

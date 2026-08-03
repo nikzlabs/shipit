@@ -667,6 +667,14 @@ export class ServiceManager extends EventEmitter {
     return this.secrets.getSnapshot();
   }
 
+  /**
+   * Whether a secrets sync has run yet. An empty snapshot means "nothing is
+   * declared" only once this is true; before that it means "not resolved yet."
+   */
+  get secretsSynced(): boolean {
+    return this.secrets.hasSynced;
+  }
+
   /** Whether the compose stack has been started. */
   get started(): boolean {
     return this._started;
