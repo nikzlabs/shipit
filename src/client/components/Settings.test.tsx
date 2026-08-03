@@ -196,6 +196,35 @@ describe("Settings - Agent → Claude tab", () => {
     vi.unstubAllGlobals();
   });
 
+  // docs/150 req 23 — the last account disconnects without a picker, because
+  // there is nothing to pick. The user is told what it cost.
+  it("disconnects the last account and reports the sessions left without one", async () => {
+    const now = Date.now();
+    useSettingsStore.getState().setProviderAccounts([
+      { provider: "claude", id: "acct-a", label: "Account A", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+    ]);
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ accounts: [], switchedSessionIds: [], strandedSessionIds: ["s1", "s2"] }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Settings {...defaultProps} />);
+    await userEvent.click(within(screen.getByTestId("provider-account-row-acct-a")).getByRole("button", { name: "Disconnect" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      "/api/provider-accounts/claude/acct-a",
+      expect.objectContaining({ method: "DELETE" }),
+    ));
+    // No replacement picker — that panel is for the answerable case only.
+    expect(screen.queryByTestId("provider-account-replacement-acct-a")).not.toBeInTheDocument();
+    await waitFor(() => expect(useUiStore.getState().toast?.message).toContain(
+      "2 session(s) have no connected Claude account",
+    ));
+    vi.unstubAllGlobals();
+  });
+
   it("exposes the API key fallback via a collapsed disclosure with metered-billing copy", async () => {
     render(<Settings {...defaultProps} agentList={[claudeUnauthed]} />);
     expect(screen.queryByTestId("provider-api-key-input-claude")).not.toBeInTheDocument();

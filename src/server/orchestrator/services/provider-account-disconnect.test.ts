@@ -80,14 +80,60 @@ describe("deleteProviderAccount", () => {
     expect(accounts.list("claude").map((x) => x.id)).toContain(a.id);
   });
 
-  it("says so plainly when there is nowhere to move the sessions to", () => {
+  /**
+   * req 23 — the last account is disconnectable. This branch used to 409 with
+   * "there is no other connected claude account to move them to", which no
+   * amount of user action could satisfy short of connecting an account solely
+   * to disconnect another.
+   */
+  it("disconnects the last account even with sessions pinned to it, reporting them", () => {
     const a = accounts.create("claude", "A");
     accounts.setAccountStatus("claude", a.id, "ready");
+    pinSession("s1", a.id);
+    pinSession("s2", a.id);
+
+    const result = deleteProviderAccount(accounts, sessions, registry(), "claude", a.id, {
+      credentialsDir: root,
+    });
+
+    expect(accounts.list("claude")).toEqual([]);
+    expect(result.switchedSessionIds).toEqual([]);
+    expect(result.strandedSessionIds.sort()).toEqual(["s1", "s2"]);
+    // The route is left pointing at the gone account rather than rewritten:
+    // that reads unusable, which is the same recovery path provider-wide
+    // sign-out relies on.
+    expect(sessions.get("s1")?.providerRouteId).toBe(a.id);
+    expect(accounts.isRouteUsableForTurn("claude", { kind: "account", id: a.id })).toBe(false);
+  });
+
+  it("disconnects when the only other account is not connected yet", () => {
+    const a = accounts.create("claude", "A");
+    const b = accounts.create("claude", "B");
+    accounts.setAccountStatus("claude", a.id, "ready");
+    // B exists but never finished signing in, so it is not somewhere a pinned
+    // session can be moved to — same dead end as having no second account.
+    accounts.setAccountStatus("claude", b.id, "auth_failed");
+    pinSession("s1", a.id);
+
+    const result = deleteProviderAccount(accounts, sessions, registry(), "claude", a.id, {
+      credentialsDir: root,
+    });
+
+    expect(result.strandedSessionIds).toEqual(["s1"]);
+    expect(accounts.list("claude").map((x) => x.id)).toEqual([b.id]);
+  });
+
+  it("still asks rather than stranding when a replacement does exist", () => {
+    const a = accounts.create("claude", "A");
+    const b = accounts.create("claude", "B");
+    accounts.setAccountStatus("claude", a.id, "ready");
+    accounts.setAccountStatus("claude", b.id, "ready");
     pinSession("s1", a.id);
 
     expect(() => deleteProviderAccount(accounts, sessions, registry(), "claude", a.id, {
       credentialsDir: root,
-    })).toThrow(/no other connected claude account/);
+    })).toThrow(/Choose a replacement account/);
+    expect(accounts.list("claude").map((x) => x.id)).toContain(a.id);
   });
 
   it("moves every pinned session to the replacement, then disconnects", () => {
@@ -132,6 +178,23 @@ describe("deleteProviderAccount", () => {
       replacementAccountId: b.id,
     })).toThrow(/while a pinned session is running/);
     expect(sessions.get("s1")?.providerRouteId).toBe(a.id);
+  });
+
+  /**
+   * req 23 draws the line here: "no matter what" removed the refusal that
+   * waiting can never clear, not the one that clears itself when the turn ends.
+   * Naming the sessions is what makes it a wait rather than a dead end.
+   */
+  it("still refuses a running pinned session on the last account, naming it", () => {
+    const a = accounts.create("claude", "A");
+    accounts.setAccountStatus("claude", a.id, "ready");
+    pinSession("s1", a.id);
+    runningSessionIds.add("s1");
+
+    expect(() => deleteProviderAccount(accounts, sessions, registry(), "claude", a.id, {
+      credentialsDir: root,
+    })).toThrow(/"s1".*Let the turn finish or stop it/s);
+    expect(accounts.list("claude").map((x) => x.id)).toEqual([a.id]);
   });
 
   it("rejects a replacement that is the account being disconnected", () => {

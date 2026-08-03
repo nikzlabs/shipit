@@ -209,10 +209,17 @@ export function ProviderAccountsCard({
   /**
    * Disconnect, resolving the pinned-session case inline rather than by toast.
    *
-   * The server refuses to strand sessions that are pinned to the account and
-   * answers with the list of accounts they could move to instead (req 9). That
-   * is a question, so it gets asked here — a row-local picker — instead of
-   * being flattened into an error toast the user can only retry verbatim.
+   * When the account's pinned sessions have somewhere to go, the server answers
+   * with the accounts they could move to (req 9). That is a question, so it gets
+   * asked here — a row-local picker — instead of being flattened into an error
+   * toast the user can only retry verbatim.
+   *
+   * When they have nowhere to go, there is no question: the server disconnects
+   * (req 23) and reports which sessions it left without an account, and this
+   * says so afterwards. It is deliberately not a confirmation prompt — the
+   * button that deletes an *unpinned* account's credentials doesn't ask either,
+   * and the last account was precisely the case that used to have no way
+   * through.
    */
   const disconnect = async (account: ProviderAccount, replacementAccountId?: string) => {
     setSavingId(account.id);
@@ -220,15 +227,24 @@ export function ProviderAccountsCard({
       const query = replacementAccountId
         ? `?replacementAccountId=${encodeURIComponent(replacementAccountId)}`
         : "";
-      const result = await request<{ accounts: ProviderAccount[]; switchedSessionIds: string[] }>(
+      const result = await request<{
+        accounts: ProviderAccount[];
+        switchedSessionIds: string[];
+        strandedSessionIds?: string[];
+      }>(
         `/api/provider-accounts/${provider}/${account.id}${query}`,
         { method: "DELETE" },
       );
       setProviderAccounts(result.accounts);
       setPendingDisconnect(null);
+      const stranded = result.strandedSessionIds?.length ?? 0;
       if (result.switchedSessionIds.length > 0) {
         useUiStore.getState().setToast({
           message: `Moved ${result.switchedSessionIds.length} session(s) to the replacement account.`,
+        });
+      } else if (stranded > 0) {
+        useUiStore.getState().setToast({
+          message: `Disconnected. ${stranded} session(s) have no connected ${name} account — connect one before their next turn.`,
         });
       }
     } catch (err) {

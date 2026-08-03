@@ -257,9 +257,25 @@ Adding an account launches the provider's normal auth flow. OAuth/account/billin
 pages are allowed external tabs under the product principles; everything after
 auth returns to ShipIt and is rendered inline.
 
-Disconnect is blocked while the account is pinned to a running session unless
-the user chooses a replacement account. On disconnect (two ordered paths
-depending on whether the user already picked a replacement):
+Disconnect asks the user to choose a replacement account while sessions are
+pinned to this one **and another connected account exists to move them to**; a
+session that is *running a turn right now* blocks it outright, naming the
+sessions to wait for. Those are the only two gates (req 23) —
+`deleteProviderAccount` in `services/settings.ts`.
+
+With no usable replacement — the last connected account, or one whose only
+sibling never finished signing in — disconnect proceeds and returns the pinned
+sessions as `strandedSessionIds`, which the card reports in a toast. That branch
+used to 409 ("there is no other connected account to move them to"), which was
+terminal by construction: nothing the user could do satisfied it except
+connecting an account solely in order to disconnect another. The sessions keep
+their now-dangling `provider_route_id` rather than having it rewritten, which is
+the same state provider-wide sign-out leaves behind and recovers the same way —
+`isRouteUsableForTurn` reads an unknown account as unusable, so the next turn
+re-routes or reports `auth_required`.
+
+On disconnect (two ordered paths depending on whether the user already picked a
+replacement):
 
 Common steps (run for every disconnect):
 
