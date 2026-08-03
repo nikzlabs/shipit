@@ -5,21 +5,26 @@
  * notices it moved without scanning the full diff or detouring to the Docs
  * panel. Three tiers:
  *
- *   1. **Design docs** — any `.md` file. The chip reads the frontmatter `title`
- *      ("Session lifecycle") rather than the filename ("plan.md").
+ *   1. **Design docs** — any `.md` file.
  *   2. **Config** — a small allowlist of "wait, what moved?" files.
  *   3. **Images** — any added/modified image (by extension). The chip opens the
  *      asset inline so the user can eyeball it.
  *
- * Everything else stays in the full diff. The list is a pure projection of the
- * PR's changed-file set, so it's sticky and drift-free by construction.
+ * Every chip is labelled by its {@link compactPathLabel} — `246/plan.md`, not a
+ * document title. This surface is a flat PR file list, not a document browser:
+ * the *file* is the useful identity here (a feature's `plan.md` and
+ * `checklist.md` are indistinguishable when both render as the feature's
+ * title), and the Docs panel remains the title-and-description surface.
+ *
+ * Everything else stays in the full diff. The list is a pure 1:1 projection of
+ * the PR's changed-file set — no collapsing, no title resolution, no disk reads
+ * — so it's sticky and drift-free by construction.
  */
 
 import path from "node:path";
 
 import type { GitManager } from "../../shared/git.js";
 import type { NotableFileChange } from "../../shared/types.js";
-import { resolveDocTitle } from "../markdown.js";
 import { committedChangesVsBase } from "./git.js";
 
 /**
@@ -80,75 +85,56 @@ function normalizeStatus(raw: string): "M" | "A" | "D" | null {
   }
 }
 
-/**
- * Preference rank for collapsing doc chips that share a title — lower wins.
- * A feature directory is one logical document split across generic files
- * (`plan.md`, `checklist.md`, …); when several change together we keep a
- * single chip pointing at the canonical file so it opens the doc's main page.
- */
-const DOC_FILENAME_RANK: Record<string, number> = { plan: 0, index: 1, readme: 2 };
-function docFilenameRank(p: string): number {
-  return DOC_FILENAME_RANK[path.basename(p, ".md").toLowerCase()] ?? 3;
-}
+/** A `NNN-` feature-directory prefix — shortened to just the digits. */
+const FEATURE_DIR_PREFIX_RE = /^(\d+)-/;
 
 /**
- * Collapse design-doc chips that resolve to the same title into one. A feature
- * dir's `plan.md` + `checklist.md` both derive their title from the directory
- * name ({@link resolveDocTitle} → `titleFromPath`), which previously surfaced
- * the same document as two identical chips on the PR card. We keep one chip per
- * title, preferring the canonical file (`plan.md`) so the click opens the doc's
- * main page, and preserving first-seen order.
+ * Compact, distinguishable chip label for a changed file: its basename
+ * prefixed by its immediate parent directory (`shipit-docs/environment.md`).
+ * A `NNN-slug` feature dir shortens to its number (`246-native-issue-tracker-
+ * evaluation/plan.md` → `246/plan.md`), and a repo-root file is just its
+ * basename (`shipit.yaml`). Only the immediate parent appears — the full path
+ * already lives in the chip's `title=` tooltip.
  *
- * Config files are NOT deduped: two same-named configs in different directories
- * (a monorepo's multiple `package.json` / `docker-compose.yml`) are genuinely
- * distinct files the user needs to see separately.
+ * Pure string work on the diff path, so it resolves for a *deleted* file too,
+ * and a path is unique within a diff — which is what makes the chip set a
+ * collision-free 1:1 projection of the changed-file set.
  */
-function dedupeNotableDocs(files: NotableFileChange[]): NotableFileChange[] {
-  const docIndexByTitle = new Map<string, number>();
-  const out: NotableFileChange[] = [];
-  for (const file of files) {
-    if (file.kind !== "doc") {
-      out.push(file);
-      continue;
-    }
-    const existingIdx = docIndexByTitle.get(file.title);
-    if (existingIdx === undefined) {
-      docIndexByTitle.set(file.title, out.length);
-      out.push(file);
-    } else if (docFilenameRank(file.path) < docFilenameRank(out[existingIdx].path)) {
-      // A more canonical file collides — replace in place, keeping position.
-      out[existingIdx] = file;
-    }
-  }
-  return out;
+export function compactPathLabel(relativePath: string): string {
+  const basename = path.posix.basename(relativePath);
+  const dir = path.posix.dirname(relativePath);
+  if (!dir || dir === "." || dir === "/") return basename;
+  const parent = path.posix.basename(dir);
+  if (!parent) return basename;
+  const numbered = FEATURE_DIR_PREFIX_RE.exec(parent);
+  return `${numbered ? numbered[1] : parent}/${basename}`;
 }
 
 /**
  * Classify a changed-file list into the notable subset (docs + config +
- * images), resolving the frontmatter `title` for docs against `workspaceDir`.
- * Docs that resolve to the same title are collapsed to a single chip (see
- * {@link dedupeNotableDocs}); config and images are never collapsed.
+ * images), labelling each by {@link compactPathLabel}.
+ *
+ * A pure 1:1 projection: every classified change yields exactly one chip. No
+ * collapsing — labels are path-derived, so they can't collide, and the docs
+ * panel (which keys by path) can't drift from the strip.
  */
-export async function computeNotableFiles(
-  workspaceDir: string,
-  changes: RawFileChange[],
-): Promise<NotableFileChange[]> {
+export function computeNotableFiles(changes: RawFileChange[]): NotableFileChange[] {
   const out: NotableFileChange[] = [];
   for (const change of changes) {
     const status = normalizeStatus(change.status);
     if (!status) continue;
-    const basename = path.basename(change.path);
+    const basename = path.posix.basename(change.path);
+    const label = compactPathLabel(change.path);
 
     if (CONFIG_FILENAMES.has(basename)) {
-      out.push({ path: change.path, title: basename, kind: "config", status });
+      out.push({ path: change.path, label, kind: "config", status });
     } else if (change.path.endsWith(".md")) {
-      const title = await resolveDocTitle(path.join(workspaceDir, change.path), change.path);
-      out.push({ path: change.path, title, kind: "doc", status });
+      out.push({ path: change.path, label, kind: "doc", status });
     } else if (IMAGE_EXTENSIONS.has(path.extname(change.path).toLowerCase())) {
-      out.push({ path: change.path, title: basename, kind: "image", status });
+      out.push({ path: change.path, label, kind: "image", status });
     }
   }
-  return dedupeNotableDocs(out);
+  return out;
 }
 
 /**
@@ -164,9 +150,8 @@ export async function computeNotableFiles(
  */
 export async function notableFilesForBranch(
   git: GitManager,
-  workspaceDir: string,
   baseBranch: string,
 ): Promise<NotableFileChange[]> {
   const changes = await committedChangesVsBase(git, baseBranch);
-  return computeNotableFiles(workspaceDir, changes);
+  return computeNotableFiles(changes);
 }

@@ -96,7 +96,7 @@ export async function emitPrLifecycleAfterCommit(args: {
         deps.prStatusPoller.getStatus(sessionId)?.baseBranch
         ?? previousMergedPr?.baseBranch
         ?? await stripGit.getDefaultBranch();
-      const notableFiles = await notableFilesForBranch(stripGit, sessionDir, base);
+      const notableFiles = await notableFilesForBranch(stripGit, base);
       emit({
         type: "pr_notable_files",
         sessionId,
@@ -177,7 +177,7 @@ export async function emitPrLifecycleAfterCommit(args: {
         const autoMerge = deps.prStatusPoller.getAutoMergeState(sessionId);
         // docs/205 — the changed-docs strip's notable-file list, derived from
         // the same base...HEAD diff that produced the PR.
-        const notableFiles = await notableFilesForBranch(git, sessionDir, result.baseBranch);
+        const notableFiles = await notableFilesForBranch(git, result.baseBranch);
         emit({
           type: "pr_lifecycle_update",
           sessionId,
@@ -230,7 +230,7 @@ export async function emitPrLifecycleAfterCommit(args: {
     const { insertions: totalInsertions, deletions: totalDeletions } = await git.diffStatVsBranch(readyBase);
     // docs/205 — notable files (docs + config) changed vs the base, for the
     // card's collapsible changed-docs strip.
-    const notableFiles = await notableFilesForBranch(git, sessionDir, readyBase);
+    const notableFiles = await notableFilesForBranch(git, readyBase);
     const autoMerge = deps.prStatusPoller.getAutoMergeState(sessionId);
     emit({
       type: "pr_lifecycle_update",

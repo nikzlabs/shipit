@@ -169,8 +169,8 @@ describe("pr-store", () => {
       );
 
       usePrStore.getState().setNotableFiles("s1", "pr-card-s1", [
-        { path: "docs/a/plan.md", title: "A", kind: "doc", status: "M" },
-        { path: "docs/b/plan.md", title: "B", kind: "doc", status: "A" },
+        { path: "docs/a/plan.md", label: "A", kind: "doc", status: "M" },
+        { path: "docs/b/plan.md", label: "B", kind: "doc", status: "A" },
       ]);
 
       const card = usePrStore.getState().cardBySession.s1;
@@ -185,7 +185,7 @@ describe("pr-store", () => {
 
     it("clears the strip when the recomputed list is empty (authoritative)", () => {
       usePrStore.getState().setNotableFiles("s1", "pr-card-s1", [
-        { path: "docs/a/plan.md", title: "A", kind: "doc", status: "M" },
+        { path: "docs/a/plan.md", label: "A", kind: "doc", status: "M" },
       ]);
       usePrStore.getState().setNotableFiles("s1", "pr-card-s1", []);
 
@@ -197,7 +197,7 @@ describe("pr-store", () => {
       // arrive on independent sockets with no ordering guarantee — the patch must
       // not be dropped if it lands first.
       usePrStore.getState().setNotableFiles("s1", "pr-card-s1", [
-        { path: "docs/a/plan.md", title: "A", kind: "doc", status: "M" },
+        { path: "docs/a/plan.md", label: "A", kind: "doc", status: "M" },
       ]);
       expect(usePrStore.getState().cardBySession.s1).toBeUndefined();
       expect(usePrStore.getState().notableFilesBySession.s1?.map((f) => f.path)).toEqual([
@@ -211,7 +211,7 @@ describe("pr-store", () => {
       // is independent, so it persists.
       usePrStore.getState().updateCard("s1", makeCard("open"));
       usePrStore.getState().setNotableFiles("s1", "pr-card-s1", [
-        { path: "docs/a/plan.md", title: "A", kind: "doc", status: "M" },
+        { path: "docs/a/plan.md", label: "A", kind: "doc", status: "M" },
       ]);
 
       usePrStore.getState().applyPrStatusUpdates([makePrStatus({ prState: "open" })]);
@@ -224,7 +224,7 @@ describe("pr-store", () => {
     it("drops the strip slice when the session's PR is removed", () => {
       usePrStore.getState().updateCard("s1", makeCard("open"));
       usePrStore.getState().setNotableFiles("s1", "pr-card-s1", [
-        { path: "docs/a/plan.md", title: "A", kind: "doc", status: "M" },
+        { path: "docs/a/plan.md", label: "A", kind: "doc", status: "M" },
       ]);
 
       usePrStore.getState().applyPrStatusUpdates([], ["s1"]);
