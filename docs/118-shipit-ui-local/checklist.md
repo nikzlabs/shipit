@@ -144,8 +144,7 @@ The previous fix renamed the spinner from "Starting dev server..." to "Connectin
 
 ## Dogfood could never run a turn (landed)
 
-Two independent, stacked failures. The first killed the turn before the model
-was reached, which hid the second entirely.
+Three stacked failures, each hiding the next. A turn now completes end-to-end.
 
 - [x] `docker/Dockerfile.dogfood` installs `/etc/shipit/managed-settings.json` and the two hooks it references. `prepareClaudeRunParams` hardcodes `--settings /etc/shipit/managed-settings.json`; a missing settings file is fatal to the Claude CLI, so every turn died on `Error: Settings file not found`. Both session-worker images already installed it; this one never did.
 - [x] **SHI-282** — local mode could never authenticate *any* agent. Credential provisioning in `session-agent-env.ts` is gated on `runner instanceof ContainerSessionRunner`, and `buildRunnerFactory` returns a plain `SessionRunner` in local mode, so the gate was always false: no per-session credentials dir was ever created and the CLI spawned against an empty `${agentHome()}`. Keyed on the runner type rather than the agent, so Claude and Codex failed identically.
@@ -171,7 +170,10 @@ was reached, which hid the second entirely.
 - [x] Ownership split written down in `plan.md`: `local-agent-home.ts` owns per-turn delivery, `local-agent-credentials.ts` owns the unscoped fallback home. Docstrings on both updated; the "rejected alternative" and "accepted trade-off" paragraphs, which described a world that no longer exists, are gone.
 - [x] Closed the reserved-route seam: `clearAgentHomeCredentialLinks()` removes stale account links when the turn routes to a reserved env route, so the home never carries one route's credentials while the turn runs on another (docs/150 req 12 by construction, not by the CLI's env-beats-disk luck). 5 new tests.
 - [x] `CLAUDE.md` and `plan.md` corrected: setting `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` no longer breaks every turn (the scrub handles it), but should still be left unset for the narrower `generateText` reason.
-- [ ] **Not verified live.** The reconciliation is unit-tested only; no dogfood turn was driven end to end through the inner UI to confirm a turn now completes.
+- [x] **A dogfood turn does complete** — driven end to end through the inner UI. A Claude turn spawned a subagent via the `Agent` tool, its nested Bash call rendered under "Subagent's work", the final report came back, and usage and cost appeared in the composer. That also closed one of docs/244's two open verification items, and turned up SHI-287 (subagent final reports render as raw block-array JSON — pre-existing, not caused by docs/244).
+- [ ] **…but not on *this* tree.** That turn ran on `ae58d3b4`, before the reconciliation commit existed, so it exercised the per-spawn resolver and the linking step coexisting *unreconciled*. What is still unverified live is specifically `clearAgentHomeCredentialLinks` — a reserved-route turn clearing a prior account turn's links. Unit-tested only. Cheap to close: sign the inner ShipIt out of its Claude account (or set `ANTHROPIC_AUTH_TOKEN`) so a turn routes reserved, then check for the `[local-credentials] … cleared …` line.
+- [x] The operational half of the env-var story, confirmed the hard way: with `ANTHROPIC_AUTH_TOKEN` set on the `dev` service, turns failed with `Agent CLI requires authentication` — a symptom identical to SHI-282 and *not* it. Unsetting it in outer Settings → Secrets is what let the first turn through. `scrubEnvAuthForScopedHome` means that is no longer required, but the incident is why the docs still say to leave it unset.
+- [ ] Inner sessions have no MCP servers, so the dogfood agent has no browser tool at all. Blocks the last docs/244 verification (a real MCP image-block result) and any other MCP-shaped check.
 
 ## Phase 2 — inner-session preview (deferred design)
 

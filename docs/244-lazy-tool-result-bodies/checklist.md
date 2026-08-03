@@ -126,23 +126,32 @@ Run after the req-1 fix merged. Two of the five checks are done and are now
       mount, the body rendered, an error surfaced on 404, and no fetch at all
       for a result that arrived whole.
 
+- [x] **A subagent (`Agent`) turn end-to-end**, driven through a live Claude CLI
+      turn in the dogfood. The `Agent` tool ran, the subagent card rendered with
+      its nested Bash call under "Subagent's work", and the **final report
+      arrived whole** — the `SUBAGENT_REPORT_TOOL_NAMES` exemption holding on
+      real CLI data rather than on a fixture. This also answers docs/109's
+      standing question: **nested subagent activity does render in the UI**, both
+      while running and after completion.
+
+      One defect observed while verifying, and it is *not* caused by this
+      feature: the final report renders as the raw block-array JSON
+      (`[{"type":"text","text":"…"}]`) instead of the extracted prose. The
+      exemption returns the result untouched, so the renderer is receiving
+      exactly what it received before docs/244 — `SubagentCall` simply doesn't
+      parse a block array. Filed separately.
+
 Blocked, with the reason:
 
-- [ ] **A screenshot result end-to-end.** Neither local CLI transcript contains
-      a single image block, so there is no real-shape data to run against. The
-      synthetic coverage is good (including two block shapes that previously
-      broke a lexical pre-filter), but "the real MCP screenshot shape" is still
-      unconfirmed.
-- [ ] **A subagent (`Agent`) turn end-to-end**, and with it docs/109's standing
-      question of whether nested subagent activity renders in the UI at all.
-      Same reason: no `Task`/`Agent` calls in either local transcript.
-- [ ] Both need a live agent turn in the dogfood preview. The inner ShipIt
-      starts and serves, but reports **no agent subscription connected** — the
-      `dev` service's `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` are
-      user-supplied secrets (outer Settings → Secrets, `docs/184`). The outer
-      orchestrator's `/history` is deliberately closed to session containers, so
-      there is no way around it from in here.
-
+- [ ] **A screenshot result end-to-end.** Still no real-shape data. Neither local
+      CLI transcript contains an image block, and the dogfood cannot produce one
+      either — inner sessions have no Playwright MCP server, so the agent has no
+      browser tool at all (it said so itself when asked). The synthetic coverage
+      is good, including two block shapes that previously broke a lexical
+      pre-filter, but "the real MCP screenshot shape" remains unconfirmed.
+      Unblocking it means wiring an MCP server into inner sessions (docs/118
+      follow-up) or capturing a real image-bearing transcript from a
+      containerized session.
 
 ## Verification
 - [x] `npm run typecheck`
