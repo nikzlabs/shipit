@@ -34,6 +34,51 @@ stamp over the existing `POST /install` call — is a real refactor of the
 install-skip logic and the overlay publish gate, both load-bearing, and buys
 nothing the mount doesn't.
 
+### The worker's state dir is injected, not read from the environment
+
+`InstallController` first hardcoded the container mount path. That is wrong
+outside a container: every in-process integration test (and any non-container
+worker) then tries to create `/session-state` at the filesystem root, the marker
+write throws, and the install hangs rather than failing loudly — which is
+exactly how CI caught it. The path is now a dependency
+(`SessionWorkerDeps.stateDir` → `InstallControllerDeps.stateDir`) defaulting to
+`SHIPIT_SESSION_STATE_DIR` then the `/session-state` mount, so tests point it at
+a temp dir and exercise the real mechanism.
+
+### The state dir is never placed inside the clone (containment check)
+
+`sessionStateDir(sessionDir)` is only safe when the clone is a *subdirectory* of
+the session dir. Under the legacy flat layout the two are the same path
+(`ContainerConfig.workspaceDir`: "Falls back to sessionDir for legacy
+sessions"), so the naive form yields `<clone>/state` — a ShipIt directory
+created **inside the user's repository**, which `git add -A` would commit. That
+is strictly worse than the bug this feature fixes: it isn't under `.shipit/`, so
+neither the sweep nor the req-7 guard test would notice it.
+
+`resolveContainerStateDir()` therefore performs a containment check and returns
+`null` when the candidate would land inside the clone — the same posture as
+`assertServiceEnvRootOutsideWorkspace` (docs/183). `null` means "no mount"; the
+worker is then told, via `SHIPIT_SESSION_STATE_DIR` in the container env, to keep
+the legacy in-clone location. Without that env the worker would try to create
+`/session-state` at the container's filesystem root and hang, which is the same
+failure CI caught in-process.
+
+Two consequences that fall out of it:
+
+- **The sweep is gated on having a state dir.** For a session with no state dir
+  the in-clone files are still *live*, not leftovers — sweeping them would
+  delete the real install marker on every container create and re-run
+  `agent.install` every boot.
+- **Grandfathered containers degrade safely.** `deploy.sh` stopped killing
+  session containers on update (docs/113), so a container adopted across a
+  deploy runs the OLD worker against the NEW orchestrator. That worker writes
+  the marker in the clone and never sees the host-side pre-stamp, so the
+  pre-stamp stops suppressing installs (a redundant install — slow, correct)
+  rather than skipping one that was needed. `claim-session` unlinks both the
+  state-dir and the in-clone marker, so HEAD-change invalidation keeps working
+  either way, and the clone's leftovers get swept when the container is next
+  recreated.
+
 ### The state dir is threaded, never derived
 
 `ServiceManager` holds only `workspaceDir` (`service-manager.ts:245`) and the
@@ -55,7 +100,18 @@ consumer re-derives it from a workspace path.
 | `compose.override.yml` | `<sessionDir>/state/` | no | Orchestrator writes it, orchestrator's `docker compose` reads it. Passed as an **absolute** `-f`. |
 | `.install-done` | `<sessionDir>/state/` | yes (`/session-state`) | Written in-container by the worker; pre-stamped and deleted by the orchestrator. |
 | `ci-logs/` | `<sessionDir>/state/ci-logs/` | yes (`/session-state`) | Prompt must cite the new in-container path. |
-| `.env.agent` | `<sessionDir>/state/` | yes (`/session-state`) | No reader in `src/`; kept agent-readable to preserve the documented affordance. |
+| `.env.agent` | `<sessionDir>/state/` | **no** | Orchestrator-side only — see below. |
+
+**`.env.agent` is not exposed in the container**, which restores what docs/087
+§403 specified — "Orchestrator passes `--env-file .shipit/.env.agent` on `docker
+create`. This file is on the orchestrator's filesystem, **not the workspace
+volume**." The workspace placement was an implementation divergence (087's
+`checklist.md:40`), and the `--env-file` wiring it existed for was never built:
+the file has no reader in `src/` or `docker/` outside tests, and `agent: true`
+values actually reach the agent through the worker `PUT /secrets` endpoint into
+`process.env` (docs/088 §260). So nothing observable changes, and the earlier
+draft's "keep it agent-readable" rationale — preserving a hand-sourcing
+affordance — was hypothesising a consumer that does not exist.
 
 **The compose override stays correct as an absolute `-f`** because the project
 directory is anchored by the *first* `-f` — the user's compose file, still

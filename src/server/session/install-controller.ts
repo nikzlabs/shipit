@@ -34,9 +34,18 @@ import { formatInstallFailureMessage, INSTALL_STDERR_TAIL_BYTES } from "./instal
 import { computeInstallDepsHash } from "../shared/deps-hash.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { createDepSnapshotTar, safeDepDirRelpath } from "./dep-snapshot.js";
+import { INSTALL_MARKER_FILE } from "../shared/fs-constants.js";
 
 export interface InstallControllerDeps {
   workspaceDir: string;
+  /**
+   * docs/246 — where the install marker lives, in the container's own path
+   * namespace (`/session-state`, a mount of the session's state dir). Injected
+   * rather than read from the environment here so a worker running WITHOUT the
+   * mount — every in-process integration test — can point it at a real
+   * directory instead of failing to create one at the filesystem root.
+   */
+  stateDir: string;
   broadcast: (event: WorkerSSEEvent) => void;
   mcpConfig: McpConfigController;
 }
@@ -66,6 +75,10 @@ export class InstallController {
 
   private get workspaceDir(): string {
     return this.deps.workspaceDir;
+  }
+
+  private get stateDir(): string {
+    return this.deps.stateDir;
   }
 
   private broadcastSSE(event: WorkerSSEEvent): void {
@@ -103,8 +116,16 @@ export class InstallController {
       // and `agent.install` re-runs. Checked before the `running` guard so a
       // finished pre-install that wrote the marker (warm-pool path) but hasn't
       // yet flipped `_installRunning` still short-circuits cleanly.
-      const markerDir = path.join(this.workspaceDir, ".shipit");
-      const markerFile = path.join(markerDir, ".install-done");
+      const markerDir = this.stateDir;
+      const markerFile = path.join(markerDir, INSTALL_MARKER_FILE);
+      // docs/246 — a pre-246 marker in the clone is both stale and committable.
+      // Drop it whenever we evaluate the gate so an upgrading session sheds it
+      // on its first `/install`, whatever the outcome of the match below.
+      try {
+        fs.unlinkSync(path.join(this.workspaceDir, ".shipit", INSTALL_MARKER_FILE));
+      } catch {
+        // Absent — the normal case.
+      }
       const stamp: InstallMarkerStamp = {
         sourceCommit: await this.readSourceCommit(),
         runtimeKey: runtimeKey(),

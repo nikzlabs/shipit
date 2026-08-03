@@ -1084,8 +1084,9 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
 // `/agent/start` was never POSTed. The session showed `running=false` in the
 // worker and no chat output, until a viewer happened to open it.
 //
-// These tests use a real SessionWorker against a tmp workspaceDir (so the
-// `.shipit/.install-done` marker doesn't pollute the repo) and a trivial
+// These tests use a real SessionWorker against a tmp workspaceDir + stateDir (so
+// the install marker doesn't pollute the repo; docs/246 moved it out of the
+// clone onto the `/session-state` mount, which an in-process worker lacks) and a trivial
 // install command (`true`) so the worker's `runInstallCommands` finishes
 // near-instantly. The key contract: with NO viewer attached, both
 // `runner.runInstall(...)` and `runner._startAgentViaProxy(...)` must complete
@@ -1097,10 +1098,12 @@ describe("Integration: spawn-child install gate (no viewer attached)", () => {
   let lastAgent: FakeWorkerAgent;
   let workerUrl: string;
   let tmpWorkspace: string;
+  let tmpStateDir: string;
 
   beforeEach(async () => {
     lastAgent = null as unknown as FakeWorkerAgent;
     tmpWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-install-gate-"));
+    tmpStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-install-gate-state-"));
 
     worker = new SessionWorker({
       agentFactory: () => {
@@ -1110,6 +1113,7 @@ describe("Integration: spawn-child install gate (no viewer attached)", () => {
       port: 0,
       host: "127.0.0.1",
       workspaceDir: tmpWorkspace,
+      stateDir: tmpStateDir,
     });
 
     const address = await worker.start();
@@ -1123,6 +1127,7 @@ describe("Integration: spawn-child install gate (no viewer attached)", () => {
     await new Promise((r) => setTimeout(r, 50));
     try {
       fs.rmSync(tmpWorkspace, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+      fs.rmSync(tmpStateDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
     } catch {
       // ignore cleanup errors
     }

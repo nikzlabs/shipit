@@ -35,7 +35,12 @@ fi
 # the same worker-UID handoff as the other writable mounts or the non-root worker
 # can't write to it. (/uploads is :ro — the writability probe below skips it;
 # /persist is :rw, so it runs.)
-for d in /workspace /uploads /persist /dep-cache /credentials /home/shipit; do
+# /session-state (docs/246) holds ShipIt's OWN per-session artifacts, moved out
+# of the user's git clone. The worker writes the install marker there after
+# `agent.install` and the agent reads fetched CI logs from it, so it needs the
+# same handoff — without it the non-root worker EACCESes on the marker write and
+# every `agent.install` re-runs.
+for d in /workspace /uploads /persist /session-state /dep-cache /credentials /home/shipit; do
   case "$d" in
     # Skip the workspace chown when the orchestrator bind-mounted the host source
     # tree (dev / dogfood). `chown -R` on a bind mount rewrites *host* filesystem

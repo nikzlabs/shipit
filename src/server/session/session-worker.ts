@@ -32,7 +32,7 @@ import type { PermissionDecision } from "../shared/types.js";
 import { PermissionBroker } from "./permission-broker.js";
 import { TerminalProcess } from "./terminal.js";
 import { FileWatcher } from "./file-watcher.js";
-import { CONTAINER_WORKSPACE_DIR } from "../shared/fs-constants.js";
+import { CONTAINER_WORKSPACE_DIR, CONTAINER_SESSION_STATE_DIR } from "../shared/fs-constants.js";
 import { getErrorMessage } from "../shared/utils.js";
 import { ClaudeProcess } from "./agents/claude/process.js";
 import { ClaudeAdapter } from "./agents/claude/adapter.js";
@@ -71,6 +71,12 @@ export interface SessionWorkerDeps {
   host?: string;
   /** Workspace directory inside the container. Defaults to "/workspace". */
   workspaceDir?: string;
+  /**
+   * docs/246 — ShipIt's per-session state dir inside the container, where the
+   * install marker is written. Defaults to the `/session-state` mount; tests
+   * (which run the worker in-process, with no mount) pass a temp dir.
+   */
+  stateDir?: string;
   /** Factory for creating FileWatcher (injectable for testing). */
   createFileWatcher?: () => FileWatcher;
   /** Factory for creating TerminalProcess (injectable for testing). */
@@ -94,6 +100,7 @@ export class SessionWorker extends EventEmitter {
   private port: number;
   private host: string;
   private workspaceDir: string;
+  private stateDir: string;
   private _createOrchestratorClient?: () => OrchestratorClient;
 
   // Per-concern controllers — each owns its endpoint group and the state behind
@@ -130,6 +137,9 @@ export class SessionWorker extends EventEmitter {
     this.port = deps.port ?? 9100;
     this.host = deps.host ?? "0.0.0.0";
     this.workspaceDir = deps.workspaceDir ?? "/workspace";
+    this.stateDir = deps.stateDir
+      ?? process.env.SHIPIT_SESSION_STATE_DIR
+      ?? CONTAINER_SESSION_STATE_DIR;
     this._createOrchestratorClient = deps.createOrchestratorClient;
 
     const broadcast = (event: WorkerSSEEvent): void => this.sse.broadcast(event);
@@ -167,6 +177,7 @@ export class SessionWorker extends EventEmitter {
     });
     this.installController = new InstallController({
       workspaceDir: this.workspaceDir,
+      stateDir: this.stateDir,
       broadcast,
       mcpConfig: this.mcpConfig,
     });

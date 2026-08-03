@@ -138,8 +138,10 @@ ShipIt writes them to an orchestrator-private directory *outside* the workspace
 workspace subpath of the shared volume, so it cannot read these files even
 though they sit on the same volume. This keeps a service-only secret (a
 database URL, a third-party API key) out of the agent's reach unless you
-explicitly mark it `agent: true`. Only `.shipit/.env.agent` — which holds
-`agent: true` values and MCP credentials — lives in the workspace.
+explicitly mark it `agent: true`. The `.env.agent` file — which holds
+`agent: true` values and MCP credentials — also lives outside the workspace, on
+the orchestrator's filesystem; `agent: true` values reach the agent through its
+process environment, not through a file in your repo.
 
 The files are rewritten on every session activation and on every secrets save.
 Marking an entry `agent: true` is the supported way to expose its value to the

@@ -139,6 +139,14 @@ export interface ContainerConfig {
    * case) instead of the ephemeral `/tmp`.
    */
   scratchDir?: string;
+  /**
+   * docs/246 — Host path: /workspace/sessions/{uuid}/state. Mounted **rw** at
+   * `/session-state`: ShipIt's OWN per-session artifacts (the install marker,
+   * fetched CI logs, the compose override, the agent env file), kept out of the
+   * user's git clone so the post-turn `git add -A` can never stage them into
+   * their repository. Another sibling of `workspace/`, like `scratch/`.
+   */
+  sessionStateDir?: string;
   /** Host path: /credentials (Claude CLI auth, GitHub token) */
   credentialsDir: string;
   /** Container image name. */

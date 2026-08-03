@@ -572,51 +572,49 @@ describe("writeComposeOverride", () => {
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("writes override file to .shipit directory", () => {
+  // docs/246 — the override is written to the directory it's GIVEN (the
+  // session's state dir in production), not to a `.shipit/` subdirectory of a
+  // clone. That is the whole point of the move: `git add -A` can't reach it.
+  it("writes the override into the given directory", () => {
     const dir = setup();
     const content = "services: {}\n";
     const result = writeComposeOverride(dir, content);
-    expect(result).toBe(path.join(dir, ".shipit", "compose.override.yml"));
+    expect(result).toBe(path.join(dir, "compose.override.yml"));
     expect(fs.readFileSync(result, "utf-8")).toBe(content);
   });
 
-  it("creates .shipit directory if it doesn't exist", () => {
+  it("creates the target directory if it doesn't exist", () => {
     const dir = setup();
-    writeComposeOverride(dir, "test");
-    expect(fs.existsSync(path.join(dir, ".shipit"))).toBe(true);
+    const target = path.join(dir, "state");
+    writeComposeOverride(target, "test");
+    expect(fs.existsSync(path.join(target, "compose.override.yml"))).toBe(true);
   });
 
-  // docs/150 §7 addendum (SHI-31): the override is written by the root
-  // orchestrator into the worker-owned workspace; without the handoff it lands
-  // root:root and the agent's own `docker compose` (worker uid) can't read it.
-  describe("session-worker chown (SHI-31)", () => {
-    const origUid = process.env.SHIPIT_SESSION_WORKER_UID;
-    afterEach(() => {
-      if (origUid === undefined) delete process.env.SHIPIT_SESSION_WORKER_UID;
-      else process.env.SHIPIT_SESSION_WORKER_UID = origUid;
-    });
+  it("never creates a .shipit directory in the caller's tree", () => {
+    const dir = setup();
+    writeComposeOverride(path.join(dir, "state"), "services: {}\n");
+    expect(fs.existsSync(path.join(dir, ".shipit"))).toBe(false);
+  });
 
-    it("chowns the override + .shipit dir to the worker uid when the flag is set", () => {
-      const myUid = process.getuid?.();
-      if (myUid === undefined) return; // not POSIX — skip
-      // Chowning to our OWN uid needs no CAP_CHOWN, so we can exercise the
-      // real path without root.
-      process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
-      const dir = setup();
-      const result = writeComposeOverride(dir, "services: {}\n");
-      expect(fs.lstatSync(result).uid).toBe(myUid);
-      expect(fs.lstatSync(path.join(dir, ".shipit")).uid).toBe(myUid);
-    });
-
-    it("leaves ownership untouched when the flag is unset", () => {
-      delete process.env.SHIPIT_SESSION_WORKER_UID;
+  // docs/246 — the docs/150 §7 chown handoff is deliberately GONE. It existed
+  // because the override lived in the worker-owned clone; the state dir is not
+  // mounted into the container, so there is no worker uid to hand it to and a
+  // chown here would only obscure that.
+  it("does not chown the override, even with the worker-uid flag set", () => {
+    const myUid = process.getuid?.();
+    if (myUid === undefined) return; // not POSIX — skip
+    const orig = process.env.SHIPIT_SESSION_WORKER_UID;
+    process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
+    try {
       const dir = setup();
       const result = writeComposeOverride(dir, "services: {}\n");
       const before = fs.lstatSync(result).uid;
-      // Re-write to prove no chown side effect on the existing file.
       writeComposeOverride(dir, "services: {}\n");
       expect(fs.lstatSync(result).uid).toBe(before);
-    });
+    } finally {
+      if (orig === undefined) delete process.env.SHIPIT_SESSION_WORKER_UID;
+      else process.env.SHIPIT_SESSION_WORKER_UID = orig;
+    }
   });
 });
 
