@@ -1,4 +1,5 @@
 ---
+issue: https://linear.app/shipit-ai/issue/SHI-304
 title: Private GitHub issue tracker
 description: Use a dedicated private GitHub repository as ShipIt's issue backend without routing writes to the code repository.
 ---
@@ -9,10 +10,9 @@ description: Use a dedicated private GitHub repository as ShipIt's issue backend
 
 This is the focused design for the private-GitHub option identified by the
 [issue tracker evaluation](../246-native-issue-tracker-evaluation/plan.md).
-It is not yet approved for implementation. The parent capability classification
-no longer gates this option: choosing GitHub Issues means accepting its feature
-set. Only the public-PR pointer disclosure choice in
-[requirements.md](./requirements.md) remains open.
+Choosing GitHub Issues means accepting its feature set rather than passing a
+separate parity gate. Implementation remains blocked on the privacy authorization
+question in [requirements.md](./requirements.md).
 
 The likely first increment is small: reuse ShipIt's existing GitHub adapter and
 bind it to a dedicated private repository. The hard part is not CRUD; it is
@@ -25,7 +25,8 @@ The Issues list, issue detail, inline editing, comments, session creation,
 agent provenance cards, and `shipit issue` commands remain inside ShipIt.
 Users do not need GitHub open to work with issues. GitHub is the private storage
 and API provider; its web UI is only an escape hatch for repository
-administration or unsupported edge cases.
+administration or exceptional manual recovery. Missing inline support remains a
+ShipIt backlog or degraded-state concern rather than a required GitHub step.
 
 An operator connects a private repository that is distinct from the public
 ShipIt code repository. The binding is deployment-wide initially, so sessions
@@ -75,10 +76,10 @@ The resolver follows these rules:
 1. List and create operations use the configured private tracker binding.
 2. A fully qualified `owner/repo#number` pointer retains that repository as
    authoritative routing data.
-3. A tracker pointer whose repository conflicts with the configured binding is
-   routed only when its tracker destination explicitly permits that repository;
-   otherwise it is rejected with a clear error. It is never rewritten to the
-   active code repository or the other tracker destination.
+3. A private-planning pointer whose repository conflicts with the configured
+   binding is rejected before a GitHub request. It is never rewritten to the
+   active code repository or the public tracker destination. The separate public
+   bug tracker accepts only its fixed public ShipIt repository.
 4. Bare issue numbers are accepted only in a context with one unambiguous
    configured tracker repository.
 5. Missing configuration or repository access fails closed; there is no code
@@ -94,13 +95,13 @@ effects after a PR merge. The binding is resolved at the operation boundary and
 captured for asynchronous work rather than reread from whichever session later
 happens to be active.
 
-Public PR bodies need a separate pointer rule. A fully qualified private tracker
-pointer in a public code-repository PR discloses the private repository slug and
-issue number. If that disclosure is not acceptable, PR lifecycle syntax must
-use a bare issue number that `parsePrBodyIssueRefs` resolves only through the
-single configured private binding. Today's parser deliberately rejects bare
-`#42`, so this is a real parser and ambiguity change, not merely documentation.
-The choice remains open in requirements.
+Public PR bodies use fully qualified private tracker pointers such as
+`owner/private-repo#42`. This is unambiguous routing data and works with the
+existing qualified-pointer syntax. The user accepts that the public PR exposes
+the private repository slug, referenced issue number, and existence of the
+planning issue; issue contents remain inaccessible without repository access.
+Bare numbers and opaque ShipIt pointer aliases are not part of the initial
+design.
 
 ## Configuration and authentication
 
@@ -135,11 +136,6 @@ authentication failure may do that. Every ShipIt user who performs attributed
 tracker writes needs repository access, which also constrains available
 assignees.
 
-GitHub Free currently advertises unlimited private repositories and Issues, so
-this option meets the free/no-subscription constraint today. Pricing and
-feature availability must be revalidated before implementation because they
-are upstream service terms, not a ShipIt guarantee.
-
 ## Accepted GitHub feature set
 
 This focused design assumes GitHub Issues has been selected and accepts its
@@ -166,8 +162,7 @@ tracker entry points:
 - `src/server/shared/issue-ref.ts` preserves qualified GitHub repository data in
   the parsed value rather than only its display form.
 - `src/server/shared/pr-issue-refs.ts` preserves the same data for `Refs`,
-  `Closes`, `Fixes`, and `Resolves` pointers, and implements the selected safe
-  public-PR pointer syntax.
+  `Closes`, `Fixes`, and `Resolves` fully qualified pointers.
 - parser deduplication, deterministic lifecycle card IDs, and the persisted
   applied-merge-effect keys qualify issue numbers with `owner/repo`; migration
   handling for existing bare-number keys must prevent duplicate effects without
@@ -194,8 +189,8 @@ tracker entry points:
 - the Issues UI represents unavailable GitHub operations honestly and shows
   setup failures inline, without directing normal work to GitHub.
 
-Exact files and types remain planning targets until the open requirements are
-resolved and the current call graph is retraced at implementation time.
+Exact files and types remain planning targets until the current call graph is
+retraced at implementation time.
 
 ## Validation
 
@@ -237,15 +232,14 @@ coding sessions, Git operations, or access to locally persisted chat history.
 - Redirecting Shipit's public user bug-report flow into the private planning
   repository.
 - Silently routing arbitrary cross-repository pointers.
-- Depending on paid GitHub plans or paid GitHub features.
 - Implementing continuous two-way synchronization with Linear.
 - Emulating non-GitHub capabilities merely to preserve blanket wrapper parity.
 
 ## Decision boundary
 
-Implementation may begin after the user decides whether public PR bodies may
-expose fully qualified private-tracker pointers. Public user bug reports and
-private owner planning issues coexist as distinct tracker destinations. GitHub's
-feature set is accepted; implementation must represent unavailable normalized
-operations honestly and must not weaken the repository-routing invariant to
-simulate parity.
+Implementation remains blocked only on the privacy authorization question in
+requirements. Public user bug reports and private owner planning issues coexist
+as distinct tracker destinations, and public PR bodies use fully qualified
+private-repository pointers. GitHub's feature set is accepted; implementation
+must represent unavailable normalized operations honestly and must not weaken
+the repository-routing invariant to simulate parity.

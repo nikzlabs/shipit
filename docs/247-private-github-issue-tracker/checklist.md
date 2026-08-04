@@ -2,7 +2,7 @@
 
 ## Design
 
-- [x] Record private, free/no-subscription, and required-capability constraints.
+- [x] Record the initial cost/parity constraints and their subsequent supersession.
 - [x] Separate this option from the broader tracker comparison.
 - [x] Document the current cross-repository wrong-target risk.
 - [x] Define repository identity as authoritative routing data.
@@ -14,7 +14,8 @@
 - [x] Use one deployment-wide private tracker until Projects makes bindings per Project.
 - [x] Require the user to create the private repository; ShipIt only connects it.
 - [x] Accept GitHub Issues' feature set without a separate capability-parity gate.
-- [ ] Decide whether public PR bodies may expose qualified private tracker pointers.
+- [x] Use fully qualified private tracker pointers in public PR bodies and accept their metadata disclosure.
+- [ ] Decide whether trusted-deployment access is sufficient or per-viewer GitHub membership must be enforced.
 
 ## Implementation
 
