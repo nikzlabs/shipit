@@ -2,23 +2,10 @@
 
 /**
  * Identifier for a configured issue tracker. Drives the Issues tab's sub-tab
- * switcher and the `?tracker=` query.
- *
- * Three destinations, deliberately distinct (docs/247):
- *  - `"linear"`   — the deployment-wide Linear workspace.
- *  - `"github"`   — the **active session's code repository** issues. Its binding
- *                   is derived per-request from that session's git remote.
- *  - `"planning"` — the owner's **private planning repository**, an explicitly
- *                   configured `{owner, repo}` binding that is NOT inferred from
- *                   any session remote.
- *
- * `"github"` and `"planning"` are both GitHub Issues behind the same adapter, but
- * they are separate ids on purpose: configuring a planning repo must never
- * silently change where an existing `--tracker github` command writes
- * (docs/247 req 3). ShipIt's public bug-report flow is a fourth destination that
- * deliberately sits OUTSIDE this registry with a fixed upstream repo (req 4).
+ * switcher. v1 ships Linear only; `"github"` is reserved so a GitHub Issues
+ * adapter can slot in later without a type change (see docs/170 non-goals).
  */
-export type TrackerId = "linear" | "github" | "planning";
+export type TrackerId = "linear" | "github";
 
 /**
  * Normalized priority bucket, tracker-agnostic. Linear maps its 0–4 priority

@@ -20,12 +20,14 @@
 - [x] Preserve each active code repository's GitHub Issues as a distinct tracker destination.
 - [x] Decide how historical references and Undo actions behave after the configured private repository changes or is removed.
 - [x] Validate on connection and rely on ordinary GitHub authorization afterward; do not add proactive polling.
-- [x] Create missing priority-convention labels on demand for user-requested priority changes.
+- [x] Name the destination with an explicit `--repo owner/name` on the existing `github` tracker rather than a new tracker identity.
+- [x] Move priority-label writes out of this feature (SHI-310, both GitHub destinations).
 
 ## Implementation
 
 - [ ] Convert the resolved decisions into implementation acceptance tests.
 - [ ] Preserve structured repository identity through parsing and all issue operations.
+- [ ] Add `--repo owner/name` to `shipit issue`, the `/agent-ops/issue/*` schema, and the HTTP routes; no-`--repo` keeps meaning the session's code repo.
 - [ ] Add private tracker repository configuration and permission validation.
 - [ ] Represent unsupported normalized operations and GitHub feature differences honestly.
 - [ ] Add same-numbered code/tracker repository regression coverage.

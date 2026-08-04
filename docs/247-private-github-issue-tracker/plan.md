@@ -123,15 +123,20 @@ the owner's planning repository. The public bug-report destination remains the
 public ShipIt repository and is selected by the bug-report workflow, not by the
 private planning setting.
 
-The existing `github` destination continues to mean the active code
-repository's issue tracker. The private planning destination receives a
-distinct tracker identity so configuration cannot silently change existing
-commands to another repository. Operations that do not yet have an issue
-pointer, such as list and create, carry the selected destination; persisted
+**There is no new tracker identity.** The destination is a *repository*, named
+explicitly on the operation: `shipit issue … --tracker github --repo owner/name`
+(req 3). `github` keeps its current meaning, and an operation that names no
+repository still resolves the active session's code remote — so configuration
+cannot silently change where an existing command writes, which is the property
+the earlier "distinct tracker id" design was reaching for. A third `TrackerId`,
+a third sub-tab, and a third `--tracker` value are all avoided; the routing data
+lives on the operation instead of being encoded in a destination name.
+
+That leaves the binding needed only where there is nothing else to consult:
+list, create, and bare-number operations aimed at private planning. Persisted
 issue references and effects carry the qualified `owner/repo#number`, which is
-sufficient to prevent same-number collisions. The public bug-report flow
-remains outside the tracker registry and keeps its fixed ShipIt upstream
-repository.
+what prevents same-number collisions. The public bug-report flow remains outside
+the tracker registry and keeps its fixed ShipIt upstream repository.
 
 The user creates the private repository and ShipIt connects it. ShipIt does not
 request repository-creation permission or implement naming, ownership,
@@ -183,9 +188,13 @@ Known differences between GitHub and ShipIt's current normalized behavior are:
   starting from an open issue is otherwise a no-op unless ShipIt later adopts a
   writable status-label/project convention.
 
-A priority write creates its missing convention label on demand. This is an
-ordinary user-requested tracker mutation, not connection-time repository
-initialization.
+**Priority writes are out of scope for this feature** and tracked separately as
+[SHI-310](https://linear.app/shipit-ai/issue/SHI-310). They are a property of the
+shared GitHub adapter rather than of the private planning binding — the adapter
+already *reads* priority from labels but rejects `--priority` on writes for every
+GitHub destination — so fixing them here would either leave the two destinations
+behaving differently for the same flag, or quietly widen this feature into the
+code-repository tracker. This feature inherits whatever the adapter does.
 
 ShipIt-owned capabilities such as session creation, tracker-neutral commands,
 provenance cards, Undo, and PR lifecycle automation remain feasible only after
@@ -222,8 +231,9 @@ tracker entry points:
   applied-effect store and card IDs use qualified identity keys.
 - `src/server/session/agent-shim/shipit-issue.ts`, the `/agent-ops/issue/*`
   request schema, and orchestrator validation preserve a qualified pointer
-  rather than reducing it to a bare ID. `--tracker github` continues to mean
-  the active code repository; private planning uses a distinct tracker name.
+  rather than reducing it to a bare ID, and carry the new `--repo owner/name`
+  argument. `--tracker github` with no `--repo` continues to mean the active
+  code repository (req 3).
 - the Issues UI represents unavailable GitHub operations honestly and shows
   setup failures inline, without directing normal work to GitHub.
 
@@ -255,7 +265,8 @@ issue is unchanged. Coverage includes:
 - binding replacement and clearing using the behavior selected in requirements;
 - no proactive access or privacy polling after connection, with later GitHub
   request failures represented inline;
-- on-demand creation of a missing priority-convention label;
+- an operation naming `--repo`, and one naming none, each reaching the repository
+  req 3 says they should;
 - the accepted GitHub feature differences represented honestly rather than
   failing silently.
 

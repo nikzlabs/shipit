@@ -23,7 +23,6 @@
  */
 
 import type {
-  TrackerId,
   TrackerInfo,
   TrackerIssue,
   TrackerComment,
@@ -58,29 +57,11 @@ export interface GitHubRepoRef {
 
 export interface GitHubTrackerConfig {
   token: string | null;
-  /**
-   * The bound repository. For the `"github"` destination this is derived from
-   * the active session's remote; for `"planning"` it is the explicitly
-   * configured private repo (docs/247). Null when unresolved/unconfigured.
-   */
+  /** Repo derived from the active session's remote, or null when unresolved. */
   repo: GitHubRepoRef | null;
-  /**
-   * Which destination this instance serves (docs/247). Defaults to the
-   * session-derived code-repository tracker. One adapter class backs both
-   * because the API is identical — only the binding and the identity differ.
-   */
-  id?: Extract<TrackerId, "github" | "planning">;
-  /** Sub-tab label; defaults to the one matching `id`. */
-  label?: string;
   /** Injectable for tests; defaults to the global `fetch`. */
   fetchImpl?: FetchImpl;
 }
-
-/** Default sub-tab label per destination. */
-const DEFAULT_LABEL: Record<Extract<TrackerId, "github" | "planning">, string> = {
-  github: "GitHub",
-  planning: "Planning",
-};
 
 const PRIORITY_BY_LEVEL: Record<
   Exclude<IssuePriorityLevel, "none">,
@@ -252,29 +233,17 @@ export function resolveGitHubState(status: string): { state: "open" | "closed"; 
 }
 
 export class GitHubTracker implements Tracker {
-  readonly id: Extract<TrackerId, "github" | "planning">;
-  readonly label: string;
+  readonly id = "github" as const;
+  readonly label = "GitHub";
 
   private token: string | null;
   private repo: GitHubRepoRef | null;
   private fetchImpl: FetchImpl;
 
   constructor(config: GitHubTrackerConfig) {
-    this.id = config.id ?? "github";
-    this.label = config.label ?? DEFAULT_LABEL[this.id];
     this.token = config.token;
     this.repo = config.repo;
     this.fetchImpl = config.fetchImpl ?? fetch;
-  }
-
-  /**
-   * The repository this instance is bound to, or null when unconfigured. Callers
-   * that persist a target (Undo cards, lifecycle effects) read it here so the
-   * `owner/repo` travels with the operation instead of being reconstructed from
-   * whichever session is active later (docs/247 core invariant).
-   */
-  boundRepo(): GitHubRepoRef | null {
-    return this.repo;
   }
 
   isConfigured(): boolean {
