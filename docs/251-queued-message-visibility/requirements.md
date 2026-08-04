@@ -1,0 +1,61 @@
+---
+issue: https://linear.app/shipit-ai/issue/SHI-313
+title: Telling a queued message from a delivered one
+description: Whether the user can tell their message was queued, and — when it queued behind a turn ShipIt started rather than one they did — that the wait isn't their doing.
+---
+
+# 251 — Telling a queued message from a delivered one: requirements
+
+Status: **open questions unanswered — nothing is being built.** There is no `plan.md` yet, and there must not be one until every bullet under [Open questions](#open-questions) is answered by a human.
+
+This feature exists because of an incident on PR #1981 ("Gate submit acks on actual delivery"): an operator submitted an action card and it could not be determined afterwards whether the click was dropped in the browser or enqueued behind a turn the operator never started. #1981 fixed the browser half — a `send` on a non-OPEN socket silently no-oped and the card acked anyway. The other half — "it was enqueued, and I couldn't tell" — was deliberately left out of that PR, and is what this document scopes.
+
+The work was proposed on the premise that a queued message is today *indistinguishable* from a delivered one. **That premise is false**, which is why this document leads with what already exists.
+
+## Current behavior (verified)
+
+Verified by reading the source on 2026-08-04, not inherited from the proposal.
+
+**A queued message is already visible, to every viewer.**
+
+1. When a message arrives while a turn is running and can't be steered into it, the runner enqueues it and broadcasts `message_queued` (`session-runner.ts:387`, via `emitMessage`, so all attached viewers see it — not just the sending socket).
+2. The client moves the optimistic bubble out of the transcript and stashes it for re-insertion when the message is dequeued (`client/hooks/message-handlers/message-queued.ts`).
+3. A card above the composer shows "N message(s) queued", each item's position badge and truncated text, a per-item cancel, and "Clear all" (`client/components/QueueIndicator.tsx`, rendered from `App.tsx:1899`).
+
+**A system turn is already visible too, at least at first.**
+
+4. Turns ShipIt starts on its own — a merge wake-turn (`merge-watch.ts` → `wake-session.ts`), a cohort report delivery (`services/session-report.ts`), rebase conflict resolution (`services/rebase-driver.ts`), CI auto-fix (`app-lifecycle.ts`, `services/github-ci-fix.ts`) — are dispatched with `systemTurn: true` and carry an activity label: "Resuming after your PR merged…", "Resuming after child PR merged…", "Reassessing after child PR closed…", "Resolving conflicts...", "Fixing CI…".
+5. That label reaches the client twice: on the `system_user_message` echo and on the `session_agent_started` SSE, and both set the status-bar label (`message-handlers/system-user-message.ts`, `hooks/useServerEvents.ts:107`).
+6. The system turn's prompt is also appended to the transcript as a user-role bubble and persisted, so it survives a reload.
+7. While a system turn is in flight, live steering is suppressed on purpose (`shouldSteerMessage`, `dispatch-steering.ts`; docs/146), so a user message that would otherwise be injected mid-turn is queued instead. **This suppression is by design and is not in scope to change.**
+
+**What is *not* conveyed today.**
+
+8. The queue card says only how many messages are waiting. It says nothing about what they are waiting behind, and reads identically whether the user queued behind a turn they started (expected — they typed while the agent was working) or behind one ShipIt started.
+9. The system-turn activity label is transient: the running turn's first thinking/tool event overwrites it with the ordinary per-tool label ("Thinking...", "Editing foo.ts") (`message-handlers/agent-event.ts:96-102`). Within seconds of a system turn starting, the status bar is indistinguishable from a user turn's.
+10. A viewer who attaches *after* a system turn started (session switch, page reload, a second tab) never receives its label at all — `session_agent_started` fired before they were listening, and nothing in the attach path restores it.
+11. The client has no notion of a system turn: no flag for it crosses the wire in any message. The only cross-session provenance that renders is `messageOrigin` ("From child session · <title>"), which a merge wake or CI-fix does not carry — so their prompt bubble looks like something the user typed.
+
+## Requirements
+
+Both of these are stated at the level the user experiences. Requirement 1 is met today; it is recorded because it is the thing that must not regress.
+
+1. When the user sends a message and it is queued rather than handed to the running agent, they can tell that it was queued, without waiting for it to run.
+
+2. When a message is queued behind a turn the user did not start, they can tell the wait is not the consequence of something they did.
+
+Requirement 2 is the whole of this feature, and whether it is worth meeting *at all* — given items 4–6 above already convey a good deal of it — is the first open question.
+
+## Open questions
+
+- **Is this worth building at all?** The queue card exists, and a system turn announces itself in the transcript and in the status bar when it starts. The residual gap is narrow: the label is overwritten within seconds (item 9), is missing for anyone who attached late (item 10), and the queue card itself never mentions it (item 8). "Do nothing, close this" is a legitimate answer and would leave requirement 2 unmet on purpose. My recommendation is the smallest change that closes items 8–9 and nothing more.
+
+- **Should the user be told *why* the message is queued, or only *that* it is queued behind something they didn't start?** Naming it ("waiting for a merge follow-up") is more useful but ties the wording to each system-turn source; a generic marker ("queued behind a follow-up ShipIt started") is one string and never goes stale.
+
+- **Does this need anything server-side?** The activity label already crosses the wire at turn start, so a client-only change can hold onto it for the turn's duration and show it on the queue card — no new field, no orchestrator change. The cost is item 10: a viewer who attached mid-turn still has no label and would see the plain "1 message queued". Closing that too means the server carrying the reason on `message_queued` (or on the attach snapshot), which is where this expands into the orchestrator — exactly what #1981 avoided.
+
+- **Should a system-initiated prompt bubble be marked as not written by the user?** It is persisted as a plain user-role bubble (item 11), so on reload the transcript shows the user apparently saying "Your PR merged, reset your branch…". This is adjacent to requirement 2 and may be the more honest fix, or may be a separate feature — it is not what was asked for, so it is not a requirement here.
+
+## Resolved questions
+
+_None yet._
