@@ -27,6 +27,7 @@ import { labelDotColor } from "./issue-label-color.js";
 import { useSurfaceLuminance } from "../hooks/useSurfaceLuminance.js";
 import { adaptColorForSurface } from "../utils/status-color.js";
 import { ICON_SIZE } from "../design-tokens.js";
+import { isGitHubTracker } from "../../server/shared/tracker-id.js";
 import type {
   IssueLabel,
   IssuePriorityLevel,
@@ -693,7 +694,7 @@ export function IssuesViewer({
         )}
 
         {!configured ? (
-          activeTracker === "github" ? (
+          isGitHubTracker(activeTracker) ? (
             // GitHub needs no connect step — it reuses ShipIt's GitHub auth and
             // scopes to the active session's repo. So "not configured" means
             // there's no GitHub repo in context, not a missing credential.

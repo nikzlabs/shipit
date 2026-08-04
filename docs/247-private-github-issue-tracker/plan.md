@@ -12,12 +12,40 @@ This is the focused design for the private-GitHub option identified by the
 [issue tracker evaluation](../246-native-issue-tracker-evaluation/plan.md).
 Choosing GitHub Issues means accepting its feature set rather than passing a
 separate parity gate. Every product question in
-[requirements.md](./requirements.md) is resolved; implementation is unblocked.
+[requirements.md](./requirements.md) is resolved.
 
-The likely first increment is small: reuse ShipIt's existing GitHub adapter and
-bind it to a dedicated private repository. The hard part is not CRUD; it is
-preserving the authoritative repository target through every UI, CLI, Undo,
-session-start, and PR-lifecycle path.
+**Implemented.** Declarations, `--repo`, qualified routing, the extra Issues tab,
+the fail-closed access error, and pointer-only branch names all ship; a
+fresh-context requirements review is the only checklist item left. The hard part was never CRUD —
+it was preserving the authoritative repository target through every UI, CLI,
+Undo, session-start, and PR-lifecycle path, and the section below records how
+that ended up being achieved with **one** piece of state rather than a parallel
+field threaded through each of them.
+
+### How repository identity is actually carried
+
+The implementation collapsed onto a single idea: **the repository lives in the
+tracker id**. `"github"` keeps its old meaning (the session's own code repo) and
+`` `github:${owner}/${repo}` `` names one explicitly, so `TrackerId` widened from
+a closed union to include that template-literal member.
+
+That one change is what satisfies the core invariant everywhere at once, because
+the tracker id was *already* the thing every surface round-trips:
+
+| Surface | Why it now routes correctly |
+|---|---|
+| `?tracker=` on the routes + `/agent-ops/issue/*` | Already carried the id verbatim; the relay is a pass-through, so no schema change. |
+| `IssueWriteCard.tracker`, persisted in chat history | Undo resolves `card.tracker` — so an Undo replays against the repository the write hit, with **no new column and no migration**. |
+| `parseIssueRef` dedup key (`tracker:issueId`) | Becomes qualified for free, so `a/x#42` and `b/y#42` stop colliding. |
+| PR-body `Closes` / `Refs` pointers | `parsePrBodyIssueRefs` delegates to `parseIssueRef`, so merge effects inherit the qualified destination. |
+| The Issues sub-tab | Already keyed by tracker id. |
+
+The alternative — a parallel `repo` field beside a `tracker: "github"` — was
+rejected precisely because it re-creates the bug: a display-ish `tracker` sitting
+next to the real routing data invites exactly the reduction the invariant
+forbids, and it would have needed a persisted-card field, a DB migration, and a
+legacy-card fail-closed path. Comparisons therefore use `isGitHubTracker(id)`
+from `shared/tracker-id.ts`, never `=== "github"`.
 
 ## User experience
 
@@ -111,10 +139,22 @@ planning issue; issue contents remain inaccessible without repository access.
 Bare numbers and opaque ShipIt pointer aliases are not part of the initial
 design.
 
-Sessions seeded from private planning issues keep the issue title in ShipIt,
-but derive pushed branch names and public PR titles from the qualified pointer
-alone. This prevents the existing title-based branch and PR naming path from
-publishing private content.
+Sessions seeded from an issue keep the title in ShipIt — it is still the session
+title and still opens the seed prompt — but the **pushed branch name is the
+qualified pointer alone** (`seedFromIssueRef`). A branch reaches a public remote,
+so a title from a private planning issue would be published there.
+
+The rule is **unconditional**, not scoped to declared or "private" trackers.
+Dropping the connect step (req 5) also dropped the only thing that could have
+told ShipIt which repositories are private: a declared planning repo may be
+public and a session's own code repo may be private, so any narrower rule would
+be a guess dressed as a policy. The cost — `shi-67` instead of
+`shi-67-inline-tracker-issues-tab`, for Linear and code-repo issues too — was
+accepted explicitly. Determinism is unchanged: the branch was already a pure
+function of the issue.
+
+Public PR **titles** are outside this: the agent writes them with
+`gh pr create -t`, so ShipIt generates no PR title to derive from a pointer.
 
 ## Configuration and authentication
 
@@ -125,9 +165,20 @@ repositories are listed in the code repository's `shipit.yaml`, alongside the
 ```yaml
 issues:
   trackers:
-    - repo: owner/planning        # required, `owner/name`
+    - kind: github                # which tracker backs this tab
+      repo: owner/planning        # GitHub Issues: `owner/name`
       label: Planning             # optional; defaults to the repo name
 ```
+
+Each entry is a **tagged union discriminated on `kind`** (the same discriminator
+name the issue domain types already use for `IssueWriteUndo`), not a bare list of
+repositories. The identifying fields belong to the kind — `repo` is GitHub's, and
+a tracker identified by something else entirely can be added later without
+reshaping the block or migrating existing configs. This feature defines only
+`github`; nothing here specifies what any other kind's fields would be. An entry
+whose `kind` the running ShipIt does not recognize is skipped with a warning, so
+a config written against a newer version degrades instead of failing the session
+(the same treatment `shipit-config.ts` already gives unknown keys).
 
 This is the pattern the product already uses for stack shape — declared in the
 repo, versioned with it, reconciled by ShipIt — rather than a Settings surface
@@ -242,9 +293,11 @@ tracker entry points:
   applied-merge-effect keys qualify issue numbers with `owner/repo`; migration
   handling for existing bare-number keys must prevent duplicate effects without
   making a wrong-repository assumption.
-- `src/server/shared/shipit-config.ts` parses the new `issues.trackers` block
-  (repo slug + optional label) with the same unknown-key warning treatment the
-  other blocks get; a malformed entry warns rather than failing the session.
+- `src/server/shared/shipit-config.ts` parses the new `issues.trackers` block as
+  a `kind`-discriminated list, with the same unknown-key warning treatment the
+  other blocks get. A malformed entry, a missing `repo` on a `github` entry, and
+  an unrecognized `kind` all warn and skip that entry rather than failing the
+  session — the forward-compatibility path req 5 requires.
 - `src/server/orchestrator/trackers/registry.ts` builds one `GitHubTracker` per
   declared repository in addition to the session-derived one, giving each a
   derived `github:owner/repo` id. `TrackerId` widens from a closed union
@@ -271,8 +324,31 @@ tracker entry points:
 - the Issues UI represents unavailable GitHub operations honestly and shows
   setup failures inline, without directing normal work to GitHub.
 
-Exact files and types remain planning targets until the current call graph is
-retraced at implementation time.
+### Key files (as built)
+
+- `src/server/shared/tracker-id.ts` — the qualified-id vocabulary:
+  `githubTrackerId`, `parseGitHubTrackerId`, `isGitHubTracker`, `parseOwnerRepo`.
+  Every comparison goes through it so nothing reduces an id back to `"github"`.
+- `src/server/shared/shipit-config.ts` — `parseIssuesConfig` / the
+  `DeclaredTracker` union. Nothing here throws: unlike the other blocks, which
+  gate the container, a tracker declaration gates one tab, so a malformed entry
+  or an unrecognized `kind` warns and skips.
+- `src/server/shared/issue-ref.ts` — `ParsedIssueRef.tracker` is a `TrackerId`,
+  so a GitHub pointer resolves to its own repository.
+- `src/server/orchestrator/trackers/registry.ts` — declared trackers registered
+  per declaration; `get()` synthesizes any well-formed qualified id (the
+  `list()`/`get()` asymmetry documented in that file).
+- `src/server/orchestrator/trackers/github/adapter.ts` — configurable `id`/`label`;
+  `accessError()` names both "missing" and "inaccessible" for the 403/404 pair.
+- `src/server/orchestrator/api-routes-issues.ts` — `resolveGitHubTrackerContext`
+  reads the session workspace's `shipit.yaml` per request (uncached: editing the
+  file must change the tabs on the next request; a parse failure degrades to no
+  declarations rather than breaking the tab).
+- `src/server/session/agent-shim/shipit-issue.ts` — `--repo` on every verb, via
+  `resolveTrackerFlag` / `resolveIssuePointer`.
+- Agent-facing docs: `src/server/shipit-docs/issues.md` (repository-resolution
+  rules; supersedes the old "no cross-repo access" claim) and
+  `shipit-docs/shipit-yaml.md` (the `issues:` block).
 
 ## Validation
 
@@ -292,8 +368,9 @@ issue is unchanged. Coverage includes:
 - Undo of a legacy persisted card created before repository targets were stored;
 - an unreachable repository, insufficient permission, and revoked access, all
   failing without fallback and naming both "missing" and "inaccessible";
-- a malformed or absent `issues.trackers` block warning rather than failing the
-  session, and declaring the session's own code repo being harmless;
+- a malformed or absent `issues.trackers` block, a `github` entry missing `repo`,
+  and an entry with an unrecognized `kind`, each warning and skipping rather than
+  failing the session; declaring the session's own code repo being harmless;
 - public bug reports continuing to target the public ShipIt repository before
   and after trackers are declared;
 - code-repository GitHub Issues continuing to target each active code

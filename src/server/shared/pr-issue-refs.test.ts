@@ -38,7 +38,7 @@ describe("parsePrBodyIssueRefs", () => {
     const { closes } = parsePrBodyIssueRefs("Fixes octocat/hello-world#42");
     expect(closes).toHaveLength(1);
     expect(closes[0]).toMatchObject({
-      tracker: "github",
+      tracker: "github:octocat/hello-world",
       identifier: "octocat/hello-world#42",
       issueId: "42",
     });
@@ -49,7 +49,7 @@ describe("parsePrBodyIssueRefs", () => {
     expect(linear.closes[0]).toMatchObject({ tracker: "linear", issueId: "SHI-9" });
 
     const gh = parsePrBodyIssueRefs("Closes https://github.com/octocat/hello-world/issues/7");
-    expect(gh.closes[0]).toMatchObject({ tracker: "github", issueId: "7" });
+    expect(gh.closes[0]).toMatchObject({ tracker: "github:octocat/hello-world", issueId: "7" });
   });
 
   it("routes Refs / References to the non-closing bucket", () => {

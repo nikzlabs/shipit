@@ -1,7 +1,6 @@
 /**
- * Unified shipit.yaml parser — reads `version`, `agent`, and `compose` blocks.
- *
- * The schema has three top-level keys:
+ * Unified shipit.yaml parser — reads `version`, `agent`, `compose`, `release`,
+ * and `issues` blocks.
  *
  *   version: 1          # optional schema version
  *   agent:              # optional agent container config
@@ -11,6 +10,10 @@
  *     dep-dirs:         # dependency dirs eligible for the overlay store (docs/183)
  *       - node_modules
  *   compose: docker-compose.yml   # string or object form
+ *   issues:             # additional issue trackers, as Issues tabs (docs/247)
+ *     trackers:
+ *       - kind: github
+ *         repo: owner/planning
  *
  * Old-format keys (preview, resources, capabilities, services) emit warnings
  * with migration hints. The `agent.memory` / `agent.cpu` / `agent.pids`
@@ -23,6 +26,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import type { ReleaseMechanism } from "./types/release-types.js";
+import { defaultTrackerLabel, parseOwnerRepo } from "./tracker-id.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -133,6 +137,34 @@ export interface HostMount {
   readOnly: true;
 }
 
+/**
+ * docs/247 — one entry of the `issues.trackers` list: an additional issue
+ * tracker the repository declares, rendered as its own tab in the Issues UI.
+ *
+ * A **tagged union discriminated on `kind`** (the discriminator name the issue
+ * domain types already use for `IssueWriteUndo`), not a bare list of
+ * repositories. The identifying fields belong to the kind — `repo` is GitHub's —
+ * so a tracker identified by something other than an `owner/repo` can be added
+ * later without reshaping the block or migrating existing configs. This feature
+ * defines only `github`.
+ */
+export interface DeclaredGitHubTracker {
+  kind: "github";
+  owner: string;
+  repo: string;
+  /** Sub-tab label. Defaults to the repository name when `label` is absent. */
+  label: string;
+}
+
+/** docs/247 — a declared additional tracker. Only `github` is defined today. */
+export type DeclaredTracker = DeclaredGitHubTracker;
+
+/** docs/247 — the optional `issues:` block. */
+export interface IssuesConfig {
+  /** Declared additional trackers, in declaration order (drives tab order). */
+  trackers: DeclaredTracker[];
+}
+
 export interface ShipitConfig {
   /** Schema version. Currently 1. */
   version?: number;
@@ -148,6 +180,12 @@ export interface ShipitConfig {
   hostMounts: HostMount[];
   /** Optional release configuration block (docs/171 Phase 2). */
   release?: ReleaseConfig;
+  /**
+   * docs/247 — additional issue trackers this repository declares. Always
+   * present (empty when the `issues:` block is absent) so callers never have to
+   * branch on undefined to get the common "no declarations" case.
+   */
+  issues: IssuesConfig;
   /** Warnings emitted during parsing (unknown keys, migration hints). */
   warnings: string[];
 }
@@ -176,7 +214,14 @@ export const AGENT_DEFAULTS: Readonly<AgentConfig> = {
 // Known keys for validation
 // ---------------------------------------------------------------------------
 
-const KNOWN_TOP_LEVEL_KEYS = new Set(["version", "agent", "compose", "release", "x-shipit-host-mounts"]);
+const KNOWN_TOP_LEVEL_KEYS = new Set([
+  "version",
+  "agent",
+  "compose",
+  "release",
+  "issues",
+  "x-shipit-host-mounts",
+]);
 const KNOWN_AGENT_KEYS = new Set(["install", "dep-dirs", "install-inputs"]);
 
 /**
@@ -226,7 +271,7 @@ export function parseShipitConfig(doc: unknown): ShipitConfig {
   const warnings: string[] = [];
 
   if (doc === null || doc === undefined) {
-    return { agent: { ...AGENT_DEFAULTS, install: [] }, hostMounts: [], warnings };
+    return { agent: { ...AGENT_DEFAULTS, install: [] }, hostMounts: [], issues: { trackers: [] }, warnings };
   }
 
   if (typeof doc !== "object" || Array.isArray(doc)) {
@@ -267,10 +312,124 @@ export function parseShipitConfig(doc: unknown): ShipitConfig {
   // ---- release (docs/171) ----
   const release = parseReleaseConfig(raw.release, warnings);
 
+  // ---- issues (docs/247) ----
+  const issues = parseIssuesConfig(raw.issues, warnings);
+
   // ---- x-shipit-host-mounts (docs/128) ----
   const hostMounts = parseHostMounts(raw["x-shipit-host-mounts"]);
 
-  return { version, agent, compose, release, hostMounts, warnings };
+  return { version, agent, compose, release, issues, hostMounts, warnings };
+}
+
+const KNOWN_ISSUES_KEYS = new Set(["trackers"]);
+const KNOWN_GITHUB_TRACKER_KEYS = new Set(["kind", "repo", "label"]);
+
+/**
+ * docs/247 — parse the `issues:` block.
+ *
+ * ```yaml
+ * issues:
+ *   trackers:
+ *     - kind: github           # which tracker backs this tab
+ *       repo: owner/planning   # GitHub Issues: `owner/name`
+ *       label: Planning        # optional; defaults to the repository name
+ * ```
+ *
+ * **Nothing here is fatal.** Every malformed shape — a non-list `trackers`, a
+ * non-mapping entry, a `github` entry with a missing or unparseable `repo`, and
+ * an entry whose `kind` this version does not recognize — warns and skips that
+ * entry rather than throwing. That is the forward-compatibility path req 5
+ * requires: a `shipit.yaml` written against a newer ShipIt that declares a
+ * tracker kind this build has never heard of must degrade to "that tab doesn't
+ * appear", not "the session fails to start". The other blocks throw on bad
+ * input because they gate the container; a tracker declaration gates one tab.
+ */
+function parseIssuesConfig(raw: unknown, warnings: string[]): IssuesConfig {
+  if (raw === undefined || raw === null) return { trackers: [] };
+
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    warnings.push("`issues` must be a mapping (object); ignoring it.");
+    return { trackers: [] };
+  }
+
+  const obj = raw as Record<string, unknown>;
+  for (const key of Object.keys(obj)) {
+    if (!KNOWN_ISSUES_KEYS.has(key)) {
+      warnings.push(`Unknown key \`issues.${key}\` in shipit.yaml.`);
+    }
+  }
+
+  const rawTrackers = obj.trackers;
+  if (rawTrackers === undefined || rawTrackers === null) return { trackers: [] };
+  if (!Array.isArray(rawTrackers)) {
+    warnings.push("`issues.trackers` must be a list; ignoring it.");
+    return { trackers: [] };
+  }
+
+  const trackers: DeclaredTracker[] = [];
+  const seen = new Set<string>();
+  for (let i = 0; i < rawTrackers.length; i++) {
+    const entry = parseDeclaredTracker(rawTrackers[i], i, warnings);
+    if (!entry) continue;
+    // De-duplicate on the tracker's identity, so a repeated declaration doesn't
+    // mint two tabs with the same id (which would make `get()` ambiguous).
+    const key = `${entry.kind}:${entry.owner}/${entry.repo}`.toLowerCase();
+    if (seen.has(key)) {
+      warnings.push(`Ignoring \`issues.trackers[${i}]\`: duplicate declaration of \`${entry.owner}/${entry.repo}\`.`);
+      continue;
+    }
+    seen.add(key);
+    trackers.push(entry);
+  }
+  return { trackers };
+}
+
+/** Parse one `issues.trackers` entry; returns null (and warns) when unusable. */
+function parseDeclaredTracker(entry: unknown, index: number, warnings: string[]): DeclaredTracker | null {
+  const drop = (reason: string): null => {
+    warnings.push(`Ignoring \`issues.trackers[${index}]\`: ${reason}.`);
+    return null;
+  };
+
+  if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+    return drop("each entry must be a mapping with a `kind`");
+  }
+  const obj = entry as Record<string, unknown>;
+  const kind = obj.kind;
+  if (typeof kind !== "string" || !kind.trim()) {
+    return drop("each entry must state its tracker `kind` (e.g. `kind: github`)");
+  }
+
+  if (kind.trim().toLowerCase() !== "github") {
+    // Forward compatibility: a kind from a newer ShipIt, not a user error.
+    return drop(`unrecognized tracker \`kind: ${kind}\` — this version of ShipIt only supports \`github\``);
+  }
+
+  for (const key of Object.keys(obj)) {
+    if (!KNOWN_GITHUB_TRACKER_KEYS.has(key)) {
+      warnings.push(`Unknown key \`issues.trackers[${index}].${key}\` in shipit.yaml.`);
+    }
+  }
+
+  const repoSlug = obj.repo;
+  if (typeof repoSlug !== "string" || !repoSlug.trim()) {
+    return drop("a `github` tracker needs `repo: owner/name`");
+  }
+  const ref = parseOwnerRepo(repoSlug);
+  if (!ref) {
+    return drop(`\`repo: ${repoSlug}\` must be an \`owner/name\` slug`);
+  }
+
+  const rawLabel = obj.label;
+  if (rawLabel !== undefined && (typeof rawLabel !== "string" || !rawLabel.trim())) {
+    warnings.push(
+      `Ignoring \`issues.trackers[${index}].label\`: must be a non-empty string; using the repository name.`,
+    );
+  }
+  const label =
+    typeof rawLabel === "string" && rawLabel.trim() ? rawLabel.trim() : defaultTrackerLabel(ref);
+
+  return { kind: "github", owner: ref.owner, repo: ref.repo, label };
 }
 
 /**
@@ -657,7 +816,7 @@ export function resolveShipitConfig(dir: string): ShipitConfig {
     content = fs.readFileSync(yamlPath, "utf-8");
   } catch {
     // File doesn't exist or can't be read — use defaults
-    config = { agent: { ...AGENT_DEFAULTS, install: [] }, hostMounts: [], warnings: [] };
+    config = { agent: { ...AGENT_DEFAULTS, install: [] }, hostMounts: [], issues: { trackers: [] }, warnings: [] };
   }
 
   if (content !== undefined) {
@@ -672,7 +831,7 @@ export function resolveShipitConfig(dir: string): ShipitConfig {
     }
   } else {
     // Already set above in the catch block, but TypeScript needs this
-    config ??= { agent: { ...AGENT_DEFAULTS, install: [] }, hostMounts: [], warnings: [] };
+    config ??= { agent: { ...AGENT_DEFAULTS, install: [] }, hostMounts: [], issues: { trackers: [] }, warnings: [] };
   }
 
   return config;

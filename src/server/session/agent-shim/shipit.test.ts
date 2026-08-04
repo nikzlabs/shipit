@@ -1684,6 +1684,102 @@ describe("shipit issue", () => {
     expect(out.stdout).toContain("A bug");
   });
 
+  // -- docs/247: --repo names the destination repository -------------------
+
+  it("view routes a qualified pointer to the repository it named", async () => {
+    // The core wrong-target fix: `octocat/hello#42` must reach octocat/hello's
+    // issue 42, not the session repo's issue 42.
+    const { run } = makeRunner();
+    const out = await run(["issue", "view", "octocat/hello#42"], {
+      "GET /agent-ops/issue/view": { status: 200, body: issuePayload },
+    });
+    expect(out.calls[0].path).toContain(`tracker=${encodeURIComponent("github:octocat/hello")}`);
+  });
+
+  it("view --repo qualifies a bare issue number", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "view", "42", "--repo", "acme/planning"], {
+      "GET /agent-ops/issue/view": { status: 200, body: issuePayload },
+    });
+    expect(out.calls[0].path).toContain(`tracker=${encodeURIComponent("github:acme/planning")}`);
+    expect(out.calls[0].path).toContain("id=42");
+  });
+
+  it("list --repo targets a repository the session doesn't own", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "list", "--repo", "acme/planning"], {
+      "GET /agent-ops/issue/list": { status: 200, body: { tracker: { id: "github:acme/planning" }, issues: [] } },
+    });
+    expect(out.calls[0].path).toContain(`tracker=${encodeURIComponent("github:acme/planning")}`);
+  });
+
+  it("list without --repo still means the session's own repo", async () => {
+    // Backward compatibility (req 3 rule 2): no existing command changes
+    // destination, so a bare `--tracker github` stays the bare `github` id.
+    const { run } = makeRunner();
+    const out = await run(["issue", "list", "--tracker", "github"], {
+      "GET /agent-ops/issue/list": { status: 200, body: { tracker: { id: "github" }, issues: [] } },
+    });
+    expect(out.calls[0].path).toMatch(/tracker=github(&|$)/);
+  });
+
+  it("rejects a --repo that isn't an owner/name slug", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "list", "--repo", "planning"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("owner/name");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("rejects --repo combined with --tracker linear", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "list", "--tracker", "linear", "--repo", "acme/planning"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("cannot be combined");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("rejects --repo that contradicts the repository in the pointer", async () => {
+    // Naming two different repositories is a mistake, not a precedence
+    // question — silently preferring either one would be the substitution
+    // requirement 3 forbids.
+    const { run } = makeRunner();
+    const out = await run(["issue", "view", "octocat/hello#42", "--repo", "acme/planning"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("contradicts");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("accepts --repo that agrees with the pointer", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "view", "octocat/hello#42", "--repo", "octocat/hello"], {
+      "GET /agent-ops/issue/view": { status: 200, body: issuePayload },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].path).toContain(`tracker=${encodeURIComponent("github:octocat/hello")}`);
+  });
+
+  it("comment --repo routes the write to the named repository", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["issue", "comment", "42", "--repo", "acme/planning", "--body", "hi"],
+      { "POST /agent-ops/issue/comment": { status: 200, body: { issue: { identifier: "acme/planning#42" } } } },
+    );
+    expect(out.calls[0].body).toMatchObject({ tracker: "github:acme/planning", id: "42" });
+  });
+
+  it("still rejects --priority on a qualified GitHub destination", async () => {
+    // The GitHub feature gaps are properties of the adapter, so they apply
+    // identically to a declared/named repository (SHI-310 covers fixing them
+    // for both destinations at once).
+    const { run } = makeRunner();
+    const out = await run([
+      "issue", "create", "--repo", "acme/planning", "--title", "T", "--body", "B", "--priority", "high",
+    ]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("--priority is not supported on GitHub");
+  });
+
   it("view fails on an unknown pointer without --tracker", async () => {
     const { run } = makeRunner();
     const out = await run(["issue", "view", "just-text"]);

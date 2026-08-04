@@ -23,6 +23,7 @@ import { useMessageScroll } from "./hooks/useMessageScroll.js";
 import { MessageToolElement } from "./MessageToolUse.js";
 import { renderMessageCard } from "./cards/MessageCards.js";
 import { SubAgentSpawnChipRow } from "./cards/SubAgentCards.js";
+import type { TrackerId } from "../../../server/shared/types.js";
 
 function defaultSessionNameFor(value: string): string {
   const cleaned = value.trim().replace(/\s+/g, " ").slice(0, 80);
@@ -73,7 +74,7 @@ export function MessageList({
    * write). Switches the right panel to the Issues tab and loads the issue.
    */
   onOpenIssue?: (ref: {
-    tracker: "linear" | "github";
+    tracker: TrackerId;
     id?: string;
     identifier: string;
     title?: string;
