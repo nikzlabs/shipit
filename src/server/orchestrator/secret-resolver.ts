@@ -12,8 +12,8 @@
  *     UI can surface a "configure secrets" banner.
  *
  * Later phases extend this module to:
- *   - Agent container env file (`.shipit/.env.agent`) for `agent: true`
- *     entries (Phase 3)
+ *   - Agent container env file (`.env.agent`) for `agent: true` entries
+ *     (Phase 3) — written to the session state dir, outside the clone (docs/246)
  *   - Docker secrets-based delivery instead of env files for stronger
  *     isolation (Phase 1 follow-up)
  *
@@ -867,14 +867,6 @@ export function writeAgentEnvFile(opts: {
   const { workspaceDir, body } = opts;
   const targetDir = sessionStateDirForWorkspace(workspaceDir);
   const filePath = path.join(targetDir, AGENT_ENV_FILE);
-
-  // Drop any pre-246 copy left inside the clone, so a session upgrading to the
-  // new placement doesn't keep a stale committable file next to the live one.
-  try {
-    fs.unlinkSync(path.join(workspaceDir, ".shipit", AGENT_ENV_FILE));
-  } catch {
-    // Absent — the normal case after the first pass.
-  }
 
   if (!body) {
     try {

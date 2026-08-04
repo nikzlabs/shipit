@@ -21,9 +21,14 @@ own `.gitignore` hides them here; no user repo has that line (req 2).
 
 `<sessionDir>/state/` — a sibling of `workspace/`, following the exact shape
 docs/217 used for `scratch/` (`/persist`) and docs/138 for the per-session
-credentials subtree (`/credentials`). Mounted into the session container at
-`/session-state` read-write, owned by the worker uid via the entrypoint's chown
-loop.
+credentials subtree (`/credentials`). Its **`shared/` subdirectory only** is
+mounted into the session container at `/session-state` read-write, owned by the
+worker uid via the entrypoint's chown loop. The state dir's root is deliberately
+*not* mounted, which is what keeps the orchestrator-only artifacts (the compose
+override and `.env.agent`) out of the container namespace — see
+`SESSION_STATE_SHARED_SUBDIR`. Mounting the whole dir, which is what the first
+implementation did, put plaintext secrets inside the container while this
+document claimed they weren't there.
 
 Why a mount and not four separate moves: two of the four artifacts must be
 readable *inside* the container — `.install-done` is written there by the worker
@@ -45,61 +50,59 @@ exactly how CI caught it. The path is now a dependency
 `SHIPIT_SESSION_STATE_DIR` then the `/session-state` mount, so tests point it at
 a temp dir and exercise the real mechanism.
 
-### The state dir is never placed inside the clone (containment check)
+### The state dir is never placed inside the clone (structural, not a check)
 
 `sessionStateDir(sessionDir)` is only safe when the clone is a *subdirectory* of
-the session dir. Under the legacy flat layout the two are the same path
-(`ContainerConfig.workspaceDir`: "Falls back to sessionDir for legacy
-sessions"), so the naive form yields `<clone>/state` — a ShipIt directory
-created **inside the user's repository**, which `git add -A` would commit. That
-is strictly worse than the bug this feature fixes: it isn't under `.shipit/`, so
-neither the sweep nor the req-7 guard test would notice it.
+the session dir. Under the pre-`workspace/` flat layout the two were the same
+path, so the naive form yielded `<clone>/state` — a ShipIt directory created
+**inside the user's repository**, which `git add -A` would commit. That is
+strictly worse than the bug this feature fixes: it isn't under `.shipit/`, so the
+req-7 guard test would not notice it.
 
-`resolveContainerStateDir()` therefore performs a containment check and returns
-`null` when the candidate would land inside the clone — the same posture as
-`assertServiceEnvRootOutsideWorkspace` (docs/183). `null` means "no mount"; the
-worker is then told, via `SHIPIT_SESSION_STATE_DIR` in the container env, to keep
-the legacy in-clone location. Without that env the worker would try to create
-`/session-state` at the container's filesystem root and hang, which is the same
-failure CI caught in-process.
+That is why `sessionStateDirForWorkspace()` derives ONLY from the
+`<sessionDir>/workspace` shape and **throws** on anything else (SHI-286). The
+earlier posture — a containment check in `resolveContainerStateDir()` returning
+`null`, with the worker told via `SHIPIT_SESSION_STATE_DIR` to keep the legacy
+in-clone location — is gone: a production census found no flat-layout session, so
+the fallback was dead weight that kept requirement 1 conditional. Because the
+resolved dir is now always a *sibling* of the clone, containment is a property of
+the layout rather than something a check has to enforce.
 
-Two consequences that fall out of it:
+One consequence still worth knowing:
 
-- **The sweep is gated on having a state dir.** For a session with no state dir
-  the in-clone files are still *live*, not leftovers — sweeping them would
-  delete the real install marker on every container create and re-run
-  `agent.install` every boot.
 - **Grandfathered containers degrade safely.** `deploy.sh` stopped killing
   session containers on update (docs/113), so a container adopted across a
   deploy runs the OLD worker against the NEW orchestrator. That worker writes
   the marker in the clone and never sees the host-side pre-stamp, so the
   pre-stamp stops suppressing installs (a redundant install — slow, correct)
-  rather than skipping one that was needed. `claim-session` unlinks both the
-  state-dir and the in-clone marker, so HEAD-change invalidation keeps working
-  either way, and the clone's leftovers get swept when the container is next
-  recreated.
+  rather than skipping one that was needed. `claim-session` clears the state-dir
+  marker, so HEAD-change invalidation keeps working, and the clone's leftovers
+  disappear with the clone itself the next time the session is evicted and
+  re-cloned.
 
-### The state dir is threaded, never derived
+### The state dir is derived from ONE resolver, never from a bare `dirname`
 
-`ServiceManager` holds only `workspaceDir` (`service-manager.ts:245`) and the
-`Session` type has no `sessionDir` (`domain-types/session.ts:99`), so the
-tempting move is `path.dirname(workspaceDir)`. That is wrong: the legacy flat
-layout has `sessionDir === workspaceDir` (`container-lifecycle.ts:229`), where
-`dirname` yields `sessionsRoot` and every session's state collides in one
-directory.
+`ServiceManager` holds only `workspaceDir` and the `Session` type has no
+`sessionDir`, so the tempting move is `path.dirname(workspaceDir)`. That is
+wrong: the legacy flat layout had `sessionDir === workspaceDir`, where `dirname`
+yields `sessionsRoot` and every session's state collides in one directory.
 
-So the resolved state dir is computed once by the caller that knows both paths
-and **threaded as an explicit option**, exactly as docs/183 threaded
-`serviceEnvDir` through `service-manager-setup.ts` → `ServiceManager`. No
-consumer re-derives it from a workspace path.
+The first implementation avoided that by computing the path once in the caller
+that knew both and **threading it as an explicit option** (as docs/183 threaded
+`serviceEnvDir`). SHI-286 replaced the threading with a single shared resolver:
+consumers — `ServiceManager`, the container config, the secret resolver,
+`claim-session` — each call `sessionStateDirForWorkspace(workspaceDir)`, which
+enforces the `<sessionDir>/workspace` contract and throws on anything else. That
+is safe precisely because it is not a bare `dirname`: one function owns the
+derivation, so the host side and the container mount cannot disagree.
 
 ### Per-artifact
 
 | Artifact | New home | Container-visible? | Notes |
 |---|---|---|---|
 | `compose.override.yml` | `<sessionDir>/state/` | no | Orchestrator writes it, orchestrator's `docker compose` reads it. Passed as an **absolute** `-f`. |
-| `.install-done` | `<sessionDir>/state/` | yes (`/session-state`) | Written in-container by the worker; pre-stamped and deleted by the orchestrator. |
-| `ci-logs/` | `<sessionDir>/state/ci-logs/` | yes (`/session-state`) | Prompt must cite the new in-container path. |
+| `.install-done` | `<sessionDir>/state/shared/` | yes (`/session-state`) | Written in-container by the worker; pre-stamped and deleted by the orchestrator. |
+| `ci-logs/` | `<sessionDir>/state/shared/ci-logs/` | yes (`/session-state`) | Prompt must cite the new in-container path. |
 | `.env.agent` | `<sessionDir>/state/` | **no** | Orchestrator-side only — see below. |
 
 **`.env.agent` is not exposed in the container**, which restores what docs/087
@@ -119,11 +122,43 @@ relative to cwd = the clone. The generated override already contains only
 absolute paths (`env_file: /workspace/service-env/<id>/.env.<svc>`, named-volume
 mounts with subpaths), so nothing in it resolves relative to its own location.
 
-### Cleanup of what earlier versions left behind (req 6)
+### Cleanup of what earlier versions left behind (req 6) — done, and retired
 
-On session boot, remove the four generated names from `<clone>/.shipit/`, then
-remove the directory if empty. Working tree only — copies already committed to a
-user's history are left alone and not announced (resolved question, 2026-08-03).
+On session boot (container create), `sweepLegacyCloneArtifacts()` removed the
+generated names from `<clone>/.shipit/` and dropped the directory if the sweep
+emptied it. Working tree only — copies already committed to a user's history
+were left alone and not announced (resolved question, 2026-08-03). Provenance
+came from `git ls-files`, so a repo that legitimately tracked a file of the same
+name kept it.
+
+**That migration has served its purpose and the code for it is gone.** The sweep,
+`LEGACY_CLONE_ARTIFACTS`, the `isTrackedByGit()` helper, and the three pre-246
+unlinks (`claim-session.ts`, `install-controller.ts`, `secret-resolver.ts`) are
+deleted. Requirement 6 is not withdrawn — it was honoured, and the code that
+honoured it was retired once it had nothing left to find:
+
+- **It has already run**, on every container create and every claim / `/install`
+  / `.env.agent` write, for the whole period docs/246 has been deployed. On a
+  single-instance deployment that is past tense, not future.
+- It only ever removed files an **older** ShipIt wrote; current code writes none
+  of them into a clone, which is what `no-clone-writes.test.ts` pins.
+- One production instance, one user — no fleet of older orchestrators to wait for.
+
+**Not a reason: disk-tier eviction.** An earlier draft justified this with
+"eviction re-clones the workspace, so leftovers self-clean." That is false and
+the opposite is closer to true: `reclaimToEvicted` (`tier-escalation.ts:180`)
+auto-commits and pushes a **dirty** tree before wiping it, so an untracked
+leftover is *staged and committed* into the user's branch and then cloned back.
+Recorded here because the claim is plausible enough to be re-derived.
+
+The accepted residual is a session that still holds a leftover: the next turn's
+`git add -A`, or the eviction auto-commit above, can commit it.
+`GitManager.autoCommit`'s secret scanner is a partial backstop for the
+`.env.agent` case only. Accepted by the user, recorded in `checklist.md`.
+
+None of the *placement* work changed: the state dir, the `/session-state` mount,
+the artifact constants and the req-7 guard test are all untouched. If a change
+here starts moving where an artifact is written, it has gone too far.
 
 Note `.shipit/system-prompt.md` is **not** in a clone: every caller passes the
 app-scope `workspaceDir` (`route-registry.ts:238` → `:977`,

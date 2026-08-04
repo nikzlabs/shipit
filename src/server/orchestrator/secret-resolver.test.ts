@@ -482,16 +482,6 @@ describe("writeAgentEnvFile", () => {
     expect(fs.existsSync(path.join(stateOf(dir), ".env.agent"))).toBe(true);
   });
 
-  // docs/246 req 6 — a session upgraded across the move sheds the copy an
-  // earlier ShipIt left inside its clone, so `git add -A` can't stage it.
-  it("sheds a pre-246 in-clone .shipit/.env.agent", () => {
-    const dir = setup();
-    fs.mkdirSync(path.join(dir, ".shipit"), { recursive: true });
-    fs.writeFileSync(path.join(dir, ".shipit", ".env.agent"), "PRE246=1\n");
-    writeAgentEnvFile({ workspaceDir: dir, body: "X=1\n" });
-    expect(fs.existsSync(path.join(dir, ".shipit", ".env.agent"))).toBe(false);
-  });
-
   it("is a no-op when body is empty and file doesn't exist", () => {
     const dir = setup();
     expect(() => writeAgentEnvFile({ workspaceDir: dir, body: "" })).not.toThrow();

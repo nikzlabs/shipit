@@ -1007,12 +1007,9 @@ services:
 
   it("removes the state dir's .env.agent when no agent: true declarations remain", async () => {
     const dir = setup();
-    // Pre-seed an existing .env.agent file from a prior compose definition,
-    // plus a pre-246 copy inside the clone that the writer also sheds.
+    // Pre-seed an existing .env.agent file from a prior compose definition.
     fs.mkdirSync(stateOf(dir), { recursive: true });
     fs.writeFileSync(path.join(stateOf(dir), ".env.agent"), "OLD=1\n");
-    fs.mkdirSync(path.join(dir, ".shipit"), { recursive: true });
-    fs.writeFileSync(path.join(dir, ".shipit/.env.agent"), "PRE246=1\n");
 
     writeCompose(dir, `
 services:
@@ -1035,9 +1032,6 @@ services:
     try { await mgr.start(); } catch { /* expected */ }
 
     expect(fs.existsSync(path.join(stateOf(dir), ".env.agent"))).toBe(false);
-    // docs/246 req 6 — the pre-246 in-clone copy is shed too, so it can't be
-    // staged by the next `git add -A`.
-    expect(fs.existsSync(path.join(dir, ".shipit/.env.agent"))).toBe(false);
   });
 
   // ---- Phase 1 follow-up: Docker-secrets mode ----

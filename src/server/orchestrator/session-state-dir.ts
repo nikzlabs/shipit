@@ -28,15 +28,7 @@
  * carve-outs — a `.shipit/` inside a session clone is a bug.
  */
 
-import fs from "node:fs";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
-import {
-  COMPOSE_OVERRIDE_FILE,
-  INSTALL_MARKER_FILE,
-  CI_LOGS_SUBDIR,
-  AGENT_ENV_FILE,
-} from "../shared/fs-constants.js";
 
 /** Directory name of the per-session state dir (sibling of `workspace/`). */
 export const SESSION_STATE_SUBDIR = "state";
@@ -116,99 +108,4 @@ export const SESSION_STATE_SHARED_SUBDIR = "shared";
 /** Host path of the container-visible slice of a session's state dir. */
 export function sessionSharedStateDir(stateDir: string): string {
   return path.join(stateDir, SESSION_STATE_SHARED_SUBDIR);
-}
-
-/**
- * The generated names earlier ShipIt versions wrote into `<clone>/.shipit/`.
- * Used by {@link sweepLegacyCloneArtifacts} — NOT a list of current write
- * targets.
- */
-export const LEGACY_CLONE_ARTIFACTS: readonly string[] = [
-  COMPOSE_OVERRIDE_FILE,
-  INSTALL_MARKER_FILE,
-  CI_LOGS_SUBDIR,
-  AGENT_ENV_FILE,
-  // SHI-285 — Docker-secrets mode used to copy its entrypoint wrapper here so
-  // the compose override could mount it through the workspace volume; it is
-  // staged in the secrets root now. Deliberately a literal, not the constant
-  // the staging code uses: this is the name OLD versions wrote, and renaming
-  // the current file must not silently change what the sweep removes.
-  "secrets-entrypoint.sh",
-];
-
-/**
- * Remove ShipIt's generated artifacts from a clone's `.shipit/` (docs/246 req 6)
- * and drop the directory when nothing else is left in it.
- *
- * Working tree only. Copies a user already committed are deliberately left
- * alone and not announced — ShipIt cannot rewrite someone's history, and the
- * files are inert once it stops writing them (resolved question, 2026-08-03).
- *
- * Only the names in {@link LEGACY_CLONE_ARTIFACTS} are removed, never the
- * directory wholesale: a user is free to keep their own files under `.shipit/`,
- * and an `rm -rf` of a directory in someone's repo is not a cleanup we get to
- * do on their behalf.
- *
- * **Tracked paths are never swept.** Matching on filename alone is not proof of
- * provenance — a repository may legitimately commit a `.shipit/ci-logs/` or a
- * `.shipit/compose.override.yml` of its own. Deleting one would be silent (the
- * next auto-commit records the deletion) and unrecoverable from the user's point
- * of view. `git ls-files` is the provenance check: anything git tracks belongs
- * to the user, whatever it is called. ShipIt's own leftovers are untracked in
- * every repo that didn't commit them, which is the case this sweep exists for.
- *
- * Best-effort throughout — a sweep failure must never block session boot.
- *
- * Returns the names actually removed (for logging/tests).
- */
-/**
- * Does git track anything at `relPath` (a file, or any path under it)? Errors —
- * not a repo, no git binary, no HEAD — answer "unknown", and we treat unknown as
- * TRACKED: refusing to delete is always recoverable, deleting is not.
- */
-function isTrackedByGit(workspaceDir: string, relPath: string): boolean {
-  try {
-    const out = execFileSync("git", ["ls-files", "--error-unmatch", "--", relPath], {
-      cwd: workspaceDir,
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    return out.trim().length > 0;
-  } catch (err) {
-    // Exit 1 with no match is the common, expected case: untracked → sweepable.
-    if ((err as { status?: number }).status === 1) return false;
-    return true; // anything else is unknown → keep the file
-  }
-}
-
-export function sweepLegacyCloneArtifacts(workspaceDir: string): string[] {
-  const shipitDir = path.join(workspaceDir, ".shipit");
-  const removed: string[] = [];
-
-  for (const name of LEGACY_CLONE_ARTIFACTS) {
-    const target = path.join(shipitDir, name);
-    try {
-      if (!fs.existsSync(target)) continue;
-      if (isTrackedByGit(workspaceDir, `.shipit/${name}`)) {
-        console.warn(
-          `[session-state] not sweeping tracked path .shipit/${name} — it belongs to the repo, not ShipIt`,
-        );
-        continue;
-      }
-      fs.rmSync(target, { recursive: true, force: true });
-      removed.push(name);
-    } catch (err) {
-      console.warn(`[session-state] failed to sweep ${target}:`, err);
-    }
-  }
-
-  // Drop `.shipit/` itself only when our sweep emptied it — `rmdir` fails on a
-  // non-empty dir, which is exactly the guard we want for a user's own files.
-  try {
-    if (removed.length > 0) fs.rmdirSync(shipitDir);
-  } catch {
-    // Non-empty (user files remain) or already gone — both fine.
-  }
-
-  return removed;
 }

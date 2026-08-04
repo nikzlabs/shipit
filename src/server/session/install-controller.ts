@@ -118,14 +118,6 @@ export class InstallController {
       // yet flipped `_installRunning` still short-circuits cleanly.
       const markerDir = this.stateDir;
       const markerFile = path.join(markerDir, INSTALL_MARKER_FILE);
-      // docs/246 — a pre-246 marker in the clone is both stale and committable.
-      // Drop it whenever we evaluate the gate so an upgrading session sheds it
-      // on its first `/install`, whatever the outcome of the match below.
-      try {
-        fs.unlinkSync(path.join(this.workspaceDir, ".shipit", INSTALL_MARKER_FILE));
-      } catch {
-        // Absent — the normal case.
-      }
       const stamp: InstallMarkerStamp = {
         sourceCommit: await this.readSourceCommit(),
         runtimeKey: runtimeKey(),
@@ -138,8 +130,9 @@ export class InstallController {
       };
       if (await this.installMarkerMatches(markerFile, stamp)) {
         // docs/183 — a matching marker is only trustworthy if every declared dep
-        // dir actually holds content. The marker lives in the host clone; the
-        // deps live in the dep dir (an overlay mount when OVERLAY_DEP_STORE is on,
+        // dir actually holds content. The marker lives in the session state dir
+        // (docs/246, outside the clone); the deps live in the dep dir *inside*
+        // the clone (an overlay mount when OVERLAY_DEP_STORE is on,
         // a plain dir in the clone otherwise), and the two can disagree:
         //   • Flag newly ON: a container recreated with the flag enabled mounts an
         //     EMPTY overlay over previously-installed deps — skipping would leave
@@ -429,7 +422,9 @@ export class InstallController {
   }
 
   /**
-   * Write the stamped `.shipit/.install-done` marker (docs/183 Phase 3). The
+   * Write the stamped `.install-done` marker (docs/183 Phase 3) into the
+   * container-visible slice of the session state dir — docs/246 moved it out of
+   * `<clone>/.shipit/`, where `git add -A` could commit it. The
    * stamp records the source commit + runtime fingerprint + install commands
    * the install ran against, so a later `/install` skips only on an exact match.
    */

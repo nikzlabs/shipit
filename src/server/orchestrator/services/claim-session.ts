@@ -243,12 +243,9 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
     const headAfter = await sessionGit.getHeadHash();
     const headChanged = headBefore !== headAfter;
     if (headChanged) {
-      // docs/246 — the marker now lives in the session state dir, outside the
-      // clone. The in-clone path is still cleared so a session upgrading across
-      // this change doesn't keep a stale (and committable) copy.
+      // docs/246 — the marker lives in the session state dir, outside the clone.
       const stateDir = sessionStateDirForWorkspace(sessionDir);
       try { unlinkSync(path.join(sessionSharedStateDir(stateDir), INSTALL_MARKER_FILE)); } catch { /* marker may not exist */ }
-      try { unlinkSync(path.join(sessionDir, ".shipit", INSTALL_MARKER_FILE)); } catch { /* marker may not exist */ }
     }
     return { headChanged, fetched, fetchDurationMs };
   }
