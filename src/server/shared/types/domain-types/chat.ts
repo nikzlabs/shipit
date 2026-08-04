@@ -60,6 +60,21 @@ export interface SubAgentConsultCard {
    * which drives the verb ("Consulted" / "Cancelled" / …).
    */
   status: "pending" | "success" | "error" | "timeout" | "cancelled";
+  /**
+   * SHI-307 — a SHIPIT-authored one-line explanation of a terminal status, for
+   * the cases where the status alone is misleading. Currently set only by the
+   * boot reconcile, which cancels consults stranded `pending` by an orchestrator
+   * restart: without it "Cancelled Codex" is indistinguishable from a consult
+   * the user cancelled.
+   *
+   * Deliberately NOT `outputMarkdown`. That field is the sub-agent's verbatim
+   * words — it is what `shipit agent result` prints on stdout and what SHI-245
+   * guarantees is the same artifact the user reads — so putting ShipIt's own
+   * prose there would hand a caller our apology in the consultant's voice. This
+   * field renders as ShipIt's commentary on both surfaces (the card face, and
+   * the shim's stderr).
+   */
+  statusDetail?: string;
   durationMs?: number;
   costUsd?: number;
   /** True when the sub-agent's output hit the wall-clock or character cap. */

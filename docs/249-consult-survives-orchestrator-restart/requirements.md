@@ -49,29 +49,35 @@ sub-agents inside them.
    caller gets `3` and stops. Anyone polling `shipit agent result` in a loop
    must be able to rely on that loop now terminating.
 
+8. The consult's status must read as `cancelled` rather than as an error: the
+   sub-agent did not fail, ShipIt cut the run short.
+
 ## Non-requirements
 
+- **Recovering the sub-agent's output.** The work is lost and the caller re-runs
+  the consult. See the resolved question below.
 - Preventing orchestrator restarts, or draining in-flight consults before one.
   The restart is a given.
 - Anything about the primary agent turn, which docs/240 already covers.
 
 ## Open questions
 
-- **Must the sub-agent's output be recovered, or is an honest terminal card
-  enough?** SHI-307 lists "the sub-agent's actual output is lost even though the
-  work was done" as one of four harms, and lists a recovery mechanism as one of
-  two undecided directions — it does not say which outcome is wanted. These are
-  different products at different prices: an honest card is a boot-time
-  reconcile over persisted cards; recovering the output means the worker
-  retains a record of the run and the orchestrator re-reads it after restart,
-  and still needs the honest-card path as its fallback for the cases where
-  recovery is impossible (container gone, worker restarted too).
-
-- **When the output is not recovered, what should the card say it was?** The
-  issue offers `error` or `cancelled` without choosing. The two differ in what
-  the user reads on the card face ("Cancelled asking Codex" vs an error) and in
-  whether it looks like something went wrong with Codex.
+_(none)_
 
 ## Resolved questions
 
-_(none yet)_
+- **2026-08-04 — Must the sub-agent's output be recovered, or is an honest
+  terminal card enough?** Asked with two options: an honest card only (a boot
+  reconcile over persisted cards), or additionally recovering the output (a
+  durable worker-side record plus a re-attach path, which still needs the
+  honest-card path underneath it for when the container died too). Answer:
+  **honest card only.** Recorded as the non-requirement above; requirements 1–7
+  are unchanged by it.
+
+- **2026-08-04 — When the output is not recovered, what should the card say it
+  was, `error` or `cancelled`?** Answered as part of the same choice:
+  **`cancelled`**, on the grounds that nothing went wrong with the sub-agent and
+  an error-shaped card sends the reader hunting for a fault that isn't there.
+  Added as requirement 8. This is what makes requirement 5 load-bearing rather
+  than decorative — `cancelled` alone is indistinguishable from a consult the
+  user cancelled, so the card has to carry the reason.

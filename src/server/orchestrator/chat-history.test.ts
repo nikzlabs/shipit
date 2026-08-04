@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { DatabaseManager } from "../shared/database.js";
 import { ChatHistoryManager, type PersistedMessage } from "./chat-history.js";
+import type { SubAgentConsultCard } from "../shared/types.js";
 import { CARD_MESSAGE_FIELDS } from "../../client/components/visual-elements.js";
 
 /**
@@ -481,6 +482,87 @@ describe("ChatHistoryManager", () => {
       mgr.append("sess-1", pending("spawn-a"));
       expect(mgr.updateSubAgentConsultCard("sess-2", "card-spawn-a", { status: "error" })).toBe(false);
       expect(mgr.listSubAgentConsultCards("sess-1")[0].status).toBe("pending");
+    });
+
+    // SHI-307 — the boot reconcile's write. `finalize` clears in_progress so the
+    // reconciled card cannot be deleted by a docs/240-adopted turn's
+    // `replaceInProgress`, which drops every in_progress=1 row in the session.
+    it("finalize clears in_progress, so an adopted turn's replaceInProgress can't delete the card", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      // The foreground-consult shape: the card is still inside its own turn's
+      // in-progress row set when the orchestrator dies.
+      mgr.replaceInProgress("sess-1", [
+        { role: "assistant", text: "consulting codex", inProgress: true },
+        { ...pending("spawn-a"), inProgress: true },
+      ]);
+
+      expect(mgr.updateSubAgentConsultCard(
+        "sess-1",
+        "card-spawn-a",
+        { status: "cancelled", statusDetail: "ShipIt restarted" },
+        { finalize: true },
+      )).toBe(true);
+
+      // The adopted turn now rebuilds its own rows, wiping every in-progress row.
+      mgr.replaceInProgress("sess-1", [{ role: "assistant", text: "the adopted turn", inProgress: true }]);
+
+      const cards = new ChatHistoryManager(dbManager).listSubAgentConsultCards("sess-1");
+      expect(cards).toHaveLength(1);
+      expect(cards[0]).toMatchObject({ status: "cancelled", statusDetail: "ShipIt restarted" });
+    });
+
+    it("without finalize, an in-progress card is still deleted by the next replaceInProgress", () => {
+      // Pins the reason `finalize` exists — remove it and this is what happens.
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.replaceInProgress("sess-1", [{ ...pending("spawn-a"), inProgress: true }]);
+      expect(mgr.updateSubAgentConsultCard("sess-1", "card-spawn-a", { status: "cancelled" })).toBe(true);
+      mgr.replaceInProgress("sess-1", [{ role: "assistant", text: "the adopted turn", inProgress: true }]);
+      expect(mgr.listSubAgentConsultCards("sess-1")).toEqual([]);
+    });
+  });
+
+  describe("listPendingSubAgentConsultCards (SHI-307)", () => {
+    const consultWith = (spawnId: string, status: SubAgentConsultCard["status"]): PersistedMessage => ({
+      role: "assistant",
+      text: "",
+      subAgentConsult: {
+        cardId: `card-${spawnId}`,
+        spawnId,
+        subAgentId: "codex",
+        status,
+        createdAt: "2026-08-04T00:00:00.000Z",
+      },
+    });
+
+    it("returns every pending card across ALL sessions, with its owning session", () => {
+      // The boot sweep does not know which sessions were running when the
+      // previous orchestrator died — that is why this read is not per-session.
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", consultWith("spawn-a", "pending"));
+      mgr.append("sess-1", consultWith("spawn-b", "success"));
+      mgr.append("sess-2", consultWith("spawn-c", "pending"));
+      mgr.append("sess-2", consultWith("spawn-d", "cancelled"));
+      mgr.append("sess-3", { role: "assistant", text: "no consults here" });
+
+      const pendingCards = new ChatHistoryManager(dbManager).listPendingSubAgentConsultCards();
+      expect(pendingCards.map((p) => [p.sessionId, p.card.spawnId])).toEqual([
+        ["sess-1", "spawn-a"],
+        ["sess-2", "spawn-c"],
+      ]);
+    });
+
+    it("includes a card still inside its own in-progress turn", () => {
+      // The foreground-consult strand: the card never reached in_progress=0
+      // because the turn holding it never finalized.
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.replaceInProgress("sess-1", [{ ...consultWith("spawn-a", "pending"), inProgress: true }]);
+      expect(mgr.listPendingSubAgentConsultCards()).toHaveLength(1);
+    });
+
+    it("is empty when nothing is pending", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", consultWith("spawn-a", "success"));
+      expect(mgr.listPendingSubAgentConsultCards()).toEqual([]);
     });
   });
 

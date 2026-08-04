@@ -133,25 +133,33 @@ observing durable state, so there is nothing to lose by being interrupted.
 - `src/server/orchestrator/chat-history.ts` — narrowed consult-card query
 - `src/server/shipit-docs/agent.md` — agent-facing docs (req 10)
 
-## Known limitation: a run stranded by an orchestrator restart
+## A run stranded by an orchestrator restart — resolved in docs/249
 
 The wait is restart-safe in the sense that matters to *it* — no in-memory wait
-state exists to lose, so any fresh request recomputes the outcome. But the run
-it is waiting on is not equally durable, and this is worth stating precisely
-rather than letting the sentence above imply more than it earns.
+state exists to lose, so any fresh request recomputes the outcome. The run it is
+waiting on was **not** equally durable, which used to make that sentence claim
+more than it earned.
 
-`runSubAgent` (`services/sub-agent.ts:343`) is the **only** writer of the card's
+`runSubAgent` (`services/sub-agent.ts`) is the **only** writer of the card's
 `pending` → terminal patch, and it performs it when the worker's synchronous
 HTTP response returns. The worker keeps no durable record of completion, and
-nothing reconciles consult cards at boot. So if the orchestrator is destroyed
-mid-run, the card stays `pending` forever: the UI shows a permanently in-flight
-consult, and `--wait` correctly reports "still running" until its timeout, again
-and again.
+nothing reconciled consult cards at boot. So if the orchestrator was destroyed
+mid-run, the card stayed `pending` forever: the UI showed a permanently
+in-flight consult, and `--wait` correctly reported "still running" until its
+timeout, again and again.
 
-This is pre-existing (docs/236 / SHI-278), not introduced here — `--wait` only
-makes it easier to notice, because a caller now sits on the symptom instead of
-reading a card. Tracked as SHI-307; the fix belongs with the card lifecycle, not
-with the wait.
+**Fixed by [docs/249](../249-consult-survives-orchestrator-restart/plan.md)
+(SHI-307).** A boot sweep marks every card left `pending` by a dead process
+`cancelled`, carrying a `statusDetail` that says a restart lost the result. For
+a waiting caller that is a deliberate change of observed behavior: the poll that
+used to answer `4` ("still running") forever now answers `3` ("the run failed"),
+so a retry loop terminates. What is *not* recovered is the sub-agent's output —
+that was scoped out on purpose (docs/249 requirements); re-running the consult is
+the answer.
+
+The limitation was pre-existing (docs/236 / SHI-278), not introduced here —
+`--wait` only made it easier to notice, because a caller sits on the symptom
+instead of glancing at a card.
 
 ## Follow-up, deliberately not built
 

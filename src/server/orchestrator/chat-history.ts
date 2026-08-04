@@ -460,6 +460,7 @@ export class ChatHistoryManager {
   private stmtUpdate;
   private stmtLoadAll;
   private stmtLoadSubAgentCards;
+  private stmtLoadAllPendingSubAgentCards;
   private stmtLoadLast;
   private stmtDeleteBySession;
   private stmtDeleteInProgress;
@@ -479,6 +480,13 @@ export class ChatHistoryManager {
     // transition on that path.
     this.stmtLoadSubAgentCards = this.db.prepare(
       "SELECT sub_agent_consult FROM messages WHERE session_id = ? AND sub_agent_consult IS NOT NULL ORDER BY id",
+    );
+    // SHI-307 — the boot reconcile's cross-session read. No `in_progress`
+    // filter, for the same reason as the per-session query above: a consult
+    // stranded inside its own turn is `in_progress=1`, and it is precisely the
+    // case that needs reconciling.
+    this.stmtLoadAllPendingSubAgentCards = this.db.prepare(
+      "SELECT session_id, sub_agent_consult FROM messages WHERE sub_agent_consult IS NOT NULL ORDER BY id",
     );
     // Filters in_progress=0 because `updateLastMessage` (the only caller) is
     // invoked from post-turn auto-commit to write `commit_hash` /
@@ -793,6 +801,35 @@ export class ChatHistoryManager {
   }
 
   /**
+   * SHI-307 — every `pending` consult card in the DB, across all sessions, with
+   * the session that owns it. Backs the boot reconcile (`consult-card-reconcile.ts`),
+   * which is a whole-database question rather than a per-session one: a restart
+   * strands consults in whichever sessions happened to be running, and the
+   * orchestrator does not know which those were.
+   *
+   * Whole-column scan rather than a `json_extract` predicate: this runs exactly
+   * once per process, over the few rows that carry a consult at all, so the
+   * simpler query is the right trade. Rows whose JSON is unreadable are skipped
+   * — a corrupt card is not worth failing the boot sweep over.
+   */
+  listPendingSubAgentConsultCards(): { sessionId: string; card: SubAgentConsultCard }[] {
+    const rows = this.stmtLoadAllPendingSubAgentCards.all() as {
+      session_id: string;
+      sub_agent_consult: string;
+    }[];
+    const out: { sessionId: string; card: SubAgentConsultCard }[] = [];
+    for (const row of rows) {
+      try {
+        const card = JSON.parse(row.sub_agent_consult) as SubAgentConsultCard;
+        if (card.status === "pending") out.push({ sessionId: row.session_id, card });
+      } catch {
+        // Unreadable card JSON — skip it rather than aborting the sweep.
+      }
+    }
+    return out;
+  }
+
+  /**
    * SHI-278 — patch a persisted sub-agent consult card in place, keyed by
    * `cardId`. The card is created `pending` at spawn time and patched to its
    * terminal status when the run finishes; because docs/236 tells agents to
@@ -802,11 +839,22 @@ export class ChatHistoryManager {
    * originating turn is still in flight and still holds the card in
    * `recordedCards`, that helper patches the recorded copy instead so the turn's
    * own finalize can't clobber the transition. Returns true if a card matched.
+   *
+   * `opts.finalize` additionally clears the row's `in_progress` flag. Only the
+   * SHI-307 boot reconcile passes it, and it needs it: a consult spawned by a
+   * FOREGROUND `shipit agent run` is still inside its originating turn when the
+   * orchestrator dies, so its row is `in_progress=1`. docs/240 then adopts that
+   * turn in the new process, and the adopted turn's `agent_result` calls
+   * `replaceInProgress`, which deletes every `in_progress=1` row in the session
+   * and rebuilds from the fresh runner's (empty) `recordedCards` — taking the
+   * card with it. A patch alone would be undone by a delete; finalizing the row
+   * is what makes the reconciled card outlive the adoption.
    */
   updateSubAgentConsultCard(
     sessionId: string,
     cardId: string,
     patch: Partial<SubAgentConsultCard>,
+    opts?: { finalize?: boolean },
   ): boolean {
     return this.db.transaction(() => {
       const rows = this.stmtLoadAll.all(sessionId) as MessageRow[];
@@ -816,6 +864,7 @@ export class ChatHistoryManager {
         if (card.cardId !== cardId) continue;
         const msg = this.fromRow(row);
         msg.subAgentConsult = { ...card, ...patch };
+        if (opts?.finalize) msg.inProgress = false;
         this.stmtUpdate.run({ ...this.toRow(sessionId, msg), id: row.id });
         return true;
       }

@@ -444,6 +444,12 @@ export async function handleAgentResult(args: string[], deps: RunDeps): Promise<
   }
 
   deps.io.stderr(`shipit agent result: run ${spawnId} · ${subAgentId} · ${status}\n`);
+  // SHI-307 — ShipIt's own explanation of a terminal status, when the status
+  // alone would mislead (a consult cancelled by an orchestrator restart reads
+  // exactly like one the user cancelled). On stderr, never stdout: stdout is the
+  // sub-agent's verbatim output and must stay in the consultant's voice.
+  const statusDetail = asString(lookup.body.statusDetail);
+  if (statusDetail) deps.io.stderr(`shipit agent result: ${statusDetail}\n`);
   if (lookup.lastTransportError) {
     deps.io.stderr(`shipit agent result: transport retried (${lookup.lastTransportError})\n`);
   }
