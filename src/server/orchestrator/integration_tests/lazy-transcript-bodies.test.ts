@@ -38,13 +38,14 @@ import { COMMAND_SUMMARY_CHARS } from "../../shared/transcript-input-policy.js";
 const HEAVY_OUTPUT = Array.from({ length: 40_000 }, (_, i) => `stdout line ${i}`).join("\n");
 const FILE_BODY = Array.from({ length: 2_000 }, (_, i) => `const x${i} = ${i};`).join("\n");
 const SCREENSHOT = Buffer.from("x".repeat(200_000)).toString("base64");
-// Distinct from HEAVY_OUTPUT on purpose: the Task result is the exempt subagent
-// report and MUST still ship whole, so the assertions below can only tell the
-// two cases apart if their bodies differ.
+// Distinct from HEAVY_OUTPUT on purpose: the Task result is the subagent report,
+// which ships its clamped HEAD (docs/109 req 8) where an ordinary result ships
+// nothing at all — so the assertions below can only tell the two cases apart if
+// their bodies differ.
 const SUBAGENT_REPORT = Array.from({ length: 5_000 }, (_, i) => `finding ${i}`).join("\n");
 // A cross-agent consult's verbatim output (SHI-297). Deliberately distinct from
-// SUBAGENT_REPORT above, which is EXEMPT and must still ship whole in the same
-// payload — so an "is it on the wire?" assertion can tell the two apart.
+// SUBAGENT_REPORT above, whose head still ships in the same payload — so an
+// "is it on the wire?" assertion can tell the two apart.
 const CONSULT_OUTPUT = Array.from({ length: 5_000 }, (_, i) => `review note ${i}`).join("\n");
 // SHI-296 — the input side. A heredoc command and a subagent prompt are both
 // routinely kilobytes, and the transcript draws 80 characters of the first and
@@ -146,8 +147,6 @@ describe("Integration: lazy transcript bodies (SHI-267)", () => {
     const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
     const served = res.rawPayload.length;
 
-    // The Task result is exempt (its final report renders whole), so it
-    // dominates the served size; everything else is bounded by the slice.
     expect(served).toBeLessThan(stored / 2);
 
     // None of the three heavy bodies appears in the payload at all. The Bash
@@ -162,9 +161,12 @@ describe("Integration: lazy transcript bodies (SHI-267)", () => {
     // subagent's prompt are behind clicks too.
     expect(body).not.toContain("body line 799");
     expect(body).not.toContain("instruction 399");
-    // ...while the exempt subagent report still ships whole, since the
-    // transcript renders it inline with no expand affordance.
-    expect(body).toContain("finding 4999");
+    // docs/109 req 8 — the subagent report used to be the one exception here,
+    // shipping whole because the card rendered it with nothing to click. It
+    // now clamps behind a modal, so its tail is behind a click like everything
+    // else — while the head the card actually draws still ships.
+    expect(body).not.toContain("finding 4999");
+    expect(body).toContain("finding 0");
   });
 
   it("ships no body at all for a modal-only result, keeping only its metadata", async () => {
@@ -179,11 +181,31 @@ describe("Integration: lazy transcript bodies (SHI-267)", () => {
     expect(bash.totalLines).toBe(40_000);
   });
 
-  it("never slices the subagent final report", async () => {
+  /**
+   * docs/109 req 8. The counterpart to the Bash case above, and the reason the
+   * report is not simply emptied like one: the card draws the clamped head with
+   * no click, so the head has to ship. Only the tail moved behind the modal's
+   * fetch.
+   */
+  it("serves the clamped head of the subagent final report, not the whole thing", async () => {
     const { messages } = await loadHistory();
     const task = messages[1]!.toolResults!.find((r) => r.toolUseId === "task-1")!;
-    expect(task.truncated).toBeUndefined();
-    expect(task.content).toBe(SUBAGENT_REPORT);
+
+    expect(task.truncated).toBe(true);
+    expect(task.totalLines).toBe(5_000);
+    expect(task.content).not.toBe("");
+    expect(SUBAGENT_REPORT.startsWith(task.content)).toBe(true);
+    expect(task.content.length).toBeLessThan(SUBAGENT_REPORT.length / 100);
+  });
+
+  it("serves the whole report from the fetch endpoint the modal opens", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/sessions/${sessionId}/tool-results/task-1`,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect((res.json() as { content: string }).content).toBe(SUBAGENT_REPORT);
   });
 
   it("strips the Write body but keeps the +N -M the diff summary draws", async () => {
@@ -456,9 +478,13 @@ describe("Integration: lazy transcript bodies (SHI-267)", () => {
     expect(card.outputTruncated).toBe(true);
     expect(card.outputMarkdown!.length).toBeLessThan(200);
     expect(res.rawPayload.toString("utf8")).not.toContain("review note 4999");
-    // …while the exempt subagent final report in the same payload still ships
-    // whole, so this asserts a distinction rather than an empty transcript.
-    expect(res.rawPayload.toString("utf8")).toContain("finding 4999");
+    // …while the subagent final report in the same payload still ships the head
+    // its card draws, so this asserts a distinction rather than an empty
+    // transcript. (Its tail is behind a click too since docs/109 req 8; what
+    // separates the two is that the consult card draws one collapsed LINE while
+    // the report card draws a clamped block.)
+    expect(res.rawPayload.toString("utf8")).toContain("finding 0");
+    expect(res.rawPayload.toString("utf8")).not.toContain("review note 0\nreview note 1");
     // The summary line ("Consulted Codex · 900s") is drawn without a click, so
     // its inputs stay on the wire.
     expect(card.status).toBe("success");

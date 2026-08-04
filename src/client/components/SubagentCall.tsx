@@ -18,16 +18,17 @@
  */
 
 import { useState } from "react";
-import { CaretRightIcon, RobotIcon, CheckCircleIcon, WarningCircleIcon } from "@phosphor-icons/react";
+import { CaretRightIcon, RobotIcon, CheckCircleIcon, WarningCircleIcon, ClockIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { ToolUseItem } from "./message-tools.js";
-import { MarkdownContent } from "./message-markdown.js";
+import { SubagentReport } from "./SubagentReport.js";
 import { ToolSpinner } from "./StreamingIndicator.js";
 import { useLazyToolInput } from "../hooks/useLazyToolInput.js";
 import {
   groupEventsByParent,
   findSubagentFinalReport,
   parseSubagentReport,
+  isBackgroundLaunchAck,
   type SubagentStep,
 } from "../utils/group-events-by-parent.js";
 import type { ToolUseBlock, ToolResultBlock, SubagentEvent } from "./MessageList.js";
@@ -54,7 +55,12 @@ export function SubagentCall({ tool, subagentEvents, parentToolResults, isStream
   const tree = grouped.get(tool.id);
   const steps: SubagentStep[] = tree?.steps ?? [];
   const finalReport = findSubagentFinalReport(tool.id, parentToolResults);
-  const report = finalReport ? parseSubagentReport(finalReport.content) : null;
+  // req 1/2 — a `run_in_background` Task's "result" is the CLI's launch
+  // acknowledgement, so the subagent has NOT finished. The badge has to know,
+  // because a result block arriving is otherwise the whole definition of done.
+  const backgrounded = !!finalReport
+    && !finalReport.isError
+    && isBackgroundLaunchAck(parseSubagentReport(finalReport.content).text);
 
   const [promptExpanded, setPromptExpanded] = useState(false);
   // docs/244 — the prompt may have been dropped on the serve path, leaving only
@@ -89,7 +95,12 @@ export function SubagentCall({ tool, subagentEvents, parentToolResults, isStream
           {subagentType ? `Subagent (${subagentType})` : "Subagent"}:
         </span>
         <span className="text-(--color-text-primary)">{description}</span>
-        <StatusBadge inProgress={inProgress} isError={isError} hasReport={!!finalReport} />
+        <StatusBadge
+          inProgress={inProgress}
+          isError={isError}
+          hasReport={!!finalReport}
+          backgrounded={backgrounded}
+        />
       </div>
 
       {/* Prompt — collapsed by default */}
@@ -135,34 +146,9 @@ export function SubagentCall({ tool, subagentEvents, parentToolResults, isStream
         </Disclosure>
       )}
 
-      {/* Final report — always visible once present. Renders as markdown.
-          The CLI wraps it in a JSON block array whenever it appends its own
-          accounting footer, which is most of the time, so parse before
-          rendering (SHI-287) — otherwise the user reads escaped JSON. */}
-      {report && (
-        <div data-testid="subagent-final-report" className="mt-1">
-          <div className="text-xs text-(--color-text-tertiary) mb-1 uppercase tracking-wide">
-            {isError ? "Subagent error" : "Final report"}
-          </div>
-          <div
-            className={
-              isError
-                ? "text-sm text-(--color-error) bg-(--color-error-subtle) border border-(--color-error)/40 rounded p-2"
-                : "text-sm text-(--color-text-primary)"
-            }
-          >
-            <MarkdownContent text={report.text} />
-          </div>
-          {report.meta && (
-            <div
-              data-testid="subagent-report-meta"
-              className="mt-1 text-xs text-(--color-text-tertiary) font-mono whitespace-pre-wrap leading-5"
-            >
-              {report.meta}
-            </div>
-          )}
-        </div>
-      )}
+      {/* Final report — panel, chips, clamp and modal all live in
+          `SubagentReport` (docs/109 reqs 1–9). */}
+      {finalReport && <SubagentReport result={finalReport} />}
     </div>
   );
 }
@@ -200,16 +186,29 @@ function Disclosure({
   );
 }
 
-/** Status indicator on the header — spinner / check / error. */
+/** Status indicator on the header — spinner / check / error / background. */
 function StatusBadge({
   inProgress,
   isError,
   hasReport,
+  backgrounded,
 }: {
   inProgress: boolean;
   isError: boolean;
   hasReport: boolean;
+  backgrounded: boolean;
 }) {
+  // req 2 — checked before `hasReport`, which is otherwise true here: the
+  // acknowledgement arrives as an ordinary tool result and used to stamp the
+  // card `done` while the subagent was still working.
+  if (backgrounded) {
+    return (
+      <span data-testid="subagent-background" className="ml-auto flex items-center gap-1 text-xs text-(--color-warning)">
+        <ClockIcon size={ICON_SIZE.XS} weight="fill" />
+        <span>in background</span>
+      </span>
+    );
+  }
   if (inProgress) {
     return (
       <span data-testid="subagent-running" className="ml-auto flex items-center gap-1 text-xs text-(--color-text-tertiary)">

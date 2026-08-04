@@ -139,9 +139,20 @@ describe("rendersResultContentInline matches what the transcript actually reads"
  * larger payload beats destroying text.
  */
 describe("shipsResultBodyWhole is the no-recovery set", () => {
-  it("covers the subagent report tools — SubagentCall renders them with nothing to click", () => {
+  /**
+   * docs/109 req 7/8 — the report tools were the other member and left when the
+   * card grew a *Show the full report* modal. Membership is "cutting it destroys
+   * text with no way back", and the modal IS the way back: the report is clamped
+   * by `sliceSubagentReport` and the rest fetched from
+   * `/tool-results/:toolUseId`. If that modal is ever removed, this is where the
+   * report has to come back.
+   */
+  it("excludes the subagent report tools, which now have a modal to recover from", () => {
     for (const name of SUBAGENT_REPORT_TOOL_NAMES) {
-      expect(shipsResultBodyWhole(name)).toBe(true);
+      expect(shipsResultBodyWhole(name)).toBe(false);
+      // Still drawn without a click — the clamped head — so the body may be
+      // bounded but must not be emptied the way a modal-only result is.
+      expect(rendersResultContentInline(name)).toBe(true);
     }
   });
 

@@ -2,7 +2,7 @@ import type { WsAgentEvent, AgentContentBlock } from "../../../server/shared/typ
 import type { ChatMessage, ToolResultBlock } from "../../components/MessageList.js";
 import { activityFromTool } from "../../components/StreamingIndicator.js";
 import { CARD_MESSAGE_FIELDS } from "../../components/visual-elements.js";
-import { shipsResultBodyWhole } from "../../../server/shared/transcript-slice-tools.js";
+import { shipsResultBodyWhole, SUBAGENT_REPORT_TOOL_NAMES } from "../../../server/shared/transcript-slice-tools.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import type { Handler } from "./types.js";
@@ -11,8 +11,8 @@ import type { Handler } from "./types.js";
  * Hard ceiling on how much of a single tool result the live path keeps in
  * memory. A backstop, not the primary bound — docs/244's serve-path projection
  * slices heavy results before they are emitted. What still reaches this are the
- * classes that projection deliberately leaves inline (a subagent's exempt final
- * report, and nested subagent results before their row is committed).
+ * classes that projection deliberately leaves inline (an `AskUserQuestion`
+ * answer, and nested subagent results before their row is committed).
  *
  * Exported for the test that pins the cap's markers.
  */
@@ -30,9 +30,9 @@ function safeCutAt(text: string, max: number): number {
 
 /**
  * Name of the tool that produced `toolUseId`, searched over the transcript the
- * result is about to be attached to. Needed to tell a subagent's final report
- * (never capped) from an ordinary result, since the tool_result block itself
- * carries only the id.
+ * result is about to be attached to. Needed to tell a body that must ship whole
+ * from an ordinary result, since the tool_result block itself carries only the
+ * id.
  */
 function toolNameForResult(messages: ChatMessage[], toolUseId: string): string | undefined {
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -184,28 +184,42 @@ export const handleAgentEvent: Handler<WsAgentEvent> = (_ctx, data) => {
         //     affordance and no fetch. Capping it here would re-truncate,
         //     permanently, the very bodies that exemption exists to protect —
         //     so it is not capped at all. Deliberately unbounded: the
-        //     alternative is silently destroying a subagent report or the tail
-        //     of a long `AskUserQuestion` answer (SHI-291).
+        //     alternative is silently destroying the tail of a long
+        //     `AskUserQuestion` answer (SHI-291).
         //
         //     This used to test `SUBAGENT_TOOLS`, the *layout* set, which was
         //     wrong in both directions: it spared `Skill` (which renders no
         //     report and is sliced server-side anyway) while capping
         //     `AskUserQuestion` (which has no way to recover the tail). Client
         //     and server now read the same set.
+        //
+        //     A TOP-LEVEL subagent final report left that set with docs/109
+        //     req 8: it clamps inline with a modal behind it, so it is capped
+        //     here like anything else — and, being top-level, marked
+        //     `truncated`, which is what points the modal at the fetch.
         //   - A NESTED result is capped, but NOT marked `truncated`. Its row is
         //     not committed until the next top-level boundary, so a fetch
         //     marker here would promise a body the endpoint would 404 on.
+        //   - A NESTED final report (a subagent's subagent) gets neither: the
+        //     two rules above disagree, and shipping it whole is the only
+        //     option that loses nothing. Capping it is what the modal made
+        //     acceptable for a top-level report, and the modal's fetch reads
+        //     the persisted row — which for a nested result does not exist yet.
+        //     So live, there is nothing to recover the tail from. It is bounded
+        //     on the next history load instead, where the row IS committed and
+        //     the server slices it properly.
         //   - Everything else is capped AND marked, because a top-level result
         //     is committed in the same tick as its emit, so the fetch resolves.
         //
         // Marking without fetchability and clipping without marking are both
         // wrong; which of the two a result gets depends on where its row is.
         const toolName = toolNameForResult(session.messages, block.tool_use_id as string);
-        const isFinalReport = shipsResultBodyWhole(toolName);
         const isNested = typeof (event as { parentToolUseId?: string }).parentToolUseId === "string";
+        const shipsWhole = shipsResultBodyWhole(toolName)
+          || (isNested && !!toolName && SUBAGENT_REPORT_TOOL_NAMES.has(toolName));
 
         let capped: { totalLines: number } | undefined;
-        if (!isFinalReport && content.length > CLIENT_CONTENT_CAP) {
+        if (!shipsWhole && content.length > CLIENT_CONTENT_CAP) {
           capped = { totalLines: content.split("\n").length };
           content = content.slice(0, safeCutAt(content, CLIENT_CONTENT_CAP));
         }

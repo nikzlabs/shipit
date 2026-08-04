@@ -14,6 +14,7 @@ import { describe, it, expect } from "vitest";
 import { parseContentForImages } from "./ToolResult.js";
 import { parsePresentToolResult } from "./message-tools.js";
 import { countLines } from "./DiffBlock.js";
+import { parseSubagentReport } from "../utils/group-events-by-parent.js";
 import type { ToolUseBlock, ToolResultBlock } from "./MessageList/types.js";
 import { projectToolResult, projectToolUse, imageUrl, imageHash } from "../../server/orchestrator/transcript-projection.js";
 
@@ -94,15 +95,24 @@ describe("the constraint consumers still resolve from a projected result (req 4)
     });
   });
 
-  it("leaves a subagent final report whole even when it is enormous", () => {
-    // The one body with no expand affordance anywhere: `SubagentCall` renders
-    // it as markdown in full, so a slice here would cut a report with no way
-    // to get the rest back.
+  /**
+   * docs/109 req 7/8 — this used to assert the report shipped whole, because
+   * `SubagentCall` rendered it in full with no expand affordance. It now clamps
+   * inline behind a *Show the full report* modal, so what has to survive the
+   * projection is the clamped head the card draws — a real prefix, in a shape
+   * the client parser still understands, with the markers that point the modal
+   * at the fetch.
+   */
+  it("clamps an enormous subagent final report into a renderable head", () => {
     const report = Array.from({ length: 5_000 }, (_, i) => `finding ${i}`).join("\n");
     for (const parent of ["Task", "Agent"]) {
       const projected = projectToolResult("s1", { toolUseId: "t1", content: report }, parent);
-      expect(projected.content).toBe(report);
-      expect(projected.truncated).toBeUndefined();
+      expect(projected.truncated).toBe(true);
+      expect(projected.totalLines).toBe(5_000);
+      // What the card renders inline must be the real head of the report, not
+      // an empty body the way a modal-only result gets.
+      expect(parseSubagentReport(projected.content).text.startsWith("finding 0")).toBe(true);
+      expect(report.startsWith(parseSubagentReport(projected.content).text)).toBe(true);
     }
   });
 });

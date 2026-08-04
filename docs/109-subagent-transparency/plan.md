@@ -47,11 +47,109 @@ Two fields we already see on the wire and can capture:
 > long as this feature has existed, so a real subagent turn showed the user
 > `[{"type":"text","text":"…"}]` with escaped newlines. `parseSubagentReport`
 > now splits it: the text blocks become the report, and a recognized footer is
-> demoted to a muted line instead of being read as prose.
+> demoted out of the prose (since 2026-08-04, into the header chips).
 >
 > Not a docs/244 regression, though it surfaced during that feature's
-> verification: the lazy-body projection **exempts** subagent reports, so the
-> renderer receives byte-for-byte what it always did.
+> verification: at the time, the lazy-body projection **exempted** subagent
+> reports, so the renderer received byte-for-byte what it always did. That
+> exemption is gone — see *The final report* below.
+
+### The final report
+
+Requirements: [`requirements.md`](./requirements.md). Visual reference:
+[`mockup-final-report.html`](./mockup-final-report.html) — current-vs-proposed
+for four report shapes.
+
+The report is the part of the card a reader actually reads, and until 2026-08-04
+it was the least designed part of it: undifferentiated body text at full
+transcript width, glued to the bottom of the card, with the CLI's accounting
+footer printed underneath as a raw `key: value` blob. `SubagentReport.tsx` now
+owns it.
+
+**A backgrounded subagent has no report, and saying it does was a content bug**
+(reqs 1–2). A `run_in_background` Task returns the CLI's *launch
+acknowledgement* — an `agentId` to resume with, an output-file path, and an
+instruction never to quote any of it — and the card rendered that verbatim under
+**FINAL REPORT** while stamping the header `done` for a subagent that was still
+running. `isBackgroundLaunchAck` recognizes it and the card shows a running row
+instead, with an `in background` badge. The recognizer needs the opening
+sentence **and** a structural corroborator (`agentId:` or `output_file:` on its
+own line), because the CLI owns that string and a false positive would hide a
+real report — this repo's own docs quote the sentence.
+
+**The report is quoted output, so it reads like it** (reqs 3–5). A bordered
+panel with a label row separates it from the parent agent's prose; the
+accounting footer becomes duration / tools / tokens chips on that row, and
+`agentId` is dropped in `parseReportMeta` rather than at the render site, so
+there is one place to check it cannot reach the DOM. The markdown scale is
+deliberately flattened — every heading level renders at the body size — because
+a subagent's `#` otherwise renders larger than anything in the conversation
+containing it.
+
+**Long reports clamp, and the full one opens in a modal** (reqs 6–8). The clamp
+is a max-height with a fade rather than a line count: the body is rendered
+markdown, so a table or a fenced block is far taller than its source lines
+suggest.
+
+That modal is what let the report **leave the docs/244 exemption set**. The
+exemption's stated premise was that the transcript "renders it in full with no
+expand affordance and no fetch path", so cutting it destroyed text with no way
+back — a click and a fetch is exactly what removes that premise. So:
+
+* `WHOLE_RESULT_TOOL_NAMES` is now `AskUserQuestion` alone.
+* `projectToolResult` sends the report tools through `sliceSubagentReport`,
+  which is a *separate* slice for a load-bearing reason: a report's normal
+  encoding is a `JSON.stringify`'d block array, i.e. **one line**, so the
+  generic line cap never fires and the byte backstop cuts mid-array — leaving
+  JSON the client cannot parse and renders verbatim, which is SHI-287 arriving
+  by a second route. The report slice clamps the *text inside* the blocks and
+  rebuilds the structure, keeping the footer whole because the chips it feeds
+  are visible without a click.
+* `rendersResultContentInline` stays **true** for report tools. The clamped head
+  is drawn with no click, so the body is bounded rather than emptied the way a
+  modal-only result is.
+* The modal fetches from the existing `/api/sessions/:id/tool-results/:toolUseId`.
+  A report is a *top-level* tool result, committed in the same tick as its emit
+  (`agent-listeners.ts`), so opening the modal on the turn that produced it
+  cannot outrun the write.
+
+If the modal is ever removed, the report has to go back into
+`WHOLE_RESULT_TOOL_NAMES` — that set's docstring says so, and
+`tool-result-slice.test.ts` pins the pairing.
+
+**Where requirement 8 is deliberately relaxed.** A *nested* report — the final
+report of a subagent's own subagent — is sent whole on the **live** path, on
+both sides. The independent review flagged it as a requirement-8 shortfall,
+correctly; it stands because the alternatives are worse, not because it was
+missed:
+
+* The projection cannot slice it, because a nested result skips
+  `replaceInProgress` entirely (the `parentToolUseId` branch of the
+  `agent_tool_result` handler returns before it), so its row is not on disk and
+  the fetch behind the slice would 404.
+* The client cap cannot cut it either. Capping without marking destroys the tail
+  with no affordance to recover it; marking without fetchability promises the
+  404 above.
+
+So it ships whole for the life of that turn's view and is bounded properly on
+the next history load, where the row **is** committed. The requirement's own
+wording is what makes this a relaxation rather than a violation — it says only
+the clamped part *needs* to be sent, and requires that nothing be permanently
+lost. Nothing is: the persisted row is always whole, and
+`/tool-results/:toolUseId` scans `subagent_events` too.
+
+Two further review findings that shaped the code rather than the docs: a
+**lone** footer-shaped block is now treated as the footer (it used to render as
+prose, which put `agentId` on screen for a subagent that returned nothing but
+accounting), and `sliceSubagentReport` rebuilds the block array **in place**
+(an earlier version emitted a fresh `[text, meta]` pair, which deleted any image
+the subagent had returned). Image substitution runs before the clamp, so a
+report carrying a screenshot is bounded on both axes.
+
+One shortfall is **not** addressed here and is recorded in `checklist.md`: a
+nested report renders through the generic `ToolResult` path, not `SubagentCall`,
+so it shows raw block JSON including the footer and needs two clicks to open.
+That predates this change.
 
 ### UI
 
@@ -124,10 +222,12 @@ Component tests for `SubagentCall` covering each disclosure level.
 | `src/server/orchestrator/ws-handlers/agent-listeners.ts` | Forward nested events |
 | `src/server/orchestrator/chat-history.ts` | Persist parent ids |
 | `src/client/components/ToolCall/SubagentCall.tsx` | New component |
-| `src/client/utils/group-events-by-parent.ts` | New util; also `parseSubagentReport` (SHI-287) — splits the CLI's block-array result into report text + accounting footer. Structural parse (`startsWith("[")` → `JSON.parse` → inspect block types), matching `parseContentForImages`; the footer has no structural marker, so it is recognized narrowly (last block only, every line a `key: value` with a known key) because a false positive would eat someone's report. |
+| `src/client/utils/group-events-by-parent.ts` | New util. `parseSubagentReport` (SHI-287) moved to `server/shared/subagent-report.ts` and is re-exported here |
 | `src/client/components/MessageList/MessageToolUse.tsx` | Route subagent tools to `SubagentCall` |
-| `src/server/shared/transcript-slice-tools.ts` | `SUBAGENT_TOOL_NAMES` (layout) + `SUBAGENT_REPORT_TOOL_NAMES` (report / slice exemption) |
-| `src/server/orchestrator/transcript-projection.ts` | Exempt the report set from docs/244 slicing |
+| `src/client/components/SubagentReport.tsx` | The report itself: background-launch row, panel, chips, clamp, modal, lazy fetch |
+| `src/server/shared/subagent-report.ts` | Isomorphic report code — `parseSubagentReport` (structural parse: `startsWith("[")` → `JSON.parse` → inspect block types, matching `parseContentForImages`; the footer has no structural marker, so it is recognized narrowly — last block only, every line a `key: value` with a known key — because a false positive would eat someone's report), `parseReportMeta`, `isBackgroundLaunchAck`, `sliceSubagentReport` |
+| `src/server/shared/transcript-slice-tools.ts` | `SUBAGENT_TOOL_NAMES` (layout) + `SUBAGENT_REPORT_TOOL_NAMES` (report / report-shaped slice) |
+| `src/server/orchestrator/transcript-projection.ts` | Route the report set through `sliceSubagentReport` |
 
 ## Implementation notes (post-shipping)
 

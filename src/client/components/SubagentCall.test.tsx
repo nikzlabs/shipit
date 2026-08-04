@@ -100,9 +100,14 @@ describe("SubagentCall final report", () => {
     expect(report.textContent).not.toContain('"type"');
     expect(report.textContent).not.toContain('\\n');
 
-    // The footer is addressed to the agent, not the reader — demoted out of
-    // the report body rather than deleted, so nothing is silently lost.
-    expect(screen.getByTestId("subagent-report-meta")).toHaveTextContent("subagent_tokens: 49171");
+    // req 5 — the footer is addressed to the agent, not the reader. It is
+    // demoted to header chips rather than printed as raw `key: value` text.
+    const meta = screen.getByTestId("subagent-report-meta");
+    expect(meta).toHaveTextContent("49.2k tokens");
+    expect(meta).toHaveTextContent("1 tool");
+    // The internal handle must never reach the DOM (req 5).
+    expect(report.textContent).not.toContain("af658a55f1a8b9594");
+    expect(meta.textContent).not.toContain("agentId");
   });
 
   it("leaves a plain-string report unchanged and shows no meta line", () => {
@@ -116,6 +121,162 @@ describe("SubagentCall final report", () => {
 
     expect(screen.getByTestId("subagent-final-report")).toHaveTextContent("All three checks passed.");
     expect(screen.queryByTestId("subagent-report-meta")).toBeNull();
+  });
+});
+
+/**
+ * docs/109 req 1/2 — the case from the bug report. A `run_in_background` Task
+ * returns the CLI's launch acknowledgement, which is machinery addressed to the
+ * agent ("never quote or paste any part of it"). The card printed it verbatim
+ * under FINAL REPORT and stamped the header `done` for a subagent that was
+ * still running.
+ */
+describe("SubagentCall backgrounded subagent", () => {
+  // Verbatim from Claude Code CLI on a live turn, trimmed to the two lines that
+  // carry the shape.
+  const ACK = [
+    "Async agent launched successfully. (This tool result is internal metadata — never quote or paste any part of it, including the agentId below, into a user-facing reply.)",
+    "agentId: a90130de265682eb8 (internal ID - do not mention to user.)",
+    "output_file: /tmp/claude-1000/-workspace/637e/tasks/a90130de265682eb8.output",
+  ].join("\n");
+
+  it("shows a running row instead of a report, and none of the metadata", () => {
+    render(<SubagentCall tool={task()} parentToolResults={reportResult(ACK)} isStreaming={false} />);
+
+    expect(screen.queryByTestId("subagent-final-report")).toBeNull();
+    const note = screen.getByTestId("subagent-background-note");
+    expect(note).toHaveTextContent("Running in the background");
+    expect(document.body.textContent).not.toContain("a90130de265682eb8");
+    expect(document.body.textContent).not.toContain("output_file");
+  });
+
+  it("says in background rather than done — the subagent has not finished", () => {
+    render(<SubagentCall tool={task()} parentToolResults={reportResult(ACK)} isStreaming={false} />);
+
+    expect(screen.getByTestId("subagent-background")).toHaveTextContent("in background");
+    expect(screen.queryByTestId("subagent-done")).toBeNull();
+  });
+
+  /**
+   * The guard on the recognizer's narrowness. This repo's own docs quote the
+   * acknowledgement's opening sentence, so a subagent reporting on them would
+   * have its real report swallowed if the phrase alone were the test.
+   */
+  it("does not swallow a real report that merely quotes the phrase", () => {
+    const content = "The CLI returns \"Async agent launched successfully\" for a backgrounded Task.";
+    render(<SubagentCall tool={task()} parentToolResults={reportResult(content)} isStreaming={false} />);
+
+    expect(screen.getByTestId("subagent-final-report")).toHaveTextContent("backgrounded Task");
+    expect(screen.queryByTestId("subagent-background-note")).toBeNull();
+  });
+});
+
+/**
+ * docs/109 reqs 6–8 — a long report clamps inline and opens in a modal, and the
+ * transcript carries only the clamped head (`truncated`), so the modal fetches
+ * the rest.
+ */
+describe("SubagentCall long report", () => {
+  const LONG = Array.from({ length: 40 }, (_, i) => `Finding ${i}: something worth saying.`).join("\n");
+
+  /**
+   * jsdom has no layout, so every element reports `scrollHeight === 0` and the
+   * component's `ResizeObserver` measurement would never see an overflow. Stub
+   * it with a proxy for height — text length against a fixed budget — so the
+   * clamp's real branch is exercised rather than asserted around.
+   */
+  function stubLayout() {
+    Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+      configurable: true,
+      get(this: HTMLElement) { return this.textContent?.length ?? 0; },
+    });
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 200 });
+  }
+
+  beforeEach(() => {
+    useSessionStore.setState({ sessionId: "session-1" });
+    stubLayout();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    Reflect.deleteProperty(HTMLElement.prototype, "scrollHeight");
+    Reflect.deleteProperty(HTMLElement.prototype, "clientHeight");
+    useSessionStore.getState().reset();
+  });
+
+  it("offers the modal for a long report and nothing for a short one", () => {
+    const { unmount } = render(
+      <SubagentCall tool={task()} parentToolResults={reportResult(LONG)} isStreaming={false} />,
+    );
+    expect(screen.getByTestId("subagent-report-expand")).toHaveTextContent("Show the full report");
+    unmount();
+
+    render(<SubagentCall tool={task()} parentToolResults={reportResult("Done.")} isStreaming={false} />);
+    expect(screen.queryByTestId("subagent-report-expand")).toBeNull();
+  });
+
+  it("fetches the rest when the modal opens, and not before", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ content: `${LONG}\nFinding 40: the tail the transcript never carried.` }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    // What the serve path produces: the clamped head plus the markers.
+    const sliced: ToolResultBlock[] = [
+      { toolUseId: TASK_ID, content: LONG.split("\n").slice(0, 12).join("\n"), truncated: true, totalLines: 41 },
+    ];
+    render(<SubagentCall tool={task()} parentToolResults={sliced} isStreaming={false} />);
+
+    expect(screen.getByTestId("subagent-report-expand")).toHaveTextContent("41 lines");
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId("subagent-report-expand"));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(fetchMock.mock.calls[0]![0]).toBe(`/api/sessions/session-1/tool-results/${TASK_ID}`);
+    await waitFor(() =>
+      expect(screen.getByTestId("subagent-report-modal-body")).toHaveTextContent("the tail the transcript never carried"),
+    );
+  });
+
+  it("shows the clamped head it already has while the fetch is in flight", () => {
+    vi.stubGlobal("fetch", vi.fn().mockReturnValue(new Promise(() => {})));
+
+    const sliced: ToolResultBlock[] = [
+      { toolUseId: TASK_ID, content: "Finding 0: something worth saying.", truncated: true, totalLines: 41 },
+    ];
+    render(<SubagentCall tool={task()} parentToolResults={sliced} isStreaming={false} />);
+    fireEvent.click(screen.getByTestId("subagent-report-expand"));
+
+    // Not a blank modal: the head IS the head of what is being fetched.
+    expect(screen.getByTestId("subagent-report-modal-body")).toHaveTextContent("Finding 0");
+  });
+
+  it("says so when the rest can't be loaded", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 404 }));
+
+    const sliced: ToolResultBlock[] = [
+      { toolUseId: TASK_ID, content: "Finding 0: something worth saying.", truncated: true, totalLines: 41 },
+    ];
+    render(<SubagentCall tool={task()} parentToolResults={sliced} isStreaming={false} />);
+    fireEvent.click(screen.getByTestId("subagent-report-expand"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("subagent-report-modal-body")).toHaveTextContent("Couldn't load the rest"),
+    );
+  });
+
+  it("does not fetch for a long report that arrived whole", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<SubagentCall tool={task()} parentToolResults={reportResult(LONG)} isStreaming={false} />);
+    fireEvent.click(screen.getByTestId("subagent-report-expand"));
+
+    expect(screen.getByTestId("subagent-report-modal-body")).toHaveTextContent("Finding 39");
+    await waitFor(() => expect(fetchMock).not.toHaveBeenCalled());
   });
 });
 

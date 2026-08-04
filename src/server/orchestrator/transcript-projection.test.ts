@@ -103,16 +103,71 @@ describe("projectToolResult", () => {
     expect(projected.truncated).toBe(true);
   });
 
-  it("never slices a subagent final report", () => {
-    // `SubagentCall` renders this in full as markdown with no expand
-    // affordance, so a slice would cut the report with no way to recover it.
-    // `Agent` is the name the Claude CLI actually emits; `Task` covers
-    // transcripts persisted before docs/109.
+  /**
+   * docs/109 req 8 — the report used to be exempt from every bound because the
+   * card rendered it whole with nothing to click. It now clamps inline with a
+   * *Show the full report* modal behind it, so the head ships and the tail is
+   * fetched. `Agent` is the name the Claude CLI actually emits; `Task` covers
+   * transcripts persisted before docs/109.
+   */
+  it("clamps a subagent final report and marks it fetchable", () => {
     for (const tool of ["Task", "Agent"]) {
       const projected = projectToolResult("s1", { toolUseId: "t1", content: bigOutput }, tool);
-      expect(projected.truncated).toBeUndefined();
-      expect(projected.content).toBe(bigOutput);
+      expect(projected.truncated).toBe(true);
+      expect(projected.content.length).toBeLessThan(bigOutput.length);
+      // The head is a real prefix — the card renders it as the clamped body.
+      expect(bigOutput.startsWith(projected.content)).toBe(true);
+      expect(projected.totalLines).toBe(bigOutput.split("\n").length);
     }
+  });
+
+  /**
+   * The failure mode this branch exists to avoid. A report's normal encoding is
+   * a `JSON.stringify`'d block array — ONE line — so the generic slice's line
+   * cap never fires and its byte backstop cuts mid-array. The client would then
+   * fail to parse it and render raw JSON at the user, which is SHI-287 all over
+   * again.
+   */
+  it("keeps a block-array report parseable after clamping", () => {
+    const content = JSON.stringify([
+      { type: "text", text: Array.from({ length: 200 }, (_, i) => `line ${i}`).join("\n") },
+      { type: "text", text: "agentId: a1\nsubagent_tokens: 4210\ntool_uses: 7" },
+    ]);
+
+    const projected = projectToolResult("s1", { toolUseId: "t1", content }, "Agent");
+
+    expect(projected.truncated).toBe(true);
+    const blocks = JSON.parse(projected.content) as { type: string; text: string }[];
+    expect(blocks[0]!.text.split("\n").length).toBeLessThan(200);
+    expect(blocks[0]!.text.startsWith("line 0")).toBe(true);
+    // The footer feeds the header chips, which are visible with no click — so
+    // it ships whole rather than being clamped away with the body.
+    expect(blocks[1]!.text).toContain("subagent_tokens: 4210");
+  });
+
+  it("leaves a short report whole — the markers would cost more than the body", () => {
+    const projected = projectToolResult("s1", { toolUseId: "t1", content: "All three checks passed." }, "Agent");
+    expect(projected.truncated).toBeUndefined();
+    expect(projected.content).toBe("All three checks passed.");
+  });
+
+  /**
+   * From the cross-agent review. A subagent can return a screenshot beside its
+   * report, and that base64 is the heaviest thing in the message — the text
+   * clamp does not touch it. Substitution runs first, so a report is bounded on
+   * both axes, and the image survives as a URL rather than being dropped.
+   */
+  it("substitutes a report's images even when the text is short enough to keep", () => {
+    const content = JSON.stringify([
+      { type: "text", text: "Here is the screenshot." },
+      { type: "image", source: { type: "base64", media_type: "image/png", data: "x".repeat(200_000) } },
+    ]);
+
+    const projected = projectToolResult("s1", { toolUseId: "t1", content }, "Agent");
+
+    expect(projected.content).not.toContain("xxxxxxxxxx");
+    expect(projected.content).toContain("/api/sessions/s1/images/");
+    expect(projected.content).toContain("Here is the screenshot.");
   });
 
   it("does slice a Skill result, which renders no report", () => {
@@ -354,7 +409,7 @@ describe("projectMessagesForWire", () => {
     expect(projectMessagesForWire("s1", msgs)[0]).toBe(msgs[0]);
   });
 
-  it("exempts a Task result while still slicing an ordinary one in the same message", () => {
+  it("clamps a Task result and empties an ordinary one in the same message", () => {
     const msgs: PersistedMessage[] = [
       {
         role: "assistant",
@@ -370,8 +425,12 @@ describe("projectMessagesForWire", () => {
       },
     ];
     const [projected] = projectMessagesForWire("s1", msgs);
-    expect(projected!.toolResults![0]!.truncated).toBeUndefined();
+    // Both are bounded now, but differently: the report keeps the head the card
+    // draws (req 8), while an ordinary result — modal-only — keeps nothing.
+    expect(projected!.toolResults![0]!.truncated).toBe(true);
+    expect(projected!.toolResults![0]!.content).not.toBe("");
     expect(projected!.toolResults![1]!.truncated).toBe(true);
+    expect(projected!.toolResults![1]!.content).toBe("");
   });
 
   it("projects results nested under a subagent", () => {

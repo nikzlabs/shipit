@@ -183,18 +183,21 @@ describe("what the cap must NOT do (docs/244 round-3)", () => {
   } as unknown as WsAgentEvent);
 
   for (const parentTool of ["Task", "Agent"]) {
-    it(`never caps a ${parentTool} final report, however big`, () => {
-      // `SubagentCall` renders the final report whole, as markdown, with no
-      // expand affordance and no fetch. The server exempts it from slicing for
-      // exactly that reason — so capping it here would re-truncate the one body
-      // the exemption exists to protect, permanently and invisibly.
+    /**
+     * docs/109 req 7/8 — this used to assert the opposite ("never caps a final
+     * report, however big"), because the card rendered it whole with no expand
+     * affordance and no fetch. It now clamps behind a *Show the full report*
+     * modal, so a TOP-LEVEL report is capped like anything else — and marked,
+     * because a top-level row is committed in the same tick as its emit and the
+     * modal's fetch resolves against it.
+     */
+    it(`caps a top-level ${parentTool} final report and marks it fetchable`, () => {
       handleAgentEvent(ctx, assistantEvent("", [{ id: "tu-task", name: parentTool, input: { prompt: "audit" } }]));
       handleAgentEvent(ctx, resultEvent("tu-task", overCap));
 
       const result = resultFor("tu-task")!;
-      expect(result.content).toBe(overCap);
-      expect(result.content.length).toBeGreaterThan(CLIENT_CONTENT_CAP);
-      expect(result.truncated).toBeUndefined();
+      expect(result.content.length).toBeLessThanOrEqual(CLIENT_CONTENT_CAP);
+      expect(result.truncated).toBe(true);
     });
   }
 
@@ -257,8 +260,17 @@ describe("a subagent's subagent (docs/244 round-4)", () => {
    * The overlap case that slipped through round 3: an INNER Task's result is
    * simultaneously a nested result (it carries `parentToolUseId`) and a
    * subagent final report (its own tool is a Task). The two rules disagree —
-   * "cap nested results" vs "never cap a final report" — and the final report
-   * rule has to win, because nothing renders an expand affordance for it.
+   * "cap nested results" vs "ship a final report whole" — and the final report
+   * rule has to win.
+   *
+   * docs/109 did NOT change this case, though it changed the reason. A
+   * top-level report is now capped, because the *Show the full report* modal
+   * can fetch the rest from the persisted row. A nested result's row is not
+   * written until the next top-level boundary, so live there is nothing to
+   * fetch: capping it here would destroy the tail with no affordance to get it
+   * back, and marking it would promise a 404. Shipping it whole is the only
+   * option that loses nothing — the history path bounds it properly on the next
+   * load.
    *
    * The bug was that the inner Task's `tool_use` lives in the parent's
    * `subagentEvents`, not in `message.toolUse`, so the name lookup returned
