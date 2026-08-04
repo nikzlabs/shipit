@@ -43,6 +43,10 @@ export function MessageImages({ images, isUserMessage }: { images: ChatMessageIm
         // messages; `data` only survives on the latter. One URL serves both the
         // 96px render and the full-size preview below — the browser cache makes
         // the second free, which is why no separate thumbnail is stored.
+        //
+        // Nothing resizes the image, here or anywhere else in the repo — the
+        // 96px render is CSS only, so the browser downloads the full bytes to
+        // paint it. Accepted by docs/244 requirement 9; SHI-300 revisits it.
         const src = img.src ?? `data:${img.mediaType};base64,${img.data}`;
         const alt = `Attached image ${i + 1}`;
         return (
