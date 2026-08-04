@@ -11,8 +11,9 @@
 
 ## Product decisions
 
-- [ ] Choose deployment-wide or per-Project repository binding.
-- [ ] Choose existing-repository selection only or ShipIt-managed repository creation.
+- [x] Use one deployment-wide private tracker until Projects makes bindings per Project.
+- [x] Require the user to create the private repository; ShipIt only connects it.
+- [x] Accept GitHub Issues' feature set without a separate capability-parity gate.
 - [ ] Decide whether public PR bodies may expose qualified private tracker pointers.
 
 ## Implementation
@@ -20,7 +21,7 @@
 - [ ] Convert the resolved decisions into implementation acceptance tests.
 - [ ] Preserve structured repository identity through parsing and all issue operations.
 - [ ] Add private tracker repository configuration and permission validation.
-- [ ] Implement every Required capability and expose Optional gaps.
+- [ ] Represent unsupported normalized operations and GitHub feature differences honestly.
 - [ ] Add same-numbered code/tracker repository regression coverage.
 - [ ] Add repository-qualified deduplication, lifecycle-card, and persisted effect keys.
 - [ ] Preserve repository targets through agent operations and persisted Undo cards.

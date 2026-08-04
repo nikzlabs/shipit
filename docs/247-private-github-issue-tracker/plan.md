@@ -10,8 +10,9 @@ description: Use a dedicated private GitHub repository as ShipIt's issue backend
 This is the focused design for the private-GitHub option identified by the
 [issue tracker evaluation](../246-native-issue-tracker-evaluation/plan.md).
 It is not yet approved for implementation. The parent capability classification
-and the configuration/privacy choices in [requirements.md](./requirements.md)
-remain open.
+no longer gates this option: choosing GitHub Issues means accepting its feature
+set. Only the public-PR pointer disclosure choice in
+[requirements.md](./requirements.md) remains open.
 
 The likely first increment is small: reuse ShipIt's existing GitHub adapter and
 bind it to a dedicated private repository. The hard part is not CRUD; it is
@@ -27,10 +28,10 @@ and API provider; its web UI is only an escape hatch for repository
 administration or unsupported edge cases.
 
 An operator connects a private repository that is distinct from the public
-ShipIt code repository. Whether that connection is deployment-wide or belongs
-to each ShipIt Project is an unresolved product decision. The first release
-should not offer both models unless the user selects both: one authoritative
-binding is easier to explain and safer to route.
+ShipIt code repository. The binding is deployment-wide initially, so sessions
+for the owner's ShipIt-related private code repositories share it. When the
+[Projects design](../231-projects/plan.md) is implemented, the binding follows
+that feature's established model and becomes per Project.
 
 The private planning tracker coexists with ShipIt's public issue tracker. User
 bug reports — including reports submitted through ShipIt's existing bug-report
@@ -104,12 +105,8 @@ The choice remains open in requirements.
 ## Configuration and authentication
 
 The selected binding stores a GitHub `owner` and `repo`, not a URL inferred
-from a coding session. Two scopes are still under consideration:
-
-| Scope | Benefit | Cost |
-|---|---|---|
-| Deployment-wide | Smallest first release; one global issue workspace | All projects share one tracker and its labels/workflow |
-| Per ShipIt Project | Natural isolation and stable project-to-tracker routing | Depends on the Projects configuration model and needs unbound-project UX |
+from a coding session. It is stored deployment-wide before Projects and in the
+owning Project's configuration after Projects lands.
 
 Binding scope is independent from tracker purpose. The private binding selects
 the owner's planning repository. The public bug-report destination remains the
@@ -123,12 +120,9 @@ which destination it belongs to as well as `owner/repo#number`. Public bug
 reports and private planning issues can therefore share the same issue number
 without colliding or being displayed as interchangeable records.
 
-Likewise, selecting an existing repository is the recommended provisioning
-path for the first release. Creating a private repository manually is a small
-one-time administrative action, while creation from ShipIt adds permission
-scopes, naming and ownership choices, collision handling, and an externally
-consequential create action. It should be added only if the user explicitly
-selects it as a requirement.
+The user creates the private repository and ShipIt connects it. ShipIt does not
+request repository-creation permission or implement naming, ownership,
+collision, or initialization flows.
 
 The orchestrator acquires a token explicitly scoped for the selected tracker
 repository. For GitHub App authentication, the App must be installed on that
@@ -146,21 +140,19 @@ this option meets the free/no-subscription constraint today. Pricing and
 feature availability must be revalidated before implementation because they
 are upstream service terms, not a ShipIt guarantee.
 
-## Capability fit
+## Accepted GitHub feature set
 
-The canonical C1–C18 inventory and current feasibility analysis remain in the
-[evaluation requirements](../246-native-issue-tracker-evaluation/requirements.md)
-and [GitHub feasibility table](../246-native-issue-tracker-evaluation/plan.md#github-capability-feasibility-pending-user-classification).
-This document deliberately does not duplicate or pre-classify that table.
-
-Known adapter gaps that matter only if their capabilities are marked Required:
+This focused design assumes GitHub Issues has been selected and accepts its
+feature set. The broader [evaluation](../246-native-issue-tracker-evaluation/plan.md)
+retains its comparison inventory, but that inventory does not gate this design.
+Known differences between GitHub and ShipIt's current normalized behavior are:
 
 - workflow beyond Open/Closed needs an explicit status convention;
 - priority writes need an agreed label convention;
 - parent/sub-issue reads and writes need GitHub API mapping;
-- automatic Started cannot be represented by native GitHub Open/Closed state:
-  starting from an open issue is otherwise a no-op. Therefore C15 can be
-  Required only together with the writable C6 status-label/project convention.
+- automatic Started cannot be represented by native GitHub Open/Closed state;
+  starting from an open issue is otherwise a no-op unless ShipIt later adopts a
+  writable status-label/project convention.
 
 ShipIt-owned capabilities such as session creation, tracker-neutral commands,
 provenance cards, Undo, and PR lifecycle automation remain feasible only after
@@ -199,8 +191,8 @@ tracker entry points:
   request schema, and orchestrator validation preserve a qualified pointer
   rather than reducing it to a bare ID. `--tracker github 42` remains legal only
   when one configured binding makes it unambiguous.
-- the Issues UI displays unavailable Optional capabilities honestly and setup
-  failures inline, without directing normal work to GitHub.
+- the Issues UI represents unavailable GitHub operations honestly and shows
+  setup failures inline, without directing normal work to GitHub.
 
 Exact files and types remain planning targets until the open requirements are
 resolved and the current call graph is retraced at implementation time.
@@ -223,8 +215,8 @@ issue is unchanged. Coverage includes:
   access, all failing without fallback;
 - public bug reports continuing to target the public ShipIt repository before
   and after private planning tracker configuration;
-- every C1–C18 capability ultimately classified Required, with Optional gaps
-  represented explicitly.
+- the accepted GitHub feature differences represented honestly rather than
+  failing silently.
 
 ## Migration and operations
 
@@ -247,16 +239,13 @@ coding sessions, Git operations, or access to locally persisted chat history.
 - Silently routing arbitrary cross-repository pointers.
 - Depending on paid GitHub plans or paid GitHub features.
 - Implementing continuous two-way synchronization with Linear.
-- Implementing unresolved Optional capabilities merely for blanket parity.
+- Emulating non-GitHub capabilities merely to preserve blanket wrapper parity.
 
 ## Decision boundary
 
-Implementation may begin only after the user classifies C1–C18 and chooses the
-binding, provisioning, and public-PR disclosure models. Public user bug reports
-and private owner planning issues are required to coexist as distinct tracker
-destinations.
-If C15 is Required, the C6 writable workflow convention is necessarily part of
-the implementation. The option passes its design gate only if all Required
-capabilities can be implemented without weakening the repository routing
-invariant. Otherwise the broader evaluation proceeds to the Vikunja spike
-rather than accumulating fragile GitHub conventions.
+Implementation may begin after the user decides whether public PR bodies may
+expose fully qualified private-tracker pointers. Public user bug reports and
+private owner planning issues coexist as distinct tracker destinations. GitHub's
+feature set is accepted; implementation must represent unavailable normalized
+operations honestly and must not weaken the repository-routing invariant to
+simulate parity.
