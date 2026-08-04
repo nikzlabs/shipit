@@ -109,7 +109,4 @@ Thumbs.db
 
 # ---- Misc ----
 *.pem
-
-# ---- ShipIt ----
-.shipit
 `;

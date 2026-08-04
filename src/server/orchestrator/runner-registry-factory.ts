@@ -105,9 +105,10 @@ export interface RunnerRegistryDeps {
   /**
    * docs/183 — orchestrator-private root for per-service compose env files,
    * outside the agent's workspace mount. Forwarded into `setupServiceManager`
-   * → `ServiceManager`. See `ServiceManagerOptions.serviceEnvDir`.
+   * → `ServiceManager`, both of which require it (SHI-290). See
+   * `ServiceManagerOptions.serviceEnvDir`.
    */
-  serviceEnvDir?: string;
+  serviceEnvDir: string;
   /** docs/192 — durable log store, forwarded to `setupServiceManager` for service-log persistence. */
   logStore?: LogStore;
   /**

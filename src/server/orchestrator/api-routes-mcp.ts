@@ -9,8 +9,9 @@
  * Server config blobs hold `$secret:` placeholders only; raw secret values
  * live in `CredentialStore.agentEnv` under `mcp__<server>__*` and are never
  * echoed back. After every mutation we trigger the agent-env refresh path on
- * each active session's ServiceManager so the merged `.shipit/.env.agent` is
- * rewritten and pushed to the worker (reusing 087's transport substrate).
+ * each active session's ServiceManager so the merged `.env.agent` — in the
+ * session's state dir, outside the clone (docs/246) — is rewritten and pushed to
+ * the worker (reusing 087's transport substrate).
  */
 
 import type { FastifyInstance } from "fastify";
@@ -111,7 +112,7 @@ function isMcpAuthFailure(result: unknown): boolean {
 /**
  * Trigger the agent-env refresh on every active session's ServiceManager.
  * Each `refreshSecrets()` re-runs `syncSecrets()`, which re-reads the
- * `mcp__*` keys from CredentialStore, rewrites `.shipit/.env.agent`, and
+ * `mcp__*` keys from CredentialStore, rewrites the state dir's `.env.agent`, and
  * pushes the full set to the worker via `PUT /secrets`. The worker REPLACES
  * its tracked set on every push, so deleted/renamed keys are dropped without
  * an explicit clear list. Fire-and-forget per session.

@@ -117,7 +117,7 @@ For each service that declares secrets, ShipIt writes a per-service env file
 and references it via `env_file:` in the generated compose override:
 
 ```yaml
-# .shipit/compose.override.yml (generated, containerized mode)
+# compose.override.yml (generated, in the session's state dir — never your clone)
 services:
   api:
     env_file: [/workspace/service-env/<sessionId>/.env.api]
@@ -169,8 +169,9 @@ Required environment variables on the orchestrator:
 | `SHIPIT_SECRETS_HOST_DIR` | Host-side path the Docker daemon sees for the same directory. Required when the orchestrator runs in a container; omit for orchestrator-on-host setups. Covers both the per-secret `file:` references and the staged entrypoint wrapper's bind mount. |
 | `SHIPIT_SECRETS_ENTRYPOINT` | Path to `secrets-entrypoint.sh` inside the orchestrator image. Defaults to `/usr/local/share/shipit/secrets-entrypoint.sh`. |
 
-Tradeoff: the agent loses the ability to casually `cat .shipit/.env.<svc>`
-to read secrets. Exfiltration via agent-authored code (writing
+What this does NOT buy you: the agent already cannot read the per-service env
+file in either mode, because env-file mode writes it outside your clone as well.
+Exfiltration via agent-authored code (writing
 `process.env` to a workspace file, logging it to stdout, etc.) is still
 possible — Docker secrets isolate the values from the *file system*, not
 from the *code that runs in the service container*. See the plan in
@@ -233,7 +234,7 @@ whether containment is actually **enforced** on this deployment (it warns
 Saving a secret in the UI:
 
 1. Stores the value in the per-repo secret store.
-2. Rewrites `.shipit/.env.<service>` for every active session backed by
+2. Rewrites the per-service env file for every active session backed by
    that repo.
 3. Runs `docker compose up -d` for each session — Compose detects the env
    file change and recreates the affected containers.

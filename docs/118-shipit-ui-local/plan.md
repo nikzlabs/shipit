@@ -240,13 +240,11 @@ Three consequences, all of which need explicit Phase 1 mitigation:
 
 A previous draft of this plan proposed a new `x-shipit-orchestrator: true` marker. **This was wrong** — `platform-credentials.ts` already supports this exact use case (its docstring names ShipIt-in-ShipIt as the flagship). However, the *mechanism* is more subtle than "env vars in compose":
 
-`secret-resolver.ts` resolves `x-shipit-secrets` by writing per-service `.env` files (e.g. `.shipit/.env.dev`) and emitting `env_file:` references in the generated compose override. By default, those files land **inside the workspace volume**, at `${workspaceDir}/.shipit/.env.<service>`. There is also a hardened path that writes to a separate isolated directory, gated on the `SHIPIT_SECRETS_INTERNAL_DIR` env var on the outer orchestrator (`secret-resolver.ts:writeIsolatedSecretFiles`, called from `index.ts:196`).
+`secret-resolver.ts` resolves `x-shipit-secrets` by writing per-service `.env` files (e.g. `.env.dev`) and emitting `env_file:` references in the generated compose override.
 
-For ShipIt-in-ShipIt this matters because `${workspaceDir}` for the dev compose service is `/workspace`, which is *the ShipIt repo's source tree*. Without mitigation:
-- `/workspace/.shipit/.env.dev` contains the user's Claude OAuth + GitHub tokens.
-- The outer agent can `ls` and `cat` it.
-- `git add -A` in the outer ShipIt repo would pick it up.
-- Outer's file watcher fires on every secret refresh.
+**The hazard this section was written about is gone (SHI-290).** When this plan was drafted, those files landed **inside the workspace volume** at `${workspaceDir}/.shipit/.env.<service>` unless a root was configured — and for ShipIt-in-ShipIt `${workspaceDir}` for the `dev` service is `/workspace`, *the ShipIt repo's source tree*, so `/workspace/.shipit/.env.dev` held the user's Claude OAuth + GitHub tokens where the outer agent could `cat` it, the outer `git add -A` could commit it, and the outer file watcher fired on every refresh. docs/183 moved the default write to `<serviceEnvDir>/<sessionId>/.env.<service>` outside the workspace, and SHI-290 deleted the in-workspace writer entirely and made the root required, so there is no configuration in which those files land in the source tree.
+
+The stronger `SHIPIT_SECRETS_INTERNAL_DIR` path (Docker secrets — `secret-resolver.ts:writeIsolatedSecretFiles`) still exists and is still worth setting on the outer, but it is now a hardening step rather than a leak mitigation. The Phase 1 actions below are kept as the historical record of what was required at the time.
 
 **Required Phase 1 actions.**
 

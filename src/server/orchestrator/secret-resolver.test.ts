@@ -6,9 +6,7 @@ import {
   resolveSecrets,
   collectMcpAgentEnv,
   renderAgentEnvBody,
-  writePerServiceEnvFiles,
   writeServiceEnvFilesToRoot,
-  sweepWorkspaceServiceEnvFiles,
   removeSessionServiceEnvDir,
   removeSessionSecretsDir,
   writeAgentEnvFile,
@@ -823,76 +821,6 @@ describe("stageSecretsEntrypoint (SHI-285)", () => {
   });
 });
 
-describe("writePerServiceEnvFiles", () => {
-  let tmpDir: string;
-
-  function setup() {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "secret-resolver-"));
-    return tmpDir;
-  }
-
-  afterEach(() => {
-    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  it("writes files into .shipit/ keyed by service name", () => {
-    const dir = setup();
-    const written = writePerServiceEnvFiles({
-      workspaceDir: dir,
-      perServiceEnv: {
-        web: "STRIPE_KEY=sk_test\n",
-        api: "DATABASE_URL=postgres://x\n",
-      },
-    });
-    expect(written).toContain(".shipit/.env.web");
-    expect(written).toContain(".shipit/.env.api");
-    expect(fs.readFileSync(path.join(dir, ".shipit/.env.web"), "utf-8")).toContain("STRIPE_KEY=sk_test");
-    expect(fs.readFileSync(path.join(dir, ".shipit/.env.api"), "utf-8")).toContain("DATABASE_URL=postgres://x");
-  });
-
-  it("removes stale .env.<svc> files for services that no longer declare secrets", () => {
-    const dir = setup();
-    const shipit = path.join(dir, ".shipit");
-    fs.mkdirSync(shipit);
-    fs.writeFileSync(path.join(shipit, ".env.removed"), "STALE=1\n");
-    fs.writeFileSync(path.join(shipit, ".env.web"), "OLD=1\n");
-
-    writePerServiceEnvFiles({
-      workspaceDir: dir,
-      perServiceEnv: { web: "NEW=1\n" },
-    });
-
-    // Stale file removed
-    expect(fs.existsSync(path.join(shipit, ".env.removed"))).toBe(false);
-    // web kept and overwritten
-    expect(fs.readFileSync(path.join(shipit, ".env.web"), "utf-8")).toContain("NEW=1");
-  });
-
-  it("preserves .env.agent (Phase 3 owns it)", () => {
-    const dir = setup();
-    const shipit = path.join(dir, ".shipit");
-    fs.mkdirSync(shipit);
-    fs.writeFileSync(path.join(shipit, ".env.agent"), "FROM_AGENT=1\n");
-
-    writePerServiceEnvFiles({
-      workspaceDir: dir,
-      perServiceEnv: { web: "NEW=1\n" },
-    });
-
-    expect(fs.existsSync(path.join(shipit, ".env.agent"))).toBe(true);
-  });
-
-  it("creates .shipit/ if missing", () => {
-    const dir = setup();
-    expect(fs.existsSync(path.join(dir, ".shipit"))).toBe(false);
-    writePerServiceEnvFiles({
-      workspaceDir: dir,
-      perServiceEnv: { web: "X=1\n" },
-    });
-    expect(fs.existsSync(path.join(dir, ".shipit", ".env.web"))).toBe(true);
-  });
-});
-
 describe("writeServiceEnvFilesToRoot (docs/183)", () => {
   let tmpDir: string;
 
@@ -939,25 +867,6 @@ describe("writeServiceEnvFilesToRoot (docs/183)", () => {
     expect(fs.existsSync(path.join(workspaceDir, ".shipit", ".env.web"))).toBe(false);
   });
 
-  it("sweeps a pre-183 workspace .shipit/.env.<service> leak but keeps .env.agent", () => {
-    const { workspaceDir, rootDir } = setup();
-    const shipit = path.join(workspaceDir, ".shipit");
-    fs.mkdirSync(shipit, { recursive: true });
-    fs.writeFileSync(path.join(shipit, ".env.web"), "LEAKED=1\n");
-    fs.writeFileSync(path.join(shipit, ".env.agent"), "FROM_AGENT=1\n");
-
-    writeServiceEnvFilesToRoot({
-      rootDir,
-      sessionId: "sess1",
-      workspaceDir,
-      perServiceEnv: { web: "STRIPE_KEY=sk_test\n" },
-    });
-
-    // The leaked service env file is removed from the workspace…
-    expect(fs.existsSync(path.join(shipit, ".env.web"))).toBe(false);
-    // …but the agent env file is left alone (Phase 3 owns it).
-    expect(fs.existsSync(path.join(shipit, ".env.agent"))).toBe(true);
-  });
 
   it("removes stale external .env.<svc> files for services that no longer declare secrets", () => {
     const { workspaceDir, rootDir } = setup();
@@ -1058,28 +967,3 @@ describe("writeServiceEnvFilesToRoot (docs/183)", () => {
   });
 });
 
-describe("sweepWorkspaceServiceEnvFiles (docs/183)", () => {
-  let tmpDir: string;
-
-  afterEach(() => {
-    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  it("removes .env.<svc> files but preserves .env.agent; no-op when .shipit missing", () => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sweep-183-"));
-    // No .shipit dir yet — must not throw.
-    expect(() => sweepWorkspaceServiceEnvFiles(tmpDir)).not.toThrow();
-
-    const shipit = path.join(tmpDir, ".shipit");
-    fs.mkdirSync(shipit);
-    fs.writeFileSync(path.join(shipit, ".env.web"), "A=1\n");
-    fs.writeFileSync(path.join(shipit, ".env.api"), "B=1\n");
-    fs.writeFileSync(path.join(shipit, ".env.agent"), "AGENT=1\n");
-
-    sweepWorkspaceServiceEnvFiles(tmpDir);
-
-    expect(fs.existsSync(path.join(shipit, ".env.web"))).toBe(false);
-    expect(fs.existsSync(path.join(shipit, ".env.api"))).toBe(false);
-    expect(fs.existsSync(path.join(shipit, ".env.agent"))).toBe(true);
-  });
-});

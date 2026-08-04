@@ -827,13 +827,15 @@ describe("generateComposeOverride env_file injection", () => {
     composeConfig: { file: "docker-compose.yml", dockerSocket: false },
   };
 
+  const ENV_ROOT = "/state/service-env/test-session-123";
+
   it("adds env_file reference for services with declared secrets", () => {
     const override = generateComposeOverride(
       [{ name: "api", secrets: ["DATABASE_URL"] }],
-      baseOpts,
+      { ...baseOpts, serviceEnvFiles: { api: `${ENV_ROOT}/.env.api` } },
     );
     expect(override).toContain("env_file:");
-    expect(override).toContain(".shipit/.env.api");
+    expect(override).toContain(`${ENV_ROOT}/.env.api`);
   });
 
   it("does not add env_file for services without secrets", () => {
@@ -850,10 +852,16 @@ describe("generateComposeOverride env_file injection", () => {
         { name: "web", secrets: ["STRIPE_KEY"] },
         { name: "api", secrets: ["DATABASE_URL"] },
       ],
-      baseOpts,
+      {
+        ...baseOpts,
+        serviceEnvFiles: {
+          web: `${ENV_ROOT}/.env.web`,
+          api: `${ENV_ROOT}/.env.api`,
+        },
+      },
     );
-    expect(override).toContain(".shipit/.env.web");
-    expect(override).toContain(".shipit/.env.api");
+    expect(override).toContain(`${ENV_ROOT}/.env.web`);
+    expect(override).toContain(`${ENV_ROOT}/.env.api`);
   });
 
   // docs/183 — out-of-workspace env-file paths
@@ -878,7 +886,11 @@ describe("generateComposeOverride env_file injection", () => {
     expect(override).not.toContain(".shipit/.env.api");
   });
 
-  it("falls back to .shipit/.env.<service> when a service is missing from serviceEnvFiles", () => {
+  // SHI-290 — a service missing from the map gets NO env_file rather than the
+  // old `.shipit/.env.<service>` fallback. Nothing writes that file any more, so
+  // referencing it would fail the whole stack at `up` time instead of one
+  // service, and it named a path inside the user's git clone (docs/246 req 7).
+  it("emits no env_file for a service missing from serviceEnvFiles", () => {
     const override = generateComposeOverride(
       [
         { name: "web", secrets: ["STRIPE_KEY"] },
@@ -893,7 +905,7 @@ describe("generateComposeOverride env_file injection", () => {
       },
     );
     expect(override).toContain("/workspace/service-env/test-session-123/.env.web");
-    expect(override).toContain(".shipit/.env.api");
+    expect(override).not.toContain(".env.api");
   });
 });
 

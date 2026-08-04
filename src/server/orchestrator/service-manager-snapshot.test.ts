@@ -69,6 +69,9 @@ describe("ServiceManager.snapshotLogs", () => {
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir,
+      // Sibling of the clone — ServiceManager requires a service-env root
+      // outside it (SHI-290).
+      serviceEnvDir: path.join(tmpDir, "service-env"),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner: () => Promise.resolve(),
       pollIntervalMs: 0,

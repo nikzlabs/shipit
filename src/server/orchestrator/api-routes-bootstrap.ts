@@ -88,7 +88,7 @@ export async function registerBootstrapRoutes(
       try {
         return await saveGlobalSettings({
           agentRegistry: deps.agentRegistry,
-          workspaceDir: deps.workspaceDir,
+          appWorkspaceDir: deps.workspaceDir,
           credentialStore: deps.credentialStore,
           providerAccountManager: deps.providerAccountManager,
           // docs/146 — when the user toggles autoResolveConflicts false → true,

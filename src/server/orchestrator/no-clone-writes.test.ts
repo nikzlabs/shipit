@@ -13,6 +13,20 @@
  * {@link IN_CLONE_SHIPIT_PATH} for why matching the directory join, rather than
  * the artifact names, is the invariant.
  *
+ * **There is no allowlist, and that is the point (SHI-290).** The check used to
+ * carry an exemption map, which meant it asserted "only these files may" rather
+ * than "no file does" — and because the granularity was per FILE, a new
+ * forbidden writer added to an already-exempt file passed silently. The map is
+ * gone because its last four rows were resolved rather than tolerated: three
+ * were false positives that composed the APP-scope
+ * `<appWorkspaceDir>/.shipit/system-prompt.md` and now go through
+ * `global-system-prompt.ts` (one helper, one parameter named for the
+ * orchestrator's own root), and the fourth was docs/183's in-workspace
+ * `.shipit/.env.<svc>` fallback, deleted along with the `writePerServiceEnvFiles`
+ * writer it called. With nothing exempt there is nowhere for a new writer to
+ * hide, so per-line allowlisting — recorded as a follow-up when the map still
+ * existed — is not needed either.
+ *
  * The invariant has no carve-outs, which is what makes it checkable: nothing
  * user-authored lives in a clone's `.shipit/`. The per-repo config a human
  * writes is `shipit.yaml` at the repo root, and `.shipit/system-prompt.md` is a
@@ -50,57 +64,34 @@ const REPO_ROOT = path.resolve(fileURLToPath(import.meta.url), "../../../..");
  * backticked `.shipit/...` is nearly always a markdown code span in a JSDoc
  * comment — adding it matches ~20 files of pure prose, and a guard whose output
  * is mostly noise is one nobody reads. The dangerous shape is a path composed
- * from a clone variable, and that always shows up as either the `path.join`
- * form or the `${…}/` interpolation, both of which are covered.
+ * from a clone variable, and that always shows up as one of the three forms
+ * covered here: the `path.join` argument pair, the `${…}/` interpolation, or
+ * string concatenation (`workspaceDir + "/.shipit/…"`).
  *
- * **Known limitation — granularity is per FILE, not per line.** A file in
- * {@link ALLOWED} is exempt wholesale, so a NEW forbidden writer added to, say,
- * `secret-resolver.ts` would pass. Closing that means allowlisting individual
- * matched lines; recorded as a follow-up rather than fixed here. The check is
- * still the difference between "someone has to catch it in review" and "CI
- * names the file".
+ * **What it still cannot see, stated rather than implied:** a path composed
+ * through an *alias* (`const root = workspaceDir; path.join(root, ".shipit")`)
+ * or assembled from fragments. No grep can follow that, and the answer is not a
+ * cleverer regex — it is that a reviewer reading such code has to notice. The
+ * guard's job is to make the obvious shapes impossible to land by accident, and
+ * to remove the "someone will catch it in review" excuse for the common cases.
  */
-const IN_CLONE_SHIPIT_PATH = String.raw`(workspaceDir|sessionDir|clone|repoDir|cwd)\s*,\s*['"]\.shipit['"]|"\.shipit/|\}/\.shipit`;
+const IN_CLONE_SHIPIT_PATH = String.raw`(workspaceDir|sessionDir|clone|repoDir|cwd)\s*,\s*['"]\.shipit['"]|"\.shipit/|\}/\.shipit|\+\s*['"]/?\.shipit`;
 
 /**
- * Sites still permitted to name an in-clone artifact path.
+ * Source files (excluding tests) that compose an in-clone artifact path.
  *
- * SHI-286 emptied the "back-compat fallback" category: the legacy flat layout
- * (`sessionDir === workspaceDir`) is gone, so nothing falls back to writing a
- * docs/246 artifact into a clone. The "removes a pre-246 copy" category is
- * empty too — the one-time migration (the boot sweep and the three unlinks that
- * shed an older ShipIt's leftovers) was retired once it had served its purpose,
- * so no docs/246 code composes an in-clone path at all any more.
- *
- * One writer does survive, and it is NOT a docs/246 artifact:
- * `secret-resolver.ts`'s `writePerServiceEnvFiles` still writes
- * `.shipit/.env.<svc>` into the clone when neither Docker-secrets mode nor
- * docs/183's `serviceEnvDir` is configured. That is a docs/183 leftover with its
- * own migration story (`writeServiceEnvFilesToRoot` sweeps it), reachable only
- * in tests / non-container setups — tracked separately, not allowlisted away
- * here on purpose. It is the sole reason the entry below exists.
+ * `--untracked` matters more than it looks: without it `git grep` searches only
+ * files already in the index, so a brand-new writer in a file the author hasn't
+ * staged yet is invisible locally — green on the machine where it was written,
+ * red only after someone else pulls it. That is exactly backwards for a guard
+ * whose value is catching the mistake at the moment it is made.
  */
-const ALLOWED: Record<string, string> = {
-  // --- Not a clone at all: the APP-SCOPE workspaceDir (the orchestrator's own
-  // workspace root), where the GLOBAL system-prompt.md lives, one level above
-  // every session. Nothing here touches a user's repository. ---
-  "src/server/orchestrator/bootstrap-managers.ts": "app-scope system-prompt.md",
-  "src/server/orchestrator/route-registry.ts": "app-scope system-prompt.md",
-  "src/server/orchestrator/services/settings.ts": "app-scope system-prompt.md",
-
-  // --- Owns docs/183's in-clone per-service env fallback
-  // (`writePerServiceEnvFiles`), which is out of scope for docs/246 and tracked
-  // on its own. See the note above. ---
-  "src/server/orchestrator/secret-resolver.ts": "docs/183 per-service env fallback",
-};
-
-/** Source files (excluding tests) that compose an in-clone artifact path. */
 function filesComposingInCloneArtifacts(): string[] {
   let out: string;
   try {
     out = execFileSync(
       "git",
-      ["grep", "-l", "-E", IN_CLONE_SHIPIT_PATH, "--", "src/**/*.ts", ":!src/**/*.test.ts"],
+      ["grep", "-l", "--untracked", "-E", IN_CLONE_SHIPIT_PATH, "--", "src/**/*.ts", ":!src/**/*.test.ts"],
       { cwd: REPO_ROOT, encoding: "utf-8" },
     );
   } catch (err: unknown) {
@@ -112,21 +103,15 @@ function filesComposingInCloneArtifacts(): string[] {
 }
 
 describe("no ShipIt-generated writes inside a session clone (docs/246 req 7)", () => {
-  it("no source file outside the allowlist composes an in-clone artifact path", () => {
-    const offenders = filesComposingInCloneArtifacts().filter((f) => !(f in ALLOWED));
+  it("no source file composes an in-clone artifact path", () => {
     expect(
-      offenders,
+      filesComposingInCloneArtifacts(),
       "These files put a ShipIt-generated artifact inside the user's git clone, where the "
         + "post-turn `git add -A` will commit it into their repository. Write to the session "
-        + "state dir instead (see session-state-dir.ts). ALLOWED is not a place to add a new "
-        + "writer: SHI-286 retired the back-compat-default category, and the one-time pre-246 "
-        + "migration that owned the rest is gone.",
+        + "state dir instead (see session-state-dir.ts). This check has no allowlist by design "
+        + "(SHI-290) — if the path you are adding is the orchestrator's OWN workspace root "
+        + "rather than a session clone, route it through global-system-prompt.ts or give the "
+        + "variable a name that says so, rather than re-introducing an exemption.",
     ).toEqual([]);
-  });
-
-  it("the allowlist has no stale entries", () => {
-    const composing = new Set(filesComposingInCloneArtifacts());
-    const stale = Object.keys(ALLOWED).filter((f) => !composing.has(f));
-    expect(stale, "allowlisted files that no longer compose an in-clone path").toEqual([]);
   });
 });

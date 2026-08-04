@@ -160,12 +160,11 @@ None of the *placement* work changed: the state dir, the `/session-state` mount,
 the artifact constants and the req-7 guard test are all untouched. If a change
 here starts moving where an artifact is written, it has gone too far.
 
-Note `.shipit/system-prompt.md` is **not** in a clone: every caller passes the
-app-scope `workspaceDir` (`route-registry.ts:238` → `:977`,
-`bootstrap-managers.ts:361`, `services/misc.ts:88`), i.e. the orchestrator's
-workspace root. It is a global setting living above every session, so the
+Note `.shipit/system-prompt.md` is **not** in a clone: it is a global setting
+living at the orchestrator's own workspace root, above every session, so the
 cleanup has no carve-out to make and a clone's `.shipit/` can disappear
-entirely.
+entirely. SHI-290 made that legible in the code rather than only here — see
+below.
 
 ### Making it stay fixed (req 7)
 
@@ -174,6 +173,43 @@ asserts no writer composes `path.join(workspaceDir, ".shipit", …)`. With no
 user-authored file left in a clone's `.shipit/`, the invariant is
 unconditional — `.shipit/` inside a session clone is a bug — which is what makes
 it mechanically checkable rather than a review convention.
+
+**The guard has no allowlist (SHI-290).** It asserts "no source file composes an
+in-clone `.shipit` path", not "only these files may". The exemption map it used
+to carry was worse than it looked: granularity was per FILE, so a new forbidden
+writer added to an already-listed file passed silently. Emptying it took
+resolving its last four rows rather than tolerating them, and the two halves were
+different in kind:
+
+- **Three were false positives, and the fix was a naming problem.** They composed
+  `path.join(workspaceDir, ".shipit", "system-prompt.md")` where `workspaceDir`
+  was the orchestrator's own root — the regex could not tell them apart because
+  the codebase uses one name for two different things. That ambiguity is the same
+  one that produced the flat-layout bug below (a session resolving to a
+  host-shared `<sessionsRoot>/state`), so the fix is a real clarity win and not a
+  dodge: `global-system-prompt.ts` owns the path, its parameter is
+  `appWorkspaceDir`, and `.shipit` appears once instead of four times. The guard
+  stops matching as a consequence.
+- **One was a genuine in-clone writer, and it was deleted.** See below.
+
+### docs/183's in-workspace env-file fallback is gone (SHI-290)
+
+`ServiceSecretsResolver` used to fall back to writing `.shipit/.env.<svc>` into
+the clone when neither Docker-secrets mode nor `serviceEnvDir` was configured.
+Production never took it — `bootstrap-managers.ts` always computes
+`serviceEnvDir` (`SHIPIT_SERVICE_ENV_DIR ?? <stateDir>/service-env`) — so it was
+reachable only from tests, which is exactly the shape SHI-286 deleted for the
+flat layout. `serviceEnvDir` is now **required** on `ServiceSecretsResolver`,
+`ServiceManager`, `setupServiceManager` and `createRunnerRegistry`, so "service
+secrets never land in the clone" is a property of the type rather than of the
+wiring.
+
+Deleted with it, because they existed only to serve that mode:
+`writePerServiceEnvFiles`, `sweepWorkspaceServiceEnvFiles` (docs/183's own
+migration tail, retired for the same reasons as the docs/246 sweep) and its two
+call sites, and the compose generator's `?? \`.shipit/.env.${svc}\`` fallback —
+which after the writer's removal would have named a file nothing creates. A
+service missing from `serviceEnvFiles` now gets no `env_file:` entry at all.
 
 ## Key files
 

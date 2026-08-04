@@ -1,12 +1,11 @@
 import type { FastifyInstance } from "fastify";
-import path from "node:path";
-import fs from "node:fs/promises";
 import { getAuthEnvKey } from "../shared/agent-registry.js";
 import type { AgentId } from "../shared/types.js";
 import type { WsClientMessage, WsServerMessage, WsLogRecord, LogSource } from "../shared/types.js";
 import { agentLogAppend } from "./log-emit.js";
 import { getErrorMessage } from "./validation.js";
 import { getGitIdentity } from "./git-config.js";
+import { readGlobalSystemPrompt } from "./global-system-prompt.js";
 import { pushToOrigin, isGitAuthError } from "./git-utils.js";
 import { isNonFastForwardError } from "./services/git.js";
 import { notableFilesForBranch } from "./services/notable-files.js";
@@ -955,13 +954,10 @@ export async function registerRoutes(
         send({ type: "git_identity_required" });
       };
 
-      const readSystemPrompt = async (): Promise<string | undefined> => {
-        try {
-          const content = await fs.readFile(path.join(workspaceDir, ".shipit", "system-prompt.md"), "utf-8");
-          const trimmed = content.trim();
-          return trimmed || undefined;
-        } catch { return undefined; }
-      };
+      // `workspaceDir` in this scope is the orchestrator's own root, not this
+      // session's clone — the system prompt is a global setting.
+      const readSystemPrompt = (): Promise<string | undefined> =>
+        readGlobalSystemPrompt(workspaceDir);
 
       // Wrap broadcastLog so it both buffers (per-session) AND sends to attached WS viewers.
       // The sessionId is captured from the URL — every log line emitted on

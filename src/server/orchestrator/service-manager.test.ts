@@ -26,6 +26,22 @@ function stateOf(workspaceDir: string): string {
   return path.resolve(workspaceDir, "..", SESSION_STATE_SUBDIR);
 }
 
+/**
+ * The orchestrator-private service-env root for a clone produced by
+ * {@link makeSessionDir} — a sibling of `workspace/`, so it is outside the
+ * clone. `ServiceManager` requires one (SHI-290): there is no longer an
+ * in-clone `.shipit/.env.<svc>` fallback, and a root that resolves inside the
+ * clone is refused outright.
+ */
+function serviceEnvOf(workspaceDir: string): string {
+  return path.resolve(workspaceDir, "..", "service-env");
+}
+
+/** Where `<svc>`'s env file lands for a manager built with {@link serviceEnvOf}. */
+function serviceEnvFile(workspaceDir: string, sessionId: string, svc: string): string {
+  return path.join(serviceEnvOf(workspaceDir), sessionId, `.env.${svc}`);
+}
+
 describe("ServiceManager", () => {
   let tmpDir: string;
 
@@ -50,6 +66,7 @@ describe("ServiceManager", () => {
     return new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner,
     });
@@ -146,6 +163,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner,
       composeQuery,
@@ -260,6 +278,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner,
       composeQuery,
@@ -307,6 +326,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner,
       composeQuery,
@@ -418,6 +438,7 @@ describe("ServiceManager lifecycle (mocked docker)", () => {
     return new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner,
       composeQuery,
@@ -558,6 +579,7 @@ describe("ServiceManager lifecycle (mocked docker)", () => {
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner,
       composeQuery,
@@ -595,6 +617,7 @@ describe("ServiceManager lifecycle (mocked docker)", () => {
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner,
       composeQuery,
@@ -658,6 +681,7 @@ describe("ServiceManager lifecycle (mocked docker)", () => {
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner,
       composeQuery,
@@ -730,6 +754,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner: fakeRunner,
       secretsLoader: async () => ({ STRIPE_KEY: "sk_test_123", DATABASE_URL: "postgres://x" }),
@@ -738,10 +763,13 @@ services:
 
     try { await mgr.start(); } catch { /* expected — no docker */ }
 
-    const webEnv = fs.readFileSync(path.join(dir, ".shipit/.env.web"), "utf-8");
-    const apiEnv = fs.readFileSync(path.join(dir, ".shipit/.env.api"), "utf-8");
+    const webEnv = fs.readFileSync(serviceEnvFile(dir, "test-session", "web"), "utf-8");
+    const apiEnv = fs.readFileSync(serviceEnvFile(dir, "test-session", "api"), "utf-8");
     expect(webEnv).toContain("STRIPE_KEY=sk_test_123");
     expect(apiEnv).toContain("DATABASE_URL=postgres://x");
+
+    // SHI-290 — and nowhere near the user's clone.
+    expect(fs.existsSync(path.join(dir, ".shipit"))).toBe(false);
 
     // Scoping: web should not see api's secrets and vice versa
     expect(webEnv).not.toContain("DATABASE_URL");
@@ -764,6 +792,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner: fakeRunner,
       secretsLoader: async () => ({ STRIPE_KEY: "sk" }),
@@ -772,8 +801,8 @@ services:
 
     try { await mgr.start(); } catch { /* expected */ }
 
-    expect(fs.existsSync(path.join(dir, ".shipit/.env.web"))).toBe(true);
-    expect(fs.existsSync(path.join(dir, ".shipit/.env.db"))).toBe(false);
+    expect(fs.existsSync(serviceEnvFile(dir, "test-session", "web"))).toBe(true);
+    expect(fs.existsSync(serviceEnvFile(dir, "test-session", "db"))).toBe(false);
   });
 
   it("does nothing when no secretsLoader is provided", async () => {
@@ -790,6 +819,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner: fakeRunner,
       // no secretsLoader
@@ -800,7 +830,7 @@ services:
 
     // The env file is still written (with header only, no values) so compose's
     // env_file: reference doesn't fail with "missing file"
-    const webEnv = fs.readFileSync(path.join(dir, ".shipit/.env.web"), "utf-8");
+    const webEnv = fs.readFileSync(serviceEnvFile(dir, "test-session", "web"), "utf-8");
     expect(webEnv).not.toContain("STRIPE_KEY=");
     expect(webEnv).toContain("# Generated by ShipIt");
   });
@@ -830,6 +860,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner,
       composeQuery,
@@ -838,12 +869,12 @@ services:
     });
 
     await mgr.start();
-    expect(fs.readFileSync(path.join(dir, ".shipit/.env.api"), "utf-8"))
+    expect(fs.readFileSync(serviceEnvFile(dir, "test-session", "api"), "utf-8"))
       .toContain("DATABASE_URL=postgres://old");
 
     secrets = { DATABASE_URL: "postgres://new" };
     await mgr.refreshSecrets();
-    expect(fs.readFileSync(path.join(dir, ".shipit/.env.api"), "utf-8"))
+    expect(fs.readFileSync(serviceEnvFile(dir, "test-session", "api"), "utf-8"))
       .toContain("DATABASE_URL=postgres://new");
   });
 
@@ -862,6 +893,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner,
       secretsLoader: async () => ({ API_KEY: secret }),
@@ -872,7 +904,7 @@ services:
     secret = "new";
     await mgr.refreshSecrets();
 
-    expect(fs.readFileSync(path.join(dir, ".shipit/.env.worker"), "utf-8"))
+    expect(fs.readFileSync(serviceEnvFile(dir, "test-session", "worker"), "utf-8"))
       .toContain("API_KEY=new");
     expect(composeRunner.mock.calls.some(([args]) => args.includes("up"))).toBe(false);
   });
@@ -896,6 +928,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner,
       secretsLoader: async () => ({ API_KEY: "value" }),
@@ -925,6 +958,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner: fakeRunner,
       secretsLoader: async () => ({ DATABASE_URL: "postgres://x" }),
@@ -935,7 +969,10 @@ services:
 
     const override = fs.readFileSync(path.join(stateOf(dir), "compose.override.yml"), "utf-8");
     expect(override).toContain("env_file:");
-    expect(override).toContain(".shipit/.env.api");
+    // SHI-290 — the reference is the absolute out-of-clone path, never
+    // `.shipit/.env.api` inside the user's repository.
+    expect(override).toContain(serviceEnvFile(dir, "test-session", "api"));
+    expect(override).not.toContain(".shipit/.env.api");
   });
 
   it("getDeclaredSecretNames returns the union across services", async () => {
@@ -957,6 +994,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner: fakeRunner,
       secretsLoader: async () => ({}),
@@ -986,6 +1024,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner: fakeRunner,
       secretsLoader: async () => ({ DATABASE_URL: "postgres://x", STRIPE_KEY: "sk" }),
@@ -1023,6 +1062,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner: fakeRunner,
       secretsLoader: async () => ({ STRIPE_KEY: "sk" }),
@@ -1053,6 +1093,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner: fakeRunner,
       secretsLoader: async () => ({ DATABASE_URL: "postgres://x" }),
@@ -1112,6 +1153,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner: fakeRunner,
       secretsLoader: async () => ({ DATABASE_URL: "postgres://x" }),
@@ -1155,6 +1197,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner: fakeRunner,
       secretsLoader: async () => ({ DATABASE_URL: "postgres://x" }),
@@ -1179,44 +1222,6 @@ services:
     fs.rmSync(secretsRoot, { recursive: true, force: true });
   });
 
-  it("Docker-secrets mode sweeps any leftover .env.<svc> files from prior env-file mode", async () => {
-    const dir = setup();
-    const secretsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "isolated-secrets-root-"));
-    const entrypointPath = path.join(secretsRoot, "secrets-entrypoint.sh");
-    fs.writeFileSync(entrypointPath, "#!/bin/sh\nexec \"$@\"\n", { mode: 0o755 });
-    // Pre-seed a stale env-file-mode artifact.
-    fs.mkdirSync(path.join(dir, ".shipit"), { recursive: true });
-    fs.writeFileSync(path.join(dir, ".shipit/.env.api"), "STALE=value\n");
-
-    writeCompose(dir, `
-services:
-  api:
-    image: node:20
-    ports: ['3000:3000']
-    x-shipit-secrets:
-      - DATABASE_URL
-`);
-    const fakeRunner: ComposeRunner = () => Promise.reject(new Error("no docker"));
-    const mgr = new ServiceManager({
-      sessionId: "test-session",
-      workspaceDir: dir,
-      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
-      composeRunner: fakeRunner,
-      secretsLoader: async () => ({ DATABASE_URL: "postgres://x" }),
-      pollIntervalMs: 0,
-      dockerSecretsConfig: {
-        internalDir: secretsRoot,
-        entrypointSourcePath: entrypointPath,
-      },
-    });
-
-    try { await mgr.start(); } catch { /* expected */ }
-
-    // Stale .env.api removed
-    expect(fs.existsSync(path.join(dir, ".shipit/.env.api"))).toBe(false);
-
-    fs.rmSync(secretsRoot, { recursive: true, force: true });
-  });
 
   it("Docker-secrets mode removes the internal secrets dir on stop({ removeVolumes: true }) but keeps it otherwise", async () => {
     const dir = setup();
@@ -1235,6 +1240,7 @@ services:
     const make = () => new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner: fakeRunner,
       secretsLoader: async () => ({ DATABASE_URL: "postgres://x" }),
@@ -1346,38 +1352,6 @@ services:
     fs.rmSync(serviceEnvRoot, { recursive: true, force: true });
   });
 
-  it("serviceEnvDir sweeps a pre-183 in-workspace .shipit/.env.<svc> leak", async () => {
-    const dir = setup();
-    const serviceEnvRoot = fs.mkdtempSync(path.join(os.tmpdir(), "service-env-root-"));
-    // Pre-seed a leaked env file from the old in-workspace write path.
-    fs.mkdirSync(path.join(dir, ".shipit"), { recursive: true });
-    fs.writeFileSync(path.join(dir, ".shipit/.env.api"), "LEAKED=value\n");
-
-    writeCompose(dir, `
-services:
-  api:
-    image: node:20
-    ports: ['3000:3000']
-    x-shipit-secrets:
-      - DATABASE_URL
-`);
-    const fakeRunner: ComposeRunner = () => Promise.reject(new Error("no docker"));
-    const mgr = new ServiceManager({
-      sessionId: "test-session",
-      workspaceDir: dir,
-      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
-      composeRunner: fakeRunner,
-      secretsLoader: async () => ({ DATABASE_URL: "postgres://x" }),
-      pollIntervalMs: 0,
-      serviceEnvDir: serviceEnvRoot,
-    });
-
-    try { await mgr.start(); } catch { /* expected */ }
-
-    expect(fs.existsSync(path.join(dir, ".shipit/.env.api"))).toBe(false);
-
-    fs.rmSync(serviceEnvRoot, { recursive: true, force: true });
-  });
 
   it("refreshSecrets in serviceEnvDir mode rewrites the external file and leaves the override's absolute path intact", async () => {
     const dir = setup();
@@ -1490,6 +1464,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner: fakeRunner,
       secretsLoader: async () => ({}), // no values — both surface as missing
@@ -1576,6 +1551,7 @@ describe("ServiceManager install-running retry gate", () => {
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner,
       composeQuery,
@@ -2014,6 +1990,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner,
       composeQuery,
@@ -2062,6 +2039,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner,
       composeQuery,
@@ -2099,6 +2077,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner,
       composeQuery,
@@ -2131,6 +2110,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner,
       composeQuery,
@@ -2193,6 +2173,7 @@ describe("ServiceManager install gate (x-shipit-depends-on-install)", () => {
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner,
       composeQuery,
@@ -2430,6 +2411,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner,
       composeQuery,
@@ -2548,6 +2530,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner,
       composeQuery,

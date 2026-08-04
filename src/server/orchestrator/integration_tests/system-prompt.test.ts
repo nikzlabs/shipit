@@ -91,6 +91,40 @@ describe("Integration: System prompt", () => {
     client.close();
   });
 
+  /**
+   * SHI-290 — the WS turn and the server-dispatched (system) turn read the
+   * global prompt through *different* closures: `route-registry.ts`'s
+   * per-connection `readSystemPrompt` and `bootstrap-managers.ts`'s app-scope
+   * `readSystemPromptApp`. Both now call `readGlobalSystemPrompt`, but only the
+   * first was covered — so a change that disconnected the app-scope one would
+   * have silently dropped the prompt from CI-fix, child and wake turns while
+   * every other test stayed green.
+   */
+  it("system prompt reaches a server-dispatched turn, not just a WS turn", async () => {
+    const settingsRes = await app.inject({
+      method: "PUT",
+      url: "/api/settings",
+      payload: { systemPrompt: "Be concise." },
+    });
+    expect(settingsRes.statusCode).toBe(200);
+
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // Dispatch over HTTP — the same path CI-fix / child / wake turns take.
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${client.sessionId}/agent/dispatch`,
+      payload: { text: "fix the failing check", activity: "Fixing CI…" },
+    });
+    expect(res.statusCode).toBe(200);
+
+    await waitForClaude(() => lastClaude);
+    expect(lastClaude.lastSystemPrompt).toBe(`${CLAUDE_AGENT_INSTRUCTIONS}\n\nBe concise.`);
+
+    client.close();
+  });
+
   it("system prompt contains only agent instructions when no user prompt file exists", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status

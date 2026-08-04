@@ -3,9 +3,10 @@
  *
  * Secrets are key-value pairs (environment variables) associated with a repo
  * URL. The orchestrator resolves them against `x-shipit-secrets` declarations
- * in the user's docker-compose.yml and writes per-service env files
- * (`.shipit/.env.<service>`) referenced by the compose override via
- * `env_file:`. See feature 087 for the full pipeline.
+ * in the user's docker-compose.yml and writes per-service env files at
+ * `<serviceEnvDir>/<sessionId>/.env.<service>` — outside the session's git clone
+ * (docs/183, SHI-290) — referenced by the compose override via absolute
+ * `env_file:` paths. See feature 087 for the full pipeline.
  *
  * Follows the same structural pattern as DeploymentStore: SQLite via
  * DatabaseManager, class wrapping prepared statements.

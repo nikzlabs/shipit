@@ -1,12 +1,13 @@
 /**
  * Compose override file generator.
  *
- * Reads a user's docker-compose.yml and generates `.shipit/compose.override.yml`
+ * Reads a user's docker-compose.yml and generates a `compose.override.yml`
  * that layers on ShipIt's labels, network, volume rewrites, and security policies.
- * The user's file is never modified.
+ * The user's file is never modified, and the override is written to the session's
+ * state dir rather than the clone (docs/246 — see {@link writeComposeOverride}).
  *
  * The override is used with:
- *   docker compose -f <user-file> -f .shipit/compose.override.yml up -d
+ *   docker compose -f <user-file> -f <state-dir>/compose.override.yml up -d
  */
 
 import fs from "node:fs";
@@ -132,12 +133,15 @@ export interface ComposeOverrideOptions {
     entrypointHostPath?: string;
   };
   /**
-   * docs/183 — service-name → absolute env-file path for services that
-   * declare `x-shipit-secrets`. When provided (out-of-workspace env-file
-   * mode), the service's `env_file:` entry uses this absolute path instead
-   * of the workspace-relative `.shipit/.env.<service>`. A service missing
-   * from the map falls back to the workspace path, so partial maps and the
-   * no-map (test / legacy) case both behave correctly.
+   * docs/183 — service-name → absolute env-file path for services that declare
+   * `x-shipit-secrets`. The service's `env_file:` entry uses this path, which
+   * always resolves outside the session's git clone.
+   *
+   * A service missing from the map gets **no** `env_file:` entry rather than a
+   * fallback path (SHI-290 — there is no longer an in-clone file to fall back
+   * to). `ServiceSecretsResolver.sync()` populates one entry per
+   * secret-declaring service and always runs before the override is generated,
+   * so a gap here means secrets haven't been resolved at all.
    *
    * Ignored when `dockerSecrets` is active (that mode uses `secrets:`, not
    * `env_file:`).
@@ -838,12 +842,17 @@ export function generateComposeOverride(
     } else if (svc.secrets && svc.secrets.length > 0) {
       // Inject the per-service secrets env file if the service declared any
       // secrets via `x-shipit-secrets`. The orchestrator writes the file before
-      // running `docker compose up` (see secret-resolver.ts). docs/183: in
-      // out-of-workspace env-file mode the file lives at an absolute path
-      // outside the workspace (`serviceEnvFiles[name]`); otherwise it falls
-      // back to the workspace-relative `.shipit/.env.<service>`.
-      const envFilePath = opts.serviceEnvFiles?.[svc.name] ?? `.shipit/.env.${svc.name}`;
-      entry.env_file = [envFilePath];
+      // running `docker compose up` (see secret-resolver.ts), at an absolute
+      // path outside the workspace (docs/183).
+      //
+      // No entry → no `env_file:`. There used to be a
+      // `?? \`.shipit/.env.${svc.name}\`` fallback for the in-workspace write
+      // path; that writer is gone (SHI-290), so the fallback would now name a
+      // file nothing creates and fail the whole stack at `up` time. Absence
+      // means `sync()` hasn't run, which is also when there is no file to point
+      // at.
+      const envFilePath = opts.serviceEnvFiles?.[svc.name];
+      if (envFilePath) entry.env_file = [envFilePath];
     }
 
     // docs/183 Phase 5 — append nested overlay dep-dir mounts for services that
