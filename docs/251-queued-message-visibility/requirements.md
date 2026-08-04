@@ -6,7 +6,7 @@ description: Whether the user can tell their message was queued, and — when it
 
 # 251 — Telling a queued message from a delivered one: requirements
 
-Status: **open questions unanswered — nothing is being built.** There is no `plan.md` yet, and there must not be one until every bullet under [Open questions](#open-questions) is answered by a human.
+Status: **closed, nothing built — deliberately.** The human's answer on 2026-08-04 was "do nothing" (see [Resolved questions](#resolved-questions)). Requirement 2 is knowingly unmet. There is no `plan.md` and there should not be one unless this is reopened. What this document is worth keeping for is the [verified current behavior](#current-behavior-verified) below — it is the record of what ShipIt already does here, which is more than the work was proposed on the assumption of.
 
 This feature exists because of an incident on PR #1981 ("Gate submit acks on actual delivery"): an operator submitted an action card and it could not be determined afterwards whether the click was dropped in the browser or enqueued behind a turn the operator never started. #1981 fixed the browser half — a `send` on a non-OPEN socket silently no-oped and the card acked anyway. The other half — "it was enqueued, and I couldn't tell" — was deliberately left out of that PR, and is what this document scopes.
 
@@ -42,20 +42,14 @@ Both of these are stated at the level the user experiences. Requirement 1 is met
 
 1. When the user sends a message and it is queued rather than handed to the running agent, they can tell that it was queued, without waiting for it to run.
 
-2. When a message is queued behind a turn the user did not start, they can tell the wait is not the consequence of something they did.
+2. **Not met, by decision.** When a message is queued behind a turn the user did not start, they can tell the wait is not the consequence of something they did.
 
-Requirement 2 is the whole of this feature, and whether it is worth meeting *at all* — given items 4–6 above already convey a good deal of it — is the first open question.
+Requirement 2 was the whole of this feature. Items 4–6 already convey a good deal of it, and on 2026-08-04 the human decided the remainder was not worth closing. The gap it leaves is precisely items 8–10: the queue card names no cause, the system-turn label is overwritten within seconds, and a viewer who attached mid-turn never sees it. If this is reopened, that is the list to start from.
 
 ## Open questions
 
-- **Is this worth building at all?** The queue card exists, and a system turn announces itself in the transcript and in the status bar when it starts. The residual gap is narrow: the label is overwritten within seconds (item 9), is missing for anyone who attached late (item 10), and the queue card itself never mentions it (item 8). "Do nothing, close this" is a legitimate answer and would leave requirement 2 unmet on purpose. My recommendation is the smallest change that closes items 8–9 and nothing more.
-
-- **Should the user be told *why* the message is queued, or only *that* it is queued behind something they didn't start?** Naming it ("waiting for a merge follow-up") is more useful but ties the wording to each system-turn source; a generic marker ("queued behind a follow-up ShipIt started") is one string and never goes stale.
-
-- **Does this need anything server-side?** The activity label already crosses the wire at turn start, so a client-only change can hold onto it for the turn's duration and show it on the queue card — no new field, no orchestrator change. The cost is item 10: a viewer who attached mid-turn still has no label and would see the plain "1 message queued". Closing that too means the server carrying the reason on `message_queued` (or on the attach snapshot), which is where this expands into the orchestrator — exactly what #1981 avoided.
-
-- **Should a system-initiated prompt bubble be marked as not written by the user?** It is persisted as a plain user-role bubble (item 11), so on reload the transcript shows the user apparently saying "Your PR merged, reset your branch…". This is adjacent to requirement 2 and may be the more honest fix, or may be a separate feature — it is not what was asked for, so it is not a requirement here.
+_None — the feature was closed before any were answered on their merits. The three that shaped how it would be built (name the reason vs. a generic marker; client-only vs. carrying the reason from the server; whether to also mark system-initiated prompt bubbles as not written by the user) are moot while requirement 2 stays unmet, and are recorded in the git history of this file rather than restated here._
 
 ## Resolved questions
 
-_None yet._
+- 2026-08-04 — Is this worth building at all, given `QueueIndicator` already exists and a system turn already announces itself when it starts? Chosen: **do nothing**. Requirement 2 is left unmet on purpose and marked as such; the remaining questions were not reached. The recommendation on the table was a client-only change (hold the system-turn label for the whole turn and show it on the queue card); it was declined along with the larger server-side option.
