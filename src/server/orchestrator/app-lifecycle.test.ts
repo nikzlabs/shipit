@@ -21,6 +21,7 @@ import { ProviderAccountManager } from "./provider-account-manager.js";
 import { SessionManager } from "./sessions.js";
 import { createTestDatabaseManager } from "./integration_tests/test-helpers.js";
 import type { AgentId, AgentProcess, SessionInfo } from "../shared/types.js";
+import type { AgentMcpWriteContext } from "../shared/types/agent-types.js";
 import type { AgentAuthManager } from "./agent-auth-manager.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { AgentRegistry } from "../shared/agent-registry.js";
@@ -651,6 +652,59 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
         "/credentials/provider-accounts/claude/acct-a",
         "/credentials/provider-accounts/claude/acct-b",
       ]);
+      runner.dispose({ force: true });
+    });
+  });
+
+  // SHI-298 — the second thing a local spawn has no worker to do for it. The
+  // adapter's MCP write and the MCP env both happen at `createAgent`, next to
+  // the account-scoped HOME above.
+  describe("MCP on a local spawn (SHI-298)", () => {
+    function localFactoryWithMcp(opts: { credentialStore?: CredentialStore } = {}) {
+      const written: (AgentMcpWriteContext | null)[] = [];
+      const localAgentFactory = vi.fn((): AgentProcess => {
+        const agent = new EventEmitter() as unknown as AgentProcess;
+        agent.writeMcpConfig = (ctx: AgentMcpWriteContext) => {
+          written.push(ctx);
+          return {};
+        };
+        agent.run = () => { /* no spawn in this test */ };
+        return agent;
+      });
+      const factory = buildRunnerFactory({
+        deps: {},
+        containerManager: null,
+        credentialsDir: "/credentials",
+        sessionManager: { get: () => undefined } as unknown as SessionManager,
+        runtimeMode: "local",
+        localAgentFactory,
+        ...(opts.credentialStore ? { credentialStore: opts.credentialStore } : {}),
+      });
+      return { factory: factory!, written };
+    }
+
+    it("wraps the spawn so the adapter's MCP config is written", () => {
+      const store = new CredentialStore(
+        fs.mkdtempSync(path.join(os.tmpdir(), "shipit-mcp-")),
+      );
+      store.setAgentEnv("mcp__linear__TOKEN", "sk-1");
+      const { factory, written } = localFactoryWithMcp({ credentialStore: store });
+
+      const runner = factory({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+      const agent = runner.createAgent!("claude");
+      agent.run({ prompt: "hi", cwd: "/tmp/s1" });
+
+      expect(written).toHaveLength(1);
+      // No bridge: its tools are transports to a worker local mode doesn't have.
+      expect(written[0]?.shipitBridge).toBeNull();
+      runner.dispose({ force: true });
+    });
+
+    it("without a credential store the spawn is unwrapped (pre-SHI-298 behavior)", () => {
+      const { factory, written } = localFactoryWithMcp();
+      const runner = factory({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+      runner.createAgent!("claude").run({ prompt: "hi", cwd: "/tmp/s1" });
+      expect(written).toHaveLength(0);
       runner.dispose({ force: true });
     });
   });

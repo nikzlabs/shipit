@@ -55,6 +55,30 @@ RUN ln -sf /opt/agent-cli/node_modules/.bin/claude /usr/local/bin/claude \
  && ln -sf /opt/agent-cli/node_modules/.bin/codex /usr/local/bin/codex \
  && ln -sf /opt/agent-cli/node_modules/.bin/playwright-mcp /usr/local/bin/playwright-mcp
 
+# SHI-298 — Chromium + its system libraries for the Playwright MCP browser
+# tools. `playwright-mcp` being on PATH (above) is only half of it: the server
+# still has to launch a browser, and neither the binary nor the ~50 shared libs
+# Chromium links against are in node:24-slim. Without this layer every
+# `browser_*` tool fails on first call, which is exactly the state SHI-298
+# found — MCP config written, tools advertised, nothing behind them.
+#
+# Copied from Dockerfile.session-worker.prod (canonical comment there): install
+# system deps via the pinned `playwright` CLI, then fetch the chrome-for-testing
+# build via @playwright/mcp's own installer, both invoked by bare name off
+# /opt/agent-cli's PATH rather than `npx <pkg>` (which would re-fetch an
+# unpinned copy). The browser is pinned to a shared readable path because this
+# container does NOT necessarily run as root: with SHIPIT_SESSION_WORKER_UID set
+# on the deployment the compose generator forces `user: <uid>:<uid>` onto the
+# `dev` service, and the default install location ($HOME/.cache/ms-playwright)
+# would then be unreadable — the same SHI-282 constraint that moved AGENT_HOME
+# out of /root. `--isolated` in PLAYWRIGHT_MCP_ARGS keeps the writable profile
+# dir in /tmp, so read-only here is enough (docs/150 §8).
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
+RUN mkdir -p /opt/playwright-browsers \
+ && playwright install-deps chromium \
+ && HOME=/opt/playwright-browsers playwright-mcp install-browser chrome-for-testing \
+ && chmod -R a+rX /opt/playwright-browsers
+
 # No-op git credential helper. Session workspaces carry a local
 # `credential.helper = /usr/local/bin/shipit-git-credential` (the brokering
 # binary, installed only in the session-worker images). When the orchestrator —
