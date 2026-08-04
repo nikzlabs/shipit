@@ -62,28 +62,54 @@ That reasoning is load-bearing: moving this onto a periodic timer or a
 per-activation hook would put genuinely in-flight consults in scope and cancel
 them out from under their callers.
 
-### Ordering: before the docs/240 turn adoption
+**The assumption it rests on, stated plainly:** one orchestrator per database.
+Verified for the production path — `autoStart` builds exactly one app and calls
+`app.listen()` only after `buildApp()` resolves (`app-lifecycle.ts`), and
+`runSubAgent` has a single non-test entry point (the agent HTTP route). It is
+*not* mechanically enforced: two `buildApp()` calls sharing an injected
+`databaseManager` (`app-di.ts`) would let the second one's sweep cancel the
+first's live card. That topology exists only in tests today, and a second
+orchestrator on the same state directory would already be broken in more
+serious ways (container rediscovery, SQLite writers, session ownership). Exclusive
+ownership of the state directory would close it properly; that is a
+platform-level concern, not this feature's.
 
-The sweep is called from `bootstrap-managers.ts` **immediately before**
-`reattachInFlightTurns`, and finalizes the rows it patches. Both halves matter,
-for one reason:
+**When the sweep itself fails, the card stays stranded until the next boot.**
+`reconcileOrphanedConsultCards` logs and continues — a read failure returns
+early, a per-row write failure skips that row. This is a deliberate trade:
+the orchestrator owns every live session, so failing the boot over an
+unreconciled card would turn a cosmetic-and-CLI problem into a total outage. The
+cost is that requirements 1/3/4 depend on the sweep succeeding, and a failed one
+leaves the original symptom in place. Pinned by the two failure-isolation tests.
+
+### Finalizing the row — what protects the card from the docs/240 adoption
 
 A consult spawned by a **foreground** `shipit agent run` is still inside its
 originating turn when the orchestrator dies, so its card row is `in_progress=1`.
 docs/240 then adopts that turn in the new process, and the adopted turn's
 `agent_result` calls `replaceInProgress` — which deletes **every** `in_progress=1`
-row in the session and rebuilds from the fresh runner's (empty) `recordedCards`.
-A patch alone would be undone by that delete, and the card would not merely stay
+row in the session and rebuilds from the fresh runner's (empty) `recordedCards`
+(verified at `chat-history.ts` `replaceInProgress` → `stmtDeleteInProgress`, and
+`agent-listeners.ts`'s `agent_result` path via `turn-adoption.ts`). A status
+patch alone would be undone by that delete, and the card would not merely stay
 pending: it would be **gone**, with `shipit agent result` answering "No sub-agent
-runs in this session yet" — the exact docs/236 failure. So the patch also clears
-`in_progress` (`updateSubAgentConsultCard`'s `finalize` option), and it runs
-before the adoption rather than racing it.
+runs in this session yet" — the exact docs/236 failure.
 
-Pinned by two tests that fail in opposite directions:
+So the patch also clears `in_progress` (`updateSubAgentConsultCard`'s `finalize`
+option). **That is the protection**, and it is what the tests pin — not the call
+ordering. Being precise about this matters, because the ordering looks like it
+carries more weight than it does: the adopted turn's `replaceInProgress` fires at
+its `agent_result`, seconds to minutes after boot, so the sweep would beat it
+either way. Running before `reattachInFlightTurns` in `bootstrap-managers.ts`
+closes the window rather than being the reason the card survives. Do not reorder
+it — but do not mistake the ordering for the guarantee.
+
+Pinned by three tests that fail in different directions:
 `consult-card-reconcile.test.ts` → "survives an adopted turn's
-replaceInProgress", and `chat-history.test.ts` → "without finalize, an
-in-progress card is still deleted", which documents what `finalize` is for by
-showing the loss.
+replaceInProgress"; `chat-history.test.ts` → "without finalize, an in-progress
+card is still deleted", which documents what `finalize` is for by showing the
+loss; and the integration test's "boot leaves the card able to survive an adopted
+turn's row rebuild", which asserts it through a real `buildApp`.
 
 ### Where the explanation lives: `statusDetail`, not `outputMarkdown`
 

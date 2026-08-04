@@ -38,6 +38,13 @@
  * That reasoning is load-bearing: this must NOT be moved onto a periodic timer
  * or a per-activation hook, where a genuinely in-flight consult would be in
  * scope and would be cancelled out from under its caller.
+ *
+ * It also assumes ONE orchestrator per database — verified for the production
+ * path (`autoStart` builds one app and listens only after `buildApp` resolves),
+ * but not mechanically enforced: two `buildApp()` calls sharing an injected
+ * `databaseManager` would let the second one's sweep cancel the first's live
+ * card. That topology exists only in tests, and a second orchestrator on one
+ * state directory is already broken in more serious ways. See docs/249.
  */
 
 import type { SubAgentConsultCard } from "../shared/types.js";
@@ -116,11 +123,13 @@ export function reconcileOrphanedConsultCards(
         {
           status: ORPHANED_CONSULT_STATUS,
           statusDetail: ORPHANED_CONSULT_DETAIL,
-          // No duration or cost is claimed: the run's real numbers died with the
-          // response, and inventing a wall-clock figure from `createdAt` would
-          // report time the consult may never have spent working.
-          costUsd: 0,
-          truncated: false,
+          // Deliberately no `durationMs`, `costUsd` or `truncated`. Every one of
+          // those facts died with the response, and writing a zero is not the
+          // same as writing nothing: a `--json` caller reads `costUsd: 0` as
+          // "this consult was free" and `truncated: false` as "the output was
+          // complete", neither of which we know. Absent fields say "unknown",
+          // which is the true answer. The card face and the shim already treat
+          // absent and zero identically, so this costs no display.
         },
         { finalize: true },
       );

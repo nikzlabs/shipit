@@ -90,6 +90,35 @@ describe("Integration: consult cards stranded by an orchestrator restart (SHI-30
     expect(card.spawnId).toBe("spawn-a");
   });
 
+  it("boot leaves the card able to survive an adopted turn's row rebuild", async () => {
+    // The foreground-consult shape: a blocking `shipit agent run` means the card
+    // is still an `in_progress=1` row when the orchestrator dies. docs/240 then
+    // adopts that turn, and its eventual `agent_result` calls `replaceInProgress`,
+    // which deletes EVERY in-progress row in the session and rebuilds from the
+    // fresh runner's empty `recordedCards`.
+    //
+    // So terminalizing the card is not sufficient on its own — a card that boot
+    // marked `cancelled` but left in-progress is deleted outright a moment later,
+    // and `shipit agent result` answers "No sub-agent runs in this session yet".
+    // This asserts the property that actually protects it end-to-end: after a
+    // REAL boot, the row no longer participates in the rebuild.
+    chatHistoryManager.replaceInProgress("sess-1", [
+      { role: "assistant", text: "asking codex", inProgress: true },
+      { ...pendingCard("spawn-a"), inProgress: true },
+    ]);
+
+    await boot();
+
+    // …now the adopted turn finalizes and rebuilds its own rows.
+    chatHistoryManager.replaceInProgress("sess-1", [
+      { role: "assistant", text: "the adopted turn", inProgress: true },
+    ]);
+
+    const card = getSubAgentResult({ chatHistoryManager }, "sess-1");
+    expect(card.status).toBe("cancelled");
+    expect(card.spawnId).toBe("spawn-a");
+  });
+
   it("leaves a finished consult's output untouched across the same boot", async () => {
     chatHistoryManager.append("sess-1", {
       role: "assistant",

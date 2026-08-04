@@ -64,13 +64,17 @@ describe("reconcileOrphanedConsultCards (SHI-307)", () => {
     });
   });
 
-  it("claims no duration — the run's real numbers died with the response", () => {
+  it("claims no telemetry at all — the run's real numbers died with the response", () => {
+    // Absent, not zero. A `--json` caller reads `costUsd: 0` as "this consult
+    // was free" and `truncated: false` as "the output was complete"; we know
+    // neither. Absent is the only honest encoding of unknown.
     const mgr = new ChatHistoryManager(dbManager);
     mgr.append("sess-1", consult("spawn-a"));
     reconcileOrphanedConsultCards(mgr);
     const [card] = mgr.listSubAgentConsultCards("sess-1");
     expect(card.durationMs).toBeUndefined();
-    expect(card.costUsd).toBe(0);
+    expect(card.costUsd).toBeUndefined();
+    expect(card.truncated).toBeUndefined();
   });
 
   it("sweeps every session, because it cannot know which ones were running", () => {
