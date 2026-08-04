@@ -20,6 +20,8 @@ import {
   createTestSession,
 } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
+import { ProviderAccountManager } from "../provider-account-manager.js";
+import type { CredentialStore } from "../credential-store.js";
 
 describe("Integration: AskUserQuestion / answer_question flow", () => {
   let app: FastifyInstance;
@@ -28,25 +30,32 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
   let sessionManager: SessionManager;
   /** Most recently created FakeClaudeProcess — set by agentFactory. */
   let lastClaude: FakeClaudeProcess = null as any;
+  /** Every FakeClaudeProcess this app created, in order. */
+  let allClaudes: FakeClaudeProcess[];
   let dbManager: DatabaseManager;
+  let credentialStore: CredentialStore;
+  let credentialsDir: string;
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
     lastClaude = null as any;
+    allClaudes = [];
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-ask-question-"));
+    credentialsDir = path.join(tmpDir, "credentials");
 
     sessionManager = new SessionManager(dbManager);
 
-    const credentialStore = createTestCredentialStore(tmpDir);
+    credentialStore = createTestCredentialStore(tmpDir);
 
     app = await buildApp({
       credentialStore,
-      credentialsDir: path.join(tmpDir, "credentials"),
+      credentialsDir,
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       agentFactory: () => {
         lastClaude = new FakeClaudeProcess();
+        allClaudes.push(lastClaude);
         return lastClaude as any;
       },
       workspaceDir: tmpDir,
@@ -329,6 +338,7 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
       authManager: new StubAuthManager() as unknown as AuthManager,
       agentFactory: () => {
         lastClaude = new FakeClaudeProcess();
+        allClaudes.push(lastClaude);
         return lastClaude as any;
       },
       workspaceDir: tmpDir,
@@ -408,6 +418,7 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
       authManager: new StubAuthManager() as unknown as AuthManager,
       agentFactory: () => {
         lastClaude = new FakeClaudeProcess();
+        allClaudes.push(lastClaude);
         return lastClaude as any;
       },
       workspaceDir: tmpDir,
@@ -773,6 +784,52 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
       }
     }
     expect(sawFinished).toBe(true);
+
+    client.close();
+  });
+  // docs/150 reqs 13, 20 — an answer is a full turn, so it takes the shared
+  // provider-account preflight. `handleAnswerQuestion` delegates to
+  // `runAgentWithMessage`, which is the wiring under test: if the answer path
+  // ever grew its own `agent.run(...)` again (it hand-rolled one before
+  // docs/169), an exhausted subscription would be discovered by the provider
+  // mid-turn instead of by ShipIt before the spawn.
+  //
+  // The assertion is that the turn was STOPPED, not merely that it "worked":
+  // the error carries the earliest reset time, and no CLI ever received the
+  // answer.
+  it("blocks an answer when every connected account is out of quota", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // A first turn, on an install with no accounts yet, so the session exists
+    // and is pinned to an agent before quota enters the picture.
+    client.send({ type: "send_message", text: "Ask me something" });
+    const firstClaude = await waitForClaude(() => lastClaude);
+    firstClaude.finish(client.sessionId);
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Now both connected Claude subscriptions are spent. `markAccountExhausted`
+    // is the persisted hard-exhaustion stamp (req 7), which is what the router
+    // reads before any fresh quota snapshot exists.
+    const accounts = new ProviderAccountManager({ credentialsDir, credentialStore });
+    const resetAt = Date.now() + 30 * 60 * 1000;
+    for (const label of ["Work", "Personal"]) {
+      const acct = accounts.create("claude", label);
+      accounts.setAccountStatus("claude", acct.id, "ready");
+      accounts.markAccountExhausted("claude", acct.id, resetAt);
+    }
+    const spawnedBefore = allClaudes.length;
+
+    client.send({ type: "answer_question", toolUseId: "tool-quota", answers: { "0": "Redis" } });
+
+    const err = await client.receiveType("error") as unknown as { message: string };
+    expect(err.message).toContain("out of quota");
+    expect(err.message).toContain(new Date(resetAt).toISOString().slice(0, 16));
+    // req 13 — the prompt is not held for later, so the user is told to resend.
+    expect(err.message).toContain("Send this message again");
+    // Nothing ran the answer: the preflight stopped the turn before `agent.run`.
+    expect(allClaudes.slice(spawnedBefore).some((c) => c.runCalled)).toBe(false);
+    expect(allClaudes.every((c) => c.lastPrompt !== "Redis")).toBe(true);
 
     client.close();
   });
