@@ -786,6 +786,23 @@ describe("PrLifecycleCard", () => {
     expect(screen.getByText("Squash and merge")).toBeInTheDocument();
   });
 
+  it("puts the merge controls on a row of their own, apart from the diff/CI chips", () => {
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "success", total: 3, passed: 3, failed: 0, pending: 0 },
+    });
+
+    render(<PrLifecycleCard sessionId="s1" />);
+
+    // The merge row is `basis-full`, which is what forces the line break in the
+    // wrapping rows that host it. Without it the toggle and button get pulled
+    // up onto the diff/CI line.
+    const mergeRow = screen.getByText("Squash and merge").closest("div.basis-full");
+    expect(mergeRow).not.toBeNull();
+    // The chips live outside that row.
+    expect(mergeRow).not.toContainElement(screen.getByText("+100"));
+  });
+
   it("does not render merge button when CI is pending", () => {
     setCard("s1", {
       ...openPrCard,

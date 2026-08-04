@@ -1,7 +1,10 @@
 /**
- * PrStatusActions — the open-PR card's status chips and action controls: diff
- * stats, pending review, CI, review decision, the auto-merge toggle, and the
- * merge / resolve-conflicts / fix-CI buttons.
+ * PrStatusActions — the open-PR card's status chips and secondary action
+ * controls: diff stats, pending review, CI, review decision, and the
+ * resolve-conflicts / fix-CI buttons.
+ *
+ * The auto-merge toggle and the merge button are NOT here: they live in
+ * `PrMergeActions` below, which always renders on a line of its own.
  *
  * Extracted from OpenPhase because it renders in two places depending on the
  * viewport, and only the placement differs:
@@ -11,13 +14,8 @@
  * - **Mobile** — as its own full-width row below the card header (rendered by
  *   PrLifecycleCard). The card's icon cluster is a sibling column, so it
  *   narrows *every* wrapped row, not just the first: on a 427px phone that
- *   leaves the inline row ~258px, and the auto-merge toggle (~123px) plus
- *   "Squash and merge" (~137px) need ~272px. Breaking out to the card's full
- *   width gives ~370px and the pair fits with their real labels.
- *
- * The toggle and the merge button are additionally bound into one non-wrapping
- * group, because greedy wrapping would otherwise pull the toggle up onto the
- * diff/CI line and strand the merge button alone on the next one.
+ *   leaves the inline row ~258px, which isn't enough for the merge controls to
+ *   share with the chips. Breaking out to the card's full width gives ~370px.
  */
 
 import { useState } from "react";
@@ -97,30 +95,26 @@ function PendingReviewButton({ sessionId, count }: { sessionId: string; count: n
   );
 }
 
-export function PrStatusActions({
-  card,
-  sessionId,
-  canAutoMerge,
-}: {
-  card: PrCardState;
-  sessionId: string;
-  canAutoMerge?: boolean;
-}) {
-  const pr = card.pr;
+/**
+ * Is the merge button allowed to show? Shared by the card's merge row and the
+ * detail panel's action box so the two can't drift apart.
+ *
+ * Gates on CI state AND on GitHub-reported mergeability. Don't gate on
+ * `mergeable === "unknown"` — that's the brief window after each push while
+ * GitHub computes mergeability, and gating would flicker the button off-on
+ * every push. The cost of a stale click during that window is bounded (the
+ * merge attempt fails with a toast).
+ *
+ * docs/174 — also gate on GitHub's review decision. A base branch with a
+ * required-review protection rule reports "review_required" until approved and
+ * "changes_requested" when a reviewer blocks; both mean GitHub would reject the
+ * merge, so hide the button. "approved"/"none" allow it ("none" = no review
+ * requirement, the common solo-repo case).
+ */
+function useCanMerge(card: PrCardState, sessionId: string): boolean {
   const mergeable = usePrStore((s) => s.statusBySession[sessionId]?.mergeable);
   const reviewDecision = usePrStore((s) => s.statusBySession[sessionId]?.reviewDecision);
-  const rebaseStatus = useGitStore((s) => s.rebaseStatus);
-  const pendingReviewCount = useCommentStore((s) => s.getCommentCount(sessionId));
-  const autoFixCi = useSettingsStore((s) => s.autoFixCi);
-  const openDiff = useOpenPrDiff(pr?.baseBranch);
   const ciDisplay = useCiDisplay(card.checks);
-  if (!pr) return null;
-
-  const autoFix = card.autoFix;
-  const autoMerge = card.autoMerge;
-  const isAutoFixRunning = autoFix?.status === "running";
-  const isAutoFixExhausted = autoFix?.status === "exhausted";
-  const isCiFailed = ciDisplay.kind === "failure";
   const isCiPassed = ciDisplay.kind === "success";
   // "none" must come from the poller explicitly — `"unknown"` means we haven't
   // heard from the poller yet, so we don't know whether CI exists. Treating
@@ -134,24 +128,72 @@ export function PrStatusActions({
   // merge button appears. `useCiDisplay` also retires the override locally at
   // its deadline, so a paused poller can't strand the button behind a spinner.
   const isCiNone = ciDisplay.kind === "none";
-  const isConflicting = mergeable === "conflicting";
-  // docs/174 — also gate on GitHub's review decision. A base branch with a
-  // required-review protection rule reports "review_required" until approved
-  // and "changes_requested" when a reviewer blocks; both mean GitHub would
-  // reject the merge, so hide the button. "approved"/"none" allow it ("none" =
-  // no review requirement, the common solo-repo case).
   const isReviewBlocked = reviewDecision === "review_required" || reviewDecision === "changes_requested";
-  // Merge button visibility: gate on CI state AND on GitHub-reported
-  // mergeability. Don't gate on `mergeable === "unknown"` — that's the brief
-  // window after each push while GitHub computes mergeability, and gating
-  // would flicker the button off-on every push. The cost of a stale click
-  // during that window is bounded (the merge attempt fails with a toast).
-  const canMerge = (isCiPassed || isCiNone) && !isConflicting && !isReviewBlocked;
+  return (isCiPassed || isCiNone) && mergeable !== "conflicting" && !isReviewBlocked;
+}
+
+/**
+ * The auto-merge toggle and the merge button, on a row of their own.
+ *
+ * `basis-full` is what buys the separate line: in the mobile actions row (a
+ * full-width flex-wrap container) it forces the pair onto a line below the
+ * chips instead of letting greedy wrapping mix them in; in the desktop card the
+ * caller drops it into the title column as a block-level row below the title.
+ * Either way the pair never shares a line with the diff/CI chips, and the
+ * toggle can't ride up and strand the button alone.
+ *
+ * Renders nothing when neither control applies, so the card doesn't grow an
+ * empty row.
+ */
+export function PrMergeActions({
+  card,
+  sessionId,
+  canAutoMerge,
+}: {
+  card: PrCardState;
+  sessionId: string;
+  canAutoMerge?: boolean;
+}) {
+  const canMerge = useCanMerge(card, sessionId);
+  const autoMerge = card.autoMerge;
+  const showMergeButton = canMerge && !autoMerge?.enabled;
+
+  if (!card.pr || (!canAutoMerge && !showMergeButton)) return null;
+
+  return (
+    <div className="w-full basis-full mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 md:gap-x-3">
+      {canAutoMerge && <AutoMergeToggle sessionId={sessionId} autoMerge={autoMerge} />}
+      {showMergeButton && <MergeButton sessionId={sessionId} autoMerge={autoMerge} />}
+    </div>
+  );
+}
+
+export function PrStatusActions({
+  card,
+  sessionId,
+}: {
+  card: PrCardState;
+  sessionId: string;
+}) {
+  const pr = card.pr;
+  const mergeable = usePrStore((s) => s.statusBySession[sessionId]?.mergeable);
+  const reviewDecision = usePrStore((s) => s.statusBySession[sessionId]?.reviewDecision);
+  const rebaseStatus = useGitStore((s) => s.rebaseStatus);
+  const pendingReviewCount = useCommentStore((s) => s.getCommentCount(sessionId));
+  const autoFixCi = useSettingsStore((s) => s.autoFixCi);
+  const openDiff = useOpenPrDiff(pr?.baseBranch);
+  const ciDisplay = useCiDisplay(card.checks);
+  if (!pr) return null;
+
+  const autoFix = card.autoFix;
+  const isAutoFixRunning = autoFix?.status === "running";
+  const isAutoFixExhausted = autoFix?.status === "exhausted";
+  const isCiFailed = ciDisplay.kind === "failure";
+  const isConflicting = mergeable === "conflicting";
   // docs/169 — auto-fix is now a global setting, not a per-card toggle. Show the
   // manual "Fix CI" button when CI failed and the auto-loop isn't actively
   // handling it (global auto-fix off, or its budget exhausted).
   const showFixButton = isCiFailed && !isAutoFixRunning && (!autoFixCi || isAutoFixExhausted);
-  const showMergeButton = canMerge && !autoMerge?.enabled;
   // The inline conflict UI yields to the RebaseBanner once a rebase is
   // active — RebaseBanner is the surface for the in-flight flow. The
   // indicator and Resolve button reappear if the rebase aborts back to
@@ -169,19 +211,10 @@ export function PrStatusActions({
       {card.previousMergedPr && (
         <PreviouslyMergedNote previousMergedPr={card.previousMergedPr} />
       )}
-      {/* The toggle and the merge button wrap as one unit, so the toggle can't
-          ride up onto the diff/CI line and leave the button stranded below.
-          The group still shrinks and wraps internally where even the full-width
-          row is too narrow (a split-pane desktop chat panel, a ~320px phone),
-          which degrades to the old one-per-line stacking rather than
-          overflowing. The conflict controls render after the pair rather than
-          between them: a conflicting PR is never mergeable, so the merge button
-          and the conflict controls never appear together and the visible order
-          is unchanged in every reachable state. */}
-      <span className="flex flex-wrap items-center gap-x-2 gap-y-1 md:gap-x-3">
-        {canAutoMerge && <AutoMergeToggle sessionId={sessionId} autoMerge={autoMerge} />}
-        {showMergeButton && <MergeButton sessionId={sessionId} autoMerge={autoMerge} />}
-      </span>
+      {/* The merge controls are NOT here — PrMergeActions renders them on their
+          own row (see its docstring). The conflict / fix-CI controls stay on the
+          chips line: a conflicting or CI-failed PR is never mergeable, so they
+          never compete with the merge button for space. */}
       {showConflictUi && <MergeConflictIndicator />}
       {showConflictUi && (
         <ResolveConflictsButton sessionId={sessionId} baseBranch={pr.baseBranch} />
