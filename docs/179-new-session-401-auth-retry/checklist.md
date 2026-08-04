@@ -61,6 +61,13 @@
 - [x] Tests: genuine leaked shape (symlink into the shared root), system-turn retire
       asserted as an ordering, `sessionHasLiveAgent` true for an idle session holding a
       resident process
-- [ ] Convergence (criterion 2) — the writer recreating the links between turns on the
-      production install is **still unidentified**; tracked on nikzlabs/shipit#1874. The
-      §4 fix does not depend on it.
+- [x] Convergence (criterion 2) — **accepted unresolved, deliberately.** The writer that
+      recreated the links between turns on the production install was never identified,
+      and #1874 is closed without it: the leaked shape is unreachable for sessions
+      provisioned after docs/150 req 19 (no root aliases created, existing ones retired,
+      `copyCredentialPath` dereferences), a pre-req-19 session's repair converges after
+      one pass (asserted by `session-agent-env.test.ts`), and the §4 fix makes
+      repair-under-a-resident-process impossible whether or not repair converges. The
+      criterion-7 `[env-prep]` line now distinguishes "repaired again" from "ran and
+      found nothing", so a recurrence is diagnosable from one log line — reopen on that
+      evidence rather than keeping the item open speculatively.
