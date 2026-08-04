@@ -450,7 +450,14 @@ async function restoreSessionWorkspaceImpl(
 
 // ---- Mutation operations ----
 
-/** Rename a session. Returns the updated session or throws ServiceError. */
+/**
+ * Rename a session from the sidebar. Returns the updated session or throws
+ * ServiceError.
+ *
+ * docs/250 — records the title as user-set, which locks it: from here on neither
+ * the agent's `shipit session rename` nor the AI namer will overwrite it
+ * (requirement 4). This is the ONLY writer that passes `"user"`.
+ */
 export function renameSession(
   sessionManager: SessionManager,
   sessionId: string,
@@ -458,7 +465,7 @@ export function renameSession(
 ): SessionInfo {
   const trimmed = title.trim();
   if (!trimmed) throw new ServiceError(400, "Session title cannot be empty");
-  const renamed = sessionManager.rename(sessionId, trimmed);
+  const renamed = sessionManager.rename(sessionId, trimmed, "user");
   if (!renamed) throw new ServiceError(404, "Session not found");
   return renamed;
 }

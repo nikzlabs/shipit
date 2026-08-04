@@ -230,6 +230,31 @@ export interface BranchSyncedCard {
   createdAt: string;
 }
 
+/**
+ * docs/250 — a persisted "renamed this session" transcript card (requirement 9).
+ * Emitted when the agent retitles its own session via `shipit session rename`, so
+ * a name that changed mid-session can be explained after the fact ("why is this
+ * session called that?") instead of silently differing from what the user
+ * remembers. Immutable, no lifecycle — written once on emit, never patched.
+ *
+ * Distinct from the `session_renamed` WS/SSE event, which updates the SIDEBAR
+ * entry: this is the scrollback row, and per CLAUDE.md transcript content has to
+ * be persisted, not merely emitted. Shared verbatim by the live WS payload
+ * (`WsSessionRenamedCard`), the persisted chat-history row
+ * (`PersistedMessage.sessionRenamed`), and the client card so the three can't
+ * drift. Idempotent on the client by `cardId` (live emit vs reconnect/reload replay).
+ */
+export interface SessionRenamedCard {
+  /** Stable id — dedupes the live append vs the reconnect/reload replay. */
+  cardId: string;
+  /** The title the session had before this rename. */
+  from: string;
+  /** The title it has now. */
+  to: string;
+  /** Emit time — doubles as the provenance stamp. */
+  createdAt: string;
+}
+
 // ---- Chat history message (shared data type) ----
 
 /**

@@ -13,6 +13,7 @@ import {
   listAllSessions,
   unarchiveSession,
   renameSession,
+  renameSessionByAgent,
   setSessionPinned,
   setKeepPreviewRunning,
   reorderSessionPins,
@@ -121,13 +122,52 @@ export async function registerSessionCrudRoutes(
     },
   );
 
-  // PATCH /api/sessions/:id — rename session
+  // PATCH /api/sessions/:id — rename session (the sidebar's hand rename).
+  // docs/250 — this is what locks the title against the agent and the AI namer.
   app.patch<{ Params: { id: string }; Body: { title: string } }>(
     "/api/sessions/:id",
     async (request, reply) => {
       try {
         const session = renameSession(sessionManager, request.params.id, request.body.title);
+        // docs/250 — broadcast so EVERY viewer's sidebar updates, not just the
+        // renaming tab. This route previously relied on the calling client's own
+        // optimistic store update, which left other tabs on the stale title until
+        // they reloaded. Invisible while the only renamer was the user in the tab
+        // doing the renaming; the agent path has no client to be optimistic.
+        deps.sseBroadcast("session_renamed", { session });
         return { session };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to rename session: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/sessions/:id/rename — docs/250. `shipit session rename`: the agent
+  // retitles its OWN session so the sidebar keeps describing what the session is
+  // about past its first PR. Own-session scoped like every other
+  // container-reachable route (the worker injects the caller's id, so an agent
+  // can never name another session here). Separate from the PATCH above because
+  // the two differ in provenance and precedence: this one records `agent` and
+  // refuses when the user has renamed by hand.
+  app.post<{ Params: { id: string }; Body: { title?: string } }>(
+    "/api/sessions/:id/rename",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      try {
+        return renameSessionByAgent(
+          {
+            sessionManager,
+            runnerRegistry: deps.runnerRegistry,
+            chatHistoryManager: deps.chatHistoryManager,
+            sseBroadcast: deps.sseBroadcast,
+          },
+          request.params.id,
+          request.body?.title,
+        );
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });

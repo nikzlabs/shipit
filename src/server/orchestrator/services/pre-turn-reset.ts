@@ -502,7 +502,15 @@ function buildAgentPrefix(prNumber: number, base: string): string {
     `This branch has been automatically reset to the latest origin/${base} — it no ` +
     `longer contains the merged commits and starts from current code. Build the ` +
     `requested work on top of this fresh base; do not re-apply or recreate anything ` +
-    `from the merged PR.`
+    `from the merged PR. ` +
+    // docs/250 (requirement 6) — the second of the two moments the agent
+    // reconsiders the session title. This one is load-bearing: a session
+    // starting a SECOND round of work is precisely when a title describing the
+    // first round has gone stale, and the sidebar is the only place the user
+    // sees which session is which.
+    `This session is now starting new work, so its title probably describes only ` +
+    `the merged PR — check it and run \`shipit session rename --title "..."\` if it ` +
+    `no longer fits (a title the user set by hand wins, and the command will say so).`
   );
 }
 

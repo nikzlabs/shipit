@@ -6,7 +6,7 @@ description: Let the agent keep a session's title current as it does more work, 
 
 # 250 — Agent session rename: requirements
 
-The design that implements these requirements will be in `plan.md` (not yet written — this feature still has open questions).
+The design that implements these requirements is in [`plan.md`](./plan.md).
 
 Today a session's title is decided once, from the first message, and never changes again on its own. A session that goes on to do several rounds of work keeps a name describing only its first PR, so the sidebar stops describing what the session is actually about.
 
@@ -28,11 +28,11 @@ Today a session's title is decided once, from the first message, and never chang
 
 9. When the agent renames the session, the chat transcript records that it did, so the name can be explained after the fact.
 
+10. Renaming a session never changes its git branch name. Only the title the user sees changes.
+
 ## Open questions
 
-- **Does renaming a session ever change its branch name?** ShipIt's automatic naming today renames both the title and the git branch.
-  - (a) *No — renaming only ever changes the title the user sees.* **Recommended**: by the time the agent wants to rename, a PR usually exists on that branch, and renaming the branch underneath it would strand the PR.
-  - (b) *Yes, while no PR exists yet* — keeps title and branch consistent for early renames, at the cost of a rule the user has to know.
+_(none — implementation is unblocked.)_
 
 ## Resolved questions
 
@@ -40,3 +40,4 @@ Today a session's title is decided once, from the first message, and never chang
 - 2026-08-04 — What counts as "the user renamed it" and permanently locks the title? Chosen: only a rename the user typed by hand; issue-derived and parent-agent-chosen starting titles stay replaceable. Added as requirement 7, refining requirement 4.
 - 2026-08-04 — Must the automatic naming at session start also respect the lock? Chosen: yes — with the note that in practice this window is rarely hit, so it should be satisfied by the simplest ordering check rather than by machinery built for it. Added as requirement 8.
 - 2026-08-04 — Should the user see that the agent renamed the session? Chosen: yes, a line in the chat transcript, so the name can be explained after the fact. Added as requirement 9.
+- 2026-08-04 — Does renaming a session ever change its branch name too? Chosen: never — renaming only ever changes the title. Added as requirement 10.

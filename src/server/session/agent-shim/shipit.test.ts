@@ -206,7 +206,6 @@ describe("runShim — allowlist", () => {
     "fork",
     "adopt",
     "merge",
-    "rename",
     "switch",
   ])("rejects `shipit session %s` with a helpful error pointing at the docs", async (sub) => {
     const { run } = makeRunner();
@@ -1138,6 +1137,82 @@ describe("shipit session whoami", () => {
     });
     expect(out.exitCode).toBe(0);
     expect(JSON.parse(out.stdout)).toEqual(COHORT_BODY);
+  });
+});
+
+describe("shipit session rename (docs/250)", () => {
+  const RENAMED = { sessionId: "ses_me", previousTitle: "Fix the flaky test", title: "Harden CI" };
+
+  it("posts the title to the self-scoped route and prints from -> to", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "rename", "--title", "Harden CI"], {
+      "POST /agent-ops/session/rename": { status: 200, body: RENAMED },
+    });
+    expect(out.exitCode).toBe(0);
+    // No session id anywhere in the path — the worker injects the caller's own.
+    expect(out.calls[0]).toMatchObject({
+      method: "POST",
+      path: "/agent-ops/session/rename",
+      body: { title: "Harden CI" },
+    });
+    expect(out.stdout).toContain("Fix the flaky test");
+    expect(out.stdout).toContain("Harden CI");
+  });
+
+  it("requires --title", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "rename"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("--title is required");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("rejects a positional session id rather than renaming the wrong thing", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "rename", "ses_other", "--title", "Nope"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("takes no session id");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("surfaces the orchestrator's refusal when the user renamed by hand", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "rename", "--title", "Agent idea"], {
+      "POST /agent-ops/session/rename": {
+        status: 409,
+        body: { error: 'This session was renamed by the user ("My name"), so it keeps that name.' },
+      },
+    });
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("My name");
+  });
+
+  it("reports an unchanged title without claiming a rename happened", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "rename", "--title", "Same"], {
+      "POST /agent-ops/session/rename": {
+        status: 200,
+        body: { sessionId: "ses_me", previousTitle: "Same", title: "Same" },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("unchanged");
+  });
+
+  it("--json passes the broker response through verbatim", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "rename", "--title", "Harden CI", "--json"], {
+      "POST /agent-ops/session/rename": { status: 200, body: RENAMED },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(JSON.parse(out.stdout)).toEqual(RENAMED);
+  });
+
+  it("rejects unsupported flags", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "rename", "--title", "T", "--branch", "b"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("Unsupported flag for shipit session rename");
   });
 });
 

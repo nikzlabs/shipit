@@ -803,6 +803,24 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE messages ADD COLUMN message_origin TEXT");
   },
+  // docs/250 — provenance for `sessions.title`, so the rename paths can answer
+  // "may I overwrite this?". Only the two LOCKING values are stored ('user' —
+  // the user renamed by hand, final; 'agent' — `shipit session rename`, which
+  // the AI namer must not clobber). NULL = automatic or born-with (graduation
+  // placeholder, AI namer, or an explicitTitle from the seeding issue / a parent
+  // agent), all of which stay replaceable. Every pre-existing row is NULL, which
+  // is the correct reading: nothing before this migration recorded a hand rename.
+  (db) => {
+    db.exec("ALTER TABLE sessions ADD COLUMN title_source TEXT");
+  },
+  // docs/250 — persist the "renamed this session" transcript card. The rename
+  // relays over HTTP mid-turn, i.e. off the agent-event stream, so
+  // `buildTurnMessages` doesn't capture it on its own; without this column the
+  // card would render live and vanish on the next loadSessionHistory. NULL =
+  // ordinary (non-card) message.
+  (db) => {
+    db.exec("ALTER TABLE messages ADD COLUMN session_renamed TEXT");
+  },
 ];
 
 export class DatabaseManager {

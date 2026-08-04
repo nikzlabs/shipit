@@ -14,6 +14,7 @@ import { IssueWriteCard } from "../../IssueWriteCard.js";
 import { IssueRefCard } from "../../IssueRefCard.js";
 import { ActionChecklistCard } from "../../ActionChecklistCard.js";
 import { BranchUpdatedCard } from "../../BranchUpdatedCard.js";
+import { SessionRenamedCard } from "../../SessionRenamedCard.js";
 import { BranchSyncedCard } from "../../BranchSyncedCard.js";
 import { ReleaseLifecycleCard } from "../../ReleaseLifecycleCard.js";
 import type { ChatMessage } from "../types.js";
@@ -296,6 +297,20 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
       <div className="flex justify-start">
         <div className="max-w-2xl w-full">
           <BranchUpdatedCard card={msg.branchAutoReset} />
+        </div>
+      </div>
+    );
+  }
+
+  // docs/250 — session-renamed card. Carries no chat text of its own; renders the
+  // static `SessionRenamedCard` straight from the message payload (no store, no
+  // lifecycle). Shown at the point in the turn where the agent retitled the
+  // session, so a name that changed mid-session is explainable after the fact.
+  if (msg.sessionRenamed) {
+    return (
+      <div className="flex justify-start">
+        <div className="max-w-2xl w-full">
+          <SessionRenamedCard card={msg.sessionRenamed} />
         </div>
       </div>
     );

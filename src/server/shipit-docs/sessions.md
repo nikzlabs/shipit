@@ -125,6 +125,7 @@ override the parent.
 | `shipit session notify-on-merge --self [--json]` | **Async, and about YOUR own PR.** Arm a watch on this session's currently-open PR and return immediately; the turn ends. When that PR merges — by hand, from ShipIt or GitHub, or via auto-merge — the orchestrator wakes **this** session with a turn telling you to run `shipit branch reset-to-base` and then continue the work you were already asked for. Use it when the user asked for several PRs in a row and the next step can only start after this one lands. Refuses if the branch has no open PR (open one first; if your PR has *already* merged, just keep going in this turn). Arming always **replaces** any previous self-watch, so re-arming mid-chain is normal. **Nothing re-arms on your behalf** — after you open the next PR, run it again if more work remains. See *Chaining several PRs* below. |
 | `shipit session archive <id> [--json]` | Archive a child this parent spawned. Refuses with a clear error when the child is still running — use `shipit session wait` first. |
 | `shipit session whoami [--json]` | Resolve **this** session: id, title, branch, status, its parent, its cohort siblings, and any children it spawned. `view <id>` is descendant-scoped, so passing your own id doesn't work — use this. A bare `shipit session view` (no id) is the same thing. |
+| `shipit session rename --title T [--json]` | Retitle **this** session (never another — there is no session-id argument). A session is named automatically from your first message, so once it has done more than that first piece of work the sidebar name is stale; renaming is what keeps it honest. Do it when you open a PR and when you continue past a merged one. Max 60 characters, **rejected** if longer rather than truncated. It changes only the title — never the git branch, which usually has a PR attached by then. If the user has renamed the session by hand, this refuses (exit non-zero) and that name is final: leave it alone. |
 | `shipit session report -b TEXT \| --body-file FILE [--severity fyi\|warn\|blocker] [--subject T] [--to parent\|cohort] [--json]` | Push a report **up** to the session that spawned you (and, with `--to cohort`, to every live sibling). Each recipient gets a card in its chat **and** a queued system turn, so the report is pushed, not waiting to be pulled. See *Reporting upward* below. |
 | `shipit session help` | Print the subcommand reference. |
 
@@ -210,7 +211,8 @@ the user, not the agent), or because it widens the surface in ways doc 117
 explicitly declined to ship in v1:
 
 - `shipit session delete <id>` — destructive; user-only.
-- `shipit session fork|rename|switch` — owned by the UI, not the agent.
+- `shipit session fork|switch` — owned by the UI, not the agent.
+  (`rename` **is** available, but only for your own session — see above.)
 - `shipit session adopt <id>` — adopting an unrelated session into the
   parent's tree is not supported.
 - `--repo`, `--owner` on any subcommand — spawned sessions inherit the
