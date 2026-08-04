@@ -297,6 +297,128 @@ describe("autoResetMergedBranchOnContinue", () => {
       expect(handWorkspaceBackToWorker).not.toHaveBeenCalled();
     });
   });
+
+  /**
+   * SHI-295 — a skip on a MERGED session must never be silent again.
+   *
+   * The production incident was diagnosed by proving a negative: one session's
+   * log showed `[git] Reset --hard`, the broken one showed nothing at all — no
+   * card, no prefix, no log line. Meanwhile the branch sat on already-merged
+   * commits and the agent, equally unaware, authored a commit for a dead PR.
+   * These pin the clause-per-skip contract so the next investigation greps one
+   * line and the next user reads one notice.
+   */
+  describe("skip reporting (SHI-295)", () => {
+    it.each([
+      ["dirty-tree", { isClean: vi.fn().mockResolvedValue(false) }, "uncommitted changes"],
+      ["detached-head", { currentBranchOrNull: vi.fn().mockResolvedValue(null) }, "HEAD is detached"],
+      ["wrong-branch", { currentBranchOrNull: vi.fn().mockResolvedValue("shipit/other") }, "shipit/other"],
+      ["rebase-in-progress", { isRebaseInProgress: vi.fn().mockResolvedValue(true) }, "rebase is in progress"],
+      ["sequencer-in-progress", { isMergeOrSequencerInProgress: vi.fn().mockResolvedValue(true) }, "cherry-pick"],
+      ["head-moved", { getHeadHash: vi.fn().mockResolvedValue("deadbeef000000000000000000000000000beef1") }, "moved since the merge"],
+    ] as const)("names the %s clause and builds a warn notice", async (clause, over, phrase) => {
+      const out = await autoResetMergedBranchOnContinue(
+        makeDeps({ createGitManager: () => makeGit(over) }),
+        "s1",
+        "/ws",
+      );
+      expect(out.moved).toBe(false);
+      expect(out.skip?.clause).toBe(clause);
+      expect(out.skip?.level).toBe("warn");
+      expect(out.skip?.detail).toContain(phrase);
+      // The user notice names the merged PR, the refusal, and the consequence.
+      expect(out.skip?.notice).toContain("#482");
+      expect(out.skip?.notice).toContain(phrase);
+      expect(out.skip?.notice).toContain("will not auto-push");
+      // The agent learns it too — this is what stops the next commit-for-a-dead-PR.
+      expect(out.agentPrefix).toContain("already merged");
+      expect(out.agentPrefix).toContain("no open pull request");
+    });
+
+    it.each([
+      [
+        "no-merged-head-sha",
+        (): SessionInfo => { const s = makeSession(); delete s.mergedHeadSha; return s; },
+        (): PrStatusSummary | null => makePrStatus(),
+      ],
+      ["no-base-branch", (): SessionInfo => makeSession(), (): PrStatusSummary | null => null],
+    ] as const)("reports the %s clause (a merged session ShipIt cannot safely reset)", async (clause, session, prStatus) => {
+      const out = await autoResetMergedBranchOnContinue(
+        makeDeps({ getSession: session, getPrStatus: prStatus, createGitManager: () => makeGit() }),
+        "s1",
+        "/ws",
+      );
+      expect(out.skip?.clause).toBe(clause);
+      expect(out.skip?.level).toBe("warn");
+      expect(out.skip?.notice).toContain("not updated to the latest base");
+    });
+
+    it("falls back to the previousMergedPr breadcrumb when the live snapshot was re-armed away", async () => {
+      // `PrStatusPoller.reArm` nulls the live snapshot on the ordinary
+      // keep-working-after-a-merge path, so the notice must not lose the PR
+      // number — same durability problem `resolveResetBase` solves.
+      const session = makeSession({
+        previousMergedPr: { number: 1963, url: "https://github.com/o/r/pull/1963", title: "T", baseBranch: "main" },
+      });
+      const out = await autoResetMergedBranchOnContinue(
+        makeDeps({ getSession: () => session, getPrStatus: () => null, createGitManager: () => makeGit() }),
+        "s1",
+        "/ws",
+      );
+      expect(out.skip?.notice).toContain("#1963");
+      expect(out.skip?.notice).toContain("origin/main");
+    });
+
+    it.each([
+      ["the global setting is off", { getAutoResetMergedBranch: () => false }, undefined, "setting-off"],
+      ["the per-send control was unticked", {}, false, "opted-out"],
+    ] as const)("reports %s at info level (a deliberate choice, still recorded)", async (_label, over, intent, clause) => {
+      const out = await autoResetMergedBranchOnContinue(makeDeps(over), "s1", "/ws", intent);
+      expect(out.moved).toBe(false);
+      expect(out.skip?.clause).toBe(clause);
+      expect(out.skip?.level).toBe("info");
+      expect(out.skip?.notice).toContain("not updated to the latest base");
+    });
+
+    it("stays silent for a session that never merged (not a failure mode)", async () => {
+      const session = makeSession();
+      delete session.mergedAt;
+      const out = await autoResetMergedBranchOnContinue(
+        makeDeps({ getSession: () => session, createGitManager: () => makeGit() }),
+        "s1",
+        "/ws",
+      );
+      expect(out.moved).toBe(false);
+      expect(out.skip).toBeUndefined();
+      expect(out.agentPrefix).toBeUndefined();
+    });
+
+    it("reports a post-fetch TOCTOU bail too (the tree was dirtied mid-flight)", async () => {
+      const isClean = vi.fn().mockResolvedValueOnce(true).mockResolvedValue(false);
+      const git = makeGit({ isClean });
+      const out = await autoResetMergedBranchOnContinue(makeDeps({ createGitManager: () => git }), "s1", "/ws");
+      expect(git.fetch).toHaveBeenCalledOnce();
+      expect(git.resetHardToRemoteBase).not.toHaveBeenCalled();
+      expect(out.skip?.clause).toBe("dirty-tree");
+    });
+
+    it("logs one greppable [pre-turn-reset] line per skip", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      await autoResetMergedBranchOnContinue(
+        makeDeps({ createGitManager: () => makeGit({ isClean: vi.fn().mockResolvedValue(false) }) }),
+        "s1",
+        "/ws",
+      );
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("[pre-turn-reset] skipped for s1 (dirty-tree)"));
+      warn.mockRestore();
+    });
+
+    it("says nothing on a successful move (the branch-updated card is the record there)", async () => {
+      const out = await autoResetMergedBranchOnContinue(makeDeps({ createGitManager: () => makeGit() }), "s1", "/ws");
+      expect(out.moved).toBe(true);
+      expect(out.skip).toBeUndefined();
+    });
+  });
 });
 
 describe("isResetEligible (composer-control signal)", () => {

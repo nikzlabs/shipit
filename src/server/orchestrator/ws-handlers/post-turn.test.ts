@@ -200,3 +200,111 @@ describe("postTurnCommit — agent self-commit (moved HEAD) secret guard", () =>
     expect(scheduleAutoPush).toHaveBeenCalledTimes(1);
   });
 });
+
+/**
+ * SHI-295 — a merged session's post-turn auto-push RECREATES the branch GitHub
+ * deleted at merge, stranding the commit as an orphan that belongs to no pull
+ * request. The commit still happens (work is never lost); only the silent push is
+ * refused, and the refusal always leaves a persisted notice — the silence is what
+ * made the user report this twice as "changes are missing from the merged PR".
+ */
+describe("postTurnCommit — merged sessions never silently auto-push", () => {
+  const MERGED_SHA = "025e9609";
+
+  function makeMergedCtx(opts: {
+    session?: Partial<SessionInfo>;
+    prStatus?: unknown;
+    commitHash?: string | null;
+    /** Is the merged tip still an ancestor of HEAD (i.e. not rebased away)? */
+    stackedOnMergedTip?: boolean;
+  }) {
+    const autoCommit = vi.fn(async () => ({
+      commitHash: opts.commitHash === undefined ? "0d9a31d1" : opts.commitHash,
+      conflictedFiles: [], rebaseInProgress: false, secretFindings: [],
+    }));
+    const scheduleAutoPush = vi.fn();
+    const append = vi.fn();
+    const emit = vi.fn();
+    const ctx = {
+      createGitManager: vi.fn(() => ({
+        autoCommit,
+        getHeadHash: vi.fn(async () => "0d9a31d1"),
+        isAncestor: vi.fn(async () => opts.stackedOnMergedTip ?? true),
+        diffRange: vi.fn(async () => "diff --git a/ok.ts b/ok.ts\n+const x = 1;"),
+      })),
+      chatHistoryManager: { updateLastMessage: vi.fn(() => null), indexOfMessageId: vi.fn(() => -1), append },
+      sessionManager: {
+        get: vi.fn(() => ({
+          id: "s1", branch: "shipit/codex-poll",
+          mergedAt: "2026-08-04 16:33:40", mergedHeadSha: MERGED_SHA,
+          ...opts.session,
+        } as SessionInfo)),
+        getPrStatus: vi.fn(() => opts.prStatus ?? { prNumber: 1963, baseBranch: "main" }),
+      },
+      scheduleAutoPush,
+    } as unknown as Parameters<typeof postTurnCommit>[0];
+    return { ctx, scheduleAutoPush, append, emit };
+  }
+
+  it("commits but refuses the push, and persists a notice naming the merged PR", async () => {
+    const { ctx, scheduleAutoPush, append, emit } = makeMergedCtx({});
+    const hash = await postTurnCommit(ctx, {
+      sessionDir: "/workspace", sessionId: "s1", emit, turnSummary: "Added, in both places",
+    });
+    // The work is committed — the guard never costs the user their edits.
+    expect(hash).toBe("0d9a31d1");
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ type: "git_committed" }));
+    // …but it does not silently land on a branch whose PR already merged.
+    expect(scheduleAutoPush).not.toHaveBeenCalled();
+    expect(append).toHaveBeenCalled(); // persisted, so it survives a reload
+    expect(emit).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "system_notice", level: "warn", message: expect.stringContaining("#1963") }),
+    );
+  });
+
+  it("still refuses the push when the agent moved HEAD itself (no auto-commit)", async () => {
+    const { ctx, scheduleAutoPush, append } = makeMergedCtx({ commitHash: null });
+    await postTurnCommit(ctx, {
+      sessionDir: "/workspace", sessionId: "s1", emit: vi.fn(), turnSummary: "x", turnStartHeadHash: "oldhead",
+    });
+    expect(scheduleAutoPush).not.toHaveBeenCalled();
+    expect(append).toHaveBeenCalled();
+  });
+
+  it("pushes normally once the branch has been rebased off the merged tip", async () => {
+    // The prescribed keep-shipping flow: rebase onto the fresh base, commit, open
+    // a new PR. `mergedAt` is still set (docs/202 re-arms AFTER this), so without
+    // the ancestry test this legitimate push would be blocked and mis-explained.
+    const { ctx, scheduleAutoPush, append } = makeMergedCtx({ stackedOnMergedTip: false });
+    await postTurnCommit(ctx, {
+      sessionDir: "/workspace", sessionId: "s1", emit: vi.fn(), turnSummary: "next slice",
+    });
+    expect(scheduleAutoPush).toHaveBeenCalledTimes(1);
+    expect(append).not.toHaveBeenCalled();
+  });
+
+  it("pushes normally for a session that is not merged", async () => {
+    const { ctx, scheduleAutoPush, append } = makeMergedCtx({ session: { mergedAt: undefined } });
+    await postTurnCommit(ctx, {
+      sessionDir: "/workspace", sessionId: "s1", emit: vi.fn(), turnSummary: "ordinary turn",
+    });
+    expect(scheduleAutoPush).toHaveBeenCalledTimes(1);
+    expect(append).not.toHaveBeenCalled();
+  });
+
+  it("does not let a failing notice write take the turn down", async () => {
+    const { ctx, scheduleAutoPush } = makeMergedCtx({});
+    (ctx.chatHistoryManager as unknown as { append: () => void }).append = () => {
+      throw new Error("database is locked");
+    };
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const hash = await postTurnCommit(ctx, {
+      sessionDir: "/workspace", sessionId: "s1", emit: vi.fn(), turnSummary: "x",
+    });
+    // The commit — and the caller's PR flow, which is gated on this hash — survive.
+    expect(hash).toBe("0d9a31d1");
+    expect(scheduleAutoPush).not.toHaveBeenCalled();
+    expect(err).toHaveBeenCalled();
+    err.mockRestore();
+  });
+});

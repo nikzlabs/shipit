@@ -511,6 +511,46 @@ rather than throwing — the reset still stands and the turn runs). This reverse
 "never force-push at reset" decision (see the superseded note above). Tests in
 `pre-turn-reset.test.ts` (heal called on success; best-effort on failure).
 
+**SHI-295 — a skipped reset is no longer silent, and a merged session no longer
+silently auto-pushes.** Two halves of one user-facing failure ("my session's PR
+merged and nothing said so"), from a production incident where a turn ran two
+minutes after the merge, the reset did not fire, and the post-turn auto-push
+*recreated* the branch GitHub had deleted — leaving an orphan commit that belonged
+to no PR. The user worked it out themselves ("Pr was actually already merged");
+the second time they had reported "changes are missing from the merged PR".
+
+- **The skip reports its clause.** `computeResetEligible` is now a thin wrapper
+  over `computeResetBlocker`, which returns *which* clause refused instead of a
+  bare boolean — one implementation, so the explanation can't drift from the
+  gate. On a **merged** session, `autoResetMergedBranchOnContinue` turns that
+  clause into three surfaces: a `[pre-turn-reset] skipped for <id> (<clause>)`
+  log line (so the next ops investigation greps one line instead of proving a
+  negative by diffing two sessions' logs), a **persisted** transcript notice via
+  `emitNoticeInTurn` on the existing `afterUserMessagePersisted` hook (same
+  anchor as the branch-updated card), and an agent prompt prefix (the agent was
+  as unaware as the user — it went on to author a commit for a dead PR).
+  Non-merged sessions stay silent: nothing to reset, nothing to say. Safety
+  clauses report at `warn`; the two deliberate opt-outs (global setting off,
+  per-send untick) at `info` — which narrows this plan's "a global opt-out means
+  we don't nag" to what it should always have meant: hide the *control*, not the
+  fact that a merged branch is stale.
+- **No clause was weakened.** The incident's blocker was almost certainly
+  `git.isClean()` — a dirty tree at 16:33:58 — and that refusal is correct: a
+  `reset --hard` over uncommitted edits is the one irreversible loss. The bug was
+  the silence, not the refusal.
+- **The merged-branch push guard** (`services/merged-push-guard.ts`, wired into
+  `postTurnCommit`) refuses the *silent debounced* auto-push while the session is
+  merged and the commit is stacked on the merged tip. The commit still happens
+  (work is never lost, and stays reflog-recoverable); only the push is refused,
+  with a persisted notice naming the merged PR and the two recovery routes. An
+  explicit `gh pr create` is unaffected — it force-pushes through its own path,
+  the same carve-out the ops-session gate makes. The `mergedHeadSha`-ancestry
+  test is what keeps it precise: a branch rebased onto the fresh base (the flow
+  ShipIt's own agent instructions prescribe after a merge) still has `mergedAt`
+  set at commit time, because the docs/202 re-arm that clears it runs *after* —
+  so gating on `mergedAt` alone would have blocked and mis-explained a
+  legitimate pre-PR push.
+
 ## Review notes
 
 Reviewed by Codex (cross-agent). Accepted: PR-head-SHA capture instead of local HEAD

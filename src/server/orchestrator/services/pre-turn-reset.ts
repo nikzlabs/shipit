@@ -24,9 +24,16 @@
  * `agentPrefix` to the turn's prompt (so the agent starts fresh and doesn't
  * re-apply shipped work) and emits a persisted card from the returned move info.
  *
- * Everything here is fail-safe: any gate failure or git error returns
- * {@link NOT_MOVED} and the turn runs on the un-moved branch — the user falls
- * back to today's manual flow (still picked up by the docs/202 / docs/216 re-arm).
+ * Everything here is fail-safe: any gate failure or git error leaves the branch
+ * un-moved and the turn runs normally — the user falls back to today's manual
+ * flow (still picked up by the docs/202 / docs/216 re-arm).
+ *
+ * SHI-295 — fail-safe is not the same as silent. A skip on a MERGED session
+ * leaves the branch on commits that are already shipped and whose pull request
+ * is closed, so it now reports the clause that refused (log line + persisted
+ * transcript notice + agent prompt prefix) instead of returning a bare
+ * {@link NOT_MOVED}. Non-merged sessions still skip silently: there is nothing
+ * to reset and nothing to say. See {@link skipped}.
  */
 
 import type { SessionInfo } from "../../shared/types.js";
@@ -56,6 +63,45 @@ export interface ResetOutcome {
   toSha?: string;
   /** The `[System] …` prefix to prepend to the turn's prompt (agent-facing). */
   agentPrefix?: string;
+  /**
+   * SHI-295 — set when the session IS merged and the reset was nonetheless
+   * skipped. Carries the clause that blocked it plus the ready-to-emit user
+   * notice; the caller persists `notice` into the transcript and prepends
+   * `agentPrefix` to the turn. Absent on a non-merged session (nothing to say)
+   * and on a successful move.
+   */
+  skip?: ResetSkipInfo;
+}
+
+/** Which clause of the gate refused the reset. Stable ids — logs + tests key off these. */
+export type ResetSkipClause =
+  | "not-merged"
+  | "setting-off"
+  | "opted-out"
+  | "no-merged-head-sha"
+  | "no-base-branch"
+  | "dirty-tree"
+  | "detached-head"
+  | "wrong-branch"
+  | "rebase-in-progress"
+  | "sequencer-in-progress"
+  | "head-moved";
+
+export interface ResetSkip {
+  clause: ResetSkipClause;
+  /** A sentence fragment completing "…was not reset because <detail>". */
+  detail: string;
+}
+
+export interface ResetSkipInfo extends ResetSkip {
+  /** The persisted transcript notice the caller emits. */
+  notice: string;
+  /**
+   * `warn` for a safety clause the user has to act on, `info` for the two
+   * deliberate opt-outs (global setting off, per-send untick) — those are the
+   * user's own choice, so they get a record without an alarm.
+   */
+  level: "info" | "warn";
 }
 
 const NOT_MOVED: ResetOutcome = { moved: false };
@@ -84,29 +130,93 @@ export async function computeResetEligible(
   prStatus: PrStatusSummary | null,
   git: GitManager,
 ): Promise<boolean> {
-  if (!session?.mergedAt) return false;
-  if (!session.mergedHeadSha) return false;
-  if (!prStatus?.baseBranch) return false;
-
-  if (!(await git.isClean())) return false;
-
-  const branch = await git.currentBranchOrNull();
-  if (!branch) return false; // detached HEAD
-  if (session.branch && branch !== session.branch) return false;
-
-  if (await git.isRebaseInProgress()) return false;
-  if (await git.isMergeOrSequencerInProgress()) return false;
-
-  const head = await git.getHeadHash();
-  if (!head || head !== session.mergedHeadSha) return false;
-
-  return true;
+  return (await computeResetBlocker(session, prStatus, git)) === null;
 }
 
 /**
- * Run the pre-turn auto-reset. Returns {@link NOT_MOVED} when the global setting
- * is off, the safety gate fails, or anything throws (fail-safe). On a real move,
- * returns the base + PR pointers + before/after SHAs + the agent prompt prefix.
+ * SHI-295 — {@link computeResetEligible}'s single implementation, returning
+ * WHICH clause refused instead of a bare boolean. Null = eligible.
+ *
+ * The clause has to come out of the same evaluation that decides eligibility,
+ * not a parallel "explain why" helper: two implementations of a nine-clause
+ * safety gate drift, and the one that drifts is the explanation — which is
+ * exactly the surface a user reads to decide what to do about it.
+ *
+ * `not-merged` is in the union for totality only. It is not a failure mode —
+ * it is the ordinary state of nearly every session — so no notice is ever built
+ * from it: the notice path gates on `session.mergedAt` before asking.
+ */
+export async function computeResetBlocker(
+  session: SessionInfo | undefined,
+  prStatus: PrStatusSummary | null,
+  git: GitManager,
+): Promise<ResetSkip | null> {
+  if (!session?.mergedAt) {
+    return { clause: "not-merged", detail: "this session has no merged pull request" };
+  }
+  if (!session.mergedHeadSha) {
+    return {
+      clause: "no-merged-head-sha",
+      detail:
+        "ShipIt has no record of the commit GitHub merged, so it cannot prove this branch "
+        + "carries only already-shipped work",
+    };
+  }
+  if (!prStatus?.baseBranch) {
+    return {
+      clause: "no-base-branch",
+      detail: "the merged pull request's base branch is not recorded, so there is no reset target",
+    };
+  }
+
+  if (!(await git.isClean())) {
+    return {
+      clause: "dirty-tree",
+      detail:
+        "the working tree has uncommitted changes, and a hard reset would discard them "
+        + "permanently (uncommitted edits have no reflog entry)",
+    };
+  }
+
+  const branch = await git.currentBranchOrNull();
+  if (!branch) {
+    return { clause: "detached-head", detail: "HEAD is detached, so a reset would not move the session branch" };
+  }
+  if (session.branch && branch !== session.branch) {
+    return {
+      clause: "wrong-branch",
+      detail: `HEAD is on '${branch}', not the session branch '${session.branch}'`,
+    };
+  }
+
+  if (await git.isRebaseInProgress()) {
+    return { clause: "rebase-in-progress", detail: "a rebase is in progress and a reset would clobber its recovery state" };
+  }
+  if (await git.isMergeOrSequencerInProgress()) {
+    return {
+      clause: "sequencer-in-progress",
+      detail: "a merge / cherry-pick / revert is in progress and a reset would clobber its recovery state",
+    };
+  }
+
+  const head = await git.getHeadHash();
+  if (!head || head !== session.mergedHeadSha) {
+    return {
+      clause: "head-moved",
+      detail:
+        "the branch has moved since the merge, so it may carry commits that were never shipped",
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Run the pre-turn auto-reset. Returns {@link NOT_MOVED} when the session isn't
+ * merged or anything throws (fail-safe); on a merged session whose reset was
+ * refused, returns the same `moved: false` plus a {@link ResetSkipInfo} the
+ * caller surfaces (SHI-295). On a real move, returns the base + PR pointers +
+ * before/after SHAs + the agent prompt prefix.
  *
  * The gate is evaluated TWICE — once before the fetch and once after — because
  * `git fetch` yields to the event loop, during which a terminal edit or a queued
@@ -174,21 +284,44 @@ export async function autoResetMergedBranchOnContinue(
   // to be made here rather than by handing back unconditionally.
   let mutatedWorkspace = false;
   try {
-    // Gate on the global setting AND an explicit per-send opt-out.
-    if (!deps.getAutoResetMergedBranch()) return NOT_MOVED;
-    if (intent === false) return NOT_MOVED;
-
     const session = deps.getSession(sessionId);
     const prStatus = deps.getPrStatus(sessionId);
+
+    // SHI-295 — the merged check moves AHEAD of the setting / opt-out gates.
+    // Both lookups are in-memory, and every path below this point needs to know
+    // whether this is a merged session: a skip on a merged session is a reportable
+    // event (the branch stays on dead, already-shipped commits), while a skip on
+    // an ordinary session is just "nothing to do" and must stay silent.
+    if (!session?.mergedAt) return NOT_MOVED;
+
+    // Gate on the global setting AND an explicit per-send opt-out. Both are
+    // deliberate user choices rather than safety refusals, so they are reported
+    // at `info` — but they ARE reported: a merged session whose branch silently
+    // stays behind is the failure mode this whole notice exists for.
+    if (!deps.getAutoResetMergedBranch()) {
+      return skipped(sessionId, session, prStatus, {
+        clause: "setting-off",
+        detail: "the “start from the latest base” setting is turned off",
+      });
+    }
+    if (intent === false) {
+      return skipped(sessionId, session, prStatus, {
+        clause: "opted-out",
+        detail: "“start from the latest base” was unticked for this message",
+      });
+    }
+
     const git = deps.createGitManager(sessionDir);
 
-    if (!(await computeResetEligible(session, prStatus, git))) return NOT_MOVED;
+    const blocker = await computeResetBlocker(session, prStatus, git);
+    if (blocker) return skipped(sessionId, session, prStatus, blocker);
     const base = prStatus!.baseBranch;
 
     // Fetch the latest base, then RE-validate the full gate (TOCTOU window).
     mutatedWorkspace = true;
     await git.fetch("origin");
-    if (!(await computeResetEligible(session, prStatus, git))) return NOT_MOVED;
+    const blockerAfterFetch = await computeResetBlocker(session, prStatus, git);
+    if (blockerAfterFetch) return skipped(sessionId, session, prStatus, blockerAfterFetch);
 
     const { from, to } = await git.resetHardToRemoteBase(base);
 
@@ -261,6 +394,102 @@ export async function autoResetMergedBranchOnContinue(
     // post-fetch TOCTOU bail still hands back.
     if (mutatedWorkspace) handWorkspaceBackToWorker(sessionDir);
   }
+}
+
+/**
+ * SHI-295 — build the outcome for a MERGED session whose reset was skipped, and
+ * log the skip.
+ *
+ * Why this exists: every gate failure used to return a bare {@link NOT_MOVED}
+ * and only *errors* were logged, so a skip left no trace anywhere — no card, no
+ * prompt prefix, no log line. The production incident that produced this fix was
+ * diagnosed by comparing two sessions and proving a NEGATIVE (session A shows
+ * `[git] Reset --hard`, session B shows nothing at all), which is not a thing an
+ * investigation should have to do. The user's read was blunter: "it silently
+ * didn't sync and it was not clear to me that this was a failure mode."
+ *
+ * Three surfaces, deliberately: the `console.warn` (so the next ops
+ * investigation greps one line instead of inferring absence), the persisted
+ * notice (so the user sees it in the transcript on reload, not just live), and
+ * the agent prefix (so the agent knows its branch is stale AND merged before it
+ * authors a commit for a dead pull request — which is exactly what happened).
+ *
+ * The PR pointers come from the live snapshot when present and fall back to the
+ * durable `previousMergedPr` breadcrumb, for the same reason
+ * {@link resolveResetBase} does: `PrStatusPoller.reArm` nulls the live snapshot
+ * on the ordinary keep-working-after-a-merge path.
+ */
+function skipped(
+  sessionId: string,
+  session: SessionInfo,
+  prStatus: PrStatusSummary | null,
+  skip: ResetSkip,
+): ResetOutcome {
+  const prNumber = prStatus?.prNumber ?? session.previousMergedPr?.number;
+  const base = prStatus?.baseBranch ?? session.previousMergedPr?.baseBranch;
+  // The two opt-outs are the user's own choice, not a refusal they need to act
+  // on — record them without an alarm.
+  const level = skip.clause === "setting-off" || skip.clause === "opted-out" ? "info" : "warn";
+  console.warn(
+    `[pre-turn-reset] skipped for ${sessionId} (${skip.clause}): ${skip.detail}. `
+      + `Branch stays on the merged tip${prNumber ? ` (PR #${prNumber})` : ""}.`,
+  );
+  return {
+    moved: false,
+    skip: { ...skip, level, notice: buildSkipNotice(skip, prNumber, base) },
+    agentPrefix: buildSkipAgentPrefix(skip, prNumber, base),
+  };
+}
+
+/**
+ * The persisted user-facing notice. Says three things, in the order a user needs
+ * them: that the branch was NOT updated, which clause refused, and what the
+ * consequence is (commits made now sit on already-merged history and will not be
+ * auto-pushed — the SHI-295 defect-1 gate). The recovery line is deliberately
+ * generic rather than per-clause: the reset is re-evaluated on every turn, so
+ * "clear the reason and send again" is the honest instruction for all of them.
+ *
+ * Plain prose, no markdown emphasis — `MessageList` renders a `notice` message as
+ * pre-wrapped text, so `**bold**` would show up literally.
+ */
+function buildSkipNotice(skip: ResetSkip, prNumber?: number, base?: string): string {
+  const pr = prNumber ? `#${prNumber}` : "for this session";
+  const into = base ? ` into ${base}` : "";
+  const target = base ? `origin/${base}` : "the latest base";
+  return (
+    `Branch not updated to the latest base. Pull request ${pr} merged${into}, but this branch `
+    + `was not reset to ${target} because ${skip.detail}.\n\n`
+    + `It still sits on the already-merged commits, so anything committed here belongs to no `
+    + `open pull request — and ShipIt will not auto-push it.\n\n`
+    + `Clear the reason above and send another message (the reset is re-evaluated every turn), `
+    + `or ask the agent to run \`shipit branch reset-to-base\`.`
+  );
+}
+
+/**
+ * The agent-facing counterpart, prepended to this turn's prompt only. Without it
+ * the agent has no idea its branch is both stale and merged — in the incident it
+ * went on to author, commit and push a change for a pull request that had merged
+ * two minutes earlier, and the user had to work that out themselves.
+ *
+ * It ends by pointing at the brokered reset rather than leaving the agent to
+ * improvise, for the {@link RESET_REFUSAL_GUIDANCE} reason: an agent that reads
+ * "your branch is stale" and has a shell is two words away from
+ * `git reset --hard`, which over the dirty tree that most often causes this skip
+ * is precisely the unrecoverable loss the gate refused to risk.
+ */
+function buildSkipAgentPrefix(skip: ResetSkip, prNumber?: number, base?: string): string {
+  const pr = prNumber ? ` (#${prNumber})` : "";
+  const into = base ? ` into ${base}` : "";
+  const target = base ? `origin/${base}` : "the latest base";
+  return (
+    `[System] This session's pull request${pr} was already merged${into}, and the branch was `
+    + `NOT reset to ${target}: ${skip.detail}. The branch still contains the merged commits, `
+    + `is behind the base, and has no open pull request — anything you commit here will not be `
+    + `auto-pushed and belongs to no pull request. Tell the user this before doing work that `
+    + `assumes a fresh base. Do not run a manual \`git reset --hard\` or \`git push --force\`; `
+    + `if the user wants the branch moved, use \`shipit branch reset-to-base\`.`
+  );
 }
 
 /**
