@@ -18,9 +18,10 @@
  * as `null` here — they keep opening externally, unchanged.
  */
 import { parseIssueRef } from "../../server/shared/issue-ref.js";
+import type { TrackerId } from "../../server/shared/types.js";
 
 export interface TrackerIssueLink {
-  tracker: "linear" | "github";
+  tracker: TrackerId;
   /** Display identifier, e.g. "SHI-28" or "owner/repo#42". */
   identifier: string;
   /** Tracker-native lookup id (Linear key, bare GitHub number). */

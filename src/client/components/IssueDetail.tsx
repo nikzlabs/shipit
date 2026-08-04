@@ -49,6 +49,7 @@ import { useSurfaceLuminance } from "../hooks/useSurfaceLuminance.js";
 import { adaptColorForSurface } from "../utils/status-color.js";
 import { formatRelativeDate } from "../utils/dates.js";
 import type { IssueSelection } from "../stores/issues-store.js";
+import { isGitHubTracker } from "../../server/shared/tracker-id.js";
 import type {
   IssueLabel,
   IssuePriorityLevel,
@@ -173,7 +174,7 @@ export function IssueDetail({
   // so the header/title paint before the fetch resolves.
   const title = detail?.title ?? selection.title ?? selection.identifier;
   const url = detail?.url ?? selection.url;
-  const trackerLabel = info?.label ?? (selection.tracker === "github" ? "GitHub" : "Linear");
+  const trackerLabel = info?.label ?? (isGitHubTracker(selection.tracker) ? "GitHub" : "Linear");
   // Detail body sits on the primary surface; adapt status/priority colors to it.
   const surfaceLum = useSurfaceLuminance("--color-bg-primary");
   // A card-opened issue with no seed and no detail yet has nothing to show but

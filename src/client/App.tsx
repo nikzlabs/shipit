@@ -58,6 +58,7 @@ import { GitHistory } from "./components/GitHistory.js";
 import { AuthOverlayContainer } from "./AuthOverlay.js";
 import { Settings } from "./components/Settings.js";
 import { ProjectSettings } from "./components/ProjectSettings.js";
+import type { TrackerId } from "../server/shared/types.js";
 import { AppLayout } from "./AppLayout.js";
 import { DocsViewer } from "./components/DocsViewer.js";
 import { IssuesPanel } from "./components/IssuesPanel.js";
@@ -990,7 +991,7 @@ export default function App() {
   // rightTab change also fires the fetch-on-open effect below for the list.
   const handleOpenIssue = useCallback(
     (ref: {
-      tracker: "linear" | "github";
+      tracker: TrackerId;
       id?: string;
       identifier: string;
       title?: string;

@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { parse as parseYaml } from "yaml";
 import {
   parseShipitConfig,
   resolveShipitConfig,
@@ -577,5 +578,107 @@ describe("resolveShipitConfig", () => {
     );
     const config = resolveShipitConfig(dir);
     expect(config.warnings.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// docs/247 — `issues.trackers`
+// ---------------------------------------------------------------------------
+
+describe("issues.trackers", () => {
+  const parse = (yaml: string) => parseShipitConfig(parseYaml(yaml));
+
+  it("defaults to no declared trackers when the block is absent", () => {
+    expect(parse("version: 1\n").issues.trackers).toEqual([]);
+  });
+
+  it("parses a github declaration into an owner/repo pair", () => {
+    const config = parse(`
+issues:
+  trackers:
+    - kind: github
+      repo: acme/planning
+      label: Planning
+`);
+    expect(config.issues.trackers).toEqual([
+      { kind: "github", owner: "acme", repo: "planning", label: "Planning" },
+    ]);
+    expect(config.warnings).toEqual([]);
+  });
+
+  it("defaults the label to the repository name", () => {
+    const config = parse("issues:\n  trackers:\n    - kind: github\n      repo: acme/planning\n");
+    expect(config.issues.trackers[0].label).toBe("planning");
+  });
+
+  it("preserves declaration order (it drives tab order)", () => {
+    const config = parse(`
+issues:
+  trackers:
+    - kind: github
+      repo: acme/first
+    - kind: github
+      repo: acme/second
+`);
+    expect(config.issues.trackers.map((t) => t.repo)).toEqual(["first", "second"]);
+  });
+
+  // The forward-compatibility contract in req 5: a config written against a
+  // NEWER ShipIt that declares a tracker kind this build has never heard of must
+  // degrade to "that tab doesn't appear", never to a failed session. Same for
+  // every other malformed shape — a tracker declaration gates one tab, not the
+  // container, so nothing here is allowed to throw.
+  it.each([
+    ["an unrecognized kind", "issues:\n  trackers:\n    - kind: linear\n      team: SHI\n"],
+    ["a missing kind", "issues:\n  trackers:\n    - repo: acme/planning\n"],
+    ["a github entry with no repo", "issues:\n  trackers:\n    - kind: github\n"],
+    ["a repo that isn't a slug", "issues:\n  trackers:\n    - kind: github\n      repo: planning\n"],
+    ["a non-mapping entry", "issues:\n  trackers:\n    - acme/planning\n"],
+    ["a non-list trackers", "issues:\n  trackers: acme/planning\n"],
+    ["a non-mapping issues block", "issues: acme/planning\n"],
+  ])("warns and skips %s rather than failing", (_label, yaml) => {
+    const config = parse(yaml);
+    expect(config.issues.trackers).toEqual([]);
+    expect(config.warnings.length).toBeGreaterThan(0);
+  });
+
+  it("keeps the valid entries when one entry is unusable", () => {
+    const config = parse(`
+issues:
+  trackers:
+    - kind: some-future-tracker
+      handle: whatever
+    - kind: github
+      repo: acme/planning
+`);
+    expect(config.issues.trackers).toEqual([
+      { kind: "github", owner: "acme", repo: "planning", label: "planning" },
+    ]);
+    expect(config.warnings.length).toBe(1);
+  });
+
+  it("drops a duplicate declaration of the same repository", () => {
+    const config = parse(`
+issues:
+  trackers:
+    - kind: github
+      repo: acme/planning
+    - kind: github
+      repo: acme/planning
+      label: Second
+`);
+    expect(config.issues.trackers).toHaveLength(1);
+    expect(config.warnings.some((w) => w.includes("duplicate"))).toBe(true);
+  });
+
+  it("warns about unknown keys inside an entry without dropping it", () => {
+    const config = parse("issues:\n  trackers:\n    - kind: github\n      repo: acme/planning\n      colour: red\n");
+    expect(config.issues.trackers).toHaveLength(1);
+    expect(config.warnings.some((w) => w.includes("colour"))).toBe(true);
+  });
+
+  it("does not warn about `issues` as an unknown top-level key", () => {
+    const config = parse("issues:\n  trackers: []\n");
+    expect(config.warnings).toEqual([]);
   });
 });

@@ -25,18 +25,22 @@
 
 ## Implementation
 
-- [ ] Convert the resolved decisions into implementation acceptance tests.
-- [ ] Preserve structured repository identity through parsing and all issue operations.
-- [ ] Add `--repo owner/name` to `shipit issue`, the `/agent-ops/issue/*` schema, and the HTTP routes; no-`--repo` keeps meaning the session's code repo.
-- [ ] Parse the `issues.trackers` block in `shipit.yaml`; warn on malformed entries rather than failing the session.
-- [ ] Widen `TrackerId` for derived `github:owner/repo` ids; make `GitHubTracker`'s id/label configurable; register one tracker per declaration.
-- [ ] Render a declared tracker as its own Issues tab, with reachability failures inline on that tab.
-- [ ] Represent unsupported normalized operations and GitHub feature differences honestly.
-- [ ] Add same-numbered code/tracker repository regression coverage.
-- [ ] Add repository-qualified deduplication, lifecycle-card, and persisted effect keys.
-- [ ] Preserve repository targets through agent operations and persisted Undo cards.
-- [ ] Keep public user bug reports routed to ShipIt's public repository while private planning issues use the private tracker.
-- [ ] Keep each active code repository's GitHub Issues routed independently of the private planning tracker.
-- [ ] Verify private issue content does not reach public surfaces beyond explicitly accepted disclosures.
-- [ ] Run focused tests, `npm run test:dev`, `npm run lint:dev`, and `npm run typecheck`.
+- [x] Convert the resolved decisions into implementation acceptance tests.
+- [x] Preserve structured repository identity through parsing and all issue operations.
+- [x] Add `--repo owner/name` to `shipit issue`, the `/agent-ops/issue/*` schema, and the HTTP routes; no-`--repo` keeps meaning the session's code repo. *(The agent-ops relay passes `tracker` through verbatim, so no schema change was needed.)*
+- [x] Parse the `issues.trackers` block in `shipit.yaml` as a `kind`-discriminated list; warn and skip on a malformed entry, a `github` entry missing `repo`, or an unrecognized `kind`, rather than failing the session.
+- [x] Widen `TrackerId` for derived `github:owner/repo` ids; make `GitHubTracker`'s id/label configurable; register one tracker per declaration.
+- [x] Render a declared tracker as its own Issues tab, with reachability failures inline on that tab.
+- [x] Represent unsupported normalized operations and GitHub feature differences honestly. *(`--priority` / `--parent` are rejected identically on a named repository; SHI-310 covers priority writes for both destinations.)*
+- [x] Add same-numbered code/tracker repository regression coverage.
+- [x] Add repository-qualified deduplication, lifecycle-card, and persisted effect keys. *(Falls out of the qualified tracker id — `parseIssueRef`'s dedup key and the PR-body pointers are qualified without separate key changes.)*
+- [x] Preserve repository targets through agent operations and persisted Undo cards. *(Undo resolves `card.tracker`, which is now qualified — no new persisted field, no migration, no legacy-card path.)*
+- [x] Keep public user bug reports routed to ShipIt's public repository while private planning issues use the private tracker. *(`services/bug-report.ts` stays outside the tracker registry; untouched by this change.)*
+- [x] Keep each active code repository's GitHub Issues routed independently of the private planning tracker.
+- [x] Run focused tests, the full suite, `npm run lint:dev`, and `npm run typecheck`.
+
+Remaining:
+
+- [ ] **Blocked on an open question** — requirement 1's public-surface derivation: seed pushed branch names and public PR titles from the qualified pointer rather than the issue title. Which issues this applies to is no longer decidable from the code now that there is no connected "private planning repository"; see `## Open questions` in requirements.md.
+- [ ] Verify private issue content does not reach public surfaces beyond explicitly accepted disclosures (depends on the item above).
 - [ ] Complete a fresh-context requirements review.

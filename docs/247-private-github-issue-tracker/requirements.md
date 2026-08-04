@@ -9,11 +9,14 @@
    ```yaml
    issues:
      trackers:
-       - repo: owner/planning     # required, `owner/name`
-         label: Planning          # optional; defaults to the repository name
+       - kind: github           # which tracker backs this tab
+         repo: owner/planning   # GitHub Issues: `owner/name`
+         label: Planning        # optional; defaults to the repository name
    ```
 
-   Each declaration names a repository and appears as its own tab in the Issues UI, alongside Linear and the session's own code repository. `trackers` is a list, so a repository may declare more than one. Because the declaration travels with the repository, there is no deployment-wide binding and no separate per-Project binding is required when [Projects](../231-projects/requirements.md) ships.
+   Each entry states its tracker `kind`, and the remaining fields are whatever that kind needs to identify itself — so a tracker identified by something other than a repository can be added later without changing the shape. `github` is the only kind defined now; an entry whose `kind` this version of ShipIt does not recognize is ignored with a warning rather than failing the session.
+
+   Each declaration appears as its own tab in the Issues UI, alongside Linear and the session's own code repository, in the order declared. `trackers` is a list, so a repository may declare more than one. Because the declaration travels with the repository, there is no deployment-wide binding and no separate per-Project binding is required when [Projects](../231-projects/requirements.md) ships.
 6. The user creates the repository and declares it. ShipIt neither creates the repository nor performs initial repository setup or bulk initialization. Ordinary tracker operations against a declared repository remain allowed.
 7. When ShipIt adds a private planning issue reference to a public PR body, it uses a fully qualified GitHub pointer such as `owner/private-repo#42`. ShipIt-generated public text includes no other private issue fields. The user accepts disclosure of the repository slug, issue number, and issue existence in the public PR and its edit history; readers without repository access still cannot inspect the issue contents.
 8. GitHub's feature set is accepted without a separate parity gate. ShipIt does not emulate missing capabilities solely for wrapper parity. A normalized operation unavailable for this backend is omitted or disabled with an inline explanation and must never silently no-op or report false success.
@@ -21,7 +24,33 @@
 
 ## Open questions
 
-None.
+- **Which issues get pointer-only branch and PR names?** Requirement 1 says a
+  session started from a *private planning* issue must derive its pushed branch
+  name and public PR title from the qualified pointer alone, so the issue title
+  stays inside ShipIt. Today the branch is `<identifier>-<title-slug>`
+  (`seedFromIssueRef`), so a title would leak. The rule was written when a single
+  connected repository *was* "the private planning tracker"; with declarations
+  (requirement 5) and no connect-time validation, ShipIt has no signal for which
+  repositories are private — a declared repository may be public, and a session's
+  own code repository may be private. So "private planning issue" no longer picks
+  out a set the code can identify. Which should it be?
+  - **(a) Every issue.** Always derive branch/PR names from the pointer. Simplest
+    and leak-proof, but it changes today's behavior for Linear and code-repo
+    GitHub issues, where readable branch names are a feature nobody complained
+    about.
+  - **(b) Declared trackers only.** Treat a `shipit.yaml` declaration as the
+    "this is my planning tracker" signal. Matches the intent, changes no existing
+    behavior — but it is an inference ShipIt is making, and a declared *public*
+    repository would get pointer-only names it doesn't need.
+  - **(c) An explicit opt-in on the declaration** (e.g. `private: true`), so the
+    user states it rather than ShipIt guessing. Honest, but adds a field for
+    something no other part of the design needs.
+  - **(d) Drop the requirement.** Accept that titles appear in branch names, on
+    the grounds that requirement 7 already accepts disclosing the repository slug
+    and issue number.
+
+  Nothing else in the feature depends on this; it is the last unimplemented item
+  in requirement 1.
 
 ## Resolved questions
 
@@ -37,6 +66,7 @@ None.
 - 2026-08-04 — The user clarified that every code repository keeps its own GitHub Issues tracker. The fixed public ShipIt bug-report destination applies only to ShipIt product reports, while the private tracker is an additional planning destination.
 - 2026-08-04 — To keep authorization simple, ShipIt validates the private repository when connecting it and thereafter relies on ordinary GitHub requests, without proactive access or privacy polling.
 - 2026-08-04 — The user approved creating a missing priority-convention label on demand when they request a priority change.
+- 2026-08-04 — The user required the declaration syntax to name the tracker kind explicitly rather than assuming GitHub Issues, since other trackers may be declared this way later (they cited Linear team assignment as a plausible case). Each entry is therefore discriminated by `kind`, with the identifying fields belonging to that kind — so a tracker not identified by an `owner/repo` needs no change to the shape. Only `github` is defined by this feature; nothing about Linear's fields is specified here. An unrecognized `kind` is ignored with a warning so that a config written for a newer ShipIt does not break an older one.
 - 2026-08-04 — Reviewing this document, the user removed three things. A stale sentence in requirement 3 routing list/create/bare-number operations through "the current deployment or Project binding" — a leftover from the binding design that no longer describes anything. The claim in requirement 4 that the fixed public bug-report destination is "ShipIt-specific, not a general tracker for other projects" — an editorial framing rather than an observable requirement, and inaccurate now that `--repo` makes the mechanism generic. And the whole of requirement 8, which stated what ShipIt does *not* do (no connection-time validation, no privacy or access polling); its observable half already lives in requirement 3, and the rest is a design consequence recorded in the receipts below. The user also asked for the concrete `shipit.yaml` syntax, now shown in requirement 5.
 - 2026-08-04 — The user replaced the stored deployment-wide binding with a declarative one: additional GitHub issue trackers are listed in the repository's `shipit.yaml` and each appears as its own Issues tab. This removes the Settings connect flow, the credential-store field, connection-time validation, and the migration; it also dissolves the per-Project binding question, since the declaration already travels with the repository. Two accepted consequences: `TrackerId` stops being a closed union (declared trackers need dynamic ids), and with no connection step ShipIt no longer verifies that a declared repository is private — on a public code repository the declaration also discloses the planning repository's slug in a committed file, which extends the disclosure already accepted in requirement 7.
 - 2026-08-04 — Asked which repositories `--repo` may name, the user chose any repository the GitHub credential can reach, with GitHub authorization as the only gate. An allow-list limited to the session's code repository plus the configured planning binding was rejected, as was an allow-list with an opt-in escape hatch. This supersedes the previous "only this session's repo" rule in the agent-facing docs, and makes the planning binding a default for list/create rather than a boundary. The accepted consequence is that a mistyped `--repo` can write to a real repository the credential owns.

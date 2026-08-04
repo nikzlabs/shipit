@@ -2,10 +2,22 @@
 
 /**
  * Identifier for a configured issue tracker. Drives the Issues tab's sub-tab
- * switcher. v1 ships Linear only; `"github"` is reserved so a GitHub Issues
- * adapter can slot in later without a type change (see docs/170 non-goals).
+ * switcher and the `?tracker=` query.
+ *
+ * Not a closed union (docs/247): `"github"` keeps its historical meaning — the
+ * active session's own code repository — but a GitHub destination may also be
+ * named explicitly as `` `github:${owner}/${repo}` ``. Those come from
+ * `issues.trackers` declarations in a repository's `shipit.yaml` and from an
+ * operation's `--repo owner/name`, neither of which is drawn from a fixed set,
+ * so the id has to stay open-ended. The template-literal member keeps that open
+ * end typed rather than degrading the whole union to `string`.
+ *
+ * Build and inspect qualified ids with the helpers in `shared/tracker-id.ts`
+ * (`githubTrackerId`, `parseGitHubTrackerId`, `isGitHubTracker`) — never by
+ * comparing against the bare literal `"github"`, which silently drops the
+ * repository and re-targets the session's code repo.
  */
-export type TrackerId = "linear" | "github";
+export type TrackerId = "linear" | "github" | `github:${string}`;
 
 /**
  * Normalized priority bucket, tracker-agnostic. Linear maps its 0–4 priority

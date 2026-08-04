@@ -23,6 +23,7 @@
  */
 
 import type {
+  TrackerId,
   TrackerInfo,
   TrackerIssue,
   TrackerComment,
@@ -61,6 +62,16 @@ export interface GitHubTrackerConfig {
   repo: GitHubRepoRef | null;
   /** Injectable for tests; defaults to the global `fetch`. */
   fetchImpl?: FetchImpl;
+  /**
+   * docs/247 — tracker id, defaulting to the bare `"github"` (the session's own
+   * code repository). A tracker bound to an explicitly *named* repository — a
+   * `shipit.yaml` declaration or an operation's `--repo` — takes the qualified
+   * `github:owner/repo` id instead, so the repository stays attached to every
+   * surface the id reaches (route query, persisted Undo card, sub-tab).
+   */
+  id?: TrackerId;
+  /** docs/247 — sub-tab label. Defaults to `"GitHub"` for the session's repo. */
+  label?: string;
 }
 
 const PRIORITY_BY_LEVEL: Record<
@@ -233,8 +244,8 @@ export function resolveGitHubState(status: string): { state: "open" | "closed"; 
 }
 
 export class GitHubTracker implements Tracker {
-  readonly id = "github" as const;
-  readonly label = "GitHub";
+  readonly id: TrackerId;
+  readonly label: string;
 
   private token: string | null;
   private repo: GitHubRepoRef | null;
@@ -244,6 +255,8 @@ export class GitHubTracker implements Tracker {
     this.token = config.token;
     this.repo = config.repo;
     this.fetchImpl = config.fetchImpl ?? fetch;
+    this.id = config.id ?? "github";
+    this.label = config.label ?? "GitHub";
   }
 
   isConfigured(): boolean {
@@ -554,7 +567,7 @@ export class GitHubTracker implements Tracker {
       throw new Error(`GitHub request failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
     }
     if (res.status === 401 || res.status === 403) {
-      throw new Error("GitHub rejected the token (401/403). Re-connect GitHub with a valid token.");
+      throw new Error(this.accessError(res.status));
     }
     if (!res.ok) {
       // Surface GitHub's own message (e.g. "could not add assignees: not a
@@ -578,10 +591,39 @@ export class GitHubTracker implements Tracker {
 
   private assertOk(res: Response): void {
     if (res.status === 401 || res.status === 403) {
-      throw new Error("GitHub rejected the token (401/403). Re-connect GitHub with a valid token.");
+      throw new Error(this.accessError(res.status));
+    }
+    if (res.status === 404) {
+      throw new Error(this.accessError(404));
     }
     if (!res.ok) {
       throw new Error(`GitHub API returned ${res.status}`);
     }
+  }
+
+  /**
+   * docs/247 req 3 — fail closed with an error that names **both**
+   * possibilities. GitHub deliberately returns `404` rather than `403` for a
+   * private repository the credential cannot see, so "missing" and
+   * "inaccessible" are genuinely indistinguishable from the response; claiming
+   * either one alone would send the user to the wrong fix. A `403` is scoped
+   * differently (the repo exists, the grant doesn't reach it) but lands the user
+   * in the same place, so it gets the same message rather than the old
+   * "re-connect GitHub" advice — for a *named* repository the token is usually
+   * fine and the grant is what's missing.
+   */
+  private accessError(status: number): string {
+    if (!this.repo) {
+      return "GitHub rejected the token (401/403). Re-connect GitHub with a valid token.";
+    }
+    const slug = `${this.repo.owner}/${this.repo.repo}`;
+    if (status === 401) {
+      return `GitHub rejected the token (401). Re-connect GitHub with a valid token.`;
+    }
+    return (
+      `GitHub returned ${status} for \`${slug}\` — the repository either does not exist or ` +
+      `the connected GitHub credential cannot access it. GitHub returns the same response for both, ` +
+      `so check the slug and that the credential is granted Issues access there.`
+    );
   }
 }

@@ -20,6 +20,7 @@ import { ReleaseLifecycleCard } from "../../ReleaseLifecycleCard.js";
 import type { ChatMessage } from "../types.js";
 import type { ReleaseMechanism } from "../../../../server/shared/types.js";
 import { SubAgentConsultCardRow } from "./SubAgentCards.js";
+import type { TrackerId } from "../../../../server/shared/types.js";
 
 /** Callbacks the inline transcript cards may invoke. */
 export interface MessageCardCallbacks {
@@ -40,7 +41,7 @@ export interface MessageCardCallbacks {
   onUndoIssueWrite?: (cardId: string) => void;
   /** docs/189 — open an issue's inline detail view from a chat card. */
   onOpenIssue?: (ref: {
-    tracker: "linear" | "github";
+    tracker: TrackerId;
     id?: string;
     identifier: string;
     title?: string;
