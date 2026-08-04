@@ -162,7 +162,17 @@ export function PrMergeActions({
 
   return (
     <div className="w-full basis-full mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 md:gap-x-3">
-      {canAutoMerge && <AutoMergeToggle sessionId={sessionId} autoMerge={autoMerge} />}
+      {/* `pl-0` on the leading toggle: this row sits directly under the PR
+          title, and the ghost button's `px-2` would otherwise inset the visible
+          switch 8px past the title's text edge — a gap the hover background
+          makes obvious by painting the button's real box out to the alignment
+          line. Dropping only the left padding puts the switch AND its hover
+          background on that line, without the negative margin that would make
+          the merge button's solid fill hang left of the title. The other
+          AutoMergeToggle call sites (detail panel, overflow menu) keep `px-2`:
+          they sit inside their own padded container, where symmetric padding is
+          what's wanted. */}
+      {canAutoMerge && <AutoMergeToggle sessionId={sessionId} autoMerge={autoMerge} className="pl-0" />}
       {showMergeButton && <MergeButton sessionId={sessionId} autoMerge={autoMerge} />}
     </div>
   );
