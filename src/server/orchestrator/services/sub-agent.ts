@@ -594,6 +594,95 @@ export function getSubAgentResult(
 }
 
 /**
+ * docs/248 — interval between re-derives inside a wait segment. A consult runs
+ * for minutes, so half a second of latency on the transition is immaterial, and
+ * paying it buys a wait with no in-memory registry of in-flight runs and no
+ * completion event to miss.
+ */
+export const SUB_AGENT_RESULT_POLL_INTERVAL_MS = 500;
+
+/** Default `shipit agent result --wait --timeout` when the caller omits one. */
+export const DEFAULT_SUB_AGENT_WAIT_MS = 5 * 60 * 1000;
+
+/**
+ * Cap on a sub-agent wait. Matches the sub-agent's own wall-clock cap — past it
+ * the run cannot still be alive, so waiting longer only defers the truth.
+ */
+export const MAX_SUB_AGENT_WAIT_MS = 30 * 60 * 1000;
+
+export interface WaitForSubAgentResultOptions {
+  spawnId?: string;
+  /**
+   * Bounded server segment. Still `pending` when it elapses ⇒ resolve
+   * `outcome: "pending"` instead of holding the socket open, so the shim's
+   * segment loop can absorb a transport reset by re-issuing one segment.
+   */
+  segmentMs: number;
+  /** Injectable for deterministic tests. */
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+}
+
+export interface WaitForSubAgentResultOutcome {
+  card: SubAgentConsultCard;
+  /** `finished` — the card reached a terminal status. `pending` — segment elapsed. */
+  outcome: "finished" | "pending";
+}
+
+/**
+ * docs/248 — wait until a sub-agent run's consult card reaches a terminal
+ * status, bounded to one `segmentMs` segment.
+ *
+ * Level-triggered by construction, exactly as docs/182's `waitForChildIdle` is:
+ * every iteration re-derives the answer from the PERSISTED card, so an
+ * orchestrator restart mid-wait cannot strand the caller and there is no
+ * in-memory state to keep in sync. Both of the card's pending → terminal patch
+ * paths land in the DB — `persistCardTransition` either patches the recorded
+ * card and calls `persistTurnInProgress` (writing in_progress=1 rows), or
+ * patches the finalized row via `updateSubAgentConsultCard` — and
+ * `listSubAgentConsultCards` filters on neither, so this observes both.
+ *
+ * Throws `ServiceError` from the first derive only (unknown id, ambiguous
+ * prefix, no runs at all): a lookup that was valid once is not re-validated
+ * into a failure mid-wait.
+ */
+export async function waitForSubAgentResult(
+  deps: GetSubAgentResultDeps,
+  sessionId: string,
+  opts: WaitForSubAgentResultOptions,
+): Promise<WaitForSubAgentResultOutcome> {
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const now = opts.now ?? (() => Date.now());
+
+  // Fast path — derive once before arming anything. Also the only derive that
+  // is allowed to throw, so a bad run id fails immediately instead of after a
+  // full segment of polling.
+  let card = getSubAgentResult(deps, sessionId, opts.spawnId);
+  if (card.status !== "pending") return { card, outcome: "finished" };
+
+  // Pin the run. With no `spawnId` the caller means "the most recent run", but
+  // re-resolving that each iteration would silently switch the wait onto a
+  // NEWER run started mid-wait — and then report that one's status as if it
+  // were the run the caller asked about.
+  const pinnedSpawnId = card.spawnId;
+  const deadline = now() + Math.max(0, opts.segmentMs);
+
+  while (now() < deadline) {
+    await sleep(Math.min(SUB_AGENT_RESULT_POLL_INTERVAL_MS, Math.max(0, deadline - now())));
+    try {
+      card = getSubAgentResult(deps, sessionId, pinnedSpawnId);
+    } catch {
+      // The card is momentarily unreadable (a history rewrite between our
+      // reads). Not an outcome — keep waiting; the next poll re-derives.
+      continue;
+    }
+    if (card.status !== "pending") return { card, outcome: "finished" };
+  }
+
+  return { card, outcome: "pending" };
+}
+
+/**
  * Emit a `usage_update` reflecting a just-recorded sub-agent turn (docs/144).
  * Rolls the consult's cost + tokens into the session bill and cumulative-token
  * totals — both are SUM queries over every row, so they already include the new

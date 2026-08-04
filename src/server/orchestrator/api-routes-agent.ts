@@ -17,7 +17,15 @@ import type {
   UploadRef,
   AgentId,
 } from "../shared/types.js";
-import { dispatchAgentMessage, runSubAgent, getSubAgentResult, ServiceError } from "./services/index.js";
+import {
+  dispatchAgentMessage,
+  runSubAgent,
+  getSubAgentResult,
+  waitForSubAgentResult,
+  DEFAULT_SUB_AGENT_WAIT_MS,
+  MAX_SUB_AGENT_WAIT_MS,
+  ServiceError,
+} from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
 import { AgentTurnAdmissionError } from "./session-runner.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
@@ -136,18 +144,47 @@ export async function registerAgentRoutes(
     },
   );
 
-  // GET /api/sessions/:id/agent/result?spawnId=… — SHI-245. Re-read a completed
-  // spawn's persisted consult card (the artifact the UI renders) so the invoking
-  // agent can verify parity, or recover output whose delivery was lost when its
-  // `shipit agent run` was killed mid-flight. Reached via the worker's
-  // `/agent-ops/agent/result` broker, which injects the trusted SESSION_ID.
-  // No spawnId ⇒ the session's most recent run.
-  app.get<{ Params: { id: string }; Querystring: { spawnId?: string } }>(
+  // GET /api/sessions/:id/agent/result?spawnId=…[&wait=true&timeout=N&segment=S]
+  //
+  // SHI-245. Re-read a completed spawn's persisted consult card (the artifact
+  // the UI renders) so the invoking agent can verify parity, or recover output
+  // whose delivery was lost when its `shipit agent run` was killed mid-flight.
+  // Reached via the worker's `/agent-ops/agent/result` broker, which injects the
+  // trusted SESSION_ID. No spawnId ⇒ the session's most recent run.
+  //
+  // docs/248 — with `wait=true` the call resolves when the run reaches a
+  // terminal status. `segment` (seconds) bounds a single server poll: still
+  // pending when it elapses ⇒ 200 with `outcome: "pending"` ("poll again")
+  // rather than a held socket, so the shim owns the overall deadline and a
+  // reset costs one segment. Same contract as the child-session wait.
+  app.get<{
+    Params: { id: string };
+    Querystring: { spawnId?: string; wait?: string; timeout?: string; segment?: string };
+  }>(
     "/api/sessions/:id/agent/result",
     { config: { containerAccessible: true } },
     async (request, reply) => {
       try {
         const spawnId = request.query.spawnId?.trim();
+        if (request.query.wait === "true") {
+          const requestedTimeoutSecs = Number(request.query.timeout);
+          const timeoutMs = Number.isFinite(requestedTimeoutSecs) && requestedTimeoutSecs > 0
+            ? Math.min(Math.floor(requestedTimeoutSecs * 1000), MAX_SUB_AGENT_WAIT_MS)
+            : DEFAULT_SUB_AGENT_WAIT_MS;
+          const requestedSegmentSecs = Number(request.query.segment);
+          // A caller may not ask for a segment longer than the time it is
+          // willing to wait overall.
+          const segmentMs = Number.isFinite(requestedSegmentSecs) && requestedSegmentSecs > 0
+            ? Math.min(Math.floor(requestedSegmentSecs * 1000), timeoutMs)
+            : timeoutMs;
+          const result = await waitForSubAgentResult(
+            { chatHistoryManager: deps.chatHistoryManager },
+            request.params.id,
+            { ...(spawnId ? { spawnId } : {}), segmentMs },
+          );
+          reply.send({ ...result.card, outcome: result.outcome });
+          return;
+        }
         const card = getSubAgentResult(
           { chatHistoryManager: deps.chatHistoryManager },
           request.params.id,

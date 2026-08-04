@@ -459,6 +459,7 @@ export class ChatHistoryManager {
   private stmtInsert;
   private stmtUpdate;
   private stmtLoadAll;
+  private stmtLoadSubAgentCards;
   private stmtLoadLast;
   private stmtDeleteBySession;
   private stmtDeleteInProgress;
@@ -470,6 +471,15 @@ export class ChatHistoryManager {
     this.stmtInsert = this.db.prepare(INSERT_SQL);
     this.stmtUpdate = this.db.prepare(UPDATE_SQL);
     this.stmtLoadAll = this.db.prepare("SELECT * FROM messages WHERE session_id = ? ORDER BY id");
+    // docs/248 — `listSubAgentConsultCards` on the `--wait` poll path. No
+    // `in_progress` filter, deliberately: a consult that completes while its
+    // originating turn is still in flight is persisted by `persistTurnInProgress`
+    // as in_progress=1 rows (chat-card-persistence.ts `persistCardTransition`),
+    // and a wait that skipped those would never observe the pending → terminal
+    // transition on that path.
+    this.stmtLoadSubAgentCards = this.db.prepare(
+      "SELECT sub_agent_consult FROM messages WHERE session_id = ? AND sub_agent_consult IS NOT NULL ORDER BY id",
+    );
     // Filters in_progress=0 because `updateLastMessage` (the only caller) is
     // invoked from post-turn auto-commit to write `commit_hash` /
     // `parent_commit_hash` onto the just-finalized assistant message. If the
@@ -773,13 +783,13 @@ export class ChatHistoryManager {
    * output lands here and nowhere else.
    */
   listSubAgentConsultCards(sessionId: string): SubAgentConsultCard[] {
-    const rows = this.stmtLoadAll.all(sessionId) as MessageRow[];
-    const cards: SubAgentConsultCard[] = [];
-    for (const row of rows) {
-      if (!row.sub_agent_consult) continue;
-      cards.push(JSON.parse(row.sub_agent_consult) as SubAgentConsultCard);
-    }
-    return cards;
+    // Narrowed to the consult column of the (few) rows that carry one, rather
+    // than loading every message row in the session: docs/248's
+    // `shipit agent result --wait` re-reads this every 500ms for the length of
+    // a wait, and a full-row scan of a long session's transcript per poll is
+    // real work to repeat thousands of times.
+    const rows = this.stmtLoadSubAgentCards.all(sessionId) as { sub_agent_consult: string }[];
+    return rows.map((r) => JSON.parse(r.sub_agent_consult) as SubAgentConsultCard);
   }
 
   /**

@@ -207,7 +207,7 @@ Compose services (docs/238 — start the services declared in docker-compose.yml
 
 Sub-agents (docs/144 — spawn another agent for a one-shot sub-task):
   shipit agent run --agent claude|codex --prompt-file FILE [--model M] [--json]
-  shipit agent result [RUN-ID] [--json]
+  shipit agent result [RUN-ID] [--wait [--timeout SECONDS]] [--json]
 
   'run' spawns ANOTHER registered agent with the prompt from --prompt-file (or
   --prompt-file - for stdin) and prints its final text on stdout. Use it for a
@@ -225,10 +225,17 @@ Sub-agents (docs/144 — spawn another agent for a one-shot sub-task):
     $(git diff)
     EOF
 
-  'result' re-prints a finished run's output — the same artifact ShipIt renders
-  inline for the user. No RUN-ID ⇒ the most recent run in this session. Use it
-  to recover output when a 'run' call was killed before it printed: the spawn
+  'result' re-prints a run's output — the same artifact ShipIt renders inline
+  for the user. No RUN-ID ⇒ the most recent run in this session. Use it to
+  recover output when a 'run' call was killed before it printed: the spawn
   keeps going server-side, so the answer is still there.
+
+  --wait blocks until the run finishes (default 5m, --timeout up to 30m). Use it
+  instead of a sleep/poll loop; it absorbs transport resets and, if the timeout
+  elapses, exits 4 and tells you to re-run — waiting is resumable, so nothing is
+  lost. Exit codes: 0 finished ok · 4 still running · 3 the run failed ·
+  1 the lookup failed (bad run id, unreachable) · 2 bad flags. Branch on those,
+  never on grepping the output for "pending" — a finished review can say it.
 
 Ops-only (read-only ShipIt source, docs/162):
   shipit source status   [--json]

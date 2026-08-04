@@ -20,6 +20,7 @@
 import {
   asString,
   fail,
+  isTransientStatus,
   onTerminationSignal,
   parseFlags,
   readBodyFromFileOrStdin,
@@ -157,12 +158,146 @@ export async function handleAgentRun(args: string[], deps: RunDeps): Promise<voi
 }
 
 /**
- * `shipit agent result [<run-id>] [--json]` (SHI-245) — print a finished spawn's
- * persisted output: the exact card the UI shows. No id ⇒ the session's most
- * recent run. A run-id prefix is accepted as long as it is unambiguous.
+ * docs/248 — exit codes for `shipit agent result`, so a caller that backgrounded
+ * a long consult can branch on `$?` instead of grepping the run's own output for
+ * the word "pending" (a code review can easily contain it).
+ *
+ * `0`/`3` mirror docs/182's `WAIT_EXIT_IDLE`/`WAIT_EXIT_ERROR`. Pending is `4`
+ * because every lower code is already spoken for by a FAILURE: `1` is this
+ * command's lookup error (unknown/ambiguous run id, unreachable orchestrator)
+ * and `2` is the shim-wide `fail()` default for a bad invocation. "Still
+ * running" has to be distinguishable from both, or a caller retrying until the
+ * command succeeds would spin forever on a condition that can never clear.
+ */
+const RESULT_EXIT_SUCCESS = 0;
+const RESULT_EXIT_PENDING = 4;
+const RESULT_EXIT_RUN_FAILED = 3;
+
+/** docs/248 — `--wait` tuning. Mirrors the `shipit session wait` segment loop. */
+const RESULT_WAIT_DEFAULT_SECS = 5 * 60;
+/** The sub-agent's own wall-clock cap — past it the run cannot still be alive. */
+const MAX_RESULT_WAIT_SECS = 30 * 60;
+const RESULT_WAIT_SEGMENT_SECS = 25;
+const RESULT_WAIT_INITIAL_BACKOFF_MS = 500;
+const RESULT_WAIT_MAX_BACKOFF_MS = 8_000;
+/** Per-request abort budget: one segment plus margin for the server's resolve. */
+const RESULT_WAIT_REQUEST_MARGIN_MS = 10_000;
+
+/** Map a consult card's status to this command's exit code. */
+function exitCodeForResultStatus(status: string): number {
+  if (status === "pending") return RESULT_EXIT_PENDING;
+  if (status === "success") return RESULT_EXIT_SUCCESS;
+  // error | timeout | cancelled — the run reached a terminal state that wasn't
+  // success. An unrecognized status is treated as success by the caller below
+  // (it defaults the field), preserving the pre-docs/248 behavior.
+  return RESULT_EXIT_RUN_FAILED;
+}
+
+interface ResultLookup {
+  body: Record<string, unknown>;
+  /** Set when the overall `--wait` deadline elapsed with the run still pending. */
+  waitTimedOut: boolean;
+  /** Set when transport errors were swallowed and retried during the wait. */
+  lastTransportError?: string;
+  /** A non-2xx response the caller should surface as a lookup failure. */
+  lookupError?: string;
+}
+
+/**
+ * docs/248 — wait for a run to reach a terminal status, with a resumable
+ * segment loop beneath an overall deadline. Same structure as `waitForChildOnce`
+ * (docs/182): each iteration issues a bounded server segment; `pending`
+ * re-issues, and a transient transport failure backs off and retries. A
+ * transport error is never an outcome. Never throws.
+ */
+async function waitForResult(
+  runId: string | undefined,
+  deadline: number,
+  deps: RunDeps,
+): Promise<ResultLookup> {
+  let backoff = RESULT_WAIT_INITIAL_BACKOFF_MS;
+  let lastTransportError: string | undefined;
+  let lastBody: Record<string, unknown> | undefined;
+
+  while (deps.now() < deadline) {
+    const remainingMs = deadline - deps.now();
+    const segSecs = Math.max(1, Math.min(RESULT_WAIT_SEGMENT_SECS, Math.ceil(remainingMs / 1000)));
+    const overallSecs = Math.max(1, Math.ceil(remainingMs / 1000));
+    const params = new URLSearchParams({
+      wait: "true",
+      timeout: String(overallSecs),
+      segment: String(segSecs),
+    });
+    if (runId) params.set("spawnId", runId);
+
+    const res = await deps.call(
+      "GET",
+      `/agent-ops/agent/result?${params.toString()}`,
+      undefined,
+      deps.env,
+      segSecs * 1000 + RESULT_WAIT_REQUEST_MARGIN_MS,
+    );
+
+    if (isTransientStatus(res.status)) {
+      // Transport failure is NEVER an outcome — swallow and retry with backoff.
+      lastTransportError = formatError(res, "transport error reaching the ShipIt orchestrator");
+      const sleepMs = Math.min(backoff, Math.max(0, deadline - deps.now()));
+      if (sleepMs <= 0) break;
+      await deps.sleep(sleepMs);
+      backoff = Math.min(backoff * 2, RESULT_WAIT_MAX_BACKOFF_MS);
+      continue;
+    }
+    if (res.status < 200 || res.status >= 300) {
+      // A real answer from the server (unknown id, ambiguous prefix) — terminal.
+      return {
+        body: res.body,
+        waitTimedOut: false,
+        lookupError: formatError(res, "Sub-agent result lookup failed"),
+        ...(lastTransportError ? { lastTransportError } : {}),
+      };
+    }
+
+    backoff = RESULT_WAIT_INITIAL_BACKOFF_MS;
+    lastBody = res.body;
+    // Prefer the server's explicit outcome; fall back to the card's own status
+    // so an older orchestrator (no `outcome` field) still terminates the loop.
+    const outcome = res.body.outcome;
+    const cardStatus = asString(res.body.status);
+    if (outcome === "finished" || (outcome !== "pending" && cardStatus !== "pending")) {
+      return { body: res.body, waitTimedOut: false, ...(lastTransportError ? { lastTransportError } : {}) };
+    }
+  }
+
+  if (!lastBody) {
+    // Every attempt failed in transport — we never learned anything about the
+    // run. That is a lookup failure, not "still pending".
+    return {
+      body: {},
+      waitTimedOut: true,
+      lookupError: lastTransportError ?? "Sub-agent result lookup failed: the orchestrator was unreachable.",
+      ...(lastTransportError ? { lastTransportError } : {}),
+    };
+  }
+  return { body: lastBody, waitTimedOut: true, ...(lastTransportError ? { lastTransportError } : {}) };
+}
+
+/**
+ * `shipit agent result [<run-id>] [--wait [--timeout SECONDS]] [--json]`
+ * (SHI-245, docs/248) — print a spawn's persisted output: the exact card the UI
+ * shows. No id ⇒ the session's most recent run. A run-id prefix is accepted as
+ * long as it is unambiguous.
+ *
+ * The exit code carries the run's status (see `RESULT_EXIT_*`), and `--wait`
+ * blocks until the run is terminal, so a caller that backgrounded a long consult
+ * never needs a hand-written `sleep`/`grep` loop. A wait that hits its timeout
+ * exits `2` and says how to resume — every call re-derives from durable state,
+ * so being interrupted loses nothing.
  */
 export async function handleAgentResult(args: string[], deps: RunDeps): Promise<void> {
-  const parsed = parseFlags(args, { booleans: { "--json": "json" } });
+  const parsed = parseFlags(args, {
+    values: { "--timeout": "timeout", "-T": "timeout" },
+    booleans: { "--json": "json", "--wait": "wait" },
+  });
   if (parsed.unsupported.length > 0) {
     fail(deps.io, `Unsupported flag for shipit agent result: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
   }
@@ -171,32 +306,80 @@ export async function handleAgentResult(args: string[], deps: RunDeps): Promise<
   }
 
   const runId = parsed.positional[0];
-  const qs = runId ? `?spawnId=${encodeURIComponent(runId)}` : "";
-  const res = await deps.call("GET", `/agent-ops/agent/result${qs}`, undefined, deps.env);
-  if (res.status < 200 || res.status >= 300) {
-    fail(deps.io, formatError(res, "Sub-agent result lookup failed"), 1);
+  const wait = parsed.booleans.has("wait");
+  // `--timeout` does NOT imply `--wait`: a stray flag must never silently turn a
+  // quick read into a five-minute block.
+  if (parsed.values.timeout && !wait) {
+    fail(deps.io, "shipit agent result: --timeout only applies with --wait. Add --wait to block until the run finishes.");
+  }
+  let overallSecs = RESULT_WAIT_DEFAULT_SECS;
+  if (parsed.values.timeout) {
+    const n = Number(parsed.values.timeout);
+    if (!Number.isFinite(n) || n <= 0) {
+      fail(deps.io, "shipit agent result: --timeout must be a positive number of seconds.");
+    }
+    overallSecs = Math.min(Math.floor(n), MAX_RESULT_WAIT_SECS);
   }
 
+  let lookup: ResultLookup;
+  if (wait) {
+    lookup = await waitForResult(runId, deps.now() + overallSecs * 1000, deps);
+  } else {
+    const qs = runId ? `?spawnId=${encodeURIComponent(runId)}` : "";
+    const res = await deps.call("GET", `/agent-ops/agent/result${qs}`, undefined, deps.env);
+    lookup = {
+      body: res.body,
+      waitTimedOut: false,
+      ...(res.status < 200 || res.status >= 300
+        ? { lookupError: formatError(res, "Sub-agent result lookup failed") }
+        : {}),
+    };
+  }
+
+  if (lookup.lookupError) {
+    fail(deps.io, lookup.lookupError, 1);
+  }
+
+  const output = asString(lookup.body.outputMarkdown);
+  const status = asString(lookup.body.status) || "success";
+  const subAgentId = asString(lookup.body.subAgentId);
+  const spawnId = asString(lookup.body.spawnId);
+  const exitCode = exitCodeForResultStatus(status);
+
   if (parsed.booleans.has("json")) {
-    deps.io.stdout(`${JSON.stringify(res.body)}\n`);
-    deps.io.exit(0);
+    deps.io.stdout(`${JSON.stringify(lookup.body)}\n`);
+    deps.io.exit(exitCode);
     return;
   }
 
-  const output = asString(res.body.outputMarkdown);
-  const status = asString(res.body.status) || "success";
-  const subAgentId = asString(res.body.subAgentId);
-  const spawnId = asString(res.body.spawnId);
-
   deps.io.stderr(`shipit agent result: run ${spawnId} · ${subAgentId} · ${status}\n`);
+  if (lookup.lastTransportError) {
+    deps.io.stderr(`shipit agent result: transport retried (${lookup.lastTransportError})\n`);
+  }
+
+  if (status === "pending") {
+    // The run is alive. Say how to keep waiting — resumable because each call
+    // re-derives the answer from the persisted card, so nothing is lost by
+    // having been interrupted.
+    const resume = `shipit agent result${spawnId ? ` ${spawnId}` : ""} --wait`;
+    deps.io.stderr(
+      lookup.waitTimedOut
+        ? `shipit agent result: still running after ${overallSecs}s. Re-run to keep waiting: ${resume}\n`
+        : `shipit agent result: that run is still going. Block until it finishes with: ${resume}\n`,
+    );
+    if (output) deps.io.stdout(output.endsWith("\n") ? output : `${output}\n`);
+    deps.io.exit(RESULT_EXIT_PENDING);
+    return;
+  }
+
   if (!output) {
     // A terminal card with no text (a crash, a cancel before any output) is a
     // real answer to "what did that run produce" — say so rather than printing
     // nothing, which reads like the lookup itself failed.
     deps.io.stderr("shipit agent result: that run produced no output.\n");
-    deps.io.exit(0);
+    deps.io.exit(exitCode);
     return;
   }
   deps.io.stdout(output.endsWith("\n") ? output : `${output}\n`);
-  deps.io.exit(0);
+  deps.io.exit(exitCode);
 }

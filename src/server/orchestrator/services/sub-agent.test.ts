@@ -9,7 +9,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { getSubAgentResult, runSubAgent, sweepSubAgentCredentialsOnSignOut, SUB_AGENT_PER_TURN_CAP } from "./sub-agent.js";
+import {
+  getSubAgentResult,
+  runSubAgent,
+  sweepSubAgentCredentialsOnSignOut,
+  waitForSubAgentResult,
+  SUB_AGENT_PER_TURN_CAP,
+} from "./sub-agent.js";
 import { ServiceError } from "./types.js";
 import { DatabaseManager } from "../../shared/database.js";
 import { ChatHistoryManager } from "../chat-history.js";
@@ -628,6 +634,118 @@ describe("getSubAgentResult (SHI-245)", () => {
   it("404s when the session has no runs, and when the id is unknown", () => {
     expect(() => getSubAgentResult(reader([]), "s1")).toThrow(/No sub-agent runs/);
     expect(() => getSubAgentResult(reader([card("aaa1", "x")]), "s1", "zzz")).toThrow(/No sub-agent run with id/);
+  });
+});
+
+/**
+ * docs/248 — `waitForSubAgentResult` backs `shipit agent result --wait`, whose
+ * whole point is that a caller which backgrounded a long consult never has to
+ * script a sleep/grep loop. The properties worth pinning are the ones that make
+ * the wait safe to interrupt and safe to retry.
+ */
+describe("waitForSubAgentResult (docs/248)", () => {
+  type Status = "pending" | "success" | "error" | "timeout" | "cancelled";
+  const card = (spawnId: string, status: Status, outputMarkdown = "") => ({
+    cardId: `c-${spawnId}`,
+    spawnId,
+    subAgentId: "codex" as const,
+    status,
+    outputMarkdown,
+    createdAt: "2026-08-04T00:00:00Z",
+  });
+
+  /**
+   * A reader whose card list is re-read on every call, plus a virtual clock the
+   * wait's own `sleep` advances — so the loop's timing is exercised
+   * deterministically without real timers.
+   */
+  function harness(states: ReturnType<typeof card>[][]) {
+    let reads = 0;
+    let clock = 0;
+    const deps = {
+      chatHistoryManager: {
+        listSubAgentConsultCards: () => states[Math.min(reads++, states.length - 1)],
+      },
+    };
+    return {
+      deps,
+      readCount: () => reads,
+      opts: {
+        sleep: async (ms: number) => {
+          clock += ms;
+        },
+        now: () => clock,
+      },
+    };
+  }
+
+  it("returns immediately when the run is already terminal — no polling at all", async () => {
+    const h = harness([[card("aaa1", "success", "done")]]);
+    const res = await waitForSubAgentResult(h.deps, "s1", { segmentMs: 60_000, ...h.opts });
+    expect(res.outcome).toBe("finished");
+    expect(res.card.outputMarkdown).toBe("done");
+    // The fast-path derive only — a terminal run must not arm the loop.
+    expect(h.readCount()).toBe(1);
+  });
+
+  it("resolves as soon as the card flips pending → terminal", async () => {
+    const h = harness([
+      [card("aaa1", "pending")],
+      [card("aaa1", "pending")],
+      [card("aaa1", "success", "the review")],
+    ]);
+    const res = await waitForSubAgentResult(h.deps, "s1", { segmentMs: 60_000, ...h.opts });
+    expect(res.outcome).toBe("finished");
+    expect(res.card.outputMarkdown).toBe("the review");
+  });
+
+  it("reports a non-success terminal status as finished — the wait is over either way", async () => {
+    const h = harness([[card("aaa1", "pending")], [card("aaa1", "error")]]);
+    const res = await waitForSubAgentResult(h.deps, "s1", { segmentMs: 60_000, ...h.opts });
+    expect(res.outcome).toBe("finished");
+    expect(res.card.status).toBe("error");
+  });
+
+  it("resolves `pending` when the segment elapses, so the shim can re-issue", async () => {
+    const h = harness([[card("aaa1", "pending")]]);
+    const res = await waitForSubAgentResult(h.deps, "s1", { segmentMs: 2_000, ...h.opts });
+    expect(res.outcome).toBe("pending");
+    expect(res.card.spawnId).toBe("aaa1");
+  });
+
+  it("pins the run on the first derive — a newer run started mid-wait must not hijack it", async () => {
+    // No spawnId ⇒ "the most recent run". A second consult starts while we are
+    // waiting; without pinning, "most recent" would silently switch to it and
+    // report ITS status as the answer to a question about the first run.
+    const h = harness([
+      [card("aaa1", "pending")],
+      [card("aaa1", "pending"), card("bbb2", "success", "other run")],
+      [card("aaa1", "success", "the run we asked about"), card("bbb2", "success", "other run")],
+    ]);
+    const res = await waitForSubAgentResult(h.deps, "s1", { segmentMs: 60_000, ...h.opts });
+    expect(res.card.spawnId).toBe("aaa1");
+    expect(res.card.outputMarkdown).toBe("the run we asked about");
+  });
+
+  it("throws on a bad run id from the first derive, without polling a full segment", async () => {
+    const h = harness([[card("aaa1", "pending")]]);
+    await expect(
+      waitForSubAgentResult(h.deps, "s1", { spawnId: "zzz", segmentMs: 60_000, ...h.opts }),
+    ).rejects.toThrow(/No sub-agent run with id/);
+    expect(h.readCount()).toBe(1);
+  });
+
+  it("keeps waiting when the card is momentarily unreadable mid-wait", async () => {
+    // A history rewrite between two polls must not be reported as "the run
+    // vanished" — a lookup that was valid once is not re-validated into failure.
+    const h = harness([
+      [card("aaa1", "pending")],
+      [], // transient: nothing readable this instant
+      [card("aaa1", "success", "recovered")],
+    ]);
+    const res = await waitForSubAgentResult(h.deps, "s1", { segmentMs: 60_000, ...h.opts });
+    expect(res.outcome).toBe("finished");
+    expect(res.card.outputMarkdown).toBe("recovered");
   });
 });
 
