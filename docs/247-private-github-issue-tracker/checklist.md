@@ -16,11 +16,11 @@
 - [x] Accept GitHub Issues' feature set without a separate capability-parity gate.
 - [x] Use fully qualified private tracker pointers in public PR bodies and accept their metadata disclosure.
 - [x] Use the contextual GitHub credential and let GitHub enforce repository access; do not add a separate per-viewer tracker ACL.
-- [ ] Decide whether private issue titles may appear in pushed branch names and public PR titles.
-- [ ] Decide whether the active code repository's GitHub Issues remain a third destination.
-- [ ] Decide rebinding and historical qualified-reference behavior.
-- [ ] Decide post-connection privacy/access revalidation behavior.
-- [ ] Decide whether priority operations may create convention labels on demand.
+- [x] Keep private issue titles out of pushed branch names and public PR titles.
+- [x] Preserve each active code repository's GitHub Issues as a distinct tracker destination.
+- [ ] Decide how historical references and Undo actions behave after the configured private repository changes or is removed.
+- [x] Validate on connection and rely on ordinary GitHub authorization afterward; do not add proactive polling.
+- [x] Create missing priority-convention labels on demand for user-requested priority changes.
 
 ## Implementation
 
@@ -32,6 +32,7 @@
 - [ ] Add repository-qualified deduplication, lifecycle-card, and persisted effect keys.
 - [ ] Preserve repository targets through agent operations and persisted Undo cards.
 - [ ] Keep public user bug reports routed to ShipIt's public repository while private planning issues use the private tracker.
+- [ ] Keep each active code repository's GitHub Issues routed independently of the private planning tracker.
 - [ ] Verify private issue content does not reach public surfaces beyond explicitly accepted disclosures.
 - [ ] Run focused tests, `npm run test:dev`, `npm run lint:dev`, and `npm run typecheck`.
 - [ ] Complete a fresh-context requirements review.
