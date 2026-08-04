@@ -226,7 +226,7 @@ Run after the req-1 fix merged. Two of the five checks are done and are now
 
 Blocked, with the reason:
 
-- [ ] **A screenshot result end-to-end.** Still no real-shape data. Neither local
+- [ ] **A screenshot result end-to-end** (blocked on **SHI-298**). Still no real-shape data. Neither local
       CLI transcript contains an image block, and the dogfood cannot produce one
       either — inner sessions have no Playwright MCP server, so the agent has no
       browser tool at all (it said so itself when asked). The synthetic coverage
