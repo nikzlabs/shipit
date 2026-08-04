@@ -99,8 +99,17 @@ hands you *nothing*, even though the sub-agent kept working. So for anything
 review-sized or open-ended, **launch it in the background** (`run_in_background`),
 which has no cap, and collect the output when it finishes.
 
-If a run does get killed, the work is not lost — the spawn completes
-server-side and its output is persisted. Fetch it with:
+**Do not pipe the run through `tail`, `head`, `grep`, or any other filter.** The
+sub-agent's report *is* the deliverable, and a review is long precisely when it
+matters — the findings you most need are as likely to be at the top as the
+bottom. Backgrounding invites this mistake, because trimming a command's output
+is a reasonable habit everywhere else; here it silently throws away most of a
+consult that cost many minutes and a lot of tokens. Let it print in full and read
+it. If you only want to check whether a run has *finished*, that is the exit
+code's job (see below), not a `grep`.
+
+If a run does get killed — or you truncated its output — the work is not lost:
+the spawn completes server-side and its output is persisted. Fetch it with:
 
 ```
 shipit agent result            # the most recent run in this session

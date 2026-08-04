@@ -20,16 +20,30 @@ Two changes to `shipit agent result`, one small and one structural:
 | Code | Meaning |
 |---|---|
 | `0` | The run finished with status `success`. |
-| `2` | The run is still `pending` — either no `--wait`, or `--wait`'s timeout elapsed. |
+| `4` | The run is still `pending` — either no `--wait`, or `--wait`'s timeout elapsed. |
 | `3` | The run reached a terminal status that was not success (`error`, `timeout`, `cancelled`). |
-| `1` | The lookup failed: unknown run id, ambiguous id prefix, bad flags, orchestrator unreachable. |
+| `1` | The lookup failed: unknown run id, ambiguous prefix, unreadable response, orchestrator unreachable. |
+| `2` | Bad invocation — the shim-wide `fail()` default (unknown flag, two run ids, `--timeout` without `--wait`). |
 
-`0`/`3` mirror docs/182's `WAIT_EXIT_IDLE` / `WAIT_EXIT_ERROR`. Pending is `2`
-rather than docs/182's `1` **deliberately** (see the resolved question in
-requirements.md): `1` is already the shim-wide `fail()` code for a broken
-invocation, so `until shipit agent result <id>; do …; done` against a mistyped
-id would retry forever on a condition that can never clear. `2` is the only code
-that means "come back later", which is what makes requirement 3 hold.
+`0`/`3` mirror docs/182's `WAIT_EXIT_IDLE` / `WAIT_EXIT_ERROR`. Pending is `4`,
+not docs/182's `1`, **deliberately** (see the resolved question in
+requirements.md). Both low codes were already taken by failures: this command
+has used `fail(…, 1)` for a lookup error since SHI-245, and `fail()`'s shim-wide
+default is `2`. Reusing either would mean `until shipit agent result <id>; do …;
+done` retries forever against a mistyped id or a typo'd flag — a condition that
+can never clear. `4` is the only code that means "come back later", which is
+what makes requirement 3 hold. Pinned by a test asserting all three are
+distinct.
+
+### A wrong exit code is the one unacceptable failure
+
+The premise is "trust `$?` instead of reading the text", so the loop refuses an
+answer it cannot read rather than guessing one. `cardStatusOf` returns `null`
+for any 2xx body that is not a recognizable consult card — which is exactly what
+`callBroker` produces (`{}`) when a response is reset or truncated *after* its
+2xx headers. Such a body is retried like transport damage; it never becomes an
+outcome and never defaults to "success". A wait that only ever saw unreadable
+bodies exits `1`, not `0`.
 
 ## Server: a level-triggered wait over the persisted card
 
@@ -62,12 +76,21 @@ Shape of the loop:
 - **Pin the run id on first derive.** With no `spawnId` the caller means "the
   most recent run"; resolving that fresh each iteration would silently follow a
   *newer* run that started mid-wait. The first derive pins the id and the rest
-  of the wait follows that one run.
+  of the wait follows that one run. This pin lasts one *segment*, so the shim
+  re-pins too: it replaces whatever the caller named (nothing, or a prefix) with
+  the full id from the first readable response, and sends that on every later
+  segment. Both halves are needed — without the shim half a multi-segment wait
+  still switches runs between segments, and a prefix that was unique at the
+  start can turn ambiguous once a newer run appears.
 - **Poll interval 500 ms** (req 9). Cheap enough to be irrelevant against a
   multi-minute consult, and half a second of latency on such a run is not worth
   an event bus. To keep each poll small, `listSubAgentConsultCards` now selects
   only the `sub_agent_consult` column of rows where it is non-null, instead of
   loading and re-parsing every message row in the session.
+- **Pace the shim loop.** A server that answers `pending` instantly — an older
+  build that ignores `wait` — has not spent a segment, so the shim enforces a
+  1-second floor per iteration. Without it the loop issued ~1000 requests per
+  second for the length of the timeout.
 - **`segmentMs`** bounds one server call: still pending when it elapses ⇒ resolve
   `{ outcome: "pending" }` rather than holding the socket open. The shim owns the
   overall deadline (req 5).
@@ -109,6 +132,26 @@ observing durable state, so there is nothing to lose by being interrupted.
 - `src/server/session/agent-ops-routes.ts` — broker forwarding + timeout budget
 - `src/server/orchestrator/chat-history.ts` — narrowed consult-card query
 - `src/server/shipit-docs/agent.md` — agent-facing docs (req 10)
+
+## Known limitation: a run stranded by an orchestrator restart
+
+The wait is restart-safe in the sense that matters to *it* — no in-memory wait
+state exists to lose, so any fresh request recomputes the outcome. But the run
+it is waiting on is not equally durable, and this is worth stating precisely
+rather than letting the sentence above imply more than it earns.
+
+`runSubAgent` (`services/sub-agent.ts:343`) is the **only** writer of the card's
+`pending` → terminal patch, and it performs it when the worker's synchronous
+HTTP response returns. The worker keeps no durable record of completion, and
+nothing reconciles consult cards at boot. So if the orchestrator is destroyed
+mid-run, the card stays `pending` forever: the UI shows a permanently in-flight
+consult, and `--wait` correctly reports "still running" until its timeout, again
+and again.
+
+This is pre-existing (docs/236 / SHI-278), not introduced here — `--wait` only
+makes it easier to notice, because a caller now sits on the symptom instead of
+reading a card. Tracked as SHI-307; the fix belongs with the card lifecycle, not
+with the wait.
 
 ## Follow-up, deliberately not built
 

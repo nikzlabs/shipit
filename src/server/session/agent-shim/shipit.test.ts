@@ -2704,6 +2704,121 @@ describe("shipit agent result --wait (docs/248)", () => {
     expect(out.stdout).toContain("old server");
   });
 
+  // -------------------------------------------------------------------------
+  // Adversarial cases — found by a fresh-context review of this branch. Each
+  // one previously produced a WRONG exit code, which is the single thing this
+  // command must never do: the whole feature is "trust $? instead of the text".
+  // -------------------------------------------------------------------------
+
+  it("never reports success for a 2xx body that isn't a card", async () => {
+    // `callBroker` turns a body reset or truncated after its 2xx headers into
+    // `{}`. Defaulting that to "success" would tell the caller a run finished
+    // cleanly on the strength of a corrupted response.
+    const out = await runResultWait(["agent", "result", "--wait", "--timeout", "5"], [
+      { status: 200, body: {} },
+    ]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.exitCode).toBe(1);
+    expect(out.stderr).toContain("not a consult card");
+  });
+
+  it("treats a status-less pending response as pending, not as success", async () => {
+    const out = await runResultWait(["agent", "result", "--wait", "--timeout", "60"], [
+      { status: 200, body: { outcome: "pending" } },
+    ]);
+    expect(out.exitCode).toBe(4);
+  });
+
+  it("recovers when an unreadable response is followed by a good one", async () => {
+    const out = await runResultWait(["agent", "result", "--wait"], [
+      { status: 200, body: {} },
+      finished("success"),
+    ]);
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("the review");
+  });
+
+  it("pins the run across segments so a newer consult can't hijack the wait", async () => {
+    // No run id ⇒ "the most recent run". The server pins only within a segment,
+    // so without shim-side pinning the second request would re-resolve to a
+    // newer run started mid-wait and report ITS status.
+    const out = await runResultWait(["agent", "result", "--wait"], [
+      pendingSegment,
+      finished("success"),
+    ]);
+    expect(out.exitCode).toBe(0);
+    // First request names no run; every later one carries the id the server
+    // reported, so they all follow the same run.
+    expect(out.paths[0]).not.toContain("spawnId");
+    expect(out.paths[1]).toContain("spawnId=run-77");
+  });
+
+  it("re-pins a prefix to the full id, so it can't turn ambiguous mid-wait", async () => {
+    const out = await runResultWait(["agent", "result", "run", "--wait"], [
+      pendingSegment,
+      finished("success"),
+    ]);
+    expect(out.paths[0]).toContain("spawnId=run");
+    expect(out.paths[1]).toContain("spawnId=run-77");
+  });
+
+  it("does not spin hot against a server that answers pending instantly", async () => {
+    // An older orchestrator ignores `wait` and returns immediately. Without a
+    // floor, the loop issues ~1000 requests/second for the whole timeout.
+    const instantPending = {
+      status: 200,
+      body: { cardId: "c1", spawnId: "run-77", subAgentId: "codex", status: "pending", createdAt: "x" },
+    };
+    const out = await runResultWait(
+      ["agent", "result", "run-77", "--wait", "--timeout", "10"],
+      [instantPending],
+    );
+    expect(out.exitCode).toBe(4);
+    // 10s of wait, paced at >=1s per iteration.
+    expect(out.paths.length).toBeLessThanOrEqual(11);
+  });
+
+  it("keeps the per-request budget within the caller's stated timeout", async () => {
+    // `--timeout 5` must not hand the first request a 15-second abort budget.
+    const budgets: number[] = [];
+    const clock = virtualClock();
+    const io: ShimIO = { stdout: () => {}, stderr: () => {}, exit: () => { throw new Error("__shim_exit__"); } };
+    const call = async (_m: string, _p: string, _b: unknown, _e: unknown, timeoutMs?: number) => {
+      budgets.push(timeoutMs ?? 0);
+      await clock.sleep(5_000);
+      return { status: 200, body: { cardId: "c1", spawnId: "run-77", subAgentId: "codex", status: "pending", createdAt: "x" } };
+    };
+    try {
+      await runShim(["agent", "result", "run-77", "--wait", "--timeout", "5"], io, {}, call as never, {
+        sleep: clock.sleep,
+        now: clock.now,
+      });
+    } catch (err) {
+      if (err instanceof Error && err.message !== "__shim_exit__") throw err;
+    }
+    expect(budgets[0]).toBeLessThanOrEqual(5_000 + 2_000);
+  });
+
+  it("surfaces the outcome, transport damage and resume hint in --json too", async () => {
+    const out = await runResultWait(["agent", "result", "run-77", "--wait", "--timeout", "60", "--json"], [
+      { status: 0, body: { error: "connection reset" } },
+      pendingSegment,
+    ]);
+    expect(out.exitCode).toBe(4);
+    const parsed = JSON.parse(out.stdout);
+    expect(parsed.outcome).toBe("pending");
+    expect(parsed.lastTransportError).toContain("connection reset");
+    expect(parsed.resumeCommand).toContain("--wait");
+  });
+
+  it("honours a sub-second --timeout instead of flooring it to zero", async () => {
+    // `--timeout 0.5` floored to 0 skipped the lookup entirely and then blamed
+    // the orchestrator for being unreachable.
+    const out = await runResultWait(["agent", "result", "--wait", "--timeout", "0.5"], [finished("success")]);
+    expect(out.exitCode).toBe(0);
+    expect(out.paths.length).toBeGreaterThan(0);
+  });
+
   it("clamps --timeout to the sub-agent's own 30-minute cap", async () => {
     const out = await runResultWait(
       ["agent", "result", "--wait", "--timeout", "99999"],
