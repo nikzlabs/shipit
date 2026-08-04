@@ -1057,6 +1057,48 @@ describe("PrLifecycleCard", () => {
     }
   });
 
+  it("renders exactly one header row after repeated session switches on mobile", () => {
+    // Regression: the header div and the hoisted mobile actions row are siblings
+    // in the same fragment, and both were keyed on the bare sessionId. React only
+    // requires keys to be unique among siblings, so those were duplicates: the
+    // previous children got indexed into a Map by key, the actions row overwrote
+    // the header, and on a session switch React deleted what remained in that Map
+    // — never the header. Its DOM node stayed behind, so each switch stacked one
+    // more stale PR header (with the previous session's title) under the app
+    // chrome. Desktop was unaffected: it renders only one keyed div.
+    mockMatchMedia(true);
+    const withTitle = (title: string): PrCardState => ({
+      ...openPrCard,
+      pr: {
+        number: 42,
+        url: "https://github.com/o/r/pull/42",
+        baseBranch: "main",
+        headBranch: "feature-branch",
+        insertions: 100,
+        deletions: 20,
+        title,
+      },
+    });
+    setCard("s1", withTitle("PR one"));
+    setCard("s2", withTitle("PR two"));
+    setCard("s3", withTitle("PR three"));
+
+    const onOpenDetails = vi.fn();
+    const { rerender, container } = render(
+      <PrLifecycleCard sessionId="s1" onOpenDetails={onOpenDetails} />,
+    );
+    rerender(<PrLifecycleCard sessionId="s2" onOpenDetails={onOpenDetails} />);
+    rerender(<PrLifecycleCard sessionId="s3" onOpenDetails={onOpenDetails} />);
+
+    // Only the current session's PR title is on screen — no orphaned headers
+    // from the sessions the user passed through.
+    expect(screen.getByText("PR three")).toBeInTheDocument();
+    expect(screen.queryByText("PR one")).toBeNull();
+    expect(screen.queryByText("PR two")).toBeNull();
+    // And exactly one header + one actions row, not one pair per visited session.
+    expect(container.querySelectorAll('[aria-label="Open PR details"]')).toHaveLength(1);
+  });
+
   it("hides merge button when auto-merge is enabled", () => {
     setCard("s1", {
       ...openPrCard,

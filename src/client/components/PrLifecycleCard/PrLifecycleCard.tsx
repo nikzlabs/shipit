@@ -189,12 +189,22 @@ export function PrLifecycleCard({
   // Without this, switching sessions while a merge is in flight leaves the
   // button stuck on "Merging..." against the new session.
   //
-  // The mobile actions row below carries the SAME key, and must keep doing so:
+  // The mobile actions row below is keyed on sessionId too, and must keep being:
   // on mobile PrStatusActions is hoisted OUT of this subtree into a sibling row,
   // taking every one of those transient flags with it. A key only on the header
   // remounts the desktop copy — the mobile copy survived the switch and left
   // "Merging..." (and "Fixing CI...", "Resolving...", "Sending...") pinned to
   // whatever session the user landed on, for the rest of the page's life.
+  //
+  // The two keys MUST stay namespaced apart (`header:`/`actions:`), never the
+  // bare sessionId on both. Keys only have to be unique among *siblings*, and
+  // these two divs are siblings in this fragment — a bare sessionId on both made
+  // them duplicates. React's keyed reconciler indexes the previous children into
+  // a Map by key, so the second div overwrote the first; on a session switch
+  // every key changed, React created fresh nodes and then deleted "the rest" from
+  // that Map — which no longer held the old header. Its DOM node was orphaned in
+  // place, so on mobile (the only viewport where the second keyed div renders)
+  // every session switch stacked one more stale PR header under the app chrome.
   const phaseContent = card ? (
     <>
       {(card.phase === "ready" || card.phase === "creating") && <ReadyPhase card={card} sessionId={sessionId} creating={card.phase === "creating"} onCreatePr={onCreatePr} />}
@@ -219,7 +229,7 @@ export function PrLifecycleCard({
   return (
     <>
       <div
-        key={sessionId}
+        key={`header:${sessionId}`}
         onClick={handleClick}
         aria-label={clickable ? "Open PR details" : undefined}
         className={`shrink-0 flex items-start gap-2 px-3 sm:px-4 pt-2 ${actionsRowShown ? "pb-1" : "pb-2"} ${stripShown || actionsRowShown ? "" : "border-b border-(--color-border-primary)"} ${clickable ? "cursor-pointer hover:bg-(--color-bg-hover)/40 transition-colors" : ""}`}
@@ -247,7 +257,7 @@ export function PrLifecycleCard({
         // `pl-8` = the header's px-3 plus the PR badge (w-5) and its gap, so the
         // row lines up under the PR title rather than under the badge.
         <div
-          key={sessionId}
+          key={`actions:${sessionId}`}
           className={`shrink-0 flex flex-wrap items-center gap-x-3 gap-y-1 pl-8 pr-3 pb-2 ${stripShown ? "" : "border-b border-(--color-border-primary)"}`}
         >
           <PrStatusActions card={card} sessionId={sessionId} />
