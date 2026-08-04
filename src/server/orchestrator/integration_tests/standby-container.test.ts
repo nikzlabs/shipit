@@ -456,6 +456,8 @@ describe("standby container pre-warming", () => {
     await containerManager.createStandby({
       sessionId: standbyId,
       sessionDir: standbyDir,
+      workspaceDir: path.join(standbyDir, "workspace"),
+      sessionStateDir: path.join(standbyDir, "state"),
       credentialsDir: tmpDir,
       imageName: "shipit-session-worker:test",
       memoryLimit: 512 * 1024 * 1024,
@@ -507,6 +509,8 @@ describe("standby container pre-warming", () => {
       await containerManager.create({
         sessionId: sid,
         sessionDir: dir,
+        workspaceDir: path.join(dir, "workspace"),
+        sessionStateDir: path.join(dir, "state"),
         credentialsDir: tmpDir,
         imageName: "shipit-session-worker:test",
         memoryLimit: 512 * 1024 * 1024,

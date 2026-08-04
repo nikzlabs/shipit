@@ -247,9 +247,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
       // clone. The in-clone path is still cleared so a session upgrading across
       // this change doesn't keep a stale (and committable) copy.
       const stateDir = sessionStateDirForWorkspace(sessionDir);
-      if (stateDir) {
-        try { unlinkSync(path.join(sessionSharedStateDir(stateDir), INSTALL_MARKER_FILE)); } catch { /* marker may not exist */ }
-      }
+      try { unlinkSync(path.join(sessionSharedStateDir(stateDir), INSTALL_MARKER_FILE)); } catch { /* marker may not exist */ }
       try { unlinkSync(path.join(sessionDir, ".shipit", INSTALL_MARKER_FILE)); } catch { /* marker may not exist */ }
     }
     return { headChanged, fetched, fetchDurationMs };

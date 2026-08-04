@@ -4,13 +4,34 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { ServiceManager, type ComposeRunner, type ComposeQuery, type SecretsStatusInternalSnapshot } from "./service-manager.js";
+import { SESSION_WORKSPACE_SUBDIR, SESSION_STATE_SUBDIR } from "./session-state-dir.js";
+
+/**
+ * Create a real session layout in a temp dir: the clone at
+ * `<sessionDir>/workspace`, ShipIt's state dir at its `state/` sibling.
+ *
+ * `ServiceManager` resolves the state dir from the clone path (docs/246), and
+ * since SHI-286 it REFUSES a clone that doesn't sit at `workspace/` rather than
+ * falling back to writing into the clone — so a bare temp dir is no longer a
+ * valid workspace. Returns the session dir; the clone is its `workspace/` child.
+ */
+function makeSessionDir(prefix: string): string {
+  const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  fs.mkdirSync(path.join(sessionDir, SESSION_WORKSPACE_SUBDIR), { recursive: true });
+  return sessionDir;
+}
+
+/** The session state dir for a clone produced by {@link makeSessionDir}. */
+function stateOf(workspaceDir: string): string {
+  return path.resolve(workspaceDir, "..", SESSION_STATE_SUBDIR);
+}
 
 describe("ServiceManager", () => {
   let tmpDir: string;
 
   function setup() {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "service-mgr-"));
-    return tmpDir;
+    tmpDir = makeSessionDir("service-mgr-");
+    return path.join(tmpDir, SESSION_WORKSPACE_SUBDIR);
   }
 
   afterEach(() => {
@@ -57,7 +78,7 @@ describe("ServiceManager", () => {
     // start() will fail because docker compose isn't available in test,
     // but the override file should be written before the compose up call
     try { await mgr.start(); } catch { /* expected */ }
-    const overridePath = path.join(dir, ".shipit", "compose.override.yml");
+    const overridePath = path.join(stateOf(dir), "compose.override.yml");
     expect(fs.existsSync(overridePath)).toBe(true);
     const content = fs.readFileSync(overridePath, "utf-8");
     expect(content).toContain("shipit-parent-session: test-session");
@@ -371,8 +392,8 @@ describe("ServiceManager lifecycle (mocked docker)", () => {
   let tmpDir: string;
 
   function setup() {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "service-mgr-lc-"));
-    return tmpDir;
+    tmpDir = makeSessionDir("service-mgr-lc-");
+    return path.join(tmpDir, SESSION_WORKSPACE_SUBDIR);
   }
 
   afterEach(() => {
@@ -679,8 +700,8 @@ describe("ServiceManager secret injection", () => {
   let tmpDir: string;
 
   function setup() {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "service-mgr-secrets-"));
-    return tmpDir;
+    tmpDir = makeSessionDir("service-mgr-secrets-");
+    return path.join(tmpDir, SESSION_WORKSPACE_SUBDIR);
   }
 
   afterEach(() => {
@@ -912,7 +933,7 @@ services:
 
     try { await mgr.start(); } catch { /* expected */ }
 
-    const override = fs.readFileSync(path.join(dir, ".shipit/compose.override.yml"), "utf-8");
+    const override = fs.readFileSync(path.join(stateOf(dir), "compose.override.yml"), "utf-8");
     expect(override).toContain("env_file:");
     expect(override).toContain(".shipit/.env.api");
   });
@@ -949,7 +970,7 @@ services:
 
   // ---- Phase 3: agent: true → .env.agent + secrets snapshot ----
 
-  it("writes .shipit/.env.agent for `agent: true` declarations", async () => {
+  it("writes the state dir's .env.agent for `agent: true` declarations", async () => {
     const dir = setup();
     writeCompose(dir, `
 services:
@@ -973,8 +994,8 @@ services:
 
     try { await mgr.start(); } catch { /* expected */ }
 
-    expect(fs.existsSync(path.join(dir, ".shipit/.env.agent"))).toBe(true);
-    const agentEnv = fs.readFileSync(path.join(dir, ".shipit/.env.agent"), "utf-8");
+    expect(fs.existsSync(path.join(stateOf(dir), ".env.agent"))).toBe(true);
+    const agentEnv = fs.readFileSync(path.join(stateOf(dir), ".env.agent"), "utf-8");
     expect(agentEnv).toContain("DATABASE_URL=postgres://x");
     // STRIPE_KEY is service-only — not agent-injected
     expect(agentEnv).not.toContain("STRIPE_KEY");
@@ -984,11 +1005,14 @@ services:
     expect(snap.agentValues).toEqual({ DATABASE_URL: "postgres://x" });
   });
 
-  it("removes .shipit/.env.agent when no agent: true declarations remain", async () => {
+  it("removes the state dir's .env.agent when no agent: true declarations remain", async () => {
     const dir = setup();
-    // Pre-seed an existing .env.agent file from a prior compose definition.
+    // Pre-seed an existing .env.agent file from a prior compose definition,
+    // plus a pre-246 copy inside the clone that the writer also sheds.
+    fs.mkdirSync(stateOf(dir), { recursive: true });
+    fs.writeFileSync(path.join(stateOf(dir), ".env.agent"), "OLD=1\n");
     fs.mkdirSync(path.join(dir, ".shipit"), { recursive: true });
-    fs.writeFileSync(path.join(dir, ".shipit/.env.agent"), "OLD=1\n");
+    fs.writeFileSync(path.join(dir, ".shipit/.env.agent"), "PRE246=1\n");
 
     writeCompose(dir, `
 services:
@@ -1010,6 +1034,9 @@ services:
 
     try { await mgr.start(); } catch { /* expected */ }
 
+    expect(fs.existsSync(path.join(stateOf(dir), ".env.agent"))).toBe(false);
+    // docs/246 req 6 — the pre-246 in-clone copy is shed too, so it can't be
+    // staged by the next `git add -A`.
     expect(fs.existsSync(path.join(dir, ".shipit/.env.agent"))).toBe(false);
   });
 
@@ -1062,7 +1089,7 @@ services:
 
     // Override references Docker secrets, not env_file, and mounts the wrapper
     // from its absolute staged path.
-    const override = fs.readFileSync(path.join(dir, ".shipit/compose.override.yml"), "utf-8");
+    const override = fs.readFileSync(path.join(stateOf(dir), "compose.override.yml"), "utf-8");
     expect(override).toContain("shipit-DATABASE_URL");
     expect(override).toContain("/shipit/secrets-entrypoint.sh");
     expect(override).toContain(stagedWrapper);
@@ -1071,12 +1098,11 @@ services:
     fs.rmSync(secretsRoot, { recursive: true, force: true });
   });
 
-  // SHI-285 / docs/246 req 1 — the whole point: on the layout production uses
-  // (a threaded state dir), a Docker-secrets session leaves the git clone
-  // untouched. Before the fix this test failed on `.shipit/secrets-entrypoint.sh`.
-  it("Docker-secrets mode writes nothing into the clone when a state dir is threaded", async () => {
+  // SHI-285 / docs/246 req 1 — the whole point: a Docker-secrets session leaves
+  // the git clone untouched. Before the fix this test failed on
+  // `.shipit/secrets-entrypoint.sh`.
+  it("Docker-secrets mode writes nothing into the clone", async () => {
     const dir = setup();
-    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "session-state-"));
     const secretsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "isolated-secrets-root-"));
     const entrypointPath = path.join(secretsRoot, "baked-secrets-entrypoint.sh");
     fs.writeFileSync(entrypointPath, "#!/bin/sh\nexec \"$@\"\n", { mode: 0o755 });
@@ -1092,7 +1118,6 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
-      sessionStateDir: stateDir,
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner: fakeRunner,
       secretsLoader: async () => ({ DATABASE_URL: "postgres://x" }),
@@ -1110,11 +1135,10 @@ services:
 
     // Everything ShipIt generated is elsewhere, and the override points the
     // service at the staged wrapper by absolute path.
-    const override = fs.readFileSync(path.join(stateDir, "compose.override.yml"), "utf-8");
+    const override = fs.readFileSync(path.join(stateOf(dir), "compose.override.yml"), "utf-8");
     expect(override).toContain(path.join(secretsRoot, "_entrypoint", "secrets-entrypoint.sh"));
 
     fs.rmSync(secretsRoot, { recursive: true, force: true });
-    fs.rmSync(stateDir, { recursive: true, force: true });
   });
 
   // The staged wrapper is bind-mounted by the DAEMON, so a containerized
@@ -1153,7 +1177,7 @@ services:
     // Written where the orchestrator can reach it...
     expect(fs.existsSync(path.join(secretsRoot, "_entrypoint", "secrets-entrypoint.sh"))).toBe(true);
     // ...referenced where the daemon can, alongside the secret files themselves.
-    const override = fs.readFileSync(path.join(dir, ".shipit/compose.override.yml"), "utf-8");
+    const override = fs.readFileSync(path.join(stateOf(dir), "compose.override.yml"), "utf-8");
     expect(override).toContain("/var/lib/shipit/secrets/_entrypoint/secrets-entrypoint.sh");
     expect(override).toContain("/var/lib/shipit/secrets/test-session/DATABASE_URL");
     expect(override).not.toContain(secretsRoot);
@@ -1280,7 +1304,7 @@ services:
     expect(fs.existsSync(path.join(dir, ".shipit/.env.api"))).toBe(false);
 
     // Override references the absolute external path, not the workspace path.
-    const override = fs.readFileSync(path.join(dir, ".shipit/compose.override.yml"), "utf-8");
+    const override = fs.readFileSync(path.join(stateOf(dir), "compose.override.yml"), "utf-8");
     expect(override).toContain("env_file:");
     expect(override).toContain(externalEnv);
     expect(override).not.toContain(".shipit/.env.api");
@@ -1317,7 +1341,7 @@ services:
     // No workspace leak — the agent can't read either secret-bearing file.
     expect(fs.existsSync(path.join(dir, ".shipit/.env.dev"))).toBe(false);
     // No agent env file, since nothing is marked agent: true.
-    expect(fs.existsSync(path.join(dir, ".shipit/.env.agent"))).toBe(false);
+    expect(fs.existsSync(path.join(stateOf(dir), ".env.agent"))).toBe(false);
 
     // The external service env file holds the values.
     const externalEnv = path.join(serviceEnvRoot, "test-session", ".env.dev");
@@ -1395,7 +1419,7 @@ services:
 
     await mgr.start();
     const externalEnv = path.join(serviceEnvRoot, "test-session", ".env.api");
-    const overrideBefore = fs.readFileSync(path.join(dir, ".shipit/compose.override.yml"), "utf-8");
+    const overrideBefore = fs.readFileSync(path.join(stateOf(dir), "compose.override.yml"), "utf-8");
     expect(fs.readFileSync(externalEnv, "utf-8")).toContain("DATABASE_URL=postgres://old");
     expect(overrideBefore).toContain(externalEnv);
 
@@ -1405,7 +1429,7 @@ services:
     // External file content updated…
     expect(fs.readFileSync(externalEnv, "utf-8")).toContain("DATABASE_URL=postgres://new");
     // …and the absolute env_file path in the override is unchanged (still outside the workspace).
-    const overrideAfter = fs.readFileSync(path.join(dir, ".shipit/compose.override.yml"), "utf-8");
+    const overrideAfter = fs.readFileSync(path.join(stateOf(dir), "compose.override.yml"), "utf-8");
     expect(overrideAfter).toContain(externalEnv);
     expect(fs.existsSync(path.join(dir, ".shipit/.env.api"))).toBe(false);
 
@@ -1505,8 +1529,8 @@ describe("ServiceManager install-running retry gate", () => {
   let tmpDir: string;
 
   function setup() {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "service-mgr-install-"));
-    return tmpDir;
+    tmpDir = makeSessionDir("service-mgr-install-");
+    return path.join(tmpDir, SESSION_WORKSPACE_SUBDIR);
   }
 
   afterEach(() => {
@@ -2136,8 +2160,8 @@ describe("ServiceManager install gate (x-shipit-depends-on-install)", () => {
   let tmpDir: string;
 
   function setup() {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "service-mgr-gate-"));
-    return tmpDir;
+    tmpDir = makeSessionDir("service-mgr-gate-");
+    return path.join(tmpDir, SESSION_WORKSPACE_SUBDIR);
   }
 
   afterEach(() => {

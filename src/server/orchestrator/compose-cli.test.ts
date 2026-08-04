@@ -111,6 +111,7 @@ function makeCli(world: World) {
     sessionId: SID,
     workspaceDir: "/workspace",
     composeFile: "docker-compose.yml",
+    overrideFile: "/state/compose.override.yml",
     composeQuery: query,
     composeRunner: vi.fn(async () => undefined),
   });
@@ -252,6 +253,7 @@ describe("ComposeCli.killStaleContainers — egress sidecar keep-list (SHI-222)"
       sessionId: SID,
       workspaceDir: "/workspace",
       composeFile: "docker-compose.yml",
+      overrideFile: "/state/compose.override.yml",
       composeQuery: query,
       composeRunner: vi.fn(async () => undefined),
     });

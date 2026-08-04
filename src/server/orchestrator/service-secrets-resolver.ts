@@ -23,7 +23,6 @@ import {
   stageSecretsEntrypoint,
   type DeclaredSecret,
 } from "./secret-resolver.js";
-import { sessionStateDirForWorkspace } from "./session-state-dir.js";
 import type { ComposeService } from "./compose-generator.js";
 
 // ---------------------------------------------------------------------------
@@ -328,12 +327,11 @@ export class ServiceSecretsResolver {
     // Phase 3 (087) + docs/088: write the agent env file from the merged
     // set (compose `agent: true` values + account-level `mcp__*` secrets).
     // Empty body removes the file.
-    // docs/246 — orchestrator-side placement (the session state dir), restoring
-    // what docs/087 §403 specified: "This file is on the orchestrator's
-    // filesystem, not the workspace volume." Null on the legacy flat layout.
+    // docs/246 — orchestrator-side placement (the session state dir, resolved
+    // from the clone path), restoring what docs/087 §403 specified: "This file
+    // is on the orchestrator's filesystem, not the workspace volume."
     writeAgentEnvFile({
       workspaceDir: this.workspaceDir,
-      sessionStateDir: sessionStateDirForWorkspace(this.workspaceDir),
       body: renderAgentEnvBody(mergedAgentValues),
     });
   }

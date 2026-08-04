@@ -36,13 +36,45 @@ const REPO_ROOT = path.resolve(fileURLToPath(import.meta.url), "../../../..");
  * `path.join(opts.workspaceDir, ".shipit")` on one line and passed that
  * directory to the writer on another, so no single expression matched. Matching
  * the DIRECTORY join is the invariant — what gets written into it is irrelevant.
+ *
+ * SHI-286 closed a third bypass, and it was not hypothetical: the version that
+ * recognised only a DOUBLE-quoted `.shipit` never saw `buildEnv`'s
+ * `` `${workspaceDir}/.shipit` `` — a live in-clone path that sat green in CI
+ * for the whole of docs/246. So `\}/\.shipit` now catches a template
+ * interpolation followed by the directory, and the quote class accepts `'` as
+ * well as `"`.
+ *
+ * **Backticks are deliberately NOT in that class.** In this codebase a
+ * backticked `.shipit/...` is nearly always a markdown code span in a JSDoc
+ * comment — adding it matches ~20 files of pure prose, and a guard whose output
+ * is mostly noise is one nobody reads. The dangerous shape is a path composed
+ * from a clone variable, and that always shows up as either the `path.join`
+ * form or the `${…}/` interpolation, both of which are covered.
+ *
+ * **Known limitation — granularity is per FILE, not per line.** A file in
+ * {@link ALLOWED} is exempt wholesale, so a NEW forbidden writer added to, say,
+ * `secret-resolver.ts` would pass. Closing that means allowlisting individual
+ * matched lines; recorded as a follow-up rather than fixed here. The check is
+ * still the difference between "someone has to catch it in review" and "CI
+ * names the file".
  */
-const IN_CLONE_SHIPIT_PATH = String.raw`(workspaceDir|sessionDir|clone|repoDir|cwd)\s*,\s*"\.shipit"|"\.shipit/`;
+const IN_CLONE_SHIPIT_PATH = String.raw`(workspaceDir|sessionDir|clone|repoDir|cwd)\s*,\s*['"]\.shipit['"]|"\.shipit/|\}/\.shipit`;
 
 /**
- * Sites still permitted to name an in-clone artifact path — every one of them
- * either REMOVES a pre-246 copy or is a back-compat default for a caller that
- * hasn't threaded a state dir. None of them creates a new file in a clone.
+ * Sites still permitted to name an in-clone artifact path.
+ *
+ * SHI-286 emptied the "back-compat fallback" category: the legacy flat layout
+ * (`sessionDir === workspaceDir`) is gone, so nothing falls back to writing a
+ * docs/246 artifact into a clone. What is left either isn't a clone at all
+ * (app-scope) or REMOVES a pre-246 copy.
+ *
+ * One writer does survive, and it is NOT a docs/246 artifact:
+ * `secret-resolver.ts`'s `writePerServiceEnvFiles` still writes
+ * `.shipit/.env.<svc>` into the clone when neither Docker-secrets mode nor
+ * docs/183's `serviceEnvDir` is configured. That is a docs/183 leftover with its
+ * own migration story (`writeServiceEnvFilesToRoot` sweeps it), reachable only
+ * in tests / non-container setups — tracked separately, not allowlisted away
+ * here on purpose.
  */
 const ALLOWED: Record<string, string> = {
   // --- Not a clone at all: the APP-SCOPE workspaceDir (the orchestrator's own
@@ -57,13 +89,11 @@ const ALLOWED: Record<string, string> = {
   "src/server/orchestrator/services/claim-session.ts": "unlinks a pre-246 marker",
   "src/server/session/install-controller.ts": "unlinks a pre-246 marker",
 
-  // --- Back-compat fallbacks for a session with no state dir (legacy flat
-  // layout). These keep such a session working where it already is; they never
-  // move a modern session's artifact into a clone. ---
-  "src/server/orchestrator/compose-cli.ts": "legacy default override path",
-  "src/server/orchestrator/service-manager.ts": "legacy fallback override dir",
-  "src/server/orchestrator/overlay-session.ts": "legacy fallback marker path",
-  "src/server/orchestrator/secret-resolver.ts": "unlink + legacy fallback .env.agent",
+  // --- Unlinks a pre-246 `.env.agent`; ALSO still owns docs/183's in-clone
+  // per-service env fallback (`writePerServiceEnvFiles`), which is out of scope
+  // for docs/246 and tracked on its own. See the note above. ---
+  "src/server/orchestrator/secret-resolver.ts":
+    "unlinks a pre-246 .env.agent; docs/183 per-service env fallback",
 };
 
 /** Source files (excluding tests) that compose an in-clone artifact path. */
@@ -91,7 +121,7 @@ describe("no ShipIt-generated writes inside a session clone (docs/246 req 7)", (
       "These files put a ShipIt-generated artifact inside the user's git clone, where the "
         + "post-turn `git add -A` will commit it into their repository. Write to the session "
         + "state dir instead (see session-state-dir.ts). Add to ALLOWED only when the path is "
-        + "being REMOVED or is a back-compat default.",
+        + "being REMOVED — SHI-286 retired the back-compat-default category.",
     ).toEqual([]);
   });
 

@@ -21,7 +21,7 @@ import {
 import { CONTAINER_WORKSPACE_DIR } from "../shared/fs-constants.js";
 import {
   CONTAINER_SESSION_STATE_DIR,
-  resolveContainerStateDir,
+  sessionStateDirForWorkspace,
   sessionSharedStateDir,
   sweepLegacyCloneArtifacts,
 } from "./session-state-dir.js";
@@ -230,9 +230,9 @@ export function buildMounts(
   const binds: string[] = [];
   const mounts: MountSpec["mounts"] = [];
   const workspaceDir = CONTAINER_WORKSPACE_DIR;
-  // config.workspaceDir is the git repo directory (session.workspaceDir).
-  // It may be the same as sessionDir (legacy) or a subdirectory (new layout).
-  const hostWorkspaceDir = config.workspaceDir ?? config.sessionDir;
+  // config.workspaceDir is the git repo directory (session.workspaceDir),
+  // always `<sessionDir>/workspace`.
+  const hostWorkspaceDir = config.workspaceDir;
 
   // The workspace mount is ALWAYS the normal host clone (source + `.git`,
   // authoritative). docs/183 dep-dir design: even for overlay sessions
@@ -326,19 +326,17 @@ export function buildMounts(
   // the compose override and `.env.agent` are orchestrator-only and simply
   // aren't read from inside the container. Worker-UID ownership comes from the
   // entrypoint chown loop, same as /persist.
-  if (config.sessionStateDir) {
-    if (workspaceVolume) {
-      const stateRelPath = sessionSharedStateDir(config.sessionStateDir).replace(/^\/workspace\//, "");
-      mounts.push({
-        Type: "volume",
-        Source: workspaceVolume,
-        Target: CONTAINER_SESSION_STATE_DIR,
-        ReadOnly: false,
-        VolumeOptions: { Subpath: stateRelPath },
-      });
-    } else {
-      binds.push(`${sessionSharedStateDir(config.sessionStateDir)}:${CONTAINER_SESSION_STATE_DIR}:rw`);
-    }
+  if (workspaceVolume) {
+    const stateRelPath = sessionSharedStateDir(config.sessionStateDir).replace(/^\/workspace\//, "");
+    mounts.push({
+      Type: "volume",
+      Source: workspaceVolume,
+      Target: CONTAINER_SESSION_STATE_DIR,
+      ReadOnly: false,
+      VolumeOptions: { Subpath: stateRelPath },
+    });
+  } else {
+    binds.push(`${sessionSharedStateDir(config.sessionStateDir)}:${CONTAINER_SESSION_STATE_DIR}:rw`);
   }
 
   // Mount the per-repo dependency cache so npm/yarn/pnpm share downloaded
@@ -433,14 +431,11 @@ export function buildEnv(
   const env: string[] = [
     `SESSION_ID=${config.sessionId}`,
     `WORKSPACE_DIR=${workspaceDir}`,
-    // docs/246 — where the worker writes the install marker. `/session-state`
-    // when the state dir is mounted; otherwise the legacy in-clone location, so
-    // a session that can't get a mount (flat layout) keeps working instead of
-    // failing to create a directory at the container's filesystem root — the
-    // exact hang the first CI run caught.
-    `SHIPIT_SESSION_STATE_DIR=${
-      config.sessionStateDir ? CONTAINER_SESSION_STATE_DIR : `${workspaceDir}/.shipit`
-    }`,
+    // docs/246 — where the worker writes the install marker: the mounted slice
+    // of the session's state dir, never a path inside the clone. Every session
+    // gets the mount (SHI-286 removed the un-mountable flat layout), so this is
+    // unconditional and the worker can rely on the directory existing.
+    `SHIPIT_SESSION_STATE_DIR=${CONTAINER_SESSION_STATE_DIR}`,
     `WORKER_PORT=${workerPort}`,
     "WORKER_MODE=session",
     // docs/150 — the worker drops to the unprivileged `shipit` user whose home
@@ -681,7 +676,6 @@ export function selfHealWorkspaceOwnership(
   // Dev/dogfood bind mount — never chown the host source tree.
   if (!workspaceVolume) return;
   const workspaceDir = config.workspaceDir;
-  if (!workspaceDir) return;
   handBack(workspaceDir);
 
   // #1666 — repair root-owned tool caches the handback's dep-dir exclusion skips.
@@ -735,12 +729,10 @@ export async function createContainer(
   // in `createSessionDirFactory` because a session whose dir predates the state
   // dir (or a warm clone claimed into place) must still get one before the
   // mount resolves.
-  if (config.sessionStateDir) {
-    fs.mkdirSync(config.sessionStateDir, { recursive: true });
-    // The mounted slice must exist before the mount resolves, or Docker creates
-    // it root-owned and the entrypoint chown races the worker's first write.
-    fs.mkdirSync(sessionSharedStateDir(config.sessionStateDir), { recursive: true });
-  }
+  fs.mkdirSync(config.sessionStateDir, { recursive: true });
+  // The mounted slice must exist before the mount resolves, or Docker creates
+  // it root-owned and the entrypoint chown races the worker's first write.
+  fs.mkdirSync(sessionSharedStateDir(config.sessionStateDir), { recursive: true });
 
   // docs/246 req 6 — shed what earlier versions left inside the clone. Runs on
   // every container create, so a session that predates the move sheds its
@@ -748,17 +740,16 @@ export async function createContainer(
   // Working tree only: copies already committed to the user's history are
   // deliberately left alone (ShipIt can't rewrite someone's history, and the
   // files are inert once it stops writing them).
-  // Only when this session HAS a state dir. Without one (legacy flat layout)
-  // the in-clone files are still LIVE, not leftovers — sweeping them would
-  // delete the session's real install marker on every container create and
-  // re-run `agent.install` every boot.
-  if (config.workspaceDir && config.sessionStateDir) {
-    const swept = sweepLegacyCloneArtifacts(config.workspaceDir);
-    if (swept.length > 0) {
-      console.log(
-        `[container:${config.sessionId}] swept pre-246 ShipIt artifacts from the clone: ${swept.join(", ")}`,
-      );
-    }
+  // Unconditional: every session has a state dir, so anything left in the clone
+  // is by definition a leftover. (It was gated on having one while the flat
+  // layout existed, where the in-clone files were still LIVE and sweeping them
+  // would have re-run `agent.install` on every boot — SHI-286 removed that
+  // layout, and with it the gate.)
+  const swept = sweepLegacyCloneArtifacts(config.workspaceDir);
+  if (swept.length > 0) {
+    console.log(
+      `[container:${config.sessionId}] swept pre-246 ShipIt artifacts from the clone: ${swept.join(", ")}`,
+    );
   }
 
   // Ensure the dep cache directory exists on the host before mounting.
@@ -1158,14 +1149,13 @@ export async function createContainer(
     // lowerdir is pinned, so the generation check is race-correct) and before
     // the caller resolves the runner's worker URL (so /install can't race the
     // write). Best-effort: any failure just means a real install runs.
-    if (config.overlaySpecs && config.overlaySpecs.length > 0 && deps.stateDir && config.workspaceDir) {
+    if (config.overlaySpecs && config.overlaySpecs.length > 0 && deps.stateDir) {
       try {
         const stamped = await preStampInstallMarker({
+          // The ORCHESTRATOR's state dir (overlay base pointers). The session
+          // state dir the marker goes in is resolved from the clone path.
           stateDir: deps.stateDir,
           workspaceDir: config.workspaceDir,
-          // docs/246 — `config.sessionStateDir` is the SESSION state dir (where
-          // the marker lives); `deps.stateDir` above is the orchestrator's.
-          ...(config.sessionStateDir ? { sessionStateDir: config.sessionStateDir } : {}),
           specs: config.overlaySpecs,
         });
         if (stamped) {
@@ -1410,7 +1400,7 @@ export function buildContainerConfig(
   opts: {
     sessionId: string;
     sessionDir: string;
-    workspaceDir?: string;
+    workspaceDir: string;
     credentialsDir: string;
     depCacheDir?: string;
     /** docs/197 Part 2 — shared per-runtime pnpm store host dir; absent for non-pnpm / flag-off sessions. */
@@ -1418,8 +1408,6 @@ export function buildContainerConfig(
     uploadsDir?: string;
     /** docs/217 — persistent scratch host dir; defaults to a `sessionDir` sibling. */
     scratchDir?: string;
-    /** docs/246 — ShipIt's per-session state dir; defaults to a `sessionDir` sibling. */
-    sessionStateDir?: string;
     env?: Record<string, string>;
     memoryLimit?: number;
     cpuQuota?: number;
@@ -1442,11 +1430,18 @@ export function buildContainerConfig(
     pnpmStoreDir: opts.pnpmStoreDir,
     uploadsDir: opts.uploadsDir ?? path.join(opts.sessionDir, "uploads"),
     scratchDir: opts.scratchDir ?? path.join(opts.sessionDir, "scratch"),
-    // docs/246 — null when the state dir would land inside the clone (legacy
-    // flat layout, where sessionDir === workspaceDir). No mount then; the
-    // worker keeps the legacy in-clone marker via SHIPIT_SESSION_STATE_DIR.
-    sessionStateDir: opts.sessionStateDir
-      ?? resolveContainerStateDir(opts.workspaceDir) ?? undefined,
+    // docs/246 — ALWAYS resolved from the clone path via the one contract the
+    // host-side callers share, so the mount and every host writer agree on where
+    // this session's state lives. Throws for a clone that isn't
+    // `<sessionDir>/workspace`.
+    //
+    // Deliberately NOT overridable (SHI-286). It used to accept an explicit
+    // `sessionStateDir`, which no production caller ever passed and which the
+    // overlay pre-stamp would now ignore: `preStampInstallMarker` derives the
+    // marker's home from the clone path, so an override would mount
+    // `<custom>/shared` while the pre-stamp wrote `<sessionDir>/state/shared` —
+    // an unreadable marker and a full `agent.install` on every base hit.
+    sessionStateDir: sessionStateDirForWorkspace(opts.workspaceDir),
     imageName: deps.imageName,
     memoryLimit: opts.memoryLimit ?? deps.defaultMemoryLimit,
     cpuQuota: opts.cpuQuota ?? deps.defaultCpuQuota,

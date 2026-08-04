@@ -58,13 +58,17 @@ describe("ServiceManager.snapshotLogs", () => {
   /** Build a manager and white-box-register a service (no docker start). */
   function makeManager(logStore?: InstanceType<typeof LogStore>): InstanceType<typeof ServiceManager> {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "svc-snap-"));
+    // A real session layout: the clone is `<sessionDir>/workspace`, which is what
+    // the state dir (where the compose override goes) is resolved from.
+    const workspaceDir = path.join(tmpDir, "workspace");
+    fs.mkdirSync(workspaceDir, { recursive: true });
     fs.writeFileSync(
-      path.join(tmpDir, "docker-compose.yml"),
+      path.join(workspaceDir, "docker-compose.yml"),
       "services:\n  web:\n    image: node:20\n    ports: ['3000:3000']\n",
     );
     const mgr = new ServiceManager({
       sessionId: "test-session",
-      workspaceDir: tmpDir,
+      workspaceDir,
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner: () => Promise.resolve(),
       pollIntervalMs: 0,

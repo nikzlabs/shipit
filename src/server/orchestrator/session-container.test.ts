@@ -5,7 +5,7 @@
  * orphan cleanup, and health monitoring without a real Docker daemon.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
@@ -193,10 +193,33 @@ function createMockDocker() {
 // Test helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * A writable stand-in for the production `/workspace/sessions/<id>` layout:
+ * session dir, the clone at its `workspace/` child, ShipIt's state dir at its
+ * `state/` sibling.
+ *
+ * These have to be REAL paths, not the `/workspace/...` literals they used to
+ * be: `createContainer` mkdirs the state dir, and since SHI-286 it does so
+ * unconditionally (there is no "session without a state dir" left to skip for),
+ * so a non-writable literal is an EACCES rather than a no-op.
+ */
+const TEST_SESSION_DIR = path.join(
+  fs.mkdtempSync(path.join(os.tmpdir(), "session-container-cfg-")),
+  "sessions",
+  "test-session-1",
+);
+const TEST_WORKSPACE_DIR = path.join(TEST_SESSION_DIR, "workspace");
+
+afterAll(() => {
+  fs.rmSync(path.dirname(path.dirname(TEST_SESSION_DIR)), { recursive: true, force: true });
+});
+
 function buildConfig(overrides?: Partial<ContainerConfig>): ContainerConfig {
   return {
     sessionId: "test-session-1",
-    sessionDir: "/workspace/sessions/test-session-1",
+    sessionDir: TEST_SESSION_DIR,
+    workspaceDir: TEST_WORKSPACE_DIR,
+    sessionStateDir: path.join(TEST_SESSION_DIR, "state"),
     credentialsDir: "/credentials",
     imageName: "shipit-session-worker:test",
     memoryLimit: 512 * 1024 * 1024,
@@ -343,7 +366,8 @@ describe("SessionContainerManager", () => {
           },
           HostConfig: expect.objectContaining({
             Binds: expect.arrayContaining([
-              "/workspace/sessions/test-session-1:/workspace:rw",
+              // The CLONE is what lands at /workspace — `<sessionDir>/workspace`.
+              `${TEST_WORKSPACE_DIR}:/workspace:rw`,
               // docs/138 — the container gets its private per-session credentials
               // subtree, never the shared root.
               "/credentials/sessions/test-session-1:/credentials:rw",
@@ -638,9 +662,15 @@ describe("SessionContainerManager", () => {
       await ovlManager.dispose();
     });
 
+    /**
+     * A real session layout — the clone at `<sessionDir>/workspace`, which is
+     * what the state dir is resolved from (docs/246 / SHI-286). Returns the clone.
+     */
     async function ws(opts: { gitignore?: string; shipitYaml?: string; dirs?: string[] } = {}): Promise<string> {
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "prep-overlay-"));
-      tmpDirs.push(dir);
+      const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), "prep-overlay-"));
+      tmpDirs.push(sessionDir);
+      const dir = path.join(sessionDir, "workspace");
+      fs.mkdirSync(dir, { recursive: true });
       const git = (await import("simple-git")).default;
       await git(dir).init();
       if (opts.gitignore !== undefined) fs.writeFileSync(path.join(dir, ".gitignore"), opts.gitignore);
@@ -698,7 +728,9 @@ describe("SessionContainerManager", () => {
         expect(fs.existsSync(specs[0].orchDirs!.lowerdir)).toBe(false);
         await mgr.create(mgr.buildConfigForWorkspace({
           sessionId: "cold-scope-1",
-          sessionDir: dir,
+          // `dir` is the CLONE; the session dir is its parent, so `uploadsDir`
+          // and `scratchDir` default to siblings of the clone as in production.
+          sessionDir: path.dirname(dir),
           workspaceDir: dir,
           credentialsDir: "/credentials",
           overlaySpecs: specs,
@@ -744,7 +776,7 @@ describe("SessionContainerManager", () => {
       const overlaySpecs = await ovlManager.prepareOverlaySpecs({ sessionId: "e2e-session-1", workspaceDir: dir, session: eligible });
       const config = ovlManager.buildConfigForWorkspace({
         sessionId: "e2e-session-1",
-        sessionDir: dir,
+        sessionDir: path.dirname(dir),
         workspaceDir: dir,
         credentialsDir: "/credentials",
         overlaySpecs,
@@ -775,7 +807,7 @@ describe("SessionContainerManager", () => {
       });
       expect(overlaySpecs).toHaveLength(1);
       const config = ovlManager.buildConfigForWorkspace({
-        sessionId: appSessionId, sessionDir: dir, workspaceDir: dir,
+        sessionId: appSessionId, sessionDir: path.dirname(dir), workspaceDir: dir,
         credentialsDir: "/credentials", overlaySpecs,
       });
       const sc = await ovlManager.createStandby(config);
@@ -796,7 +828,7 @@ describe("SessionContainerManager", () => {
       });
       expect(overlaySpecs).toEqual([]);
       const config = ovlManager.buildConfigForWorkspace({
-        sessionId: "warm-off-1", sessionDir: dir, workspaceDir: dir,
+        sessionId: "warm-off-1", sessionDir: path.dirname(dir), workspaceDir: dir,
         credentialsDir: "/credentials", overlaySpecs,
       });
       await ovlManager.createStandby(config);
@@ -906,7 +938,7 @@ describe("SessionContainerManager", () => {
         expect(overlaySpecs).toEqual([]);
         const pnpmStoreDir = mgr.preparePnpmStore({ workspaceDir: dir, session: eligible });
         const config = mgr.buildConfigForWorkspace({
-          sessionId: "pnpm-e2e-1", sessionDir: dir, workspaceDir: dir,
+          sessionId: "pnpm-e2e-1", sessionDir: path.dirname(dir), workspaceDir: dir,
           credentialsDir: "/credentials", overlaySpecs, pnpmStoreDir,
         });
         await mgr.create(config);
@@ -1048,6 +1080,7 @@ describe("SessionContainerManager", () => {
       const config = manager.buildConfig({
         sessionId: "s1",
         sessionDir: "/ws/s1",
+        workspaceDir: "/ws/s1/workspace",
         credentialsDir: "/creds",
       });
 
@@ -1061,6 +1094,7 @@ describe("SessionContainerManager", () => {
       const config = manager.buildConfig({
         sessionId: "s1",
         sessionDir: "/ws/s1",
+        workspaceDir: "/ws/s1/workspace",
         credentialsDir: "/creds",
         memoryLimit: 1024 * 1024 * 1024,
         cpuQuota: 100_000,
@@ -1390,6 +1424,9 @@ describe("buildConfigForWorkspace — sandbox Docker capability (docs/211)", () 
     // An empty sandbox workspace has NO shipit.yaml, so the workspace-derived
     // dockerAccess is always false — the capability grant is the only source.
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sandbox-docker-"));
+    // Sandboxes come from `createSessionDir` like every other session, so the
+    // clone is `<sessionDir>/workspace` — the layout the state dir resolves from.
+    fs.mkdirSync(path.join(tmpDir, "workspace"), { recursive: true });
   });
   afterEach(async () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -1400,7 +1437,7 @@ describe("buildConfigForWorkspace — sandbox Docker capability (docs/211)", () 
     mgr.buildConfigForWorkspace({
       sessionId: "sbx123456789",
       sessionDir: tmpDir,
-      workspaceDir: tmpDir,
+      workspaceDir: path.join(tmpDir, "workspace"),
       credentialsDir: "/credentials",
       ...(dockerAccess !== undefined ? { dockerAccess } : {}),
     });

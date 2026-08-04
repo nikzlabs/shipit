@@ -6,7 +6,6 @@ import { execFileSync } from "node:child_process";
 import {
   sessionStateDir,
   sessionStateDirForWorkspace,
-  resolveContainerStateDir,
   sweepLegacyCloneArtifacts,
   SESSION_STATE_SUBDIR,
 } from "./session-state-dir.js";
@@ -18,51 +17,45 @@ describe("sessionStateDirForWorkspace (docs/246)", () => {
     );
   });
 
-  // The whole reason this isn't a bare `path.dirname`: under the legacy flat
-  // layout (sessionDir === workspaceDir) dirname yields sessionsRoot, and every
-  // session's state would land in the same directory.
-  it("returns null on the legacy flat layout instead of collapsing into sessionsRoot", () => {
-    expect(sessionStateDirForWorkspace("/data/sessions/abc")).toBeNull();
-  });
-
   it("agrees with sessionStateDir on the session dir it derives", () => {
     const sessionDir = "/data/sessions/abc";
     expect(sessionStateDirForWorkspace(path.join(sessionDir, "workspace"))).toBe(
       sessionStateDir(sessionDir),
     );
   });
-});
 
-describe("resolveContainerStateDir (docs/246)", () => {
-  it("resolves the sibling state dir for the standard layout", () => {
-    expect(resolveContainerStateDir("/data/sessions/abc/workspace")).toBe(
+  // SHI-286 — the pre-`workspace/` flat layout (sessionDir === workspaceDir) is
+  // no longer serviceable. It must NOT degrade into a bare `path.dirname`: that
+  // yields `<sessionsRoot>/state` for every flat session on the host — one
+  // directory, one shared `.install-done` between all of them. Nor may it return
+  // a "no state dir" sentinel, which is what used to let callers keep writing
+  // ShipIt's artifacts into the user's clone. It refuses.
+  it("throws on the legacy flat layout instead of collapsing into sessionsRoot", () => {
+    expect(() => sessionStateDirForWorkspace("/data/sessions/abc")).toThrow(
+      /<sessionDir>\/workspace/,
+    );
+  });
+
+  it("never hands two flat-layout clones the same directory (it hands them none)", () => {
+    expect(() => sessionStateDirForWorkspace("/data/sessions/abc")).toThrow();
+    expect(() => sessionStateDirForWorkspace("/data/sessions/def")).toThrow();
+  });
+
+  // A clone with a trailing slash still names the `workspace` segment — the
+  // shape the production census checked for separately.
+  it("accepts a trailing-slash clone path", () => {
+    expect(sessionStateDirForWorkspace("/data/sessions/abc/workspace/")).toBe(
       path.join("/data/sessions/abc", SESSION_STATE_SUBDIR),
     );
   });
 
-  // Regression: the runner factory passes `sessionDir = dirname(workspaceDir)`
-  // (app-lifecycle.ts), so a FLAT session used to resolve to
-  // `<sessionsRoot>/state` — outside its own clone, so a containment check
-  // passed it, but SHARED by every flat session on the host. They would have
-  // mounted one directory and shared a single install marker, while host-side
-  // callers looked somewhere else entirely.
-  it("returns null for a flat-layout clone instead of a host-shared directory", () => {
-    expect(resolveContainerStateDir("/data/sessions/abc")).toBeNull();
-  });
-
-  it("gives two flat sessions no shared directory", () => {
-    expect(resolveContainerStateDir("/data/sessions/abc")).toBeNull();
-    expect(resolveContainerStateDir("/data/sessions/def")).toBeNull();
-  });
-
-  it("returns null when the clone path is absent", () => {
-    expect(resolveContainerStateDir(undefined)).toBeNull();
-  });
-
-  // The host and container sides must never derive different answers.
-  it("agrees with the host-side resolver by construction", () => {
+  // The resolved state dir is a SIBLING of the clone, never inside it — the
+  // property that used to need a separate containment check on the container
+  // side. Deriving both sides from this one function makes it structural.
+  it("resolves outside the clone it was derived from", () => {
     const clone = "/data/sessions/abc/workspace";
-    expect(resolveContainerStateDir(clone)).toBe(sessionStateDirForWorkspace(clone));
+    const rel = path.relative(clone, sessionStateDirForWorkspace(clone));
+    expect(rel.startsWith("..")).toBe(true);
   });
 });
 

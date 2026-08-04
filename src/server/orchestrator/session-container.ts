@@ -114,10 +114,11 @@ export interface ContainerConfig {
   sessionId: string;
   /** Host path: /workspace/sessions/{uuid} */
   sessionDir: string;
-  /** Host path to the git repo directory, mounted as /workspace in the container.
-   *  New layout: /workspace/sessions/{uuid}/workspace
-   *  Falls back to sessionDir for legacy sessions. */
-  workspaceDir?: string;
+  /** Host path to the git repo directory, mounted as /workspace in the container:
+   *  /workspace/sessions/{uuid}/workspace. Always a `workspace/` child of the
+   *  session dir — the pre-`workspace/` flat layout, where the clone WAS the
+   *  session dir, was removed in SHI-286. */
+  workspaceDir: string;
   /** Host path: /workspace/dep-cache/{hash} (shared dependency cache) */
   depCacheDir?: string;
   /**
@@ -145,8 +146,13 @@ export interface ContainerConfig {
    * fetched CI logs, the compose override, the agent env file), kept out of the
    * user's git clone so the post-turn `git add -A` can never stage them into
    * their repository. Another sibling of `workspace/`, like `scratch/`.
+   *
+   * Always present: `buildContainerConfig` derives it from the clone path and
+   * refuses a session whose clone isn't `<sessionDir>/workspace` (SHI-286), so
+   * neither the mount nor the worker's `SHIPIT_SESSION_STATE_DIR` has a
+   * "no state dir" case to fall back from.
    */
-  sessionStateDir?: string;
+  sessionStateDir: string;
   /** Host path: /credentials (Claude CLI auth, GitHub token) */
   credentialsDir: string;
   /** Container image name. */
@@ -1089,7 +1095,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   buildConfig(opts: {
     sessionId: string;
     sessionDir: string;
-    workspaceDir?: string;
+    workspaceDir: string;
     credentialsDir: string;
     depCacheDir?: string;
     /** docs/197 Part 2 — shared per-runtime pnpm store host dir; absent for non-pnpm / flag-off sessions. */

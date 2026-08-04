@@ -30,8 +30,9 @@ import { prepareDispatch } from "../prepared-dispatch.js";
 
 /**
  * Fetch CI failure logs for each failed check run.
- * Full logs are written to .shipit/ci-logs/ in the session directory;
- * the returned CIFailureLog contains only the last 30 lines as a snippet.
+ * Full logs are written to `ci-logs/` in the session's state dir (mounted at
+ * `/session-state` in the container); the returned CIFailureLog contains only
+ * the last 30 lines as a snippet.
  */
 export async function fetchCIFailureLogs(
   githubAuth: GitHubAuthManager,
@@ -46,8 +47,12 @@ export async function fetchCIFailureLogs(
   // workaround: appending `.shipit` to the user's TRACKED `.gitignore` so
   // ShipIt's own logs wouldn't be committed. That mutation is gone with the
   // files it existed for.
-  const stateDir = sessionDir ? sessionStateDirForWorkspace(sessionDir) : null;
-  const logDir = stateDir ? path.join(sessionSharedStateDir(stateDir), CI_LOGS_SUBDIR) : null;
+  // `sessionDir` is optional (callers without a session write no logs at all,
+  // only the inline excerpt), so `logDir` stays nullable — but when a clone IS
+  // given, its state dir always resolves.
+  const logDir = sessionDir
+    ? path.join(sessionSharedStateDir(sessionStateDirForWorkspace(sessionDir)), CI_LOGS_SUBDIR)
+    : null;
   if (logDir) {
     fs.mkdirSync(logDir, { recursive: true });
     // docs/150 §7 — written by the root orchestrator, read by the agent's

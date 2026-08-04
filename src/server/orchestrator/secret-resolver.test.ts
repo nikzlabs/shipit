@@ -431,46 +431,83 @@ describe("resolveSecrets — Phase 3 agent injection", () => {
 describe("writeAgentEnvFile", () => {
   let tmpDir: string;
 
+  /**
+   * A real session layout: the clone at `<sessionDir>/workspace`. docs/246 writes
+   * `.env.agent` into the `state/` sibling, resolved from the clone path — and
+   * SHI-286 removed the in-clone fallback, so a bare temp dir is now refused.
+   * Returns the clone.
+   */
   function setup() {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-env-"));
-    return tmpDir;
+    const dir = path.join(tmpDir, "workspace");
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
   }
+
+  /** The state dir for a clone produced by {@link setup}. */
+  const stateOf = (dir: string) => path.resolve(dir, "..", "state");
 
   afterEach(() => {
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("writes .shipit/.env.agent with the given body", () => {
+  it("writes .env.agent into the session state dir, outside the clone", () => {
     const dir = setup();
     const written = writeAgentEnvFile({
       workspaceDir: dir,
       body: "DATABASE_URL=postgres://x\n",
     });
-    expect(written).toBe(".shipit/.env.agent");
-    const contents = fs.readFileSync(path.join(dir, ".shipit/.env.agent"), "utf-8");
+    // Relative to the clone — and it points OUT of it.
+    expect(written).toBe(path.join("..", "state", ".env.agent"));
+    const contents = fs.readFileSync(path.join(stateOf(dir), ".env.agent"), "utf-8");
     expect(contents).toContain("DATABASE_URL=postgres://x");
+    // Nothing lands in the user's repository.
+    expect(fs.existsSync(path.join(dir, ".shipit"))).toBe(false);
   });
 
   it("removes .env.agent when body is empty", () => {
     const dir = setup();
-    const shipit = path.join(dir, ".shipit");
-    fs.mkdirSync(shipit);
-    fs.writeFileSync(path.join(shipit, ".env.agent"), "OLD=1\n");
+    const state = stateOf(dir);
+    fs.mkdirSync(state, { recursive: true });
+    fs.writeFileSync(path.join(state, ".env.agent"), "OLD=1\n");
     const result = writeAgentEnvFile({ workspaceDir: dir, body: "" });
     expect(result).toBeNull();
-    expect(fs.existsSync(path.join(shipit, ".env.agent"))).toBe(false);
+    expect(fs.existsSync(path.join(state, ".env.agent"))).toBe(false);
   });
 
-  it("creates .shipit/ if missing when body is non-empty", () => {
+  it("creates the state dir if missing when body is non-empty", () => {
     const dir = setup();
-    expect(fs.existsSync(path.join(dir, ".shipit"))).toBe(false);
+    expect(fs.existsSync(stateOf(dir))).toBe(false);
     writeAgentEnvFile({ workspaceDir: dir, body: "X=1\n" });
-    expect(fs.existsSync(path.join(dir, ".shipit", ".env.agent"))).toBe(true);
+    expect(fs.existsSync(path.join(stateOf(dir), ".env.agent"))).toBe(true);
+  });
+
+  // docs/246 req 6 — a session upgraded across the move sheds the copy an
+  // earlier ShipIt left inside its clone, so `git add -A` can't stage it.
+  it("sheds a pre-246 in-clone .shipit/.env.agent", () => {
+    const dir = setup();
+    fs.mkdirSync(path.join(dir, ".shipit"), { recursive: true });
+    fs.writeFileSync(path.join(dir, ".shipit", ".env.agent"), "PRE246=1\n");
+    writeAgentEnvFile({ workspaceDir: dir, body: "X=1\n" });
+    expect(fs.existsSync(path.join(dir, ".shipit", ".env.agent"))).toBe(false);
   });
 
   it("is a no-op when body is empty and file doesn't exist", () => {
     const dir = setup();
     expect(() => writeAgentEnvFile({ workspaceDir: dir, body: "" })).not.toThrow();
+  });
+
+  // SHI-286 — the legacy flat layout is refused rather than degraded back into
+  // the clone. A session of that shape is unserviceable by decision.
+  it("refuses a clone that is not <sessionDir>/workspace", () => {
+    const flat = fs.mkdtempSync(path.join(os.tmpdir(), "agent-env-flat-"));
+    try {
+      expect(() => writeAgentEnvFile({ workspaceDir: flat, body: "X=1\n" })).toThrow(
+        /<sessionDir>\/workspace/,
+      );
+    } finally {
+      fs.rmSync(flat, { recursive: true, force: true });
+    }
   });
 });
 

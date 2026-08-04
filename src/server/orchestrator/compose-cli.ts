@@ -23,13 +23,6 @@ import { spawn } from "node:child_process";
 import { EGRESS_RESOLVER_LABEL } from "./egress-dns-install.js";
 import { EGRESS_PROXY_LABEL } from "./egress-proxy-install.js";
 
-/**
- * Where the override lived before docs/246 moved it out of the user's clone —
- * workspace-relative, resolved against the compose cwd. Retained only as the
- * default for callers that don't thread the new absolute path.
- */
-const LEGACY_IN_CLONE_OVERRIDE = ".shipit/compose.override.yml";
-
 /** Runs a docker compose command. Resolves on exit 0, rejects otherwise. */
 export type ComposeRunner = (args: string[], cwd: string) => Promise<void>;
 
@@ -44,17 +37,17 @@ export interface ComposeCliOptions {
   /** Compose file path, relative to the workspace (e.g. "docker-compose.yml"). */
   composeFile: string;
   /**
-   * docs/246 — absolute path to the generated compose override, which now lives
-   * in the session's state dir instead of `<clone>/.shipit/`. Defaults to the
-   * legacy in-clone relative path so an un-threaded caller (older tests) keeps
-   * working.
+   * docs/246 — absolute path to the generated compose override, which lives in
+   * the session's state dir, never in `<clone>/.shipit/`. Required: there is no
+   * safe default, and the in-clone one this replaced (SHI-286) put a generated
+   * file where the post-turn `git add -A` stages it into the user's repository.
    *
    * Passing an absolute path is safe: compose anchors the **project directory**
    * to the first `-f` (still the user's compose file, relative to cwd), so the
    * user's own relative build contexts and bind sources resolve exactly as
    * before, and the generated override contains only absolute paths anyway.
    */
-  overrideFile?: string;
+  overrideFile: string;
   /** Optional override for running compose commands (useful for testing). */
   composeRunner?: ComposeRunner;
   /** Optional override for querying compose commands (useful for testing). */
@@ -74,7 +67,7 @@ export class ComposeCli {
     this.sessionId = opts.sessionId;
     this.workspaceDir = opts.workspaceDir;
     this.composeFile = opts.composeFile;
-    this.overrideFile = opts.overrideFile ?? LEGACY_IN_CLONE_OVERRIDE;
+    this.overrideFile = opts.overrideFile;
     this.runner = opts.composeRunner ?? defaultComposeRunner;
     this.query = opts.composeQuery ?? defaultComposeQuery;
   }
