@@ -5,7 +5,7 @@ The design that implements these requirements is in [`plan.md`](./plan.md).
 This feature is about the ShipIt-in-ShipIt dogfood loop (feature 118): the inner
 ShipIt that runs as the `dev` Compose service and renders in the outer preview
 pane. Requirements 1–8 are the original goal — the inner ShipIt should come up
-with repos already there. Requirements 9–10 are what the outer agent must be
+with repos already there. Requirements 9–11 are what the outer agent must be
 able to do with it.
 
 ## Requirements
@@ -37,37 +37,44 @@ able to do with it.
    reason for that is visible, rather than repos silently not appearing.
 
 9. The outer agent can make an inner agent start working on a task in the inner
-   ShipIt, without a human driving the inner UI.
+   ShipIt, without a human driving the inner UI. This applies both to the
+   sessions that were seeded (requirement 1) and to a fresh session the outer
+   agent creates with an opening task.
 
 10. The outer agent can read back an inner session's conversation — what the
     inner agent said and what it did — to see what happened.
 
+11. The outer agent can tell whether an inner session is still working or has
+    finished, so it knows when there is something to read.
+
+Not required in this version: the outer agent replying to an inner agent
+mid-task — follow-up messages, answering a question the inner agent asks,
+interrupting it. Starting it and reading the result is enough (see the resolved
+question below).
+
 ## Open questions
 
-- **What does "start an inner agent" apply to?** Requirement 9 could mean
-  (a) sending a task to one of the seeded sessions, (b) creating a fresh inner
-  session with an opening prompt, or (c) both. These are not the same amount of
-  work: (b) is already reachable over the inner ShipIt's HTTP API, while (a) is
-  currently WebSocket-only (noted as a gap in `docs/160-external-control-api`).
-  *Recommendation: (c) both, because the seeded repos from requirements 1–8 are
-  the point — being able to start work only in throwaway new sessions would
-  leave the seeded ones untestable.*
-
-- **Start-and-watch, or a full conversation?** Does the outer agent need to
-  reply to the inner agent — follow-ups, answering a question it asks,
-  interrupting it — or is starting it once and reading the result enough?
-  *Recommendation: start-and-watch for this version. Replying is the same
-  primitive as (a) above, so it comes along if (a) is in scope, but nothing
-  should be designed around a back-and-forth until we want one.*
-
-- **Does the outer agent need to know when the inner agent has finished?**
-  Requirement 10 says the outer agent can read the conversation; it does not say
-  it can tell "still working" from "done". Without that, the outer agent has to
-  guess when to look, which matters if this is meant to be used unattended.
-  *Recommendation: yes, include it — the inner ShipIt already reports whether a
-  session is running, so this is reading something that exists, not building
-  something new.*
+_(none — implementation is unblocked.)_
 
 ## Resolved questions
 
-_(none yet)_
+- 2026-08-04 — Does "start an inner agent" (req 9) mean sending a task to one of
+  the seeded sessions, creating a fresh session with an opening prompt, or both?
+  Chosen: **both**. The seeded repos are the point of requirements 1–8, so
+  starting work only in fresh throwaway sessions would leave them untestable.
+  Requirement 9 was extended to say so. Cost: creating-with-a-prompt is already
+  an HTTP route on the inner ShipIt, but sending a message to an *existing*
+  session is WebSocket-only today — the gap `docs/160-external-control-api`
+  identifies — so this half needs building.
+
+- 2026-08-04 — Does the outer agent need to talk back to the inner agent
+  (follow-ups, answers, interrupts), or only start it and read the result?
+  Chosen: **start and watch only**. Recorded above as an explicit
+  non-requirement so the design isn't built around a conversation loop. The
+  underlying primitive is the same one requirement 9 needs, so a later version
+  can add it without rework.
+
+- 2026-08-04 — Should the outer agent be able to tell "still working" from
+  "done", which requirement 10 alone doesn't give it? Chosen: **yes**. Added as
+  requirement 11. The inner ShipIt already reports whether a session is running,
+  so this reads something that exists rather than building something new.

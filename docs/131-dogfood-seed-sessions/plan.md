@@ -39,12 +39,10 @@ set of repo-backed inner sessions via the inner orch's HTTP API. Idempotent: a
 dev-service restart that finds the sessions already present does nothing
 (reqs 1, 5, 7).
 
-**Goal (reqs 9–10, not yet designed).** The outer agent can start an inner agent
-and read back its conversation. The mechanism is deliberately not designed here
-yet — see the open questions in `requirements.md`, which change what has to be
-built (the inner orch has an HTTP route to create a session *with* a prompt, but
-sending a message to an *existing* session is WebSocket-only; see
-`docs/160-external-control-api`).
+**Goal (reqs 9–11).** The outer agent can start an inner agent — in a seeded
+session or a fresh one — read back its conversation, and tell whether it is
+still working. Designed in [Driving the inner ShipIt from the outer agent](#driving-the-inner-shipit-from-the-outer-agent-reqs-911)
+below.
 
 **Non-goals.**
 - Blank / template-scaffolded inner sessions. There is no public "create empty
@@ -155,6 +153,53 @@ feature 137. The seed step slots in after the orch launch either way.)
 The script itself owns the "wait until healthy" poll (bounded retries, ~60s cap)
 so it's resilient to the orch taking a while to boot behind that wait.
 
+## Driving the inner ShipIt from the outer agent (reqs 9–11)
+
+The outer agent already has a shell and the inner ShipIt already has an HTTP
+API. Three of the four things it needs are plain `curl` against routes that
+exist today; only one is missing.
+
+**Reaching the inner orch.** The `dev` service publishes port 3000, and Vite
+proxies `/api` to the orch on 4000 (`vite.config.ts`), so every call below goes
+to the `dev` service's port 3000. The outer agent resolves that the documented
+way — `GET /api/sessions/${SHIPIT_SESSION_ID}/services` on the *outer*
+orchestrator gives the service's `containerIp` and `port`
+(`shipit-docs/preview.md`). No new plumbing.
+
+| Need | Route | Exists? |
+|---|---|---|
+| List the inner sessions (find a seeded one by `remoteUrl`) | `GET /api/sessions/all` | Yes |
+| Start work in a **fresh** session (req 9) | `POST /api/sessions/headless` — `{ repoUrl, initialPrompt }`, plus optional `branch`/`agent`/`model` | Yes |
+| Start work in a **seeded** session (req 9) | — | **No: WS-only `send_message`** |
+| Read the conversation (req 10) | `GET /api/sessions/:id/history` | Yes |
+| Still working, or done? (req 11) | `GET /api/sessions/:id/status` → `{ running, queueLength }` | Yes |
+
+**The one gap: `POST /api/sessions/:id/message`.** Sending a message to an
+existing session is WebSocket-only (`send_message` in `ws-client-messages.ts`);
+the only HTTP path is `POST /api/sessions/:parentId/children/:childId/message`,
+which is parent-to-child. This is exactly missing piece #1 in
+`docs/160-external-control-api`, and it's what makes the *seeded* sessions
+reachable at all — without it, reqs 1–8 provision sessions the outer agent
+cannot use.
+
+Add the thin version of that route: body `{ text }`, resolve the runner from
+`SessionRunnerRegistry`, hand off to the same path `send_message` takes, return
+`202` with the session id. Deliberately **not** in scope: docs/160's personal
+access tokens and auth middleware. Every orch route is unauthenticated today and
+this one is no different — the inner orch is reachable only on the Compose
+network. That's a real limitation of the current trust model, not something this
+feature should quietly fix on the side; docs/160 owns it.
+
+**Why not have the outer agent speak WebSocket instead** (and add no route)?
+A WS client is more code than a fetch, it would live somewhere nobody else uses,
+and it leaves the documented gap open. A route the agent can `curl` needs no
+client at all — which is the whole reason the capability is cheap.
+
+**Why no wrapper CLI.** No `shipit dogfood ...` command, no helper script: the
+four calls above are `curl` one-liners against a documented API, and a wrapper
+would be a second surface to keep in sync with the routes. A short section in
+`CLAUDE.md`'s dogfooding paragraph, listing the four calls, is the deliverable.
+
 ## Key files
 
 | File | Change |
@@ -164,11 +209,13 @@ so it's resilient to the orch taking a while to boot behind that wait.
 | `docker-compose.yml` | Add the background seed step to the `dev` service's `command:`. |
 | `.gitignore` | Add `scripts/dogfood-seed.local.json`. |
 | `docs/118-shipit-ui-local/plan.md` | Cross-link this doc from the dogfooding section. **Done.** |
-| `CLAUDE.md` | One line in the "Dogfooding ShipIt in ShipIt" paragraph noting the seed. |
+| `CLAUDE.md` | The "Dogfooding ShipIt in ShipIt" paragraph: one line on the seed, plus the four calls the outer agent uses to drive the inner ShipIt. |
+| `api-routes-session-crud.ts` | New. `POST /api/sessions/:id/message` — `{ text }` → resolve runner from the registry → same path as WS `send_message` → `202`. The one gap for reqs 9–11. |
 
-No orchestrator/client/shared code changes for reqs 1–8 — the inner orch already
-exposes `POST /api/repos/:url/claim-session` and reads `process.env.GITHUB_TOKEN`.
-Reqs 9–10 may need more than the script; that depends on the open questions.
+Reqs 1–8 need no orchestrator/client/shared code changes — the inner orch
+already exposes `POST /api/repos/:url/claim-session` and reads
+`process.env.GITHUB_TOKEN`. Reqs 9–11 add exactly one route; everything else
+they need already exists.
 
 ## Tests
 
@@ -178,10 +225,18 @@ Reqs 9–10 may need more than the script; that depends on the open questions.
   ones, (c) exits 0 when a `claim-session` call fails, (d) no-ops cleanly when
   `DOGFOOD_SEED=0` or the fixture file is missing, (e) prefers
   `dogfood-seed.local.json` over the committed fixture.
+- **Integration** (reqs 9–11, in `integration_tests/`): `POST
+  /api/sessions/:id/message` reaches a running session's runner and 404s on an
+  unknown id; `GET /api/sessions/:id/status` flips `running` false→true→false
+  around a turn; `GET /api/sessions/:id/history` contains the turn afterwards.
+  Uses the existing `buildApp` + `TestClient` + `FakeClaudeProcess` harness — no
+  dogfood stack needed.
 - **Manual smoke**: open the ShipIt repo in production ShipIt, set the
   `GITHUB_TOKEN` secret, start the dev service. Confirm the inner UI comes up
   with the fixture sessions present, each with its repo cloned. Restart the dev
-  service; confirm the script no-ops and no duplicates appear (req 5).
+  service; confirm the script no-ops and no duplicates appear (req 5). Then, as
+  the outer agent: send a task to a seeded session, poll status until it stops
+  running, and read the conversation back (reqs 9–11).
 
 ## Open questions / risks
 
