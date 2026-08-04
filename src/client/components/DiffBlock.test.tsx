@@ -165,7 +165,7 @@ describe("DiffBlock lazy body (docs/244)", () => {
     stubSession();
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({ oldString: "before", newString: "after" }),
+      json: async () => ({ input: { file_path: "src/app.ts", old_string: "before", new_string: "after" } }),
     });
     vi.stubGlobal("fetch", fetchMock);
 

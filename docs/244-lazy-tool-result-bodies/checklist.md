@@ -33,6 +33,23 @@
 - [x] Strip body from the wire behind a `truncated` marker
 - [x] `GET /api/sessions/:id/tool-inputs/:toolUseId`
 
+## Server — every other tool input (SHI-296)
+- [x] Per-tool, per-key policy (`inputKeyTreatment`, `shared/transcript-input-policy.ts`) rather than a second hardcoded tool set — the input-side counterpart of `rendersResultContentInline`
+- [x] `keep` for the keys the one-line summary draws (`file_path`, `pattern`, `query`, `url`), for the tools that render their whole input as the card itself (`AskUserQuestion`, `TodoWrite`, `apply_patch`), for a subagent's `description`/`subagent_type`/`skill`/`args`, and for a `present` card's `title`
+- [x] `head` for `command` — 80 characters, the number `message-tools.tsx` slices to. Imported, not restated, so the deletion is provably invisible
+- [x] `drop` for everything else, which is exactly what the tool-call modal alone displays
+- [x] **`keep` for a plan document's `content`** — `findPlanContent` renders a `.claude/plans/` Write body inline via `PlanApproval`, with no click and no fetch path, so the blanket Edit/Write strip had been blanking the plan card on every history load. `isPlanDocumentWrite` is shared with the reader
+- [x] `inputChars` — the original length of each shortened/removed string key, so `SubagentCall`'s `Prompt (N chars)` toggle keeps its label
+- [x] 200-byte floor, same reasoning as the result floor. Consequence: a small Edit now keeps its strings; `DiffBlock` recomputes identical stats from them
+- [x] `GET …/tool-inputs/:toolUseId` returns the input verbatim (`{ input }`) rather than the three Edit/Write fields — what a caller needs back depends on the tool
+- [x] Unchanged: *when* the projection may run. An input still only leaves the wire once its row is committed — always on the history path, and on the reconnect snapshot for the ids SHI-297's `committedBodyIds.toolInputs` records. The live emit still ships inputs whole, because an `agent_assistant` row is not committed until the next tool-result boundary. `projectToolUse` sits behind those gates and knows nothing about them
+
+## Client — every other tool input (SHI-296)
+- [x] `useLazyToolInput` — one keyed fetch shared by the diff modal, the tool-call modal and the subagent prompt; `DiffBlock` migrated onto it
+- [x] Tool-call modal fetches on mount and renders the recovered keys; keeps the fields it already has and shows "Loading input…" rather than blanking, and surfaces a failed fetch
+- [x] Subagent prompt disclosure renders from `inputChars` while collapsed and fetches on expand (the expand is the click req 8 licenses a loading state for)
+- [x] `message-tools.tsx` imports `COMMAND_SUMMARY_CHARS` instead of its literal `80`; `findPlanContent` imports `isPlanDocumentWrite`
+
 ## Server — images
 - [x] Hash + strip base64 in the projection; populate `src` with the URL
 - [x] `GET /api/sessions/:id/images/:hash`, `Cache-Control: immutable` + `ETag`
@@ -97,7 +114,9 @@
 > *Independent requirements review* at the end. Several gaps were filed against
 > one requirement while breaking others, and one entry was stale.
 
-- [ ] Req 5 says "tool inputs"; only Edit/Write are projected, other tool inputs ship whole. **Also req 1**: a 1 MB Bash command ships whole while the transcript shows its first 80 characters, and a `Task` prompt ships whole while sitting behind a collapsed disclosure.
+- [x] ~~Req 5 says "tool inputs"; only Edit/Write are projected, other tool inputs ship whole. **Also req 1**: a 1 MB Bash command ships whole while the transcript shows its first 80 characters, and a `Task` prompt ships whole while sitting behind a collapsed disclosure.~~ — **fixed (SHI-296).** Replaced with a per-tool, per-key policy; see *Server/Client — every other tool input* above and `plan.md` → *2. Tool inputs*. Fixing it also surfaced a live regression the original gap had not named: a `.claude/plans/` `Write` body **is** drawn inline (`findPlanContent` → `PlanApproval`), so the blanket Edit/Write strip had been blanking the plan card on every history load.
+- [ ] `apply_patch`'s `changes` still ships whole (reqs 1/5). Its inline `+N -M` is derived from each change's `diff`, so deferring the bodies needs per-change stats and a per-change fetch key — a second lazy mechanism, for one backend's tool. Kept as a `keep` rather than half-done.
+- [ ] `pattern` / `query` / `url` / `AskUserQuestion.questions` are kept whole however long (req 1). They render inline with no bound in code — the one-liner clips them with CSS, whose width depends on the viewport — so any slice would be a guess at what a wide screen shows. Tens of bytes in practice.
 - [x] ~~Byte backstop on a single long line removes text that used to render inline, and labels it "Show all 1 lines" (reqs 1/8)~~ — **stale, withdrawn.** Written when the previews were in the transcript. `ToolResult` now renders only inside the click-opened `ToolOutputModal`, where req 8 expressly permits loading, so this is no longer a transcript-level finding.
 - [x] ~~A >16 KB free-form AskUserQuestion answer would be sliced (req 4)~~ — **fixed (SHI-291).** It broke reqs 2 and 8 as well as 4: the Ask branch returns before the output modal, so the tail was unreachable rather than deferred, and the Ask card *is* the transcript. `WHOLE_RESULT_TOOL_NAMES` is now the set every bound agrees on — the server's 16 KB backstop and the client's 1 MB cap both read it. That also fixed a second, opposite error the review had not named: the client cap keyed off `SUBAGENT_TOOLS`, the *layout* set, so it spared `Skill` (no report, fetchable) while capping `AskUserQuestion` (no recovery).
 - [ ] A modal-only result at or under `RESULT_STRIP_FLOOR_BYTES` (200) ships whole though nothing renders it without a click (req 1) — **undisclosed until the review**. Recorded here as the deviation it is; the floor itself stays deliberate.
@@ -216,6 +235,15 @@ Blocked, with the reason:
       Unblocking it means wiring an MCP server into inner sessions (docs/118
       follow-up) or capturing a real image-bearing transcript from a
       containerized session.
+
+## Verification (SHI-296)
+- [x] `npm run typecheck`, `npm run lint:dev`
+- [x] `transcript-input-policy.test.ts` — the drift guard, one case per enumerated call site (same manual-enumeration caveat as the result-side guard, stated in the file)
+- [x] `transcript-projection.test.ts` — head slice, drops, `inputChars`, key-order preservation, the floor, the plan-document exemption and its near-miss
+- [x] `useLazyToolInput.test.ts` — enable-is-the-trigger, fetch-once, no stale input when re-pointed, error surfaced, no retry storm
+- [x] `SubagentCall.test.tsx` / `message-tools.test.tsx` — the three views actually call it, render what comes back, and degrade visibly when it 404s
+- [x] `lazy-transcript-bodies.test.ts` — the whole round-trip through the real orchestrator, including the plan-document body surviving and the command's tail being absent from the payload
+- [x] `lazy-body-projection.test.ts` — the client/server `countLines` pin still holds with padded fixtures (the old ones fell below the new floor)
 
 ## Verification
 - [x] `npm run typecheck`

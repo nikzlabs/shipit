@@ -114,11 +114,19 @@ describe("diff stats survive the body being stripped", () => {
    * implementations are separate functions in separate layers, so this pins
    * them together — if either drifts, the summary silently changes on reload.
    */
+  // Padded past `INPUT_STRIP_FLOOR_BYTES`: below the floor the projection
+  // deliberately leaves a body in place (the markers would cost more than the
+  // text), so a two-line fixture would exercise nothing. The padding is inside
+  // one line of each body, so the line counts under test are unchanged.
+  const wide = (label: string) => `${label}${"-".repeat(300)}`;
   const cases: { name: string; input: Record<string, unknown> }[] = [
-    { name: "Write", input: { file_path: "/a.ts", content: "a\nb\nc" } },
-    { name: "Edit", input: { file_path: "/a.ts", old_string: "x\ny", new_string: "x\ny\nz\nw" } },
-    { name: "Write", input: { file_path: "/a.ts", content: "trailing newline\n" } },
-    { name: "Edit", input: { file_path: "/a.ts", old_string: "only-old", new_string: "" } },
+    { name: "Write", input: { file_path: "/a.ts", content: `${wide("a")}\nb\nc` } },
+    { name: "Edit", input: { file_path: "/a.ts", old_string: `${wide("x")}\ny`, new_string: `${wide("x")}\ny\nz\nw` } },
+    { name: "Write", input: { file_path: "/a.ts", content: `${wide("trailing newline")}\n` } },
+    // An empty `new_string` is the deletion case, and it also pins the floor's
+    // edge: a zero-byte value is left on the wire (there is nothing to save),
+    // so only `old_string` disappears here.
+    { name: "Edit", input: { file_path: "/a.ts", old_string: wide("only-old"), new_string: "" } },
   ];
 
   for (const { name, input } of cases) {
@@ -129,10 +137,14 @@ describe("diff stats survive the body being stripped", () => {
         added: countLines((input.new_string ?? input.content ?? "") as string),
         removed: countLines((input.old_string ?? "") as string),
       });
-      // …and the body it computed them from is gone.
+      // …and every body it computed them from that was worth removing is gone.
       expect(projected.bodyTruncated).toBe(true);
       for (const key of ["content", "old_string", "new_string"]) {
-        expect(projected.input[key]).toBeUndefined();
+        const value = input[key];
+        if (typeof value === "string" && value.length > 200) {
+          expect(projected.input[key]).toBeUndefined();
+          expect(projected.inputChars?.[key]).toBe(value.length);
+        }
       }
       // The path stays: it is what the one-line summary draws.
       expect(projected.input.file_path).toBe("/a.ts");

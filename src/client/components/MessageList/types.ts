@@ -21,13 +21,20 @@ export interface ToolUseBlock {
   name: string;
   input: Record<string, unknown>;
   /**
-   * docs/244 — the Edit/Write file body was stripped from `input` on the serve
-   * path; fetch it from `/api/sessions/:id/tool-inputs/:id` when the diff modal
-   * opens. The inline summary needs only `diffStats`.
+   * docs/244 — one or more input keys were shortened or removed on the serve
+   * path; fetch the whole input from `/api/sessions/:id/tool-inputs/:id` when
+   * the view that shows it opens (the diff modal, the tool-call modal, the
+   * subagent prompt disclosure). What the transcript still draws is covered by
+   * the keys that remain, plus `diffStats` and `inputChars`.
    */
   bodyTruncated?: true;
   /** Line stats for the `+N -M` summary, computed before the body was stripped. */
   diffStats?: { added: number; removed: number };
+  /**
+   * Original character length of each shortened or removed string key — the
+   * `Prompt (N chars)` label keeps working once the prompt itself is gone.
+   */
+  inputChars?: Record<string, number>;
 }
 
 export interface ToolResultBlock {

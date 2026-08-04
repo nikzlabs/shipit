@@ -13,6 +13,7 @@ import {
   imageUrl,
 } from "./transcript-projection.js";
 import { TRANSCRIPT_SLICE_LINES, subAgentPreviewLine } from "../shared/transcript-slice.js";
+import { COMMAND_SUMMARY_CHARS } from "../shared/transcript-input-policy.js";
 import type { PersistedMessage } from "./chat-history.js";
 import type { SubAgentConsultCard } from "../shared/types.js";
 
@@ -178,15 +179,13 @@ describe("substituteResultImages", () => {
 });
 
 describe("projectToolUse", () => {
+  const use = (name: string, input: Record<string, unknown>) =>
+    ({ type: "tool_use" as const, id: "t1", name, input });
+
   it("computes the +N -M stats and strips the body for Edit", () => {
-    const tool = {
-      type: "tool_use" as const,
-      id: "t1",
-      name: "Edit",
-      input: { file_path: "/a.ts", old_string: "a\nb", new_string: "x\ny\nz" },
-    };
+    const tool = use("Edit", { file_path: "/a.ts", old_string: bigOutput, new_string: `${bigOutput}\nmore` });
     const projected = projectToolUse(tool);
-    expect(projected.diffStats).toEqual({ added: 3, removed: 2 });
+    expect(projected.diffStats).toEqual({ added: 501, removed: 500 });
     expect(projected.bodyTruncated).toBe(true);
     expect(projected.input.old_string).toBeUndefined();
     expect(projected.input.new_string).toBeUndefined();
@@ -194,19 +193,133 @@ describe("projectToolUse", () => {
   });
 
   it("computes stats for Write from content", () => {
-    const projected = projectToolUse({
-      type: "tool_use" as const,
-      id: "t1",
-      name: "Write",
-      input: { file_path: "/a.ts", content: "1\n2\n3\n4" },
-    });
-    expect(projected.diffStats).toEqual({ added: 4, removed: 0 });
+    const projected = projectToolUse(use("Write", { file_path: "/a.ts", content: bigOutput }));
+    expect(projected.diffStats).toEqual({ added: 500, removed: 0 });
     expect(projected.input.content).toBeUndefined();
   });
 
-  it("leaves other tools untouched, same reference", () => {
-    const tool = { type: "tool_use" as const, id: "t1", name: "Bash", input: { command: "ls" } };
+  it("leaves a small edit alone — the markers would cost more than the body", () => {
+    // The same floor the result path uses, for the same reason: replacing a
+    // 20-byte body with `bodyTruncated` + `inputChars` makes the payload larger
+    // AND buys a fetch round-trip. `DiffBlock` recomputes identical stats from
+    // the strings it still has, so nothing about the summary changes.
+    const tool = use("Edit", { file_path: "/a.ts", old_string: "a\nb", new_string: "x\ny\nz" });
     expect(projectToolUse(tool)).toBe(tool);
+  });
+
+  it("leaves a short command alone, same reference", () => {
+    const tool = use("Bash", { command: "ls" });
+    expect(projectToolUse(tool)).toBe(tool);
+  });
+
+  /**
+   * SHI-296. Everything below is what "only Edit/Write are projected" left on
+   * the wire: a megabyte `Bash` command behind an 80-character summary, a
+   * kilobyte subagent prompt behind a collapsed disclosure, an MCP argument
+   * object nothing draws at all.
+   */
+  it("ships only the characters of `command` the tool line draws", () => {
+    const command = "echo ".concat("x".repeat(5_000));
+    const projected = projectToolUse(use("Bash", { command, description: "a".repeat(500) }));
+
+    expect(projected.input.command).toBe(command.slice(0, COMMAND_SUMMARY_CHARS));
+    expect(projected.inputChars).toEqual({ command: command.length, description: 500 });
+    expect(projected.bodyTruncated).toBe(true);
+    // Modal-only, so not even a prefix.
+    expect(projected.input.description).toBeUndefined();
+    // Not a file write — no `+N -M` to invent.
+    expect(projected.diffStats).toBeUndefined();
+  });
+
+  it("keeps the keys the one-line summary draws in full", () => {
+    const long = "y".repeat(1_000);
+    for (const key of ["file_path", "pattern", "query", "url"]) {
+      const projected = projectToolUse(use("Grep", { [key]: long, extra: long }));
+      expect(projected.input[key]).toBe(long);
+      expect(projected.input.extra).toBeUndefined();
+    }
+  });
+
+  it("drops a subagent prompt but keeps the length its toggle is labelled with", () => {
+    const prompt = "p".repeat(4_000);
+    for (const name of ["Task", "Agent"]) {
+      const projected = projectToolUse(use(name, {
+        description: "Review the diff",
+        subagent_type: "general-purpose",
+        prompt,
+      }));
+      expect(projected.input.prompt).toBeUndefined();
+      expect(projected.inputChars?.prompt).toBe(4_000);
+      expect(projected.input.description).toBe("Review the diff");
+      expect(projected.input.subagent_type).toBe("general-purpose");
+    }
+  });
+
+  it("keeps the Skill chip's name and args", () => {
+    const projected = projectToolUse(use("Skill", { skill: "s".repeat(300), args: "a".repeat(300), other: "o".repeat(300) }));
+    expect(projected.input.skill).toBe("s".repeat(300));
+    expect(projected.input.args).toBe("a".repeat(300));
+    expect(projected.input.other).toBeUndefined();
+  });
+
+  it("keeps the whole input of tools that render it as the card itself", () => {
+    // AskUserQuestion and TodoWrite return before any modal, so a dropped key
+    // would be unreachable rather than deferred — the same argument that puts
+    // AskUserQuestion in `WHOLE_RESULT_TOOL_NAMES` on the result side.
+    // `apply_patch`'s inline `+N -M` is derived from the diffs themselves.
+    const questions = [{ question: "q".repeat(2_000), options: [] }];
+    const ask = projectToolUse(use("AskUserQuestion", { questions }));
+    expect(ask.input.questions).toBe(questions);
+    expect(ask.bodyTruncated).toBeUndefined();
+
+    const todos = [{ content: "t".repeat(2_000) }];
+    expect(projectToolUse(use("TodoWrite", { todos })).input.todos).toBe(todos);
+
+    const changes = [{ path: "/a.ts", kind: "update", diff: "+x\n".repeat(500) }];
+    expect(projectToolUse(use("apply_patch", { changes })).input.changes).toBe(changes);
+  });
+
+  it("keeps the `present` card's title and drops the rest", () => {
+    const projected = projectToolUse(use("mcp__shipit__present", { title: "T".repeat(400), file: "/f".padEnd(400, "x") }));
+    expect(projected.input.title).toBe("T".repeat(400));
+    expect(projected.input.file).toBeUndefined();
+  });
+
+  it("drops a heavy non-string argument with no `inputChars` entry", () => {
+    // `inputChars` exists for the one label drawn from a length (`Prompt (N
+    // chars)`), which is a string measure — an object has no character count to
+    // report, only the flag saying the input is incomplete.
+    const args = { rows: Array.from({ length: 500 }, (_, i) => ({ i })) };
+    const projected = projectToolUse(use("mcp__db__query_rows", { args }));
+    expect(projected.input.args).toBeUndefined();
+    expect(projected.bodyTruncated).toBe(true);
+    expect(projected.inputChars).toBeUndefined();
+  });
+
+  /**
+   * The regression this policy exists to prevent. `findPlanContent` renders a
+   * plan document's body as markdown **inline in the transcript**, with no
+   * click and no fetch path — so the blanket Edit/Write strip blanked the plan
+   * card on every history load. `isPlanDocumentWrite` is shared with the reader
+   * so the two cannot drift.
+   */
+  it("keeps the body of a Write to a plan document, which PlanApproval renders inline", () => {
+    const tool = use("Write", { file_path: "/w/.claude/plans/plan.md", content: bigOutput });
+    expect(projectToolUse(tool)).toBe(tool);
+  });
+
+  it("still strips an ordinary Write to a path that merely looks similar", () => {
+    const projected = projectToolUse(use("Write", { file_path: "/w/.claude/plan.md", content: bigOutput }));
+    expect(projected.input.content).toBeUndefined();
+  });
+
+  it("preserves key order, because the modal lays out `Object.keys(input)`", () => {
+    const projected = projectToolUse(use("Bash", {
+      command: "x".repeat(500),
+      description: "d",
+      timeout: 1000,
+    }));
+    expect(Object.keys(projected.input)).toEqual(["command", "description", "timeout"]);
   });
 });
 
@@ -272,7 +385,7 @@ describe("projectMessagesForWire", () => {
             kind: "assistant",
             parentToolUseId: "task1",
             text: "working",
-            toolUse: [{ type: "tool_use", id: "nested1", name: "Write", input: { file_path: "/a.ts", content: "1\n2" } }],
+            toolUse: [{ type: "tool_use", id: "nested1", name: "Write", input: { file_path: "/a.ts", content: bigOutput } }],
           },
           {
             kind: "tool_result",

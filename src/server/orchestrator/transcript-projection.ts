@@ -54,6 +54,11 @@ import {
   RESULT_STRIP_FLOOR_BYTES,
 } from "../shared/transcript-slice.js";
 import { shipsResultBodyWhole, rendersResultContentInline } from "../shared/transcript-slice-tools.js";
+import {
+  COMMAND_SUMMARY_CHARS,
+  INPUT_STRIP_FLOOR_BYTES,
+  inputKeyTreatment,
+} from "../shared/transcript-input-policy.js";
 import type { PersistedMessage } from "./chat-history.js";
 import type { AgentEvent, SubAgentConsultCard } from "../shared/types.js";
 import type { ToolResultEntry } from "./session-runner.js";
@@ -61,9 +66,8 @@ import type { ToolResultEntry } from "./session-runner.js";
 /** Tools whose *input* is a file body drawn as a one-line diff summary. */
 const DIFF_INPUT_TOOLS = new Set(["Edit", "Write"]);
 
-/** Input keys holding a file body, stripped once the line stats are computed. */
+/** Input keys holding a file body, whose line stats survive the body's removal. */
 const DIFF_BODY_KEYS = ["content", "old_string", "new_string"] as const;
-const DIFF_BODY_KEY_SET = new Set<string>(DIFF_BODY_KEYS);
 
 export function imageUrl(sessionId: string, hash: string): string {
   return `/api/sessions/${encodeURIComponent(sessionId)}/images/${hash}`;
@@ -266,29 +270,98 @@ export function projectToolResult(
   };
 }
 
+/** Byte cost of an input value on the wire — the string itself, or its JSON. */
+function inputValueBytes(value: unknown): number {
+  if (typeof value === "string") return Buffer.byteLength(value, "utf8");
+  if (value === undefined || value === null) return 0;
+  try {
+    return Buffer.byteLength(JSON.stringify(value) ?? "", "utf8");
+  } catch {
+    // A circular or otherwise unserializable value never made it into the row
+    // in the first place (`toRow` stringifies it), so this is unreachable in
+    // practice — treat it as weightless rather than throwing on a serve path.
+    return 0;
+  }
+}
+
+/** True when this key is both projectable and big enough to be worth projecting. */
+function shouldProjectInput(tool: { name: string; input: Record<string, unknown> }, key: string): boolean {
+  if (inputKeyTreatment(tool.name, key, tool.input) === "keep") return false;
+  return inputValueBytes(tool.input[key]) > INPUT_STRIP_FLOOR_BYTES;
+}
+
 /**
- * Project a tool_use block: for Edit/Write, compute the `+N -M` stats the diff
- * summary draws and drop the file body, which is only ever shown in the modal
- * behind a click.
+ * The `+N -M` an Edit/Write draws inline, computed from the WHOLE body before
+ * any of it leaves the payload. `DiffBlock` prefers these over recomputing from
+ * the strings, and `countLines` here is a copy of `DiffBlock.countLines` — a
+ * test pins them equal, because a mismatch changes the summary on reload.
+ *
+ * Returns undefined for anything that isn't a file write, and for a write with
+ * no body at all (nothing to count, nothing stripped).
+ */
+function diffStatsFor(tool: { name: string; input: Record<string, unknown> }): { added: number; removed: number } | undefined {
+  if (!DIFF_INPUT_TOOLS.has(tool.name)) return undefined;
+  const str = (key: string): string => (typeof tool.input[key] === "string" ? tool.input[key] : "");
+  if (!DIFF_BODY_KEYS.some((k) => str(k).length > 0)) return undefined;
+  return {
+    added: countLines(str("new_string") || str("content")),
+    removed: countLines(str("old_string")),
+  };
+}
+
+/**
+ * Project a tool_use block: keep the input keys the transcript draws, shorten
+ * the one it draws a fixed prefix of, and drop the rest — which is everything
+ * the tool-call modal alone displays.
+ *
+ * Which key is which is `inputKeyTreatment`'s job (`transcript-input-policy.ts`,
+ * SHI-296); this function is only the mechanics. Edit/Write are no longer a
+ * special case for *stripping* — their body keys are dropped by the ordinary
+ * rule, and the special case that remains is the `+N -M` the summary needs,
+ * which has to be computed before the body goes.
+ *
+ * Two properties worth keeping:
+ *
+ *   - the same reference comes back when nothing needed projecting, so the
+ *     common small-input transcript allocates nothing; and
+ *   - key order is preserved, because the modal renders `Object.keys(input)`.
  */
 export function projectToolUse<T extends { name: string; input: Record<string, unknown> }>(
   tool: T,
-): T & { bodyTruncated?: true; diffStats?: { added: number; removed: number } } {
-  if (!DIFF_INPUT_TOOLS.has(tool.name)) return tool;
-  const str = (key: string): string => (typeof tool.input[key] === "string" ? tool.input[key] : "");
-  if (!DIFF_BODY_KEYS.some((k) => str(k).length > 0)) return tool;
-
-  const added = countLines(str("new_string") || str("content"));
-  const removed = countLines(str("old_string"));
+): T & { bodyTruncated?: true; diffStats?: { added: number; removed: number }; inputChars?: Record<string, number> } {
+  const keys = Object.keys(tool.input);
+  if (!keys.some((k) => shouldProjectInput(tool, k))) return tool;
 
   // Rebuilt by filtering rather than `delete`-ing keys off a copy: a dynamic
   // delete is both slower (it deoptimizes the object's shape) and banned by
   // lint, and the projection runs over every tool_use in every served message.
-  const input = Object.fromEntries(
-    Object.entries(tool.input).filter(([k]) => !DIFF_BODY_KEY_SET.has(k)),
-  );
+  const input: Record<string, unknown> = {};
+  const inputChars: Record<string, number> = {};
+  for (const key of keys) {
+    const value = tool.input[key];
+    if (!shouldProjectInput(tool, key)) {
+      input[key] = value;
+      continue;
+    }
+    // The length the client would have measured, for the labels drawn from it
+    // (`Prompt (N chars)` in `SubagentCall`). Only meaningful for strings; a
+    // dropped object leaves no trace but the `bodyTruncated` flag.
+    if (typeof value === "string") {
+      inputChars[key] = value.length;
+      if (inputKeyTreatment(tool.name, key, tool.input) === "head") {
+        input[key] = value.slice(0, COMMAND_SUMMARY_CHARS);
+      }
+    }
+  }
 
-  return { ...tool, input, bodyTruncated: true, diffStats: { added, removed } };
+  const diffStats = diffStatsFor(tool);
+  return {
+    ...tool,
+    input,
+    bodyTruncated: true,
+    ...(diffStats ? { diffStats } : {}),
+    ...(Object.keys(inputChars).length > 0 ? { inputChars } : {}),
+  };
 }
 
 /**
@@ -400,8 +473,8 @@ function toolNamesFor(msg: PersistedMessage): Map<string, string> {
  *     the `agent_tool_result` handler, synchronously in the same tick as the
  *     emit (`agent-listeners.ts`). Safe everywhere.
  *   - **User-row images** are persisted when the turn opens. Safe everywhere.
- *   - **Edit/Write inputs** arrive on an `agent_assistant` event, and nothing
- *     commits that row until the *next* tool-result boundary.
+ *   - **Tool inputs** arrive on an `agent_assistant` event, and nothing commits
+ *     that row until the *next* tool-result boundary.
  *   - **Results nested under a subagent** are worse: the `parentToolUseId`
  *     branch of the `agent_tool_result` handler calls
  *     `attachSubagentToolResults` and **returns**, skipping the
@@ -544,8 +617,8 @@ export function projectMessagesForWire(
  * TOP-LEVEL tool results only — the one payload class this handler commits in
  * the same tick as the emit. Two neighbours are deliberately left whole:
  *
- *   - An `agent_assistant` carrying an Edit/Write body, which nothing commits
- *     until the next tool-result boundary.
+ *   - An `agent_assistant` carrying any tool input, which nothing commits until
+ *     the next tool-result boundary.
  *   - A nested (`parentToolUseId`) result, whose handler branch returns before
  *     `replaceInProgress` runs at all.
  *

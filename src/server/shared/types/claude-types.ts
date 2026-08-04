@@ -171,13 +171,20 @@ export interface ClaudeContentBlockToolUse {
   name: string;
   input: Record<string, unknown>;
   /**
-   * docs/244 — the file body was stripped from `input` on the serve path and is
-   * available from `GET /api/sessions/:id/tool-inputs/:toolUseId`. The diff
-   * summary the transcript draws needs only `diffStats`; the body is modal-only.
+   * docs/244 — one or more input keys were shortened or removed on the serve
+   * path; the whole input is available from
+   * `GET /api/sessions/:id/tool-inputs/:toolUseId`. Which keys, and why, is
+   * `inputKeyTreatment` (`shared/transcript-input-policy.ts`).
    */
   bodyTruncated?: true;
   /** Line stats for the `+N -M` summary, computed before the body was stripped. */
   diffStats?: { added: number; removed: number };
+  /**
+   * Original character length of each shortened or removed *string* key, for the
+   * labels the transcript draws from a length it no longer holds — today just
+   * `SubagentCall`'s `Prompt (N chars)` toggle (SHI-296).
+   */
+  inputChars?: Record<string, number>;
 }
 
 export type ClaudeContentBlock = ClaudeContentBlockText | ClaudeContentBlockToolUse;
