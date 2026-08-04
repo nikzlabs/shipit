@@ -251,6 +251,10 @@ export async function startStartupMonitors(
   // missing-container reconciler's `reconcileInFlight` above). It matters more
   // now the pass also runs the slower steady-state cache sweeps below.
   let escalationInFlight = false;
+  // SHI-294 — sessions already warned that their eviction is blocked by
+  // uncommittable work. Process-scoped so the hourly pass appends the notice
+  // once per stuck session instead of once per hour.
+  const notifiedEvictBlocked = new Set<string>();
   const kickDiskEscalation = (excludeSessionId?: string): void => {
     if (isTestMode || !containerManager) return;
     if (escalationInFlight) return;
@@ -266,6 +270,10 @@ export async function startStartupMonitors(
             pruneVolumes: (sid) => pruneSessionVolumes(sid),
             createGitManager,
             ladder,
+            // SHI-294 — persisted warning when a dirty checkout can't be made
+            // durable, so a session pinned at `light` is visible to its user.
+            chatHistory: chatHistoryManager,
+            notifiedEvictBlocked,
             paceMs: escalationPaceMs,
             diskFreeLow,
             diskFreeHigh,
