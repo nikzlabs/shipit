@@ -58,3 +58,15 @@
 - [x] Unit: escalation ladder + guards block destructive descent for running/open/recent sessions; dirty-tree push failure keeps a session at `light`; disk-pressure LRU sweep (`disk-tier-escalation.test.ts`)
 - [x] Integration: `evicted` restore branch tip equals current `origin/main` tip — `session-restore-freshness.test.ts` runs `unarchiveSession` end-to-end against a real file:// remote + bare cache: the remote advances after the cache is built, and the restored workspace's branch tip and `origin/main` both equal the advanced head (proves `fetchCache(0)` ran before clone and the branch is cut from fresh main)
 - [x] Migration semantics covered by archive/unarchive unit tests; disk-janitor tests insert `disk_tier='evicted'` rows directly
+
+## SHI-294 — blocked eviction (durability of the destructive rung)
+- [x] Gate the wipe on a clean tree *after* the remediation attempt, not on `autoCommit`'s returned hash (three null paths, only "nothing to commit" is safe to wipe)
+- [x] Also block on a CLEAN checkout with a merge/rebase mid-flight — `autoCommit`'s conflict branch never runs when the tree is clean
+- [x] Run the `origin` durability check unconditionally (`tipIsOnOrigin` + push), not only when this pass created a commit — a commit whose push failed leaves a clean tree the next pass would have wiped
+- [x] `blocked-by-dirty` outcome + `evictBlockedByDirty` counter, distinct from `blocked-by-push`
+- [x] Bound the pin: both blocked outcomes reclaim the regenerable dep caches — `overlay/` upper **and** the `.install-done` marker, which must move together (`reclaimBlockedSessionCaches`) — never the checkout
+- [x] Persisted `system_notice` naming the cause (redacted findings / conflicted paths), once per session per process, marked only after the append succeeds (`notifiedEvictBlocked`)
+- [x] Key the durability check + push off the CHECKED-OUT branch, never `session.branch` — a detached HEAD pushes a different ref and "succeeds" while HEAD stays local; a detached HEAD is never evictable
+- [x] Re-read the row + re-run `canAutoDescend` immediately before BOTH destructive steps — the wipe and the blocked-path cache reclaim (the guards were evaluated before seconds of pacing + git/network work)
+- [x] An already-missing checkout is recorded as `evicted` (when a remote can restore it) instead of pinned at `light`, where activation's `light → hot` shortcut 404s the bind-mount
+- [x] Tests: each null cause pinned separately — secret refusal, unresolved merge state, clean-tree rebase, the benign nothing-to-commit race (which must still evict), a failed push surviving a SECOND pass, a remote-less session never evicting, warn-once across passes (`disk-tier-escalation.test.ts`, `evict-blocked-notice.test.ts`, `disk-utils.test.ts`)
