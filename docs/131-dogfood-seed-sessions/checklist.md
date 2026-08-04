@@ -1,16 +1,15 @@
 # 131 — Dogfood seed sessions: checklist
 
-Nothing is implemented yet. One requirements-level open question is outstanding
-(the local override), and it gates only one optional bullet — everything below
-is buildable.
+Nothing is implemented yet. Requirements are settled — no open questions — so
+everything below is buildable.
 
 ## Seeding (reqs 1–7)
 
 - [ ] `scripts/seed-inner-sessions.js` — poll `GET /api/bootstrap` until healthy,
       diff the fixture against existing session `remoteUrl`s, `POST`
       `claim-session` for the rest. Idempotent, exits 0 on partial failure,
-      honors `DOGFOOD_SEED`. Choose the input file in one place, so the deferred
-      local override stays a small change.
+      honors `DOGFOOD_SEED`. Reads the committed fixture only — no local
+      override.
 - [ ] Confirm the health-probe payload — does `GET /api/bootstrap` actually
       carry the session list with `remoteUrl`s? Use whatever route does if not.
 - [ ] Not-authenticated detection + clear `[seed]` log (req 7).
@@ -29,15 +28,12 @@ is buildable.
 - [ ] `CLAUDE.md` — dogfooding paragraph: the seed, plus the four calls the
       outer agent uses (list / start / read history / check status).
 
-## Blocked on a human answer
-
-- [ ] Local override (gitignored `dogfood-seed.local.json` + `DOGFOOD_SEED_FILE`)
-      — open question in `requirements.md`, leaning toward *drop*. If dropped,
-      tick this and delete the bullet from plan.md's "Fixture format".
-
 ## Done
 
-- [x] `requirements.md` written and reviewed; four questions answered 2026-08-04.
+- [x] `requirements.md` written and reviewed; five questions answered
+      2026-08-04, none outstanding.
+- [x] Local override dropped (one developer — a personal set and the committed
+      set are the same thing).
 - [x] Obsolete GitHub-token half removed from `plan.md` (superseded by
       docs/184 — platform secret forwarding is gone, the secret is already
       user-supplied).

@@ -51,37 +51,18 @@ question below).
 
 ## Open questions
 
-- **Should a developer be able to seed their own repos instead, without
-  committing that choice — and is it worth the mechanism?** This was in the
-  numbered list until review questioned it; it is a question, not a settled
-  requirement, so it sits here until answered.
-
-  *How it would work (the question asked):* the seed file from requirement 2 is
-  committed, so a developer who wants different repos would drop a gitignored
-  sibling next to it — `scripts/dogfood-seed.local.json` — which wins over the
-  committed file when present, with a `DOGFOOD_SEED_FILE` environment variable
-  as an escape hatch to point somewhere else entirely. Nothing else changes; the
-  seed script just picks its input file differently.
-
-  *The objection, which is correct:* a developer can already add their own repo
-  by hand through the inner ShipIt UI, so this buys nothing on its own.
-
-  *The one thing it does buy:* the inner ShipIt's state lives in `.inner-shipit/`
-  inside the outer session's workspace and is gitignored, so it does not travel
-  between outer sessions and an outer archive or full reset wipes it. A repo
-  added by hand through the inner UI therefore has to be re-added every time you
-  start a fresh outer session — which is the same re-clicking that requirement 1
-  exists to remove, just moved to the developer who wanted a different repo. The
-  override is what makes a personal choice reproducible instead of one-shot.
-
-  *Recommendation: drop it for now.* It is a real benefit but a small one, and
-  it costs a second config path plus a gitignore entry. If re-adding a repo per
-  outer session turns out to be annoying in practice, add it then — the seed
-  script reads a file either way, so nothing about this decision is hard to
-  reverse. Only worth building now if you expect to routinely dogfood against
-  repos you don't want in the committed fixture.
+_(none — implementation is unblocked.)_
 
 ## Resolved questions
+
+- 2026-08-04 — Should a developer be able to seed their own repos without
+  committing that choice, via a gitignored override of the file in requirement 2?
+  Chosen: **no, not now** — there is one developer, so a personal set and the
+  committed set are the same thing. The committed fixture is the only input.
+  Requirement 2 is unchanged and stands on its own; nothing needs to be built to
+  close this. If a second developer arrives, or if repos worth dogfooding against
+  turn out not to belong in the committed fixture, revisit — the seed script
+  reads a file either way, so it stays a small change.
 
 - 2026-08-04 — Does requirement 1 need a *defined set* of sessions to be present,
   as originally written? Chosen: **no** — at least one repo-backed session is

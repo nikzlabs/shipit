@@ -124,13 +124,10 @@ A checked-in `scripts/dogfood-seed.json`:
   entry satisfies req 1; the committed file ships with a couple of innocuous
   public repos as a sane default.
 - `DOGFOOD_SEED=0` disables seeding entirely (req 3).
-- **Not currently in scope: a local override.** A gitignored
-  `scripts/dogfood-seed.local.json` winning over the committed file, plus a
-  `DOGFOOD_SEED_FILE` escape hatch, was in an earlier draft of this design. It is
-  an open question in [`requirements.md`](./requirements.md), leaning toward
-  *drop* — a developer can already add a repo through the inner ShipIt UI. Build
-  the script so the input file is chosen in one place, so adding the override
-  later is a two-line change rather than a rework.
+- The committed file is the **only** input. An earlier draft added a gitignored
+  `scripts/dogfood-seed.local.json` override plus a `DOGFOOD_SEED_FILE` escape
+  hatch; that was dropped — there is one developer, so a personal set and the
+  committed set are the same thing (`requirements.md`, resolved 2026-08-04).
 
 ## Where it runs
 
@@ -209,7 +206,7 @@ would be a second surface to keep in sync with the routes. A short section in
 
 | File | Change |
 |---|---|
-| `scripts/seed-inner-sessions.js` | New. Polls `GET /api/bootstrap`, diffs fixture against existing `remoteUrl`s, `POST`s `claim-session` for the rest. Idempotent, non-fatal on error, honors `DOGFOOD_SEED`. Plain Node (no deps) so it runs before/independent of the build. Pick the input file in one place, so the deferred local override is a small change. |
+| `scripts/seed-inner-sessions.js` | New. Polls `GET /api/bootstrap`, diffs fixture against existing `remoteUrl`s, `POST`s `claim-session` for the rest. Idempotent, non-fatal on error, honors `DOGFOOD_SEED`. Plain Node (no deps) so it runs before/independent of the build. |
 | `scripts/dogfood-seed.json` | New. Default fixture — a couple of public repos. |
 | `docker-compose.yml` | Add the background seed step to the `dev` service's `command:`. |
 | `docs/118-shipit-ui-local/plan.md` | Cross-link this doc from the dogfooding section. **Done.** |
@@ -243,11 +240,8 @@ they need already exists.
 
 ## Open questions / risks
 
-One requirements-level open question is outstanding — whether a developer can
-seed their own repos without committing that choice. It lives in
-[`requirements.md`](./requirements.md), leaning toward *drop*, and is the
-human's to answer. It gates only the override bullet under "Fixture format";
-the rest of this design is settled. The items below are design risks in the
+No requirements-level open questions are outstanding — see
+[`requirements.md`](./requirements.md). The items below are design risks in the
 seeding half, for the implementer.
 
 - **Health probe shape.** The script assumes `GET /api/bootstrap` returns 200
