@@ -125,6 +125,9 @@ export async function registerAgentRoutes(
             chatHistoryManager: deps.chatHistoryManager,
             ...(deps.recordAgentRateLimits ? { recordAgentRateLimits: deps.recordAgentRateLimits } : {}),
             ...(deps.credentialsDir ? { credentialsDir: deps.credentialsDir } : {}),
+            // SHI-299 — lets the service commit work a backgrounded consult left
+            // behind once its parent turn has already ended.
+            createGitManager: deps.createGitManager,
           },
           request.params.id,
           {

@@ -175,8 +175,13 @@ id or a bad flag, since neither condition can ever clear.
   cancel).
 - **The sub-agent runs full-capability** in the *same* workspace — it can read,
   write, and run shell. If you want it to only review (not edit), **say so in the
-  prompt**. Any files it writes are committed under the session's pinned agent at
-  the end of your turn, same as your own changes.
+  prompt**. Any files it writes are committed for you: if the run finishes while
+  your turn is still open, they ride your turn's ordinary end-of-turn commit; if
+  it outlives your turn (the normal shape for a backgrounded consult), they are
+  committed and pushed on their own as soon as it finishes, under a commit named
+  `Sub-agent consult (<agent>): work committed after the turn ended`. Either way
+  you do **not** need to commit them yourself, and they will not be sitting
+  uncommitted when the PR is reviewed.
 
 ## Limits
 

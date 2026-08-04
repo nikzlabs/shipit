@@ -668,6 +668,55 @@ Route chain, mirroring the spawn path: `shipit agent result` →
 `listSubAgentConsultCards`. It is a cheap read, so the default timeout applies
 (unlike the unbounded spawn leg).
 
+### 10. A consult's work is committed when it outlives its turn (SHI-299)
+
+§3's "the run outlives its caller" contract has a consequence the v0 design did
+not follow through on: a sub-agent **writes into the session workspace**, and
+`postTurnCommit` is a *turn-end* hook. `shipit-docs/agent.md` tells the agent to
+background a long consult, and the transport allows it 35 minutes, so the normal
+shape is a run that finishes minutes-to-hours after its parent turn already
+auto-committed and pushed. Nothing was scheduled to commit what it wrote.
+
+Observed twice in production as "changes missing from the merged PR". In the
+incident that produced this section the parent turn committed at 14:10:56 and
+the consult finished at 14:22:36; the files it wrote entered git at 16:35:28 —
+two minutes *after* the PR merged — swept up by the next user turn under that
+turn's summary. The dirty tree also silently blocked the docs/218 pre-turn
+auto-reset (`computeResetEligible` requires `git.isClean()`), which is how that
+next turn came to author a commit onto an already-merged branch.
+
+So `runSubAgent` ends every terminal path — success, error, timeout, cancel — by
+calling `commitSubAgentWork` (`services/sub-agent-commit.ts`):
+
+- **Only when the parent turn is already over** (`runner.running === false`,
+  re-resolved from the registry at completion time). A foreground consult's work
+  is the turn's work; `postTurnCommit` picks it up, and committing early would
+  split one turn across two commits under two subjects.
+- **Through `flushPendingTurnCommit`**, the helper docs/116 added for the
+  structurally identical `gh pr create` case — not a third commit path. That
+  brings the docs/213 secret scan (a refused commit stays refused, with the
+  redacted notice) and the conflict notice with it. It is called with an explicit
+  `summary` override, because the default (`runner.turnSummary`) would attribute
+  the commit to the previous turn.
+- **Not through `postTurnCommit`**, whose closing `updateLastMessage` would
+  repoint the *previous* turn's rewind target at a commit that turn did not make.
+- **Under `withWorkspaceLock`** (docs/149): a consult finishing while a new turn
+  starts is two concurrent `git add -A` runs on one workspace.
+- **Honouring the same kind gates** as the post-turn path: a `sandbox` session
+  has no root repo and is skipped entirely; an `ops` session commits but never
+  pushes.
+- **Pushing via `runner.schedulePostTurnPush()`**, which delegates to the same
+  `SystemTurnDeps.scheduleAutoPush` closure `postTurnCommit` pushes through — so
+  gates on the post-turn push (the merged-PR gate in particular) are inherited
+  rather than written twice.
+- **Visibly.** The commit subject is
+  `Sub-agent consult (<agent>): work committed after the turn ended`, and one
+  persisted `system_notice` names the short hash. This incident was fundamentally
+  about an invisible state change; silent-but-correct would still be silent.
+
+Fail-safe throughout: every failure is caught and logged, and the card, the
+persisted output and `shipit agent result` are unaffected.
+
 ## Touchpoints
 
 - **Global settings (`SettingsManager` / settings store)** — add
@@ -699,7 +748,14 @@ Route chain, mirroring the spawn path: `shipit agent result` →
   bill refresh; returns `{ status, text, truncated, durationMs, costUsd,
   inputTokens?, outputTokens?, cacheReadTokens?, cacheCreateTokens?,
   contextTokens? }`. Tracks each in-flight spawn so it can
-  SIGTERM the subprocess on cancel/timeout.
+  SIGTERM the subprocess on cancel/timeout. Ends every terminal path by calling
+  `commitSubAgentWork` (§10).
+- **New `services/sub-agent-commit.ts` (SHI-299)** — `commitSubAgentWork`:
+  commits (and pushes) work a consult left behind when its parent turn has
+  already ended, via `flushPendingTurnCommit` under `withWorkspaceLock`, with
+  the sandbox/ops kind gates and a persisted notice. Never throws. Paired with
+  `SessionRunnerInterface.schedulePostTurnPush()`, which exposes the shared
+  `SystemTurnDeps.scheduleAutoPush` closure to non-turn callers.
 - **`session-worker.ts`** — new `POST /agent/spawn` and `POST /agent/cancel`
   endpoints. The handler instantiates the appropriate per-agent adapter
   (`ClaudeAdapter` / `CodexAdapter`) fresh — NOT through the `/agent/start`

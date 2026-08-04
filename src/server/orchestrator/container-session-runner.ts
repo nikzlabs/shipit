@@ -2344,6 +2344,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   get canRunDispatchedTurn(): boolean { return this._systemTurnDeps !== null; }
 
+  /** SHI-299 — see `SessionRunnerInterface.schedulePostTurnPush`. */
+  schedulePostTurnPush(): void {
+    this._systemTurnDeps?.scheduleAutoPush(this.sessionDir);
+  }
+
   /** SHI-255 — the queue-drain re-entry for `execution: "dispatched"` entries. */
   async runDispatchedTurn(opts: PreparedDispatch): Promise<void> {
     await runDispatchedTurn(this, this._systemTurnDeps!, this._agentId, opts, (agentId) => {

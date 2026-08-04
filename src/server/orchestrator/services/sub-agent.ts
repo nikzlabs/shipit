@@ -56,6 +56,8 @@ import {
 } from "../session-credentials.js";
 import type { SubAgentRunResult } from "../../shared/sub-agent-run.js";
 import { detectHardExhaustion, exhaustionLockoutUntil } from "../ws-handlers/agent-rate-limits.js";
+import { commitSubAgentWork } from "./sub-agent-commit.js";
+import type { GitManager } from "../../shared/git.js";
 import { ServiceError } from "./types.js";
 
 /** §5 — modest per-turn fan-out cap; the forgery-resistant bound on total spawns. */
@@ -127,6 +129,12 @@ export interface RunSubAgentDeps {
   ) => void;
   /** Source-of-truth credentials root (`/credentials`). Omitted in local mode / tests. */
   credentialsDir?: string;
+  /**
+   * SHI-299 — git access for the post-run commit of work a consult left behind
+   * after its parent turn ended (`services/sub-agent-commit.ts`). Optional so
+   * minimal test setups keep working; absent ⇒ no commit is attempted.
+   */
+  createGitManager?: (dir: string) => GitManager;
 }
 
 export interface RunSubAgentInput {
@@ -534,6 +542,29 @@ export async function runSubAgent(
         );
       }
     }
+
+    // SHI-299 — the run has reached a terminal state (success, error, timeout or
+    // cancel; a cancelled or errored consult can have written files too). If its
+    // parent turn is already over — the normal shape, since docs/236 tells agents
+    // to background long consults — nothing else is scheduled to commit what it
+    // wrote, and the edits sit in the working tree until some later turn sweeps
+    // them up under the wrong summary or a `git reset` discards them. Commit them
+    // here instead. Awaited (not fire-and-forget) so `shipit agent run` returns
+    // only once the work is durable, and so the tree is clean before the caller's
+    // next turn consults the docs/218 reset gate. Runs AFTER the credential wipe
+    // above so a provisioned subtree can never be caught by `git add -A`.
+    //
+    // `commitSubAgentWork` never throws — result delivery does not depend on it.
+    await commitSubAgentWork(
+      {
+        sessionManager: deps.sessionManager,
+        runnerRegistry: deps.runnerRegistry,
+        chatHistoryManager: deps.chatHistoryManager,
+        ...(deps.createGitManager ? { createGitManager: deps.createGitManager } : {}),
+      },
+      sessionId,
+      { spawnId, subAgentId },
+    );
   }
 }
 

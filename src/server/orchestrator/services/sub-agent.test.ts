@@ -18,6 +18,8 @@ import {
 } from "./sub-agent.js";
 import { ServiceError } from "./types.js";
 import { DatabaseManager } from "../../shared/database.js";
+import { GitManager } from "../../shared/git.js";
+import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { persistTurnInProgress } from "../chat-card-persistence.js";
 import type { SubAgentRunResult } from "../../shared/sub-agent-run.js";
@@ -890,6 +892,107 @@ describe("a backgrounded consult that finishes AFTER its launching turn (SHI-245
       });
     });
   }
+});
+
+/**
+ * SHI-299 — the wiring test for `commitSubAgentWork`. The gating/lock/notice
+ * behaviour is pinned in `sub-agent-commit.test.ts`; what matters here is that
+ * `runSubAgent` actually reaches it on the terminal path, so a consult that
+ * outlives its turn no longer leaves its work uncommitted (the 100-minute Codex
+ * run whose edits missed the merged PR).
+ */
+describe("runSubAgent — committing work a consult left after its turn ended (SHI-299)", () => {
+  let tmpDir: string;
+  let origGitConfigGlobal: string | undefined;
+  let git: GitManager;
+
+  beforeEach(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-sub-agent-run-commit-"));
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    initGlobalGitConfig(tmpDir);
+    setGitIdentity("Test", "test@test.com");
+    git = new GitManager(tmpDir);
+    await git.init();
+    fs.writeFileSync(path.join(tmpDir, "turn-work.txt"), "from the turn");
+    await git.autoCommit("Agent turn");
+  });
+
+  afterEach(() => {
+    if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    else delete process.env.GIT_CONFIG_GLOBAL;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function scenario(opts: { turnEndsDuringConsult: boolean }) {
+    const schedulePostTurnPush = vi.fn();
+    const runner = {
+      subAgentSpawnsThisTurn: 0,
+      sessionId: "s1",
+      sessionDir: tmpDir,
+      running: true,
+      turnSummary: "Launching a Codex review in the background",
+      pendingCommitLink: null as unknown,
+      emitMessage: vi.fn(),
+      schedulePostTurnPush,
+      chatMessageGroups: [] as never[],
+      steeredMessages: [] as never[],
+      recordedCards: [] as never[],
+      spawnSubAgent: vi.fn(async () => {
+        // The consult writes into the session workspace, as a review that
+        // records its findings (or applies a fix) does.
+        fs.writeFileSync(path.join(tmpDir, "consult.md"), "codex findings");
+        // …and the launching turn finishes first — the whole reason the agent
+        // was told to background it.
+        if (opts.turnEndsDuringConsult) runner.running = false;
+        return { status: "success" as const, text: "done", truncated: false, durationMs: 1_100_000, costUsd: 0 };
+      }),
+    };
+    const deps = {
+      sessionManager: { get: () => ({ id: "s1", kind: "repo", agentId: "claude", agentPinned: true }), list: () => [] },
+      credentialStore: { getEnableSubAgents: () => true, getAgentSubAgentDefaults: () => ({}) },
+      agentRegistry: { refreshAuth: vi.fn(), get: () => ({ name: "Codex", authConfigured: true }) },
+      runnerRegistry: { get: () => runner },
+      usageManager: { record: vi.fn(), getSessionUsage: () => null, getSessionTokenTotals: () => null },
+      chatHistoryManager: { replaceInProgress: vi.fn(), append: vi.fn(), updateSubAgentConsultCard: vi.fn(() => true) },
+      createGitManager: (dir: string) => new GitManager(dir),
+    } as never;
+    return { runner, deps, schedulePostTurnPush };
+  }
+
+  it("commits and pushes the consult's work once its turn is over", async () => {
+    const { deps, schedulePostTurnPush } = scenario({ turnEndsDuringConsult: true });
+
+    await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+
+    const log = await git.log();
+    expect(log[0].message).toContain("Sub-agent consult (codex)");
+    expect(schedulePostTurnPush).toHaveBeenCalledTimes(1);
+    // docs/218 — the reset gate requires a clean tree; a dirty one left by a
+    // finished consult is what stranded the merged session in the incident.
+    expect(await git.isClean()).toBe(true);
+  });
+
+  it("leaves the work to the ordinary post-turn commit while the turn is still running", async () => {
+    const { deps, schedulePostTurnPush } = scenario({ turnEndsDuringConsult: false });
+
+    await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+
+    expect((await git.log()).length).toBe(2); // init + the turn's commit
+    expect(schedulePostTurnPush).not.toHaveBeenCalled();
+    expect(await git.isClean()).toBe(false);
+  });
+
+  it("still delivers the consult's result when the commit path fails", async () => {
+    const { deps } = scenario({ turnEndsDuringConsult: true });
+    // A workspace that isn't a git repo at all — `autoCommit` throws.
+    (deps as unknown as { createGitManager: (d: string) => GitManager }).createGitManager = () =>
+      new GitManager(fs.mkdtempSync(path.join(os.tmpdir(), "shipit-not-a-repo-")));
+
+    const res = await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+
+    expect(res.status).toBe("success");
+    expect(res.text).toBe("done");
+  });
 });
 
 describe("sweepSubAgentCredentialsOnSignOut", () => {
