@@ -74,18 +74,21 @@ active code remote ────────────────────�
 
 The resolver follows these rules:
 
-1. List and create operations use the configured private tracker binding.
-2. Each operation explicitly selects a destination. Within a private-planning
-   operation, a fully qualified `owner/repo#number` pointer retains that
-   repository as routing data and must match the configured private binding.
-3. A mismatch in a private-planning operation is rejected before a GitHub
-   request. It is never rewritten to the active code repository or the public
-   bug-report destination. Code-repository issue operations continue to use the
-   active repository, and qualified pointers used with that destination retain
-   their own repository. The separate ShipIt bug-report flow accepts only its
-   fixed public ShipIt repository.
-4. Bare issue numbers are accepted only in a context with one unambiguous
-   configured tracker repository.
+1. An operation that names a repository — `--repo owner/name`, or a fully
+   qualified `owner/repo#number` pointer — uses **that** repository, verbatim.
+   ShipIt does not check it against a known set: any repository the GitHub
+   credential can reach is reachable, and GitHub authorization is the only gate
+   (req 3). A repository the credential cannot see fails closed with an inline
+   access error naming both possibilities (missing or inaccessible).
+2. An operation that names none keeps its current meaning: the active session's
+   code repository. This is what makes the change backward-compatible — no
+   existing command changes destination.
+3. ShipIt never substitutes one repository for another. A named repository is
+   never rewritten to the active code remote or the public bug-report
+   destination, and a failure is never retried against a fallback. The separate
+   ShipIt bug-report flow accepts only its fixed public ShipIt repository.
+4. Bare issue numbers resolve against the repository the operation resolved by
+   rules 1–2 — never against a different one.
 5. Missing configuration or repository access fails closed; there is no code
    repository fallback. Legacy persisted cards that lack repository identity
    also fail closed when undone; they are never retroactively aimed at the
