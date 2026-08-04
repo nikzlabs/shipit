@@ -1,17 +1,40 @@
 # 131 — Dogfood seed sessions: checklist
 
-Implemented. What remains is the manual smoke on a real dogfood stack, which
-needs a running `dev` service and the `GITHUB_TOKEN` secret.
+Implemented and smoke-tested on a real dogfood stack (2026-08-04). One step of
+the smoke is blocked on a human: the inner ShipIt has no agent account connected,
+and connecting one is an OAuth flow only the user can complete.
 
 ## Remaining
 
-- [ ] Manual smoke: start the `dev` service in production ShipIt with the
-      `GITHUB_TOKEN` secret set. Confirm the inner UI comes up with the fixture
-      repo present, ready and trusted, and that opening it gives a session with
-      no clone wait (req 1). Restart the service; confirm `[seed]` logs "already
-      present" and nothing is duplicated (req 4). Then, as the outer agent:
-      create a session on that repo, dispatch at it, poll status until it stops
-      running, and read the conversation back (reqs 8–10).
+- [ ] Finish the reqs 9–10 smoke once the inner ShipIt is signed in to a Claude
+      or Codex account (Settings → Agents in the inner UI). Then: dispatch at a
+      session, poll `GET /api/sessions/:id/status` until `running` goes false,
+      and read the turn back from `GET /api/sessions/:id/history`. Everything up
+      to the agent itself is already verified — see below.
+
+## Manual smoke (2026-08-04, `dev` service in production ShipIt)
+
+- [x] **req 1** — first boot: `[seed] … added and trusted`, and
+      `GET /api/repos` reports the fixture repo `status: ready`,
+      `trusted: true`, with a `warmSessionId` already allocated (so opening it
+      is instant, which is the point of req 1). The inner UI's sidebar shows
+      `todo-list` with no trust banner.
+- [x] **req 4** — second boot logged `already present` /
+      `0 seeded, 1 already present, 0 failed`. The repo list still has exactly
+      one entry, with its original `addedAt` and its warm session intact:
+      nothing re-cloned, nothing duplicated.
+- [x] **req 7** — the warning path was exercised earlier against a local
+      orchestrator with no GitHub login. On the real stack `GITHUB_TOKEN` is
+      set, so the private fixture repo cloned cleanly.
+- [x] **req 8 (wake half)** — dispatching at the warm session, which had no
+      runner, reached the *auth gate* (401 "Claude is not authenticated")
+      rather than 404 "Session is not active". The auth gate is step 3 of
+      `dispatchAgentMessage` and step 2 is runner resolution, so a 401 proves
+      the runner was materialized. A genuinely unknown session id still 404s.
+- [ ] **reqs 9–10** — blocked on the agent sign-in above. `GET /status`
+      answers correctly for a session with no runner
+      (`{running: false, queueLength: 0}`); what's untested is a real turn
+      flowing through it and landing in history.
 
 ## Seeding (reqs 1–7)
 
