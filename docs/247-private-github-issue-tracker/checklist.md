@@ -28,7 +28,9 @@
 - [ ] Convert the resolved decisions into implementation acceptance tests.
 - [ ] Preserve structured repository identity through parsing and all issue operations.
 - [ ] Add `--repo owner/name` to `shipit issue`, the `/agent-ops/issue/*` schema, and the HTTP routes; no-`--repo` keeps meaning the session's code repo.
-- [ ] Add private tracker repository configuration and permission validation.
+- [ ] Parse the `issues.trackers` block in `shipit.yaml`; warn on malformed entries rather than failing the session.
+- [ ] Widen `TrackerId` for derived `github:owner/repo` ids; make `GitHubTracker`'s id/label configurable; register one tracker per declaration.
+- [ ] Render a declared tracker as its own Issues tab, with reachability failures inline on that tab.
 - [ ] Represent unsupported normalized operations and GitHub feature differences honestly.
 - [ ] Add same-numbered code/tracker repository regression coverage.
 - [ ] Add repository-qualified deduplication, lifecycle-card, and persisted effect keys.

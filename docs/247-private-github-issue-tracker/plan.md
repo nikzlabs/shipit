@@ -28,11 +28,12 @@ and API provider; its web UI is only an escape hatch for repository
 administration or exceptional manual recovery. Missing inline support remains a
 ShipIt backlog or degraded-state concern rather than a required GitHub step.
 
-An operator connects a private repository that is distinct from the public
-ShipIt code repository. The binding is deployment-wide initially, so sessions
-for the owner's ShipIt-related private code repositories share it. When the
-[Projects design](../231-projects/plan.md) is implemented, the binding follows
-that feature's established model and becomes per Project.
+The code repository declares the private planning repository in its
+`shipit.yaml`, and ShipIt renders it as an extra Issues tab. Because the
+declaration lives in the repository, it is already scoped to it — the
+[Projects design](../231-projects/plan.md) inherits that scoping and needs no
+tracker work of its own. For ShipIt's own repository, the planning repo is also
+named in `CLAUDE.md`, which is how the agent knows what to pass to `--repo`.
 
 The private planning tracker is additional to each code repository's own GitHub
 Issues tracker; it does not replace it. ShipIt product bug reports submitted
@@ -117,33 +118,59 @@ publishing private content.
 
 ## Configuration and authentication
 
-The selected binding stores a GitHub `owner` and `repo`, not a URL inferred
-from a coding session. It is stored deployment-wide before Projects phase 1c
-and in the owning Project's configuration after phase 1c lands.
+**Trackers are declared, not connected** (req 5). Additional GitHub issue
+repositories are listed in the code repository's `shipit.yaml`, alongside the
+`agent`, `compose`, and `release` blocks it already carries:
 
-Binding scope is independent from tracker purpose. The private binding selects
-the owner's planning repository. The public bug-report destination remains the
-public ShipIt repository and is selected by the bug-report workflow, not by the
-private planning setting.
+```yaml
+issues:
+  trackers:
+    - repo: owner/planning        # required, `owner/name`
+      label: Planning             # optional; defaults to the repo name
+```
 
-**There is no new tracker identity.** The destination is a *repository*, named
-explicitly on the operation: `shipit issue … --tracker github --repo owner/name`
-(req 3). `github` keeps its current meaning, and an operation that names no
-repository still resolves the active session's code remote — so configuration
-cannot silently change where an existing command writes, which is the property
-the earlier "distinct tracker id" design was reaching for. A third `TrackerId`,
-a third sub-tab, and a third `--tracker` value are all avoided; the routing data
-lives on the operation instead of being encoded in a destination name.
+This is the pattern the product already uses for stack shape — declared in the
+repo, versioned with it, reconciled by ShipIt — rather than a Settings surface
+the user has to operate. It buys three things at once:
 
-That leaves the binding needed only where there is nothing else to consult:
-list, create, and bare-number operations aimed at private planning. Persisted
-issue references and effects carry the qualified `owner/repo#number`, which is
-what prevents same-number collisions. The public bug-report flow remains outside
-the tracker registry and keeps its fixed ShipIt upstream repository.
+- **No configuration subsystem.** No Settings connect flow, no `CredentialStore`
+  field, no connection-time validation endpoint, no migration.
+- **Project scoping for free.** `shipit.yaml` is per repository, so a Project's
+  sessions see exactly the trackers their own repositories declare. The
+  [Projects](../231-projects/plan.md) design consequently needs no tracker work
+  at phase 1c — there is no deployment-wide binding to scope and no Default
+  Project alias.
+- **Plural at no extra cost.** A repository may declare several.
 
-The user creates the private repository and ShipIt connects it. ShipIt does not
-request repository-creation permission or implement naming, ownership,
-collision, or initialization flows.
+**There is no new fixed tracker identity either.** On the CLI the destination is
+a *repository*, named on the operation: `shipit issue … --tracker github --repo
+owner/name` (req 3). `github` keeps its current meaning, and an operation naming
+no repository still resolves the active session's code remote — so neither a
+declaration nor a setting can silently change where an existing command writes.
+`--repo` accepts any repository the credential can reach, so it is not limited to
+what `shipit.yaml` declares; declarations drive the *UI tabs*, not the CLI's
+reachable set.
+
+The consequence is that `TrackerId` can no longer be the closed
+`"linear" | "github"` union it is today, because declared trackers are open-ended.
+Declared trackers take a derived id of the form `github:owner/repo`, which keys
+the sub-tab and the `?tracker=` query the same way the fixed ids do.
+
+Persisted issue references and effects carry the qualified `owner/repo#number`,
+which is what prevents same-number collisions. The public bug-report flow remains
+outside the tracker registry and keeps its fixed ShipIt upstream repository.
+
+The user creates the repository and declares it. ShipIt does not create it, does
+not request repository-creation permission, and implements no naming, ownership,
+collision, or initialization flow.
+
+Because nothing is "saved", there is no moment at which to validate (req 8).
+ShipIt does not check that a declared repository exists, is private, or has
+Issues enabled; a declared tracker is exercised by ordinary requests and its tab
+surfaces an inline error when one fails. Two accepted consequences follow:
+declaring a *public* repository is not caught, and on a public code repository
+the committed `shipit.yaml` discloses the planning repository's slug — an
+extension of the disclosure requirement 7 already accepts for PR bodies.
 
 Private tracker calls use the same contextual GitHub credential as ShipIt's
 other GitHub operations: the deployment credential initially and the owning
@@ -162,20 +189,19 @@ possibilities. Repository-scoped `403` responses are also access/configuration
 failures. Neither response invalidates otherwise valid GitHub credentials; only
 an authentication failure may do that.
 
-Privacy and access are validated when the binding is connected. ShipIt adds no
-poller or periodic membership/visibility check afterward; normal GitHub
-requests surface later authorization and availability failures inline. The
+There is no poller and no periodic membership/visibility check; normal GitHub
+requests surface authorization and availability failures inline (req 8). The
 operator remains responsible for keeping the repository private in GitHub.
 
-Rebinding gets no dedicated mechanism (req 3). A target ShipIt already recorded
-— an Undo card's stored `owner/repo#number`, a qualified pointer in an open PR
-body — is routing data in its own right, so the deferred effect simply uses it
-and GitHub authorization decides whether it still succeeds. That is what the
-core invariant already produces with no extra code; rejecting such a target
-against the current binding would mean *adding* a comparison for an event that
-happens at most once in a deployment's life. The binding is consulted only where
-there is nothing else to consult: list, create, and bare-number operations. No
-issue migration or synchronization mechanism is proposed.
+Changing a declaration gets no dedicated mechanism (req 3). A target ShipIt
+already recorded — an Undo card's stored `owner/repo#number`, a qualified pointer
+in an open PR body — is routing data in its own right, so the deferred effect
+simply uses it and GitHub authorization decides whether it still succeeds. That
+is what the core invariant already produces with no extra code; validating such a
+target against the current declarations would mean *adding* a comparison for an
+event that happens at most once in a repository's life. Editing `shipit.yaml`
+changes which tabs appear and nothing else. No issue migration or synchronization
+mechanism is proposed.
 
 ## Accepted GitHub feature set
 
@@ -216,14 +242,19 @@ tracker entry points:
   applied-merge-effect keys qualify issue numbers with `owner/repo`; migration
   handling for existing bare-number keys must prevent duplicate effects without
   making a wrong-repository assumption.
-- tracker configuration resolves the selected private repository independently
-  of the active session's code remote.
-- the tracker domain model gives the private planning destination an explicit
-  identity instead of silently changing what the existing session-derived
-  `github` adapter means. The public ShipIt bug-report service remains outside
-  this registry and keeps its fixed upstream repository.
-- `src/server/orchestrator/api-routes-issues.ts` uses that binding for list,
-  detail, create, edit, comment, label, assignee, and status operations.
+- `src/server/shared/shipit-config.ts` parses the new `issues.trackers` block
+  (repo slug + optional label) with the same unknown-key warning treatment the
+  other blocks get; a malformed entry warns rather than failing the session.
+- `src/server/orchestrator/trackers/registry.ts` builds one `GitHubTracker` per
+  declared repository in addition to the session-derived one, giving each a
+  derived `github:owner/repo` id. `TrackerId` widens from a closed union
+  accordingly, and `GitHubTracker`'s hardcoded `id`/`label` become configuration.
+  The public ShipIt bug-report service stays outside this registry and keeps its
+  fixed upstream repository.
+- `src/server/orchestrator/api-routes-issues.ts` resolves the operation's
+  repository for list, detail, create, edit, comment, label, assignee, and status
+  operations, from `--repo`/the tab's tracker id, falling back to the session's
+  code remote.
 - `src/server/orchestrator/ws-handlers/issue-write-handlers.ts` records enough
   target data for Undo to address the original repository. Because issue-write
   cards persist in chat history, the repository target must round-trip through
@@ -259,15 +290,18 @@ issue is unchanged. Coverage includes:
   including deduplication, persisted effect-guard keys, and card IDs;
 - reload or session switching before delayed lifecycle work finishes;
 - Undo of a legacy persisted card created before repository targets were stored;
-- missing binding, repository mismatch, insufficient permission, and revoked
-  access, all failing without fallback;
+- an unreachable repository, insufficient permission, and revoked access, all
+  failing without fallback and naming both "missing" and "inaccessible";
+- a malformed or absent `issues.trackers` block warning rather than failing the
+  session, and declaring the session's own code repo being harmless;
 - public bug reports continuing to target the public ShipIt repository before
-  and after private planning tracker configuration;
+  and after trackers are declared;
 - code-repository GitHub Issues continuing to target each active code
-  repository before and after private planning tracker configuration;
-- binding replacement and clearing using the behavior selected in requirements;
-- no proactive access or privacy polling after connection, with later GitHub
-  request failures represented inline;
+  repository before and after trackers are declared;
+- editing `shipit.yaml` changing which tabs appear and nothing else — recorded
+  Undo targets and open-PR pointers still resolve to what they recorded;
+- no proactive access or privacy polling, with GitHub request failures
+  represented inline;
 - an operation naming `--repo`, and one naming none, each reaching the repository
   req 3 says they should;
 - the accepted GitHub feature differences represented honestly rather than
