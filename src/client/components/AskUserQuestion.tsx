@@ -26,7 +26,13 @@ export interface AskQuestionItem {
 interface AskUserQuestionProps {
   toolUseId: string;
   questions: AskQuestionItem[];
-  onAnswer: (toolUseId: string, answers: Record<string, string>, text: string) => void;
+  /**
+   * MUST return whether the answer was accepted for delivery. The card's
+   * answered-state lock is gated on it: a send dropped on a non-OPEN socket
+   * must leave the question answerable rather than showing an answered state
+   * for a message the agent never received.
+   */
+  onAnswer: (toolUseId: string, answers: Record<string, string>, text: string) => boolean;
   disabled: boolean;
   /**
    * The agent's tool_result content for this question, when it has been
@@ -166,6 +172,22 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
   const submittedAnswers = localSubmitted ?? persistedAnswers;
   const setSubmittedAnswers = setLocalSubmitted;
 
+  /**
+   * Send the answers and lock the card ONLY if they reached the wire. The lock
+   * used to be unconditional, so a send dropped by `useWebSocket.send` (silent
+   * no-op when the socket isn't OPEN) rendered an answered card for a message
+   * the agent never got — the same defect as the action-checklist card's
+   * "Submitted" ack. `sendUserMessage` already toasts on the failure, so the
+   * only thing needed here is to stay answerable.
+   */
+  const submitAnswers = useCallback(
+    (answers: Record<string, string>) => {
+      if (!onAnswer(toolUseId, answers, formatAnswerText(questions, answers))) return;
+      setSubmittedAnswers(answers);
+    },
+    [onAnswer, toolUseId, questions, setSubmittedAnswers],
+  );
+
   const handleOptionClick = useCallback((qIndex: number, label: string, multiSelect: boolean) => {
     if (disabled || submittedAnswers) return;
 
@@ -217,11 +239,10 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
           return next;
         });
       } else {
-        setSubmittedAnswers(answers);
-        onAnswer(toolUseId, answers, formatAnswerText(questions, answers));
+        submitAnswers(answers);
       }
     }
-  }, [disabled, submittedAnswers, selections, usingOther, otherTexts, questions, onAnswer, toolUseId]);
+  }, [disabled, submittedAnswers, selections, usingOther, otherTexts, questions, submitAnswers]);
 
   const handleOtherClick = useCallback((qIndex: number) => {
     if (disabled || submittedAnswers) return;
@@ -258,9 +279,8 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
     const text = otherTexts.get(qIndex)?.trim();
     if (!text) return;
     const answers: Record<string, string> = { [String(qIndex)]: text };
-    setSubmittedAnswers(answers);
-    onAnswer(toolUseId, answers, formatAnswerText(questions, answers));
-  }, [disabled, submittedAnswers, otherTexts, questions, onAnswer, toolUseId, setSubmittedAnswers]);
+    submitAnswers(answers);
+  }, [disabled, submittedAnswers, otherTexts, submitAnswers]);
 
   const handleSubmit = useCallback(() => {
     if (disabled || submittedAnswers) return;
@@ -280,9 +300,8 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
 
     if (Object.keys(answers).length === 0) return;
 
-    setSubmittedAnswers(answers);
-    onAnswer(toolUseId, answers, formatAnswerText(questions, answers));
-  }, [disabled, submittedAnswers, questions, selections, usingOther, otherTexts, onAnswer, toolUseId]);
+    submitAnswers(answers);
+  }, [disabled, submittedAnswers, questions, selections, usingOther, otherTexts, submitAnswers]);
 
   // Determine if submit button should be shown (multi-select or multi-question)
   const needsSubmitButton = questions.length > 1 || questions.some((q) => q.multiSelect);

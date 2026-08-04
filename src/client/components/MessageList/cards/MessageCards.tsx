@@ -48,7 +48,8 @@ export interface MessageCardCallbacks {
     /** Comment to scroll to + highlight once the thread lands (SHI-103). */
     anchorCommentId?: string;
   }) => void;
-  onSendFollowUp?: (text: string) => void;
+  /** Returns whether the message actually reached the wire (see `sendUserMessage`). */
+  onSendFollowUp?: (text: string) => boolean;
   /** docs/171 — confirm a proposed release (sends the "yes, ship it" reply). */
   onReleaseConfirm?: (version: string, mechanism: ReleaseMechanism) => void;
   /** docs/171 — cancel a proposed release (sends the cancel reply). */

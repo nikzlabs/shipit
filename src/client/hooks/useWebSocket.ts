@@ -5,7 +5,23 @@ import { useEventListeners } from "./useEventListener.js";
 export type WsStatus = "connecting" | "open" | "closed";
 
 export interface UseWebSocketReturn {
-  send: (data: unknown) => void;
+  /**
+   * Put a frame on the wire. Returns `true` only if the bytes were actually
+   * handed to an OPEN socket, `false` if the send was dropped (socket absent,
+   * connecting, closing, closed, or `ws.send` threw).
+   *
+   * Callers MUST NOT assume delivery: a `void` return here is what let the
+   * action-checklist card render "Submitted · N sent" for a frame that never
+   * left the browser. Anything that shows the user a confirmation has to gate
+   * it on this boolean (see `sendUserMessage`).
+   *
+   * Caveat — `true` means "written to an OPEN socket", not "the server got it".
+   * A backgrounded mobile socket can read OPEN while the OS has already killed
+   * the connection, so the bytes vanish silently. Closing that hole needs a
+   * server-side ack keyed on `requestId`; this boolean only guarantees the ack
+   * can never outrun the wire.
+   */
+  send: (data: unknown) => boolean;
   /**
    * The most recent WebSocket message. Used as a React render trigger — when
    * multiple messages arrive between renders, only the last one is visible here.
@@ -132,9 +148,15 @@ export function useWebSocket(url: string | null): UseWebSocketReturn {
     };
   }, [url, connectAttempt, clearForegroundRetryTimers]);
 
-  const send = useCallback((data: unknown) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
+  const send = useCallback((data: unknown): boolean => {
+    if (wsRef.current?.readyState !== WebSocket.OPEN) return false;
+    try {
       wsRef.current.send(JSON.stringify(data));
+      return true;
+    } catch {
+      // `ws.send` throws InvalidStateError if the socket transitioned between
+      // the readyState check and the write. A dropped frame is a dropped frame.
+      return false;
     }
   }, []);
 
