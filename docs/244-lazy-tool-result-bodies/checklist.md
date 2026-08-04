@@ -138,8 +138,11 @@ Run after the req-1 fix merged. Two of the five checks are done and are now
       feature: the final report renders as the raw block-array JSON
       (`[{"type":"text","text":"…"}]`) instead of the extracted prose. The
       exemption returns the result untouched, so the renderer is receiving
-      exactly what it received before docs/244 — `SubagentCall` simply doesn't
-      parse a block array. Filed separately.
+      exactly what it received before docs/244 — `SubagentCall` simply didn't
+      parse a block array. Filed as SHI-287 and **since fixed**:
+      `parseSubagentReport` (`client/utils/group-events-by-parent.ts`) splits
+      the array into report text and the CLI's accounting footer, structurally
+      rather than lexically. Written up in docs/109.
 
 Blocked, with the reason:
 

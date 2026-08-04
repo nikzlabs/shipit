@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { groupEventsByParent, findSubagentFinalReport } from "./group-events-by-parent.js";
+import { groupEventsByParent, findSubagentFinalReport, parseSubagentReport } from "./group-events-by-parent.js";
 import type { SubagentEvent, ToolResultBlock } from "../components/MessageList.js";
 
 describe("groupEventsByParent", () => {
@@ -66,5 +66,121 @@ describe("findSubagentFinalReport", () => {
     expect(findSubagentFinalReport("task-1", undefined)).toBeUndefined();
     expect(findSubagentFinalReport("task-1", [])).toBeUndefined();
     expect(findSubagentFinalReport("task-1", [{ toolUseId: "x", content: "y" }])).toBeUndefined();
+  });
+});
+
+/**
+ * SHI-287 — the Claude CLI returns a subagent's `tool_result` as a JSON-encoded
+ * block array whenever the reply has more than one block, which is the normal
+ * case because the CLI appends its own accounting footer. `SubagentCall` used
+ * to hand that string straight to the markdown renderer, so the user read
+ * `[{"type":"text","text":"…"}]` with escaped newlines instead of the report.
+ */
+describe("parseSubagentReport", () => {
+  /**
+   * The exact shape observed from Claude Code CLI 2.1.219 on a live dogfood
+   * turn — the report block, then the CLI's `agentId` footer. Kept verbatim
+   * rather than tidied, because "what the CLI actually emits" is the whole
+   * point of this function.
+   */
+  const REAL_REPORT = JSON.stringify([
+    {
+      type: "text",
+      text: "File: /workspace/README.md\n- Words: 2145\n- Lines: 264\n- Bytes: 15379",
+    },
+    {
+      type: "text",
+      text: "agentId: af658a55f1a8b9594\nsubagent_tokens: 49171\ntool_uses: 1\nduration_ms: 5411",
+    },
+  ]);
+
+  it("extracts the report text from the CLI's real block-array shape", () => {
+    const parsed = parseSubagentReport(REAL_REPORT);
+    expect(parsed.text).toBe("File: /workspace/README.md\n- Words: 2145\n- Lines: 264\n- Bytes: 15379");
+    // No JSON punctuation survives into what the user reads.
+    expect(parsed.text).not.toContain('"type"');
+    expect(parsed.text).not.toContain("\\n");
+  });
+
+  it("separates the CLI's accounting footer so it can be demoted, not read as report", () => {
+    const parsed = parseSubagentReport(REAL_REPORT);
+    expect(parsed.meta).toContain("subagent_tokens: 49171");
+    expect(parsed.text).not.toContain("agentId");
+  });
+
+  /**
+   * The non-array path must be byte-identical, since a single-block reply is
+   * delivered as a plain string and is by far the more common shape.
+   */
+  it("returns a plain-string report untouched", () => {
+    const plain = "## Findings\n\nAll three checks passed.";
+    expect(parseSubagentReport(plain)).toEqual({ text: plain, meta: null });
+  });
+
+  it("returns content untouched when it starts with [ but is not JSON", () => {
+    // A markdown report may legitimately open with a link or a checkbox.
+    const md = "[the linked doc](http://example.com) explains the rest";
+    expect(parseSubagentReport(md)).toEqual({ text: md, meta: null });
+  });
+
+  it("returns content untouched for a JSON array that is not blocks", () => {
+    expect(parseSubagentReport("[1, 2, 3]").text).toBe("[1, 2, 3]");
+  });
+
+  it("joins multiple report blocks and keeps them all when there is no footer", () => {
+    const content = JSON.stringify([
+      { type: "text", text: "First half." },
+      { type: "text", text: "Second half." },
+    ]);
+    const parsed = parseSubagentReport(content);
+    expect(parsed.text).toBe("First half.\n\nSecond half.");
+    expect(parsed.meta).toBeNull();
+  });
+
+  /**
+   * The footer has no structural marker — it is an ordinary `type: "text"`
+   * block — so recognition is deliberately narrow. A false positive would eat
+   * someone's report; a false negative just renders it as text, which is what
+   * happened before this function existed.
+   */
+  it("does not mistake a report that merely contains colons for the footer", () => {
+    const content = JSON.stringify([
+      { type: "text", text: "Summary" },
+      { type: "text", text: "Result: everything passed\nNote: see line 40" },
+    ]);
+    const parsed = parseSubagentReport(content);
+    expect(parsed.meta).toBeNull();
+    expect(parsed.text).toContain("Result: everything passed");
+  });
+
+  it("does not treat a lone block as a footer, even when it looks like one", () => {
+    // A one-block reply IS the report. Stripping it would blank the card.
+    const content = JSON.stringify([{ type: "text", text: "agentId: abc\ntool_uses: 0" }]);
+    const parsed = parseSubagentReport(content);
+    expect(parsed.text).toBe("agentId: abc\ntool_uses: 0");
+    expect(parsed.meta).toBeNull();
+  });
+
+  it("keeps a trailing footer-shaped block that is not last", () => {
+    const content = JSON.stringify([
+      { type: "text", text: "agentId: abc\ntool_uses: 0" },
+      { type: "text", text: "The actual report." },
+    ]);
+    const parsed = parseSubagentReport(content);
+    expect(parsed.meta).toBeNull();
+    expect(parsed.text).toContain("agentId: abc");
+  });
+
+  /**
+   * A block array with no text at all tells us nothing renderable; returning
+   * "" would blank a report that does exist in some shape we don't model.
+   */
+  it("falls back to the raw content when a parsed array holds no text blocks", () => {
+    const content = JSON.stringify([{ type: "image", source: { data: "iVBOR", media_type: "image/png" } }]);
+    expect(parseSubagentReport(content).text).toBe(content);
+  });
+
+  it("handles an empty report without throwing", () => {
+    expect(parseSubagentReport("")).toEqual({ text: "", meta: null });
   });
 });
