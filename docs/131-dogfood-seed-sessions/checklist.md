@@ -1,16 +1,7 @@
 # 131 — Dogfood seed sessions: checklist
 
-Implemented and smoke-tested on a real dogfood stack (2026-08-04). One step of
-the smoke is blocked on a human: the inner ShipIt has no agent account connected,
-and connecting one is an OAuth flow only the user can complete.
-
-## Remaining
-
-- [ ] Finish the reqs 9–10 smoke once the inner ShipIt is signed in to a Claude
-      or Codex account (Settings → Agents in the inner UI). Then: dispatch at a
-      session, poll `GET /api/sessions/:id/status` until `running` goes false,
-      and read the turn back from `GET /api/sessions/:id/history`. Everything up
-      to the agent itself is already verified — see below.
+Implemented and smoke-tested end to end on a real dogfood stack (2026-08-04),
+with a real agent turn. Nothing outstanding.
 
 ## Manual smoke (2026-08-04, `dev` service in production ShipIt)
 
@@ -26,15 +17,28 @@ and connecting one is an OAuth flow only the user can complete.
 - [x] **req 7** — the warning path was exercised earlier against a local
       orchestrator with no GitHub login. On the real stack `GITHUB_TOKEN` is
       set, so the private fixture repo cloned cleanly.
-- [x] **req 8 (wake half)** — dispatching at the warm session, which had no
-      runner, reached the *auth gate* (401 "Claude is not authenticated")
-      rather than 404 "Session is not active". The auth gate is step 3 of
-      `dispatchAgentMessage` and step 2 is runner resolution, so a 401 proves
-      the runner was materialized. A genuinely unknown session id still 404s.
-- [ ] **reqs 9–10** — blocked on the agent sign-in above. `GET /status`
-      answers correctly for a session with no runner
-      (`{running: false, queueLength: 0}`); what's untested is a real turn
-      flowing through it and landing in history.
+- [x] **req 8, new session** — `POST /api/sessions/headless` with
+      `{repoUrl, agent: "codex", initialPrompt}` on the seeded repo started a
+      real turn with no human touching the inner UI.
+- [x] **req 8, existing session** — the decisive test. Restarting the `dev`
+      service drops every runner while the session rows survive in
+      `.inner-shipit`, which is exactly the "session from an earlier boot"
+      case. `POST /api/sessions/:id/agent/dispatch` at that session returned
+      `{ok: true, queued: false}` and ran the turn. On the old code this is the
+      404 "Session is not active" path. A genuinely unknown session id still
+      404s, and an earlier run against a Claude-pinned session showed the
+      dispatch reaching the *auth gate* (401) rather than 404 — the gate is
+      step 3 and runner resolution is step 2, so that too proved the wake.
+- [x] **req 10** — `GET /api/sessions/:id/status` reported
+      `running: true` for the duration of the first turn and flipped to
+      `running: false` when it ended.
+- [x] **req 9** — `GET /api/sessions/:id/history` returned the whole
+      conversation: the dispatched prompt, the agent's reasoning, its `shell`
+      tool calls, and its final answer ("a responsive TODO web app built with
+      React 19, TypeScript, and Vite…"). Both turns are there, so what the
+      inner agent *said* and what it *did* are both readable.
+- [x] The woken turn pushed nothing and opened no PR — the prompts were
+      read-only, so the post-turn commit had nothing to commit.
 
 ## Seeding (reqs 1–7)
 
