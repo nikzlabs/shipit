@@ -32,6 +32,16 @@ Two resolutions shape the design directly:
 Req 1 also fixes the completion criterion: *do not load information that is not
 visible without a click*. There is no byte target to tune against.
 
+> **The shipped feature does not fully meet that criterion, and this section
+> used to read as though it did** (correction from the independent review,
+> 2026-08-04). Four things still transfer without a click: modal-only results
+> at or under the 200-byte floor, every tool input that is not Edit/Write,
+> `sub_agent_consult_card.outputMarkdown`, and the full-resolution bytes behind
+> each 96×96 image thumbnail. The live and reconnect paths relax it further.
+> All are listed in `checklist.md` → *Known gaps*; the two that were
+> undisclosed are SHI-291 and SHI-292. The criterion stands as the goal — the
+> claim that the design achieves it does not.
+
 ## What the UI actually draws
 
 > **The `tool_results` row of this table is out of date.** It described the UI
@@ -55,9 +65,13 @@ and it is that artifact, not raw metadata, that has to stay on the wire.
 | `images` (user rows) | A 96×96 thumbnail (`w-24 h-24 object-cover`, `message-media.tsx:53`) | Full-size preview |
 | `subagent_events` | A `Disclosure` — "Subagent's work (N actions)" — open by default, containing ordinary tool calls | Per-step detail, via the same components |
 
-So three mechanisms cover all four columns, and `subagent_events` needs none of
-its own: its contents are rendered by the *same* components as top-level tools,
-so fixing tool results and Write/Edit bodies covers its innards for free. What
+So three mechanisms cover all four columns, and `subagent_events` needs no new
+*component* of its own: its contents are rendered by the *same* components as
+top-level tools, so fixing tool results and Write/Edit bodies covers its innards
+for free. It does still carry unprojected payload — a collapsed subagent prompt
+is a `Task` input, and non-Edit/Write inputs are not projected at all — so
+"needs none of its own", as this sentence originally read, was too strong
+(independent review, 2026-08-04). What
 remains on a subagent row is per-step text, which is small.
 
 ### The inline artifacts each mechanism must preserve
@@ -80,8 +94,12 @@ remains on a subagent row is per-step text, which is small.
   (`SubagentCall.tsx:50, 132`) with no expand affordance. Exempt by parent tool
   name (`SUBAGENT_TOOLS`).
 
-The other three consumers the issue flags all read short values that fit well
-inside a slice: `AskUserQuestion` (`resolvedAnswer={result?.content}`,
+The other three consumers the issue flags read values that *usually* fit inside
+a slice — but `AskUserQuestion` is not bounded by its producer, and a free-form
+answer over 16 KB is sliced with no modal and no fetch path to recover the tail
+(SHI-291). "All read short values" was an assumption about typical input, not a
+property of the code (independent review, 2026-08-04): `AskUserQuestion`
+(`resolvedAnswer={result?.content}`,
 `message-tools.tsx:137`), `ExitPlanMode` (`resolved={!!result}`, `:162`), and
 Present (`parsePresentToolResult`, `:171`).
 
@@ -100,7 +118,9 @@ SHI-267 was sequenced after SHI-266 "because it depends on `rowId` being on the
 wire". Neither mechanism needs one:
 
 * Tool results and Write/Edit inputs are addressed by `toolUseId`, already on
-  the wire and unique within a session — including results nested inside
+  the wire and — by assumption, not by anything this repo enforces — unique
+  within a session (the endpoints return the first match; no collision has been
+  observed in any current adapter, but nothing prevents one) — including results nested inside
   `subagent_events`, which carry their own (`collectToolResults`,
   `SubagentCall.tsx:248`).
 * Images are addressed by a content hash, which is a better key than a row id
@@ -161,8 +181,12 @@ the feature exists to remove. Rare enough to accept, and the "Show all N lines"
 button already there is the recovery path.
 
 `SLICE_LINES` lives in shared code with a guard test asserting it is ≥ every
-`*_MAX_LINES` in `ToolResult.tsx`, so a future render path that shows more
-lines fails the build rather than silently rendering a short preview. That guard
+`*_MAX_LINES` constant it **manually enumerates** from `ToolResult.tsx`. A
+change to one of those four constants fails the build; a *new* render path that
+reads result content elsewhere does not, because nothing enumerates it
+automatically. The earlier wording here ("a future render path that shows more
+lines fails the build") claimed a guarantee the test does not provide
+(independent review, 2026-08-04). That guard
 is still meaningful, but its subject moved: those previews now render inside the
 output modal rather than in the transcript.
 

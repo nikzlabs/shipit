@@ -92,12 +92,19 @@
 - [x] **`Skill` and `Agent`** — resolved. `SUBAGENT_REPORT_TOOL_NAMES` (`Task`, `Agent`) is the exemption and `SUBAGENT_TOOL_NAMES` stays the layout set; `Skill` renders no result content, so it now ships none.
 
 ## Known gaps (recorded, not addressed in this PR)
-- [ ] Req 5 says "tool inputs"; only Edit/Write are projected, other tool inputs ship whole
-- [ ] Byte backstop on a single long line removes text that used to render inline, and labels it "Show all 1 lines" (reqs 1/8)
-- [ ] A >16 KB free-form AskUserQuestion answer would be sliced (req 4)
+
+> Requirement attributions below were corrected by the independent review — see
+> *Independent requirements review* at the end. Several gaps were filed against
+> one requirement while breaking others, and one entry was stale.
+
+- [ ] Req 5 says "tool inputs"; only Edit/Write are projected, other tool inputs ship whole. **Also req 1**: a 1 MB Bash command ships whole while the transcript shows its first 80 characters, and a `Task` prompt ships whole while sitting behind a collapsed disclosure.
+- [x] ~~Byte backstop on a single long line removes text that used to render inline, and labels it "Show all 1 lines" (reqs 1/8)~~ — **stale, withdrawn.** Written when the previews were in the transcript. `ToolResult` now renders only inside the click-opened `ToolOutputModal`, where req 8 expressly permits loading, so this is no longer a transcript-level finding.
+- [ ] A >16 KB free-form AskUserQuestion answer would be sliced (req 4) — **and reqs 2 and 8, which this entry understated.** The Ask branch returns before the output modal, so there is no click, no modal and no fetch for the tail: it is unreachable, not deferred. It is also the one genuine *transcript-level* req-8 break. Filed as **SHI-291**.
+- [ ] A modal-only result at or under `RESULT_STRIP_FLOOR_BYTES` (200) ships whole though nothing renders it without a click (req 1) — **undisclosed until the review**. Recorded here as the deviation it is; the floor itself stays deliberate.
+- [ ] Inline image thumbnails point at the full-resolution URL, so the bytes transfer on viewport entry rather than on click (reqs 1 and 9) — **undisclosed until the review**. Filed as **SHI-292**.
 - [ ] `message_steered` echoes full base64 images unprojected — safe to fix (row is persisted first), just not done here
-- [ ] `sub_agent_consult_card.outputMarkdown` is modal-only content shipped whole
-- [ ] Reconnect snapshot resends already-committed tool inputs; tightening needs a committed-prefix marker on the runner
+- [ ] `sub_agent_consult_card.outputMarkdown` is modal-only content shipped whole (reqs 1, 5, 6 — it bypasses the live path too)
+- [ ] Reconnect snapshot resends already-committed tool inputs; tightening needs a committed-prefix marker on the runner. **Also**: live nested subagent results and snapshot nested results are unprojected, which earlier sections describe as intentional but the gaps list never named (req 6).
 
 ## Follow-up work (separate from this PR)
 
@@ -161,4 +168,61 @@ Blocked, with the reason:
 - [x] `npm run lint:dev`
 - [x] Feature test files green
 - [x] Post-merge live verification (see above): real-CLI shapes, same-tick commit, modal render
-- [ ] Independent requirements review by a fresh context (CLAUDE.md step 5) — round 2 found real bugs; needs a clean pass
+- [x] Independent requirements review by a fresh context (CLAUDE.md step 5) — see below
+- [x] Client half of the lazy Edit/Write path pinned (`DiffBlock.test.tsx`) — the review found it unpinned
+
+## Independent requirements review (2026-08-04)
+
+Run on **Codex** rather than a subagent, so the reviewer shared none of the
+implementer's assumptions. It read `requirements.md` and `plan.md`, found the
+implementation itself, and reported per-requirement verdicts with `file:line`
+evidence. Every claim below was re-verified against the code before being
+recorded — the brief warned that earlier rounds on this feature produced both
+real bugs and confident false positives.
+
+**Verdicts: 3, 7, 9 met. 1, 2, 4, 5, 6, 8 partially met.** No requirement
+unmet. The partials are all payload-completeness shortfalls, not broken
+behavior — with one exception (req 2/8, the Ask answer) which loses text.
+
+What the review found that we had not:
+
+- **The >16 KB `AskUserQuestion` answer is worse than filed.** It was recorded
+  as a req-4 gap; it also breaks req 2 (nothing displays or fetches the tail —
+  it is unreachable, not deferred) and req 8 (the Ask card *is* the transcript).
+  Verified: the Ask branch in `message-tools.tsx` returns before the output
+  modal. → **SHI-291**.
+- **Image thumbnails transfer full-resolution bytes pre-click.** The 96×96
+  render points at the same content-addressed URL as the full-size preview, so
+  `loading="lazy"` fetches the whole image on viewport entry. Reduced *CSS
+  dimensions*, not reduced bytes — req 9's second clause never fires. Verified
+  in `message-media.tsx`, which documents the choice but never recorded it as a
+  req-1 shortfall. → **SHI-292**.
+- **The 200-byte floor is an undisclosed req-1 deviation.** Real, and the
+  review is right that the checklist marked it *complete* rather than
+  *deviating*. Now recorded as a gap; the floor itself stays.
+- **The lazy Edit/Write client path was unpinned.** The integration test proved
+  the endpoint, nothing proved the UI calls it. A refactor dropping the fetch
+  would have left every diff modal blank with a green suite. **Fixed** — five
+  tests in `DiffBlock.test.tsx` covering no-fetch-until-open, the endpoint URL,
+  the loading state, a 404 surfacing an error rather than an empty diff, and no
+  fetch at all for a whole diff.
+- **One recorded gap was stale** ("Show all 1 lines"), because the previews
+  moved into the modal after it was written. Withdrawn above.
+
+Two structural criticisms accepted without code changes, because they are about
+how the feature was specified rather than what it does:
+
+- The **200-byte floor** and the **live-path relaxation** are mechanisms the
+  implementation chose that no requirement asked for — the floor optimizes a
+  transferred-size target the human explicitly declined to set, and the live
+  relaxation narrows req 6. Under this repo's spec discipline both should have
+  been raised as open questions rather than settled in `plan.md`. Recorded here
+  rather than re-litigated.
+- The **drift guard** for inline result readers is a manual enumeration, so a
+  new component reading another tool's result content would not fail the build.
+  The review is right that `plan.md` overstated it; the wording is corrected.
+
+Not acted on: the reviewer flagged that `plan.md` asserts session-unique
+tool-use ids while nothing enforces it locally, and the endpoints return the
+first match. It found no concrete collision in current adapters and labelled it
+an unproven assumption, so it stays an assumption — now labelled as one.
