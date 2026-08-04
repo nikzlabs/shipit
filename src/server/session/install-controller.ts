@@ -35,6 +35,7 @@ import { computeInstallDepsHash } from "../shared/deps-hash.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { createDepSnapshotTar, safeDepDirRelpath } from "./dep-snapshot.js";
 import { INSTALL_MARKER_FILE } from "../shared/fs-constants.js";
+import { whenNodeRuntimeReady } from "./node-runtime.js";
 
 export interface InstallControllerDeps {
   workspaceDir: string;
@@ -104,6 +105,14 @@ export class InstallController {
       if (!Array.isArray(commands) || commands.length === 0) {
         return reply.code(400).send({ error: "commands array is required" });
       }
+
+      // docs/248 — wait for the repo's Node pin to be resolved BEFORE anything
+      // else in this route. Two reasons, both load-bearing: the install itself
+      // must compile native addons against the Node the project targets, and
+      // `runtimeKey()` below reads the resolved version out of the environment
+      // — computing the stamp first would key the install to the image's Node
+      // and let a tree built under the old pin survive a pin change.
+      await whenNodeRuntimeReady();
 
       // Check the stamped marker — skip only when it EXACTLY matches this
       // session's install context (source commit + runtime fingerprint +

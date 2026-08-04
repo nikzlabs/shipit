@@ -32,7 +32,16 @@ import type { PermissionDecision } from "../shared/types.js";
 import { PermissionBroker } from "./permission-broker.js";
 import { TerminalProcess } from "./terminal.js";
 import { FileWatcher } from "./file-watcher.js";
-import { CONTAINER_WORKSPACE_DIR, CONTAINER_SESSION_STATE_DIR } from "../shared/fs-constants.js";
+import {
+  CONTAINER_WORKSPACE_DIR,
+  CONTAINER_SESSION_STATE_DIR,
+  DEP_CACHE_CONTAINER_PATH,
+} from "../shared/fs-constants.js";
+import {
+  getNodeRuntimeStatus,
+  resolveNodeCacheDir,
+  startNodeRuntimeProvisioning,
+} from "./node-runtime.js";
 import { getErrorMessage } from "../shared/utils.js";
 import { ClaudeProcess } from "./agents/claude/process.js";
 import { ClaudeAdapter } from "./agents/claude/adapter.js";
@@ -204,6 +213,11 @@ export class SessionWorker extends EventEmitter {
     registerWorkerAuthGuard(app, { token: this._workerToken });
 
     app.get("/health", async () => ({ status: "ok" }));
+
+    // docs/248 — how the repo's Node pin was resolved. Read-only and never
+    // awaits provisioning, so the diagnostics panel can render "pending" while
+    // a first-on-this-host download is still running.
+    app.get("/node-runtime", async () => getNodeRuntimeStatus());
 
     // Controller-owned endpoint groups.
     this.agentController.registerRoutes(app);
@@ -743,10 +757,25 @@ export const createWorkerAgent: WorkerAgentFactory = (agentId: AgentId) =>
 
 // Only auto-start when run directly (not when imported for testing)
 if (process.argv[1] && import.meta.url.endsWith(process.argv[1])) {
+  const workspaceDir = process.env.WORKSPACE_DIR || CONTAINER_WORKSPACE_DIR;
   const worker = new SessionWorker({
     agentFactory: createWorkerAgent,
     port: Number(process.env.WORKER_PORT) || 9100,
-    workspaceDir: process.env.WORKSPACE_DIR || CONTAINER_WORKSPACE_DIR,
+    workspaceDir,
+  });
+
+  // docs/248 — honor the repo's `.nvmrc` / `engines.node`. Started here rather
+  // than in the constructor so in-process tests never touch the network, and
+  // deliberately NOT awaited: the orchestrator gives the worker 30s to report
+  // healthy, and a slow nodejs.org must not turn a version pin into a failed
+  // container. The paths that must not run on the wrong Node await
+  // `whenNodeRuntimeReady()` themselves.
+  startNodeRuntimeProvisioning({
+    workspaceDir,
+    cacheDir: resolveNodeCacheDir(
+      DEP_CACHE_CONTAINER_PATH,
+      process.env.SHIPIT_SESSION_STATE_DIR ?? CONTAINER_SESSION_STATE_DIR,
+    ),
   });
 
   const address = await worker.start();

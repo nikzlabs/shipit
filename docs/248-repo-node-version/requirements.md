@@ -21,13 +21,17 @@ image's baked Node major (`docker/Dockerfile.session-worker.prod` is
 
 1. When a repository pins a Node version, the agent container runs that Node
    version. `node -v` in the session terminal reports a version matching the
-   repo's pin, not the container's baked default.
+   repo's pin, not the container's baked default. This applies to every repo
+   with a pin, with no configuration — a repo does not opt in.
 
 2. `.nvmrc` at the workspace root counts as a pin. A bare major (`22`) is the
    reported form and must work.
 
 3. `package.json` `engines.node` counts as a pin when present. (The reporting
    repo has no `engines` field; the issue names it as an additional source.)
+   `.nvmrc` and `engines.node` are the only pin sources; when both exist,
+   `.nvmrc` wins. Other ecosystem pin files (`.node-version`, `volta.node`,
+   `mise.toml`, `.tool-versions`) are not read.
 
 4. The pinned version is what the session *builds and runs with*, not only what
    an interactive `node -v` prints. Dependency installs, native-addon compiles,
@@ -59,35 +63,42 @@ image's baked Node major (`docker/Dockerfile.session-worker.prod` is
 
 ## Open questions
 
-- **How far does this go — provision, or only report?** Requirement 1 says run
-  the pinned version; requirement 6 accepts surfacing the mismatch as the floor
-  if provisioning is impractical. Which is being asked for now: full
-  provisioning, diagnostics-only, or provisioning with a diagnostics fallback
-  when a version can't be provisioned?
-- **Which pin files, and which wins when they disagree?** `.nvmrc` and
-  `engines.node` are named in the issue. Ecosystem-adjacent sources exist and
-  are not named: `.node-version` (nodenv/fnm), `volta.node` in `package.json`,
-  `mise.toml`/`.tool-versions`. And `.nvmrc` = `22` vs `engines.node` = `>=20`
-  need a stated precedence.
-- **How is the version provisioned?** Two mechanisms with different cost
-  profiles: baking a small set of majors into the session-worker image (instant,
-  fixed image growth, only covers the baked set), or downloading the pinned
-  version on demand from `nodejs.org` into the shared dependency cache (covers
-  any version, costs a one-time download per version per host).
-- **Does session start wait for it?** Requirement 4 means the pinned Node has to
-  be in place *before* `agent.install` runs, or the install compiles against the
-  wrong ABI. That implies blocking the install (and so the first turn) on
-  provisioning. Is that acceptable, or should the first turn start immediately
-  and the pin apply from the next one?
-- **Does a repo need to opt in?** Honoring a pin changes the runtime under
-  existing sessions of existing repos, which could break a repo whose `.nvmrc`
-  is stale or wrong. Automatic for every repo, or gated behind a `shipit.yaml`
-  key?
-- **Scope boundary.** ShipIt's own worker process, agent CLIs, and shims run on
-  the image's Node and are not repo code. Assumption to confirm: the pin applies
-  to the agent's shell, the terminal, and `agent.install` — not to the
-  session-worker process itself.
+_None._
 
 ## Resolved questions
 
-_None yet._
+### 2026-08-04 — provision, with diagnostics as the fallback
+
+Asked whether to provision the pinned Node, only report the mismatch, or
+provision with a reporting fallback. **Answer: provision, report on failure.**
+ShipIt installs and uses the pinned version; when a version can't be provisioned
+(unavailable, no network, network-off sandbox) the session falls back to the
+image's Node and the mismatch is surfaced in session diagnostics rather than
+failing the session. Requirements 1 and 6 stand as written, and 6 is explicitly
+the fallback path rather than the design.
+
+### 2026-08-04 — `.nvmrc` and `engines.node` only, `.nvmrc` wins
+
+Asked which files count as a pin and what the precedence is. **Answer: exactly
+the two sources the issue names — `.nvmrc` first, then `engines.node`.**
+`.nvmrc` wins when both are present, because it pins a version while
+`engines.node` is usually a range; a range resolves to the newest available
+version satisfying it. `.node-version`, `volta.node`, `mise.toml`, and
+`.tool-versions` are deliberately not read. Folded into requirement 3.
+
+### 2026-08-04 — download on demand and cache it
+
+Asked whether to bake a set of Node majors into the session-worker image or
+download the pinned version on demand. **Answer: download on demand, cached.**
+The version is fetched from `nodejs.org` (already on the egress allowlist) the
+first time it's needed and reused from the shared dependency cache afterwards,
+so any pinned version is covered with no image growth. This is a mechanism
+choice and adds no requirement.
+
+### 2026-08-04 — automatic for every repo
+
+Asked whether honoring the pin should be automatic or gated behind a
+`shipit.yaml` key. **Answer: automatic for every repo, no opt-in.** ShipIt reads
+the pin file and honors it; the resolved version is visible in session
+diagnostics so a stale or wrong `.nvmrc` is diagnosable. Folded into
+requirement 1.

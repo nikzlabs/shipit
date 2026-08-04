@@ -8,6 +8,7 @@
 import type { FastifyInstance } from "fastify";
 import type { TerminalProcess } from "./terminal.js";
 import type { WorkerSSEEvent } from "./sse-broadcaster.js";
+import { whenNodeRuntimeReady } from "./node-runtime.js";
 
 export interface TerminalControllerDeps {
   createTerminal: () => TerminalProcess;
@@ -42,6 +43,12 @@ export class TerminalController {
       const body = (request.body ?? {});
       const cols = typeof body.cols === "number" ? Math.max(1, Math.min(500, body.cols)) : 80;
       const rows = typeof body.rows === "number" ? Math.max(1, Math.min(200, body.rows)) : 24;
+
+      // docs/248 — the shell inherits the worker's PATH, so it must not spawn
+      // before a repo-pinned Node has been put on it. Otherwise `node -v` in
+      // the terminal reports the image's major, which is the exact symptom
+      // nikzlabs/shipit#1728 reported.
+      await whenNodeRuntimeReady();
 
       this.terminal = this.deps.createTerminal();
       this.wireTerminalEvents(this.terminal);

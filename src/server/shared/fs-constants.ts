@@ -21,6 +21,16 @@ export const CONTAINER_WORKSPACE_DIR = "/workspace";
  */
 export const CONTAINER_SESSION_STATE_DIR = "/session-state";
 
+/**
+ * Mount point for the shared per-repo dependency cache inside session
+ * containers (docs/075). Same "both layers need it" rationale as the state dir
+ * above: the orchestrator builds the mount, and session code (docs/248's Node
+ * toolchain cache) needs the container-side path without importing from
+ * `orchestrator/`. Re-exported from `container-lifecycle.ts` for its existing
+ * importers.
+ */
+export const DEP_CACHE_CONTAINER_PATH = "/dep-cache";
+
 /** Generated compose merge file (`docker compose -f … -f <this>`). */
 export const COMPOSE_OVERRIDE_FILE = "compose.override.yml";
 /** Install-skip marker, written in-container after `agent.install` succeeds. */

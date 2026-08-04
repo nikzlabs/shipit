@@ -229,14 +229,20 @@ COPY src/server/shipit-docs/ /shipit-docs/
 # current working directory's node_modules, which fails with `Cannot find package
 # 'tsx'` when the agent runs `gh` from /workspace in a user repo that doesn't
 # happen to depend on tsx (i.e. almost every user repo).
-RUN printf '#!/bin/sh\nexec /app/node_modules/.bin/tsx /app/src/server/session/agent-shim/gh.ts "$@"\n' > /usr/local/bin/gh \
+#
+# docs/248 — and invoke it with the ABSOLUTE image `node`, not the shebang's
+# `env node`. A repo that pins a different Node major now gets that Node first
+# on PATH for everything the worker spawns, this shim included; but the shim
+# runs ShipIt's own code against /app/node_modules, which is built for the
+# image's ABI. Pinning the interpreter keeps `gh` working under any repo pin.
+RUN printf '#!/bin/sh\nexec /usr/local/bin/node /app/node_modules/.bin/tsx /app/src/server/session/agent-shim/gh.ts "$@"\n' > /usr/local/bin/gh \
     && chmod 0755 /usr/local/bin/gh
 
 # Install the curated `shipit` shim (see src/server/session/agent-shim/shipit.ts).
 # Mirrors the `gh` shim install above — same tsx-by-absolute-path rationale.
 # The shim brokers `shipit session create/list/view` through the worker's
 # /agent-ops/session/* routes (docs/117).
-RUN printf '#!/bin/sh\nexec /app/node_modules/.bin/tsx /app/src/server/session/agent-shim/shipit.ts "$@"\n' > /usr/local/bin/shipit \
+RUN printf '#!/bin/sh\nexec /usr/local/bin/node /app/node_modules/.bin/tsx /app/src/server/session/agent-shim/shipit.ts "$@"\n' > /usr/local/bin/shipit \
     && chmod 0755 /usr/local/bin/shipit
 
 # Install the brokering `shipit-git-credential` helper (docs/088 finding #5).
@@ -244,7 +250,7 @@ RUN printf '#!/bin/sh\nexec /app/node_modules/.bin/tsx /app/src/server/session/a
 # GitHub token from the worker over localhost at git-time so the PAT is never
 # written into /credentials/.gitconfig. Same tsx-by-absolute-path rationale as
 # the shims above.
-RUN printf '#!/bin/sh\nexec /app/node_modules/.bin/tsx /app/src/server/session/agent-shim/git-credential.ts "$@"\n' > /usr/local/bin/shipit-git-credential \
+RUN printf '#!/bin/sh\nexec /usr/local/bin/node /app/node_modules/.bin/tsx /app/src/server/session/agent-shim/git-credential.ts "$@"\n' > /usr/local/bin/shipit-git-credential \
     && chmod 0755 /usr/local/bin/shipit-git-credential
 
 # Bake the agent hooks: the PreToolUse branch-block hook (docs/130) and the

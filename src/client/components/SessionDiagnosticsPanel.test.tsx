@@ -92,6 +92,16 @@ const samplePayload = {
     routeId: "acct_1234",
     label: "Work",
   },
+  nodeRuntime: {
+    state: "provisioned",
+    pinSource: ".nvmrc",
+    pinRaw: "22",
+    resolvedVersion: "22.20.1",
+    activeVersion: "22.20.1",
+    imageVersion: "24.15.0",
+    reason: null,
+    mismatch: false,
+  },
 };
 
 function mockOk(payload: unknown) {
@@ -292,6 +302,58 @@ describe("SessionDiagnosticsPanel", () => {
     );
     await waitFor(() => {
       expect(screen.getByText(/not pinned yet/)).toBeTruthy();
+    });
+  });
+
+  // docs/248 — requirement 6. The reported bug was an INVISIBLE mismatch, so
+  // the un-honored states must render their reason, not a terse "ok".
+  describe("Node runtime section", () => {
+    it("shows the honored pin and the container's own version", async () => {
+      mockOk(samplePayload);
+      render(
+        <SessionDiagnosticsPanel sessionId="sess-1" open={true} onOpenChange={() => {}} />,
+      );
+      await waitFor(() => {
+        expect(screen.getByText("Node runtime")).toBeTruthy();
+      });
+      expect(screen.getByText(/provisioned/)).toBeTruthy();
+      // Both the active version and what the pin resolved to render as v22.20.1.
+      expect(screen.getAllByText("v22.20.1").length).toBe(2);
+      expect(screen.getByText("v24.15.0")).toBeTruthy();
+      expect(screen.getByText("22 (.nvmrc)")).toBeTruthy();
+    });
+
+    it("surfaces the reason when the pin can't be honored", async () => {
+      mockOk({
+        ...samplePayload,
+        nodeRuntime: {
+          state: "failed",
+          pinSource: ".nvmrc",
+          pinRaw: "22",
+          resolvedVersion: null,
+          activeVersion: "24.15.0",
+          imageVersion: "24.15.0",
+          reason: "could not provision Node for `22`: getaddrinfo EAI_AGAIN nodejs.org",
+          mismatch: true,
+        },
+      });
+      render(
+        <SessionDiagnosticsPanel sessionId="sess-1" open={true} onOpenChange={() => {}} />,
+      );
+      await waitFor(() => {
+        expect(screen.getByText(/EAI_AGAIN nodejs.org/)).toBeTruthy();
+      });
+      expect(screen.getByText(/could not provision the pinned Node/)).toBeTruthy();
+    });
+
+    it("says so when there is no worker to ask", async () => {
+      mockOk({ ...samplePayload, nodeRuntime: null });
+      render(
+        <SessionDiagnosticsPanel sessionId="sess-1" open={true} onOpenChange={() => {}} />,
+      );
+      await waitFor(() => {
+        expect(screen.getByText(/No running worker to report the Node runtime/)).toBeTruthy();
+      });
     });
   });
 
