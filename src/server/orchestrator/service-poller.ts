@@ -27,6 +27,20 @@ export interface PollerService {
   status: "stopped" | "starting" | "running" | "error";
 }
 
+/**
+ * How long a known service may be absent from `docker compose ps -a` before
+ * the poller reconciles it to `stopped` (SHI-314). ~6 polls at the default 5s
+ * interval.
+ *
+ * The window exists because "no row" is genuinely ambiguous for a short
+ * moment: `compose up` recreating a container removes the old one before
+ * creating the new one, so a poll landing in that gap sees nothing. It is NOT
+ * the mechanism that protects a slow first start — a `compose up` that is
+ * still building has no row for minutes, far longer than any sane grace, and
+ * is excluded by the `isStartInFlight` check instead.
+ */
+export const MISSING_CONTAINER_GRACE_MS = 30_000;
+
 export interface ServicePollerOptions {
   sessionId: string;
   workspaceDir: string;
@@ -45,6 +59,20 @@ export interface ServicePollerOptions {
   isGated?: (name: string) => boolean;
   /** Look up the current state of a service in the manager's map. */
   getService: (name: string) => PollerService | undefined;
+  /**
+   * Every service the manager currently knows about. Drives the
+   * missing-container reconciliation pass (SHI-314) — the poll's forward pass
+   * can only react to services `ps` mentions, so the reverse question ("which
+   * services did `ps` NOT mention?") needs the full registry.
+   */
+  listServices: () => PollerService[];
+  /**
+   * Whether a `docker compose up` is in flight for this service right now.
+   * Such a service legitimately has no container yet — possibly for minutes
+   * while an image builds — so it is exempt from missing-container
+   * reconciliation. Optional — defaults to "never in flight".
+   */
+  isStartInFlight?: (name: string) => boolean;
   /** Persist a resolved container IP back to the manager's service entry. */
   setContainerIp: (serviceName: string, ip: string) => void;
   /** Update a service's status (delegates to the manager). */
@@ -100,6 +128,8 @@ export class ServicePoller {
   private readonly composeArgs: (...extra: string[]) => string[];
   private readonly isGated: (name: string) => boolean;
   private readonly getService: (name: string) => PollerService | undefined;
+  private readonly listServices: () => PollerService[];
+  private readonly isStartInFlight: (name: string) => boolean;
   private readonly setContainerIp: (serviceName: string, ip: string) => void;
   private readonly updateServiceStatus: ServicePollerOptions["updateServiceStatus"];
   private readonly onRunning: (name: string) => void;
@@ -109,6 +139,13 @@ export class ServicePoller {
   private readonly afterPoll?: () => void | Promise<void>;
 
   private pollTimer: ReturnType<typeof setInterval> | null = null;
+  /**
+   * `serviceName -> Date.now()` of the first poll that found the service
+   * absent from `ps` output while it was eligible for reconciliation. Cleared
+   * the moment the service reappears (or becomes ineligible), so the grace
+   * window measures a *continuous* absence rather than a cumulative one.
+   */
+  private readonly missingSince = new Map<string, number>();
 
   constructor(opts: ServicePollerOptions) {
     this.sessionId = opts.sessionId;
@@ -118,6 +155,8 @@ export class ServicePoller {
     this.composeArgs = opts.composeArgs;
     this.isGated = opts.isGated ?? (() => false);
     this.getService = opts.getService;
+    this.listServices = opts.listServices;
+    this.isStartInFlight = opts.isStartInFlight ?? (() => false);
     this.setContainerIp = opts.setContainerIp;
     this.updateServiceStatus = opts.updateServiceStatus;
     this.onRunning = opts.onRunning;
@@ -136,6 +175,11 @@ export class ServicePoller {
     const args = this.composeArgs("ps", "--format", "json", "-a");
     let stdout: string;
     try {
+      // A failing `ps` says nothing about container state, so we deliberately
+      // bail out entirely rather than letting the reconciliation pass below
+      // interpret "no rows" as "every container vanished" — a broken docker
+      // CLI would otherwise mark the whole stack `stopped`. Statuses stay
+      // frozen until `ps` answers again.
       stdout = await this.composeQuery(args, this.workspaceDir);
     } catch (err) {
       console.warn(`[compose:${this.sessionId}] pollStatus failed:`, (err as Error).message);
@@ -145,6 +189,8 @@ export class ServicePoller {
     // Parse container info and collect names for IP resolution
     const containerNames = new Map<string, string>();
     const statusUpdates: { name: string; state: string; exitCode: number }[] = [];
+    /** Services `ps` returned a row for — the input to the reconcile pass. */
+    const seen = new Set<string>();
 
     for (const line of stdout.split("\n")) {
       const trimmed = line.trim();
@@ -157,6 +203,9 @@ export class ServicePoller {
       }
       const svc = entry.Service ? this.getService(entry.Service) : undefined;
       if (!svc) continue;
+      // Recorded before the gate check: a gated service with a container is
+      // still "present", and reconciliation must not reason about it at all.
+      seen.add(svc.name);
 
       // Skip gated services — the install gate owns their status. A `ps`
       // reading here (e.g. a container exiting during re-install teardown)
@@ -213,6 +262,10 @@ export class ServicePoller {
       }
     }
 
+    // Reverse pass: services the registry knows about that `ps` never
+    // mentioned (SHI-314).
+    this.reconcileMissingServices(seen);
+
     // Self-heal the agent's compose-network attachment on the poll heartbeat
     // (docs/128). Membership-gated inside the hook, so the steady state is a
     // single cheap `network inspect`. Best-effort — never let a heal failure
@@ -223,6 +276,86 @@ export class ServicePoller {
       } catch (err) {
         console.warn(`[compose:${this.sessionId}] afterPoll hook failed:`, (err as Error).message);
       }
+    }
+  }
+
+  /**
+   * Reconcile services the registry knows about but `docker compose ps -a`
+   * did not return a row for (SHI-314).
+   *
+   * The forward pass above can only ever react to rows `ps` produced, so a
+   * service whose container was *removed* — as opposed to merely exited, which
+   * `-a` still reports — produced no update at all and kept whatever status it
+   * last had. In practice that is the `"starting"` set by `startService`
+   * immediately before `compose up`, and it stuck forever: nothing else in the
+   * manager times a `starting` service out. That is not cosmetic — `getServices`
+   * only publishes a preview URL for a `running` service, so a pinned service
+   * silently costs the preview and the agent's `containerIp`. The usual trigger
+   * is a compose reconcile (editing `docker-compose.yml` while the stack is up),
+   * which tears the old container down.
+   *
+   * "No row" resolves to `"stopped"`, not `"error"`: no container exists, and
+   * we have no evidence of a failure — `error` would also feed the service into
+   * `flushPostInstallRetries`, which is for crashes, not disappearances.
+   *
+   * Three exclusions keep a healthy service from being flapped to `stopped`:
+   *
+   *  - **Gated services** (docs/137) are skipped exactly as the forward pass
+   *    skips them — the install gate owns their held `starting`/`error`, and a
+   *    mid-re-install teardown legitimately removes their containers.
+   *  - **A `compose up` in flight** means the service is entitled to have no
+   *    container yet, for however long the image takes to build. This is the
+   *    real answer to "is it legitimately mid-start?"; a wall-clock grace alone
+   *    could never distinguish a five-minute build from a vanished container.
+   *  - **Already `stopped`/`error`** services have nothing to reconcile, and
+   *    re-emitting their status every poll would be pure noise.
+   *
+   * The remaining grace window covers only the genuinely brief ambiguity: a
+   * container being *recreated* is removed before its replacement is created,
+   * so a poll landing in that gap sees no row for a service that is fine.
+   */
+  private reconcileMissingServices(seen: Set<string>): void {
+    const now = Date.now();
+    const known = new Set<string>();
+
+    for (const svc of this.listServices()) {
+      known.add(svc.name);
+      const eligible =
+        !seen.has(svc.name) &&
+        !this.isGated(svc.name) &&
+        !this.isStartInFlight(svc.name) &&
+        svc.status !== "stopped" &&
+        svc.status !== "error";
+      if (!eligible) {
+        // Any reason to skip also resets the clock — the grace window must
+        // measure one continuous absence, not a sum of unrelated ones.
+        this.missingSince.delete(svc.name);
+        continue;
+      }
+
+      const since = this.missingSince.get(svc.name);
+      if (since === undefined) {
+        this.missingSince.set(svc.name, now);
+        continue;
+      }
+      if (now - since < MISSING_CONTAINER_GRACE_MS) continue;
+
+      this.missingSince.delete(svc.name);
+      console.warn(
+        `[compose:${this.sessionId}] service "${svc.name}" has had no container for ` +
+        `${Math.round((now - since) / 1000)}s while ${svc.status} — marking stopped`,
+      );
+      // The service is not running, whatever it was doing before. Cancel the
+      // stable-uptime timers the same way an observed exit would, so a vanished
+      // container can't quietly clear the OOM budget it was accruing.
+      this.onLeftRunning(svc.name);
+      this.updateServiceStatus(svc.name, "stopped");
+    }
+
+    // Drop bookkeeping for services that left the registry (e.g. renamed or
+    // deleted by a compose reconcile) so the map can't grow unboundedly.
+    for (const name of this.missingSince.keys()) {
+      if (!known.has(name)) this.missingSince.delete(name);
     }
   }
 
@@ -246,6 +379,10 @@ export class ServicePoller {
       clearInterval(this.pollTimer);
       this.pollTimer = null;
     }
+    // `reconcile()` stops the poller, clears the services map and starts over;
+    // an absence observed against the *old* registry must not count toward the
+    // new one's grace window.
+    this.missingSince.clear();
   }
 
   /**
