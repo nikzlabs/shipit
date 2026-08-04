@@ -339,10 +339,15 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
   // that their doc/diff comments shipped to the agent. The prompt body
   // lives on `msg.text` (kept as the source of truth so chat-history
   // reload, search, and existing text-handling still work).
+  //
+  // The row mirrors a plain user bubble's: `justify-end` with a `min-w-0`
+  // child that HUGS its content rather than the old `max-w-2xl w-full`. A
+  // fixed-width block reads as a full-bleed agent card no matter which side
+  // it's on; hugging is what actually makes it land on the user's side.
   if (msg.role === "user" && msg.userReview) {
     return (
       <div className="flex justify-end">
-        <div className="max-w-2xl w-full">
+        <div className="min-w-0">
           <UserReviewCard
             filePaths={msg.userReview.filePaths}
             commentCount={msg.userReview.commentCount}

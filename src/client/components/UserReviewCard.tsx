@@ -5,11 +5,25 @@
  * were sent. Previously this flow created no chat entry at all — the agent
  * silently started working and the input box still looked idle.
  *
- * Visual treatment mirrors SubagentCall: a left-border accent, an icon +
- * header line, a collapsed-by-default disclosure showing the full prompt the
- * agent received. Status is intentionally NOT rendered here (the chat-level
- * spinner / activity label already drives that) — this card is just the
- * "you sent this" receipt.
+ * Visual treatment is deliberately NOT SubagentCall's. It used to be — a 2px
+ * left-border accent over full-width, left-aligned content — which is the
+ * agent-side grammar shared by subagent calls and every other agent card. The
+ * card was right-aligned in the DOM but nothing about it *looked* right
+ * aligned, so it read as agent output and blended into the surrounding turns.
+ *
+ * So it's now shaped like a user message: a right-aligned bubble that hugs its
+ * content, tinted with `--color-accent-subtle` behind an accent border. Layout
+ * is eyebrow-over-body, which is what a user message actually is — a label plus
+ * content: "Sent N comments" demotes to a 10px uppercase accent eyebrow (loud
+ * colour is fine at that size), and the file path becomes the body in primary
+ * text so it's the most legible thing in the card when scanning back through
+ * the transcript. The tint stops short of the solid `--color-accent` fill of a
+ * real user bubble so the card still reads as a structured submission rather
+ * than something the user typed.
+ *
+ * A collapsed-by-default disclosure shows the full prompt the agent received.
+ * Status is intentionally NOT rendered here (the chat-level spinner / activity
+ * label already drives that) — this card is just the "you sent this" receipt.
  */
 
 import { useState } from "react";
@@ -33,21 +47,23 @@ export function UserReviewCard({ filePaths, commentCount, prompt }: UserReviewCa
   return (
     <div
       data-testid="user-review-card"
-      className="border-l-2 border-(--color-info)/40 pl-3 space-y-1.5"
+      className="max-w-full min-w-0 rounded-lg border border-(--color-accent)/45 bg-(--color-accent-subtle) px-3.5 py-2.5"
     >
-      <div className="flex items-center gap-2 text-sm">
-        <ChatTextIcon size={ICON_SIZE.SM} className="text-(--color-info)" />
-        <span className="font-semibold text-(--color-info)">Sent comments</span>
-        {fileLabel && (
-          <span className="text-(--color-text-secondary)">
-            on <span className="font-mono text-xs">{fileLabel}</span>
-          </span>
-        )}
-        <span className="text-(--color-text-tertiary) text-xs">· {commentLabel}</span>
+      <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-(--color-accent)">
+        <ChatTextIcon size={ICON_SIZE.XS} />
+        <span>Sent {commentLabel}</span>
+      </div>
+
+      <div
+        className={`mt-1 text-[13px] break-all ${
+          fileLabel ? "font-mono text-(--color-text-primary)" : "text-(--color-text-secondary)"
+        }`}
+      >
+        {fileLabel || "on the diff"}
       </div>
 
       {prompt && (
-        <div>
+        <div className="mt-1.5">
           <button
             type="button"
             onClick={() => setPromptExpanded((v) => !v)}
@@ -63,7 +79,12 @@ export function UserReviewCard({ filePaths, commentCount, prompt }: UserReviewCa
           {promptExpanded && (
             <div
               data-testid="user-review-prompt"
-              className="mt-1 text-xs text-(--color-text-secondary) font-mono whitespace-pre-wrap rounded bg-(--color-bg-secondary)/60 p-2 max-h-64 overflow-y-auto leading-5"
+              // Semi-transparent page background rather than a fixed white or
+              // `--color-bg-secondary`: the card sits on an accent tint, so
+              // knocking the panel back toward the chat surface reads as inset
+              // on light and dark themes alike, where either fixed colour only
+              // works on one of them.
+              className="mt-1.5 text-xs text-(--color-text-secondary) font-mono whitespace-pre-wrap rounded bg-(--color-bg-primary)/60 p-2 max-h-64 overflow-y-auto leading-5"
             >
               {prompt}
             </div>
