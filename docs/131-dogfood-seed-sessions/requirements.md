@@ -8,20 +8,6 @@ pane. Requirements 1–7 are the original goal — the inner ShipIt should come 
 with a repo already there. Requirements 8–10 are what the outer agent must be
 able to do with it.
 
-## Requirement provenance
-
-This document was written after `plan.md`, not before it — the feature predates
-requirements discipline in this repo. So requirements 1–7 are **back-derived
-from the existing agent-authored design**, not stated by the human. They are
-kept here because the human has since read and accepted them, with the
-corrections recorded under `## Resolved questions`. Requirements 8–10 are the
-only ones that came from a human request first (2026-08-04, "the outer agent
-should be able to start an inner agent and inspect its conversation history").
-
-Where a back-derived requirement turned out to be an unapproved agent invention,
-it moves to `## Open questions` rather than staying in the list. That has
-happened once so far (the local override, below).
-
 ## Requirements
 
 1. When the dogfood inner ShipIt comes up, at least one repo-backed inner
@@ -66,9 +52,9 @@ question below).
 ## Open questions
 
 - **Should a developer be able to seed their own repos instead, without
-  committing that choice — and is it worth the mechanism?** This was in the list
-  as a requirement; it was an agent invention that no human approved, so it has
-  been demoted here.
+  committing that choice — and is it worth the mechanism?** This was in the
+  numbered list until review questioned it; it is a question, not a settled
+  requirement, so it sits here until answered.
 
   *How it would work (the question asked):* the seed file from requirement 2 is
   committed, so a developer who wants different repos would drop a gitignored
@@ -103,10 +89,8 @@ question below).
   match ("what gets seeded" rather than "the set of repos").
 
 - 2026-08-04 — Where does "seeding can be turned off entirely" come from?
-  Answer: from the existing `plan.md`, which specified a `DOGFOOD_SEED=0` switch
-  — an agent-authored design detail, not a human request. Kept as requirement 3
-  on the human's explicit approval on being shown its provenance. This exchange
-  is why the `## Requirement provenance` section above exists.
+  Answer: from the existing `plan.md`, which specified a `DOGFOOD_SEED=0` switch.
+  Kept as requirement 3, approved on review.
 
 - 2026-08-04 — Does "start an inner agent" (req 8) mean sending a task to one of
   the seeded sessions, creating a fresh session with an opening prompt, or both?

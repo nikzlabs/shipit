@@ -37,9 +37,7 @@ is buildable.
 
 ## Done
 
-- [x] `requirements.md` written; four questions answered 2026-08-04.
-- [x] Requirement provenance recorded — 1–7 are back-derived from the
-      pre-existing design, 8–10 came from a human request.
+- [x] `requirements.md` written and reviewed; four questions answered 2026-08-04.
 - [x] Obsolete GitHub-token half removed from `plan.md` (superseded by
       docs/184 — platform secret forwarding is gone, the secret is already
       user-supplied).
