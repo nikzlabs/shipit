@@ -15,6 +15,7 @@ import {
   resolveAutoStartDeps,
 } from "./app-lifecycle.js";
 import { SessionRunner, SessionRunnerRegistry } from "./session-runner.js";
+import type { SystemTurnDeps } from "./session-runner.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import { CredentialStore } from "./credential-store.js";
 import { ProviderAccountManager } from "./provider-account-manager.js";
@@ -236,6 +237,98 @@ describe("createIdleEnforcer", () => {
     })();
 
     expect(destroy).toHaveBeenCalledWith("a");
+  });
+
+  // SHI-296 — the prod incident: a BACKGROUNDED `shipit agent run` consult (the
+  // shape docs/236 tells agents to prefer) ends the primary turn, so `running`
+  // is false; and with no resident streaming process `backgroundTaskCount` reads
+  // 0 too. The session looked perfectly idle and its container was destroyed 12
+  // minutes into an `xhigh` Codex review, leaving only a `cancelled` card.
+  //
+  // The assertion that matters is `destroy` — the SHI-278 runner-level guard
+  // already made `dispose` decline, and it declined AFTER `container.stop` had
+  // been issued, which is exactly why it didn't save the review.
+  it("never destroys the container of a runner with an in-flight sub-agent spawn", async () => {
+    const containers = [{ sessionId: "consulting" }, { sessionId: "idle" }];
+    const destroy = vi.fn().mockResolvedValue(undefined);
+    const cm = makeContainerManager({ containers, destroy });
+
+    const consulting = registry.getOrCreate("consulting", "/tmp/consulting", "claude" as AgentId);
+    registry.getOrCreate("idle", "/tmp/idle", "claude" as AgentId);
+
+    // A fake adapter that never finishes — the spawn stays in flight until we
+    // let it complete below.
+    const agent = Object.assign(new EventEmitter(), { run: vi.fn(), kill: vi.fn() });
+    consulting.setSystemTurnDeps({
+      agentFactory: () => agent as unknown as AgentProcess,
+    } as unknown as SystemTurnDeps);
+    const spawned = consulting.spawnSubAgent({
+      agentId: "codex" as AgentId,
+      prompt: "review this branch",
+      spawnId: "spawn-1",
+      depth: 0,
+      timeoutMs: 10 * 60_000,
+    });
+
+    // No viewer ever attached (so `lastViewerDetachAt` is 0 and the grace period
+    // never applies — the incident's exact shape), and no turn is running.
+    expect(consulting.running).toBe(false);
+    expect(consulting.viewerCount).toBe(0);
+    expect(consulting.subAgentSpawnsInFlight).toBe(1);
+    // Eligibility half of the fix: the scan must see this as busy. (The runner's
+    // own dispose guard is the second half — either alone would have saved the
+    // consult only if the enforcer stopped firing `destroy` unconditionally.)
+    expect(consulting.agentBusy).toBe(true);
+
+    const enforce = createIdleEnforcer({
+      containerManager: cm,
+      credentialStore: makeCredentialStore(0),
+      runnerRegistry: registry,
+    });
+    enforce();
+
+    expect(destroy).not.toHaveBeenCalledWith("consulting");
+    expect(consulting.disposed).toBe(false);
+    // The genuinely-idle sibling is still reaped — the guard is narrow.
+    expect(destroy).toHaveBeenCalledWith("idle");
+
+    // Once the consult lands, the session is reclaimable like any other.
+    agent.emit("done");
+    await spawned;
+    expect(consulting.subAgentSpawnsInFlight).toBe(0);
+    expect(consulting.agentBusy).toBe(false);
+
+    enforce();
+    expect(destroy).toHaveBeenCalledWith("consulting");
+  });
+
+  // SHI-296, second half — the enforcer used to fire `destroy` and `dispose`
+  // unconditionally in sequence, so a runner that declined disposal still lost
+  // its container (and was left pointed at a dead one). A declined dispose must
+  // now mean the container is left alone.
+  it("leaves the container alone when the runner declines disposal", () => {
+    const containers = [{ sessionId: "stubborn" }];
+    const destroy = vi.fn().mockResolvedValue(undefined);
+    const cm = makeContainerManager({ containers, destroy });
+
+    const runner = registry.getOrCreate("stubborn", "/tmp/stubborn", "claude" as AgentId);
+    // Pass the enforcer's own gates but refuse at the runner level — the shape
+    // any future runner-owned guard takes.
+    const declining = runner as unknown as { dispose: (opts?: { force?: boolean }) => void };
+    const origDispose = declining.dispose.bind(runner);
+    declining.dispose = (opts?: { force?: boolean }) => {
+      if (!opts?.force) return;
+      origDispose(opts);
+    };
+
+    createIdleEnforcer({
+      containerManager: cm,
+      credentialStore: makeCredentialStore(0),
+      runnerRegistry: registry,
+    })();
+
+    expect(destroy).not.toHaveBeenCalled();
+    expect(runner.disposed).toBe(false);
   });
 
   it("skips runners whose viewer just detached (within grace period)", () => {

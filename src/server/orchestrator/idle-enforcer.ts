@@ -72,11 +72,16 @@ export const IDLE_GRACE_PERIOD_MS = 600_000;
  * dispose their runners.
  *
  * Important invariants:
- *  - Never disposes a runner whose agent is currently running (`runner.running`).
+ *  - Never disposes a runner that is busy (`runner.agentBusy` — a running turn,
+ *    pending background work, or an in-flight sub-agent consult).
  *  - Never disposes a runner that lost its last viewer within the grace
  *    period — protects against transient WebSocket disconnects.
  *  - Runner disposal is TOCTOU-safe: state is re-checked at dispose time, and
  *    `runner.dispose()` itself refuses to run while the agent is active.
+ *  - The container is destroyed only AFTER the runner accepted disposal
+ *    (SHI-296). A declined dispose leaves the container running, so the
+ *    runner-level guards and the enforcer can never disagree about whether the
+ *    session is reclaimable.
  *
  * This function MUST NOT be called synchronously from a WebSocket close
  * handler. WebSocket lifecycle is independent from runner/container
@@ -117,7 +122,9 @@ export function createIdleEnforcer(
       // background task finished and the CLI started a fresh turn) reads as
       // idle here and gets its container destroyed mid-turn. `agentBusy` also
       // covers the quieter case: a task still pending between turns, which is
-      // work that will resume and must not be reclaimed.
+      // work that will resume and must not be reclaimed — and (SHI-296) a
+      // backgrounded sub-agent consult, which has neither a running turn nor a
+      // resident streaming process yet is very much live work.
       if (runner.agentBusy) continue;
       if (runner.viewerCount > 0) continue;
       // Skip runners whose last viewer detach was within the grace period —
@@ -145,6 +152,22 @@ export function createIdleEnforcer(
         const runner = runnerRegistry.get(sid);
         if (sessionManager?.get(sid)?.keepPreviewRunning) continue;
         if (runner && (runner.agentBusy || runner.viewerCount > 0)) {
+          continue;
+        }
+        // SHI-296 — dispose FIRST, and treat a declined dispose as "leave this
+        // container alone". Previously `destroy` was fired unconditionally and
+        // `dispose` ran after it, so the runner-level guards (running agent,
+        // in-flight sub-agent spawn) could only decline *after* `container.stop`
+        // was already issued: the work died anyway, and the surviving runner was
+        // left pointed at a dead container (ECONNREFUSED on the file watcher
+        // until the orphan-runner sweep force-disposed it, then a dropped turn).
+        // With this order the two decisions cannot disagree.
+        runnerRegistry.dispose(sid);
+        if (runner && !runner.disposed) {
+          console.log(
+            `[idle-cleanup] Skipping container destroy for session ${sid}`
+            + ` — runner declined disposal (still holds live work)`,
+          );
           continue;
         }
         const reason = underPressure ? "memory-pressure" : "idle-disposed";
@@ -183,11 +206,11 @@ export function createIdleEnforcer(
         containerManager.destroy(sid).catch((err: unknown) => {
           const errMsg = getErrorMessage(err);
           console.error(`[idle-cleanup] Failed to destroy container ${sid}:`, errMsg);
-          // The runner is already disposed by the line below — its
-          // emitMessage path is gone — so the only durable way to
-          // surface this is the per-session log ring. Without it, the
-          // user sees a session that disappeared with no log entry
-          // explaining the destroy failed.
+          // The runner was already disposed above — its emitMessage path
+          // is gone — so the only durable way to surface this is the
+          // per-session log ring. Without it, the user sees a session
+          // that disappeared with no log entry explaining the destroy
+          // failed.
           if (broadcastLog) {
             broadcastLog(
               sid,
@@ -196,7 +219,6 @@ export function createIdleEnforcer(
             );
           }
         });
-        runnerRegistry.dispose(sid);
       }
     }
   };

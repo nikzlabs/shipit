@@ -391,7 +391,13 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   // process the answer is definitionally zero.
   get backgroundTaskCount(): number { return this._backgroundTasks.count(this._isStreamingActive); }
   get backgroundTaskDescriptions(): string[] { return this._backgroundTasks.descriptions(this._isStreamingActive); }
-  get agentBusy(): boolean { return this._isRunning || this.backgroundTaskCount > 0; }
+  // SHI-296 — a live consult is a fact we own (the in-flight abort-controller
+  // set), not a reported hint, so it needs no `isStreamingActive` gate. This is
+  // what keeps a backgrounded `shipit agent run` off the idle-eviction list.
+  get subAgentSpawnsInFlight(): number { return this._subAgentAborts.size; }
+  get agentBusy(): boolean {
+    return this._isRunning || this.backgroundTaskCount > 0 || this.subAgentSpawnsInFlight > 0;
+  }
   setBackgroundTasks(tasks: BackgroundTaskInfo[]): void { this._backgroundTasks.set(tasks); }
   clearBackgroundTasks(): void { this._backgroundTasks.clear(); }
   get appliedPermissionMode(): PermissionMode | undefined { return this._appliedPermissionMode; }
