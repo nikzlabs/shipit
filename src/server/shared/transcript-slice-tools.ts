@@ -32,6 +32,42 @@ export const SUBAGENT_TOOL_NAMES = new Set(["Task", "Skill", "Agent"]);
 export const SUBAGENT_REPORT_TOOL_NAMES = new Set(["Task", "Agent"]);
 
 /**
+ * Tools whose result body must ship **whole** — never sliced, never capped.
+ *
+ * The invariant, and the reason this is a set rather than an `||` at two call
+ * sites: the transcript renders this result's content *in full* and offers **no
+ * expand affordance and no fetch path**. Cutting it therefore destroys text
+ * with no way to get it back. That is strictly worse than shipping bytes, so
+ * every bound in the feature — the server's 16 KB backstop and the client's
+ * 1 MB cap — has to agree on this set.
+ *
+ * Two members, for the same reason arrived at twice:
+ *
+ *   - `SUBAGENT_REPORT_TOOL_NAMES` — `SubagentCall` renders the final report as
+ *     markdown with nothing to click.
+ *   - `AskUserQuestion` — the chosen answer is drawn from result content
+ *     (`resolvedAnswer={result?.content}`), and the Ask branch of
+ *     `MessageToolUse` **returns before the output modal**, so there is no
+ *     click, no modal and no fetch. A >16 KB free-form answer used to lose its
+ *     tail permanently (SHI-291): recorded as a requirement-4 shortfall, but it
+ *     also broke requirement 2 (nothing displays or fetches the rest) and
+ *     requirement 8 (the Ask card *is* the transcript). Bounding an answer, if
+ *     ever wanted, belongs at the input — not at the projection, which is the
+ *     last place that can still see the whole thing.
+ *
+ * The `present` tool is deliberately absent even though it also reads result
+ * content inline: it parses an artifact id out of the head of a compact
+ * producer-controlled payload, and a slice keeps the head. `ExitPlanMode` reads
+ * result *existence*, so it survives an emptied body.
+ */
+export const WHOLE_RESULT_TOOL_NAMES = new Set([...SUBAGENT_REPORT_TOOL_NAMES, "AskUserQuestion"]);
+
+/** True when `toolName`'s result body must never be sliced or capped. */
+export function shipsResultBodyWhole(toolName: string | undefined): boolean {
+  return !!toolName && WHOLE_RESULT_TOOL_NAMES.has(toolName);
+}
+
+/**
  * Tools whose result *content* is read by something the transcript draws
  * without a click. For every other tool the content is modal-only, so the
  * transcript may carry none of it at all.

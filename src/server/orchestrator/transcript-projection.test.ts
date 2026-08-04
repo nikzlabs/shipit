@@ -61,6 +61,31 @@ describe("projectToolResult", () => {
     }
   });
 
+  /**
+   * SHI-291. The Ask branch of `MessageToolUse` returns before the output
+   * modal, so a sliced answer's tail is unreachable — not behind a click,
+   * gone. Found by the independent requirements review: it had been recorded
+   * as a requirement-4 shortfall, but it also broke requirement 2 (nothing
+   * displays or fetches the rest) and requirement 8 (the Ask card *is* the
+   * transcript), which made it the feature's only real transcript regression.
+   */
+  it("never slices an AskUserQuestion answer, however long", () => {
+    const longAnswer = "A".repeat(40_000);
+    const projected = projectToolResult("s1", { toolUseId: "t1", content: longAnswer }, "AskUserQuestion");
+
+    expect(projected.content).toBe(longAnswer);
+    expect(projected.truncated).toBeUndefined();
+  });
+
+  it("still slices a long result for `present`, whose id survives the head", () => {
+    // The counter-case that keeps the exemption narrow: `present` also reads
+    // result content inline, but only an artifact id out of the head of a
+    // compact producer-controlled payload, which a slice preserves. Exempting
+    // it would ship bytes for nothing.
+    const projected = projectToolResult("s1", { toolUseId: "t1", content: bigOutput }, "present");
+    expect(projected.truncated).toBe(true);
+  });
+
   it("preserves the metadata the transcript needs without a fetch", () => {
     const projected = projectToolResult(
       "s1",

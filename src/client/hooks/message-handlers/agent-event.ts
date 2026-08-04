@@ -1,7 +1,8 @@
 import type { WsAgentEvent, AgentContentBlock } from "../../../server/shared/types.js";
 import type { ChatMessage, ToolResultBlock } from "../../components/MessageList.js";
 import { activityFromTool } from "../../components/StreamingIndicator.js";
-import { CARD_MESSAGE_FIELDS, SUBAGENT_TOOLS } from "../../components/visual-elements.js";
+import { CARD_MESSAGE_FIELDS } from "../../components/visual-elements.js";
+import { shipsResultBodyWhole } from "../../../server/shared/transcript-slice-tools.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import type { Handler } from "./types.js";
@@ -178,12 +179,19 @@ export const handleAgentEvent: Handler<WsAgentEvent> = (_ctx, data) => {
         // projection leaves inline — and what to do differs per class, because
         // clipping is only acceptable when the body can be got back.
         //
-        //   - A subagent FINAL REPORT is exempt server-side precisely because
-        //     `SubagentCall` renders it whole with no expand affordance and no
-        //     fetch. Capping it here would re-truncate, permanently, the one
-        //     body the whole exemption exists to protect — so it is not capped
-        //     at all. That is a deliberate unbounded case: the alternative is
-        //     silently destroying the report.
+        //   - A body in `WHOLE_RESULT_TOOL_NAMES` is exempt server-side
+        //     precisely because the transcript renders it whole with no expand
+        //     affordance and no fetch. Capping it here would re-truncate,
+        //     permanently, the very bodies that exemption exists to protect —
+        //     so it is not capped at all. Deliberately unbounded: the
+        //     alternative is silently destroying a subagent report or the tail
+        //     of a long `AskUserQuestion` answer (SHI-291).
+        //
+        //     This used to test `SUBAGENT_TOOLS`, the *layout* set, which was
+        //     wrong in both directions: it spared `Skill` (which renders no
+        //     report and is sliced server-side anyway) while capping
+        //     `AskUserQuestion` (which has no way to recover the tail). Client
+        //     and server now read the same set.
         //   - A NESTED result is capped, but NOT marked `truncated`. Its row is
         //     not committed until the next top-level boundary, so a fetch
         //     marker here would promise a body the endpoint would 404 on.
@@ -193,7 +201,7 @@ export const handleAgentEvent: Handler<WsAgentEvent> = (_ctx, data) => {
         // Marking without fetchability and clipping without marking are both
         // wrong; which of the two a result gets depends on where its row is.
         const toolName = toolNameForResult(session.messages, block.tool_use_id as string);
-        const isFinalReport = !!toolName && SUBAGENT_TOOLS.has(toolName);
+        const isFinalReport = shipsResultBodyWhole(toolName);
         const isNested = typeof (event as { parentToolUseId?: string }).parentToolUseId === "string";
 
         let capped: { totalLines: number } | undefined;

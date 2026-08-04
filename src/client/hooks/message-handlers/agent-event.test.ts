@@ -182,7 +182,7 @@ describe("what the cap must NOT do (docs/244 round-3)", () => {
     },
   } as unknown as WsAgentEvent);
 
-  for (const parentTool of ["Task", "Skill", "Agent"]) {
+  for (const parentTool of ["Task", "Agent"]) {
     it(`never caps a ${parentTool} final report, however big`, () => {
       // `SubagentCall` renders the final report whole, as markdown, with no
       // expand affordance and no fetch. The server exempts it from slicing for
@@ -197,6 +197,37 @@ describe("what the cap must NOT do (docs/244 round-3)", () => {
       expect(result.truncated).toBeUndefined();
     });
   }
+
+  /**
+   * SHI-291 — the same no-recovery rule, arrived at from the other direction.
+   * The Ask branch of `MessageToolUse` returns before the output modal, so a
+   * capped answer has no click, no modal and no fetch to get its tail back.
+   */
+  it("never caps an AskUserQuestion answer, however big", () => {
+    handleAgentEvent(ctx, assistantEvent("", [
+      { id: "tu-ask", name: "AskUserQuestion", input: { questions: [{ question: "which?" }] } },
+    ]));
+    handleAgentEvent(ctx, resultEvent("tu-ask", overCap));
+
+    const result = resultFor("tu-ask")!;
+    expect(result.content).toBe(overCap);
+    expect(result.truncated).toBeUndefined();
+  });
+
+  /**
+   * The counter-case, and a correction: this used to test `SUBAGENT_TOOLS`, the
+   * *layout* set, so `Skill` was spared here while `AskUserQuestion` was
+   * capped — wrong in both directions at once. `Skill` renders no report and is
+   * stripped server-side, so its body is fetchable and capping it is correct.
+   */
+  it("DOES cap a Skill result, which renders no report and is fetchable", () => {
+    handleAgentEvent(ctx, assistantEvent("", [{ id: "tu-skill", name: "Skill", input: { command: "x" } }]));
+    handleAgentEvent(ctx, resultEvent("tu-skill", overCap));
+
+    const result = resultFor("tu-skill")!;
+    expect(result.content.length).toBeLessThanOrEqual(CLIENT_CONTENT_CAP);
+    expect(result.truncated).toBe(true);
+  });
 
   it("caps a nested subagent result but does not advertise a fetch for it", () => {
     // A nested result takes the `parentToolUseId` branch server-side, which
