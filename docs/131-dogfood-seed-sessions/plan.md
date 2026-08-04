@@ -1,16 +1,16 @@
 ---
-description: Seed script that provisions reproducible inner sessions for the ShipIt-in-ShipIt dogfood loop at dev-service boot, with a dedicated testing GitHub token.
+description: Seed script that provisions reproducible inner sessions for the ShipIt-in-ShipIt dogfood loop at dev-service boot.
 issue: https://linear.app/shipit-ai/issue/SHI-52
 ---
 
 # Dogfood seed sessions (reproducible inner sessions for ShipIt-in-ShipIt)
 
+Implements [`requirements.md`](./requirements.md).
+
 Make the dogfood inner orchestrator (`RUNTIME_MODE=local`, feature 118) come up
 with a known set of repo-backed inner sessions already provisioned, so manual
 and automated testing of the inner UI doesn't start from an empty slate every
-time. Also stop forwarding the outer user's GitHub token into the inner orch by
-default — let the developer supply a dedicated *testing* token instead, so the
-dogfood loop runs against a separate GitHub account with throwaway repos.
+time (reqs 1–2).
 
 This is "Option B" from the discussion in `docs/118-shipit-ui-local/plan.md`'s
 follow-up: persistence of inner state is the wrong goal (it drifts and goes
@@ -36,11 +36,15 @@ session" N times before you can test anything. For automated testing it's worse
 **Goal.** A checked-in seed script, wired into the dogfood `docker-compose.yml`
 `command:`, that — after the inner orch is healthy — provisions a fixture-defined
 set of repo-backed inner sessions via the inner orch's HTTP API. Idempotent: a
-dev-service restart that finds the sessions already present does nothing.
+dev-service restart that finds the sessions already present does nothing
+(reqs 1, 5, 7).
 
-**Goal.** Decouple the inner orch's GitHub identity from the outer user's. The
-`GITHUB_TOKEN` `platform:github_token` forward is removed; the developer supplies
-a testing-account token through the outer ShipIt's secret store instead.
+**Goal (reqs 9–10, not yet designed).** The outer agent can start an inner agent
+and read back its conversation. The mechanism is deliberately not designed here
+yet — see the open questions in `requirements.md`, which change what has to be
+built (the inner orch has an HTTP route to create a session *with* a prompt, but
+sending a message to an *existing* session is WebSocket-only; see
+`docs/160-external-control-api`).
 
 **Non-goals.**
 - Blank / template-scaffolded inner sessions. There is no public "create empty
@@ -51,8 +55,9 @@ a testing-account token through the outer ShipIt's secret store instead.
 - Persisting inner state across outer sessions. Explicitly rejected — see above.
 - Seeding chat history / running turns as part of the fixture. The seed creates
   the session + clones the repo; exercising it is the test's job.
-- Changing anything in the orchestrator code. This feature is entirely the seed
-  script + the compose file + a fixture file + `.gitignore`.
+- Changing anything in the orchestrator code *for the seeding half* (reqs 1–8):
+  that is entirely the seed script + the compose file + a fixture file +
+  `.gitignore`. Reqs 9–10 are not covered by this claim.
 
 ## How inner sessions get created (the API the script drives)
 
@@ -83,47 +88,26 @@ Idempotency falls out of step 3: on a dev-service restart within the same outer
 session, `.inner-shipit/` still has the sessions, so every fixture entry matches
 an existing `remoteUrl` and the script no-ops.
 
-## GitHub token change
+## When the inner ShipIt has no GitHub access (req 8)
 
-Today `docker-compose.yml` forwards the outer user's token:
+The inner orch's `GITHUB_TOKEN` is a **user-supplied secret**, set once in the
+outer ShipIt's Settings → Secrets. It arrives as `process.env.GITHUB_TOKEN`,
+which is what `GitHubAuthManager.checkCredentials()` reads (`github-auth.ts` —
+env var is checked after the credential store).
 
-```yaml
-x-shipit-secrets:
-  - { name: GITHUB_TOKEN, source: platform:github_token }
-```
+> This doc originally proposed making that change — dropping
+> `source: platform:github_token` from the `x-shipit-secrets` entry so the inner
+> orch stopped inheriting the outer user's GitHub identity. That has since
+> landed independently: `docs/184-remove-platform-secret-forwarding` removed
+> platform secret forwarding wholesale, so every `x-shipit-secrets` entry in
+> `docker-compose.yml` is already user-supplied. Nothing is left to do here.
 
-`platform-credentials.ts` resolves `platform:github_token` from the outer
-`GitHubAuthManager`. We **remove the `source:`** so the entry resolves from the
-outer ShipIt's user secret store instead (the resolver in `secret-resolver.ts`
-falls through to `userSecrets[req.name]` when there's no `source:`):
-
-```yaml
-x-shipit-secrets:
-  - { name: ANTHROPIC_API_KEY,    source: platform:claude_oauth }   # unchanged
-  - { name: ANTHROPIC_AUTH_TOKEN, source: platform:claude_oauth }   # unchanged
-  - { name: GITHUB_TOKEN }                                          # was: source: platform:github_token
-```
-
-The developer sets `GITHUB_TOKEN` once in the outer ShipIt's secrets UI to a
-**testing-account** personal access token. It still arrives at the inner orch as
-`process.env.GITHUB_TOKEN`, which is exactly what `GitHubAuthManager.checkCredentials()`
-reads (`github-auth.ts` — env var is checked after the credential store). No orch
-code change needed.
-
-Why not a plain compose `environment:` passthrough (`GITHUB_TOKEN: "${GITHUB_TOKEN:-}"`)?
-That depends on `docker compose` substituting from whatever environment
-`ServiceManager` invokes compose in, which isn't a controllable knob from the
-repo. The secret-store route is ShipIt-native, definitely works, and keeps the
-test token out of the repo and out of git. (Anthropic creds stay on
-`platform:claude_oauth` — only the *git* identity is being separated, so the
-dogfood loop keeps using the developer's own Claude subscription.)
-
-**Consequence to handle in the script:** with no token forwarded by default, if
-the developer hasn't set the secret the inner orch has no GitHub auth. Public
-fixture repos still clone anonymously; private ones fail. The seed script must
-detect a missing/!authenticated state (visible in `GET /api/bootstrap`) and log
-a clear "GitHub not authenticated — set the GITHUB_TOKEN secret in the outer
-ShipIt; private repos will be skipped" message rather than failing opaquely.
+**Consequence the script must still handle:** if the developer hasn't set the
+secret, the inner orch has no GitHub auth. Public fixture repos still clone
+anonymously; private ones fail. The seed script must detect the
+not-authenticated state (visible in `GET /api/bootstrap`) and log a clear
+"GitHub not authenticated — set the GITHUB_TOKEN secret in the outer ShipIt;
+private repos will be skipped" message rather than failing opaquely.
 
 ## Fixture format
 
@@ -138,33 +122,38 @@ A checked-in `scripts/dogfood-seed.json`:
 }
 ```
 
-- Checked in so the fixture is reproducible and self-documenting.
-- Because the repos belong to the developer's own test account, support an
-  override: if `scripts/dogfood-seed.local.json` exists it wins over the
-  committed file (and is gitignored), and `DOGFOOD_SEED_FILE` can point
-  elsewhere entirely. The committed file ships with a couple of innocuous public
-  repos as a sane default.
-- `DOGFOOD_SEED=0` disables seeding entirely.
+- Checked in so the fixture is reproducible and self-documenting (req 2).
+- Overridable without committing the choice (req 3): if
+  `scripts/dogfood-seed.local.json` exists it wins over the committed file (and
+  is gitignored), and `DOGFOOD_SEED_FILE` can point elsewhere entirely. The
+  committed file ships with a couple of innocuous public repos as a sane default.
+- `DOGFOOD_SEED=0` disables seeding entirely (req 4).
 
 ## Where it runs
 
 Wired into the dogfood `docker-compose.yml` `command:`. The orch is started in
 the background already; the seed is launched as a background step right after,
 so it doesn't block Vite coming up and the inner UI is usable while sessions
-trickle in:
+trickle in (req 7) — one line added to the command as it stands today:
 
 ```sh
 sh -c "
-  mkdir -p $${SHIPIT_STATE_DIR:-/workspace/.inner-shipit} &&
-  npm install &&
-  (PORT=4000 npm run dev 2>&1 | sed 's/^/[orch] /' &) &&
+  mkdir -p $${SHIPIT_STATE_DIR:-/workspace/.inner-shipit} $${AGENT_HOME:-/root} &&
+  while [ ! -x node_modules/.bin/vite ]; do
+    echo '[dev] waiting for agent.install to populate node_modules…'; sleep 1;
+  done &&
+  PORT=4000 npm run dev &
   (node scripts/seed-inner-sessions.js 2>&1 | sed 's/^/[seed] /' &) &&
   API_PORT=4000 exec npx vite --host 0.0.0.0 --port 3000
 "
 ```
 
+(The `npm install` this doc originally showed is gone — the `dev` service shares
+the agent container's `node_modules` and waits for `agent.install` instead; see
+feature 137. The seed step slots in after the orch launch either way.)
+
 The script itself owns the "wait until healthy" poll (bounded retries, ~60s cap)
-so it's resilient to the orch taking a while to boot behind `npm install`.
+so it's resilient to the orch taking a while to boot behind that wait.
 
 ## Key files
 
@@ -172,13 +161,14 @@ so it's resilient to the orch taking a while to boot behind `npm install`.
 |---|---|
 | `scripts/seed-inner-sessions.js` | New. Polls `GET /api/bootstrap`, diffs fixture against existing `remoteUrl`s, `POST`s `claim-session` for the rest. Idempotent, non-fatal on error, honors `DOGFOOD_SEED` / `DOGFOOD_SEED_FILE`. Plain Node (no deps) so it runs before/independent of the build. |
 | `scripts/dogfood-seed.json` | New. Default fixture — a couple of public repos. |
-| `docker-compose.yml` | (a) Add the background seed step to `command:`. (b) Drop `source: platform:github_token` from the `GITHUB_TOKEN` `x-shipit-secrets` entry. |
+| `docker-compose.yml` | Add the background seed step to the `dev` service's `command:`. |
 | `.gitignore` | Add `scripts/dogfood-seed.local.json`. |
-| `docs/118-shipit-ui-local/plan.md` | Cross-link this doc from the dogfooding section. |
-| `CLAUDE.md` | One line in the "Dogfooding ShipIt in ShipIt" paragraph noting the seed + the testing-token secret. |
+| `docs/118-shipit-ui-local/plan.md` | Cross-link this doc from the dogfooding section. **Done.** |
+| `CLAUDE.md` | One line in the "Dogfooding ShipIt in ShipIt" paragraph noting the seed. |
 
-No orchestrator/client/shared code changes — the inner orch already exposes
-`POST /api/repos/:url/claim-session` and reads `process.env.GITHUB_TOKEN`.
+No orchestrator/client/shared code changes for reqs 1–8 — the inner orch already
+exposes `POST /api/repos/:url/claim-session` and reads `process.env.GITHUB_TOKEN`.
+Reqs 9–10 may need more than the script; that depends on the open questions.
 
 ## Tests
 
@@ -188,12 +178,17 @@ No orchestrator/client/shared code changes — the inner orch already exposes
   ones, (c) exits 0 when a `claim-session` call fails, (d) no-ops cleanly when
   `DOGFOOD_SEED=0` or the fixture file is missing, (e) prefers
   `dogfood-seed.local.json` over the committed fixture.
-- **Manual smoke**: open the ShipIt repo in production ShipIt, set a
-  testing-account `GITHUB_TOKEN` secret, start the dev service. Confirm the inner
-  UI comes up with the fixture sessions present, each with its repo cloned.
-  Restart the dev service; confirm the script no-ops and no duplicates appear.
+- **Manual smoke**: open the ShipIt repo in production ShipIt, set the
+  `GITHUB_TOKEN` secret, start the dev service. Confirm the inner UI comes up
+  with the fixture sessions present, each with its repo cloned. Restart the dev
+  service; confirm the script no-ops and no duplicates appear (req 5).
 
 ## Open questions / risks
+
+The requirements-level open questions — the ones that decide what reqs 9–10
+actually need — live in [`requirements.md`](./requirements.md) and are for the
+human to answer. Implementation is blocked while they stand. The items below are
+design risks in the seeding half, for the implementer.
 
 - **Health probe shape.** The script assumes `GET /api/bootstrap` returns 200
   once the orch is ready and includes the session list with `remoteUrl`s.
