@@ -204,7 +204,8 @@ export function reopenedAfterResolve(s: SessionInfo): boolean {
  * docs/201): the merged view cap is a form of *automatic* archiving, and spawned
  * clusters are exempt from it — they only leave the sidebar via an explicit user
  * archive (which `archiveSession` cascades from a session through its whole
- * brood). The exemption keys off the ROOT ancestor (`rootSessionId`) rather than
+ * brood — except from an Ops session, which never cascades; docs/162). The
+ * exemption keys off the ROOT ancestor (`rootSessionId`) rather than
  * the immediate parent so it is depth-independent. Concretely, the cap never
  * demotes:
  *   - a root that still has a live (non-user-archived) descendant — a root with
