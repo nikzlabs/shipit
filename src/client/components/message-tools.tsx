@@ -64,7 +64,7 @@ export function ToolCallGroup({ items, isStreaming }: {
   );
 }
 
-export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestion, onSendFollowUp, isQuestionDisabled, grouped: _grouped, planContent }: { tool: ToolUseBlock; result?: ToolResultBlock; isLast: boolean; isStreaming: boolean; onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>, text: string) => void; onSendFollowUp?: (text: string) => void; isQuestionDisabled: boolean; grouped?: boolean; planContent?: string }) {
+export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestion, onSendFollowUp, isQuestionDisabled, grouped: _grouped, planContent }: { tool: ToolUseBlock; result?: ToolResultBlock; isLast: boolean; isStreaming: boolean; onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>, text: string) => boolean; onSendFollowUp?: (text: string) => void; isQuestionDisabled: boolean; grouped?: boolean; planContent?: string }) {
   // IMPORTANT: all hooks must be called before any conditional `return` below.
   // `tool.name` and `tool.input` can change between renders while a tool is
   // streaming in (e.g. `AskUserQuestion` only matches once `input.questions`
@@ -142,7 +142,9 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
       <AskUserQuestion
         toolUseId={tool.id}
         questions={questions}
-        onAnswer={onAnswerQuestion ?? (() => {})}
+        // No handler wired ⇒ nothing can reach the agent, so report undelivered
+        // and leave the card answerable rather than locking it.
+        onAnswer={onAnswerQuestion ?? (() => false)}
         disabled={isQuestionDisabled}
         // `result` (when present) is the agent's tool_result for this
         // question — its content carries the answer text. Passing it lets

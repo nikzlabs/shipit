@@ -22,7 +22,8 @@ export function MessageToolElement({
   el: Extract<VisualElement, { kind: "tool-group" | "subagent" | "standalone-tool" }>;
   messages: ChatMessage[];
   findPlanContent: (exitPlanMsgIndex: number) => string | undefined;
-  onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>, text: string) => void;
+  /** Returns whether the answer actually reached the wire (see `sendUserMessage`). */
+  onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>, text: string) => boolean;
   onSendFollowUp?: (text: string) => void;
 }) {
   // ── Tool-group: grouped tool calls from consecutive assistant messages ──

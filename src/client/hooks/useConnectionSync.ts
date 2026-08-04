@@ -8,7 +8,8 @@ import { useEventListeners } from "./useEventListener.js";
 
 export function useConnectionSync(params: {
   status: string;
-  send: (msg: WsClientMessage) => void;
+  /** Returns whether the frame reached the wire — see `useWebSocket.send`. */
+  send: (msg: WsClientMessage) => boolean;
   onSessionConnect?: (sessionId: string) => void | Promise<void>;
 }): void {
   const { status, send, onSessionConnect } = params;
@@ -86,8 +87,14 @@ export function useConnectionSync(params: {
       // If there's a pending WS message (e.g. new session from home page, feature start), send it now
       const pending = useSessionStore.getState().pendingWsMessage;
       if (pending) {
-        useSessionStore.getState().setPendingWsMessage(undefined);
-        send({ ...pending, sessionId } as WsClientMessage);
+        // Only drop the stash once the frame is actually on the wire. The
+        // status transition can land a tick before the socket is writable (or
+        // the socket can close again in between), and clearing first would lose
+        // the message with no trace — the same silent drop `send`'s boolean
+        // exists to expose. Keeping it stashed means the next open retries it.
+        if (send({ ...pending, sessionId } as WsClientMessage)) {
+          useSessionStore.getState().setPendingWsMessage(undefined);
+        }
       }
     }
     if (status === "closed" || status === "connecting") {

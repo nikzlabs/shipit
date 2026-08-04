@@ -601,18 +601,19 @@ export default function App() {
           activity: "Thinking...",
           dispatch: (requestId) => {
             const frame = { ...message, requestId };
-            if (status === "open") {
-              // Send directly over WS
-              send(frame);
-            } else {
-              // The session exists but the WS isn't open yet — e.g. we just claimed
-              // a session on /{slug}/new and the socket is still connecting. Calling
-              // send() here would silently drop the message (useWebSocket.send only
-              // writes when readyState === OPEN), leaving the user with an optimistic
-              // bubble + spinner and no response. Stash it so useConnectionSync
-              // flushes it the moment the WS opens. (docs/144 fix #2)
-              useSessionStore.getState().setPendingWsMessage(frame);
-            }
+            if (send(frame)) return true;
+            // The send was dropped — e.g. we just claimed a session on
+            // /{slug}/new and the socket is still connecting. Dropping it here
+            // would leave the user with an optimistic bubble + spinner and no
+            // response, so stash it and let useConnectionSync flush it the
+            // moment the WS opens. (docs/144 fix #2)
+            //
+            // The attempt-then-stash order matters: `status` is React state and
+            // can lag the real readyState in both directions, so trusting it
+            // either dropped a sendable frame or stashed one the socket would
+            // have taken. `send`'s return value is the readyState itself.
+            useSessionStore.getState().setPendingWsMessage(frame);
+            return true;
           },
         });
       } else {
@@ -636,7 +637,6 @@ export default function App() {
     },
     [
       send,
-      status,
       requestPermission,
       disableAutoFix,
       navigate,
@@ -829,8 +829,10 @@ export default function App() {
     [],
   );
 
+  // Returns whether the answer reached the wire — AskUserQuestion gates its
+  // answered-state lock on this, so it must not swallow the boolean.
   const handleAnswerQuestion = useCallback(
-    (toolUseId: string, answers: Record<string, string>, text: string) => {
+    (toolUseId: string, answers: Record<string, string>, text: string): boolean => {
       // Forward the session's current permission mode so answering a clarifying
       // question stays in the same mode it was asked in. Without this, an answer
       // given in plan mode resumes the CLI in default mode and the agent starts
@@ -840,7 +842,7 @@ export default function App() {
       const pm = useSettingsStore
         .getState()
         .getPermissionMode(session.sessionId);
-      sendUserMessage({
+      return sendUserMessage({
         bubble: { role: "user", text },
         activity: "Thinking...",
         dispatch: (requestId) =>
@@ -857,13 +859,15 @@ export default function App() {
     [send],
   );
 
+  // Returns whether the message reached the wire — the action-checklist card
+  // gates its "Submitted" ack on this, so it must not swallow the boolean.
   const handleSendFollowUp = useCallback(
-    (text: string) => {
+    (text: string): boolean => {
       const session = useSessionStore.getState();
       const pm = useSettingsStore
         .getState()
         .getPermissionMode(session.sessionId);
-      sendUserMessage({
+      return sendUserMessage({
         bubble: { role: "user", text },
         activity: "Thinking...",
         dispatch: (requestId) =>

@@ -53,8 +53,10 @@ export function MessageList({
   isLoading: boolean;
   searchMatches?: SearchMatch[];
   currentMatch?: SearchMatch;
-  onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>, text: string) => void;
-  onSendFollowUp?: (text: string) => void;
+  /** Returns whether the answer actually reached the wire (see `sendUserMessage`). */
+  onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>, text: string) => boolean;
+  /** Returns whether the message actually reached the wire (see `sendUserMessage`). */
+  onSendFollowUp?: (text: string) => boolean;
   rewindPreviews?: Record<string, WsRewindPreview>;
   sessionTitle?: string;
   onRequestRewindPreview?: (gapPosition: number, action: RewindGapAction) => void;
