@@ -103,6 +103,21 @@ describe("dispatchMessage — transcript session scoping", () => {
     expect(useSessionStore.getState().containerFreshness).toEqual(stale);
   });
 
+  it("applies the secret-scan commit block only to its owning active session", () => {
+    // SHI-315 — the banner is session state, and the browser holds exactly one
+    // session's view, so a foreign block must not raise it here.
+    const block = {
+      findings: [{ rule: "github-pat", description: "PAT", file: "a.ts", line: 1, redacted: "ghp_…" }],
+      at: "2026-08-04T12:00:00.000Z",
+      notifyCount: 1,
+    };
+    dispatchMessage(ctx, { type: "secret_block_status", sessionId: "other", block });
+    expect(useSessionStore.getState().secretBlock).toBeNull();
+
+    dispatchMessage(ctx, { type: "secret_block_status", sessionId: "active", block });
+    expect(useSessionStore.getState().secretBlock).toEqual(block);
+  });
+
   it("still delivers messages that legitimately describe OTHER sessions", () => {
     // Sidebar running dots are keyed by their own sessionId — never scoped out.
     dispatchMessage(ctx, { type: "session_status", sessionId: "other", running: true });

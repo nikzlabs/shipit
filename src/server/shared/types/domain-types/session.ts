@@ -1,5 +1,8 @@
 import type { AgentId } from "../agent-types.js";
 import type { ProviderRouteKind } from "./provider.js";
+// Type-only, so it erases at compile time — no runtime edge from types/ back
+// into the detector module.
+import type { SecretFinding } from "../../secret-scan.js";
 
 // ---- Session types ----
 
@@ -262,6 +265,16 @@ export interface SessionInfo {
    */
   mergeWatch?: SessionMergeWatch;
   /**
+   * docs/213 / SHI-315 — the session's auto-commit is currently refused because
+   * the working tree carries a likely credential. Present ⇒ blocked.
+   *
+   * Persisted rather than held on the runner, because that is what makes the
+   * warning *sticky*: the runner is disposed when the session goes idle, and a
+   * page reload after that would otherwise render a clean session whose commits
+   * are still blocked. Cleared the moment any auto-commit succeeds.
+   */
+  secretBlock?: SessionSecretBlock;
+  /**
    * docs/202 — display-only breadcrumb of the session's prior MERGED PR,
    * retained after a re-arm clears `merged_at`. Set by `clearMerged` when a
    * merged branch is rebased onto its base and gains genuinely new work, so the
@@ -305,6 +318,28 @@ export interface PreviousMergedPr {
   title: string;
   /** The prior PR's base branch — the new PR targets the same base. */
   baseBranch: string;
+}
+
+/**
+ * docs/213 / SHI-315 — the sticky record of an auto-commit refused by the
+ * secret scanner. Stored as JSON on the session row.
+ *
+ * `findings` are already redacted at the detector (only a short public prefix +
+ * length), so persisting and rendering them never re-leaks the token body.
+ *
+ * `notifyCount` bounds the agent-facing remediation turn. The block re-arises on
+ * every turn while the credential sits in the tree, so an unbounded "tell the
+ * agent" would spawn a turn per turn, forever. Two attempts is enough for the
+ * agent to scrub an accidental paste; past that it needs a human, and the banner
+ * is the surface that asks for one.
+ */
+export interface SessionSecretBlock {
+  /** Redacted findings from the refused staged diff. */
+  findings: SecretFinding[];
+  /** ISO instant the block was first observed (not refreshed on re-block). */
+  at: string;
+  /** How many remediation turns have been dispatched for this block. */
+  notifyCount: number;
 }
 
 /**
