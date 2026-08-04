@@ -2,9 +2,9 @@
 
 This feature predates ShipIt's requirements-document workflow. This file records human-owned requirements added after the original design; the existing `plan.md` remains the record for earlier design decisions until they are separately restated by the user.
 
-1. When Projects is implemented, each Project has its own private planning issue-tracker binding. Sessions and repositories in that Project use its binding and do not read or mutate another Project's private planning issues.
+1. When Projects phase 1c adds per-Project GitHub identity, each Project also gains its own private planning issue-tracker binding. Until phase 1c, Projects use the Default Project compatibility alias for the deployment-wide binding and credential. After phase 1c, sessions and repositories use only their Project's binding and do not read or mutate another Project's private planning issues.
 2. The private planning tracker remains distinct from ShipIt's public user bug tracker. Project scoping must not redirect the existing in-product bug-report flow away from the public ShipIt repository.
-3. A Project's private planning tracker uses the same GitHub credential as that Project's other GitHub operations. GitHub enforces whether the credential can access the configured private repository; ShipIt does not add a separate per-viewer tracker ACL or repository-membership check.
+3. A Project's private planning tracker uses the same GitHub credential as that Project's other GitHub operations. GitHub enforces whether the credential can access the configured private repository; ShipIt does not add a separate per-viewer tracker ACL or repository-membership check. Anyone who can use the Project can therefore operate on its tracker through ShipIt regardless of their personal GitHub membership.
 
 ## Open questions
 

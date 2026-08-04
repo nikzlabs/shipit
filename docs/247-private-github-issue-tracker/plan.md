@@ -11,9 +11,9 @@ description: Use a dedicated private GitHub repository as ShipIt's issue backend
 This is the focused design for the private-GitHub option identified by the
 [issue tracker evaluation](../246-native-issue-tracker-evaluation/plan.md).
 Choosing GitHub Issues means accepting its feature set rather than passing a
-separate parity gate. The product decisions in
-[requirements.md](./requirements.md) are resolved, so implementation is no
-longer blocked on a privacy-authorization choice.
+separate parity gate. The shared-credential authorization decision is resolved,
+but implementation remains blocked on the product questions in
+[requirements.md](./requirements.md).
 
 The likely first increment is small: reuse ShipIt's existing GitHub adapter and
 bind it to a dedicated private repository. The hard part is not CRUD; it is
@@ -75,11 +75,13 @@ active code remote ────────────────────�
 The resolver follows these rules:
 
 1. List and create operations use the configured private tracker binding.
-2. A fully qualified `owner/repo#number` pointer retains that repository as
-   authoritative routing data.
-3. A private-planning pointer whose repository conflicts with the configured
-   binding is rejected before a GitHub request. It is never rewritten to the
-   active code repository or the public tracker destination. The separate public
+2. Each operation explicitly selects a destination. Within a private-planning
+   operation, a fully qualified `owner/repo#number` pointer retains that
+   repository as routing data and must match the configured private binding.
+3. A mismatch in a private-planning operation is rejected before a GitHub
+   request. It is never rewritten to the active code repository or the public
+   tracker destination. A qualified pointer used with another explicitly
+   selected GitHub destination retains its own repository. The separate public
    bug tracker accepts only its fixed public ShipIt repository.
 4. Bare issue numbers are accepted only in a context with one unambiguous
    configured tracker repository.
@@ -115,12 +117,14 @@ the owner's planning repository. The public bug-report destination remains the
 public ShipIt repository and is selected by the bug-report workflow, not by the
 private planning setting.
 
-The two destinations require separate stable tracker identities in ShipIt's
-domain model and registry rather than overloading the single `github` key. Each
-issue reference, persisted card, agent request, and lifecycle effect carries
-which destination it belongs to as well as `owner/repo#number`. Public bug
-reports and private planning issues can therefore share the same issue number
-without colliding or being displayed as interchangeable records.
+Private-planning operations require a stable destination identity in ShipIt's
+domain model rather than overloading the existing `github` key. Operations that
+do not yet have an issue pointer, such as list and create, carry the selected
+destination; persisted issue references and effects carry the qualified
+`owner/repo#number`, which is sufficient to prevent same-number collisions.
+The public bug-report flow remains separate from the tracker registry and keeps
+its fixed upstream repository. Whether the active code repository's existing
+GitHub tracker remains as a third destination is an open product question.
 
 The user creates the private repository and ShipIt connects it. ShipIt does not
 request repository-creation permission or implement naming, ownership,
@@ -128,14 +132,20 @@ collision, or initialization flows.
 
 Private tracker calls use the same contextual GitHub credential as ShipIt's
 other GitHub operations: the deployment credential initially and the owning
-Project's credential after Projects ships. ShipIt does not introduce a second
+Project's credential after Projects phase 1c. ShipIt does not introduce a second
 tracker credential, a private-tracker ACL, or a per-viewer GitHub-membership
-check. GitHub authorizes the credential against the configured repository. For
+check. GitHub authorizes the credential—not the viewer—against the configured
+repository. Anyone with access to the deployment initially, or the Project
+after phase 1c, can therefore operate on the tracker through ShipIt regardless
+of their personal GitHub membership. For
 GitHub App authentication, the App installation must include that repository;
 for a user token, that token must grant the required Issues access there.
-Credentials remain outside session containers. A repository-scope `403` is
-reported as an access/configuration failure and must not invalidate otherwise
-valid GitHub credentials; only an authentication failure may do that.
+Credentials remain outside session containers. GitHub may return `404` for a
+private repository that the credential cannot see, so ShipIt cannot distinguish
+"missing" from "inaccessible" in that case; the inline error must name both
+possibilities. Repository-scoped `403` responses are also access/configuration
+failures. Neither response invalidates otherwise valid GitHub credentials; only
+an authentication failure may do that.
 
 ## Accepted GitHub feature set
 
@@ -170,9 +180,10 @@ tracker entry points:
   making a wrong-repository assumption.
 - tracker configuration resolves the selected private repository independently
   of the active session's code remote.
-- the tracker domain model and registry distinguish the public ShipIt bug
-  tracker from the private planning tracker instead of constructing one
-  session-derived `github` adapter for both purposes.
+- the tracker domain model gives the private planning destination an explicit
+  identity instead of silently changing what the existing session-derived
+  `github` adapter means. The public ShipIt bug-report service remains outside
+  this registry and keeps its fixed upstream repository.
 - `src/server/orchestrator/api-routes-issues.ts` uses that binding for list,
   detail, create, edit, comment, label, assignee, and status operations.
 - `src/server/orchestrator/ws-handlers/issue-write-handlers.ts` records enough
@@ -238,10 +249,11 @@ coding sessions, Git operations, or access to locally persisted chat history.
 
 ## Decision boundary
 
-The product decisions in requirements are resolved. Public user bug reports and
-private owner planning issues coexist as distinct tracker destinations, public
-PR bodies use fully qualified private-repository pointers, and GitHub authorizes
-the same contextual credential used for other GitHub operations. GitHub's
-feature set is accepted; implementation must represent unavailable normalized
-operations honestly and must not weaken the repository-routing invariant to
-simulate parity.
+The shared-credential authorization decision is resolved: GitHub authorizes the
+same contextual credential used for other GitHub operations, not each ShipIt
+viewer. The remaining product questions in requirements must be resolved before
+implementation. Public user bug reports and private owner planning issues
+coexist as distinct destinations, and public PR bodies use fully qualified
+private-repository pointers. GitHub's feature set is accepted; implementation
+must represent unavailable normalized operations honestly and must not weaken
+the repository-routing invariant to simulate parity.
