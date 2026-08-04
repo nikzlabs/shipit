@@ -14,7 +14,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { AgentId } from "../shared/types/agent-types.js";
-import { ensureClaudeUserConfigDefaults } from "./agents/claude/user-config.js";
+import {
+  ensureClaudeUserConfigDefaults,
+  ensureClaudeWorkspaceTrusted,
+} from "./agents/claude/user-config.js";
 import { providerAccountCredentialRoot } from "./provider-account-manager.js";
 import { SUBTREE_STATE_SUBPATHS } from "./token-sync-manager.js";
 import {
@@ -184,6 +187,42 @@ export function ensureSessionAgentUserConfig(
   // (docs/150 §7). Skipping the walk on the common no-op keeps this cheap
   // enough to run every turn.
   if (wrote) chownSessionCredentialsTree(credentialsRoot, sessionId);
+}
+
+/**
+ * Per-agent workspace trust for `RUNTIME_MODE=local`, keyed by the directory
+ * the agent CLI actually runs in.
+ *
+ * A runtime table rather than an `agentId === "claude"` branch (docs/155), for
+ * the same reason {@link POST_PROVISION_CONFIG} is one. Only Claude has a row:
+ * its CLI gates a workspace's own `.claude/settings.json` `permissions.allow`
+ * entries on per-directory trust. Codex has a comparable
+ * `projects.<path>.trust_level` in `config.toml`, but ShipIt spawns it with an
+ * explicit `approvalPolicy: "never"`, so nothing is silently dropped there and
+ * it needs no row.
+ */
+const LOCAL_WORKSPACE_TRUST: Partial<Record<AgentId, (home: string, workspaceDir: string) => void>> = {
+  claude: (home, workspaceDir) => {
+    ensureClaudeWorkspaceTrusted(path.join(home, ".claude.json"), workspaceDir);
+  },
+};
+
+/**
+ * Trust `workspaceDir` in the config the local-mode `agentId` CLI reads under
+ * `home`. Idempotent and safe to call on every turn; a no-op for an agent with
+ * no row in {@link LOCAL_WORKSPACE_TRUST}.
+ *
+ * Local mode only — the caller (`session-agent-env.ts`) gates on
+ * `isLocalRuntime()`, and containerized sessions are covered by
+ * {@link ensureSessionAgentUserConfig} writing `CLAUDE_PRE_TRUSTED_DIRS` into
+ * their own per-session config instead.
+ */
+export function ensureLocalWorkspaceTrust(
+  home: string,
+  agentId: AgentId,
+  workspaceDir: string,
+): void {
+  LOCAL_WORKSPACE_TRUST[agentId]?.(home, workspaceDir);
 }
 
 function provisionAgentCredentialsFromRoot(
