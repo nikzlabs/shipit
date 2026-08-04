@@ -304,12 +304,14 @@ Requirements 1–9 are the user's words, restated as observable behavior.
 12–18 come from the user's answers and review feedback, each with a dated
 receipt under "Resolved questions" (16 came directly as a requirement, so it has
 no question to resolve). 19 came directly as a requirement on 2026-08-02 and
-likewise has no question to resolve. Requirement 20 came directly from the
-2026-08-02 parent review and is recorded above; *what* counts as legacy is design detail
-and lives in `plan.md`, not here. 21 and 22 come from the user's answers to the
-two Phase 0 questions on 2026-08-03, each with a receipt below; 21 is the user's
-own proposal (a setting rather than either fixed behavior) and is the reason 2
-and 6 were amended. 11 comes from the standing product principles in
+likewise has no question to resolve. 20 came directly from the user's
+2026-08-02 report that the brokered review path stopped at an exhausted Claude
+account despite another configured account; it explicitly closes the run-path
+scope gap in requirements 3 and 7. *What* counts as legacy is design detail and
+lives in `plan.md`, not here. 21 and 22 come from the user's answers to the two
+Phase 0 questions on 2026-08-03, each with a receipt below; 21 is the user's own
+proposal (a setting rather than either fixed behavior) and is the reason 2 and
+6 were amended. 11 comes from the standing product principles in
 `CLAUDE.md`; 10 started there and the user then specified its shape in review.
 23 came directly as a requirement on 2026-08-03, with its one ambiguity (whether
 it overrides the mid-turn refusal too) resolved by the user the same day.
