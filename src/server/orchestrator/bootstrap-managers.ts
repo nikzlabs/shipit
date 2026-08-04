@@ -185,9 +185,11 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   // ---- Runner factory ----
   // docs/150 — `localAgentFactory` + `providerAccountManager` let a local-mode
   // runner spawn its CLI against the account this session was routed to.
+  // SHI-298 — `credentialStore` is the MCP env that spawn carries, standing in
+  // for the worker secrets push local mode has no worker to receive.
   const effectiveRunnerFactory = buildRunnerFactory({
     deps, containerManager, credentialsDir, sessionManager, runtimeMode, broadcastLog,
-    oomBreaker, presentStore,
+    oomBreaker, presentStore, credentialStore,
     ...(localAgentFactory ? { localAgentFactory } : {}),
     providerAccountManager,
   });

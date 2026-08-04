@@ -41,6 +41,8 @@ import type { GitHubAuthManager } from "./github-auth.js";
 import type { ProviderAccountManager } from "./provider-account-manager.js";
 import type { LocalAgentFactory } from "./local-agent-home.js";
 import { resolveLocalAgentHome } from "./local-agent-home.js";
+import type { LocalAgentMcpDeps } from "./local-agent-mcp.js";
+import { applyLocalMcp } from "./local-agent-mcp.js";
 import { refuseIfAlreadyConnected } from "./provider-account-identity.js";
 import type { AgentRegistry } from "../shared/agent-registry.js";
 import type { AgentId, AgentProcess, LogSource, LogRingEntry } from "../shared/types.js";
@@ -312,6 +314,13 @@ export interface RunnerFactoryDeps {
   localAgentFactory?: LocalAgentFactory;
   /** docs/150 — resolves a cross-provider sub-agent spawn's account. */
   providerAccountManager?: ProviderAccountManager;
+  /**
+   * SHI-298 — local mode only. Source of the MCP env a local spawn carries
+   * (`applyLocalMcp`), standing in for the worker `PUT /secrets` push that
+   * `prepareSessionAgentEnvironment` skips outside container mode. Absent ⇒ the
+   * local runner spawns with no MCP at all, which is the pre-SHI-298 behavior.
+   */
+  credentialStore?: LocalAgentMcpDeps["credentialStore"];
 }
 
 interface CreateContainerForRunnerOpts {
@@ -546,7 +555,7 @@ export function buildRunnerFactory(
 ): SessionRunnerFactory | undefined {
   const {
     deps, containerManager, credentialsDir, sessionManager, runtimeMode, broadcastLog,
-    oomBreaker, presentStore, localAgentFactory, providerAccountManager,
+    oomBreaker, presentStore, localAgentFactory, providerAccountManager, credentialStore,
   } = factoryDeps;
 
   // Explicit injection always wins (tests, custom orchestrations).
@@ -576,11 +585,33 @@ export function buildRunnerFactory(
           credentialsDir,
           ...(providerAccountManager ? { providerAccountManager } : {}),
         };
-        runner.createAgent = (agentId: AgentId): AgentProcess =>
+        runner.createAgent = (agentId: AgentId): AgentProcess => {
           // Resolved lazily, inside the spawn: `createAgent` runs before
           // `prepareSessionAgentEnvironment` has pinned the route, and a
           // failover repoints an already-pinned session under this same runner.
-          localAgentFactory(agentId, () => resolveLocalAgentHome(o.sessionId, agentId, homeDeps));
+          const agent = localAgentFactory(agentId, () =>
+            resolveLocalAgentHome(o.sessionId, agentId, homeDeps));
+          // SHI-298 — and the same reasoning carries MCP. The worker performs
+          // two writes before a spawn (the adapter's `writeMcpConfig`, and the
+          // agent-env push that its `$secret:` resolution and the MCP children
+          // read); local mode runs neither, so the CLI spawned with no MCP at
+          // all. `applyLocalMcp` does both here, at the spawn, for the same
+          // reason HOME is resolved here rather than provisioned per session.
+          return credentialStore
+            ? applyLocalMcp(agent, {
+              credentialStore,
+              onServerFailed: (name, reason) => {
+                runner.emitMessage({
+                  type: "mcp_server_status",
+                  sessionId: o.sessionId,
+                  name,
+                  state: "failed",
+                  reason,
+                });
+              },
+            })
+            : agent;
+        };
       }
       return runner;
     };

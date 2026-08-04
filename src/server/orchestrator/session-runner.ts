@@ -1087,8 +1087,13 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
 
   /**
    * Authoritative cache of agent-emitted presentation METADATA (docs/093),
-   * mirroring the worker's PresentRegistry — no artifact bytes. Container-only:
-   * direct/in-process runners don't host the present MCP tool and omit this.
+   * mirroring the worker's PresentRegistry — no artifact bytes. Container-only,
+   * and in-process runners omit it: `present` is not a tool the agent has here.
+   * Every tool on the internal `shipit` MCP bridge is a transport to the
+   * worker's `/agent-ops/*` surface, so an in-process runner — which has no
+   * worker — is given no bridge at all rather than tools that ECONNREFUSE. See
+   * {@link LOCAL_SHIPIT_BRIDGE} in `local-agent-mcp.ts` (SHI-298), which is
+   * where that decision and its follow-up live.
    * Maintained from the SSE `present_content` / `present_cleared` stream so
    * `attachToRunner` can replay a `present_state` message to a late- or
    * re-connecting viewer whose Present tab would otherwise be empty after a
