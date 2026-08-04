@@ -38,6 +38,7 @@ import { ClaudeProcess } from "./agents/claude/process.js";
 import { ClaudeAdapter } from "./agents/claude/adapter.js";
 import { CodexAdapter } from "./agents/codex/adapter.js";
 import { registerAgentOpsRoutes } from "./agent-ops-routes.js";
+import { registerWorkerAuthGuard } from "./worker-auth-guard.js";
 import { normalizeAskQuestions } from "./ask-question.js";
 import type { OrchestratorClient } from "./orchestrator-client.js";
 import { ServiceRequestQueue } from "./service-request-queue.js";
@@ -83,6 +84,12 @@ export interface SessionWorkerDeps {
   createTerminal?: () => TerminalProcess;
   /** Factory for the worker→orchestrator client. Injectable so tests can stub the orchestrator. */
   createOrchestratorClient?: () => OrchestratorClient;
+  /**
+   * SHI-311 — the per-session token the orchestrator presents on its calls.
+   * Defaults to `SHIPIT_WORKER_TOKEN` from the container env; injectable so the
+   * guard's remote-caller behavior is testable in-process.
+   */
+  workerToken?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -102,6 +109,7 @@ export class SessionWorker extends EventEmitter {
   private workspaceDir: string;
   private stateDir: string;
   private _createOrchestratorClient?: () => OrchestratorClient;
+  private readonly _workerToken: string | undefined;
 
   // Per-concern controllers — each owns its endpoint group and the state behind
   // it. The worker wires them with a shared broadcast closure + the cross-cutting
@@ -141,6 +149,7 @@ export class SessionWorker extends EventEmitter {
       ?? process.env.SHIPIT_SESSION_STATE_DIR
       ?? CONTAINER_SESSION_STATE_DIR;
     this._createOrchestratorClient = deps.createOrchestratorClient;
+    this._workerToken = deps.workerToken;
 
     const broadcast = (event: WorkerSSEEvent): void => this.sse.broadcast(event);
 
@@ -187,6 +196,12 @@ export class SessionWorker extends EventEmitter {
 
   private buildApp(): FastifyInstance {
     const app = Fastify({ logger: false });
+
+    // SHI-311 — registered FIRST so its `onRequest` hook runs ahead of every
+    // handler below. The worker listens on 0.0.0.0 (the orchestrator dials it
+    // by bridge IP), which also puts it in reach of every other session's
+    // container; this is what keeps those callers out.
+    registerWorkerAuthGuard(app, { token: this._workerToken });
 
     app.get("/health", async () => ({ status: "ok" }));
 

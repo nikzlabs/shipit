@@ -122,9 +122,20 @@ are brokered to the container on demand — they are not handed to the agent's s
 Each session runs in its own Docker container, and ShipIt assumes the code inside it may
 be hostile.
 
-- **One container per session, on an isolated network.** Every session gets a dedicated
-  container on its own session bridge network. Sessions **cannot reach each other's
-  containers**; only the orchestrator is reachable from inside.
+- **One container per session, and a session container serves only its own session.**
+  Every session gets a dedicated container. Agent containers share the orchestrator's
+  bridge network (the orchestrator dials each worker by bridge IP), so they can *address*
+  each other at the network layer; what stops one from *driving* another is the worker's
+  own trust boundary. Each worker distinguishes its two legitimate callers: its own agent,
+  which always dials the container's loopback (unreachable from any other network
+  namespace), and the orchestrator, which presents a per-session token injected at
+  container creation. The agent's own broker routes (`/agent-ops/*`, which relay to the
+  orchestrator with the worker's trusted session id injected) and its rendered `present`
+  artifacts are **loopback-only** — a token does not open them. Everything else — the
+  terminal, agent start/kill/message, secrets push — requires the token. Without this,
+  session A could POST to B's worker and have B's worker speak to the orchestrator *as B*,
+  passing the container-origin guard below (SHI-311). See
+  `docs/251-worker-trust-boundary/`.
 - **No Docker socket in the container.** Containers never get the host Docker socket.
   Instead, `DOCKER_HOST` points at a **Docker API proxy** (`docker-proxy.ts`) that enforces
   an explicit allow-list. The proxy identifies the calling session by its unique bridge IP
@@ -180,7 +191,9 @@ be hostile.
   provider accounts, tracker connections — are additionally hard-denied for container
   origins. A prompt-injected agent therefore cannot `curl` the control plane to write
   secrets, add an MCP server, or mutate account settings. Browser callers (which never
-  arrive from a container's bridge IP) are unaffected. See `docs/201-container-api-trust-boundary/`.
+  arrive from a container's bridge IP) are unaffected. See `docs/201-container-api-trust-boundary/`,
+  and `docs/251-worker-trust-boundary/` for the matching guard at the worker end of the
+  same channel.
 - **Preview proxy guards routing.** Browser previews reach containers through a reverse
   proxy (`preview-proxy.ts`) that validates the session-ID/port from the request, resolves
   the target container IP from **server-side session state** (not user input), and rewrites

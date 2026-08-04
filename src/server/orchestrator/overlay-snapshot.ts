@@ -35,6 +35,7 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import { Readable } from "node:stream";
+import { workerAuthHeaders } from "./worker-auth.js";
 
 /**
  * Extract a tar stream into `destDir` (created if absent) via `tar -x`. Rejects on
@@ -136,7 +137,11 @@ export async function fetchDepSnapshotStream(
   signal?: AbortSignal,
 ): Promise<Readable> {
   const url = `${workerUrl}/workspace/dep-snapshot?path=${encodeURIComponent(depDir)}`;
-  const res = await fetch(url, signal ? { signal } : {});
+  // SHI-311 — orchestrator-facing worker route; carry the per-session token.
+  const res = await fetch(url, {
+    headers: workerAuthHeaders(workerUrl),
+    ...(signal ? { signal } : {}),
+  });
   if (!res.ok || !res.body) {
     // Drain so the socket is released rather than left half-read.
     await res.body?.cancel().catch(() => {});
@@ -173,7 +178,11 @@ export async function fetchWorkspaceHeadInfo(
   signal?: AbortSignal,
 ): Promise<WorkspaceHeadInfo | null> {
   try {
-    const res = await fetch(`${workerUrl}/workspace/head-commit`, signal ? { signal } : {});
+    // SHI-311 — orchestrator-facing worker route; carry the per-session token.
+    const res = await fetch(`${workerUrl}/workspace/head-commit`, {
+      headers: workerAuthHeaders(workerUrl),
+      ...(signal ? { signal } : {}),
+    });
     if (!res.ok) return null;
     const body = (await res.json()) as { commit?: string | null; runtimeKey?: string | null };
     if (typeof body.commit !== "string" || body.commit.length === 0) return null;

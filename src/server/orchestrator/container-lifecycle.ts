@@ -58,6 +58,8 @@ import {
 } from "./egress-proxy-install.js";
 import type { ResolvedEgressConfig } from "./egress-allowlist.js";
 import { readonlyRootfsTmpfs } from "./container-hardening.js";
+import { generateWorkerToken, setWorkerAuthToken, clearWorkerAuthToken } from "./worker-auth.js";
+import { WORKER_TOKEN_ENV } from "../shared/worker-auth.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -802,6 +804,14 @@ export async function createContainer(
   // Expose orchestrator API so the agent can query service status/logs
   env.push(...await buildOrchestratorCallbackEnv(config.sessionId));
 
+  // SHI-311 — the per-container secret the worker requires on every call that
+  // doesn't come from its own loopback, i.e. every orchestrator call. Fresh per
+  // container so a token learned in one session opens nothing in another; the
+  // container env is the source of truth, so an orchestrator restart re-reads it
+  // at adoption (`container-discovery.ts`) instead of needing a persisted key.
+  const workerToken = generateWorkerToken();
+  env.push(`${WORKER_TOKEN_ENV}=${workerToken}`);
+
   // Use the docker-capable image when Docker access is requested, or for ops
   // sessions (docs/128) — the agent runs `docker ps/logs/inspect` against a proxy
   // (and, for ops, `journalctl` over the journal mounts), so it needs the docker
@@ -844,6 +854,7 @@ export async function createContainer(
     sessionId: config.sessionId,
     containerIp: "",
     workerUrl: "",
+    workerToken,
     status: "starting",
     hostWorkspaceDir: config.sessionDir,
     dockerAccess: config.dockerAccess ?? false,
@@ -998,6 +1009,9 @@ export async function createContainer(
 
     sc.containerIp = networkInfo.IPAddress;
     sc.workerUrl = `http://${sc.containerIp}:${deps.workerPort}`;
+    // SHI-311 — bind the token to the base URL the transports key off. Done the
+    // moment the URL is known, before anything can dial it.
+    setWorkerAuthToken(sc.workerUrl, sc.workerToken);
 
     // docs/172 Gap 1 (SHI-90) Tier A — install the default-deny egress firewall
     // into the agent's netns via a privileged sidecar, BEFORE the container is
@@ -1163,6 +1177,10 @@ export async function createContainer(
     // them — the agent container itself isn't parent-session-labeled, so the
     // explicit stop/remove around the cleanup is still required.
     deps.containers.delete(config.sessionId);
+    // SHI-311 — same reasoning as destroyContainer: the URL may already be
+    // registered (the throw can come after the IP was resolved), and this
+    // container is going away.
+    clearWorkerAuthToken(sc.workerUrl);
     // docs/172 ordering fix — unblock any concurrent compose-join awaiter; the
     // container is being torn down, so resolving (not hanging) lets the join's
     // best-effort egress re-open fall through to its "no container" no-op.
@@ -1324,6 +1342,10 @@ export async function destroyContainer(
   if (!sc) return;
 
   sc.status = "stopping";
+  // SHI-311 — drop the token binding with the container. Bridge IPs are
+  // recycled, so a stale entry would otherwise hand the previous container's
+  // token to whatever lands on that address next.
+  clearWorkerAuthToken(sc.workerUrl);
 
   // Stop the session container first so it can't create new child resources
   try {

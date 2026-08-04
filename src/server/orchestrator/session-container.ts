@@ -202,6 +202,15 @@ export interface SessionContainer {
   containerIp: string;
   /** Worker IPC URL (e.g. http://172.18.0.3:9100). */
   workerUrl: string;
+  /**
+   * SHI-311 — the per-session token this container's worker requires on
+   * orchestrator→worker calls (injected as `SHIPIT_WORKER_TOKEN` at create,
+   * re-read from the container env on adoption). Absent for a container created
+   * before the mechanism existed, in which case its worker gates only the
+   * loopback-only routes. Registered by base URL in `worker-auth.ts`, which is
+   * where the transports read it — this field is the record, not the lookup.
+   */
+  workerToken?: string;
   /** Container lifecycle status. */
   status: "starting" | "running" | "stopping" | "stopped";
   /** Immutable build ID baked into the worker image, when labeled (docs/242). */
