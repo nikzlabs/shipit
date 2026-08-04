@@ -42,6 +42,13 @@ sub-agents inside them.
    terminal. A run that is genuinely still in flight must keep reporting
    `pending` until it really finishes.
 
+7. The change in what a waiting caller observes is intended, not incidental.
+   `shipit agent result` exits `4` ("still running") for a `pending` card and
+   `3` ("the run failed") for a terminal non-success one (docs/248). A stranded
+   card today makes a caller loop on `4` forever; after this change the same
+   caller gets `3` and stops. Anyone polling `shipit agent result` in a loop
+   must be able to rely on that loop now terminating.
+
 ## Non-requirements
 
 - Preventing orchestrator restarts, or draining in-flight consults before one.
