@@ -1163,6 +1163,53 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     expect(spawnRes.json().error).toMatch(/no remote URL/i);
   });
 
+  it("POST /spawn refuses a sandbox parent with a sandbox-specific reason", { timeout: 15_000 }, async () => {
+    // docs/211 — a sandbox has no `remoteUrl` by construction, so it lands on
+    // the same guard as the test above. The generic "register the parent's
+    // repo" wording reads as a fixable misconfiguration and sends the agent
+    // chasing a fix that doesn't exist; the sandbox path must say the
+    // capability is absent and name what does work instead.
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/_test/sessions",
+      payload: { title: "Sandbox" },
+    });
+    const { sessionId: parentId } = res.json() as { sessionId: string };
+    sessionManager.setKind(parentId, "sandbox");
+
+    const spawnRes = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "spin up a sibling", title: "Sibling" },
+    });
+    expect(spawnRes.statusCode).toBe(400);
+    const error = spawnRes.json().error as string;
+    expect(error).toMatch(/sandbox/i);
+    expect(error).not.toMatch(/no remote URL/i);
+    // Names a usable alternative rather than dead-ending.
+    expect(error).toMatch(/shipit agent run/);
+  });
+
+  it("POST /spawn --detached also refuses a sandbox parent", { timeout: 15_000 }, async () => {
+    // A detached spawn skips the parent-linkage quotas but still claims a repo,
+    // so the sandbox refusal must not be reachable only on the linked path.
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/_test/sessions",
+      payload: { title: "Sandbox" },
+    });
+    const { sessionId: parentId } = res.json() as { sessionId: string };
+    sessionManager.setKind(parentId, "sandbox");
+
+    const spawnRes = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "spin up a sibling", title: "Sibling", detached: true },
+    });
+    expect(spawnRes.statusCode).toBe(400);
+    expect(spawnRes.json().error).toMatch(/sandbox/i);
+  });
+
   // -------------------------------------------------------------------------
   // docs/205 — detached spawns (completely separate, no linkage/coordination)
   // -------------------------------------------------------------------------

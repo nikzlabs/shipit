@@ -187,6 +187,35 @@ describe("buildAgentSystemInstructions", () => {
     );
   });
 
+  // docs/211 — the per-agent "Parallel sessions" section teaches
+  // `shipit session create`, and the skeleton composes it AFTER the overlay.
+  // A sandbox can't spawn (spawning claims the parent's repo; a sandbox has
+  // none), so the sandbox overlay carries the override — which only works if
+  // the overlay lands in EVERY sandbox variant, including the ones that also
+  // get the per-agent section. Assert composition + the command token the
+  // override has to name; never the surrounding wording.
+  it("composes the sandbox overlay, which overrides the spawn guidance, into every sandbox variant", () => {
+    const fragment = fs.readFileSync(
+      new URL("./prompts/sandbox-session.md", import.meta.url),
+      "utf8",
+    ).trim();
+    // The override is only meaningful if it names the command it overrides.
+    expect(fragment).toContain("shipit session create");
+
+    const sandboxVariants: AgentSystemInstructionOptions[] = [
+      { isSandbox: true },
+      { agentId: "claude", isSandbox: true },
+      { agentId: "codex", isSandbox: true },
+    ];
+    for (const opts of sandboxVariants) {
+      expect(buildAgentSystemInstructions(opts)).toContain(fragment);
+    }
+    // ...and nowhere else: a std or ops session has a repo and can spawn.
+    expect(buildAgentSystemInstructions()).not.toContain(fragment);
+    expect(buildAgentSystemInstructions({ agentId: "claude" })).not.toContain(fragment);
+    expect(buildAgentSystemInstructions({ isOps: true })).not.toContain(fragment);
+  });
+
   it("composes each overlay with the per-agent axis into a distinct variant", () => {
     const opsClaude = buildAgentSystemInstructions({ agentId: "claude", isOps: true });
     const sandboxClaude = buildAgentSystemInstructions({ agentId: "claude", isSandbox: true });

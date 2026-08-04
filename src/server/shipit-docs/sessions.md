@@ -11,7 +11,9 @@ when the user explicitly asks for *another session*, *a parallel branch*, or
 
 > A **sandbox session** is a different shape: a repo-less workspace where you
 > clone and manage your own repos with capability toggles for git/docker/network.
-> If you are *in* one (empty `/workspace`, no PR card), see
+> If you are *in* one (empty `/workspace`, no PR card), **none of this page
+> applies**: spawning claims the parent's repo, and a sandbox has no bound repo,
+> so `shipit session create` is refused. See
 > [sandbox-session.md](sandbox-session.md).
 
 ## When to spawn a sibling session

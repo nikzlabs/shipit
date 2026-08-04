@@ -85,6 +85,15 @@
       `agent-ops-routes.test.ts` (broker forwarding), and
       `integration_tests/agent-driven-pr.test.ts` (PR built from the resolved
       clone; repo-bound unchanged; credential 403 gate).
+- [x] Stop advertising `shipit session create` to a Sandbox agent, and refuse it
+      with a sandbox-specific reason. The `PARALLEL_SESSIONS` prompt section is
+      composed on every axis, so a Sandbox agent was told to use a command that
+      always 400s ("the parent has no remote URL" — unfixable here). Override in
+      `prompts/sandbox-session.md`; sandbox-specific 400 in `spawnChildSession`;
+      agent-facing docs in `shipit-docs/sandbox-session.md` + `sessions.md`.
+      Tests: `agent-instructions.test.ts` (overlay composed into every sandbox
+      variant), `integration_tests/agent-spawned-session.test.ts` (linked +
+      `--detached` refusals).
 - [x] Docker lock-down tests: sandbox uses session proxy not `OPS_DOCKER_HOST`
       (`container-lifecycle.test.ts`), no journal/host mounts
       (`session-container.test.ts` asserts `opsSession` falsy + no `hostMounts`).

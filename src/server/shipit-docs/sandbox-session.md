@@ -67,6 +67,27 @@ EOF
 `gh` is the same brokered shim as in a normal session — a curated subset of PR
 operations, with the token never exposed. See [github.md](github.md).
 
+## Spawning sessions — not available here
+
+`shipit session create` is **refused in a sandbox**, with or without
+`--detached`. Spawning claims the *parent's* repo and branches the child off its
+freshly-fetched `origin/main`; a sandbox has no bound repo, so there is nothing
+to claim. Cloning a repo into `/workspace/<name>` does not change this — those
+clones are yours, not the session's, and ShipIt does not treat any of them as
+the session's repo.
+
+If the user asks for a separate session, say a sandbox can't spawn one and point
+them at the sidebar to start a repo-backed session. The rest of
+[sessions.md](sessions.md) — `list`, `view`, `message`, `wait`, `archive`,
+`notify-on-merge` — is likewise inapplicable, since you have no children.
+
+What still works, because neither needs a repo:
+
+- **In-turn subagents**, for parallel research or codegen you synthesize in the
+  current reply (the `Task` tool, on backends that have one).
+- **`shipit agent run --agent <id> --prompt-file -`**, to consult a different
+  agent backend one-shot. See [agent.md](agent.md).
+
 ## Persistence
 
 The workspace persists between turns and **survives idle container destruction**

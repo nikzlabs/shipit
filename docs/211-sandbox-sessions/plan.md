@@ -138,6 +138,7 @@ the absence of a remote:
 | Session-level auto-commit | Off — **explicitly** skipped for sandbox (not auto-off: `post-turn.ts` commits the session dir unconditionally today; the non-repo root would error otherwise) |
 | Branch-op blocking shim | Off — the agent owns its own branches/PRs (see PR brokering) |
 | `RELEASES` / `NEW_PROJECT` prompt fragments | Dropped, like ops |
+| Spawning sibling sessions (`shipit session create`) | Off — refused with a sandbox-specific 400 (see below) |
 | UI | PR lifecycle card replaced by the orientation banner (same chat-panel slot); side-panel Preview & PR tabs removed (Files + Terminal remain) |
 | Sidebar | Own group + badge, like the Host / Ops group |
 | Warm pool | Cheaper to warm — no clone needed |
@@ -151,6 +152,38 @@ push, and open PRs (via the repo-aware shim below). A Sandbox-specific
 into `/workspace/<name>`; ShipIt won't render previews or PR cards for these; open
 PRs per-repo with `gh` from inside each clone; the workspace persists between
 turns on disk but treat pushed state as the source of truth.
+
+### Spawning is off, and the prompt must say so
+
+`spawnChildSession` resolves the repo to claim as
+`opts.repoUrlOverride ?? parent.remoteUrl` and refuses when it is empty. A
+Sandbox has no `remoteUrl` by construction, and `repoUrlOverride` is set by
+exactly one caller (the Ops `--shipit-source` path, docs/162), so **every**
+spawn from a Sandbox fails — linked or `--detached`. That is the correct
+behavior: a spawned child is branched off the *parent's* `origin/main`, and
+there is nothing to branch from. The repos the agent clones into
+`/workspace/<name>` don't change it — those are the agent's, not the session's.
+
+Two things followed from that being an accident rather than a stated contract:
+
+- **The prompt advertised the capability anyway.** `renderInstructions` composes
+  the per-agent `PARALLEL_SESSIONS` section (which teaches
+  `shipit session create`) on every axis, sandbox included — so a Sandbox agent
+  was told to reach for a command that always 400s. The Sandbox overlay
+  (`prompts/sandbox-session.md`, composed *earlier* in the skeleton) now carries
+  an explicit override naming the command, and points at the fan-out primitives
+  that do work here — in-turn subagents and `shipit agent run`, neither of which
+  needs a repo. Pinned by `agent-instructions.test.ts` (composition + the
+  command token, not the wording).
+- **The error read as a fixable misconfiguration.** "the parent has no remote
+  URL. Spawn requires the parent's repo to be registered" invites the agent to
+  go register a repo — work that cannot succeed. A Sandbox parent now gets its
+  own 400 saying the capability is absent and naming the alternatives.
+
+The gate stays server-side rather than in the shim: `SHIPIT_SANDBOX=1` is set
+only on the Claude CLI spawn (`session/agents/claude/process.ts`), so a shim-side
+early reject would silently not apply to Codex. `spawnChildSession` covers every
+backend uniformly.
 
 ### PR brokering in a Sandbox — the shim must become repo-aware (CRITICAL)
 

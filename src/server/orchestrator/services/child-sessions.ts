@@ -282,6 +282,24 @@ export async function spawnChildSession(
   // rather than the parent's own remote (an Ops session has none).
   const claimUrl = opts.repoUrlOverride ?? parent.remoteUrl;
   if (!claimUrl) {
+    // docs/211 — a sandbox parent hits this by construction, not by
+    // misconfiguration: a sandbox has no `remoteUrl` at all (the agent clones
+    // into `/workspace/<name>` subdirs, and none of those is the session's
+    // repo). The generic message below reads as "register your repo and retry",
+    // which sends a sandbox agent chasing a fix that does not exist — so say
+    // plainly that the capability is absent here and name what does work. The
+    // sandbox system-prompt section says the same thing up front; this is the
+    // authoritative backstop for an agent that tries anyway (and it covers
+    // every backend, unlike the prompt's `SHIPIT_SANDBOX` sibling signal).
+    if (parent.kind === "sandbox") {
+      throw new ServiceError(
+        400,
+        "Cannot spawn a session from a sandbox session: spawning claims the parent's repo and " +
+          "branches the child off it, and a sandbox has no repo bound to it. " +
+          "Do the work in this session, or ask the user to start a repo-backed session from the sidebar. " +
+          "In-turn subagents and `shipit agent run` need no repo and still work here.",
+      );
+    }
     throw new ServiceError(
       400,
       "Cannot spawn a child session: the parent has no remote URL. Spawn requires the parent's repo to be registered.",
