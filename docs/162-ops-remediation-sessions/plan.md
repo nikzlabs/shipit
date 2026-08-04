@@ -1,4 +1,5 @@
 ---
+issue: https://linear.app/shipit-ai/issue/SHI-305
 description: Give Ops sessions read-only ShipIt source access for diagnosis, then spawn targeted repo-backed fix sessions that can open normal PRs.
 ---
 
@@ -221,6 +222,34 @@ The child owns all file edits, tests, commits, pushes, and PR creation. The Ops
 parent can `view`, `wait`, and `message` the child using existing spawned
 session controls, but it cannot read the child's filesystem directly or push its
 branch.
+
+**Archiving the Ops session does not archive its fix sessions.** `archiveSession`
+normally cascades through a session's whole spawn brood (docs/117/201): a
+spawned cohort is one unit of work, so hiding the root hides the fan-out. An Ops
+session is not that shape. It is a long-lived per-host cockpit whose children are
+independent remediation sessions on the *ShipIt source repo*, each with its own
+branch and (usually) an open PR, spawned across unrelated incidents. Archiving
+the cockpit — routine after an incident, or to recreate it against a new host —
+says nothing about the fixes it started, so the cascade would force-dispose
+running agents and delete workspaces the operator still needs. `archiveSession`
+therefore skips the child loop when `session.kind === "ops"`.
+
+The child keeps its `parent_session_id` breadcrumb rather than being detached, so
+nothing is lost when the Ops session is unarchived. The consequences of a
+dangling-but-archived parent are already handled:
+
+- **Sidebar** — `SessionGroup.tsx` renders a session whose root isn't visible in
+  its repo group at top level (the orphan fallback), and a fix session is in the
+  ShipIt-source repo group anyway, not the Ops one.
+- **Merged-view cap** — the parent/child exemption keys off *live* roots, so an
+  archived Ops parent stops pinning its brood open and each fix session is capped
+  on its own merits.
+- **Merge watch** — `handleChildPrTerminal` already drops a watch whose parent is
+  archived, so a fix session whose Ops parent went away simply loses the
+  merge-notification wake-turn and keeps its work.
+
+The exemption is scoped to the Ops session itself: an ordinary session inside the
+brood still cascades to its own descendants when archived.
 
 ### Read-Only Access Without Write Access
 

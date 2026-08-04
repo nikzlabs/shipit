@@ -563,6 +563,9 @@ export function reorderSessionPins(
  * mount pinned to the about-to-be-unlinked inode. After unarchive re-clones
  * a fresh inode at the same path, reconnects to the orphan container see
  * an empty `/workspace`. Optional only so tests without Docker can omit it.
+ *
+ * Archiving cascades through the session's whole spawn brood — except for an
+ * Ops session, which never cascades (see the comment at the cascade loop).
  */
 export async function archiveSession(
   sessionManager: SessionManager,
@@ -589,6 +592,8 @@ export async function archiveSession(
   inProgress = new Set<string>(),
 ): Promise<{ sessions: SessionInfo[] }> {
   inProgress.add(sessionId);
+  const session = sessionManager.get(sessionId);
+
   // Cascade to children first. A spawned child is an independent session
   // (own workspace, branch, container) but it references the parent via
   // `parent_session_id`; leaving children alive after the parent disappears
@@ -596,21 +601,35 @@ export async function archiveSession(
   // means grandchildren are handled by the same path. Children are otherwise
   // never archived automatically (see `markMergedAndPruneExcess`) — they only
   // go away via explicit action on the child, or this cascade from the parent.
-  for (const child of sessionManager.findChildren(sessionId)) {
-    if (inProgress.has(child.id)) continue; // cycle / already in this cascade
-    await archiveSession(
-      sessionManager,
-      runnerRegistry,
-      getBareCacheDir,
-      child.id,
-      pruneVolumes,
-      containerManager,
-      removeSessionLogs,
-      inProgress,
-    );
+  //
+  // EXCEPTION — an Ops session (docs/128) never cascades (docs/162). An Ops
+  // session is a per-host cockpit, not the root of a cohort: its children are
+  // remediation sessions on the *ShipIt source repo*, carrying their own branch
+  // and (usually) an open PR, spawned across unrelated incidents. Archiving the
+  // cockpit — routine after an incident, or to recreate it against a new host —
+  // is a statement about the cockpit, not about the fixes it started, so the
+  // cascade would force-dispose running agents and delete workspaces the
+  // operator still needs. The child keeps its `parent_session_id` breadcrumb:
+  // the sidebar already renders a child whose root isn't visible at top level
+  // (`SessionGroup.tsx` orphan fallback), the merged-view-cap exemption keys off
+  // *live* roots so an archived Ops parent stops pinning its brood open, and
+  // unarchiving the Ops session re-links the tree as it was. Ops children are
+  // reachable and archivable on their own, exactly like any other session.
+  if (session?.kind !== "ops") {
+    for (const child of sessionManager.findChildren(sessionId)) {
+      if (inProgress.has(child.id)) continue; // cycle / already in this cascade
+      await archiveSession(
+        sessionManager,
+        runnerRegistry,
+        getBareCacheDir,
+        child.id,
+        pruneVolumes,
+        containerManager,
+        removeSessionLogs,
+        inProgress,
+      );
+    }
   }
-
-  const session = sessionManager.get(sessionId);
 
   // Signal the compose-stop hook (in app-lifecycle.ts's setupServiceManager
   // disposed handler) to drop the stack's named volumes. Archive is a
