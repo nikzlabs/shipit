@@ -324,7 +324,7 @@ These were open questions; the following are the settled answers.
 
 ## Still open
 
-- **Server-side delivery ack.** The delivery signal today is client-local
+- **Server-side delivery ack** (tracked in SHI-312). The delivery signal today is client-local
   (`useWebSocket.send`'s boolean). It catches every `readyState !== OPEN` drop
   but not the zombie-socket case, where a backgrounded mobile socket still reads
   OPEN after the OS killed the connection and `ws.send()` "succeeds" locally
