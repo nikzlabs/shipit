@@ -18,15 +18,19 @@
 - [x] Use the contextual GitHub credential and let GitHub enforce repository access; do not add a separate per-viewer tracker ACL.
 - [x] Keep private issue titles out of pushed branch names and public PR titles.
 - [x] Preserve each active code repository's GitHub Issues as a distinct tracker destination.
-- [ ] Decide how historical references and Undo actions behave after the configured private repository changes or is removed.
+- [x] Decide how historical references and Undo actions behave after the configured private repository changes or is removed.
 - [x] Validate on connection and rely on ordinary GitHub authorization afterward; do not add proactive polling.
-- [x] Create missing priority-convention labels on demand for user-requested priority changes.
+- [x] Name the destination with an explicit `--repo owner/name` on the existing `github` tracker rather than a new tracker identity.
+- [x] Move priority-label writes out of this feature (SHI-310, both GitHub destinations).
 
 ## Implementation
 
 - [ ] Convert the resolved decisions into implementation acceptance tests.
 - [ ] Preserve structured repository identity through parsing and all issue operations.
-- [ ] Add private tracker repository configuration and permission validation.
+- [ ] Add `--repo owner/name` to `shipit issue`, the `/agent-ops/issue/*` schema, and the HTTP routes; no-`--repo` keeps meaning the session's code repo.
+- [ ] Parse the `issues.trackers` block in `shipit.yaml`; warn on malformed entries rather than failing the session.
+- [ ] Widen `TrackerId` for derived `github:owner/repo` ids; make `GitHubTracker`'s id/label configurable; register one tracker per declaration.
+- [ ] Render a declared tracker as its own Issues tab, with reachability failures inline on that tab.
 - [ ] Represent unsupported normalized operations and GitHub feature differences honestly.
 - [ ] Add same-numbered code/tracker repository regression coverage.
 - [ ] Add repository-qualified deduplication, lifecycle-card, and persisted effect keys.
