@@ -179,6 +179,40 @@ describe("Integration: lazy bodies on a live turn (SHI-267)", () => {
     client.close();
   });
 
+  it("a mid-turn reconnect no longer re-sends the bodies a boundary already committed (SHI-297)", async () => {
+    // The third browser-facing path. The snapshot is built from the runner's
+    // in-memory groups, so it can't tell "on disk" from "in memory" on its own
+    // and used to ship the whole turn whole — re-sending, on every switch back,
+    // exactly the megabytes the history path had just removed.
+    //
+    // The turn above has passed one tool-result boundary, so the Write input IS
+    // committed by now; the snapshot must say so AND the fetch behind it must
+    // work, which is the pair that makes stripping legal at all.
+    const { client, sessionId } = await runTurnWithToolResult();
+    client.close();
+    await new Promise((r) => setTimeout(r, 100));
+
+    const back = await TestClient.connect(port, sessionId);
+    const replayed: Record<string, unknown>[] = [];
+    try {
+      for (let i = 0; i < 40; i++) replayed.push(await back.receive(300) as unknown as Record<string, unknown>);
+    } catch { /* drained */ }
+
+    const snapshot = replayed.find((m) => m.type === "turn_snapshot") as unknown as {
+      messages: { toolUse?: { id: string; input: Record<string, unknown>; bodyTruncated?: true }[] }[];
+    };
+    expect(snapshot).toBeDefined();
+
+    const write = snapshot.messages.flatMap((m) => m.toolUse ?? []).find((t) => t.id === "write-live")!;
+    expect(write.bodyTruncated).toBe(true);
+    expect(write.input.content).toBeUndefined();
+
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/tool-inputs/write-live` });
+    expect(res.statusCode).toBe(200);
+    expect((res.json() as { content: string }).content).toBe(FILE_BODY);
+    back.close();
+  });
+
   it("persists the whole body even though the wire copy was emptied", async () => {
     // The projection must never reach the write path: the emitted event and the
     // persisted row are built from the same object, so an in-place projection

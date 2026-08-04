@@ -1,8 +1,9 @@
 /**
  * Fetch endpoints for the bodies the docs/244 projection strips from the
  * transcript payload (SHI-267). Each one is hit when the user opens the view
- * that actually shows the body — "Show all N lines", the diff modal, or an
- * image — so the transcript itself never carries them.
+ * that actually shows the body — "Show all N lines", the diff modal, an image,
+ * or a sub-agent consult's output viewer (SHI-297) — so the transcript itself
+ * never carries them.
  *
  * These read `ChatHistoryManager.load()` directly rather than the projected
  * `getChatHistory`, because the whole point is to return what the projection
@@ -127,6 +128,31 @@ export function registerLazyBodyRoutes(app: FastifyInstance, deps: ApiDeps): voi
         }
       }
       reply.code(404).send({ error: "Tool input not found" });
+    },
+  );
+
+  // GET /api/sessions/:id/sub-agent-consults/:cardId — the consult's full output.
+  //
+  // SHI-297 — the card face draws a 140-character preview line and the rest is
+  // modal-only, so the wire copy carries only the preview. Served from the
+  // persisted card, which is always whole: `projectConsultCardForWire` runs on
+  // the serve path, and `updateSubAgentConsultCard` (a read-modify-write updater
+  // over `fromRow`) would otherwise write a preview back over the real output.
+  app.get<{ Params: { id: string; cardId: string } }>(
+    "/api/sessions/:id/sub-agent-consults/:cardId",
+    async (request, reply) => {
+      if (!deps.sessionManager.get(request.params.id)) {
+        reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      const card = deps.chatHistoryManager
+        .listSubAgentConsultCards(request.params.id)
+        .find((c) => c.cardId === request.params.cardId);
+      if (!card) {
+        reply.code(404).send({ error: "Sub-agent consult not found" });
+        return;
+      }
+      reply.send({ outputMarkdown: card.outputMarkdown ?? "" });
     },
   );
 

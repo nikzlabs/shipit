@@ -46,6 +46,7 @@ import { stripAnsi } from "../shared/strip-ansi.js";
 import { SseConnectionManager } from "./sse-connection-manager.js";
 import { BackgroundTaskTracker, type BackgroundTaskInfo } from "./background-task-tracker.js";
 import { TurnAccumulator } from "./turn-accumulator.js";
+import type { CommittedBodyIds } from "./transcript-projection.js";
 import { TerminalBufferManager } from "./terminal-buffer-manager.js";
 
 // ---------------------------------------------------------------------------
@@ -418,6 +419,9 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   get recordedCards(): RecordedChatCard[] { return this.turn.recordedCards; }
   set recordedCards(m: RecordedChatCard[]) { this.turn.recordedCards = m; }
+
+  /** docs/244 / SHI-297 — stable reference, mutable contents. */
+  get committedBodyIds(): CommittedBodyIds { return this.turn.committedBodyIds; }
 
   get agentId(): AgentId { return this._agentId; }
   set agentId(id: AgentId) { this._agentId = id; }

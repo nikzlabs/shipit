@@ -252,6 +252,38 @@ describe("runSubAgent — happy path", () => {
     expect(res.spawnId).toBe(card?.spawnId);
   });
 
+  it("emits a long consult as its preview line while persisting the whole output (docs/244, SHI-297)", async () => {
+    // The card face draws one 140-character line and the viewer is a click away,
+    // so under requirement 1 the rest doesn't belong on the wire. What must NOT
+    // change is the stored copy: it is what the fetch endpoint serves and what
+    // `shipit agent result` reads back, so SHI-245's "one artifact, two
+    // surfaces" still holds — the preview is a transport detail, not a second
+    // extraction.
+    const review = Array.from({ length: 300 }, (_, i) => `finding ${i}`).join("\n");
+    const { deps, emitMessage, replaceInProgress } = makeDeps({
+      spawnResult: { status: "success", text: review, truncated: false, durationMs: 900_000, costUsd: 0 },
+    });
+
+    const res = await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+
+    const emitted = emitMessage.mock.calls
+      .map((c) => c[0] as { type: string; card?: { outputMarkdown?: string; outputTruncated?: true } })
+      .filter((m) => m.type === "sub_agent_consult_card")
+      .at(-1)?.card;
+    expect(emitted?.outputTruncated).toBe(true);
+    expect(emitted?.outputMarkdown).not.toContain("finding 299");
+
+    // The caller still gets the whole thing…
+    expect(res.text).toBe(review);
+    // …and so does chat history, which is where the fetch resolves against.
+    const persistedCard = replaceInProgress.mock.calls
+      .map((c) => c[1] as { subAgentConsult?: { outputMarkdown?: string; outputTruncated?: true } }[])
+      .at(-1)
+      ?.find((m) => m.subAgentConsult);
+    expect(persistedCard?.subAgentConsult?.outputMarkdown).toBe(review);
+    expect(persistedCard?.subAgentConsult?.outputTruncated).toBeUndefined();
+  });
+
   it("forwards the invoked agent's global reasoning + model defaults to the spawn (docs/217)", async () => {
     const { deps, runner } = makeDeps({ subAgentDefaults: { reasoningEffort: "high", model: "gpt-5.5" } });
     await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });

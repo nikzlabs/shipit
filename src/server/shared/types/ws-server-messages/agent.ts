@@ -131,8 +131,13 @@ export interface WsMessageSteered {
    * Attachments the user sent with the steer. Same shapes that chat history
    * persists for user messages — so reconnecting viewers / other tabs render
    * the steered bubble identically to a reloaded one.
+   *
+   * docs/244 / SHI-297 — that parity now includes the body bound: the echo
+   * carries a content-addressed `src` rather than the base64 `data`, exactly as
+   * the history path does. The steered row is persisted BEFORE this message is
+   * emitted, so the image is fetchable the moment the URL is on the wire.
    */
-  images?: { data: string; mediaType: string }[];
+  images?: { data?: string; mediaType: string; src?: string }[];
   files?: { path: string; contentPreview: string; startLine?: number; endLine?: number }[];
   uploadPaths?: string[];
   agentInterface?: AgentInterfaceProvenance;

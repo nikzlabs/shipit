@@ -33,6 +33,14 @@ export { runDispatchedTurn };
 // lives outside this file to keep the import graph acyclic.
 import { trySteerDispatch } from "./dispatch-steering.js";
 import { resetVoiceNoteTurnState } from "./voice/voice-note-router.js";
+// docs/244 / SHI-297 — the committed-body marker the reconnect snapshot reads.
+// `transcript-projection.ts` imports only TYPES from this module, so this edge
+// is one-way at runtime.
+import {
+  createCommittedBodyIds,
+  clearCommittedBodyIds,
+  type CommittedBodyIds,
+} from "./transcript-projection.js";
 
 // docs/240 — the branded prepared-dispatch producers and the turn settlement.
 // `prepared-dispatch.ts` imports only TYPES from this module, so the runtime
@@ -774,6 +782,9 @@ export function resetRunnerTurnState(runner: SessionRunnerInterface): void {
   runner.recordedCards = [];
   runner.wasInterrupted = false;
   runner.pendingCommitLink = null;
+  // docs/244 / SHI-297 — nothing of the new turn is on disk yet, so no body of
+  // it may leave the reconnect snapshot until a boundary writes it.
+  clearCommittedBodyIds(runner.committedBodyIds);
   // docs/144 — reset the per-turn sub-agent spawn budget at primary-turn start.
   runner.subAgentSpawnsThisTurn = 0;
   // docs/163 — clear per-turn voice-note state (authored flag + attention cap).
@@ -1062,6 +1073,14 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   /** Index into the turn event buffer up to which events have been persisted to chat history.
    *  On viewer attach, only events after this index need to be replayed. */
   lastPersistedBufferIndex: number;
+  /**
+   * docs/244 / SHI-297 — which of the running turn's heavy bodies are already on
+   * disk, so the reconnect `turn_snapshot` can strip the committed prefix
+   * instead of re-sending the whole turn whole. Maintained by
+   * `markMessagesCommitted` at each `replaceInProgress`, cleared at turn start.
+   * A stable reference with mutable contents — never reassigned.
+   */
+  readonly committedBodyIds: CommittedBodyIds;
 
   // Detected ports (per-session)
   detectedPorts: number[];
@@ -1275,6 +1294,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private static readonly MAX_TURN_BUFFER = 1000;
   private static readonly MAX_QUEUE_SIZE = 50;
   lastPersistedBufferIndex = 0;
+  readonly committedBodyIds = createCommittedBodyIds();
   private _viewerCount = 0;
   private _detectedPorts: number[] = [];
   private _disposed = false;

@@ -3,6 +3,7 @@ import { emitChatCard, recordChatCard, updateRecordedCard, persistCardTransition
 import type { SessionRunnerInterface } from "./session-runner.js";
 import type { PersistedMessage } from "./chat-history.js";
 import type { WsServerMessage } from "../shared/types.js";
+import { createCommittedBodyIds } from "./transcript-projection.js";
 
 /**
  * The anti-footgun contract: a transcript card emitted via `emitChatCard` is
@@ -44,6 +45,9 @@ function fakeRunner(groups: { text: string; toolUse: unknown[] }[] = []): {
     steeredMessages: [],
     getTurnEventBuffer: () => [...turnEventBuffer],
     lastPersistedBufferIndex: 0,
+    // docs/244 / SHI-297 — the real runner's committed-body marker, which
+    // `persistTurnInProgress` fills in as it writes.
+    committedBodyIds: createCommittedBodyIds(),
   } as unknown as SessionRunnerInterface;
   return { runner, emitted, persisted, appended, chatHistoryManager };
 }
@@ -99,6 +103,29 @@ describe("chat-card-persistence", () => {
     // the cursor must point past BOTH so neither is replayed over the snapshot.
     expect(runner.getTurnEventBuffer()).toHaveLength(emitted.length);
     expect(runner.lastPersistedBufferIndex).toBe(runner.getTurnEventBuffer().length);
+  });
+
+  it("persistTurnInProgress records what it wrote as committed (docs/244, SHI-297)", () => {
+    // The reconnect snapshot may only strip a body once the row holding it is on
+    // disk. `persistTurnInProgress` is one of the two writers that puts a turn
+    // there (the tool-result boundary is the other), so it is also where the
+    // marker has to be set — from the list it actually wrote, not from the live
+    // groups, which keep accumulating after the write.
+    const { runner, chatHistoryManager } = fakeRunner([
+      {
+        text: "writing",
+        toolUse: [{ type: "tool_use", id: "w1", name: "Write", input: { content: "x" } }],
+      },
+    ]);
+    (runner.chatMessageGroups[0] as { toolResults?: unknown[] }).toolResults = [
+      { toolUseId: "w1", content: "ok" },
+    ];
+    runner.committedBodyIds.toolInputs.clear();
+
+    persistTurnInProgress(chatHistoryManager, runner, "s1");
+
+    expect(runner.committedBodyIds.toolInputs.has("w1")).toBe(true);
+    expect(runner.committedBodyIds.toolResults.has("w1")).toBe(true);
   });
 
   describe("emitChatCard — a card that lands AFTER its turn finalized", () => {

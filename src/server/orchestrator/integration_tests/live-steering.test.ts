@@ -34,6 +34,7 @@ import {
 import type { CredentialStore } from "../credential-store.js";
 import { DatabaseManager } from "../../shared/database.js";
 import { testDispatch } from "./dispatch-test-helpers.js";
+import { imageHash } from "../transcript-projection.js";
 
 type AnyMsg = any;
 
@@ -134,6 +135,50 @@ describe("Integration: live steering (docs/140)", () => {
     // (its default `sendUserMessage` proxies to `writeStdin` for parity with
     // production adapters).
     expect(claude.stdinData).toContain("Steer me");
+
+    client.close();
+  });
+
+  it("echoes a steered image as a content-addressed URL, not base64 (docs/244, SHI-297)", async () => {
+    // The `message_steered` echo is a browser-facing transcript path of its own:
+    // it bypasses `projectMessagesForWire` entirely, so a pasted screenshot went
+    // out in full even though every other delivery of the same row had been
+    // stripped to a URL since docs/244.
+    //
+    // Safe to fix here specifically because the ordering already holds — the row
+    // is recorded and persisted BEFORE the echo is emitted — which is the
+    // invariant every strip in this feature turns on.
+    const png = Buffer.from("steered-png-bytes").toString("base64");
+
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "First message" });
+    const claude = await waitForClaude(() => lastClaude);
+    claude.initSession("steer-image-session");
+
+    client.send({
+      type: "send_message",
+      text: "look at this",
+      images: [{ data: png, mediaType: "image/png" }],
+    });
+
+    const steered = await drainUntil(client, (m) => m.type === "message_steered");
+    expect(steered.images).toHaveLength(1);
+    expect(steered.images[0].data).toBeUndefined();
+    expect(steered.images[0].src).toBe(`/api/sessions/${client.sessionId}/images/${imageHash(png)}`);
+    expect(steered.images[0].mediaType).toBe("image/png");
+
+    // The URL resolves the moment it is on the wire, and storage keeps the bytes.
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/sessions/${client.sessionId}/images/${imageHash(png)}`,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.rawPayload.toString("base64")).toBe(png);
+
+    const stored = chatHistoryManager.load(client.sessionId) as { images?: { data?: string }[] }[];
+    expect(stored.some((m) => m.images?.some((i) => i.data === png))).toBe(true);
 
     client.close();
   });

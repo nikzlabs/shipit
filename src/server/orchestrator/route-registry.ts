@@ -615,6 +615,10 @@ export async function registerRoutes(
             // through `getChatHistory`, so it is its own projection site;
             // without this a mid-turn reconnect re-sent every heavy body the
             // history path had just stripped.
+            //
+            // SHI-297 — `committedBodyIds` says which half of the in-flight turn
+            // a boundary has already written, so the already-committed prefix is
+            // stripped too and only the genuinely in-memory tail ships whole.
             messages: projectTurnSnapshotForWire(
               runner.sessionId,
               buildTurnMessages(
@@ -623,6 +627,7 @@ export async function registerRoutes(
                 runner.recordedCards,
                 { inProgress: true },
               ),
+              runner.committedBodyIds,
             ),
           });
         }

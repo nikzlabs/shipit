@@ -9,6 +9,7 @@ import { resolveRunner } from "./resolve-runner.js";
 import { shouldSteerMessage } from "../dispatch-steering.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
 import { agentAuthenticationError, isAgentAuthenticated } from "../services/agent-auth-gate.js";
+import { imageHash, imageUrl } from "../transcript-projection.js";
 
 // Re-export all public symbols from sub-modules for backwards compatibility
 export { CONTEXT_WINDOW_TOKENS, wireAgentListeners, extractToolResults } from "./agent-listeners.js";
@@ -267,13 +268,24 @@ export async function handleSendMessage(
             });
             persistTurnInProgress(ctx.chatHistoryManager, runnerForQueue, capturedSessionId);
           }
-          // Broadcast message_steered so all viewers (including other tabs) see it
+          // Broadcast message_steered so all viewers (including other tabs) see it.
+          //
+          // docs/244 / SHI-297 — the echo goes out projected: base64 payloads are
+          // replaced by the same `/images/:hash` URLs `projectMessagesForWire`
+          // builds, so a steered screenshot doesn't cross the wire twice (once
+          // here, once on every later history load). Safe by ordering rather than
+          // by assumption — `recordSteeredMessage` + `persistTurnInProgress`
+          // above have already written the row this URL resolves against, which
+          // is the invariant every strip in this feature turns on.
           if (capturedSessionId) {
             runnerForQueue.emitMessage({
               type: "message_steered",
               text: msg.text,
               sessionId: capturedSessionId,
-              images: historyImages,
+              images: historyImages?.map((img) => ({
+                mediaType: img.mediaType,
+                src: imageUrl(capturedSessionId, imageHash(img.data)),
+              })),
               files: historyFiles,
               uploadPaths: steerUploadPaths,
             });

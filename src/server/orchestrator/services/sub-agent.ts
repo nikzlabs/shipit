@@ -46,6 +46,7 @@ import {
   type InProgressPersister,
 } from "../chat-card-persistence.js";
 import { WorkerAbortedError, WorkerTimeoutError } from "../worker-http.js";
+import { projectConsultCardForWire } from "../transcript-projection.js";
 import {
   provisionSubAgentCredentials,
   provisionProviderAccountCredentials,
@@ -324,7 +325,15 @@ export async function runSubAgent(
    */
   const finalizeConsultCard = (card: SubAgentConsultCard) => {
     const live = deps.runnerRegistry.get(sessionId) ?? runner;
-    live.emitMessage({ type: "sub_agent_consult_card", sessionId, card });
+    // docs/244 / SHI-297 — persist BEFORE emitting, and emit the projected copy.
+    // The card face draws one 140-character preview line and puts the rest of the
+    // output behind a click, so the wire copy carries only that line plus
+    // `outputTruncated`, and `SubAgentConsultCardRow` fetches the full markdown
+    // when the viewer opens. Both halves of that are load-bearing: the stored
+    // card must stay WHOLE (it is what `shipit agent result` reads back, and what
+    // the fetch endpoint serves), and it must be on disk before the URL implying
+    // it exists reaches a browser. Either branch of `persistCardTransition`
+    // writes it synchronously, so returning from this call is enough.
     let persisted = true;
     persistCardTransition(
       live,
@@ -333,6 +342,11 @@ export async function runSubAgent(
       (m) => ({ ...m, subAgentConsult: card }),
       () => { persisted = deps.chatHistoryManager.updateSubAgentConsultCard(sessionId, cardId, card); },
     );
+    live.emitMessage({
+      type: "sub_agent_consult_card",
+      sessionId,
+      card: projectConsultCardForWire(card),
+    });
     console.log(
       `[sub-agent] finished session=${sessionId} spawn=${spawnId} card=${cardId} agent=${subAgentId} `
       + `status=${card.status} durationMs=${card.durationMs ?? 0} costUsd=${card.costUsd ?? 0} `

@@ -73,6 +73,14 @@ export interface SubAgentConsultCard {
    * transport-failure card (no output was produced) and on empty output.
    */
   outputMarkdown?: string;
+  /**
+   * docs/244 / SHI-297 — set on the SERVE path only: `outputMarkdown` carries
+   * just the one-line preview the card face draws, and the full text is fetched
+   * from `/api/sessions/:id/sub-agent-consults/:cardId` when the viewer opens.
+   * Never persisted — the stored card always holds the whole output, which is
+   * what `shipit agent result` reads.
+   */
+  outputTruncated?: true;
   createdAt: string;
 }
 

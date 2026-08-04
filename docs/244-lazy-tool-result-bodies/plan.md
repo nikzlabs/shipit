@@ -36,9 +36,11 @@ visible without a click*. There is no byte target to tune against.
 > used to read as though it did** (correction from the independent review,
 > 2026-08-04). Four things still transfer without a click: modal-only results
 > at or under the 200-byte floor, every tool input that is not Edit/Write,
-> `sub_agent_consult_card.outputMarkdown`, and the full-resolution bytes behind
-> each 96×96 image thumbnail. The live and reconnect paths relax it further.
-> All are listed in `checklist.md` → *Known gaps*; the two that were
+> ~~`sub_agent_consult_card.outputMarkdown`~~ (fixed, SHI-297), and the
+> full-resolution bytes behind each 96×96 image thumbnail. ~~The live and
+> reconnect paths relax it further.~~ The reconnect path no longer relaxes it
+> for the committed part of a turn (SHI-297); the live path still does, and
+> must. All are listed in `checklist.md` → *Known gaps*; the two that were
 > undisclosed are SHI-291 and SHI-292. The criterion stands as the goal — the
 > claim that the design achieves it does not.
 
@@ -253,6 +255,54 @@ through the ordinary bound. With this change it goes further and ships no body
 at all, since nothing renders its result content either.
 
 
+## The five browser-facing paths (SHI-297)
+
+The design named three projection sites. Two more carry transcript payload of
+their own and reach the browser without passing through any of them — a
+side-channel emit is exactly the shape that keeps slipping past this feature
+(`CLAUDE.md`'s card-persistence contract has the same recurring failure). All
+five are now projected, and the rule is the same everywhere: **a body may only
+leave the wire once the row holding it is committed.**
+
+| Path | What it carries | When the row lands |
+|---|---|---|
+| `getChatHistory` | everything | already on disk — read came from the DB |
+| live `agent_event` | top-level tool results | same tick as the emit |
+| `turn_snapshot` | the in-flight turn | partly on disk — see below |
+| `message_steered` | the steered user row's images | before the emit, by ordering |
+| `sub_agent_consult_card` | the consult's output | before the emit, by ordering |
+
+### The snapshot's committed prefix
+
+The snapshot is built from `runner.chatMessageGroups`, half of which a boundary
+has already written. It used to take the conservative option for all of it and
+re-send every committed tool input and nested subagent result on each reconnect.
+`CommittedBodyIds` (`transcript-projection.ts`) records what each
+`replaceInProgress` actually wrote, so only the genuinely in-memory tail stays
+inline.
+
+It is an **id set, not a "committed up to event N" cursor**, because groups are
+mutated in place after they are persisted — `attachToolResultsToGroup`,
+`attachSubagentToolResults`, and the standalone-merge branch of
+`accumulateAssistantGroups` all append to a group a boundary already wrote. So a
+group index cannot express "every body in here is on disk"; an id can. Inputs
+and results are tracked in **separate** sets even though they share an id, since
+a subagent's `tool_use` reaches disk at a boundary its result skips entirely.
+
+The set is filled from the message list actually written, so it can only
+under-report: a missed call site costs bytes, never a 404. Live nested subagent
+results remain unprojected and correct — nothing has written them at emit time.
+
+### The consult card
+
+`projectConsultCardForWire` replaces `outputMarkdown` with the one-line preview
+the card face draws and sets `outputTruncated`; the viewer fetches the rest.
+`subAgentPreviewLine` is **shared with the client** rather than reimplemented —
+the server now builds the line the client used to derive, and a byte-different
+preview would change the card face on reload. The stored card stays whole, which
+is what keeps SHI-245's "the agent's copy and the user's copy are one artifact"
+true: the preview is transport, not a second extraction.
+
 ## Key files
 
 Added by this feature:
@@ -260,15 +310,20 @@ Added by this feature:
 * `src/server/shared/transcript-slice.ts` — `sliceBody`, `TRANSCRIPT_SLICE_LINES` (40), `TRANSCRIPT_SLICE_BYTES` (16 KB); UTF-8-safe, dependency-free so the client can import the constants
 * `src/server/shared/transcript-slice-tools.ts` — `SUBAGENT_TOOL_NAMES`, the one exemption set, re-exported by `visual-elements.ts` so the renderer and the projection cannot disagree
 * `src/server/orchestrator/transcript-projection.ts` — the serve-path projection: `projectMessagesForWire` (history), `projectAgentEventForWire` (live), `projectToolResult`, `projectToolUse`, `imageHash`
-* `src/server/orchestrator/api-routes-lazy-bodies.ts` — the three fetch endpoints; scans top-level *and* `subagent_events`
+* `src/server/orchestrator/api-routes-lazy-bodies.ts` — the four fetch endpoints (results, inputs, images, sub-agent consults); scans top-level *and* `subagent_events`
 
 Touched:
 
 * `src/server/orchestrator/services/session.ts` — `getChatHistory`, the history projection site
 * `src/server/orchestrator/ws-handlers/agent-listeners.ts` — live emit site; projects the wire copy only, `event` stays whole for persistence
-* `src/server/orchestrator/route-registry.ts` — `turn_snapshot`, the reconnect projection site (req 6)
+* `src/server/orchestrator/route-registry.ts` — `turn_snapshot`, the reconnect projection site (req 6); passes `runner.committedBodyIds`
+* `src/server/orchestrator/session-runner.ts` + `turn-accumulator.ts` — `committedBodyIds`, cleared by `resetRunnerTurnState` (SHI-297)
+* `src/server/orchestrator/chat-card-persistence.ts` — `persistTurnInProgress` marks what it wrote
+* `src/server/orchestrator/services/sub-agent.ts` — the consult card: persist whole, emit projected (SHI-297)
+* `src/client/components/MessageList/cards/SubAgentCards.tsx` — fetch-on-open for the consult output
 * `src/server/orchestrator/chat-history.ts` — `PersistedMessage`, `fromRow` (do not slice here)
 * `src/server/orchestrator/ws-handlers/agent-event-normalizer.ts` — `extractToolResults`, the uncapped persist path
+* `src/server/orchestrator/ws-handlers/send-message.ts` — the `message_steered` echo, projected in place (SHI-297)
 * `src/server/orchestrator/api-routes-session-spawn.ts:85` — `GET /api/sessions/:id/history`
 * `src/client/components/ToolResult.tsx` — the four preview/expand render paths
 * `src/client/components/DiffBlock.tsx` — the `+N -M` summary and the diff modal
