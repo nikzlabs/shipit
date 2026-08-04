@@ -72,3 +72,20 @@
       never-dispatched manager reaches the same verdict), plus the manager-side and
       turn-lifecycle halves in `merge-watch.test.ts` /
       `integration_tests/turn-settlement.test.ts`
+
+## Fix D — the stuck-running recovery is a terminal path (SHI-280)
+
+- [x] `turn_abandoned` runner event; `dispatchOnRunner` settles the abandoned turn as
+      `dropped` through the same chained-callback path as `disposed`
+- [x] `verifyRunningState` clears `activeDeliveryId` BEFORE reporting (a stale `true`
+      reads as "never retry"), then releases the queue
+- [x] `releaseQueuedTurn` in `queue-drain.ts` — one implementation shared by the
+      stuck-running recovery and `drainQueueForSession`, so the released entry keeps
+      `systemTurn` / `postTurn` / `onTurnComplete` / `deliveryId` by construction
+- [x] `idle` emitted only when nothing was released (a released turn means not idle)
+- [x] `send-message.ts` re-reads `runner.running` after the verify, so the message that
+      triggered the recovery queues behind the released entry instead of racing it
+- [x] Rebase lifecycle messages carry `sessionId`; handlers drop foreign ones
+- [x] Tests: a dispatched queue entry is released through the branded path with every
+      field intact; the abandoned turn settles as `dropped` and stops publishing its
+      delivery; an empty queue still signals `idle`

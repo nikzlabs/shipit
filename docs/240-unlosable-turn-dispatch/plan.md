@@ -291,6 +291,77 @@ failing doesn't skip the other.
   the retry supervisor re-attempts on a backoff instead of the watch looking
   healthy while stranded.
 
+## Fix D — the stuck-running recovery is a terminal path (SHI-280)
+
+Production, 2026-08-04 ~06:28 UTC. A parent session sat wedged for 40+ minutes
+with one message frozen in its queue (`Child PR #1939 merged: …`) and no agent
+running anywhere.
+
+The turn that was "running" had every one of its events dropped — the relay
+logged `dropped (no _agent)` from `agent_init` all the way through
+`agent_result`, so the slot was empty from the start of the turn, not displaced
+mid-turn. `running` therefore stayed `true`, the merge wake dispatched seven
+minutes later was enqueued behind it, and 14 seconds after that the reconciler
+did its job: `Detected stuck running=true (worker reports no agent). Resetting.`
+
+Then nothing. The reset restored `running` and emitted `idle`, but two things
+were still hanging off the phantom turn:
+
+1. **The queue.** Every drain in the system is reached *from a turn that
+   actually ran* — the executor's post-turn drain, the WS drain,
+   `dispatchOnRunner`'s setup-failure release, `drainQueueForSession` after an
+   auto-resolve attempt. None of them can fire for a turn whose events never
+   arrived, so the entry sat there until a human happened to send a new message
+   (which ran immediately, and whose own post-turn drain then picked it up).
+2. **The settlement.** The turn never reached the executor's settling `finally`,
+   so `onTurnComplete` never fired and `activeDeliveryId` stayed published —
+   which is exactly the "indefinitely in flight" reading that suppresses every
+   retry. Same stranding class as SHI-263 / SHI-264, reached through the one
+   path Fix B and Fix C did not cover: a turn that loses its ability to settle
+   itself while its runner stays perfectly alive.
+
+So the reset is treated as what it is — the turn's real terminal moment:
+
+- `verifyRunningState` clears `activeDeliveryId`, emits a new runner event
+  `turn_abandoned`, and then releases the queue. `dispatchOnRunner` listens for
+  `turn_abandoned` alongside `disposed` and settles the handle as `dropped`
+  through the same chained-callback path, so the pre-docs/240 consumers hear it
+  too. Ordering matches `settleTurn`: the delivery stops being live *before* its
+  consumer is told, or the consumer's retry check reads a stale `true`.
+- The release goes through `releaseQueuedTurn` (`queue-drain.ts`), which is
+  `drainQueueForSession`'s body lifted into the module that owns the drain rule.
+  Both callers are the same shape — a path with no turn of its own to drain from
+  — so there is one implementation rather than a fifth hand-rolled one, and the
+  entry keeps `systemTurn` / `postTurn` / `onTurnComplete` / `deliveryId` by
+  construction. `idle` is emitted only when nothing was released: a released
+  turn means the runner is *not* idle, and that turn's own post-turn flow
+  signals idle when it finishes.
+- `send-message.ts` re-reads `runner.running` after `verifyRunningState` instead
+  of trusting the return value. The release claims the runner synchronously, and
+  without the re-read the user message that triggered the recovery would fall
+  through and spawn a second agent against the one the released turn is already
+  starting — two paths racing for the `_agent` slot, which is how the phantom
+  turn came about in the first place. Re-entering the queue branch puts the user
+  message behind the entry that was there first.
+
+**The rebase banner is a symptom of the same bug, not a second one.** The
+incident also reported a "Rebasing onto `main`…" spinner with nothing behind it.
+`runRebaseFlow` emits `rebase_started` and then *awaits*
+`runRebaseResolutionTurn`, whose promise resolves from `onTurnComplete`. A
+resolution turn stranded this way never settles, so the flow never reaches
+`rebase_complete` / `rebase_aborted`, and the buffered `rebase_started` replays
+on every viewer attach. (Start and terminal are both buffered via
+`emitMessage`, so a lone start can *only* mean the flow itself never finished —
+replay filtering would have hidden the symptom, not fixed it.) With Fix D the
+abandoned resolution turn settles as `dropped`, which is `errored: true`, so the
+driver rejects, the route's `flowPromise.catch` emits `rebase_aborted`, and the
+banner clears.
+
+Separately, the rebase lifecycle messages now carry `sessionId` and their
+handlers drop foreign ones — `useGitStore` is a global client store fed by a
+per-session socket, and `auto_resolve_started`, which interleaves with them,
+already had that guard.
+
 ## Key files
 
 | Area | File | Change |
@@ -310,6 +381,11 @@ failing doesn't skip the other.
 | Fix C — turn lifecycle | `src/server/orchestrator/turn-executor.ts`, `dispatched-turn.ts`, `turn-adoption.ts` | Publish at turn start, stamp on the spawn, clear in `settleTurn` before reporting; adoption rebinds via `deps.rebindDelivery` |
 | Fix C — the owner | `src/server/orchestrator/merge-watch.ts` | Mints + persists `watchId:attempt`; `buildDeliverySettlement` shared by dispatch and rebind; `rebindDelivery`; derived `isDeliveryInFlight`; `inFlight` reduced to a `dispatching` lock |
 | Fix C — persistence | `src/server/shared/types/domain-types/session.ts`, `agent-types.ts` | `SessionMergeWatch.deliveryId` (JSON column — no migration), `WorkerAgentStatus.deliveryId`, `AgentProcess.setDeliveryId?` |
+| **Fix D** — recovery | `src/server/orchestrator/container-session-runner.ts` | `verifyRunningState` clears `activeDeliveryId`, emits `turn_abandoned`, releases the queue, and emits `idle` only when nothing was released |
+| Fix D — settlement | `src/server/orchestrator/session-runner.ts` | `turn_abandoned` on `SessionRunnerEvents`; `dispatchOnRunner` settles it as `dropped` via the same `settleAsDropped` path as `disposed` |
+| Fix D — one drain | `src/server/orchestrator/queue-drain.ts`, `bootstrap-managers.ts` | `releaseQueuedTurn` — `drainQueueForSession`'s body lifted into the module that owns the drain rule, shared by both no-turn-of-its-own paths |
+| Fix D — the race | `src/server/orchestrator/ws-handlers/send-message.ts` | Re-reads `runner.running` after `verifyRunningState`, so a released entry isn't raced for the `_agent` slot |
+| Fix D — banner scope | `src/server/shared/types/ws-server-messages/git.ts`, `services/rebase-driver.ts`, `api-routes-git.ts`, `client/hooks/message-handlers/rebase-*.ts` | `sessionId` on the four rebase lifecycle messages; handlers drop foreign ones (the guard `auto_resolve_started` already had) |
 
 ## Testing
 

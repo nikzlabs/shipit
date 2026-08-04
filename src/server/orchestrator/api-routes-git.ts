@@ -422,7 +422,7 @@ export async function registerGitRoutes(
           // state and surfaces the failure — without `reason` the old code
           // silently bounced the banner from "in_progress" back to "idle" and
           // the user had no way to tell what went wrong.
-          runner.emitMessage({ type: "rebase_aborted", reason: getErrorMessage(err) });
+          runner.emitMessage({ type: "rebase_aborted", sessionId: runner.sessionId, reason: getErrorMessage(err) });
         });
 
         return { status: "started" };
@@ -459,7 +459,7 @@ export async function registerGitRoutes(
         const git = createGitManager(dir);
         await rebaseAbort(git);
         if (runner) {
-          runner.emitMessage({ type: "rebase_aborted" });
+          runner.emitMessage({ type: "rebase_aborted", sessionId: runner.sessionId });
         }
         return { status: "aborted" };
       } catch (err) {

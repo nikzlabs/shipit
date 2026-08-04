@@ -250,12 +250,12 @@ export async function runRebaseFlow(
       const cardEmitted = recordSync
         ? emitSyncCard(deps, { baseBranch, headFrom: headBefore, headTo: headBefore, baseMove, forcePushed: false })
         : false;
-      runner.emitMessage({ type: "rebase_complete", forcePushed: false, upToDate: true, baseMoved: cardEmitted });
+      runner.emitMessage({ type: "rebase_complete", sessionId: runner.sessionId, forcePushed: false, upToDate: true, baseMoved: cardEmitted });
       return { status: "up_to_date" };
     }
 
     // 4. Begin rebase.
-    runner.emitMessage({ type: "rebase_started", baseBranch });
+    runner.emitMessage({ type: "rebase_started", sessionId: runner.sessionId, baseBranch });
 
     // Errors propagate to the route's `flowPromise.catch`, which emits a single
     // `rebase_aborted` carrying the error message. Don't emit here too — before
@@ -269,7 +269,7 @@ export async function runRebaseFlow(
       if (recordSync) {
         emitSyncCard(deps, { baseBranch, headFrom: headBefore, headTo: await git.getHeadHash(), baseMove, forcePushed });
       }
-      runner.emitMessage({ type: "rebase_complete", forcePushed });
+      runner.emitMessage({ type: "rebase_complete", sessionId: runner.sessionId, forcePushed });
       return { status: "rebased", forcePushed };
     }
 
@@ -287,6 +287,7 @@ export async function runRebaseFlow(
 
       runner.emitMessage({
         type: "rebase_conflicts",
+        sessionId: runner.sessionId,
         conflicts: result.conflicts.map((c) => ({ path: c.path })),
       });
 
@@ -322,7 +323,7 @@ export async function runRebaseFlow(
     if (recordSync) {
       emitSyncCard(deps, { baseBranch, headFrom: headBefore, headTo: await git.getHeadHash(), baseMove, forcePushed });
     }
-    runner.emitMessage({ type: "rebase_complete", forcePushed });
+    runner.emitMessage({ type: "rebase_complete", sessionId: runner.sessionId, forcePushed });
     return { status: "conflicts_resolved", iterations: iter, forcePushed };
   } finally {
     // SHI-144 / docs/150 §7: every orchestrator git op above (fetch, rebase,
@@ -572,7 +573,7 @@ export async function runAutoResolveAttempt(
         // 7. Surface a `rebase_aborted` so the UI clears the rebase banner
         //    doc 094 raised. The inner driver doesn't emit this on our
         //    timeout path because it never gets the chance.
-        runner.emitMessage({ type: "rebase_aborted" });
+        runner.emitMessage({ type: "rebase_aborted", sessionId: runner.sessionId });
         resolve({ outcome: "error", lastError: "timeout", didWork: true });
       })();
     }, timeoutMs);

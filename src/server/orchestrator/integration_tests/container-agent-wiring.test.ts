@@ -15,6 +15,9 @@ import os from "node:os";
 import path from "node:path";
 import { SessionWorker } from "../../session/session-worker.js";
 import { ContainerSessionRunner } from "../container-session-runner.js";
+import type { SystemTurnDeps } from "../session-runner.js";
+import { prepareDispatch, type PreparedDispatch } from "../prepared-dispatch.js";
+import { TURN_COMPLETED, type TurnOutcome } from "../turn-settlement.js";
 import type { AgentProcess, AgentProcessEvents, AgentId, AgentRunParams, PermissionMode } from "../../shared/types.js";
 
 // ---------------------------------------------------------------------------
@@ -87,6 +90,34 @@ async function waitFor(
     await new Promise((r) => setTimeout(r, 50));
   }
   throw new Error(`waitFor(${label}) timed out after ${timeoutMs}ms`);
+}
+
+/**
+ * SHI-280 — a runner that can start dispatched turns but never actually runs
+ * one: `runDispatchedTurn` is replaced by a recorder that hangs, which is
+ * exactly the field condition (a turn whose every event was dropped, so it never
+ * reaches the executor's settling teardown). `dispatchOnRunner` still runs for
+ * real, so `running`, `activeDeliveryId`, and the settlement all behave as they
+ * do in production.
+ */
+function makeDispatchStubbedRunner(
+  sessionId: string,
+  workerUrl: string,
+): ContainerSessionRunner & { dispatched: PreparedDispatch[] } {
+  const runner = new ContainerSessionRunner({
+    sessionId,
+    sessionDir: "/tmp/test",
+    defaultAgentId: "claude",
+    workerUrl,
+  }) as ContainerSessionRunner & { dispatched: PreparedDispatch[] };
+  // Only `canRunDispatchedTurn` is read before the stub takes over.
+  runner.setSystemTurnDeps({} as SystemTurnDeps);
+  runner.dispatched = [];
+  runner.runDispatchedTurn = async (opts: PreparedDispatch): Promise<void> => {
+    runner.dispatched.push(opts);
+    return new Promise<void>(() => { /* never settles — the dropped-events case */ });
+  };
+  return runner;
 }
 
 // ---------------------------------------------------------------------------
@@ -1141,6 +1172,109 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
 
       // Idle event fires so the runner can be reclaimed normally.
       await idlePromise;
+
+      runner.dispose();
+    });
+
+    // ---- SHI-280 ----
+    //
+    // The reset above is only half a recovery. In the field a session sat wedged
+    // for 40+ minutes with a `Child PR #… merged` wake-turn frozen in its queue:
+    // every SSE event of the running turn was dropped (`no _agent` in the slot
+    // from `agent_init` onward), so the turn never settled, the merge wake was
+    // enqueued behind it, and when the reconciler finally reset `running` it
+    // released neither the queue nor the abandoned turn's settlement.
+
+    it("releases a queued entry through the branded dispatch path after the reset", async () => {
+      const runner = makeDispatchStubbedRunner("test-stuck-drains-queue", workerUrl);
+
+      const outcomes: TurnOutcome[] = [];
+      runner.enqueue({
+        text: "Child PR #1939 merged: Retire the docs/246 one-time clone migration",
+        execution: "dispatched",
+        systemTurn: true,
+        postTurn: "none",
+        activity: "Waking on merge…",
+        deliveryId: "delivery-queued",
+        onTurnComplete: (outcome) => outcomes.push(outcome),
+      });
+
+      runner.running = true;
+      expect(await runner.verifyRunningState()).toBe(false);
+
+      // The entry left the queue and became a real turn.
+      expect(runner.queueLength).toBe(0);
+      expect(runner.dispatched).toHaveLength(1);
+      expect(runner.running).toBe(true);
+
+      // …and it went through `queuedMessageToDispatchOptions`, not a narrowed
+      // interactive re-entry: every turn-execution field survived.
+      const opts = runner.dispatched[0];
+      expect(opts.text).toMatch(/Child PR #1939 merged/);
+      expect(opts.execution).toBe("dispatched");
+      expect(opts.systemTurn).toBe(true);
+      expect(opts.postTurn).toBe("none");
+      expect(opts.activity).toBe("Waking on merge…");
+      expect(opts.deliveryId).toBe("delivery-queued");
+      // The settlement is chained onto the entry's own callback, so the released
+      // turn still reports completion to the watch that queued it.
+      expect(typeof opts.onTurnComplete).toBe("function");
+      opts.onTurnComplete?.(TURN_COMPLETED);
+      expect(outcomes).toEqual([TURN_COMPLETED]);
+
+      runner.dispose({ force: true });
+    });
+
+    it("settles the abandoned turn as dropped and stops publishing its delivery", async () => {
+      const runner = makeDispatchStubbedRunner("test-stuck-settles-turn", workerUrl);
+
+      // A dispatched turn that starts and then loses every event: the stub never
+      // reaches a terminal agent event, so nothing inside the turn machinery can
+      // settle it. Only the reconciler notices.
+      const handle = runner.dispatch(prepareDispatch({
+        text: "wake up",
+        agentInterface: undefined,
+        execution: "dispatched",
+        activity: undefined,
+        images: undefined,
+        files: undefined,
+        uploads: undefined,
+        permissionMode: undefined,
+        postTurn: undefined,
+        systemTurn: true,
+        onTurnComplete: undefined,
+        deliveryId: "delivery-running",
+      }));
+      expect(runner.running).toBe(true);
+      expect(runner.hasDelivery("delivery-running")).toBe(true);
+
+      expect(await runner.verifyRunningState()).toBe(false);
+
+      // Bounded so a regression fails as an unsettled handle rather than hanging
+      // the suite — which is the exact production symptom.
+      const settled = await Promise.race<TurnOutcome | null>([
+        handle.settled,
+        new Promise<null>((r) => setTimeout(() => r(null), 1000)),
+      ]);
+
+      // `dropped`, so the merge-watch supervisor retries instead of reading the
+      // dead attempt as indefinitely in flight.
+      expect(settled?.status).toBe("dropped");
+      expect(runner.activeDeliveryId).toBeUndefined();
+      expect(runner.hasDelivery("delivery-running")).toBe(false);
+
+      runner.dispose({ force: true });
+    });
+
+    it("still signals idle when the queue is empty", async () => {
+      const runner = makeDispatchStubbedRunner("test-stuck-empty-queue", workerUrl);
+
+      runner.running = true;
+      const idlePromise = new Promise<void>((resolve) => { runner.once("idle", () => resolve()); });
+
+      expect(await runner.verifyRunningState()).toBe(false);
+      await idlePromise;
+      expect(runner.dispatched).toHaveLength(0);
 
       runner.dispose();
     });

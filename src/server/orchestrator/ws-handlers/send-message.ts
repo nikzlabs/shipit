@@ -98,7 +98,16 @@ export async function handleSendMessage(
     // race). Without this check, the new message would be queued forever
     // and the user sees: "agent starts briefly, nothing happens".
     const actuallyRunning = await runnerForQueue.verifyRunningState();
-    if (actuallyRunning) {
+    // SHI-280 — the recovery inside `verifyRunningState` may have released a
+    // queue entry the phantom turn was blocking, which claims the runner
+    // synchronously. Re-read `running` rather than trusting the return value, or
+    // this message falls through and spawns a second agent against the one the
+    // released turn is already starting — the two-paths-one-`_agent`-slot race
+    // that produced the phantom turn in the first place. Re-entering the block
+    // queues this message behind the entry that was there first (steering and
+    // `/compact` both fall through to the queue: the released turn has no
+    // resident streaming process yet).
+    if (actuallyRunning || runnerForQueue.running) {
       // docs/178 — `/compact` while a turn is in flight: trigger compaction on
       // the resident live process (streaming Claude injects `/compact`; live
       // Codex sends `thread/compact/start`) rather than queuing the literal text.

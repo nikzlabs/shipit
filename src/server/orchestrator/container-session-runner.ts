@@ -33,6 +33,7 @@ import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, System
 import type { SubAgentSpawnRequest, SubAgentRunResult } from "../shared/sub-agent-run.js";
 import { SUB_AGENT_TRANSPORT_TIMEOUT_MS } from "../shared/sub-agent-run.js";
 import { AgentTurnAdmissionError, runDispatchedTurn, dispatchOnRunner } from "./session-runner.js";
+import { releaseQueuedTurn } from "./queue-drain.js";
 import type { PreparedDispatch } from "./prepared-dispatch.js";
 import type { TurnHandle } from "./turn-settlement.js";
 import type { SSEEvent } from "./sse-client.js";
@@ -2351,7 +2352,26 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    *
    * If the worker reports no agent is running but `_isRunning` is true
    * locally, reset the flag, clear the agent reference, emit a recovery
-   * `session_status` message, and signal idle so the runner is reclaimable.
+   * `session_status` message, settle the abandoned turn, release the queue, and
+   * signal idle so the runner is reclaimable.
+   *
+   * SHI-280 — the reset alone was not a recovery. It restored `running` and
+   * emitted `idle`, but the phantom turn had TWO other things hanging off it:
+   *
+   *  1. Anything QUEUED behind it. Every other drain in the system is reached
+   *     from a turn that actually ran (the executor's post-turn drain, the WS
+   *     drain, `dispatchOnRunner`'s setup-failure release), and none of them can
+   *     fire for a turn whose events never arrived. So a wake-turn enqueued
+   *     behind the phantom sat in the queue indefinitely — until a human
+   *     happened to send a new message, which ran immediately and whose own
+   *     post-turn drain picked the entry up. In the field that was 40+ minutes
+   *     and counting, with the entry visibly stuck in the queue chip.
+   *  2. Its SETTLEMENT. The turn never reached the executor's settling
+   *     `finally`, so `onTurnComplete` never fired and `activeDeliveryId` stayed
+   *     published — which reads as "this delivery is still in flight" and
+   *     suppresses every retry (`isDeliveryInFlight`). That is the stranding
+   *     class SHI-263 / SHI-264 / docs/240 closed, reached through the one path
+   *     they did not cover.
    */
   async verifyRunningState(): Promise<boolean> {
     if (!this._isRunning) return false;
@@ -2383,6 +2403,21 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       queueLength: this.queueLength,
       error: "Agent state was out of sync with the worker — reset. You can send a new message.",
     });
+    // The delivery stops being live BEFORE its consumer is told, for the reason
+    // `executeAgentTurn.settleTurn` spells out: the consumer's first act on a
+    // non-`completed` outcome is to ask whether a retry is warranted, and a
+    // delivery still reading as in-flight would suppress it forever. Safe to
+    // clear unconditionally here — `running` is false, so no turn owns it.
+    this.activeDeliveryId = undefined;
+    this.emit("turn_abandoned");
+    // Release the queue before signalling idle. `releaseQueuedTurn` re-enters
+    // the branded `dispatch` path, so a dispatched entry keeps its `systemTurn`
+    // / `onTurnComplete` / `postTurn` fields instead of being re-narrowed into
+    // an interactive turn (the SHI-255 / SHI-259 rule — see `queue-drain.ts`).
+    // When it starts a turn the runner is NOT idle, so the `idle` event that
+    // drives auto-remediation and `waitForIdle` is deliberately not emitted;
+    // that turn's own post-turn flow signals idle when it finishes.
+    if (releaseQueuedTurn(this)) return false;
     this.emit("idle");
     return false;
   }
