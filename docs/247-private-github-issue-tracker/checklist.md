@@ -15,7 +15,7 @@
 - [x] Require the user to create the private repository; ShipIt only connects it.
 - [x] Accept GitHub Issues' feature set without a separate capability-parity gate.
 - [x] Use fully qualified private tracker pointers in public PR bodies and accept their metadata disclosure.
-- [ ] Decide whether trusted-deployment access is sufficient or per-viewer GitHub membership must be enforced.
+- [x] Use the contextual GitHub credential and let GitHub enforce repository access; do not add a separate per-viewer tracker ACL.
 
 ## Implementation
 

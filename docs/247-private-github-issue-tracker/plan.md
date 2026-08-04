@@ -11,8 +11,9 @@ description: Use a dedicated private GitHub repository as ShipIt's issue backend
 This is the focused design for the private-GitHub option identified by the
 [issue tracker evaluation](../246-native-issue-tracker-evaluation/plan.md).
 Choosing GitHub Issues means accepting its feature set rather than passing a
-separate parity gate. Implementation remains blocked on the privacy authorization
-question in [requirements.md](./requirements.md).
+separate parity gate. The product decisions in
+[requirements.md](./requirements.md) are resolved, so implementation is no
+longer blocked on a privacy-authorization choice.
 
 The likely first increment is small: reuse ShipIt's existing GitHub adapter and
 bind it to a dedicated private repository. The hard part is not CRUD; it is
@@ -125,16 +126,16 @@ The user creates the private repository and ShipIt connects it. ShipIt does not
 request repository-creation permission or implement naming, ownership,
 collision, or initialization flows.
 
-The orchestrator acquires a token explicitly scoped for the selected tracker
-repository. For GitHub App authentication, the App must be installed on that
-repository and ShipIt must mint a repository-scoped token for it; a code-repo
-token is not reused. For a user token, the token must grant Issues read/write
-access to the tracker repository. Credentials remain outside session
-containers. A repository-scope `403` is reported as an access/configuration
-failure and must not invalidate otherwise valid GitHub credentials; only an
-authentication failure may do that. Every ShipIt user who performs attributed
-tracker writes needs repository access, which also constrains available
-assignees.
+Private tracker calls use the same contextual GitHub credential as ShipIt's
+other GitHub operations: the deployment credential initially and the owning
+Project's credential after Projects ships. ShipIt does not introduce a second
+tracker credential, a private-tracker ACL, or a per-viewer GitHub-membership
+check. GitHub authorizes the credential against the configured repository. For
+GitHub App authentication, the App installation must include that repository;
+for a user token, that token must grant the required Issues access there.
+Credentials remain outside session containers. A repository-scope `403` is
+reported as an access/configuration failure and must not invalidate otherwise
+valid GitHub credentials; only an authentication failure may do that.
 
 ## Accepted GitHub feature set
 
@@ -237,9 +238,10 @@ coding sessions, Git operations, or access to locally persisted chat history.
 
 ## Decision boundary
 
-Implementation remains blocked only on the privacy authorization question in
-requirements. Public user bug reports and private owner planning issues coexist
-as distinct tracker destinations, and public PR bodies use fully qualified
-private-repository pointers. GitHub's feature set is accepted; implementation
-must represent unavailable normalized operations honestly and must not weaken
-the repository-routing invariant to simulate parity.
+The product decisions in requirements are resolved. Public user bug reports and
+private owner planning issues coexist as distinct tracker destinations, public
+PR bodies use fully qualified private-repository pointers, and GitHub authorizes
+the same contextual credential used for other GitHub operations. GitHub's
+feature set is accepted; implementation must represent unavailable normalized
+operations honestly and must not weaken the repository-routing invariant to
+simulate parity.

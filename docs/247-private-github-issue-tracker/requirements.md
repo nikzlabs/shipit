@@ -9,10 +9,11 @@
 7. When ShipIt adds a private planning issue reference to a public PR body, it uses a fully qualified GitHub pointer such as `owner/private-repo#42`. ShipIt-generated public text includes no other private issue fields. The user accepts disclosure of the repository slug, issue number, and issue existence in the public PR and its edit history; readers without repository access still cannot inspect the issue contents.
 8. ShipIt saves and uses a binding only after verifying that the repository exists, is private, has GitHub Issues enabled, and is readable and writable by the GitHub identity for the current deployment or Project. Validation failure, revoked access, or a later visibility mismatch fails closed and is explained inline; ShipIt does not replace the previous valid binding or fall back to a code repository.
 9. GitHub's feature set is accepted without a separate parity gate. ShipIt does not emulate missing capabilities solely for wrapper parity. A normalized operation unavailable for this backend is omitted or disabled with an inline explanation and must never silently no-op or report false success.
+10. Private tracker operations use the same GitHub credential selected for the deployment or Project's other GitHub operations. GitHub is the authorization authority: ShipIt adds no separate per-viewer repository-membership check or private-tracker ACL. If that credential cannot access the configured private repository, the operation fails closed with an inline access error.
 
 ## Open questions
 
-- Does access inside ShipIt rely on the deployment's trusted-user, soft-separation model, or must ShipIt verify each viewer's GitHub membership before showing private issues? The current [Projects design](../231-projects/plan.md#trust-model) provides contextual separation, not authentication or security isolation. Per-viewer membership enforcement would require a separate ShipIt authentication/authorization boundary; the recommended initial scope is trusted-deployment access with per-Project contextual isolation.
+None.
 
 ## Resolved questions
 
@@ -23,3 +24,4 @@
 - 2026-08-04 — The user will create the private repository, including the one used for ShipIt itself. ShipIt only connects it; ordinary issue and label operations after connection remain part of tracker use rather than repository initialization.
 - 2026-08-04 — After reviewing the disclosure risks, the user confirmed fully qualified private-repository pointers as the initial PR syntax and accepted that the public PR reveals the repository slug, issue number, and issue existence. Bare and opaque ShipIt pointers are not part of the initial design.
 - 2026-08-04 — A fresh-context Codex requirements review verified the current wrong-target risk and public bug-report destination. It also identified the unresolved distinction between Projects' trusted contextual separation and per-viewer GitHub authorization, recorded above.
+- 2026-08-04 — The user resolved that distinction: the private tracker uses the same GitHub token as other GitHub operations. GitHub access to the configured repository is authoritative; ShipIt does not independently verify each viewer's repository membership.

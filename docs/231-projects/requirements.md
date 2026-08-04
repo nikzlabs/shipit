@@ -4,6 +4,7 @@ This feature predates ShipIt's requirements-document workflow. This file records
 
 1. When Projects is implemented, each Project has its own private planning issue-tracker binding. Sessions and repositories in that Project use its binding and do not read or mutate another Project's private planning issues.
 2. The private planning tracker remains distinct from ShipIt's public user bug tracker. Project scoping must not redirect the existing in-product bug-report flow away from the public ShipIt repository.
+3. A Project's private planning tracker uses the same GitHub credential as that Project's other GitHub operations. GitHub enforces whether the credential can access the configured private repository; ShipIt does not add a separate per-viewer tracker ACL or repository-membership check.
 
 ## Open questions
 
@@ -13,3 +14,4 @@ None for these added requirements.
 
 - 2026-08-04 — The user specified that the private GitHub planning tracker is deployment-wide before Projects exists and becomes per Project when the Projects feature ships. This requirement is shared with [doc 247](../247-private-github-issue-tracker/requirements.md).
 - 2026-08-04 — Public issues reported by ShipIt users remain in ShipIt's public repository; Project-private planning bindings coexist with that public destination rather than replacing it.
+- 2026-08-04 — The user specified that private tracker access uses the same GitHub token as other GitHub operations and that GitHub, rather than ShipIt, enforces repository access.
