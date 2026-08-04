@@ -821,6 +821,14 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE messages ADD COLUMN session_renamed TEXT");
   },
+  // docs/213 / SHI-315 — sticky "auto-commit blocked by the secret scanner"
+  // state, as JSON (`SessionSecretBlock`). Persisted rather than kept on the
+  // runner because the runner dies with the idle container: the block outlives
+  // it (the credential is in the working tree), so the warning has to as well.
+  // NULL = not blocked, which is the correct reading for every existing row.
+  (db) => {
+    db.exec("ALTER TABLE sessions ADD COLUMN secret_block TEXT");
+  },
 ];
 
 export class DatabaseManager {

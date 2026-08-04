@@ -3,7 +3,7 @@ import type { ConnectionCtx, AppCtx } from "./types.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
 import { withWorkspaceLock } from "../services/marketplace.js";
 import { formatUnresolvedConflictNotice } from "../services/conflict-marker-notice.js";
-import { formatSecretScanNotice } from "../services/secret-scan-notice.js";
+import { recordSecretBlock, clearSecretBlock } from "../services/secret-block.js";
 import { evaluateMergedBranchPush, formatMergedPushNotice } from "../services/merged-push-guard.js";
 import { scanDiffForSecrets } from "../../shared/secret-scan.js";
 import { emitNoticePostTurn } from "../chat-card-persistence.js";
@@ -157,17 +157,34 @@ export async function postTurnCommit(
     const firstLine = opts.turnSummary.split("\n")[0]?.slice(0, 120) || "Agent turn";
     const { commitHash, conflictedFiles, rebaseInProgress, secretFindings } = await git.autoCommit(firstLine);
     if (secretFindings.length > 0 && opts.sessionId) {
-      // docs/213 — the commit was refused because the staged diff carried a
-      // likely secret. Persist (append + emit) the redacted warning so it
-      // survives a reload, exactly like the conflict notice below. commitHash
-      // is null, so the no-commit path below short-circuits push + PR.
-      emitNoticePostTurn(
-        opts.emit,
-        ctx.chatHistoryManager,
-        opts.sessionId,
-        formatSecretScanNotice(secretFindings),
-        "warn",
+      // docs/213 / SHI-315 — the commit was refused because the staged diff
+      // carried a likely secret. `recordSecretBlock` owns all three responses:
+      // the persisted redacted notice (as before), the sticky banner state, and
+      // a bounded remediation turn so the agent learns its work did not land.
+      // commitHash is null, so the no-commit path below short-circuits push + PR.
+      recordSecretBlock(
+        {
+          sessionId: opts.sessionId,
+          sessionManager: ctx.sessionManager,
+          chatHistory: ctx.chatHistoryManager,
+          emit: opts.emit,
+          runner: opts.runner,
+        },
+        secretFindings,
       );
+    }
+    // SHI-315 — the scan actually ran and came back clean, so any standing block
+    // is over. Deliberately NOT cleared on the conflict/rebase branch:
+    // `autoCommit` returns there BEFORE staging or scanning, so a secret still in
+    // the tree would go unscanned and the banner would clear on a lie. Only "no
+    // findings, and nothing stopped us from looking" retires the block — which
+    // covers both a successful commit and a genuinely clean tree.
+    if (opts.sessionId && secretFindings.length === 0 && conflictedFiles.length === 0 && !rebaseInProgress) {
+      clearSecretBlock({
+        sessionId: opts.sessionId,
+        sessionManager: ctx.sessionManager,
+        emit: opts.emit,
+      });
     }
     if ((conflictedFiles.length > 0 || rebaseInProgress) && opts.sessionId) {
       // Persisted (append + emit), not emit-only, so the conflict warning
@@ -204,12 +221,15 @@ export async function postTurnCommit(
           );
           if (findings.length > 0) {
             if (opts.sessionId) {
-              emitNoticePostTurn(
-                opts.emit,
-                ctx.chatHistoryManager,
-                opts.sessionId,
-                formatSecretScanNotice(findings),
-                "warn",
+              recordSecretBlock(
+                {
+                  sessionId: opts.sessionId,
+                  sessionManager: ctx.sessionManager,
+                  chatHistory: ctx.chatHistoryManager,
+                  emit: opts.emit,
+                  runner: opts.runner,
+                },
+                findings,
               );
             }
             // Do NOT push the secret-bearing commit(s). It stays local; the agent

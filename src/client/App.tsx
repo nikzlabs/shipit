@@ -98,6 +98,7 @@ import { PrDetailPanel } from "./components/PrDetailPanel.js";
 import { PresentPane } from "./components/PresentPane.js";
 import { HostPanel } from "./components/HostPanel.js";
 import { RebaseBanner } from "./components/RebaseBanner.js";
+import { SecretBlockBanner } from "./components/SecretBlockBanner.js";
 import { QueueIndicator } from "./components/QueueIndicator.js";
 import { AgentStatusBar } from "./components/AgentStatusBar.js";
 import { StaleContainerBanner } from "./components/StaleContainerBanner.js";
@@ -1900,6 +1901,10 @@ export default function App() {
           <div className="flex flex-col gap-2">
             {isLoading && <AgentStatusBar activity={activity} />}
             {wsSessionId && <RebaseBanner sessionId={wsSessionId} />}
+            {/* SHI-315 — sits directly under the rebase banner: both render a
+                live "your work is not landing" condition, and neither is
+                dismissible. */}
+            <SecretBlockBanner />
             {queuedMessages.length > 0 && (
               <QueueIndicator
                 queue={queuedMessages}

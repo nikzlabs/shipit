@@ -720,7 +720,12 @@ export async function executeAgentTurn(
           emit,
         });
       }
-      // Fallback for minimal test setups that wire `autoCommit` but not `commitTurn`.
+      // Fallback for minimal test setups that wire `autoCommit` but not
+      // `commitTurn`. Both production paths (`agent-execution.ts` and
+      // `runner-registry-factory.ts`) wire `commitTurn` → `postTurnCommit`, which
+      // is where the SHI-315 banner state + remediation turn live; this path
+      // keeps the notice only, and deliberately has no `sessionManager` to
+      // persist block state into.
       const result = await deps.autoCommit(runner.sessionDir, summary);
       if (result.secretFindings.length > 0) {
         emitNoticePostTurn(

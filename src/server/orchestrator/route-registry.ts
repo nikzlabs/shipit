@@ -584,6 +584,19 @@ export async function registerRoutes(
         });
       };
 
+      // SHI-315 — rehydrate the "commits are blocked by a secret" banner. This is
+      // the half that makes the warning genuinely sticky: the block lives in the
+      // working tree, which outlives both the runner and the container, so a
+      // reload or a session switch has to be able to re-derive it from the
+      // session row rather than from a message that happened to be in flight.
+      const sendSecretBlock = (sid: string) => {
+        send({
+          type: "secret_block_status",
+          sessionId: sid,
+          block: sessionManager.getSecretBlock(sid) ?? null,
+        });
+      };
+
       const onContainerStarted = (sid: string) => {
         if (sid === activeAppSessionId) sendContainerFreshness(sid);
       };
@@ -937,6 +950,7 @@ export async function registerRoutes(
         }
         if (dir) void checkGitIdentity(dir);
         sendContainerFreshness(sid);
+        sendSecretBlock(sid);
         // docs/161 — after the session is up and the user has control, kick a
         // background disk-tier escalation pass over the OTHER idle sessions
         // (this one is excluded + guarded anyway). Never awaited — adds no
