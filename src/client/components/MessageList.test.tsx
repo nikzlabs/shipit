@@ -196,15 +196,36 @@ describe("MessageList", () => {
       );
       const card = screen.getByTestId("user-review-card");
       expect(card).toBeInTheDocument();
-      expect(card.textContent).toContain("Sent comments");
+      expect(card.textContent).toContain("Sent 3 comments");
       expect(card.textContent).toContain("docs/149/plan.md");
-      expect(card.textContent).toContain("3 comments");
+      // Shaped like a user bubble, not an agent-side left-border card — that
+      // similarity is what made it blend into the surrounding agent turns.
+      expect(card.className).toContain("bg-(--color-accent-subtle)");
+      expect(card.className).not.toContain("border-l-2");
       // Prompt body is collapsed by default — the toggle is visible, the body isn't.
       expect(screen.getByTestId("user-review-prompt-toggle")).toBeInTheDocument();
       expect(screen.queryByTestId("user-review-prompt")).not.toBeInTheDocument();
       // Clicking the toggle expands the prompt body.
       fireEvent.click(screen.getByTestId("user-review-prompt-toggle"));
       expect(screen.getByTestId("user-review-prompt").textContent).toContain("comment 1");
+    });
+
+    it("falls back to 'on the diff' when a UserReviewCard has no file paths", () => {
+      render(
+        <MessageList
+          messages={[
+            {
+              role: "user",
+              text: "feedback",
+              userReview: { filePaths: [], commentCount: 1 },
+            },
+          ]}
+          isLoading={false}
+        />,
+      );
+      const card = screen.getByTestId("user-review-card");
+      expect(card.textContent).toContain("Sent 1 comment");
+      expect(card.textContent).toContain("on the diff");
     });
   });
 
