@@ -11,16 +11,19 @@ export const SUBAGENT_TOOL_NAMES = new Set(["Task", "Skill", "Agent"]);
 
 /**
  * The subset of `SUBAGENT_TOOL_NAMES` whose tool_result IS the subagent's final
- * report — rendered in full as markdown by `SubagentCall` with no expand
- * affordance. That makes it the one body the docs/244 projection never slices:
- * a slice would visibly cut the report with no way to get the rest back.
+ * report — the body `SubagentCall` renders as markdown.
  *
  * One set, two consumers, deliberately: `MessageToolUse` routes exactly these
- * names to `SubagentCall`, and `transcript-projection` exempts exactly these
- * names from slicing. Drift between "renders the report" and "ships the whole
- * report" is what produced both halves of the docs/109 bug — a name that
+ * names to `SubagentCall`, and `transcript-projection` sends exactly these
+ * names through the report-shaped slice ({@link sliceSubagentReport}) rather
+ * than the generic one. Drift between "renders the report" and "is projected as
+ * a report" is what produced both halves of the docs/109 bug — a name that
  * rendered nothing while its unbounded body was shipped anyway (`Skill`), and a
  * name that was shipped whole but rendered nothing (`Agent`).
+ *
+ * These used to be exempt from slicing altogether, on the grounds that the
+ * report rendered in full with nothing to click. It now clamps inline behind a
+ * modal, so the exemption is gone — see `WHOLE_RESULT_TOOL_NAMES`.
  *
  * `Skill` is deliberately absent. Verified against Claude Code CLI 2.1.219: an
  * in-context skill invocation emits a ~33-character tool_result (a base-directory
@@ -41,10 +44,8 @@ export const SUBAGENT_REPORT_TOOL_NAMES = new Set(["Task", "Agent"]);
  * every bound in the feature — the server's 16 KB backstop and the client's
  * 1 MB cap — has to agree on this set.
  *
- * Two members, for the same reason arrived at twice:
+ * One member:
  *
- *   - `SUBAGENT_REPORT_TOOL_NAMES` — `SubagentCall` renders the final report as
- *     markdown with nothing to click.
  *   - `AskUserQuestion` — the chosen answer is drawn from result content
  *     (`resolvedAnswer={result?.content}`), and the Ask branch of
  *     `MessageToolUse` **returns before the output modal**, so there is no
@@ -55,12 +56,21 @@ export const SUBAGENT_REPORT_TOOL_NAMES = new Set(["Task", "Agent"]);
  *     ever wanted, belongs at the input — not at the projection, which is the
  *     last place that can still see the whole thing.
  *
+ * **`SUBAGENT_REPORT_TOOL_NAMES` was the other member and is no longer one**
+ * (docs/109 requirement 8). The membership test is "renders in full with
+ * nothing to click", and the report now clamps inline with a *Show the full
+ * report* modal behind it, so the premise is gone: it is sliced by
+ * {@link sliceSubagentReport} and the modal fetches the rest from
+ * `/api/sessions/:id/tool-results/:toolUseId`. Slicing it is only safe *because*
+ * that click exists — if the modal is ever removed, this set is where the report
+ * has to come back.
+ *
  * The `present` tool is deliberately absent even though it also reads result
  * content inline: it parses an artifact id out of the head of a compact
  * producer-controlled payload, and a slice keeps the head. `ExitPlanMode` reads
  * result *existence*, so it survives an emptied body.
  */
-export const WHOLE_RESULT_TOOL_NAMES = new Set([...SUBAGENT_REPORT_TOOL_NAMES, "AskUserQuestion"]);
+export const WHOLE_RESULT_TOOL_NAMES = new Set(["AskUserQuestion"]);
 
 /** True when `toolName`'s result body must never be sliced or capped. */
 export function shipsResultBodyWhole(toolName: string | undefined): boolean {
@@ -81,8 +91,10 @@ export function shipsResultBodyWhole(toolName: string | undefined): boolean {
  *
  * The three inline readers, each verified at its call site:
  *
- *   - `SUBAGENT_REPORT_TOOL_NAMES` — `SubagentCall` renders the final report in
- *     full as markdown (`SubagentCall.tsx:132`), no expand affordance.
+ *   - `SUBAGENT_REPORT_TOOL_NAMES` — `SubagentCall` renders the report inline,
+ *     clamped, with the rest behind the *Show the full report* modal. Still a
+ *     `true`: the clamped part IS drawn without a click, so the head has to
+ *     ship. Only the tail moved behind the fetch.
  *   - `AskUserQuestion` — the chosen answer comes from result content
  *     (`resolvedAnswer={result?.content}`, `message-tools.tsx:149`).
  *   - the `present` tool — the artifact id is parsed out of the result

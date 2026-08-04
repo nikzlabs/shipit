@@ -153,12 +153,20 @@ describe("parseSubagentReport", () => {
     expect(parsed.text).toContain("Result: everything passed");
   });
 
-  it("does not treat a lone block as a footer, even when it looks like one", () => {
-    // A one-block reply IS the report. Stripping it would blank the card.
+  /**
+   * docs/109 req 5 — this used to assert the opposite ("a one-block reply IS
+   * the report; stripping it would blank the card"), which meant a subagent
+   * that returned nothing but accounting had its internal `agentId` rendered to
+   * the user as prose. The `texts.length > 1` guard was protecting against a
+   * case the recognizer already excludes: a block only gets here if EVERY line
+   * is a `key: value` with a key the CLI emits, which no prose report is. An
+   * empty report body is the truthful rendering of a reply that carried none.
+   */
+  it("treats a lone footer-shaped block as the footer, not as the report", () => {
     const content = JSON.stringify([{ type: "text", text: "agentId: abc\ntool_uses: 0" }]);
     const parsed = parseSubagentReport(content);
-    expect(parsed.text).toBe("agentId: abc\ntool_uses: 0");
-    expect(parsed.meta).toBeNull();
+    expect(parsed.text).toBe("");
+    expect(parsed.meta).toBe("agentId: abc\ntool_uses: 0");
   });
 
   it("keeps a trailing footer-shaped block that is not last", () => {

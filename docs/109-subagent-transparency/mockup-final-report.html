@@ -362,7 +362,10 @@ duration_ms: 102400</div>
     <h2 class="case">Case 3 — A long report</h2>
     <p class="case-note">
       Three parallel subagents each returning 60 lines buries the parent transcript. Clamp past ~10 lines with a
-      fade and a one-click expand; the header chips still say how big it is, so nothing is hidden silently.
+      fade; the header chips still say how big it is, so nothing is hidden silently.
+      <b>Shipped behaviour:</b> the button opens a <b>modal</b> rather than expanding in place — which is what
+      lets the transcript carry only the clamped head and fetch the rest on the click
+      (<code>requirements.md</code> reqs 7–8).
     </p>
     <div class="pair">
       <div>
@@ -418,7 +421,7 @@ duration_ms: 102400</div>
                 <li>Failed auth heal — re-runs the turn but never commits the partial tree.</li>
               </ul>
             </div>
-            <button class="more"><span class="caret">▾</span> Show the full report — 24 more lines</button>
+            <button class="more"><span class="caret">▾</span> Show the full report — 36 lines</button>
           </div>
         </div>
       </div>
@@ -489,8 +492,18 @@ duration_ms: 102400</div>
         <code>agentId</code> is dropped from view entirely since it is internal.</li>
       <li><b>4. Typography</b>: 13.5px / 1.6, a 78ch measure, flattened headings with an accent tick, tightened
         lists, real <code>&lt;pre&gt;</code> and table styling.</li>
-      <li><b>5. Long reports clamp</b> at ~10 lines with a fade and an explicit expand.</li>
+      <li><b>5. Long reports clamp</b> at ~10 lines with a fade, and the full report opens in a modal.</li>
     </ul>
+    <p style="margin:10px 0 0">
+      <b>Deltas between this mockup and what shipped.</b> Two, both deliberate.
+      <b>(a)</b> The expand opens a modal rather than expanding in place, so the transcript can carry only the
+      clamped head and fetch the rest on the click — that payload saving is requirement 8, and it is the reason
+      the report left docs/244's ship-whole exemption set.
+      <b>(b)</b> The report panel's body is an <em>opaque</em> surface
+      (<code>--color-bg-primary</code>) rather than the translucent white used above: the clamp's fade has to
+      blend into it exactly, and a translucent panel's effective colour depends on whatever is behind it, which
+      no single gradient stop can match across fourteen themes.
+    </p>
   </div>
 
 </div>

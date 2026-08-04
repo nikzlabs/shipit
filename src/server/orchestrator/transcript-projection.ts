@@ -53,7 +53,12 @@ import {
   subAgentPreviewLine,
   RESULT_STRIP_FLOOR_BYTES,
 } from "../shared/transcript-slice.js";
-import { shipsResultBodyWhole, rendersResultContentInline } from "../shared/transcript-slice-tools.js";
+import {
+  shipsResultBodyWhole,
+  rendersResultContentInline,
+  SUBAGENT_REPORT_TOOL_NAMES,
+} from "../shared/transcript-slice-tools.js";
+import { sliceSubagentReport } from "../shared/subagent-report.js";
 import {
   COMMAND_SUMMARY_CHARS,
   INPUT_STRIP_FLOOR_BYTES,
@@ -188,12 +193,14 @@ function projectBlockArray(
 
 /**
  * Project one tool result. `toolName` is the name of the tool that produced it,
- * used for the exemption: `WHOLE_RESULT_TOOL_NAMES` are the tools the transcript
- * renders in full with no expand affordance and no fetch path, so slicing them
- * cuts text with no way to get it back. That is the subagent final report
- * (`SubagentCall` renders it as markdown, nothing to click) and
- * `AskUserQuestion` (the Ask branch returns before the output modal, so a
- * sliced answer's tail is unreachable — SHI-291).
+ * and selects between three treatments:
+ *
+ *   - **`WHOLE_RESULT_TOOL_NAMES`** ship whole, because the transcript renders
+ *     them in full with no expand affordance and no fetch path, so slicing cuts
+ *     text with no way to get it back. `AskUserQuestion` only (SHI-291).
+ *   - **`SUBAGENT_REPORT_TOOL_NAMES`** get the report-shaped slice below.
+ *   - **everything else** gets the generic slice, or no body at all when
+ *     nothing draws its content without a click.
  *
  * `Skill` is NOT exempt: it renders no report, so its body goes through the
  * ordinary bound like any other tool result. Nor is `present`, which reads an
@@ -205,6 +212,34 @@ export function projectToolResult(
   toolName: string | undefined,
 ): ToolResultEntry {
   const exempt = shipsResultBodyWhole(toolName);
+
+  // A final report is clamped inline and the rest opens in a modal (docs/109
+  // req 8), so only the clamped part belongs on the wire. It cannot go through
+  // either branch below: its normal encoding is a `JSON.stringify`'d block
+  // array, which is ONE line, so the generic line cap never fires and the byte
+  // backstop would cut mid-array — leaving JSON `parseSubagentReport` can't
+  // parse and the card renders verbatim (the SHI-287 bug, reintroduced). The
+  // report slice works on the text inside the blocks and rebuilds the
+  // structure, keeping the accounting footer whole for the header chips.
+  if (toolName && SUBAGENT_REPORT_TOOL_NAMES.has(toolName)) {
+    // Image substitution FIRST, and unconditionally: a subagent can return a
+    // screenshot alongside its report, and those base64 payloads are the
+    // heaviest thing in the message — the clamp bounds the text and would leave
+    // them untouched. `substituteResultImages` is a no-op for the text-only
+    // report that is the normal case.
+    const withUrls = substituteResultImages(sessionId, result.content);
+    const sliced = sliceSubagentReport(withUrls);
+    if (!sliced) {
+      return withUrls === result.content ? result : { ...result, content: withUrls };
+    }
+    return {
+      ...result,
+      content: sliced.content,
+      truncated: true,
+      totalLines: sliced.totalLines,
+      totalBytes: sliced.totalBytes,
+    };
+  }
 
   // Requirement 1, applied at full strength: nothing renders this result's
   // content without a click, so the transcript carries none of it. The slice
