@@ -11,9 +11,8 @@ description: Use a dedicated private GitHub repository as ShipIt's issue backend
 This is the focused design for the private-GitHub option identified by the
 [issue tracker evaluation](../246-native-issue-tracker-evaluation/plan.md).
 Choosing GitHub Issues means accepting its feature set rather than passing a
-separate parity gate. One product question remains in
-[requirements.md](./requirements.md): historical actions after changing or
-removing the configured private repository.
+separate parity gate. Every product question in
+[requirements.md](./requirements.md) is resolved; implementation is unblocked.
 
 The likely first increment is small: reuse ShipIt's existing GitHub adapter and
 bind it to a dedicated private repository. The hard part is not CRUD; it is
@@ -160,9 +159,15 @@ poller or periodic membership/visibility check afterward; normal GitHub
 requests surface later authorization and availability failures inline. The
 operator remains responsible for keeping the repository private in GitHub.
 
-The behavior of historical references and Undo cards after the configured
-private repository changes remains the sole open product question. No issue
-migration or synchronization mechanism is proposed.
+Rebinding gets no dedicated mechanism (req 3). A target ShipIt already recorded
+— an Undo card's stored `owner/repo#number`, a qualified pointer in an open PR
+body — is routing data in its own right, so the deferred effect simply uses it
+and GitHub authorization decides whether it still succeeds. That is what the
+core invariant already produces with no extra code; rejecting such a target
+against the current binding would mean *adding* a comparison for an event that
+happens at most once in a deployment's life. The binding is consulted only where
+there is nothing else to consult: list, create, and bare-number operations. No
+issue migration or synchronization mechanism is proposed.
 
 ## Accepted GitHub feature set
 
@@ -279,9 +284,8 @@ coding sessions, Git operations, or access to locally persisted chat history.
 
 ## Decision boundary
 
-All product decisions except historical behavior after changing the private
-repository are resolved. GitHub authorizes the same contextual credential used
-for other GitHub operations, not each ShipIt viewer.
+All product decisions are resolved. GitHub authorizes the same contextual
+credential used for other GitHub operations, not each ShipIt viewer.
 Each code repository keeps its own GitHub Issues tracker, private owner planning
 uses the configured private destination, and the fixed public bug-report flow is
 specific to ShipIt. Public PR bodies use fully qualified private-repository

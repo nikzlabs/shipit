@@ -18,7 +18,7 @@
 - [x] Use the contextual GitHub credential and let GitHub enforce repository access; do not add a separate per-viewer tracker ACL.
 - [x] Keep private issue titles out of pushed branch names and public PR titles.
 - [x] Preserve each active code repository's GitHub Issues as a distinct tracker destination.
-- [ ] Decide how historical references and Undo actions behave after the configured private repository changes or is removed.
+- [x] Decide how historical references and Undo actions behave after the configured private repository changes or is removed.
 - [x] Validate on connection and rely on ordinary GitHub authorization afterward; do not add proactive polling.
 - [x] Create missing priority-convention labels on demand for user-requested priority changes.
 

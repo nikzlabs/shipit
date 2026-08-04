@@ -25,11 +25,29 @@ interface LinearTrackerConfig {
   team?: { id: string; key: string; name: string };
 }
 
+/**
+ * docs/247 — the private planning tracker binding: a user-created **private**
+ * GitHub repository, explicitly connected rather than inferred from any session
+ * remote. Deployment-wide until Projects phase 1c moves it into the owning
+ * Project (docs/231 req 1).
+ *
+ * No token of its own: planning calls use the same GitHub credential as every
+ * other GitHub operation (docs/247 req 10), so only the target is stored here.
+ * The binding is written only after `validatePlanningRepo` confirms the repo
+ * exists, is private, has Issues enabled, and is writable (req 8).
+ */
+interface PrivateTrackerConfig {
+  owner: string;
+  repo: string;
+}
+
 interface CredentialData {
   agentEnv?: Record<string, string>;
   githubToken?: string;
   /** docs/170 — Linear Issues-tab binding. */
   linear?: LinearTrackerConfig;
+  /** docs/247 — private planning GitHub repository binding. */
+  privateGithubTracker?: PrivateTrackerConfig;
   maxIdleContainers?: number;
   agentSystemInstructionsEnabled?: boolean;
   autoCreatePr?: boolean;
