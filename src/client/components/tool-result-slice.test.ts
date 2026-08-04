@@ -10,7 +10,9 @@ import { SUBAGENT_TOOLS } from "./visual-elements.js";
 import {
   SUBAGENT_TOOL_NAMES,
   SUBAGENT_REPORT_TOOL_NAMES,
+  WHOLE_RESULT_TOOL_NAMES,
   rendersResultContentInline,
+  shipsResultBodyWhole,
 } from "../../server/shared/transcript-slice-tools.js";
 
 /**
@@ -125,5 +127,71 @@ describe("rendersResultContentInline matches what the transcript actually reads"
     // Skill sits in the layout set but renders neither a report nor a preview.
     expect(SUBAGENT_TOOL_NAMES.has("Skill")).toBe(true);
     expect(rendersResultContentInline("Skill")).toBe(false);
+  });
+});
+
+/**
+ * SHI-291 — the set every size bound in this feature has to agree on.
+ *
+ * `rendersResultContentInline` answers "does anything draw this without a
+ * click"; this one answers the sharper question "and if we cut it, can the user
+ * ever get the rest back?". Where the answer is no, the body ships whole — a
+ * larger payload beats destroying text.
+ */
+describe("shipsResultBodyWhole is the no-recovery set", () => {
+  it("covers the subagent report tools — SubagentCall renders them with nothing to click", () => {
+    for (const name of SUBAGENT_REPORT_TOOL_NAMES) {
+      expect(shipsResultBodyWhole(name)).toBe(true);
+    }
+  });
+
+  it("covers AskUserQuestion — the Ask branch returns before the output modal", () => {
+    // The regression itself: a >16 KB free-form answer lost its tail with no
+    // click, no modal and no fetch to recover it.
+    expect(shipsResultBodyWhole("AskUserQuestion")).toBe(true);
+  });
+
+  /**
+   * The counter-case that keeps the set narrow. `present` reads result content
+   * inline too, but only an artifact id from the head of a compact payload its
+   * own producer controls — a slice preserves that, so exempting it would ship
+   * bytes for nothing.
+   */
+  it("excludes the present tool, whose id survives a slice", () => {
+    for (const name of ["present", "mcp__shipit__present"]) {
+      expect(rendersResultContentInline(name)).toBe(true);
+      expect(shipsResultBodyWhole(name)).toBe(false);
+    }
+  });
+
+  it("excludes ExitPlanMode and ordinary tools", () => {
+    for (const name of ["ExitPlanMode", "Bash", "Read", "Edit"]) {
+      expect(shipsResultBodyWhole(name)).toBe(false);
+    }
+  });
+
+  /**
+   * `Skill` sits in the LAYOUT set, and the client cap used to key off that
+   * set — so it spared `Skill` (which renders no report) while capping
+   * `AskUserQuestion` (which cannot recover). Both halves are fixed by the two
+   * sides reading this one.
+   */
+  it("excludes Skill, which the layout set contains but which renders no report", () => {
+    expect(SUBAGENT_TOOL_NAMES.has("Skill")).toBe(true);
+    expect(shipsResultBodyWhole("Skill")).toBe(false);
+  });
+
+  it("is false for an unresolvable tool name", () => {
+    // Unlike `rendersResultContentInline`, whose safe direction is to ship, the
+    // safe direction here is to bound: an unknown name gets the ordinary slice,
+    // which the unknown-name fallback already keeps generous.
+    expect(shipsResultBodyWhole(undefined)).toBe(false);
+  });
+
+  it("is a subset of what the transcript reads inline", () => {
+    // A body that ships whole but that nothing renders would be pure waste.
+    for (const name of WHOLE_RESULT_TOOL_NAMES) {
+      expect(rendersResultContentInline(name)).toBe(true);
+    }
   });
 });

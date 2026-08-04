@@ -43,7 +43,7 @@
 
 import { createHash } from "node:crypto";
 import { sliceBody, RESULT_STRIP_FLOOR_BYTES } from "../shared/transcript-slice.js";
-import { SUBAGENT_REPORT_TOOL_NAMES, rendersResultContentInline } from "../shared/transcript-slice-tools.js";
+import { shipsResultBodyWhole, rendersResultContentInline } from "../shared/transcript-slice-tools.js";
 import type { PersistedMessage } from "./chat-history.js";
 import type { AgentEvent } from "../shared/types.js";
 import type { ToolResultEntry } from "./session-runner.js";
@@ -174,18 +174,23 @@ function projectBlockArray(
 
 /**
  * Project one tool result. `toolName` is the name of the tool that produced it,
- * used for the single exemption: a Task/Agent result carries the subagent's
- * final report, which `SubagentCall` renders in full as markdown with no expand
- * affordance — slicing it would visibly cut the report with no way to get the
- * rest back. `Skill` is NOT exempt: it renders no report, so its body goes
- * through the ordinary bound like any other tool result.
+ * used for the exemption: `WHOLE_RESULT_TOOL_NAMES` are the tools the transcript
+ * renders in full with no expand affordance and no fetch path, so slicing them
+ * cuts text with no way to get it back. That is the subagent final report
+ * (`SubagentCall` renders it as markdown, nothing to click) and
+ * `AskUserQuestion` (the Ask branch returns before the output modal, so a
+ * sliced answer's tail is unreachable — SHI-291).
+ *
+ * `Skill` is NOT exempt: it renders no report, so its body goes through the
+ * ordinary bound like any other tool result. Nor is `present`, which reads an
+ * artifact id out of the head of a compact payload that a slice preserves.
  */
 export function projectToolResult(
   sessionId: string,
   result: ToolResultEntry,
   toolName: string | undefined,
 ): ToolResultEntry {
-  const exempt = !!toolName && SUBAGENT_REPORT_TOOL_NAMES.has(toolName);
+  const exempt = shipsResultBodyWhole(toolName);
 
   // Requirement 1, applied at full strength: nothing renders this result's
   // content without a click, so the transcript carries none of it. The slice

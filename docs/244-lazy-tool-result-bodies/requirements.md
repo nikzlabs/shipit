@@ -23,13 +23,33 @@
    introduce loading states of its own. A view the user opens by clicking may
    load data on demand, and may show a loading state while it does.
 9. Images may render inline at reduced resolution, with the full-resolution
-   image loaded when the user opens the full-size preview.
+   image loaded when the user opens the full-size preview. Sending an image
+   with the transcript rather than deferring it to a click is acceptable for
+   images up to 256×256; requirement 1 does not apply to them.
 
 ## Open questions
 
-None.
+- Requirement 9's 256×256 allowance is written as a bound on the image being
+  sent, but the code sends whatever resolution was stored — the 96×96 inline
+  thumbnail points at the same content-addressed URL as the full-size preview,
+  so a 4000×3000 screenshot transfers in full on viewport entry. So either:
+  (a) the allowance describes the inline **render** size and the transfer stays
+  deliberately unbounded, in which case requirement 9's wording should say so
+  and no code changes; or (b) it is a real bound on transferred pixels, in
+  which case images above it must be downsampled server-side — which needs a
+  new image-processing dependency, since the repo has none, and reads against
+  "accept the gap". Recorded as an open question rather than guessed at,
+  because the two readings differ by a whole subsystem. SHI-292.
 
 ## Resolved questions
+
+- 2026-08-04 — Should inline image thumbnails be downsampled so requirement 1's
+  "nothing transfers without a click" holds for images, or is transferring them
+  with the transcript acceptable? Answer: acceptable — accept the gap, allow
+  images up to 256×256 to be sent, they are infrequent anyway. Recorded in
+  requirement 9. (Raised by the independent requirements review, which found
+  that the 96×96 thumbnail loads full-resolution bytes on viewport entry rather
+  than on click, making requirement 9's second clause unreachable. SHI-292.)
 
 - 2026-08-01 — Should the byte bound apply to the live WebSocket path or only
   to history loads? Answer: both. Recorded as requirement 6.
