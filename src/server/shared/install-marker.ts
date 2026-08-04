@@ -1,5 +1,9 @@
 /**
- * Stamped install marker — `.shipit/.install-done` (docs/183 Phase 3).
+ * Stamped install marker — `.install-done` (docs/183 Phase 3). It lives in the
+ * container-visible slice of the per-session state dir (`/session-state` in the
+ * container, `<sessionDir>/state/shared/` on the host); docs/246 moved it out of
+ * `<clone>/.shipit/`, where the post-turn `git add -A` could commit it into the
+ * user's repository.
  *
  * Phase 1 left the install gate as "marker present → skip". That is too coarse
  * for the overlay rolling base: a session mounts a shared base captured after
@@ -19,11 +23,16 @@
  *   - `installCommands` — the exact `agent.install` command list. Editing the
  *     install command in `shipit.yaml` must force a reinstall.
  *
- * The marker is plain JSON written into `.shipit/`, which (unlike `.git`) is
- * captured into the overlay base — so a fresh session over an unchanged-`main`
- * base reads a valid stamp from the lowerdir and skips at ~0. A legacy
- * timestamp marker (pre-upgrade) fails {@link parseMarker} and is treated as a
- * miss: one slow install after the upgrade, then the stamped marker takes over.
+ * The marker is plain JSON. It used to ride the clone's `.shipit/`, which
+ * (unlike `.git`) is captured into the overlay base, so a fresh session over an
+ * unchanged-`main` base read a valid stamp straight from the lowerdir. Now that
+ * it lives outside the clone (docs/246) the base carries no marker, and the
+ * orchestrator reproduces that base-hit skip explicitly: `preStampInstallMarker`
+ * (`overlay-session.ts`) writes the stamp into the session state dir at
+ * container create when the pinned overlay generation proves the base's deps fit
+ * this checkout. A legacy timestamp marker (pre-upgrade) fails
+ * {@link parseMarker} and is treated as a miss: one slow install after the
+ * upgrade, then the stamped marker takes over.
  */
 
 /**

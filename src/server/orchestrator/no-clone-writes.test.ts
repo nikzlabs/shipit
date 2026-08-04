@@ -8,8 +8,10 @@
  * unrelated and legitimate reasons (`.shipit.db`, `.shipit-worker-uid`, the
  * app-scope `system-prompt.md`, file-watcher skip lists), so an allowlist of
  * every mention would be noise nobody reads. Instead it matches only the thing
- * that is actually forbidden: one of the four GENERATED ARTIFACT names composed
- * with an in-clone `.shipit` path.
+ * that is actually forbidden: an in-clone `.shipit` DIRECTORY path composed from
+ * a clone/workspace variable. What gets written into it is irrelevant — see
+ * {@link IN_CLONE_SHIPIT_PATH} for why matching the directory join, rather than
+ * the artifact names, is the invariant.
  *
  * The invariant has no carve-outs, which is what makes it checkable: nothing
  * user-authored lives in a clone's `.shipit/`. The per-repo config a human
@@ -65,8 +67,10 @@ const IN_CLONE_SHIPIT_PATH = String.raw`(workspaceDir|sessionDir|clone|repoDir|c
  *
  * SHI-286 emptied the "back-compat fallback" category: the legacy flat layout
  * (`sessionDir === workspaceDir`) is gone, so nothing falls back to writing a
- * docs/246 artifact into a clone. What is left either isn't a clone at all
- * (app-scope) or REMOVES a pre-246 copy.
+ * docs/246 artifact into a clone. The "removes a pre-246 copy" category is
+ * empty too — the one-time migration (the boot sweep and the three unlinks that
+ * shed an older ShipIt's leftovers) was retired once it had served its purpose,
+ * so no docs/246 code composes an in-clone path at all any more.
  *
  * One writer does survive, and it is NOT a docs/246 artifact:
  * `secret-resolver.ts`'s `writePerServiceEnvFiles` still writes
@@ -74,7 +78,7 @@ const IN_CLONE_SHIPIT_PATH = String.raw`(workspaceDir|sessionDir|clone|repoDir|c
  * docs/183's `serviceEnvDir` is configured. That is a docs/183 leftover with its
  * own migration story (`writeServiceEnvFilesToRoot` sweeps it), reachable only
  * in tests / non-container setups — tracked separately, not allowlisted away
- * here on purpose.
+ * here on purpose. It is the sole reason the entry below exists.
  */
 const ALLOWED: Record<string, string> = {
   // --- Not a clone at all: the APP-SCOPE workspaceDir (the orchestrator's own
@@ -84,16 +88,10 @@ const ALLOWED: Record<string, string> = {
   "src/server/orchestrator/route-registry.ts": "app-scope system-prompt.md",
   "src/server/orchestrator/services/settings.ts": "app-scope system-prompt.md",
 
-  // --- Removes a pre-246 copy, never creates one. ---
-  "src/server/orchestrator/session-state-dir.ts": "owns the sweep",
-  "src/server/orchestrator/services/claim-session.ts": "unlinks a pre-246 marker",
-  "src/server/session/install-controller.ts": "unlinks a pre-246 marker",
-
-  // --- Unlinks a pre-246 `.env.agent`; ALSO still owns docs/183's in-clone
-  // per-service env fallback (`writePerServiceEnvFiles`), which is out of scope
-  // for docs/246 and tracked on its own. See the note above. ---
-  "src/server/orchestrator/secret-resolver.ts":
-    "unlinks a pre-246 .env.agent; docs/183 per-service env fallback",
+  // --- Owns docs/183's in-clone per-service env fallback
+  // (`writePerServiceEnvFiles`), which is out of scope for docs/246 and tracked
+  // on its own. See the note above. ---
+  "src/server/orchestrator/secret-resolver.ts": "docs/183 per-service env fallback",
 };
 
 /** Source files (excluding tests) that compose an in-clone artifact path. */
@@ -114,14 +112,15 @@ function filesComposingInCloneArtifacts(): string[] {
 }
 
 describe("no ShipIt-generated writes inside a session clone (docs/246 req 7)", () => {
-  it("only sweep / back-compat sites compose an in-clone artifact path", () => {
+  it("no source file outside the allowlist composes an in-clone artifact path", () => {
     const offenders = filesComposingInCloneArtifacts().filter((f) => !(f in ALLOWED));
     expect(
       offenders,
       "These files put a ShipIt-generated artifact inside the user's git clone, where the "
         + "post-turn `git add -A` will commit it into their repository. Write to the session "
-        + "state dir instead (see session-state-dir.ts). Add to ALLOWED only when the path is "
-        + "being REMOVED — SHI-286 retired the back-compat-default category.",
+        + "state dir instead (see session-state-dir.ts). ALLOWED is not a place to add a new "
+        + "writer: SHI-286 retired the back-compat-default category, and the one-time pre-246 "
+        + "migration that owned the rest is gone.",
     ).toEqual([]);
   });
 
