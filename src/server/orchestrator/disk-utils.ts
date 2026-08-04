@@ -12,6 +12,7 @@ import { spawn } from "node:child_process";
 import { OVERLAY_SESSION_SUBDIR } from "./overlay-session.js";
 import {
   SESSION_STATE_SUBDIR,
+  SESSION_WORKSPACE_SUBDIR,
   INSTALL_MARKER_FILE,
   sessionStateDirForWorkspace,
   sessionSharedStateDir,
@@ -130,7 +131,23 @@ export async function reclaimRegenerableSessionDirs(
   // in prod) plus the overlay upper sibling. NEVER a blanket `rm` of
   // `sessionRoot`, which also holds durable `uploads/` — see
   // {@link REGENERABLE_SESSION_SUBDIRS}.
-  const targets = [workspaceDir, path.join(sessionRoot, OVERLAY_SESSION_SUBDIR)];
+  // Derived from {@link REGENERABLE_SESSION_SUBDIRS}, NOT hand-listed. The
+  // hand-listed version silently ignored additions to that constant: docs/246
+  // added `state` to it and nothing changed, so the install marker kept
+  // outliving the clone it describes (evict → restore → fresh checkout with no
+  // deps, marker still matches, `/install` skips, dep-less session). The unit
+  // test that "covered" it asserted the constant's CONTENTS, which passed while
+  // the behaviour was unchanged — declaration pinned, effect not.
+  //
+  // The checkout keeps using the `workspaceDir` argument verbatim rather than
+  // `<sessionRoot>/workspace`: callers pass the session's real checkout path and
+  // it stays authoritative here.
+  const targets = [
+    workspaceDir,
+    ...REGENERABLE_SESSION_SUBDIRS
+      .filter((sub) => sub !== SESSION_WORKSPACE_SUBDIR)
+      .map((sub) => path.join(sessionRoot, sub)),
+  ];
   const removed: string[] = [];
   const failed: { dir: string; message: string }[] = [];
   for (const dir of targets) {

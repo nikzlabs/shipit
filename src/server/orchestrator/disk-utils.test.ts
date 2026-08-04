@@ -65,15 +65,36 @@ describe("reclaimRegenerableSessionDirs (SHI-192)", () => {
     expect(failed).toEqual([]);
   });
 
-  // The allowlist is the safety property (SHI-192: never blanket-`rm` the
-  // session root and take `uploads/` with it), so every addition is deliberate
-  // and lands here. `state` joined it in docs/246: ShipIt's generated state is
-  // regenerable, and the install marker DESCRIBES the checkout — leaving it
-  // behind when `workspace/` is reclaimed makes it outlive the clone it refers
-  // to, so the restored session skips an install it needs and comes back
-  // dep-less.
-  it("only ever targets the allowlisted regenerable subdirs", () => {
-    expect(REGENERABLE_SESSION_SUBDIRS).toEqual(["workspace", "overlay", "state"]);
+  // SHI-293 — this used to assert the CONTENTS of REGENERABLE_SESSION_SUBDIRS,
+  // which is worthless as a guard: the reclaim built its target list by hand and
+  // never read the constant, so docs/246's addition of `state` passed the test
+  // and changed nothing. The marker kept outliving the clone it describes.
+  // Assert the EFFECT instead — every listed subdir is actually removed.
+  it("removes every subdir named in REGENERABLE_SESSION_SUBDIRS", async () => {
+    for (const sub of REGENERABLE_SESSION_SUBDIRS) {
+      fs.mkdirSync(path.join(sessionRoot, sub, "content"), { recursive: true });
+    }
+    fs.mkdirSync(path.join(sessionRoot, "uploads"), { recursive: true });
+
+    await reclaimRegenerableSessionDirs(workspaceDir);
+
+    for (const sub of REGENERABLE_SESSION_SUBDIRS) {
+      expect(fs.existsSync(path.join(sessionRoot, sub)), `${sub} should be reclaimed`).toBe(false);
+    }
+    expect(fs.existsSync(path.join(sessionRoot, "uploads"))).toBe(true);
+  });
+
+  // The specific regression: the install marker must not survive the checkout it
+  // describes, or the restored session skips an install it needs.
+  it("reclaims the state dir, so the install marker cannot outlive the clone", async () => {
+    fs.mkdirSync(path.join(sessionRoot, "state", "shared"), { recursive: true });
+    fs.writeFileSync(path.join(sessionRoot, "state", "shared", ".install-done"), "{}");
+    fs.mkdirSync(workspaceDir, { recursive: true });
+
+    const { removed } = await reclaimRegenerableSessionDirs(workspaceDir);
+
+    expect(removed).toContain(path.join(sessionRoot, "state"));
+    expect(fs.existsSync(path.join(sessionRoot, "state", "shared", ".install-done"))).toBe(false);
   });
 });
 
