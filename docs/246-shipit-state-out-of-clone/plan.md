@@ -125,6 +125,22 @@ On session boot, remove the four generated names from `<clone>/.shipit/`, then
 remove the directory if empty. Working tree only — copies already committed to a
 user's history are left alone and not announced (resolved question, 2026-08-03).
 
+**"Session boot" means the runner factory, not container create (SHI-289).**
+`sweepLegacyCloneArtifacts()` first hung off `createContainer()`, which quietly
+made an unconditional requirement conditional on a runtime: `RUNTIME_MODE=local`
+(the dogfood loop, docs/118) creates no container, so a local-mode session kept
+its untracked pre-246 `.shipit/.env.agent` indefinitely and the post-turn
+`git add -A` would stage a secret-shaped file into the user's repo. The sweep now
+wraps the factory `buildRunnerFactory` returns (`withLegacyCloneSweep`,
+`app-lifecycle.ts`) — the one seam local, containerized, and injected factories
+all pass through, so there is a single call site rather than two that can drift.
+The cadence is unchanged in spirit and slightly wider in practice: the factory
+runs when `SessionRunnerRegistry.getOrCreate` has no live runner — session
+activation, or reactivation after an idle disposal — which is not per turn and
+not per message, and it now also covers the container-reconnect path that never
+called `createContainer()` at all. In the steady state that is five `existsSync`
+misses; the `git ls-files` provenance check only runs for a name that exists.
+
 Note `.shipit/system-prompt.md` is **not** in a clone: every caller passes the
 app-scope `workspaceDir` (`route-registry.ts:238` → `:977`,
 `bootstrap-managers.ts:361`, `services/misc.ts:88`), i.e. the orchestrator's
@@ -144,6 +160,8 @@ it mechanically checkable rather than a review convention.
 
 - `src/server/orchestrator/session-dir-factory.ts` — the `state/` sibling
 - `src/server/orchestrator/container-lifecycle.ts` — the `/session-state` mount
+- `src/server/orchestrator/app-lifecycle.ts` — `withLegacyCloneSweep`, the
+  runtime-independent seam the req-6 sweep hangs off (SHI-289)
 - `docker/session-worker/entrypoint.sh` — chown loop coverage
 - `src/server/orchestrator/compose-generator.ts` / `compose-cli.ts` /
   `service-manager.ts` — override path + absolute `-f`

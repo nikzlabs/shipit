@@ -23,7 +23,6 @@ import {
   CONTAINER_SESSION_STATE_DIR,
   sessionStateDirForWorkspace,
   sessionSharedStateDir,
-  sweepLegacyCloneArtifacts,
 } from "./session-state-dir.js";
 import { agentHome } from "../shared/agent-home.js";
 import type { HostMount } from "../shared/shipit-config.js";
@@ -734,23 +733,13 @@ export async function createContainer(
   // it root-owned and the entrypoint chown races the worker's first write.
   fs.mkdirSync(sessionSharedStateDir(config.sessionStateDir), { recursive: true });
 
-  // docs/246 req 6 — shed what earlier versions left inside the clone. Runs on
-  // every container create, so a session that predates the move sheds its
-  // leftovers the next time it boots rather than only on fresh sessions.
-  // Working tree only: copies already committed to the user's history are
-  // deliberately left alone (ShipIt can't rewrite someone's history, and the
-  // files are inert once it stops writing them).
-  // Unconditional: every session has a state dir, so anything left in the clone
-  // is by definition a leftover. (It was gated on having one while the flat
-  // layout existed, where the in-clone files were still LIVE and sweeping them
-  // would have re-run `agent.install` on every boot — SHI-286 removed that
-  // layout, and with it the gate.)
-  const swept = sweepLegacyCloneArtifacts(config.workspaceDir);
-  if (swept.length > 0) {
-    console.log(
-      `[container:${config.sessionId}] swept pre-246 ShipIt artifacts from the clone: ${swept.join(", ")}`,
-    );
-  }
+  // docs/246 req 6 — shedding what earlier versions left inside the clone used
+  // to happen HERE, and that was the bug (SHI-289): req 6 is unconditional, but
+  // container create is a Docker-runtime event, so `RUNTIME_MODE=local` never
+  // ran it. The sweep now hangs off the runner factory
+  // (`app-lifecycle.ts` → `withLegacyCloneSweep`), which both runtimes pass
+  // through on session activation — earlier than this point on the container
+  // path, since the factory kicks `createContainerForRunner` off itself.
 
   // Ensure the dep cache directory exists on the host before mounting.
   if (config.depCacheDir) {

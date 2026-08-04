@@ -43,6 +43,7 @@ import type { LocalAgentFactory } from "./local-agent-home.js";
 import { resolveLocalAgentHome } from "./local-agent-home.js";
 import { refuseIfAlreadyConnected } from "./provider-account-identity.js";
 import type { AgentRegistry } from "../shared/agent-registry.js";
+import { sweepLegacyCloneArtifacts } from "./session-state-dir.js";
 import type { AgentId, AgentProcess, LogSource, LogRingEntry } from "../shared/types.js";
 import type { AppDeps, RuntimeMode } from "./app-di.js";
 import { SessionRunner } from "./session-runner.js";
@@ -540,8 +541,57 @@ async function attemptContainerCreate(
  *   subprocesses are spawned via the process-level `agentFactory` (see
  *   `app-di.ts` `buildLocalAgentFactory`). No containers, no proxy.
  * - Test/custom: `deps.runnerFactory` overrides everything.
+ *
+ * Whichever branch is taken, the returned factory is wrapped in
+ * {@link withLegacyCloneSweep} — see there for why the docs/246 sweep lives at
+ * this seam rather than inside one runtime's branch.
  */
 export function buildRunnerFactory(
+  factoryDeps: RunnerFactoryDeps,
+): SessionRunnerFactory | undefined {
+  const factory = selectRunnerFactory(factoryDeps);
+  return factory ? withLegacyCloneSweep(factory) : undefined;
+}
+
+/**
+ * docs/246 req 6 (SHI-289) — shed the generated artifacts an earlier ShipIt left
+ * inside a session's git clone, on **every** runtime.
+ *
+ * The sweep used to live in `createContainer()`, which made an unconditional
+ * requirement conditional on a runtime: `RUNTIME_MODE=local` (the dogfood loop,
+ * docs/118) creates no container, so a local-mode session carrying an untracked
+ * pre-246 `.shipit/.env.agent` kept it forever — and the post-turn `git add -A`
+ * stages a secret-shaped file into the user's repo. This wrapper is the seam
+ * both runtimes pass through, so there is one call site rather than two that can
+ * drift.
+ *
+ * **Cadence: once per session activation.** The factory is only invoked when
+ * `SessionRunnerRegistry.getOrCreate` has no live runner for the session, which
+ * is activation (or reactivation after an idle disposal) — not per turn and not
+ * per message. In the steady state the sweep is five `existsSync` misses; the
+ * `git ls-files` provenance check only runs for a name that actually exists.
+ *
+ * `o.sessionDir` is the session's **clone** (`session.workspaceDir`), which is
+ * what the sweep takes. Best-effort: a sweep failure must never block a session
+ * from getting a runner.
+ */
+function withLegacyCloneSweep(factory: SessionRunnerFactory): SessionRunnerFactory {
+  return (o: Parameters<SessionRunnerFactory>[0]) => {
+    try {
+      const swept = sweepLegacyCloneArtifacts(o.sessionDir);
+      if (swept.length > 0) {
+        console.log(
+          `[session-state] ${o.sessionId}: swept pre-246 ShipIt artifacts from the clone: ${swept.join(", ")}`,
+        );
+      }
+    } catch (err) {
+      console.warn(`[session-state] clone sweep failed for ${o.sessionId}:`, err);
+    }
+    return factory(o);
+  };
+}
+
+function selectRunnerFactory(
   factoryDeps: RunnerFactoryDeps,
 ): SessionRunnerFactory | undefined {
   const {

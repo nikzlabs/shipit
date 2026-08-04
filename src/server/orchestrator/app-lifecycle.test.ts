@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
+import { execFileSync } from "node:child_process";
 import {
   buildRunnerFactory,
   createIdleEnforcer,
@@ -1197,4 +1198,98 @@ describe("markProviderAccountReauthenticated", () => {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
   });
+});
+
+// ---------------------------------------------------------------------------
+// docs/246 req 6 (SHI-289) — the pre-246 clone sweep is runtime-independent
+// ---------------------------------------------------------------------------
+
+/**
+ * The bug: `sweepLegacyCloneArtifacts()`'s only caller was `createContainer()`,
+ * so `RUNTIME_MODE=local` (the dogfood loop, docs/118) never ran it — and a
+ * local-mode session kept an untracked pre-246 `.shipit/.env.agent` forever,
+ * where the post-turn `git add -A` stages a secret-shaped file into the user's
+ * repo. Req 6 is unconditional, so the sweep now hangs off the runner factory,
+ * the seam both runtimes pass through.
+ */
+describe("buildRunnerFactory — pre-246 clone sweep (docs/246 req 6, SHI-289)", () => {
+  let sessionDir: string;
+  let clone: string;
+  const shipitDir = () => path.join(clone, ".shipit");
+
+  beforeEach(() => {
+    sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-sweep-factory-"));
+    // The sweep asks `git ls-files` for provenance and treats an unknown answer
+    // as TRACKED, so the clone has to be a real repo — production ones are.
+    clone = path.join(sessionDir, "workspace");
+    fs.mkdirSync(clone, { recursive: true });
+    execFileSync("git", ["init", "-q"], { cwd: clone });
+    execFileSync("git", ["config", "user.email", "t@example.com"], { cwd: clone });
+    execFileSync("git", ["config", "user.name", "t"], { cwd: clone });
+    fs.mkdirSync(shipitDir(), { recursive: true });
+  });
+
+  afterEach(() => {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  });
+
+  it("sweeps the clone in local mode, where no container is ever created", () => {
+    fs.writeFileSync(path.join(shipitDir(), ".env.agent"), "DATABASE_URL=postgres://u:p@h/db");
+
+    const factory = buildRunnerFactory({
+      deps: {},
+      containerManager: null,
+      credentialsDir: "/credentials",
+      runtimeMode: "local",
+    });
+    const runner = factory!({ sessionId: "s1", sessionDir: clone, defaultAgentId: "claude" as AgentId });
+
+    expect(fs.existsSync(shipitDir())).toBe(false);
+    runner.dispose({ force: true });
+  });
+
+  // The containerized branch keeps the behavior it had when the sweep lived in
+  // `createContainer()` — and gains the reconnect path, which never called it.
+  it("still sweeps on the containerized path", () => {
+    fs.writeFileSync(path.join(shipitDir(), ".install-done"), "{}");
+
+    const mgr = {
+      get: () => ({ status: "running", workerUrl: "http://172.18.0.9:9100" }),
+      isStandby: () => false,
+      claimStandby: () => undefined,
+    } as unknown as SessionContainerManager;
+
+    const factory = buildRunnerFactory({
+      deps: {},
+      containerManager: mgr,
+      credentialsDir: "/credentials",
+      runtimeMode: "containerized",
+    });
+    const runner = factory!({ sessionId: "s1", sessionDir: clone, defaultAgentId: "claude" as AgentId });
+
+    expect(runner).toBeInstanceOf(ContainerSessionRunner);
+    expect(fs.existsSync(shipitDir())).toBe(false);
+    runner.dispose({ force: true });
+  });
+
+  // The property `session-state-dir.test.ts` pins for the sweep itself must
+  // survive the move: a repo may legitimately commit its own `.shipit/` files,
+  // and deleting one would be silent and land in the next auto-commit.
+  it("does not touch a git-tracked artifact", () => {
+    fs.writeFileSync(path.join(shipitDir(), "compose.override.yml"), "mine");
+    execFileSync("git", ["add", ".shipit/compose.override.yml"], { cwd: clone });
+    execFileSync("git", ["commit", "-qm", "user owns this"], { cwd: clone });
+
+    const factory = buildRunnerFactory({
+      deps: {},
+      containerManager: null,
+      credentialsDir: "/credentials",
+      runtimeMode: "local",
+    });
+    const runner = factory!({ sessionId: "s1", sessionDir: clone, defaultAgentId: "claude" as AgentId });
+
+    expect(fs.readFileSync(path.join(shipitDir(), "compose.override.yml"), "utf-8")).toBe("mine");
+    runner.dispose({ force: true });
+  });
+
 });

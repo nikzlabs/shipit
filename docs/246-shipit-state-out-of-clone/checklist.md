@@ -8,7 +8,7 @@
 - [x] `.env.agent` → state dir, orchestrator-side only (restores docs/087 §403)
 - [x] `.install-done` → `/session-state` (install-controller, `preStampInstallMarker`, claim-session)
 - [x] `ci-logs/` → state dir; CI-fix prompt cites the absolute container path; `ensureShipitGitignored` deleted (req 2 forbids editing the user's tracked `.gitignore`)
-- [x] `sweepLegacyCloneArtifacts()` wired into container create — working tree only, keeps user files, idempotent
+- [x] `sweepLegacyCloneArtifacts()` wired into the runner factory (SHI-289; was container create) — working tree only, keeps user files, idempotent
 - [x] Guard test: no generated artifact name composed with an in-clone `.shipit` path (`no-clone-writes.test.ts`)
 - [x] `shipit-docs/shipit-yaml.md` + `secrets.md` updated for the new paths; the "add `.shipit` to your `.gitignore`" onboarding step is gone
 - [x] Worker state dir injected (`SessionWorkerDeps.stateDir`) rather than hardcoded to the mount — the first CI run caught the in-process case
@@ -51,11 +51,18 @@
   `no-clone-writes.test.ts` no longer holds a single site that writes a docs/246
   artifact into a clone.
 
-- **The sweep never runs in local/dogfood mode** — SHI-289. `sweepLegacyCloneArtifacts`'s only
-  caller is `createContainer`, and `RUNTIME_MODE=local` creates no container, so a local-mode
-  session keeps an untracked pre-246 `.shipit/.env.agent` forever and the post-turn `git add -A`
-  can commit it. Req 6 is stated unconditionally but wired to the container path only. Pre-existing
-  (identical on `main` before SHI-286); found by the SHI-286 review.
+- ~~**The sweep never runs in local/dogfood mode.**~~ **Closed by SHI-289.**
+  `sweepLegacyCloneArtifacts`'s only caller was `createContainer`, and
+  `RUNTIME_MODE=local` creates no container, so a local-mode session kept an
+  untracked pre-246 `.shipit/.env.agent` forever and the post-turn `git add -A`
+  could commit it. The sweep now wraps whatever factory `buildRunnerFactory`
+  returns (`withLegacyCloneSweep`, `app-lifecycle.ts`) — the seam local,
+  containerized, and injected factories all share — so req 6 is unconditional in
+  the code as well as on paper, with one call site instead of two that can
+  drift. It fires once per session activation (the factory only runs when
+  `getOrCreate` has no live runner), not per turn, and additionally covers the
+  container-reconnect path that never reached `createContainer`. Pinned by the
+  local/containerized/tracked-path cases in `app-lifecycle.test.ts`.
 
 ## Out of scope, surfaced by SHI-286
 
