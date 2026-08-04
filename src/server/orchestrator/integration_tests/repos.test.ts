@@ -1,7 +1,7 @@
 /**
  * Integration tests for repo management endpoints and RepoStore.
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -117,6 +117,33 @@ describe("POST /api/repos with url", () => {
       payload: { url: "" },
     });
     expect(res.statusCode).toBe(400);
+  });
+
+  it("a failed clone leaves no cache behind, so a retry re-clones (docs/131)", async () => {
+    // Regression: `git clone --bare` leaves its target directory behind when it
+    // fails, and the `stat(cacheDir)` existence check is the ONLY guard on the
+    // clone. So the SECOND add skipped cloning entirely, called setReady, and
+    // published a repo whose bare cache was empty — every session claimed from
+    // it then cloned from nothing. Found smoke-testing the dogfood seed, which
+    // re-adds a non-ready fixture repo on every boot and so hits this reliably.
+    const url = "https://github.com/test/never-clonable.git";
+    const cacheRoot = path.join(tmpDir, "repo-cache");
+
+    await app.inject({ method: "POST", url: "/api/repos", payload: { url } });
+    // The clone is backgrounded; git is pinned to local transports so it fails
+    // in milliseconds rather than at the mercy of the network.
+    await vi.waitFor(() => {
+      expect(fs.existsSync(cacheRoot) ? fs.readdirSync(cacheRoot) : []).toEqual([]);
+    });
+    expect(repoStore.get(url)?.status).toBe("cloning");
+
+    // The retry must actually attempt a clone again — and fail again — rather
+    // than inherit a bogus `ready`.
+    await app.inject({ method: "POST", url: "/api/repos", payload: { url } });
+    await vi.waitFor(() => {
+      expect(repoStore.get(url)?.status).toBe("cloning");
+      expect(fs.existsSync(cacheRoot) ? fs.readdirSync(cacheRoot) : []).toEqual([]);
+    });
   });
 });
 
