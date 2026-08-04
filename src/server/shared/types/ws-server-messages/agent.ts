@@ -5,6 +5,7 @@ import type { PermissionMode } from "../attachment-types.js";
 // the same path). Erased at build time — no runtime coupling reaches the
 // client bundle.
 import type { PersistedMessage } from "../../../orchestrator/chat-history.js";
+import type { ToolResultEntry } from "../../../orchestrator/session-runner.js";
 import type { AgentInterfaceProvenance } from "../../agent-interface-sdk/protocol.js";
 import type { SessionMessageOrigin } from "../domain-types.js";
 
@@ -88,6 +89,32 @@ export interface WsSubAgentSpawn {
   spawnId: string;
   /** The agent being consulted (display: "Asking Codex…"). */
   subAgentId: AgentId;
+}
+
+/**
+ * docs/109 reqs 10–11 — a subagent launched with `run_in_background` finished,
+ * and the `tool_result` sitting in the transcript as its launch acknowledgement
+ * has been replaced with what it reported.
+ *
+ * A patch rather than a card: the transcript row already exists and the
+ * orchestrator has already rewritten it in place (persisted history, and the
+ * runner's accumulator when the launching turn is still open), so there is
+ * nothing here for `emitChatCard` to record — this only tells viewers holding
+ * the pre-completion copy in memory to catch up. A viewer that misses it gets
+ * the same content from history on its next load, which is exactly why the
+ * persist is the source of truth and this is the optimisation.
+ *
+ * `result` is projected for the wire like any other served tool result
+ * (docs/244), so a long report arrives clamped with the rest behind the modal's
+ * fetch.
+ */
+export interface WsSubagentReportUpdate {
+  type: "subagent_report_update";
+  /** The session that owns the transcript this result belongs to. */
+  sessionId: string;
+  /** The `Task`/`Agent` tool_use whose result this replaces. */
+  toolUseId: string;
+  result: ToolResultEntry;
 }
 
 // ---- Model info ----

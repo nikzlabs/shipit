@@ -4,6 +4,12 @@ import type { SubagentEvent, ToolResultEntry } from "./session-runner.js";
 import type { IssueWriteCard, IssueRefCard, CompactionCard, ChildMergedCard, SelfMergeWatchCard, SessionReportCard, SubAgentConsultCard, AiReviewCard, ActionChecklistCard, BranchAutoResetCard, BranchSyncedCard, SessionRenamedCard, SessionMessageOrigin } from "../shared/types.js";
 import type { ReleaseStatusSummary } from "../shared/types/release-types.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
+import { retireBackgroundSubagentResult } from "./subagent-completion.js";
+import type {
+  BackgroundSubagentCompletion,
+  RetiredSubagentHit,
+  RetiredSubagentResult,
+} from "./subagent-completion.js";
 
 export type RewindSnapshotAction = "chat" | "code" | "both" | "fork";
 
@@ -464,12 +470,25 @@ const UPDATE_SQL = `
   WHERE id = @id
 `;
 
+/**
+ * Escape the LIKE metacharacters so a literal string matches literally.
+ *
+ * Load-bearing rather than defensive: a Claude tool_use id is `toolu_…`, and
+ * `_` is LIKE's single-character wildcard. Without this the prefilter would
+ * quietly match neighbouring ids — harmless today (the structural check behind
+ * it rejects them) but a trap for anyone who later trusts the query alone.
+ */
+function likeEscape(value: string): string {
+  return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
+
 export class ChatHistoryManager {
   private db;
   private stmtInsert;
   private stmtUpdate;
   private stmtLoadAll;
   private stmtLoadSubAgentCards;
+  private stmtLoadByToolUseId;
   private stmtLoadAllPendingSubAgentCards;
   private stmtLoadLast;
   private stmtDeleteBySession;
@@ -490,6 +509,17 @@ export class ChatHistoryManager {
     // transition on that path.
     this.stmtLoadSubAgentCards = this.db.prepare(
       "SELECT sub_agent_consult FROM messages WHERE session_id = ? AND sub_agent_consult IS NOT NULL ORDER BY id",
+    );
+    // docs/109 reqs 10–11 — narrowed to the (at most one) row that could hold a
+    // given tool_use id, rather than the whole transcript. This runs on EVERY
+    // background-task completion, including the `Bash(run_in_background)` jobs
+    // that will never match, so a full-row scan per completion would be real
+    // work repeated for nothing on a long session. The `LIKE` is a prefilter
+    // only — it hands back candidates and `retireBackgroundSubagentResult` still
+    // does the structural check — so a false positive costs one `fromRow`.
+    this.stmtLoadByToolUseId = this.db.prepare(
+      "SELECT * FROM messages WHERE session_id = ? AND tool_results IS NOT NULL "
+      + "AND tool_use LIKE ? ESCAPE '\\' ORDER BY id",
     );
     // SHI-307 — the boot reconcile's cross-session read. No `in_progress`
     // filter, for the same reason as the per-session query above: a consult
@@ -790,6 +820,40 @@ export class ChatHistoryManager {
         return true;
       }
       return false;
+    })();
+  }
+
+  /**
+   * docs/109 reqs 10–11 — replace a backgrounded subagent's launch
+   * acknowledgement with what it actually reported, keyed by the Task's
+   * `tool_use_id`.
+   *
+   * Unlike the card patches above this rewrites a *tool result* rather than a
+   * card column, so it walks `toolResults` — and it does not stop at the last
+   * row, because the notification routinely arrives turns after the launch. All
+   * the "is this the right result to touch" reasoning lives in
+   * {@link retireBackgroundSubagentResult}, which is also what the runner's live
+   * accumulator is patched through; this method only supplies the rows and
+   * writes the hit back. Returns the rewritten entry, or null if no row held an
+   * un-retired acknowledgement for that id (a duplicate notification, a Bash
+   * background task, or a session that never launched one).
+   */
+  retireBackgroundSubagentResult(
+    sessionId: string,
+    completion: BackgroundSubagentCompletion,
+    built: RetiredSubagentResult,
+  ): RetiredSubagentHit | null {
+    const pattern = `%${likeEscape(JSON.stringify(completion.toolUseId))}%`;
+    return this.db.transaction(() => {
+      const rows = this.stmtLoadByToolUseId.all(sessionId, pattern) as MessageRow[];
+      for (const row of rows) {
+        const msg = this.fromRow(row);
+        const hit = retireBackgroundSubagentResult(msg, completion, built);
+        if (!hit) continue;
+        this.stmtUpdate.run({ ...this.toRow(sessionId, msg), id: row.id });
+        return hit;
+      }
+      return null;
     })();
   }
 

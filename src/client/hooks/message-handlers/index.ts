@@ -81,6 +81,7 @@ import { handleSessionStatus } from "./session-status.js";
 import { handleSessionContainerFreshness } from "./session-container-freshness.js";
 import { handleSubAgentConsultCard } from "./sub-agent-consult-card.js";
 import { handleSubAgentSpawn } from "./sub-agent-spawn.js";
+import { handleSubagentReportUpdate } from "./subagent-report-update.js";
 import { handleSystemNotice } from "./system-notice.js";
 import { handleSystemUserMessage } from "./system-user-message.js";
 import { handleTemplateApplied } from "./template-applied.js";
@@ -199,6 +200,7 @@ export const messageHandlers: MessageHandlerMap = {
   session_container_freshness: handleSessionContainerFreshness,
   sub_agent_consult_card: handleSubAgentConsultCard,
   sub_agent_spawn: handleSubAgentSpawn,
+  subagent_report_update: handleSubagentReportUpdate,
   system_notice: handleSystemNotice,
   system_user_message: handleSystemUserMessage,
   template_applied: handleTemplateApplied,
@@ -259,6 +261,7 @@ const TRANSCRIPT_SCOPED_MESSAGES: ReadonlySet<WsMessageType> = new Set<WsMessage
   "secret_block_status",
   "sub_agent_consult_card",
   "sub_agent_spawn",
+  "subagent_report_update",
   "system_notice",
   "system_user_message",
   "message_steered",
