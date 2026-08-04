@@ -1,4 +1,5 @@
 ---
+issue: https://linear.app/shipit-ai/issue/SHI-308
 title: Agent messaging repository trust gate
 description: Make repository trust a fail-closed prerequisite for every new agent turn, enforced at the shared runner boundary and reflected in the composer.
 ---
@@ -134,7 +135,9 @@ Unknown/hydrating state is security-neutral on the client because the server is 
 
 Pass the trust restriction into `MessageInput.disabled` in addition to its existing socket readiness condition. Keyboard submit and every send-button variant already respect `disabled`; tests must keep that contract.
 
-Do not add a second consent control. The existing `RepoTrustBanner` and “Trust this repository” button remain the explanation and action. Update their copy to state that agent messages, install, and services remain blocked until trust. If the banner remains preview-only, the normal chat surface needs a small inline explanation adjacent to the disabled composer that points the user to the existing Trust surface without creating another Trust button; whether the banner itself should become visible from chat is an open product question below.
+The existing `RepoTrustBanner` and “Trust this repository” button remain the explanation and action on the Preview tab, with copy stating that agent messages, install, and services remain blocked until trust.
+
+> **Superseded 2026-08-04 (see requirement 6).** This paragraph originally said "do not add a second consent control" and directed the chat surface to carry a non-action explanation *pointing at* the existing Trust surface. That is not implementable: local mode (`RUNTIME_MODE=local`, the dogfood `dev` service) renders no Preview tab at all, so there is nothing to point at — and with this gate fail-closed, every repo-backed session there was stuck with a disabled composer and no reachable consent. The resolved decision is **both** surfaces: `RepoTrustNotice` above the composer carries its own Trust action, sharing `useRepoTrust` with the banner so the lookup and grant exist once. See `docs/178-repo-trust-gate` for the placement rationale and the general rule (a gate's consent must be reachable in every mode the gate is active in).
 
 Client affordances outside the composer (review, answer, Create PR, send logs/errors, auto-fix) may still race or be invoked programmatically. They should either share a client-side `canMessageAgent` guard for clean UX or rely on rollback, but neither replaces server admission.
 
@@ -215,7 +218,7 @@ After implementation, removing any route-specific client guard should worsen UX 
 
 ## Open product questions
 
-1. Where should the explanatory trust surface appear when the user is on chat or another non-preview tab: move/mirror the existing banner into the central session view, or keep the consent in Preview and add a non-action explanation beside the disabled composer?
+1. ~~Where should the explanatory trust surface appear when the user is on chat or another non-preview tab?~~ **Resolved 2026-08-04 — keep both surfaces, each with a Trust action.** See requirement 6 and its receipt in `requirements.md`.
 2. Should an AskUserQuestion answer control remain visible-but-disabled while untrusted, or be replaced by the same repository-trust explanation until trust is granted?
 3. If trust revocation is added later, should it interrupt an already-running turn, cancel queued work immediately, or only reject subsequent admission/drain attempts?
 4. Should a rejected programmatic/system turn be retried automatically after the user trusts the repository, or should its owning workflow settle as blocked and require a new trigger? The requirements only say messages are blocked until consent; they do not define deferred execution.
