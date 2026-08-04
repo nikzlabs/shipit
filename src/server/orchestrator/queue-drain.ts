@@ -69,3 +69,33 @@ export async function startQueuedMessage(
   }
   await runner.runDispatchedTurn(queuedMessageToDispatchOptions(next));
 }
+
+/**
+ * Release the head of an idle runner's queue onto the branded dispatch path.
+ * Returns true when an entry was started.
+ *
+ * This is the drain for the paths that have NO turn of their own to hang off —
+ * a turn that ended without running (an auto-conflict-resolve attempt that
+ * settled, SHI-280's stuck-running recovery). Every other drain is reached from
+ * a turn that actually ran and can re-enter its own executor; these can only
+ * ask the runner to start the next thing.
+ *
+ * `runner.dispatch` (not `runDispatchedTurn`) is deliberate: `dispatch` is the
+ * send-or-queue rule, so if something else claimed the runner between the
+ * caller's check and this call the entry is simply re-queued rather than racing
+ * the turn already starting. `queuedMessageToDispatchOptions` is the module rule
+ * — see the docblock at the top of this file for why a hand-rolled field copy
+ * here is the recurring bug and not a shortcut.
+ */
+export function releaseQueuedTurn(runner: SessionRunnerInterface): boolean {
+  if (runner.running || runner.queueLength === 0) return false;
+  // A runner with no system-turn deps can't start a dispatched turn at all
+  // (`dispatch` falls back to a plain enqueue), so dequeuing here would only
+  // shuffle the entry to the back of its own queue.
+  if (!runner.canRunDispatchedTurn) return false;
+  const next = runner.dequeue();
+  if (!next) return false;
+  runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
+  runner.dispatch(queuedMessageToDispatchOptions(next));
+  return true;
+}

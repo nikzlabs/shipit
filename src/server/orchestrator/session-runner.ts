@@ -434,17 +434,29 @@ export function dispatchOnRunner(
   //
   // Owned here for the same reason completion and setup failure are: one place
   // starts a dispatched turn, so one place can observe it losing its runner.
-  const onRunnerDisposed = (): void => {
+  //
+  // SHI-280 adds the second way a started turn can lose its ability to settle
+  // itself, with the runner still very much alive: every event of the turn was
+  // dropped on the way from the worker (in the field, an `_agent` slot that was
+  // empty from `agent_init` onward), so the terminal `agent_result` never
+  // reached the executor's `finally` either. `verifyRunningState` is what
+  // eventually notices — it asks the worker, is told nothing is running, and
+  // resets. That reset is the turn's real terminal moment, so it settles here
+  // through the same `dropped` path for the same reason.
+  const settleAsDropped = (reason: string): void => {
     if (settlement.isSettled) return;
-    console.warn(
-      `[dispatch] runner for ${runner.sessionId} was disposed mid-turn — settling the dispatched turn as dropped`,
-    );
-    chained.onTurnComplete?.(turnDropped("runner disposed mid-turn"));
+    console.warn(`[dispatch] settling the dispatched turn for ${runner.sessionId} as dropped — ${reason}`);
+    chained.onTurnComplete?.(turnDropped(reason));
   };
+  const onRunnerDisposed = (): void => settleAsDropped("runner disposed mid-turn");
+  const onTurnAbandoned = (): void =>
+    settleAsDropped("turn abandoned — worker reported no agent running");
   runner.on("disposed", onRunnerDisposed);
+  runner.on("turn_abandoned", onTurnAbandoned);
   void (async () => {
     await settlement.settled;
     runner.off("disposed", onRunnerDisposed);
+    runner.off("turn_abandoned", onTurnAbandoned);
   })();
   void runner.runDispatchedTurn(chained).catch((err: unknown) => {
     // SHI-263 — the setup half of a dispatched turn (attachment preparation,
@@ -807,6 +819,18 @@ export interface SessionRunnerEvents {
   message: [WsServerMessage];
   idle: [];
   disposed: [];
+  /**
+   * SHI-280 — the turn that was running on this runner has been declared dead
+   * WITHOUT any terminal agent event: the stuck-running reconciler
+   * (`verifyRunningState`) asked the worker, was told no agent is running, and
+   * reset `running` to false.
+   *
+   * The turn machinery never reached its settling `finally` (the events that
+   * would have driven it were dropped), so nothing else can settle a dispatched
+   * turn that ended this way. `dispatchOnRunner` listens for this and settles
+   * the handle as `dropped`, exactly as it does for a runner disposed mid-turn.
+   */
+  turn_abandoned: [];
 }
 
 /**

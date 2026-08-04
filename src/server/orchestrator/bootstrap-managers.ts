@@ -8,7 +8,7 @@ import type { PrStatusPoller } from "./pr-status-poller.js";
 import { ReleaseStatusPoller } from "./release-status-poller.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import { sessionHasLiveAgent } from "./session-runner.js";
-import { queuedMessageToDispatchOptions } from "./queue-drain.js";
+import { releaseQueuedTurn } from "./queue-drain.js";
 import type { ServiceManager } from "./service-manager.js";
 import type { ResolvedEgressConfig } from "./egress-allowlist.js";
 import type { AppCtx } from "./ws-handlers/types.js";
@@ -502,15 +502,14 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
 
   const drainQueueForSession = (sessionId: string): void => {
     const runner = runnerRegistry.get(sessionId);
-    if (!runner || runner.running || runner.queueLength === 0) return;
-    const next = runner.dequeue();
-    if (!next) return;
-    runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
-    // SHI-255 — use the shared full conversion, never a hand-rolled field copy:
-    // this drain (post auto-conflict-resolve) previously dropped `systemTurn`,
-    // `postTurn`, and `onTurnComplete`, so a docs/196 wake-turn that queued
-    // during a rebase ran as an ordinary turn and never signalled completion.
-    runner.dispatch(queuedMessageToDispatchOptions(next));
+    if (!runner) return;
+    // SHI-255 — the shared release, never a hand-rolled field copy: this drain
+    // (post auto-conflict-resolve) previously dropped `systemTurn`, `postTurn`,
+    // and `onTurnComplete`, so a docs/196 wake-turn that queued during a rebase
+    // ran as an ordinary turn and never signalled completion. SHI-280 moved the
+    // body into `releaseQueuedTurn` so the stuck-running recovery — the other
+    // path with no turn of its own to drain from — shares it.
+    releaseQueuedTurn(runner);
   };
 
   // ---- Notify-on-merge watches (docs/196) ----
