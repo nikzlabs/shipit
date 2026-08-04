@@ -22,6 +22,13 @@
 - [x] Verify against a real browser render, not just unit tests
 - [x] `npm run typecheck` + `npm run lint:dev` clean
 
+## Collapse the work timeline by default
+
+- [x] Default the work disclosure to collapsed in every state (running + finished)
+- [x] Keep the live action count on the toggle so the collapsed row still signals activity
+- [x] Component tests for the collapsed default (streaming, finished) and the user toggle
+- [x] Update the two `MessageList` cases that asserted an expanded-by-default timeline
+
 ## Not done
 
 - [ ] Per-subagent duration / token usage in the header — the CLI does not expose

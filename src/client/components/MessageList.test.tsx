@@ -1431,8 +1431,10 @@ describe("MessageList", () => {
       ];
       render(<MessageList messages={messages} isLoading={false} />);
       expect(screen.getByTestId("subagent-call")).toBeInTheDocument();
-      // The subagent's own work is visible — this is what the Task-only gate
-      // discarded.
+      // The subagent's own work is reachable — this is what the Task-only gate
+      // discarded. It sits behind its (collapsed-by-default) disclosure.
+      expect(screen.queryByTestId("subagent-work")).not.toBeInTheDocument();
+      fireEvent.click(screen.getByTestId("subagent-work-toggle"));
       expect(screen.getByTestId("subagent-work")).toBeInTheDocument();
       expect(screen.getByText(/Running the command/)).toBeInTheDocument();
       // And its final report.
@@ -1585,12 +1587,14 @@ describe("MessageList", () => {
       expect(screen.getByText(/Findings/)).toBeInTheDocument();
       // "Done" status badge once final report has arrived
       expect(screen.getByTestId("subagent-done")).toBeInTheDocument();
-      // Work stays expanded by default — tool calls and per-step text remain
-      // visible after the subagent finishes. Click the toggle to collapse.
+      // Work is collapsed by default — the toggle advertises the action count
+      // so the reader can see something happened without the timeline eating
+      // the transcript. Clicking it reveals the tool calls and per-step text.
+      expect(screen.queryByTestId("subagent-work")).not.toBeInTheDocument();
+      expect(screen.getByTestId("subagent-work-toggle")).toHaveTextContent("2 actions");
+      fireEvent.click(screen.getByTestId("subagent-work-toggle"));
       expect(screen.getByTestId("subagent-work")).toBeInTheDocument();
       expect(screen.getByText(/Reading file/)).toBeInTheDocument();
-      fireEvent.click(screen.getByTestId("subagent-work-toggle"));
-      expect(screen.queryByTestId("subagent-work")).not.toBeInTheDocument();
     });
 
     it("shows running indicator while subagent is still working", () => {
