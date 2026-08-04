@@ -50,21 +50,78 @@ export const DEFAULT_MAX_ACTIVE_SPAWNED_SESSIONS =
 
 /**
  * Default per-turn quota for newly-spawned child sessions.
+ *
+ * Sized at `6`: it covers the fan-out shapes that are actually legitimate — one
+ * child per subsystem, per failing test area, per independent slice of a
+ * migration — while staying short of the width at which an agent is usually
+ * over-slicing one task. It also keeps {@link DEFAULT_MAX_ACTIVE_SPAWNED_SESSIONS}
+ * (16) as the bound that binds over a session's *life* (~3 turns to reach it)
+ * rather than something a single turn nearly exhausts.
+ *
+ * Why not higher: nothing downstream will say no. There is no global cap on
+ * live containers — `createContainerForRunner` (`app-lifecycle.ts`) gates only
+ * on the per-session OOM breaker — and reclaim is idle-only, since
+ * `idle-enforcer.ts` skips any runner with `agentBusy` or an attached viewer
+ * even under memory pressure. A spawned child is born busy, so N of them are
+ * exempt from every reclaim path for as long as they work. Meanwhile each
+ * container's memory ceiling is ~half of usable host RAM (deliberately not
+ * `1 / expectedConcurrency`, `container-config-builder.ts`), so on a 16 GB host
+ * even this cap is ~3× over-subscribed and survives only on statistical
+ * multiplexing. The real fix is host-derived sizing (docs/229) or admission
+ * control on the create path, not a larger constant.
+ *
  * Overridable via the `MAX_SPAWNED_SESSIONS_PER_TURN` env var (positive
- * integer); the compile-time default is `4`. Read once at module init.
+ * integer). Read once at module init.
  */
 export const DEFAULT_MAX_SPAWNED_SESSIONS_PER_TURN =
-  readPositiveIntEnv("MAX_SPAWNED_SESSIONS_PER_TURN") ?? 4;
+  readPositiveIntEnv("MAX_SPAWNED_SESSIONS_PER_TURN") ?? 6;
 
 /**
- * docs/162 — lower per-turn cap for Ops `--shipit-source` fix-session spawns.
- * A ShipIt fix session is heavier and higher-stakes than a generic fan-out
- * child (it claims the ShipIt repo and opens a PR against it), so we bound how
- * many an Ops turn can kick off. Overridable via `MAX_SHIPIT_FIX_SESSIONS_PER_TURN`
- * (positive integer); the compile-time default is `2`. Read once at module init.
+ * docs/162 — per-turn cap for Ops `--shipit-source` fix-session spawns.
+ *
+ * What this bounds: the container burst of a *single* Ops turn. Each fix child
+ * claims the ShipIt repo, boots its own container, and opens a PR, so a turn
+ * that fans out a dozen of them is a capacity spike worth smoothing.
+ *
+ * What this is **not**: a containment boundary against a runaway agent. There
+ * is no spawn-depth limit for sessions — docs/117 dropped grandchild quotas
+ * deliberately — and a child can spawn grandchildren of its own, so nested
+ * spawns route around any per-turn number. The only other gate on that path is
+ * {@link DEFAULT_MAX_ACTIVE_SPAWNED_SESSIONS} (16 active children per parent),
+ * which is also per-parent and so is evaded the same way. (Distinct from
+ * docs/144's depth-1 cap, which bounds *sub-agent* recursion — a different
+ * mechanism entirely.)
+ *
+ * Do **not** read "the global container ceiling" as the backstop, as docs/117
+ * does — verified absent at `app-lifecycle.ts:createContainerForRunner`, which
+ * gates only on the per-session OOM breaker: nothing anywhere counts live
+ * containers and refuses. Capacity control is reclaim-only and idle-only
+ * (`idle-enforcer.ts` skips any runner with `agentBusy` or an attached viewer,
+ * even under memory pressure). A spawned child is born busy, so a fleet of them
+ * is exempt from every reclaim path for as long as it works. That makes this
+ * cap load-bearing for simultaneity, not merely a smoother of bursts — raise it
+ * with that in mind, and prefer host-derived sizing (docs/229) or real
+ * admission control over a larger constant.
+ *
+ * Sized at `6`, raised from the original `2`: an Ops investigation is exactly
+ * the workflow that legitimately finds several *independent* defects in one
+ * pass, and the alternatives a low cap forces — batching unrelated fixes into
+ * one muddled PR, or splitting a diagnosis across turns and losing the
+ * connective tissue between findings — are worse than the burst it prevents.
+ *
+ * That happens to equal {@link DEFAULT_MAX_SPAWNED_SESSIONS_PER_TURN} today,
+ * but the two are **not** coupled and should not be collapsed into one
+ * constant: they answer different questions (generic = parallel width across
+ * slices of *one* task; Ops = how many *independent* findings one investigation
+ * may ship, each as its own PR) and carry separate env overrides so a
+ * deployment can tune Ops without touching generic fan-out. Expect them to
+ * diverge again.
+ *
+ * Overridable via `MAX_SHIPIT_FIX_SESSIONS_PER_TURN` (positive integer). Read
+ * once at module init.
  */
 export const DEFAULT_MAX_SHIPIT_FIX_SESSIONS_PER_TURN =
-  readPositiveIntEnv("MAX_SHIPIT_FIX_SESSIONS_PER_TURN") ?? 2;
+  readPositiveIntEnv("MAX_SHIPIT_FIX_SESSIONS_PER_TURN") ?? 6;
 
 export interface SpawnChildSessionOptions {
   /** The required initial user prompt that the spawned session's agent runs. */
