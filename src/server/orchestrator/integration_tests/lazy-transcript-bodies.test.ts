@@ -41,6 +41,10 @@ const SCREENSHOT = Buffer.from("x".repeat(200_000)).toString("base64");
 // report and MUST still ship whole, so the assertions below can only tell the
 // two cases apart if their bodies differ.
 const SUBAGENT_REPORT = Array.from({ length: 5_000 }, (_, i) => `finding ${i}`).join("\n");
+// A cross-agent consult's verbatim output (SHI-297). Deliberately distinct from
+// SUBAGENT_REPORT above, which is EXEMPT and must still ship whole in the same
+// payload — so an "is it on the wire?" assertion can tell the two apart.
+const CONSULT_OUTPUT = Array.from({ length: 5_000 }, (_, i) => `review note ${i}`).join("\n");
 
 describe("Integration: lazy transcript bodies (SHI-267)", () => {
   let app: FastifyInstance;
@@ -352,10 +356,57 @@ describe("Integration: lazy transcript bodies (SHI-267)", () => {
     for (const url of [
       `/api/sessions/${sessionId}/tool-results/nope`,
       `/api/sessions/${sessionId}/tool-inputs/nope`,
+      `/api/sessions/${sessionId}/sub-agent-consults/nope`,
       `/api/sessions/${sessionId}/images/${"0".repeat(64)}`,
     ]) {
       expect((await app.inject({ method: "GET", url })).statusCode).toBe(404);
     }
+  });
+
+  it("serves a sub-agent consult as its preview line, with the output behind a fetch (SHI-297)", async () => {
+    // A cross-agent review is routinely tens of kilobytes and the card face
+    // draws one 140-character line of it, so the rest is modal-only content —
+    // the same shape as a tool result, and the same treatment.
+    history.append(sessionId, {
+      role: "assistant",
+      text: "",
+      subAgentConsult: {
+        cardId: "consult-1",
+        spawnId: "spawn-1",
+        subAgentId: "codex",
+        status: "success",
+        durationMs: 900_000,
+        costUsd: 0,
+        outputMarkdown: CONSULT_OUTPUT,
+        createdAt: "2026-08-04T00:00:00.000Z",
+      },
+    });
+
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
+    const card = (res.json() as { messages: { subAgentConsult?: {
+      outputMarkdown?: string; outputTruncated?: true; status: string; durationMs?: number;
+    } }[] }).messages.at(-1)!.subAgentConsult!;
+
+    expect(card.outputTruncated).toBe(true);
+    expect(card.outputMarkdown!.length).toBeLessThan(200);
+    expect(res.rawPayload.toString("utf8")).not.toContain("review note 4999");
+    // …while the exempt subagent final report in the same payload still ships
+    // whole, so this asserts a distinction rather than an empty transcript.
+    expect(res.rawPayload.toString("utf8")).toContain("finding 4999");
+    // The summary line ("Consulted Codex · 900s") is drawn without a click, so
+    // its inputs stay on the wire.
+    expect(card.status).toBe("success");
+    expect(card.durationMs).toBe(900_000);
+
+    // …and the whole output is one fetch away, from the still-whole stored card.
+    const full = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/sub-agent-consults/consult-1` });
+    expect(full.statusCode).toBe(200);
+    expect((full.json() as { outputMarkdown: string }).outputMarkdown).toBe(CONSULT_OUTPUT);
+
+    // `shipit agent result` reads the persisted card directly — it must never
+    // see the preview, or the agent's copy and the user's copy stop being one
+    // artifact (docs/236).
+    expect(history.listSubAgentConsultCards(sessionId)[0]!.outputMarkdown).toBe(CONSULT_OUTPUT);
   });
 
   it("a read-modify-write updater does not write back a sliced body", async () => {

@@ -29,6 +29,12 @@
  *   2. The live `agent_event` emit (`agent-listeners.ts`).
  *   3. The reconnect `turn_snapshot` (`route-registry.ts`), which is built from
  *      the runner's in-memory groups and so bypasses (1) entirely.
+ *   4. Two side-channel emits that carry transcript payload of their own and
+ *      reach the browser without passing through any of the above: the
+ *      `message_steered` echo (`ws-handlers/send-message.ts`, which substitutes
+ *      its image URLs directly via {@link imageUrl}) and the
+ *      `sub_agent_consult_card` (`services/sub-agent.ts`, via
+ *      {@link projectConsultCardForWire}). SHI-297.
  *
  * ## What each path may strip
  *
@@ -42,10 +48,14 @@
  */
 
 import { createHash } from "node:crypto";
-import { sliceBody, RESULT_STRIP_FLOOR_BYTES } from "../shared/transcript-slice.js";
+import {
+  sliceBody,
+  subAgentPreviewLine,
+  RESULT_STRIP_FLOOR_BYTES,
+} from "../shared/transcript-slice.js";
 import { shipsResultBodyWhole, rendersResultContentInline } from "../shared/transcript-slice-tools.js";
 import type { PersistedMessage } from "./chat-history.js";
-import type { AgentEvent } from "../shared/types.js";
+import type { AgentEvent, SubAgentConsultCard } from "../shared/types.js";
 import type { ToolResultEntry } from "./session-runner.js";
 
 /** Tools whose *input* is a file body drawn as a one-line diff summary. */
@@ -281,6 +291,92 @@ export function projectToolUse<T extends { name: string; input: Record<string, u
   return { ...tool, input, bodyTruncated: true, diffStats: { added, removed } };
 }
 
+/**
+ * Project a sub-agent consult card (SHI-297). The card face draws one collapsed
+ * preview line; the rest of the output is modal-only, so under requirement 1 it
+ * does not belong on the wire — `SubAgentConsultCardRow` fetches it from
+ * `/api/sessions/:id/sub-agent-consults/:cardId` when the viewer opens.
+ *
+ * The server builds the preview rather than shipping a head slice, because the
+ * card face is not a slice: it collapses whitespace, so a byte-equal preview has
+ * to come from the same function the client draws with
+ * ({@link subAgentPreviewLine}).
+ *
+ * Same floor as a tool-result body, for the same reason: below it, `truncated` +
+ * a preview that is nearly the whole text costs more than it saves and buys a
+ * round-trip for a couple of lines.
+ *
+ * Returns the same reference when nothing changed.
+ */
+export function projectConsultCardForWire(card: SubAgentConsultCard): SubAgentConsultCard {
+  const output = card.outputMarkdown;
+  if (!output) return card;
+  if (Buffer.byteLength(output, "utf8") <= RESULT_STRIP_FLOOR_BYTES) return card;
+  const preview = subAgentPreviewLine(output);
+  if (preview === output) return card;
+  return { ...card, outputMarkdown: preview, outputTruncated: true };
+}
+
+/**
+ * The ids whose bodies are already on disk for the turn in flight (SHI-297).
+ *
+ * The reconnect snapshot is built from the runner's in-memory groups, part of
+ * which a boundary has already committed and part of which it has not. Without a
+ * marker the snapshot cannot tell the halves apart, so it took the conservative
+ * option for all of it and re-sent every already-committed tool input and nested
+ * subagent result.
+ *
+ * This is an id set rather than the "events up to index N" cursor the issue
+ * imagined, because a group is **mutated in place**: `attachToolResultsToGroup`
+ * and `attachSubagentToolResults` append to a group that a boundary has already
+ * persisted, and the standalone-merge branch of `accumulateAssistantGroups`
+ * pushes a fresh `tool_use` into it. So "group index < N" does not imply "every
+ * body inside it is on disk", while "this id was in the message set we handed
+ * `replaceInProgress`" does.
+ *
+ * Inputs and results are tracked separately even though they share an id: a
+ * subagent's `tool_use` can reach disk at one boundary while its result — which
+ * skips `replaceInProgress` entirely — is still only in memory. One set would
+ * let the second be stripped on the strength of the first, promising a fetch
+ * that 404s.
+ */
+export interface CommittedBodyIds {
+  /** tool_use ids whose INPUT body is in a persisted row. */
+  toolInputs: Set<string>;
+  /** tool_use ids whose RESULT is in a persisted row. */
+  toolResults: Set<string>;
+}
+
+export function createCommittedBodyIds(): CommittedBodyIds {
+  return { toolInputs: new Set(), toolResults: new Set() };
+}
+
+/** Turn start: nothing of the new turn is on disk yet. */
+export function clearCommittedBodyIds(ids: CommittedBodyIds): void {
+  ids.toolInputs.clear();
+  ids.toolResults.clear();
+}
+
+/**
+ * Record everything a just-written `replaceInProgress` put on disk. Called with
+ * the exact message list that was persisted, so the set can only ever
+ * under-report (a missed call site means fewer strips, never a promised fetch
+ * that 404s).
+ */
+export function markMessagesCommitted(ids: CommittedBodyIds, messages: PersistedMessage[]): void {
+  for (const msg of messages) {
+    for (const t of msg.toolUse ?? []) ids.toolInputs.add(t.id);
+    for (const r of msg.toolResults ?? []) ids.toolResults.add(r.toolUseId);
+    for (const ev of msg.subagentEvents ?? []) {
+      if (ev.kind === "assistant") {
+        for (const t of ev.toolUse ?? []) ids.toolInputs.add(t.id);
+      } else {
+        for (const r of ev.toolResults) ids.toolResults.add(r.toolUseId);
+      }
+    }
+  }
+}
+
 /** Build an id → tool-name map so results can find the tool that produced them. */
 function toolNamesFor(msg: PersistedMessage): Map<string, string> {
   const names = new Map<string, string>();
@@ -312,10 +408,12 @@ function toolNamesFor(msg: PersistedMessage): Map<string, string> {
  *     `replaceInProgress` below it. They reach disk only at the next
  *     *top-level* boundary, which for a long Task is many tool calls later.
  *
- * The last two are therefore stripped on the **history path only**, where every
- * row is on disk by construction because the read came from the database. On
- * the live emit and the reconnect snapshot they stay inline, exactly as they
- * are today.
+ * The last two are therefore stripped on the **history path**, where every row
+ * is on disk by construction because the read came from the database — and, on
+ * the reconnect snapshot, for whichever of them a boundary has already written
+ * ({@link CommittedBodyIds}, SHI-297). On the live emit they stay inline: an
+ * event being emitted right now is the one thing no boundary can have committed
+ * yet.
  *
  * That gives up part of the live-path saving. It is the right trade twice over:
  * an unfetchable body is a visible failure while a fatter live frame is not,
@@ -344,6 +442,17 @@ export interface WireProjectionOptions {
    * most recent groups may not be written yet.
    */
   allRowsPersisted?: boolean;
+  /**
+   * SHI-297 — the per-payload escape hatch from the blanket `false` above.
+   *
+   * An in-flight turn is not uniformly uncommitted: the boundaries it has
+   * already passed wrote their groups to disk, and those bodies are as fetchable
+   * as any history row. When supplied, an id in {@link CommittedBodyIds} is
+   * treated exactly as `allRowsPersisted` treats everything — so a mid-turn
+   * reconnect strips the committed prefix and keeps only the genuinely
+   * in-memory tail inline. Omitted ⇒ the old all-or-nothing behavior.
+   */
+  committedBodyIds?: CommittedBodyIds;
 }
 
 /**
@@ -354,8 +463,15 @@ export interface WireProjectionOptions {
 export function projectMessagesForWire(
   sessionId: string,
   messages: PersistedMessage[],
-  { allRowsPersisted = true }: WireProjectionOptions = {},
+  { allRowsPersisted = true, committedBodyIds }: WireProjectionOptions = {},
 ): PersistedMessage[] {
+  // The two "is this body fetchable yet?" predicates. On the history path
+  // everything is; on an in-flight turn only what a boundary already wrote.
+  const inputCommitted = (id: string): boolean =>
+    allRowsPersisted || (committedBodyIds?.toolInputs.has(id) ?? false);
+  const resultCommitted = (id: string): boolean =>
+    allRowsPersisted || (committedBodyIds?.toolResults.has(id) ?? false);
+
   return messages.map((msg) => {
     const names = toolNamesFor(msg);
     let changed = false;
@@ -366,13 +482,17 @@ export function projectMessagesForWire(
       return projected;
     });
 
-    const toolUse = allRowsPersisted
-      ? msg.toolUse?.map((t) => {
-        const projected = projectToolUse(t);
-        if (projected !== t) changed = true;
-        return projected;
-      })
-      : msg.toolUse;
+    const toolUse = msg.toolUse?.map((t) => {
+      if (!inputCommitted(t.id)) return t;
+      const projected = projectToolUse(t);
+      if (projected !== t) changed = true;
+      return projected;
+    });
+
+    const subAgentConsult = msg.subAgentConsult
+      ? projectConsultCardForWire(msg.subAgentConsult)
+      : undefined;
+    if (subAgentConsult && subAgentConsult !== msg.subAgentConsult) changed = true;
 
     const images = msg.images?.map((img) => {
       if (!img.data) return img;
@@ -383,9 +503,11 @@ export function projectMessagesForWire(
     const subagentEvents = msg.subagentEvents?.map((ev) => {
       if (ev.kind === "tool_result") {
         // Nested results skip the `replaceInProgress` their top-level siblings
-        // run through, so on an in-flight turn they may exist only in memory.
-        if (!allRowsPersisted) return ev;
-        const results = ev.toolResults.map((r) => projectToolResult(sessionId, r, names.get(r.toolUseId)));
+        // run through, so on an in-flight turn they may exist only in memory —
+        // unless a later top-level boundary has since swept them onto disk,
+        // which is what the committed set records.
+        const results = ev.toolResults.map((r) =>
+          resultCommitted(r.toolUseId) ? projectToolResult(sessionId, r, names.get(r.toolUseId)) : r);
         if (results.some((r, i) => r !== ev.toolResults[i])) {
           changed = true;
           return { ...ev, toolResults: results };
@@ -393,8 +515,8 @@ export function projectMessagesForWire(
         return ev;
       }
       const original = ev.toolUse;
-      if (!original || !allRowsPersisted) return ev;
-      const tools = original.map((t) => projectToolUse(t));
+      if (!original) return ev;
+      const tools = original.map((t) => (inputCommitted(t.id) ? projectToolUse(t) : t));
       if (tools.some((t, i) => t !== original[i])) {
         changed = true;
         return { ...ev, toolUse: tools };
@@ -409,6 +531,7 @@ export function projectMessagesForWire(
       ...(toolUse ? { toolUse } : {}),
       ...(images ? { images } : {}),
       ...(subagentEvents ? { subagentEvents } : {}),
+      ...(subAgentConsult ? { subAgentConsult } : {}),
     };
   });
 }
@@ -484,12 +607,19 @@ export function projectAgentEventForWire(
  * that is false for both of those classes, and stripping them handed the client
  * a lazy affordance backed by no row.
  *
- * This does resend some already-committed bodies — an Edit in an older group is
- * on disk by now, but the flag is per-call rather than per-group. Tightening it
- * needs a committed-prefix marker on the runner (`lastPersistedBufferIndex` is
- * a buffer index, not a group boundary), which is more machinery than the
- * duplicate bytes on a mid-turn reconnect are worth.
+ * SHI-297 — `committed` narrows that blanket exemption to the part of the turn
+ * that genuinely is still in memory. An Edit from a group two boundaries back is
+ * on disk, and now says so, so a mid-turn reconnect no longer re-sends it. Omit
+ * the argument (tests, callers without a runner) and the conservative
+ * all-or-nothing behavior is unchanged.
  */
-export function projectTurnSnapshotForWire(sessionId: string, messages: PersistedMessage[]): PersistedMessage[] {
-  return projectMessagesForWire(sessionId, messages, { allRowsPersisted: false });
+export function projectTurnSnapshotForWire(
+  sessionId: string,
+  messages: PersistedMessage[],
+  committed?: CommittedBodyIds,
+): PersistedMessage[] {
+  return projectMessagesForWire(sessionId, messages, {
+    allRowsPersisted: false,
+    ...(committed ? { committedBodyIds: committed } : {}),
+  });
 }

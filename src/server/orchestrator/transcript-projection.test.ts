@@ -5,12 +5,16 @@ import {
   projectAgentEventForWire,
   projectToolResult,
   projectToolUse,
+  projectConsultCardForWire,
   substituteResultImages,
+  createCommittedBodyIds,
+  markMessagesCommitted,
   imageHash,
   imageUrl,
 } from "./transcript-projection.js";
-import { TRANSCRIPT_SLICE_LINES } from "../shared/transcript-slice.js";
+import { TRANSCRIPT_SLICE_LINES, subAgentPreviewLine } from "../shared/transcript-slice.js";
 import type { PersistedMessage } from "./chat-history.js";
+import type { SubAgentConsultCard } from "../shared/types.js";
 
 const bigOutput = Array.from({ length: 500 }, (_, i) => `line ${i}`).join("\n");
 const png = Buffer.from("fake-png-bytes").toString("base64");
@@ -308,6 +312,65 @@ describe("projectMessagesForWire", () => {
   });
 });
 
+describe("projectConsultCardForWire (SHI-297)", () => {
+  const consultCard = (over: Partial<SubAgentConsultCard> = {}): SubAgentConsultCard => ({
+    cardId: "card-1",
+    spawnId: "sp-1",
+    subAgentId: "codex",
+    status: "success",
+    createdAt: "2026-08-04T00:00:00.000Z",
+    ...over,
+  });
+
+  it("carries only the preview line the card face draws", () => {
+    const review = Array.from({ length: 200 }, (_, i) => `finding ${i}`).join("\n");
+    const projected = projectConsultCardForWire(consultCard({ outputMarkdown: review }));
+
+    expect(projected.outputTruncated).toBe(true);
+    expect(projected.outputMarkdown).toBe(subAgentPreviewLine(review));
+    // Nothing past the preview: the viewer is behind a click, so the rest of an
+    // 18-minute review has no business in the transcript payload.
+    expect(projected.outputMarkdown).not.toContain("finding 199");
+    // Everything the card face draws WITHOUT opening the viewer survives.
+    expect(projected.status).toBe("success");
+    expect(projected.spawnId).toBe("sp-1");
+  });
+
+  it("re-previewing the server's own preview is a no-op", () => {
+    // The client still calls `previewLine` on whatever it holds, so the shared
+    // function has to be idempotent or the card face would lose a character on
+    // every projected load.
+    const long = "word ".repeat(500);
+    const once = subAgentPreviewLine(long);
+    expect(subAgentPreviewLine(once)).toBe(once);
+  });
+
+  it("leaves a short output whole rather than buying a round-trip for it", () => {
+    const card = consultCard({ outputMarkdown: "Looks fine to me." });
+    expect(projectConsultCardForWire(card)).toBe(card);
+  });
+
+  it("leaves an output-less card untouched, same reference", () => {
+    const card = consultCard({ status: "error" });
+    expect(projectConsultCardForWire(card)).toBe(card);
+  });
+
+  it("projects the card on the history path too", () => {
+    // The live emit is only the first delivery; a switch or reload rehydrates
+    // the same card from `subAgentConsult`, and requirement 1 applies there just
+    // as much (it is the path the bytes accumulate on).
+    const review = "finding: ".repeat(500);
+    const msgs: PersistedMessage[] = [
+      { role: "assistant", text: "", subAgentConsult: consultCard({ outputMarkdown: review }) },
+    ];
+    const [projected] = projectMessagesForWire("s1", msgs);
+    expect(projected!.subAgentConsult!.outputTruncated).toBe(true);
+    expect(projected!.subAgentConsult!.outputMarkdown!.length).toBeLessThan(200);
+    // …and the stored card is untouched, as every projection in this module.
+    expect(msgs[0]!.subAgentConsult!.outputMarkdown).toBe(review);
+  });
+});
+
 describe("a body only leaves the wire once its row is on disk", () => {
   /**
    * The rule that keeps req 1 from breaking req 2. Only ONE payload class is
@@ -402,6 +465,94 @@ describe("a body only leaves the wire once its row is on disk", () => {
     // does not actually make.
     const block = (projected as unknown as { content: { input: Record<string, unknown> }[] }).content[0]!;
     expect(block.input.content).toBe(bigOutput);
+  });
+
+  it("the snapshot strips the part of the turn a boundary already committed (SHI-297)", () => {
+    // The blanket `allRowsPersisted: false` was conservative for the WHOLE turn,
+    // so a mid-turn reconnect re-sent every Edit body and nested result the turn
+    // had accumulated — including ones written to disk several boundaries ago.
+    // The committed set is what tells the two halves apart.
+    const msg = writeMsg();
+    const committed = createCommittedBodyIds();
+    markMessagesCommitted(committed, [msg]);
+
+    const [projected] = projectTurnSnapshotForWire("s1", [msg], committed);
+
+    const tool = projected!.toolUse![0]! as { input: Record<string, unknown>; bodyTruncated?: true };
+    expect(tool.bodyTruncated).toBe(true);
+    expect(tool.input.content).toBeUndefined();
+
+    const nested = projected!.subagentEvents![0] as { toolResults: { truncated?: true }[] };
+    expect(nested.toolResults[0]!.truncated).toBe(true);
+  });
+
+  it("…and keeps the uncommitted tail of that same turn inline", () => {
+    // The whole point of a per-payload marker: one snapshot legitimately mixes
+    // both. Here only the first group reached a boundary.
+    const committedGroup: PersistedMessage = {
+      role: "assistant",
+      text: "wrote it",
+      toolUse: [{ type: "tool_use", id: "w-old", name: "Write", input: { file_path: "/a.ts", content: bigOutput } }],
+    };
+    const freshGroup: PersistedMessage = {
+      role: "assistant",
+      text: "writing more",
+      toolUse: [{ type: "tool_use", id: "w-new", name: "Write", input: { file_path: "/b.ts", content: bigOutput } }],
+    };
+    const committed = createCommittedBodyIds();
+    markMessagesCommitted(committed, [committedGroup]);
+
+    const projected = projectTurnSnapshotForWire("s1", [committedGroup, freshGroup], committed);
+
+    expect((projected[0]!.toolUse![0]! as { bodyTruncated?: true }).bodyTruncated).toBe(true);
+    expect(projected[1]!.toolUse![0]!.input.content).toBe(bigOutput);
+    expect((projected[1]!.toolUse![0]! as { bodyTruncated?: true }).bodyTruncated).toBeUndefined();
+  });
+
+  it("a committed tool INPUT does not license stripping its uncommitted RESULT", () => {
+    // The id-collision the two sets exist for. A subagent's `tool_use` lands in
+    // `subagentEvents` at one boundary; its result skips `replaceInProgress`
+    // entirely and may still be memory-only — under the SAME id. One set would
+    // read "id is committed" off the input and strip the result, promising a
+    // fetch that 404s.
+    const persistedSoFar: PersistedMessage = {
+      role: "assistant",
+      text: "",
+      toolUse: [{ type: "tool_use", id: "task-1", name: "Task", input: {} }],
+      subagentEvents: [
+        {
+          kind: "assistant",
+          parentToolUseId: "task-1",
+          text: "running",
+          toolUse: [{ type: "tool_use", id: "sub-1", name: "Bash", input: { command: "ls" } }],
+        },
+      ],
+    };
+    const committed = createCommittedBodyIds();
+    markMessagesCommitted(committed, [persistedSoFar]);
+    expect(committed.toolInputs.has("sub-1")).toBe(true);
+    expect(committed.toolResults.has("sub-1")).toBe(false);
+
+    // The result arrives after that boundary — same id, not on disk.
+    const withResult: PersistedMessage = {
+      ...persistedSoFar,
+      subagentEvents: [
+        ...persistedSoFar.subagentEvents!,
+        { kind: "tool_result", parentToolUseId: "task-1", toolResults: [{ toolUseId: "sub-1", content: bigOutput }] },
+      ],
+    };
+
+    const [projected] = projectTurnSnapshotForWire("s1", [withResult], committed);
+    const nested = projected!.subagentEvents![1] as { toolResults: { content: string; truncated?: true }[] };
+    expect(nested.toolResults[0]!.truncated).toBeUndefined();
+    expect(nested.toolResults[0]!.content).toBe(bigOutput);
+  });
+
+  it("without a marker the snapshot behaves exactly as before", () => {
+    // Callers that can't supply one (tests, a runner-less path) must not get a
+    // stricter projection by accident.
+    const [projected] = projectTurnSnapshotForWire("s1", [writeMsg()]);
+    expect(projected!.toolUse![0]!.input.content).toBe(bigOutput);
   });
 
   it("a live tool_result event is still sliced", () => {

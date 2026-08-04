@@ -23,7 +23,7 @@ import {
   isWellFormedAskUserQuestion,
   createAgentToolTracker,
 } from "./agent-event-normalizer.js";
-import { projectAgentEventForWire } from "../transcript-projection.js";
+import { projectAgentEventForWire, markMessagesCommitted } from "../transcript-projection.js";
 import {
   accumulateAssistantGroups,
   attachSubagentAssistant,
@@ -1070,6 +1070,11 @@ export function wireAgentListeners(
           { inProgress: true },
         );
         deps.chatHistoryManager.replaceInProgress(usageSessionId, inProgressMessages);
+        // docs/244 / SHI-297 — this boundary is what puts the turn's Edit/Write
+        // inputs and its nested subagent results on disk. Recording them lets a
+        // mid-turn reconnect strip the committed prefix instead of re-sending
+        // every body the history path had just removed.
+        if (runner) markMessagesCommitted(runner.committedBodyIds, inProgressMessages);
         if (runner) runner.lastPersistedBufferIndex = runner.getTurnEventBuffer().length;
       }
     }

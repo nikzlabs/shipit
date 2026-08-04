@@ -102,9 +102,63 @@
 - [x] ~~A >16 KB free-form AskUserQuestion answer would be sliced (req 4)~~ — **fixed (SHI-291).** It broke reqs 2 and 8 as well as 4: the Ask branch returns before the output modal, so the tail was unreachable rather than deferred, and the Ask card *is* the transcript. `WHOLE_RESULT_TOOL_NAMES` is now the set every bound agrees on — the server's 16 KB backstop and the client's 1 MB cap both read it. That also fixed a second, opposite error the review had not named: the client cap keyed off `SUBAGENT_TOOLS`, the *layout* set, so it spared `Skill` (no report, fetchable) while capping `AskUserQuestion` (no recovery).
 - [ ] A modal-only result at or under `RESULT_STRIP_FLOOR_BYTES` (200) ships whole though nothing renders it without a click (req 1) — **undisclosed until the review**. Recorded here as the deviation it is; the floor itself stays deliberate.
 - [x] ~~Inline image thumbnails point at the full-resolution URL, so the bytes transfer on viewport entry rather than on click (reqs 1 and 9)~~ — **accepted, not fixed (SHI-292).** Human decision, 2026-08-04: images are infrequent enough that transferring them with the transcript is fine. Requirement 9 amended to say so, with a dated receipt in `requirements.md`. One open question remains there on the wording — whether the stated 256×256 is a bound on transferred pixels (needing server-side downsampling, and a new dependency) or a description of the inline render size.
-- [ ] `message_steered` echoes full base64 images unprojected — safe to fix (row is persisted first), just not done here
-- [ ] `sub_agent_consult_card.outputMarkdown` is modal-only content shipped whole (reqs 1, 5, 6 — it bypasses the live path too)
-- [ ] Reconnect snapshot resends already-committed tool inputs; tightening needs a committed-prefix marker on the runner. **Also**: live nested subagent results and snapshot nested results are unprojected, which earlier sections describe as intentional but the gaps list never named (req 6).
+- [x] ~~`message_steered` echoes full base64 images unprojected~~ — **fixed (SHI-297).**
+- [x] ~~`sub_agent_consult_card.outputMarkdown` is modal-only content shipped whole~~ — **fixed (SHI-297).**
+- [x] ~~Reconnect snapshot resends already-committed tool inputs~~ — **fixed (SHI-297).** Live nested subagent results stay unprojected, which is correct and is now named as such rather than left implicit.
+
+## The three remaining browser-facing paths (SHI-297)
+
+All three were the same shape — a path reaching the browser without going
+through `projectMessagesForWire` / `projectAgentEventForWire` — and all three
+turn on the same rule: *a body may only leave the wire once the row holding it
+is committed*.
+
+- [x] **`message_steered` images.** The echo now carries the same
+      `/images/:hash` URLs the history path builds. Safe by ORDERING, not by
+      assumption: `recordSteeredMessage` + `persistTurnInProgress` already run
+      before the emit, so the row the URL resolves against is on disk first.
+      Pinned end-to-end in `live-steering.test.ts` (echo carries `src` not
+      `data`, the endpoint serves the bytes, storage keeps them).
+- [x] **`sub_agent_consult_card.outputMarkdown`.** The card face draws one
+      140-character preview line and the viewer is a click, so the wire copy is
+      the preview plus `outputTruncated`, and `GET
+      /api/sessions/:id/sub-agent-consults/:cardId` serves the rest.
+      - The preview function is **shared** (`subAgentPreviewLine`), not
+        reimplemented: the server now *builds* the line the client used to
+        derive, and a byte-different preview would change the card face on
+        reload. It is idempotent, so the client applying it to the server's own
+        preview is a no-op.
+      - `finalizeConsultCard` now **persists before it emits**. The stored card
+        stays whole — it is what the endpoint serves and what `shipit agent
+        result` reads, so SHI-245's "the agent's copy and the user's copy are one
+        artifact" is unaffected; the preview is transport only.
+      - The 200-byte floor applies, for the same reason it does to a tool result.
+- [x] **Reconnect snapshot: a committed-prefix marker.** `CommittedBodyIds` on
+      the runner records what each `replaceInProgress` actually wrote, so the
+      snapshot strips the already-committed prefix of the in-flight turn and
+      keeps only the genuinely in-memory tail inline.
+      - It is an **id set, not the "events up to index N" cursor the issue
+        imagined**, because groups are mutated in place: `attachToolResultsToGroup`
+        and `attachSubagentToolResults` append to already-persisted groups, and
+        the standalone-merge branch pushes a fresh `tool_use` into one. "Group
+        index < N" therefore does not imply "every body in it is on disk".
+      - Inputs and results are **separate sets under the same id**. A subagent's
+        `tool_use` reaches disk at a boundary while its result — which skips
+        `replaceInProgress` entirely — may still be memory-only, under that same
+        id. One set would strip the result on the strength of the input and
+        promise a fetch that 404s. Pinned by its own test.
+      - Marked from the list actually written, never from the live groups, so
+        the set can only ever UNDER-report: a missed call site costs bytes, never
+        correctness. Omitting the argument reproduces the old behavior exactly.
+      - **Top-level tool results are deliberately unchanged** — they were
+        already stripped unconditionally on this path (same-tick commit), and
+        routing them through the marker would have made an existing guarantee
+        depend on the new wiring.
+- [x] **Live nested subagent results stay unprojected**, and that is correct
+      rather than an oversight: their handler branch returns before
+      `replaceInProgress`, so nothing has written them at emit time and a
+      `truncated` marker would promise a fetch that 404s. Named here because
+      earlier sections described it as intentional while the gaps list did not.
 
 ## Follow-up work (separate from this PR)
 
@@ -167,6 +221,11 @@ Blocked, with the reason:
 - [x] `npm run typecheck`
 - [x] `npm run lint:dev`
 - [x] Feature test files green
+- [x] SHI-297: `transcript-projection.test.ts`, `lazy-transcript-bodies.test.ts`,
+      `lazy-bodies-live-turn.test.ts` (mid-turn reconnect), `live-steering.test.ts`
+      (steered image), `sub-agent.test.ts` (emit projected / persist whole),
+      `chat-card-persistence.test.ts` (the marker is set where the write happens),
+      `SubAgentCards.test.tsx` (the UI actually re-fetches and renders)
 - [x] Post-merge live verification (see above): real-CLI shapes, same-tick commit, modal render
 - [x] Independent requirements review by a fresh context (CLAUDE.md step 5) — see below
 - [x] Client half of the lazy Edit/Write path pinned (`DiffBlock.test.tsx`) — the review found it unpinned

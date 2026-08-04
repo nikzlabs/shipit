@@ -53,6 +53,7 @@ import type {
   RecordedChatCard,
 } from "./session-runner.js";
 import type { PersistedMessage } from "./chat-history.js";
+import { markMessagesCommitted, type CommittedBodyIds } from "./transcript-projection.js";
 
 /**
  * Minimal chat-history surface the card/turn persistence needs. Kept structural
@@ -171,13 +172,27 @@ export function buildTurnMessages(
  */
 export function persistTurnInProgress(
   chatHistoryManager: Pick<InProgressPersister, "replaceInProgress">,
-  runner: { chatMessageGroups: ChatMessageGroup[]; steeredMessages: SteeredMessage[]; recordedCards: RecordedChatCard[] },
+  runner: {
+    chatMessageGroups: ChatMessageGroup[];
+    steeredMessages: SteeredMessage[];
+    recordedCards: RecordedChatCard[];
+    /** Optional so partial test stubs still work; absent ⇒ nothing is marked. */
+    committedBodyIds?: CommittedBodyIds;
+  },
   sessionId: string,
 ): void {
-  chatHistoryManager.replaceInProgress(
-    sessionId,
-    buildTurnMessages(runner.chatMessageGroups, runner.steeredMessages, runner.recordedCards, { inProgress: true }),
+  const messages = buildTurnMessages(
+    runner.chatMessageGroups,
+    runner.steeredMessages,
+    runner.recordedCards,
+    { inProgress: true },
   );
+  chatHistoryManager.replaceInProgress(sessionId, messages);
+  // docs/244 / SHI-297 — these bodies are now on disk, so the reconnect snapshot
+  // may strip them. Recorded from the list actually written, never from the live
+  // groups: a group keeps accumulating after it is persisted, so "what we just
+  // wrote" and "what the group holds now" diverge within the same turn.
+  if (runner.committedBodyIds) markMessagesCommitted(runner.committedBodyIds, messages);
 }
 
 /**

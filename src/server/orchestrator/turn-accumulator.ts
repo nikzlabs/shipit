@@ -17,6 +17,7 @@
 import type { WsServerMessage, ClaudeContentBlockToolUse } from "../shared/types.js";
 import type { QueuedMessage, ChatMessageGroup, SteeredMessage, RecordedChatCard } from "./session-runner.js";
 import { settleDroppedQueueEntries } from "./turn-settlement.js";
+import { createCommittedBodyIds } from "./transcript-projection.js";
 
 const MAX_QUEUE_SIZE = 50;
 const MAX_TURN_BUFFER = 1000;
@@ -37,6 +38,9 @@ export class TurnAccumulator {
   // Turn-event replay buffer
   private _turnEventBuffer: WsServerMessage[] = [];
   lastPersistedBufferIndex = 0;
+
+  /** docs/244 / SHI-297 — see `SessionRunnerInterface.committedBodyIds`. */
+  readonly committedBodyIds = createCommittedBodyIds();
 
   // ---- Queue ----
 

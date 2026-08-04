@@ -41,6 +41,32 @@ export const TRANSCRIPT_SLICE_BYTES = 16 * 1024;
  */
 export const RESULT_STRIP_FLOOR_BYTES = 200;
 
+/**
+ * Characters of a sub-agent consult's output drawn on the card face (SHI-297).
+ *
+ * The consult card renders a single collapsed preview line and puts the rest
+ * behind a click (`SubAgentCards.tsx`), so the preview is the only part of a
+ * `sub_agent_consult_card` requirement 1 lets onto the wire. Shared rather than
+ * duplicated because the server now *builds* the preview the client used to
+ * derive: if the two ever disagreed the card face would change on reload.
+ */
+export const SUB_AGENT_PREVIEW_CHARS = 140;
+
+/**
+ * Collapse a consult's markdown into the one-line preview the card face draws.
+ *
+ * Idempotent by construction: re-applying it to its own output returns that
+ * output unchanged (the ellipsis is re-appended to the same 140-char head), so
+ * the client can call it on either the full body or the server-built preview
+ * and get the same line.
+ */
+export function subAgentPreviewLine(markdown: string): string {
+  const flat = markdown.replace(/\s+/g, " ").trim();
+  return flat.length > SUB_AGENT_PREVIEW_CHARS
+    ? `${flat.slice(0, SUB_AGENT_PREVIEW_CHARS)}…`
+    : flat;
+}
+
 export interface SlicedBody {
   /** The head slice — a prefix of the original. */
   content: string;
