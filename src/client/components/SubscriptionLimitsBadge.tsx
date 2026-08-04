@@ -105,13 +105,54 @@ interface SubscriptionLimitsBadgeProps {
  */
 export function SubscriptionLimitsBadge({ limits, autoRefresh }: SubscriptionLimitsBadgeProps) {
   const accounts = useSettingsStore((s) => s.providerAccounts);
-  const pills: {
-    key: string;
-    agentId: AgentId;
-    routeId: string;
-    label: string;
-    snapshot?: SubscriptionLimits;
-  }[] = [];
+  const pills = buildPills(limits, accounts);
+  if (pills.length === 0) return null;
+
+  return (
+    <>
+      {pills.map(({ key, agentId, routeId, label, snapshot }) => (
+        <SubscriptionLimitPill
+          key={key}
+          agentId={agentId}
+          routeId={routeId}
+          label={label}
+          snapshot={snapshot}
+          // eslint-disable-next-line no-restricted-syntax -- Claude is the only agent with an on-demand /api/oauth/usage refresh endpoint
+          showRefresh={agentId === "claude"}
+          autoRefresh={autoRefresh}
+        />
+      ))}
+    </>
+  );
+}
+
+interface SubscriptionPill {
+  key: string;
+  agentId: AgentId;
+  routeId: string;
+  label: string;
+  snapshot?: SubscriptionLimits;
+}
+
+/**
+ * How many pills the header would render right now.
+ *
+ * Exported because the header has to size its own layout around the answer
+ * (docs/150): each connected account adds a full pill, and past two or three of
+ * them the row stops fitting beside the logo. `AppLayout` reads the count to
+ * decide whether the status group renders inline or collapses into the status
+ * dropdown.
+ */
+export function useSubscriptionPillCount(limits: SubscriptionLimitsMap): number {
+  const accounts = useSettingsStore((s) => s.providerAccounts);
+  return buildPills(limits, accounts).length;
+}
+
+function buildPills(
+  limits: SubscriptionLimitsMap,
+  accounts: { id: string; provider: AgentId; label: string }[],
+): SubscriptionPill[] {
+  const pills: SubscriptionPill[] = [];
   for (const id of PILL_ORDER) {
     const byRoute = limits[id];
     const providerAccounts = accounts.filter((account) => account.provider === id);
@@ -142,24 +183,7 @@ export function SubscriptionLimitsBadge({ limits, autoRefresh }: SubscriptionLim
       });
     }
   }
-  if (pills.length === 0) return null;
-
-  return (
-    <>
-      {pills.map(({ key, agentId, routeId, label, snapshot }) => (
-        <SubscriptionLimitPill
-          key={key}
-          agentId={agentId}
-          routeId={routeId}
-          label={label}
-          snapshot={snapshot}
-          // eslint-disable-next-line no-restricted-syntax -- Claude is the only agent with an on-demand /api/oauth/usage refresh endpoint
-          showRefresh={agentId === "claude"}
-          autoRefresh={autoRefresh}
-        />
-      ))}
-    </>
-  );
+  return pills;
 }
 
 interface SubscriptionLimitPillProps {
@@ -187,11 +211,19 @@ export function SubscriptionLimitPill({ agentId, routeId, label, snapshot, showR
   // needs (tighter right edge when the refresh button is tucked in) and adds
   // the `gap-2` flex spacing between label / meters / button.
   return (
+    // `min-w-0` is what lets a header row of pills give ground instead of
+    // overflowing (docs/150): a flex item defaults to `min-width: auto`, so
+    // without it three account pills refused to shrink and pushed the header's
+    // trailing controls off-screen. The meters and refresh button stay at their
+    // natural width — the account label is the only part that yields, and it
+    // truncates with its full value still in the tooltip.
     <Badge
       numeric
-      className={`gap-2 pl-2 ${showRefresh ? "pr-1" : "pr-2"} pt-0 pb-0.5 bg-(--color-bg-hover)`}
+      className={`gap-2 pl-2 ${showRefresh ? "pr-1" : "pr-2"} pt-0 pb-0.5 bg-(--color-bg-hover) min-w-0`}
     >
-      <span title={snapshot?.plan ? `${label} — ${snapshot.plan}` : label}>{label}</span>
+      <span className="truncate" title={snapshot?.plan ? `${label} — ${snapshot.plan}` : label}>
+        {label}
+      </span>
       <Meter
         shortLabel="5h"
         longLabel="5h window"

@@ -52,7 +52,7 @@
 import type { AgentId, SessionInfo } from "../../shared/types.js";
 import type { SessionManager } from "../sessions.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
-import type { ProviderAccountManager } from "../provider-account-manager.js";
+import type { ProviderAccountManager, RouteUnusableReason } from "../provider-account-manager.js";
 import { provisionProviderAccountCredentials } from "../session-agent-credentials.js";
 import { routeFromSelection } from "../provider-route-preflight.js";
 import { ServiceError } from "./types.js";
@@ -205,15 +205,46 @@ export interface PinnedAccountFailover {
   fromLabel: string;
   toAccountId: string;
   toLabel: string;
+  /**
+   * Why the session had to move — read from the outgoing account *before* the
+   * route is repointed. Only the notice uses it (see {@link failoverNotice}),
+   * but it has to be captured here: once the switch lands, the old account's
+   * eligibility is no longer what caused this.
+   */
+  reason: RouteUnusableReason;
 }
 
 export interface FailoverPinnedSessionDeps {
   sessionManager: Pick<SessionManager, "get" | "setProviderRoute">;
   providerAccountManager: Pick<
     ProviderAccountManager,
-    "isRouteUsableForTurn" | "selectAccountForTurn" | "get"
+    "isRouteUsableForTurn" | "classifyRouteForTurn" | "selectAccountForTurn" | "get"
   >;
   credentialsDir: string;
+}
+
+/**
+ * docs/150 req 11 — what the session's transcript says about a move, in the
+ * user's own account names.
+ *
+ * One sentence per reason rather than one sentence for all of them. "X is out
+ * of quota" was the only wording for a long time, and it is a lie in the two
+ * cases that are not exhaustion: at a configured cutoff the account has quota
+ * left and the user's own 90% threshold is what moved the work (req 6), and a
+ * disconnected account never ran out of anything. A user who reads "out of
+ * quota" about an account sitting at 90% has been told their subscription is
+ * spent when it isn't.
+ */
+export function failoverNotice(failover: PinnedAccountFailover): string {
+  const { fromLabel, toLabel } = failover;
+  switch (failover.reason) {
+    case "over_cutoff":
+      return `${fromLabel} reached your usage cutoff — continuing this session on ${toLabel}.`;
+    case "unavailable":
+      return `${fromLabel} is no longer available — continuing this session on ${toLabel}.`;
+    case "exhausted":
+      return `${fromLabel} is out of quota — continuing this session on ${toLabel}.`;
+  }
 }
 
 /**
@@ -245,6 +276,17 @@ export function failoverPinnedSession(
   const fromAccountId = session?.providerRouteId;
   if (!session || !provider || !fromAccountId) return null;
 
+  // Read *why* before moving: after `setProviderRoute` below, the session no
+  // longer points at the account whose state caused this. `unavailable` is the
+  // safe default — a route that classifies as usable at this point contradicts
+  // the check above, and claiming "out of quota" on a contradiction is the
+  // failure mode this reason exists to avoid.
+  const reason =
+    deps.providerAccountManager.classifyRouteForTurn(provider, {
+      kind: "account",
+      id: fromAccountId,
+    }) ?? "unavailable";
+
   // Re-run the router rather than "pick the next one in the list": it is the
   // single place that knows the priority order, the exhaustion rules, and req
   // 12's refusal to roll onto metered billing. A blocking failure throws from
@@ -269,5 +311,6 @@ export function failoverPinnedSession(
     fromLabel: accountLabel(fromAccountId),
     toAccountId: next.id,
     toLabel: accountLabel(next.id),
+    reason,
   };
 }

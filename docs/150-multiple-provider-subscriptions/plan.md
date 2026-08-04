@@ -3037,3 +3037,122 @@ unscoped payload names no row that could render it.
 (`buildRunnerFactory` local branch), `session/agents/claude/process.ts`,
 `session/agents/codex/adapter.ts`, `client/stores/settings-store.ts`,
 `client/components/Settings/ProviderAccountsCard.tsx`.
+
+### Struck: persisting quota snapshots onto accounts (2026-08-04)
+
+The checklist carried "persist quota snapshots and plan labels onto provider
+accounts **where appropriate**" from the Phase 2 design, whose `ProviderAccount`
+sketch above still shows a `quota?: SubscriptionLimits` field. Struck rather
+than built. Three findings, in the order they settle the question:
+
+1. **Nothing ever wrote either field, and nothing ever read them.** `quota` was
+   never added to the shipped type at all — it exists only in the sketch. `plan`
+   *was* added and has zero writers: every `upsertProviderAccount` call site
+   (migration, create, rename, identity, `markAccountUsed`, status, exhaustion
+   stamp, reorder) leaves it untouched. The one plan label the UI shows comes
+   from `SubscriptionLimits.plan` on the live snapshot, read from that account's
+   own credentials — the Phase 5 fix for the pill that labelled every account
+   with the migrated default's plan. So the field the checklist row pointed at
+   was dead, and the label it was supposed to enable already worked. It has been
+   removed, with a comment in its place saying why there isn't one.
+
+2. **The one quota fact that must survive a restart already does, in the
+   narrower form.** `exhaustedUntil` persists a hard exhaustion (req 7) as a
+   scalar with a reset time, so it keeps a spent account out of the running
+   across an orchestrator restart *and expires on its own*. That is the whole
+   selection-relevant residue of a snapshot. A stored snapshot would add no
+   selection capability, only a second copy of the same fact.
+
+3. **What persistence would actually buy is a cold-start cosmetic, and the
+   honest version is better.** `LimitsRegistry`'s cache is in-memory, so after a
+   restart a pill reads `5h · — 7d · —` until a turn or a refresh press
+   repopulates it. A restored last-known value would fill that gap — but the
+   pill's whole docs/161 design is about *not* doing this: it distinguishes
+   "reset", "unknown", and "known but stale" precisely because showing a number
+   that looks current when it isn't was the earlier defect. Trading an honest
+   `—` for a number of unknown age reintroduces it.
+
+And the trap the data model warns about is worse here than for `exhausted`.
+`isOverCutoff` reads `usedPct` and deliberately does **not** check whether the
+window's `resetAt` has elapsed — it does not need to, because a live snapshot's
+windows are current by construction. Feed it a restored pre-rollover reading of
+95% and it benches a freshly reset account with no clock to clear it. Making
+that safe means expiring restored snapshots, i.e. rebuilding `exhaustedUntil`'s
+one honest property around a much larger payload. Selection keeps computing from
+the live snapshot, as the data model requires.
+
+If a future requirement does ask for quota that outlives a restart, it starts at
+`requirements.md`, not here.
+
+### Fixed: three subscription pills did not fit the header (2026-08-04)
+
+The other open Phase 2 item — "render multi-account grouped/expanded quota state
+without layout overlap" — was a real defect, confirmed in the running app rather
+than argued from the CSS. With three connected Claude accounts labelled with
+emails (which is what req 22 now defaults labels to) at a 900px window: the
+first pill rendered **on top of the ShipIt wordmark**, and the uptime badge,
+help, settings and theme controls were pushed past the right edge of the
+viewport entirely. At 640px the labels disappeared and the pills' backgrounds
+collided — req 10's account name gone, which is worse than a cramped layout.
+
+Three causes, each fixed where it lives:
+
+1. **The status group could not shrink.** It was `shrink-0` in a
+   `justify-between` header, so it took its natural width and let the overflow
+   land wherever it fell. It is `min-w-0` now, and the trailing controls (help /
+   settings / theme) moved into their own `shrink-0` group so the pills absorb
+   the overflow instead of navigation being pushed off-screen.
+2. **A pill could not shrink either.** A flex item's `min-width: auto` is its
+   content, so the pills refused to give ground. The pill is `min-w-0` and its
+   label `truncate`, which makes the account name the only part that yields —
+   the meters and refresh button keep their natural width, and the full label
+   stays in the tooltip.
+3. **The logo was not reserving its own width.** The left group was `min-w-0`
+   with a `shrink-0` h1 inside, so it shrank to nothing while the wordmark
+   overflowed out of it — which is *how* a pill ended up drawn over the logo.
+   It is `shrink-0` now.
+
+Shrinking alone still bottoms out: below roughly `md` three pills truncate to
+nothing. So the group's inline breakpoint now scales with the pill count
+(`statusGroupBreakpoint`) — one pill from `sm` (unchanged), two from `md`, three
+or more from `lg` — and below that the whole group collapses into the gauge
+dropdown that already existed for mobile, which stacks the same pills vertically
+with their full labels. That is the "grouped / expanded" the checklist row asked
+for, using the surface that was already built rather than a new one.
+
+Two deliberate choices. The **whole group** moves, not just the pills, so a
+collapsed width never renders uptime/memory both inline and in the dropdown. And
+the thresholds are **counted, not measured**: a `ResizeObserver` would be exact,
+but the inputs (pill count, label length) are already known at render time, and
+truncation covers the residual case of a fourth account or an unusually long
+label at a wide viewport.
+
+Verified in the running dogfood app at 640 / 768 / 900 / 1024 / 1280 px with
+one, two and three connected accounts: no overlap, no horizontal overflow
+(`scrollWidth === clientWidth`), and the one-account header unchanged.
+
+**Key files:** `client/AppLayout.tsx` (`statusGroupBreakpoint`),
+`client/components/SubscriptionLimitsBadge.tsx` (`useSubscriptionPillCount`,
+pill shrink/truncate).
+
+### Fixed: a cutoff-driven move said "out of quota" (2026-08-04)
+
+Not on the checklist; found while reading the failover path for the two items
+above. When `failoverPinnedSession` moved a session, the transcript notice was
+always `"<X> is out of quota — continuing this session on <Y>."` — but reqs 6
+and 7 are two different events, and only one of them is exhaustion. A move at
+the user's configured cutoff happens while the account still has quota (at the
+90% default, a tenth of the window), and a session stranded by req 23's
+last-account disconnect never ran out of anything at all. In both cases the
+notice told the user their subscription was spent when it was not.
+
+`isRouteUsableForTurn` knew which case it was and threw the distinction away at
+the `return false`. It is now a thin wrapper over `classifyRouteForTurn`, which
+returns `"exhausted"`, `"over_cutoff"`, `"unavailable"`, or `null` when the
+route is fine; `failoverPinnedSession` reads it *before* repointing the route
+(afterwards the outgoing account's state no longer explains anything) and
+carries it on `PinnedAccountFailover`, and `failoverNotice` maps it to one of
+three sentences. Selection is untouched — it only ever needed the boolean, and
+the classification is derived from the same live snapshot rather than stored
+anywhere.
+

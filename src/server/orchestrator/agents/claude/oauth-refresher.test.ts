@@ -31,7 +31,6 @@ function makeAccount(id: string, overrides: Partial<ProviderAccount> = {}): Prov
     label: id,
     isPrimary: true,
     status: "ready",
-    plan: "max-5x",
     createdAt: 0,
     updatedAt: 0,
     ...overrides,

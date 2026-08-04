@@ -221,6 +221,28 @@ describe("SubscriptionLimitsBadge group", () => {
     expect(rows[1].textContent).toMatch(/5h 12%/);
   });
 
+  // docs/150 — the header row is finite and each account adds a ~250px pill.
+  // jsdom has no layout engine, so the assertion is on the two declarations
+  // that decide who gives ground: the pill may shrink below its content, and
+  // the label is the part that yields. Without them, three accounts pushed the
+  // header's trailing controls off-screen and slid the first pill under the
+  // logo (observed at 900px in the running app).
+  it("lets a pill shrink by truncating its label, not by overflowing the row", () => {
+    const now = Date.now();
+    useSettingsStore.getState().setProviderAccounts([
+      { id: "acct-work", provider: "claude", label: "nicolas.zherebtsov@gmail.com", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+    ]);
+    const limits: SubscriptionLimitsMap = { claude: routed(makeSnap({ routeId: "acct-work" })) };
+    const { container } = render(<SubscriptionLimitsBadge limits={limits} />);
+
+    const pill = container.querySelector(":scope > span");
+    expect(pill?.className).toContain("min-w-0");
+    const label = screen.getByText("nicolas.zherebtsov@gmail.com");
+    expect(label.className).toContain("truncate");
+    // The full value stays reachable — truncation hides characters, not facts.
+    expect(label).toHaveAttribute("title", expect.stringContaining("nicolas.zherebtsov@gmail.com"));
+  });
+
   // req 10 asks for the account name outright, so it is shown even when there
   // is only one pill.
   it("labels a single account's pill with the account name", () => {

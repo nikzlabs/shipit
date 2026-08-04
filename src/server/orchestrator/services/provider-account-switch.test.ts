@@ -6,7 +6,7 @@ import { CredentialStore } from "../credential-store.js";
 import { ProviderAccountManager, providerAccountCredentialRoot } from "../provider-account-manager.js";
 import { SessionManager } from "../sessions.js";
 import { createTestDatabaseManager } from "../integration_tests/test-helpers.js";
-import { failoverPinnedSession, switchSessionProviderAccount } from "./provider-account-switch.js";
+import { failoverNotice, failoverPinnedSession, switchSessionProviderAccount } from "./provider-account-switch.js";
 import { ProviderRouteUnavailableError } from "../provider-route-preflight.js";
 import type { SubscriptionLimits, SubscriptionLimitsMap } from "../../shared/types.js";
 import { ServiceError } from "./types.js";
@@ -342,6 +342,75 @@ describe("failoverPinnedSession", () => {
     expect(
       fs.readFileSync(path.join(sessionDir(), ".claude", ".credentials.json"), "utf-8"),
     ).toBe("token-b");
+  });
+
+  // docs/150 reqs 6, 7, 11 — a cutoff move and an exhaustion move are
+  // different events, and the transcript notice is where the user learns which
+  // one happened. "out of quota" about an account sitting at 92% tells them
+  // their subscription is spent when it is not.
+  describe("the notice says why the session moved", () => {
+    /** A window at `usedPct`, still open — over the 90% cutoff but not spent. */
+    function used(pct: number): SubscriptionLimits {
+      return {
+        agentId: "claude",
+        routeId: "unused",
+        plan: null,
+        session: { usedPct: pct, resetAt: new Date(Date.now() + 3_600_000).toISOString() },
+        weekly: null,
+        fetchedAt: 0,
+      };
+    }
+
+    function twoAccountsPinnedToFirst(): { a: string; b: string } {
+      const a = accounts.create("claude", "Work");
+      const b = accounts.create("claude", "Personal");
+      accounts.setAccountStatus("claude", a.id, "ready");
+      accounts.setAccountStatus("claude", b.id, "ready");
+      seedClaudeAccount(a.id, "token-a");
+      seedClaudeAccount(b.id, "token-b");
+      sessions.setAgentId(SESSION, "claude");
+      sessions.setProviderRoute(SESSION, "account", a.id);
+      return { a: a.id, b: b.id };
+    }
+
+    it("reports a cutoff move as a cutoff, not as exhaustion (req 6)", () => {
+      const { a, b } = twoAccountsPinnedToFirst();
+      limits = { claude: { [a]: used(92), [b]: used(10) } };
+
+      const moved = failoverPinnedSession(SESSION, deps());
+
+      expect(moved?.reason).toBe("over_cutoff");
+      expect(failoverNotice(moved!)).toBe(
+        "Work reached your usage cutoff — continuing this session on Personal.",
+      );
+    });
+
+    it("reports a spent account as out of quota (req 7)", () => {
+      const { a, b } = twoAccountsPinnedToFirst();
+      limits = { claude: { [a]: spent(new Date(Date.now() + 3_600_000).toISOString()), [b]: used(10) } };
+
+      const moved = failoverPinnedSession(SESSION, deps());
+
+      expect(moved?.reason).toBe("exhausted");
+      expect(failoverNotice(moved!)).toBe(
+        "Work is out of quota — continuing this session on Personal.",
+      );
+    });
+
+    // req 23 strands sessions on a disconnected account, and a signed-out one
+    // reaches the same state. Neither ran out of anything.
+    it("reports an account that lost its sign-in as unavailable", () => {
+      const { a, b } = twoAccountsPinnedToFirst();
+      accounts.setAccountStatus("claude", a, "auth_failed");
+      limits = { claude: { [b]: used(10) } };
+
+      const moved = failoverPinnedSession(SESSION, deps());
+
+      expect(moved?.reason).toBe("unavailable");
+      expect(failoverNotice(moved!)).toBe(
+        "Work is no longer available — continuing this session on Personal.",
+      );
+    });
   });
 
   it("does nothing while the pinned account still has quota", () => {

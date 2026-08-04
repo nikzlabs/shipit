@@ -113,6 +113,22 @@ export type AccountSelection =
   | { ok: true; route: ProviderRoute }
   | ({ ok: false } & AccountSelectionFailure);
 
+/**
+ * Why a route a session is **already pinned to** can no longer run its turn
+ * (docs/150 reqs 6, 7, 11). See {@link ProviderAccountManager.classifyRouteForTurn}.
+ *
+ * `over_cutoff` is deliberately not a flavour of `exhausted`: the account still
+ * has quota, it has only crossed the threshold the *user* configured, and req 6
+ * says that moves work rather than stopping it.
+ */
+export type RouteUnusableReason =
+  /** A quota window is at 100%, or a hard exhaustion was stamped mid-turn. */
+  | "exhausted"
+  /** Past a configured cutoff, with an account genuinely under one to move to. */
+  | "over_cutoff"
+  /** Disconnected, signed out, or otherwise not in a usable state. */
+  | "unavailable";
+
 export interface SelectAccountOptions {
   /**
    * Routes already tried and failed this turn. Mid-turn failover (req 14)
@@ -708,12 +724,30 @@ export class ProviderAccountManager {
    * unusable, which sends the caller back through the router.
    */
   isRouteUsableForTurn(provider: AgentId, route: ProviderRoute): boolean {
-    if (route.kind !== "account") return true;
+    return this.classifyRouteForTurn(provider, route) === null;
+  }
+
+  /**
+   * The same question as {@link isRouteUsableForTurn}, answered with **why**:
+   * `null` when the route can still run a turn, otherwise the reason it cannot.
+   *
+   * The reason exists because the user-facing consequences differ. A move at a
+   * configured cutoff (req 6) leaves the account with quota to spare — telling
+   * the user it is "out of quota" is simply false, and misreads a threshold
+   * they chose as a provider limit they hit. Hard exhaustion (req 7) and an
+   * account that has been disconnected or lost its sign-in are three different
+   * stories, and `failoverPinnedSession` needs to tell them apart to say the
+   * true one (req 11).
+   *
+   * Selection itself does not branch on this — it only ever needs the boolean.
+   */
+  classifyRouteForTurn(provider: AgentId, route: ProviderRoute): RouteUnusableReason | null {
+    if (route.kind !== "account") return null;
     const account = this.get(provider, route.id);
-    if (!account) return false;
-    if (account.status !== "ready" && account.status !== "authenticating") return false;
+    if (!account) return "unavailable";
+    if (account.status !== "ready" && account.status !== "authenticating") return "unavailable";
     const limits = this.getSubscriptionLimits?.()?.[provider] ?? {};
-    if (exhaustedUntil(limits[route.id], account, Date.now()) !== null) return false;
+    if (exhaustedUntil(limits[route.id], account, Date.now()) !== null) return "exhausted";
 
     // docs/150 req 6 — past a cutoff, this session should move to the next
     // eligible account. But only if there IS somewhere better: reporting
@@ -723,7 +757,7 @@ export class ProviderAccountManager {
     // process every time. A cutoff is a preference, so it can only displace a
     // session onto an account that is actually under one.
     const cutoffs = this.credentialStore.getFailoverCutoffs(provider);
-    if (!isOverCutoff(limits[route.id], cutoffs)) return true;
+    if (!isOverCutoff(limits[route.id], cutoffs)) return null;
     // "Somewhere better" means an account genuinely UNDER its cutoff — not
     // merely whichever account the selector would name first. Asking the
     // selector here would compare against its over-cutoff fallback, so a
@@ -736,7 +770,7 @@ export class ProviderAccountManager {
       if (exhaustedUntil(limits[candidate.id], candidate, now) !== null) return false;
       return !isOverCutoff(limits[candidate.id], cutoffs);
     });
-    return !hasBetter;
+    return hasBetter ? "over_cutoff" : null;
   }
 
   hasAnyAuthForProvider(provider: AgentId): boolean {

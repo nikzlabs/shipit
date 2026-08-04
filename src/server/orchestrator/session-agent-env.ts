@@ -53,7 +53,7 @@ import { agentHome } from "../shared/agent-home.js";
 import type { ProviderAccountManager, ProviderRoute } from "./provider-account-manager.js";
 import { providerAccountCredentialRoot } from "./provider-account-manager.js";
 import { routeFromSelection } from "./provider-route-preflight.js";
-import { failoverPinnedSession } from "./services/provider-account-switch.js";
+import { failoverNotice, failoverPinnedSession } from "./services/provider-account-switch.js";
 import { emitNoticeInTurn } from "./chat-card-persistence.js";
 import { refreshExpiredMcpOAuthTokens } from "./services/mcp-oauth.js";
 import { collectMcpAgentEnv } from "./secret-resolver.js";
@@ -372,12 +372,7 @@ export async function prepareSessionAgentEnvironment(
   // persist it: a switch the transcript forgets on reload is not a record.
   const chatHistory = deps.chatHistoryManager;
   if (failover && runner && chatHistory) {
-    emitNoticeInTurn(
-      runner,
-      sessionId,
-      `${failover.fromLabel} is out of quota — continuing this session on ${failover.toLabel}.`,
-      chatHistory,
-    );
+    emitNoticeInTurn(runner, sessionId, failoverNotice(failover), chatHistory);
   }
 
   // One line per preparation recording the decisions that shaped it: which

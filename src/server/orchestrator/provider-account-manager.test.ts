@@ -954,6 +954,38 @@ describe("ProviderAccountManager", () => {
         expect(mgr.isRouteUsableForTurn("claude", { kind: "account", id: a })).toBe(false);
       });
     });
+
+    // docs/150 reqs 6, 7, 11 — the notice the user reads depends on *which*
+    // of these happened, so the three must not collapse into one another.
+    describe("classifyRouteForTurn", () => {
+      it("separates a cutoff from real exhaustion", () => {
+        const { a, b } = twoReadyAccounts();
+        const overCutoff = mgrWith({ [a]: { session: win(92) }, [b]: { session: win(10) } });
+        const spent = mgrWith({ [a]: { session: win(100) }, [b]: { session: win(10) } });
+
+        expect(overCutoff.classifyRouteForTurn("claude", { kind: "account", id: a })).toBe("over_cutoff");
+        expect(spent.classifyRouteForTurn("claude", { kind: "account", id: a })).toBe("exhausted");
+      });
+
+      it("reports a disconnected or signed-out account as unavailable, not out of quota", () => {
+        const { a } = twoReadyAccounts();
+        const mgr = mgrWith({});
+        mgr.setAccountStatus("claude", a, "auth_failed");
+
+        expect(mgr.classifyRouteForTurn("claude", { kind: "account", id: a })).toBe("unavailable");
+        expect(mgr.classifyRouteForTurn("claude", { kind: "account", id: "acct_gone" })).toBe("unavailable");
+      });
+
+      it("agrees with isRouteUsableForTurn — null exactly when usable", () => {
+        const { a, b } = twoReadyAccounts();
+        const mgr = mgrWith({ [a]: { session: win(10) }, [b]: { session: win(10) } });
+
+        expect(mgr.classifyRouteForTurn("claude", { kind: "account", id: a })).toBeNull();
+        expect(mgr.isRouteUsableForTurn("claude", { kind: "account", id: a })).toBe(true);
+        // A reserved route has no subscription window to leave (req 12).
+        expect(mgr.classifyRouteForTurn("claude", { kind: "reserved", id: "claude-api-key" })).toBeNull();
+      });
+    });
   });
 
   describe("selectAccountForTurn (docs/150 reqs 13, 14, 17)", () => {

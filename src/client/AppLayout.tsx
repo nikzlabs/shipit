@@ -14,7 +14,7 @@ import { type Theme } from "./hooks/useTheme.js";
 import type { SessionInfo, RepoInfo, DockerMemoryStats, SubscriptionLimitsMap } from "../server/shared/types.js";
 import { DockerMemoryBadge } from "./components/DockerMemoryBadge.js";
 import { UptimeBadge } from "./components/UptimeBadge.js";
-import { SubscriptionLimitsBadge } from "./components/SubscriptionLimitsBadge.js";
+import { SubscriptionLimitsBadge, useSubscriptionPillCount } from "./components/SubscriptionLimitsBadge.js";
 import { MobileStatusPanel } from "./components/MobileStatusPanel.js";
 import { MemoryPressureBanner } from "./components/MemoryPressureBanner.js";
 import { GitHubRateLimitBanner } from "./components/GitHubRateLimitBanner.js";
@@ -24,6 +24,37 @@ import { QuickCaptureOverlay } from "./components/QuickCaptureOverlay.js";
 import { MobileContentPanels } from "./components/MobileContentPanels.js";
 import { MobileSessionsPanel } from "./components/MobileSessionsPanel.js";
 import { useSettingsStore } from "./stores/settings-store.js";
+
+/**
+ * docs/150 — at which viewport width the header's status group (subscription
+ * pills, uptime, memory) renders inline, and below which it collapses into the
+ * gauge dropdown that already exists for mobile.
+ *
+ * The width it needs scales with the number of connected subscriptions: req 10
+ * gives every account its own named pill, and an email-labelled pill is ~250px.
+ * One always fits from `sm` — that layout is unchanged. Two or three do not,
+ * and shrinking alone does not save them: past a point the label truncates to
+ * nothing and the pills read as anonymous meters, which is req 10's account
+ * name gone. Collapsing is the better failure — the dropdown stacks the same
+ * pills vertically with their full labels, one click away.
+ *
+ * The whole group moves together rather than the pills alone, so a collapsed
+ * width never renders uptime/memory both inline and in the dropdown.
+ *
+ * Thresholds are counted, not measured: a `ResizeObserver` would be exact, but
+ * it buys precision at the boundary of a layout whose inputs (pill count, label
+ * length) are already known here. Both class strings are spelled out in full
+ * because Tailwind scans source text — a template-built class name would not be
+ * generated.
+ */
+export function statusGroupBreakpoint(pillCount: number): {
+  statusInline: string;
+  statusCollapsed: string;
+} {
+  if (pillCount >= 3) return { statusInline: "hidden lg:contents", statusCollapsed: "lg:hidden" };
+  if (pillCount === 2) return { statusInline: "hidden md:contents", statusCollapsed: "md:hidden" };
+  return { statusInline: "hidden sm:contents", statusCollapsed: "sm:hidden" };
+}
 
 interface AppLayoutProps {
   // Header
@@ -143,6 +174,9 @@ export function AppLayout({
   toast,
 }: AppLayoutProps) {
   const hasProviderAccounts = useSettingsStore((s) => s.providerAccounts.length > 0);
+  const { statusInline, statusCollapsed } = statusGroupBreakpoint(
+    useSubscriptionPillCount(subscriptionLimits),
+  );
 
   return (
     <>
@@ -150,7 +184,12 @@ export function AppLayout({
       <GitHubRateLimitBanner />
       <LocalModeBanner />
       <header className="relative flex items-center justify-between px-3 sm:px-6 py-2 sm:py-3 border-b border-(--color-border-primary)">
-        <div className="flex items-center gap-2 sm:gap-4 min-w-0">
+        {/* `shrink-0`, not `min-w-0`: this group holds only the logo, and
+            `min-w-0` let it shrink to nothing while the `shrink-0` h1 inside
+            overflowed — which is how the first subscription pill ended up
+            rendered on top of the wordmark. Reserving the logo's own width is
+            what makes the pills' shrinking above resolve against real space. */}
+        <div className="flex items-center gap-2 sm:gap-4 shrink-0">
           <h1 className="text-base sm:text-lg font-semibold tracking-tight shrink-0">
             <a
               href="/"
@@ -175,14 +214,21 @@ export function AppLayout({
             </div>
           </div>
         )}
-        <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-          <div className="hidden sm:contents">
+        {/* `min-w-0`, not `shrink-0` (docs/150): with one connected subscription
+            the pills always fit, but each additional account adds another
+            ~250px pill — three email-labelled accounts overflowed this row at
+            900px, sliding the first pill under the logo and pushing the
+            settings icons off-screen entirely. Letting the group shrink hands
+            the overflow to the pills, which truncate their labels; the trailing
+            controls below keep `shrink-0` so they stay reachable. */}
+        <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+          <div className={statusInline}>
             <SubscriptionLimitsBadge limits={subscriptionLimits} />
             {processStartedAt !== null && <UptimeBadge processStartedAt={processStartedAt} />}
             {dockerMemory && <DockerMemoryBadge stats={dockerMemory} />}
           </div>
           {(processStartedAt !== null || dockerMemory !== null || hasProviderAccounts || Object.values(subscriptionLimits).some((s) => s)) && (
-            <div className="sm:hidden">
+            <div className={statusCollapsed}>
               <Popover>
                 <PopoverTrigger asChild>
                   <button
@@ -202,17 +248,23 @@ export function AppLayout({
               </Popover>
             </div>
           )}
-          <WithTooltip label="Keyboard shortcuts">
-          <button onClick={onShortcutsOpen} className="inline-flex items-center justify-center w-7 h-7 rounded transition-colors text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)" aria-label="Keyboard shortcuts">
-            <QuestionIcon size={ICON_SIZE.SM} />
-          </button>
-          </WithTooltip>
-          <WithTooltip label="Settings">
-          <button onClick={onSettingsOpen} className={`inline-flex items-center justify-center w-7 h-7 rounded transition-colors ${hasSystemPrompt || githubAuthenticated ? "text-(--color-accent) hover:text-(--color-accent-hover) hover:bg-(--color-bg-hover)" : "text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)"}`} aria-label="Settings">
-            <GearSixIcon size={ICON_SIZE.SM} />
-          </button>
-          </WithTooltip>
-          <ThemePicker theme={theme} onSelectTheme={onSelectTheme} />
+          {/* Kept together in a `shrink-0` group so the pills above absorb every
+              pixel of overflow before these do — they are navigation, not
+              status, and a settings button pushed past the viewport edge has no
+              recovery. */}
+          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+            <WithTooltip label="Keyboard shortcuts">
+            <button onClick={onShortcutsOpen} className="inline-flex items-center justify-center w-7 h-7 rounded transition-colors text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)" aria-label="Keyboard shortcuts">
+              <QuestionIcon size={ICON_SIZE.SM} />
+            </button>
+            </WithTooltip>
+            <WithTooltip label="Settings">
+            <button onClick={onSettingsOpen} className={`inline-flex items-center justify-center w-7 h-7 rounded transition-colors ${hasSystemPrompt || githubAuthenticated ? "text-(--color-accent) hover:text-(--color-accent-hover) hover:bg-(--color-bg-hover)" : "text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)"}`} aria-label="Settings">
+              <GearSixIcon size={ICON_SIZE.SM} />
+            </button>
+            </WithTooltip>
+            <ThemePicker theme={theme} onSelectTheme={onSelectTheme} />
+          </div>
         </div>
       </header>
 
