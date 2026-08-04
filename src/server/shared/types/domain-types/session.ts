@@ -67,11 +67,29 @@ export function normalizeCapabilities(input: unknown): SessionCapabilities {
   };
 }
 
+/**
+ * docs/250 — who set a session's current title, for the two precedence questions
+ * the rename paths ask. Deliberately only the two *locking* values:
+ *   - `"user"`  — the user renamed it by hand. Final: nothing overwrites it.
+ *   - `"agent"` — the agent renamed it via `shipit session rename`. The user can
+ *     still rename over it; the automatic namer cannot.
+ * Absent (NULL) means an automatic or born-with title — the graduation
+ * placeholder, the AI namer, or an `explicitTitle` taken from the seeding issue /
+ * chosen by a parent agent. Those are all replaceable: they describe the task the
+ * session STARTED with, which is exactly what goes stale (requirements 7 + 8).
+ */
+export type SessionTitleSource = "user" | "agent";
+
 export interface SessionInfo {
   id: string;
   /** Agent's conversation ID (e.g. Claude CLI session_id for --resume). */
   agentSessionId?: string;
   title: string;
+  /**
+   * docs/250 — provenance for {@link title}. Absent ⇒ automatic/born-with, i.e.
+   * replaceable by both the agent and the AI namer. See {@link SessionTitleSource}.
+   */
+  titleSource?: SessionTitleSource;
   /**
    * docs/128 / docs/211 — server-authoritative session kind. Undefined means an
    * ordinary repo/local session. The privileged kinds are:

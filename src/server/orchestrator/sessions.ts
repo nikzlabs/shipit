@@ -1,4 +1,4 @@
-import type { PreviousMergedPr, ProviderRouteKind, SessionCapabilities, SessionInfo, SessionMergeWatch } from "../shared/types.js";
+import type { PreviousMergedPr, ProviderRouteKind, SessionCapabilities, SessionInfo, SessionMergeWatch, SessionTitleSource } from "../shared/types.js";
 import { normalizeCapabilities } from "../shared/types.js";
 import { parseTimestampMs } from "../shared/utils.js";
 import type { DatabaseManager } from "../shared/database.js";
@@ -9,6 +9,8 @@ interface SessionRow {
   id: string;
   agent_session_id: string | null;
   title: string;
+  /** docs/250 — 'user' | 'agent' | NULL. Who set `title`; NULL = automatic. */
+  title_source: string | null;
   created_at: string;
   last_used_at: string;
   workspace_dir: string | null;
@@ -286,6 +288,7 @@ export class SessionManager {
       lastUsedAt: row.last_used_at,
       remoteUrl: row.remote_url ?? "",
     };
+    if (row.title_source === "user" || row.title_source === "agent") info.titleSource = row.title_source;
     if (row.agent_session_id) info.agentSessionId = row.agent_session_id;
     if (row.workspace_dir) info.workspaceDir = row.workspace_dir;
     if (row.conversation_replay) info.conversationReplay = row.conversation_replay;
@@ -461,9 +464,24 @@ export class SessionManager {
     this.db.prepare("UPDATE sessions SET remote_url = ? WHERE id = ?").run(remoteUrl ?? null, id);
   }
 
-  /** Rename a session. Returns the updated session, or null if not found. */
-  rename(id: string, title: string): SessionInfo | null {
-    const result = this.db.prepare("UPDATE sessions SET title = ? WHERE id = ?").run(title, id);
+  /**
+   * Rename a session. Returns the updated session, or null if not found.
+   *
+   * docs/250 — `source` records WHO set the title so the two automatic writers
+   * can tell whether they may overwrite it later. Omit it for an automatic or
+   * born-with title (graduation placeholder, AI namer, `explicitTitle`); those
+   * write NULL and stay replaceable. Pass `"user"` for a hand rename (final) or
+   * `"agent"` for `shipit session rename` (the AI namer must not clobber it).
+   *
+   * The write is unconditional by design — precedence is the caller's decision,
+   * expressed once in {@link isTitleLockedAgainst} (`services/session-title.ts`),
+   * because the two gated writers need to *skip their whole flow*, not just this
+   * one statement (the AI namer must not rename the branch either).
+   */
+  rename(id: string, title: string, source?: SessionTitleSource): SessionInfo | null {
+    const result = this.db
+      .prepare("UPDATE sessions SET title = ?, title_source = ? WHERE id = ?")
+      .run(title, source ?? null, id);
     if (result.changes === 0) return null;
     return this.get(id) ?? null;
   }

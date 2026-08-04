@@ -7,6 +7,7 @@ import type {
   ActionChecklistCard,
   BranchAutoResetCard,
   BranchSyncedCard,
+  SessionRenamedCard,
 } from "../domain-types.js";
 import type { ReleaseStatusSummary } from "../release-types.js";
 import type { VoiceNoteSource } from "../voice-note-types.js";
@@ -265,4 +266,22 @@ export interface WsBranchSyncedCard {
   type: "branch_synced_card";
   sessionId: string;
   card: BranchSyncedCard;
+}
+
+/**
+ * docs/250 — the persisted "renamed this session" transcript card (requirement 9).
+ * Emitted via `emitChatCard` (so it broadcasts live AND records in-band with the
+ * turn, surviving a reconnect, switch, and reload) when the agent retitles its own
+ * session with `shipit session rename`. Carries the full `SessionRenamedCard`; the
+ * card has no lifecycle, so there is no follow-up update message. Idempotent on
+ * the client by `card.cardId`.
+ *
+ * NOT to be confused with `session_renamed` (`WsSessionRenamed`), which updates
+ * the sidebar entry. Both fire on an agent rename: one for the list, one for the
+ * scrollback.
+ */
+export interface WsSessionRenamedCard {
+  type: "session_renamed_card";
+  sessionId: string;
+  card: SessionRenamedCard;
 }

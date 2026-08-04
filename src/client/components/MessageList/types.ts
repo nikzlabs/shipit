@@ -6,6 +6,7 @@ import type {
   ActionChecklistCard as ActionChecklistCardData,
   BranchAutoResetCard as BranchAutoResetCardData,
   BranchSyncedCard as BranchSyncedCardData,
+  SessionRenamedCard as SessionRenamedCardData,
   SelfMergeWatchCard as SelfMergeWatchCardData,
   AiReviewCard,
 } from "../../../server/shared/types.js";
@@ -432,6 +433,14 @@ export interface ChatMessage {
    * renders straight from it.
    */
   branchSynced?: BranchSyncedCardData;
+  /**
+   * docs/250 — when set, this message renders an inline "renamed this session"
+   * card recording that the agent retitled the session with `shipit session
+   * rename` (requirement 9). The card has no lifecycle and no store, so both the
+   * live `session_renamed_card` WS handler and a history rehydration carry the
+   * full payload on the message; the component renders straight from it.
+   */
+  sessionRenamed?: SessionRenamedCardData;
 }
 
 export interface TextSegment {

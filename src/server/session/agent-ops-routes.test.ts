@@ -58,6 +58,42 @@ describe("agent-ops routes", () => {
     await app.close();
   });
 
+  // docs/250 — the rename relay. The route carries NO session id: the client is
+  // constructed with this container's own SESSION_ID and prefixes every path
+  // with it, which is what makes the command self-scoped.
+  it("POST /agent-ops/session/rename forwards the title to /rename", async () => {
+    client.setResponse("POST", "/rename", {
+      ok: true, status: 200,
+      body: { sessionId: "ses_me", previousTitle: "Old", title: "New" },
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent-ops/session/rename",
+      payload: { title: "New" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ previousTitle: "Old", title: "New" });
+    expect(client.calls).toHaveLength(1);
+    expect(client.calls[0]).toMatchObject({ method: "POST", path: "/rename", body: { title: "New" } });
+  });
+
+  it("POST /agent-ops/session/rename relays the orchestrator's refusal status", async () => {
+    client.setResponse("POST", "/rename", {
+      ok: false, status: 409,
+      body: { error: "This session was renamed by the user" },
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent-ops/session/rename",
+      payload: { title: "New" },
+    });
+
+    expect(res.statusCode).toBe(409);
+  });
+
   it("POST /agent-ops/pr/create forwards to /pr/agent-create with body", async () => {
     client.setResponse("POST", "/pr/agent-create", {
       ok: true, status: 200,

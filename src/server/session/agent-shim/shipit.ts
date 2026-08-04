@@ -49,6 +49,7 @@ import {
   handleSessionList,
   handleSessionMessage,
   handleSessionNotifyOnMerge,
+  handleSessionRename,
   handleSessionReport,
   handleSessionView,
   handleSessionWait,
@@ -115,6 +116,12 @@ Supported subcommands:
   shipit session notify-on-merge --self [--json]
   shipit session archive <id> [--json]
   shipit session whoami  [--json]
+  shipit session rename  --title T [--json]
+                          Retitle THIS session (never another). Do it when you
+                          open a PR, and when you continue past a merged one, so
+                          the sidebar keeps describing what the session is about
+                          rather than only its first PR. A title the user set by
+                          hand wins — that refusal is final, don't work around it.
   shipit session report  -b TEXT | --body-file FILE
                           [--severity fyi|warn|blocker] [--subject T]
                           [--to parent|cohort] [--json]
@@ -367,7 +374,6 @@ const REJECTED_SESSION_SUBCOMMANDS = new Set([
   "adopt",    // not supported by design (cross-parent reparenting).
   "merge",    // future extension; user merges via the PR/merge UI today.
   "fork",     // separate primitive owned by the UI.
-  "rename",   // user-driven; not part of the agent's surface.
   "switch",   // user navigation; not the agent's affordance.
 ]);
 
@@ -412,9 +418,11 @@ const SESSION_HANDLERS: Record<
   archive: handleSessionArchive,
   "notify-on-merge": handleSessionNotifyOnMerge,
   // docs/233 (SHI-241) — the upward channel. Every subcommand above operates
-  // parent→child; these two are the only ones a child can point at itself.
+  // parent→child; these are the only ones a session can point at itself.
   report: handleSessionReport,
   whoami: handleSessionWhoami,
+  // docs/250 — self-scoped: renames THIS session, never another.
+  rename: handleSessionRename,
 };
 
 const ISSUE_HANDLERS: Record<
