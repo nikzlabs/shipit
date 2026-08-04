@@ -24,6 +24,8 @@ import { sessionRelativePath } from "../path-utils.js";
 import { usePresentStore } from "../stores/present-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { parseMcpToolName, isPresentTool } from "./tool-names.js";
+import { COMMAND_SUMMARY_CHARS } from "../../server/shared/transcript-input-policy.js";
+import { useLazyToolInput } from "../hooks/useLazyToolInput.js";
 import type { ToolUseBlock, ToolResultBlock } from "./MessageList.js";
 
 /** Scrollable container for consecutive tool calls. Max 5 lines, auto-scrolls during streaming. */
@@ -198,9 +200,13 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
   // (showModal state is hoisted to the top of the component — see comment there)
   const isInspectable = inProgress || hasResult;
 
-  // Build a summary of the command/input for the tool line
+  // Build a summary of the command/input for the tool line.
+  //
+  // The slice length is imported, not literal: docs/244's projection ships only
+  // this many characters of `command`, so the two have to be the same number or
+  // the transcript starts showing less than it used to (SHI-296).
   const commandText = "command" in tool.input && tool.input.command
-    ? (tool.input.command as string).slice(0, 80)
+    ? (tool.input.command as string).slice(0, COMMAND_SUMMARY_CHARS)
     : null;
   const filePathText = "file_path" in tool.input && tool.input.file_path
     ? sessionRelativePath(tool.input.file_path)
@@ -274,6 +280,8 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
         <ToolOutputModal
           toolName={tool.name}
           input={tool.input}
+          toolUseId={tool.id}
+          bodyTruncated={tool.bodyTruncated}
           result={result}
           onClose={() => setShowModal(false)}
         />
@@ -469,13 +477,22 @@ export function formatToolDuration(ms: number): string {
  * (input known, no output yet), in which case the Output section shows a running
  * indicator. When the result arrives the parent re-renders this modal with the
  * `result` prop populated and the output replaces the indicator in place.
+ *
+ * This modal is the only view that draws a tool's *whole* input, so it is where
+ * the keys docs/244 removed come back (SHI-296). Opening it is the click, and
+ * the fetched input replaces the projected one wholesale rather than merging:
+ * the stored input is authoritative and preserves the original key order the
+ * fields are laid out in.
  */
-function ToolOutputModal({ toolName, input, result, onClose }: {
+function ToolOutputModal({ toolName, input, toolUseId, bodyTruncated, result, onClose }: {
   toolName: string;
   input: Record<string, unknown>;
+  toolUseId?: string;
+  bodyTruncated?: true;
   result?: ToolResultBlock;
   onClose: () => void;
 }) {
+  const lazy = useLazyToolInput(toolUseId, !!bodyTruncated);
   const duration = typeof result?.durationMs === "number" ? formatToolDuration(result.durationMs) : "";
   return (
     <Dialog open onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
@@ -484,7 +501,12 @@ function ToolOutputModal({ toolName, input, result, onClose }: {
         <span className="text-xs font-semibold text-(--color-text-primary) shrink-0">Tool Call</span>
       </div>
       <div className="flex-1 overflow-auto p-4">
-        <ToolInput toolName={toolName} input={input} />
+        <ToolInput
+          toolName={toolName}
+          input={lazy.input ?? input}
+          loading={lazy.loading}
+          error={lazy.error}
+        />
         <div className="flex items-baseline gap-2 mb-2">
           <span className="text-[11px] font-semibold uppercase tracking-wide text-(--color-text-tertiary)">Output</span>
           {duration ? (
@@ -510,13 +532,26 @@ function ToolOutputModal({ toolName, input, result, onClose }: {
   );
 }
 
-/** Renders the agent's tool-call input as labeled fields above the output. */
-function ToolInput({ toolName, input }: { toolName: string; input: Record<string, unknown> }) {
+/**
+ * Renders the agent's tool-call input as labeled fields above the output.
+ *
+ * `loading`/`error` describe the docs/244 fetch for the keys the projection
+ * removed. While it is in flight the fields already on the wire render — a
+ * `Bash` call still shows its first 80 characters of `command` — with a status
+ * line saying more is coming, rather than a blank panel that would read as "this
+ * call had no input".
+ */
+function ToolInput({ toolName, input, loading, error }: {
+  toolName: string;
+  input: Record<string, unknown>;
+  loading?: boolean;
+  error?: boolean;
+}) {
   const keys = Object.keys(input);
   return (
     <div className="mb-4 pb-4 border-b border-(--color-border-secondary)">
       <div className="text-xs text-(--color-text-secondary) font-mono mb-2">{toolName === "shell" ? "Shell" : toolName}</div>
-      {keys.length === 0 ? (
+      {keys.length === 0 && !loading && !error ? (
         <div className="text-xs text-(--color-text-tertiary) font-mono italic">(no input)</div>
       ) : (
         <div className="flex flex-col gap-3">
@@ -524,6 +559,12 @@ function ToolInput({ toolName, input }: { toolName: string; input: Record<string
             <ToolInputField key={key} toolName={toolName} fieldKey={key} value={input[key]} />
           ))}
         </div>
+      )}
+      {loading && (
+        <div className="mt-2 text-xs text-(--color-text-tertiary) font-mono italic" role="status">Loading input…</div>
+      )}
+      {error && (
+        <div className="mt-2 text-xs text-(--color-error)" role="status">Couldn&apos;t load the full input.</div>
       )}
     </div>
   );

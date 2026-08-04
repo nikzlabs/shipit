@@ -209,7 +209,7 @@ describe("Integration: lazy bodies on a live turn (SHI-267)", () => {
 
     const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/tool-inputs/write-live` });
     expect(res.statusCode).toBe(200);
-    expect((res.json() as { content: string }).content).toBe(FILE_BODY);
+    expect((res.json() as { input: { content: string } }).input.content).toBe(FILE_BODY);
     back.close();
   });
 

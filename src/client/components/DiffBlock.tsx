@@ -6,8 +6,7 @@
  * The stats are clickable and open a modal showing the full diff.
  */
 
-// eslint-disable-next-line no-restricted-imports -- useEffect: fetches the file body the serve-path projection stripped (docs/244) when the modal mounts, with cancellation on close — an external-system read with cleanup.
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo } from "react";
 import { type Icon, NotePencilIcon, PencilSimpleIcon, TrashIcon } from "@phosphor-icons/react";
 import hljs from "highlight.js";
 import { Dialog, DialogContent } from "./ui/dialog.js";
@@ -15,6 +14,7 @@ import { ICON_SIZE } from "../design-tokens.js";
 import { sessionRelativePath } from "../path-utils.js";
 import { useFileStore } from "../stores/file-store.js";
 import { useSessionStore } from "../stores/session-store.js";
+import { useLazyToolInput } from "../hooks/useLazyToolInput.js";
 
 export interface DiffBlockProps {
   filePath: string;
@@ -162,30 +162,15 @@ function DiffModal({ filePath, oldString, newString, isWrite, unifiedDiff, verb,
   lazyToolUseId?: string;
   onClose: () => void;
 }) {
-  const sessionId = useSessionStore((s) => s.sessionId);
-  const [fetched, setFetched] = useState<{ content?: string; oldString?: string; newString?: string } | null>(null);
-  const [failed, setFailed] = useState(false);
+  // The body is not in the transcript (docs/244); opening the modal IS the
+  // moment it has to be fetched.
+  const lazy = useLazyToolInput(lazyToolUseId, !!lazyToolUseId);
+  const str = (key: string): string | undefined =>
+    typeof lazy.input?.[key] === "string" ? lazy.input[key] : undefined;
 
-  // eslint-disable-next-line no-restricted-syntax -- the body is not in the transcript (docs/244); opening the modal IS the moment it has to be fetched, and the cleanup drops a response that lands after the user closed it.
-  useEffect(() => {
-    if (!lazyToolUseId || !sessionId) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/tool-inputs/${encodeURIComponent(lazyToolUseId)}`);
-        if (!res.ok) throw new Error(String(res.status));
-        const body = (await res.json()) as { content?: string; oldString?: string; newString?: string };
-        if (!cancelled) setFetched(body);
-      } catch {
-        if (!cancelled) setFailed(true);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [lazyToolUseId, sessionId]);
-
-  const pending = !!lazyToolUseId && !fetched && !failed;
-  const resolvedOld = fetched?.oldString ?? oldString;
-  const resolvedNew = fetched?.newString ?? fetched?.content ?? newString;
+  const pending = lazy.loading;
+  const resolvedOld = str("old_string") ?? oldString;
+  const resolvedNew = str("new_string") ?? str("content") ?? newString;
 
   return (
     <Dialog open onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
@@ -197,7 +182,7 @@ function DiffModal({ filePath, oldString, newString, isWrite, unifiedDiff, verb,
         <pre className="text-xs text-(--color-text-secondary) font-mono whitespace-pre-wrap break-all mb-4 pb-4 border-b border-(--color-border-secondary)">{verb} {sessionRelativePath(filePath)}</pre>
         {pending ? (
           <div className="text-xs text-(--color-text-secondary) italic" role="status">Loading diff…</div>
-        ) : failed ? (
+        ) : lazy.error ? (
           <div className="text-xs text-(--color-error)" role="status">Couldn&apos;t load this diff.</div>
         ) : unifiedDiff !== undefined ? (
           <UnifiedDiff diff={unifiedDiff} />

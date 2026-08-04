@@ -33,6 +33,7 @@ import {
 import type { DatabaseManager } from "../../shared/database.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { imageHash } from "../transcript-projection.js";
+import { COMMAND_SUMMARY_CHARS } from "../../shared/transcript-input-policy.js";
 
 const HEAVY_OUTPUT = Array.from({ length: 40_000 }, (_, i) => `stdout line ${i}`).join("\n");
 const FILE_BODY = Array.from({ length: 2_000 }, (_, i) => `const x${i} = ${i};`).join("\n");
@@ -45,6 +46,14 @@ const SUBAGENT_REPORT = Array.from({ length: 5_000 }, (_, i) => `finding ${i}`).
 // SUBAGENT_REPORT above, which is EXEMPT and must still ship whole in the same
 // payload — so an "is it on the wire?" assertion can tell the two apart.
 const CONSULT_OUTPUT = Array.from({ length: 5_000 }, (_, i) => `review note ${i}`).join("\n");
+// SHI-296 — the input side. A heredoc command and a subagent prompt are both
+// routinely kilobytes, and the transcript draws 80 characters of the first and
+// none of the second.
+const HEAVY_COMMAND = `gh pr create --body-file - <<'EOF'\n${Array.from({ length: 800 }, (_, i) => `body line ${i}`).join("\n")}\nEOF`;
+const TASK_PROMPT = Array.from({ length: 400 }, (_, i) => `instruction ${i}`).join("\n");
+// A plan document's body is the one Write body the transcript renders inline
+// (`findPlanContent` → `PlanApproval`), so it must survive the projection.
+const PLAN_BODY = Array.from({ length: 300 }, (_, i) => `## Step ${i}`).join("\n");
 
 describe("Integration: lazy transcript bodies (SHI-267)", () => {
   let app: FastifyInstance;
@@ -86,13 +95,15 @@ describe("Integration: lazy transcript bodies (SHI-267)", () => {
       role: "assistant",
       text: "running it",
       toolUse: [
-        { type: "tool_use", id: "bash-1", name: "Bash", input: { command: "npm test" } },
+        { type: "tool_use", id: "bash-1", name: "Bash", input: { command: HEAVY_COMMAND } },
         { type: "tool_use", id: "write-1", name: "Write", input: { file_path: "/a.ts", content: FILE_BODY } },
-        { type: "tool_use", id: "task-1", name: "Task", input: { prompt: "review" } },
+        { type: "tool_use", id: "plan-1", name: "Write", input: { file_path: "/w/.claude/plans/p.md", content: PLAN_BODY } },
+        { type: "tool_use", id: "task-1", name: "Task", input: { description: "review", prompt: TASK_PROMPT } },
       ],
       toolResults: [
         { toolUseId: "bash-1", content: HEAVY_OUTPUT },
         { toolUseId: "write-1", content: "ok" },
+        { toolUseId: "plan-1", content: "ok" },
         { toolUseId: "task-1", content: SUBAGENT_REPORT },
       ],
     });
@@ -112,7 +123,14 @@ describe("Integration: lazy transcript bodies (SHI-267)", () => {
     return res.json() as {
       messages: {
         images?: { data?: string; src?: string }[];
-        toolUse?: { id: string; name: string; input: Record<string, unknown>; bodyTruncated?: true; diffStats?: { added: number; removed: number } }[];
+        toolUse?: {
+          id: string;
+          name: string;
+          input: Record<string, unknown>;
+          bodyTruncated?: true;
+          diffStats?: { added: number; removed: number };
+          inputChars?: Record<string, number>;
+        }[];
         toolResults?: { toolUseId: string; content: string; truncated?: true; totalLines?: number }[];
       }[];
     };
@@ -140,6 +158,10 @@ describe("Integration: lazy transcript bodies (SHI-267)", () => {
     expect(body).not.toContain(FILE_BODY.slice(-200));
     expect(body).not.toContain("stdout line 0");
     expect(body).not.toContain("stdout line 39999");
+    // …and the same for the input side (SHI-296): the command's tail and the
+    // subagent's prompt are behind clicks too.
+    expect(body).not.toContain("body line 799");
+    expect(body).not.toContain("instruction 399");
     // ...while the exempt subagent report still ships whole, since the
     // transcript renders it inline with no expand affordance.
     expect(body).toContain("finding 4999");
@@ -173,6 +195,45 @@ describe("Integration: lazy transcript bodies (SHI-267)", () => {
     expect(write.input.file_path).toBe("/a.ts");
   });
 
+  /**
+   * SHI-296. Everything below this comment is the input side of requirement 1:
+   * before it, a megabyte `Bash` command shipped whole behind an 80-character
+   * summary and a `Task` prompt shipped whole behind a collapsed disclosure.
+   */
+  it("ships only the characters of a command the tool line draws", async () => {
+    const { messages } = await loadHistory();
+    const bash = messages[1]!.toolUse!.find((t) => t.id === "bash-1")!;
+    expect(bash.input.command).toBe(HEAVY_COMMAND.slice(0, COMMAND_SUMMARY_CHARS));
+    expect(bash.inputChars).toEqual({ command: HEAVY_COMMAND.length });
+    expect(bash.bodyTruncated).toBe(true);
+  });
+
+  it("drops a subagent prompt but keeps the length its toggle is labelled with", async () => {
+    const { messages } = await loadHistory();
+    const task = messages[1]!.toolUse!.find((t) => t.id === "task-1")!;
+    expect(task.input.prompt).toBeUndefined();
+    expect(task.inputChars?.prompt).toBe(TASK_PROMPT.length);
+    // The description sits beside the toggle in the card header.
+    expect(task.input.description).toBe("review");
+  });
+
+  it("keeps a plan document's body, which the transcript renders inline", async () => {
+    // The regression the per-tool policy exists to prevent: `findPlanContent`
+    // renders this body as markdown in the transcript with no click and no
+    // fetch path, so the blanket Edit/Write strip blanked the plan card on
+    // every history load.
+    const { messages } = await loadHistory();
+    const plan = messages[1]!.toolUse!.find((t) => t.id === "plan-1")!;
+    expect(plan.input.content).toBe(PLAN_BODY);
+    expect(plan.bodyTruncated).toBeUndefined();
+  });
+
+  it("serves the whole command back from the fetch endpoint", async () => {
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/tool-inputs/bash-1` });
+    expect(res.statusCode).toBe(200);
+    expect((res.json() as { input: { command: string } }).input.command).toBe(HEAVY_COMMAND);
+  });
+
   it("replaces the image payload with a content-addressed URL", async () => {
     const { messages } = await loadHistory();
     const img = messages[0]!.images![0]!;
@@ -186,10 +247,15 @@ describe("Integration: lazy transcript bodies (SHI-267)", () => {
     expect((res.json() as { content: string }).content).toBe(HEAVY_OUTPUT);
   });
 
-  it("serves the stripped Write body from the fetch endpoint", async () => {
+  it("serves the whole stored input from the fetch endpoint", async () => {
+    // The response is the input verbatim (SHI-296), not the three Edit/Write
+    // fields it used to name: the projection now shortens or removes keys for
+    // every tool, so what a caller needs back depends on the tool.
     const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/tool-inputs/write-1` });
     expect(res.statusCode).toBe(200);
-    expect((res.json() as { content: string }).content).toBe(FILE_BODY);
+    const { input } = res.json() as { input: Record<string, unknown> };
+    expect(input.content).toBe(FILE_BODY);
+    expect(input.file_path).toBe("/a.ts");
   });
 
   it("serves the image, immutably cached", async () => {
@@ -257,7 +323,7 @@ describe("Integration: lazy transcript bodies (SHI-267)", () => {
 
     const input = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/tool-inputs/sub-write-1` });
     expect(input.statusCode).toBe(200);
-    expect((input.json() as { content: string }).content).toBe(FILE_BODY);
+    expect((input.json() as { input: { content: string } }).input.content).toBe(FILE_BODY);
   });
 
   it("a rewind takes the row and its body away together", async () => {

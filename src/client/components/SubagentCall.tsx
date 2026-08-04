@@ -7,7 +7,10 @@
  *
  * Disclosure layers:
  *   1. Header (always visible): description + status indicator
- *   2. Prompt (collapsed; click to expand): the prompt sent to the subagent
+ *   2. Prompt (collapsed; click to expand): the prompt sent to the subagent.
+ *      The transcript carries only its character count — a subagent prompt is
+ *      routinely kilobytes and is behind a click, so docs/244's projection drops
+ *      it and expanding fetches it (SHI-296).
  *   3. Subagent's work (collapsed; click to expand): nested tool calls in
  *      order, with a live action count on the toggle
  *   4. Final report (always visible when present): the markdown the
@@ -20,6 +23,7 @@ import { ICON_SIZE } from "../design-tokens.js";
 import { ToolUseItem } from "./message-tools.js";
 import { MarkdownContent } from "./message-markdown.js";
 import { ToolSpinner } from "./StreamingIndicator.js";
+import { useLazyToolInput } from "../hooks/useLazyToolInput.js";
 import {
   groupEventsByParent,
   findSubagentFinalReport,
@@ -53,6 +57,14 @@ export function SubagentCall({ tool, subagentEvents, parentToolResults, isStream
   const report = finalReport ? parseSubagentReport(finalReport.content) : null;
 
   const [promptExpanded, setPromptExpanded] = useState(false);
+  // docs/244 — the prompt may have been dropped on the serve path, leaving only
+  // its length behind. The toggle's label is drawn from that length so the
+  // header is identical either way; the body arrives when the user expands.
+  const promptChars = typeof tool.inputChars?.prompt === "number" ? tool.inputChars.prompt : prompt.length;
+  const promptDeferred = !prompt && promptChars > 0;
+  const lazyPrompt = useLazyToolInput(tool.id, promptExpanded && promptDeferred);
+  const fetchedPrompt = typeof lazyPrompt.input?.prompt === "string" ? lazyPrompt.input.prompt : "";
+  const promptBody = prompt || fetchedPrompt;
   // "Work" is collapsed by default — while streaming AND after the final
   // report arrives. A subagent's timeline is long and mostly uninteresting to
   // the reader (it's the *parent's* conversation they're following), and two
@@ -81,9 +93,9 @@ export function SubagentCall({ tool, subagentEvents, parentToolResults, isStream
       </div>
 
       {/* Prompt — collapsed by default */}
-      {prompt && (
+      {promptChars > 0 && (
         <Disclosure
-          label={`Prompt (${prompt.length} chars)`}
+          label={`Prompt (${promptChars} chars)`}
           open={promptExpanded}
           onToggle={() => setPromptExpanded((v) => !v)}
           testId="subagent-prompt-toggle"
@@ -92,7 +104,7 @@ export function SubagentCall({ tool, subagentEvents, parentToolResults, isStream
             data-testid="subagent-prompt"
             className="text-xs text-(--color-text-secondary) font-mono whitespace-pre-wrap rounded bg-(--color-bg-secondary)/60 p-2 max-h-48 overflow-y-auto leading-5"
           >
-            {prompt}
+            {promptBody || (lazyPrompt.error ? "Couldn't load this prompt." : "Loading prompt…")}
           </div>
         </Disclosure>
       )}

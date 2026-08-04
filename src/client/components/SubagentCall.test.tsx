@@ -1,6 +1,7 @@
-import { describe, it, expect, afterEach } from "vitest";
-import { render, screen, cleanup, fireEvent } from "@testing-library/react";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
+import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { SubagentCall } from "./SubagentCall.js";
+import { useSessionStore } from "../stores/session-store.js";
 import type { ToolUseBlock, ToolResultBlock, SubagentEvent } from "./MessageList.js";
 
 afterEach(cleanup);
@@ -115,5 +116,80 @@ describe("SubagentCall final report", () => {
 
     expect(screen.getByTestId("subagent-final-report")).toHaveTextContent("All three checks passed.");
     expect(screen.queryByTestId("subagent-report-meta")).toBeNull();
+  });
+});
+
+/**
+ * SHI-296 — the prompt is the heaviest thing on a subagent card and it sits
+ * behind a collapsed disclosure, so docs/244's projection drops it and leaves
+ * only its length. These pin the two halves of that: the collapsed header must
+ * look exactly as it does when the prompt arrived whole (req 8), and expanding
+ * must actually produce the prompt (req 2).
+ */
+describe("SubagentCall lazy prompt (docs/244)", () => {
+  function deferredTask(chars: number): ToolUseBlock {
+    return {
+      ...task(),
+      // The projection removes `prompt` from `input` entirely and records what
+      // it was worth in `inputChars`.
+      inputChars: { prompt: chars },
+    };
+  }
+
+  beforeEach(() => {
+    useSessionStore.setState({ sessionId: "session-1" });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    useSessionStore.getState().reset();
+  });
+
+  it("labels the toggle from the recorded length, with the prompt absent", () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<SubagentCall tool={deferredTask(4096)} isStreaming={false} />);
+
+    expect(screen.getByTestId("subagent-prompt-toggle")).toHaveTextContent("Prompt (4096 chars)");
+    // Collapsed: nothing has been asked for, so nothing is fetched.
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("fetches the prompt when the user expands it", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ input: { description: "d", prompt: "the whole prompt" } }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<SubagentCall tool={deferredTask(16)} isStreaming={false} />);
+    fireEvent.click(screen.getByTestId("subagent-prompt-toggle"));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(fetchMock.mock.calls[0]![0]).toBe(`/api/sessions/session-1/tool-inputs/${TASK_ID}`);
+    await waitFor(() => expect(screen.getByTestId("subagent-prompt")).toHaveTextContent("the whole prompt"));
+  });
+
+  it("says so rather than showing an empty box when the fetch fails", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 404 }));
+
+    render(<SubagentCall tool={deferredTask(16)} isStreaming={false} />);
+    fireEvent.click(screen.getByTestId("subagent-prompt-toggle"));
+
+    await waitFor(() => expect(screen.getByTestId("subagent-prompt")).toHaveTextContent("Couldn't load this prompt"));
+  });
+
+  it("does not fetch for a prompt that arrived whole", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = { ...task(), input: { ...task().input, prompt: "short prompt" } };
+    render(<SubagentCall tool={tool} isStreaming={false} />);
+    fireEvent.click(screen.getByTestId("subagent-prompt-toggle"));
+
+    expect(screen.getByTestId("subagent-prompt")).toHaveTextContent("short prompt");
+    expect(screen.getByTestId("subagent-prompt-toggle")).toHaveTextContent("Prompt (12 chars)");
+    await waitFor(() => expect(fetchMock).not.toHaveBeenCalled());
   });
 });

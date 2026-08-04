@@ -5,6 +5,7 @@ import type { SearchMatch } from "../../hooks/useSearch.js";
 import { buildVisualElements } from "../visual-elements.js";
 import { RewindPoint, type RewindGapAction } from "../RewindPoint.js";
 import type { WsRewindPreview, ReleaseMechanism } from "../../../server/shared/types.js";
+import { isPlanDocumentWrite } from "../../../server/shared/transcript-input-policy.js";
 
 // Sub-component imports
 import { ToolUseItem } from "../message-tools.js";
@@ -165,6 +166,12 @@ export function MessageList({
 
   // Find plan content for ExitPlanMode tools by searching backward for a Write
   // tool that wrote to a .claude/plans/ path and extracting the file content.
+  //
+  // This is the one place a Write's *body* is drawn inline in the transcript,
+  // with no click and no fetch behind it — which is why docs/244's projection
+  // has to exempt exactly these writes. `isPlanDocumentWrite` is the shared
+  // predicate both ends use, so neither can quietly change what counts as a plan
+  // document (SHI-296).
   const findPlanContent = useMemo(() => {
     return (exitPlanMsgIndex: number): string | undefined => {
       for (let i = exitPlanMsgIndex; i >= 0; i--) {
@@ -172,7 +179,7 @@ export function MessageList({
         if (!tools) continue;
         for (let j = tools.length - 1; j >= 0; j--) {
           const t = tools[j];
-          if (t.name === "Write" && typeof t.input.file_path === "string" && t.input.file_path.includes(".claude/plans/")) {
+          if (isPlanDocumentWrite(t.name, t.input)) {
             return t.input.content as string | undefined;
           }
         }

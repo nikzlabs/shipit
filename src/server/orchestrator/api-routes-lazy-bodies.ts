@@ -106,7 +106,13 @@ export function registerLazyBodyRoutes(app: FastifyInstance, deps: ApiDeps): voi
     },
   );
 
-  // GET /api/sessions/:id/tool-inputs/:toolUseId — the stripped Edit/Write body.
+  // GET /api/sessions/:id/tool-inputs/:toolUseId — the whole stored input.
+  //
+  // Returns the input verbatim rather than the three Edit/Write body fields it
+  // used to name (SHI-296): the projection now shortens or removes keys for
+  // every tool, so what a caller needs back depends on the tool — a `Bash`
+  // command, a `Task` prompt, an MCP argument object. The persisted row always
+  // holds the whole thing, so the honest answer is all of it.
   app.get<{ Params: { id: string; toolUseId: string } }>(
     "/api/sessions/:id/tool-inputs/:toolUseId",
     async (request, reply) => {
@@ -118,11 +124,7 @@ export function registerLazyBodyRoutes(app: FastifyInstance, deps: ApiDeps): voi
       for (const msg of messages) {
         for (const t of allToolUses(msg)) {
           if (t.id === request.params.toolUseId) {
-            reply.send({
-              content: (t.input.content as string) ?? undefined,
-              oldString: (t.input.old_string as string) ?? undefined,
-              newString: (t.input.new_string as string) ?? undefined,
-            });
+            reply.send({ input: t.input });
             return;
           }
         }

@@ -34,15 +34,17 @@ visible without a click*. There is no byte target to tune against.
 
 > **The shipped feature does not fully meet that criterion, and this section
 > used to read as though it did** (correction from the independent review,
-> 2026-08-04). Four things still transfer without a click: modal-only results
-> at or under the 200-byte floor, every tool input that is not Edit/Write,
+> 2026-08-04). Four things still transferred without a click: modal-only results
+> at or under the 200-byte floor, ~~every tool input that is not Edit/Write~~
+> (fixed, SHI-296 — see *2. Tool inputs* below),
 > ~~`sub_agent_consult_card.outputMarkdown`~~ (fixed, SHI-297), and the
 > full-resolution bytes behind each 96×96 image thumbnail. ~~The live and
 > reconnect paths relax it further.~~ The reconnect path no longer relaxes it
 > for the committed part of a turn (SHI-297); the live path still does, and
 > must. All are listed in `checklist.md` → *Known gaps*; the two that were
-> undisclosed are SHI-291 and SHI-292. The criterion stands as the goal — the
-> claim that the design achieves it does not.
+> undisclosed are SHI-291 and SHI-292. Two of the four are now closed; the
+> criterion stands as the goal, and the claim that the design achieves it still
+> does not.
 
 ## What the UI actually draws
 
@@ -64,17 +66,19 @@ and it is that artifact, not raw metadata, that has to stay on the wire.
 |---|---|---|
 | `tool_results` | ~~First 15–30 lines + a "Show all N lines" button~~ — **nothing**; see the note above | A slice in the modal, then the whole body behind the modal's own "Show all N lines" |
 | `tool_use` (Write/Edit) | One line: verb, path, `+40 -12` (`DiffBlock.tsx:66–92`) | The whole diff body, in a modal |
+| `tool_use` (everything else) | Whatever *that tool's* renderer draws — 80 chars of `command`, a `pattern`, a subagent's `description`; see *2. Tool inputs* | The rest of the input, in the tool-call modal or a disclosure |
 | `images` (user rows) | A 96×96 thumbnail (`w-24 h-24 object-cover`, `message-media.tsx:53`) | Full-size preview |
 | `subagent_events` | A `Disclosure` — "Subagent's work (N actions)" — open by default, containing ordinary tool calls | Per-step detail, via the same components |
 
 So three mechanisms cover all four columns, and `subagent_events` needs no new
 *component* of its own: its contents are rendered by the *same* components as
 top-level tools, so fixing tool results and Write/Edit bodies covers its innards
-for free. It does still carry unprojected payload — a collapsed subagent prompt
-is a `Task` input, and non-Edit/Write inputs are not projected at all — so
+for free. It did still carry unprojected payload — a collapsed subagent prompt
+is a `Task` input, and non-Edit/Write inputs were not projected at all — so
 "needs none of its own", as this sentence originally read, was too strong
-(independent review, 2026-08-04). What
-remains on a subagent row is per-step text, which is small.
+(independent review, 2026-08-04). SHI-296 closed that: the prompt is now
+dropped and fetched on expand, and every tool's input goes through the policy
+below. What remains on a subagent row is per-step text, which is small.
 
 ### The inline artifacts each mechanism must preserve
 
@@ -191,6 +195,83 @@ lines fails the build") claimed a guarantee the test does not provide
 (independent review, 2026-08-04). That guard
 is still meaningful, but its subject moved: those previews now render inside the
 output modal rather than in the transcript.
+
+### 2. Tool inputs — a per-tool, per-key policy (SHI-296)
+
+The first implementation projected exactly two tool names, `Edit` and `Write`,
+and `projectToolUse` opened with `if (!DIFF_INPUT_TOOLS.has(tool.name)) return
+tool`. Everything else shipped whole: a 1 MB `Bash` command behind an 80-character
+summary, a kilobyte `Task` prompt behind a *collapsed* disclosure, any MCP
+argument object behind nothing at all. That is reqs 1 and 5 unmet for every tool
+but two.
+
+Edit/Write were easy for two reasons that do not generalise — the transcript
+draws a *computed* summary (`+N -M`) that survives the body's removal, and there
+was already a modal to fetch into. So the fix is not a wider tool set. It is a
+policy answering, per tool **and per key**, "what does the transcript actually
+draw from this?" — the input-side counterpart of
+`rendersResultContentInline`.
+
+`inputKeyTreatment(toolName, key, input)`
+(`shared/transcript-input-policy.ts`) returns one of three treatments:
+
+| Treatment | Meaning | Members |
+|---|---|---|
+| **`keep`** | drawn inline, in full, with no click | `file_path` / `pattern` / `query` / `url` (the one-line summary); the whole input of `AskUserQuestion`, `TodoWrite`, `apply_patch`; a subagent's `description`, `subagent_type`, `skill`, `args`; a `present` card's `title`; **a plan document's `content`** |
+| **`head`** | drawn inline as a fixed-length prefix | `command`, and only `command` |
+| **`drop`** | nothing draws it until a click | everything else — the tool-call modal is the only other reader, and opening it is the click |
+
+Three things make this more than a list:
+
+* **`head` is used exactly once, because it is only sound once.** The
+  transcript's command summary is a literal `slice(0, 80)`. Shipping 80
+  characters is *provably* invisible, because the client slices to the same
+  number — `COMMAND_SUMMARY_CHARS` is imported by both ends rather than written
+  twice. No other inline key has a bound in code: `pattern`, `query` and `url`
+  are clipped by CSS, whose width depends on the viewport, so slicing them
+  would mean guessing how much a wide screen shows. They are kept whole, the
+  same trade `AskUserQuestion` makes on the result side.
+* **A plan document's `content` is a `keep`, and finding that out fixed a live
+  regression.** `findPlanContent` (`MessageList.tsx`) scans backwards for a
+  `Write` whose path contains `.claude/plans/` and renders its body as markdown
+  **inline in the transcript** (`PlanApproval`, `data-testid="plan-content"`) —
+  no click, no fetch path. The blanket Edit/Write strip therefore blanked the
+  plan card on every history load. `isPlanDocumentWrite` is shared by the
+  projection and the reader so the two cannot drift again.
+* **The 200-byte floor applies here too**, for the same reason it applies to
+  results: replacing a 12-byte `timeout` with a `bodyTruncated` marker and an
+  `inputChars` entry makes the payload larger *and* buys a round-trip. A
+  consequence worth stating: a small Edit now keeps its strings, where before
+  every Edit was stripped. `DiffBlock` recomputes byte-identical stats from the
+  strings it still has, so nothing about the summary changes.
+
+Two supporting pieces:
+
+* **`inputChars`** — the original character length of each shortened or removed
+  *string* key. It exists for one label: `SubagentCall`'s `Prompt (N chars)`
+  toggle is drawn from a length the transcript no longer holds. Without it the
+  disclosure would vanish entirely, which req 8 forbids.
+* **`GET /api/sessions/:id/tool-inputs/:toolUseId` now returns the input
+  verbatim** (`{ input }`) rather than the three Edit/Write fields it used to
+  name. What a caller needs back depends on the tool, and the persisted row
+  holds all of it. One client hook, `useLazyToolInput`, serves all three views
+  that need it — the diff modal and the tool-call modal fetch on mount, the
+  subagent prompt fetches on expand.
+
+**Unchanged: when the projection is allowed to run.** Widening *what* the policy
+covers did not widen *when* it applies. An input still only leaves the wire once
+the row holding it is committed — on the history path always, and on the
+reconnect snapshot for the ids SHI-297's `committedBodyIds.toolInputs` records
+as already written by a boundary. The live emit still ships every input whole,
+because an `agent_assistant` row is not committed until the next tool-result
+boundary. `projectToolUse` is called from behind those gates and knows nothing
+about them, which is why the two changes composed without either having to
+relax the other.
+
+Deliberately not done, and recorded as a gap: `apply_patch`'s `changes` ships
+whole. Its inline `+N -M` is derived from each change's `diff`, so deferring the
+bodies needs per-change stats and a per-change fetch key — a second lazy
+mechanism, for one backend's tool.
 
 ## How requirement 1 is met
 
@@ -309,8 +390,10 @@ Added by this feature:
 
 * `src/server/shared/transcript-slice.ts` — `sliceBody`, `TRANSCRIPT_SLICE_LINES` (40), `TRANSCRIPT_SLICE_BYTES` (16 KB); UTF-8-safe, dependency-free so the client can import the constants
 * `src/server/shared/transcript-slice-tools.ts` — `SUBAGENT_TOOL_NAMES`, the one exemption set, re-exported by `visual-elements.ts` so the renderer and the projection cannot disagree
+* `src/server/shared/transcript-input-policy.ts` — SHI-296: `inputKeyTreatment`, `isPlanDocumentWrite`, `COMMAND_SUMMARY_CHARS`, `PLAN_DOC_PATH_MARKER`, `INPUT_STRIP_FLOOR_BYTES`. Imported by the client too, so the renderer's bounds and the projection's are the same numbers
 * `src/server/orchestrator/transcript-projection.ts` — the serve-path projection: `projectMessagesForWire` (history), `projectAgentEventForWire` (live), `projectToolResult`, `projectToolUse`, `imageHash`
 * `src/server/orchestrator/api-routes-lazy-bodies.ts` — the four fetch endpoints (results, inputs, images, sub-agent consults); scans top-level *and* `subagent_events`
+* `src/client/hooks/useLazyToolInput.ts` — SHI-296: the one fetch behind all three views that display a removed input key
 
 Touched:
 
@@ -329,7 +412,8 @@ Touched:
 * `src/client/components/DiffBlock.tsx` — the `+N -M` summary and the diff modal
 * `src/client/components/message-media.tsx` — user-row image thumbnails
 * `src/client/components/message-tools.tsx` — the constraint consumers
-* `src/client/components/SubagentCall.tsx` — final report (exempt), nested tool results
+* `src/client/components/SubagentCall.tsx` — final report (exempt), nested tool results, the lazy prompt disclosure
+* `src/client/components/MessageList/MessageList.tsx` — `findPlanContent`, the one inline reader of a `Write` body
 * `src/client/hooks/message-handlers/agent-event.ts:122` — the client-side 1 MB cap
 
 ## Settled decisions
