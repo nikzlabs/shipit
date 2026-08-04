@@ -117,10 +117,10 @@ write. Each would start at `requirements.md` if wanted.
 - [x] Unit: account-scoped Codex auth manager writes to the requested account root.
 - [x] Unit: account selection prefers primary, skips exhausted accounts, and respects reset times (quota *ranking* still open).
 - [x] Unit: account selection follows user priority and advances when either configurable cutoff is reached.
-- [ ] Integration: an existing pinned session switches accounts at the proactive cutoff and preserves local context.
+- [x] Integration: an existing pinned session switches accounts at the proactive cutoff and preserves local context (`provider-route-pinning.test.ts`) — through the real env-prep, including the user-lowered cutoff, the no-churn case when every account is over its cutoff, a Codex rollout, and the persisted req-11 notice.
 - [x] Integration: first Claude turn pins `{ agent_id, provider_route_kind, provider_route_id }` (`provider-route-pinning.test.ts`, against the real account manager + credential store + SQLite session manager).
 - [x] Integration: first Codex turn pins `{ agent_id, provider_route_kind, provider_route_id }`.
-- [ ] Integration: auth-complete for account X re-pushes only to sessions pinned to account X.
+- [x] Integration: auth-complete for account X re-pushes only to sessions pinned to account X (`claude-auth.test.ts`) — driven through `buildApp`'s own `wireEventHandlers` by emitting the real `complete`, asserting both directions on real per-session token files.
 - [x] Unit: a turn the provider kills for quota benches its account, and the stamp survives a restart and expires on its own.
 - [x] Integration: exhausted primary starts a new turn on a secondary account; a pinned session does not drift onto a newer account.
 - [x] Unit: all-exhausted fails the turn with the earliest reset time, pins nothing, and provisions no credentials.
@@ -128,8 +128,8 @@ write. Each would start at `requirements.md` if wanted.
 - [x] Integration: mid-turn exhaustion retries on secondary once, including after file edits or commands.
 - [x] Unit: one-shot reviews proactively select a healthy account, retry once after hard exhaustion, and do not retry model-access errors.
 - [x] Integration: switching a pinned session kills the persistent agent, reprovisions credentials, preserves `.claude/projects` / `.codex/sessions` and `agentSessionId`, and resumes the same conversation.
-- [ ] Integration: detached system turns recreate runners from persisted agent/provider route.
-- [ ] Integration: answer-question and rebase/conflict direct `agent.run` paths use provider preflight.
+- [x] Integration: detached system turns recreate runners from persisted agent/provider route (`provider-route-pinning.test.ts`) — a wake turn over a runner seeded with the global default, and over a disposed one; the route half is asserted by which account the turn stamps.
+- [x] Integration: answer-question and rebase/conflict `agent.run` paths use provider preflight (`ask-user-question.test.ts`, `rebase-flow.test.ts`) — with every account exhausted, both turns are *stopped* with req 13's message and no CLI receives the prompt. Both reach the preflight through the shared executor (`runAgentWithMessage` / `runner.dispatch`); neither hand-rolls a spawn any more.
 - [x] Client: Settings renders multiple accounts and primary selection.
 - [x] Client: account-scoped sign-in renders its authorization controls on the owning row and submits through the scoped endpoint.
 - [x] Client: render the migrated primary/default Claude subscription through the same account-row auth flow as secondary Claude subscriptions.
