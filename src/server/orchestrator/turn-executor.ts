@@ -27,6 +27,7 @@
 
 import type { AgentId, AgentProcess, PermissionMode, AgentEvent, WsServerMessage, SessionMessageOrigin } from "../shared/types.js";
 import { buildTurnMessages, wireAgentListeners } from "./ws-handlers/agent-listeners.js";
+import { createAgentStderrTail } from "./agent-stderr-tail.js";
 import { detectHardExhaustion } from "./ws-handlers/agent-rate-limits.js";
 import { resetRunnerTurnState } from "./session-runner.js";
 import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js";
@@ -145,8 +146,14 @@ export interface TurnInput {
    * error via the agent's error path) — the executor must NOT finalize this
    * turn as completed. Returning `false`/omitting it leaves the legacy
    * teardown in place.
+   *
+   * `stderrDetail` is the redacted, bounded tail of whatever the CLI wrote to
+   * stderr this turn (`agent-stderr-tail.ts`), or `undefined` when it wrote
+   * nothing. Passed rather than re-derived so the dispatch path's error text can
+   * name the cause for the same reason the WS path's row does — an exit code on
+   * its own makes every distinct failure read identically.
    */
-  onNoResultExit?: (code: number | null) => Promise<boolean>;
+  onNoResultExit?: (code: number | null, stderrDetail?: string) => Promise<boolean>;
   /**
    * docs/169 — post-turn policy. `"commit-push"` (default) runs the normal
    * commit/push/PR + queue drain. `"none"` elides auto-commit, auto-push, the
@@ -634,6 +641,25 @@ export async function executeAgentTurn(
   let sawAuthRequired = false;
   agent.on("auth_required", () => { sawAuthRequired = true; });
 
+  // Keep the tail of whatever the agent CLI wrote to stderr this turn, so a
+  // process that dies before producing an `agent_result` can say WHY in the
+  // transcript instead of only reporting its exit code.
+  //
+  // The reason has always been captured — both adapters forward stderr as a
+  // `log` event — but `log` is routed to the Logs panel and the durable
+  // `logs/agent.jsonl`, neither of which is the transcript. The persisted chat
+  // row is the artifact the user still has after a reload, and it carried only
+  // `Agent process exited with code 1`. That is how a Codex cold-start failure
+  // (`failed to initialize sqlite state runtime under <dir>`) reached
+  // the user as an unexplained dead turn.
+  //
+  // Listening here rather than in `wireAgentListeners` keeps this next to the
+  // `done` handler that consumes it, and works for both runtimes: a
+  // containerized turn's stderr arrives over SSE as the same `log` event
+  // (`container-session-runner.ts` re-emits it onto the proxy agent).
+  const stderrTail = createAgentStderrTail();
+  agent.on("log", (source: string, text: string) => { stderrTail.record(source, text); });
+
   let tokenSyncFired = false;
   const trySyncToken = (): void => {
     if (tokenSyncFired) return;
@@ -964,9 +990,16 @@ export async function executeAgentTurn(
         && !sawAuthRequired
         && !(runner?.wasInterrupted ?? false)
       ) {
-        const message = code !== 0
+        const base = code !== 0
           ? `Agent process exited with code ${code}`
           : "Agent process ended without a response";
+        // Append the CLI's own last words when it left any. This row is the
+        // whole user-visible outcome of a turn that produced nothing, so the
+        // exit code alone makes every distinct failure look identical — a bad
+        // `--resume`, a missing binary, and a Codex cold-start collision all
+        // read as "exited with code 1". Redacted + bounded by the tail itself.
+        const detail = stderrTail.describe();
+        const message = detail ? `${base}: ${detail}` : base;
         // SHI-277 — this writes a chat row; a SQLite failure here must not skip
         // the commit below (a dead turn's partial edits are the whole reason
         // this path commits at all).
@@ -1023,7 +1056,7 @@ export async function executeAgentTurn(
         // abandoning the sequence. Only a clean `true` hands the turn over.
         let handled = false;
         await postTurnStep("no-result-exit-hook", async () => {
-          handled = await input.onNoResultExit!(code);
+          handled = await input.onNoResultExit!(code, stderrTail.describe());
         });
         if (handled) return;
       }

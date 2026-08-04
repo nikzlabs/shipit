@@ -181,6 +181,69 @@ describe("generateSessionName", () => {
     expect(result?.slug).toMatch(/^[a-z0-9-]+$/);
   });
 
+  // Naming is one of the two `codex` processes that start against the
+  // same config root on a session's first message; the other is the turn's own
+  // agent. Codex's first-run initialization of that root is not
+  // concurrency-safe, so the loser exits 1 having done nothing. The gate has to
+  // be awaited BEFORE the spawn, or naming is still in the root while it's cold.
+  it("initializes a cold Codex config root before spawning the naming CLI", async () => {
+    const order: string[] = [];
+    vi.doMock("./agents/codex/home-init.js", () => ({
+      ensureCodexHomeInitialized: (home: string) => {
+        order.push(`gate:${home}`);
+        return Promise.resolve();
+      },
+    }));
+    vi.doMock("node:child_process", () => ({
+      execFile: (
+        file: string,
+        _args: string[],
+        _opts: unknown,
+        cb: (err: Error | null, stdout: string, stderr: string) => void,
+      ) => {
+        order.push(`spawn:${file}`);
+        setImmediate(() => cb(null, '{"slug": "s", "title": "T"}\n', ""));
+        return { on: () => {}, stdin: { end: () => {} } } as unknown;
+      },
+    }));
+
+    const mod = await import("./session-namer.js");
+    await mod.generateSessionName("hi", "codex", "/credentials/provider-accounts/codex/acct_work");
+
+    expect(order).toEqual([
+      "gate:/credentials/provider-accounts/codex/acct_work/.codex",
+      "spawn:codex",
+    ]);
+    vi.doUnmock("./agents/codex/home-init.js");
+  });
+
+  it("does not gate Claude naming on the Codex root", async () => {
+    const gated: string[] = [];
+    vi.doMock("./agents/codex/home-init.js", () => ({
+      ensureCodexHomeInitialized: (home: string) => {
+        gated.push(home);
+        return Promise.resolve();
+      },
+    }));
+    vi.doMock("node:child_process", () => ({
+      execFile: (
+        _file: string,
+        _args: string[],
+        _opts: unknown,
+        cb: (err: Error | null, stdout: string, stderr: string) => void,
+      ) => {
+        setImmediate(() => cb(null, '{"slug": "s", "title": "T"}\n', ""));
+        return { on: () => {}, stdin: { end: () => {} } } as unknown;
+      },
+    }));
+
+    const mod = await import("./session-namer.js");
+    await mod.generateSessionName("hi", "claude", "/credentials/provider-accounts/claude/acct_work");
+
+    expect(gated).toEqual([]);
+    vi.doUnmock("./agents/codex/home-init.js");
+  });
+
   it("clamps title to 60 chars", async () => {
     vi.doMock("node:child_process", () => {
       return {
