@@ -8,9 +8,9 @@ issue: https://linear.app/shipit-ai/issue/SHI-52
 Implements [`requirements.md`](./requirements.md).
 
 Make the dogfood inner orchestrator (`RUNTIME_MODE=local`, feature 118) come up
-with a known set of repo-backed inner sessions already provisioned, so manual
-and automated testing of the inner UI doesn't start from an empty slate every
-time (reqs 1–2).
+with at least one repo-backed inner session already provisioned, from a
+committed fixture, so manual and automated testing of the inner UI doesn't start
+from an empty slate every time (reqs 1–2).
 
 This is "Option B" from the discussion in `docs/118-shipit-ui-local/plan.md`'s
 follow-up: persistence of inner state is the wrong goal (it drifts and goes
@@ -37,11 +37,11 @@ session" N times before you can test anything. For automated testing it's worse
 `command:`, that — after the inner orch is healthy — provisions a fixture-defined
 set of repo-backed inner sessions via the inner orch's HTTP API. Idempotent: a
 dev-service restart that finds the sessions already present does nothing
-(reqs 1, 5, 7).
+(reqs 1, 4, 6).
 
-**Goal (reqs 9–11).** The outer agent can start an inner agent — in a seeded
+**Goal (reqs 8–10).** The outer agent can start an inner agent — in a seeded
 session or a fresh one — read back its conversation, and tell whether it is
-still working. Designed in [Driving the inner ShipIt from the outer agent](#driving-the-inner-shipit-from-the-outer-agent-reqs-911)
+still working. Designed in [Driving the inner ShipIt from the outer agent](#driving-the-inner-shipit-from-the-outer-agent-reqs-810)
 below.
 
 **Non-goals.**
@@ -53,9 +53,9 @@ below.
 - Persisting inner state across outer sessions. Explicitly rejected — see above.
 - Seeding chat history / running turns as part of the fixture. The seed creates
   the session + clones the repo; exercising it is the test's job.
-- Changing anything in the orchestrator code *for the seeding half* (reqs 1–8):
-  that is entirely the seed script + the compose file + a fixture file +
-  `.gitignore`. Reqs 9–10 are not covered by this claim.
+- Changing anything in the orchestrator code *for the seeding half* (reqs 1–7):
+  that is entirely the seed script + the compose file + a fixture file. Reqs
+  8–10 are not covered by this claim.
 
 ## How inner sessions get created (the API the script drives)
 
@@ -86,7 +86,7 @@ Idempotency falls out of step 3: on a dev-service restart within the same outer
 session, `.inner-shipit/` still has the sessions, so every fixture entry matches
 an existing `remoteUrl` and the script no-ops.
 
-## When the inner ShipIt has no GitHub access (req 8)
+## When the inner ShipIt has no GitHub access (req 7)
 
 The inner orch's `GITHUB_TOKEN` is a **user-supplied secret**, set once in the
 outer ShipIt's Settings → Secrets. It arrives as `process.env.GITHUB_TOKEN`,
@@ -120,19 +120,24 @@ A checked-in `scripts/dogfood-seed.json`:
 }
 ```
 
-- Checked in so the fixture is reproducible and self-documenting (req 2).
-- Overridable without committing the choice (req 3): if
-  `scripts/dogfood-seed.local.json` exists it wins over the committed file (and
-  is gitignored), and `DOGFOOD_SEED_FILE` can point elsewhere entirely. The
-  committed file ships with a couple of innocuous public repos as a sane default.
-- `DOGFOOD_SEED=0` disables seeding entirely (req 4).
+- Checked in so the fixture is reproducible and self-documenting (req 2). One
+  entry satisfies req 1; the committed file ships with a couple of innocuous
+  public repos as a sane default.
+- `DOGFOOD_SEED=0` disables seeding entirely (req 3).
+- **Not currently in scope: a local override.** A gitignored
+  `scripts/dogfood-seed.local.json` winning over the committed file, plus a
+  `DOGFOOD_SEED_FILE` escape hatch, was in an earlier draft of this design. It is
+  an open question in [`requirements.md`](./requirements.md), leaning toward
+  *drop* — a developer can already add a repo through the inner ShipIt UI. Build
+  the script so the input file is chosen in one place, so adding the override
+  later is a two-line change rather than a rework.
 
 ## Where it runs
 
 Wired into the dogfood `docker-compose.yml` `command:`. The orch is started in
 the background already; the seed is launched as a background step right after,
 so it doesn't block Vite coming up and the inner UI is usable while sessions
-trickle in (req 7) — one line added to the command as it stands today:
+trickle in (req 6) — one line added to the command as it stands today:
 
 ```sh
 sh -c "
@@ -153,7 +158,7 @@ feature 137. The seed step slots in after the orch launch either way.)
 The script itself owns the "wait until healthy" poll (bounded retries, ~60s cap)
 so it's resilient to the orch taking a while to boot behind that wait.
 
-## Driving the inner ShipIt from the outer agent (reqs 9–11)
+## Driving the inner ShipIt from the outer agent (reqs 8–10)
 
 The outer agent already has a shell and the inner ShipIt already has an HTTP
 API. Three of the four things it needs are plain `curl` against routes that
@@ -169,17 +174,17 @@ orchestrator gives the service's `containerIp` and `port`
 | Need | Route | Exists? |
 |---|---|---|
 | List the inner sessions (find a seeded one by `remoteUrl`) | `GET /api/sessions/all` | Yes |
-| Start work in a **fresh** session (req 9) | `POST /api/sessions/headless` — `{ repoUrl, initialPrompt }`, plus optional `branch`/`agent`/`model` | Yes |
-| Start work in a **seeded** session (req 9) | — | **No: WS-only `send_message`** |
-| Read the conversation (req 10) | `GET /api/sessions/:id/history` | Yes |
-| Still working, or done? (req 11) | `GET /api/sessions/:id/status` → `{ running, queueLength }` | Yes |
+| Start work in a **fresh** session (req 8) | `POST /api/sessions/headless` — `{ repoUrl, initialPrompt }`, plus optional `branch`/`agent`/`model` | Yes |
+| Start work in a **seeded** session (req 8) | — | **No: WS-only `send_message`** |
+| Read the conversation (req 9) | `GET /api/sessions/:id/history` | Yes |
+| Still working, or done? (req 10) | `GET /api/sessions/:id/status` → `{ running, queueLength }` | Yes |
 
 **The one gap: `POST /api/sessions/:id/message`.** Sending a message to an
 existing session is WebSocket-only (`send_message` in `ws-client-messages.ts`);
 the only HTTP path is `POST /api/sessions/:parentId/children/:childId/message`,
 which is parent-to-child. This is exactly missing piece #1 in
 `docs/160-external-control-api`, and it's what makes the *seeded* sessions
-reachable at all — without it, reqs 1–8 provision sessions the outer agent
+reachable at all — without it, reqs 1–7 provision sessions the outer agent
 cannot use.
 
 Add the thin version of that route: body `{ text }`, resolve the runner from
@@ -204,17 +209,16 @@ would be a second surface to keep in sync with the routes. A short section in
 
 | File | Change |
 |---|---|
-| `scripts/seed-inner-sessions.js` | New. Polls `GET /api/bootstrap`, diffs fixture against existing `remoteUrl`s, `POST`s `claim-session` for the rest. Idempotent, non-fatal on error, honors `DOGFOOD_SEED` / `DOGFOOD_SEED_FILE`. Plain Node (no deps) so it runs before/independent of the build. |
+| `scripts/seed-inner-sessions.js` | New. Polls `GET /api/bootstrap`, diffs fixture against existing `remoteUrl`s, `POST`s `claim-session` for the rest. Idempotent, non-fatal on error, honors `DOGFOOD_SEED`. Plain Node (no deps) so it runs before/independent of the build. Pick the input file in one place, so the deferred local override is a small change. |
 | `scripts/dogfood-seed.json` | New. Default fixture — a couple of public repos. |
 | `docker-compose.yml` | Add the background seed step to the `dev` service's `command:`. |
-| `.gitignore` | Add `scripts/dogfood-seed.local.json`. |
 | `docs/118-shipit-ui-local/plan.md` | Cross-link this doc from the dogfooding section. **Done.** |
 | `CLAUDE.md` | The "Dogfooding ShipIt in ShipIt" paragraph: one line on the seed, plus the four calls the outer agent uses to drive the inner ShipIt. |
-| `api-routes-session-crud.ts` | New. `POST /api/sessions/:id/message` — `{ text }` → resolve runner from the registry → same path as WS `send_message` → `202`. The one gap for reqs 9–11. |
+| `api-routes-session-crud.ts` | New. `POST /api/sessions/:id/message` — `{ text }` → resolve runner from the registry → same path as WS `send_message` → `202`. The one gap for reqs 8–10. |
 
-Reqs 1–8 need no orchestrator/client/shared code changes — the inner orch
+Reqs 1–7 need no orchestrator/client/shared code changes — the inner orch
 already exposes `POST /api/repos/:url/claim-session` and reads
-`process.env.GITHUB_TOKEN`. Reqs 9–11 add exactly one route; everything else
+`process.env.GITHUB_TOKEN`. Reqs 8–10 add exactly one route; everything else
 they need already exists.
 
 ## Tests
@@ -223,9 +227,8 @@ they need already exists.
   the script (a) skips repos whose URL already appears as a session `remoteUrl`,
   (b) `POST`s `claim-session` with a correctly `encodeURIComponent`'d URL for new
   ones, (c) exits 0 when a `claim-session` call fails, (d) no-ops cleanly when
-  `DOGFOOD_SEED=0` or the fixture file is missing, (e) prefers
-  `dogfood-seed.local.json` over the committed fixture.
-- **Integration** (reqs 9–11, in `integration_tests/`): `POST
+  `DOGFOOD_SEED=0` or the fixture file is missing.
+- **Integration** (reqs 8–10, in `integration_tests/`): `POST
   /api/sessions/:id/message` reaches a running session's runner and 404s on an
   unknown id; `GET /api/sessions/:id/status` flips `running` false→true→false
   around a turn; `GET /api/sessions/:id/history` contains the turn afterwards.
@@ -233,17 +236,19 @@ they need already exists.
   dogfood stack needed.
 - **Manual smoke**: open the ShipIt repo in production ShipIt, set the
   `GITHUB_TOKEN` secret, start the dev service. Confirm the inner UI comes up
-  with the fixture sessions present, each with its repo cloned. Restart the dev
-  service; confirm the script no-ops and no duplicates appear (req 5). Then, as
+  with the fixture session(s) present, each with its repo cloned. Restart the dev
+  service; confirm the script no-ops and no duplicates appear (req 4). Then, as
   the outer agent: send a task to a seeded session, poll status until it stops
-  running, and read the conversation back (reqs 9–11).
+  running, and read the conversation back (reqs 8–10).
 
 ## Open questions / risks
 
-The requirements-level open questions — the ones that decide what reqs 9–10
-actually need — live in [`requirements.md`](./requirements.md) and are for the
-human to answer. Implementation is blocked while they stand. The items below are
-design risks in the seeding half, for the implementer.
+One requirements-level open question is outstanding — whether a developer can
+seed their own repos without committing that choice. It lives in
+[`requirements.md`](./requirements.md), leaning toward *drop*, and is the
+human's to answer. It gates only the override bullet under "Fixture format";
+the rest of this design is settled. The items below are design risks in the
+seeding half, for the implementer.
 
 - **Health probe shape.** The script assumes `GET /api/bootstrap` returns 200
   once the orch is ready and includes the session list with `remoteUrl`s.
@@ -251,7 +256,7 @@ design risks in the seeding half, for the implementer.
   the bootstrap/session-list route actually is.
 - **Clone cost at boot.** Several fixture repos = several clones serialized in
   the background. Acceptable (non-blocking, sessions appear progressively), but
-  keep the default fixture small and let developers grow their `.local.json`.
+  keep the default fixture small.
 - **Auth race.** `claim-session` for a private repo needs `GitHubAuthManager` to
   have picked up the token. It reads env at `checkCredentials()` time and the env
   is set at container boot, so this should be fine — but the script's
