@@ -117,9 +117,24 @@ describe("Integration: issue read navigation card (docs/188)", () => {
     return reg.get(sessionId)?.recordedCards ?? [];
   }
 
+  /**
+   * `shipit issue view` is an agent tool call, so it fires with the turn in
+   * flight — which is what puts the card on `recordedCards` (the anchor AND the
+   * per-turn dedup key) instead of `emitChatCard`'s post-turn append path.
+   * These tests drive the HTTP relay directly, so mark the turn running.
+   */
+  function markTurnRunning(): void {
+    const reg = (app as unknown as {
+      runnerRegistry: { get(id: string): { running: boolean } | undefined };
+    }).runnerRegistry;
+    const runner = reg.get(sessionId);
+    if (runner) runner.running = true;
+  }
+
   it("emits + records a navigation card when the agent views an issue", async () => {
     const client = await TestClient.connect(port, sessionId);
     await client.receive(); // preview_status
+    markTurnRunning();
 
     const res = await app.inject({
       method: "GET",
@@ -144,6 +159,7 @@ describe("Integration: issue read navigation card (docs/188)", () => {
   it("dedupes repeated views of the same issue within a turn", async () => {
     const client = await TestClient.connect(port, sessionId);
     await client.receive(); // preview_status
+    markTurnRunning();
 
     for (let i = 0; i < 3; i++) {
       const res = await app.inject({

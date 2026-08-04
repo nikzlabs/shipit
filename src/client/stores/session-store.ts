@@ -2,7 +2,8 @@ import { create } from "zustand";
 import { saveDraftMessage } from "../utils/local-storage.js";
 import type { ChatMessage } from "../components/MessageList.js";
 import type { StreamingActivity } from "../components/StreamingIndicator.js";
-import type { SessionInfo, SessionCapabilities, TurnUsage, RescuePhase, WsRewindPreview, AgentId } from "../../server/shared/types.js";
+import type { SessionInfo, SessionCapabilities, TurnUsage, RescuePhase, WsRewindPreview, AgentId, ContainerFreshness } from "../../server/shared/types.js";
+import { useUiStore } from "./ui-store.js";
 
 /**
  * docs/144 — a transient sub-agent spawn spinner ("Asking Codex…"), live only
@@ -68,10 +69,26 @@ interface SessionState {
   selectedRepoUrl: string | null;
   creatingRepo: boolean;
   sessions: SessionInfo[];
-  authUrl: string | null;
   activeRunnerSessions: Set<string>;
   /** docs/193 (Thread C) — sessions blocked awaiting a permission answer. */
   awaitingPermissionSessions: Set<string>;
+  /**
+   * docs/235 — sessions holding outstanding agent-initiated background tasks,
+   * mapped to those tasks' descriptions (empty when the descriptions aren't
+   * known — the SSE reconnect snapshot carries ids only).
+   *
+   * Deliberately SEPARATE from `activeRunnerSessions` rather than folded into
+   * it: consumers of that set (`PrStatusControls`, `SpawnedSessionCard`,
+   * `useAttentionNotifications`) read it as "a turn is in flight", so widening
+   * it would silently change PR-action gating as a side effect. Sites that
+   * should treat the two alike OR them explicitly.
+   *
+   * A Map rather than a Set of ids because the chat status line names the work
+   * ("Waiting for: npm test"), and that line is restored at *turn end* — by
+   * which point the `background_tasks` message that carried the descriptions is
+   * long gone. Keeping them here means the marker and its label can't drift.
+   */
+  backgroundTaskSessions: Map<string, string[]>;
   queuedMessages: { text: string; position: number }[];
   rewindPreviews: Record<string, WsRewindPreview>;
   rewindRecoveries: Record<string, RewindRecovery>;
@@ -123,6 +140,8 @@ interface SessionState {
    * See docs/124-session-rescue-and-diagnostics follow-up.
    */
   memoryExhausted: { countInWindow: number; windowMs: number; threshold: number; at: number } | null;
+  /** Runtime worker/orchestrator build comparison for the active session. */
+  containerFreshness: ContainerFreshness | null;
   /**
    * Per-turn usage history keyed by session ID. Populated from
    * `turn_usage_update` WS messages live, and seeded on session attach from
@@ -153,6 +172,7 @@ interface SessionState {
   setInterruptError: (error: string | null) => void;
   setPauseNotice: (notice: SessionState["pauseNotice"]) => void;
   setMemoryExhausted: (notice: SessionState["memoryExhausted"]) => void;
+  setContainerFreshness: (freshness: ContainerFreshness | null) => void;
   setSessions: (
     sessions: SessionInfo[] | ((prev: SessionInfo[]) => SessionInfo[]),
   ) => void;
@@ -169,13 +189,14 @@ interface SessionState {
    * authoritative `session_list` SSE broadcast reconciles.
    */
   setPinned: (sessionId: string, pinned: boolean) => Promise<void>;
+  /** docs/241 — reserve/release the session runtime for its managed preview. */
+  setKeepPreviewRunning: (sessionId: string, enabled: boolean) => Promise<void>;
   /**
    * docs/110 Phase 2 — reorder a repo's pinned sessions to the given id order
    * (top-first). Optimistic; the authoritative `session_list` broadcast
    * reconciles.
    */
   reorderPins: (remoteUrl: string, ids: string[]) => Promise<void>;
-  setAuthUrl: (url: string | null) => void;
   setSelectedRepoUrl: (url: string | null) => void;
   setCreatingRepo: (creating: boolean) => void;
   setActiveRunnerSessions: (
@@ -183,6 +204,9 @@ interface SessionState {
   ) => void;
   setAwaitingPermissionSessions: (
     updater: (prev: Set<string>) => Set<string>,
+  ) => void;
+  setBackgroundTaskSessions: (
+    updater: (prev: Map<string, string[]>) => Map<string, string[]>,
   ) => void;
   setQueuedMessages: (
     messages:
@@ -235,9 +259,10 @@ interface SessionState {
    * docs/128 — create a privileged ops session via the ops template. When
    * `targetSessionId` is supplied (the "Investigate in Ops session" entry point
    * off another session's row), the server names the new session after its
-   * quarry and returns a `seedPrompt`, which we stash as the new session's
-   * composer draft so the operator lands with the investigation prompt
-   * pre-typed. Returns the new session id, or `null` on failure (caller toasts).
+   * quarry and returns a minimal `seedPrompt`, which we stash as the new
+   * session's composer draft. It identifies the target and read-only boundary;
+   * the operator supplies the incident-specific request. Returns the new
+   * session id, or `null` on failure (caller toasts).
    */
   createOpsSession: (targetSessionId?: string) => Promise<string | null>;
 
@@ -279,6 +304,7 @@ const initialResettableState = {
   interruptError: null as string | null,
   pauseNotice: null as SessionState["pauseNotice"],
   memoryExhausted: null as SessionState["memoryExhausted"],
+  containerFreshness: null as ContainerFreshness | null,
 };
 
 const initialTurnUsage: Record<string, TurnUsage[]> = {};
@@ -287,9 +313,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   sessionId: undefined,
   ...initialResettableState,
   sessions: [] as SessionInfo[],
-  authUrl: null,
   activeRunnerSessions: new Set<string>(),
   awaitingPermissionSessions: new Set<string>(),
+  backgroundTaskSessions: new Map<string, string[]>(),
   rewindRecoveries: {},
   turnUsage: initialTurnUsage,
   allSessions: [] as SessionInfo[],
@@ -341,6 +367,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setPauseNotice: (pauseNotice) => set({ pauseNotice }),
 
   setMemoryExhausted: (memoryExhausted) => set({ memoryExhausted }),
+
+  setContainerFreshness: (containerFreshness) => set({ containerFreshness }),
 
   setSessions: (sessions) =>
     set((state) => ({
@@ -400,6 +428,33 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
   },
 
+  setKeepPreviewRunning: async (sessionId, enabled) => {
+    const patch = (value: boolean) =>
+      set((state) => ({
+        sessions: state.sessions.map((s) =>
+          s.id === sessionId ? { ...s, keepPreviewRunning: value || undefined } : s,
+        ),
+      }));
+    const prev = get().sessions.find((s) => s.id === sessionId)?.keepPreviewRunning ?? false;
+    patch(enabled);
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/keep-preview-running`, {
+        method: "PUT",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string };
+        patch(prev);
+        useUiStore.getState().setToast({ message: data.error ?? "Failed to update preview reservation" });
+      }
+    } catch (err) {
+      console.error("[session-store] Preview reservation toggle failed:", err);
+      patch(prev);
+      useUiStore.getState().setToast({ message: "Failed to update preview reservation" });
+    }
+  },
+
   reorderPins: async (remoteUrl, ids) => {
     // Snapshot pinnedAt for the affected sessions so we can revert on failure.
     const prev = new Map(
@@ -439,8 +494,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
   },
 
-  setAuthUrl: (authUrl) => set({ authUrl }),
-
   setSelectedRepoUrl: (selectedRepoUrl) => set({ selectedRepoUrl }),
 
   setCreatingRepo: (creatingRepo) => set({ creatingRepo }),
@@ -453,6 +506,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setAwaitingPermissionSessions: (updater) =>
     set((state) => ({
       awaitingPermissionSessions: updater(state.awaitingPermissionSessions),
+    })),
+
+  setBackgroundTaskSessions: (updater) =>
+    set((state) => ({
+      backgroundTaskSessions: updater(state.backgroundTaskSessions),
     })),
 
   setQueuedMessages: (messages) =>

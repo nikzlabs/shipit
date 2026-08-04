@@ -25,21 +25,28 @@
  */
 
 import { EventEmitter } from "node:events";
-import type { AgentProcess, AgentId, AgentEvent, AgentRunParams, TerminalProcess } from "../shared/types.js";
+import type { AgentProcess, AgentId, AgentEvent, AgentRunParams, TerminalProcess, WorkerAgentStatus } from "../shared/types.js";
 import type { WsServerMessage, ClaudeContentBlockToolUse, SkillInfo, PermissionMode, PermissionDecision } from "../shared/types.js";
 import type { PresentStateEntry } from "../shared/types/ws-server-messages.js";
 import type { PresentStore } from "./present-store.js";
-import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps, ChatMessageGroup, SteeredMessage, RecordedChatCard, AgentDispatchOptions } from "./session-runner.js";
+import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps, ChatMessageGroup, SteeredMessage, RecordedChatCard } from "./session-runner.js";
 import type { SubAgentSpawnRequest, SubAgentRunResult } from "../shared/sub-agent-run.js";
-import { runDispatchedTurn, toQueuedMessage } from "./session-runner.js";
-import { trySteerDispatch } from "./dispatch-steering.js";
+import { SUB_AGENT_TRANSPORT_TIMEOUT_MS } from "../shared/sub-agent-run.js";
+import { AgentTurnAdmissionError, runDispatchedTurn, dispatchOnRunner } from "./session-runner.js";
+import { releaseQueuedTurn } from "./queue-drain.js";
+import type { PreparedDispatch } from "./prepared-dispatch.js";
+import type { TurnHandle } from "./turn-settlement.js";
 import type { SSEEvent } from "./sse-client.js";
-import { workerPost, workerGet, workerInstall, workerPushAgentSecrets, workerPostMessage } from "./worker-http.js";
+import { workerPost, workerGet, workerInstall, workerPushAgentSecrets, workerPostMessage, PLACEHOLDER_WORKER_URL, WorkerUnavailableError } from "./worker-http.js";
 import { ProxyAgentProcess } from "./proxy-agent-process.js";
 import type { ProxyAgentRunner } from "./proxy-agent-process.js";
+import { adoptInFlightTurn } from "./turn-adoption.js";
 import type { ServiceManager, ManagedService, SecretsStatusInternalSnapshot } from "./service-manager.js";
+import { stripAnsi } from "../shared/strip-ansi.js";
 import { SseConnectionManager } from "./sse-connection-manager.js";
+import { BackgroundTaskTracker, type BackgroundTaskInfo } from "./background-task-tracker.js";
 import { TurnAccumulator } from "./turn-accumulator.js";
+import type { CommittedBodyIds } from "./transcript-projection.js";
 import { TerminalBufferManager } from "./terminal-buffer-manager.js";
 
 // ---------------------------------------------------------------------------
@@ -47,7 +54,7 @@ import { TerminalBufferManager } from "./terminal-buffer-manager.js";
 // ---------------------------------------------------------------------------
 export { connectSSE } from "./sse-client.js";
 export type { SSEEvent } from "./sse-client.js";
-export { workerPost, workerGet, workerInstall } from "./worker-http.js";
+export { workerPost, workerGet, workerInstall, PLACEHOLDER_WORKER_URL, WorkerUnavailableError } from "./worker-http.js";
 export { truncateTerminalBuffer } from "./terminal-buffer.js";
 export { ProxyAgentProcess } from "./proxy-agent-process.js";
 export type { ProxyAgentRunner } from "./proxy-agent-process.js";
@@ -75,6 +82,15 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _workerReady: Promise<void>;
   private _resolveWorkerReady!: () => void;
 
+  /**
+   * Why this runner will never get a worker, when container creation failed
+   * outright. Set by `markWorkerUnavailable` (from the create path's terminal
+   * failure) BEFORE `dispose()` resolves the worker-ready gate, so a turn
+   * parked on that gate reports the real cause instead of the transport-level
+   * `connect ECONNREFUSED 0.0.0.0` the placeholder URL used to produce.
+   */
+  private _workerUnavailableReason: string | null = null;
+
   // Collaborators (own narrow slices of state — see file header).
   private sse: SseConnectionManager;
   private turn = new TurnAccumulator();
@@ -93,6 +109,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _guardedUnavailable = false;
   readonly awaitingPermissionIds = new Set<string>();
   private _isStreamingActive = false;
+  private _backgroundTasks = new BackgroundTaskTracker();
   // docs/146 follow-up — the proxy of the live resident streaming process,
   // tracked SEPARATELY from `_agent` so it survives a stale/one-shot spawn
   // momentarily displacing or nulling the single `_agent` slot. The SSE relay
@@ -103,6 +120,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   // false or on dispose.
   private _streamingProxy: ProxyAgentProcess | null = null;
   private _appliedPermissionMode: PermissionMode | undefined = undefined;
+  /** See `SessionRunnerInterface.appliedModel` — the resident CLI's `--model`. */
+  private _appliedModel: string | undefined = undefined;
 
   // Per-runner mutex for `_startAgentViaProxy`. Concurrent callers chain on
   // this promise so docs/142's B2 kill+restart cannot interleave with another
@@ -217,7 +236,22 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _disposed = false;
   pendingCommitLink: { commitHash: string; parentCommitHash: string } | null = null;
   private _subAgentSpawnsThisTurn = 0;
+  /**
+   * SHI-278 — in-flight sub-agent spawns brokered to the worker, keyed by
+   * spawnId. The container runner's counterpart to `SessionRunner`'s
+   * `_subAgentHandles`: a container spawn is an HTTP request, not a local
+   * process handle, so cancelling it means aborting the request. Aborted on
+   * dispose so a force-teardown can't leave one hanging.
+   */
+  private readonly _subAgentAborts = new Map<string, AbortController>();
   private _workerResourcesStarted = false;
+  /**
+   * docs/240 — in-flight one-time worker-resource start. Concurrent callers
+   * (the post-restart reattach sweep and a viewer attaching at the same moment)
+   * await this instead of connecting SSE themselves, so the probe-and-adopt step
+   * always completes before the stream opens.
+   */
+  private _workerStartInFlight: Promise<void> | null = null;
 
   constructor(opts: {
     sessionId: string;
@@ -241,7 +275,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       this._presentations = this._presentStore.listForClient(this.sessionId);
     }
     // If workerUrl looks like a placeholder, defer readiness until setWorkerUrl() is called.
-    if (opts.workerUrl === "http://0.0.0.0:0") {
+    if (opts.workerUrl === PLACEHOLDER_WORKER_URL) {
       this._workerReady = new Promise<void>((resolve) => { this._resolveWorkerReady = resolve; });
     } else {
       this._workerReady = Promise.resolve();
@@ -263,7 +297,56 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   /** Update the worker URL once the container is ready. */
   setWorkerUrl(url: string): void {
     this.workerUrl = url;
+    this._workerUnavailableReason = null;
     this._resolveWorkerReady();
+  }
+
+  /**
+   * True while this runner is still waiting for its container to be created —
+   * it holds the placeholder URL and creation hasn't failed yet.
+   *
+   * The missing-container reconciler consults this. It force-disposes any
+   * registered runner the container manager doesn't know about, but a runner is
+   * registered SYNCHRONOUSLY by `getOrCreate` while `createContainerForRunner`
+   * runs fire-and-forget — and the manager's map entry is only written partway
+   * into `createContainer`. Everything before that (destroying a stale
+   * container, resolving overlay specs, building the config) is a window where
+   * a perfectly healthy session looks orphaned. Disposing it there resolved the
+   * worker-ready gate against the placeholder URL, which is one of the two ways
+   * a turn ended up dialing `0.0.0.0`.
+   */
+  get awaitingContainer(): boolean {
+    return (
+      !this._disposed
+      && this._workerUnavailableReason === null
+      && this.workerUrl === PLACEHOLDER_WORKER_URL
+    );
+  }
+
+  /**
+   * Record that container creation failed terminally, so worker calls report
+   * the real cause. Called by the create path immediately before it disposes
+   * the runner — dispose resolves `_workerReady`, releasing any parked turn,
+   * and this is what that turn reports instead of a bare transport error.
+   */
+  markWorkerUnavailable(reason: string): void {
+    this._workerUnavailableReason = reason;
+  }
+
+  /**
+   * Throw when this runner has no reachable worker. Called after every
+   * `await this._workerReady` on a path whose failure surfaces to the user, so
+   * the chat error names the container instead of the placeholder address.
+   * The transport-level guard in `worker-http.ts` is the backstop for paths
+   * that don't call this.
+   */
+  private assertWorkerReachable(path: string): void {
+    if (this._workerUnavailableReason !== null) {
+      throw new WorkerUnavailableError(path, this._workerUnavailableReason);
+    }
+    if (this.workerUrl === PLACEHOLDER_WORKER_URL) {
+      throw new WorkerUnavailableError(path);
+    }
   }
 
   /**
@@ -303,8 +386,24 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // drop the reference so genuinely-orphaned events stop being re-adopted.
     this._streamingProxy = v ? this._agent : null;
   }
+  // docs/235 — gated on `isStreamingActive` inside the tracker: a background
+  // task cannot outlive the CLI process, so without a resident streaming
+  // process the answer is definitionally zero.
+  get backgroundTaskCount(): number { return this._backgroundTasks.count(this._isStreamingActive); }
+  get backgroundTaskDescriptions(): string[] { return this._backgroundTasks.descriptions(this._isStreamingActive); }
+  // SHI-296 — a live consult is a fact we own (the in-flight abort-controller
+  // set), not a reported hint, so it needs no `isStreamingActive` gate. This is
+  // what keeps a backgrounded `shipit agent run` off the idle-eviction list.
+  get subAgentSpawnsInFlight(): number { return this._subAgentAborts.size; }
+  get agentBusy(): boolean {
+    return this._isRunning || this.backgroundTaskCount > 0 || this.subAgentSpawnsInFlight > 0;
+  }
+  setBackgroundTasks(tasks: BackgroundTaskInfo[]): void { this._backgroundTasks.set(tasks); }
+  clearBackgroundTasks(): void { this._backgroundTasks.clear(); }
   get appliedPermissionMode(): PermissionMode | undefined { return this._appliedPermissionMode; }
   set appliedPermissionMode(v: PermissionMode | undefined) { this._appliedPermissionMode = v; }
+  get appliedModel(): string | undefined { return this._appliedModel; }
+  set appliedModel(v: string | undefined) { this._appliedModel = v; }
 
   get accumulatedText(): string { return this.turn.accumulatedText; }
   set accumulatedText(s: string) { this.turn.accumulatedText = s; }
@@ -327,6 +426,9 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   get recordedCards(): RecordedChatCard[] { return this.turn.recordedCards; }
   set recordedCards(m: RecordedChatCard[]) { this.turn.recordedCards = m; }
 
+  /** docs/244 / SHI-297 — stable reference, mutable contents. */
+  get committedBodyIds(): CommittedBodyIds { return this.turn.committedBodyIds; }
+
   get agentId(): AgentId { return this._agentId; }
   set agentId(id: AgentId) { this._agentId = id; }
   get subAgentSpawnsThisTurn(): number { return this._subAgentSpawnsThisTurn; }
@@ -337,27 +439,73 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * `/agent/spawn`, which runs a fresh adapter subprocess OUTSIDE the agent slot
    * and returns the accumulated final text synchronously. No SSE involvement —
    * the result flows back over this HTTP response, so the runner's `_agent`
-   * accumulators are untouched. The request is unbounded (`timeoutMs: 0`); the
-   * worker's own wall-clock cap bounds the run, and a primary-turn interrupt
-   * (which hits the worker's `/agent/interrupt`) cancels it.
+   * accumulators are untouched. The worker's own wall-clock cap stays
+   * authoritative for the run itself; a primary-turn interrupt (which hits the
+   * worker's `/agent/interrupt`) cancels it.
+   *
+   * SHI-278 — two things the original `{ timeoutMs: 0 }` got wrong:
+   *  - **Unbounded.** An interrupt is not the only way this request can be
+   *    orphaned. Destroy the container under it (Restart agent, idle teardown)
+   *    and the worker's timer dies with the worker, leaving this promise pending
+   *    forever. {@link SUB_AGENT_TRANSPORT_TIMEOUT_MS} is the backstop.
+   *  - **Uncancellable.** The request is now registered in `_subAgentAborts` so
+   *    {@link dispose} can abort it, which is what lets `runSubAgent` land a
+   *    terminal "cancelled" card instead of vanishing with the container.
    */
   async spawnSubAgent(req: SubAgentSpawnRequest): Promise<SubAgentRunResult> {
-    const result = await workerPost(
-      this.workerUrl,
-      "/agent/spawn",
-      {
-        agentId: req.agentId,
-        prompt: req.prompt,
-        spawnId: req.spawnId,
-        depth: req.depth,
-        ...(req.model !== undefined ? { model: req.model } : {}),
-        ...(req.reasoningEffort !== undefined ? { reasoningEffort: req.reasoningEffort } : {}),
-        ...(req.timeoutMs !== undefined ? { timeoutMs: req.timeoutMs } : {}),
-        ...(req.maxOutputChars !== undefined ? { maxOutputChars: req.maxOutputChars } : {}),
-      },
-      { timeoutMs: 0 },
+    const controller = new AbortController();
+    this._subAgentAborts.set(req.spawnId, controller);
+    const startedAt = Date.now();
+    console.log(
+      `[sub-agent] worker-post session=${this.sessionId} spawn=${req.spawnId} agent=${req.agentId} `
+      + `promptBytes=${Buffer.byteLength(req.prompt)} transportTimeoutMs=${SUB_AGENT_TRANSPORT_TIMEOUT_MS}`,
     );
-    return result as SubAgentRunResult;
+    try {
+      const result = await workerPost(
+        this.workerUrl,
+        "/agent/spawn",
+        {
+          agentId: req.agentId,
+          prompt: req.prompt,
+          spawnId: req.spawnId,
+          depth: req.depth,
+          ...(req.model !== undefined ? { model: req.model } : {}),
+          ...(req.reasoningEffort !== undefined ? { reasoningEffort: req.reasoningEffort } : {}),
+          ...(req.timeoutMs !== undefined ? { timeoutMs: req.timeoutMs } : {}),
+          ...(req.maxOutputChars !== undefined ? { maxOutputChars: req.maxOutputChars } : {}),
+        },
+        { timeoutMs: SUB_AGENT_TRANSPORT_TIMEOUT_MS, signal: controller.signal },
+      );
+      const r = result as SubAgentRunResult;
+      console.log(
+        `[sub-agent] worker-returned session=${this.sessionId} spawn=${req.spawnId} `
+        + `status=${r.status} transportMs=${Date.now() - startedAt}`,
+      );
+      return r;
+    } catch (err) {
+      console.warn(
+        `[sub-agent] worker-failed session=${this.sessionId} spawn=${req.spawnId} `
+        + `transportMs=${Date.now() - startedAt}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      throw err;
+    } finally {
+      this._subAgentAborts.delete(req.spawnId);
+    }
+  }
+
+  /**
+   * SHI-278 — abort every in-flight sub-agent spawn brokered by this runner.
+   * Called from {@link dispose} (the one chokepoint every force-teardown path
+   * funnels through: Restart agent, Restart container, Rescue, archive, full
+   * reset), so no caller has to remember to cancel spawns. `reason` reaches
+   * `runSubAgent`'s catch via `WorkerAbortedError` and names who cancelled.
+   */
+  private cancelInFlightSubAgents(reason: string): void {
+    for (const [spawnId, controller] of this._subAgentAborts) {
+      console.warn(`[sub-agent] cancelled session=${this.sessionId} spawn=${spawnId} by=${reason}`);
+      try { controller.abort(reason); } catch { /* best-effort */ }
+    }
+    this._subAgentAborts.clear();
   }
 
   getAgent(): AgentProcess | null { return this._agent; }
@@ -377,7 +525,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // streaming process is still alive (`isStreamingActive`); a genuine process
     // exit clears the flag and the next non-reuse spawn overwrites the mode at
     // `run()` anyway.
-    if (a === null && !this._isStreamingActive) this._appliedPermissionMode = undefined;
+    if (a === null && !this._isStreamingActive) {
+      this._appliedPermissionMode = undefined;
+      // The spawn-time model follows the same rule: the worker's streaming
+      // process outlives proxy recreation and keeps running its `--model`, so
+      // the drift check must keep comparing against it until the process
+      // genuinely exits.
+      this._appliedModel = undefined;
+    }
   }
 
   // --- Message queue ---
@@ -388,6 +543,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   dequeue(): QueuedMessage | undefined { return this.turn.dequeue(); }
   clearQueue(): void { this.turn.clearQueue(); }
   getQueueSnapshot(): { text: string; position: number }[] { return this.turn.getQueueSnapshot(); }
+
+  /** SHI-264 — see `SessionRunnerInterface.activeDeliveryId`. */
+  activeDeliveryId: string | undefined;
+  /** SHI-264 — see `SessionRunnerInterface.hasDelivery`. */
+  hasDelivery(deliveryId: string): boolean {
+    if (this.activeDeliveryId === deliveryId) return true;
+    return this.turn.messageQueue.some((m) => m.deliveryId === deliveryId);
+  }
 
   // --- Terminal ---
 
@@ -479,9 +642,13 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * Attach a ServiceManager and wire its events to WS messages.
    * The ServiceManager's service_status and service_log events are relayed
    * to all connected viewers via emitMessage().
+   *
+   * Passing `null` detaches the current manager without attaching a new one —
+   * used when a `shipit.yaml` change drops the `compose:` block entirely.
    */
-  setServiceManager(mgr: ServiceManager): void {
+  setServiceManager(mgr: ServiceManager | null): void {
     this.clearServiceManager();
+    if (!mgr) return;
     this._serviceManager = mgr;
 
     const onStatus = (svc: ManagedService) => {
@@ -745,8 +912,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * kill()/writeStdin() methods delegate to the worker via HTTP. Called by the
    * dynamic agentFactory when this runner is attached.
    */
-  createAgent(agentId: AgentId): ProxyAgentProcess {
-    const proxy = new ProxyAgentProcess(agentId, this);
+  createAgent(agentId: AgentId, opts?: { runToken?: string; deliveryId?: string }): ProxyAgentProcess {
+    const proxy = new ProxyAgentProcess(agentId, this, opts);
     this._agent = proxy;
     return proxy;
   }
@@ -766,7 +933,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * if the worker is genuinely dead, the SSE stream fails and the
    * Rescue-session UI surfaces it. (Refines doc 124 §1.3.)
    */
-  async _startAgentViaProxy(agentId: AgentId, params: AgentRunParams, runToken?: string): Promise<void> {
+  async _startAgentViaProxy(agentId: AgentId, params: AgentRunParams, runToken?: string, deliveryId?: string): Promise<void> {
     // Serialize start sequences per runner. The B2 recovery path below can
     // kill the worker's agent and start a fresh one; if a second caller is
     // mid-kill+restart at the same moment, the two sequences tear down each
@@ -778,14 +945,19 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this._startInFlight = new Promise<void>((r) => { release = r; });
     try {
       await prev.catch(() => {});
-      await this._doStartAgentViaProxy(agentId, params, runToken);
+      await this._doStartAgentViaProxy(agentId, params, runToken, deliveryId);
     } finally {
       release();
     }
   }
 
-  private async _doStartAgentViaProxy(agentId: AgentId, params: AgentRunParams, runToken?: string): Promise<void> {
+  private async _doStartAgentViaProxy(agentId: AgentId, params: AgentRunParams, runToken?: string, deliveryId?: string): Promise<void> {
     await this._workerReady;
+    // The gate above is ALSO resolved by `dispose()` (so pending awaiters don't
+    // leak when creation fails before `setWorkerUrl`). Reaching here with no
+    // real worker means this turn has nowhere to run — fail with the recorded
+    // cause rather than POSTing to the placeholder address.
+    this.assertWorkerReachable("/agent/start");
 
     await this.fastForwardStaleWorkerEventsBeforeFreshStart();
 
@@ -803,7 +975,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     await this._waitForInstallBeforeAgent();
 
     try {
-      await workerPost(this.workerUrl, "/agent/start", { agentId, params, runToken }, { timeoutMs: 0 });
+      await workerPost(this.workerUrl, "/agent/start", { agentId, params, runToken, deliveryId }, { timeoutMs: 0 });
     } catch (err) {
       // Narrow race: the previous turn's `agent_done` SSE event reaches the
       // orchestrator and triggers the queue drain → new POST /agent/start —
@@ -823,11 +995,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       if (err instanceof Error && err.message === "Agent already running") {
         await new Promise((r) => setTimeout(r, 150));
         try {
-          await workerPost(this.workerUrl, "/agent/start", { agentId, params, runToken }, { timeoutMs: 0 });
+          await workerPost(this.workerUrl, "/agent/start", { agentId, params, runToken, deliveryId }, { timeoutMs: 0 });
         } catch (retryErr) {
           if (retryErr instanceof Error && retryErr.message === "Agent already running") {
             await workerPost(this.workerUrl, "/agent/kill").catch(() => { /* may already be gone */ });
-            await workerPost(this.workerUrl, "/agent/start", { agentId, params, runToken }, { timeoutMs: 0 });
+            await workerPost(this.workerUrl, "/agent/start", { agentId, params, runToken, deliveryId }, { timeoutMs: 0 });
           } else {
             throw retryErr;
           }
@@ -841,9 +1013,12 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private async fastForwardStaleWorkerEventsBeforeFreshStart(): Promise<void> {
     if (this._workerResourcesStarted || this.sse.isConnected) return;
     try {
-      const status = await workerGet(this.workerUrl, "/agent/status", { timeoutMs: 3000 }) as {
-        latestSseSeq?: number;
-      };
+      const status = await workerGet(this.workerUrl, "/agent/status", { timeoutMs: 3000 }) as WorkerAgentStatus;
+      // docs/240 — never fast-forward past a turn that is still in flight. This
+      // probe can land after our own `/agent/start` (it is fired without an
+      // await from the start path), and skipping a live turn's already-emitted
+      // events would silently truncate the turn.
+      if (status.turnActive === true) return;
       this.sse.fastForwardLastSeenSeq(status.latestSseSeq ?? 0);
     } catch {
       // Best-effort only. If the probe fails, keep the existing since=0 path
@@ -871,28 +1046,117 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * method closes that gap by fast-forwarding on the viewer-driven first
    * connect too.
    *
-   * Gated on the worker being IDLE (`running !== true`): if a turn is genuinely
-   * still streaming, a viewer attaching mid-turn MUST still replay the live
-   * turn's un-persisted events, so we leave the cursor at `since=0`. We only
+   * Gated on there being no LIVE turn: if a turn is genuinely still in flight,
+   * a viewer attaching mid-turn MUST still replay it, so we anchor the cursor
+   * at the turn's own start seq instead (docs/240) and adopt the turn. We only
    * skip the replay of a turn that already finished.
    *
    * No-op once SSE is connected (advancing the cursor after connect would skip
    * live events) and best-effort on probe failure (keep the `since=0` path so
    * a slow/unreachable worker still prefers replay over event loss).
    */
-  private async fastForwardCompletedTurnBeforeFirstConnect(): Promise<void> {
+  private async reconcileWorkerTurnBeforeFirstConnect(): Promise<void> {
     if (this.sse.isConnected) return;
+    let status: WorkerAgentStatus;
     try {
-      const status = await workerGet(this.workerUrl, "/agent/status", { timeoutMs: 3000 }) as {
-        running?: boolean;
-        latestSseSeq?: number;
-      };
-      // A live turn must still be replayed to a mid-turn viewer — don't skip it.
-      if (status.running === true) return;
-      this.sse.fastForwardLastSeenSeq(status.latestSseSeq ?? 0);
+      status = await workerGet(this.workerUrl, "/agent/status", { timeoutMs: 3000 }) as WorkerAgentStatus;
     } catch {
       // Best-effort only — preserve the since=0 replay path on probe failure.
+      return;
     }
+
+    // docs/240 — a turn is STILL RUNNING inside the container while this runner
+    // has no agent object for it: the orchestrator restarted mid-turn (or the
+    // runner was recreated after an idle eviction that the running agent should
+    // have blocked). Adopt it — rebuild the proxy + listeners and replay from
+    // the turn's first event — instead of letting the replay drop `(no _agent)`.
+    if (status.turnActive === true && !this._agent && !this._isRunning) {
+      if (await this.adoptWorkerTurn(status)) return;
+      // Adoption unavailable (no system-turn deps wired). Fall through: leave
+      // the cursor at since=0 so the events are at least replayed to whatever
+      // takes the slot next, matching the pre-docs/240 behavior.
+      return;
+    }
+
+    // A live turn on a runner that already knows about it — leave the cursor
+    // alone so the mid-turn viewer catches up (the docs/237 snapshot path).
+    if (status.turnActive === true) return;
+    // Legacy worker (no `turnActive` field) with a resident process: can't tell
+    // in-flight from idle-resident, so keep the conservative full replay.
+    if (status.turnActive === undefined && status.running) return;
+
+    this.sse.fastForwardLastSeenSeq(status.latestSseSeq ?? 0);
+  }
+
+  /**
+   * docs/240 — adopt a turn the worker still has in flight. Fills the `_agent`
+   * slot with a proxy carrying the WORKER's run token (so the turn's eventual
+   * `agent_done` correlates instead of being ignored as a stale spawn), anchors
+   * the SSE replay cursor at the turn's first event, and wires the standard
+   * listener + post-turn flow through `adoptInFlightTurn`.
+   *
+   * Must complete BEFORE the SSE stream connects — the slot has to be occupied
+   * when the replay lands. Returns false when the runner has no system-turn deps
+   * (the registry always wires them in production; a bare test runner may not).
+   */
+  private async adoptWorkerTurn(status: WorkerAgentStatus): Promise<boolean> {
+    const deps = this._systemTurnDeps;
+    if (!deps) {
+      console.warn(
+        `[container-runner:${this.sessionId}] worker reports a live turn but no system-turn deps are wired — not adopting`,
+      );
+      return false;
+    }
+    const agentId = status.agentId ?? this._agentId;
+    const turnStartSeq = status.turnStartSseSeq ?? 0;
+    // The ring buffer is bounded (5000 events), so a very long turn can outrun
+    // it. We still adopt — the tail is worth far more than nothing — but say so,
+    // because the turn's earliest rows are then unrecoverable.
+    const oldest = status.oldestSseSeq ?? 0;
+    const truncated = oldest > turnStartSeq + 1;
+    const delivery = status.deliveryId !== undefined ? `, delivery=${status.deliveryId}` : "";
+    console.log(
+      `[container-runner:${this.sessionId}] adopting in-flight worker turn ` +
+        `(agent=${agentId}, streaming=${status.streaming === true}, sinceSeq=${turnStartSeq}${delivery}` +
+        `${truncated ? `, PARTIAL replay — buffer starts at ${oldest}` : ""})`,
+    );
+    this.sse.fastForwardLastSeenSeq(turnStartSeq);
+    this._agentId = agentId;
+    const proxy = this.createAgent(agentId, {
+      ...(status.runToken !== undefined ? { runToken: status.runToken } : {}),
+      // SHI-264 — the adopted turn keeps the delivery identity the worker
+      // reported, so a re-spawn on this proxy (auth retry) carries it too.
+      ...(status.deliveryId !== undefined ? { deliveryId: status.deliveryId } : {}),
+    });
+    await adoptInFlightTurn(this, deps, proxy, {
+      agentId,
+      ...(status.runToken !== undefined ? { runToken: status.runToken } : {}),
+      ...(status.deliveryId !== undefined ? { deliveryId: status.deliveryId } : {}),
+      streaming: status.streaming === true,
+    });
+    this.emitMessage({
+      type: "session_status",
+      sessionId: this.sessionId,
+      running: true,
+      queueLength: this.queueLength,
+    });
+    return true;
+  }
+
+  /**
+   * docs/240 — public entry point for the post-restart reattach sweep
+   * (`restart-turn-reattach.ts`). Connects worker resources (which probes the
+   * worker and adopts any in-flight turn — see
+   * `reconcileWorkerTurnBeforeFirstConnect`) and reports whether this runner
+   * ended up owning a running turn.
+   *
+   * Idempotent and safe to call on an idle session: it does exactly what a
+   * viewer attach would do, minus the viewer count.
+   */
+  async resumeInFlightTurn(): Promise<boolean> {
+    if (this._disposed) return false;
+    await this.ensureWorkerResourcesStarted();
+    return this._isRunning;
   }
 
   /**
@@ -904,16 +1168,36 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private async ensureWorkerResourcesStarted(): Promise<void> {
     if (this._disposed) return;
     if (this._workerResourcesStarted) {
+      // docs/240 — a start is still in flight: await IT rather than racing
+      // ahead to `connectEventStream`. The first start may be mid-probe,
+      // about to adopt an in-flight worker turn, and adoption must fill the
+      // `_agent` slot BEFORE the stream opens or the replay is dropped.
+      if (this._workerStartInFlight) {
+        await this._workerStartInFlight;
+        return;
+      }
       if (!this.sse.isConnected) {
         await this.connectEventStream();
       }
       return;
     }
     this._workerResourcesStarted = true;
-    // Skip the worker's ring-buffer replay of an already-completed turn before
-    // the very first connect (post-restart double-render bug) — but only when
-    // no turn is live, so a mid-turn viewer still catches up. See the method.
-    await this.fastForwardCompletedTurnBeforeFirstConnect();
+    const start = this._doStartWorkerResources();
+    this._workerStartInFlight = start;
+    try {
+      await start;
+    } finally {
+      this._workerStartInFlight = null;
+    }
+  }
+
+  /** The one-time body of {@link ensureWorkerResourcesStarted}. */
+  private async _doStartWorkerResources(): Promise<void> {
+    // Reconcile against the worker's turn state before the very first connect:
+    // skip the ring-buffer replay of an already-completed turn (the post-restart
+    // double-render bug), or ADOPT a turn still in flight (docs/240) so its
+    // replay lands in a live agent instead of being dropped. See the method.
+    await this.reconcileWorkerTurnBeforeFirstConnect();
     await this.connectEventStream();
     if (!this._disposed) void this.startWorkerResources();
   }
@@ -967,9 +1251,38 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     await workerPost(this.workerUrl, "/agent/interrupt");
   }
 
-  /** Kill the agent running on the worker. */
+  /**
+   * Kill the agent running on the worker.
+   *
+   * SHI-288 — the slot clear is IDENTITY-GUARDED against the proxy that was in
+   * the slot when the kill was requested. `ProxyAgentProcess.kill()` is
+   * fire-and-forget, so this POST is routinely still in flight while the caller
+   * synchronously moves on. Both retirement blocks in `dispatched-turn.ts` do
+   * exactly that:
+   *
+   *     outgoing.kill(); runner.setAgent(null); createAgent(); // → new proxy
+   *
+   * An unconditional `this._agent = null` here then landed tens of ms LATER, on
+   * the slot that by then held the INCOMING proxy — and nothing reinstalls it.
+   * Every event of the new turn, including its own `agent_init` and
+   * `agent_result`, was dropped `(no _agent)` by the SSE relay for the rest of
+   * the turn. In prod that hung `runRebaseResolutionTurn` until its 10-minute
+   * timeout, which then aborted a conflict resolution the agent had already
+   * completed.
+   *
+   * Capturing the victim synchronously (before the first await) and comparing on
+   * resolve makes the clear a no-op once the slot has moved on. When the victim
+   * IS still in the slot, the clear happens exactly as before.
+   */
   async killAgentOnWorker(opts?: { timeoutMs?: number }): Promise<void> {
+    const victim = this._agent;
     await workerPost(this.workerUrl, "/agent/kill", undefined, opts);
+    if (this._agent !== victim) {
+      console.warn(
+        `[container-runner:${this.sessionId}] /agent/kill resolved after the slot moved on — not clearing the incoming agent`,
+      );
+      return;
+    }
     this._agent = null;
   }
 
@@ -1110,17 +1423,21 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   // --- Worker resource lifecycle ---
 
-  /** Start file watcher on session worker. */
+  /**
+   * Start the file watcher on the session worker. Idempotent on both sides —
+   * the worker returns `{ existing: true }` when it is already watching — so
+   * this is re-issued on every SSE (re)open as a self-heal (see `onSseOpen`).
+   */
   private async startWorkerResources(): Promise<void> {
-    console.log(`[container-runner:${this.sessionId}] Waiting for worker to be ready...`);
     await this._workerReady;
     if (this._disposed) { console.log(`[container-runner:${this.sessionId}] Disposed before worker ready`); return; }
-    console.log(`[container-runner:${this.sessionId}] Starting worker resources at ${this.workerUrl}`);
 
     // Start file watcher on session worker
     try {
-      await workerPost(this.workerUrl, "/files/watch");
-      console.log(`[container-runner:${this.sessionId}] File watcher started on worker`);
+      const res = await workerPost(this.workerUrl, "/files/watch") as { existing?: boolean };
+      if (!res?.existing) {
+        console.log(`[container-runner:${this.sessionId}] File watcher started on worker`);
+      }
     } catch (err) {
       console.error(`[container-runner:${this.sessionId}] Failed to start file watcher:`, err);
     }
@@ -1216,6 +1533,21 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       this.signalInstallComplete();
       return { ok: true };
     }
+    // Same gate-resolved-by-dispose caveat as `_doStartAgentViaProxy`: a runner
+    // whose container never came up is not disposed in every path, so check the
+    // worker itself rather than inferring reachability from `_disposed`.
+    try {
+      this.assertWorkerReachable("/install");
+    } catch (err) {
+      this.emitMessage({
+        type: "install_status",
+        sessionId: this.sessionId,
+        status: "error",
+        message: err instanceof Error ? err.message : String(err),
+      });
+      this.signalInstallComplete(false);
+      return { ok: false };
+    }
 
     // Open our end of the event pipe BEFORE posting /install. The completion
     // promise above resolves on the SSE-delivered `install_done` / `install_error`
@@ -1283,6 +1615,52 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   setDepReinstallInputs(commands: string[], inputs: string[]): void {
     this._depReinstallCommands = commands;
     this._depReinstallInputs = inputs;
+  }
+
+  /**
+   * The `agent.install` command list currently applied to this session — i.e.
+   * what `shipit.yaml` said the last time the config was read. Compared against
+   * a freshly-resolved config so a rebase that changes `agent.install` actually
+   * re-runs it (see `applyShipitConfigChange`).
+   */
+  get appliedInstallCommands(): readonly string[] {
+    return this._depReinstallCommands;
+  }
+
+  /**
+   * Ask for a re-run of the recorded `agent.install`, subject to the same
+   * cooldown + install-gate bracketing as the dependency-input-driven
+   * reinstall. Used when `shipit.yaml`'s `agent.install` itself changes.
+   */
+  requestDepReinstall(): void {
+    this.maybeReinstallForDepChange();
+  }
+
+  /**
+   * Re-read the workspace's `shipit.yaml` + compose file and apply whatever
+   * changed to this live session.
+   *
+   * Two callers: the in-container file watcher (a config file was edited), and
+   * orchestrator-side workspace rewrites — a rebase/sync replaces the whole
+   * working tree from outside the container, and the inotify-based watcher is
+   * not a signal we can depend on there (it is started best-effort, and a
+   * cross-mount event can be missed entirely). The orchestrator knows exactly
+   * when it rewrote the tree, so it says so directly.
+   *
+   * `onComposeConfigChanged` is wired by the runner registry to
+   * `applyShipitConfigChange`, which owns the full delta (compose path,
+   * docker-socket, `agent.install`, compose added/removed). The reconcile-only
+   * fallback keeps runners built without that wiring (unit tests) working.
+   */
+  reevaluateWorkspaceConfig(): void {
+    if (this._disposed) return;
+    if (this.onComposeConfigChanged) {
+      this.onComposeConfigChanged();
+      return;
+    }
+    this._serviceManager?.reconcile().catch((err: unknown) => {
+      this.logReconcileError("Compose reconcile failed", err);
+    });
   }
 
   /**
@@ -1508,6 +1886,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     if (this._installInFlight) {
       void this.resyncInstallStateAfterReconnect();
     }
+    // Re-arm the worker's file watcher on every stream open. `/files/watch` is
+    // otherwise a single best-effort POST fired once per runner
+    // (`startWorkerResources`): if it fails, or the worker restarts under a
+    // live runner, the watcher stays dead for the rest of the session — no file
+    // tree updates AND no compose reconcile on a config-file change, silently.
+    // The worker endpoint is idempotent (an already-running watcher answers
+    // `existing: true`), so re-posting here is free and self-healing.
+    void this.startWorkerResources();
   }
 
   /**
@@ -1554,13 +1940,20 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * existing object-identity guards and `verifyRunningState` safety net still
    * apply, and the "missed agent_done" SSE-drop resilience path is preserved.
    */
-  private isStaleSpawnEvent(eventType: string, data: Record<string, unknown>): boolean {
+  private isStaleSpawnEvent(
+    eventType: string,
+    data: Record<string, unknown>,
+    // SHI-288 — `agent_event` may be routed to the tracked streaming proxy
+    // rather than the slot occupant (the docs/146 re-adopt branch), so the
+    // comparison is against whichever proxy would actually receive it.
+    target: ProxyAgentProcess | null = this._agent,
+  ): boolean {
     const incoming = data.runToken;
-    const current = this._agent?.runToken;
+    const current = target?.runToken;
     if (typeof incoming !== "string" || typeof current !== "string") return false;
     if (incoming === current) return false;
     console.warn(
-      `[sse-drop:${this.sessionId}] ${eventType} runToken=${incoming} != current ${current} — stale spawn exit ignored (slot reused)`,
+      `[sse-drop:${this.sessionId}] ${eventType} runToken=${incoming} != current ${current} — stale spawn ignored (slot reused)`,
     );
     return true;
   }
@@ -1573,21 +1966,17 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       switch (event.type) {
         // --- Agent events ---
 
-        case "agent_event":
-          if (this._agent) {
-            this._agent.emit("event", data as unknown as AgentEvent);
-          } else if (this._isStreamingActive && this._streamingProxy) {
-            // docs/146 follow-up — the slot is null but a resident streaming
-            // process is still mid-turn. This is the prod stranding: a stale /
-            // one-shot spawn displaced the streaming proxy and then exited,
-            // nulling `_agent`, while the live streaming process kept emitting.
-            // Re-adopt the tracked streaming proxy so its assistant/tool_result/
-            // result events are routed to the live turn instead of being dropped.
-            // A genuinely-orphaned stream has `isStreamingActive === false` (the
-            // streaming `done` clears it), so this never resurrects a dead turn.
-            this._agent = this._streamingProxy;
-            this._agent.emit("event", data as unknown as AgentEvent);
-          } else {
+        case "agent_event": {
+          // docs/146 follow-up — when the slot is null but a resident streaming
+          // process is still mid-turn, re-adopt the tracked streaming proxy
+          // instead of dropping. That is the prod stranding: a stale / one-shot
+          // spawn displaced the streaming proxy and then exited, nulling
+          // `_agent`, while the live streaming process kept emitting. A
+          // genuinely-orphaned stream has `isStreamingActive === false` (the
+          // streaming `done` clears it), so this never resurrects a dead turn.
+          const target = this._agent
+            ?? (this._isStreamingActive ? this._streamingProxy : null);
+          if (!target) {
             // docs/140 diag — events arriving with no orchestrator-side agent
             // ref AND no live streaming turn mean a genuinely-orphaned stale
             // streaming process in the worker is still emitting after the
@@ -1596,8 +1985,19 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
             // double-spawn / double-bubble repro.
             const eventType = (data as { type?: string }).type ?? "unknown";
             console.warn(`[sse-drop:${this.sessionId}] agent_event type=${eventType} dropped (no _agent)`);
+            break;
           }
+          // SHI-288 — a retired spawn's late event must not be routed into the
+          // turn that replaced it. Unstamped events (the permission broker's
+          // frames, a legacy worker) fall through as before.
+          if (this.isStaleSpawnEvent("agent_event", data, target)) break;
+          this._agent = target;
+          // The token is transport-level correlation, not part of the event
+          // contract — strip it so `AgentEvent` consumers see what they always did.
+          const { runToken: _staleGuardToken, ...payload } = data;
+          target.emit("event", payload as unknown as AgentEvent);
           break;
+        }
 
         case "agent_done":
           if (this._agent && !this.isStaleSpawnEvent("agent_done", data)) {
@@ -1641,8 +2041,9 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           const requestId = data.requestId as string;
           const action = data.action as string;
           const name = data.name as string | undefined;
+          const lines = data.lines as number | undefined;
           // Handle asynchronously — don't block SSE processing
-          void this.handleServiceRequest(requestId, action, name);
+          void this.handleServiceRequest(requestId, action, name, lines);
           break;
         }
 
@@ -1783,30 +2184,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           const paths = (data.paths as string[]) ?? [];
           this.emitMessage({ type: "files_changed", paths });
 
-          // Detect config file changes and trigger compose reconciliation
+          // Detect config file changes and re-evaluate the session's config
           const hasConfigChange = paths.some(p =>
             ContainerSessionRunner.CONFIG_FILES.has(p) ||
             ContainerSessionRunner.CONFIG_FILES.has(p.replace(/^\.\//, "")),
           );
           if (hasConfigChange) {
-            if (this._serviceManager?.started) {
-              console.log(`[container-runner:${this.sessionId}] Config file changed, reconciling compose stack`);
-              this._serviceManager.reconcile().catch((err: unknown) => {
-                this.logReconcileError("Compose reconcile failed", err);
-              });
-            } else if (this._serviceManager && !this._serviceManager.started) {
-              // ServiceManager exists but start() failed (e.g. compose file
-              // was missing when shipit.yaml was written first) — retry
-              console.log(`[container-runner:${this.sessionId}] Config file changed, retrying compose start`);
-              this._serviceManager.reconcile().catch((err: unknown) => {
-                this.logReconcileError("Compose retry failed", err);
-              });
-            } else if (!this._serviceManager && this.onComposeConfigChanged) {
-              // No ServiceManager yet (e.g. old-format config was just migrated)
-              // — re-evaluate the config and set up compose if now available
-              console.log(`[container-runner:${this.sessionId}] Config file changed, attempting compose setup`);
-              this.onComposeConfigChanged();
-            }
+            console.log(`[container-runner:${this.sessionId}] Config file changed, re-evaluating session config`);
+            this.reevaluateWorkspaceConfig();
           }
 
           // #1622 — a dependency input file (lockfile/manifest) changed. This
@@ -1831,7 +2216,12 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * Handle a service control request from the agent (received via SSE from the worker).
    * Performs the action via ServiceManager and POSTs the result back to the worker.
    */
-  private async handleServiceRequest(requestId: string, action: string, name?: string): Promise<void> {
+  private async handleServiceRequest(
+    requestId: string,
+    action: string,
+    name?: string,
+    lines?: number,
+  ): Promise<void> {
     let result: unknown;
     let error: string | undefined;
 
@@ -1841,6 +2231,29 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         throw new Error("No compose stack configured for this session");
       }
 
+      /**
+       * Read a service back out of the manager AFTER the mutation + `pollOnce`.
+       *
+       * docs/238 — start/restart used to return a hardcoded
+       * `{ status: "running" }`, throwing away the fresh poll they had just
+       * performed. A container that started and immediately exited (a dev server
+       * with no `node_modules`, exit 127) still reported `running`, so the agent
+       * proceeded against a dead service. Reporting the polled status makes a
+       * failed start legible as a failed start.
+       */
+      const describe = (svcName: string) => {
+        const svc = mgr.getServices().find(s => s.name === svcName);
+        return {
+          ok: svc?.status !== "error",
+          name: svcName,
+          status: svc?.status ?? "stopped",
+          port: svc?.port,
+          preview: svc?.preview,
+          url: svc?.url,
+          error: svc?.error,
+        };
+      };
+
       switch (action) {
         case "list":
           result = {
@@ -1849,25 +2262,44 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
               status: s.status,
               port: s.port,
               preview: s.preview,
+              url: s.url,
               error: s.error,
             })),
           };
           break;
-        case "start":
+        case "start": {
           if (!name) throw new Error("Service name is required");
+          // Report an already-running service as a no-op rather than silently
+          // re-`up`ing it, so the agent doesn't have to guess whether its start
+          // was the thing that brought the service up.
+          const before = mgr.getServices().find(s => s.name === name);
+          if (before?.status === "running") {
+            result = { ...describe(name), alreadyRunning: true };
+            break;
+          }
           await mgr.startService(name);
-          result = { ok: true, name, status: "running" };
+          result = describe(name);
           break;
+        }
         case "stop":
           if (!name) throw new Error("Service name is required");
           await mgr.stopService(name);
-          result = { ok: true, name, status: "stopped" };
+          result = describe(name);
           break;
         case "restart":
           if (!name) throw new Error("Service name is required");
           await mgr.restartService(name);
-          result = { ok: true, name, status: "running" };
+          result = describe(name);
           break;
+        case "logs": {
+          if (!name) throw new Error("Service name is required");
+          if (!mgr.getService(name)) throw new Error(`Unknown service: ${name}`);
+          // Same source as the orchestrator's logs route: the durable log store
+          // when it has been seeded, else a fresh `docker compose logs --tail`.
+          const logs = stripAnsi(await mgr.snapshotLogs(name, lines ?? 2000));
+          result = { name, logs };
+          break;
+        }
         default:
           throw new Error(`Unknown service action: ${action}`);
       }
@@ -1891,43 +2323,34 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this._systemTurnDeps = deps;
   }
 
-  dispatch(opts: AgentDispatchOptions): void {
-    if (this._isRunning) {
-      // docs/163 — honor live steering on the dispatch path too: when the
-      // running turn is steerable+streaming and live steering is on, inject
-      // the message via `sendUserMessage` instead of queuing it. Shares the
-      // `shouldSteerMessage` predicate with the WS handler so the two paths
-      // can't diverge.
-      if (this._systemTurnDeps && trySteerDispatch(this, opts, this._systemTurnDeps)) return;
-      // docs/150 — broadcast message_queued via emitMessage so every attached
-      // viewer (and any other HTTP-originated caller in this session) sees the
-      // update. Previously the WS handler emitted this on a single socket.
-      const position = this.enqueue(toQueuedMessage(opts));
-      this.emitMessage({ type: "message_queued", text: opts.text, position });
-      return;
+  assertCanDispatch(): void {
+    const authorize = this._systemTurnDeps?.authorizeDispatch;
+    if (!authorize) {
+      if (process.env.NODE_ENV === "test") return;
+      throw new AgentTurnAdmissionError(this.sessionId);
     }
-    if (!this._systemTurnDeps) {
-      const position = this.enqueue(toQueuedMessage(opts));
-      this.emitMessage({ type: "message_queued", text: opts.text, position });
-      return;
-    }
-    // Flip running=true synchronously BEFORE the async dispatched turn runs.
-    // Without this, the microtask gap between `void _runDispatchedTurn` and
-    // `runDispatchedTurn`'s own `runner.running = true` is a window where a
-    // concurrent WS `send_message` (user typing while clicking Fix CI) sees
-    // `running=false`, falls through to `runAgentWithMessage`, and races
-    // with this dispatched turn for the `_agent` slot — silently dropping
-    // one turn's SSE events.
-    //
-    // docs/169 — set `systemTurnInProgress` in the SAME synchronous tick as
-    // `_isRunning` for a system turn (rebase resolution, CI fix) so a
-    // `send_message` arriving in the gap queues instead of steering into it.
-    if (opts.systemTurn) this._systemTurnInProgress = true;
-    this._isRunning = true;
-    void this._runDispatchedTurn(opts);
+    authorize(this.sessionId);
   }
 
-  private async _runDispatchedTurn(opts: AgentDispatchOptions): Promise<void> {
+  /**
+   * docs/240 — the send-or-queue rule lives in ONE place (`dispatchOnRunner`)
+   * that both runner implementations delegate to, rather than being copied
+   * field-for-field into each. Takes a branded `PreparedDispatch` and returns a
+   * `TurnHandle`.
+   */
+  dispatch(opts: PreparedDispatch): TurnHandle {
+    return dispatchOnRunner(this, this._systemTurnDeps, opts);
+  }
+
+  get canRunDispatchedTurn(): boolean { return this._systemTurnDeps !== null; }
+
+  /** SHI-299 — see `SessionRunnerInterface.schedulePostTurnPush`. */
+  schedulePostTurnPush(): void {
+    this._systemTurnDeps?.scheduleAutoPush(this.sessionDir);
+  }
+
+  /** SHI-255 — the queue-drain re-entry for `execution: "dispatched"` entries. */
+  async runDispatchedTurn(opts: PreparedDispatch): Promise<void> {
     await runDispatchedTurn(this, this._systemTurnDeps!, this._agentId, opts, (agentId) => {
       return this.createAgent(agentId);
     });
@@ -1955,7 +2378,26 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    *
    * If the worker reports no agent is running but `_isRunning` is true
    * locally, reset the flag, clear the agent reference, emit a recovery
-   * `session_status` message, and signal idle so the runner is reclaimable.
+   * `session_status` message, settle the abandoned turn, release the queue, and
+   * signal idle so the runner is reclaimable.
+   *
+   * SHI-280 — the reset alone was not a recovery. It restored `running` and
+   * emitted `idle`, but the phantom turn had TWO other things hanging off it:
+   *
+   *  1. Anything QUEUED behind it. Every other drain in the system is reached
+   *     from a turn that actually ran (the executor's post-turn drain, the WS
+   *     drain, `dispatchOnRunner`'s setup-failure release), and none of them can
+   *     fire for a turn whose events never arrived. So a wake-turn enqueued
+   *     behind the phantom sat in the queue indefinitely — until a human
+   *     happened to send a new message, which ran immediately and whose own
+   *     post-turn drain picked the entry up. In the field that was 40+ minutes
+   *     and counting, with the entry visibly stuck in the queue chip.
+   *  2. Its SETTLEMENT. The turn never reached the executor's settling
+   *     `finally`, so `onTurnComplete` never fired and `activeDeliveryId` stayed
+   *     published — which reads as "this delivery is still in flight" and
+   *     suppresses every retry (`isDeliveryInFlight`). That is the stranding
+   *     class SHI-263 / SHI-264 / docs/240 closed, reached through the one path
+   *     they did not cover.
    */
   async verifyRunningState(): Promise<boolean> {
     if (!this._isRunning) return false;
@@ -1974,7 +2416,12 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this._isRunning = false;
     this._isStreamingActive = false;
     this._streamingProxy = null;
+    // docs/235 — the streaming process is gone, so its background tasks went
+    // with it. The count getter already gates on `isStreamingActive`; clearing
+    // here keeps the tracker from holding a stale list across a respawn.
+    this._backgroundTasks.clear();
     this._appliedPermissionMode = undefined;
+    this._appliedModel = undefined;
     this._agent = null;
     this.emitMessage({
       type: "session_status",
@@ -1983,6 +2430,21 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       queueLength: this.queueLength,
       error: "Agent state was out of sync with the worker — reset. You can send a new message.",
     });
+    // The delivery stops being live BEFORE its consumer is told, for the reason
+    // `executeAgentTurn.settleTurn` spells out: the consumer's first act on a
+    // non-`completed` outcome is to ask whether a retry is warranted, and a
+    // delivery still reading as in-flight would suppress it forever. Safe to
+    // clear unconditionally here — `running` is false, so no turn owns it.
+    this.activeDeliveryId = undefined;
+    this.emit("turn_abandoned");
+    // Release the queue before signalling idle. `releaseQueuedTurn` re-enters
+    // the branded `dispatch` path, so a dispatched entry keeps its `systemTurn`
+    // / `onTurnComplete` / `postTurn` fields instead of being re-narrowed into
+    // an interactive turn (the SHI-255 / SHI-259 rule — see `queue-drain.ts`).
+    // When it starts a turn the runner is NOT idle, so the `idle` event that
+    // drives auto-remediation and `waitForIdle` is deliberately not emitted;
+    // that turn's own post-turn flow signals idle when it finishes.
+    if (releaseQueuedTurn(this)) return false;
     this.emit("idle");
     return false;
   }
@@ -2005,7 +2467,26 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       console.log(`[container-runner:${this.sessionId}] dispose() skipped — agent is running`);
       return;
     }
+    // SHI-278 — same protection for a BACKGROUNDED sub-agent consult. docs/236
+    // tells agents to background long consults, so the primary turn routinely
+    // finishes while the spawn keeps running — `_isRunning` is false and idle
+    // cleanup would otherwise reap a live 30-minute review that nothing is
+    // wrong with. An explicit teardown (`{ force: true }`) still proceeds and
+    // cancels it below; only the lifecycle-driven paths defer.
+    if (this._subAgentAborts.size > 0 && !opts?.force) {
+      console.log(
+        `[container-runner:${this.sessionId}] dispose() skipped — ${this._subAgentAborts.size} sub-agent spawn(s) in flight`,
+      );
+      return;
+    }
     this._disposed = true;
+
+    // SHI-278 — cancel in-flight sub-agent spawns BEFORE the container goes
+    // away. Their HTTP requests are the only handle we have on them; without
+    // this abort the awaiting `runSubAgent` either hangs on a half-open socket
+    // or rejects minutes later, and either way the consult vanishes from the
+    // transcript with no terminal card.
+    this.cancelInFlightSubAgents("runner disposed");
 
     // Kill agent on worker (fire and forget)
     if (this._agent) {
@@ -2044,7 +2525,12 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this._isRunning = false;
     this._isStreamingActive = false;
     this._streamingProxy = null;
+    // docs/235 — the streaming process is gone, so its background tasks went
+    // with it. The count getter already gates on `isStreamingActive`; clearing
+    // here keeps the tracker from holding a stale list across a respawn.
+    this._backgroundTasks.clear();
     this._appliedPermissionMode = undefined;
+    this._appliedModel = undefined;
     this.termBuf.reset();
     this.emit("disposed");
     this.removeAllListeners();

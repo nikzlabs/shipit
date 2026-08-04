@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { PermissionMode, FileContextRef, ProviderAccount, SubAgentDefaults } from "../../server/shared/types.js";
+import type { AgentId, PermissionMode, FileContextRef, ProviderAccount, SubAgentDefaults } from "../../server/shared/types.js";
 import {
   getSavedNotifyOnFinish, saveNotifyOnFinish,
   getSavedSoundOnFinish, saveSoundOnFinish,
@@ -17,20 +17,85 @@ import {
 } from "../utils/local-storage.js";
 import { isValidVoice, defaultVoiceFor, providerSpeeds } from "../../server/shared/voice-catalog.js";
 import { getKeybindingDef, type KeybindingId } from "../keybindings/registry.js";
+import type { AgentAuthPhase } from "../../server/shared/types/ws-server-messages/auth.js";
 
 /**
- * In-flight `codex login --device-auth` state. Server pushes this via SSE
- * as an `agent_auth_pending` event with `agentId: "codex"` +
- * `details.kind: "device-code"` when the CLI prints the verification URL +
- * user code; cleared on `agent_auth_complete` / `agent_auth_failed` for the
- * same `agentId`. See docs/119-codex-subscription-auth/plan.md and
- * docs/155 Phase 2b for the unified event family.
+ * An in-flight sign-in challenge for one connected account.
+ *
+ * docs/150 req 19 — this replaced a pair of provider-wide slots
+ * (`codexDeviceAuth` for Codex's device code, `sessionStore.authUrl` for
+ * Claude's paste URL) that could only ever describe *one* sign-in per
+ * provider. Two rows connecting at once overwrote each other, and neither slot
+ * could say which account it belonged to. Both are gone; every challenge is
+ * keyed by {@link providerAccountAuthKey}.
+ *
+ * The server still pushes them as `agent_auth_pending` with `details.kind`
+ * `"device-code"` (Codex) or `"code-paste-url"` (Claude), cleared on
+ * `agent_auth_complete` / `agent_auth_failed`. See
+ * docs/119-codex-subscription-auth/plan.md and docs/155 Phase 2b.
  */
-export interface CodexDeviceAuth {
+export interface ProviderAccountAuth {
+  provider: AgentId;
+  accountId: string;
   verificationUri: string;
-  userCode: string;
-  expiresInSec: number;
+  userCode?: string;
 }
+
+/**
+ * docs/150 req 16 — key for the per-account sign-in maps below.
+ *
+ * Sign-in state used to live in a single slot, which was only ever correct
+ * because exactly one account could be connecting at a time. Once every
+ * account (including the first) connects through its own row, two rows can be
+ * mid-challenge simultaneously — and a single slot silently shows account B's
+ * device code on account A's row. Keying by provider *and* account id keeps
+ * each row's challenge, error, and completion independent.
+ */
+export function providerAccountAuthKey(provider: AgentId, accountId: string): string {
+  return `${provider}:${accountId}`;
+}
+
+/** Immutably set `key` to `value`, or drop it entirely when `value` is null. */
+function withKey<T>(map: Record<string, T>, key: string, value: T | null): Record<string, T> {
+  if (value === null) return Object.fromEntries(Object.entries(map).filter(([k]) => k !== key));
+  return { ...map, [key]: value };
+}
+
+export interface ClaudeAuthDiagnosticEntry {
+  id: string;
+  attemptId: string;
+  timestamp: string;
+  level: "debug" | "info" | "warn" | "error";
+  source: "shipit" | "claude_stdout" | "claude_stderr" | "claude_control";
+  message: string;
+}
+
+export interface ClaudeAuthDiagnostics {
+  attemptId: string | null;
+  active: boolean;
+  phase: AgentAuthPhase | null;
+  message: string | null;
+  elapsedMs?: number;
+  failedMessage?: string;
+  entries: ClaudeAuthDiagnosticEntry[];
+}
+
+/**
+ * The empty diagnostics an account with no sign-in attempt yet reads as.
+ *
+ * A module-level frozen constant, not an object literal in the selector: a
+ * fresh object every render would give `useSyncExternalStore` a new snapshot
+ * each time and loop forever.
+ */
+export const EMPTY_CLAUDE_AUTH_DIAGNOSTICS: ClaudeAuthDiagnostics = Object.freeze({
+  attemptId: null,
+  active: false,
+  phase: null,
+  message: null,
+  entries: [] as ClaudeAuthDiagnosticEntry[],
+});
+
+const MAX_CLAUDE_AUTH_DIAGNOSTIC_ENTRIES = 200;
 
 interface SettingsState {
   hasSystemPrompt: boolean;
@@ -105,15 +170,42 @@ interface SettingsState {
   /** docs/144 — global gate for sub-agent spawning. */
   enableSubAgents: boolean;
   /**
+   * docs/150 reqs 4-6 — per-provider proactive failover cutoffs, keyed by agent
+   * id. Reaching either window's cutoff moves new work to the next eligible
+   * account. Server always sends an entry per registered agent, so the client
+   * never has to know the 90% default.
+   */
+  failoverCutoffs: Record<string, { session: number; weekly: number }>;
+  /**
+   * docs/150 req 21 — per-provider account selection mode, keyed by agent id.
+   * Same contract as `failoverCutoffs`: the server sends an entry per
+   * registered agent, so the client never encodes the "strict" default.
+   */
+  accountSelectionMode: Record<string, "strict" | "balanced">;
+  /**
    * docs/217 — per-agent defaults applied when an agent runs as a sub-agent
    * (Control A), keyed by agent id. Hydrated from bootstrap / settings broadcast.
    */
   agentSubAgentDefaults: Record<string, SubAgentDefaults>;
-  /** Active Codex device-auth flow state — `null` when no flow is running. */
-  codexDeviceAuth: CodexDeviceAuth | null;
-  /** Last device-auth failure message — `null` when no error. */
-  codexDeviceAuthError: string | null;
+  /**
+   * Claude CLI sign-in diagnostics, keyed by provider account id (docs/150).
+   *
+   * One buffer per provider was correct only for as long as two things held at
+   * once: `startAccountAuth` refuses a second concurrent per-provider sign-in
+   * (409), and the buffer clears whenever `attemptId` changes. Under those, at
+   * most one Claude row is ever mid-challenge. Keying by account makes the
+   * scoping a property of the DATA instead of a consequence of that
+   * serialization guard, so a row can only render its own attempt's output.
+   */
+  claudeAuthDiagnostics: Record<string, ClaudeAuthDiagnostics>;
   providerAccounts: ProviderAccount[];
+  /**
+   * In-flight account-scoped sign-in challenges, keyed by
+   * {@link providerAccountAuthKey} so concurrent row sign-ins stay independent.
+   */
+  providerAccountAuths: Record<string, ProviderAccountAuth>;
+  /** Last sign-in failure per account, same key space as `providerAccountAuths`. */
+  providerAccountAuthErrors: Record<string, string>;
 
   setHasSystemPrompt: (has: boolean) => void;
   setSystemPromptContent: (content: string) => void;
@@ -143,13 +235,29 @@ interface SettingsState {
   setLiveSteering: (enabled: boolean) => void;
   setAutoResolveConflicts: (enabled: boolean) => void;
   setAutoFixCi: (enabled: boolean) => void;
+  setFailoverCutoffs: (agentId: string, cutoffs: { session: number; weekly: number }) => void;
+  setAccountSelectionMode: (agentId: string, mode: "strict" | "balanced") => void;
   setAutoResetMergedBranch: (enabled: boolean) => void;
   setEnableSubAgents: (enabled: boolean) => void;
   /** docs/217 — replace the per-agent sub-agent defaults map (Control A). */
   setAgentSubAgentDefaults: (map: Record<string, SubAgentDefaults>) => void;
-  setCodexDeviceAuth: (state: CodexDeviceAuth | null) => void;
-  setCodexDeviceAuthError: (message: string | null) => void;
+  setClaudeAuthProgress: (accountId: string, progress: {
+    attemptId: string;
+    phase: AgentAuthPhase;
+    message: string;
+    elapsedMs?: number;
+  }) => void;
+  appendClaudeAuthLog: (accountId: string, entry: Omit<ClaudeAuthDiagnosticEntry, "id">) => void;
+  finishClaudeAuthDiagnostics: (
+    accountId: string,
+    status: "complete" | "failed",
+    message?: string,
+  ) => void;
   setProviderAccounts: (accounts: ProviderAccount[]) => void;
+  /** Set (or clear, with `null`) one account's in-flight sign-in challenge. */
+  setProviderAccountAuth: (provider: AgentId, accountId: string, auth: ProviderAccountAuth | null) => void;
+  /** Set (or clear, with `null`) one account's last sign-in failure message. */
+  setProviderAccountAuthError: (provider: AgentId, accountId: string, message: string | null) => void;
   /**
    * Update the permission mode. When `sessionId` is provided, the change is
    * scoped to that session only. When `sessionId` is undefined (e.g. on the
@@ -210,10 +318,13 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   autoFixCi: false,
   autoResetMergedBranch: true,
   enableSubAgents: false,
+  failoverCutoffs: {},
+  accountSelectionMode: {},
   agentSubAgentDefaults: {},
-  codexDeviceAuth: null,
-  codexDeviceAuthError: null,
+  claudeAuthDiagnostics: {},
   providerAccounts: [],
+  providerAccountAuths: {},
+  providerAccountAuthErrors: {},
 
   setHasSystemPrompt: (has) => set({ hasSystemPrompt: has }),
 
@@ -322,14 +433,90 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setAutoResolveConflicts: (enabled) => set({ autoResolveConflicts: enabled }),
 
   setAutoFixCi: (enabled) => set({ autoFixCi: enabled }),
+  setFailoverCutoffs: (agentId, cutoffs) =>
+    set((s) => ({ failoverCutoffs: { ...s.failoverCutoffs, [agentId]: cutoffs } })),
+  setAccountSelectionMode: (agentId, mode) =>
+    set((s) => ({ accountSelectionMode: { ...s.accountSelectionMode, [agentId]: mode } })),
   setAutoResetMergedBranch: (enabled) => set({ autoResetMergedBranch: enabled }),
   setEnableSubAgents: (enabled) => set({ enableSubAgents: enabled }),
   setAgentSubAgentDefaults: (map) => set({ agentSubAgentDefaults: map }),
 
-  setCodexDeviceAuth: (state) => set({ codexDeviceAuth: state }),
-
-  setCodexDeviceAuthError: (message) => set({ codexDeviceAuthError: message }),
+  setClaudeAuthProgress: (accountId, progress) =>
+    set((state) => {
+      const current = state.claudeAuthDiagnostics[accountId] ?? EMPTY_CLAUDE_AUTH_DIAGNOSTICS;
+      const isNewAttempt = current.attemptId !== progress.attemptId;
+      return {
+        claudeAuthDiagnostics: {
+          ...state.claudeAuthDiagnostics,
+          [accountId]: {
+            attemptId: progress.attemptId,
+            active: progress.phase !== "complete" && progress.phase !== "failed",
+            phase: progress.phase,
+            message: progress.message,
+            ...(progress.elapsedMs !== undefined ? { elapsedMs: progress.elapsedMs } : {}),
+            entries: isNewAttempt ? [] : current.entries,
+          },
+        },
+      };
+    }),
+  appendClaudeAuthLog: (accountId, entry) =>
+    set((state) => {
+      const current = state.claudeAuthDiagnostics[accountId] ?? EMPTY_CLAUDE_AUTH_DIAGNOSTICS;
+      const isNewAttempt = current.attemptId !== entry.attemptId;
+      const kept = isNewAttempt ? [] : current.entries;
+      const entries = [
+        ...kept,
+        { ...entry, id: `${entry.attemptId}:${entry.timestamp}:${kept.length}` },
+      ].slice(-MAX_CLAUDE_AUTH_DIAGNOSTIC_ENTRIES);
+      return {
+        claudeAuthDiagnostics: {
+          ...state.claudeAuthDiagnostics,
+          [accountId]: {
+            ...current,
+            attemptId: entry.attemptId,
+            active: isNewAttempt ? true : current.active,
+            entries,
+          },
+        },
+      };
+    }),
+  finishClaudeAuthDiagnostics: (accountId, status, message) =>
+    set((state) => {
+      const current = state.claudeAuthDiagnostics[accountId];
+      // Nothing was recorded for this account, so there is no attempt to
+      // finish — inventing one would render an empty diagnostics block on a row
+      // that never ran a challenge.
+      if (!current) return {};
+      return {
+        claudeAuthDiagnostics: {
+          ...state.claudeAuthDiagnostics,
+          [accountId]: {
+            ...current,
+            active: false,
+            phase: status,
+            message: message ?? (status === "complete" ? "Claude sign-in completed." : "Claude sign-in failed."),
+            ...(status === "failed" && message ? { failedMessage: message } : {}),
+          },
+        },
+      };
+    }),
   setProviderAccounts: (accounts) => set({ providerAccounts: accounts }),
+  setProviderAccountAuth: (provider, accountId, auth) =>
+    set((state) => ({
+      providerAccountAuths: withKey(
+        state.providerAccountAuths,
+        providerAccountAuthKey(provider, accountId),
+        auth,
+      ),
+    })),
+  setProviderAccountAuthError: (provider, accountId, message) =>
+    set((state) => ({
+      providerAccountAuthErrors: withKey(
+        state.providerAccountAuthErrors,
+        providerAccountAuthKey(provider, accountId),
+        message,
+      ),
+    })),
 
   setPermissionMode: (sessionId, mode) => {
     if (sessionId) {

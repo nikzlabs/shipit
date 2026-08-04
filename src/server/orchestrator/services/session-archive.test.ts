@@ -191,6 +191,81 @@ describe("archiveSession container teardown", () => {
     expect(fs.existsSync(grandchildWs)).toBe(false);
   });
 
+  it("does NOT cascade from an Ops session to its spawned fix sessions", async () => {
+    // docs/162 — an Ops session is a per-host cockpit, not the root of a
+    // cohort. Its children are remediation sessions on the ShipIt source repo
+    // with their own branch and PR, spawned across unrelated incidents.
+    // Archiving the cockpit must leave them (and their workspaces) intact.
+    const opsWs = path.join(tmpDir, "ops-ws");
+    const opsId = makeSession(opsWs);
+    sessionManager.setKind(opsId, "ops");
+
+    const fixWs = path.join(tmpDir, "fix-ws");
+    const grandchildWs = path.join(tmpDir, "fix-grandchild-ws");
+    fs.mkdirSync(fixWs, { recursive: true });
+    fs.mkdirSync(grandchildWs, { recursive: true });
+
+    const fixId = "fix-1";
+    sessionManager.track(fixId, "ShipIt fix", fixWs);
+    sessionManager.setRemoteUrl(fixId, remoteUrl);
+    sessionManager.setParentSession(fixId, opsId);
+
+    const grandchildId = "fix-grandchild-1";
+    sessionManager.track(grandchildId, "Fix grandchild", grandchildWs);
+    sessionManager.setRemoteUrl(grandchildId, remoteUrl);
+    sessionManager.setParentSession(grandchildId, fixId);
+
+    await archiveSession(
+      sessionManager,
+      runnerRegistry,
+      getBareCacheDir,
+      opsId,
+    );
+
+    expect(sessionManager.get(opsId)?.archived).toBe(true);
+    expect(sessionManager.get(fixId)?.archived).toBeFalsy();
+    expect(sessionManager.get(grandchildId)?.archived).toBeFalsy();
+    expect(fs.existsSync(fixWs)).toBe(true);
+    expect(fs.existsSync(grandchildWs)).toBe(true);
+    // The breadcrumb survives, so unarchiving the Ops session re-links the tree.
+    expect(sessionManager.get(fixId)?.parentSessionId).toBe(opsId);
+  });
+
+  it("still cascades from a non-Ops child OF an Ops session", async () => {
+    // The exemption is scoped to the Ops session itself — an ordinary session
+    // in the brood still takes its own descendants with it when archived.
+    const opsWs = path.join(tmpDir, "ops-ws2");
+    const opsId = makeSession(opsWs);
+    sessionManager.setKind(opsId, "ops");
+
+    const fixWs = path.join(tmpDir, "fix-ws2");
+    const grandchildWs = path.join(tmpDir, "fix-grandchild-ws2");
+    fs.mkdirSync(fixWs, { recursive: true });
+    fs.mkdirSync(grandchildWs, { recursive: true });
+
+    const fixId = "fix-2";
+    sessionManager.track(fixId, "ShipIt fix", fixWs);
+    sessionManager.setRemoteUrl(fixId, remoteUrl);
+    sessionManager.setParentSession(fixId, opsId);
+
+    const grandchildId = "fix-grandchild-2";
+    sessionManager.track(grandchildId, "Fix grandchild", grandchildWs);
+    sessionManager.setRemoteUrl(grandchildId, remoteUrl);
+    sessionManager.setParentSession(grandchildId, fixId);
+
+    await archiveSession(
+      sessionManager,
+      runnerRegistry,
+      getBareCacheDir,
+      fixId,
+    );
+
+    expect(sessionManager.get(fixId)?.archived).toBe(true);
+    expect(sessionManager.get(grandchildId)?.archived).toBe(true);
+    expect(sessionManager.get(opsId)?.archived).toBeFalsy();
+    expect(fs.existsSync(opsWs)).toBe(true);
+  });
+
   it("archiving a child does not affect its parent", async () => {
     const parentWs = path.join(tmpDir, "parent-ws");
     const parentId = makeSession(parentWs);

@@ -29,6 +29,7 @@ import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import path from "node:path";
 import type { ComposeConfig } from "../shared/shipit-config.js";
+import { killChild } from "../shared/kill-child.js";
 import { truncateTerminalBuffer } from "./terminal-buffer.js";
 import type { LogStore } from "./log-store.js";
 import {
@@ -40,6 +41,7 @@ import {
   type ComposeService,
   type OverlayDepDirVolume,
 } from "./compose-generator.js";
+import { COMPOSE_OVERRIDE_FILE, sessionStateDirForWorkspace } from "./session-state-dir.js";
 import {
   ServiceSecretsResolver,
   type SecretsStatusInternalSnapshot,
@@ -151,7 +153,7 @@ export interface ServiceManagerOptions {
    * Loads user-saved secrets for the session's repo (from SecretStore).
    *
    * Called once before each compose start/reconcile so secret values reach
-   * compose services via per-service env files (`.shipit/.env.<service>`).
+   * compose services via per-service env files.
    * Returning an empty object is fine — services with declared
    * `x-shipit-secrets` whose values aren't configured simply get an empty env
    * file (Phase 2 surfaces this as a missing-secrets warning).
@@ -162,8 +164,8 @@ export interface ServiceManagerOptions {
    * `CredentialStore.agentEnv`) — docs/088. Called inside the secret-sync
    * pass after `resolveSecrets()` runs; the result is merged into the
    * resolved `agentValues` map (compose-declared entries win on key
-   * collision) before `.shipit/.env.agent` is written and pushed to the
-   * worker. Synchronous — `CredentialStore` is an in-memory JSON store.
+   * collision) before the session state dir's `.env.agent` is written and
+   * pushed to the worker. Synchronous — `CredentialStore` is an in-memory JSON store.
    */
   mcpAgentEnvLoader?: () => Record<string, string>;
   /**
@@ -181,23 +183,26 @@ export interface ServiceManagerOptions {
    *     (the Docker daemon reads paths from the host's filesystem). Omit
    *     for orchestrator-on-host setups.
    *   - `entrypointSourcePath`: orchestrator path to the
-   *     `secrets-entrypoint.sh` baked into the image. Copied into
-   *     `.shipit/secrets-entrypoint.sh` at compose-start so service
-   *     containers can mount it.
+   *     `secrets-entrypoint.sh` baked into the image. Staged into the
+   *     Docker-secrets root at compose-start (SHI-285) so service containers
+   *     can bind-mount it by absolute path.
    *
    * When omitted, the manager falls back to the env-file mode (Phase 1
    * baseline).
    */
   dockerSecretsConfig?: DockerSecretsConfig;
   /**
-   * docs/183 — orchestrator-private root for per-service env files, OUTSIDE
-   * the session workspace. When set (and Docker-secrets mode is off), service
-   * env files are written to `<serviceEnvDir>/<sessionId>/.env.<svc>` and the
-   * compose override references those absolute paths, keeping service-only
-   * secrets out of the agent-readable workspace. Omit for tests / non-container
-   * setups, which fall back to the legacy workspace `.shipit/.env.<svc>` path.
+   * docs/183 — orchestrator-private root for per-service env files, OUTSIDE the
+   * session workspace. Unless Docker-secrets mode is on, service env files are
+   * written to `<serviceEnvDir>/<sessionId>/.env.<svc>` and the compose override
+   * references those absolute paths, keeping service-only secrets out of the
+   * agent-readable workspace.
+   *
+   * **Required** (SHI-290) — see `ServiceSecretsResolverOptions.serviceEnvDir`
+   * for why the optional form had to go. The root must resolve outside
+   * `workspaceDir` or the write throws.
    */
-  serviceEnvDir?: string;
+  serviceEnvDir: string;
   /**
    * docs/183 Phase 5 — per-session overlay dep-dir volumes for an overlay-eligible
    * session. Forwarded into `generateComposeOverride` so services that share the
@@ -242,7 +247,7 @@ export interface ServiceManagerEvents {
 export class ServiceManager extends EventEmitter {
   private readonly sessionId: string;
   private readonly workspaceDir: string;
-  private readonly composeConfig: ComposeConfig;
+  private composeConfig: ComposeConfig;
 
   private static readonly MAX_LOG_BUFFER = 80_000;
   /**
@@ -270,7 +275,12 @@ export class ServiceManager extends EventEmitter {
   /** docs/128 — periodic agent network-attachment self-heal (see options). */
   private readonly networkHealFn?: (networkName: string) => Promise<void>;
   /** docs/183 — external service-env root, for teardown cleanup. */
-  private readonly serviceEnvDir?: string;
+  private readonly serviceEnvDir: string;
+  /**
+   * docs/246 — where the generated compose override is written: the session's
+   * state dir, always outside the clone.
+   */
+  private readonly overrideDir: string;
   /**
    * docs/087 Phase 1 follow-up — Docker-secrets orchestrator-internal root, for
    * teardown cleanup. The same `<internalDir>/<sessionId>/` directory
@@ -332,15 +342,31 @@ export class ServiceManager extends EventEmitter {
    */
   private postGateServices = new Set<string>();
 
+  /**
+   * In-flight `docker compose stop` for a mid-session re-install teardown, or
+   * `null`. The gate-open path awaits it before releasing gated services so the
+   * teardown's own SIGKILL is still observed while the service is gated — and
+   * is therefore swallowed by the existing gated guards instead of being
+   * reported to the user as a crash. See `releaseInstallGate` (docs/239).
+   */
+  private _gatedTeardown: Promise<void> | null = null;
+
   constructor(opts: ServiceManagerOptions) {
     super();
     this.sessionId = opts.sessionId;
     this.workspaceDir = opts.workspaceDir;
     this.composeConfig = opts.composeConfig;
+    // docs/246 — the override lives in the session's state dir, outside the
+    // clone, so the post-turn `git add -A` can never stage it into the user's
+    // repository. Derived from the clone path via the one contract every side
+    // of the feature shares; a clone that isn't `<sessionDir>/workspace` throws
+    // rather than falling back into the clone (SHI-286).
+    this.overrideDir = sessionStateDirForWorkspace(opts.workspaceDir);
     this.compose = new ComposeCli({
       sessionId: opts.sessionId,
       workspaceDir: opts.workspaceDir,
       composeFile: opts.composeConfig.file,
+      overrideFile: path.join(this.overrideDir, COMPOSE_OVERRIDE_FILE),
       ...(opts.composeRunner ? { composeRunner: opts.composeRunner } : {}),
       ...(opts.composeQuery ? { composeQuery: opts.composeQuery } : {}),
     });
@@ -361,7 +387,7 @@ export class ServiceManager extends EventEmitter {
       ...(opts.secretsLoader ? { secretsLoader: opts.secretsLoader } : {}),
       ...(opts.mcpAgentEnvLoader ? { mcpAgentEnvLoader: opts.mcpAgentEnvLoader } : {}),
       ...(opts.dockerSecretsConfig ? { dockerSecretsConfig: opts.dockerSecretsConfig } : {}),
-      ...(opts.serviceEnvDir ? { serviceEnvDir: opts.serviceEnvDir } : {}),
+      serviceEnvDir: opts.serviceEnvDir,
       onSnapshot: (snapshot) => this.emit("secrets_status", snapshot),
       // docs/184: relay the now-unhonored `source: platform:*` notice into the
       // service's log stream so it surfaces in the same place as its output.
@@ -422,8 +448,8 @@ export class ServiceManager extends EventEmitter {
         this.retry.clearRetryState(name);
         this.retry.clearOomBudget(name);
       },
-      onExitedWithError: (name, exitCode) => {
-        this.handleNonZeroExit(name, exitCode);
+      onExitedWithError: (name, exitCode, oomKilled) => {
+        this.handleNonZeroExit(name, exitCode, oomKilled);
       },
       afterPoll: () => this.healSessionNetwork(),
     });
@@ -462,8 +488,12 @@ export class ServiceManager extends EventEmitter {
    * Branching for a non-zero exit. See the original inline pollStatus for
    * the rationale on each branch — preserved verbatim here so the retry
    * paths behave identically.
+   *
+   * @param oomKilled The container's inspected `State.OOMKilled` (from the
+   *   poller), or `undefined` when the inspect couldn't answer. Exit 137 is
+   *   SIGKILL, not "OOM" — see the exit-137 branch below.
    */
-  private handleNonZeroExit(name: string, exitCode: number): void {
+  private handleNonZeroExit(name: string, exitCode: number, oomKilled?: boolean): void {
     const svc = this.services.get(name);
     if (!svc) return;
 
@@ -483,12 +513,23 @@ export class ServiceManager extends EventEmitter {
       return;
     }
 
-    if (exitCode === 137 && svc.preview === "auto") {
-      // 137 = SIGKILL, the most common cause of which inside a
-      // memory-limited container is the OOM killer. The authoritative
-      // signal comes from the Docker event subscriber in
-      // container-health.ts (which checks State.OOMKilled), but if that
-      // event was missed we still want to handle it correctly here.
+    if (exitCode === 137 && oomKilled === true && svc.preview === "auto") {
+      // CONFIRMED OOM kill: 137 (SIGKILL) *and* the container's inspected
+      // `State.OOMKilled` says the kernel's cgroup OOM killer did it.
+      //
+      // The `oomKilled` conjunct is load-bearing, not defensive. 137 alone
+      // means "somebody sent SIGKILL", and the most frequent sender in this
+      // system is US: `stopGatedForReinstall` runs `docker compose stop`, and a
+      // `command: sh -c "npm install && npm run dev"` service never forwards
+      // SIGTERM, so the 10s grace period always expires into a SIGKILL. Field
+      // report (docs/239): a cached ~35ms re-install looping every 30s produced
+      // an exit-137 every cycle with `OOMKilled: false` on a service using
+      // 110 MiB of a 3 GiB limit — auto-"OOM"-retried, budget drained, then
+      // latched to `error` advising the user to raise a memory limit that was
+      // never the problem. An unconfirmed 137 now falls through: inside the
+      // post-gate window it lands on the docs/137 recovery path built for
+      // exactly "crashed right after the gate opened", and outside it, on the
+      // terminal branch with an honest message.
       //
       // We auto-retry up to MAX_OOM_AUTO_RETRIES times with the same
       // backoff schedule the install-window path uses. Without this,
@@ -514,10 +555,7 @@ export class ServiceManager extends EventEmitter {
       this.postGateServices.delete(name);
     }
 
-    const message = exitCode === 137
-      ? "Exited with code 137 (likely OOMKilled)"
-      : `Exited with code ${exitCode}`;
-    this.updateServiceStatus(name, "error", message);
+    this.updateServiceStatus(name, "error", describeExit(exitCode, oomKilled));
   }
 
   /**
@@ -566,15 +604,59 @@ export class ServiceManager extends EventEmitter {
 
     if (wasRunning && !running) {
       this._installFailed = opts.failed ?? false;
+      this.releaseInstallGate();
+      // Legacy safety net for opted-out / non-gated services that crashed
+      // during the install window. Excludes gated services (handled above).
+      this.flushPostInstallRetries();
+    }
+  }
+
+  /**
+   * Install finished — hand the gated services back to their normal lifecycle.
+   *
+   * Deliberately waits for any in-flight mid-session teardown
+   * (`stopGatedForReinstall`) to finish first. `holdGatedServicesForReinstall`
+   * issues `docker compose stop`, which SIGTERMs the container and SIGKILLs it
+   * when the 10s grace period expires — and a `command: sh -c "npm install &&
+   * npm run dev"` service never forwards SIGTERM, so the grace period always
+   * expires. If the gate reopens before that SIGKILL lands (observed at +35ms
+   * on a cached no-op install, ~10s before the kill — docs/239), the service is
+   * no longer in `gatedServices`, so the poller's `isGated` skip and
+   * `handleNonZeroExit`'s gated early-return — both written for exactly this
+   * exit — miss it, and our own teardown surfaces to the user as a service
+   * crash. Waiting is what lets those existing guards do their job.
+   *
+   * Sequencing it also stops the reopening `compose up` from racing the
+   * `compose stop` it just issued against the same container.
+   */
+  private releaseInstallGate(): void {
+    const teardown = this._gatedTeardown;
+    this._gatedTeardown = null;
+
+    const open = (): void => {
+      if (this._disposed) return;
+      // A new install may have started while we waited for the teardown; that
+      // re-held the services, and its own completion owns the next gate open.
+      if (this._installRunning) return;
       if (this._installFailed) {
         this.latchGatedServicesToError();
       } else {
         this.startGatedServices();
       }
-      // Legacy safety net for opted-out / non-gated services that crashed
-      // during the install window. Excludes gated services (handled above).
-      this.flushPostInstallRetries();
+    };
+
+    if (!teardown) {
+      // No mid-session teardown in flight (the common first-install path) —
+      // open synchronously, exactly as before.
+      open();
+      return;
     }
+    // Fire-and-forget from a sync caller (`setInstallRunning`): the gate opens
+    // once the teardown lands. `stopGatedForReinstall` never rejects.
+    void (async () => {
+      await teardown;
+      open();
+    })();
   }
 
   /** Whether the install-running gate is currently active. */
@@ -599,6 +681,14 @@ export class ServiceManager extends EventEmitter {
    */
   getSecretsSnapshot(): SecretsStatusInternalSnapshot {
     return this.secrets.getSnapshot();
+  }
+
+  /**
+   * Whether a secrets sync has run yet. An empty snapshot means "nothing is
+   * declared" only once this is true; before that it means "not resolved yet."
+   */
+  get secretsSynced(): boolean {
+    return this.secrets.hasSynced;
   }
 
   /** Whether the compose stack has been started. */
@@ -753,7 +843,7 @@ export class ServiceManager extends EventEmitter {
       ...(this.overlayDepDirs.length > 0 ? { overlayDepDirs: this.overlayDepDirs } : {}),
     };
     const overrideContent = generateComposeOverride(parsedServices, overrideOpts);
-    writeComposeOverride(this.workspaceDir, overrideContent);
+    writeComposeOverride(this.overrideDir, overrideContent);
 
     // Mark auto services as starting (silently — _startupComplete is false)
     const autoServices = [...this.services.values()].filter(s => s.preview === "auto");
@@ -769,6 +859,9 @@ export class ServiceManager extends EventEmitter {
     // have fired before this start() ran). Non-gated services start now.
     this.gatedServices.clear();
     this.postGateServices.clear();
+    // A full (re)start supersedes any pending mid-session teardown — the stack
+    // is being brought up from scratch, so the gate must not wait on it.
+    this._gatedTeardown = null;
     const gateOpen = !this._installRunning && !this._installFailed;
     const startNow: ManagedService[] = [];
     for (const svc of autoServices) {
@@ -921,7 +1014,7 @@ export class ServiceManager extends EventEmitter {
   streamLogs(name: string): () => void {
     const existing = this.logProcesses.get(name);
     if (existing) {
-      existing.kill();
+      killChild(existing);
       this.logProcesses.delete(name);
     }
 
@@ -965,12 +1058,49 @@ export class ServiceManager extends EventEmitter {
     proc.stdout?.on("data", handleData);
     proc.stderr?.on("data", handleData);
 
+    // A ChildProcess that fails to exec emits 'error', and an 'error' event
+    // with no listener is rethrown as an uncaughtException that kills the
+    // whole process. The follower is the one docker spawn that bypasses the
+    // injectable compose runner, so it fires for real even when a caller has
+    // stubbed every other docker call — most visibly when `npm test` runs
+    // inside a ShipIt session container, which has no `docker` binary at all:
+    // ENOENT there crashed the vitest worker, and the pool crashed with it.
+    // Losing the follower is not fatal (it only feeds the log buffer), so
+    // degrade to "no follower" instead.
+    proc.on("error", (err: Error) => {
+      console.warn(`[compose:${this.sessionId}] log follower for ${name} failed to start:`, err.message);
+      if (this.logProcesses.get(name) === proc) this.logProcesses.delete(name);
+    });
+
     this.logProcesses.set(name, proc);
 
     return () => {
-      proc.kill();
+      killChild(proc);
       this.logProcesses.delete(name);
     };
+  }
+
+  /**
+   * Adopt a freshly-resolved `compose:` block from `shipit.yaml`.
+   *
+   * `composeConfig` is read from `shipit.yaml` once, when the manager is
+   * constructed — but `shipit.yaml` itself is a workspace file that a git
+   * sync/rebase (or a plain edit) can rewrite mid-session. Without this,
+   * `reconcile()` would keep re-parsing the ORIGINAL compose path forever, so
+   * a repo that moves its compose file or flips `docker-socket` would silently
+   * keep running the old stack definition. Call this before `reconcile()`.
+   *
+   * Returns true when the config actually changed (the caller can skip work,
+   * and the reconcile is a plain compose-file re-read).
+   */
+  updateComposeConfig(next: ComposeConfig): boolean {
+    const changed =
+      next.file !== this.composeConfig.file ||
+      next.dockerSocket !== this.composeConfig.dockerSocket;
+    if (!changed) return false;
+    this.composeConfig = next;
+    this.compose.setComposeFile(next.file);
+    return true;
   }
 
   /**
@@ -980,7 +1110,7 @@ export class ServiceManager extends EventEmitter {
   async reconcile(): Promise<void> {
     // Kill orphaned log processes before clearing state — if a service was
     // renamed or removed, start() won't find its old process to clean up.
-    for (const [, proc] of this.logProcesses) proc.kill();
+    for (const [, proc] of this.logProcesses) killChild(proc);
     this.logProcesses.clear();
     this.poller.stop();
     this.retry.cancelAll();
@@ -1006,10 +1136,11 @@ export class ServiceManager extends EventEmitter {
     this.poller.stop();
     this.retry.cancelAll();
     this.postGateServices.clear();
+    this._gatedTeardown = null;
 
     // Kill all log streaming processes
     for (const [name, proc] of this.logProcesses) {
-      proc.kill();
+      killChild(proc);
       this.logProcesses.delete(name);
     }
 
@@ -1025,7 +1156,7 @@ export class ServiceManager extends EventEmitter {
     // the workspace checkout, so neither archive nor the disk-janitor would
     // otherwise reclaim them. Idle eviction / reconcile keep `removeVolumes`
     // false, preserving the files for resume.
-    if (opts.removeVolumes && this.serviceEnvDir) {
+    if (opts.removeVolumes) {
       removeSessionServiceEnvDir({ rootDir: this.serviceEnvDir, sessionId: this.sessionId });
     }
 
@@ -1049,7 +1180,7 @@ export class ServiceManager extends EventEmitter {
    * Refresh secret env files and apply them to the running stack.
    *
    * Called when the user saves secrets via `PUT /api/secrets`. Re-parses the
-   * compose file (in case it changed), rewrites `.shipit/.env.<service>`
+   * compose file (in case it changed), rewrites the per-service env
    * files, and runs `docker compose up -d` so compose detects the env
    * changes and recreates affected containers. Safe to call when the stack
    * isn't started — env files are written but no compose call happens.
@@ -1088,7 +1219,7 @@ export class ServiceManager extends EventEmitter {
         dockerSecrets: dockerSecretsBuild,
       };
       const overrideContent = generateComposeOverride(parsedServices, overrideOpts);
-      writeComposeOverride(this.workspaceDir, overrideContent);
+      writeComposeOverride(this.overrideDir, overrideContent);
     }
 
     if (!this._started) return;
@@ -1098,6 +1229,7 @@ export class ServiceManager extends EventEmitter {
     const autoNames = [...this.services.values()]
       .filter(s => s.preview === "auto")
       .map(s => s.name);
+    if (autoNames.length === 0) return;
     try {
       await this.compose.up(autoNames);
       await this.poller.pollOnce();
@@ -1261,13 +1393,30 @@ export class ServiceManager extends EventEmitter {
       this.postGateServices.delete(svc.name);
       this.retry.clearPostGateState(svc.name);
       this.retry.cancelPostGateStableTimer(svc.name);
+      // Same reasoning for the OOM budget: this teardown+relaunch is a fresh
+      // start against a new dependency tree, so it should not inherit an
+      // earlier OOM count. Without this, a repeating re-install (the dep-change
+      // cooldown is 30s) tears the service down before it can bank the 60s of
+      // continuous uptime that clears the counter, so the budget only ever
+      // drains — monotonically, to a permanent latch. See docs/239.
+      this.retry.resetOomBudget(svc.name);
     }
-    void this.stopGatedForReinstall([...this.gatedServices]);
+    // Retained so the gate-open path can await it — see `releaseInstallGate`.
+    this._gatedTeardown = this.stopGatedForReinstall([...this.gatedServices]);
   }
 
-  /** Stop gated containers so they relaunch fresh after re-install completes. */
+  /**
+   * Stop gated containers so they relaunch fresh after re-install completes.
+   *
+   * Concurrent, not sequential: `releaseInstallGate` now waits for this, and
+   * each `compose stop` can burn the full 10s SIGTERM grace period, so a
+   * sequential loop would add 10s of preview downtime *per gated service* to
+   * every re-install bracket. Stopping them together caps the added wait at one
+   * grace period for the whole stack. Never rejects — a stop failure is logged
+   * and swallowed so it can't wedge the gate closed.
+   */
   private async stopGatedForReinstall(names: string[]): Promise<void> {
-    for (const name of names) {
+    await Promise.all(names.map(async (name) => {
       if (this._disposed) return;
       try {
         await this.compose.stop(name);
@@ -1277,7 +1426,7 @@ export class ServiceManager extends EventEmitter {
           (err as Error).message,
         );
       }
-    }
+    }));
   }
 
   /**
@@ -1330,6 +1479,24 @@ export class ServiceManager extends EventEmitter {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * User-facing message for a service that exited non-zero.
+ *
+ * Exit 137 is SIGKILL — an OOM kill is only ONE of its causes, and inside
+ * ShipIt it is not even the most common one (our own re-install teardown
+ * SIGKILLs services that don't forward SIGTERM). So we only name OOM when the
+ * container's inspected `State.OOMKilled` backs it up, hedge when we couldn't
+ * ask, and say plainly that it wasn't an OOM when the daemon told us so —
+ * because "raise your memory limit" is inert advice for a plain SIGKILL and
+ * sends the user chasing a limit that was never binding. See docs/239.
+ */
+function describeExit(exitCode: number, oomKilled?: boolean): string {
+  if (exitCode !== 137) return `Exited with code ${exitCode}`;
+  if (oomKilled === true) return "Exited with code 137 (OOMKilled)";
+  if (oomKilled === false) return "Exited with code 137 (SIGKILL — not an OOM kill)";
+  return "Exited with code 137 (likely OOMKilled)";
+}
 
 /**
  * Extract the host port from a port mapping string.

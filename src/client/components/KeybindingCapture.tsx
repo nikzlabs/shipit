@@ -1,5 +1,5 @@
-// eslint-disable-next-line no-restricted-imports -- useEffect: window keydown capture with cleanup while recording
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useEventListener } from "../hooks/useEventListener.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import { KeyboardIcon } from "@phosphor-icons/react";
 import { Button } from "./ui/button.js";
@@ -39,25 +39,19 @@ export function KeybindingCapture({
 }) {
   const [recording, setRecording] = useState(false);
 
-  // eslint-disable-next-line no-restricted-syntax -- one-shot global capture while recording, cleaned up on stop
-  useEffect(() => {
-    if (!recording) return undefined;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      if (e.key === "Escape") {
-        setRecording(false);
-        return;
-      }
-      const chord = chordFromEvent(e);
-      if (!chord) return; // modifier-only press — keep waiting
-      onCapture(chord);
+  // Capture phase so we intercept before app-level shortcut handlers fire.
+  useEventListener(recording ? window : null, "keydown", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.key === "Escape") {
       setRecording(false);
-    };
-    // Capture phase so we intercept before app-level shortcut handlers fire.
-    window.addEventListener("keydown", handleKeyDown, true);
-    return () => window.removeEventListener("keydown", handleKeyDown, true);
-  }, [recording, onCapture]);
+      return;
+    }
+    const chord = chordFromEvent(e);
+    if (!chord) return; // modifier-only press — keep waiting
+    onCapture(chord);
+    setRecording(false);
+  }, true);
 
   return (
     <div className="flex items-center gap-2">

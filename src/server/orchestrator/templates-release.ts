@@ -406,8 +406,10 @@ function renderSyncDefaultBranchJob(
   // is never merged back — so the default branch's version source drifts behind
   // every release. After a green publish on the branch path, open (or leave) a
   // chore PR bumping the default branch to the released version. A PR (not a
-  // direct push) respects branch protection; idempotent (no-op when already in
-  // sync or the sync branch exists). rc's (tag path) never reach here — the job
+  // direct push) respects branch protection. Idempotency keys on an OPEN PR, not
+  // branch existence (a prior run can push the branch then fail to open the PR —
+  // e.g. GitHub blocks Actions from creating PRs — so a re-run reuses the branch
+  // and (re)opens the PR rather than skipping). rc's (tag path) never reach here — the job
   // is gated to the branch path. The default branch is resolved at runtime
   // (`gh repo view`) so this needs no extra config and works for main/master;
   // when it equals the maintenance branch the merge already advanced it, so skip.
@@ -452,19 +454,34 @@ function renderSyncDefaultBranchJob(
           fi
 
           SYNC_BRANCH="release-sync/$TAG"
-          if git ls-remote --exit-code --heads origin "$SYNC_BRANCH" >/dev/null 2>&1; then
-            echo "Sync branch $SYNC_BRANCH already exists — leaving the existing PR."
+
+          # Idempotency keys on an OPEN PR, not the branch. A prior run can push
+          # the branch and then fail to open the PR (e.g. GitHub blocks Actions
+          # from creating PRs) — so "branch exists" does NOT imply "PR exists".
+          # Keying on an open PR lets a re-run recover by (re)opening the PR for a
+          # branch an earlier run already pushed.
+          if [ -n "$(gh pr list --head "$SYNC_BRANCH" --base "$DEFAULT_BRANCH" --state open \\
+                       --json number --jq '.[0].number' 2>/dev/null)" ]; then
+            echo "Open sync PR for $SYNC_BRANCH already exists — nothing to do."
             exit 0
           fi
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b "$SYNC_BRANCH"
 
-          # Write the released version with the SAME logic ShipIt used to bump it.
-          node ${writeHelper} '${versionSource}' "$VERSION"
-          git commit -am "Sync version to $TAG on $DEFAULT_BRANCH"
-          git push origin "$SYNC_BRANCH"
+          # Reuse the branch if a prior run already pushed it (PR-create failed);
+          # otherwise create it with the version bump (the SAME logic ShipIt used
+          # to bump it, so the synced version is byte-identical).
+          if git ls-remote --exit-code --heads origin "$SYNC_BRANCH" >/dev/null 2>&1; then
+            echo "Reusing existing sync branch $SYNC_BRANCH (prior run pushed it but could not open the PR)."
+            git fetch origin "$SYNC_BRANCH"
+            git checkout -B "$SYNC_BRANCH" "origin/$SYNC_BRANCH"
+          else
+            git checkout -b "$SYNC_BRANCH"
+            node ${writeHelper} '${versionSource}' "$VERSION"
+            git commit -am "Sync version to $TAG on $DEFAULT_BRANCH"
+            git push origin "$SYNC_BRANCH"
+          fi
 
           # Build the body with printf so no indentation leaks in as a markdown code block.
           BODY="$(printf '%s\\n' \\
@@ -474,11 +491,19 @@ function renderSyncDefaultBranchJob(
             "" \\
             "Safe to merge as-is — it only touches the version source.")"
 
-          # Create the PR, then best-effort add the exclusion label so this
-          # version-bump PR stays out of the NEXT release's notes (the label may
-          # not exist in a freshly scaffolded repo — don't fail the job over it).
-          PR_URL="$(gh pr create --base "$DEFAULT_BRANCH" --head "$SYNC_BRANCH" --title "Sync version to $TAG on $DEFAULT_BRANCH" --body "$BODY")"
-          gh pr edit "$PR_URL" --add-label ignore-for-release >/dev/null 2>&1 || \\
+          # Create the PR; on failure print an actionable message + a one-click
+          # compare URL and exit non-zero so the version drift is never silent
+          # (the branch is already pushed). The most common cause is GitHub
+          # blocking Actions from creating PRs.
+          if ! gh pr create --base "$DEFAULT_BRANCH" --head "$SYNC_BRANCH" --title "Sync version to $TAG on $DEFAULT_BRANCH" --body "$BODY"; then
+            echo "::error title=Version-sync PR not created::Could not open the sync PR for $SYNC_BRANCH. If the failure is 'GitHub Actions is not permitted to create or approve pull requests', enable Settings → Actions → General → Workflow permissions → 'Allow GitHub Actions to create and approve pull requests' (at the org and/or repo level). The sync branch is already pushed — open the PR manually here: \${GITHUB_SERVER_URL}/\${GITHUB_REPOSITORY}/compare/$DEFAULT_BRANCH...$SYNC_BRANCH?expand=1"
+            exit 1
+          fi
+
+          # Best-effort add the exclusion label so this version-bump PR stays out
+          # of the NEXT release's notes (the label may not exist in a freshly
+          # scaffolded repo — don't fail the job over it).
+          gh pr edit "$SYNC_BRANCH" --add-label ignore-for-release >/dev/null 2>&1 || \\
             echo "note: could not add the 'ignore-for-release' label (it may not exist) — the PR will appear in the next release's notes."
 `;
 }

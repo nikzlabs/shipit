@@ -10,9 +10,7 @@ import {
   MagnifyingGlassIcon,
   NotebookIcon,
   PresentationChartIcon,
-  ScrollIcon,
-  XIcon,
-} from "@phosphor-icons/react";
+  ScrollIcon,} from "@phosphor-icons/react";
 import hljs from "highlight.js";
 import { DiffBlock } from "./DiffBlock.js";
 import { ToolSpinner } from "./StreamingIndicator.js";
@@ -20,11 +18,14 @@ import { AskUserQuestion, type AskQuestionItem } from "./AskUserQuestion.js";
 import { PlanApproval } from "./PlanApproval.js";
 import { ToolResult } from "./ToolResult.js";
 import { Dialog, DialogContent } from "./ui/dialog.js";
+import { Button } from "./ui/button.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import { sessionRelativePath } from "../path-utils.js";
 import { usePresentStore } from "../stores/present-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { parseMcpToolName, isPresentTool } from "./tool-names.js";
+import { COMMAND_SUMMARY_CHARS } from "../../server/shared/transcript-input-policy.js";
+import { useLazyToolInput } from "../hooks/useLazyToolInput.js";
 import type { ToolUseBlock, ToolResultBlock } from "./MessageList.js";
 
 /** Scrollable container for consecutive tool calls. Max 5 lines, auto-scrolls during streaming. */
@@ -82,7 +83,13 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
     const newString = tool.input.new_string !== null && tool.input.new_string !== undefined ? (tool.input.new_string as string) : undefined;
     return (
       <div>
-        <DiffBlock filePath={filePath} oldString={oldString} newString={newString} />
+        <DiffBlock
+          filePath={filePath}
+          oldString={oldString}
+          newString={newString}
+          toolUseId={tool.id}
+          {...(tool.diffStats ? { stats: tool.diffStats } : {})}
+        />
         {inProgress && <ToolProgressBar tool={tool.name} />}
       </div>
     );
@@ -93,7 +100,13 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
     const content = tool.input.content !== null && tool.input.content !== undefined ? (tool.input.content as string) : "";
     return (
       <div>
-        <DiffBlock filePath={filePath} newString={content} isWrite />
+        <DiffBlock
+          filePath={filePath}
+          newString={content}
+          isWrite
+          toolUseId={tool.id}
+          {...(tool.diffStats ? { stats: tool.diffStats } : {})}
+        />
         {inProgress && <ToolProgressBar tool={tool.name} />}
       </div>
     );
@@ -180,12 +193,20 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
     );
   }
 
-  // Fallback: compact one-liner for non-file tools, with optional tool result
+  // Fallback: compact one-liner for non-file tools. The line is clickable both
+  // while the tool is pending (opens the dialog showing just the input) and once
+  // it has a result (input + output). The dialog updates in place when the
+  // result arrives — `result` is a prop, so the open modal re-renders with it.
   // (showModal state is hoisted to the top of the component — see comment there)
+  const isInspectable = inProgress || hasResult;
 
-  // Build a summary of the command/input for the tool line
+  // Build a summary of the command/input for the tool line.
+  //
+  // The slice length is imported, not literal: docs/244's projection ships only
+  // this many characters of `command`, so the two have to be the same number or
+  // the transcript starts showing less than it used to (SHI-296).
   const commandText = "command" in tool.input && tool.input.command
-    ? (tool.input.command as string).slice(0, 80)
+    ? (tool.input.command as string).slice(0, COMMAND_SUMMARY_CHARS)
     : null;
   const filePathText = "file_path" in tool.input && tool.input.file_path
     ? sessionRelativePath(tool.input.file_path)
@@ -208,8 +229,8 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
   return (
     <div className="min-w-0 overflow-hidden">
       <div
-        className={`group/tool text-xs text-(--color-text-secondary) pl-[1em] py-1 font-mono flex items-center gap-2 opacity-70 border-l-2 border-(--color-text-tertiary)/40${hasResult ? " [@media(pointer:coarse)]:active:opacity-50" : ""}`}
-        onClick={hasResult ? () => setShowModal(true) : undefined}
+        className={`group/tool text-xs text-(--color-text-secondary) pl-[1em] py-1 font-mono flex items-center gap-2 opacity-70 border-l-2 border-(--color-text-tertiary)/40${isInspectable ? " cursor-pointer [@media(pointer:coarse)]:active:opacity-50" : ""}`}
+        onClick={isInspectable ? () => setShowModal(true) : undefined}
       >
         {inProgress && <ToolSpinner />}
         {!isCommandTool && <FormattedToolName name={tool.name} highlight={inProgress} />}
@@ -238,21 +259,29 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
             {urlText}
           </span>
         ) : null}
-        {hasResult && (
-          <button
+        {isInspectable && (
+          <Button
+            variant="ghost"
+            size="icon"
             onClick={() => setShowModal(true)}
-            className="hidden group-hover/tool:inline-flex items-center gap-1 ml-1 text-(--color-text-tertiary) hover:text-(--color-text-primary) transition-colors cursor-pointer"
-            aria-label="Show output"
+            // Pin to the row's text line-height (text-xs => 16px) with zero
+            // vertical padding so revealing it on hover never grows the row.
+            // Without this the icon button renders taller than the line and the
+            // whole row jumps when the cursor enters/leaves.
+            className="hidden group-hover/tool:inline-flex ml-1 cursor-pointer h-4 py-0"
+            aria-label={hasResult ? "Show output" : "Show input"}
           >
             <EyeIcon size={12} />
-            <span className="whitespace-nowrap">Show output</span>
-          </button>
+            <span className="whitespace-nowrap">{hasResult ? "Show output" : "Show input"}</span>
+          </Button>
         )}
       </div>
-      {showModal && result && (
+      {showModal && (
         <ToolOutputModal
           toolName={tool.name}
           input={tool.input}
+          toolUseId={tool.id}
+          bodyTruncated={tool.bodyTruncated}
           result={result}
           onClose={() => setShowModal(false)}
         />
@@ -332,7 +361,10 @@ interface PresentToolResult {
   title?: string;
 }
 
-function parsePresentToolResult(tool: ToolUseBlock, result: ToolResultBlock | undefined): PresentToolResult | null {
+// Exported for the docs/244 req-4 guard: the projection must never slice a
+// result these consumers read from, so the test drives the real parser rather
+// than a copy of its rules.
+export function parsePresentToolResult(tool: ToolUseBlock, result: ToolResultBlock | undefined): PresentToolResult | null {
   if (!isPresentTool(tool.name)) return null;
   if (!result) return null;
 
@@ -438,29 +470,43 @@ export function formatToolDuration(ms: number): string {
   return s < 10 ? `${s.toFixed(1)} s` : `${Math.round(s)} s`;
 }
 
-/** Full-screen modal showing the agent's tool input and the tool's output. */
-function ToolOutputModal({ toolName, input, result, onClose }: {
+/**
+ * Full-screen modal showing the agent's tool input and the tool's output.
+ *
+ * `result` is optional: the modal can be opened while the tool is still pending
+ * (input known, no output yet), in which case the Output section shows a running
+ * indicator. When the result arrives the parent re-renders this modal with the
+ * `result` prop populated and the output replaces the indicator in place.
+ *
+ * This modal is the only view that draws a tool's *whole* input, so it is where
+ * the keys docs/244 removed come back (SHI-296). Opening it is the click, and
+ * the fetched input replaces the projected one wholesale rather than merging:
+ * the stored input is authoritative and preserves the original key order the
+ * fields are laid out in.
+ */
+function ToolOutputModal({ toolName, input, toolUseId, bodyTruncated, result, onClose }: {
   toolName: string;
   input: Record<string, unknown>;
-  result: ToolResultBlock;
+  toolUseId?: string;
+  bodyTruncated?: true;
+  result?: ToolResultBlock;
   onClose: () => void;
 }) {
-  const duration = typeof result.durationMs === "number" ? formatToolDuration(result.durationMs) : "";
+  const lazy = useLazyToolInput(toolUseId, !!bodyTruncated);
+  const duration = typeof result?.durationMs === "number" ? formatToolDuration(result.durationMs) : "";
   return (
     <Dialog open onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
     <DialogContent className="w-[min(90vw,56rem)] max-h-[80vh] flex flex-col" aria-label="Tool output">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-(--color-border-primary)">
+      <div className="flex items-center px-4 py-3 border-b border-(--color-border-primary)">
         <span className="text-xs font-semibold text-(--color-text-primary) shrink-0">Tool Call</span>
-        <button
-          onClick={onClose}
-          className="p-1 rounded text-(--color-text-tertiary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors shrink-0 cursor-pointer"
-          aria-label="Close"
-        >
-          <XIcon size={16} />
-        </button>
       </div>
       <div className="flex-1 overflow-auto p-4">
-        <ToolInput toolName={toolName} input={input} />
+        <ToolInput
+          toolName={toolName}
+          input={lazy.input ?? input}
+          loading={lazy.loading}
+          error={lazy.error}
+        />
         <div className="flex items-baseline gap-2 mb-2">
           <span className="text-[11px] font-semibold uppercase tracking-wide text-(--color-text-tertiary)">Output</span>
           {duration ? (
@@ -472,20 +518,40 @@ function ToolOutputModal({ toolName, input, result, onClose }: {
             </span>
           ) : null}
         </div>
-        <ToolResult tool={toolName} result={result} />
+        {result ? (
+          <ToolResult tool={toolName} result={result} />
+        ) : (
+          <div className="flex items-center gap-2 text-xs text-(--color-text-tertiary) font-mono italic">
+            <ToolSpinner />
+            <span>Running…</span>
+          </div>
+        )}
       </div>
     </DialogContent>
     </Dialog>
   );
 }
 
-/** Renders the agent's tool-call input as labeled fields above the output. */
-function ToolInput({ toolName, input }: { toolName: string; input: Record<string, unknown> }) {
+/**
+ * Renders the agent's tool-call input as labeled fields above the output.
+ *
+ * `loading`/`error` describe the docs/244 fetch for the keys the projection
+ * removed. While it is in flight the fields already on the wire render — a
+ * `Bash` call still shows its first 80 characters of `command` — with a status
+ * line saying more is coming, rather than a blank panel that would read as "this
+ * call had no input".
+ */
+function ToolInput({ toolName, input, loading, error }: {
+  toolName: string;
+  input: Record<string, unknown>;
+  loading?: boolean;
+  error?: boolean;
+}) {
   const keys = Object.keys(input);
   return (
     <div className="mb-4 pb-4 border-b border-(--color-border-secondary)">
       <div className="text-xs text-(--color-text-secondary) font-mono mb-2">{toolName === "shell" ? "Shell" : toolName}</div>
-      {keys.length === 0 ? (
+      {keys.length === 0 && !loading && !error ? (
         <div className="text-xs text-(--color-text-tertiary) font-mono italic">(no input)</div>
       ) : (
         <div className="flex flex-col gap-3">
@@ -493,6 +559,12 @@ function ToolInput({ toolName, input }: { toolName: string; input: Record<string
             <ToolInputField key={key} toolName={toolName} fieldKey={key} value={input[key]} />
           ))}
         </div>
+      )}
+      {loading && (
+        <div className="mt-2 text-xs text-(--color-text-tertiary) font-mono italic" role="status">Loading input…</div>
+      )}
+      {error && (
+        <div className="mt-2 text-xs text-(--color-error)" role="status">Couldn&apos;t load the full input.</div>
       )}
     </div>
   );

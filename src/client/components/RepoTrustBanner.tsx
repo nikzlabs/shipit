@@ -24,36 +24,21 @@
  * the Preview tab (the parent wrapper is `invisible` off-tab). The user can
  * keep working restricted simply by not trusting — chat, files, diffs, and the
  * other tabs all stay available.
+ *
+ * It is NOT the only consent surface, and must not be treated as one: modes
+ * that render no Preview tab at all (local/dogfood — see `RepoTrustNotice`)
+ * would otherwise have no reachable way to grant trust.
  */
 
-import { useState } from "react";
 import { ShieldWarningIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
-import { useRepoStore } from "../stores/repo-store.js";
+import { useRepoTrust } from "../hooks/useRepoTrust.js";
 import { Button } from "./ui/button.js";
 
-/** Tolerant repo-URL match — mirrors the server's `canonicalRepoKey` fallback. */
-function normalizeRepoUrl(u: string): string {
-  return u.trim().toLowerCase().replace(/\/+$/, "").replace(/\.git$/, "");
-}
-
 export function RepoTrustBanner({ repoUrl }: { repoUrl: string | undefined }) {
-  const repos = useRepoStore((s) => s.repos);
-  const [trusting, setTrusting] = useState(false);
+  const { untrusted, trusting, trust } = useRepoTrust(repoUrl);
 
-  if (!repoUrl) return null;
-  const key = normalizeRepoUrl(repoUrl);
-  const repo = repos.find((r) => normalizeRepoUrl(r.url) === key);
-  // Show only once we know the repo AND it is explicitly untrusted. `undefined`
-  // (repo still loading, or a hand-built RepoInfo without the flag) is treated
-  // as "don't prompt" to avoid a flash of the card during hydration.
-  if (repo?.trusted !== false) return null;
-
-  const onTrust = async () => {
-    setTrusting(true);
-    await useRepoStore.getState().trustRepo(repo.url);
-    setTrusting(false);
-  };
+  if (!untrusted) return null;
 
   return (
     <div
@@ -70,14 +55,13 @@ export function RepoTrustBanner({ repoUrl }: { repoUrl: string | undefined }) {
           This repository is not trusted yet
         </h2>
         <p className="text-sm text-(--color-text-secondary)">
-          It can run setup commands and start services on your machine. The
-          preview and <code className="text-xs">agent.install</code> stay off
-          until you trust it — browsing files, diffs, and chat keep working
-          while restricted.
+          Agent messages, the preview, setup commands, and services stay blocked
+          until you trust it. You can still browse files and diffs while the
+          repository is restricted.
         </p>
         <Button
           size="md"
-          onClick={onTrust}
+          onClick={() => void trust()}
           disabled={trusting}
           data-testid="repo-trust-accept"
           className="mt-1"

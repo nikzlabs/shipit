@@ -53,6 +53,12 @@ export interface PrCardState {
     pending: number;
     /** Per-check failure details. */
     failedChecks?: { name: string; summary: string }[];
+    /**
+     * Epoch ms at which a poller-forced `pending` (the grace override for "CI
+     * hasn't registered yet") expires. Past it, an empty check set is the
+     * terminal "no checks" state — see `useCiDisplay`.
+     */
+    graceUntil?: number;
   };
   /** Auto-fix loop state (open phase). docs/169: toggle is now a global setting. */
   autoFix?: {
@@ -303,13 +309,25 @@ export const usePrStore = create<PrState>((set, get) => ({
 
       for (const update of updates) {
         nextStatus[update.sessionId] = update;
-        if (update.autoMerge) {
+        const isTerminal = update.prState === "merged" || update.prState === "closed";
+        if (isTerminal) {
+          // A terminal PR retires the auto-merge arming with it. The server
+          // drops its `AutoMergeManager` state at the same transition, but its
+          // terminal `pr_status` summary carries no `autoMerge` field — and an
+          // absent field means "unchanged" everywhere else in this reducer — so
+          // the sticky entry has to be cleared from the terminal `prState`
+          // instead. Without this the merged/closed card's overflow menu keeps
+          // showing the toggle ON for a PR that no longer exists, and the next
+          // PR on this session inherits an arming the user never gave it.
+          // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+          delete nextAutoMerge[update.sessionId];
+        } else if (update.autoMerge) {
           nextAutoMerge[update.sessionId] = update.autoMerge;
         }
 
         // Update the inline card to reflect poller data
         const existing = nextCards[update.sessionId];
-        if (update.prState === "merged" || update.prState === "closed") {
+        if (isTerminal) {
           nextCards[update.sessionId] = {
             cardId: existing?.cardId ?? `pr-card-${update.sessionId}`,
             phase: update.prState,
@@ -326,7 +344,10 @@ export const usePrStore = create<PrState>((set, get) => ({
               deletions: update.deletions,
               files: update.files,
             },
-            autoMerge: update.autoMerge ?? nextAutoMerge[update.sessionId],
+            // Deliberately not carried over: the arming died with the PR
+            // (see the clear above), so a terminal card must not resurrect it
+            // from `existing` or the by-session map.
+            autoMerge: undefined,
             // Preserve last-known conversation when an update omits it (light poll).
             issueComments: update.issueComments ?? existing?.issueComments,
             reviewThreads: update.reviewThreads ?? existing?.reviewThreads,
@@ -383,7 +404,26 @@ export const usePrStore = create<PrState>((set, get) => ({
           !card.previousMergedPr) {
         return state;
       }
+      // docs/202 — a re-armed, non-terminal card is also the client-side signal
+      // that the poller dropped its snapshot. `PrStatusPoller.reArm` clears
+      // `lastKnown` *silently* (broadcasting `pr_status { removals }` would race
+      // this card across two transports and could wipe it), so nothing else
+      // retires the stale merged summary here until a reconnect snapshot prunes
+      // it. Leaving it in place keeps `PrStateBadge` — which resolves
+      // `status?.prState` ahead of the card phase — rendering the purple merged
+      // icon on the ready card AND the Active sidebar row, contradicting this
+      // feature's "gray like a fresh session" indicator and doubling the merge
+      // glyph next to the "Previously merged #N" note. Mirroring the server's
+      // silent clear here converges without the racy removal.
+      const reArmed = Boolean(card.previousMergedPr) && card.phase !== "merged" && card.phase !== "closed";
+      let nextStatus = state.statusBySession;
+      if (reArmed && state.statusBySession[sessionId]) {
+        nextStatus = { ...state.statusBySession };
+        // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+        delete nextStatus[sessionId];
+      }
       return {
+        statusBySession: nextStatus,
         autoMergeBySession: card.autoMerge
           ? { ...state.autoMergeBySession, [sessionId]: card.autoMerge }
           : state.autoMergeBySession,

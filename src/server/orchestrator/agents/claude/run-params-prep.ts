@@ -19,4 +19,8 @@ export const prepareClaudeRunParams: PrepareRunParamsFn = (params, input) => ({
   // docs/211 — forward the sandbox flag so the adapter sets SHIPIT_SANDBOX=1 and
   // the PreToolUse branch-block hook self-gates off for a repo-less session.
   sandbox: input.sandboxActive ?? false,
+  // SHI-265 — forward the merged-branch flag so the adapter sets
+  // SHIPIT_GUARD_DESTRUCTIVE_GIT=1 and the same hook blocks hand-rolled
+  // destructive git in the state `shipit branch reset-to-base` guards.
+  guardDestructiveGit: input.guardDestructiveGitActive ?? false,
 });

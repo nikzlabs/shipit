@@ -66,3 +66,15 @@
 - [x] Custom (undeclared) secrets section — for ad-hoc env vars not yet in any compose service
 - [x] Missing secrets banner in preview panel with one-click "Configure" button
 - [x] Tests: declared section, required indicator, agent/platform badges, description display, save excludes platform rows
+
+## Fix: declared secrets rendering as "Custom variables"
+- [x] Replay `secrets_status` on WS viewer attach (`buildComposeAttachReplay`) — it was only ever emitted from `syncSecrets()`, so a reload / session switch / reconnect left `declared` empty
+- [x] Fold the existing inline `compose_error` + `service_list` attach replay into the same helper
+- [x] Gate the secrets replay on `ServiceManager.secretsSynced`, not on a non-empty snapshot, so a compose file that DROPS `x-shipit-secrets` clears the client's stale declared rows
+- [x] Order `compose_error` after `service_list` in the replay — `setServices` clears `composeError`, so the old order swallowed the banner on a reconcile failure
+- [x] `SecretsTab`: apply the declared filter at render only; keep every stored key in state so an undeclared-again key can't be silently deleted on Save
+- [x] Test: replay carries declared + missing-required, and never the resolved `agentValues`
+- [x] Test: replay sends an empty declared list once synced, and nothing before
+- [x] Test: a stored key moves out of Custom variables when a late `secrets_status` declares it
+- [x] Test: removing a custom row after such a move removes the clicked row
+- [x] Test: a key hidden while declared, then undeclared, is still `keep`-ed on Save

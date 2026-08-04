@@ -53,14 +53,22 @@ import type {
   RecordedChatCard,
 } from "./session-runner.js";
 import type { PersistedMessage } from "./chat-history.js";
+import { markMessagesCommitted, type CommittedBodyIds } from "./transcript-projection.js";
 
 /**
- * Minimal chat-history surface the card/turn persistence needs: just the
- * in-progress replace. Kept structural so non-WS callers and tests can pass a
- * stub without the full `ChatHistoryManager`.
+ * Minimal chat-history surface the card/turn persistence needs. Kept structural
+ * so non-WS callers and tests can pass a stub without the full
+ * `ChatHistoryManager`.
+ *
+ * Both writes are required because `emitChatCard` picks between them by whether
+ * a turn is in flight: `replaceInProgress` for a mid-turn card (rebuilt at its
+ * anchor on every boundary), `append` for one that lands after the turn already
+ * finalized — see `emitChatCard` for why the in-progress path is actively wrong
+ * there.
  */
 export interface InProgressPersister {
   replaceInProgress(sessionId: string, messages: PersistedMessage[]): void;
+  append(sessionId: string, message: PersistedMessage): unknown;
 }
 
 /**
@@ -107,6 +115,8 @@ export function buildTurnMessages(
   const persistedSteer = (s: SteeredMessage): PersistedMessage => ({
     role: "user",
     text: s.text,
+    agentInterface: s.agentInterface,
+    messageOrigin: s.messageOrigin,
     images: s.images,
     files: s.files,
     uploadPaths: s.uploadPaths,
@@ -161,14 +171,28 @@ export function buildTurnMessages(
  * `emitChatCard` (so a side-channel card is durable the instant it fires).
  */
 export function persistTurnInProgress(
-  chatHistoryManager: InProgressPersister,
-  runner: { chatMessageGroups: ChatMessageGroup[]; steeredMessages: SteeredMessage[]; recordedCards: RecordedChatCard[] },
+  chatHistoryManager: Pick<InProgressPersister, "replaceInProgress">,
+  runner: {
+    chatMessageGroups: ChatMessageGroup[];
+    steeredMessages: SteeredMessage[];
+    recordedCards: RecordedChatCard[];
+    /** Optional so partial test stubs still work; absent ⇒ nothing is marked. */
+    committedBodyIds?: CommittedBodyIds;
+  },
   sessionId: string,
 ): void {
-  chatHistoryManager.replaceInProgress(
-    sessionId,
-    buildTurnMessages(runner.chatMessageGroups, runner.steeredMessages, runner.recordedCards, { inProgress: true }),
+  const messages = buildTurnMessages(
+    runner.chatMessageGroups,
+    runner.steeredMessages,
+    runner.recordedCards,
+    { inProgress: true },
   );
+  chatHistoryManager.replaceInProgress(sessionId, messages);
+  // docs/244 / SHI-297 — these bodies are now on disk, so the reconnect snapshot
+  // may strip them. Recorded from the list actually written, never from the live
+  // groups: a group keeps accumulating after it is persisted, so "what we just
+  // wrote" and "what the group holds now" diverge within the same turn.
+  if (runner.committedBodyIds) markMessagesCommitted(runner.committedBodyIds, messages);
 }
 
 /**
@@ -203,11 +227,41 @@ export function recordChatCard(
  * on an already-persisted card (e.g. filed/failed, undone) patch the DB row in
  * place via the relevant `ChatHistoryManager` method — they are not re-recorded
  * here.
+ *
+ * ## A card that lands AFTER its turn ended takes the append path
+ *
+ * The record-and-rebuild machinery above is a *mid-turn* mechanism: it works by
+ * rewriting the in-progress row set, which only exists while a turn is in
+ * flight. Some side-channel cards routinely arrive later — the canonical case is
+ * `shipit agent run` launched in the background (which `shipit-docs/agent.md`
+ * actively tells the agent to do for long consults), whose HTTP call outlives
+ * the turn that started it and emits its consult card minutes after that turn
+ * finalized.
+ *
+ * Run through the in-progress path, such a card is not merely misplaced — it is
+ * DESTROYED. `finalizeInProgress` has already cleared the turn's rows, so
+ * `persistTurnInProgress` re-inserts the whole finished turn as a *second*,
+ * `in_progress=1` copy with the card inside it; the next turn's first
+ * `replaceInProgress` deletes every `in_progress=1` row for the session and the
+ * card goes with it. Observed in production as `shipit agent result <id>`
+ * answering "No sub-agent runs in this session yet" for a run that had just
+ * printed its own id — the long consult's entire output, unrecoverable.
+ *
+ * So when no turn is running, append the card as a finalized row at the current
+ * end of history. That is also its correct transcript position (it happened
+ * after the turn), and it is the same choice `emitNoticePostTurn` makes for
+ * notices. `runner.running` is a safe discriminator because
+ * `finalizeInProgress` always precedes `running = false` (`agent-listeners`),
+ * so `running === false` guarantees there is no in-progress set to join.
+ * `recordedCards` is deliberately NOT touched on this path: the next turn start
+ * clears it anyway, and recording would re-insert the card into that turn's
+ * rebuilt rows as a duplicate.
  */
 export function emitChatCard(
   runner: Pick<
     SessionRunnerInterface,
     | "emitMessage"
+    | "running"
     | "chatMessageGroups"
     | "recordedCards"
     | "steeredMessages"
@@ -219,6 +273,12 @@ export function emitChatCard(
   persist: CardPersistCtx,
 ): void {
   runner.emitMessage(wsMessage);
+
+  if (!runner.running) {
+    persist.chatHistoryManager.append(persist.sessionId, persisted);
+    return;
+  }
+
   recordChatCard(runner, persisted);
   persistTurnInProgress(persist.chatHistoryManager, runner, persist.sessionId);
 
@@ -302,23 +362,40 @@ export function updateRecordedCard(
  * `matches` selects the recorded card by its stable id; `patchRecorded` returns
  * the patched `PersistedMessage`; `patchDb` performs the finalized-row
  * `ChatHistoryManager.update*Card` fallback.
+ *
+ * Returns true when the in-flight (recorded-card) branch was taken.
  */
 export function persistCardTransition(
   runner: Pick<
     SessionRunnerInterface,
-    "running" | "recordedCards" | "chatMessageGroups" | "steeredMessages"
+    | "running"
+    | "recordedCards"
+    | "chatMessageGroups"
+    | "steeredMessages"
+    | "getTurnEventBuffer"
+    | "lastPersistedBufferIndex"
   >,
   persist: CardPersistCtx,
   matches: (m: PersistedMessage) => boolean,
   patchRecorded: (m: PersistedMessage) => PersistedMessage,
   patchDb: () => void,
-): void {
+): boolean {
   const patchedInFlight = runner.running && updateRecordedCard(runner, matches, patchRecorded);
   if (patchedInFlight) {
     persistTurnInProgress(persist.chatHistoryManager, runner, persist.sessionId);
+    // Same replay-cursor advance `emitChatCard` performs, and for the same
+    // reason: `persistTurnInProgress` just wrote a complete snapshot of the
+    // turn, so leaving the cursor behind it lets a later reconnect replay the
+    // buffered pre-card events ON TOP of that snapshot — which merges the
+    // preceding `agent_assistant` into the card's carrier message and drops the
+    // card field. Guarded for partial test stubs that don't model the buffer.
+    if (typeof runner.getTurnEventBuffer === "function") {
+      runner.lastPersistedBufferIndex = runner.getTurnEventBuffer().length;
+    }
   } else {
     patchDb();
   }
+  return patchedInFlight;
 }
 
 /**
@@ -352,6 +429,7 @@ export function emitNoticeInTurn(
   runner: Pick<
     SessionRunnerInterface,
     | "emitMessage"
+    | "running"
     | "chatMessageGroups"
     | "recordedCards"
     | "steeredMessages"

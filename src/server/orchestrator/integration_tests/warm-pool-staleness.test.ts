@@ -24,6 +24,7 @@ import { EventEmitter } from "node:events";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../index.js";
 import { GitManager } from "../../shared/git.js";
+import { deriveSessionMemorySizing } from "../session-container.js";
 import { SessionManager } from "../sessions.js";
 import { RepoStore } from "../repo-store.js";
 import { SessionContainerManager, CONTAINER_SESSION_ID_LABEL } from "../session-container.js";
@@ -35,6 +36,7 @@ import {
   createTestCredentialStore,
   createTestDatabaseManager,
 } from "./test-helpers.js";
+import { allocateDeadLoopbackPort } from "./container-test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
 import type { AuthManager } from "../agents/claude/auth-manager.js";
 import type { GitHubAuthManager } from "../github-auth.js";
@@ -60,7 +62,10 @@ function createFakeDocker() {
     createContainer: async (opts: any) => {
       containerCounter++;
       const id = `fake-container-${containerCounter}`;
-      const ip = `172.18.0.${containerCounter + 2}`;
+      // Distinct loopback IPs + a dead ephemeral workerPort: refuses
+      // instantly, can never be a real worker (see allocateDeadLoopbackPort
+      // in container-test-helpers.ts).
+      const ip = `127.0.0.${containerCounter + 2}`;
       containers.set(id, {
         id, started: false, labels: opts.Labels ?? {}, ip,
         hostConfig: opts.HostConfig ?? {},
@@ -150,7 +155,7 @@ describe("Integration: warm-pool / claim staleness (W2 + W3)", () => {
   let origGitTerminalPrompt: string | undefined;
   let repoUrl: string;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-warm-stale-"));
     sessionManager = new SessionManager(dbManager);
@@ -162,7 +167,7 @@ describe("Integration: warm-pool / claim staleness (W2 + W3)", () => {
       docker: fakeDocker as any,
       imageName: "shipit-session-worker:test",
       networkName: "shipit-test",
-      workerPort: 9100,
+      workerPort: await allocateDeadLoopbackPort(),
       skipHealthCheck: true,
       stackName: "shipit-test",
     });
@@ -218,10 +223,11 @@ describe("Integration: warm-pool / claim staleness (W2 + W3)", () => {
     return { remoteDir };
   }
 
-  it("W2: warm standby boots at the real remote's latest agent.memory, not the stale cache's", async () => {
-    // Real remote: c1 has NO shipit.yaml; c2 declares 3 GiB. The bare cache
-    // is frozen at c1 — so the only way the standby boots at 3 GiB is if
-    // the warm path fetched the real remote in the workspace clone.
+  it("W2: warm standby boots auto-sized and records its booted limits", async () => {
+    // Memory is host-derived (docs/229), so a standby is auto-sized regardless
+    // of what any commit's shipit.yaml says. c2 still sets the removed fields —
+    // they're warned-and-ignored. This asserts the standby boots at the live
+    // auto-derived sizing and records those limits (the W3 plumbing).
     const { remoteDir } = await setup({ "README.md": "# test\n" });
     advanceRemote(remoteDir, { "shipit.yaml": "agent:\n  memory: 3072\n  cpu: 2.0\n  pids: 2048\n" });
 
@@ -243,54 +249,52 @@ describe("Integration: warm-pool / claim staleness (W2 + W3)", () => {
     const standbyId = repoStore.get(repoUrl)!.warmSessionId!;
     await waitFor(() => containerManager.isStandby(standbyId), 10000, "standby ready");
 
-    // The standby's fake-docker container must carry the 3 GiB limit from
-    // c2's shipit.yaml — proving the workspace landed on the latest commit
-    // despite the bare cache being frozen at c1.
     const standbyDocker = [...fakeDocker._containers.values()].find(
       (c) => c.labels[CONTAINER_SESSION_ID_LABEL] === standbyId,
     );
     expect(standbyDocker).toBeDefined();
-    expect(standbyDocker!.hostConfig.Memory).toBe(3072 * 1024 * 1024);
-    expect(standbyDocker!.hostConfig.PidsLimit).toBe(2048);
+    const expectedMem = deriveSessionMemorySizing().effectiveMb * 1024 * 1024;
+    const expectedCpu = Math.max(1, os.cpus().length) * 100_000;
+    expect(standbyDocker!.hostConfig.Memory).toBe(expectedMem);
+    expect(standbyDocker!.hostConfig.PidsLimit).toBe(8192);
 
     // And the booted limits are recorded on the tracked container (W3 plumbing).
     expect(containerManager.get(standbyId)?.bootedLimits).toEqual({
-      memoryLimit: 3072 * 1024 * 1024,
-      cpuQuota: 200_000,
-      pidsLimit: 2048,
+      memoryLimit: expectedMem,
+      cpuQuota: expectedCpu,
+      pidsLimit: 8192,
     });
   }, 30000);
 
-  it("W3: claim destroys a standby whose booted limits no longer match the refreshed workspace", async () => {
-    // Real remote starts at c1 with NO shipit.yaml → defaults (1.5 GiB).
+  it("W3: a HEAD change does not destroy a standby (limits are host-stable under auto-sizing)", async () => {
+    // Memory is host-derived (docs/229), so the booted limit no longer depends
+    // on shipit.yaml. A HEAD jump that changes a (now-ignored) `agent.memory`
+    // can't make a standby's limits stale, so claim leaves the standby in place.
+    // (The old stale-limit reprovision path was removed once it became dead.)
     const { remoteDir } = await setup({ "README.md": "# test\n" });
 
     await waitFor(() => !!repoStore.get(repoUrl)?.warmSessionId, 10000, "warm #1");
     const warmId = repoStore.get(repoUrl)!.warmSessionId!;
     expect(sessionManager.get(warmId)!.workspaceDir).toBeDefined();
 
-    // Startup warming now boots the standby itself (docs/148). c1 has no
-    // shipit.yaml → defaults to 1.5 GiB, which is exactly the stale-limits
-    // baseline this test wants. Wait for it to land instead of building a
-    // duplicate by hand (which would now collide with the startup standby).
     await waitFor(() => containerManager.isStandby(warmId), 10000, "startup standby");
-    expect(containerManager.get(warmId)?.bootedLimits?.memoryLimit).toBe(1536 * 1024 * 1024);
+    const expectedMem = deriveSessionMemorySizing().effectiveMb * 1024 * 1024;
+    expect(containerManager.get(warmId)?.bootedLimits?.memoryLimit).toBe(expectedMem);
 
-    // The remote advances: c2 declares 3 GiB. The standby is now stale.
+    // The remote advances with a (removed, ignored) agent.memory change.
     advanceRemote(remoteDir, { "shipit.yaml": "agent:\n  memory: 3072\n" });
 
     const destroySpy = vi.spyOn(containerManager, "destroy");
 
-    // Claim → warm path → refreshCloneToLatestMain fetches c2 → headChanged
-    // → reprovisionStandbyIfLimitsChanged sees 1 GiB booted vs 3 GiB declared
-    // → destroys the standby so the runner factory rebuilds it correctly.
+    // Claim → warm path → refreshCloneToLatestMain fetches c2 → headChanged,
+    // but nothing reprovisions on limits anymore → the standby is NOT destroyed.
     const res = await app.inject({
       method: "POST",
       url: `/api/repos/${encodeURIComponent(repoUrl)}/claim-session`,
     });
     expect(res.statusCode).toBe(200);
 
-    expect(destroySpy).toHaveBeenCalledWith(warmId);
-    expect(containerManager.get(warmId)).toBeUndefined();
+    expect(destroySpy).not.toHaveBeenCalledWith(warmId);
+    expect(containerManager.get(warmId)).toBeDefined();
   }, 30000);
 });

@@ -101,6 +101,7 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
     now: () => number = () => Date.now(),
     /** docs/169 Workstream C — cross-automation arbiter (optional). */
     arbiter?: RemediationArbiter,
+    ensureRunner?: (sessionId: string) => Promise<SessionRunnerInterface | undefined>,
   ) {
     super({
       name: "auto-resolve",
@@ -110,6 +111,7 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
       isGlobalEnabled,
       now,
       ...(arbiter ? { arbiter } : {}),
+      ...(ensureRunner ? { ensureRunner } : {}),
     });
     this.rebaseAndResolveCb = rebaseAndResolveCb;
   }
@@ -255,9 +257,16 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
   private writeBack(sessionId: string, result: AutoResolveResult, attempt: number): void {
     const state = this.states.get(sessionId);
     if (!state) {
-      // Session was deleted (untrack / closed PR) mid-attempt — still release
-      // the arbiter claim so it doesn't wedge the session.
-      this.releaseClaim(sessionId, { pushed: false });
+      // State was dropped mid-attempt — untrack / closed PR, or the base's
+      // step 5 settling the loop because the PR became mergeable while this
+      // attempt was in flight. Still release the arbiter claim so it doesn't
+      // wedge the session, and release it with the TRUE `pushed` value: an
+      // attempt that force-pushed must still arm await-fresh-signal, or the
+      // next poll is free to act on the stale pre-push verdict — the docs/146
+      // spin, reached through the one path that used to hard-code `false`.
+      this.releaseClaim(sessionId, {
+        pushed: result.outcome === "success" && result.forcePushed,
+      });
       return;
     }
 

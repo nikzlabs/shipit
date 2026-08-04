@@ -25,7 +25,7 @@ describe("computeRepoGroups — sandbox group", () => {
       { url: "https://github.com/o/r.git", addedAt: "", lastUsedAt: "", status: "ready" },
     ];
     const sessions = [
-      session({ id: "sb1", kind: "sandbox", capabilities: { git: true, docker: false, network: true } }),
+      session({ id: "sb1", kind: "sandbox", capabilities: { git: true, docker: false, network: true, dangerousGitHubOps: false } }),
       session({ id: "repo1", remoteUrl: "https://github.com/o/r.git" }),
     ];
     const groups = computeRepoGroups(repos, sessions);

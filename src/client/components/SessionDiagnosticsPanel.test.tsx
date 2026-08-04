@@ -64,10 +64,19 @@ const samplePayload = {
     { source: "server", text: "Session container paused after 60s.", timestamp: "2026-05-07T12:00:00.000Z" },
   ],
   parsedConfig: {
-    agent: { memory: 3072, cpu: 2.0, pids: 2048, install: ["npm install"] },
+    agent: { install: ["npm install"] },
     compose: { file: "docker-compose.yml", dockerSocket: false },
     warnings: [],
-    effectiveAgent: { memory: 3072, cpu: 2.0, pids: 2048, dockerAccess: false },
+    sizing: {
+      effectiveMb: 44237,
+      autoMb: 44237,
+      hostMb: 98304,
+      reserveMb: 9830,
+      usableMb: 88474,
+      baselineSource: "auto",
+      capSource: "host",
+      capApplied: false,
+    },
   },
   oomBreaker: {
     tripped: false,
@@ -76,6 +85,12 @@ const samplePayload = {
     trippedAt: null,
     threshold: 3,
     windowMs: 5 * 60 * 1000,
+  },
+  providerRoute: {
+    agentId: "claude",
+    kind: "account",
+    routeId: "acct_1234",
+    label: "Work",
   },
 };
 
@@ -150,7 +165,8 @@ describe("SessionDiagnosticsPanel", () => {
     await waitFor(() => {
       expect(screen.getByText("Parsed shipit.yaml")).toBeTruthy();
     });
-    expect(screen.getByText("3072 MiB")).toBeTruthy();
+    // Auto-derived session memory is shown (44237 MiB on the sample 96 GB host).
+    expect(screen.getByText(/44237 MiB — auto/)).toBeTruthy();
     expect(screen.getByText("npm install")).toBeTruthy();
     expect(screen.getByText("docker-compose.yml")).toBeTruthy();
   });
@@ -159,20 +175,17 @@ describe("SessionDiagnosticsPanel", () => {
     mockOk({
       ...samplePayload,
       parsedConfig: {
-        agent: { memory: 1024, cpu: 0.5, pids: 4096, install: [] },
-        warnings: ["The `resources` block has been replaced by `agent`."],
-        effectiveAgent: { memory: 1024, cpu: 0.5, pids: 4096, dockerAccess: false },
+        agent: { install: [] },
+        warnings: ["The `resources` block has been removed."],
+        sizing: samplePayload.parsedConfig.sizing,
       },
     });
     render(
       <SessionDiagnosticsPanel sessionId="sess-1" open={true} onOpenChange={() => {}} />,
     );
     await waitFor(() => {
-      expect(screen.getByText(/`resources` block has been replaced/)).toBeTruthy();
+      expect(screen.getByText(/`resources` block has been removed/)).toBeTruthy();
     });
-    // memory falls through to the library default, which is the value the
-    // container actually booted on — visible right next to the warning.
-    expect(screen.getByText("1024 MiB")).toBeTruthy();
   });
 
   it("renders the OOM breaker as tripped with a retry hint", async () => {
@@ -199,27 +212,87 @@ describe("SessionDiagnosticsPanel", () => {
       screen.getByText((_content, node) => {
         if (node?.tagName !== "P") return false;
         const text = node.textContent ?? "";
-        return text.includes("Increase") && text.includes("agent.memory") && text.includes("Rescue session");
+        return text.includes("DEFAULT_SESSION_MEMORY_MB") && text.includes("Rescue session");
       }),
     ).toBeTruthy();
   });
 
-  it("renders declared → effective when an env cap clamps a value", async () => {
+  it("renders the cap source when MAX_SESSION_MEMORY_MB clamps the sizing", async () => {
     mockOk({
       ...samplePayload,
       parsedConfig: {
-        agent: { memory: 3072, cpu: 2.0, pids: 2048, install: [] },
-        warnings: ["agent.memory 3072 MiB clamped to 1024 MiB by MAX_SESSION_MEMORY_MB"],
-        effectiveAgent: { memory: 1024, cpu: 2.0, pids: 2048, dockerAccess: false },
+        agent: { install: [] },
+        warnings: [],
+        sizing: {
+          effectiveMb: 1024,
+          autoMb: 44237,
+          hostMb: 98304,
+          reserveMb: 9830,
+          usableMb: 88474,
+          baselineSource: "auto",
+          capSource: "MAX_SESSION_MEMORY_MB",
+          capApplied: true,
+        },
       },
     });
     render(
       <SessionDiagnosticsPanel sessionId="sess-1" open={true} onOpenChange={() => {}} />,
     );
     await waitFor(() => {
-      expect(screen.getByText(/3072 MiB → 1024 MiB \(capped\)/)).toBeTruthy();
+      expect(screen.getByText(/capped to 1024 MiB by MAX_SESSION_MEMORY_MB/)).toBeTruthy();
     });
-    expect(screen.getByText(/MAX_SESSION_MEMORY_MB/)).toBeTruthy();
+  });
+
+  // docs/150 req 11 — after a proactive cutoff or a hard-exhaustion retry has
+  // moved a session, this panel is where "which account am I on?" gets
+  // answered. The account's NAME is the answer; the opaque id is supporting
+  // detail for a bug report, not the thing the user reads.
+  it("renders the active provider account by name, with the route id alongside", async () => {
+    mockOk(samplePayload);
+    render(
+      <SessionDiagnosticsPanel sessionId="sess-1" open={true} onOpenChange={() => {}} />,
+    );
+    await waitFor(() => {
+      expect(screen.getByText("Provider account")).toBeTruthy();
+    });
+    expect(screen.getByText("Work")).toBeTruthy();
+    expect(screen.getByText("account / acct_1234")).toBeTruthy();
+  });
+
+  it("names a reserved route instead of showing its id", async () => {
+    mockOk({
+      ...samplePayload,
+      providerRoute: {
+        agentId: "claude",
+        kind: "reserved",
+        routeId: "claude-api-key",
+        label: "Anthropic API key — metered billing",
+      },
+    });
+    render(
+      <SessionDiagnosticsPanel sessionId="sess-1" open={true} onOpenChange={() => {}} />,
+    );
+    await waitFor(() => {
+      expect(screen.getByText("Anthropic API key — metered billing")).toBeTruthy();
+    });
+  });
+
+  it("says a session with no turns yet is not pinned, rather than showing an error", async () => {
+    mockOk({
+      ...samplePayload,
+      providerRoute: {
+        agentId: null,
+        kind: null,
+        routeId: null,
+        label: "not pinned yet — the next turn selects an account",
+      },
+    });
+    render(
+      <SessionDiagnosticsPanel sessionId="sess-1" open={true} onOpenChange={() => {}} />,
+    );
+    await waitFor(() => {
+      expect(screen.getByText(/not pinned yet/)).toBeTruthy();
+    });
   });
 
   it("shows an error message when the endpoint fails", async () => {

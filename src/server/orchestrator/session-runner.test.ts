@@ -1,12 +1,14 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
-import { SessionRunner, SessionRunnerRegistry } from "./session-runner.js";
+import { AgentTurnAdmissionError, SessionRunner, SessionRunnerRegistry, sessionHasLiveAgent } from "./session-runner.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import {
   prepareSessionAgentEnvironment,
   PUSH_AGENT_SECRETS_TIMEOUT_MS,
 } from "./session-agent-env.js";
 import type { AgentId } from "../shared/types.js";
+import { testDispatch } from "./integration_tests/dispatch-test-helpers.js";
+import { TURN_COMPLETED } from "./turn-settlement.js";
 
 describe("SessionRunner", () => {
   afterEach(() => {
@@ -32,8 +34,8 @@ describe("SessionRunner", () => {
       defaultAgentId: "claude" as AgentId,
     });
     expect(runner.queueLength).toBe(0);
-    runner.enqueue({ text: "msg1" });
-    runner.enqueue({ text: "msg2" });
+    runner.enqueue({ text: "msg1", execution: "interactive" });
+    runner.enqueue({ text: "msg2", execution: "interactive" });
     expect(runner.queueLength).toBe(2);
 
     const snapshot = runner.getQueueSnapshot();
@@ -119,7 +121,7 @@ describe("SessionRunner", () => {
     const idleSpy = vi.fn();
     runner.on("idle", idleSpy);
 
-    runner.enqueue({ text: "pending" });
+    runner.enqueue({ text: "pending", execution: "interactive" });
     runner.running = false;
     runner.onAgentFinished();
     expect(idleSpy).not.toHaveBeenCalled();
@@ -133,7 +135,7 @@ describe("SessionRunner", () => {
       defaultAgentId: "claude" as AgentId,
     });
     runner.running = true;
-    runner.dispatch({ text: "fix ci" });
+    runner.dispatch(testDispatch({ text: "fix ci" }));
     expect(runner.queueLength).toBe(1);
     expect(runner.dequeue()?.text).toBe("fix ci");
     runner.dispose({ force: true });
@@ -151,7 +153,7 @@ describe("SessionRunner", () => {
     const received: any[] = [];
     runner.on("message", (msg) => received.push(msg));
     runner.running = true;
-    runner.dispatch({ text: "fix ci" });
+    runner.dispatch(testDispatch({ text: "fix ci" }));
     const queued = received.find((m) => m.type === "message_queued");
     expect(queued).toMatchObject({ type: "message_queued", text: "fix ci", position: 1 });
     runner.dispose({ force: true });
@@ -174,7 +176,6 @@ describe("SessionRunner", () => {
         sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
         chatHistoryManager: { replaceInProgress: opts.replaceInProgress ?? vi.fn(), finalizeInProgress: vi.fn(), append: vi.fn() } as any,
         usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as any,
-        authManager: { startOAuthFlow: vi.fn() } as any,
         sseBroadcast: vi.fn(),
         broadcastLog: vi.fn(),
         getSelectedModel: () => undefined,
@@ -183,6 +184,30 @@ describe("SessionRunner", () => {
       steerInputs: () => ({ liveSteering: opts.liveSteering, steeringCapable: opts.steeringCapable ?? true }),
     } as any;
   }
+
+  it("rejects an untrusted dispatch before steering or queue insertion (docs/243)", () => {
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    const deps = steerDeps({ liveSteering: true });
+    deps.authorizeDispatch = vi.fn(() => {
+      throw new AgentTurnAdmissionError("s1");
+    });
+    runner.setSystemTurnDeps(deps);
+    const sendUserMessage = vi.fn();
+    runner.setAgent({ sendUserMessage, kill: vi.fn() } as any);
+    runner.running = true;
+    runner.isStreamingActive = true;
+
+    expect(() => runner.dispatch(testDispatch({ text: "blocked" }))).toThrow(
+      expect.objectContaining({ code: "repository_untrusted", statusCode: 403 }),
+    );
+    expect(sendUserMessage).not.toHaveBeenCalled();
+    expect(runner.queueLength).toBe(0);
+    runner.dispose({ force: true });
+  });
 
   it("dispatch steers a mid-turn message via sendUserMessage when live steering + streaming are active (docs/163)", () => {
     const runner = new SessionRunner({
@@ -202,7 +227,7 @@ describe("SessionRunner", () => {
     const received: any[] = [];
     runner.on("message", (msg) => received.push(msg));
 
-    runner.dispatch({ text: "actually use a worktree" });
+    runner.dispatch(testDispatch({ text: "actually use a worktree" }));
 
     // Injected into the running turn — NOT queued.
     expect(sent).toEqual(["actually use a worktree"]);
@@ -212,6 +237,66 @@ describe("SessionRunner", () => {
     expect(received.find((m) => m.type === "message_queued")).toBeUndefined();
     // Persisted at its true transcript position so it survives a reload.
     expect(persisted.length).toBe(1);
+
+    runner.dispose({ force: true });
+  });
+
+  it("SHI-254: a systemTurn dispatch is NEVER steered into a running user turn — it enqueues, keeping its onTurnComplete", () => {
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    // Live steering on + a steerable, streaming user turn in flight: every
+    // condition `shouldSteerMessage` looks at says "steer". The only thing that
+    // must stop it is the INCOMING dispatch being a system turn.
+    runner.setSystemTurnDeps(steerDeps({ liveSteering: true }));
+    const sent: string[] = [];
+    runner.setAgent({ sendUserMessage: (t: string) => sent.push(t), kill: () => {} } as any);
+    runner.running = true;
+    runner.isStreamingActive = true;
+    expect(runner.systemTurnInProgress).toBe(false); // the RUNNING turn is a user turn
+
+    const completions: { errored: boolean }[] = [];
+    runner.dispatch(testDispatch({
+      text: "child PR merged — resume the rebase",
+      systemTurn: true,
+      onTurnComplete: (o) => completions.push(o),
+    }));
+
+    // Not injected into the user's turn; queued as its own turn instead.
+    expect(sent).toEqual([]);
+    expect(runner.queueLength).toBe(1);
+    // …and the completion callback rode the queue rather than being dropped by
+    // the steer path's early return (which is what stranded docs/196 watches at
+    // `merge-observed` and re-fired them on every restart).
+    const queued = runner.messageQueue[0]!;
+    expect(queued.systemTurn).toBe(true);
+    expect(queued.execution).toBe("dispatched");
+    expect(queued.onTurnComplete).toBeTypeOf("function");
+    queued.onTurnComplete!(TURN_COMPLETED);
+    expect(completions).toEqual([TURN_COMPLETED]);
+
+    runner.dispose({ force: true });
+  });
+
+  it("SHI-254: a dispatch carrying only onTurnComplete is also unsteerable (the callback can't survive a steer)", () => {
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    runner.setSystemTurnDeps(steerDeps({ liveSteering: true }));
+    const sent: string[] = [];
+    runner.setAgent({ sendUserMessage: (t: string) => sent.push(t), kill: () => {} } as any);
+    runner.running = true;
+    runner.isStreamingActive = true;
+
+    runner.dispatch(testDispatch({ text: "awaited follow-up", onTurnComplete: () => {} }));
+
+    expect(sent).toEqual([]);
+    expect(runner.queueLength).toBe(1);
+    expect(runner.messageQueue[0]!.onTurnComplete).toBeTypeOf("function");
 
     runner.dispose({ force: true });
   });
@@ -232,7 +317,7 @@ describe("SessionRunner", () => {
     const received: any[] = [];
     runner.on("message", (msg) => received.push(msg));
 
-    runner.dispatch({ text: "queue me" });
+    runner.dispatch(testDispatch({ text: "queue me" }));
 
     expect(sent).toEqual([]);
     expect(runner.queueLength).toBe(1);
@@ -258,7 +343,7 @@ describe("SessionRunner", () => {
     const received: any[] = [];
     runner.on("message", (msg) => received.push(msg));
 
-    runner.dispatch({ text: "queue me" });
+    runner.dispatch(testDispatch({ text: "queue me" }));
 
     expect(sent).toEqual([]);
     expect(runner.queueLength).toBe(1);
@@ -283,7 +368,7 @@ describe("SessionRunner", () => {
     // A dispatch during a system turn queues rather than steers, giving us a
     // buffered-but-unsent message to assert the teardown drop semantics on.
     runner.systemTurnInProgress = true;
-    runner.dispatch({ text: "buffered note" });
+    runner.dispatch(testDispatch({ text: "buffered note" }));
     expect(runner.queueLength).toBe(1);
 
     runner.dispose({ force: true });
@@ -318,7 +403,6 @@ describe("SessionRunner", () => {
         sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
         chatHistoryManager: { replaceInProgress: vi.fn(), finalizeInProgress: vi.fn(), append: vi.fn() } as any,
         usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as any,
-        authManager: { startOAuthFlow: vi.fn() } as any,
         sseBroadcast: vi.fn(),
         broadcastLog: vi.fn(),
         getSelectedModel: () => undefined,
@@ -330,7 +414,7 @@ describe("SessionRunner", () => {
       }),
     });
 
-    runner.dispatch({ text: "fix ci" });
+    runner.dispatch(testDispatch({ text: "fix ci" }));
     // runDispatchedTurn awaits buildRunParams; flush microtasks so the run call lands.
     await new Promise((r) => setImmediate(r));
     // Should start a turn directly — not enqueue
@@ -368,7 +452,6 @@ describe("SessionRunner", () => {
         sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
         chatHistoryManager: { replaceInProgress: vi.fn(), finalizeInProgress: vi.fn(), append: vi.fn() } as any,
         usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as any,
-        authManager: { startOAuthFlow: vi.fn() } as any,
         sseBroadcast: vi.fn(),
         broadcastLog: vi.fn(),
         getSelectedModel: () => undefined,
@@ -382,11 +465,211 @@ describe("SessionRunner", () => {
       }),
     });
 
-    runner.dispatch({ text: "fix ci" });
+    runner.dispatch(testDispatch({ text: "fix ci" }));
     await new Promise((r) => setImmediate(r));
     await new Promise((r) => setTimeout(r, 0));
     expect(callOrder).toEqual(["prepareAgentEnv", "buildRunParams"]);
     expect(fakeAgent.run).toHaveBeenCalled();
+    runner.dispose({ force: true });
+  });
+
+  it("retires the outgoing resident before creating an account-failover turn", async () => {
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    const outgoing = {
+      kill: vi.fn(),
+      removeAllListeners: vi.fn(),
+    } as any;
+    const incoming = {
+      on: vi.fn(),
+      run: vi.fn(),
+      kill: vi.fn(),
+      removeAllListeners: vi.fn(),
+    } as any;
+    runner.setAgent(outgoing);
+    runner.isStreamingActive = true;
+    runner.setSystemTurnDeps({
+      agentFactory: () => incoming,
+      autoCommit: vi.fn().mockResolvedValue({
+        commitHash: null,
+        parentHash: null,
+        conflictedFiles: [],
+        rebaseInProgress: false,
+        secretFindings: [],
+      }),
+      scheduleAutoPush: vi.fn(),
+      listenerDeps: {
+        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
+        chatHistoryManager: { replaceInProgress: vi.fn(), finalizeInProgress: vi.fn(), append: vi.fn() } as any,
+        usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as any,
+        sseBroadcast: vi.fn(),
+        broadcastLog: vi.fn(),
+        getSelectedModel: () => undefined,
+      },
+      needsAccountFailover: () => true,
+      prepareAgentEnv: vi.fn().mockResolvedValue(undefined),
+      buildRunParams: vi.fn().mockResolvedValue({ prompt: "continue", cwd: "/tmp/s1" }),
+    });
+
+    runner.dispatch(testDispatch({ text: "continue" }));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(outgoing.kill).toHaveBeenCalledOnce();
+    expect(incoming.kill).not.toHaveBeenCalled();
+    expect(incoming.run).toHaveBeenCalledWith(expect.objectContaining({ prompt: "continue" }));
+    expect(runner.getAgent()).toBe(incoming);
+    runner.dispose({ force: true });
+  });
+
+  it("tells env prep whether the turn reuses a resident agent or spawns a fresh one", async () => {
+    // nikzlabs/shipit#1874 — `reusingResidentAgent` is what stops the
+    // destructive docs/153 leak repair from running under a live CLI. The flag
+    // is decided by the shared executor (`turn-executor.ts`, at the
+    // `prepareAgentEnv` call immediately above its `reuseExistingAgent`
+    // branch), so every turn that can reuse a resident streaming process —
+    // a WS turn, a `/compact`, a queued merge-wake dispatch — inherits this
+    // one decision rather than each transport making its own.
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    const resident = {
+      on: vi.fn(),
+      run: vi.fn(),
+      kill: vi.fn(),
+      removeAllListeners: vi.fn(),
+      sendUserMessage: vi.fn(),
+    } as any;
+    const fresh = { on: vi.fn(), run: vi.fn(), kill: vi.fn(), removeAllListeners: vi.fn() } as any;
+    const prepareAgentEnv = vi.fn().mockResolvedValue(undefined);
+    runner.setAgent(resident);
+    runner.isStreamingActive = true;
+    runner.setSystemTurnDeps({
+      agentFactory: () => fresh,
+      autoCommit: vi.fn().mockResolvedValue({
+        commitHash: null,
+        parentHash: null,
+        conflictedFiles: [],
+        rebaseInProgress: false,
+        secretFindings: [],
+      }),
+      scheduleAutoPush: vi.fn(),
+      listenerDeps: {
+        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
+        chatHistoryManager: { replaceInProgress: vi.fn(), finalizeInProgress: vi.fn(), append: vi.fn() } as any,
+        usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as any,
+        sseBroadcast: vi.fn(),
+        broadcastLog: vi.fn(),
+        getSelectedModel: () => undefined,
+      },
+      prepareAgentEnv,
+      buildRunParams: vi.fn().mockResolvedValue({ prompt: "continue", cwd: "/tmp/s1" }),
+    });
+
+    // A resident streaming process is alive → the message is carried into it.
+    runner.dispatch(testDispatch({ text: "continue" }));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(resident.sendUserMessage).toHaveBeenCalledWith("continue");
+    expect(prepareAgentEnv).toHaveBeenLastCalledWith(
+      "s1", "claude", expect.objectContaining({ reusingResidentAgent: true }),
+    );
+
+    // No resident process → a fresh spawn, so the repair is free to run.
+    runner.running = false;
+    runner.setAgent(null);
+    runner.isStreamingActive = false;
+    runner.dispatch(testDispatch({ text: "again" }));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(prepareAgentEnv).toHaveBeenLastCalledWith(
+      "s1", "claude", expect.objectContaining({ reusingResidentAgent: false }),
+    );
+
+    runner.dispose({ force: true });
+  });
+
+  it("retires the resident process before env prep on a system turn (merge wake)", async () => {
+    // nikzlabs/shipit#1874 criterion 3, the case `reusingResidentAgent` alone
+    // does NOT cover. A system turn — the merge wake, a rebase, a CI fix — is
+    // never steered, so it truthfully answers "no, I am not reusing the
+    // resident process" and env prep is free to run the destructive docs/153
+    // repair. But declining to ADOPT the process does not stop it running: it
+    // is still resident in the worker, still re-reading its credentials per
+    // request (see plan.md §4's probe), and the repair is about to unlink the
+    // subtree underneath it. That is the incident's exact shape.
+    //
+    // So the boundary is made real: the outgoing process is killed BEFORE env
+    // prep, not orphaned by the fresh spawn. This asserts the ordering, which
+    // is the whole property — a test that only checked "kill was called" would
+    // pass on the pre-fix code too, where the worker's 409 kills it afterwards.
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    const order: string[] = [];
+    const resident = {
+      on: vi.fn(),
+      run: vi.fn(),
+      kill: vi.fn(() => { order.push("kill-resident"); }),
+      removeAllListeners: vi.fn(),
+      sendUserMessage: vi.fn(),
+    } as any;
+    const fresh = { on: vi.fn(), run: vi.fn(), kill: vi.fn(), removeAllListeners: vi.fn() } as any;
+    let agentAtEnvPrep: unknown = "unset";
+    const prepareAgentEnv = vi.fn().mockImplementation(async () => {
+      order.push("env-prep");
+      agentAtEnvPrep = runner.getAgent();
+    });
+    runner.setAgent(resident);
+    runner.isStreamingActive = true;
+    runner.setSystemTurnDeps({
+      agentFactory: () => fresh,
+      autoCommit: vi.fn().mockResolvedValue({
+        commitHash: null,
+        parentHash: null,
+        conflictedFiles: [],
+        rebaseInProgress: false,
+        secretFindings: [],
+      }),
+      scheduleAutoPush: vi.fn(),
+      listenerDeps: {
+        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
+        chatHistoryManager: { replaceInProgress: vi.fn(), finalizeInProgress: vi.fn(), append: vi.fn() } as any,
+        usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as any,
+        sseBroadcast: vi.fn(),
+        broadcastLog: vi.fn(),
+        getSelectedModel: () => undefined,
+      },
+      prepareAgentEnv,
+      buildRunParams: vi.fn().mockResolvedValue({ prompt: "merged", cwd: "/tmp/s1" }),
+    });
+
+    runner.dispatch(testDispatch({ text: "merged", systemTurn: true }));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setTimeout(r, 0));
+
+    // The resident process was NOT adopted...
+    expect(resident.sendUserMessage).not.toHaveBeenCalled();
+    expect(fresh.run).toHaveBeenCalledWith(expect.objectContaining({ prompt: "merged" }));
+    // ...and it was gone before env prep touched the credential subtree.
+    expect(order).toEqual(["kill-resident", "env-prep"]);
+    // What the slot held at that moment: the INCOMING agent, which exists as an
+    // object but has not been started, never the outgoing process. (This is why
+    // `sessionHasLiveAgent` is the predicate for the refresher and the
+    // post-sign-in re-push but NOT for the turn path — at a spawn boundary it
+    // reads the agent the turn is about to run and would suppress every repair.
+    // Its over-approximation is safe for the wall-clock callers, which have no
+    // spawn in view; it would be wrong here.)
+    expect(agentAtEnvPrep).toBe(fresh);
+    expect(agentAtEnvPrep).not.toBe(resident);
+
     runner.dispose({ force: true });
   });
 
@@ -441,7 +724,6 @@ describe("SessionRunner", () => {
         sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
         chatHistoryManager: { replaceInProgress: vi.fn(), finalizeInProgress: vi.fn(), append: vi.fn() } as any,
         usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as any,
-        authManager: { startOAuthFlow: vi.fn() } as any,
         sseBroadcast: vi.fn(),
         broadcastLog: vi.fn(),
         getSelectedModel: () => undefined,
@@ -460,7 +742,7 @@ describe("SessionRunner", () => {
 
     vi.useFakeTimers();
     try {
-      runner.dispatch({ text: "fix ci" });
+      runner.dispatch(testDispatch({ text: "fix ci" }));
       // Advance past the worker-secrets-push fail-open timeout, flushing
       // microtasks between timers so the turn proceeds to the spawn.
       await vi.advanceTimersByTimeAsync(PUSH_AGENT_SECRETS_TIMEOUT_MS + 1_000);
@@ -496,7 +778,6 @@ describe("SessionRunner", () => {
           append: chatHistoryAppend,
         } as any,
         usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as any,
-        authManager: { startOAuthFlow: vi.fn() } as any,
         sseBroadcast,
         broadcastLog: vi.fn(),
         getSelectedModel: () => undefined,
@@ -504,7 +785,7 @@ describe("SessionRunner", () => {
       buildRunParams: vi.fn().mockRejectedValue(new Error("run params failed")),
     });
 
-    runner.dispatch({ text: "fix ci" });
+    runner.dispatch(testDispatch({ text: "fix ci" }));
     await new Promise((r) => setImmediate(r));
     await new Promise((r) => setTimeout(r, 0));
 
@@ -532,7 +813,7 @@ describe("SessionRunner", () => {
       defaultAgentId: "claude" as AgentId,
     });
     // No system turn deps set
-    runner.dispatch({ text: "fix ci" });
+    runner.dispatch(testDispatch({ text: "fix ci" }));
     expect(runner.queueLength).toBe(1);
     runner.dispose();
   });
@@ -548,14 +829,14 @@ describe("SessionRunner", () => {
       defaultAgentId: "claude" as AgentId,
     });
     runner.running = true;
-    runner.dispatch({
+    runner.dispatch(testDispatch({
       text: "review please",
       activity: "Reviewing…",
       images: [{ data: "AAA=", mediaType: "image/png" }],
       files: [{ path: "src/foo.ts" }],
       uploads: [{ path: "/uploads/screen.png", type: "upload" as const }],
       permissionMode: "guarded",
-    });
+    }));
     const queued = runner.dequeue();
     expect(queued).toMatchObject({
       text: "review please",
@@ -576,16 +857,16 @@ describe("SessionRunner", () => {
     });
 
     for (let i = 0; i < 50; i++) {
-      runner.enqueue({ text: `msg${i}` });
+      runner.enqueue({ text: `msg${i}`, execution: "interactive" });
     }
     expect(runner.queueLength).toBe(50);
 
-    expect(() => runner.enqueue({ text: "overflow" })).toThrow("Message queue is full");
+    expect(() => runner.enqueue({ text: "overflow", execution: "interactive" })).toThrow("Message queue is full");
     expect(runner.queueLength).toBe(50);
 
     runner.dequeue();
     expect(runner.queueLength).toBe(49);
-    runner.enqueue({ text: "fits now" });
+    runner.enqueue({ text: "fits now", execution: "interactive" });
     expect(runner.queueLength).toBe(50);
 
     runner.dispose();
@@ -693,6 +974,45 @@ describe("SessionRunner", () => {
     runner.detachViewer();
     expect(runner.lastViewerDetachAt).toBeGreaterThanOrEqual(firstZero);
     runner.dispose();
+  });
+});
+
+// docs/179 §4 — the predicate guarding every credential-topology rewrite. Its
+// whole value is being *narrower* than the two things it is easy to confuse it
+// with, so those distinctions are what these assert.
+describe("sessionHasLiveAgent", () => {
+  it("is false for an unknown session and for a runner with no agent", () => {
+    const registry = new SessionRunnerRegistry();
+    expect(sessionHasLiveAgent(registry, "nope")).toBe(false);
+    const runner = registry.getOrCreate("s1", "/tmp/s1", "claude" as AgentId);
+    expect(sessionHasLiveAgent(registry, "s1")).toBe(false);
+    runner.dispose();
+  });
+
+  it("is true for an IDLE session that still holds a resident process", () => {
+    const registry = new SessionRunnerRegistry();
+    const runner = registry.getOrCreate("s1", "/tmp/s1", "claude" as AgentId);
+    runner.setAgent(new EventEmitter() as never);
+    runner.running = false;
+
+    // This is the case `runner.running` gets wrong. A streaming Claude process
+    // outlives its turn (live steering), and it re-reads its credentials on
+    // the next request — so "no turn in flight" does not mean "safe to rewrite
+    // the credential subtree". A `/compact` leaves exactly this state behind,
+    // and it is the state the reported incident was in.
+    expect(runner.running).toBe(false);
+    expect(sessionHasLiveAgent(registry, "s1")).toBe(true);
+
+    runner.setAgent(null);
+    expect(sessionHasLiveAgent(registry, "s1")).toBe(false);
+    runner.dispose({ force: true });
+  });
+
+  it("tolerates a missing registry", () => {
+    // Minimal builds (no runner registry) have no agent processes to disturb,
+    // so the answer is "nothing is live" rather than a crash.
+    expect(sessionHasLiveAgent(null, "s1")).toBe(false);
+    expect(sessionHasLiveAgent(undefined, "s1")).toBe(false);
   });
 });
 

@@ -12,14 +12,17 @@ import {
   wireEventHandlers,
   markProviderAccountUnauthenticated,
   markProviderAccountReauthenticated,
+  resolveAutoStartDeps,
 } from "./app-lifecycle.js";
 import { SessionRunner, SessionRunnerRegistry } from "./session-runner.js";
+import type { SystemTurnDeps } from "./session-runner.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import { CredentialStore } from "./credential-store.js";
 import { ProviderAccountManager } from "./provider-account-manager.js";
 import { SessionManager } from "./sessions.js";
 import { createTestDatabaseManager } from "./integration_tests/test-helpers.js";
-import type { AgentId } from "../shared/types.js";
+import type { AgentId, AgentProcess, SessionInfo } from "../shared/types.js";
+import type { AgentMcpWriteContext } from "../shared/types/agent-types.js";
 import type { AgentAuthManager } from "./agent-auth-manager.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { AgentRegistry } from "../shared/agent-registry.js";
@@ -33,6 +36,25 @@ import type { SessionContainerManager } from "./session-container.js";
  */
 
 interface FakeContainer { sessionId: string }
+
+describe("resolveAutoStartDeps", () => {
+  it("keeps local-mode credentials in the writable ShipIt state directory", () => {
+    expect(resolveAutoStartDeps({
+      RUNTIME_MODE: "local",
+      SHIPIT_STATE_DIR: "/workspace/.inner-shipit",
+    })).toEqual({
+      serveStatic: true,
+      credentialsDir: "/workspace/.inner-shipit/credentials",
+    });
+  });
+
+  it("preserves the containerized credentials default outside local mode", () => {
+    expect(resolveAutoStartDeps({
+      RUNTIME_MODE: "containerized",
+      SHIPIT_STATE_DIR: "/workspace/.inner-shipit",
+    })).toEqual({ serveStatic: true });
+  });
+});
 
 function makeContainerManager(opts: {
   containers: FakeContainer[];
@@ -61,6 +83,28 @@ describe("createIdleEnforcer", () => {
   afterEach(() => {
     vi.useRealTimers();
     registry.disposeAll();
+  });
+
+  it("exempts reserved sessions from both idle and memory-pressure eviction", () => {
+    const containers = [{ sessionId: "reserved" }, { sessionId: "ordinary" }];
+    const destroy = vi.fn().mockResolvedValue(undefined);
+    const cm = makeContainerManager({ containers, destroy });
+    registry.getOrCreate("reserved", "/tmp/reserved", "claude" as AgentId);
+    registry.getOrCreate("ordinary", "/tmp/ordinary", "claude" as AgentId);
+
+    createIdleEnforcer({
+      containerManager: cm,
+      credentialStore: makeCredentialStore(0),
+      runnerRegistry: registry,
+      sessionManager: {
+        get: (id: string) => id === "reserved" ? { keepPreviewRunning: true } : undefined,
+      } as any,
+      getMemoryStats: () => ({ usedBytes: 95, totalBytes: 100 }),
+    })();
+
+    expect(destroy).toHaveBeenCalledWith("ordinary");
+    expect(destroy).not.toHaveBeenCalledWith("reserved");
+    expect(registry.get("reserved")).toBeDefined();
   });
 
   it("never disposes a runner whose agent is running, even when over the limit", () => {
@@ -117,6 +161,174 @@ describe("createIdleEnforcer", () => {
     for (const c of containers) {
       expect(registry.get(c.sessionId)?.disposed).toBe(false);
     }
+  });
+
+  // docs/235 — the reclaim guard reads `agentBusy`, not `running`. A session
+  // whose agent woke ITSELF (a background task finished and the CLI started a
+  // fresh turn), or that is merely holding pending background work between
+  // turns, has `running === false` and would otherwise be reaped mid-work.
+  it("never disposes a runner holding outstanding background tasks", () => {
+    const containers = [
+      { sessionId: "a" }, { sessionId: "b" }, { sessionId: "c" },
+    ];
+    const destroy = vi.fn().mockResolvedValue(undefined);
+    const cm = makeContainerManager({ containers, destroy });
+
+    for (const c of containers) {
+      const r = registry.getOrCreate(c.sessionId, `/tmp/${c.sessionId}`, "claude" as AgentId);
+      // No viewer, no running turn — idle by the old definition.
+      r.isStreamingActive = true;
+      r.setBackgroundTasks([{ id: `task-${c.sessionId}`, description: "npm test" }]);
+      expect(r.running).toBe(false);
+      expect(r.agentBusy).toBe(true);
+    }
+
+    createIdleEnforcer({
+      containerManager: cm,
+      credentialStore: makeCredentialStore(1),
+      runnerRegistry: registry,
+    })();
+
+    expect(destroy).not.toHaveBeenCalled();
+    for (const c of containers) {
+      expect(registry.get(c.sessionId)?.disposed).toBe(false);
+    }
+  });
+
+  it("reaps a runner once its background tasks drain", () => {
+    const containers = [{ sessionId: "a" }, { sessionId: "b" }];
+    const destroy = vi.fn().mockResolvedValue(undefined);
+    const cm = makeContainerManager({ containers, destroy });
+
+    for (const c of containers) {
+      const r = registry.getOrCreate(c.sessionId, `/tmp/${c.sessionId}`, "claude" as AgentId);
+      r.isStreamingActive = true;
+      r.setBackgroundTasks([{ id: "t1" }]);
+    }
+    // The backend reports an empty list — drained.
+    for (const c of containers) registry.get(c.sessionId)!.setBackgroundTasks([]);
+
+    createIdleEnforcer({
+      containerManager: cm,
+      credentialStore: makeCredentialStore(0),
+      runnerRegistry: registry,
+    })();
+
+    expect(destroy).toHaveBeenCalledTimes(2);
+  });
+
+  // The count is only meaningful while a streaming process is resident: the CLI
+  // reaps background work when it exits, so a stale list must not keep the
+  // container alive after the process is gone.
+  it("ignores background tasks when no streaming process is resident", () => {
+    const containers = [{ sessionId: "a" }];
+    const destroy = vi.fn().mockResolvedValue(undefined);
+    const cm = makeContainerManager({ containers, destroy });
+
+    const r = registry.getOrCreate("a", "/tmp/a", "claude" as AgentId);
+    r.setBackgroundTasks([{ id: "t1" }]);
+    r.isStreamingActive = false;
+    expect(r.agentBusy).toBe(false);
+
+    createIdleEnforcer({
+      containerManager: cm,
+      credentialStore: makeCredentialStore(0),
+      runnerRegistry: registry,
+    })();
+
+    expect(destroy).toHaveBeenCalledWith("a");
+  });
+
+  // SHI-296 — the prod incident: a BACKGROUNDED `shipit agent run` consult (the
+  // shape docs/236 tells agents to prefer) ends the primary turn, so `running`
+  // is false; and with no resident streaming process `backgroundTaskCount` reads
+  // 0 too. The session looked perfectly idle and its container was destroyed 12
+  // minutes into an `xhigh` Codex review, leaving only a `cancelled` card.
+  //
+  // The assertion that matters is `destroy` — the SHI-278 runner-level guard
+  // already made `dispose` decline, and it declined AFTER `container.stop` had
+  // been issued, which is exactly why it didn't save the review.
+  it("never destroys the container of a runner with an in-flight sub-agent spawn", async () => {
+    const containers = [{ sessionId: "consulting" }, { sessionId: "idle" }];
+    const destroy = vi.fn().mockResolvedValue(undefined);
+    const cm = makeContainerManager({ containers, destroy });
+
+    const consulting = registry.getOrCreate("consulting", "/tmp/consulting", "claude" as AgentId);
+    registry.getOrCreate("idle", "/tmp/idle", "claude" as AgentId);
+
+    // A fake adapter that never finishes — the spawn stays in flight until we
+    // let it complete below.
+    const agent = Object.assign(new EventEmitter(), { run: vi.fn(), kill: vi.fn() });
+    consulting.setSystemTurnDeps({
+      agentFactory: () => agent as unknown as AgentProcess,
+    } as unknown as SystemTurnDeps);
+    const spawned = consulting.spawnSubAgent({
+      agentId: "codex" as AgentId,
+      prompt: "review this branch",
+      spawnId: "spawn-1",
+      depth: 0,
+      timeoutMs: 10 * 60_000,
+    });
+
+    // No viewer ever attached (so `lastViewerDetachAt` is 0 and the grace period
+    // never applies — the incident's exact shape), and no turn is running.
+    expect(consulting.running).toBe(false);
+    expect(consulting.viewerCount).toBe(0);
+    expect(consulting.subAgentSpawnsInFlight).toBe(1);
+    // Eligibility half of the fix: the scan must see this as busy. (The runner's
+    // own dispose guard is the second half — either alone would have saved the
+    // consult only if the enforcer stopped firing `destroy` unconditionally.)
+    expect(consulting.agentBusy).toBe(true);
+
+    const enforce = createIdleEnforcer({
+      containerManager: cm,
+      credentialStore: makeCredentialStore(0),
+      runnerRegistry: registry,
+    });
+    enforce();
+
+    expect(destroy).not.toHaveBeenCalledWith("consulting");
+    expect(consulting.disposed).toBe(false);
+    // The genuinely-idle sibling is still reaped — the guard is narrow.
+    expect(destroy).toHaveBeenCalledWith("idle");
+
+    // Once the consult lands, the session is reclaimable like any other.
+    agent.emit("done");
+    await spawned;
+    expect(consulting.subAgentSpawnsInFlight).toBe(0);
+    expect(consulting.agentBusy).toBe(false);
+
+    enforce();
+    expect(destroy).toHaveBeenCalledWith("consulting");
+  });
+
+  // SHI-296, second half — the enforcer used to fire `destroy` and `dispose`
+  // unconditionally in sequence, so a runner that declined disposal still lost
+  // its container (and was left pointed at a dead one). A declined dispose must
+  // now mean the container is left alone.
+  it("leaves the container alone when the runner declines disposal", () => {
+    const containers = [{ sessionId: "stubborn" }];
+    const destroy = vi.fn().mockResolvedValue(undefined);
+    const cm = makeContainerManager({ containers, destroy });
+
+    const runner = registry.getOrCreate("stubborn", "/tmp/stubborn", "claude" as AgentId);
+    // Pass the enforcer's own gates but refuse at the runner level — the shape
+    // any future runner-owned guard takes.
+    const declining = runner as unknown as { dispose: (opts?: { force?: boolean }) => void };
+    const origDispose = declining.dispose.bind(runner);
+    declining.dispose = (opts?: { force?: boolean }) => {
+      if (!opts?.force) return;
+      origDispose(opts);
+    };
+
+    createIdleEnforcer({
+      containerManager: cm,
+      credentialStore: makeCredentialStore(0),
+      runnerRegistry: registry,
+    })();
+
+    expect(destroy).not.toHaveBeenCalled();
+    expect(runner.disposed).toBe(false);
   });
 
   it("skips runners whose viewer just detached (within grace period)", () => {
@@ -463,11 +675,131 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
     });
     expect(runner).toBeInstanceOf(SessionRunner);
     expect(runner).not.toBeInstanceOf(ContainerSessionRunner);
-    // Local runners have no in-container agent worker — `createAgent` should
-    // be undefined so the registry's onRunnerCreated wiring falls through to
-    // the process-level agentFactory.
+    // No `localAgentFactory` was passed, so there is nothing to bind an
+    // account-scoped spawn to and `createAgent` stays unset — the registry's
+    // onRunnerCreated wiring falls through to the process-level agentFactory.
     expect(runner.createAgent).toBeUndefined();
     runner.dispose({ force: true });
+  });
+
+  // docs/150 — local mode has no per-session credentials mount, so the account
+  // the router selected reaches the CLI only if the spawn is told which HOME to
+  // use. `createAgent` is the per-session hook every spawn path already prefers.
+  describe("account-scoped local spawns (docs/150)", () => {
+    const account = (sessionId: string, accountId: string): SessionInfo => ({
+      id: sessionId,
+      agentId: "claude" as AgentId,
+      providerRouteKind: "account",
+      providerRouteId: accountId,
+    } as SessionInfo);
+
+    function localFactoryWith(sessions: Record<string, SessionInfo>) {
+      const calls: { agentId: AgentId; home: string | undefined }[] = [];
+      const localAgentFactory = vi.fn((agentId: AgentId, resolveHome?: () => string | undefined) => {
+        calls.push({ agentId, home: resolveHome?.() });
+        return { agentId } as unknown as AgentProcess;
+      });
+      const factory = buildRunnerFactory({
+        deps: {},
+        containerManager: null,
+        credentialsDir: "/credentials",
+        sessionManager: { get: (id: string) => sessions[id] } as unknown as SessionManager,
+        runtimeMode: "local",
+        localAgentFactory,
+      });
+      return { factory: factory!, calls };
+    }
+
+    it("resolves each session's own account root", () => {
+      const { factory, calls } = localFactoryWith({
+        s1: account("s1", "acct-a"),
+        s2: account("s2", "acct-b"),
+      });
+
+      const r1 = factory({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+      const r2 = factory({ sessionId: "s2", sessionDir: "/tmp/s2", defaultAgentId: "claude" as AgentId });
+      r1.createAgent!("claude");
+      r2.createAgent!("claude");
+
+      // Two sessions pinned to different accounts spawn against different
+      // credential roots — the whole point, and what a single process-global
+      // HOME could not express.
+      expect(calls[0].home).toBe("/credentials/provider-accounts/claude/acct-a");
+      expect(calls[1].home).toBe("/credentials/provider-accounts/claude/acct-b");
+      r1.dispose({ force: true });
+      r2.dispose({ force: true });
+    });
+
+    it("re-reads the route on each spawn so a failover is picked up", () => {
+      const sessions: Record<string, SessionInfo> = { s1: account("s1", "acct-a") };
+      const { factory, calls } = localFactoryWith(sessions);
+      const runner = factory({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+
+      runner.createAgent!("claude");
+      // The turn hits its cutoff and env-prep moves the session; the retry
+      // spawns from the same runner.
+      sessions.s1 = account("s1", "acct-b");
+      runner.createAgent!("claude");
+
+      expect(calls.map((c) => c.home)).toEqual([
+        "/credentials/provider-accounts/claude/acct-a",
+        "/credentials/provider-accounts/claude/acct-b",
+      ]);
+      runner.dispose({ force: true });
+    });
+  });
+
+  // SHI-298 — the second thing a local spawn has no worker to do for it. The
+  // adapter's MCP write and the MCP env both happen at `createAgent`, next to
+  // the account-scoped HOME above.
+  describe("MCP on a local spawn (SHI-298)", () => {
+    function localFactoryWithMcp(opts: { credentialStore?: CredentialStore } = {}) {
+      const written: (AgentMcpWriteContext | null)[] = [];
+      const localAgentFactory = vi.fn((): AgentProcess => {
+        const agent = new EventEmitter() as unknown as AgentProcess;
+        agent.writeMcpConfig = (ctx: AgentMcpWriteContext) => {
+          written.push(ctx);
+          return {};
+        };
+        agent.run = () => { /* no spawn in this test */ };
+        return agent;
+      });
+      const factory = buildRunnerFactory({
+        deps: {},
+        containerManager: null,
+        credentialsDir: "/credentials",
+        sessionManager: { get: () => undefined } as unknown as SessionManager,
+        runtimeMode: "local",
+        localAgentFactory,
+        ...(opts.credentialStore ? { credentialStore: opts.credentialStore } : {}),
+      });
+      return { factory: factory!, written };
+    }
+
+    it("wraps the spawn so the adapter's MCP config is written", () => {
+      const store = new CredentialStore(
+        fs.mkdtempSync(path.join(os.tmpdir(), "shipit-mcp-")),
+      );
+      store.setAgentEnv("mcp__linear__TOKEN", "sk-1");
+      const { factory, written } = localFactoryWithMcp({ credentialStore: store });
+
+      const runner = factory({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+      const agent = runner.createAgent!("claude");
+      agent.run({ prompt: "hi", cwd: "/tmp/s1" });
+
+      expect(written).toHaveLength(1);
+      // No bridge: its tools are transports to a worker local mode doesn't have.
+      expect(written[0]?.shipitBridge).toBeNull();
+      runner.dispose({ force: true });
+    });
+
+    it("without a credential store the spawn is unwrapped (pre-SHI-298 behavior)", () => {
+      const { factory, written } = localFactoryWithMcp();
+      const runner = factory({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+      runner.createAgent!("claude").run({ prompt: "hi", cwd: "/tmp/s1" });
+      expect(written).toHaveLength(0);
+      runner.dispose({ force: true });
+    });
   });
 
   it("local mode wins over a non-null containerManager", () => {
@@ -774,6 +1106,43 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
     expect(complete?.data).toMatchObject({ agentId: "claude", accountId: account.id });
   });
 
+  /** Write what a completed Claude sign-in leaves in an account's root. */
+  function writeClaudeSignIn(
+    providerAccountManager: ProviderAccountManager,
+    accountId: string,
+    uuid: string,
+    email: string,
+  ): void {
+    const dir = providerAccountManager.resolveCredentialRoot("claude", accountId);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, ".claude.json"),
+      JSON.stringify({ oauthAccount: { accountUuid: uuid, emailAddress: email } }),
+    );
+  }
+
+  // docs/150 req 22 — the refusal has to happen on this event, not later. Once
+  // the row goes `ready` it is selectable, and a duplicate is worst exactly
+  // when it is picked as the failover target for the account it duplicates.
+  it("refuses a completion that resolves to an already-connected account", () => {
+    const { providerAccountManager, mgr, events, account } = setup();
+    writeClaudeSignIn(providerAccountManager, account.id, "uuid-1", "dev@example.com");
+    mgr.activeAccountId = account.id;
+    mgr.emit("complete");
+
+    const second = providerAccountManager.create("claude");
+    writeClaudeSignIn(providerAccountManager, second.id, "uuid-1", "dev@example.com");
+    mgr.activeAccountId = second.id;
+    mgr.emit("complete");
+
+    // No "connected" signal for the refused flow, and no second row.
+    expect(events.filter((e) => e.event === "agent_auth_complete")).toHaveLength(1);
+    expect(providerAccountManager.list("claude").map((a) => a.id)).toEqual([account.id]);
+    const failed = events.filter((e) => e.event === "agent_auth_failed").at(-1);
+    expect(failed?.data).toMatchObject({ agentId: "claude", accountId: second.id, reason: "duplicate" });
+    expect(String(failed?.data.message)).toContain("already connected");
+  });
+
   it("scoped failure marks the row auth_failed and qualifies the SSE", () => {
     const { providerAccountManager, mgr, events, account } = setup();
     mgr.activeAccountId = account.id;
@@ -793,14 +1162,59 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
     expect(pending?.data).toMatchObject({ agentId: "claude", accountId: account.id });
   });
 
-  it("singleton complete omits accountId", () => {
-    const { mgr, events } = setup();
+  it("rebroadcasts auth progress and log diagnostics", () => {
+    const { mgr, events, account } = setup();
+    mgr.activeAccountId = account.id;
+    mgr.emit("progress", {
+      agentId: "claude",
+      accountId: account.id,
+      attemptId: "attempt-1",
+      phase: "waiting_for_url",
+      message: "Waiting for Claude CLI.",
+    });
+    mgr.emit("log", {
+      agentId: "claude",
+      accountId: account.id,
+      attemptId: "attempt-1",
+      timestamp: "2026-07-11T00:00:00.000Z",
+      level: "info",
+      source: "shipit",
+      message: "Spawned claude /login.",
+    });
+
+    expect(events.find((e) => e.event === "agent_auth_progress")?.data).toMatchObject({
+      agentId: "claude",
+      accountId: account.id,
+      attemptId: "attempt-1",
+      phase: "waiting_for_url",
+    });
+    expect(events.find((e) => e.event === "agent_auth_log")?.data).toMatchObject({
+      agentId: "claude",
+      accountId: account.id,
+      attemptId: "attempt-1",
+      source: "shipit",
+    });
+  });
+
+  // docs/150 req 19 — a scope-less completion is no longer a supported flow
+  // (`AgentAuthManager.start` requires the account), so this is the defensive
+  // case: a manager emitting `complete` without a start. It must not fabricate
+  // an account, and must not re-run the default-account migration the singleton
+  // branch used to.
+  it("a completion with no account scope marks nothing and invents no accountId", () => {
+    const { mgr, events, providerAccountManager } = setup();
+    const before = providerAccountManager.list("claude").map((a) => a.id);
     mgr.activeAccountId = null;
+
     mgr.emit("complete");
 
     const complete = events.find((e) => e.event === "agent_auth_complete");
     expect(complete?.data).toMatchObject({ agentId: "claude" });
     expect(complete?.data.accountId).toBeUndefined();
+    // No row invented (the old `else` called migrateDefaultAccounts here) and
+    // none flipped to ready off an unattributable completion.
+    expect(providerAccountManager.list("claude").map((a) => a.id)).toEqual(before);
+    expect(providerAccountManager.list("claude").every((a) => a.status !== "ready")).toBe(true);
   });
 });
 

@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { LineComment } from "../../server/shared/types.js";
+import { getLocalStorageObject } from "../utils/local-storage.js";
 
 /**
  * Legacy file-comment store used by DiffPanel for per-staged-change line
@@ -11,11 +12,7 @@ import type { LineComment } from "../../server/shared/types.js";
 const STORAGE_KEY = "shipit-file-comments";
 
 function loadFromStorage(): Record<string, LineComment[]> {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw) as Record<string, LineComment[]>;
-  } catch { /* ignore */ }
-  return {};
+  return getLocalStorageObject<Record<string, LineComment[]>>(STORAGE_KEY, {});
 }
 
 function saveToStorage(data: Record<string, LineComment[]>): void {

@@ -45,6 +45,15 @@ export interface PrepareRunParamsInput {
    * `false` at the hook) so existing call sites/tests that omit it still compile.
    */
   sandboxActive?: boolean;
+  /**
+   * SHI-265 — `true` iff the session is merged with a recorded `mergedHeadSha`,
+   * i.e. sitting in the state `shipit branch reset-to-base` guards. Claude's hook
+   * forwards it to the adapter as `guardDestructiveGit`, which sets
+   * SHIPIT_GUARD_DESTRUCTIVE_GIT=1 so the managed-settings.json PreToolUse hook
+   * arms its destructive-git rule. Optional (defaults to `false` at the hook) so
+   * existing call sites/tests that omit it still compile.
+   */
+  guardDestructiveGitActive?: boolean;
 }
 
 /**

@@ -18,6 +18,60 @@ import http from "node:http";
  */
 export const DEFAULT_WORKER_TIMEOUT_MS = 10_000;
 
+/**
+ * The worker URL a {@link ContainerSessionRunner} carries between construction
+ * and `setWorkerUrl()` — i.e. while its container is still being created.
+ *
+ * Exported so the runner and this module agree on the sentinel instead of
+ * repeating the literal. Nothing may be dialed at this address: see
+ * {@link WorkerUnavailableError}.
+ */
+export const PLACEHOLDER_WORKER_URL = "http://0.0.0.0:0";
+
+/**
+ * Thrown when a worker call is attempted against a session whose container
+ * never came up — the runner still holds {@link PLACEHOLDER_WORKER_URL}.
+ *
+ * Without this guard the call is actually dialed, and Node reports
+ * `connect ECONNREFUSED 0.0.0.0` (it omits the `:0`). That message reached
+ * users as a chat error: it names neither the session container nor the real
+ * failure, and it looks like a bug in the user's own project rather than a
+ * container that failed to start. `dispose()` resolves the runner's
+ * worker-ready gate so pending awaiters don't leak, which is what lets a
+ * parked turn reach the POST with the placeholder still set — so this has to
+ * be enforced at the transport, where no call site can forget it.
+ *
+ * The `reason` carries the actual container-creation failure when the runner
+ * knows it (see `ContainerSessionRunner.markWorkerUnavailable`).
+ */
+export class WorkerUnavailableError extends Error {
+  readonly path: string;
+  constructor(path: string, reason?: string) {
+    super(
+      reason
+        ? `The session container isn't running, so the request could not be delivered: ${reason}`
+        : "The session container isn't running, so the request could not be delivered. "
+          + "It failed to start — send your message again to retry.",
+    );
+    this.name = "WorkerUnavailableError";
+    this.path = path;
+  }
+}
+
+/**
+ * Reject rather than dial when the base URL is still the placeholder.
+ *
+ * Returns a rejected promise (not a synchronous throw) so the many
+ * fire-and-forget `workerPost(...).catch(() => {})` call sites keep swallowing
+ * it exactly as they swallow a transport error today.
+ */
+function guardPlaceholder(baseUrl: string, path: string): Promise<never> | null {
+  if (baseUrl === PLACEHOLDER_WORKER_URL) {
+    return Promise.reject(new WorkerUnavailableError(path));
+  }
+  return null;
+}
+
 export interface WorkerHttpOpts {
   /**
    * Request timeout in milliseconds. When set, both connect and idle-read
@@ -29,6 +83,14 @@ export interface WorkerHttpOpts {
    * doesn't make the orchestrator hang on aggregation requests.
    */
   timeoutMs?: number;
+  /**
+   * SHI-278 — abort an in-flight request from outside. Used by
+   * `ContainerSessionRunner.dispose` to cancel a long-lived sub-agent spawn
+   * whose container is about to be destroyed, so the awaiting caller learns the
+   * run is over (and can land a terminal card) instead of hanging on a socket
+   * nobody will ever answer. Rejects with {@link WorkerAbortedError}.
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -47,13 +109,63 @@ export class WorkerTimeoutError extends Error {
   }
 }
 
+/**
+ * SHI-278 — thrown when a worker request was aborted via {@link WorkerHttpOpts.signal}.
+ * Distinguishable from a timeout or a generic transport error so the caller can
+ * report "cancelled" rather than "failed".
+ */
+export class WorkerAbortedError extends Error {
+  readonly path: string;
+  readonly reason: string | undefined;
+  constructor(path: string, reason?: string) {
+    super(reason ? `Worker request aborted: ${path} (${reason})` : `Worker request aborted: ${path}`);
+    this.name = "WorkerAbortedError";
+    this.path = path;
+    this.reason = reason;
+  }
+}
+
 function resolveTimeout(opts?: WorkerHttpOpts): number {
   // `undefined` → default; `0` → explicitly disabled; otherwise the value.
   if (opts?.timeoutMs === undefined) return DEFAULT_WORKER_TIMEOUT_MS;
   return Math.max(0, opts.timeoutMs);
 }
 
+/**
+ * Wire the standard JSON response handling onto a worker {@link http.IncomingMessage}:
+ * buffer the body, parse it as JSON, reject on HTTP >= 400 (preferring the worker's
+ * `.error` field over a generic `HTTP <status>`), reject with an "Invalid response
+ * from worker" message when the body isn't JSON, otherwise resolve the parsed object.
+ *
+ * Shared by {@link workerPost}, {@link workerPut}, and {@link workerGet} — same
+ * treatment as the already-extracted {@link resolveTimeout}.
+ */
+function attachWorkerResponseHandler(
+  res: http.IncomingMessage,
+  resolve: (value: unknown) => void,
+  reject: (reason: Error) => void,
+): void {
+  let data = "";
+  res.setEncoding("utf-8");
+  res.on("data", (chunk: string) => { data += chunk; });
+  res.on("end", () => {
+    try {
+      const parsed = JSON.parse(data) as Record<string, unknown>;
+      if (res.statusCode && res.statusCode >= 400) {
+        reject(new Error((parsed.error as string) ?? `HTTP ${res.statusCode}`));
+      } else {
+        resolve(parsed);
+      }
+    } catch {
+      reject(new Error(`Invalid response from worker: ${data}`));
+    }
+  });
+  res.on("error", reject);
+}
+
 export async function workerPost(baseUrl: string, path: string, body?: unknown, opts?: WorkerHttpOpts): Promise<unknown> {
+  const unavailable = guardPlaceholder(baseUrl, path);
+  if (unavailable) return unavailable;
   return new Promise((resolve, reject) => {
     const url = new URL(path, baseUrl);
     const payload = body !== undefined ? JSON.stringify(body) : undefined;
@@ -73,30 +185,26 @@ export async function workerPost(baseUrl: string, path: string, body?: unknown, 
         headers,
         ...(timeoutMs > 0 ? { timeout: timeoutMs } : {}),
       },
-      (res) => {
-        let data = "";
-        res.setEncoding("utf-8");
-        res.on("data", (chunk: string) => { data += chunk; });
-        res.on("end", () => {
-          try {
-            const parsed = JSON.parse(data) as Record<string, unknown>;
-            if (res.statusCode && res.statusCode >= 400) {
-              reject(new Error((parsed.error as string) ?? `HTTP ${res.statusCode}`));
-            } else {
-              resolve(parsed);
-            }
-          } catch {
-            reject(new Error(`Invalid response from worker: ${data}`));
-          }
-        });
-        res.on("error", reject);
-      },
+      (res) => attachWorkerResponseHandler(res, resolve, reject),
     );
 
     if (timeoutMs > 0) {
       req.on("timeout", () => {
         req.destroy(new WorkerTimeoutError(path, timeoutMs));
       });
+    }
+
+    const signal = opts?.signal;
+    if (signal) {
+      const abortReason = () =>
+        typeof signal.reason === "string" ? signal.reason : undefined;
+      if (signal.aborted) {
+        req.destroy(new WorkerAbortedError(path, abortReason()));
+      } else {
+        const onAbort = () => req.destroy(new WorkerAbortedError(path, abortReason()));
+        signal.addEventListener("abort", onAbort, { once: true });
+        req.on("close", () => signal.removeEventListener("abort", onAbort));
+      }
     }
 
     req.on("error", reject);
@@ -134,6 +242,8 @@ export async function workerPostMessage(baseUrl: string, text: string, opts?: Wo
  * — JSON request/response, optional timeout, error-on-4xx-or-5xx semantics.
  */
 export async function workerPut(baseUrl: string, path: string, body?: unknown, opts?: WorkerHttpOpts): Promise<unknown> {
+  const unavailable = guardPlaceholder(baseUrl, path);
+  if (unavailable) return unavailable;
   return new Promise((resolve, reject) => {
     const url = new URL(path, baseUrl);
     const payload = body !== undefined ? JSON.stringify(body) : undefined;
@@ -153,24 +263,7 @@ export async function workerPut(baseUrl: string, path: string, body?: unknown, o
         headers,
         ...(timeoutMs > 0 ? { timeout: timeoutMs } : {}),
       },
-      (res) => {
-        let data = "";
-        res.setEncoding("utf-8");
-        res.on("data", (chunk: string) => { data += chunk; });
-        res.on("end", () => {
-          try {
-            const parsed = JSON.parse(data) as Record<string, unknown>;
-            if (res.statusCode && res.statusCode >= 400) {
-              reject(new Error((parsed.error as string) ?? `HTTP ${res.statusCode}`));
-            } else {
-              resolve(parsed);
-            }
-          } catch {
-            reject(new Error(`Invalid response from worker: ${data}`));
-          }
-        });
-        res.on("error", reject);
-      },
+      (res) => attachWorkerResponseHandler(res, resolve, reject),
     );
 
     if (timeoutMs > 0) {
@@ -194,6 +287,8 @@ export async function workerPushAgentSecrets(baseUrl: string, secrets: Record<st
 }
 
 export async function workerGet(baseUrl: string, path: string, opts?: WorkerHttpOpts): Promise<unknown> {
+  const unavailable = guardPlaceholder(baseUrl, path);
+  if (unavailable) return unavailable;
   return new Promise((resolve, reject) => {
     const url = new URL(path, baseUrl);
 
@@ -206,24 +301,7 @@ export async function workerGet(baseUrl: string, path: string, opts?: WorkerHttp
         method: "GET",
         ...(timeoutMs > 0 ? { timeout: timeoutMs } : {}),
       },
-      (res) => {
-        let data = "";
-        res.setEncoding("utf-8");
-        res.on("data", (chunk: string) => { data += chunk; });
-        res.on("end", () => {
-          try {
-            const parsed = JSON.parse(data) as Record<string, unknown>;
-            if (res.statusCode && res.statusCode >= 400) {
-              reject(new Error((parsed.error as string) ?? `HTTP ${res.statusCode}`));
-            } else {
-              resolve(parsed);
-            }
-          } catch {
-            reject(new Error(`Invalid response from worker: ${data}`));
-          }
-        });
-        res.on("error", reject);
-      },
+      (res) => attachWorkerResponseHandler(res, resolve, reject),
     );
 
     if (timeoutMs > 0) {

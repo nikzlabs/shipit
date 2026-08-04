@@ -1,22 +1,31 @@
 /**
- * Workflow loader & path-filter matcher.
+ * Workflow loader & trigger matcher.
  *
  * Reads `.github/workflows/*.yml` from a bare git cache via `git ls-tree` +
- * `git show`, extracts each workflow's `on.{push,pull_request,
- * pull_request_target}.paths` / `paths-ignore` filters, and provides a
- * helper to decide whether a given list of changed files would trigger any
- * of the workflows.
+ * `git show`, extracts each workflow's PR-relevant triggers (`push`,
+ * `pull_request`, `pull_request_target`) along with their `branches` /
+ * `branches-ignore` / `tags` / `paths` / `paths-ignore` filters, and provides
+ * a helper to decide whether a given pull request would trigger any of them.
  *
- * Used by `CiGraceTracker` to short-circuit the "force pending" grace
- * window for PRs whose changed paths don't match any workflow's filters
- * (the classic `paths-ignore: ['**.md']` + docs-only PR case).
+ * Used by `CiGraceTracker` to short-circuit the "force pending" grace window
+ * for PRs that provably can't produce a check run. Two shapes matter:
+ *
+ *   - **Path filters** — `paths-ignore: ['**.md']` + a docs-only PR.
+ *   - **Event/branch filters** — the repo's only workflow is
+ *     `on: { workflow_dispatch: , push: { branches: [release] } }`, so a PR
+ *     from `shipit/xyz` into `main` matches no trigger at all and GitHub
+ *     creates zero check runs (SHI / nikzlabs/shipit#1730). A release
+ *     workflow gated on `push: { tags: ['v*'] }` is the same class.
+ *
+ * In both cases the empty check set is *terminal from the first poll*, so the
+ * grace window must not apply — otherwise the CI indicator spins for a result
+ * that is never coming.
  *
  * The glob semantics are a deliberate subset of GitHub Actions' matcher
  * (which itself uses minimatch under the hood): `**`, `*`, and `?` are
  * supported; character classes and brace alternation are not. The subset
- * covers the patterns observed in practice (see `extractEventFilters`
- * tests) — anything more exotic falls back to "treat as always-applies"
- * which preserves the pre-fix behavior.
+ * covers the patterns observed in practice — anything more exotic falls back
+ * to "treat as always-applies", which preserves the conservative behavior.
  */
 
 import simpleGit from "simple-git";
@@ -25,20 +34,52 @@ import { parse as parseYaml } from "yaml";
 /** PR-relevant trigger event names (we ignore manual/scheduled triggers). */
 const RELEVANT_EVENTS = ["push", "pull_request", "pull_request_target"] as const;
 
-/** Path-filter view of a single workflow file. */
+export type WorkflowEventName = (typeof RELEVANT_EVENTS)[number];
+
+/** One PR-relevant trigger declared by a workflow, with its filters. */
+export interface ParsedWorkflowEvent {
+  event: WorkflowEventName;
+  /** `paths:` — when non-empty, at least one changed file must match. */
+  pathsInclude: string[];
+  /** `paths-ignore:` — a file matching any of these is out of scope. */
+  pathsIgnore: string[];
+  /** `branches:` — when non-empty, the ref must match one of these. */
+  branchesInclude: string[];
+  /** `branches-ignore:` — the ref must match none of these. */
+  branchesIgnore: string[];
+  /**
+   * True when a `push` trigger declares `tags:` / `tags-ignore:` and no
+   * branch filter — GitHub then runs it for tag pushes only, so it can never
+   * fire for a PR's head branch. Always false for `pull_request*` (tag
+   * filters aren't valid there).
+   */
+  tagsOnly: boolean;
+}
+
+/** Trigger view of a single workflow file. */
 export interface ParsedWorkflow {
   /**
-   * True when at least one relevant event has no path filter (or YAML was
-   * unparseable, or the event is shorthand like `on: push`). In that case
-   * the workflow is assumed to always trigger and grace is justified.
+   * True when the YAML couldn't be parsed. We then know nothing about the
+   * workflow's triggers and must assume it applies (conservative — a spinner
+   * that resolves late beats a wrongly-enabled merge button).
    */
-  alwaysApplies: boolean;
+  unparseable: boolean;
   /**
-   * Path filters for each event that has them. Multiple events on the same
-   * workflow produce one entry each; the workflow triggers if ANY entry
-   * matches the changed files.
+   * Every PR-relevant trigger the workflow declares. Empty means the
+   * workflow declares only irrelevant triggers (`workflow_dispatch`,
+   * `schedule`, `workflow_call`, …) and can never run for a pull request.
    */
-  events: { pathsInclude: string[]; pathsIgnore: string[] }[];
+  events: ParsedWorkflowEvent[];
+}
+
+/** The pull request a workflow is being matched against. */
+export interface PrTriggerContext {
+  /** The PR's head branch — what `push:` filters see. */
+  headBranch?: string;
+  /** The PR's base branch — what `pull_request:` filters see. */
+  baseBranch?: string;
+  /** Files the PR changes. Empty/absent means "unknown", matched conservatively. */
+  changedFiles?: string[];
 }
 
 /**
@@ -52,7 +93,7 @@ export interface ParsedWorkflow {
  *     files (also not worth caching — same retry rationale).
  *   - A non-empty array if at least one workflow file was successfully
  *     enumerated. Individual files that fail to parse are represented as
- *     `{ alwaysApplies: true }` so the caller stays conservative.
+ *     `{ unparseable: true }` so the caller stays conservative.
  */
 export async function loadAndParseWorkflows(
   bareRepoDir: string,
@@ -82,7 +123,7 @@ export async function loadAndParseWorkflows(
     try {
       content = await git.raw(["show", `HEAD:${file}`]);
     } catch {
-      parsed.push({ alwaysApplies: true, events: [] });
+      parsed.push({ unparseable: true, events: [] });
       continue;
     }
     parsed.push(parseWorkflowContent(content));
@@ -90,8 +131,20 @@ export async function loadAndParseWorkflows(
   return parsed;
 }
 
+/** An event with no filters at all — fires for every push / every PR. */
+function unfilteredEvent(event: WorkflowEventName): ParsedWorkflowEvent {
+  return {
+    event,
+    pathsInclude: [],
+    pathsIgnore: [],
+    branchesInclude: [],
+    branchesIgnore: [],
+    tagsOnly: false,
+  };
+}
+
 /**
- * Parse a single workflow YAML's `on:` block into the filter view. Exposed
+ * Parse a single workflow YAML's `on:` block into the trigger view. Exposed
  * for unit testing; production callers go through `loadAndParseWorkflows`.
  */
 export function parseWorkflowContent(content: string): ParsedWorkflow {
@@ -99,10 +152,10 @@ export function parseWorkflowContent(content: string): ParsedWorkflow {
   try {
     doc = parseYaml(content);
   } catch {
-    return { alwaysApplies: true, events: [] };
+    return { unparseable: true, events: [] };
   }
   if (!doc || typeof doc !== "object") {
-    return { alwaysApplies: true, events: [] };
+    return { unparseable: true, events: [] };
   }
   // YAML 1.1 quirk: bare `on:` parses as the boolean `true` (the "Norway
   // problem" cousin). The `yaml` package follows YAML 1.2 by default, which
@@ -115,48 +168,58 @@ export function parseWorkflowContent(content: string): ParsedWorkflow {
   // Case 1: `on: push` (string)
   if (typeof onValue === "string") {
     return {
-      alwaysApplies: (RELEVANT_EVENTS as readonly string[]).includes(onValue),
-      events: [],
+      unparseable: false,
+      events: isRelevantEvent(onValue) ? [unfilteredEvent(onValue)] : [],
     };
   }
 
   // Case 2: `on: [push, pull_request]` (array)
   if (Array.isArray(onValue)) {
-    const hasRelevant = onValue.some(
-      (e) => typeof e === "string" && (RELEVANT_EVENTS as readonly string[]).includes(e),
-    );
-    return { alwaysApplies: hasRelevant, events: [] };
+    const events = onValue
+      .filter((e): e is WorkflowEventName => typeof e === "string" && isRelevantEvent(e))
+      .map(unfilteredEvent);
+    return { unparseable: false, events };
   }
 
-  // Case 3: `on: { pull_request: { paths: [...] } }` (map)
+  // Case 3: `on: { pull_request: { branches: [...], paths: [...] } }` (map)
   if (onValue && typeof onValue === "object") {
-    const events: { pathsInclude: string[]; pathsIgnore: string[] }[] = [];
-    let alwaysApplies = false;
+    const events: ParsedWorkflowEvent[] = [];
     for (const eventName of RELEVANT_EVENTS) {
       if (!(eventName in onValue)) continue;
       const eventCfg = (onValue as Record<string, unknown>)[eventName];
       // `on: { push: null }` or `on: { pull_request: }` — event present but
       // empty config means "fire for every push/PR with no filter."
       if (eventCfg === null || eventCfg === undefined) {
-        alwaysApplies = true;
+        events.push(unfilteredEvent(eventName));
         continue;
       }
       if (typeof eventCfg !== "object") continue;
-      const paths = (eventCfg as Record<string, unknown>).paths;
-      const pathsIgnore = (eventCfg as Record<string, unknown>)["paths-ignore"];
-      const pathsArr = toStringArray(paths);
-      const pathsIgnoreArr = toStringArray(pathsIgnore);
-      if (pathsArr.length === 0 && pathsIgnoreArr.length === 0) {
-        // Event configured but no path filter → always applies for this event.
-        alwaysApplies = true;
-        continue;
-      }
-      events.push({ pathsInclude: pathsArr, pathsIgnore: pathsIgnoreArr });
+      const cfg = eventCfg as Record<string, unknown>;
+      const branchesInclude = toStringArray(cfg.branches);
+      const branchesIgnore = toStringArray(cfg["branches-ignore"]);
+      // Tag filters are only meaningful on `push`. A push trigger that names
+      // tags and no branches fires exclusively for tag pushes.
+      const hasTagFilter =
+        eventName === "push"
+        && (toStringArray(cfg.tags).length > 0 || toStringArray(cfg["tags-ignore"]).length > 0);
+      events.push({
+        event: eventName,
+        pathsInclude: toStringArray(cfg.paths),
+        pathsIgnore: toStringArray(cfg["paths-ignore"]),
+        branchesInclude,
+        branchesIgnore,
+        tagsOnly: hasTagFilter && branchesInclude.length === 0 && branchesIgnore.length === 0,
+      });
     }
-    return { alwaysApplies, events };
+    return { unparseable: false, events };
   }
 
-  return { alwaysApplies: false, events: [] };
+  // No `on:` block we can make sense of — assume nothing relevant is declared.
+  return { unparseable: false, events: [] };
+}
+
+function isRelevantEvent(name: string): name is WorkflowEventName {
+  return (RELEVANT_EVENTS as readonly string[]).includes(name);
 }
 
 function toStringArray(value: unknown): string[] {
@@ -165,29 +228,49 @@ function toStringArray(value: unknown): string[] {
 }
 
 /**
- * Decide whether the given list of changed files would trigger this
- * workflow. Returns true on `alwaysApplies` or when at least one event's
- * filters match at least one file.
+ * Decide whether the given pull request would trigger this workflow.
+ *
+ * Returns true when the workflow is unparseable (conservative) or when at
+ * least one of its PR-relevant triggers survives both the branch filter and
+ * the path filter. Returns false only when we can prove no trigger fires —
+ * which makes an empty check-run set terminal rather than pending.
  */
-export function workflowAppliesToFiles(
+export function workflowAppliesToPr(
   workflow: ParsedWorkflow,
-  changedFiles: string[],
+  ctx: PrTriggerContext,
 ): boolean {
-  if (workflow.alwaysApplies) return true;
-  if (changedFiles.length === 0) {
-    // No changed-files info available — be conservative.
-    return true;
-  }
-  for (const event of workflow.events) {
-    if (eventAppliesToFiles(event, changedFiles)) return true;
-  }
-  return false;
+  if (workflow.unparseable) return true;
+  return workflow.events.some(
+    (event) => eventBranchApplies(event, ctx) && eventPathsApply(event, ctx.changedFiles ?? []),
+  );
 }
 
-function eventAppliesToFiles(
-  event: { pathsInclude: string[]; pathsIgnore: string[] },
-  files: string[],
-): boolean {
+/**
+ * Branch/ref gate. `push` filters match against the ref being pushed — for a
+ * ShipIt PR that's the head branch. `pull_request` / `pull_request_target`
+ * filters match against the PR's *base* branch, per GitHub's semantics.
+ */
+function eventBranchApplies(event: ParsedWorkflowEvent, ctx: PrTriggerContext): boolean {
+  if (event.tagsOnly) return false;
+
+  const ref = event.event === "push" ? ctx.headBranch : ctx.baseBranch;
+  // Unknown ref — can't rule the trigger out, so keep it conservative.
+  if (!ref) return true;
+
+  if (event.branchesInclude.length > 0) {
+    if (!event.branchesInclude.some((p) => globToRegex(p).test(ref))) return false;
+  }
+  if (event.branchesIgnore.length > 0) {
+    if (event.branchesIgnore.some((p) => globToRegex(p).test(ref))) return false;
+  }
+  return true;
+}
+
+function eventPathsApply(event: ParsedWorkflowEvent, files: string[]): boolean {
+  if (event.pathsInclude.length === 0 && event.pathsIgnore.length === 0) return true;
+  // No changed-files info available — be conservative.
+  if (files.length === 0) return true;
+
   const includeRegexes = event.pathsInclude.map(globToRegex);
   const ignoreRegexes = event.pathsIgnore.map(globToRegex);
   for (const file of files) {
@@ -196,8 +279,7 @@ function eventAppliesToFiles(
     const matchesInclude =
       includeRegexes.length === 0 || includeRegexes.some((r) => r.test(file));
     if (!matchesInclude) continue;
-    const matchesIgnore = ignoreRegexes.some((r) => r.test(file));
-    if (matchesIgnore) continue;
+    if (ignoreRegexes.some((r) => r.test(file))) continue;
     return true;
   }
   return false;
@@ -207,7 +289,7 @@ function eventAppliesToFiles(
  * Convert a GitHub-Actions-style glob to a `RegExp`. Supports `**`, `*`,
  * `?` and literal escapes. Character classes and brace alternation are
  * NOT supported (rare in practice; the parsing layer handles them by
- * returning `alwaysApplies: true` only at the YAML-parse level — patterns
+ * returning `unparseable: true` only at the YAML-parse level — patterns
  * containing `[` or `{` will simply not match anything, which on the
  * paths-ignore side means "no file is excluded by this pattern"). Exposed
  * for unit testing.

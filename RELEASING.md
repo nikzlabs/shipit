@@ -141,8 +141,21 @@ every release. After a successful publish on the branch path, `release.yml`'s
 bumps `main`'s `package.json` + `package-lock.json` to the just-released version.
 Merge it to bring `main` in sync — it touches only the version files. The PR is
 labeled `ignore-for-release` so it doesn't clutter the next release's notes, and
-the job is idempotent (no-op when `main` already carries the version, or when the
-sync branch already exists). rc's (the tag path) never touch `main`.
+the job is idempotent: it no-ops when `main` already carries the version or when
+an **open sync PR already exists** (the guard keys on the PR, not the branch, so a
+re-run recovers a branch a prior run pushed but couldn't open a PR for). rc's (the
+tag path) never touch `main`.
+
+> **Prerequisite — one-time GitHub setting.** `sync-main` opens its PR with the
+> default `GITHUB_TOKEN`. GitHub blocks that **by default**, failing with
+> `GitHub Actions is not permitted to create or approve pull requests`. Enable it
+> once: **Settings → Actions → General → Workflow permissions → check "Allow
+> GitHub Actions to create and approve pull requests"** (set it at the **org**
+> level for `nikzlabs`, and at the repo level if the org leaves it to repos). Until
+> it's enabled the publish still succeeds (tag + Release are created) but
+> `sync-main` goes **red** and `main` stays on the old version. The job's failure
+> log prints a one-click `compare` URL so you can open the sync PR by hand in the
+> meantime.
 
 ## Release candidates (prereleases)
 

@@ -18,6 +18,7 @@ import {
   repoFlagToUrl,
   resolvePrTarget,
   gitCredentialAllowed,
+  mergeDisposition,
 } from "./pr-target.js";
 import type { SessionInfo } from "../shared/types.js";
 
@@ -163,5 +164,37 @@ describe("gitCredentialAllowed", () => {
 
   it("denies a sandbox with capabilities missing entirely", () => {
     expect(gitCredentialAllowed({ kind: "sandbox" } as SessionInfo)).toBe(false);
+  });
+});
+
+describe("mergeDisposition", () => {
+  it("treats a repo-bound session as not-sandbox (use the PR card)", () => {
+    expect(mergeDisposition({} as SessionInfo)).toBe("not-sandbox");
+  });
+
+  it("treats an ops session as not-sandbox", () => {
+    expect(mergeDisposition({ kind: "ops" } as SessionInfo)).toBe("not-sandbox");
+  });
+
+  it("allows a sandbox with the dangerousGitHubOps grant on", () => {
+    expect(
+      mergeDisposition({
+        kind: "sandbox",
+        capabilities: { git: true, docker: false, network: true, dangerousGitHubOps: true },
+      } as SessionInfo),
+    ).toBe("allowed");
+  });
+
+  it("reports not-granted for a sandbox with the grant off", () => {
+    expect(
+      mergeDisposition({
+        kind: "sandbox",
+        capabilities: { git: true, docker: false, network: true, dangerousGitHubOps: false },
+      } as SessionInfo),
+    ).toBe("not-granted");
+  });
+
+  it("reports not-granted for a sandbox with capabilities missing entirely", () => {
+    expect(mergeDisposition({ kind: "sandbox" } as SessionInfo)).toBe("not-granted");
   });
 });

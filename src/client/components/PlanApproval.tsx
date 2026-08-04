@@ -3,9 +3,7 @@ import {
   ArrowsOutSimpleIcon,
   CheckCircleIcon,
   PencilSimpleLineIcon,
-  ShieldCheckIcon,
-  XIcon,
-} from "@phosphor-icons/react";
+  ShieldCheckIcon,} from "@phosphor-icons/react";
 import { Badge } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
@@ -214,16 +212,8 @@ export function PlanApproval({ onSend, disabled, planContent, resolved }: PlanAp
         <Dialog open onOpenChange={(open) => { if (!open) setExpanded(false); }}>
           <DialogContent className="w-[90vw] max-w-2xl h-[85vh] flex flex-col p-0" data-testid="plan-expanded">
             {/* Header */}
-            <div className="flex items-center justify-between px-5 py-3 border-b border-(--color-border-secondary) shrink-0">
+            <div className="flex items-center px-5 py-3 border-b border-(--color-border-secondary) shrink-0">
               <DialogTitle className="text-sm font-medium">Plan</DialogTitle>
-              <button
-                type="button"
-                onClick={() => setExpanded(false)}
-                className="p-1 rounded hover:bg-(--color-bg-hover) text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors"
-                aria-label="Close"
-              >
-                <XIcon size={ICON_SIZE.MD} />
-              </button>
             </div>
             {/* Scrollable plan content */}
             <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4 text-sm">

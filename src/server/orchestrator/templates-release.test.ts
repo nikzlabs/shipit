@@ -55,6 +55,32 @@ describe("renderReleaseWorkflow", () => {
     expect(wf).toContain('gh pr create --base "$DEFAULT_BRANCH"');
   });
 
+  it("keys sync-job idempotency on an OPEN PR and recovers a pushed-but-unopened branch", () => {
+    const wf = renderReleaseWorkflow({ versionSource: "package.json", branch: "stable" });
+    // Idempotency keys on an open PR (not branch existence) so a prior run that
+    // pushed the branch but failed to open the PR can recover on re-run.
+    expect(wf).toContain(
+      'gh pr list --head "$SYNC_BRANCH" --base "$DEFAULT_BRANCH" --state open',
+    );
+    // The pushed-but-unopened branch is reused rather than skipped.
+    expect(wf).toContain("Reusing existing sync branch");
+    expect(wf).toContain('git checkout -B "$SYNC_BRANCH" "origin/$SYNC_BRANCH"');
+  });
+
+  it("surfaces an actionable error + compare URL when the sync PR cannot be opened", () => {
+    const wf = renderReleaseWorkflow({ versionSource: "package.json", branch: "stable" });
+    // On gh-pr-create failure: name the remedy (Workflow permissions setting),
+    // print a one-click compare URL, and exit non-zero so drift is never silent.
+    expect(wf).toContain("if ! gh pr create");
+    expect(wf).toContain("Allow GitHub Actions to create and approve pull requests");
+    // The one-click compare URL (GitHub Actions env vars, kept literal in the YAML).
+    expect(wf).toContain("/compare/$DEFAULT_BRANCH...$SYNC_BRANCH?expand=1");
+    expect(wf).toContain("GITHUB_SERVER_URL");
+    expect(wf).toContain("GITHUB_REPOSITORY");
+    // The best-effort label step is preserved.
+    expect(wf).toContain("--add-label ignore-for-release");
+  });
+
   it("omits the tag path + version-guard when prerelease is disabled", () => {
     const wf = renderReleaseWorkflow({ versionSource: "VERSION", branch: "stable" });
     expect(wf).not.toContain("tags: ['v*']");
@@ -87,6 +113,19 @@ describe("renderReleaseWorkflow", () => {
     expect(wf).toContain(`node ${RELEASE_VERSION_HELPER_PATH} 'pyproject.toml'`);
     // Final-only branch: a prerelease version is rejected on the branch path.
     expect(wf).toContain("Branch carries a prerelease version");
+  });
+
+  it("renders valid YAML for every version source and trigger combination", async () => {
+    const { parse } = await import("yaml");
+    const sources = ["package.json", "Cargo.toml", "pyproject.toml", "VERSION"] as const;
+    for (const versionSource of sources) {
+      for (const prerelease of [false, true]) {
+        for (const gate of [undefined, "npm test"]) {
+          const wf = renderReleaseWorkflow({ versionSource, branch: "stable", prerelease, gate });
+          expect(() => parse(wf)).not.toThrow();
+        }
+      }
+    }
   });
 });
 

@@ -3,16 +3,19 @@
  * (PR create/merge, token, logout, quick PR creation).
  */
 
+import path from "node:path";
 import type { GitManager } from "../../shared/git.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { WorkflowRunSummary, WorkflowJobSummary, WorkflowSummary } from "../github-auth-actions.js";
-import type { ChatHistoryManager } from "../chat-history.js";
+import type { ChatHistoryManager, PersistedMessage } from "../chat-history.js";
 import type { PrAutoMergeError } from "../../shared/types/github-types.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { SessionManager } from "../sessions.js";
 import { parseGitHubRemote } from "../git-utils.js";
+import { resolvePrBaseBranch } from "./git.js";
 import { ServiceError } from "./types.js";
+import { validateNonEmptyString } from "./validation.js";
 import { getErrorMessage } from "../validation.js";
 import type { GitHubStatus } from "./types.js";
 import { formatUnresolvedConflictNotice } from "./conflict-marker-notice.js";
@@ -25,6 +28,28 @@ import { emitNoticePostTurn } from "../chat-card-persistence.js";
  * since local clones from the bare cache may have a filesystem path as origin.
  *
  * Returns `{ owner, repo }` on success, or `{ error }` explaining the failure.
+ *
+ * **This must not give the workspace an `origin` it didn't have.** It is on the
+ * read path of ~15 GitHub operations, including `gh pr list` / `gh pr view`, and
+ * `remoteUrl` is frequently NOT the session's own repo: `resolvePrTarget` maps an
+ * explicit `gh --repo owner/name` straight through to it. It used to
+ * `addRemote("origin", remoteUrl)` on any mismatch, so a *read* naming another
+ * repo wired that repo into the workspace as `origin` — permanently, and
+ * invisibly to the caller that did it.
+ *
+ * That is how an ops session ended up pointed at the ShipIt repo: `gh pr list
+ * --repo nikzlabs/shipit` created `origin` in its throwaway template workspace,
+ * and the next post-turn auto-push — which had been correctly inert on a
+ * remote-less session — sailed past `pushToOrigin`'s no-origin guard and tried to
+ * push the ops workspace's `main` at the real repo. It failed only because the
+ * two histories are unrelated; a workspace seeded from a clone would have pushed.
+ *
+ * So the repair is narrowed to the single case it was written for: an origin that
+ * is a **local filesystem path**, i.e. the `git clone --local` artifact pointing
+ * at the bare cache (`RepoGit.cloneFromCache` normally rewrites it, so this is the
+ * legacy-clone safety net). Repointing that at the GitHub URL loses nothing — a
+ * cache path was never a push target. Anything else is left alone: an absent
+ * origin stays absent, and a real remote is never silently swapped for another.
  */
 async function resolveGitHubRemote(
   git: GitManager,
@@ -33,11 +58,9 @@ async function resolveGitHubRemote(
   if (remoteUrl) {
     const parsed = parseGitHubRemote(remoteUrl);
     if (parsed) {
-      // Fix the git remote if it doesn't match (e.g., points to bare cache path).
-      // This makes subsequent git push/pull operations work correctly.
       const remotes = await git.getRemotes();
       const origin = remotes.find((r) => r.name === "origin");
-      if (origin?.url !== remoteUrl) {
+      if (origin && origin.url !== remoteUrl && path.isAbsolute(origin.url)) {
         await git.addRemote("origin", remoteUrl);
       }
       return parsed;
@@ -306,6 +329,80 @@ export async function mergePullRequest(
   return { success: false, message: result.message };
 }
 
+/**
+ * docs/224 — agent-driven merge backing `gh pr merge`, gated behind the sandbox
+ * `dangerousGitHubOps` grant at the route. Distinct from {@link mergePullRequest}
+ * (the UI card's current-branch merge): the agent passes an explicit PR number,
+ * and because the agent is *mid-turn* the PR-status poller's cached checks/review
+ * state is unavailable (sandbox PRs aren't tracked), so the guardrails are
+ * enforced inline against the GitHub API:
+ *   - Refuse a draft PR (mark it ready first).
+ *   - Refuse unless required checks are green — unless `auto`, which enables
+ *     GitHub auto-merge (merge-when-green) instead of merging now.
+ *   - Branch protection / required reviews are enforced by GitHub server-side;
+ *     its rejection message is surfaced verbatim rather than forced.
+ *   - No admin/force path (the shim rejects `--admin` before it reaches here).
+ */
+export async function agentMergePullRequest(
+  git: GitManager,
+  githubAuthManager: GitHubAuthManager,
+  opts: { number: number; method?: string; auto?: boolean; remoteUrl?: string },
+): Promise<{ success: boolean; message: string; autoMergeEnabled?: boolean; url?: string }> {
+  if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
+
+  const resolved = await resolveGitHubRemote(git, opts.remoteUrl);
+  if ("error" in resolved) return { success: false, message: resolved.error };
+
+  const { owner, repo } = resolved;
+  const pr = await githubAuthManager.viewPullRequest(owner, repo, opts.number);
+  if (!pr) return { success: false, message: `PR #${opts.number} not found` };
+  if (pr.merged) return { success: true, message: `PR #${opts.number} is already merged`, url: pr.url };
+  if (pr.state === "closed") return { success: false, message: `PR #${opts.number} is closed` };
+  if (pr.isDraft) {
+    return { success: false, message: `PR #${opts.number} is a draft — mark it ready first (gh pr ready ${opts.number})` };
+  }
+
+  const mergeMethod = (opts.method || "merge") as "merge" | "squash" | "rebase";
+
+  // Guardrail: required checks must be green. Checked directly against the PR
+  // head's combined status — the poller doesn't track sandbox PRs.
+  const checks = await githubAuthManager.getCheckStatus(owner, repo, pr.head);
+  if (checks.state === "failure") {
+    return {
+      success: false,
+      message: `Cannot merge PR #${opts.number}: ${checks.failed} required check(s) failing. Fix CI before merging.`,
+    };
+  }
+  if (checks.state === "pending") {
+    if (opts.auto) {
+      const graphqlMethod =
+        mergeMethod === "merge" ? ("MERGE" as const)
+        : mergeMethod === "squash" ? ("SQUASH" as const)
+        : ("REBASE" as const);
+      const autoResult = await githubAuthManager.enableAutoMerge(owner, repo, opts.number, graphqlMethod);
+      return {
+        success: autoResult.success,
+        message: autoResult.success
+          ? `Auto-merge enabled for PR #${opts.number} — it will merge once checks pass.`
+          : autoResult.message,
+        autoMergeEnabled: autoResult.success,
+        url: pr.url,
+      };
+    }
+    return {
+      success: false,
+      message: `Cannot merge PR #${opts.number}: ${checks.pending} check(s) still running. Wait for green, or pass --auto to merge when checks pass.`,
+    };
+  }
+
+  // checks.state is "success" or "none" (no checks configured) → merge now.
+  const result = await githubAuthManager.mergePullRequest(owner, repo, opts.number, mergeMethod);
+  if (result.success) return { success: true, message: `Merged PR #${opts.number}`, url: pr.url };
+  // GitHub rejected the merge (branch protection, required review, conflicts).
+  // Surface its reason verbatim — never force.
+  return { success: false, message: result.message };
+}
+
 /** Generate a PR description using the agent's generateText capability. */
 export async function generatePrDescription(
   git: GitManager,
@@ -410,13 +507,10 @@ export async function quickCreatePr(
   }
 
   // Base branch: for a re-armed branch use the prior PR's base (re-arm knows
-  // it); otherwise auto-detect main/master from the remote.
+  // it); otherwise the remote's actual default branch.
   let baseBranch = reArm?.baseBranch?.trim();
   if (!baseBranch) {
-    const remoteBranches = await git.listRemoteBranches();
-    baseBranch = remoteBranches.includes("main") ? "main" :
-      remoteBranches.includes("master") ? "master" :
-      remoteBranches[0] ?? "main";
+    baseBranch = await resolvePrBaseBranch(git, await git.listRemoteBranches());
   }
 
   // Generate title from session title
@@ -460,8 +554,14 @@ export async function quickCreatePr(
 /**
  * Look up an open PR for the session's branch. Returns `null` if none exists.
  * Throws ServiceError on auth/remote-resolution failures so callers can map to HTTP.
+ *
+ * Exported for docs/239's self-merge-watch arm, which must resolve the PR by a
+ * LIVE lookup rather than from the `pr_status` snapshot: at a chain boundary the
+ * agent arms seconds after `gh pr create` returns, while the session still sits
+ * in the poller's `mergedSessions` set (which it skips), so the snapshot still
+ * describes the previous, just-merged PR.
  */
-async function resolveSessionPr(
+export async function resolveSessionPr(
   git: GitManager,
   githubAuthManager: GitHubAuthManager,
   remoteUrl?: string,
@@ -571,15 +671,28 @@ export async function flushPendingTurnCommit(
     sessionId?: string;
     runnerRegistry?: SessionRunnerRegistry;
     /** When provided, the conflict notice is persisted (append) as well as
-     * emitted, so it survives a reload — not just a reconnect. */
-    chatHistory?: ChatHistoryManager;
+     * emitted, so it survives a reload — not just a reconnect. Structural (only
+     * `append` is used) so non-`ChatHistoryManager` callers can pass a stub. */
+    chatHistory?: { append(sessionId: string, message: PersistedMessage): unknown };
+    /**
+     * SHI-299 — override the commit subject. The default (`runner.turnSummary`)
+     * is right for the mid-turn `gh pr create` flush, where the work being
+     * committed IS the turn's work. It is wrong for a flush that happens outside
+     * a turn — a sub-agent consult finishing after its parent turn already
+     * committed — where the last turn's summary would misattribute the commit to
+     * work the agent did not do. Callers on that path pass their own subject.
+     */
+    summary?: string;
   },
 ): Promise<{ commitHash: string | null; secretBlocked: boolean }> {
   const runner = deps.sessionId && deps.runnerRegistry
     ? deps.runnerRegistry.get(deps.sessionId)
     : null;
 
-  const summary = runner?.turnSummary?.split("\n")[0]?.slice(0, 120) || "Agent turn";
+  const summary =
+    deps.summary?.split("\n")[0]?.slice(0, 120)
+    || runner?.turnSummary?.split("\n")[0]?.slice(0, 120)
+    || "Agent turn";
   const parentHash = await git.getHeadHash();
   const { commitHash, conflictedFiles, rebaseInProgress, secretFindings } = await git.autoCommit(summary);
   const secretBlocked = secretFindings.length > 0;
@@ -789,10 +902,7 @@ export async function agentCreatePr(
   // caller passed an explicit one.
   let baseBranch = options.base?.trim() || reArmBase;
   if (!baseBranch) {
-    const remoteBranches = await git.listRemoteBranches();
-    baseBranch = remoteBranches.includes("main") ? "main" :
-      remoteBranches.includes("master") ? "master" :
-      remoteBranches[0] ?? "main";
+    baseBranch = await resolvePrBaseBranch(git, await git.listRemoteBranches());
   }
 
   // Resolve title — fall back to session title or branch name.
@@ -928,8 +1038,7 @@ export async function commentOnPullRequest(
   body: string,
   options: { number?: number; remoteUrl?: string } = {},
 ): Promise<{ number: number; commentUrl: string }> {
-  const trimmed = body.trim();
-  if (!trimmed) throw new ServiceError(400, "Comment body is required");
+  const trimmed = validateNonEmptyString(body, "Comment body").trim();
 
   const resolved = await resolveSessionPr(git, githubAuthManager, options.remoteUrl);
   let prNumber = options.number;

@@ -241,7 +241,7 @@ describe("Integration: Codex agent — defaultAgentId=codex message flow", () =>
     // Claude-only) alongside a stale agent=codex param. The model is the single
     // source of truth, so the unpinned session must derive Claude and run it —
     // this is the server-side guard against the Opus→gpt-5.5 silent switch.
-    const client = await TestClient.connect(port, undefined, { model: "claude-opus-4-8", agent: "codex" });
+    const client = await TestClient.connect(port, undefined, { model: "claude-opus-5", agent: "codex" });
     await client.receive(); // preview_status
 
     client.send({ type: "send_message", text: "Hello" });
@@ -264,7 +264,7 @@ describe("Integration: Codex agent — defaultAgentId=codex message flow", () =>
     await client.receive(); // preview_status
 
     // Send ONLY set_model — deliberately omit set_agent to prove self-healing.
-    client.send({ type: "set_model", model: "claude-opus-4-8" });
+    client.send({ type: "set_model", model: "claude-opus-5" });
     await new Promise((r) => setTimeout(r, 50));
 
     // A subsequent message must run on Claude (the owner of "opus"), not Codex.
@@ -599,7 +599,7 @@ describe("Integration: Codex agent — validation and default agent", () => {
 
   it("set_model within the pinned agent's lineup succeeds mid-session", async () => {
     // After a session pins claude (first turn), the user can still pick a
-    // different *claude* model (sonnet → opus 4.8). The change persists to the
+    // different *claude* model (sonnet → opus 5). The change persists to the
     // session record and doesn't error — only cross-agent picks are blocked.
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
@@ -611,10 +611,10 @@ describe("Integration: Codex agent — validation and default agent", () => {
     expect(sessionManager.get(sid)?.agentPinned).toBe(true);
 
     // Now switch to a different claude model mid-session. No error expected.
-    client.send({ type: "set_model", model: "claude-opus-4-8" });
+    client.send({ type: "set_model", model: "claude-opus-5" });
     // Give the handler a tick to persist.
     await new Promise((r) => setTimeout(r, 50));
-    expect(sessionManager.get(sid)?.model).toBe("claude-opus-4-8");
+    expect(sessionManager.get(sid)?.model).toBe("claude-opus-5");
     // Agent must stay claude — set_model within the same agent never moves it.
     expect(sessionManager.get(sid)?.agentId).toBe("claude");
 

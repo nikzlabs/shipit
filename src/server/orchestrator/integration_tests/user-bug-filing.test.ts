@@ -160,7 +160,8 @@ describe("Integration: user bug filing", () => {
     client.close();
   });
 
-  it("(a) records the card in-band so it persists at its transcript position", async () => {
+  it("(a) persists the card durably even though no turn is running", async () => {
+    const histMgr = (app as unknown as { chatHistoryManager: ChatHistoryManager }).chatHistoryManager;
     const client = await TestClient.connect(port, sessionId);
     await client.receive(); // preview_status
 
@@ -171,14 +172,17 @@ describe("Integration: user bug filing", () => {
     });
     const card = (await client.receiveType("bug_report_card")) as WsBugReportCard;
 
-    // The card is recorded on the runner (anchored by afterGroupIndex) via the
-    // shared `emitChatCard` primitive, so `buildTurnMessages` folds it into chat
-    // history at the spot the agent's `report_shipit_bug` tool fired — the same
-    // mechanism voice notes use.
-    const runner = (app as unknown as { runnerRegistry: { get(id: string): { recordedCards: { afterGroupIndex: number; message: { bugReport?: { cardId: string; phase: string } } }[] } | undefined } }).runnerRegistry.get(sessionId);
-    expect(runner?.recordedCards).toHaveLength(1);
-    expect(runner?.recordedCards[0].message.bugReport?.cardId).toBe(card.cardId);
-    expect(runner?.recordedCards[0].message.bugReport?.phase).toBe("draft");
+    // A USER-filed report arrives with no turn in flight, so `emitChatCard`
+    // appends it as an already-final row rather than folding it into an
+    // in-progress turn that doesn't exist. That distinction is the whole point:
+    // an `in_progress=1` row is deleted wholesale by the NEXT turn's first
+    // `replaceInProgress`, so the card the user just filed would silently
+    // disappear from the transcript as soon as they sent another message.
+    const persisted = histMgr.load(sessionId).filter((m) => m.bugReport);
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0].bugReport?.cardId).toBe(card.cardId);
+    expect(persisted[0].bugReport?.phase).toBe("draft");
+    expect(persisted[0].inProgress).toBeUndefined();
 
     client.close();
   });

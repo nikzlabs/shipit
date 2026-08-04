@@ -22,7 +22,7 @@ import { WithTooltip } from "./ui/tooltip.js";
 export type MobilePanel = "chat" | "preview";
 
 const TAB_BASE =
-  "flex min-h-11 flex-col items-center justify-center gap-0.5 rounded-md text-xs font-medium transition-colors";
+  "flex min-h-11 flex-col items-center justify-center gap-0.5 rounded-md text-xs font-medium transition-colors disabled:opacity-40 disabled:pointer-events-none";
 const TAB_INACTIVE =
   "text-(--color-text-secondary) active:bg-(--color-bg-hover) active:text-(--color-text-primary)";
 const TAB_ACTIVE = "text-(--color-text-link)";
@@ -30,6 +30,7 @@ const TAB_ACTIVE = "text-(--color-text-link)";
 export function MobileTabBar({
   activePanel,
   sidebarOpen,
+  contentTabsDisabled = false,
   onChangePanel,
   onOpenSessions,
   onNewSession,
@@ -39,6 +40,14 @@ export function MobileTabBar({
 }: {
   activePanel: MobilePanel;
   sidebarOpen: boolean;
+  /**
+   * When true (the home screen, where no session is open) the Chat/Workspace
+   * content tabs are disabled — there's no session content to switch between —
+   * but the Sessions tab and the creation actions stay live so the drawer is
+   * still reachable. Keeps the bar present everywhere instead of hiding it as a
+   * home-screen special case.
+   */
+  contentTabsDisabled?: boolean;
   onChangePanel: (panel: MobilePanel) => void;
   onOpenSessions: () => void;
   onNewSession: () => void;
@@ -47,9 +56,10 @@ export function MobileTabBar({
   newSessionDisabled?: boolean;
 }) {
   // The drawer, when open, owns the active state — so neither content tab is
-  // highlighted while Sessions is selected.
-  const chatActive = !sidebarOpen && activePanel === "chat";
-  const workspaceActive = !sidebarOpen && activePanel === "preview";
+  // highlighted while Sessions is selected. Disabled content tabs are never
+  // highlighted either.
+  const chatActive = !contentTabsDisabled && !sidebarOpen && activePanel === "chat";
+  const workspaceActive = !contentTabsDisabled && !sidebarOpen && activePanel === "preview";
   return (
     <nav
       className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t border-(--color-border-primary) bg-(--color-bg-primary) px-3 py-1.5 pb-[max(0.375rem,env(safe-area-inset-bottom))]"
@@ -58,6 +68,7 @@ export function MobileTabBar({
       <div className="grid min-w-0 grid-cols-3 gap-1">
         <button
           onClick={() => onChangePanel("chat")}
+          disabled={contentTabsDisabled}
           className={`${TAB_BASE} ${chatActive ? TAB_ACTIVE : TAB_INACTIVE}`}
           aria-current={chatActive ? "page" : undefined}
         >
@@ -67,6 +78,7 @@ export function MobileTabBar({
 
         <button
           onClick={() => onChangePanel("preview")}
+          disabled={contentTabsDisabled}
           className={`${TAB_BASE} ${workspaceActive ? TAB_ACTIVE : TAB_INACTIVE}`}
           aria-current={workspaceActive ? "page" : undefined}
         >

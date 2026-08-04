@@ -282,6 +282,20 @@ This feature's net addition is the **pre-turn reset + the explicit control + the
 agent prefix + the persisted user card**. The PR-card lifecycle (docs/202/216) is
 treated as corroborating, not as the user-facing signal of record.
 
+**A false docs/202 re-arm used to disable this feature (SHI-238).** The composition
+above runs in one direction, but there was a feedback edge in the other: docs/202's
+detection reads `origin/<base>` from the session clone, which nothing on the merge
+path fetches, and a stale base ref makes `advancedBeyondMergedBase` report progress
+for a branch that never moved. So on a session where the reset did *not* fire (the
+setting off, a per-send untick, no `mergedHeadSha`, a dirty tree, `/compact`), the
+next committing turn falsely re-armed — and `clearMerged` drops `mergedHeadSha`,
+which is this feature's load-bearing safety anchor. From then on
+`computeResetEligible` was permanently false: no composer control, no auto-advance,
+and a gray "ready" card showing the stale full-branch diff with a "Create PR"
+button. The user-visible read was "the branch-advance feature doesn't work."
+Fixed in docs/202 (`pr-rearm.ts#freshenBaseRef` + the `unmovedSinceMerge`
+anchor short-circuit); see that plan's "The base ref must be current".
+
 **Pre-turn PR-card re-arm (timing fix).** The post-turn `detectAndReArmResetSession`
 above only settles the PR card *after* the whole agent turn finishes, so the stale
 "merged" PR card lingered while the user already saw the branch-updated card — the
@@ -308,6 +322,13 @@ fail-safe for the manual-`git reset` path and no-ops here (it has already cleare
   run the turn normally. (The continue path rehydrates the clone before this hook.)
 - **Stale client eligibility flag:** harmless — the server re-validates the full gate
   at send time, so the checkbox is intent only.
+- **`/compact` on a merged, eligible session (docs/178):** a between-turns `/compact`
+  routes through `runAgentWithMessage` with `compact: true`, which would otherwise
+  reach this pre-turn reset. Compaction is a maintenance command, not a continuation
+  of work — so the reset block is gated on `!opts.compact` and skipped for compaction
+  requests. Without the guard the reset moved the branch to base **and** prepended the
+  `[System] …PR was merged…` prefix to the `/compact` prompt, so the agent reacted to
+  the merge notice instead of compacting. The reset still runs on the next real turn.
 
 ## Product-principle check
 
@@ -489,6 +510,46 @@ clone never pruned), so both "deleted at merge" (create) and "surviving + diverg
 rather than throwing — the reset still stands and the turn runs). This reverses the
 "never force-push at reset" decision (see the superseded note above). Tests in
 `pre-turn-reset.test.ts` (heal called on success; best-effort on failure).
+
+**SHI-295 — a skipped reset is no longer silent, and a merged session no longer
+silently auto-pushes.** Two halves of one user-facing failure ("my session's PR
+merged and nothing said so"), from a production incident where a turn ran two
+minutes after the merge, the reset did not fire, and the post-turn auto-push
+*recreated* the branch GitHub had deleted — leaving an orphan commit that belonged
+to no PR. The user worked it out themselves ("Pr was actually already merged");
+the second time they had reported "changes are missing from the merged PR".
+
+- **The skip reports its clause.** `computeResetEligible` is now a thin wrapper
+  over `computeResetBlocker`, which returns *which* clause refused instead of a
+  bare boolean — one implementation, so the explanation can't drift from the
+  gate. On a **merged** session, `autoResetMergedBranchOnContinue` turns that
+  clause into three surfaces: a `[pre-turn-reset] skipped for <id> (<clause>)`
+  log line (so the next ops investigation greps one line instead of proving a
+  negative by diffing two sessions' logs), a **persisted** transcript notice via
+  `emitNoticeInTurn` on the existing `afterUserMessagePersisted` hook (same
+  anchor as the branch-updated card), and an agent prompt prefix (the agent was
+  as unaware as the user — it went on to author a commit for a dead PR).
+  Non-merged sessions stay silent: nothing to reset, nothing to say. Safety
+  clauses report at `warn`; the two deliberate opt-outs (global setting off,
+  per-send untick) at `info` — which narrows this plan's "a global opt-out means
+  we don't nag" to what it should always have meant: hide the *control*, not the
+  fact that a merged branch is stale.
+- **No clause was weakened.** The incident's blocker was almost certainly
+  `git.isClean()` — a dirty tree at 16:33:58 — and that refusal is correct: a
+  `reset --hard` over uncommitted edits is the one irreversible loss. The bug was
+  the silence, not the refusal.
+- **The merged-branch push guard** (`services/merged-push-guard.ts`, wired into
+  `postTurnCommit`) refuses the *silent debounced* auto-push while the session is
+  merged and the commit is stacked on the merged tip. The commit still happens
+  (work is never lost, and stays reflog-recoverable); only the push is refused,
+  with a persisted notice naming the merged PR and the two recovery routes. An
+  explicit `gh pr create` is unaffected — it force-pushes through its own path,
+  the same carve-out the ops-session gate makes. The `mergedHeadSha`-ancestry
+  test is what keeps it precise: a branch rebased onto the fresh base (the flow
+  ShipIt's own agent instructions prescribe after a merge) still has `mergedAt`
+  set at commit time, because the docs/202 re-arm that clears it runs *after* —
+  so gating on `mergedAt` alone would have blocked and mis-explained a
+  legitimate pre-PR push.
 
 ## Review notes
 

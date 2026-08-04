@@ -28,13 +28,41 @@ dist/
 sessions/
 .inner-shipit/
 
-# Android (see android/ — separate Gradle build, not part of the Node project)
-android/.gradle/
-android/build/
-android/app/build/
-android/local.properties
-android/.idea/
-android/captures/
-android/.cxx/
+# Orchestrator runtime state written under `<stateDir>` (app-di.ts).
+# `stateDir` falls back to `workspaceDir` (= "/workspace") when SHIPIT_STATE_DIR
+# is unset, so an orchestrator started by hand from a checkout mounted at
+# /workspace — e.g. `npm run dev` inside a dogfood session container, where
+# RUNTIME_MODE is unset so it resolves to "containerized" — writes its state
+# INTO the source tree, where the post-turn `git add -A` sweeps it up. That is
+# how `.shipit-worker-uid` (the docs/150 worker-UID boot marker) got committed
+# in 18df8025. These are orchestrator state, never repo content.
+.shipit-worker-uid
+.voice-cache/
+repo-cache/
+dep-cache/
+marketplace-cache/
+service-env/
+overlay-base/
+overlay-base-meta/
+pnpm-store/
+
+# Android service caches (Gradle/adb HOME for the `android` compose service)
+.gradle-android/
+.android-home/
+
+# Android — separate Gradle builds, not part of the Node project. (The old
+# android/ WebView wrapper was removed; the PWA superseded it. See docs/222.)
+# Android test app (separate Gradle build — see android-snapshot-test/)
+android-snapshot-test/.gradle/
+android-snapshot-test/build/
+android-snapshot-test/app/build/
+android-snapshot-test/local.properties
+android-snapshot-test/.idea/
+# Android overlay-test fixture (separate Gradle build — see android-overlay-test/)
+android-overlay-test/.gradle/
+android-overlay-test/build/
+android-overlay-test/app/build/
+android-overlay-test/local.properties
+android-overlay-test/.idea/
 *.keystore
 *.jks

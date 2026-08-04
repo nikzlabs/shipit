@@ -10,6 +10,13 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { OVERLAY_SESSION_SUBDIR } from "./overlay-session.js";
+import {
+  SESSION_STATE_SUBDIR,
+  SESSION_WORKSPACE_SUBDIR,
+  INSTALL_MARKER_FILE,
+  sessionStateDirForWorkspace,
+  sessionSharedStateDir,
+} from "./session-state-dir.js";
 
 /**
  * docs/161 — default free-disk probe for the disk-pressure pass. Returns bytes
@@ -82,7 +89,18 @@ export function getMessage(err: unknown): string {
  * the session root would take `uploads/` with it, and the allowlist is
  * future-proof against new durable siblings.
  */
-export const REGENERABLE_SESSION_SUBDIRS = ["workspace", OVERLAY_SESSION_SUBDIR] as const;
+export const REGENERABLE_SESSION_SUBDIRS = [
+  "workspace",
+  OVERLAY_SESSION_SUBDIR,
+  // docs/246 — ShipIt's own generated state. Every artifact in it is
+  // regenerated (compose override, agent env file, CI logs) and, critically,
+  // the install marker DESCRIBES the checkout: leaving it behind when
+  // `workspace/` is reclaimed makes it outlive the clone it refers to, so the
+  // restored session matches a marker whose `node_modules` no longer exists and
+  // `/install` returns `{ skipped: true }` — a dep-less session. Before the
+  // marker moved out of the clone, deleting the checkout necessarily deleted it.
+  SESSION_STATE_SUBDIR,
+] as const;
 
 /**
  * SHI-192 — reclaim a session's REGENERABLE on-disk tiers while PRESERVING its
@@ -113,7 +131,23 @@ export async function reclaimRegenerableSessionDirs(
   // in prod) plus the overlay upper sibling. NEVER a blanket `rm` of
   // `sessionRoot`, which also holds durable `uploads/` — see
   // {@link REGENERABLE_SESSION_SUBDIRS}.
-  const targets = [workspaceDir, path.join(sessionRoot, OVERLAY_SESSION_SUBDIR)];
+  // Derived from {@link REGENERABLE_SESSION_SUBDIRS}, NOT hand-listed. The
+  // hand-listed version silently ignored additions to that constant: docs/246
+  // added `state` to it and nothing changed, so the install marker kept
+  // outliving the clone it describes (evict → restore → fresh checkout with no
+  // deps, marker still matches, `/install` skips, dep-less session). The unit
+  // test that "covered" it asserted the constant's CONTENTS, which passed while
+  // the behaviour was unchanged — declaration pinned, effect not.
+  //
+  // The checkout keeps using the `workspaceDir` argument verbatim rather than
+  // `<sessionRoot>/workspace`: callers pass the session's real checkout path and
+  // it stays authoritative here.
+  const targets = [
+    workspaceDir,
+    ...REGENERABLE_SESSION_SUBDIRS
+      .filter((sub) => sub !== SESSION_WORKSPACE_SUBDIR)
+      .map((sub) => path.join(sessionRoot, sub)),
+  ];
   const removed: string[] = [];
   const failed: { dir: string; message: string }[] = [];
   for (const dir of targets) {
@@ -128,6 +162,60 @@ export async function reclaimRegenerableSessionDirs(
     }
   }
   return { removed, failed };
+}
+
+/**
+ * SHI-294 — reclaim a session's regenerable CACHES while leaving the
+ * `workspace/` checkout in place: the `overlay/` upper (docs/183 install
+ * deltas) and, with it, the `.install-done` marker.
+ *
+ * Used by the one path that must reclaim what it can while preserving what it
+ * can't restore — an eviction blocked because the checkout is the only copy of
+ * the work (an auto-commit the secret scanner or an unresolved merge state
+ * refused, or a commit that could not be pushed). Such a session can stay
+ * pinned at `light` for weeks, so dropping the install delta keeps the pin from
+ * hoarding the expensive half of its disk.
+ *
+ * **The marker must go with the upper.** The marker claims "this checkout's
+ * deps are installed", and after the upper is gone that is false — but not
+ * *detectably* false: the session's dep dir remounts over the shared rolling
+ * base, whose lower is usually populated, so the present-but-EMPTY contradiction
+ * check (`overlay-dep-check.ts`) does not fire and `agent.install` would be
+ * skipped, leaving the session with the base's deps and none of its own. Both
+ * removals therefore live in one function rather than at the call site. Same
+ * unlink `claim-session.ts` does when it hands a clone to a new session.
+ *
+ * Never rejects.
+ */
+export async function reclaimBlockedSessionCaches(
+  workspaceDir: string,
+): Promise<{ removed: string[]; message?: string }> {
+  const overlayDir = path.join(path.dirname(workspaceDir), OVERLAY_SESSION_SUBDIR);
+  const removed: string[] = [];
+  try {
+    // Via the canonical resolvers, not a hand-built path — and resolved INSIDE
+    // the try so an unrecognized layout throws here and takes the overlay
+    // removal with it. Failing closed is the point: if we can't locate the
+    // marker we must not delete the deps it describes.
+    const markerFile = path.join(
+      sessionSharedStateDir(sessionStateDirForWorkspace(workspaceDir)), INSTALL_MARKER_FILE,
+    );
+    // Marker FIRST. If the second removal fails, the surviving state is
+    // "no marker, deps present" — a harmless extra reinstall. The reverse
+    // order's half-failure is "marker present, deps gone", which is the
+    // dep-less session this function exists to prevent.
+    if (await fs.stat(markerFile).catch(() => null)) {
+      await fs.rm(markerFile, { force: true });
+      removed.push(markerFile);
+    }
+    if (await fs.stat(overlayDir).catch(() => null)) {
+      await fs.rm(overlayDir, { recursive: true, force: true });
+      removed.push(overlayDir);
+    }
+    return { removed };
+  } catch (err) {
+    return { removed, message: getMessage(err) };
+  }
 }
 
 /**

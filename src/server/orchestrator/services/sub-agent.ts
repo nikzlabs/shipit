@@ -17,6 +17,18 @@
  * Review is the first *consumer* of this primitive, not the primitive itself:
  * "get a second opinion from Codex on this diff" is just a review-shaped prompt
  * handed to `subAgentId: "codex"`.
+ *
+ * ## Observability (SHI-278)
+ *
+ * Every line this module logs is prefixed `[sub-agent]`, matching the house
+ * style of the paths around it (`[spawn-child]`, `[turn]`, `[steer-send]`,
+ * `[container-runner:<sid>]`). This path was previously *completely silent* —
+ * entry, all eight rejection gates, the exhaustion fallback, completion, and the
+ * catch — so "Codex just didn't run" was undebuggable from host logs and one
+ * incident had to be reconstructed from a git commit message. A silent 403/409
+ * is the worst case: the user sees nothing and the logs say nothing.
+ *
+ * Sizes and ids only — never prompt or output text.
  */
 
 import { randomUUID } from "node:crypto";
@@ -28,18 +40,61 @@ import type { ProviderAccountManager } from "../provider-account-manager.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { UsageManager } from "../usage.js";
 import { ContainerSessionRunner } from "../container-session-runner.js";
-import { emitChatCard, type InProgressPersister } from "../chat-card-persistence.js";
+import {
+  emitChatCard,
+  persistCardTransition,
+  type InProgressPersister,
+} from "../chat-card-persistence.js";
+import { WorkerAbortedError, WorkerTimeoutError } from "../worker-http.js";
+import { projectConsultCardForWire } from "../transcript-projection.js";
 import {
   provisionSubAgentCredentials,
+  provisionProviderAccountCredentials,
   removeSubAgentCredentials,
   syncAgentTokenBack,
   syncProviderAccountTokenBack,
 } from "../session-credentials.js";
 import type { SubAgentRunResult } from "../../shared/sub-agent-run.js";
+import { detectHardExhaustion, exhaustionLockoutUntil } from "../ws-handlers/agent-rate-limits.js";
+import { commitSubAgentWork } from "./sub-agent-commit.js";
+import type { GitManager } from "../../shared/git.js";
 import { ServiceError } from "./types.js";
 
 /** §5 — modest per-turn fan-out cap; the forgery-resistant bound on total spawns. */
 export const SUB_AGENT_PER_TURN_CAP = 3;
+
+/**
+ * SHI-278 — the chat-history surface the consult card's lifecycle needs: the
+ * in-progress replace `emitChatCard` uses to persist the PENDING card, plus the
+ * finalized-row patch that flips it to its terminal status once the run ends
+ * (usually after the originating turn has finalized, since docs/236 tells agents
+ * to background long consults).
+ */
+export interface ConsultCardPersister extends InProgressPersister {
+  updateSubAgentConsultCard(
+    sessionId: string,
+    cardId: string,
+    patch: Partial<SubAgentConsultCard>,
+  ): boolean;
+}
+
+/**
+ * SHI-278 — log a rejected spawn and build the error the route maps to HTTP.
+ * Every gate goes through here so no rejection can be silent; `reason` is a
+ * stable grep token, distinct from the user-facing message.
+ */
+function rejectSpawn(
+  sessionId: string,
+  subAgentId: AgentId,
+  statusCode: number,
+  reason: string,
+  message: string,
+): ServiceError {
+  console.warn(
+    `[sub-agent] rejected session=${sessionId} agent=${subAgentId} reason=${reason} status=${statusCode}`,
+  );
+  return new ServiceError(statusCode, message);
+}
 
 export interface RunSubAgentDeps {
   sessionManager: SessionManager;
@@ -49,11 +104,12 @@ export interface RunSubAgentDeps {
   runnerRegistry: SessionRunnerRegistry;
   usageManager: UsageManager;
   /**
-   * Where the terminal "Consulted Codex" card is persisted (docs/144 §7). Required
-   * so the card can't ship emit-only and vanish on a switch/reload — `emitChatCard`
-   * takes a persist context by construction (CLAUDE.md side-channel-card contract).
+   * Where the consult card is persisted (docs/144 §7). Required so the card can't
+   * ship emit-only and vanish on a switch/reload — `emitChatCard` takes a persist
+   * context by construction (CLAUDE.md side-channel-card contract). SHI-278 also
+   * needs the finalized-row patch for the pending → terminal transition.
    */
-  chatHistoryManager: InProgressPersister;
+  chatHistoryManager: ConsultCardPersister;
   /**
    * Forward the sub-agent's latest subscription rate-limit snapshot into the
    * right `LimitsProvider` so the limit pill reflects quota the consult
@@ -64,9 +120,21 @@ export interface RunSubAgentDeps {
     agentId: AgentId,
     session: { usedPct: number | null; resetAt: string } | null,
     weekly: { usedPct: number | null; resetAt: string } | null,
+    /**
+     * docs/150 — the session whose turn reported these numbers, so the
+     * orchestrator can attribute them to that session's pinned provider
+     * account. Omitted only where no session owns the turn.
+     */
+    sessionId?: string,
   ) => void;
   /** Source-of-truth credentials root (`/credentials`). Omitted in local mode / tests. */
   credentialsDir?: string;
+  /**
+   * SHI-299 — git access for the post-run commit of work a consult left behind
+   * after its parent turn ended (`services/sub-agent-commit.ts`). Optional so
+   * minimal test setups keep working; absent ⇒ no commit is attempted.
+   */
+  createGitManager?: (dir: string) => GitManager;
 }
 
 export interface RunSubAgentInput {
@@ -83,6 +151,22 @@ export interface RunSubAgentInput {
 
 export interface RunSubAgentResult extends SubAgentRunResult {
   subAgentId: AgentId;
+  /**
+   * SHI-245 — the run's id, echoed back to the caller. The SAME id is on the
+   * consult card the UI renders, so the text the invoking agent acted on and the
+   * text the user read are provably one artifact, and either side can name the
+   * run when they disagree. It is also the handle for `shipit agent result <id>`,
+   * which re-reads the persisted card — the recovery path when the caller's copy
+   * was lost (a SIGTERMed shim, a foreground tool timeout).
+   */
+  spawnId: string;
+}
+
+function allAccountsExhaustedMessage(providerName: string, earliestResetAt: string | null): string {
+  const reset = earliestResetAt
+    ? ` Earliest reset: ${new Date(earliestResetAt).toISOString()}.`
+    : "";
+  return `Every connected ${providerName} subscription account is out of quota.${reset}`;
 }
 
 /**
@@ -97,90 +181,104 @@ export async function runSubAgent(
   input: RunSubAgentInput,
 ): Promise<RunSubAgentResult> {
   const { subAgentId, prompt, depth } = input;
+  const promptBytes = typeof prompt === "string" ? Buffer.byteLength(prompt) : 0;
+  console.log(
+    `[sub-agent] requested session=${sessionId} agent=${subAgentId} depth=${depth} promptBytes=${promptBytes}`,
+  );
 
   const session = deps.sessionManager.get(sessionId);
-  if (!session) throw new ServiceError(404, "Session not found");
+  if (!session) throw rejectSpawn(sessionId, subAgentId, 404, "session_not_found", "Session not found");
 
   // §1 — the global gate, checked on EVERY spawn (not cached at boot) so toggling
   // it off mid-session takes effect on the next attempt.
   if (!deps.credentialStore.getEnableSubAgents()) {
-    throw new ServiceError(403, "Sub-agents are disabled. Enable them in Settings → Multi-agent sessions.");
+    throw rejectSpawn(sessionId, subAgentId, 403, "sub_agents_disabled",
+      "Sub-agents are disabled. Enable them in Settings → Multi-agent sessions.");
   }
 
   if (typeof prompt !== "string" || prompt.trim().length === 0) {
-    throw new ServiceError(400, "A prompt is required (pass it via --prompt-file -).");
+    throw rejectSpawn(sessionId, subAgentId, 400, "empty_prompt",
+      "A prompt is required (pass it via --prompt-file -).");
   }
 
   // §3 — the agent must be registered and authed. Re-probe first so a just-
   // -completed sign-in is seen.
   deps.agentRegistry.refreshAuth(subAgentId);
   const info = deps.agentRegistry.get(subAgentId);
-  if (!info) throw new ServiceError(400, `Unknown agent: ${subAgentId}`);
+  if (!info) throw rejectSpawn(sessionId, subAgentId, 400, "unknown_agent", `Unknown agent: ${subAgentId}`);
   if (!info.authConfigured) {
-    throw new ServiceError(400, `${info.name} is not signed in. Connect it in Settings before spawning it.`);
+    throw rejectSpawn(sessionId, subAgentId, 400, "not_signed_in",
+      `${info.name} is not signed in. Connect it in Settings before spawning it.`);
   }
 
   // §3 — a pre-pin session has no primary identity to spawn on behalf of.
   if (!session.agentPinned) {
-    throw new ServiceError(409, "This session has no pinned agent yet — send a message first.");
+    throw rejectSpawn(sessionId, subAgentId, 409, "session_not_pinned",
+      "This session has no pinned agent yet — send a message first.");
   }
 
   // §3 — best-effort recursion guard. A non-zero forwarded depth means the
   // caller is a spawned sub-agent. NOT forgery-resistant (a shell-capable
   // sub-agent can spoof depth: 0); the per-turn cap below is the real bound.
   if (depth !== 0) {
-    throw new ServiceError(403, "Sub-agents cannot spawn further sub-agents.");
+    throw rejectSpawn(sessionId, subAgentId, 403, "recursion_depth",
+      "Sub-agents cannot spawn further sub-agents.");
   }
 
   const runner = deps.runnerRegistry.get(sessionId);
-  if (!runner) throw new ServiceError(409, "Session is not active.");
+  if (!runner) {
+    throw rejectSpawn(sessionId, subAgentId, 409, "session_inactive", "Session is not active.");
+  }
 
   // §5 — the forgery-resistant per-turn cap. Keyed by the worker-injected
   // SESSION_ID (this runner), so every spawn in the turn — including any a
   // sub-agent forges past the depth guard — decrements the same budget.
   if (runner.subAgentSpawnsThisTurn >= SUB_AGENT_PER_TURN_CAP) {
-    throw new ServiceError(429, `Sub-agent spawn cap reached for this turn (max ${SUB_AGENT_PER_TURN_CAP}).`);
+    throw rejectSpawn(sessionId, subAgentId, 429, "per_turn_cap",
+      `Sub-agent spawn cap reached for this turn (max ${SUB_AGENT_PER_TURN_CAP}).`);
   }
   runner.subAgentSpawnsThisTurn += 1;
 
   // §4 — resolve the sub-agent's provider-account route exactly as the primary
   // turn path does, so a multi-account user provisions from the freshest account
   // root rather than the stale flat root.
-  const route = deps.providerAccountManager?.selectRouteForTurn(subAgentId) ?? null;
-  const accountId = route?.kind === "account" ? route.id : undefined;
+  const selection = deps.providerAccountManager?.selectAccountForTurn(subAgentId);
+  if (selection && !selection.ok) {
+    if (selection.reason === "all_exhausted") {
+      throw rejectSpawn(sessionId, subAgentId, 429, "all_accounts_exhausted",
+        allAccountsExhaustedMessage(info.name, selection.earliestResetAt));
+    }
+    throw rejectSpawn(sessionId, subAgentId, 400, "no_account_route",
+      `${info.name} is not signed in. Connect it in Settings before spawning it.`);
+  }
+  let route = selection?.route ?? null;
+  let accountId = route?.kind === "account" ? route.id : undefined;
 
   // A same-provider spawn reuses the pinned agent's already-present credentials
   // and provisions nothing. A cross-provider spawn provisions the other agent's
   // subtree — only on a container runner (local mode is a no-op, docs/138).
-  const crossProvider = subAgentId !== session.agentId;
   const isContainer = runner instanceof ContainerSessionRunner;
-  const provisioned = crossProvider && isContainer && !!deps.credentialsDir;
+  const provisioned = isContainer && !!deps.credentialsDir;
   const credentialsDir = deps.credentialsDir;
 
-  if (provisioned && credentialsDir) {
-    provisionSubAgentCredentials(credentialsDir, sessionId, subAgentId, accountId);
-  }
+  const provisionAttempt = (): void => {
+    if (provisioned && credentialsDir) {
+      console.log(
+        `[sub-agent] provision-credentials session=${sessionId} agent=${subAgentId} account=${accountId ?? "flat"}`,
+      );
+      provisionSubAgentCredentials(credentialsDir, sessionId, subAgentId, accountId);
+    }
+  };
+  provisionAttempt();
 
   const spawnId = randomUUID();
+  const cardId = randomUUID();
   const startedAtMs = Date.now();
   // §7 — transient "Asking Codex…" spinner (live activity only) while in flight.
-  // The terminal record is the persisted consult card emitted below, not this.
-  runner.emitMessage({ type: "sub_agent_spawn", spawnId, subAgentId });
-
-  // §7 — the persisted terminal card. Built for EVERY outcome (success, error,
-  // timeout, cancel, or a thrown transport failure) so the spinner is always
-  // replaced by a durable inline record anchored where the consult happened —
-  // never left spinning and never lost on a switch/reload. Emitted via
-  // `emitChatCard` (CLAUDE.md side-channel-card contract): live WS + in-band
-  // record + immediate persist, in one call.
-  const emitConsultCard = (card: SubAgentConsultCard) => {
-    emitChatCard(
-      runner,
-      { type: "sub_agent_consult_card", sessionId, card },
-      { role: "assistant", text: "", subAgentConsult: card },
-      { chatHistoryManager: deps.chatHistoryManager, sessionId },
-    );
-  };
+  // Kept for the live case (it renders pinned at the bottom of the transcript
+  // rather than inline), but SHI-278 it is no longer the ONLY in-flight signal —
+  // the pending card below is the durable one.
+  runner.emitMessage({ type: "sub_agent_spawn", sessionId, spawnId, subAgentId });
 
   // docs/217 — a sub-agent runs with the invoked agent's OWN global defaults
   // (reasoning effort + model, set on its Settings tab), independent of the
@@ -188,8 +286,85 @@ export async function runSubAgent(
   // applies next time. An unset model lets the adapter pick `models[0]`.
   const { reasoningEffort, model } = deps.credentialStore.getAgentSubAgentDefaults(subAgentId);
 
+  console.log(
+    `[sub-agent] accepted session=${sessionId} spawn=${spawnId} card=${cardId} agent=${subAgentId} `
+    + `depth=${depth} promptBytes=${promptBytes} route=${route?.kind ?? "default"}:${accountId ?? "-"} `
+    + `model=${model ?? "default"} effort=${reasoningEffort ?? "default"} `
+    + `spawnsThisTurn=${runner.subAgentSpawnsThisTurn}`,
+  );
+
+  // §7 / SHI-278 — the DURABLE in-flight record. Emitted `pending` at spawn time
+  // via `emitChatCard` (CLAUDE.md side-channel-card contract: live WS + in-band
+  // record anchored at the spawn's group index + immediate persist), then patched
+  // to its terminal status when the run ends. Creating it here rather than at
+  // completion is what makes a backgrounded consult survive a session switch, a
+  // reload, and a container restart — the incident where a 15-minute Codex review
+  // left no trace anywhere. It also anchors the card at the CALL SITE instead of
+  // wherever the transcript happened to be when the consult finished (the
+  // positional drift docs/144 §7 noted for backgrounded runs).
+  const pendingCard: SubAgentConsultCard = {
+    cardId,
+    spawnId,
+    subAgentId,
+    status: "pending",
+    createdAt: new Date().toISOString(),
+  };
+  emitChatCard(
+    runner,
+    { type: "sub_agent_consult_card", sessionId, card: pendingCard },
+    { role: "assistant", text: "", subAgentConsult: pendingCard },
+    { chatHistoryManager: deps.chatHistoryManager, sessionId },
+  );
+
+  /**
+   * Flip the pending card to its terminal status. Two hazards this navigates,
+   * both from the incident:
+   *
+   *  - **The runner may be gone.** A restart/destroy disposes the runner that
+   *    started the consult; emitting through it drops the live card (no attached
+   *    viewers) AND `persistTurnInProgress` would rebuild `in_progress=1` rows
+   *    from its stale turn state, which the next turn then clobbers. So the
+   *    runner is RE-RESOLVED from the registry at completion time.
+   *  - **The originating turn is usually over.** docs/236 made backgrounding the
+   *    recommended shape, so the common case is a card whose turn already
+   *    finalized. `persistCardTransition` handles exactly that split: patch the
+   *    recorded card while the turn still holds it, else patch the finalized DB
+   *    row directly.
+   */
+  const finalizeConsultCard = (card: SubAgentConsultCard) => {
+    const live = deps.runnerRegistry.get(sessionId) ?? runner;
+    // docs/244 / SHI-297 — persist BEFORE emitting, and emit the projected copy.
+    // The card face draws one 140-character preview line and puts the rest of the
+    // output behind a click, so the wire copy carries only that line plus
+    // `outputTruncated`, and `SubAgentConsultCardRow` fetches the full markdown
+    // when the viewer opens. Both halves of that are load-bearing: the stored
+    // card must stay WHOLE (it is what `shipit agent result` reads back, and what
+    // the fetch endpoint serves), and it must be on disk before the URL implying
+    // it exists reaches a browser. Either branch of `persistCardTransition`
+    // writes it synchronously, so returning from this call is enough.
+    let persisted = true;
+    persistCardTransition(
+      live,
+      { chatHistoryManager: deps.chatHistoryManager, sessionId },
+      (m) => m.subAgentConsult?.cardId === cardId,
+      (m) => ({ ...m, subAgentConsult: card }),
+      () => { persisted = deps.chatHistoryManager.updateSubAgentConsultCard(sessionId, cardId, card); },
+    );
+    live.emitMessage({
+      type: "sub_agent_consult_card",
+      sessionId,
+      card: projectConsultCardForWire(card),
+    });
+    console.log(
+      `[sub-agent] finished session=${sessionId} spawn=${spawnId} card=${cardId} agent=${subAgentId} `
+      + `status=${card.status} durationMs=${card.durationMs ?? 0} costUsd=${card.costUsd ?? 0} `
+      + `outputChars=${card.outputMarkdown?.length ?? 0} truncated=${card.truncated === true} `
+      + `emitted=true persisted=${persisted} liveRunner=${live === runner ? "original" : "reresolved"}`,
+    );
+  };
+
   try {
-    const result = await runner.spawnSubAgent({
+    const spawn = () => runner.spawnSubAgent({
       agentId: subAgentId,
       prompt,
       spawnId,
@@ -197,6 +372,62 @@ export async function runSubAgent(
       ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
       ...(model !== undefined ? { model } : {}),
     });
+    let result = await spawn();
+
+    // docs/150 reqs 7, 14, 20 — one-shot reviews use the same persisted hard-
+    // exhaustion signal and structured account router as ordinary turns. One
+    // fallback is bounded by the connected subscription set: every account is
+    // attempted at most once. API-key routes never enter this branch because
+    // only account routes are benched or accepted as fallbacks.
+    const attemptedAccountIds = new Set(accountId ? [accountId] : []);
+    let exhausted = result.status === "error" && result.error
+      ? detectHardExhaustion(result.error)
+      : null;
+    while (exhausted && accountId && deps.providerAccountManager) {
+      const failedAccountId = accountId;
+      deps.providerAccountManager.markAccountExhausted(
+        subAgentId,
+        failedAccountId,
+        exhaustionLockoutUntil(exhausted),
+      );
+      const fallback = deps.providerAccountManager.selectAccountForTurn(subAgentId, {
+        exclude: [...attemptedAccountIds],
+      });
+      if (!fallback.ok) {
+        console.warn(
+          `[sub-agent] account-fallback-exhausted session=${sessionId} spawn=${spawnId} `
+          + `agent=${subAgentId} benched=${failedAccountId} reason=${fallback.reason}`,
+        );
+        if (fallback.reason === "all_exhausted") {
+          result = {
+            ...result,
+            error: allAccountsExhaustedMessage(info.name, fallback.earliestResetAt),
+          };
+        }
+        break;
+      }
+      if (fallback.route.kind !== "account") break;
+      console.warn(
+        `[sub-agent] account-fallback session=${sessionId} spawn=${spawnId} agent=${subAgentId} `
+        + `benched=${failedAccountId} next=${fallback.route.id}`,
+      );
+      if (provisioned && credentialsDir) {
+        try {
+          syncProviderAccountTokenBack(credentialsDir, sessionId, subAgentId, failedAccountId);
+        } catch {
+          // Best-effort, matching the terminal sync below.
+        }
+        removeSubAgentCredentials(credentialsDir, sessionId, subAgentId);
+      }
+      route = fallback.route;
+      accountId = route.id;
+      attemptedAccountIds.add(accountId);
+      provisionAttempt();
+      result = await spawn();
+      exhausted = result.status === "error" && result.error
+        ? detectHardExhaustion(result.error)
+        : null;
+    }
 
     // §5 — attribute the sub-agent's cost AND token usage to subAgentId, not the
     // pinned agentId. A subscription backend (Codex) reports tokens but $0 cost,
@@ -237,10 +468,8 @@ export async function runSubAgent(
       deps.recordAgentRateLimits?.(subAgentId, result.rateLimits.session, result.rateLimits.weekly);
     }
 
-    emitConsultCard({
-      cardId: randomUUID(),
-      spawnId,
-      subAgentId,
+    finalizeConsultCard({
+      ...pendingCard,
       status: result.status,
       durationMs: result.durationMs,
       costUsd: result.costUsd,
@@ -248,23 +477,35 @@ export async function runSubAgent(
       // docs/220 — carry the verbatim output so the brokered consult is visible,
       // not just attested. Already capped upstream (`maxOutputChars`), which is
       // also what flags `truncated`. Omitted when empty.
+      //
+      // SHI-245 — this is the SAME `result.text` returned below to the invoking
+      // agent, by construction: one string, written to both surfaces from one
+      // place. Never re-derive the card's copy from anything else — a second
+      // extraction is exactly how the two documents drift apart.
       ...(result.text ? { outputMarkdown: result.text } : {}),
-      createdAt: new Date().toISOString(),
     });
 
-    return { ...result, subAgentId };
+    return { ...result, subAgentId, spawnId };
   } catch (err) {
-    // A transport-level failure (e.g. worker unreachable) never produced a
-    // result, so synthesize an error card — otherwise the spinner spins forever.
-    emitConsultCard({
-      cardId: randomUUID(),
-      spawnId,
-      subAgentId,
-      status: "error",
+    // A transport-level failure never produced a result, so finalize the card
+    // from the error itself — otherwise the card stays pending forever. An
+    // ABORT means someone tore the runner down under us (Restart agent, idle
+    // dispose, full reset), which is a cancellation, not a fault; a transport
+    // TIMEOUT means the worker never answered at all (SHI-278's backstop).
+    const status: SubAgentConsultCard["status"] =
+      err instanceof WorkerAbortedError ? "cancelled"
+      : err instanceof WorkerTimeoutError ? "timeout"
+      : "error";
+    const detail = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[sub-agent] failed session=${sessionId} spawn=${spawnId} agent=${subAgentId} status=${status}: ${detail}`,
+    );
+    finalizeConsultCard({
+      ...pendingCard,
+      status,
       durationMs: Math.max(0, Date.now() - startedAtMs),
       costUsd: 0,
       truncated: false,
-      createdAt: new Date().toISOString(),
     });
     throw err;
   } finally {
@@ -280,8 +521,196 @@ export async function runSubAgent(
         // start from a slightly older token, which heals on its own refresh.
       }
       removeSubAgentCredentials(credentialsDir, sessionId, subAgentId);
+      console.log(
+        `[sub-agent] wipe-credentials session=${sessionId} spawn=${spawnId} agent=${subAgentId} `
+        + `account=${accountId ?? "flat"}`,
+      );
+      // A same-provider consult temporarily borrows the session's provider
+      // subtree while the primary is blocked waiting for it. Put the pinned
+      // account back before the primary resumes; cross-provider runs touched a
+      // different subtree, so there is nothing to restore.
+      if (
+        subAgentId === session.agentId
+        && session.providerRouteKind === "account"
+        && session.providerRouteId
+      ) {
+        provisionProviderAccountCredentials(
+          credentialsDir,
+          sessionId,
+          subAgentId,
+          session.providerRouteId,
+        );
+      }
     }
+
+    // SHI-299 — the run has reached a terminal state (success, error, timeout or
+    // cancel; a cancelled or errored consult can have written files too). If its
+    // parent turn is already over — the normal shape, since docs/236 tells agents
+    // to background long consults — nothing else is scheduled to commit what it
+    // wrote, and the edits sit in the working tree until some later turn sweeps
+    // them up under the wrong summary or a `git reset` discards them. Commit them
+    // here instead. Awaited (not fire-and-forget) so `shipit agent run` returns
+    // only once the work is durable, and so the tree is clean before the caller's
+    // next turn consults the docs/218 reset gate. Runs AFTER the credential wipe
+    // above so a provisioned subtree can never be caught by `git add -A`.
+    //
+    // `commitSubAgentWork` never throws — result delivery does not depend on it.
+    await commitSubAgentWork(
+      {
+        sessionManager: deps.sessionManager,
+        runnerRegistry: deps.runnerRegistry,
+        chatHistoryManager: deps.chatHistoryManager,
+        ...(deps.createGitManager ? { createGitManager: deps.createGitManager } : {}),
+      },
+      sessionId,
+      { spawnId, subAgentId },
+    );
   }
+}
+
+/**
+ * Minimal chat-history surface the result lookup needs. Kept structural so
+ * tests and non-`ChatHistoryManager` callers can pass a stub.
+ */
+export interface ConsultCardReader {
+  listSubAgentConsultCards(sessionId: string): SubAgentConsultCard[];
+}
+
+export interface GetSubAgentResultDeps {
+  chatHistoryManager: ConsultCardReader;
+}
+
+/**
+ * SHI-245 — re-read a completed spawn's persisted consult card: the exact
+ * artifact rendered in the UI, output text included.
+ *
+ * Backs `shipit agent result [<runId>]`. Two things make this worth a route of
+ * its own rather than "the agent already got the text on stdout":
+ *
+ *  - **Parity is checkable.** The caller can prove its copy is the user's copy
+ *    instead of assuming it, and can name a run id when the two disagree.
+ *  - **The result outlives the call.** A `shipit agent run` whose shim dies —
+ *    the invoking agent's foreground tool timeout SIGTERMs it well before a long
+ *    consult finishes — does not stop the spawn; it finishes server-side and
+ *    persists its card. Without this, that output existed only in the UI and the
+ *    18 minutes of work were unrecoverable from the agent's side.
+ *
+ * Omit `spawnId` for the session's most recent run.
+ *
+ * SHI-278 — a card can now be `pending` (created at spawn time). That is
+ * returned as-is rather than skipped: "the consult you named is still running"
+ * is the honest answer, and hiding it would resurrect the older, more confusing
+ * failure where a live run looked like it had never existed.
+ */
+export function getSubAgentResult(
+  deps: GetSubAgentResultDeps,
+  sessionId: string,
+  spawnId?: string,
+): SubAgentConsultCard {
+  const cards = deps.chatHistoryManager.listSubAgentConsultCards(sessionId);
+  if (cards.length === 0) {
+    throw new ServiceError(404, "No sub-agent runs in this session yet.");
+  }
+  if (!spawnId) return cards[cards.length - 1];
+  // Accept a unique prefix too: the id is printed as a short prefix in the run
+  // footer, and re-typing a full UUID from a log line is a needless failure mode.
+  const exact = cards.find((c) => c.spawnId === spawnId);
+  if (exact) return exact;
+  const prefixed = cards.filter((c) => c.spawnId.startsWith(spawnId));
+  if (prefixed.length === 1) return prefixed[0];
+  if (prefixed.length > 1) {
+    throw new ServiceError(400, `Ambiguous run id "${spawnId}" — it matches ${prefixed.length} runs.`);
+  }
+  throw new ServiceError(404, `No sub-agent run with id "${spawnId}" in this session.`);
+}
+
+/**
+ * docs/248 — interval between re-derives inside a wait segment. A consult runs
+ * for minutes, so half a second of latency on the transition is immaterial, and
+ * paying it buys a wait with no in-memory registry of in-flight runs and no
+ * completion event to miss.
+ */
+export const SUB_AGENT_RESULT_POLL_INTERVAL_MS = 500;
+
+/** Default `shipit agent result --wait --timeout` when the caller omits one. */
+export const DEFAULT_SUB_AGENT_WAIT_MS = 5 * 60 * 1000;
+
+/**
+ * Cap on a sub-agent wait. Matches the sub-agent's own wall-clock cap — past it
+ * the run cannot still be alive, so waiting longer only defers the truth.
+ */
+export const MAX_SUB_AGENT_WAIT_MS = 30 * 60 * 1000;
+
+export interface WaitForSubAgentResultOptions {
+  spawnId?: string;
+  /**
+   * Bounded server segment. Still `pending` when it elapses ⇒ resolve
+   * `outcome: "pending"` instead of holding the socket open, so the shim's
+   * segment loop can absorb a transport reset by re-issuing one segment.
+   */
+  segmentMs: number;
+  /** Injectable for deterministic tests. */
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+}
+
+export interface WaitForSubAgentResultOutcome {
+  card: SubAgentConsultCard;
+  /** `finished` — the card reached a terminal status. `pending` — segment elapsed. */
+  outcome: "finished" | "pending";
+}
+
+/**
+ * docs/248 — wait until a sub-agent run's consult card reaches a terminal
+ * status, bounded to one `segmentMs` segment.
+ *
+ * Level-triggered by construction, exactly as docs/182's `waitForChildIdle` is:
+ * every iteration re-derives the answer from the PERSISTED card, so an
+ * orchestrator restart mid-wait cannot strand the caller and there is no
+ * in-memory state to keep in sync. Both of the card's pending → terminal patch
+ * paths land in the DB — `persistCardTransition` either patches the recorded
+ * card and calls `persistTurnInProgress` (writing in_progress=1 rows), or
+ * patches the finalized row via `updateSubAgentConsultCard` — and
+ * `listSubAgentConsultCards` filters on neither, so this observes both.
+ *
+ * Throws `ServiceError` from the first derive only (unknown id, ambiguous
+ * prefix, no runs at all): a lookup that was valid once is not re-validated
+ * into a failure mid-wait.
+ */
+export async function waitForSubAgentResult(
+  deps: GetSubAgentResultDeps,
+  sessionId: string,
+  opts: WaitForSubAgentResultOptions,
+): Promise<WaitForSubAgentResultOutcome> {
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const now = opts.now ?? (() => Date.now());
+
+  // Fast path — derive once before arming anything. Also the only derive that
+  // is allowed to throw, so a bad run id fails immediately instead of after a
+  // full segment of polling.
+  let card = getSubAgentResult(deps, sessionId, opts.spawnId);
+  if (card.status !== "pending") return { card, outcome: "finished" };
+
+  // Pin the run. With no `spawnId` the caller means "the most recent run", but
+  // re-resolving that each iteration would silently switch the wait onto a
+  // NEWER run started mid-wait — and then report that one's status as if it
+  // were the run the caller asked about.
+  const pinnedSpawnId = card.spawnId;
+  const deadline = now() + Math.max(0, opts.segmentMs);
+
+  while (now() < deadline) {
+    await sleep(Math.min(SUB_AGENT_RESULT_POLL_INTERVAL_MS, Math.max(0, deadline - now())));
+    try {
+      card = getSubAgentResult(deps, sessionId, pinnedSpawnId);
+    } catch {
+      // The card is momentarily unreadable (a history rewrite between our
+      // reads). Not an outcome — keep waiting; the next poll re-derives.
+      continue;
+    }
+    if (card.status !== "pending") return { card, outcome: "finished" };
+  }
+
+  return { card, outcome: "pending" };
 }
 
 /**

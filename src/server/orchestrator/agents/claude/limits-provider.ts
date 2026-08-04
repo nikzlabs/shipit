@@ -27,7 +27,11 @@
 
 import type { AuthManager } from "./auth-manager.js";
 import type { LimitsProvider } from "../types.js";
-import type { SubscriptionLimits, SubscriptionLimitsWindow } from "../../../shared/types.js";
+import type {
+  LimitsRefreshResult,
+  SubscriptionLimits,
+  SubscriptionLimitsWindow,
+} from "../../../shared/types.js";
 
 /** OAuth usage endpoint backing Claude Code's `/usage` slash command. */
 export const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
@@ -44,6 +48,28 @@ interface WindowSnapshot {
 
 export interface ClaudeLimitsDeps {
   authManager: Pick<AuthManager, "getAccessToken">;
+  /**
+   * docs/150 — every connected account for this provider, whether or not it has
+   * reported quota yet.
+   *
+   * Without this, `routeIds()` could only name routes that already had a cached
+   * snapshot, which made the once-per-sign-in seed fetch a no-op for a freshly
+   * connected account: you needed data before you were allowed to fetch data,
+   * so the pill sat at "—" until a turn happened to push an event. Optional —
+   * tests and pre-docs/150 wiring fall back to the cached keys alone.
+   */
+  listAccountRouteIds?: () => string[];
+  /**
+   * docs/150 — the credential dir backing a route, so the usage fetch reads
+   * THAT account's token.
+   *
+   * Returning `undefined` selects the legacy/env path, which is correct for the
+   * reserved `claude-env-oauth` / API-key routes. Getting this wrong is not a
+   * missing number but a wrong one: without it the fetch reads the root config
+   * dir (or `ANTHROPIC_AUTH_TOKEN`) for every route and attributes one
+   * subscription's usage to another.
+   */
+  credentialDirForRoute?: (routeId: string) => string | undefined;
   /** Inject for tests; defaults to `globalThis.fetch`. */
   fetchImpl?: typeof fetch;
   /** Inject for deterministic tests; defaults to `Date.now`. */
@@ -56,19 +82,33 @@ export class ClaudeLimitsProvider implements LimitsProvider {
   private fetchImpl: typeof fetch;
   private now: () => number;
 
-  /** Latest windows pushed from the CLI stream (`rate_limit_event`). */
-  private eventLatest: WindowSnapshot | null = null;
-  /** Latest windows pulled from `/api/oauth/usage` via `refreshNow()`. */
-  private apiLatest: WindowSnapshot | null = null;
-  /** Epoch ms until which `/api/oauth/usage` is locked out after a 429. */
-  private lockedUntil = 0;
-  /** Single-flight guard so concurrent refreshes share one request. */
-  private inFlight: Promise<void> | null = null;
+  /**
+   * docs/150 — every cache below is keyed by **route id** (a provider-account
+   * id, or a reserved route like `claude-env-oauth`). Two connected Anthropic
+   * subscriptions have two independent 5h windows, two independent
+   * `/api/oauth/usage` results, and two independent 429 lockouts — a 429
+   * against one account's token says nothing about another's. Sharing any of
+   * these across routes produces plausible numbers attributed to the wrong
+   * subscription, which is worse than no numbers.
+   */
+  /** Latest windows pushed from the CLI stream (`rate_limit_event`), per route. */
+  private eventLatest = new Map<string, WindowSnapshot>();
+  /** Latest windows pulled from `/api/oauth/usage` via `refreshNow()`, per route. */
+  private apiLatest = new Map<string, WindowSnapshot>();
+  /** Epoch ms until which `/api/oauth/usage` is locked out after a 429, per route. */
+  private lockedUntil = new Map<string, number>();
+  /** Single-flight guard so concurrent refreshes share one request, per route. */
+  private inFlight = new Map<string, Promise<LimitsRefreshResult>>();
+
+  private listAccountRouteIds: (() => string[]) | undefined;
+  private credentialDirForRoute: ((routeId: string) => string | undefined) | undefined;
 
   constructor(deps: ClaudeLimitsDeps) {
     this.authManager = deps.authManager;
     this.fetchImpl = deps.fetchImpl ?? ((input, init) => fetch(input, init));
     this.now = deps.now ?? (() => Date.now());
+    this.listAccountRouteIds = deps.listAccountRouteIds;
+    this.credentialDirForRoute = deps.credentialDirForRoute;
   }
 
   /**
@@ -80,43 +120,75 @@ export class ClaudeLimitsProvider implements LimitsProvider {
   setRateLimits(
     session: SubscriptionLimitsWindow | null,
     weekly: SubscriptionLimitsWindow | null,
+    routeId: string,
   ): void {
-    this.eventLatest = { session, weekly, at: this.now() };
+    this.eventLatest.set(routeId, { session, weekly, at: this.now() });
   }
 
-  canFetch(): boolean {
-    return this.eventLatest !== null || this.apiLatest !== null;
+  /**
+   * Routes this provider can be asked about: every connected account (so a
+   * newly connected one is refreshable before it has ever reported), unioned
+   * with anything already cached (so a reserved env/API-key route, which only
+   * appears once a turn pushes a snapshot, is not dropped).
+   */
+  routeIds(): string[] {
+    return [...new Set([
+      ...(this.listAccountRouteIds?.() ?? []),
+      ...this.eventLatest.keys(),
+      ...this.apiLatest.keys(),
+    ])];
   }
 
-  async fetch(): Promise<SubscriptionLimits | null> {
-    if (!this.eventLatest && !this.apiLatest) return null;
+  forgetRoute(routeId: string): void {
+    this.eventLatest.delete(routeId);
+    this.apiLatest.delete(routeId);
+    this.lockedUntil.delete(routeId);
+  }
+
+  async fetch(routeId: string): Promise<SubscriptionLimits | null> {
+    const eventLatest = this.eventLatest.get(routeId) ?? null;
+    const apiLatest = this.apiLatest.get(routeId) ?? null;
+    const lockedUntilNow = this.lockedUntil.get(routeId) ?? 0;
+    const locked = lockedUntilNow > this.now();
+    // A route with no readings but an active lockout still has something the
+    // user needs: the countdown. Returning null here (the old behavior) dropped
+    // `lockedUntil` on the floor for exactly the route whose refresh button
+    // looks broken — an account that got 429'd before it ever reported a
+    // number renders an enabled button that silently no-ops for ~30 minutes.
+    if (!eventLatest && !apiLatest && !locked) return null;
 
     // Plan tier isn't in either payload — derive from the credentials file.
+    // Account-scoped for the same reason `doRefresh` is (docs/150 req 19): the
+    // unscoped read hits the singleton config root, which since the aliases
+    // were retired holds nothing on a migrated install — so every account's
+    // pill lost its plan label, and before that they all showed the migrated
+    // default's label regardless of whose usage the numbers were.
     let plan: string | null = null;
-    const tokenResult = await this.authManager.getAccessToken();
+    const tokenResult = await this.authManager.getAccessToken(this.credentialDirForRoute?.(routeId));
     if (tokenResult.token !== null) plan = tokenResult.plan;
 
     const session = mergeWindow(
-      this.eventLatest?.session ?? null,
-      this.eventLatest?.at ?? 0,
-      this.apiLatest?.session ?? null,
-      this.apiLatest?.at ?? 0,
+      eventLatest?.session ?? null,
+      eventLatest?.at ?? 0,
+      apiLatest?.session ?? null,
+      apiLatest?.at ?? 0,
     );
     const weekly = mergeWindow(
-      this.eventLatest?.weekly ?? null,
-      this.eventLatest?.at ?? 0,
-      this.apiLatest?.weekly ?? null,
-      this.apiLatest?.at ?? 0,
+      eventLatest?.weekly ?? null,
+      eventLatest?.at ?? 0,
+      apiLatest?.weekly ?? null,
+      apiLatest?.at ?? 0,
     );
 
-    const fetchedAt = Math.max(this.eventLatest?.at ?? 0, this.apiLatest?.at ?? 0);
+    const fetchedAt = Math.max(eventLatest?.at ?? 0, apiLatest?.at ?? 0);
     return {
       agentId: "claude",
+      routeId,
       plan,
       session,
       weekly,
       fetchedAt,
-      ...(this.lockedUntil > this.now() ? { lockedUntil: this.lockedUntil } : {}),
+      ...(locked ? { lockedUntil: lockedUntilNow } : {}),
     };
   }
 
@@ -125,23 +197,40 @@ export class ClaudeLimitsProvider implements LimitsProvider {
    * user mashing the refresh button (or back-to-back seeds) can't trip the
    * upstream 429. `"seed"` self-skips once an API snapshot already exists;
    * `"manual"` always attempts (subject only to the lockout). Never throws.
+   *
+   * Resolves with the outcome rather than `void`: every early return here is a
+   * state the user is entitled to see on the button that just did nothing.
    */
-  async refreshNow(reason: "manual" | "seed"): Promise<void> {
-    if (reason === "seed" && this.apiLatest !== null) return;
-    if (this.lockedUntil > this.now()) return;
-    if (this.inFlight) {
-      await this.inFlight;
-      return;
+  async refreshNow(reason: "manual" | "seed", routeId: string): Promise<LimitsRefreshResult> {
+    if (reason === "seed" && this.apiLatest.has(routeId)) {
+      return { routeId, outcome: "skipped" };
     }
-    this.inFlight = this.doRefresh().finally(() => {
-      this.inFlight = null;
+    const lockedUntil = this.lockedUntil.get(routeId) ?? 0;
+    if (lockedUntil > this.now()) {
+      return { routeId, outcome: "locked", lockedUntil };
+    }
+    const existing = this.inFlight.get(routeId);
+    if (existing) return existing;
+    const run = this.doRefresh(routeId).finally(() => {
+      this.inFlight.delete(routeId);
     });
-    await this.inFlight;
+    this.inFlight.set(routeId, run);
+    return run;
   }
 
-  private async doRefresh(): Promise<void> {
-    const tokenResult = await this.authManager.getAccessToken();
-    if (tokenResult.token === null) return;
+  private async doRefresh(routeId: string): Promise<LimitsRefreshResult> {
+    // Account-scoped: `getAccessToken()` with no dir prefers ANTHROPIC_AUTH_TOKEN
+    // and otherwise reads the ROOT config dir, so passing nothing here fetched
+    // the wrong subscription's usage (or none at all, leaving the pill at "—").
+    const tokenResult = await this.authManager.getAccessToken(this.credentialDirForRoute?.(routeId));
+    if (tokenResult.token === null) {
+      console.warn(`[claude-limits] /usage skipped for ${routeId}: ${tokenResult.reason}`);
+      return {
+        routeId,
+        outcome: "no-credentials",
+        detail: tokenResult.reason === "api-key" ? "route uses an API key, not a subscription" : "no OAuth credentials on disk",
+      };
+    }
     // Skip a doomed call against an idle-expired access token — the shared
     // credential file is refreshed by the CLI on each turn; we don't refresh
     // it ourselves (blast radius). The badge keeps its last numbers.
@@ -149,7 +238,8 @@ export class ClaudeLimitsProvider implements LimitsProvider {
       tokenResult.expiresAt !== null &&
       tokenResult.expiresAt <= this.now() + 60_000
     ) {
-      return;
+      console.warn(`[claude-limits] /usage skipped for ${routeId}: access token expired`);
+      return { routeId, outcome: "expired-token", detail: "access token expired — sign in again" };
     }
 
     let response: Response;
@@ -165,19 +255,20 @@ export class ClaudeLimitsProvider implements LimitsProvider {
       });
     } catch (err) {
       console.warn(`[claude-limits] /usage network error: ${errMsg(err)}`);
-      return;
+      return { routeId, outcome: "failed", detail: `network error: ${errMsg(err)}` };
     }
 
     if (response.status === 429) {
-      this.lockedUntil = this.now() + retryAfterMs(response);
+      const until = this.now() + retryAfterMs(response);
+      this.lockedUntil.set(routeId, until);
       console.warn(
-        `[claude-limits] /usage 429 — locked out until ${new Date(this.lockedUntil).toISOString()}`,
+        `[claude-limits] /usage 429 for ${routeId} — locked out until ${new Date(until).toISOString()}`,
       );
-      return;
+      return { routeId, outcome: "rate-limited", lockedUntil: until };
     }
     if (!response.ok) {
       console.warn(`[claude-limits] /usage HTTP ${response.status}`);
-      return;
+      return { routeId, outcome: "failed", detail: `HTTP ${response.status}` };
     }
 
     let body: unknown;
@@ -185,17 +276,18 @@ export class ClaudeLimitsProvider implements LimitsProvider {
       body = await response.json();
     } catch (err) {
       console.warn(`[claude-limits] /usage non-JSON body: ${errMsg(err)}`);
-      return;
+      return { routeId, outcome: "failed", detail: "response was not JSON" };
     }
 
     const parsed = parseUsageWindows(body);
     if (!parsed) {
       console.warn("[claude-limits] /usage unexpected payload shape");
-      return;
+      return { routeId, outcome: "failed", detail: "unexpected /usage payload" };
     }
-    // A successful fetch clears any prior lockout.
-    this.lockedUntil = 0;
-    this.apiLatest = { session: parsed.session, weekly: parsed.weekly, at: this.now() };
+    // A successful fetch clears any prior lockout for this route.
+    this.lockedUntil.delete(routeId);
+    this.apiLatest.set(routeId, { session: parsed.session, weekly: parsed.weekly, at: this.now() });
+    return { routeId, outcome: "updated" };
   }
 }
 

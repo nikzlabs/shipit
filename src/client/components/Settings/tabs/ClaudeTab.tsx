@@ -1,43 +1,32 @@
 import type { AgentOption } from "../../../agent-types.js";
-import { ClaudeAuthCard } from "../../ClaudeAuthCard.js";
-import { useSettingsStore } from "../../../stores/settings-store.js";
-import { ProviderAccountSection } from "../ProviderAccountSection.js";
+import { ProviderAccountsCard } from "../ProviderAccountsCard.js";
 import { SubAgentDefaultsSection } from "../SubAgentDefaultsSection.js";
 
+/**
+ * docs/150 req 16 — this tab used to stack a provider-wide `ClaudeAuthCard`
+ * (the only way to connect the *first* subscription) on top of a per-account
+ * section (the only way to connect *subsequent* ones). `ProviderAccountsCard`
+ * replaces both with a single account-row flow. Onboarding renders this same
+ * card now, so no surface connects a first account differently — and
+ * `ClaudeAuthCard` itself is gone.
+ */
 export function ClaudeTab({
   agent,
-  authUrl,
-  onStartAuth,
   onApiKey,
   onClearApiKey,
-  onPasteCode,
 }: {
   agent: AgentOption | undefined;
-  authUrl: string | null;
-  onStartAuth: () => void;
   onApiKey: (key: string) => void;
   onClearApiKey: () => void;
-  onPasteCode: (code: string) => void;
 }) {
-  // A stored Claude account row means there are credentials/state to clear even
-  // when the agent reads as unauthenticated (stale/unverifiable token). Surfaces
-  // the "Clear saved credentials" reset in ClaudeAuthCard's not-authed panel.
-  const claudeHasStoredCredentials = useSettingsStore((s) =>
-    s.providerAccounts.some((a) => a.provider === "claude"),
-  );
-
   return (
     <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full">
-      <ClaudeAuthCard
+      <ProviderAccountsCard
+        provider="claude"
         agent={agent}
-        authUrl={authUrl}
-        onStartAuth={onStartAuth}
-        onApiKeySubmit={async (key) => { onApiKey(key); return undefined; }}
-        onPasteAuthCode={onPasteCode}
+        onSubmitApiKey={(key) => onApiKey(key)}
         onClearApiKey={onClearApiKey}
-        hasStoredCredentials={claudeHasStoredCredentials}
       />
-      <ProviderAccountSection provider="claude" />
       <SubAgentDefaultsSection agent={agent} />
     </div>
   );

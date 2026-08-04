@@ -1,11 +1,14 @@
 /**
  * Shared stubs and helpers for container/worker integration tests.
  *
- * Used by worker-terminal.test.ts and worker-file-watcher.test.ts.
+ * Used by worker-terminal.test.ts, worker-file-watcher.test.ts, and the
+ * fake-Docker container fixtures (container-lifecycle, standby-container,
+ * warm-pool-staleness, child-message-resume).
  */
 
 import { EventEmitter } from "node:events";
 import http from "node:http";
+import net from "node:net";
 import type { AgentProcess, AgentProcessEvents, AgentId, AgentRunParams, PermissionMode } from "../../shared/types.js";
 
 // ---------------------------------------------------------------------------
@@ -99,6 +102,50 @@ export class StubWatcher extends EventEmitter {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Allocate a loopback TCP port that is guaranteed to have no listener.
+ *
+ * Fake-Docker container fixtures need a `workerPort` (and IP) whose resulting
+ * worker URL (a) can NEVER reach a real session worker and (b) fails
+ * instantly. Both constraints are load-bearing:
+ *
+ * - The production worker port (9100) must never appear in a fixture. When
+ *   this suite runs inside a ShipIt session container (dogfooding), the
+ *   session's REAL worker listens on 127.0.0.1:9100 — a fixture pointing
+ *   there makes the test orchestrator's persistent-409 recovery
+ *   (container-session-runner.ts, docs/142 Problem B2) POST /agent/kill and
+ *   SIGTERM the very agent running vitest, mid-turn. Observed in production.
+ * - Bridge IPs (172.18.x) are no safer: inside a session container they can
+ *   be live NEIGHBOR session workers on the shared Docker network, and in
+ *   some CI network namespaces they blackhole, resolving only on a 12s
+ *   fail-open timeout that blows the per-test budget.
+ * - Loopback + a dead port yields an instant ECONNREFUSED everywhere, so the
+ *   env-prep secret pushes, SSE connects, and /agent/start calls that
+ *   ContainerSessionRunner fires at the fixture URL fail fast and touch
+ *   nothing real.
+ *
+ * Binding port 0 lets the kernel pick a free ephemeral port; closing the
+ * listener frees it dead. The kernel cycles through the ephemeral range
+ * before reusing a port, so it stays dead for the lifetime of a test run.
+ *
+ * Fixture IPs may be any distinct `127.0.0.x` (the whole 127/8 block is
+ * loopback on Linux) — with the dead port they all refuse instantly, and
+ * distinctness keeps per-container IP assertions meaningful.
+ */
+export async function allocateDeadLoopbackPort(): Promise<number> {
+  const srv = net.createServer();
+  const port = await new Promise<number>((resolve, reject) => {
+    srv.once("error", reject);
+    srv.listen(0, "127.0.0.1", () => {
+      resolve((srv.address() as net.AddressInfo).port);
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    srv.close((err) => (err ? reject(err) : resolve()));
+  });
+  return port;
+}
 
 /** Collect SSE events from a raw HTTP connection to the worker. */
 export function collectSSE(

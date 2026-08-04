@@ -21,6 +21,7 @@ import {
   ServiceError,
   createClaimSessionService,
   ClaimAbortedError,
+  refreshRepoDefaultBranch,
 } from "./services/index.js";
 import { canonicalRepoKey } from "./git-utils.js";
 import { getErrorMessage } from "./validation.js";
@@ -87,7 +88,15 @@ export async function registerSessionReposRoutes(
                 console.log("[repos] Cloned bare cache:", cacheDir);
               }
               deps.repoStore.setReady(repoUrl);
+              // Read the remote's real default branch off the freshly-cloned
+              // bare cache (`git clone --bare` points HEAD at it) so the UI can
+              // name the actual base branch instead of assuming `main`.
+              await refreshRepoDefaultBranch(
+                { repoStore: deps.repoStore, createRepoGit, getBareCacheDir: deps.getSharedRepoDir },
+                repoUrl,
+              );
               deps.sseBroadcast("repo_status", { url: repoUrl, status: "ready" });
+              deps.sseBroadcast("repo_list", { repos: listRepos(deps.repoStore) });
               const warmFn = deps.warmSessionForRepo;
               if (warmFn) await warmFn(repoUrl);
             } catch (err) {

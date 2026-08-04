@@ -21,6 +21,8 @@ export interface SubscriptionLimitsWindow {
   usedPct: number | null;
   /** ISO timestamp of when the window resets. */
   resetAt: string;
+  /** Stable beginning of the displayed window, when the provider supplies it. */
+  startedAt?: string;
   /**
    * Where this window's number came from. `"event"` = the CLI's
    * `rate_limit_event` stream (free, live near the limit, but `usedPct` is
@@ -34,6 +36,18 @@ export interface SubscriptionLimitsWindow {
 export interface SubscriptionLimits {
   /** Which agent these numbers belong to. */
   agentId: AgentId;
+  /**
+   * docs/150 req 10 — which *route* produced these numbers: a provider-account
+   * id (`acct_…`) or a reserved route id (`claude-env-oauth`,
+   * `claude-api-key`).
+   *
+   * Quota belongs to the subscription, not the provider: two connected
+   * Anthropic accounts have two independent 5h windows, and keying only by
+   * provider made the badge show whichever account last took a turn.
+   * Duplicated from the map key so a snapshot stays self-describing once it has
+   * been pulled out of the map.
+   */
+  routeId: string;
   /**
    * Subscription tier name to render in the tooltip
    * (e.g. "Pro", "Max 20x", "Plus"). Null when the provider can't
@@ -58,10 +72,71 @@ export interface SubscriptionLimits {
 }
 
 /**
- * Map sent over the wire on every `subscription_limits` SSE
- * broadcast. Providers that report `canFetch() === false` are
- * **omitted** from the map (not stored as `null`); a missing key
- * means "do not render a pill." The client replaces its store map
- * wholesale on each broadcast so sign-outs propagate naturally.
+ * Map sent over the wire on every `subscription_limits` SSE broadcast:
+ * **provider → route → limits** (docs/150 req 10).
+ *
+ * The inner key is a provider-account id or a reserved route id, so a user with
+ * two Anthropic subscriptions gets two independent entries under `claude`
+ * rather than one that flickers between whichever account last took a turn.
+ * Routes with no snapshot are **omitted** (not stored as `null`). Connected
+ * provider accounts still render an unknown-state pill from the account
+ * registry; this map supplies readings, not account visibility. Reserved
+ * routes have no account row, so their pill remains snapshot-driven. The
+ * client replaces its store map wholesale on each broadcast so stale readings
+ * and signed-out reserved routes propagate naturally.
  */
-export type SubscriptionLimitsMap = Partial<Record<AgentId, SubscriptionLimits>>;
+export type SubscriptionLimitsMap = Partial<Record<AgentId, Record<string, SubscriptionLimits>>>;
+
+/**
+ * Why an on-demand usage refresh did or didn't produce new numbers.
+ *
+ * Every one of these except `"updated"` used to be a silent `return` inside the
+ * provider, which is what made the refresh button look broken: the click
+ * spun, the pill stayed at `—`, and nothing anywhere said why. The outcome
+ * travels back on the `POST /api/limits/refresh` response so the button can
+ * explain itself.
+ */
+export type LimitsRefreshOutcome =
+  /** Fresh numbers fetched and cached. */
+  | "updated"
+  /** A previous 429 is still locked out; no request was made. */
+  | "locked"
+  /** This attempt was 429'd — `lockedUntil` says until when. */
+  | "rate-limited"
+  /** No usable OAuth token on disk for this route (signed out / never signed in). */
+  | "no-credentials"
+  /** The route's access token is at/past expiry, so the call would 401. */
+  | "expired-token"
+  /** Network error, non-429 HTTP error, or an unparseable payload. */
+  | "failed"
+  /** Nothing to do: unknown route, or a provider with no on-demand path (Codex). */
+  | "unavailable"
+  /** `reason: "seed"` self-skip — this route already has a usage-api snapshot. */
+  | "skipped";
+
+/** One route's refresh outcome, returned per route by `POST /api/limits/refresh`. */
+export interface LimitsRefreshResult {
+  routeId: string;
+  outcome: LimitsRefreshOutcome;
+  /** Epoch ms the lockout elapses, when `outcome` is `locked` / `rate-limited`. */
+  lockedUntil?: number;
+  /** Short human-readable detail for the button tooltip (HTTP status, error text). */
+  detail?: string;
+}
+
+/**
+ * Flatten the nested map to a list — what most consumers actually want (render
+ * each pill, find the worst window, ask whether anything is exhausted). Each
+ * entry carries its own `agentId`/`routeId`, so nothing has to be re-derived
+ * from the nesting.
+ */
+export function listSubscriptionLimits(map: SubscriptionLimitsMap): SubscriptionLimits[] {
+  const out: SubscriptionLimits[] = [];
+  for (const byRoute of Object.values(map)) {
+    if (!byRoute) continue;
+    // Defensive: this map arrives over the wire, and a hole here would
+    // otherwise throw inside every consumer that reads `.agentId`.
+    for (const snap of Object.values(byRoute)) if (snap) out.push(snap);
+  }
+  return out;
+}

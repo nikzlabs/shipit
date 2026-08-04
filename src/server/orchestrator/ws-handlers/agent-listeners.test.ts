@@ -2,8 +2,10 @@ import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import { SessionRunner } from "../session-runner.js";
 import { wireAgentListeners, buildTurnMessages, type AgentListenerDeps } from "./agent-listeners.js";
+import { AGENT_NOT_AUTHENTICATED_MESSAGE } from "./agent-auth-handler.js";
 import type { ChatMessageGroup, RecordedChatCard } from "../session-runner.js";
 import { routeVoiceNote } from "../voice/voice-note-router.js";
+import { ProviderRouteUnavailableError } from "../provider-route-preflight.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { AgentCapabilities, AgentEvent, AgentMcpWriteContext, AgentMcpWriteResult, AgentProcess } from "../../shared/types.js";
 
@@ -47,6 +49,7 @@ function deps(): AgentListenerDeps {
     } as any,
     chatHistoryManager: {
       replaceInProgress: vi.fn(),
+      append: vi.fn(),
       finalizeInProgress: vi.fn(),
       updateLastMessage: vi.fn(() => null),
       indexOfMessageId: vi.fn(() => -1),
@@ -55,9 +58,6 @@ function deps(): AgentListenerDeps {
       record: vi.fn(),
       getSessionUsage: vi.fn(() => null),
       getSessionTokenTotals: vi.fn(() => null),
-    } as any,
-    authManager: {
-      startOAuthFlow: vi.fn(),
     } as any,
     sseBroadcast: vi.fn(),
     broadcastLog: vi.fn(),
@@ -107,6 +107,131 @@ describe("wireAgentListeners", () => {
     runner.dispose({ force: true });
   });
 
+  // docs/150 req 13 — a turn blocked because no connected account can serve it
+  // reaches the same `error` listener as a crashed process (env-prep throws,
+  // `executeAgentTurn` re-emits). It must inherit the terminal-turn cleanup but
+  // NOT the "Agent process error" framing: nothing crashed, and the message
+  // already tells the user what to do.
+  // docs/150 req 7 — a turn the provider killed for quota is the most reliable
+  // exhaustion signal there is: the account itself refusing work, not telemetry
+  // describing it. Stamping it is what makes the NEXT turn fail over.
+  describe("hard-exhaustion detection on agent_result (docs/150 req 7)", () => {
+    function wireForResult() {
+      const agent = new FakeAgent();
+      const runner = new SessionRunner({
+        sessionId: "session-1",
+        sessionDir: "/tmp/session-1",
+        defaultAgentId: "codex",
+      });
+      const d = deps();
+      const marked: { sessionId: string; until: number }[] = [];
+      d.markSessionAccountExhausted = (sessionId, until) => { marked.push({ sessionId, until }); };
+      wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
+        capturedSessionId: "session-1",
+        isNewSession: false,
+        persistUserMessage: vi.fn(),
+      });
+      return { agent, runner, marked };
+    }
+
+    it("benches the session's account until the reset the provider named", () => {
+      const { agent, runner, marked } = wireForResult();
+      const resetAt = new Date(Date.now() + 3_600_000).toISOString();
+
+      agent.emit("event", {
+        type: "agent_result",
+        error: `You've hit Codex's 5h usage limit. It resets at ${resetAt}.`,
+      } as AgentEvent);
+
+      expect(marked).toEqual([{ sessionId: "session-1", until: Date.parse(resetAt) }]);
+      runner.dispose({ force: true });
+    });
+
+    it("leaves the account alone for an ordinary turn failure", () => {
+      const { agent, runner, marked } = wireForResult();
+
+      agent.emit("event", { type: "agent_result", error: "API Error: 500" } as AgentEvent);
+
+      expect(marked).toEqual([]);
+      runner.dispose({ force: true });
+    });
+
+    it("does not bench anything on a clean result", () => {
+      const { agent, runner, marked } = wireForResult();
+
+      agent.emit("event", { type: "agent_result" } as AgentEvent);
+
+      expect(marked).toEqual([]);
+      runner.dispose({ force: true });
+    });
+  });
+
+  describe("blocked-turn errors (docs/150 req 13)", () => {
+    function wireForError() {
+      const agent = new FakeAgent();
+      const runner = new SessionRunner({
+        sessionId: "session-1",
+        sessionDir: "/tmp/session-1",
+        defaultAgentId: "codex",
+      });
+      runner.running = true;
+      const emitted: { type?: string; message?: string }[] = [];
+      runner.on("message", (msg) => emitted.push(msg as { type?: string; message?: string }));
+      const d = deps();
+      d.chatHistoryManager.append = vi.fn() as never;
+      wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
+        capturedSessionId: "session-1",
+        isNewSession: false,
+        persistUserMessage: vi.fn(),
+      });
+      return { agent, runner, emitted, d };
+    }
+
+    const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+    it("surfaces the routing message verbatim and persists it as the turn's error", async () => {
+      const { agent, runner, emitted, d } = wireForError();
+      const blocked = new ProviderRouteUnavailableError("claude", {
+        reason: "all_exhausted",
+        earliestResetAt: "2026-08-01T14:30:00.000Z",
+      });
+
+      agent.emit("error", blocked);
+      await tick();
+
+      const errorMsg = emitted.find((m) => m.type === "error");
+      expect(errorMsg?.message).toBe(blocked.message);
+      expect(errorMsg?.message).not.toContain("Agent process error");
+      expect(d.chatHistoryManager.append).toHaveBeenCalledWith("session-1", {
+        role: "assistant",
+        text: blocked.message,
+        isError: true,
+      });
+      // Terminal-turn cleanup still runs, so the runner is reclaimable and the
+      // queue drains — a blocked turn must not wedge the session.
+      expect(runner.running).toBe(false);
+      expect(runner.lastTurnErrored).toBe(true);
+      runner.dispose({ force: true });
+    });
+
+    it("still frames a genuine process crash as an agent process error", async () => {
+      const { agent, runner, emitted, d } = wireForError();
+
+      agent.emit("error", new Error("spawn ENOENT"));
+      await tick();
+
+      expect(emitted.find((m) => m.type === "error")?.message).toBe(
+        "Agent process error: spawn ENOENT",
+      );
+      expect(d.chatHistoryManager.append).toHaveBeenCalledWith("session-1", {
+        role: "assistant",
+        text: "Error: spawn ENOENT",
+        isError: true,
+      });
+      runner.dispose({ force: true });
+    });
+  });
+
   describe("auth_required auto-recovery (docs/179)", () => {
     const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
@@ -137,7 +262,7 @@ describe("wireAgentListeners", () => {
 
     it("stays quiet (no card, no OAuth) when recovery heals the token", async () => {
       const recoverAuth = vi.fn().mockResolvedValue(true);
-      const { agent, killSpy, runner, emitted, d } = wireAuth({
+      const { agent, killSpy, runner, emitted } = wireAuth({
         willRecoverAuth: () => true,
         recoverAuth,
       });
@@ -149,7 +274,6 @@ describe("wireAgentListeners", () => {
       expect(recoverAuth).toHaveBeenCalledTimes(1);
       // No sign-in card, no OAuth flow — the recovery re-dispatches silently.
       expect(emitted.find((m) => m.type === "auth_required")).toBeUndefined();
-      expect(d.authManager.startOAuthFlow).not.toHaveBeenCalled();
       // running is left set on the quiet path so the client doesn't flicker.
       expect(runner.running).toBe(true);
       runner.dispose({ force: true });
@@ -157,7 +281,7 @@ describe("wireAgentListeners", () => {
 
     it("surfaces a re-auth error pointing to Settings (no OAuth popup) when the heal fails", async () => {
       const recoverAuth = vi.fn().mockResolvedValue(false);
-      const { agent, killSpy, emitted, d } = wireAuth({
+      const { agent, killSpy, emitted } = wireAuth({
         willRecoverAuth: () => true,
         recoverAuth,
       });
@@ -172,12 +296,11 @@ describe("wireAgentListeners", () => {
       const err = emitted.find((m) => m.type === "error") as { message?: string } | undefined;
       expect(err).toBeDefined();
       expect(err?.message).toContain("Settings");
-      expect(d.authManager.startOAuthFlow).not.toHaveBeenCalled();
       // restore mocked timers/spies via dispose handled by GC; runner local.
     });
 
     it("surfaces a re-auth error when no recovery hooks are wired", async () => {
-      const { agent, killSpy, runner, emitted, d } = wireAuth({});
+      const { agent, killSpy, runner, emitted } = wireAuth({});
 
       agent.emit("auth_required");
       await tick();
@@ -186,9 +309,127 @@ describe("wireAgentListeners", () => {
       const err = emitted.find((m) => m.type === "error") as { message?: string } | undefined;
       expect(err).toBeDefined();
       expect(err?.message).toContain("Settings");
-      expect(d.authManager.startOAuthFlow).not.toHaveBeenCalled();
       // No recovery → running cleared as before.
       expect(runner.running).toBe(false);
+      runner.dispose({ force: true });
+    });
+
+    // The production incident: the sign-in notice was the user's ONLY signal
+    // that the turn had died, and it was emit-only. No viewer was attached at
+    // the failure instant and idle-cleanup disposed the runner five seconds
+    // later — so the message reached nobody and left no trace. It must now be
+    // in chat history, finalized, the moment it fires.
+    it("PERSISTS the re-auth notice into chat history, finalized", async () => {
+      const { agent, runner, d } = wireAuth({});
+
+      agent.emit("auth_required");
+      await tick();
+
+      // On this path the teardown clears `running` before the notice fires, so
+      // it lands as a directly-appended, already-final row. That is the whole
+      // guarantee: it is in chat history, not parked in an in-progress set the
+      // next turn's `replaceInProgress` would delete (docs/156).
+      expect(d.chatHistoryManager.append).toHaveBeenCalledWith(
+        "session-1",
+        expect.objectContaining({
+          role: "assistant",
+          text: `Error: ${AGENT_NOT_AUTHENTICATED_MESSAGE}`,
+          isError: true,
+        }),
+      );
+      // The turn's partial output is flushed and finalized alongside it — this
+      // is the one turn ending that never reaches `onInterruptedTurn`.
+      expect(d.chatHistoryManager.replaceInProgress).toHaveBeenCalledWith("session-1", expect.any(Array));
+      expect(d.chatHistoryManager.finalizeInProgress).toHaveBeenCalledWith("session-1");
+      runner.dispose({ force: true });
+    });
+
+    it("persists the notice on the failed-heal path too", async () => {
+      const { agent, runner, d } = wireAuth({
+        willRecoverAuth: () => true,
+        recoverAuth: vi.fn().mockResolvedValue(false),
+      });
+
+      agent.emit("auth_required");
+      await tick();
+
+      expect(runner.recordedCards).toHaveLength(1);
+      expect(d.chatHistoryManager.finalizeInProgress).toHaveBeenCalledWith("session-1");
+      expect(runner.recordedCards[0]!.message).toEqual(
+        expect.objectContaining({ isError: true, text: `Error: ${AGENT_NOT_AUTHENTICATED_MESSAGE}` }),
+      );
+      runner.dispose({ force: true });
+    });
+
+    it("records nothing extra on the quiet heal path (the turn is being retried)", async () => {
+      const { agent, runner, d } = wireAuth({
+        willRecoverAuth: () => true,
+        recoverAuth: vi.fn().mockResolvedValue(true),
+      });
+
+      agent.emit("auth_required");
+      await tick();
+
+      expect(runner.recordedCards).toHaveLength(0);
+      expect(d.chatHistoryManager.finalizeInProgress).not.toHaveBeenCalled();
+      runner.dispose({ force: true });
+    });
+  });
+
+  // docs/179 — the sibling of the auth notice: a rejected `--resume` that the
+  // executor could not auto-recover leaves the user with a turn that produced
+  // nothing, so its explanation has to be durable too.
+  describe("unrecoverable stale resume", () => {
+    it("persists the couldn't-resume error instead of only emitting it", async () => {
+      const agent = new FakeAgent();
+      const runner = new SessionRunner({
+        sessionId: "session-1",
+        sessionDir: "/tmp/session-1",
+        defaultAgentId: "codex",
+      });
+      runner.running = true; // the stderr line arrives mid-turn
+      const emitted: { type?: string; message?: string }[] = [];
+      runner.on("message", (m) => emitted.push(m as { type?: string; message?: string }));
+      const d = deps();
+      wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
+        capturedSessionId: "session-1",
+        isNewSession: false,
+        persistUserMessage: vi.fn(),
+        recoverMissingConversation: () => false, // executor declined (budget spent)
+      });
+
+      agent.emit("log", "stderr", "No conversation found with session ID: abc-123");
+
+      expect(emitted.find((m) => m.type === "error")?.message).toContain("Couldn't resume");
+      expect(runner.recordedCards).toHaveLength(1);
+      expect(runner.recordedCards[0]!.message).toEqual(
+        expect.objectContaining({ isError: true, text: expect.stringContaining("Couldn't resume") }),
+      );
+      expect(d.chatHistoryManager.replaceInProgress).toHaveBeenCalled();
+      runner.dispose({ force: true });
+    });
+
+    it("stays silent when the executor claims the recovery", () => {
+      const agent = new FakeAgent();
+      const runner = new SessionRunner({
+        sessionId: "session-1",
+        sessionDir: "/tmp/session-1",
+        defaultAgentId: "codex",
+      });
+      const emitted: { type?: string }[] = [];
+      runner.on("message", (m) => emitted.push(m as { type?: string }));
+      const d = deps();
+      wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
+        capturedSessionId: "session-1",
+        isNewSession: false,
+        persistUserMessage: vi.fn(),
+        recoverMissingConversation: () => true,
+      });
+
+      agent.emit("log", "stderr", "No conversation found with session ID: abc-123");
+
+      expect(emitted.find((m) => m.type === "error")).toBeUndefined();
+      expect(runner.recordedCards).toHaveLength(0);
       runner.dispose({ force: true });
     });
   });
@@ -200,6 +441,7 @@ describe("wireAgentListeners", () => {
       sessionDir: "/tmp/session-1",
       defaultAgentId: "codex",
     });
+    runner.running = true; // compaction fires mid-turn
     const emitted: any[] = [];
     runner.on("message", (m) => emitted.push(m));
 
@@ -275,7 +517,6 @@ describe("wireAgentListeners", () => {
       expect(deliverVoiceNote).toHaveBeenCalledTimes(1);
       const [payload, , source] = deliverVoiceNote.mock.calls[0];
       expect(source).toBe("ask");
-      expect(payload.needsAttention).toBe(true);
       expect(payload.summary).toContain("delivery");
       runner.dispose({ force: true });
     });
@@ -307,7 +548,7 @@ describe("wireAgentListeners", () => {
             type: "tool_use",
             id: "v1",
             name: "mcp__shipit__voice_note",
-            input: { summary: "Big finding — your call on the direction.", needsAttention: true, context: { repo: "acme/app" } },
+            input: { summary: "Big finding — your call on the direction.", context: { repo: "acme/app" } },
           },
         ],
       } satisfies AgentEvent);
@@ -316,7 +557,6 @@ describe("wireAgentListeners", () => {
       const [payload, , source] = deliverVoiceNote.mock.calls[0];
       expect(source).toBe("authored");
       expect(payload.summary).toBe("Big finding — your call on the direction.");
-      expect(payload.needsAttention).toBe(true);
       expect(payload.context).toEqual({ repo: "acme/app" });
       runner.dispose({ force: true });
     });
@@ -326,8 +566,8 @@ describe("wireAgentListeners", () => {
       // ride the same fast event-stream channel as the dialog (not the slow
       // relay), and the authored headline must win over the derived one.
       const credentialStore = { getVoiceDeliveryMode: () => "native", getVoiceWebhook: () => null } as unknown as CredentialStore;
-      const deliverVoiceNote = (payload: { summary: string; needsAttention: boolean }, r: SessionRunner, source: "authored" | "ask" | "plan") =>
-        void routeVoiceNote(payload, { runner: r, sessionId: "session-1", credentialStore, source, chatHistoryManager: { replaceInProgress: () => {} } });
+      const deliverVoiceNote = (payload: { summary: string }, r: SessionRunner, source: "authored" | "ask" | "plan") =>
+        void routeVoiceNote(payload, { runner: r, sessionId: "session-1", credentialStore, source, chatHistoryManager: { replaceInProgress: () => {}, append: () => {} } });
       const { agent, runner } = wire({ deliverVoiceNote: deliverVoiceNote as unknown as AgentListenerDeps["deliverVoiceNote"] });
 
       const cards: { headline: string }[] = [];
@@ -336,7 +576,7 @@ describe("wireAgentListeners", () => {
       agent.emit("event", {
         type: "agent_assistant",
         content: [
-          { type: "tool_use", id: "v1", name: "mcp__shipit__voice_note", input: { summary: "Authored headline.", needsAttention: true } },
+          { type: "tool_use", id: "v1", name: "mcp__shipit__voice_note", input: { summary: "Authored headline." } },
           { type: "tool_use", id: "q1", name: "AskUserQuestion", input: { questions: [{ header: "direction", question: "Which way?" }] } },
         ],
       } satisfies AgentEvent);
@@ -363,12 +603,13 @@ describe("wireAgentListeners", () => {
         updateLastMessage: vi.fn(() => null),
         indexOfMessageId: vi.fn(() => -1),
       } as unknown as AgentListenerDeps["chatHistoryManager"];
-      const deliverVoiceNote = (payload: { summary: string; needsAttention: boolean }, r: SessionRunner, source: "authored" | "ask" | "plan") =>
+      const deliverVoiceNote = (payload: { summary: string }, r: SessionRunner, source: "authored" | "ask" | "plan") =>
         void routeVoiceNote(payload, { runner: r, sessionId: "session-1", credentialStore, source, chatHistoryManager });
       const { agent, runner } = wire({
         deliverVoiceNote: deliverVoiceNote as unknown as AgentListenerDeps["deliverVoiceNote"],
         chatHistoryManager,
       });
+      runner.running = true; // the agent authors the note mid-turn
 
       // ONLY the voice_note tool event — no tool_result, no trailing reply, so
       // the only thing that could persist the card is the eager persist.
@@ -376,7 +617,7 @@ describe("wireAgentListeners", () => {
         type: "agent_assistant",
         content: [
           { type: "text", text: "Here's the summary." },
-          { type: "tool_use", id: "v1", name: "mcp__shipit__voice_note", input: { summary: "Done — your call.", needsAttention: true } },
+          { type: "tool_use", id: "v1", name: "mcp__shipit__voice_note", input: { summary: "Done — your call." } },
         ],
       } satisfies AgentEvent);
 
@@ -416,8 +657,8 @@ describe("wireAgentListeners", () => {
       // Simulate the agent authoring a headline via the built-in tool first.
       const credentialStore = { getVoiceDeliveryMode: () => "native", getVoiceWebhook: () => null } as unknown as CredentialStore;
       await routeVoiceNote(
-        { summary: "I have a question coming up.", needsAttention: true },
-        { runner, sessionId: "session-1", credentialStore, source: "authored", chatHistoryManager: { replaceInProgress: () => {} } },
+        { summary: "I have a question coming up." },
+        { runner, sessionId: "session-1", credentialStore, source: "authored", chatHistoryManager: { replaceInProgress: () => {}, append: () => {} } },
       );
 
       agent.emit("event", {
@@ -444,7 +685,7 @@ describe("wireAgentListeners", () => {
       message: {
         role: "assistant",
         text: "",
-        voiceNote: { id, headline: `note-${id}`, needsAttention: true, kind: "authored", createdAt: "2026-06-01T00:00:00.000Z" },
+        voiceNote: { id, headline: `note-${id}`, kind: "authored", createdAt: "2026-06-01T00:00:00.000Z" },
       },
     });
     const bugCard = (id: string, afterGroupIndex: number): RecordedChatCard => ({

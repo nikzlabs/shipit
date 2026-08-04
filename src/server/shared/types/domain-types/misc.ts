@@ -114,8 +114,9 @@ export interface SecretRequirement {
    */
   required?: boolean;
   /**
-   * If true, this secret is also injected into the agent container (via
-   * `--env-file .shipit/.env.agent`). Used for connection strings the agent
+   * If true, this secret is also injected into the agent container (via the
+   * session state dir's `.env.agent`, outside the clone — docs/246). Used for
+   * connection strings the agent
    * needs when running migrations / codegen / tests against the running
    * stack. (Phase 3.)
    */

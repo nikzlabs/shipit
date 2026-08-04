@@ -80,13 +80,32 @@ export function SecretsTab({ repoUrl, onSecretsSave, onSecretsLoad }: SecretsTab
 
   const declaredNames = new Set(declared.map((d) => d.name));
   const existingSet = new Set(existingKeys);
-  // Stored keys not covered by a declared row surface as editable custom rows
-  // so the user can see and manage them. Values are unknown to the browser,
-  // hence blank with `existing: true`.
-  const inferredCustomRows = existingKeys
-    .filter((k) => !declaredNames.has(k))
-    .map((key) => ({ key, value: "", existing: true }));
-  const customRowsToShow = customRows ?? inferredCustomRows;
+  // Every stored key becomes a candidate custom row. Values are unknown to the
+  // browser, hence blank with `existing: true`. Declared keys are filtered out
+  // below at RENDER time, not here — see the note on `pinnedCustomRows`.
+  const inferredCustomRows = existingKeys.map((key) => ({ key, value: "", existing: true }));
+  // A stored key belongs in the custom section only while no compose service
+  // declares it — and `declared` is live, so that can change under an open
+  // panel in both directions (a late `secrets_status`, or the compose file
+  // gaining/losing an `x-shipit-secrets` entry).
+  //
+  // So the declared filter is applied at RENDER time and nowhere else. State
+  // (`customRows`, and the inferred list it's seeded from) always holds every
+  // stored key. That's load-bearing rather than tidy: the first edit pins
+  // `customRows`, and a key omitted from that pin is gone for good — if
+  // `declared` later drops it, it's in neither section, so Save puts it in
+  // neither `set` nor `keep` and the server DELETES the stored secret. Kept in
+  // state, it just reappears.
+  //
+  // Only rows backed by a stored value (`existing`) are hidden. A blank row the
+  // user is still filling in stays put whatever they name it.
+  const pinnedCustomRows = customRows ?? inferredCustomRows;
+  // Rendered position → index into `pinnedCustomRows`, so the row handlers
+  // (which receive the rendered index) can write the right element back.
+  const visibleCustomIdx = pinnedCustomRows
+    .map((_, i) => i)
+    .filter((i) => !(pinnedCustomRows[i].existing && declaredNames.has(pinnedCustomRows[i].key)));
+  const customRowsToShow = visibleCustomIdx.map((i) => pinnedCustomRows[i]);
 
   function setDeclaredValue(name: string, value: string) {
     setValues((v) => ({ ...v, [name]: value }));
@@ -106,31 +125,35 @@ export function SecretsTab({ repoUrl, onSecretsSave, onSecretsLoad }: SecretsTab
     setSaved(false);
   }
 
+  // `idx` on all three row handlers is a RENDERED position, and the rendered
+  // list is filtered — so each maps through `visibleCustomIdx` before touching
+  // state. Indexing `pinnedCustomRows` directly would edit or remove the wrong
+  // row by however many keys have moved into the declared section.
+
   function setCustomKey(idx: number, key: string) {
-    setCustomRows((rows) => {
-      const next = [...(rows ?? inferredCustomRows)];
-      next[idx] = { ...next[idx], key };
-      return next;
-    });
+    const next = [...pinnedCustomRows];
+    const at = visibleCustomIdx[idx];
+    next[at] = { ...next[at], key };
+    setCustomRows(next);
     setSaved(false);
   }
 
   function setCustomValue(idx: number, value: string) {
-    setCustomRows((rows) => {
-      const next = [...(rows ?? inferredCustomRows)];
-      next[idx] = { ...next[idx], value };
-      return next;
-    });
+    const next = [...pinnedCustomRows];
+    const at = visibleCustomIdx[idx];
+    next[at] = { ...next[at], value };
+    setCustomRows(next);
     setSaved(false);
   }
 
   function removeCustomRow(idx: number) {
-    setCustomRows((rows) => (rows ?? inferredCustomRows).filter((_, i) => i !== idx));
+    const at = visibleCustomIdx[idx];
+    setCustomRows(pinnedCustomRows.filter((_, i) => i !== at));
     setSaved(false);
   }
 
   function addCustomRow() {
-    setCustomRows((rows) => [...(rows ?? inferredCustomRows), { key: "", value: "", existing: false }]);
+    setCustomRows([...pinnedCustomRows, { key: "", value: "", existing: false }]);
     setSaved(false);
   }
 

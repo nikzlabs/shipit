@@ -1,6 +1,7 @@
-import { describe, it, expect, afterEach } from "vitest";
-import { render, screen, cleanup, fireEvent } from "@testing-library/react";
+import { describe, it, expect, afterEach, vi } from "vitest";
+import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { SubAgentConsultCardRow } from "./SubAgentCards.js";
+import { useSessionStore } from "../../../stores/session-store.js";
 import type { SubAgentConsultCard } from "../../../../server/shared/types.js";
 
 /**
@@ -43,5 +44,123 @@ describe("SubAgentConsultCardRow (docs/220)", () => {
     expect(screen.getByTestId("sub-agent-consult-card").textContent).toContain("Asked Codex");
     expect(screen.queryByTestId("sub-agent-consult-preview")).toBeNull();
     expect(screen.queryByTestId("sub-agent-consult-output")).toBeNull();
+  });
+
+  // SHI-307 — a consult the boot reconcile cancelled reads exactly like one the
+  // USER cancelled unless the card says otherwise, so ShipIt's own explanation
+  // renders on the card face.
+  it("shows ShipIt's explanation of a terminal status alongside the summary", () => {
+    render(<SubAgentConsultCardRow card={card({
+      status: "cancelled",
+      durationMs: undefined,
+      costUsd: 0,
+      statusDetail: "ShipIt restarted while this consult was running, so its result was lost.",
+    })} />);
+
+    const row = screen.getByTestId("sub-agent-consult-card");
+    expect(row.textContent).toContain("Cancelled Codex");
+    expect(screen.getByTestId("sub-agent-consult-status-detail").textContent)
+      .toContain("ShipIt restarted while this consult was running");
+    // Still not a spinner — the whole point is that it stops claiming to run.
+    expect(row.getAttribute("data-pending")).toBeNull();
+  });
+
+  it("omits the explanation row when the card carries none", () => {
+    render(<SubAgentConsultCardRow card={card({ status: "cancelled", costUsd: 0 })} />);
+    expect(screen.queryByTestId("sub-agent-consult-status-detail")).toBeNull();
+  });
+
+  // SHI-278 — the same card also carries the DURABLE in-flight state, so a
+  // backgrounded consult still shows up after a switch/reload/restart.
+  it("renders the pending state as an in-progress row", () => {
+    render(<SubAgentConsultCardRow card={card({ status: "pending", durationMs: undefined, costUsd: undefined })} />);
+    const row = screen.getByTestId("sub-agent-consult-card");
+    expect(row.textContent).toContain("Asking Codex");
+    expect(row.textContent).toContain("in progress");
+    expect(row.getAttribute("data-pending")).toBe("true");
+  });
+});
+
+/**
+ * docs/244 / SHI-297 — the lazy consult output. The transcript payload carries
+ * only the preview line the card face draws; the viewer is the click that
+ * fetches the rest. Server tests prove the payload is stripped — these prove the
+ * UI actually puts the output back on screen, which is the half a refactor could
+ * silently drop while every server test stayed green.
+ */
+describe("SubAgentConsultCardRow lazy output (docs/244, SHI-297)", () => {
+  const PREVIEW = "Two findings, both in the projection…";
+  const lazyCard = card({ outputMarkdown: PREVIEW, outputTruncated: true });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    useSessionStore.getState().reset();
+  });
+
+  function stubSession() {
+    useSessionStore.setState({ sessionId: "session-1" });
+  }
+
+  it("draws the preview inline with no loading state and no fetch (req 8)", () => {
+    stubSession();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<SubAgentConsultCardRow card={lazyCard} />);
+
+    expect(screen.getByTestId("sub-agent-consult-preview").textContent).toContain("Two findings");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("fetches the full output when the viewer opens, and renders it", async () => {
+    stubSession();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ outputMarkdown: "Two findings, both in the projection. Here they are in full." }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<SubAgentConsultCardRow card={lazyCard} />);
+    fireEvent.click(screen.getByTestId("sub-agent-consult-card"));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(fetchMock.mock.calls[0]![0]).toBe("/api/sessions/session-1/sub-agent-consults/sac-1");
+    await waitFor(() =>
+      expect(screen.getByTestId("sub-agent-consult-output").textContent).toContain("Here they are in full"));
+  });
+
+  it("shows a loading state while the output is in flight, not the preview as if it were the whole thing", async () => {
+    stubSession();
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+
+    render(<SubAgentConsultCardRow card={lazyCard} />);
+    fireEvent.click(screen.getByTestId("sub-agent-consult-card"));
+
+    await waitFor(() => expect(screen.getByRole("status").textContent).toContain("Loading output"));
+  });
+
+  it("surfaces an error rather than a silently truncated review when the fetch fails", async () => {
+    stubSession();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 404 }));
+
+    render(<SubAgentConsultCardRow card={lazyCard} />);
+    fireEvent.click(screen.getByTestId("sub-agent-consult-card"));
+
+    await waitFor(() =>
+      expect(screen.getByRole("status").textContent).toContain("Couldn't load this output"));
+  });
+
+  it("issues no request at all for a card that arrived whole", async () => {
+    // Short consults stay under the strip floor, and rows persisted before
+    // SHI-297 carry no marker — both must render straight from the payload.
+    stubSession();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<SubAgentConsultCardRow card={card({ outputMarkdown: "Looks fine to me." })} />);
+    fireEvent.click(screen.getByTestId("sub-agent-consult-card"));
+
+    expect(screen.getByTestId("sub-agent-consult-output").textContent).toContain("Looks fine to me.");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

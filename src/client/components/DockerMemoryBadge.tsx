@@ -1,4 +1,5 @@
 import type { DockerMemoryStats } from "../../server/shared/types.js";
+import { Badge } from "./ui/badge.js";
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
@@ -31,12 +32,11 @@ export function DockerMemoryBadge({ stats }: DockerMemoryBadgeProps) {
     ? `Docker memory: ${formatBytes(usedBytes)} used of ${formatBytes(totalBytes)} (${pct.toFixed(0)}%)`
     : `Docker memory: ${formatBytes(usedBytes)} used`;
 
+  // Background stays constant; only the text color tracks severity, so override
+  // the chip background and the (conditional) text color over Badge's default.
   return (
-    <span
-      className={`inline-block text-xs px-2 py-0.5 rounded-full bg-(--color-bg-hover) ${colorClass} font-medium tabular-nums`}
-      title={title}
-    >
+    <Badge numeric className={`bg-(--color-bg-hover) ${colorClass}`} title={title}>
       {label}
-    </span>
+    </Badge>
   );
 }

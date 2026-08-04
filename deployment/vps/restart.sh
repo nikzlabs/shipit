@@ -40,11 +40,13 @@ echo "$(date -Iseconds) ShipIt restart starting (no rebuild)..."
 
 cd "$SHIPIT_DIR"
 
-# Kill stale session-worker and compose service containers from previous
-# runs — same defensive cleanup deploy.sh does, since the orchestrator is
-# the only thing that tracks those containers and a restart drops that state.
-docker rm -f $(docker ps -aq --filter "label=shipit-stack=shipit") 2>/dev/null || true
-docker rm -f $(docker ps -aq --filter "label=shipit-parent-session") 2>/dev/null || true
+# docs/113 Phase 1 — session-worker and compose service containers are left
+# running. A restart replaces only the orchestrator; the new process re-adopts
+# the surviving containers at boot (`rediscoverContainers()`, and docs/240's
+# `reattachInFlightTurns()` for turns that were mid-flight) and reaps true
+# orphans itself (`cleanupOrphanContainers()`). The old comment here claimed
+# the orchestrator "drops that state" across a restart — that predates docs/240
+# and is no longer true.
 
 # Force-recreate the orchestrator container using the existing image.
 # --no-build skips the build step entirely; --force-recreate ensures the

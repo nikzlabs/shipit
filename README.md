@@ -4,6 +4,7 @@
 </h1>
 
 <p align="center">
+  <a href="https://github.com/nikzlabs/shipit/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/nikzlabs/shipit/ci.yml?branch=main&amp;label=CI" alt="CI status"></a>
   <img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License: Apache 2.0">
   <img src="https://img.shields.io/badge/status-early%20public%20release-orange" alt="Status: early public release">
   <img src="https://img.shields.io/badge/self--hosted-Docker-2496ED?logo=docker&logoColor=white" alt="Self-hosted via Docker">
@@ -246,6 +247,10 @@ and module layout, see [CONTRIBUTING.md](CONTRIBUTING.md).
 Found a security vulnerability? Don't open a public issue — follow [SECURITY.md](SECURITY.md). For
 how ShipIt defends its trust boundaries (and the risks it has accepted), see
 [SECURITY-MODEL.md](SECURITY-MODEL.md).
+
+## Website
+
+[ship-it.ai](https://ship-it.ai/) — the product page.
 
 ## Author
 

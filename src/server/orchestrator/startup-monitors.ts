@@ -11,6 +11,7 @@ import { runDiskJanitor, runSteadyStateReclaim, pruneSessionVolumes, escalateDis
 import { liveOverlayScopeHashes, depDirsForSession, isOverlayEnabled, overlayRuntimeKey, pnpmStoreHash } from "./overlay-session.js";
 import { DEFAULT_DISK_LADDER, assertDiskLadderOrdering, type DiskLadderThresholds } from "./sessions.js";
 import type { OrchestratorRuntime } from "./bootstrap-managers.js";
+import { createKeepPreviewRestartSupervisor, restoreReservedPreviews } from "./keep-preview-running.js";
 
 /** Functions produced by {@link startStartupMonitors} that later steps need. */
 export interface StartupMonitors {
@@ -47,6 +48,7 @@ export async function startStartupMonitors(
     loopDetector, oomBreaker, chatHistoryManager,
     repoPrefetcher, claudeOAuthRefresherRef, codexOAuthRefresherRef,
     startupTimer, authManagers, dockerProxyServer, databaseManager,
+    mergeWatchManager,
   } = rt;
 
   // ---- Docker memory stats broadcast (every 10s) ----
@@ -187,6 +189,10 @@ export async function startStartupMonitors(
       createRepoGit,
       getBareCacheDir,
       sweepOrphanBranches: process.env.DISK_JANITOR_ORPHAN_BRANCHES !== "false",
+      // SHI-222 — orphan egress-sidecar sweep. Reuses the container manager's
+      // OWN Docker client so we hit the same daemon/socket it was configured
+      // with; without a container manager there are no sidecars to reap.
+      ...(containerManager ? { docker: containerManager.dockerClient } : {}),
     });
   }
 
@@ -245,6 +251,10 @@ export async function startStartupMonitors(
   // missing-container reconciler's `reconcileInFlight` above). It matters more
   // now the pass also runs the slower steady-state cache sweeps below.
   let escalationInFlight = false;
+  // SHI-294 — sessions already warned that their eviction is blocked by
+  // uncommittable work. Process-scoped so the hourly pass appends the notice
+  // once per stuck session instead of once per hour.
+  const notifiedEvictBlocked = new Set<string>();
   const kickDiskEscalation = (excludeSessionId?: string): void => {
     if (isTestMode || !containerManager) return;
     if (escalationInFlight) return;
@@ -260,6 +270,10 @@ export async function startStartupMonitors(
             pruneVolumes: (sid) => pruneSessionVolumes(sid),
             createGitManager,
             ladder,
+            // SHI-294 — persisted warning when a dirty checkout can't be made
+            // durable, so a session pinned at `light` is visible to its user.
+            chatHistory: chatHistoryManager,
+            notifiedEvictBlocked,
             paceMs: escalationPaceMs,
             diskFreeLow,
             diskFreeHigh,
@@ -334,7 +348,33 @@ export async function startStartupMonitors(
 
   // ---- Container health monitoring ----
   if (containerManager) {
-    setupContainerHealthMonitoring(containerManager, runnerRegistry, broadcastLog, loopDetector, oomBreaker, chatHistoryManager);
+    const keepPreviewSupervisor = createKeepPreviewRestartSupervisor({
+      sessionManager,
+      runnerRegistry,
+      containerManager,
+      defaultAgentId: rt.defaultAgentId,
+      broadcastLog,
+    });
+    const restored = restoreReservedPreviews({
+      sessionManager,
+      runnerRegistry,
+      containerManager,
+      defaultAgentId: rt.defaultAgentId,
+      broadcastLog,
+    });
+    if (restored.length > 0) {
+      console.log(`[keep-preview] Restoring ${restored.length} reserved preview runtime(s)`);
+    }
+    setupContainerHealthMonitoring(
+      containerManager,
+      runnerRegistry,
+      broadcastLog,
+      loopDetector,
+      oomBreaker,
+      chatHistoryManager,
+      keepPreviewSupervisor.handleUnexpectedExit,
+    );
+    app.addHook("onClose", async () => keepPreviewSupervisor.dispose());
   }
 
   // Graceful shutdown
@@ -345,6 +385,9 @@ export async function startStartupMonitors(
     if (repoPrefetcher) repoPrefetcher.stop();
     claudeOAuthRefresherRef.ref?.stop();
     codexOAuthRefresherRef.ref?.stop();
+    // SHI-258 — the notify-on-merge retry supervisor. Unref'd, so it never held
+    // the process open, but stopping it keeps shutdown free of a stray pass.
+    mergeWatchManager?.stopRetryLoop();
   });
   registerShutdownHook(app, {
     startupTimer, authManagers, runnerRegistry,

@@ -39,6 +39,24 @@ export const DEFAULT_SUB_AGENT_TIMEOUT_MS = parseTimeoutEnv(
   30 * 60_000,
 );
 
+/**
+ * SHI-278 — backstop bound on the orchestrator→worker `/agent/spawn` leg.
+ *
+ * That leg used to be sent with `{ timeoutMs: 0 }` on the theory that the
+ * worker's own wall-clock cap ({@link DEFAULT_SUB_AGENT_TIMEOUT_MS}) always
+ * bounds the run and a primary-turn interrupt always cancels it. Neither holds
+ * when the container is destroyed underneath the request (a Restart agent, an
+ * idle teardown) or the socket goes half-open: the worker's timer dies with the
+ * worker, so `runSubAgent` stays pending forever — no card, no error, nothing
+ * in `shipit agent result`.
+ *
+ * The worker cap stays authoritative; this only fires when the worker never
+ * answers at all, hence the generous margin. Both sides read the same
+ * `SHIPIT_SUB_AGENT_TIMEOUT_MS`, but they are different containers with
+ * possibly different env, so the margin also absorbs a modest mismatch.
+ */
+export const SUB_AGENT_TRANSPORT_TIMEOUT_MS = DEFAULT_SUB_AGENT_TIMEOUT_MS + 5 * 60_000;
+
 /** Parse a positive-integer ms env override, falling back to `fallback`. */
 function parseTimeoutEnv(raw: string | undefined, fallback: number): number {
   if (!raw) return fallback;
@@ -157,9 +175,18 @@ export function runAgentToCompletion(
 
   // For Claude one-shot, each `agent_assistant` event carries a FULL message, so
   // the last one is the final answer. For Codex, deltas stream into individual
-  // events and the authoritative final text arrives once with `isStreamCompletion`.
-  // Prefer the stream-completion text; fall back to the last full message.
-  let streamCompletionText: string | null = null;
+  // events and each COMPLETED message is re-emitted once with
+  // `isStreamCompletion`. Prefer the stream-completion texts; fall back to the
+  // last full message.
+  //
+  // SHI-245 — a delta-streaming run can complete MORE THAN ONE message in a
+  // single turn (Codex routinely emits a long report and then a shorter wrap-up,
+  // and any preamble message is its own `agentMessage` item). Keeping only the
+  // last one silently handed the caller the tail of the answer — an artifact
+  // that reads complete but isn't. So collect every completed message in order
+  // and join them: the caller and the consult card both get the sub-agent's
+  // WHOLE assistant output, never a suffix of it.
+  const completedMessages: string[] = [];
   let lastFullText = "";
   let costUsd = 0;
   let reportedDurationMs: number | undefined;
@@ -187,7 +214,7 @@ export function runAgentToCompletion(
         settled = true;
         clearTimeout(timer);
 
-        let text = (streamCompletionText ?? lastFullText) || "";
+        let text = (completedMessages.length > 0 ? completedMessages.join("\n\n") : lastFullText) || "";
         let truncated = false;
         if (text.length > maxOutputChars) {
           text = text.slice(0, maxOutputChars);
@@ -228,7 +255,12 @@ export function runAgentToCompletion(
           if (event.parentToolUseId) return; // ignore nested sub-agent (Task tool) output
           const text = assistantText(event);
           if (event.isStreamCompletion) {
-            streamCompletionText = text;
+            // One entry per completed message. Deduped against the previous
+            // entry so an adapter that re-emits the same completion twice can't
+            // double it up.
+            if (text.length > 0 && completedMessages[completedMessages.length - 1] !== text) {
+              completedMessages.push(text);
+            }
           } else if (text.length > 0) {
             lastFullText = text;
           }

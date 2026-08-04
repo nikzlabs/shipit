@@ -15,9 +15,9 @@ describe("KeyboardShortcutsOverlay", () => {
     expect(screen.getByRole("dialog")).toBeInTheDocument();
   });
 
-  it("has an accessible label", () => {
+  it("has an accessible name from its title", () => {
     render(<KeyboardShortcutsOverlay onClose={vi.fn()} />);
-    expect(screen.getByRole("dialog")).toHaveAttribute("aria-label", "Keyboard shortcuts");
+    expect(screen.getByRole("dialog")).toHaveAccessibleName("Keyboard Shortcuts");
   });
 
   // --- Shortcut groups ---
@@ -80,13 +80,9 @@ describe("KeyboardShortcutsOverlay", () => {
   });
 
   // --- Closing behavior ---
-  it("calls onClose when Escape is pressed", () => {
-    const onClose = vi.fn();
-    render(<KeyboardShortcutsOverlay onClose={onClose} />);
-    fireEvent.keyDown(window, { key: "Escape" });
-    expect(onClose).toHaveBeenCalledOnce();
-  });
-
+  // Escape, the backdrop, and the corner close button now come from the shared
+  // Dialog (Radix) and are exercised in ui/dialog.test.tsx. Here we cover the
+  // two app-specific toggles this component still owns, plus the close button.
   it("calls onClose when ? is pressed", () => {
     const onClose = vi.fn();
     render(<KeyboardShortcutsOverlay onClose={onClose} />);
@@ -108,14 +104,6 @@ describe("KeyboardShortcutsOverlay", () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
-  it("calls onClose when clicking the backdrop", () => {
-    const onClose = vi.fn();
-    render(<KeyboardShortcutsOverlay onClose={onClose} />);
-    // Click the backdrop (the outer div with role=dialog)
-    fireEvent.click(screen.getByRole("dialog"));
-    expect(onClose).toHaveBeenCalledOnce();
-  });
-
   it("does not call onClose when clicking inside the modal content", () => {
     const onClose = vi.fn();
     render(<KeyboardShortcutsOverlay onClose={onClose} />);
@@ -123,7 +111,7 @@ describe("KeyboardShortcutsOverlay", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it("calls onClose when the Esc button is clicked", () => {
+  it("calls onClose when the close button is clicked", () => {
     const onClose = vi.fn();
     render(<KeyboardShortcutsOverlay onClose={onClose} />);
     fireEvent.click(screen.getByLabelText("Close"));
@@ -132,8 +120,10 @@ describe("KeyboardShortcutsOverlay", () => {
 
   // --- Key rendering ---
   it("renders kbd elements for shortcut keys", () => {
-    const { container } = render(<KeyboardShortcutsOverlay onClose={vi.fn()} />);
-    const kbds = container.querySelectorAll("kbd");
+    // The shared Dialog renders content in a portal (document.body), not inside
+    // the render container, so query the document.
+    render(<KeyboardShortcutsOverlay onClose={vi.fn()} />);
+    const kbds = document.body.querySelectorAll("kbd");
     expect(kbds.length).toBeGreaterThan(0);
   });
 
@@ -142,7 +132,7 @@ describe("KeyboardShortcutsOverlay", () => {
     const onClose = vi.fn();
     const { unmount } = render(<KeyboardShortcutsOverlay onClose={onClose} />);
     unmount();
-    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyDown(window, { key: "?" });
     expect(onClose).not.toHaveBeenCalled();
   });
 });

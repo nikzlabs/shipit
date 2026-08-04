@@ -12,11 +12,10 @@
 import type { FastifyInstance } from "fastify";
 import type {
   AgentProcess,
-  AgentRunParams,
   AgentEvent,
   AgentId,
 } from "./agents/agent-process.js";
-import type { PermissionMode } from "../shared/types.js";
+import type { PermissionMode, WorkerAgentStartBody, WorkerAgentStatus } from "../shared/types.js";
 import type { PermissionBroker } from "./permission-broker.js";
 import type { WorkerSSEEvent } from "./sse-broadcaster.js";
 import type { McpConfigController } from "./mcp-config-controller.js";
@@ -38,10 +37,49 @@ export interface AgentControllerDeps {
   mcpConfig: McpConfigController;
   /** Reports the latest SSE sequence for `/agent/status`. */
   latestSseSeq: () => number;
+  /**
+   * docs/240 — reports the OLDEST sequence still in the SSE replay buffer.
+   * `/agent/status` publishes it so an orchestrator adopting a turn that was
+   * in flight across its restart can tell whether the buffer still covers the
+   * whole turn (complete replay) or only its tail (partial). Optional so
+   * existing constructions without the getter keep working.
+   */
+  oldestSseSeq?: () => number;
 }
 
 export class AgentController {
   private agent: AgentProcess | null = null;
+
+  /**
+   * docs/240 — metadata about the spawn occupying the slot, published via
+   * `/agent/status` so an orchestrator that restarted mid-turn can re-create a
+   * proxy with the SAME run token (keeping `isStaleSpawnEvent` correlation
+   * intact) and in the right streaming mode.
+   */
+  private residentSpawn: { runToken?: string; streaming: boolean } | null = null;
+
+  /**
+   * SHI-264 — the durable DELIVERY id of the turn currently in flight, when the
+   * orchestrator dispatched it on behalf of a server-side delivery (a
+   * notify-on-merge wake). Published via `/agent/status` so a restarted
+   * orchestrator can re-identify the delivery and rebind its completion
+   * settlement onto the adopted turn instead of dispatching a duplicate.
+   *
+   * Deliberately keyed to the TURN, not the spawn: a resident streaming process
+   * outlives its turn, so a delivery held on `residentSpawn` would keep reading
+   * as live after the turn ended (suppressing a legitimate redispatch forever)
+   * and would leak onto the NEXT turn that `/agent/message` starts on the same
+   * process. Cleared by {@link endTurn}.
+   */
+  private turnDeliveryId: string | undefined;
+
+  /**
+   * docs/240 — whether a turn is genuinely in flight on the resident process.
+   * Set when a turn starts (`/agent/start`, or `/agent/message` into an idle
+   * resident streaming process); cleared on `agent_result` and on process exit.
+   */
+  private turnActive = false;
+  private turnStartSseSeq = 0;
 
   // docs/144 — in-flight sub-agent spawns, keyed by orchestrator-supplied
   // spawnId. These run OUTSIDE the single-occupant `this.agent` slot as plain
@@ -58,17 +96,27 @@ export class AgentController {
   }
 
   registerRoutes(app: FastifyInstance): void {
-    app.post<{ Body: { agentId: AgentId; params: AgentRunParams; runToken?: string } }>("/agent/start", async (request, reply) => {
+    app.post<{ Body: WorkerAgentStartBody }>("/agent/start", async (request, reply) => {
       if (this.agent) {
         return reply.code(409).send({ error: "Agent already running" });
       }
 
-      const { agentId, params, runToken } = request.body;
+      const { agentId, params, runToken, deliveryId } = request.body;
       if (!agentId || !params) {
         return reply.code(400).send({ error: "agentId and params are required" });
       }
 
       try {
+        // docs/240 — mark the turn in flight BEFORE the adapter can emit
+        // anything, and record the seq the turn starts at. A restarted
+        // orchestrator replays from exactly here, so the live turn's events are
+        // re-delivered while the previous (already-persisted) turn's are not.
+        this.beginTurn();
+        // SHI-264 — stamp the delivery AFTER `beginTurn` (which clears nothing,
+        // but keeps the "turn identity is established first" reading) and
+        // before anything can be emitted.
+        this.turnDeliveryId = deliveryId;
+        this.residentSpawn = { runToken, streaming: params.useStreaming === true };
         // docs/155 hair 10 — each adapter knows its own MCP wire format
         // (Claude: per-turn `--mcp-config` JSON; Codex: `config.toml` block;
         // Cursor: `mcp.json`). The worker hands over the cross-cutting
@@ -100,6 +148,7 @@ export class AgentController {
         return { started: true };
       } catch (err) {
         this.agent = null;
+        this.endTurn();
         return reply.code(500).send({ error: getErrorMessage(err) });
       }
     });
@@ -123,6 +172,7 @@ export class AgentController {
       }
       this.agent.kill();
       this.agent = null;
+      this.endTurn();
       return { killed: true };
     });
 
@@ -140,14 +190,23 @@ export class AgentController {
       async (request, reply) => {
         const { agentId, prompt, spawnId, depth, model, reasoningEffort, timeoutMs, maxOutputChars } = request.body ?? {};
         if (!agentId || typeof prompt !== "string" || !spawnId) {
+          console.warn("[sub-agent] worker rejected spawn: agentId, prompt, and spawnId are required");
           return reply.code(400).send({ error: "agentId, prompt, and spawnId are required" });
         }
         let agent: AgentProcess;
         try {
           agent = this.deps.agentFactory(agentId);
         } catch (err) {
+          console.warn(`[sub-agent] worker rejected spawn=${spawnId}: unknown agent ${agentId}`);
           return reply.code(400).send({ error: `Unknown agent: ${agentId} (${getErrorMessage(err)})` });
         }
+        // SHI-278 — this whole path used to be silent, so a consult that never
+        // produced an artifact left nothing in the worker logs either.
+        console.log(
+          `[sub-agent] worker spawn=${spawnId} agent=${agentId} depth=${depth ?? 0} `
+          + `promptBytes=${Buffer.byteLength(prompt)} model=${model ?? "default"} `
+          + `effort=${reasoningEffort ?? "default"}`,
+        );
 
         const runOpts = {
           prompt,
@@ -169,8 +228,15 @@ export class AgentController {
           this.withTemporaryEnv({ SHIPIT_AGENT_DEPTH: childDepth }, () => {
             agent.run(buildSubAgentRunParams(runOpts));
           });
-          return await handle.promise;
+          const result = await handle.promise;
+          console.log(
+            `[sub-agent] worker done spawn=${spawnId} status=${result.status} `
+            + `durationMs=${result.durationMs} outputChars=${result.text.length} `
+            + `truncated=${result.truncated}`,
+          );
+          return result;
         } catch (err) {
+          console.warn(`[sub-agent] worker failed spawn=${spawnId}: ${getErrorMessage(err)}`);
           return await reply.code(500).send({ error: getErrorMessage(err) });
         } finally {
           this.spawnedAgents.delete(spawnId);
@@ -256,6 +322,12 @@ export class AgentController {
         console.log(
           `[steer-worker] /agent/message → agent.sendUserMessage (bytes=${text.length}, text=${snippet})`,
         );
+        // docs/240 — a message into an IDLE resident streaming process starts a
+        // new turn (this is how every turn after the first runs under live
+        // steering), so it must mark the turn in flight and anchor the replay
+        // cursor. A message into a turn already in flight is a mid-turn steer:
+        // leave the existing anchor alone so the whole turn stays replayable.
+        if (!this.turnActive) this.beginTurn();
         this.agent.sendUserMessage(text);
         return { success: true };
       },
@@ -278,10 +350,38 @@ export class AgentController {
       return { success: true };
     });
 
-    app.get("/agent/status", async () => ({
+    app.get("/agent/status", async (): Promise<WorkerAgentStatus> => ({
       running: this.agent !== null,
       latestSseSeq: this.deps.latestSseSeq(),
+      oldestSseSeq: this.deps.oldestSseSeq?.() ?? 0,
+      turnActive: this.turnActive,
+      turnStartSseSeq: this.turnStartSseSeq,
+      ...(this.residentSpawn?.runToken !== undefined ? { runToken: this.residentSpawn.runToken } : {}),
+      ...(this.turnDeliveryId !== undefined ? { deliveryId: this.turnDeliveryId } : {}),
+      ...(this.agent ? { agentId: this.agent.agentId } : {}),
+      ...(this.residentSpawn
+        ? { streaming: this.residentSpawn.streaming || this.agent?.isStreaming === true }
+        : {}),
     }));
+  }
+
+  /**
+   * docs/240 — mark a turn as in flight and anchor the SSE replay cursor at the
+   * seq the turn starts from. Called before anything the turn emits, so a
+   * restarted orchestrator replaying from `turnStartSseSeq` sees the whole turn
+   * and none of the previous (already-persisted) one.
+   */
+  private beginTurn(): void {
+    this.turnActive = true;
+    this.turnStartSseSeq = this.deps.latestSseSeq();
+  }
+
+  /** docs/240 — the turn ended (result, process exit, or kill). */
+  private endTurn(): void {
+    this.turnActive = false;
+    // SHI-264 — the delivery belongs to the turn that just ended; a later
+    // `/agent/status` must not report it as still live.
+    this.turnDeliveryId = undefined;
   }
 
   /** Kill the resident agent and cancel all sub-agent spawns (worker shutdown). */
@@ -290,6 +390,8 @@ export class AgentController {
     if (this.agent) {
       this.agent.kill();
       this.agent = null;
+      this.residentSpawn = null;
+      this.endTurn();
     }
   }
 
@@ -311,7 +413,8 @@ export class AgentController {
 
   /** docs/144 — SIGTERM every in-flight sub-agent spawn (symmetric cancel). */
   private cancelAllSpawns(): void {
-    for (const handle of this.spawnedAgents.values()) {
+    for (const [spawnId, handle] of this.spawnedAgents) {
+      console.warn(`[sub-agent] worker cancelling spawn=${spawnId} (primary interrupt/kill)`);
       try { handle.cancel(); } catch { /* best-effort */ }
     }
   }
@@ -329,7 +432,18 @@ export class AgentController {
    */
   private wireAgentEvents(agent: AgentProcess, runToken?: string): void {
     agent.on("event", (event: AgentEvent) => {
-      this.deps.broadcast({ type: "agent_event", data: event });
+      // SHI-288 — the event channel carries the spawn token too. It used to be
+      // the only channel that didn't, so a retired process's late `agent_result`
+      // (the canonical turn-ended signal) was routed into whatever proxy held
+      // the orchestrator's slot, settling a turn that had just started. The
+      // orchestrator strips the token back off before handing the event to the
+      // proxy, so `AgentEvent` consumers never see it.
+      this.deps.broadcast({ type: "agent_event", data: { ...event, runToken } });
+      // docs/240 — `agent_result` is the canonical turn-ended signal (the same
+      // one the orchestrator keys its post-turn flow off). A resident streaming
+      // process stays in the slot afterwards, so `running` alone can't tell an
+      // in-flight turn from an idle-resident one — this can.
+      if (event.type === "agent_result" && this.agent === agent) this.endTurn();
     });
 
     // Capture `agent` in the closure so the done/error handlers compare against
@@ -352,6 +466,8 @@ export class AgentController {
       this.deps.broadcast({ type: "agent_done", data: { exitCode, runToken } });
       if (this.agent === agent) {
         this.agent = null;
+        this.residentSpawn = null;
+        this.endTurn();
       }
     });
 
@@ -360,6 +476,8 @@ export class AgentController {
       this.deps.broadcast({ type: "agent_error", data: { message: err.message, runToken } });
       if (this.agent === agent) {
         this.agent = null;
+        this.residentSpawn = null;
+        this.endTurn();
       }
     });
 

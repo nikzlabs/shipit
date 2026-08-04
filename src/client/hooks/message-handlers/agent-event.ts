@@ -2,9 +2,55 @@ import type { WsAgentEvent, AgentContentBlock } from "../../../server/shared/typ
 import type { ChatMessage, ToolResultBlock } from "../../components/MessageList.js";
 import { activityFromTool } from "../../components/StreamingIndicator.js";
 import { CARD_MESSAGE_FIELDS } from "../../components/visual-elements.js";
+import { shipsResultBodyWhole, SUBAGENT_REPORT_TOOL_NAMES } from "../../../server/shared/transcript-slice-tools.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import type { Handler } from "./types.js";
+
+/**
+ * Hard ceiling on how much of a single tool result the live path keeps in
+ * memory. A backstop, not the primary bound — docs/244's serve-path projection
+ * slices heavy results before they are emitted. What still reaches this are the
+ * classes that projection deliberately leaves inline (an `AskUserQuestion`
+ * answer, and nested subagent results before their row is committed).
+ *
+ * Exported for the test that pins the cap's markers.
+ */
+export const CLIENT_CONTENT_CAP = 1_000_000;
+
+/**
+ * Largest index ≤ `max` that does not split a UTF-16 surrogate pair, so a
+ * clipped body never ends in a lone surrogate (which renders as `�`).
+ */
+function safeCutAt(text: string, max: number): number {
+  const code = text.charCodeAt(max - 1);
+  // High surrogate at the boundary means its pair starts here — drop it.
+  return code >= 0xd800 && code <= 0xdbff ? max - 1 : max;
+}
+
+/**
+ * Name of the tool that produced `toolUseId`, searched over the transcript the
+ * result is about to be attached to. Needed to tell a body that must ship whole
+ * from an ordinary result, since the tool_result block itself carries only the
+ * id.
+ */
+function toolNameForResult(messages: ChatMessage[], toolUseId: string): string | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    const top = msg.toolUse?.find((t) => t.id === toolUseId);
+    if (top) return top.name;
+    // A subagent can spawn a subagent, and the inner Task's tool_use lands in
+    // `subagentEvents` rather than `toolUse`. Searching only the top level
+    // resolved the inner Task to `undefined`, so its final report — nested AND
+    // a final report at once — fell into the ordinary branch and was clipped.
+    for (const ev of msg.subagentEvents ?? []) {
+      if (ev.kind !== "assistant") continue;
+      const nested = ev.toolUse?.find((t) => t.id === toolUseId);
+      if (nested) return nested.name;
+    }
+  }
+  return undefined;
+}
 
 export const handleAgentEvent: Handler<WsAgentEvent> = (_ctx, data) => {
   const session = useSessionStore.getState();
@@ -29,7 +75,17 @@ export const handleAgentEvent: Handler<WsAgentEvent> = (_ctx, data) => {
       .join("\n\n");
 
     const toolUseBlocks = (event.content ?? [])
-      .filter((b: AgentContentBlock): b is { type: "tool_use"; id: string; name: string; input: Record<string, unknown> } => b.type === "tool_use");
+      // docs/244 — `bodyTruncated`/`diffStats` are added by the orchestrator's
+      // wire projection for Edit/Write, whose file body is stripped. Named in
+      // the predicate so they survive as types, not just at runtime.
+      .filter((b: AgentContentBlock): b is {
+        type: "tool_use";
+        id: string;
+        name: string;
+        input: Record<string, unknown>;
+        bodyTruncated?: true;
+        diffStats?: { added: number; removed: number };
+      } => b.type === "tool_use");
 
     // Subagent events (Task tool nested events) — attach to the parent
     // message's `subagentEvents` instead of the main message stream so the
@@ -118,9 +174,56 @@ export const handleAgentEvent: Handler<WsAgentEvent> = (_ctx, data) => {
         } else {
           content = JSON.stringify(rawContent);
         }
-        if (content.length > 1_000_000) {
-          content = `${content.slice(0, 1_000_000)  }\n... (output truncated — exceeded 1MB)`;
+        // Backstop only. Since docs/244 the orchestrator already slices heavy
+        // results before emitting, so this fires only for the classes the
+        // projection leaves inline — and what to do differs per class, because
+        // clipping is only acceptable when the body can be got back.
+        //
+        //   - A body in `WHOLE_RESULT_TOOL_NAMES` is exempt server-side
+        //     precisely because the transcript renders it whole with no expand
+        //     affordance and no fetch. Capping it here would re-truncate,
+        //     permanently, the very bodies that exemption exists to protect —
+        //     so it is not capped at all. Deliberately unbounded: the
+        //     alternative is silently destroying the tail of a long
+        //     `AskUserQuestion` answer (SHI-291).
+        //
+        //     This used to test `SUBAGENT_TOOLS`, the *layout* set, which was
+        //     wrong in both directions: it spared `Skill` (which renders no
+        //     report and is sliced server-side anyway) while capping
+        //     `AskUserQuestion` (which has no way to recover the tail). Client
+        //     and server now read the same set.
+        //
+        //     A TOP-LEVEL subagent final report left that set with docs/109
+        //     req 8: it clamps inline with a modal behind it, so it is capped
+        //     here like anything else — and, being top-level, marked
+        //     `truncated`, which is what points the modal at the fetch.
+        //   - A NESTED result is capped, but NOT marked `truncated`. Its row is
+        //     not committed until the next top-level boundary, so a fetch
+        //     marker here would promise a body the endpoint would 404 on.
+        //   - A NESTED final report (a subagent's subagent) gets neither: the
+        //     two rules above disagree, and shipping it whole is the only
+        //     option that loses nothing. Capping it is what the modal made
+        //     acceptable for a top-level report, and the modal's fetch reads
+        //     the persisted row — which for a nested result does not exist yet.
+        //     So live, there is nothing to recover the tail from. It is bounded
+        //     on the next history load instead, where the row IS committed and
+        //     the server slices it properly.
+        //   - Everything else is capped AND marked, because a top-level result
+        //     is committed in the same tick as its emit, so the fetch resolves.
+        //
+        // Marking without fetchability and clipping without marking are both
+        // wrong; which of the two a result gets depends on where its row is.
+        const toolName = toolNameForResult(session.messages, block.tool_use_id as string);
+        const isNested = typeof (event as { parentToolUseId?: string }).parentToolUseId === "string";
+        const shipsWhole = shipsResultBodyWhole(toolName)
+          || (isNested && !!toolName && SUBAGENT_REPORT_TOOL_NAMES.has(toolName));
+
+        let capped: { totalLines: number } | undefined;
+        if (!shipsWhole && content.length > CLIENT_CONTENT_CAP) {
+          capped = { totalLines: content.split("\n").length };
+          content = content.slice(0, safeCutAt(content, CLIENT_CONTENT_CAP));
         }
+        const cappedAndFetchable = capped && !isNested;
         results.push({
           toolUseId: block.tool_use_id as string,
           content,
@@ -128,6 +231,20 @@ export const handleAgentEvent: Handler<WsAgentEvent> = (_ctx, data) => {
           // docs/185 — per-tool duration the orchestrator stamped onto the
           // tool_result block before forwarding. Powers the detail-modal timing.
           ...(typeof block.duration_ms === "number" ? { durationMs: block.duration_ms } : {}),
+          // docs/244 — the orchestrator sliced this body; carry the markers so
+          // the "Show all N lines" label is honest and expanding fetches the
+          // tail from the persisted row.
+          ...(block.shipit_truncated === true || cappedAndFetchable ? { truncated: true as const } : {}),
+          ...(typeof block.shipit_total_lines === "number"
+            ? { totalLines: block.shipit_total_lines }
+            : cappedAndFetchable
+              ? { totalLines: capped!.totalLines }
+              : {}),
+          // Only the server sets `totalBytes` — it measures UTF-8 bytes, and the
+          // client cap counts UTF-16 units, so filling it in here would report a
+          // different quantity under the same name. `totalLines` is what the
+          // "Show all N lines" label reads; nothing renders `totalBytes`.
+          ...(typeof block.shipit_total_bytes === "number" ? { totalBytes: block.shipit_total_bytes } : {}),
         });
       }
     }
@@ -157,9 +274,22 @@ export const handleAgentEvent: Handler<WsAgentEvent> = (_ctx, data) => {
     session.setIsLoading(false);
     session.setActivity(undefined);
     session.setMessages((prev) =>
-      prev.map((m) =>
-        m.role === "assistant" && m.streaming ? { ...m, streaming: false } : m
-      )
+      prev.map((m) => {
+        const closeStreaming = m.role === "assistant" && m.streaming;
+        // Mirror the server: `agent_result` runs `finalizeInProgress`, which
+        // drops the `in_progress` flag from every row of the turn. The client
+        // must drop it too. `inProgress` is set by `loadSessionHistory` and by
+        // `turn_snapshot`, and until now nothing ever cleared it — so rows of a
+        // turn the viewer happened to be attached to kept the marking for the
+        // rest of the session's life. A LATER `turn_snapshot` (any attach
+        // during a subsequent turn) applies
+        // `prev.filter((m) => !m.inProgress)`, which then deletes those
+        // finished turns from the transcript along with the running one it
+        // means to replace. Clearing here bounds the replace-filter to the turn
+        // that is actually in flight.
+        if (!closeStreaming && !m.inProgress) return m;
+        return { ...m, ...(closeStreaming ? { streaming: false } : {}), inProgress: false };
+      })
     );
   }
 };

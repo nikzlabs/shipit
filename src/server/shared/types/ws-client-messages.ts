@@ -4,6 +4,7 @@ import type { WsTerminalStart, WsTerminalInput, WsTerminalResize, WsSubscribeLog
 
 export interface WsSendMessage {
   type: "send_message";
+  requestId?: string;
   text: string;
   sessionId?: string;
   images?: ImageAttachment[];
@@ -28,6 +29,7 @@ export interface WsSendMessage {
 
 export interface WsAnswerQuestion {
   type: "answer_question";
+  requestId?: string;
   toolUseId: string;
   answers: Record<string, string>;
   /**

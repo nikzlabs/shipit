@@ -34,6 +34,7 @@ export const handleChildMergedCard: Handler<WsChildMergedCard> = (_ctx, data) =>
               prUrl: data.card.prUrl,
               ...(data.card.prTitle ? { prTitle: data.card.prTitle } : {}),
               ...(data.card.mergeSha ? { mergeSha: data.card.mergeSha } : {}),
+              ...(data.card.deliveryFailure ? { deliveryFailure: data.card.deliveryFailure } : {}),
               createdAt: data.card.createdAt,
             },
           },

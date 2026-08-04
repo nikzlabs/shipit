@@ -20,7 +20,9 @@
  * that dispatches to the per-domain handler modules:
  *   - `shipit-session.ts` — session create/list/view/message/wait/archive/notify
  *   - `shipit-issue.ts`   — tracker-neutral issue view/list/create/comment/edit/status/assign
- *   - `shipit-agent.ts`   — one-shot sub-agent spawn (`shipit agent run`)
+ *   - `shipit-agent.ts`   — one-shot sub-agent spawn + result re-read
+ *                           (`shipit agent run` / `shipit agent result`)
+ *   - `shipit-service.ts` — Compose service control (list/start/stop/restart/logs)
  *   - `shipit-source.ts`  — read-only ShipIt source browsing (Ops sessions)
  *
  * Output:
@@ -47,21 +49,31 @@ import {
   handleSessionList,
   handleSessionMessage,
   handleSessionNotifyOnMerge,
+  handleSessionReport,
   handleSessionView,
   handleSessionWait,
+  handleSessionWhoami,
 } from "./shipit-session.js";
 import {
   handleIssueAssign,
   handleIssueComment,
   handleIssueCreate,
   handleIssueEdit,
+  handleIssueLabel,
   handleIssueLabels,
   handleIssueList,
   handleIssueStatus,
   handleIssueStatuses,
   handleIssueView,
 } from "./shipit-issue.js";
-import { handleAgentRun } from "./shipit-agent.js";
+import { handleAgentRun, handleAgentResult } from "./shipit-agent.js";
+import {
+  handleServiceList,
+  handleServiceLogs,
+  handleServiceRestart,
+  handleServiceStart,
+  handleServiceStop,
+} from "./shipit-service.js";
 import { handleReleasePlan, handleReleasePrepare } from "./shipit-release.js";
 import {
   handleSourceBlame,
@@ -76,6 +88,8 @@ import {
 // Re-exported so existing importers (and tests) keep resolving these from
 // `./shipit.js` after the shared plumbing moved into shim-common.
 export { parseFlags, type ShimIO };
+
+import { handleBranchResetToBase, RESET_USAGE } from "./shipit-branch.js";
 
 const SHIM_NAME = "shipit (ShipIt)";
 
@@ -98,19 +112,33 @@ Supported subcommands:
   shipit session message <id> -m "TEXT" [--json]
   shipit session wait    <id...> [--timeout SECONDS] [--any|--all] [--json]
   shipit session notify-on-merge <id> [--json]
+  shipit session notify-on-merge --self [--json]
   shipit session archive <id> [--json]
+  shipit session whoami  [--json]
+  shipit session report  -b TEXT | --body-file FILE
+                          [--severity fyi|warn|blocker] [--subject T]
+                          [--to parent|cohort] [--json]
   shipit session help
+
+Branch (docs/239):
+  shipit branch reset-to-base [--json]
+                          Move this session's branch to its merged PR's base and
+                          force the remote to match. Run this FIRST after a
+                          self-merge wake, before editing anything. Exit 0 = the
+                          branch is ready; nonzero = STOP and report (never reset
+                          by hand).
 
 Issues (tracker-neutral — tracker inferred from the pointer; docs/175 + docs/177 + docs/187):
   shipit issue view      <pointer> [--tracker github|linear] [--comments] [--json]
   shipit issue list      [--tracker github|linear] [--state open|closed|all] [--full] [--json]
   shipit issue labels    [--tracker github|linear] [--json]
   shipit issue statuses  [--tracker github|linear] [--json]
-  shipit issue create    --title T [--body B | --body-file FILE] [--label NAME]... [--priority P] [--tracker github|linear] [--json]
+  shipit issue create    --title T [--body B | --body-file FILE] [--label NAME]... [--create-missing-labels] [--priority P] [--tracker github|linear] [--json]
   shipit issue comment   <pointer> -b BODY | --body-file FILE [--tracker T] [--json]
-  shipit issue edit      <pointer> [--title T] [--body B | --body-file FILE] [--label NAME]... [--priority P] [--tracker T] [--json]
+  shipit issue edit      <pointer> [--title T] [--body B | --body-file FILE] [--label NAME]... [--create-missing-labels] [--priority P] [--tracker T] [--json]
   shipit issue status    <pointer> <state> [--tracker T] [--json]
   shipit issue assign    <pointer> <user|me | --none> [--tracker T] [--json]
+  shipit issue label create --name NAME [--color '#rrggbb'] [--description TEXT] [--tracker github|linear] [--json]
 
   A <pointer> is whatever the user/doc gave you — SHI-28, owner/repo#42, or an
   issue URL; the tracker is inferred from its shape. Writes are do-then-surface:
@@ -120,9 +148,11 @@ Issues (tracker-neutral — tracker inferred from the pointer; docs/175 + docs/1
 
   --label is repeatable (or comma-separated) and resolves against the tracker's
   existing labels — an unknown name is rejected with the valid options, not
-  created. On 'edit' labels are added to the issue's existing set. --priority is
-  urgent|high|medium|low|none on Linear; GitHub has no priority field, so use a
-  label there instead.
+  created. To mint a new label, run 'shipit issue label create' (Undo deletes it
+  while unused) or pass --create-missing-labels to create unknown names on the
+  fly (each gets its own Undo card). On 'edit' labels are added to the issue's
+  existing set. --priority is urgent|high|medium|low|none on Linear; GitHub has
+  no priority field, so use a label there instead.
 
   'labels'/'statuses' list the tracker's valid label names and status targets so
   you can pick one before a create/edit/status write instead of guessing. 'list
@@ -151,22 +181,63 @@ Releases (docs/214 — deterministic, merge-triggered; CI publishes):
   (a tag push is always confirmation-gated). There is no 'release tag',
   'release publish', or 'release push' — publishing is CI's job.
 
+Compose services (docs/238 — start the services declared in docker-compose.yml):
+  shipit service list    [--json]
+  shipit service start   <name> [--timeout SECONDS] [--json]
+  shipit service stop    <name> [--json]
+  shipit service restart <name> [--timeout SECONDS] [--json]
+  shipit service logs    <name> [--lines N] [--json]
+
+  Services marked \`x-shipit-preview: manual\` (the default for any service with
+  no \`ports\`) do NOT start on their own — a database, a cache, a worker, an
+  emulator. START THEM YOURSELF when you need them; don't ask the user to click
+  Start. \`list\` shows every service with its status and its agent-reachable
+  \`url\` (the container IP — the address for your own curl / browser_navigate,
+  not the user's preview origin).
+
+  A manual service is manual because it's HEAVY: the first start may pull a
+  large image or run a \`build:\`, taking minutes. \`start\`/\`restart\` wait up to
+  10 minutes, so run them in the BACKGROUND if your shell caps foreground
+  commands below that. If a start does time out it is still running — re-check
+  with \`list\` and follow progress with \`logs\`.
+
+  The stack's SHAPE is declared in docker-compose.yml, not issued imperatively:
+  there is no \`service create\`/\`delete\`/\`build\`/\`exec\`/\`up\`/\`down\`. Edit the
+  compose file and ShipIt reconciles it.
+
 Sub-agents (docs/144 — spawn another agent for a one-shot sub-task):
   shipit agent run --agent claude|codex --prompt-file FILE [--model M] [--json]
+  shipit agent result [RUN-ID] [--wait [--timeout SECONDS]] [--json]
 
-  Spawns ANOTHER registered agent with the prompt from --prompt-file (or
+  'run' spawns ANOTHER registered agent with the prompt from --prompt-file (or
   --prompt-file - for stdin) and prints its final text on stdout. Use it for a
   second-opinion review or a bounded delegation: put ALL context the sub-agent
   needs into the prompt (the task, any \`git diff\`, file references, focus
   hints). The spawned agent runs full-capability in this same workspace and its
   work is committed under your session's agent. Requires the "Multi-agent
-  sessions" setting to be enabled. Blocks until the sub-agent finishes (30–120s
-  typical). Example:
+  sessions" setting to be enabled. Blocks until the sub-agent finishes: a real
+  consult routinely runs for many minutes, up to a 30-minute cap, so run it in
+  the BACKGROUND — most shell tools cap foreground commands well below that. A
+  killed 'run' does not stop the spawn; recover it with 'result'. Never pipe it
+  through tail/head/grep — the sub-agent's report IS the deliverable, and the
+  finding you need is as likely to be at the top as the bottom. Example:
 
     shipit agent run --agent codex --prompt-file - <<'EOF'
     Review this diff for bugs. Report findings as file:line — comment.
     $(git diff)
     EOF
+
+  'result' re-prints a run's output — the same artifact ShipIt renders inline
+  for the user. No RUN-ID ⇒ the most recent run in this session. Use it to
+  recover output when a 'run' call was killed before it printed: the spawn
+  keeps going server-side, so the answer is still there.
+
+  --wait blocks until the run finishes (default 5m, --timeout up to 30m). Use it
+  instead of a sleep/poll loop; it absorbs transport resets and, if the timeout
+  elapses, exits 4 and tells you to re-run — waiting is resumable, so nothing is
+  lost. Exit codes: 0 finished ok · 4 still running · 3 the run failed ·
+  1 the lookup failed (bad run id, unreachable) · 2 bad flags. Branch on those,
+  never on grepping the output for "pending" — a finished review can say it.
 
 Ops-only (read-only ShipIt source, docs/162):
   shipit source status   [--json]
@@ -208,6 +279,30 @@ will never need to hear about again (e.g. spinning off a fix for an unrelated
 bug). The test: if you'd ever want to wait on it, follow up, or be told it
 merged, it should be a child — omit \`--detached\`. \`--detached\` cannot be
 combined with \`--shipit-source\`.
+
+Coordination runs BOTH ways. Parent → child is \`list\`/\`view\`/\`wait\`/
+\`message\`/\`notify-on-merge\`. Child → parent (and siblings) is
+\`shipit session report\`: it posts a card into each recipient's chat AND wakes
+its agent with a queued turn, so a finding is pushed instead of sitting in a PR
+nobody has opened yet. Use it when what you found reaches beyond your own
+session — shared machinery you're scoped not to touch, a blocker, or something
+that invalidates a sibling's work:
+
+  shipit session report --severity blocker --to cohort \\
+    --subject "regen command deletes all catalogs" --body-file - <<'EOF'
+  \`npm run regen\` wipes data/catalogs/ before writing, so it destroys the other
+  catalogs too. Don't run it until #123 lands.
+  EOF
+
+\`--to parent\` (the default) reaches the session that spawned you; \`--to cohort\`
+(or \`--cohort\`) also reaches every live sibling. Severity is \`fyi\` (default),
+\`warn\`, or \`blocker\`. You cannot target an arbitrary session id — recipients are
+derived from your own parent linkage. A report costs each recipient a turn, so
+batch findings into one report rather than sending a stream of them.
+
+\`shipit session whoami\` resolves THIS session: its id, branch, parent, cohort
+siblings, and any children it spawned. (\`view <id>\` is descendant-scoped, so
+passing your own id doesn't work — use \`whoami\`.)
 
 In an Ops session, use \`shipit source *\` to read the ShipIt source code that
 runs this host, then \`shipit session create --shipit-source --title "..."\` to
@@ -316,6 +411,10 @@ const SESSION_HANDLERS: Record<
   wait: handleSessionWait,
   archive: handleSessionArchive,
   "notify-on-merge": handleSessionNotifyOnMerge,
+  // docs/233 (SHI-241) — the upward channel. Every subcommand above operates
+  // parent→child; these two are the only ones a child can point at itself.
+  report: handleSessionReport,
+  whoami: handleSessionWhoami,
 };
 
 const ISSUE_HANDLERS: Record<
@@ -331,46 +430,61 @@ const ISSUE_HANDLERS: Record<
   edit: handleIssueEdit,
   status: handleIssueStatus,
   assign: handleIssueAssign,
+  label: handleIssueLabel,
 };
 
-/**
- * Per-subcommand usage strings for `shipit issue <sub> --help` (SHI-199). Before
- * this, `--help` fell into a subcommand's flag parser and was rejected as an
- * unsupported flag; now `dispatchIssue` intercepts it and prints the matching
- * entry. Top-level `shipit issue help` still prints the full HELP block.
- */
-const ISSUE_USAGE: Record<string, string> = {
-  view: `shipit issue view <pointer> [--tracker github|linear] [--comments] [--json]
-  Read one issue — identifier, title, status, priority, assignee, URL, body, and
-  the valid status targets. --comments adds the thread; --json emits the object.`,
-  list: `shipit issue list [--tracker github|linear] [--state open|closed|all] [--full] [--json]
-  List issues (priority-sorted). --json rows are lean by default (no body); --full
-  re-adds each issue's description.`,
-  labels: `shipit issue labels [--tracker github|linear] [--json]
-  List the tracker's pickable labels — the valid set to pass to --label on
-  create/edit (so you don't guess and trip the rejection).`,
-  statuses: `shipit issue statuses [--tracker github|linear] [--json]
-  List the tracker's assignable statuses — the valid targets for 'issue status'.`,
-  create: `shipit issue create --title T [--body B | --body-file FILE] [--label NAME]... [--priority P] [--parent <pointer>] [--tracker github|linear] [--json]
-  File a new issue (defaults to Linear). Do-then-surface — created immediately
-  with an Undo card. --priority and --parent (sub-issue nesting) are Linear-only.`,
-  comment: `shipit issue comment <pointer> -b BODY | --body-file FILE [--tracker T] [--json]
-  Add a comment to an issue.`,
-  edit: `shipit issue edit <pointer> [--title T] [--body B | --body-file FILE] [--label NAME]... [--priority P] [--parent <pointer>|none] [--tracker T] [--json]
-  Edit title/body/labels/priority/parent. Labels are additive; --parent nests as a
-  Linear sub-issue (--parent none detaches).`,
-  status: `shipit issue status <pointer> <state> [--tracker T] [--json]
-  Set status from a normalized type (completed, started, …) or a native name.
-  Run 'shipit issue statuses' to see the valid targets.`,
-  assign: `shipit issue assign <pointer> <user|me | --none> [--tracker T] [--json]
-  Set or clear (--none) the assignee.`,
+const COMMAND_DOCS: Record<string, string> = {
+  session: "/shipit-docs/sessions.md",
+  source: "/shipit-docs/ops-session.md",
+  issue: "/shipit-docs/issues.md",
+  agent: "/shipit-docs/agent.md",
+  service: "/shipit-docs/compose.md",
+  release: "/shipit-docs/release.md",
+  branch: "/shipit-docs/sessions.md",
 };
+
+/** Keep command help useful without maintaining a second copy of canonical docs. */
+function commandHelp(domain: keyof typeof COMMAND_DOCS, sub: string): string {
+  return `See ${COMMAND_DOCS[domain]} for \`shipit ${domain} ${sub}\` usage and examples.`;
+}
+
+function requestsHelp(args: string[]): boolean {
+  return args.some((arg) => arg === "--help" || arg === "-h");
+}
 
 const AGENT_HANDLERS: Record<
   string,
   (args: string[], deps: RunDeps) => Promise<void>
 > = {
   run: handleAgentRun,
+  result: handleAgentResult,
+};
+
+/**
+ * Compose verbs the agent might reach for that the shim refuses (docs/238). The
+ * stack's shape is DECLARED in `docker-compose.yml` and reconciled by ShipIt;
+ * the agent edits that file rather than issuing imperative stack commands. Same
+ * shape as `shipit release`'s refusal to hand-push a tag.
+ */
+const REJECTED_SERVICE_SUBCOMMANDS = new Set([
+  "create", // declare it in docker-compose.yml instead.
+  "delete", // remove it from docker-compose.yml instead.
+  "remove",
+  "build",  // `start`/`restart` already run `up -d --build`.
+  "exec",   // use the terminal / bash tool.
+  "up",     // ShipIt owns stack lifecycle; per-service `start` is the surface.
+  "down",
+]);
+
+const SERVICE_HANDLERS: Record<
+  string,
+  (args: string[], deps: RunDeps) => Promise<void>
+> = {
+  list: handleServiceList,
+  start: handleServiceStart,
+  stop: handleServiceStop,
+  restart: handleServiceRestart,
+  logs: handleServiceLogs,
 };
 
 const RELEASE_HANDLERS: Record<
@@ -446,6 +560,16 @@ export async function runShim(
     return;
   }
 
+  if (command === "service" || command === "services") {
+    await dispatchService(args.slice(1), deps, io);
+    return;
+  }
+
+  if (command === "branch") {
+    await dispatchBranch(args.slice(1), deps, io);
+    return;
+  }
+
   if (command !== "session") {
     fail(io, `Unknown shipit subcommand: ${command}\n${REJECTED_HELP}`);
   }
@@ -468,7 +592,33 @@ export async function runShim(
     fail(io, `Unsupported shipit session subcommand: ${sub}\n${REJECTED_HELP}`);
   }
 
+  if (requestsHelp(args.slice(2))) {
+    success(io, commandHelp("session", sub));
+    return;
+  }
+
   await handler(args.slice(2), deps);
+}
+
+/**
+ * Dispatch a `shipit branch <sub>` invocation (docs/239). One subcommand today —
+ * `reset-to-base`, the explicit mode over the docs/218 reset core, which the
+ * self-merge wake turn runs before it touches anything.
+ */
+async function dispatchBranch(args: string[], deps: RunDeps, io: ShimIO): Promise<void> {
+  const sub = args[0];
+  if (!sub || sub === "--help" || sub === "-h" || sub === "help") {
+    success(io, RESET_USAGE);
+    return;
+  }
+  if (sub !== "reset-to-base") {
+    fail(io, `Unsupported shipit branch subcommand: ${sub}\n${REJECTED_HELP}`);
+  }
+  if (requestsHelp(args.slice(1))) {
+    success(io, commandHelp("branch", sub));
+    return;
+  }
+  await handleBranchResetToBase(args.slice(1), deps);
 }
 
 /**
@@ -493,6 +643,10 @@ async function dispatchSource(args: string[], deps: RunDeps, io: ShimIO): Promis
   const handler = SOURCE_HANDLERS[sub];
   if (!handler) {
     fail(io, `Unsupported shipit source subcommand: ${sub}\n${REJECTED_HELP}`);
+  }
+  if (requestsHelp(args.slice(1))) {
+    success(io, commandHelp("source", sub));
+    return;
   }
   await handler(args.slice(1), deps);
 }
@@ -522,18 +676,17 @@ async function dispatchIssue(args: string[], deps: RunDeps, io: ShimIO): Promise
   if (!handler) {
     fail(io, `Unsupported shipit issue subcommand: ${sub}\n${REJECTED_HELP}`);
   }
-  // `shipit issue <sub> --help` prints that subcommand's usage (SHI-199), rather
-  // than letting --help fall through to the flag parser as an unsupported flag.
-  if (args.slice(1).some((a) => a === "--help" || a === "-h")) {
-    success(io, ISSUE_USAGE[sub] ?? HELP);
+  if (requestsHelp(args.slice(1))) {
+    success(io, commandHelp("issue", sub));
     return;
   }
   await handler(args.slice(1), deps);
 }
 
 /**
- * Dispatch a `shipit agent <sub>` invocation (docs/144). Only `run` exists —
- * the one-shot sub-agent spawn primitive.
+ * Dispatch a `shipit agent <sub>` invocation (docs/144, SHI-245). `run` is the
+ * one-shot sub-agent spawn primitive; `result` re-reads a finished run's
+ * persisted output.
  */
 async function dispatchAgent(args: string[], deps: RunDeps, io: ShimIO): Promise<void> {
   const sub = args[0];
@@ -544,6 +697,41 @@ async function dispatchAgent(args: string[], deps: RunDeps, io: ShimIO): Promise
   const handler = AGENT_HANDLERS[sub];
   if (!handler) {
     fail(io, `Unsupported shipit agent subcommand: ${sub}\n${REJECTED_HELP}`);
+  }
+  if (requestsHelp(args.slice(1))) {
+    success(io, commandHelp("agent", sub));
+    return;
+  }
+  await handler(args.slice(1), deps);
+}
+
+/**
+ * Dispatch a `shipit service <sub>` invocation (docs/238). Also reached via the
+ * `services` alias — the plural is the word the compose file uses, so it's the
+ * likely typo, and rejecting it would be pure friction.
+ */
+async function dispatchService(args: string[], deps: RunDeps, io: ShimIO): Promise<void> {
+  const sub = args[0];
+  if (!sub || sub === "--help" || sub === "-h" || sub === "help") {
+    success(io, HELP);
+    return;
+  }
+  if (REJECTED_SERVICE_SUBCOMMANDS.has(sub)) {
+    fail(
+      io,
+      `${SHIM_NAME} does not support \`shipit service ${sub}\` — the stack's shape is declared, not commanded.\n` +
+        "Add, change, or remove services by editing docker-compose.yml; ShipIt reconciles the stack from the file.\n" +
+        "To bring an existing service up or down, use `shipit service start|stop|restart <name>`.\n" +
+        "See /shipit-docs/compose.md.",
+    );
+  }
+  const handler = SERVICE_HANDLERS[sub];
+  if (!handler) {
+    fail(io, `Unsupported shipit service subcommand: ${sub}\n${REJECTED_HELP}`);
+  }
+  if (requestsHelp(args.slice(1))) {
+    success(io, commandHelp("service", sub));
+    return;
   }
   await handler(args.slice(1), deps);
 }
@@ -571,6 +759,10 @@ async function dispatchRelease(args: string[], deps: RunDeps, io: ShimIO): Promi
   const handler = RELEASE_HANDLERS[sub];
   if (!handler) {
     fail(io, `Unsupported shipit release subcommand: ${sub}\n${REJECTED_HELP}`);
+  }
+  if (requestsHelp(args.slice(1))) {
+    success(io, commandHelp("release", sub));
+    return;
   }
   await handler(args.slice(1), deps);
 }

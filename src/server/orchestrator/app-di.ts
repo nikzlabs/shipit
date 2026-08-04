@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { DatabaseManager } from "../shared/database.js";
 import { GitManager } from "../shared/git.js";
@@ -22,6 +24,8 @@ import { SessionContainerManager } from "./session-container.js";
 import type { SessionRunnerFactory } from "./session-runner.js";
 import { PrStatusPoller } from "./pr-status-poller.js";
 import type { AgentId, AgentEvent, AgentProcess, RuntimeMode } from "../shared/types.js";
+import type { AgentHomeResolver } from "../shared/agent-home.js";
+import type { LocalAgentFactory } from "./local-agent-home.js";
 
 /**
  * Runtime mode for the orchestrator. Selected via the `RUNTIME_MODE` env var.
@@ -33,6 +37,59 @@ import type { AgentId, AgentEvent, AgentProcess, RuntimeMode } from "../shared/t
  * "isTestMode ≠ runtimeMode === 'local'" note in docs/118.
  */
 export type { RuntimeMode } from "../shared/types.js";
+
+/**
+ * The production credentials volume. In the orchestrator's own container this
+ * is the shared credentials volume; **inside a session container it is that
+ * session's live agent home** — the dir holding the running CLI's
+ * `.claude/.credentials.json` and its conversation jsonl.
+ */
+export const LIVE_CREDENTIALS_DIR = "/credentials";
+
+/**
+ * Resolve the credentials root, refusing to hand the live volume to a test.
+ *
+ * `initializeManagers` constructs a {@link ProviderAccountManager}, whose
+ * constructor runs a one-shot legacy migration that *moves* `<credentialsDir>/
+ * .claude` and `.claude.json` into `provider-accounts/<provider>/<id>/`. That
+ * migration is guarded by "no accounts registered yet", which never fires in
+ * production but **always** fires against a fresh test database.
+ *
+ * So a test that passed `workspaceDir: tmpDir` but let `credentialsDir` default
+ * was pointing that migration at {@link LIVE_CREDENTIALS_DIR}. When the suite
+ * ran inside a ShipIt session container — i.e. every time the agent ran the
+ * tests on itself — the migration found the session's real credentials and
+ * renamed the agent's home out from under the running CLI. Every subsequent
+ * turn failed with "Not logged in · Please run /login", permanently, because
+ * nothing moved it back. It tracked *running the suite*, not subject matter,
+ * because the smoke tests alone were enough to trigger it.
+ *
+ * Two rules, both enforced here rather than at ~90 call sites:
+ *
+ *  - Under test mode an omitted `credentialsDir` gets a fresh temp dir, never
+ *    the live volume. Tests that don't care about credentials keep working
+ *    untouched; tests that do get a private root.
+ *  - Under test mode an *explicit* live path is a hard error. Nothing legitimate
+ *    needs it, and it is the one value that destroys the developer's session.
+ */
+export function resolveCredentialsDir(
+  credentialsDir: string | undefined,
+  isTestMode: boolean,
+): string {
+  if (!isTestMode) return credentialsDir ?? LIVE_CREDENTIALS_DIR;
+
+  if (credentialsDir === undefined) {
+    return fs.mkdtempSync(path.join(os.tmpdir(), "shipit-test-credentials-"));
+  }
+  if (path.resolve(credentialsDir) === LIVE_CREDENTIALS_DIR) {
+    throw new Error(
+      `Refusing to use the live credentials volume (${LIVE_CREDENTIALS_DIR}) in test mode: `
+        + `ProviderAccountManager's legacy migration would move the running agent's home out `
+        + `from under it. Pass a temp dir as credentialsDir, or omit it to get one.`,
+    );
+  }
+  return credentialsDir;
+}
 
 /** Read RUNTIME_MODE from process.env, defaulting to "containerized". */
 export function resolveRuntimeMode(): RuntimeMode {
@@ -183,6 +240,12 @@ export interface ManagerSet {
   autoPushDebounceMs: number;
   sessionsRoot: string;
   agentFactory: ((agentId: AgentId) => AgentProcess) | undefined;
+  /**
+   * docs/150 — local mode only: the same factory, but able to scope a spawn's
+   * HOME to a provider account. Undefined in containerized mode and whenever a
+   * test injects `deps.agentFactory`.
+   */
+  localAgentFactory: LocalAgentFactory | undefined;
   createGitManager: (dir: string) => GitManager;
   createRepoGit: (dir: string) => RepoGit;
   databaseManager: DatabaseManager;
@@ -213,10 +276,26 @@ export interface ManagerSet {
 export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   const {
     workspaceDir = "/workspace",
-    credentialsDir = "/credentials",
     serveStatic: shouldServeStatic = true,
     autoPushDebounceMs = 5000,
   } = deps;
+
+  // Resolved up here, not at the return: every manager below that touches
+  // credentials (CredentialStore, the secret cipher, the global git config,
+  // and above all ProviderAccountManager's destructive legacy migration) is
+  // constructed in between. See {@link resolveCredentialsDir}.
+  //
+  // NOTE: `serveStatic === false` is now load-bearing for CREDENTIAL SAFETY,
+  // not just for enabling test-only routes. It is what keeps a test from being
+  // handed {@link LIVE_CREDENTIALS_DIR} — i.e. the running agent's own home
+  // when the suite executes inside a session container. Every current test
+  // reaches this with `serveStatic: false`; a future one that doesn't would
+  // silently lose that protection (the in-container guard in
+  // `provider-account-manager.ts` still covers it, but that is the second
+  // layer, not the first). If this flag ever stops implying "under test",
+  // take an explicit signal here rather than widening its meaning.
+  const isTestMode = deps.serveStatic === false;
+  const credentialsDir = resolveCredentialsDir(deps.credentialsDir, isTestMode);
 
   // ---- Runtime mode ----
   // `containerized` = production (Docker per session). `local` = dogfooding
@@ -239,8 +318,17 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   // in-process, since there is no container worker to forward to. Local-mode
   // adapters live in session/ — we resolve them via dynamic import so the
   // prod image (which omits session/) never has to load them.
+  //
+  // docs/150 — the local factory takes a per-spawn HOME resolver so each
+  // session's CLI reads the provider account it was routed to. The plain
+  // `agentFactory` below keeps its one-argument shape (every existing caller
+  // has an agentId and nothing else); the account-scoped wiring goes through
+  // `localAgentFactory`, which `buildRunnerFactory` hands to each local
+  // runner's `createAgent`.
+  const localAgentFactory: LocalAgentFactory | undefined =
+    !deps.agentFactory && runtimeMode === "local" ? await buildLocalAgentFactory() : undefined;
   const agentFactory: ((agentId: AgentId) => AgentProcess) | undefined =
-    deps.agentFactory ?? (runtimeMode === "local" ? await buildLocalAgentFactory() : undefined);
+    deps.agentFactory ?? (localAgentFactory ? (agentId: AgentId): AgentProcess => localAgentFactory(agentId) : undefined);
 
   // ---- Per-session directory root ----
   // Inner-session clones still live under the visible workspace (the user
@@ -309,15 +397,19 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
 
   // ---- Auth manager ----
   const authManager = deps.authManager ?? new AuthManager();
-  const hasCredentials = authManager.checkCredentials();
-  console.log("[server] Claude credentials found:", hasCredentials);
+  // Primes the manager's singleton `authenticated` flag. Deliberately NOT the
+  // startup log's source: with the req-19 aliases gone the singleton path holds
+  // nothing on a migrated install, so it would report "no credentials found"
+  // for a user with several accounts connected. Ask the account manager, which
+  // is what every routing decision asks.
+  authManager.checkCredentials();
+  console.log("[server] Claude credentials found:", providerAccountManager.hasAnyAuthForProvider("claude"));
 
   // ---- Codex auth manager (ChatGPT subscription) ----
   // Wraps `codex login --device-auth` so a user can sign in with their
   // ChatGPT plan instead of an OPENAI_API_KEY. See feature 119.
   const codexAuthManager = deps.codexAuthManager ?? new CodexAuthManager();
-  const hasCodexAuth = codexAuthManager.checkCredentials();
-  console.log("[server] Codex ChatGPT credentials found:", hasCodexAuth);
+  console.log("[server] Codex ChatGPT credentials found:", providerAccountManager.hasAnyAuthForProvider("codex"));
 
   // ---- Global git config (single source of truth for identity) ----
   // Only initialize if not already configured (tests set this up via createTestCredentialStore).
@@ -335,7 +427,15 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
 
   // ---- Agent registry ----
   const agentRegistry = deps.agentRegistry ?? new AgentRegistry({
-    checkClaudeAuth: () => providerAccountManager.hasAnyAuthForProvider("claude"),
+    checkClaudeAuth: () =>
+      providerAccountManager.hasAnyAuthForProvider("claude")
+      // Explicit dependency injection is itself an auth source for tests and
+      // custom runtimes that do not persist provider-account rows. Production
+      // never takes this branch: its AuthManager is built below rather than
+      // supplied through AppDeps. Keeping the fallback at the DI boundary
+      // preserves those fixtures without reintroducing the legacy singleton
+      // gate in either turn-ingress path.
+      || (deps.authManager?.authenticated ?? false),
     checkCodexAuth: () => providerAccountManager.hasAnyAuthForProvider("codex"),
   });
   await agentRegistry.detect();
@@ -413,8 +513,6 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
     });
   });
 
-  const isTestMode = deps.serveStatic === false;
-
   return {
     defaultAgentId,
     workspaceDir,
@@ -424,6 +522,7 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
     autoPushDebounceMs,
     sessionsRoot,
     agentFactory,
+    localAgentFactory,
     createGitManager,
     createRepoGit,
     databaseManager,
@@ -459,18 +558,26 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
  * orchestrator/session boundary) never has to resolve them. Only the dev
  * image — used for the dogfooding `RUNTIME_MODE=local` path — actually loads
  * these.
+ *
+ * docs/150 — `resolveHome` is how account selection reaches the CLI here.
+ * A containerized session gets its account through the per-session credentials
+ * mount; local mode has no mount, so the adapter is told which HOME to spawn
+ * with instead. It is a path, not credential material: the orchestrator still
+ * owns what is written under it. Omitted (tests, sub-agent paths with no
+ * session context) ⇒ the process-global `agentHome()`, i.e. today's behavior.
  */
-async function buildLocalAgentFactory(): Promise<(agentId: AgentId) => AgentProcess> {
+async function buildLocalAgentFactory(): Promise<LocalAgentFactory> {
   const [{ ClaudeAdapter }, { CodexAdapter }] = await Promise.all([
     import("../session/agents/claude/adapter.js"),
     import("../session/agents/codex/adapter.js"),
   ]);
-  return (agentId: AgentId): AgentProcess => {
+  return (agentId: AgentId, resolveHome?: AgentHomeResolver): AgentProcess => {
+    const opts = resolveHome ? { resolveHome } : undefined;
     switch (agentId) {
       case "claude":
-        return new ClaudeAdapter();
+        return new ClaudeAdapter(undefined, opts);
       case "codex":
-        return new CodexAdapter();
+        return new CodexAdapter(undefined, opts);
       default: {
         const _exhaustive: never = agentId;
         throw new Error(`No local agent adapter for agentId: ${_exhaustive as string}`);

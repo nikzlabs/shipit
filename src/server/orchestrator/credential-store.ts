@@ -7,7 +7,9 @@ import type {
   OAuthTokens,
   McpOAuthRegisteredClient,
 } from "../shared/types/mcp-types.js";
-import type { AgentId, ProviderAccount, SubAgentDefaults, SubAgentDefaultsPatch } from "../shared/types.js";
+import type { AgentId, AccountSelectionMode, FailoverCutoffs, ProviderAccount, SubAgentDefaults, SubAgentDefaultsPatch } from "../shared/types.js";
+import { DEFAULT_SELECTION_MODE } from "../shared/types.js";
+import { DEFAULT_FAILOVER_CUTOFF } from "../shared/types.js";
 import type { VoiceDeliveryMode } from "../shared/types/voice-note-types.js";
 import { DEFAULT_VOICE_DELIVERY_MODE } from "../shared/types/voice-note-types.js";
 
@@ -37,6 +39,10 @@ interface CredentialData {
    * supportsSteering: true. (docs/140)
    */
   liveSteering?: boolean;
+  /** docs/150 reqs 4–6 — per-provider proactive failover cutoffs. */
+  failoverCutoffs?: Partial<Record<AgentId, FailoverCutoffs>>;
+  /** docs/150 req 21 — per-provider account selection mode. */
+  accountSelectionMode?: Partial<Record<AgentId, AccountSelectionMode>>;
   /**
    * When true, the PR poller's auto-resolve loop fires when a tracked PR
    * transitions to CONFLICTING while the agent is idle. (docs/146)
@@ -245,25 +251,22 @@ export class CredentialStore {
     return found ? { ...found } : undefined;
   }
 
-  getPrimaryProviderAccount(provider: AgentId): ProviderAccount | undefined {
-    const accounts = this.data.providerAccounts?.[provider] ?? [];
-    const found = accounts.find((a) => a.isPrimary) ?? accounts[0];
-    return found ? { ...found } : undefined;
-  }
-
+  /**
+   * docs/150 req 19 — this store no longer maintains an `isPrimary` invariant.
+   * "Primary" is position 0 of the `priority` order, derived by
+   * `ProviderAccountManager.list()`. The three blocks that used to live here —
+   * clearing the flag from siblings on upsert, and re-electing a primary on
+   * upsert and on delete — existed only to keep a second copy of that fact
+   * consistent, and a second copy is what req 19 is about removing. Rows on
+   * disk may still carry a stale flag; it is ignored on read.
+   */
   upsertProviderAccount(account: ProviderAccount): void {
     this.data.providerAccounts ??= {};
     const accounts = [...(this.data.providerAccounts[account.provider] ?? [])];
     const idx = accounts.findIndex((a) => a.id === account.id);
     const next = { ...account, updatedAt: Date.now() };
-    if (next.isPrimary) {
-      for (const existing of accounts) existing.isPrimary = false;
-    }
     if (idx >= 0) accounts[idx] = next;
     else accounts.push(next);
-    if (!accounts.some((a) => a.isPrimary) && accounts[0]) {
-      accounts[0] = { ...accounts[0], isPrimary: true, updatedAt: Date.now() };
-    }
     this.data.providerAccounts[account.provider] = accounts;
     this.save();
   }
@@ -271,11 +274,7 @@ export class CredentialStore {
   deleteProviderAccount(provider: AgentId, accountId: string): void {
     const accounts = this.data.providerAccounts?.[provider];
     if (!accounts) return;
-    const next = accounts.filter((a) => a.id !== accountId);
-    if (next.length > 0 && !next.some((a) => a.isPrimary)) {
-      next[0] = { ...next[0], isPrimary: true, updatedAt: Date.now() };
-    }
-    this.data.providerAccounts![provider] = next;
+    this.data.providerAccounts![provider] = accounts.filter((a) => a.id !== accountId);
     this.save();
   }
 
@@ -618,6 +617,51 @@ export class CredentialStore {
     this.save();
   }
 
+  // ---- Proactive failover cutoffs (docs/150 reqs 4-6) ----
+
+  /**
+   * Per-provider cutoffs, defaulting to 90% on both windows (req 5). Stored
+   * values are clamped on write, so a hand-edited config that slipped an
+   * out-of-range number in cannot make the selector behave nonsensically.
+   */
+  getFailoverCutoffs(provider: AgentId): FailoverCutoffs {
+    const stored = this.data.failoverCutoffs?.[provider];
+    return {
+      session: clampCutoff(stored?.session),
+      weekly: clampCutoff(stored?.weekly),
+    };
+  }
+
+  setFailoverCutoffs(provider: AgentId, cutoffs: Partial<FailoverCutoffs>): FailoverCutoffs {
+    const current = this.getFailoverCutoffs(provider);
+    const next: FailoverCutoffs = {
+      session: cutoffs.session === undefined ? current.session : clampCutoff(cutoffs.session),
+      weekly: cutoffs.weekly === undefined ? current.weekly : clampCutoff(cutoffs.weekly),
+    };
+    this.data.failoverCutoffs = { ...this.data.failoverCutoffs, [provider]: next };
+    this.save();
+    return next;
+  }
+
+  // ---- Account selection mode (docs/150 req 21) ----
+
+  /**
+   * Unrecognized stored values fall back to the default rather than being
+   * surfaced: this is read on the turn-routing path, where an unknown mode has
+   * no sensible behavior and failing the turn over a bad settings value would
+   * be worse than routing the way an untouched install does.
+   */
+  getSelectionMode(provider: AgentId): AccountSelectionMode {
+    const stored = this.data.accountSelectionMode?.[provider];
+    return stored === "strict" || stored === "balanced" ? stored : DEFAULT_SELECTION_MODE;
+  }
+
+  setSelectionMode(provider: AgentId, mode: AccountSelectionMode): AccountSelectionMode {
+    this.data.accountSelectionMode = { ...this.data.accountSelectionMode, [provider]: mode };
+    this.save();
+    return mode;
+  }
+
   // ---- Auto-resolve conflicts (docs/146) ----
 
   getAutoResolveConflicts(): boolean {
@@ -710,4 +754,15 @@ export class CredentialStore {
     this.data = {};
     this.save();
   }
+}
+
+/**
+ * docs/150 req 5 — a cutoff is a percentage, so anything outside 1–100 is
+ * meaningless. Clamped rather than rejected: this runs on read as well as
+ * write, and a config file that already holds a bad value should still yield a
+ * working selector rather than throwing on every turn.
+ */
+function clampCutoff(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_FAILOVER_CUTOFF;
+  return Math.min(100, Math.max(1, Math.round(value)));
 }

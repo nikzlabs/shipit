@@ -16,6 +16,7 @@ describe("handleSystemUserMessage (docs/150 dedupe)", () => {
   it("appends when no optimistic bubble matches (server-only dispatch path)", () => {
     handleSystemUserMessage(ctx, {
       type: "system_user_message",
+      sessionId: "s1",
       text: "Auto-fixing CI…",
       activity: "Auto-fixing CI...",
     });
@@ -25,6 +26,20 @@ describe("handleSystemUserMessage (docs/150 dedupe)", () => {
     expect(messages[0].pendingDispatch).toBeUndefined();
   });
 
+  it("preserves inter-session provenance on the receiving bubble", () => {
+    handleSystemUserMessage(ctx, {
+      type: "system_user_message",
+      sessionId: "child",
+      text: "Check the shared parser",
+      messageOrigin: { sessionId: "parent", sessionTitle: "Parser plan", relation: "parent" },
+    });
+
+    expect(useSessionStore.getState().messages[0]).toMatchObject({
+      role: "user",
+      messageOrigin: { sessionId: "parent", sessionTitle: "Parser plan", relation: "parent" },
+    });
+  });
+
   it("dedupes against the tail pendingDispatch bubble (HTTP-dispatch path)", () => {
     // Simulate the optimistic append from `dispatchAgentMessage`.
     useSessionStore.setState({
@@ -32,6 +47,7 @@ describe("handleSystemUserMessage (docs/150 dedupe)", () => {
     });
     handleSystemUserMessage(ctx, {
       type: "system_user_message",
+      sessionId: "s1",
       text: "Create the PR",
       activity: "Creating PR…",
     });
@@ -48,6 +64,7 @@ describe("handleSystemUserMessage (docs/150 dedupe)", () => {
     });
     handleSystemUserMessage(ctx, {
       type: "system_user_message",
+      sessionId: "s1",
       text: "Auto-fixing CI…",
     });
     const messages = useSessionStore.getState().messages;
@@ -65,6 +82,7 @@ describe("handleSystemUserMessage (docs/150 dedupe)", () => {
     });
     handleSystemUserMessage(ctx, {
       type: "system_user_message",
+      sessionId: "s1",
       text: "Queued user input",
     });
     const messages = useSessionStore.getState().messages;

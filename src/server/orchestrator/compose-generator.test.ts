@@ -8,6 +8,9 @@ import {
   generateComposeOverride,
   writeComposeOverride,
   ComposeValidationError,
+  validateDevices,
+  isDevKvmAllowed,
+  ALLOWED_DEVICE,
 } from "./compose-generator.js";
 
 describe("parseComposeFile", () => {
@@ -44,6 +47,21 @@ services:
     expect(services[0].name).toBe("web");
     expect(services[0].ports).toEqual(["5173:5173"]);
     expect(services[1].name).toBe("db");
+  });
+
+  it("captures an explicit user: field (#1646)", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    user: "1001:1001"
+  db:
+    image: postgres:16
+`);
+    const services = parseComposeFile(p, { dockerSocket: false });
+    expect(services[0].user).toBe("1001:1001");
+    expect(services[1].user).toBeUndefined();
   });
 
   it("extracts x-shipit-preview values", () => {
@@ -172,6 +190,45 @@ services:
     network_mode: host
 `);
     expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("network_mode: host");
+  });
+
+  // docs/213 Phase 3 — the Android emulator service needs /dev/kvm. ShipIt
+  // allows exactly that one device mapping and rejects any other passthrough.
+  it("accepts the exact /dev/kvm:/dev/kvm device mapping (emulator)", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  emulator:
+    image: budtmo/docker-android:emulator_14.0
+    devices: ["/dev/kvm:/dev/kvm"]
+    expose: ["5555"]
+`);
+    const services = parseComposeFile(p, { dockerSocket: false });
+    expect(services).toHaveLength(1);
+    expect(services[0].name).toBe("emulator");
+  });
+
+  it("rejects any device other than /dev/kvm", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  bad:
+    image: node:20
+    devices: ["/dev/sda:/dev/sda"]
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow(ComposeValidationError);
+    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("is not allowed");
+  });
+
+  it("rejects a /dev/kvm host remapped to a different container device", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  sneaky:
+    image: node:20
+    devices: ["/dev/kvm:/dev/sda"]
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("is not allowed");
   });
 
   it("rejects Docker socket mount when docker-socket is false", () => {
@@ -425,6 +482,84 @@ describe("generateComposeOverride", () => {
   });
 });
 
+// #1646 — when the non-root worker runtime is active, compose services must run
+// as the same UID so dev-server caches in the shared workspace are agent-owned
+// and a terminal `npm run build` doesn't EACCES on a root-owned `.vite` dir.
+describe("generateComposeOverride — session-worker UID (#1646)", () => {
+  const baseOpts = {
+    sessionId: "test-session-123",
+    composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+  };
+  const origUid = process.env.SHIPIT_SESSION_WORKER_UID;
+  afterEach(() => {
+    if (origUid === undefined) delete process.env.SHIPIT_SESSION_WORKER_UID;
+    else process.env.SHIPIT_SESSION_WORKER_UID = origUid;
+  });
+
+  it("does not set user when SHIPIT_SESSION_WORKER_UID is unset (legacy all-root)", () => {
+    delete process.env.SHIPIT_SESSION_WORKER_UID;
+    const override = generateComposeOverride([{ name: "web", ports: ["5173:5173"] }], baseOpts);
+    const doc = parseYaml(override) as { services: Record<string, { user?: string }> };
+    expect(doc.services.web.user).toBeUndefined();
+  });
+
+  it("runs services as the worker UID when the var is set", () => {
+    process.env.SHIPIT_SESSION_WORKER_UID = "1000";
+    const override = generateComposeOverride([{ name: "web", ports: ["5173:5173"] }], baseOpts);
+    const doc = parseYaml(override) as { services: Record<string, { user?: string }> };
+    expect(doc.services.web.user).toBe("1000:1000");
+  });
+
+  it("applies the UID to every service in the stack", () => {
+    process.env.SHIPIT_SESSION_WORKER_UID = "1000";
+    const override = generateComposeOverride(
+      [{ name: "web", ports: ["5173:5173"] }, { name: "api", ports: ["3000:3000"] }],
+      baseOpts,
+    );
+    const doc = parseYaml(override) as { services: Record<string, { user?: string }> };
+    expect(doc.services.web.user).toBe("1000:1000");
+    expect(doc.services.api.user).toBe("1000:1000");
+  });
+
+  it("keeps the ops docker-socket-proxy image startup user so HAProxy config generation can run", () => {
+    process.env.SHIPIT_SESSION_WORKER_UID = "1000";
+    const override = generateComposeOverride(
+      [{ name: "docker-socket-proxy", shipitPreview: "auto" }],
+      { ...baseOpts, composeConfig: { file: "docker-compose.yml", dockerSocket: true } },
+    );
+    const doc = parseYaml(override) as { services: Record<string, { user?: string; cap_drop?: string[] }> };
+    expect(doc.services["docker-socket-proxy"].user).toBeUndefined();
+    expect(doc.services["docker-socket-proxy"].cap_drop).toEqual(["NET_RAW"]);
+  });
+
+  it("honors an explicit user: from the compose file and never overrides it", () => {
+    process.env.SHIPIT_SESSION_WORKER_UID = "1000";
+    const override = generateComposeOverride(
+      [{ name: "web", ports: ["5173:5173"], user: "root" }],
+      baseOpts,
+    );
+    const doc = parseYaml(override) as { services: Record<string, { user?: string }> };
+    // The override omits `user:` so compose merge keeps the user's `root`.
+    expect(doc.services.web.user).toBeUndefined();
+  });
+
+  // docs/213 — the Android emulator image (budtmo) runs as its own baked-in user
+  // and keeps startup scripts under /home/androidusr. Forcing the session-worker
+  // UID onto it fails at boot with:
+  //   sh: /home/androidusr/docker-android/mixins/scripts/run.sh: Permission denied
+  // The canonical recipe declares `user: androidusr`; this pins that a *named*
+  // (non-numeric) user survives the override, not just a numeric one.
+  it("preserves a named user: so images with their own baked-in user still boot", () => {
+    process.env.SHIPIT_SESSION_WORKER_UID = "1000";
+    const override = generateComposeOverride(
+      [{ name: "emulator", ports: ["6080:6080"], user: "androidusr" }],
+      baseOpts,
+    );
+    const doc = parseYaml(override) as { services: Record<string, { user?: string }> };
+    expect(doc.services.emulator.user).toBeUndefined();
+  });
+});
+
 describe("writeComposeOverride", () => {
   let tmpDir: string;
 
@@ -437,51 +572,49 @@ describe("writeComposeOverride", () => {
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("writes override file to .shipit directory", () => {
+  // docs/246 — the override is written to the directory it's GIVEN (the
+  // session's state dir in production), not to a `.shipit/` subdirectory of a
+  // clone. That is the whole point of the move: `git add -A` can't reach it.
+  it("writes the override into the given directory", () => {
     const dir = setup();
     const content = "services: {}\n";
     const result = writeComposeOverride(dir, content);
-    expect(result).toBe(path.join(dir, ".shipit", "compose.override.yml"));
+    expect(result).toBe(path.join(dir, "compose.override.yml"));
     expect(fs.readFileSync(result, "utf-8")).toBe(content);
   });
 
-  it("creates .shipit directory if it doesn't exist", () => {
+  it("creates the target directory if it doesn't exist", () => {
     const dir = setup();
-    writeComposeOverride(dir, "test");
-    expect(fs.existsSync(path.join(dir, ".shipit"))).toBe(true);
+    const target = path.join(dir, "state");
+    writeComposeOverride(target, "test");
+    expect(fs.existsSync(path.join(target, "compose.override.yml"))).toBe(true);
   });
 
-  // docs/150 §7 addendum (SHI-31): the override is written by the root
-  // orchestrator into the worker-owned workspace; without the handoff it lands
-  // root:root and the agent's own `docker compose` (worker uid) can't read it.
-  describe("session-worker chown (SHI-31)", () => {
-    const origUid = process.env.SHIPIT_SESSION_WORKER_UID;
-    afterEach(() => {
-      if (origUid === undefined) delete process.env.SHIPIT_SESSION_WORKER_UID;
-      else process.env.SHIPIT_SESSION_WORKER_UID = origUid;
-    });
+  it("never creates a .shipit directory in the caller's tree", () => {
+    const dir = setup();
+    writeComposeOverride(path.join(dir, "state"), "services: {}\n");
+    expect(fs.existsSync(path.join(dir, ".shipit"))).toBe(false);
+  });
 
-    it("chowns the override + .shipit dir to the worker uid when the flag is set", () => {
-      const myUid = process.getuid?.();
-      if (myUid === undefined) return; // not POSIX — skip
-      // Chowning to our OWN uid needs no CAP_CHOWN, so we can exercise the
-      // real path without root.
-      process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
-      const dir = setup();
-      const result = writeComposeOverride(dir, "services: {}\n");
-      expect(fs.lstatSync(result).uid).toBe(myUid);
-      expect(fs.lstatSync(path.join(dir, ".shipit")).uid).toBe(myUid);
-    });
-
-    it("leaves ownership untouched when the flag is unset", () => {
-      delete process.env.SHIPIT_SESSION_WORKER_UID;
+  // docs/246 — the docs/150 §7 chown handoff is deliberately GONE. It existed
+  // because the override lived in the worker-owned clone; the state dir is not
+  // mounted into the container, so there is no worker uid to hand it to and a
+  // chown here would only obscure that.
+  it("does not chown the override, even with the worker-uid flag set", () => {
+    const myUid = process.getuid?.();
+    if (myUid === undefined) return; // not POSIX — skip
+    const orig = process.env.SHIPIT_SESSION_WORKER_UID;
+    process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
+    try {
       const dir = setup();
       const result = writeComposeOverride(dir, "services: {}\n");
       const before = fs.lstatSync(result).uid;
-      // Re-write to prove no chown side effect on the existing file.
       writeComposeOverride(dir, "services: {}\n");
       expect(fs.lstatSync(result).uid).toBe(before);
-    });
+    } finally {
+      if (orig === undefined) delete process.env.SHIPIT_SESSION_WORKER_UID;
+      else process.env.SHIPIT_SESSION_WORKER_UID = orig;
+    }
   });
 });
 
@@ -694,13 +827,15 @@ describe("generateComposeOverride env_file injection", () => {
     composeConfig: { file: "docker-compose.yml", dockerSocket: false },
   };
 
+  const ENV_ROOT = "/state/service-env/test-session-123";
+
   it("adds env_file reference for services with declared secrets", () => {
     const override = generateComposeOverride(
       [{ name: "api", secrets: ["DATABASE_URL"] }],
-      baseOpts,
+      { ...baseOpts, serviceEnvFiles: { api: `${ENV_ROOT}/.env.api` } },
     );
     expect(override).toContain("env_file:");
-    expect(override).toContain(".shipit/.env.api");
+    expect(override).toContain(`${ENV_ROOT}/.env.api`);
   });
 
   it("does not add env_file for services without secrets", () => {
@@ -717,10 +852,16 @@ describe("generateComposeOverride env_file injection", () => {
         { name: "web", secrets: ["STRIPE_KEY"] },
         { name: "api", secrets: ["DATABASE_URL"] },
       ],
-      baseOpts,
+      {
+        ...baseOpts,
+        serviceEnvFiles: {
+          web: `${ENV_ROOT}/.env.web`,
+          api: `${ENV_ROOT}/.env.api`,
+        },
+      },
     );
-    expect(override).toContain(".shipit/.env.web");
-    expect(override).toContain(".shipit/.env.api");
+    expect(override).toContain(`${ENV_ROOT}/.env.web`);
+    expect(override).toContain(`${ENV_ROOT}/.env.api`);
   });
 
   // docs/183 — out-of-workspace env-file paths
@@ -745,7 +886,11 @@ describe("generateComposeOverride env_file injection", () => {
     expect(override).not.toContain(".shipit/.env.api");
   });
 
-  it("falls back to .shipit/.env.<service> when a service is missing from serviceEnvFiles", () => {
+  // SHI-290 — a service missing from the map gets NO env_file rather than the
+  // old `.shipit/.env.<service>` fallback. Nothing writes that file any more, so
+  // referencing it would fail the whole stack at `up` time instead of one
+  // service, and it named a path inside the user's git clone (docs/246 req 7).
+  it("emits no env_file for a service missing from serviceEnvFiles", () => {
     const override = generateComposeOverride(
       [
         { name: "web", secrets: ["STRIPE_KEY"] },
@@ -760,7 +905,7 @@ describe("generateComposeOverride env_file injection", () => {
       },
     );
     expect(override).toContain("/workspace/service-env/test-session-123/.env.web");
-    expect(override).toContain(".shipit/.env.api");
+    expect(override).not.toContain(".env.api");
   });
 });
 
@@ -780,7 +925,7 @@ describe("generateComposeOverride — Docker-secrets mode", () => {
       secretNames: allNames,
       perService,
       filePathFor: (name: string) => `/host/secrets/test-session-123/${name}`,
-      entrypointWorkspacePath: ".shipit/secrets-entrypoint.sh",
+      entrypointHostPath: "/host/secrets/_entrypoint/secrets-entrypoint.sh",
     };
   }
 
@@ -857,6 +1002,51 @@ describe("generateComposeOverride — Docker-secrets mode", () => {
     // redis service block shouldn't contain the entrypoint hijack
     const afterRedis = override.slice(redisIdx, redisIdx + 200);
     expect(afterRedis).not.toContain("secrets-entrypoint");
+  });
+
+  // SHI-285 — the wrapper mount used to come out of the workspace volume, which
+  // is why a generated `secrets-entrypoint.sh` had to be copied into the user's
+  // git clone (docs/246 req 1). It is now bind-mounted from its staged absolute
+  // path, so the mount is identical whether or not a workspace volume exists.
+  it("bind-mounts the wrapper from its absolute staged path, even with a workspace volume", () => {
+    const override = generateComposeOverride(
+      [{ name: "api", secrets: ["DATABASE_URL"], volumes: [".:/app"] }],
+      {
+        ...baseOpts,
+        workspaceVolume: "shipit-dev_workspace",
+        workspaceSubpath: "sessions/test-session-123/workspace",
+        dockerSecrets: dockerSecretsOpts({ api: ["DATABASE_URL"] }),
+      },
+    );
+    const parsed = parseYaml(override) as {
+      services: Record<string, { volumes?: Record<string, unknown>[]; entrypoint?: string[] }>;
+    };
+    const wrapper = parsed.services.api!.volumes!.find(
+      (v) => v.target === "/shipit/secrets-entrypoint.sh",
+    );
+    expect(wrapper).toEqual({
+      type: "bind",
+      source: "/host/secrets/_entrypoint/secrets-entrypoint.sh",
+      target: "/shipit/secrets-entrypoint.sh",
+      read_only: true,
+    });
+    expect(parsed.services.api!.entrypoint).toEqual(["/shipit/secrets-entrypoint.sh"]);
+    // Nothing anchors the wrapper to the clone any more.
+    expect(override).not.toContain(".shipit/secrets-entrypoint.sh");
+  });
+
+  it("omits the entrypoint hijack when the wrapper could not be staged", () => {
+    const { entrypointHostPath: _dropped, ...noEntrypoint } = dockerSecretsOpts({
+      api: ["DATABASE_URL"],
+    });
+    const override = generateComposeOverride(
+      [{ name: "api", secrets: ["DATABASE_URL"] }],
+      { ...baseOpts, dockerSecrets: noEntrypoint },
+    );
+    // Secrets are still delivered as files; only the env-var wrapper is absent,
+    // so the service boots rather than failing on a mount source that isn't there.
+    expect(override).toContain("shipit-DATABASE_URL");
+    expect(override).not.toContain("secrets-entrypoint");
   });
 });
 
@@ -978,5 +1168,66 @@ describe("generateComposeOverride — overlay dep-dir mounts (docs/183 Phase 5)"
     expect(atNodeModules).toEqual([
       { type: "volume", source: NM.volumeName, target: "/app/node_modules" },
     ]);
+  });
+});
+
+describe("isDevKvmAllowed (docs/213 operator kill-switch)", () => {
+  it("defaults to allowed when unset", () => {
+    expect(isDevKvmAllowed({})).toBe(true);
+  });
+
+  it("treats 0/false/no/off (any case) as disabled", () => {
+    for (const v of ["0", "false", "FALSE", "no", "Off", " off "]) {
+      expect(isDevKvmAllowed({ SESSION_ALLOW_DEV_KVM: v })).toBe(false);
+    }
+  });
+
+  it("treats any other value as allowed", () => {
+    for (const v of ["1", "true", "yes", "on", ""]) {
+      expect(isDevKvmAllowed({ SESSION_ALLOW_DEV_KVM: v })).toBe(true);
+    }
+  });
+});
+
+describe("validateDevices (docs/213 — only /dev/kvm)", () => {
+  it("is a no-op when devices is absent", () => {
+    expect(() => validateDevices("svc", { image: "x" }, true)).not.toThrow();
+  });
+
+  it("accepts the exact /dev/kvm mapping in every supported form", () => {
+    const forms: unknown[] = [
+      "/dev/kvm",
+      "/dev/kvm:/dev/kvm",
+      "/dev/kvm:/dev/kvm:rwm", // cgroup permissions are ignored
+      { source: "/dev/kvm", target: "/dev/kvm" },
+      { source: "/dev/kvm" }, // target defaults to source
+    ];
+    for (const dev of forms) {
+      expect(() => validateDevices("emulator", { devices: [dev] }, true)).not.toThrow();
+    }
+    expect(ALLOWED_DEVICE).toBe("/dev/kvm");
+  });
+
+  it("rejects any other device, and a /dev/kvm host remapped to another container device", () => {
+    const bad: unknown[] = [
+      "/dev/sda",
+      "/dev/sda:/dev/sda",
+      "/dev/snd:/dev/snd:rwm",
+      "/dev/kvm:/dev/sda", // host is kvm but container target is not
+      "/dev/sda:/dev/kvm", // container is kvm but host source is not
+      { source: "/dev/sda", target: "/dev/sda" },
+    ];
+    for (const dev of bad) {
+      expect(() => validateDevices("svc", { devices: [dev] }, true)).toThrow("is not allowed");
+    }
+  });
+
+  it("rejects a non-list devices value", () => {
+    expect(() => validateDevices("svc", { devices: "/dev/kvm" }, true)).toThrow("must be a list");
+  });
+
+  it("rejects even /dev/kvm when the operator kill-switch is off", () => {
+    expect(() => validateDevices("emulator", { devices: ["/dev/kvm:/dev/kvm"] }, false))
+      .toThrow("disabled on this deployment");
   });
 });

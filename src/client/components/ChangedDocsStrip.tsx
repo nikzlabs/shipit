@@ -59,6 +59,12 @@ const KIND_ICON_CLASS: Record<NotableFileChange["kind"], string> = {
   image: "text-(--color-text-link)",
 };
 
+/**
+ * One changed-file chip. Labelled by its compact path (`246/plan.md`) rather
+ * than a document title — the strip is a flat PR file list, so the file is the
+ * useful identity here and a feature's `plan.md`/`checklist.md` stay tellable
+ * apart. The full path (plus status) stays in the `title=` tooltip.
+ */
 function ChangedDocChip({ sessionId, file }: { sessionId: string; file: NotableFileChange }) {
   const Icon = KIND_ICON[file.kind];
   const iconColor = KIND_ICON_CLASS[file.kind];
@@ -71,7 +77,7 @@ function ChangedDocChip({ sessionId, file }: { sessionId: string; file: NotableF
       className="inline-flex items-center gap-1.5 max-w-full pl-2 pr-2.5 py-1 rounded-full text-xs cursor-pointer text-(--color-text-primary) bg-(--color-bg-tertiary) border border-(--color-border-secondary) hover:border-(--color-text-tertiary) hover:bg-(--color-bg-hover) transition-colors"
     >
       <Icon size={ICON_SIZE.XS} className={`shrink-0 ${iconColor}`} />
-      <span className="truncate">{file.title}</span>
+      <span className="truncate">{file.label}</span>
       <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${STATUS_DOT_CLASS[file.status]}`} />
     </button>
   );

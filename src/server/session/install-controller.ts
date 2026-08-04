@@ -15,6 +15,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
+import { killChild } from "../shared/kill-child.js";
 import type { McpServerConfig } from "./agents/agent-process.js";
 import type { WorkerSSEEvent } from "./sse-broadcaster.js";
 import type { McpConfigController } from "./mcp-config-controller.js";
@@ -33,9 +34,18 @@ import { formatInstallFailureMessage, INSTALL_STDERR_TAIL_BYTES } from "./instal
 import { computeInstallDepsHash } from "../shared/deps-hash.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { createDepSnapshotTar, safeDepDirRelpath } from "./dep-snapshot.js";
+import { INSTALL_MARKER_FILE } from "../shared/fs-constants.js";
 
 export interface InstallControllerDeps {
   workspaceDir: string;
+  /**
+   * docs/246 — where the install marker lives, in the container's own path
+   * namespace (`/session-state`, a mount of the session's state dir). Injected
+   * rather than read from the environment here so a worker running WITHOUT the
+   * mount — every in-process integration test — can point it at a real
+   * directory instead of failing to create one at the filesystem root.
+   */
+  stateDir: string;
   broadcast: (event: WorkerSSEEvent) => void;
   mcpConfig: McpConfigController;
 }
@@ -65,6 +75,10 @@ export class InstallController {
 
   private get workspaceDir(): string {
     return this.deps.workspaceDir;
+  }
+
+  private get stateDir(): string {
+    return this.deps.stateDir;
   }
 
   private broadcastSSE(event: WorkerSSEEvent): void {
@@ -102,8 +116,8 @@ export class InstallController {
       // and `agent.install` re-runs. Checked before the `running` guard so a
       // finished pre-install that wrote the marker (warm-pool path) but hasn't
       // yet flipped `_installRunning` still short-circuits cleanly.
-      const markerDir = path.join(this.workspaceDir, ".shipit");
-      const markerFile = path.join(markerDir, ".install-done");
+      const markerDir = this.stateDir;
+      const markerFile = path.join(markerDir, INSTALL_MARKER_FILE);
       const stamp: InstallMarkerStamp = {
         sourceCommit: await this.readSourceCommit(),
         runtimeKey: runtimeKey(),
@@ -116,8 +130,9 @@ export class InstallController {
       };
       if (await this.installMarkerMatches(markerFile, stamp)) {
         // docs/183 — a matching marker is only trustworthy if every declared dep
-        // dir actually holds content. The marker lives in the host clone; the
-        // deps live in the dep dir (an overlay mount when OVERLAY_DEP_STORE is on,
+        // dir actually holds content. The marker lives in the session state dir
+        // (docs/246, outside the clone); the deps live in the dep dir *inside*
+        // the clone (an overlay mount when OVERLAY_DEP_STORE is on,
         // a plain dir in the clone otherwise), and the two can disagree:
         //   • Flag newly ON: a container recreated with the flag enabled mounts an
         //     EMPTY overlay over previously-installed deps — skipping would leave
@@ -268,7 +283,7 @@ export class InstallController {
   /** Kill any in-flight install process (worker shutdown). */
   stop(): void {
     if (this._installProcess) {
-      this._installProcess.kill();
+      killChild(this._installProcess);
       this._installProcess = null;
       this._installRunning = false;
     }
@@ -407,7 +422,9 @@ export class InstallController {
   }
 
   /**
-   * Write the stamped `.shipit/.install-done` marker (docs/183 Phase 3). The
+   * Write the stamped `.install-done` marker (docs/183 Phase 3) into the
+   * container-visible slice of the session state dir — docs/246 moved it out of
+   * `<clone>/.shipit/`, where `git add -A` could commit it. The
    * stamp records the source commit + runtime fingerprint + install commands
    * the install ran against, so a later `/install` skips only on an exact match.
    */

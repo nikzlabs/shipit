@@ -1,12 +1,13 @@
 /**
  * Compose override file generator.
  *
- * Reads a user's docker-compose.yml and generates `.shipit/compose.override.yml`
+ * Reads a user's docker-compose.yml and generates a `compose.override.yml`
  * that layers on ShipIt's labels, network, volume rewrites, and security policies.
- * The user's file is never modified.
+ * The user's file is never modified, and the override is written to the session's
+ * state dir rather than the clone (docs/246 — see {@link writeComposeOverride}).
  *
  * The override is used with:
- *   docker compose -f <user-file> -f .shipit/compose.override.yml up -d
+ *   docker compose -f <user-file> -f <state-dir>/compose.override.yml up -d
  */
 
 import fs from "node:fs";
@@ -14,7 +15,8 @@ import path from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import type { ComposeConfig } from "../shared/shipit-config.js";
 import type { SecretRequirement } from "../shared/types/domain-types.js";
-import { chownToSessionWorker } from "./session-worker-uid.js";
+import { sessionWorkerUid } from "./session-worker-uid.js";
+import { COMPOSE_OVERRIDE_FILE } from "./session-state-dir.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -57,6 +59,13 @@ export interface ComposeService {
    * shorthand).
    */
   secretRequirements?: SecretRequirement[];
+  /**
+   * Explicit `user:` declared by the service in the user's compose file, if any.
+   * When set, ShipIt honors it and does NOT inject the session-worker UID
+   * (see {@link generateComposeOverride}). Captured as a string so both the
+   * `1000` and `1000:1000` / named forms round-trip.
+   */
+  user?: string;
 }
 
 export interface ComposeOverrideOptions {
@@ -105,20 +114,34 @@ export interface ComposeOverrideOptions {
     /** Returns the compose-side `file:` path for a given secret name. */
     filePathFor: (name: string) => string;
     /**
-     * Workspace-relative path to the entrypoint wrapper script
-     * (`secrets-entrypoint.sh`), e.g. `.shipit/secrets-entrypoint.sh`.
-     * The override mounts it into each service container at
+     * SHI-285 — absolute, DAEMON-SIDE path of the staged entrypoint wrapper
+     * (`stageSecretsEntrypoint()`), e.g.
+     * `/var/lib/shipit/secrets/_entrypoint/secrets-entrypoint.sh`. The override
+     * bind-mounts it into each secret-consuming service container at
      * `/shipit/secrets-entrypoint.sh` and sets it as the entrypoint.
+     *
+     * It used to be a workspace-RELATIVE path mounted through the workspace
+     * volume, which required the wrapper to live inside the user's git clone.
+     * The daemon resolves this path the same way it resolves the `file:`
+     * references in the top-level `secrets:` block, so both come from the same
+     * `hostDir` mapping and are correct together or wrong together.
+     *
+     * Absent when staging failed — the service then gets its `secrets:`
+     * references without the wrapper rather than a mount of a path that
+     * doesn't exist.
      */
-    entrypointWorkspacePath: string;
+    entrypointHostPath?: string;
   };
   /**
-   * docs/183 — service-name → absolute env-file path for services that
-   * declare `x-shipit-secrets`. When provided (out-of-workspace env-file
-   * mode), the service's `env_file:` entry uses this absolute path instead
-   * of the workspace-relative `.shipit/.env.<service>`. A service missing
-   * from the map falls back to the workspace path, so partial maps and the
-   * no-map (test / legacy) case both behave correctly.
+   * docs/183 — service-name → absolute env-file path for services that declare
+   * `x-shipit-secrets`. The service's `env_file:` entry uses this path, which
+   * always resolves outside the session's git clone.
+   *
+   * A service missing from the map gets **no** `env_file:` entry rather than a
+   * fallback path (SHI-290 — there is no longer an in-clone file to fall back
+   * to). `ServiceSecretsResolver.sync()` populates one entry per
+   * secret-declaring service and always runs before the override is generated,
+   * so a gap here means secrets haven't been resolved at all.
    *
    * Ignored when `dockerSecrets` is active (that mode uses `secrets:`, not
    * `env_file:`).
@@ -306,6 +329,11 @@ export function parseComposeFile(
     const requirements = parseSecretEntries(name, svc["x-shipit-secrets"]);
     const secrets = requirements?.map((r) => r.name);
 
+    // Preserve an explicit `user:` so the override doesn't clobber it. Compose
+    // accepts string (`node`, `1000:1000`) and bare-number forms.
+    const user =
+      typeof svc.user === "string" || typeof svc.user === "number" ? String(svc.user) : undefined;
+
     result.push({
       name,
       ports,
@@ -315,6 +343,7 @@ export function parseComposeFile(
       volumes,
       secrets,
       secretRequirements: requirements,
+      user,
     });
   }
 
@@ -384,6 +413,86 @@ function parseSecretEntries(
 }
 
 /**
+ * The one device mapping ShipIt permits through to a Compose service:
+ * `/dev/kvm` → `/dev/kvm`, for Android-emulator hardware acceleration (docs/213).
+ * This is NOT a general devices passthrough — every other device is rejected.
+ */
+export const ALLOWED_DEVICE = "/dev/kvm";
+
+/**
+ * Operator kill-switch for the `/dev/kvm` passthrough. Default ON — the emulator
+ * tier needs it and the user opts in *per-service* by declaring the device, so
+ * the floor is "allowed". An operator sets `SESSION_ALLOW_DEV_KVM=0` (also
+ * `false`/`no`/`off`) to disable it deployment-wide — e.g. on a shared or
+ * multi-tenant host that shouldn't expose KVM. This is the deployment-level
+ * gate the design called for, NOT a per-repo `shipit.yaml` field.
+ */
+export function isDevKvmAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
+  const v = env.SESSION_ALLOW_DEV_KVM?.trim().toLowerCase();
+  return !(v === "0" || v === "false" || v === "no" || v === "off");
+}
+
+/**
+ * Parse one compose `devices` entry into its host/container device paths.
+ * Supports the short string form `HOST[:CONTAINER[:PERMS]]` and the long object
+ * form `{ source, target, permissions }`. Returns null for unparseable entries.
+ * Cgroup permissions are ignored — they scope r/w/m on the device, not which
+ * device, so they can't widen past the path check below.
+ */
+function parseDeviceEntry(dev: unknown): { host: string; container: string } | null {
+  if (typeof dev === "string") {
+    const parts = dev.split(":").map((p) => p.trim());
+    const host = parts[0];
+    if (!host) return null;
+    return { host, container: parts[1] || host };
+  }
+  if (dev && typeof dev === "object") {
+    const o = dev as Record<string, unknown>;
+    if (typeof o.source === "string" && o.source.trim()) {
+      const host = o.source.trim();
+      const target = typeof o.target === "string" && o.target.trim() ? o.target.trim() : host;
+      return { host, container: target };
+    }
+  }
+  return null;
+}
+
+/**
+ * Validate a service's `devices:`. ShipIt allows exactly ONE mapping —
+ * `/dev/kvm:/dev/kvm` (Android-emulator hardware acceleration, docs/213) — and
+ * rejects everything else; it is not a general device passthrough. The single
+ * allowed device is itself gated by the operator kill-switch ({@link isDevKvmAllowed}).
+ */
+export function validateDevices(
+  name: string,
+  svc: Record<string, unknown>,
+  allowDevKvm: boolean,
+): void {
+  if (svc.devices === undefined) return;
+  if (!Array.isArray(svc.devices)) {
+    throw new ComposeValidationError(`Service \`${name}\`: \`devices\` must be a list.`);
+  }
+  for (const dev of svc.devices) {
+    const parsed = parseDeviceEntry(dev);
+    // parsed === null (unparseable) → `undefined !== ALLOWED_DEVICE` is true → rejected.
+    if (parsed?.host !== ALLOWED_DEVICE || parsed?.container !== ALLOWED_DEVICE) {
+      const shown = typeof dev === "string" ? dev : JSON.stringify(dev);
+      throw new ComposeValidationError(
+        `Service \`${name}\`: device \`${shown}\` is not allowed. ShipIt only permits the ` +
+        `exact \`/dev/kvm:/dev/kvm\` mapping (Android-emulator hardware acceleration); ` +
+        `no other device passthrough is supported.`,
+      );
+    }
+    if (!allowDevKvm) {
+      throw new ComposeValidationError(
+        `Service \`${name}\`: \`/dev/kvm\` passthrough is disabled on this deployment ` +
+        `(SESSION_ALLOW_DEV_KVM=0). Ask the operator to enable it, or use a cloud device farm.`,
+      );
+    }
+  }
+}
+
+/**
  * Validate security constraints for a compose service definition.
  */
 function validateServiceSecurity(
@@ -406,6 +515,9 @@ function validateServiceSecurity(
       `Use explicit port mappings instead.`,
     );
   }
+
+  // Reject device passthrough except the exact /dev/kvm mapping (docs/213).
+  validateDevices(name, svc, isDevKvmAllowed());
 
   // Check volumes for Docker socket and path traversal
   if (Array.isArray(svc.volumes)) {
@@ -658,6 +770,31 @@ export function generateComposeOverride(
       cap_drop: ["NET_RAW"],
     };
 
+    // docs/150 §7 / #1646 — run compose services as the same UID the session
+    // worker drops to, so files a dev server writes into the SHARED workspace
+    // (e.g. `node_modules/.vite`, framework build caches) are owned by the agent
+    // user. Otherwise a root-owned cache from the running dev server makes a
+    // one-off `npm run build` in the terminal (run as `shipit`) fail with EACCES
+    // when the tool tries to rmdir/overwrite it — and `sudo` isn't available.
+    // Symmetric with the worker entrypoint's `gosu ${UID}:${UID}` and the
+    // orchestrator's §7 chowns, all gated on the same env var:
+    //   - unset (legacy default) → no-op; worker AND services are both root, so
+    //     there's no ownership mismatch to begin with.
+    //   - set (e.g. 1000) → both sides share the UID; one deploy flips both.
+    // An explicit `user:` in the user's compose file is honored — we never
+    // override a deliberate choice.
+    const workerUid = sessionWorkerUid();
+    // docs/128 — the ops docker-socket-proxy image must start as its image
+    // default user so its entrypoint can generate
+    // /usr/local/etc/haproxy/haproxy.cfg before haproxy drops privileges. The
+    // read-only Docker security boundary is enforced by the proxy's env
+    // allowlist and the read-only socket mount, not by forcing this service to
+    // the session worker UID.
+    const preservesImageStartupUser = svc.name === "docker-socket-proxy";
+    if (workerUid !== null && svc.user === undefined && !preservesImageStartupUser) {
+      entry.user = `${workerUid}:${workerUid}`;
+    }
+
     // Strip host port bindings — compose services are accessed through
     // the preview proxy via the session network, not direct host ports.
     // Publishing to the host causes "port already allocated" conflicts.
@@ -682,38 +819,40 @@ export function generateComposeOverride(
       const consumed = (ds.perService[svc.name] ?? []).filter((n) => ds.secretNames.includes(n));
       if (consumed.length > 0) {
         entry.secrets = consumed.map((n) => `shipit-${n}`);
-        // Mount the entrypoint wrapper read-only into the container. We
-        // reuse the workspace-volume mount (the wrapper is copied into
-        // .shipit/) so this works on both volume-backed and bind-mount
-        // setups without changing the host bind path.
-        const existingVolumes = (entry.volumes as unknown[] | undefined) ?? [];
-        const wrapperMount: Record<string, unknown> = opts.workspaceVolume
-          ? {
-            type: "volume",
-            source: "shipit-workspace",
+        // SHI-285 — bind-mount the wrapper read-only from its staged absolute
+        // path. One mount shape for every setup: the wrapper no longer rides
+        // the workspace volume (which is what forced it to live inside the
+        // user's git clone), and the daemon resolves this source exactly as it
+        // resolves the `secrets: file:` paths above it.
+        if (ds.entrypointHostPath) {
+          const existingVolumes = (entry.volumes as unknown[] | undefined) ?? [];
+          entry.volumes = [...existingVolumes, {
+            type: "bind",
+            source: ds.entrypointHostPath,
             target: "/shipit/secrets-entrypoint.sh",
             read_only: true,
-            volume: { subpath: opts.workspaceSubpath
-              ? `${opts.workspaceSubpath}/${ds.entrypointWorkspacePath}`
-              : ds.entrypointWorkspacePath },
-          }
-          : { type: "bind", source: `./${ds.entrypointWorkspacePath}`, target: "/shipit/secrets-entrypoint.sh", read_only: true };
-        entry.volumes = [...existingVolumes, wrapperMount];
-        // Override the entrypoint to the wrapper. The wrapper exec's
-        // "$@" so the user's command runs unchanged. We don't touch
-        // `command:` here — leaving it unset means compose merges the
-        // user's compose-file value, which is what we want.
-        entry.entrypoint = ["/shipit/secrets-entrypoint.sh"];
+          }];
+          // Override the entrypoint to the wrapper. The wrapper exec's
+          // "$@" so the user's command runs unchanged. We don't touch
+          // `command:` here — leaving it unset means compose merges the
+          // user's compose-file value, which is what we want.
+          entry.entrypoint = ["/shipit/secrets-entrypoint.sh"];
+        }
       }
     } else if (svc.secrets && svc.secrets.length > 0) {
       // Inject the per-service secrets env file if the service declared any
       // secrets via `x-shipit-secrets`. The orchestrator writes the file before
-      // running `docker compose up` (see secret-resolver.ts). docs/183: in
-      // out-of-workspace env-file mode the file lives at an absolute path
-      // outside the workspace (`serviceEnvFiles[name]`); otherwise it falls
-      // back to the workspace-relative `.shipit/.env.<service>`.
-      const envFilePath = opts.serviceEnvFiles?.[svc.name] ?? `.shipit/.env.${svc.name}`;
-      entry.env_file = [envFilePath];
+      // running `docker compose up` (see secret-resolver.ts), at an absolute
+      // path outside the workspace (docs/183).
+      //
+      // No entry → no `env_file:`. There used to be a
+      // `?? \`.shipit/.env.${svc.name}\`` fallback for the in-workspace write
+      // path; that writer is gone (SHI-290), so the fallback would now name a
+      // file nothing creates and fail the whole stack at `up` time. Absence
+      // means `sync()` hasn't run, which is also when there is no file to point
+      // at.
+      const envFilePath = opts.serviceEnvFiles?.[svc.name];
+      if (envFilePath) entry.env_file = [envFilePath];
     }
 
     // docs/183 Phase 5 — append nested overlay dep-dir mounts for services that
@@ -800,24 +939,26 @@ export function generateComposeOverride(
 }
 
 /**
- * Write the compose override file to `.shipit/compose.override.yml`
- * in the given workspace directory. Creates the `.shipit/` directory
- * if it doesn't exist.
+ * Write the compose override into `targetDir`, creating it if needed, and
+ * return the absolute path written.
+ *
+ * docs/246 — `targetDir` is the session's **state dir**
+ * (`<sessionDir>/state/`), NOT the clone. The override is a ShipIt-generated
+ * artifact: the root orchestrator writes it and the orchestrator's own `docker
+ * compose` reads it via an absolute `-f`. Nothing inside the session container
+ * touches it, which is why the docs/150 §7 chown handoff this function used to
+ * do is gone — the state dir is not mounted into the container, so there is no
+ * worker uid to hand it to.
+ *
+ * Callers that still pass a clone path (legacy tests) get the old placement;
+ * see `ComposeCli`'s `overrideFile` for the matching read side.
  */
 export function writeComposeOverride(
-  workspaceDir: string,
+  targetDir: string,
   content: string,
 ): string {
-  const shipitDir = path.join(workspaceDir, ".shipit");
-  fs.mkdirSync(shipitDir, { recursive: true });
-  const overridePath = path.join(shipitDir, "compose.override.yml");
+  fs.mkdirSync(targetDir, { recursive: true });
+  const overridePath = path.join(targetDir, COMPOSE_OVERRIDE_FILE);
   fs.writeFileSync(overridePath, content, "utf-8");
-  // docs/150 §7 addendum: this runs in the root orchestrator but the file lives
-  // inside the worker-owned (uid 1000) workspace. Without the handoff it lands
-  // root:root and the agent's own `docker compose` invocation (run as the
-  // worker uid) can't read it. Chown the dir too — `mkdir` may have just
-  // created `.shipit` as root. No-op unless SHIPIT_SESSION_WORKER_UID is set.
-  chownToSessionWorker(shipitDir);
-  chownToSessionWorker(overridePath);
   return overridePath;
 }

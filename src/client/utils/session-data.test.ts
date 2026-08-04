@@ -237,3 +237,196 @@ describe("loadSessionHistory — modelInfo seeding", () => {
     expect(card?.path).toBe(".npmrc");
   });
 });
+
+/**
+ * docs/235 — switching into a session that is between turns with a background
+ * job outstanding showed "Waiting for a background task to finish" for a beat
+ * and then went blank, while the sidebar kept showing the session as working.
+ * The status line came from a live/replayed `background_tasks` message and the
+ * blank came from this hydration, which read only `agentRunning` and cleared
+ * the bar unconditionally.
+ */
+describe("loadSessionHistory — background-task hydration", () => {
+  let fetchSpy: ReturnType<typeof vi.fn>;
+
+  const historyWith = (backgroundTasks?: string[], agentRunning = false) => {
+    fetchSpy.mockImplementation((url: string) => {
+      if (url.includes("/history")) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            messages: [],
+            commits: [],
+            fileTree: [],
+            agentRunning,
+            ...(backgroundTasks ? { backgroundTasks } : {}),
+          }),
+        });
+      }
+      return Promise.resolve({ ok: false, status: 404 });
+    });
+  };
+
+  beforeEach(() => {
+    useUiStore.getState().reset();
+    useSessionStore.getState().reset();
+    useGitStore.getState().reset();
+    useFileStore.getState().reset();
+    fetchSpy = vi.fn();
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("keeps the status line up for a between-turns session with outstanding work", async () => {
+    useSessionStore.getState().setSessionId("bg-sess");
+    historyWith(["npm test"]);
+
+    await loadSessionHistory("bg-sess");
+
+    const state = useSessionStore.getState();
+    expect(state.isLoading).toBe(true);
+    expect(state.activity?.label).toBe("Waiting for: npm test");
+    // No tool call is running, so the tool spinner would be a lie.
+    expect(state.activity?.tool).toBeUndefined();
+    expect(state.backgroundTaskSessions.get("bg-sess")).toEqual(["npm test"]);
+  });
+
+  it("upgrades the unnamed SSE-snapshot marker to the named label", async () => {
+    useSessionStore.getState().setSessionId("bg-sess");
+    // The `session_attention` snapshot carries ids only — no descriptions.
+    useSessionStore.getState().setBackgroundTaskSessions(() => new Map([["bg-sess", []]]));
+    historyWith(["build the docs site"]);
+
+    await loadSessionHistory("bg-sess");
+
+    expect(useSessionStore.getState().activity?.label).toBe("Waiting for: build the docs site");
+  });
+
+  it("clears the marker and the status line when nothing is outstanding", async () => {
+    useSessionStore.getState().setSessionId("bg-sess");
+    useSessionStore.getState().setBackgroundTaskSessions(() => new Map([["bg-sess", ["stale"]]]));
+    historyWith([]);
+
+    await loadSessionHistory("bg-sess");
+
+    const state = useSessionStore.getState();
+    expect(state.isLoading).toBe(false);
+    expect(state.activity).toBeUndefined();
+    expect(state.backgroundTaskSessions.has("bg-sess")).toBe(false);
+  });
+
+  it("leaves other sessions' markers alone", async () => {
+    useSessionStore.getState().setSessionId("bg-sess");
+    useSessionStore.getState().setBackgroundTaskSessions(() => new Map([["other-sess", ["theirs"]]]));
+    historyWith([]);
+
+    await loadSessionHistory("bg-sess");
+
+    expect(useSessionStore.getState().backgroundTaskSessions.get("other-sess")).toEqual(["theirs"]);
+  });
+
+  it("a running turn still wins — the turn owns the status line", async () => {
+    useSessionStore.getState().setSessionId("bg-sess");
+    historyWith(["npm test"], true);
+
+    await loadSessionHistory("bg-sess");
+
+    const state = useSessionStore.getState();
+    expect(state.isLoading).toBe(true);
+    // Not overwritten with a "Waiting for…" label: live tool activity owns it.
+    expect(state.activity).toBeUndefined();
+    expect(state.backgroundTaskSessions.get("bg-sess")).toEqual(["npm test"]);
+  });
+});
+
+/**
+ * The reported bug: switch away from the browser window, come back, and part
+ * of the transcript is gone — but a full page reload brings it back, so the
+ * rows were only missing from client memory (docs/237 tells the two causes
+ * apart by exactly that question).
+ *
+ * `useWebSocket` force-reconnects on foreground, so a history load issued for
+ * the outgoing socket can still be in flight when the incoming socket opens
+ * and issues its own. Nothing cancelled the first one, and its `setMessages`
+ * lands whenever it lands — so a response read BEFORE the running turn's
+ * latest persist boundary could overwrite a fresher transcript and take the
+ * turn's tail with it. Live events only append after that, so the hole never
+ * healed.
+ */
+describe("loadSessionHistory — a superseded load must not clobber the transcript", () => {
+  let resolvers: ((value: unknown) => void)[];
+
+  const historyPayload = (texts: string[]) => ({
+    ok: true,
+    json: () => Promise.resolve({
+      messages: texts.map((text) => ({ role: "assistant", text, inProgress: true })),
+      commits: [],
+      fileTree: [],
+      agentRunning: true,
+    }),
+  });
+
+  beforeEach(() => {
+    useUiStore.getState().reset();
+    useSessionStore.getState().reset();
+    useGitStore.getState().reset();
+    useFileStore.getState().reset();
+    useSessionStore.getState().setSessionId("s1");
+    resolvers = [];
+    globalThis.fetch = vi.fn((url: string) => {
+      if (url.includes("/history")) {
+        return new Promise((resolve) => resolvers.push(resolve));
+      }
+      return Promise.resolve({ ok: false, status: 404 });
+    }) as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("ignores the older response when two loads for the same session overlap", async () => {
+    // Load A: issued for the socket the foreground handler is about to replace.
+    const first = loadSessionHistory("s1");
+    // Load B: issued when the fresh socket opened, a moment later.
+    const second = loadSessionHistory("s1");
+    await vi.waitFor(() => expect(resolvers.length).toBe(2));
+
+    // B answers first — it read the DB after the turn's latest persist.
+    resolvers[1](historyPayload(["GROUP-ONE", "GROUP-TWO"]));
+    await second;
+    expect(useSessionStore.getState().messages.map((m) => m.text))
+      .toEqual(["GROUP-ONE", "GROUP-TWO"]);
+
+    // A answers late, carrying the older snapshot. It must be discarded: this
+    // is the write that used to erase GROUP-TWO for the rest of the session.
+    resolvers[0](historyPayload(["GROUP-ONE"]));
+    await first;
+    expect(useSessionStore.getState().messages.map((m) => m.text))
+      .toEqual(["GROUP-ONE", "GROUP-TWO"]);
+  });
+
+  it("does not let a superseded load flip historyLoaded mid-reconnect", async () => {
+    const first = loadSessionHistory("s1");
+    await vi.waitFor(() => expect(resolvers.length).toBe(1));
+
+    // The socket dropped again: useConnectionSync clears the flag and issues a
+    // new load. `turn_snapshot` is queued behind this flag (useMessageHandler),
+    // so a stale load raising it would let the snapshot apply against an
+    // arbitrary transcript instead of on top of the history baseline.
+    useSessionStore.getState().setHistoryLoaded(false);
+    const second = loadSessionHistory("s1");
+    await vi.waitFor(() => expect(resolvers.length).toBe(2));
+
+    resolvers[0](historyPayload(["GROUP-ONE"]));
+    await first;
+    expect(useSessionStore.getState().historyLoaded).toBe(false);
+
+    resolvers[1](historyPayload(["GROUP-ONE", "GROUP-TWO"]));
+    await second;
+    expect(useSessionStore.getState().historyLoaded).toBe(true);
+  });
+});

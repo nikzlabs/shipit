@@ -54,7 +54,7 @@ export function IssuesPanel({
   onStartSession,
   onConnect,
 }: {
-  onStartSession: (issue: TrackerIssue) => void;
+  onStartSession: (issue: TrackerIssue, repoUrl?: string) => void;
   onConnect: () => void;
 }) {
   const trackers = useIssuesStore((s) => s.trackers);
@@ -132,16 +132,30 @@ export function IssuesPanel({
     return current?.remoteUrl;
   });
   const activeRepoUrl = useRepoStore((s) => s.activeRepoUrl);
+  const allRepos = useRepoStore((s) => s.repos);
   const effectiveRepoUrl = repoUrl || activeRepoUrl;
+
+  // Repos offered by the Start-session picker (docs/236). Hidden repos are
+  // excluded for the same reason the sidebar drops them — the user has said
+  // they don't want to see that project — except when it's the current target,
+  // which must stay visible so the checkmark has something to land on.
+  const pickerRepos = useMemo(
+    () => allRepos.filter((r) => !r.hidden || r.url === effectiveRepoUrl),
+    [allRepos, effectiveRepoUrl],
+  );
 
   const handleSelectTracker = (id: TrackerId) => {
     useIssuesStore.getState().setActiveTracker(id);
     void useIssuesStore.getState().fetchIssues(id);
   };
 
-  const handleStartSession = (issue: TrackerIssue) => {
-    if (!effectiveRepoUrl) return;
-    onStartSession(issue);
+  // `repoUrl` is set when the user picked an explicit repo from the split
+  // button's caret menu; otherwise the parent falls back to `effectiveRepoUrl`.
+  // The guard only covers the implicit path — an explicit pick is always
+  // startable, even before any repo has become "active".
+  const handleStartSession = (issue: TrackerIssue, targetRepoUrl?: string) => {
+    if (!targetRepoUrl && !effectiveRepoUrl) return;
+    onStartSession(issue, targetRepoUrl);
   };
 
   // Master-detail (docs/189): a selected issue replaces the list with the
@@ -158,6 +172,8 @@ export function IssuesPanel({
         error={detailError}
         info={info}
         canStart={Boolean(effectiveRepoUrl)}
+        repos={pickerRepos}
+        {...(effectiveRepoUrl ? { targetRepoUrl: effectiveRepoUrl } : {})}
         comments={comments}
         commentsLoading={commentsLoading}
         commentsError={commentsError}
@@ -215,6 +231,8 @@ export function IssuesPanel({
       loading={loading}
       error={error}
       canStart={Boolean(effectiveRepoUrl)}
+      repos={pickerRepos}
+      {...(effectiveRepoUrl ? { targetRepoUrl: effectiveRepoUrl } : {})}
       includeDone={includeDone}
       availableStatuses={availableStatuses}
       canEditPriority={activeTracker === "linear"}

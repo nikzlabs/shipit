@@ -1,11 +1,7 @@
 import { useState, useRef } from "react";
-import { XIcon } from "@phosphor-icons/react";
 import type { AgentOption } from "../../agent-types.js";
-import { ICON_SIZE } from "../../design-tokens.js";
-import { Button } from "../ui/button.js";
 import { Dialog, DialogContent, DialogTitle } from "../ui/dialog.js";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "../ui/tabs.js";
-import { type CodexDeviceAuthState } from "../CodexAuthCard.js";
 import { SettingsIntegrations } from "../SettingsIntegrations.js";
 import { SettingsEgress } from "../SettingsEgress.js";
 import { SkillsTab } from "../SkillsTab.js";
@@ -31,19 +27,10 @@ export interface SettingsProps {
   githubStatus: { authenticated: boolean; username?: string; avatarUrl?: string };
   onGitHubTokenSubmit: (token: string) => Promise<void> | void;
   onGitHubLogout: () => void;
-  authUrl: string | null;
   onApiKey: (key: string) => void;
   onClearApiKey: () => void;
-  onStartAuth: () => void;
-  onPasteCode: (code: string) => void;
   agentList?: AgentOption[];
   onSetAgentEnv?: (agentId: string, key: string, value: string) => void;
-  // Codex (ChatGPT subscription) device-auth — feature 119.
-  codexDeviceAuth?: CodexDeviceAuthState | null;
-  codexDeviceAuthError?: string | null;
-  onStartCodexDeviceAuth?: () => void;
-  onCancelCodexDeviceAuth?: () => void;
-  onSignOutCodex?: () => void;
   onFullReset?: () => void;
   gitIdentity: { name: string; email: string };
   onGitIdentitySave: (name: string, email: string) => void;
@@ -62,18 +49,10 @@ export function Settings({
   githubStatus,
   onGitHubTokenSubmit,
   onGitHubLogout,
-  authUrl,
   onApiKey,
   onClearApiKey,
-  onStartAuth,
-  onPasteCode,
   agentList = [],
   onSetAgentEnv,
-  codexDeviceAuth,
-  codexDeviceAuthError,
-  onStartCodexDeviceAuth,
-  onCancelCodexDeviceAuth,
-  onSignOutCodex,
   onFullReset,
   gitIdentity,
   onGitIdentitySave,
@@ -147,17 +126,8 @@ export function Settings({
         onKeyDown={handleKeyDown}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-(--color-border-secondary)">
+        <div className="flex items-center px-5 py-4 border-b border-(--color-border-secondary)">
           <DialogTitle className="text-lg font-semibold">Settings</DialogTitle>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onClose}
-            className="h-9 w-9 max-md:h-10 max-md:w-10"
-            aria-label="Close"
-          >
-            <XIcon size={ICON_SIZE.MD} weight="bold" />
-          </Button>
         </div>
 
         {/* Body: sidebar tabs + content (vertical sidebar on desktop, horizontal scroll strip on mobile) */}
@@ -196,24 +166,13 @@ export function Settings({
           <TabsContent value="agent-claude">
             <ClaudeTab
               agent={claudeAgent}
-              authUrl={authUrl}
-              onStartAuth={onStartAuth}
               onApiKey={onApiKey}
               onClearApiKey={onClearApiKey}
-              onPasteCode={onPasteCode}
             />
           </TabsContent>
 
           <TabsContent value="agent-codex">
-            <CodexTab
-              agent={codexAgent}
-              codexDeviceAuth={codexDeviceAuth}
-              codexDeviceAuthError={codexDeviceAuthError}
-              onStartCodexDeviceAuth={onStartCodexDeviceAuth}
-              onCancelCodexDeviceAuth={onCancelCodexDeviceAuth}
-              onSignOutCodex={onSignOutCodex}
-              onSetAgentEnv={onSetAgentEnv}
-            />
+            <CodexTab agent={codexAgent} onSetAgentEnv={onSetAgentEnv} />
           </TabsContent>
 
           <TabsContent value="instructions">

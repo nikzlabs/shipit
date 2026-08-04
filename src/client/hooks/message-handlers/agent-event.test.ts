@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { useSessionStore } from "../../stores/session-store.js";
-import { handleAgentEvent } from "./agent-event.js";
+import { handleAgentEvent, CLIENT_CONTENT_CAP } from "./agent-event.js";
 import type { HandlerContext } from "./types.js";
 import type { WsAgentEvent } from "../../../server/shared/types.js";
 import type { ChatMessage } from "../../components/MessageList.js";
@@ -59,5 +59,275 @@ describe("handleAgentEvent — card carrier message is never a merge target (SHI
     const { messages } = useSessionStore.getState();
     expect(messages).toHaveLength(1);
     expect(messages[0].text).toBe("Hello world");
+  });
+});
+
+describe("the 1 MB client cap is fetchable, not a dead end (docs/244)", () => {
+  /**
+   * The cap is a backstop for the classes the serve-path projection leaves
+   * inline, and what it does depends on whether the clipped body can be got
+   * back. Three cases, and getting any of them wrong is a visible bug:
+   *
+   *   - a subagent FINAL REPORT is never capped (nothing renders an expand
+   *     affordance for it, so clipping it destroys it);
+   *   - a NESTED result is capped but not marked (its row isn't committed yet,
+   *     so a fetch marker would promise a 404);
+   *   - an ordinary result is capped AND marked, and the fetch resolves.
+   */
+  const resultEvent = (content: string, opts: { id?: string; parent?: string } = {}): WsAgentEvent => ({
+    type: "agent_event",
+    event: {
+      type: "agent_tool_result",
+      ...(opts.parent ? { parentToolUseId: opts.parent } : {}),
+      content: [{ type: "tool_result", tool_use_id: opts.id ?? "tu-big", content }],
+    },
+  } as unknown as WsAgentEvent);
+
+  const line = "x".repeat(49);
+  const overCap = Array.from({ length: 30_000 }, () => line).join("\n");
+
+  // Results attach to the trailing assistant message, so the calling tool_use
+  // has to already be on screen — same order the real event stream produces.
+  // `tu-big` is a Bash call: an ORDINARY result, which is the capped-and-marked
+  // case. The subagent cases seed their own tool_use.
+  beforeEach(() => {
+    handleAgentEvent(ctx, assistantEvent("", [{ id: "tu-big", name: "Bash", input: { command: "ls" } }]));
+  });
+
+  const resultFor = (id: string) =>
+    useSessionStore.getState().messages
+      .flatMap((m) => m.toolResults ?? [])
+      .find((r) => r.toolUseId === id);
+
+  it("marks a capped ordinary body truncated and reports the TRUE line count", () => {
+    // 1.5 M chars across 30k lines — over the cap either way you measure it.
+    const huge = overCap;
+    expect(huge.length).toBeGreaterThan(CLIENT_CONTENT_CAP);
+
+    handleAgentEvent(ctx, resultEvent(huge));
+
+    const result = resultFor("tu-big");
+    expect(result).toBeTruthy();
+    expect(result!.truncated).toBe(true);
+    // The label must describe the WHOLE body, not the clipped prefix — a count
+    // taken after clipping is exactly the lie this test exists to prevent.
+    expect(result!.totalLines).toBe(30_000);
+    expect(result!.content.length).toBeLessThanOrEqual(CLIENT_CONTENT_CAP);
+    expect(huge.startsWith(result!.content)).toBe(true);
+  });
+
+  it("leaves an under-cap body completely alone", () => {
+    handleAgentEvent(ctx, resultEvent("small output"));
+
+    const result = resultFor("tu-big");
+    expect(result!.content).toBe("small output");
+    expect(result!.truncated).toBeUndefined();
+    expect(result!.totalLines).toBeUndefined();
+  });
+
+  it("does not clip mid-surrogate", () => {
+    // An emoji straddling the cut would otherwise leave a lone high surrogate,
+    // which renders as a replacement character at the end of every preview.
+    const huge = `${"a".repeat(CLIENT_CONTENT_CAP - 1)}😀${"b".repeat(100)}`;
+    handleAgentEvent(ctx, resultEvent(huge));
+
+    const content = resultFor("tu-big")!.content;
+    const last = content.charCodeAt(content.length - 1);
+    expect(last >= 0xd800 && last <= 0xdbff).toBe(false);
+    expect(huge.startsWith(content)).toBe(true);
+  });
+
+  it("prefers the server's markers over the cap's when both are present", () => {
+    // A server-sliced result arrives well under the cap, so the cap must not
+    // fire — but if it ever did, the server's true count wins.
+    const event = {
+      type: "agent_event",
+      event: {
+        type: "agent_tool_result",
+        content: [{
+          type: "tool_result",
+          tool_use_id: "tu-big",
+          content: "head slice",
+          shipit_truncated: true,
+          shipit_total_lines: 4_242,
+          shipit_total_bytes: 999_999,
+        }],
+      },
+    } as unknown as WsAgentEvent;
+
+    handleAgentEvent(ctx, event);
+
+    const result = resultFor("tu-big")!;
+    expect(result.truncated).toBe(true);
+    expect(result.totalLines).toBe(4_242);
+    expect(result.totalBytes).toBe(999_999);
+  });
+});
+
+describe("what the cap must NOT do (docs/244 round-3)", () => {
+  const line = "x".repeat(49);
+  const overCap = Array.from({ length: 30_000 }, () => line).join("\n");
+
+  const resultFor = (id: string) =>
+    useSessionStore.getState().messages
+      .flatMap((m) => [...(m.toolResults ?? []), ...(m.subagentEvents ?? []).flatMap((e) => e.kind === "tool_result" ? e.toolResults : [])])
+      .find((r) => r.toolUseId === id);
+
+  const resultEvent = (id: string, content: string, parent?: string): WsAgentEvent => ({
+    type: "agent_event",
+    event: {
+      type: "agent_tool_result",
+      ...(parent ? { parentToolUseId: parent } : {}),
+      content: [{ type: "tool_result", tool_use_id: id, content }],
+    },
+  } as unknown as WsAgentEvent);
+
+  for (const parentTool of ["Task", "Agent"]) {
+    /**
+     * docs/109 req 7/8 — this used to assert the opposite ("never caps a final
+     * report, however big"), because the card rendered it whole with no expand
+     * affordance and no fetch. It now clamps behind a *Show the full report*
+     * modal, so a TOP-LEVEL report is capped like anything else — and marked,
+     * because a top-level row is committed in the same tick as its emit and the
+     * modal's fetch resolves against it.
+     */
+    it(`caps a top-level ${parentTool} final report and marks it fetchable`, () => {
+      handleAgentEvent(ctx, assistantEvent("", [{ id: "tu-task", name: parentTool, input: { prompt: "audit" } }]));
+      handleAgentEvent(ctx, resultEvent("tu-task", overCap));
+
+      const result = resultFor("tu-task")!;
+      expect(result.content.length).toBeLessThanOrEqual(CLIENT_CONTENT_CAP);
+      expect(result.truncated).toBe(true);
+    });
+  }
+
+  /**
+   * SHI-291 — the same no-recovery rule, arrived at from the other direction.
+   * The Ask branch of `MessageToolUse` returns before the output modal, so a
+   * capped answer has no click, no modal and no fetch to get its tail back.
+   */
+  it("never caps an AskUserQuestion answer, however big", () => {
+    handleAgentEvent(ctx, assistantEvent("", [
+      { id: "tu-ask", name: "AskUserQuestion", input: { questions: [{ question: "which?" }] } },
+    ]));
+    handleAgentEvent(ctx, resultEvent("tu-ask", overCap));
+
+    const result = resultFor("tu-ask")!;
+    expect(result.content).toBe(overCap);
+    expect(result.truncated).toBeUndefined();
+  });
+
+  /**
+   * The counter-case, and a correction: this used to test `SUBAGENT_TOOLS`, the
+   * *layout* set, so `Skill` was spared here while `AskUserQuestion` was
+   * capped — wrong in both directions at once. `Skill` renders no report and is
+   * stripped server-side, so its body is fetchable and capping it is correct.
+   */
+  it("DOES cap a Skill result, which renders no report and is fetchable", () => {
+    handleAgentEvent(ctx, assistantEvent("", [{ id: "tu-skill", name: "Skill", input: { command: "x" } }]));
+    handleAgentEvent(ctx, resultEvent("tu-skill", overCap));
+
+    const result = resultFor("tu-skill")!;
+    expect(result.content.length).toBeLessThanOrEqual(CLIENT_CONTENT_CAP);
+    expect(result.truncated).toBe(true);
+  });
+
+  it("caps a nested subagent result but does not advertise a fetch for it", () => {
+    // A nested result takes the `parentToolUseId` branch server-side, which
+    // returns before `replaceInProgress` — so its row does not exist yet and
+    // `/tool-results/:id` would 404. Clipping is acceptable (memory bound);
+    // claiming the rest is one click away is not.
+    handleAgentEvent(ctx, assistantEvent("", [{ id: "tu-task", name: "Task", input: { prompt: "go" } }]));
+    handleAgentEvent(ctx, resultEvent("tu-nested", overCap, "tu-task"));
+
+    const result = resultFor("tu-nested")!;
+    expect(result.content.length).toBeLessThanOrEqual(CLIENT_CONTENT_CAP);
+    expect(result.truncated).toBeUndefined();
+    expect(result.totalLines).toBeUndefined();
+  });
+});
+
+describe("a subagent's subagent (docs/244 round-4)", () => {
+  const line = "x".repeat(49);
+  const overCap = Array.from({ length: 30_000 }, () => line).join("\n");
+
+  const findResult = (id: string) =>
+    useSessionStore.getState().messages
+      .flatMap((m) => [...(m.toolResults ?? []), ...(m.subagentEvents ?? []).flatMap((e) => e.kind === "tool_result" ? e.toolResults : [])])
+      .find((r) => r.toolUseId === id);
+
+  /**
+   * The overlap case that slipped through round 3: an INNER Task's result is
+   * simultaneously a nested result (it carries `parentToolUseId`) and a
+   * subagent final report (its own tool is a Task). The two rules disagree —
+   * "cap nested results" vs "ship a final report whole" — and the final report
+   * rule has to win.
+   *
+   * docs/109 did NOT change this case, though it changed the reason. A
+   * top-level report is now capped, because the *Show the full report* modal
+   * can fetch the rest from the persisted row. A nested result's row is not
+   * written until the next top-level boundary, so live there is nothing to
+   * fetch: capping it here would destroy the tail with no affordance to get it
+   * back, and marking it would promise a 404. Shipping it whole is the only
+   * option that loses nothing — the history path bounds it properly on the next
+   * load.
+   *
+   * The bug was that the inner Task's `tool_use` lives in the parent's
+   * `subagentEvents`, not in `message.toolUse`, so the name lookup returned
+   * `undefined` and the result took the ordinary nested branch. The earlier
+   * nested test never recorded an inner tool use, so it passed throughout.
+   */
+  it("never caps an inner Task's final report", () => {
+    // outer Task…
+    handleAgentEvent(ctx, assistantEvent("", [{ id: "outer", name: "Task", input: { prompt: "audit" } }]));
+    // …which spawns an inner Task, recorded under the outer one's subagentEvents…
+    handleAgentEvent(ctx, {
+      type: "agent_event",
+      event: {
+        type: "agent_assistant",
+        parentToolUseId: "outer",
+        content: [{ type: "tool_use", id: "inner", name: "Task", input: { prompt: "sub-audit" } }],
+      },
+    } as unknown as WsAgentEvent);
+    // …whose own final report is over the cap.
+    handleAgentEvent(ctx, {
+      type: "agent_event",
+      event: {
+        type: "agent_tool_result",
+        parentToolUseId: "outer",
+        content: [{ type: "tool_result", tool_use_id: "inner", content: overCap }],
+      },
+    } as unknown as WsAgentEvent);
+
+    const result = findResult("inner")!;
+    expect(result.content).toBe(overCap);
+    expect(result.content.length).toBeGreaterThan(CLIENT_CONTENT_CAP);
+    expect(result.truncated).toBeUndefined();
+  });
+
+  it("still caps an inner ordinary tool's result", () => {
+    // The counterpart: same nesting depth, but a Bash call — no final report to
+    // protect, so the nested rule applies (capped, and not marked fetchable).
+    handleAgentEvent(ctx, assistantEvent("", [{ id: "outer", name: "Task", input: { prompt: "audit" } }]));
+    handleAgentEvent(ctx, {
+      type: "agent_event",
+      event: {
+        type: "agent_assistant",
+        parentToolUseId: "outer",
+        content: [{ type: "tool_use", id: "inner-bash", name: "Bash", input: { command: "ls" } }],
+      },
+    } as unknown as WsAgentEvent);
+    handleAgentEvent(ctx, {
+      type: "agent_event",
+      event: {
+        type: "agent_tool_result",
+        parentToolUseId: "outer",
+        content: [{ type: "tool_result", tool_use_id: "inner-bash", content: overCap }],
+      },
+    } as unknown as WsAgentEvent);
+
+    const result = findResult("inner-bash")!;
+    expect(result.content.length).toBeLessThanOrEqual(CLIENT_CONTENT_CAP);
+    expect(result.truncated).toBeUndefined();
   });
 });

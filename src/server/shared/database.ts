@@ -761,6 +761,48 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE repos ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0");
   },
+  // docs/233 (SHI-241) — persist the inline "session report" card so a report
+  // pushed from a child/sibling survives a session switch / full reload. The
+  // card is appended to the RECIPIENT's history from an HTTP relay that fires
+  // outside any of the recipient's turns, so without this column it would render
+  // live and then vanish on the next loadSessionHistory, which rebuilds the
+  // transcript from the DB. NULL = ordinary (non-card) message.
+  (db) => {
+    db.exec("ALTER TABLE messages ADD COLUMN session_report TEXT");
+  },
+  // The repo's real default branch (main / master / trunk / …), resolved from
+  // the bare cache's HEAD. Backs the UI surfaces that need a base branch before
+  // a PR exists (rebase banner, "Sync with <base>", "Changes vs <base>"), which
+  // previously hard-coded "main". NULL = not resolved yet; callers fall back to
+  // "main", so existing rows keep the old behavior until the refresh sweep runs.
+  (db) => {
+    db.exec("ALTER TABLE repos ADD COLUMN default_branch TEXT");
+  },
+  // docs/239 — persist the "will continue when PR #N merges" card the agent's
+  // `shipit session notify-on-merge --self` surfaces into its own transcript.
+  // The arm relays over HTTP mid-turn, i.e. off the agent-event stream, so
+  // `buildTurnMessages` doesn't capture it on its own; without this column the
+  // card would render live and vanish on the next loadSessionHistory. NULL =
+  // ordinary (non-card) message.
+  (db) => {
+    db.exec("ALTER TABLE messages ADD COLUMN self_merge_watch TEXT");
+  },
+  // docs/241 — explicit per-session always-on preview reservation. This is
+  // deliberately separate from pinned_at because runtime capacity is bounded.
+  (db) => {
+    db.exec("ALTER TABLE sessions ADD COLUMN keep_preview_running INTEGER NOT NULL DEFAULT 0");
+  },
+  // docs/242 — host-owned provenance for messages submitted by an embedded
+  // Preview or Present page through the Agent Interface SDK.
+  (db) => {
+    db.exec("ALTER TABLE messages ADD COLUMN agent_interface TEXT");
+  },
+  // Prompts relayed by another session's agent must not masquerade as direct
+  // user input after a reload. Stores the source session and its relationship
+  // to the recipient for the transcript provenance label.
+  (db) => {
+    db.exec("ALTER TABLE messages ADD COLUMN message_origin TEXT");
+  },
 ];
 
 export class DatabaseManager {

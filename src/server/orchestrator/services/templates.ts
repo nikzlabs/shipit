@@ -12,6 +12,7 @@ import type { SessionCapabilities, SessionInfo } from "../../shared/types.js";
 import { normalizeCapabilities } from "../../shared/types.js";
 import { getTemplate, applyTemplate as applyTemplateFiles, generatePackageLock, OPS_TEMPLATE_ID, buildOpsInvestigationSeed } from "../templates.js";
 import { ServiceError } from "./types.js";
+import { validateNonEmptyString } from "./validation.js";
 
 /** Create a GitHub repo with a template applied, committed, and pushed.
  *  Does NOT create a session — the caller should warm one via warmSessionForRepo(). */
@@ -107,9 +108,7 @@ export async function applyTemplate(
   sessionId?: string,
   targetSessionId?: string,
 ): Promise<{ templateId: string; name: string; session?: SessionInfo; sessionDir: string; seedPrompt?: string }> {
-  if (!templateId || typeof templateId !== "string" || !templateId.trim()) {
-    throw new ServiceError(400, "Template ID is required");
-  }
+  validateNonEmptyString(templateId, "Template ID");
   const trimmedTemplateId = templateId.trim();
   const template = getTemplate(trimmedTemplateId);
   if (!template) throw new ServiceError(400, `Unknown template: ${templateId}`);
@@ -126,8 +125,9 @@ export async function applyTemplate(
   // a *reference* to the session the operator wants to debug — never the
   // session being templated — so it doesn't weaken the fresh-only privilege
   // gate above. We use it to name the new ops session after its quarry and to
-  // seed the composer with a concrete read-only first step (the agent filters
-  // containers by the target id). Silently ignored for non-ops templates or an
+  // seed the composer with the target identity and read-only boundary, leaving
+  // the incident-specific investigation request for the operator. Silently
+  // ignored for non-ops templates or an
   // unknown id, so a stale reference still yields a usable generic ops session.
   let seedPrompt: string | undefined;
   let opsTitle = `Ops — ${os.hostname()}`;

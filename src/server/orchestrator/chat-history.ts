@@ -1,8 +1,9 @@
 import crypto from "node:crypto";
 import type { DatabaseManager } from "../shared/database.js";
-import type { SubagentEvent } from "./session-runner.js";
-import type { IssueWriteCard, IssueRefCard, CompactionCard, ChildMergedCard, SubAgentConsultCard, AiReviewCard, ActionChecklistCard, BranchAutoResetCard, BranchSyncedCard } from "../shared/types.js";
+import type { SubagentEvent, ToolResultEntry } from "./session-runner.js";
+import type { IssueWriteCard, IssueRefCard, CompactionCard, ChildMergedCard, SelfMergeWatchCard, SessionReportCard, SubAgentConsultCard, AiReviewCard, ActionChecklistCard, BranchAutoResetCard, BranchSyncedCard, SessionMessageOrigin } from "../shared/types.js";
 import type { ReleaseStatusSummary } from "../shared/types/release-types.js";
+import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
 
 export type RewindSnapshotAction = "chat" | "code" | "both" | "fork";
 
@@ -106,6 +107,9 @@ interface RewindSnapshotRow {
 export interface PersistedMessage {
   role: "user" | "assistant";
   text: string;
+  agentInterface?: AgentInterfaceProvenance;
+  /** Another session's agent supplied this prompt, rather than the user. */
+  messageOrigin?: SessionMessageOrigin;
   toolUse?: {
     type: "tool_use";
     id: string;
@@ -113,8 +117,15 @@ export interface PersistedMessage {
     input: Record<string, unknown>;
   }[];
   images?: {
-    data: string;
+    /**
+     * Base64 payload. Always present in storage; replaced by `src` on the
+     * serve path (docs/244) so a transcript load doesn't carry megabytes of
+     * base64 for a 96px thumbnail.
+     */
+    data?: string;
     mediaType: string;
+    /** docs/244 — content-addressed URL, set only on the serve path. */
+    src?: string;
   }[];
   files?: {
     path: string;
@@ -123,14 +134,14 @@ export interface PersistedMessage {
     endLine?: number;
   }[];
   isError?: boolean;
-  toolResults?: {
-    toolUseId: string;
-    content: string;
-    isError?: boolean;
-    /** Derived per-tool execution time in ms (docs/185). Round-trips via the
-     * `tool_results` JSON column, so no schema migration is needed. */
-    durationMs?: number;
-  }[];
+  /**
+   * Round-trips verbatim via the `tool_results` JSON column, so no schema
+   * migration is needed when a field is added. Shares `ToolResultEntry` with the
+   * live path rather than restating its shape: the two had already drifted once
+   * (docs/244's `truncated`/`totalLines` reached the runner type but not this
+   * one), and a structural copy makes that failure silent.
+   */
+  toolResults?: ToolResultEntry[];
   /** True while the agent turn that produced this message is still running. */
   inProgress?: boolean;
   /** Git commit hash produced by auto-commit after this assistant message. */
@@ -149,11 +160,15 @@ export interface PersistedMessage {
    * notes arrive on a side channel (not the agent-event stream), so they aren't
    * captured by `buildTurnMessages`; they are persisted directly so the card
    * survives a history reload like any other transcript content.
+   *
+   * Rows written before the `needsAttention` gate was removed carry an extra
+   * `needsAttention` key in the stored JSON. It is deliberately absent from this
+   * type and read by nothing — legacy rows rehydrate and render as ordinary
+   * notes, so no migration is needed.
    */
   voiceNote?: {
     id: string;
     headline: string;
-    needsAttention: boolean;
     kind: "authored" | "ask" | "plan";
     createdAt: string;
   };
@@ -261,6 +276,24 @@ export interface PersistedMessage {
    * like any other transcript content. Static payload (no client store).
    */
   childMerged?: ChildMergedCard;
+  /**
+   * docs/239 — when set, this message renders the inline "will continue when PR
+   * #N merges" card the agent's `shipit session notify-on-merge --self` armed.
+   * A side-channel card (the arm relays over HTTP mid-turn, off the agent-event
+   * stream), recorded in-band via `emitChatCard` and persisted here so it
+   * survives a switch/reload. Immutable static payload — written once on emit,
+   * never patched; terminal outcomes append a plain note instead.
+   */
+  selfMergeWatch?: SelfMergeWatchCard;
+  /**
+   * docs/233 (SHI-241) — when set, this message renders an inline "session
+   * report" card: another session in this session's cohort (a child, or a
+   * sibling on a cohort broadcast) pushed a report here via `shipit session
+   * report`. Arrives over HTTP outside any of THIS session's turns, so it's
+   * appended directly to history and persisted here so it survives a
+   * switch/reload like any other transcript content. Static payload.
+   */
+  sessionReport?: SessionReportCard;
   /**
    * docs/171 — when set, this message renders an inline `ReleaseLifecycleCard`.
    * A release is proposed by the agent (a marker in its turn text) and reflected
@@ -379,6 +412,8 @@ interface MessageRow {
   branch_auto_reset: string | null;
   branch_synced: string | null;
   child_merged: string | null;
+  self_merge_watch: string | null;
+  session_report: string | null;
   release_card: string | null;
   spawned_session: string | null;
   spawn_failed: string | null;
@@ -389,6 +424,8 @@ interface MessageRow {
   ai_review: string | null;
   user_review: string | null;
   notice_id: string | null;
+  agent_interface: string | null;
+  message_origin: string | null;
   /**
    * Legacy column — older rows may carry a serialized per-turn usage record
    * here. The canonical per-turn series is now owned by `UsageManager`
@@ -402,8 +439,8 @@ interface MessageRow {
 }
 
 const INSERT_SQL = `
-  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, permission_prompt, egress_prompt, issue_write, issue_ref, compaction, sub_agent_consult, action_checklist, branch_auto_reset, branch_synced, child_merged, release_card, spawned_session, spawn_failed, agent_review, ai_review, user_review, notice_id)
-  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @permission_prompt, @egress_prompt, @issue_write, @issue_ref, @compaction, @sub_agent_consult, @action_checklist, @branch_auto_reset, @branch_synced, @child_merged, @release_card, @spawned_session, @spawn_failed, @agent_review, @ai_review, @user_review, @notice_id)
+  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, permission_prompt, egress_prompt, issue_write, issue_ref, compaction, sub_agent_consult, action_checklist, branch_auto_reset, branch_synced, child_merged, self_merge_watch, session_report, release_card, spawned_session, spawn_failed, agent_review, ai_review, user_review, notice_id, agent_interface, message_origin)
+  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @permission_prompt, @egress_prompt, @issue_write, @issue_ref, @compaction, @sub_agent_consult, @action_checklist, @branch_auto_reset, @branch_synced, @child_merged, @self_merge_watch, @session_report, @release_card, @spawned_session, @spawn_failed, @agent_review, @ai_review, @user_review, @notice_id, @agent_interface, @message_origin)
 `;
 
 const UPDATE_SQL = `
@@ -412,8 +449,8 @@ const UPDATE_SQL = `
     in_progress=@in_progress, tool_results=@tool_results, upload_paths=@upload_paths,
     turn_usage=@turn_usage, subagent_events=@subagent_events, rolled_back=@rolled_back,
     notice=@notice, notice_level=@notice_level, fork_child=@fork_child, code_rollback_hash=@code_rollback_hash,
-    voice_note=@voice_note, bug_report=@bug_report, permission_prompt=@permission_prompt, egress_prompt=@egress_prompt, issue_write=@issue_write, issue_ref=@issue_ref, compaction=@compaction, sub_agent_consult=@sub_agent_consult, action_checklist=@action_checklist, branch_auto_reset=@branch_auto_reset, branch_synced=@branch_synced, child_merged=@child_merged, release_card=@release_card,
-    spawned_session=@spawned_session, spawn_failed=@spawn_failed, agent_review=@agent_review, ai_review=@ai_review, user_review=@user_review, notice_id=@notice_id
+    voice_note=@voice_note, bug_report=@bug_report, permission_prompt=@permission_prompt, egress_prompt=@egress_prompt, issue_write=@issue_write, issue_ref=@issue_ref, compaction=@compaction, sub_agent_consult=@sub_agent_consult, action_checklist=@action_checklist, branch_auto_reset=@branch_auto_reset, branch_synced=@branch_synced, child_merged=@child_merged, self_merge_watch=@self_merge_watch, session_report=@session_report, release_card=@release_card,
+    spawned_session=@spawned_session, spawn_failed=@spawn_failed, agent_review=@agent_review, ai_review=@ai_review, user_review=@user_review, notice_id=@notice_id, agent_interface=@agent_interface, message_origin=@message_origin
   WHERE id = @id
 `;
 
@@ -422,6 +459,8 @@ export class ChatHistoryManager {
   private stmtInsert;
   private stmtUpdate;
   private stmtLoadAll;
+  private stmtLoadSubAgentCards;
+  private stmtLoadAllPendingSubAgentCards;
   private stmtLoadLast;
   private stmtDeleteBySession;
   private stmtDeleteInProgress;
@@ -433,6 +472,22 @@ export class ChatHistoryManager {
     this.stmtInsert = this.db.prepare(INSERT_SQL);
     this.stmtUpdate = this.db.prepare(UPDATE_SQL);
     this.stmtLoadAll = this.db.prepare("SELECT * FROM messages WHERE session_id = ? ORDER BY id");
+    // docs/248 — `listSubAgentConsultCards` on the `--wait` poll path. No
+    // `in_progress` filter, deliberately: a consult that completes while its
+    // originating turn is still in flight is persisted by `persistTurnInProgress`
+    // as in_progress=1 rows (chat-card-persistence.ts `persistCardTransition`),
+    // and a wait that skipped those would never observe the pending → terminal
+    // transition on that path.
+    this.stmtLoadSubAgentCards = this.db.prepare(
+      "SELECT sub_agent_consult FROM messages WHERE session_id = ? AND sub_agent_consult IS NOT NULL ORDER BY id",
+    );
+    // SHI-307 — the boot reconcile's cross-session read. No `in_progress`
+    // filter, for the same reason as the per-session query above: a consult
+    // stranded inside its own turn is `in_progress=1`, and it is precisely the
+    // case that needs reconciling.
+    this.stmtLoadAllPendingSubAgentCards = this.db.prepare(
+      "SELECT session_id, sub_agent_consult FROM messages WHERE sub_agent_consult IS NOT NULL ORDER BY id",
+    );
     // Filters in_progress=0 because `updateLastMessage` (the only caller) is
     // invoked from post-turn auto-commit to write `commit_hash` /
     // `parent_commit_hash` onto the just-finalized assistant message. If the
@@ -482,6 +537,8 @@ export class ChatHistoryManager {
       branch_auto_reset: msg.branchAutoReset ? JSON.stringify(msg.branchAutoReset) : null,
       branch_synced: msg.branchSynced ? JSON.stringify(msg.branchSynced) : null,
       child_merged: msg.childMerged ? JSON.stringify(msg.childMerged) : null,
+      self_merge_watch: msg.selfMergeWatch ? JSON.stringify(msg.selfMergeWatch) : null,
+      session_report: msg.sessionReport ? JSON.stringify(msg.sessionReport) : null,
       release_card: msg.releaseCard ? JSON.stringify(msg.releaseCard) : null,
       spawned_session: msg.spawnedSession ? JSON.stringify(msg.spawnedSession) : null,
       spawn_failed: msg.spawnFailed ? JSON.stringify(msg.spawnFailed) : null,
@@ -491,6 +548,8 @@ export class ChatHistoryManager {
       ai_review: msg.aiReview ? JSON.stringify(msg.aiReview) : null,
       user_review: msg.userReview ? JSON.stringify(msg.userReview) : null,
       notice_id: msg.noticeId ?? null,
+      agent_interface: msg.agentInterface ? JSON.stringify(msg.agentInterface) : null,
+      message_origin: msg.messageOrigin ? JSON.stringify(msg.messageOrigin) : null,
     };
   }
 
@@ -527,6 +586,8 @@ export class ChatHistoryManager {
     if (row.branch_auto_reset) msg.branchAutoReset = JSON.parse(row.branch_auto_reset) as BranchAutoResetCard;
     if (row.branch_synced) msg.branchSynced = JSON.parse(row.branch_synced) as BranchSyncedCard;
     if (row.child_merged) msg.childMerged = JSON.parse(row.child_merged) as ChildMergedCard;
+    if (row.self_merge_watch) msg.selfMergeWatch = JSON.parse(row.self_merge_watch) as SelfMergeWatchCard;
+    if (row.session_report) msg.sessionReport = JSON.parse(row.session_report) as SessionReportCard;
     if (row.release_card) msg.releaseCard = JSON.parse(row.release_card) as ReleaseStatusSummary;
     if (row.spawned_session) msg.spawnedSession = JSON.parse(row.spawned_session) as PersistedMessage["spawnedSession"];
     if (row.spawn_failed) msg.spawnFailed = JSON.parse(row.spawn_failed) as PersistedMessage["spawnFailed"];
@@ -554,6 +615,8 @@ export class ChatHistoryManager {
     }
     if (row.user_review) msg.userReview = JSON.parse(row.user_review) as PersistedMessage["userReview"];
     if (row.notice_id) msg.noticeId = row.notice_id;
+    if (row.agent_interface) msg.agentInterface = JSON.parse(row.agent_interface) as PersistedMessage["agentInterface"];
+    if (row.message_origin) msg.messageOrigin = JSON.parse(row.message_origin) as PersistedMessage["messageOrigin"];
     return msg;
   }
 
@@ -711,6 +774,97 @@ export class ChatHistoryManager {
         const merged: PersistedPermissionRequest = { ...card, ...patch };
         const msg = this.fromRow(row);
         msg.permissionPrompt = merged;
+        this.stmtUpdate.run({ ...this.toRow(sessionId, msg), id: row.id });
+        return true;
+      }
+      return false;
+    })();
+  }
+
+  /**
+   * SHI-245 — the session's persisted sub-agent consult cards, oldest first.
+   * Backs `shipit agent result`: the card is the artifact the UI renders, so
+   * re-reading it here is what makes "the caller can always fetch exactly what
+   * the user sees" true by construction rather than by convention. The recovery
+   * path matters most when the caller's own copy never arrived — a shim killed
+   * by a foreground tool timeout leaves the spawn running server-side, and its
+   * output lands here and nowhere else.
+   */
+  listSubAgentConsultCards(sessionId: string): SubAgentConsultCard[] {
+    // Narrowed to the consult column of the (few) rows that carry one, rather
+    // than loading every message row in the session: docs/248's
+    // `shipit agent result --wait` re-reads this every 500ms for the length of
+    // a wait, and a full-row scan of a long session's transcript per poll is
+    // real work to repeat thousands of times.
+    const rows = this.stmtLoadSubAgentCards.all(sessionId) as { sub_agent_consult: string }[];
+    return rows.map((r) => JSON.parse(r.sub_agent_consult) as SubAgentConsultCard);
+  }
+
+  /**
+   * SHI-307 — every `pending` consult card in the DB, across all sessions, with
+   * the session that owns it. Backs the boot reconcile (`consult-card-reconcile.ts`),
+   * which is a whole-database question rather than a per-session one: a restart
+   * strands consults in whichever sessions happened to be running, and the
+   * orchestrator does not know which those were.
+   *
+   * Whole-column scan rather than a `json_extract` predicate: this runs exactly
+   * once per process, over the few rows that carry a consult at all, so the
+   * simpler query is the right trade. Rows whose JSON is unreadable are skipped
+   * — a corrupt card is not worth failing the boot sweep over.
+   */
+  listPendingSubAgentConsultCards(): { sessionId: string; card: SubAgentConsultCard }[] {
+    const rows = this.stmtLoadAllPendingSubAgentCards.all() as {
+      session_id: string;
+      sub_agent_consult: string;
+    }[];
+    const out: { sessionId: string; card: SubAgentConsultCard }[] = [];
+    for (const row of rows) {
+      try {
+        const card = JSON.parse(row.sub_agent_consult) as SubAgentConsultCard;
+        if (card.status === "pending") out.push({ sessionId: row.session_id, card });
+      } catch {
+        // Unreadable card JSON — skip it rather than aborting the sweep.
+      }
+    }
+    return out;
+  }
+
+  /**
+   * SHI-278 — patch a persisted sub-agent consult card in place, keyed by
+   * `cardId`. The card is created `pending` at spawn time and patched to its
+   * terminal status when the run finishes; because docs/236 tells agents to
+   * background long consults, that finish is usually AFTER the originating turn
+   * finalized, so this finalized-row patch — not a re-record — is the common
+   * path. It is the `patchDb` half of `persistCardTransition`; while the
+   * originating turn is still in flight and still holds the card in
+   * `recordedCards`, that helper patches the recorded copy instead so the turn's
+   * own finalize can't clobber the transition. Returns true if a card matched.
+   *
+   * `opts.finalize` additionally clears the row's `in_progress` flag. Only the
+   * SHI-307 boot reconcile passes it, and it needs it: a consult spawned by a
+   * FOREGROUND `shipit agent run` is still inside its originating turn when the
+   * orchestrator dies, so its row is `in_progress=1`. docs/240 then adopts that
+   * turn in the new process, and the adopted turn's `agent_result` calls
+   * `replaceInProgress`, which deletes every `in_progress=1` row in the session
+   * and rebuilds from the fresh runner's (empty) `recordedCards` — taking the
+   * card with it. A patch alone would be undone by a delete; finalizing the row
+   * is what makes the reconciled card outlive the adoption.
+   */
+  updateSubAgentConsultCard(
+    sessionId: string,
+    cardId: string,
+    patch: Partial<SubAgentConsultCard>,
+    opts?: { finalize?: boolean },
+  ): boolean {
+    return this.db.transaction(() => {
+      const rows = this.stmtLoadAll.all(sessionId) as MessageRow[];
+      for (const row of rows) {
+        if (!row.sub_agent_consult) continue;
+        const card = JSON.parse(row.sub_agent_consult) as SubAgentConsultCard;
+        if (card.cardId !== cardId) continue;
+        const msg = this.fromRow(row);
+        msg.subAgentConsult = { ...card, ...patch };
+        if (opts?.finalize) msg.inProgress = false;
         this.stmtUpdate.run({ ...this.toRow(sessionId, msg), id: row.id });
         return true;
       }

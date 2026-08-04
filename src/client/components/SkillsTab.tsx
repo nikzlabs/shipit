@@ -22,6 +22,7 @@ import { useRepoStore } from "../stores/repo-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { parseRepoLabel } from "../utils/repo-label.js";
 import { Button } from "./ui/button.js";
+import { Alert } from "./ui/banner.js";
 import { SkillInstallSheet, type InstallRepoOption } from "./SkillInstallSheet.js";
 import type { PluginInfo } from "../../server/shared/types.js";
 
@@ -199,9 +200,10 @@ function DiscoverList({
 
       {/* Per-marketplace fetch-failed retry rows (v1's stand-in for v2's Errors tab). */}
       {failed.map((m) => (
-        <div
+        <Alert
           key={m.id}
-          className="rounded-md border border-(--color-error)/40 bg-(--color-error-subtle) p-3 text-xs flex items-start justify-between gap-3"
+          variant="error"
+          className="justify-between gap-3 p-3"
         >
           <div className="min-w-0">
             <div className="font-medium text-(--color-error)">{m.id}</div>
@@ -217,13 +219,13 @@ function DiscoverList({
           >
             Retry
           </Button>
-        </div>
+        </Alert>
       ))}
 
       {error && !failed.length && (
-        <div className="rounded-md border border-(--color-error)/40 bg-(--color-error-subtle) p-3 text-xs text-(--color-error)">
+        <Alert variant="error" className="p-3">
           {error}
-        </div>
+        </Alert>
       )}
 
       {loading && plugins.length === 0 && (

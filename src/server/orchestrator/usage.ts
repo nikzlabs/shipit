@@ -1,5 +1,29 @@
-import type { UsageTurn, SessionUsage, UsageStats, TurnUsage, MonthlyUsage } from "../shared/types.js";
+import type { UsageTurn, SessionUsage, UsageStats, TurnUsage, WeeklyUsage } from "../shared/types.js";
 import type { DatabaseManager } from "../shared/database.js";
+
+const MS_PER_WEEK = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Zero-fill the weeks between the first and last active bucket so the trend
+ * chart's x-axis is evenly spaced — a quiet week must render as an empty column,
+ * not silently collapse the axis (which would make two adjacent bars look like
+ * consecutive weeks when they aren't).
+ *
+ * Deliberately bounded by the DATA, not by "now": extending the series to the
+ * current week would make `getStats()` depend on the wall clock. The client
+ * windows this to the most recent N weeks that fit its chart.
+ */
+export function fillWeekGaps(buckets: WeeklyUsage[]): WeeklyUsage[] {
+  if (buckets.length === 0) return [];
+  const byWeek = new Map(buckets.map((b) => [b.week, b]));
+  const end = Date.parse(`${buckets[buckets.length - 1].week}T00:00:00Z`);
+  const out: WeeklyUsage[] = [];
+  for (let t = Date.parse(`${buckets[0].week}T00:00:00Z`); t <= end; t += MS_PER_WEEK) {
+    const week = new Date(t).toISOString().slice(0, 10);
+    out.push(byWeek.get(week) ?? { week, costUsd: 0, turns: 0 });
+  }
+  return out;
+}
 
 interface UsageRow {
   id: number;
@@ -231,26 +255,30 @@ export class UsageManager {
       "SELECT SUM(cost_usd) as total_cost, COUNT(*) as total_turns FROM usage_turns",
     ).get() as { total_cost: number | null; total_turns: number };
 
-    // Per-month buckets for the trend chart. `created_at` is an ISO timestamp;
-    // strftime over UTC gives stable `YYYY-MM` keys, oldest → newest.
-    const monthlyRows = this.db.prepare(`
-      SELECT strftime('%Y-%m', created_at) as month,
+    // Per-week buckets for the trend chart. `created_at` is a UTC timestamp;
+    // `date(x, 'weekday 0', '-6 days')` snaps it to that week's MONDAY (advance
+    // to the coming Sunday, step back six days), giving stable `YYYY-MM-DD`
+    // keys, oldest → newest.
+    const weeklyRows = this.db.prepare(`
+      SELECT date(created_at, 'weekday 0', '-6 days') as week,
              SUM(cost_usd) as total_cost, COUNT(*) as turns
       FROM usage_turns
-      GROUP BY month ORDER BY month
-    `).all() as { month: string; total_cost: number | null; turns: number }[];
+      GROUP BY week ORDER BY week
+    `).all() as { week: string; total_cost: number | null; turns: number }[];
 
-    const monthly: MonthlyUsage[] = monthlyRows.map((r) => ({
-      month: r.month,
-      costUsd: r.total_cost ?? 0,
-      turns: r.turns,
-    }));
+    const weekly = fillWeekGaps(
+      weeklyRows.map((r) => ({
+        week: r.week,
+        costUsd: r.total_cost ?? 0,
+        turns: r.turns,
+      })),
+    );
 
     return {
       sessions,
       totalCostUsd: totalRow.total_cost ?? 0,
       totalTurns: totalRow.total_turns,
-      monthly,
+      weekly,
     };
   }
 

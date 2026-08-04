@@ -20,6 +20,7 @@ import {
 import { ICON_SIZE } from "../../design-tokens.js";
 import { usePrStore, type PrCardState } from "../../stores/pr-store.js";
 import { Banner } from "../ui/banner.js";
+import { Button } from "../ui/button.js";
 
 function StateBadge({ phase, url }: { phase: PrCardState["phase"]; url?: string }) {
   const base = "inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-xs font-medium border";
@@ -158,14 +159,16 @@ export function PrDetailHeader({
                 >
                   <CheckIcon size={ICON_SIZE.SM} weight="bold" />
                 </button>
-                <button
+                <Button
+                  variant="ghost"
+                  size="icon"
                   onClick={cancel}
                   disabled={submitting}
                   aria-label="Cancel title edit"
-                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-(--color-text-tertiary) hover:text-(--color-text-secondary) hover:bg-(--color-bg-hover) transition-colors disabled:opacity-50"
+                  className="shrink-0"
                 >
                   <XIcon size={ICON_SIZE.SM} weight="bold" />
-                </button>
+                </Button>
               </div>
               {error && (
                 <Banner variant="error" className="rounded-md text-left">
@@ -179,13 +182,15 @@ export function PrDetailHeader({
                 {pr.title}
               </h2>
               {editable && (
-                <button
+                <Button
+                  variant="ghost"
+                  size="icon"
                   onClick={startEditing}
                   aria-label="Edit title"
-                  className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded text-(--color-text-tertiary) hover:text-(--color-text-secondary) hover:bg-(--color-bg-hover) transition-colors"
+                  className="mt-0.5 shrink-0"
                 >
                   <PencilSimpleIcon size={ICON_SIZE.SM} />
-                </button>
+                </Button>
               )}
             </div>
           )}

@@ -1,5 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: setInterval lifecycle for the ticking clock (external timer sync)
 import { useEffect, useState } from "react";
+import { Badge } from "./ui/badge.js";
 
 interface UptimeBadgeProps {
   /** Epoch milliseconds when the orchestrator process started. */
@@ -51,11 +52,12 @@ export function UptimeBadge({ processStartedAt }: UptimeBadgeProps) {
   }, [processStartedAt]);
 
   return (
-    <span
-      className="inline-block text-xs px-2 py-0.5 rounded-full bg-(--color-bg-hover) text-(--color-text-secondary) font-medium tabular-nums"
+    <Badge
+      numeric
+      className="bg-(--color-bg-hover)"
       title={`Orchestrator uptime: ${label} (started ${new Date(processStartedAt).toLocaleString()})`}
     >
       {label}
-    </span>
+    </Badge>
   );
 }

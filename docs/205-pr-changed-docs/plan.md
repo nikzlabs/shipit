@@ -48,8 +48,10 @@ signal, so there is **no count badge** (you can see/count them on expand).
   toward the panel, and a strip drops in below the header (inside the same card) listing the
   notable changed files as **compact chips** (Option B — chips wrap several-per-line for
   density; the strip caps its height and scrolls for big PRs).
-- **Each chip:** doc/config icon + frontmatter **title** (or filename) + a colored status
+- **Each chip:** doc/config icon + a label + a colored status
   **dot** (amber = modified, green = added, red = deleted). Full path on hover (`title`).
+  (The label was originally the frontmatter **title**; it is now a compact path
+  such as `246/plan.md` — see the Superseded note below.)
   Click → `useFileStore.getState().openPreview(sessionId, path)` → rich-markdown preview
   modal. No Docs-page detour.
 
@@ -140,27 +142,24 @@ pure projection of the PR's file list:
 
 Classification (`computeNotableFiles`): config allowlist is matched by basename
 and takes precedence over the generic `.md` rule, so `CLAUDE.md` / `AGENTS.md`
-render as config (blue, gear icon), not design docs. Doc titles resolve via the
-new `markdown.resolveDocTitle` (frontmatter `title`, else path-derived — a
-deleted doc still gets a sensible name). Statuses normalize to M/A/D
-(renames/copies → M).
+render as config (blue, gear icon), not design docs. Statuses normalize to
+M/A/D (renames/copies → M).
 
-Docs that resolve to the **same title** are collapsed to one chip
-(`dedupeNotableDocs`): a feature dir's `plan.md` + `checklist.md` both derive
-their title from the directory name (`titleFromPath`), which previously
-surfaced one logical document as two identical chips. The kept chip prefers the
-canonical file (`plan.md` > `index` > `readme` > rest) so the click opens the
-doc's main page, and stays in first-seen position. Config files are **not**
-deduped — a monorepo's multiple `package.json` / `docker-compose.yml` are
-genuinely distinct.
+> **Superseded:** the paragraphs above and below originally described
+> title-based chip labels (`markdown.resolveDocTitle`) and a title-keyed
+> `dedupeNotableDocs` collapse. Both are gone — chips are now labelled by a
+> compact path (`246/plan.md`) and the list is a 1:1 projection of the
+> changed-file set with no collapsing at all. See
+> [docs/210 → Follow-up 3](../210-pr-card-changed-docs-refresh/plan.md#follow-up-3-cross-feature-title-collapse-dropped-chips-the-fifth-gap).
 
 **Images are a third notable tier.** Any added/modified/deleted image (matched
 by extension — `.png/.jpg/.jpeg/.gif/.webp/.svg/.avif/.bmp/.ico`) becomes a
-chip titled by its basename, with an image icon (`ImageIcon`, link-tinted).
+chip labelled by its compact path, with an image icon (`ImageIcon`,
+link-tinted).
 The chip opens the asset inline via the existing `openPreview` →
 `FilePreviewModal` image branch, so committed mockups, screenshots, and logos
-are eyeballable on the card without scanning the diff. Like config, images are
-never deduped (same-named assets in different dirs are distinct). The
+are eyeballable on the card without scanning the diff. Nothing on the strip is
+ever deduped (same-named assets in different dirs are distinct). The
 `NotableFileChange.kind` union widened to `"doc" | "config" | "image"`.
 
 Key files added: `src/server/orchestrator/services/notable-files.ts`,

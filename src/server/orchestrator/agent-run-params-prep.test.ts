@@ -38,6 +38,18 @@ describe("prepareClaudeRunParams", () => {
     expect(prepareClaudeRunParams(baseParams, { autoCreatePrActive: false }).sandbox).toBe(false);
   });
 
+  it("SHI-265 — forwards guardDestructiveGit from guardDestructiveGitActive (defaulting false)", () => {
+    expect(
+      prepareClaudeRunParams(baseParams, {
+        autoCreatePrActive: false,
+        guardDestructiveGitActive: true,
+      }).guardDestructiveGit,
+    ).toBe(true);
+    expect(
+      prepareClaudeRunParams(baseParams, { autoCreatePrActive: false }).guardDestructiveGit,
+    ).toBe(false);
+  });
+
   it("does not mutate the input params (pure)", () => {
     const snapshot = JSON.stringify(baseParams);
     prepareClaudeRunParams(baseParams, { autoCreatePrActive: true });

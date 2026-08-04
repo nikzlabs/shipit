@@ -3,10 +3,16 @@
  *
  * When a merged session's branch is rebased onto its base AND gains genuinely
  * new work, the stale merged PR state should be dropped and the session treated
- * as ready for a fresh PR. The detection is squash-safe and local-git-only (see
- * `GitManager.advancedBeyondMergedBase`), and is **turn-gated**: it runs once
- * per assistant turn from the post-turn flow, never from a poller sweep, so a
- * merged session that isn't progressing costs zero GitHub queries.
+ * as ready for a fresh PR. The detection is squash-safe (see
+ * `GitManager.advancedBeyondMergedBase`) and **turn-gated**: it runs once per
+ * assistant turn from the post-turn flow, never from a poller sweep, so a merged
+ * session that isn't progressing costs zero GitHub API queries.
+ *
+ * Both detections are *base-relative*, so they first make sure `origin/<base>`
+ * in the session clone is current — a stale remote-tracking ref inverts the
+ * answer (see {@link freshenBaseRef}). A branch still sitting on the docs/218
+ * merged-tip anchor short-circuits before that fetch ({@link unmovedSinceMerge}),
+ * so a merged session that is merely being resumed still costs no network at all.
  *
  * This is factored into a shared helper because there are TWO post-turn entry
  * points that must both re-arm or a rebase in one of them silently fails to:
@@ -18,7 +24,7 @@
  * scope inside `emitPrLifecycleAfterCommit` (its deps only carry the WS `emit`).
  */
 
-import type { WsServerMessage } from "../../shared/types.js";
+import type { SessionInfo, WsServerMessage } from "../../shared/types.js";
 import type { GitManager } from "../../shared/git.js";
 import type { SessionManager } from "../sessions.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
@@ -28,6 +34,62 @@ export interface ReArmDeps {
   prStatusPoller: PrStatusPoller;
   createGitManager: (dir: string) => GitManager;
   sseBroadcast: (event: string, data: unknown) => void;
+}
+
+/**
+ * Cheap, network-free "this branch has not moved since the merge" check, using
+ * the docs/218 anchor (`mergedHeadSha` = the SHA GitHub actually merged). When
+ * HEAD still sits exactly on it, the branch carries nothing but already-shipped
+ * commits, so NEITHER detection below can be true — the branch is neither
+ * progressed past the base nor reset onto it. Short-circuiting here keeps the
+ * overwhelmingly common case ("user resumes a merged session, the auto-advance
+ * didn't fire") at zero network cost, and makes the decision immune to the
+ * remote-tracking staleness described in {@link freshenBaseRef}.
+ *
+ * Returns false when no anchor is recorded (pre-docs/218 merge, or a merge whose
+ * REST payload had no `head.sha`) — those sessions fall through to the
+ * fetch-then-compare path, which is what makes them detect correctly at all.
+ */
+async function unmovedSinceMerge(session: SessionInfo, git: GitManager): Promise<boolean> {
+  const anchor = session.mergedHeadSha;
+  if (!anchor) return false;
+  const head = await git.getHeadHash();
+  return head !== null && head === anchor;
+}
+
+/**
+ * Freshen `origin/<base>` before a base-relative re-arm decision.
+ *
+ * Both detections below ask a question *about `origin/<base>` in the session's
+ * own clone*, and that remote-tracking ref only moves when THIS clone fetches.
+ * Nothing on the merge path does: the poller talks to the GitHub API, the
+ * post-merge hook prunes volumes, and the post-turn flow only commits and
+ * pushes. So when a merged session resumes, `origin/<base>` is typically still
+ * the commit the branch forked from — and a stale base silently INVERTS
+ * `advancedBeyondMergedBase`: `merge-base(origin/<base>, HEAD)` trivially equals
+ * that fork point, so clause 1 ("rebased onto the *current* base") passes for a
+ * branch that was never rebased, and the two-dot diff is just the branch's own
+ * already-merged work.
+ *
+ * The observed symptom: the first committing turn on a merged session un-merged
+ * it and left a gray "ready" card showing the stale full-branch diff plus a
+ * "Create PR" button, while the branch still carried nothing but shipped
+ * commits. Worse, `clearMerged` drops `mergedHeadSha`, so the docs/218 pre-turn
+ * auto-advance could never fire for that session again — the false re-arm
+ * *disabled* the very feature whose absence it looked like.
+ *
+ * Fail-safe: a fetch failure (offline, bad credentials, evicted workspace)
+ * returns false and the caller stays merged rather than deciding off a ref it
+ * knows may be stale.
+ */
+async function freshenBaseRef(git: GitManager, sessionId: string): Promise<boolean> {
+  try {
+    await git.fetch("origin");
+    return true;
+  } catch (err) {
+    console.warn(`[pr-rearm] base-ref fetch failed for ${sessionId} (staying merged rather than deciding off a stale ref):`, err);
+    return false;
+  }
 }
 
 /**
@@ -69,7 +131,14 @@ export async function detectAndReArmMergedSession(args: {
 
   let progressed: boolean;
   try {
-    progressed = await deps.createGitManager(sessionDir).advancedBeyondMergedBase(baseBranch);
+    const git = deps.createGitManager(sessionDir);
+    // The branch still sitting on the merged tip can't have progressed — decide
+    // locally and skip the fetch entirely (see `unmovedSinceMerge`).
+    if (await unmovedSinceMerge(session, git)) return false;
+    // `advancedBeyondMergedBase` is base-relative, so the base ref must be
+    // current or it false-positives (see `freshenBaseRef`).
+    if (!(await freshenBaseRef(git, sessionId))) return false;
+    progressed = await git.advancedBeyondMergedBase(baseBranch);
   } catch {
     return false; // workspace evicted / git error — fail safe, stay merged
   }
@@ -118,6 +187,14 @@ export async function detectAndReArmResetSession(args: {
   sessionId: string;
   sessionDir: string;
   emit: (msg: WsServerMessage) => void;
+  /**
+   * Skip the base-ref freshening fetch because the caller just did one. Passed
+   * by the docs/218 pre-turn reset path, which fetches, resets onto
+   * `origin/<base>`, and then calls this immediately — a second fetch there
+   * would add network latency in front of the user's turn for no new
+   * information. Every other caller leaves it unset (see `freshenBaseRef`).
+   */
+  skipFetch?: boolean;
 }): Promise<boolean> {
   const { deps, sessionId, sessionDir, emit } = args;
   const session = deps.sessionManager.get(sessionId);
@@ -130,7 +207,14 @@ export async function detectAndReArmResetSession(args: {
 
   let atBase: boolean;
   try {
-    atBase = await deps.createGitManager(sessionDir).headIsAtBase(baseBranch);
+    const git = deps.createGitManager(sessionDir);
+    // A branch still on the merged tip is not at the base — decide locally and
+    // skip the fetch (see `unmovedSinceMerge`).
+    if (await unmovedSinceMerge(session, git)) return false;
+    // `headIsAtBase` compares against `origin/<base>`, so a stale ref would read
+    // a branch reset onto an OLD base tip as "at base" (see `freshenBaseRef`).
+    if (!args.skipFetch && !(await freshenBaseRef(git, sessionId))) return false;
+    atBase = await git.headIsAtBase(baseBranch);
   } catch {
     return false; // workspace evicted / git error — fail safe, stay merged
   }

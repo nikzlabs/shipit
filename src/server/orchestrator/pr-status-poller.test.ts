@@ -8,6 +8,7 @@ import {
 } from "./pr-status-parser.js";
 import type { PrStatusSummary } from "../shared/types/github-types.js";
 import * as workflowLoader from "./workflow-loader.js";
+import { NO_CHECKS_GRACE_MS } from "./ci-grace-tracker.js";
 import type { SessionManager } from "./sessions.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { GitManager } from "../shared/git.js";
@@ -1082,6 +1083,58 @@ describe("PrStatusPoller", () => {
       expect(poller.getStatus("s1")?.prNumber).toBe(99);
     });
 
+    it("converges to merged when the NEW PR opens and merges between polls (never seen open)", async () => {
+      // The bug: a re-armed session (superseded #42) opens a NEW PR via the gh
+      // shim, the user merges it manually on GitHub, and the poller never
+      // observes it OPEN (e.g. tab closed, or it opens-and-merges between
+      // polls). The new PR is therefore absent from the OPEN bulk view forever.
+      //
+      // Before the fix, the re-arm-time verify found only the superseded #42,
+      // returned early (suppression), and the missing-PR branch ARMED
+      // `verifiedAbsent` — so every subsequent periodic poll skipped the REST
+      // verify and the merge of the different-numbered new PR was never caught.
+      // The session stayed stuck with no PR snapshot — the gray "Branch" badge.
+      githubAuth = makeGitHubAuth(
+        { data: { repository: { pullRequests: { nodes: [] } } } },
+        SUPERSEDED_MERGED,
+      );
+      sessionManager = makeSessionManager([
+        { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+      ]);
+      poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+
+      // Re-arm: the immediate forced poll's REST verify finds only the old #42
+      // (suppressed) — no card, and the debounce must NOT be armed.
+      poller.reArm("s1", 42);
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(poller.getStatus("s1")).toBeUndefined();
+
+      // The NEW PR (#99) is opened then merged externally — REST now returns it
+      // merged. It never appeared in the OPEN bulk view, which stays empty.
+      (githubAuth.findPullRequestAnyState as ReturnType<typeof vi.fn>).mockResolvedValue({
+        url: "https://github.com/owner/repo/pull/99",
+        number: 99,
+        base: "main",
+        title: "Next slice",
+        body: "",
+        state: "closed" as const,
+        merged_at: "2026-05-22T10:00:00Z",
+        merge_commit_sha: "mergesha99",
+        head_sha: "headsha99",
+        additions: 5,
+        deletions: 1,
+      });
+
+      // A later periodic poll (NOT a forced refresh) must re-verify and promote
+      // the session to merged, clearing the superseded suppression on the way.
+      await vi.advanceTimersByTimeAsync(PR_STATUS_SLOW_INTERVAL_MS);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(poller.getStatus("s1")?.prState).toBe("merged");
+      expect(poller.getStatus("s1")?.prNumber).toBe(99);
+    });
+
     it("reArm broadcasts no destructive pr_status removal", async () => {
       githubAuth = makeGitHubAuth(
         { data: { repository: { pullRequests: { nodes: [] } } } },
@@ -1473,6 +1526,64 @@ describe("PrStatusPoller", () => {
     expect(onPrTerminalState).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: "s1", outcome: "closed", prNumber: 42 }),
     );
+  });
+
+  // Auto-merge is armed for ONE pull request, not for the session forever. When
+  // the PR it was armed for goes terminal the state must be released, or (a) the
+  // session's NEXT PR gets silently armed by `activatePendingAutoMergeForPr`
+  // reading the leftover `enabled`, and (b) the docs/077 `completed`
+  // short-circuit rides along and wedges the managed loop so the still-ON toggle
+  // never merges anything. Nothing calls `untrackSession` in production, so this
+  // terminal branch is the only release point.
+  describe("clears auto-merge arming when the PR goes terminal", () => {
+    async function pollUntilTerminal(restResult: unknown) {
+      const withPr = { data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } } };
+      githubAuth = makeGitHubAuth(withPr, restResult);
+      sessionManager = makeSessionManager([
+        { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+      ]);
+      poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+      poller.trackSession("s1", "https://github.com/owner/repo");
+      await vi.advanceTimersByTimeAsync(0);
+
+      // Arm auto-merge on the open PR, the way the toggle route does.
+      poller.setAutoMergeEnabled("s1", true);
+      poller.setAutoMergeManaged("s1", true, "https://github.com/owner/repo/settings", "Allow auto-merge is off");
+      expect(poller.getAutoMergeState("s1")?.enabled).toBe(true);
+
+      // The PR drops out of the OPEN bulk view → REST verify sees it terminal.
+      (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { repository: { pullRequests: { nodes: [] } } },
+      });
+      await vi.advanceTimersByTimeAsync(PR_STATUS_SLOW_INTERVAL_MS);
+      await vi.advanceTimersByTimeAsync(0);
+    }
+
+    it("drops the state on merge", async () => {
+      await pollUntilTerminal({
+        url: "https://github.com/owner/repo/pull/42",
+        number: 42, base: "main", title: "Add feature", body: "x",
+        state: "closed" as const, merged_at: "2026-05-19T12:00:00Z",
+        merge_commit_sha: "abc123", additions: 100, deletions: 20,
+      });
+
+      expect(poller.getStatus("s1")?.prState).toBe("merged");
+      // Not merely `enabled: false` — the whole entry is gone, so a stale
+      // `completed`/`managed` can't survive with it either.
+      expect(poller.getAutoMergeState("s1")).toBeUndefined();
+    });
+
+    it("drops the state on close-without-merge", async () => {
+      await pollUntilTerminal({
+        url: "https://github.com/owner/repo/pull/42",
+        number: 42, base: "main", title: "Add feature", body: "x",
+        state: "closed" as const, merged_at: null, merge_commit_sha: null,
+        additions: 100, deletions: 20,
+      });
+
+      expect(poller.getStatus("s1")?.prState).toBe("closed");
+      expect(poller.getAutoMergeState("s1")).toBeUndefined();
+    });
   });
 
   it("does NOT promote to merged when REST verify reports the PR is still open (rate-limit poisoning)", async () => {
@@ -1999,8 +2110,34 @@ describe("PrStatusPoller — auto-fix state", () => {
     });
   }
 
+  /** The same PR, now passing — used to drive the red → green transition. */
+  function makePassingNode() {
+    return makeGraphQLPrNode({
+      commits: {
+        nodes: [{
+          commit: {
+            oid: "sha-fail",
+            statusCheckRollup: {
+              state: "SUCCESS",
+              contexts: {
+                nodes: [
+                  { databaseId: 1, name: "test", status: "COMPLETED", conclusion: "SUCCESS", title: "all good", detailsUrl: "https://example.com" },
+                ],
+              },
+            },
+          },
+        }],
+      },
+    });
+  }
+
   /** A poller wired so the auto-fix loop fires and parks in `running`. */
   function makeRunningAutoFixPoller() {
+    return makeRunningAutoFixHarness().poller;
+  }
+
+  /** As above, but exposes the GitHub stub so a test can change the CI verdict. */
+  function makeRunningAutoFixHarness() {
     const githubAuth = makeGitHubAuth({
       data: { repository: { pullRequests: { nodes: [makeFailingNode()] } } },
     });
@@ -2010,7 +2147,7 @@ describe("PrStatusPoller — auto-fix state", () => {
     const registry = makeFakeRegistry();
     registry.setViewers("s1", 1); // open the poll gate
     registry.setRunning("s1", false); // idle runner → pre-attempt gate passes
-    return new PrStatusPoller({
+    const poller = new PrStatusPoller({
       githubAuth,
       sessionManager,
       sseBroadcast: sseBroadcastAF,
@@ -2019,6 +2156,7 @@ describe("PrStatusPoller — auto-fix state", () => {
       // Never resolves → the attempt stays in flight, so status stays "running".
       fetchAndFixCb: () => new Promise<never>(() => { /* hang */ }),
     });
+    return { poller, githubAuth };
   }
 
   it("auto-fix loop flips state to running on a failing-CI poll", async () => {
@@ -2041,6 +2179,47 @@ describe("PrStatusPoller — auto-fix state", () => {
     const statuses = poller2.getAllStatuses();
     expect(statuses).toHaveLength(1);
     expect(statuses[0].autoFix).toMatchObject({ status: "running", maxAttempts: 3 });
+    poller2.destroy();
+    vi.useRealTimers();
+  });
+
+  // `attemptCount` is incremented POST-turn (`completeTurn`), so publishing it
+  // raw made the card read "Auto-fixing (attempt 0/3)…" for the whole first
+  // attempt. The state machine already knows the 1-based number — it passes
+  // `attemptCount + 1` to `fireAttempt` — so the wire carries the displayed
+  // number rather than each of the two client render sites reconstructing it.
+  it("publishes the 1-BASED in-flight attempt number, not the completed count", async () => {
+    vi.useFakeTimers();
+    const poller2 = makeRunningAutoFixPoller();
+    poller2.trackSession("s1", "https://github.com/owner/repo");
+    await vi.advanceTimersByTimeAsync(0);
+
+    // The loop is on its FIRST attempt and has completed none.
+    expect(poller2.getAutoFixState("s1")).toMatchObject({ status: "running", attemptCount: 0 });
+    expect(poller2.getAllStatuses()[0].autoFix).toMatchObject({ attemptCount: 1, maxAttempts: 3 });
+
+    poller2.destroy();
+    vi.useRealTimers();
+  });
+
+  it("does NOT attach auto-fix state over a green rollup", async () => {
+    vi.useFakeTimers();
+    const { poller: poller2, githubAuth } = makeRunningAutoFixHarness();
+    poller2.trackSession("s1", "https://github.com/owner/repo");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(poller2.getAllStatuses()[0].autoFix).toBeDefined();
+
+    // CI goes green while the fix turn is still in flight (the callback above
+    // never resolves). The card must not keep spinning on "Auto-fixing…" — and
+    // the state machine itself settles on the resolved signal.
+    (githubAuth.graphqlQuery as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: { repository: { pullRequests: { nodes: [makePassingNode()] } } },
+    });
+    await vi.advanceTimersByTimeAsync(31_000);
+
+    expect(poller2.getAllStatuses()[0].autoFix).toBeUndefined();
+    expect(poller2.getAutoFixState("s1")).toBeUndefined();
+
     poller2.destroy();
     vi.useRealTimers();
   });
@@ -2383,8 +2562,15 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
     // Workflow with paths-ignore that excludes the PR's changed files.
     mockLoadWorkflows.mockResolvedValue([
       {
-        alwaysApplies: false,
-        events: [{ pathsInclude: [], pathsIgnore: ["docs/**", "**.md"] }],
+        unparseable: false,
+        events: [{
+          event: "pull_request",
+          pathsInclude: [],
+          pathsIgnore: ["docs/**", "**.md"],
+          branchesInclude: [],
+          branchesIgnore: [],
+          tagsOnly: false,
+        }],
       },
     ]);
 
@@ -2428,8 +2614,15 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
 
     mockLoadWorkflows.mockResolvedValue([
       {
-        alwaysApplies: false,
-        events: [{ pathsInclude: ["src/**"], pathsIgnore: [] }],
+        unparseable: false,
+        events: [{
+          event: "pull_request",
+          pathsInclude: ["src/**"],
+          pathsIgnore: [],
+          branchesInclude: [],
+          branchesIgnore: [],
+          tagsOnly: false,
+        }],
       },
     ]);
 
@@ -2449,6 +2642,92 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
         checks: expect.objectContaining({ state: "pending" }),
       })],
     }));
+
+    poller.destroy();
+  });
+
+  it("skips grace when the repo's only workflow has no PR-relevant trigger (nikzlabs/shipit#1730)", async () => {
+    // The reported repro: one workflow, manual dispatch plus a push trigger
+    // scoped to a single non-default branch. A session-branch PR into main
+    // matches nothing, so GitHub creates zero check runs — permanently. Pre-
+    // fix this went through the time-based grace and rendered a spinner for a
+    // result that was never coming.
+    const noCiNode = makeGraphQLPrNode({
+      commits: { nodes: [{ commit: { oid: "sha-1", statusCheckRollup: null } }] },
+      files: { nodes: [{ path: "src/index.ts" }] },
+    });
+    const graphqlResult = {
+      data: { repository: { pullRequests: { nodes: [noCiNode] } } },
+    };
+
+    const githubAuth = makeGitHubAuth(graphqlResult);
+    const sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+    const sseBroadcast = vi.fn();
+
+    // Parsed from the real workflow YAML so the test exercises the same path
+    // production does, not a hand-built stub.
+    mockLoadWorkflows.mockResolvedValue([
+      workflowLoader.parseWorkflowContent(
+        "on:\n  workflow_dispatch:\n  push:\n    branches:\n      - deploy\njobs: {}\n",
+      ),
+    ]);
+
+    const poller = new PrStatusPoller({
+      githubAuth,
+      sessionManager,
+      sseBroadcast,
+      getSharedRepoDir: () => "/repos/owner/repo",
+    });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Terminal from the very first poll — no spinner, no grace window.
+    expect(sseBroadcast).toHaveBeenCalledWith("pr_status", expect.objectContaining({
+      updates: [expect.objectContaining({
+        sessionId: "s1",
+        checks: expect.objectContaining({ state: "none", total: 0 }),
+      })],
+    }));
+
+    poller.destroy();
+  });
+
+  it("publishes a grace deadline alongside a forced-pending state", async () => {
+    // The client uses `graceUntil` to retire the spinner on its own if polling
+    // pauses (last viewer detached) before the poller observes the expiry.
+    const noCiNode = makeGraphQLPrNode({
+      commits: { nodes: [{ commit: { oid: "sha-1", statusCheckRollup: null } }] },
+    });
+    const graphqlResult = {
+      data: { repository: { pullRequests: { nodes: [noCiNode] } } },
+    };
+
+    const githubAuth = makeGitHubAuth(graphqlResult);
+    const sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+    const sseBroadcast = vi.fn();
+
+    mockLoadWorkflows.mockResolvedValue([ALWAYS_APPLIES]);
+
+    const poller = new PrStatusPoller({
+      githubAuth,
+      sessionManager,
+      sseBroadcast,
+      getSharedRepoDir: () => "/repos/owner/repo",
+    });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    const update = sseBroadcast.mock.calls
+      .flatMap((call) => (call[1] as { updates?: PrStatusSummary[] }).updates ?? [])
+      .find((u) => u.sessionId === "s1");
+    expect(update?.checks.state).toBe("pending");
+    expect(update?.checks.graceUntil).toBe(Date.now() + NO_CHECKS_GRACE_MS);
 
     poller.destroy();
   });

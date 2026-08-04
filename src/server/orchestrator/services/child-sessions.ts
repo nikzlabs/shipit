@@ -17,10 +17,12 @@ import type { SessionContainerManager } from "../session-container.js";
 import { ContainerSessionRunner } from "../container-session-runner.js";
 import { agentIdForModel, getAgentCapabilities, KNOWN_AGENT_IDS } from "../../shared/agent-registry.js";
 import { prepareSessionAgentEnvironment } from "../session-agent-env.js";
+import { reconcileRunnerAgent } from "../reconcile-runner-agent.js";
 import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js";
 import { ServiceError } from "./types.js";
 import type { ClaimSessionService } from "./claim-session.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
+import { prepareDispatch } from "../prepared-dispatch.js";
 
 /**
  * Read a positive-integer env var override. Returns `undefined` when the var
@@ -48,21 +50,78 @@ export const DEFAULT_MAX_ACTIVE_SPAWNED_SESSIONS =
 
 /**
  * Default per-turn quota for newly-spawned child sessions.
+ *
+ * Sized at `6`: it covers the fan-out shapes that are actually legitimate — one
+ * child per subsystem, per failing test area, per independent slice of a
+ * migration — while staying short of the width at which an agent is usually
+ * over-slicing one task. It also keeps {@link DEFAULT_MAX_ACTIVE_SPAWNED_SESSIONS}
+ * (16) as the bound that binds over a session's *life* (~3 turns to reach it)
+ * rather than something a single turn nearly exhausts.
+ *
+ * Why not higher: nothing downstream will say no. There is no global cap on
+ * live containers — `createContainerForRunner` (`app-lifecycle.ts`) gates only
+ * on the per-session OOM breaker — and reclaim is idle-only, since
+ * `idle-enforcer.ts` skips any runner with `agentBusy` or an attached viewer
+ * even under memory pressure. A spawned child is born busy, so N of them are
+ * exempt from every reclaim path for as long as they work. Meanwhile each
+ * container's memory ceiling is ~half of usable host RAM (deliberately not
+ * `1 / expectedConcurrency`, `container-config-builder.ts`), so on a 16 GB host
+ * even this cap is ~3× over-subscribed and survives only on statistical
+ * multiplexing. The real fix is host-derived sizing (docs/229) or admission
+ * control on the create path, not a larger constant.
+ *
  * Overridable via the `MAX_SPAWNED_SESSIONS_PER_TURN` env var (positive
- * integer); the compile-time default is `4`. Read once at module init.
+ * integer). Read once at module init.
  */
 export const DEFAULT_MAX_SPAWNED_SESSIONS_PER_TURN =
-  readPositiveIntEnv("MAX_SPAWNED_SESSIONS_PER_TURN") ?? 4;
+  readPositiveIntEnv("MAX_SPAWNED_SESSIONS_PER_TURN") ?? 6;
 
 /**
- * docs/162 — lower per-turn cap for Ops `--shipit-source` fix-session spawns.
- * A ShipIt fix session is heavier and higher-stakes than a generic fan-out
- * child (it claims the ShipIt repo and opens a PR against it), so we bound how
- * many an Ops turn can kick off. Overridable via `MAX_SHIPIT_FIX_SESSIONS_PER_TURN`
- * (positive integer); the compile-time default is `2`. Read once at module init.
+ * docs/162 — per-turn cap for Ops `--shipit-source` fix-session spawns.
+ *
+ * What this bounds: the container burst of a *single* Ops turn. Each fix child
+ * claims the ShipIt repo, boots its own container, and opens a PR, so a turn
+ * that fans out a dozen of them is a capacity spike worth smoothing.
+ *
+ * What this is **not**: a containment boundary against a runaway agent. There
+ * is no spawn-depth limit for sessions — docs/117 dropped grandchild quotas
+ * deliberately — and a child can spawn grandchildren of its own, so nested
+ * spawns route around any per-turn number. The only other gate on that path is
+ * {@link DEFAULT_MAX_ACTIVE_SPAWNED_SESSIONS} (16 active children per parent),
+ * which is also per-parent and so is evaded the same way. (Distinct from
+ * docs/144's depth-1 cap, which bounds *sub-agent* recursion — a different
+ * mechanism entirely.)
+ *
+ * Do **not** read "the global container ceiling" as the backstop, as docs/117
+ * does — verified absent at `app-lifecycle.ts:createContainerForRunner`, which
+ * gates only on the per-session OOM breaker: nothing anywhere counts live
+ * containers and refuses. Capacity control is reclaim-only and idle-only
+ * (`idle-enforcer.ts` skips any runner with `agentBusy` or an attached viewer,
+ * even under memory pressure). A spawned child is born busy, so a fleet of them
+ * is exempt from every reclaim path for as long as it works. That makes this
+ * cap load-bearing for simultaneity, not merely a smoother of bursts — raise it
+ * with that in mind, and prefer host-derived sizing (docs/229) or real
+ * admission control over a larger constant.
+ *
+ * Sized at `6`, raised from the original `2`: an Ops investigation is exactly
+ * the workflow that legitimately finds several *independent* defects in one
+ * pass, and the alternatives a low cap forces — batching unrelated fixes into
+ * one muddled PR, or splitting a diagnosis across turns and losing the
+ * connective tissue between findings — are worse than the burst it prevents.
+ *
+ * That happens to equal {@link DEFAULT_MAX_SPAWNED_SESSIONS_PER_TURN} today,
+ * but the two are **not** coupled and should not be collapsed into one
+ * constant: they answer different questions (generic = parallel width across
+ * slices of *one* task; Ops = how many *independent* findings one investigation
+ * may ship, each as its own PR) and carry separate env overrides so a
+ * deployment can tune Ops without touching generic fan-out. Expect them to
+ * diverge again.
+ *
+ * Overridable via `MAX_SHIPIT_FIX_SESSIONS_PER_TURN` (positive integer). Read
+ * once at module init.
  */
 export const DEFAULT_MAX_SHIPIT_FIX_SESSIONS_PER_TURN =
-  readPositiveIntEnv("MAX_SHIPIT_FIX_SESSIONS_PER_TURN") ?? 2;
+  readPositiveIntEnv("MAX_SHIPIT_FIX_SESSIONS_PER_TURN") ?? 6;
 
 export interface SpawnChildSessionOptions {
   /** The required initial user prompt that the spawned session's agent runs. */
@@ -280,6 +339,24 @@ export async function spawnChildSession(
   // rather than the parent's own remote (an Ops session has none).
   const claimUrl = opts.repoUrlOverride ?? parent.remoteUrl;
   if (!claimUrl) {
+    // docs/211 — a sandbox parent hits this by construction, not by
+    // misconfiguration: a sandbox has no `remoteUrl` at all (the agent clones
+    // into `/workspace/<name>` subdirs, and none of those is the session's
+    // repo). The generic message below reads as "register your repo and retry",
+    // which sends a sandbox agent chasing a fix that does not exist — so say
+    // plainly that the capability is absent here and name what does work. The
+    // sandbox system-prompt section says the same thing up front; this is the
+    // authoritative backstop for an agent that tries anyway (and it covers
+    // every backend, unlike the prompt's `SHIPIT_SANDBOX` sibling signal).
+    if (parent.kind === "sandbox") {
+      throw new ServiceError(
+        400,
+        "Cannot spawn a session from a sandbox session: spawning claims the parent's repo and " +
+          "branches the child off it, and a sandbox has no repo bound to it. " +
+          "Do the work in this session, or ask the user to start a repo-backed session from the sidebar. " +
+          "In-turn subagents and `shipit agent run` need no repo and still work here.",
+      );
+    }
     throw new ServiceError(
       400,
       "Cannot spawn a child session: the parent has no remote URL. Spawn requires the parent's repo to be registered.",
@@ -426,7 +503,27 @@ export async function spawnChildSession(
     sessionManager.setAgentPinned(newSessionId);
   }
 
-  runner.dispatch({ text: trimmedPrompt });
+  runner.dispatch(prepareDispatch({
+    text: trimmedPrompt,
+    agentInterface: undefined,
+    ...(!opts.detached ? {
+      messageOrigin: {
+        sessionId: parent.id,
+        sessionTitle: parent.title,
+        relation: "parent" as const,
+      },
+    } : {}),
+    execution: undefined,
+    activity: undefined,
+    images: undefined,
+    files: undefined,
+    uploads: undefined,
+    permissionMode: undefined,
+    postTurn: undefined,
+    systemTurn: undefined,
+    onTurnComplete: undefined,
+    deliveryId: undefined,
+  }));
 
   console.log(
     `[spawn-child] Spawned session ${newSessionId} under parent ${parentSessionId}: branch=${branchName} title="${child.title}"`,
@@ -550,7 +647,13 @@ function assertChildOfParent(
   return child;
 }
 
-function buildChildView(
+/**
+ * Project a session row + its live runner into the read-only `ChildSessionView`
+ * the shim renders. Exported so the cohort view (docs/233 `shipit session
+ * whoami`) describes a peer session in exactly the same shape a parent sees for
+ * its children — one projection, one set of status semantics.
+ */
+export function buildChildView(
   child: SessionInfo,
   runnerRegistry: SessionRunnerRegistry,
   projections: ChildViewProjections,
@@ -701,6 +804,13 @@ export async function sendChildMessage(
   // right fallback.
   const runner = runnerRegistry.getOrCreate(childSessionId, child.workspaceDir, child.agentId ?? defaultAgentId);
 
+  // ...but `getOrCreate` honours that argument only when it CONSTRUCTS a
+  // runner. An existing one — seeded with the global default by container
+  // rescue or the warm pool — comes back carrying that default, and everything
+  // below reads `runner.agentId`. Reconcile before env-prep so a Codex child
+  // does not run Claude (and get Claude's credentials provisioned to match).
+  const effectiveAgentId = reconcileRunnerAgent(runner, child.agentId);
+
   // docs/149 — refresh per-session credentials + OAuth + MCP env before the
   // follow-up turn fires. Mirrors the spawn path; idempotent so re-running
   // it on every message is fine. Without this, a child whose OAuth token
@@ -711,7 +821,7 @@ export async function sendChildMessage(
   if (!wasRunning && credentialsDir && credentialStore) {
     await prepareSessionAgentEnvironment(runner, {
       sessionId: childSessionId,
-      agentId: runner.agentId,
+      agentId: effectiveAgentId,
       deps: {
         credentialsDir,
         credentialStore,
@@ -743,7 +853,25 @@ export async function sendChildMessage(
     throw new ServiceError(503, "Could not resume the session container; the message was not delivered.");
   }
 
-  runner.dispatch({ text: trimmed });
+  runner.dispatch(prepareDispatch({
+    text: trimmed,
+    agentInterface: undefined,
+    messageOrigin: {
+      sessionId: parentSessionId,
+      sessionTitle: sessionManager.get(parentSessionId)?.title ?? "Parent session",
+      relation: "parent",
+    },
+    execution: undefined,
+    activity: undefined,
+    images: undefined,
+    files: undefined,
+    uploads: undefined,
+    permissionMode: undefined,
+    postTurn: undefined,
+    systemTurn: undefined,
+    onTurnComplete: undefined,
+    deliveryId: undefined,
+  }));
   return {
     queuePosition: wasRunning ? runner.queueLength : 0,
     enqueued: wasRunning,
@@ -771,8 +899,10 @@ export interface RegisterMergeWatchResult {
  * yet — the watch arms and fires once a terminal state is observed.
  *
  * Idempotent: re-arming an already-armed (or mid-delivery) watch is a no-op that
- * reports the current state. Re-arming after a previous watch already delivered
- * (terminal) starts a fresh `armed` watch — useful if the child opens a new PR.
+ * reports the current state. Re-arming after a previous watch reached a terminal
+ * state starts a fresh `armed` watch — useful if the child opens a new PR, and
+ * the sanctioned recovery for a `delivery-failed` watch (SHI-258), which
+ * deliberately never resurrects itself.
  */
 export function registerMergeWatch(
   sessionManager: SessionManager,

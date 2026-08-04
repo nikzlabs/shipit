@@ -2,6 +2,9 @@ import { describe, it, expect, vi } from "vitest";
 import { ClaudeLimitsProvider } from "./limits-provider.js";
 import type { AuthManager } from "./auth-manager.js";
 
+/** docs/150 — every snapshot is now attributed to a route (account) id. */
+const ROUTE = "acct-test";
+
 function makeAuthStub(
   result: Awaited<ReturnType<AuthManager["getAccessToken"]>>,
 ): Pick<AuthManager, "getAccessToken"> {
@@ -14,16 +17,17 @@ describe("ClaudeLimitsProvider", () => {
       authManager: makeAuthStub({ token: "tok", source: "file", expiresAt: null, plan: "Max 20x" }),
     });
 
-    expect(provider.canFetch()).toBe(false);
-    expect(await provider.fetch()).toBeNull();
+    expect(provider.routeIds()).toEqual([]);
+    expect(await provider.fetch(ROUTE)).toBeNull();
 
     provider.setRateLimits(
       { usedPct: 30, resetAt: "2026-06-01T00:00:00Z" },
       { usedPct: 12, resetAt: "2026-06-07T00:00:00Z" },
+      ROUTE,
     );
 
-    expect(provider.canFetch()).toBe(true);
-    const snap = await provider.fetch();
+    expect(provider.routeIds()).toEqual([ROUTE]);
+    const snap = await provider.fetch(ROUTE);
     expect(snap).not.toBeNull();
     expect(snap?.agentId).toBe("claude");
     expect(snap?.plan).toBe("Max 20x");
@@ -39,8 +43,9 @@ describe("ClaudeLimitsProvider", () => {
     provider.setRateLimits(
       { usedPct: 5, resetAt: "2026-06-01T00:00:00Z" },
       null,
+      ROUTE,
     );
-    const snap = await provider.fetch();
+    const snap = await provider.fetch(ROUTE);
     expect(snap?.plan).toBeNull();
     expect(snap?.session?.usedPct).toBe(5);
     expect(snap?.weekly).toBeNull();
@@ -53,12 +58,14 @@ describe("ClaudeLimitsProvider", () => {
     provider.setRateLimits(
       { usedPct: 10, resetAt: "2026-06-01T00:00:00Z" },
       { usedPct: 20, resetAt: "2026-06-07T00:00:00Z" },
+      ROUTE,
     );
     provider.setRateLimits(
       { usedPct: 80, resetAt: "2026-06-01T00:00:00Z" },
       null,
+      ROUTE,
     );
-    const snap = await provider.fetch();
+    const snap = await provider.fetch(ROUTE);
     expect(snap?.session?.usedPct).toBe(80);
     // Adapter is responsible for accumulating partial updates; the provider
     // just stores whatever was last pushed.
@@ -87,10 +94,11 @@ describe("ClaudeLimitsProvider", () => {
     provider.setRateLimits(
       { usedPct: null, resetAt: "2026-06-01T00:00:00Z" },
       { usedPct: null, resetAt: "2026-06-07T00:00:00Z" },
+      ROUTE,
     );
 
-    await provider.refreshNow("manual");
-    const snap = await provider.fetch();
+    await provider.refreshNow("manual", ROUTE);
+    const snap = await provider.fetch(ROUTE);
     expect(fetchImpl).toHaveBeenCalledOnce();
     expect(snap?.session?.usedPct).toBe(12);
     expect(snap?.session?.source).toBe("usage-api");
@@ -111,8 +119,8 @@ describe("ClaudeLimitsProvider", () => {
       authManager: makeAuthStub({ token: "tok", source: "file", expiresAt: null, plan: "Pro" }),
       fetchImpl,
     });
-    await provider.refreshNow("manual");
-    const snap = await provider.fetch();
+    await provider.refreshNow("manual", ROUTE);
+    const snap = await provider.fetch(ROUTE);
     expect(snap?.session?.usedPct).toBe(1);
     expect(snap?.weekly?.usedPct).toBe(0.4);
   });
@@ -127,11 +135,11 @@ describe("ClaudeLimitsProvider", () => {
       fetchImpl,
       now: clock,
     });
-    await provider.refreshNow("manual");
+    await provider.refreshNow("manual", ROUTE);
     // A later event with a real number should override the older API value.
     clock.mockReturnValue(2_000);
-    provider.setRateLimits({ usedPct: 88, resetAt: "2026-06-01T00:00:00Z" }, null);
-    const snap = await provider.fetch();
+    provider.setRateLimits({ usedPct: 88, resetAt: "2026-06-01T00:00:00Z" }, null, ROUTE);
+    const snap = await provider.fetch(ROUTE);
     expect(snap?.session?.usedPct).toBe(88);
     expect(snap?.session?.source).toBe("event");
   });
@@ -146,15 +154,95 @@ describe("ClaudeLimitsProvider", () => {
       fetchImpl,
       now: clock,
     });
-    await provider.refreshNow("manual");
+    await provider.refreshNow("manual", ROUTE);
     expect(fetchImpl).toHaveBeenCalledOnce();
     // Still locked → second manual refresh is a no-op (no new fetch).
-    await provider.refreshNow("manual");
+    await provider.refreshNow("manual", ROUTE);
     expect(fetchImpl).toHaveBeenCalledOnce();
     // The snapshot carries lockedUntil so the client can disable the button.
-    provider.setRateLimits({ usedPct: 1, resetAt: "2026-06-01T00:00:00Z" }, null);
-    const snap = await provider.fetch();
+    provider.setRateLimits({ usedPct: 1, resetAt: "2026-06-01T00:00:00Z" }, null, ROUTE);
+    const snap = await provider.fetch(ROUTE);
     expect(snap?.lockedUntil).toBeGreaterThan(0);
+  });
+
+  it("surfaces the lockout on a route that has never reported a number", async () => {
+    // The reported symptom: an account 429'd before it ever had a reading, so
+    // `fetch()` returned null, the broadcast omitted the route entirely, and
+    // the pill rendered an ENABLED refresh button that silently no-opped for
+    // the whole ~30 min lockout. The lockout is the one thing that route knows.
+    const clock = vi.fn(() => 1_000);
+    const provider = new ClaudeLimitsProvider({
+      authManager: makeAuthStub({ token: "tok", source: "file", expiresAt: null, plan: "Pro" }),
+      fetchImpl: vi.fn().mockResolvedValue(new Response("", { status: 429 })),
+      now: clock,
+    });
+
+    expect(await provider.fetch(ROUTE)).toBeNull();
+    await provider.refreshNow("manual", ROUTE);
+
+    const snap = await provider.fetch(ROUTE);
+    expect(snap?.lockedUntil).toBeGreaterThan(1_000);
+    expect(snap?.session).toBeNull();
+    expect(snap?.weekly).toBeNull();
+  });
+
+  it("reports why a refresh produced nothing", async () => {
+    // Every one of these was a silent `return` — indistinguishable, from the
+    // button, from a refresh that worked.
+    const clock = vi.fn(() => 10_000);
+
+    const noCreds = new ClaudeLimitsProvider({
+      authManager: makeAuthStub({ token: null, reason: "not-authenticated" }),
+      fetchImpl: vi.fn(),
+      now: clock,
+    });
+    expect(await noCreds.refreshNow("manual", ROUTE)).toMatchObject({
+      routeId: ROUTE,
+      outcome: "no-credentials",
+    });
+
+    const expired = new ClaudeLimitsProvider({
+      authManager: makeAuthStub({ token: "tok", source: "file", expiresAt: 10_000, plan: "Pro" }),
+      fetchImpl: vi.fn(),
+      now: clock,
+    });
+    expect(await expired.refreshNow("manual", ROUTE)).toMatchObject({ outcome: "expired-token" });
+
+    const httpError = new ClaudeLimitsProvider({
+      authManager: makeAuthStub({ token: "tok", source: "file", expiresAt: null, plan: "Pro" }),
+      fetchImpl: vi.fn().mockResolvedValue(new Response("", { status: 500 })),
+      now: clock,
+    });
+    expect(await httpError.refreshNow("manual", ROUTE)).toMatchObject({
+      outcome: "failed",
+      detail: "HTTP 500",
+    });
+
+    const offline = new ClaudeLimitsProvider({
+      authManager: makeAuthStub({ token: "tok", source: "file", expiresAt: null, plan: "Pro" }),
+      fetchImpl: vi.fn().mockRejectedValue(new Error("ECONNRESET")),
+      now: clock,
+    });
+    expect(await offline.refreshNow("manual", ROUTE)).toMatchObject({ outcome: "failed" });
+
+    const rateLimited = new ClaudeLimitsProvider({
+      authManager: makeAuthStub({ token: "tok", source: "file", expiresAt: null, plan: "Pro" }),
+      fetchImpl: vi.fn().mockResolvedValue(new Response("", { status: 429 })),
+      now: clock,
+    });
+    expect(await rateLimited.refreshNow("manual", ROUTE)).toMatchObject({ outcome: "rate-limited" });
+    // A second press while locked out is reported as such, not as a success.
+    expect(await rateLimited.refreshNow("manual", ROUTE)).toMatchObject({ outcome: "locked" });
+
+    const ok = new ClaudeLimitsProvider({
+      authManager: makeAuthStub({ token: "tok", source: "file", expiresAt: null, plan: "Pro" }),
+      fetchImpl: vi.fn().mockResolvedValue(
+        jsonResponse({ five_hour: { utilization: 3, resets_at: "2026-06-01T00:00:00Z" } }),
+      ),
+      now: clock,
+    });
+    expect(await ok.refreshNow("manual", ROUTE)).toMatchObject({ outcome: "updated" });
+    expect(await ok.refreshNow("seed", ROUTE)).toMatchObject({ outcome: "skipped" });
   });
 
   it("seed self-skips once an API snapshot exists", async () => {
@@ -165,8 +253,8 @@ describe("ClaudeLimitsProvider", () => {
       authManager: makeAuthStub({ token: "tok", source: "file", expiresAt: null, plan: "Pro" }),
       fetchImpl,
     });
-    await provider.refreshNow("seed");
-    await provider.refreshNow("seed");
+    await provider.refreshNow("seed", ROUTE);
+    await provider.refreshNow("seed", ROUTE);
     expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
@@ -177,8 +265,109 @@ describe("ClaudeLimitsProvider", () => {
       authManager: makeAuthStub({ token: "tok", source: "file", expiresAt: null, plan: null }),
       now: clock,
     });
-    provider.setRateLimits({ usedPct: 1, resetAt: "2026-06-01T00:00:00Z" }, null);
-    const snap = await provider.fetch();
+    provider.setRateLimits({ usedPct: 1, resetAt: "2026-06-01T00:00:00Z" }, null, ROUTE);
+    const snap = await provider.fetch(ROUTE);
     expect(snap?.fetchedAt).toBe(1_700_000_000_000);
+  });
+});
+
+/**
+ * docs/150 — the route id has to reach BOTH the enumeration and the token
+ * lookup. These two bugs together produced the reported symptom: a pill stuck
+ * at "—" whose refresh button did nothing.
+ */
+describe("ClaudeLimitsProvider account routing", () => {
+  const okUsage = {
+    ok: true,
+    status: 200,
+    json: async () => ({
+      five_hour: { utilization: 40, resets_at: "2026-06-01T00:00:00Z" },
+      seven_day: { utilization: 20, resets_at: "2026-06-07T00:00:00Z" },
+    }),
+  } as unknown as Response;
+
+  it("can name a connected account before it has ever reported quota", async () => {
+    // The bug: routeIds() returned only routes with a cached snapshot, so the
+    // once-per-sign-in seed fetch iterated zero routes for a fresh account —
+    // data was required in order to be allowed to fetch data.
+    const provider = new ClaudeLimitsProvider({
+      authManager: makeAuthStub({ token: "tok", source: "file", expiresAt: null, plan: "Pro" }),
+      listAccountRouteIds: () => ["acct-work", "acct-personal"],
+    });
+
+    expect(provider.routeIds().sort()).toEqual(["acct-personal", "acct-work"]);
+  });
+
+  it("still surfaces a cached reserved route that is not an account row", async () => {
+    const provider = new ClaudeLimitsProvider({
+      authManager: makeAuthStub({ token: "tok", source: "env", expiresAt: null, plan: null }),
+      listAccountRouteIds: () => ["acct-work"],
+    });
+    provider.setRateLimits({ usedPct: 5, resetAt: "2026-06-01T00:00:00Z" }, null, "claude-env-oauth");
+
+    expect(provider.routeIds().sort()).toEqual(["acct-work", "claude-env-oauth"]);
+  });
+
+  it("fetches each account's usage with THAT account's credentials", async () => {
+    // The bug: `getAccessToken()` was called with no dir, so it preferred
+    // ANTHROPIC_AUTH_TOKEN / the root config dir — reading the wrong
+    // subscription's usage, or none at all.
+    const getAccessToken = vi.fn().mockResolvedValue({
+      token: "tok", source: "file", expiresAt: null, plan: "Pro",
+    });
+    const fetchImpl = vi.fn().mockResolvedValue(okUsage);
+    const provider = new ClaudeLimitsProvider({
+      authManager: { getAccessToken },
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      listAccountRouteIds: () => ["acct-work"],
+      credentialDirForRoute: (routeId) =>
+        routeId === "acct-work" ? "/credentials/provider-accounts/claude/acct-work" : undefined,
+    });
+
+    await provider.refreshNow("manual", "acct-work");
+
+    expect(getAccessToken).toHaveBeenCalledWith("/credentials/provider-accounts/claude/acct-work");
+    const snap = await provider.fetch("acct-work");
+    expect(snap?.session?.usedPct).toBe(40);
+  });
+
+  it("uses the env/legacy path for a reserved route, which has no account dir", async () => {
+    const getAccessToken = vi.fn().mockResolvedValue({
+      token: "tok", source: "env", expiresAt: null, plan: null,
+    });
+    const provider = new ClaudeLimitsProvider({
+      authManager: { getAccessToken },
+      fetchImpl: vi.fn().mockResolvedValue(okUsage) as unknown as typeof fetch,
+      credentialDirForRoute: () => undefined,
+    });
+
+    await provider.refreshNow("manual", "claude-env-oauth");
+
+    expect(getAccessToken).toHaveBeenCalledWith(undefined);
+  });
+
+  // docs/150 req 19 — `fetch()` reads the plan label through the same door.
+  // It stayed unscoped after `doRefresh` was fixed, so each pill was labelled
+  // with whatever the singleton root held: the migrated default's plan for
+  // every account, and nothing at all once the aliases were retired.
+  it("reads each account's plan label from that account's credentials", async () => {
+    const getAccessToken = vi.fn().mockResolvedValue({
+      token: "tok", source: "file", expiresAt: null, plan: "Max 20x",
+    });
+    const provider = new ClaudeLimitsProvider({
+      authManager: { getAccessToken },
+      fetchImpl: vi.fn().mockResolvedValue(okUsage) as unknown as typeof fetch,
+      listAccountRouteIds: () => ["acct-work"],
+      credentialDirForRoute: (routeId) =>
+        routeId === "acct-work" ? "/credentials/provider-accounts/claude/acct-work" : undefined,
+    });
+
+    await provider.refreshNow("manual", "acct-work");
+    getAccessToken.mockClear();
+
+    const snap = await provider.fetch("acct-work");
+
+    expect(getAccessToken).toHaveBeenCalledWith("/credentials/provider-accounts/claude/acct-work");
+    expect(snap?.plan).toBe("Max 20x");
   });
 });

@@ -345,6 +345,40 @@ export class GitHubTracker implements Tracker {
     return toTrackerIssue(node, ref);
   }
 
+  async createLabel(input: { name: string; color?: string; description?: string }): Promise<IssueLabel & { id: string }> {
+    // GitHub's create API wants the hex WITHOUT '#' and defaults a color when
+    // omitted; deletion is by name, so the name doubles as the undo id.
+    const body: Record<string, unknown> = { name: input.name };
+    if (input.color) body.color = input.color.replace(/^#/, "");
+    if (input.description) body.description = input.description;
+    const node = await this.api<{ name: string; color?: string | null }>("POST", "labels", body);
+    const color = normalizeGitHubColor(node.color);
+    return { id: node.name, name: node.name, ...(color ? { color } : {}) };
+  }
+
+  async deleteUnusedLabel(id: string, name: string): Promise<void> {
+    const ref = this.requireRepo();
+    // Usage check first: one carrying issue (or PR — labels apply to both) is
+    // enough to refuse, so fetch a single row from the label-filtered list.
+    let res: Response;
+    try {
+      res = await this.fetchImpl(
+        `https://api.github.com/repos/${ref.owner}/${ref.repo}/issues?labels=${encodeURIComponent(id)}&state=all&per_page=1`,
+        { headers: githubHeaders(this.token!) },
+      );
+    } catch (err) {
+      throw new Error(`GitHub request failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+    }
+    this.assertOk(res);
+    const carriers = (await res.json()) as { number: number }[];
+    if (carriers.length > 0) {
+      throw new Error(
+        `Label "${name}" is now in use (e.g. on #${carriers[0].number}) — remove it from those issues before deleting it.`,
+      );
+    }
+    await this.api<unknown>("DELETE", `labels/${encodeURIComponent(id)}`);
+  }
+
   async addComment(id: string, body: string): Promise<TrackerComment> {
     const data = await this.api<GitHubCommentNode>(
       "POST",

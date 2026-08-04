@@ -55,6 +55,15 @@ export const EGRESS_DEFAULT_ALLOWLIST: readonly string[] = [
   ".github.com",
   ".githubusercontent.com", // raw.githubusercontent.com, objects.githubusercontent.com (release/LFS assets)
   ".githubassets.com",
+  // docs/231 — Git LFS transfers. GitHub's LFS batch API hands back signed URLs
+  // on `objects.githubusercontent.com` (covered above) OR on this S3 bucket,
+  // depending on repo and API vintage; without it `git lfs pull` (assets check
+  // out as pointer stubs) and `git lfs push` (an agent committing a new tracked
+  // binary) fail in a sandboxed session. EXACT host, never ".amazonaws.com" —
+  // the bare suffix would open every S3 bucket on the internet as an exfil
+  // target. This one bucket is signed-URL-gated, so it's read/write only for
+  // objects GitHub already authorized for this repo.
+  "github-cloud.s3.amazonaws.com",
 
   // --- Package registries ---
   ".npmjs.org", // registry.npmjs.org
@@ -63,6 +72,22 @@ export const EGRESS_DEFAULT_ALLOWLIST: readonly string[] = [
   ".pypi.org", // pypi.org
   ".pythonhosted.org", // files.pythonhosted.org (wheel downloads)
   ".nodejs.org", // nodejs.org — node-gyp downloads the Node headers tarball (npm `disturl`) here to compile native modules (node-pty, etc.)
+
+  // --- JVM / Android build artifact registries (docs/213) ---
+  // The JVM analog of the npm/pypi entries above: Gradle/Maven resolve build
+  // dependencies (AGP, Kotlin, AndroidX) from these. Required for the baked
+  // Android toolchain to actually build — without them every `./gradlew` fails
+  // at dependency resolution with UnknownHostException. All are read-only
+  // artifact CDNs (you GET jars/poms/dists), so they don't widen the exfil
+  // surface the way a content-host would — same posture as npm/pypi.
+  ".gradle.org", // services.gradle.org (wrapper distributions), plugins.gradle.org (plugin portal)
+  // EXACT, never ".google.com": the bare suffix would re-open Gmail/Drive/Forms
+  // (real exfil channels). dl.google.com is a download-only artifact host.
+  "dl.google.com", // Google Maven (AGP, AndroidX) + on-demand sdkmanager package downloads
+  "maven.google.com", // Google Maven index / redirects
+  ".maven.apache.org", // repo.maven.apache.org — Maven Central (Gradle's mavenCentral() default)
+  ".maven.org", // repo1.maven.org — Maven Central canonical / CDN alias
+  ".sonatype.org", // oss.sonatype.org, s01.oss.sonatype.org — common snapshot + transitive source
 ];
 
 /**
@@ -98,6 +123,12 @@ export const EGRESS_GITHUB_LIFELINE_HOSTS: readonly string[] = [
   ".github.com",
   ".githubusercontent.com",
   ".githubassets.com",
+  // docs/231 — `git push` in an LFS repo is a two-leg operation: refs to
+  // github.com, then the objects themselves to the LFS transfer host. Omitting
+  // this would let a Network-off + git-capable sandbox push refs that point at
+  // LFS objects the remote never received. See EGRESS_DEFAULT_ALLOWLIST for why
+  // the exact bucket host (not ".amazonaws.com") is the safe form.
+  "github-cloud.s3.amazonaws.com",
 ];
 
 /**

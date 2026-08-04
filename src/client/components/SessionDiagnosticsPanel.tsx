@@ -16,19 +16,15 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: polling external state
 import { useEffect, useState, useCallback } from "react";
 import {
-  CopyIcon,
-  CheckIcon,
   CaretRightIcon,
-  CaretDownIcon,
-  XIcon,
-} from "@phosphor-icons/react";
+  CaretDownIcon,} from "@phosphor-icons/react";
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
 } from "./ui/dialog.js";
-import { Button } from "./ui/button.js";
+import { CopyButton } from "./ui/copy-button.js";
 import { useApi, ApiError } from "../hooks/useApi.js";
 import { ICON_SIZE } from "../design-tokens.js";
 
@@ -75,15 +71,26 @@ interface LogEntry {
   timestamp: string;
 }
 
+interface SessionMemorySizing {
+  effectiveMb: number;
+  autoMb: number;
+  hostMb: number;
+  reserveMb: number;
+  usableMb: number;
+  baselineSource: "auto" | "DEFAULT_SESSION_MEMORY_MB";
+  capSource: "host" | "MAX_SESSION_MEMORY_MB";
+  capApplied: boolean;
+}
+
 interface ParsedShipitConfig {
-  agent: { memory: number; cpu: number; pids: number; install: string[] };
+  agent: { install: string[] };
   compose?: { file: string; dockerSocket: boolean };
   version?: number;
   warnings: string[];
   /** YAML parse error message, if shipit.yaml is malformed. */
   parseError?: string;
-  /** Post-clamp values the container actually boots on. */
-  effectiveAgent: { memory: number; cpu: number; pids: number; dockerAccess: boolean };
+  /** Automatic per-session memory sizing, derived from host capacity (docs/229). */
+  sizing: SessionMemorySizing;
 }
 
 interface OomBreakerState {
@@ -93,6 +100,14 @@ interface OomBreakerState {
   trippedAt: number | null;
   threshold: number;
   windowMs: number;
+}
+
+/** docs/150 req 11 — the provider account this session is running on. */
+interface ProviderRouteDiagnostic {
+  agentId: string | null;
+  kind: "account" | "reserved" | null;
+  routeId: string | null;
+  label: string;
 }
 
 interface DiagnosticsPayload {
@@ -105,6 +120,7 @@ interface DiagnosticsPayload {
   recentLogs: LogEntry[];
   parsedConfig: ParsedShipitConfig | null;
   oomBreaker: OomBreakerState | null;
+  providerRoute: ProviderRouteDiagnostic | null;
 }
 
 const POLL_INTERVAL_MS = 2000;
@@ -119,7 +135,6 @@ export function SessionDiagnosticsPanel({ sessionId, open, onOpenChange }: Sessi
   const api = useApi();
   const [data, setData] = useState<DiagnosticsPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
 
   const poll = useCallback(async () => {
     if (!sessionId) return;
@@ -139,7 +154,6 @@ export function SessionDiagnosticsPanel({ sessionId, open, onOpenChange }: Sessi
     if (!open || !sessionId) {
       setData(null);
       setError(null);
-      setCopied(false);
       return;
     }
     void poll();
@@ -147,51 +161,29 @@ export function SessionDiagnosticsPanel({ sessionId, open, onOpenChange }: Sessi
     return () => clearInterval(id);
   }, [open, sessionId, poll]);
 
-  const onCopy = useCallback(async () => {
-    if (!data) return;
-    const payload = {
-      ...data,
-      clientCopiedAt: new Date().toISOString(),
-    };
-    try {
-      await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // Browsers may deny clipboard access (insecure context, permission
-      // policy). Fall back to letting the user copy manually from the JSON
-      // panel in the UI — silently swallow here so we don't crash the
-      // dialog.
-    }
+  // Built lazily at click time so `clientCopiedAt` reflects the moment the user
+  // copied, not when the panel last rendered. The button is disabled while
+  // `!data`, so this only runs with a payload in hand.
+  const copyPayload = useCallback(() => {
+    if (!data) return "";
+    return JSON.stringify({ ...data, clientCopiedAt: new Date().toISOString() }, null, 2);
   }, [data]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="w-[min(960px,95vw)] max-w-none p-0 flex flex-col">
-        <DialogHeader>
+        {/* pr clears the dialog's corner close button so Copy doesn't sit under it */}
+        <DialogHeader className="pr-14">
           <DialogTitle>Session diagnostics</DialogTitle>
           <div className="flex items-center gap-2">
-            <Button
+            <CopyButton
               variant="secondary"
               size="md"
-              onClick={() => void onCopy()}
+              text={copyPayload}
               disabled={!data}
+              iconSize={ICON_SIZE.XS}
               title="Copy the full diagnostics payload as JSON for bug reports."
-            >
-              {copied
-                ? <CheckIcon size={ICON_SIZE.XS} />
-                : <CopyIcon size={ICON_SIZE.XS} />}
-              {copied ? "Copied" : "Copy"}
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => onOpenChange(false)}
-              className="h-9 w-9 max-md:h-10 max-md:w-10"
-              aria-label="Close"
-            >
-              <XIcon size={ICON_SIZE.MD} weight="bold" />
-            </Button>
+            />
           </div>
         </DialogHeader>
         <div className="flex-1 overflow-auto p-5 space-y-5 text-xs font-mono">
@@ -221,6 +213,10 @@ export function SessionDiagnosticsPanel({ sessionId, open, onOpenChange }: Sessi
                       : null
                   }
                 />
+              </Section>
+
+              <Section title="Provider account">
+                <ProviderRouteRows route={data.providerRoute} />
               </Section>
 
               <Section title="OOM circuit breaker">
@@ -384,28 +380,21 @@ function ParsedConfigRows({
       </p>
     );
   }
-  const { agent, compose, warnings, version, parseError, effectiveAgent } = config;
+  const { agent, compose, warnings, version, parseError, sizing } = config;
 
-  // When env caps shrink a declared value, render "declared → effective"
-  // inline so the panel reads exactly the way someone debugging an OOM
-  // would want: the value they wrote, an arrow, the value the container
-  // actually booted on.
-  const memoryClamped = effectiveAgent.memory !== agent.memory;
-  const cpuClamped = effectiveAgent.cpu !== agent.cpu;
-  const pidsClamped = effectiveAgent.pids !== agent.pids;
+  // Memory is auto-sized from host capacity (docs/229). Show the host facts
+  // that produced the per-session ceiling, then the value the container
+  // actually booted with so a warm→claim drift (booted limit frozen at create,
+  // sizing read live) is still visible side by side.
+  const baselineLabel = sizing.baselineSource === "auto"
+    ? "auto (host-derived)"
+    : "DEFAULT_SESSION_MEMORY_MB";
+  const capLabel = sizing.capApplied
+    ? ` → capped to ${sizing.effectiveMb} MiB by ${sizing.capSource === "host" ? "host budget" : "MAX_SESSION_MEMORY_MB"}`
+    : "";
 
-  // What the container *actually* booted with (Docker units → human units).
-  // The parsed config above is read live at request time; the booted
-  // limits are frozen at container-create. They diverge exactly when a
-  // warm→claim HEAD jump changed agent.memory after the container booted —
-  // the incident where diagnostics showed memory: 3072 while the container
-  // ran on a 1 GiB cgroup. Showing both side by side surfaces that.
   const bootedMemoryMiB = bootedLimits ? Math.round(bootedLimits.memoryLimit / 1024 / 1024) : null;
-  const bootedCpu = bootedLimits ? bootedLimits.cpuQuota / 100_000 : null;
-  const bootedPids = bootedLimits ? bootedLimits.pidsLimit : null;
-  const memoryMismatch = bootedMemoryMiB !== null && bootedMemoryMiB !== effectiveAgent.memory;
-  const cpuMismatch = bootedCpu !== null && bootedCpu !== effectiveAgent.cpu;
-  const pidsMismatch = bootedPids !== null && bootedPids !== effectiveAgent.pids;
+  const memoryMismatch = bootedMemoryMiB !== null && bootedMemoryMiB !== sizing.effectiveMb;
 
   return (
     <>
@@ -417,52 +406,22 @@ function ParsedConfigRows({
         />
       )}
       <KvRow
-        label="agent.memory"
-        value={memoryClamped
-          ? `${agent.memory} MiB → ${effectiveAgent.memory} MiB (capped)`
-          : `${agent.memory} MiB`}
-        valueClass={memoryClamped ? "text-(--color-warning)" : undefined}
+        label="host memory"
+        value={`${sizing.hostMb} MiB (reserve ${sizing.reserveMb} MiB → usable ${sizing.usableMb} MiB)`}
       />
       <KvRow
-        label="agent.cpu"
-        value={cpuClamped
-          ? `${agent.cpu} → ${effectiveAgent.cpu} (capped)`
-          : `${agent.cpu}`}
-        valueClass={cpuClamped ? "text-(--color-warning)" : undefined}
-      />
-      <KvRow
-        label="agent.pids"
-        value={pidsClamped
-          ? `${agent.pids} → ${effectiveAgent.pids} (capped)`
-          : `${agent.pids}`}
-        valueClass={pidsClamped ? "text-(--color-warning)" : undefined}
+        label="session memory"
+        value={`${sizing.effectiveMb} MiB — ${baselineLabel}${capLabel}`}
+        valueClass={sizing.capApplied ? "text-(--color-warning)" : undefined}
       />
       <KvRow
         label="booted memory"
         value={bootedMemoryMiB === null
           ? "— (container not running / limits unknown)"
           : memoryMismatch
-            ? `${bootedMemoryMiB} MiB ⚠ differs from parsed ${effectiveAgent.memory} MiB`
-            : `${bootedMemoryMiB} MiB (matches parsed)`}
+            ? `${bootedMemoryMiB} MiB ⚠ differs from current sizing ${sizing.effectiveMb} MiB`
+            : `${bootedMemoryMiB} MiB (matches sizing)`}
         valueClass={memoryMismatch ? "text-(--color-error)" : undefined}
-      />
-      <KvRow
-        label="booted cpu"
-        value={bootedCpu === null
-          ? "—"
-          : cpuMismatch
-            ? `${bootedCpu} ⚠ differs from parsed ${effectiveAgent.cpu}`
-            : `${bootedCpu}`}
-        valueClass={cpuMismatch ? "text-(--color-error)" : undefined}
-      />
-      <KvRow
-        label="booted pids"
-        value={bootedPids === null
-          ? "—"
-          : pidsMismatch
-            ? `${bootedPids} ⚠ differs from parsed ${effectiveAgent.pids}`
-            : `${bootedPids}`}
-        valueClass={pidsMismatch ? "text-(--color-error)" : undefined}
       />
       <KvRow
         label="agent.install"
@@ -489,6 +448,32 @@ function ParsedConfigRows({
           ))}
         </div>
       )}
+    </>
+  );
+}
+
+/**
+ * docs/150 req 11 — "which account is this session on right now?".
+ *
+ * The account's *name* is the answer; `route id` is below it for bug reports,
+ * where the opaque `acct_…` is what correlates with the server logs.
+ */
+function ProviderRouteRows({ route }: { route: ProviderRouteDiagnostic | null }) {
+  if (!route) {
+    return <p className="text-(--color-text-tertiary)">Not wired (test mode / local runtime).</p>;
+  }
+  return (
+    <>
+      <KvRow label="agent" value={route.agentId ?? "—"} />
+      <KvRow
+        label="account"
+        value={route.label}
+        valueClass={route.kind === null ? "text-(--color-text-tertiary)" : undefined}
+      />
+      <KvRow
+        label="route"
+        value={route.routeId === null ? "—" : `${route.kind} / ${route.routeId}`}
+      />
     </>
   );
 }
@@ -522,8 +507,9 @@ function OomBreakerRows({ state }: { state: OomBreakerState | null }) {
       )}
       {state.tripped && (
         <p className="mt-1 text-(--color-text-secondary)">
-          The agent container hit its memory cap repeatedly. Increase
-          {" "}<code>agent.memory</code> in <code>shipit.yaml</code> and use
+          The agent container hit its memory cap repeatedly. Session memory is
+          sized automatically from host capacity; a deployment that needs more
+          per session raises {" "}<code>DEFAULT_SESSION_MEMORY_MB</code>. Use
           {" "}<strong>Rescue session</strong> to retry — that clears the breaker.
         </p>
       )}

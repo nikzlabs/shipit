@@ -32,6 +32,7 @@
  * → undone | (failed shows the error and re-offers Undo).
  */
 
+import type { KeyboardEvent } from "react";
 import {
   ArrowUUpLeftIcon,
   ChatCircleIcon,
@@ -39,6 +40,7 @@ import {
   FlagIcon,
   PencilSimpleIcon,
   PlusCircleIcon,
+  TagIcon,
   UserCircleIcon,
   WarningIcon,
 } from "@phosphor-icons/react";
@@ -68,6 +70,7 @@ const VERB_LABEL: Record<IssueWriteVerb, string> = {
   status: "Set status of",
   assignee: "Assigned",
   create: "Created",
+  label: "Created label",
 };
 
 /** Per-verb icon. The comment gets a filled bubble so the common write pops. */
@@ -84,6 +87,8 @@ function VerbIcon({ verb }: { verb: IssueWriteVerb }) {
       return <UserCircleIcon size={size} />;
     case "create":
       return <PlusCircleIcon size={size} weight="fill" />;
+    case "label":
+      return <TagIcon size={size} />;
   }
 }
 
@@ -155,6 +160,10 @@ export function IssueWriteCard({ cardId, onUndo, onOpen }: IssueWriteCardProps) 
   // thread it through so the detail view lands on that exact comment (SHI-103).
   const anchorCommentId = card.undo.kind === "comment" ? card.undo.commentId : undefined;
 
+  // A label-creation card records tracker CONFIG, not an issue — the identifier
+  // is the label name, so there is nothing to open inline (SHI-230).
+  const isLabelCard = card.verb === "label";
+
   // The whole card opens the issue inline. Derive the lookup id from the
   // display identifier (uniform across trackers) rather than `card.issueId`,
   // which for GitHub is the undo target, not a valid `getIssue` key.
@@ -170,18 +179,22 @@ export function IssueWriteCard({ cardId, onUndo, onOpen }: IssueWriteCardProps) 
   return (
     <div
       data-testid="issue-write-card"
-      role="button"
-      tabIndex={0}
-      onClick={openIssue}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          openIssue();
-        }
-      }}
-      title={`Open ${card.identifier} in ShipIt`}
-      aria-label={`Open ${card.identifier} in ShipIt`}
-      className={`w-full text-left rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) px-3 py-2.5 text-xs cursor-pointer transition-colors hover:bg-(--color-bg-hover) focus:outline-none focus-visible:ring-1 focus-visible:ring-(--color-accent) ${undone ? "opacity-70" : ""}`}
+      {...(isLabelCard
+        ? {}
+        : {
+            role: "button",
+            tabIndex: 0,
+            onClick: openIssue,
+            onKeyDown: (e: KeyboardEvent) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                openIssue();
+              }
+            },
+            title: `Open ${card.identifier} in ShipIt`,
+            "aria-label": `Open ${card.identifier} in ShipIt`,
+          })}
+      className={`w-full text-left rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) px-3 py-2.5 text-xs transition-colors focus:outline-none ${isLabelCard ? "" : "cursor-pointer hover:bg-(--color-bg-hover) focus-visible:ring-1 focus-visible:ring-(--color-accent)"} ${undone ? "opacity-70" : ""}`}
     >
       <div className="flex items-center gap-2">
         <span className={`shrink-0 ${undone ? "text-(--color-text-tertiary)" : "text-(--color-accent)"}`}>

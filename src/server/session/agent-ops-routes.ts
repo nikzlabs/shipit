@@ -98,7 +98,7 @@ export function registerAgentOpsRoutes(
   // The consolidated `shipit` bridge forwards `voice_note` here; the worker
   // relays to the orchestrator with the trusted SESSION_ID injected. The
   // orchestrator's router decides delivery (native / external / both).
-  app.post<{ Body: { summary?: string; needsAttention?: boolean; context?: unknown } }>(
+  app.post<{ Body: { summary?: string; context?: unknown } }>(
     "/agent-ops/voice/note",
     async (request, reply) => relay("POST", "/voice-note", request.body ?? {}, reply),
   );
@@ -195,6 +195,15 @@ export function registerAgentOpsRoutes(
     "/agent-ops/pr/:number/reopen",
     async (request, reply) =>
       relay("POST", `/pr/${encodeURIComponent(request.params.number)}/reopen`, request.body ?? {}, reply),
+  );
+
+  // POST /agent-ops/pr/:number/merge — merge a PR (docs/224). The orchestrator
+  // gates this behind the sandbox `dangerousGitHubOps` grant and enforces the
+  // green-checks / no-force guardrails; this router just narrows the surface.
+  app.post<{ Params: { number: string }; Body: { method?: string; auto?: boolean; cwd?: string; repo?: string } }>(
+    "/agent-ops/pr/:number/merge",
+    async (request, reply) =>
+      relay("POST", `/pr/${encodeURIComponent(request.params.number)}/merge`, request.body ?? {}, reply),
   );
 
   // ---------------------------------------------------------------------------
@@ -344,10 +353,16 @@ export function registerAgentOpsRoutes(
     },
   );
 
-  // POST /agent-ops/issue/create { tracker, title, body, labels?, priority?, parent? } (docs/187, SHI-92, SHI-206)
-  app.post<{ Body: { tracker?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null } }>(
+  // POST /agent-ops/issue/create { tracker, title, body, labels?, priority?, parent?, createMissingLabels? } (docs/187, SHI-92, SHI-206, SHI-230)
+  app.post<{ Body: { tracker?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null; createMissingLabels?: boolean } }>(
     "/agent-ops/issue/create",
     async (request, reply) => relay("POST", "/issue/create", request.body ?? {}, reply),
+  );
+
+  // POST /agent-ops/issue/label/create { tracker, name, color?, description? } (SHI-230)
+  app.post<{ Body: { tracker?: string; name?: string; color?: string; description?: string } }>(
+    "/agent-ops/issue/label/create",
+    async (request, reply) => relay("POST", "/issue/label/create", request.body ?? {}, reply),
   );
 
   // POST /agent-ops/issue/comment { tracker, id, body }
@@ -356,8 +371,8 @@ export function registerAgentOpsRoutes(
     async (request, reply) => relay("POST", "/issue/comment", request.body ?? {}, reply),
   );
 
-  // POST /agent-ops/issue/edit { tracker, id, title?, body?, labels?, priority?, parent? } (SHI-92, SHI-206)
-  app.post<{ Body: { tracker?: string; id?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null } }>(
+  // POST /agent-ops/issue/edit { tracker, id, title?, body?, labels?, priority?, parent?, createMissingLabels? } (SHI-92, SHI-206, SHI-230)
+  app.post<{ Body: { tracker?: string; id?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null; createMissingLabels?: boolean } }>(
     "/agent-ops/issue/edit",
     async (request, reply) => relay("POST", "/issue/edit", request.body ?? {}, reply),
   );
@@ -463,15 +478,52 @@ export function registerAgentOpsRoutes(
   // the setting gate, auth/pin/recursion/per-turn-cap guards, credential
   // provisioning, and the synchronous run. `depth` rides the body (the shim
   // forwards its inherited SHIPIT_AGENT_DEPTH) — the orchestrator's recursion
-  // guard reads it. Unbounded timeout: a sub-agent run is long (30–120s typical,
-  // up to the worker's wall-clock cap), and the orchestrator holds the request
-  // open until the subprocess exits.
+  // guard reads it. Unbounded timeout: a sub-agent run routinely takes many
+  // minutes (up to the worker's wall-clock cap), and the orchestrator holds the
+  // request open until the subprocess exits.
   // ---------------------------------------------------------------------------
 
   // POST /agent-ops/agent/spawn { agentId, prompt, depth }
   app.post<{ Body: { agentId?: string; prompt?: string; depth?: number } }>(
     "/agent-ops/agent/spawn",
     async (request, reply) => relay("POST", "/agent/spawn", request.body ?? {}, reply, { timeoutMs: 0 }),
+  );
+
+  // GET /agent-ops/agent/result[?spawnId=…&wait=true&timeout=N&segment=S] —
+  // SHI-245. Re-read a completed spawn's persisted consult card: the same
+  // artifact the UI renders, so the agent can verify its copy or recover one
+  // whose `shipit agent run` died before the text reached it. Cheap read; the
+  // default timeout applies.
+  //
+  // docs/248 — `wait`/`timeout`/`segment` are forwarded verbatim for
+  // `shipit agent result --wait`, which drives a resumable segment loop over
+  // this route. Same shape as the child-session wait broker below.
+  app.get<{ Querystring: { spawnId?: string; wait?: string; timeout?: string; segment?: string } }>(
+    "/agent-ops/agent/result",
+    async (request, reply) => {
+      const { spawnId, wait, timeout, segment } = request.query;
+      const params = new URLSearchParams();
+      if (spawnId) params.set("spawnId", spawnId);
+      if (wait === "true") params.set("wait", "true");
+      if (timeout) params.set("timeout", timeout);
+      if (segment) params.set("segment", segment);
+      const qs = params.toString();
+      // Bound the worker→orchestrator leg of a segmented wait so a half-open
+      // socket fails fast (→ status 0, which the shim retries) instead of
+      // hanging. Budget = segment (or overall timeout) + margin for the
+      // server's own resolve. Unbounded reads keep the default timeout.
+      const boundSecs = wait === "true" ? Number(segment) || Number(timeout) : NaN;
+      const timeoutMs = Number.isFinite(boundSecs) && boundSecs > 0
+        ? boundSecs * 1000 + 10_000
+        : undefined;
+      return relay(
+        "GET",
+        `/agent/result${qs ? `?${qs}` : ""}`,
+        undefined,
+        reply,
+        timeoutMs !== undefined ? { timeoutMs } : undefined,
+      );
+    },
   );
 
   // ---------------------------------------------------------------------------
@@ -587,5 +639,49 @@ export function registerAgentOpsRoutes(
         {},
         reply,
       ),
+  );
+
+  // POST /agent-ops/session/notify-on-merge-self — docs/239. Arm a watch that
+  // wakes THIS session when its OWN PR merges. No childId and no payload: the
+  // worker injects the caller's session id, and the follow-up work is already in
+  // this session's transcript.
+  app.post(
+    "/agent-ops/session/notify-on-merge-self",
+    async (_request, reply) => relay("POST", "/notify-on-merge-self", {}, reply),
+  );
+
+  // POST /agent-ops/branch/reset-to-base — docs/239. The explicit branch reset
+  // the self-merge wake turn runs first. Destructive-looking but gated: the
+  // orchestrator refuses unless the branch provably carries nothing unmerged.
+  //
+  // SHI-277 — `{ force, reason }` carries the break-glass through. Forwarded
+  // verbatim and validated ORCHESTRATOR-side: this relay is not a checkpoint,
+  // it just moves the body across the container boundary.
+  app.post<{ Body: { force?: boolean; reason?: string } }>(
+    "/agent-ops/branch/reset-to-base",
+    async (request, reply) => relay("POST", "/branch/reset-to-base", request.body ?? {}, reply),
+  );
+
+  // ---------------------------------------------------------------------------
+  // Upward / lateral session reports (docs/233, SHI-241)
+  //
+  // Every route above is parent→child. These two are the reverse: they're called
+  // with THIS container's own session id (injected by `OrchestratorClient`, as
+  // always), so a child can resolve its own cohort and push a report to its
+  // parent and siblings. The recipients are derived orchestrator-side from the
+  // caller's `parentSessionId` — the shim never names a target session — so the
+  // reach is the same tree the parent already coordinates.
+  // ---------------------------------------------------------------------------
+
+  // GET /agent-ops/session/cohort — this session + parent + siblings + children
+  app.get(
+    "/agent-ops/session/cohort",
+    async (_request, reply) => relay("GET", "/cohort", undefined, reply),
+  );
+
+  // POST /agent-ops/session/report — push a report to the parent (or cohort)
+  app.post<{ Body: { body?: string; subject?: string; severity?: string; to?: string } }>(
+    "/agent-ops/session/report",
+    async (request, reply) => relay("POST", "/report", request.body ?? {}, reply),
   );
 }

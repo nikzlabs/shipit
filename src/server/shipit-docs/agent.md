@@ -28,6 +28,12 @@ Unauthorized**. `shipit agent run` is the only authenticated path — it brokers
 through the orchestrator, which supplies the spawned agent's credentials
 server-side.
 
+The broker selects among connected subscription accounts using the same quota
+policy as an ordinary session turn. If the selected account reports hard quota
+exhaustion, the run is retried once on the next eligible account for that same
+provider. It never falls through to a pay-as-you-go API key, and model-access
+errors are returned as-is rather than routed around.
+
 For an in-turn fan-out under your *own* model (parallel research, parallel
 codegen you'll synthesize), prefer the built-in `Task` tool. `shipit agent run`
 is for a *different* agent (or a deliberately fresh-context helper).
@@ -36,6 +42,7 @@ is for a *different* agent (or a deliberately fresh-context helper).
 
 ```
 shipit agent run --agent claude|codex --prompt-file FILE [--model M] [--json]
+shipit agent result [RUN-ID] [--wait [--timeout SECONDS]] [--json]
 ```
 
 - **`--agent`** (required) — the agent to spawn (`claude` or `codex`). May be the
@@ -63,25 +70,127 @@ $(git diff)
 EOF
 ```
 
-The command prints the sub-agent's findings on stdout. You read them and **act**
-— fix what's real, or summarize. You do **not** need to paste the output back for
-the user to see it: ShipIt surfaces the sub-agent's verbatim output inline, in
-the persisted "Consulted Codex" card, with attribution (docs/220). So treat
-stdout as input for *acting*, not as something to re-type into chat — re-pasting
-it just duplicates what the card already shows.
+The command prints the sub-agent's findings on stdout. **A review you asked for
+is input to your work, not the deliverable.** Triage the findings in the same
+turn: fix the ones that are real, and say which ones you are not acting on and
+why. Relaying the list and ending the turn is not a completed task — it leaves
+the user to do the triage you were asked to do. The one exception is a finding
+whose fix needs a decision or authority you don't have; ask about *that* finding
+and act on the rest.
+
+You also do **not** need to paste the output back for the user to see it: ShipIt
+surfaces the sub-agent's verbatim output inline, in the persisted "Consulted
+Codex" card, with attribution (docs/220). So treat stdout as input for *acting*,
+not as something to re-type into chat — re-pasting it just duplicates what the
+card already shows.
+
+**Your copy and the user's copy are the same document.** stdout and the card are
+written from one string, so there is no "the UI has more" — if you and the user
+appear to be reading different reports, you are looking at two different *runs*
+(each `shipit agent run` is its own run and its own card). Every run prints its
+id on stderr; use it to say which one you mean.
+
+## Run it in the background if it may be long
+
+**A consult can run up to 30 minutes; your shell tool almost certainly can't.**
+Claude Code's Bash tool caps a foreground command at 10 minutes and SIGTERMs it
+on expiry — and because output only arrives at exit, a killed foreground run
+hands you *nothing*, even though the sub-agent kept working. So for anything
+review-sized or open-ended, **launch it in the background** (`run_in_background`),
+which has no cap, and collect the output when it finishes.
+
+**Do not pipe the run through `tail`, `head`, `grep`, or any other filter.** The
+sub-agent's report *is* the deliverable, and a review is long precisely when it
+matters — the findings you most need are as likely to be at the top as the
+bottom. Backgrounding invites this mistake, because trimming a command's output
+is a reasonable habit everywhere else; here it silently throws away most of a
+consult that cost many minutes and a lot of tokens. Let it print in full and read
+it. If you only want to check whether a run has *finished*, that is the exit
+code's job (see below), not a `grep`.
+
+If a run does get killed — or you truncated its output — the work is not lost:
+the spawn completes server-side and its output is persisted. Fetch it with:
+
+```
+shipit agent result            # the most recent run in this session
+shipit agent result <RUN-ID>   # a specific run (a unique id prefix works)
+```
+
+That prints the same artifact the user sees in the card. Use it to recover a
+lost result, or to double-check that what you acted on is what was rendered.
+
+A run that is **still in flight** has a card too — `shipit agent result` reports
+it with status `pending` rather than pretending it doesn't exist. The user sees
+the same thing: the consult card appears in the transcript the moment the run
+starts, shows an in-progress row for the duration, and turns into the finished
+record when the run ends. So a backgrounded consult is visible to the user the
+whole time, and neither of you has to guess whether it is still going.
+
+### Waiting for a backgrounded run — use `--wait`, never a poll loop
+
+```
+shipit agent result <RUN-ID> --wait                  # block up to 5 minutes
+shipit agent result <RUN-ID> --wait --timeout 600    # …or up to 10, max 30
+```
+
+`--wait` returns as soon as the run reaches a terminal status. It absorbs
+dropped connections beneath your timeout, so a network blip costs a few seconds
+rather than the whole wait. If the timeout elapses with the run still going it
+exits **4** and prints the command to resume — every call re-derives the answer
+from the persisted card, so an interrupted wait has lost nothing. Pick a
+`--timeout` that fits under your own shell's foreground cap and re-run as needed.
+
+**Branch on the exit code, never on the output text:**
+
+| Exit | Meaning |
+|---|---|
+| `0` | The run finished successfully. |
+| `4` | Still running (no `--wait`, or the wait timed out). |
+| `3` | The run failed — errored, timed out, or was cancelled. |
+| `1` | The lookup failed: unknown run id, ambiguous prefix, orchestrator unreachable. |
+| `2` | Bad invocation (unknown flag, two run ids, `--timeout` without `--wait`). |
+
+Do **not** write a `sleep`-and-`grep` loop:
+
+```sh
+# WRONG — gives up after 45s on a run that can last 30 minutes, and a finished
+# review whose text happens to contain "pending" reads as still-running.
+for i in 1 2 3; do sleep 15; shipit agent result "$ID" 2>&1 | tee /tmp/r.txt;
+  if ! grep -q 'pending' /tmp/r.txt; then break; fi; done
+
+# RIGHT
+shipit agent result "$ID" --wait --timeout 540
+```
+
+"Still running" (`4`) is deliberately distinct from every failure code: a bare
+retry-until-it-succeeds loop would otherwise spin forever against a mistyped run
+id or a bad flag, since neither condition can ever clear.
 
 ## What to expect
 
-- **It blocks.** The command runs until the sub-agent finishes — typically
-  30–120s for a review-sized task. That's normal; wait for it like any long
-  shell command.
+- **It blocks, and how long is not predictable.** The command runs until the
+  sub-agent finishes. A narrow question can come back in well under a minute,
+  but a real consult — an audit, a review of a large diff, a generation task —
+  routinely runs for many minutes, up to the 30-minute cap. (That cap started
+  at 5 minutes and was raised precisely because real consults kept overrunning
+  it.) So assume "long" unless the prompt is small, and wait for it like any
+  long shell command — in the background if it may exceed your tool's
+  foreground limit.
+- **You get the sub-agent's whole answer**, not just its last message. A run
+  that produces several messages (a long report, then a wrap-up) returns all of
+  them, in order.
 - **Output is plain text** on stdout (exit 0), or a clear error on stderr with a
   non-zero exit (feature disabled, unknown agent, cap exceeded, crash, timeout,
   cancel).
 - **The sub-agent runs full-capability** in the *same* workspace — it can read,
   write, and run shell. If you want it to only review (not edit), **say so in the
-  prompt**. Any files it writes are committed under the session's pinned agent at
-  the end of your turn, same as your own changes.
+  prompt**. Any files it writes are committed for you: if the run finishes while
+  your turn is still open, they ride your turn's ordinary end-of-turn commit; if
+  it outlives your turn (the normal shape for a backgrounded consult), they are
+  committed and pushed on their own as soon as it finishes, under a commit named
+  `Sub-agent consult (<agent>): work committed after the turn ended`. Either way
+  you do **not** need to commit them yourself, and they will not be sitting
+  uncommitted when the PR is reviewed.
 
 ## Limits
 

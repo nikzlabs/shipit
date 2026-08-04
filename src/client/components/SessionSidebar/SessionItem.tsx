@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback } from "react";
-import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, DownloadSimpleIcon, PencilSimpleIcon, PushPinIcon, WrenchIcon, SlidersHorizontalIcon, CaretRightIcon, CaretDownIcon } from "@phosphor-icons/react";
+import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, CheckIcon, DownloadSimpleIcon, PencilSimpleIcon, PushPinIcon, WrenchIcon, SlidersHorizontalIcon, CaretRightIcon, CaretDownIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import { formatRelativeDate } from "../../utils/dates.js";
 import { DropdownMenuItem, DropdownMenuSeparator } from "../ui/dropdown-menu.js";
@@ -91,9 +91,9 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
   }, []);
 
   // docs/128 — spin up a privileged ops session pre-loaded to investigate THIS
-  // session. The store seeds the new session's composer with the target id +
-  // a read-only first step, so the operator never copy-pastes the session id
-  // into a blank ops session. On success we navigate straight into it.
+  // session. The store seeds the new session's composer with the target identity
+  // and read-only boundary, leaving room for the operator's incident-specific
+  // request. On success we navigate straight into it.
   const handleInvestigateInOps = useCallback(async () => {
     const newId = await useSessionStore.getState().createOpsSession(session.id);
     if (newId) {
@@ -135,6 +135,9 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
   const handleTogglePin = useCallback(() => {
     void useSessionStore.getState().setPinned(session.id, !session.pinnedAt);
   }, [session.id, session.pinnedAt]);
+  const handleToggleKeepPreviewRunning = useCallback(() => {
+    void useSessionStore.getState().setKeepPreviewRunning(session.id, !session.keepPreviewRunning);
+  }, [session.id, session.keepPreviewRunning]);
 
   // The overflow trigger is always visible on the active row, on touch
   // devices, and while the menu itself is open. On inactive desktop rows it
@@ -276,6 +279,12 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
                 <DropdownMenuItem onSelect={handleTogglePin} disabled={disabled}>
                   <PushPinIcon size={ICON_SIZE.SM} weight={isPinned ? "fill" : "regular"} />
                   {isPinned ? "Unpin" : "Pin to top"}
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={handleToggleKeepPreviewRunning} disabled={disabled}>
+                  <span className="flex h-4 w-4 items-center justify-center">
+                    {session.keepPreviewRunning && <CheckIcon size={ICON_SIZE.SM} weight="bold" />}
+                  </span>
+                  Keep preview running
                 </DropdownMenuItem>
                 {onArchive && (
                   <DropdownMenuItem onSelect={() => onArchive(session.id)} disabled={disabled}>

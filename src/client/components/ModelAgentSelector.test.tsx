@@ -14,7 +14,7 @@ const agents: AgentOption[] = [
     name: "Claude Code",
     installed: true,
     authConfigured: true,
-    models: ["sonnet", "opus", "haiku"],
+    models: ["claude-sonnet-5", "opus", "haiku"],
     supportsReview: true,
     supportedPermissionModes: ["auto", "plan", "guarded"],
   },
@@ -23,13 +23,13 @@ const agents: AgentOption[] = [
     name: "Codex",
     installed: true,
     authConfigured: true,
-    models: ["gpt-5.5", "gpt-5.4"],
+    models: ["gpt-5.6-sol", "gpt-5.4"],
     supportsReview: false,
     supportedPermissionModes: [],
   },
 ];
 
-const sonnet = { model: "sonnet", contextWindowTokens: 200000 };
+const sonnet = { model: "claude-sonnet-5", contextWindowTokens: 1_000_000 };
 
 function makeSession(overrides: Partial<SessionInfo>): SessionInfo {
   return {
@@ -68,13 +68,13 @@ describe("ModelAgentSelector — mid-session model picking", () => {
       />,
     );
     await user.click(screen.getByTestId("model-agent-trigger"));
-    expect(screen.getByTestId("model-option-sonnet")).toBeInTheDocument();
+    expect(screen.getByTestId("model-option-claude-sonnet-5")).toBeInTheDocument();
     expect(screen.getByTestId("model-option-opus")).toBeInTheDocument();
-    expect(screen.getByTestId("model-option-gpt-5.5")).toBeInTheDocument();
+    expect(screen.getByTestId("model-option-gpt-5.6-sol")).toBeInTheDocument();
   });
 
   it("still opens after the session is active (regression: used to be disabled)", async () => {
-    setSessionState(makeSession({ id: "s1", model: "sonnet", agentId: "claude", agentPinned: true }));
+    setSessionState(makeSession({ id: "s1", model: "claude-sonnet-5", agentId: "claude", agentPinned: true }));
     const user = userEvent.setup();
     render(
       <ModelAgentSelector
@@ -94,7 +94,7 @@ describe("ModelAgentSelector — mid-session model picking", () => {
   });
 
   it("disables models from the locked agent once the session has pinned an agent", async () => {
-    setSessionState(makeSession({ id: "s1", model: "sonnet", agentId: "claude", agentPinned: true }));
+    setSessionState(makeSession({ id: "s1", model: "claude-sonnet-5", agentId: "claude", agentPinned: true }));
     const user = userEvent.setup();
     render(
       <ModelAgentSelector
@@ -111,7 +111,7 @@ describe("ModelAgentSelector — mid-session model picking", () => {
     // aria-disabled attribute on enabled items rather than setting "false".
     expect(screen.getByTestId("model-option-opus")).not.toHaveAttribute("aria-disabled", "true");
     // Codex rows: disabled (other agent — locked).
-    expect(screen.getByTestId("model-option-gpt-5.5")).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByTestId("model-option-gpt-5.6-sol")).toHaveAttribute("aria-disabled", "true");
     expect(screen.getByTestId("model-option-gpt-5.4")).toHaveAttribute("aria-disabled", "true");
   });
 
@@ -120,7 +120,7 @@ describe("ModelAgentSelector — mid-session model picking", () => {
     // to Claude, but the overlay (hasActiveSession=false) is starting a brand-new
     // session. The picker must NOT inherit the background pin — every agent's
     // rows stay selectable because the new session hasn't picked an agent yet.
-    setSessionState(makeSession({ id: "s1", model: "sonnet", agentId: "claude", agentPinned: true }));
+    setSessionState(makeSession({ id: "s1", model: "claude-sonnet-5", agentId: "claude", agentPinned: true }));
     const user = userEvent.setup();
     render(
       <ModelAgentSelector
@@ -134,7 +134,7 @@ describe("ModelAgentSelector — mid-session model picking", () => {
     );
     await user.click(screen.getByTestId("model-agent-trigger"));
     // Codex rows must be enabled — the overlay starts a fresh session.
-    expect(screen.getByTestId("model-option-gpt-5.5")).not.toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByTestId("model-option-gpt-5.6-sol")).not.toHaveAttribute("aria-disabled", "true");
     expect(screen.getByTestId("model-option-gpt-5.4")).not.toHaveAttribute("aria-disabled", "true");
   });
 
@@ -193,7 +193,7 @@ describe("ModelAgentSelector — mid-session model picking", () => {
   });
 
   it("picking a model in the pinned agent emits onModelChange but NOT onAgentChange", async () => {
-    setSessionState(makeSession({ id: "s1", model: "sonnet", agentId: "claude", agentPinned: true }));
+    setSessionState(makeSession({ id: "s1", model: "claude-sonnet-5", agentId: "claude", agentPinned: true }));
     const onAgentChange = vi.fn();
     const onModelChange = vi.fn();
     const user = userEvent.setup();
@@ -230,16 +230,16 @@ describe("ModelAgentSelector — mid-session model picking", () => {
       />,
     );
     await user.click(screen.getByTestId("model-agent-trigger"));
-    await user.click(screen.getByTestId("model-option-gpt-5.5"));
+    await user.click(screen.getByTestId("model-option-gpt-5.6-sol"));
     expect(onAgentChange).toHaveBeenCalledWith("codex");
-    expect(onModelChange).toHaveBeenCalledWith("gpt-5.5");
+    expect(onModelChange).toHaveBeenCalledWith("gpt-5.6-sol");
   });
 
   it("trigger reflects a freshly picked model immediately (pending wins over the last turn's report)", async () => {
-    // Session is on sonnet (last turn's resolved model). User picks opus
+    // Session is on Sonnet (last turn's resolved model). User picks opus
     // mid-session — the trigger label should update right away, not wait for
     // the next turn's agent_init.
-    setSessionState(makeSession({ id: "s1", model: "sonnet", agentId: "claude", agentPinned: true }));
+    setSessionState(makeSession({ id: "s1", model: "claude-sonnet-5", agentId: "claude", agentPinned: true }));
     const user = userEvent.setup();
     render(
       <ModelAgentSelector
@@ -254,6 +254,60 @@ describe("ModelAgentSelector — mid-session model picking", () => {
     await user.click(screen.getByTestId("model-agent-trigger"));
     await user.click(screen.getByTestId("model-option-opus"));
     expect(screen.getByTestId("model-agent-trigger")).toHaveTextContent(/opus/i);
+  });
+
+  it("trigger and checkmark never disagree after a model switch (regression: label said Fable, dropdown said Opus)", async () => {
+    // The reported bug. Session is on Fable; the user picks Opus. `set_model`
+    // persists Opus onto the session (checkmark moves), but the CLI keeps
+    // reporting the model it is actually running — Fable, because a resident
+    // streaming process holds its spawn-time `--model`. The trigger used to
+    // prefer that live report, so the button read "Fable 5" while the open
+    // dropdown checked "Opus 4.8". The persisted selection now wins on both.
+    const agentsWithFable: AgentOption[] = [
+      { ...agents[0], models: ["claude-opus-4-8", "claude-fable-5"] },
+    ];
+    setSessionState(makeSession({ id: "s1", model: "claude-fable-5", agentId: "claude", agentPinned: true }));
+    const props = {
+      agents: agentsWithFable,
+      activeAgentId: "claude" as const,
+      onAgentChange: vi.fn(),
+      onModelChange: vi.fn(),
+      hasActiveSession: true,
+    };
+    const user = userEvent.setup();
+    const { rerender } = render(<ModelAgentSelector {...props} modelInfo={null} />);
+
+    await user.click(screen.getByTestId("model-agent-trigger"));
+    await user.click(screen.getByTestId("model-option-claude-opus-4-8"));
+    // The server persists the pick; the session record catches up.
+    setSessionState(makeSession({ id: "s1", model: "claude-opus-4-8", agentId: "claude", agentPinned: true }));
+    // A turn runs and the CLI still reports Fable (versioned id, as agent_init
+    // emits it) — this is the moment the label used to snap back.
+    rerender(
+      <ModelAgentSelector {...props} modelInfo={{ model: "claude-fable-5", contextWindowTokens: 200_000 }} />,
+    );
+
+    expect(screen.getByTestId("model-agent-trigger")).toHaveTextContent("Opus 4.8");
+    expect(screen.getByTestId("model-agent-trigger")).not.toHaveTextContent("Fable");
+    await user.click(screen.getByTestId("model-agent-trigger"));
+    expect(screen.getByTestId("model-option-claude-opus-4-8").querySelector("svg")).not.toBeNull();
+  });
+
+  it("falls back to the CLI-reported model only when the session never picked one", () => {
+    // The live report still has a job: a session with no persisted model shows
+    // what the agent actually ran rather than guessing at the agent default.
+    setSessionState(makeSession({ id: "s1", agentId: "claude", agentPinned: true }));
+    render(
+      <ModelAgentSelector
+        agents={agents}
+        activeAgentId="claude"
+        onAgentChange={vi.fn()}
+        onModelChange={vi.fn()}
+        modelInfo={{ model: "haiku", contextWindowTokens: 200_000 }}
+        hasActiveSession={true}
+      />,
+    );
+    expect(screen.getByTestId("model-agent-trigger")).toHaveTextContent("Haiku");
   });
 
   it("keeps the full model name when the CLI confirms it mid-turn (regression: showed bare 'opus')", () => {
@@ -285,25 +339,25 @@ describe("ModelAgentSelector — mid-session model picking", () => {
     // session is pinned to Claude, but global modelInfo still contains the
     // previous Codex session's GPT model. The trigger must follow the active
     // session, matching the menu rows.
-    setSessionState(makeSession({ id: "s1", model: "sonnet", agentId: "claude", agentPinned: true }));
+    setSessionState(makeSession({ id: "s1", model: "claude-sonnet-5", agentId: "claude", agentPinned: true }));
     render(
       <ModelAgentSelector
         agents={agents}
         activeAgentId="claude"
         onAgentChange={vi.fn()}
         onModelChange={vi.fn()}
-        modelInfo={{ model: "gpt-5.5", contextWindowTokens: 200000 }}
+        modelInfo={{ model: "gpt-5.6-sol", contextWindowTokens: 272_000 }}
         hasActiveSession={true}
       />,
     );
-    expect(screen.getByTestId("model-agent-trigger")).toHaveTextContent("Sonnet 4.7");
-    expect(screen.getByTestId("model-agent-trigger")).not.toHaveTextContent("GPT-5.5");
+    expect(screen.getByTestId("model-agent-trigger")).toHaveTextContent("Sonnet 5");
+    expect(screen.getByTestId("model-agent-trigger")).not.toHaveTextContent("GPT-5.6");
   });
 
   it("does not carry an optimistic model pick into a different session", async () => {
     const user = userEvent.setup();
-    const codexSession = makeSession({ id: "s1", model: "gpt-5.5", agentId: "codex", agentPinned: true });
-    const claudeSession = makeSession({ id: "s2", model: "sonnet", agentId: "claude", agentPinned: true });
+    const codexSession = makeSession({ id: "s1", model: "gpt-5.6-sol", agentId: "codex", agentPinned: true });
+    const claudeSession = makeSession({ id: "s2", model: "claude-sonnet-5", agentId: "claude", agentPinned: true });
     useSessionStore.setState({ sessionId: "s1", sessions: [codexSession, claudeSession] });
 
     const props = {
@@ -321,7 +375,7 @@ describe("ModelAgentSelector — mid-session model picking", () => {
 
     useSessionStore.setState({ sessionId: "s2", sessions: [codexSession, claudeSession] });
     rerender(<ModelAgentSelector {...props} activeAgentId="claude" />);
-    expect(screen.getByTestId("model-agent-trigger")).toHaveTextContent("Sonnet 4.7");
+    expect(screen.getByTestId("model-agent-trigger")).toHaveTextContent("Sonnet 5");
     expect(screen.getByTestId("model-agent-trigger")).not.toHaveTextContent("GPT-5.4");
   });
 
@@ -345,7 +399,7 @@ describe("ModelAgentSelector — mid-session model picking", () => {
     );
     await user.click(screen.getByTestId("model-agent-trigger"));
     // The checkmark is on the agent default, not the localStorage seed.
-    expect(screen.getByTestId("model-option-sonnet").querySelector("svg")).not.toBeNull();
+    expect(screen.getByTestId("model-option-claude-sonnet-5").querySelector("svg")).not.toBeNull();
     expect(screen.getByTestId("model-option-opus").querySelector("svg")).toBeNull();
   });
 

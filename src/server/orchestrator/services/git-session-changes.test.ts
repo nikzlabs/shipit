@@ -49,7 +49,7 @@ describe("getSessionChangedPaths", () => {
       fs.writeFileSync(path.join(work, "feature.md"), "feature\n");
       execSync("git add -A && git commit -m feature", { cwd: work, stdio: "pipe" });
 
-      const changed = await getSessionChangedPaths(git);
+      const changed = await getSessionChangedPaths(git, "main");
       expect(changed.has("feature.md")).toBe(true);
       // A file that only existed before the branch point is not "changed".
       expect(changed.has("base.md")).toBe(false);
@@ -65,12 +65,12 @@ describe("getSessionChangedPaths", () => {
       // this keeps the Docs panel in lockstep with the PR card's strip. The
       // per-turn auto-commit then makes it appear in both at once.
       fs.writeFileSync(path.join(work, "scratch.md"), "scratch\n");
-      const changed = await getSessionChangedPaths(git);
+      const changed = await getSessionChangedPaths(git, "main");
       expect(changed.has("scratch.md")).toBe(false);
 
       // Once committed, it shows up.
       execSync("git add -A && git commit -m scratch", { cwd: work, stdio: "pipe" });
-      const afterCommit = await getSessionChangedPaths(git);
+      const afterCommit = await getSessionChangedPaths(git, "main");
       expect(afterCommit.has("scratch.md")).toBe(true);
     } finally {
       fs.rmSync(work, { recursive: true, force: true });
@@ -83,7 +83,7 @@ describe("getSessionChangedPaths", () => {
       // Rewriting base.md's mtime via a no-op checkout must not flag it — this
       // is exactly the false positive the old mtime heuristic produced.
       execSync("git checkout HEAD -- base.md", { cwd: work, stdio: "pipe" });
-      const changed = await getSessionChangedPaths(git);
+      const changed = await getSessionChangedPaths(git, "main");
       expect(changed.has("base.md")).toBe(false);
       expect(changed.size).toBe(0);
     } finally {
@@ -98,7 +98,7 @@ describe("getSessionChangedPaths", () => {
       fs.writeFileSync(path.join(work, "a.md"), "a\n");
       execSync("git add -A && git commit -m a", { cwd: work, stdio: "pipe" });
       const git = new GitManager(work);
-      const changed = await getSessionChangedPaths(git);
+      const changed = await getSessionChangedPaths(git, "main");
       // No main/master ref → the committed change set can't be scoped, so we
       // degrade to flagging nothing rather than everything.
       expect(changed.size).toBe(0);

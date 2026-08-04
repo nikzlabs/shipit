@@ -3,15 +3,14 @@ import type { FileTreeNode } from "../components/FileTree.js";
 import type { DocEntry, SkillInfo, UploadedFile, UploadItem } from "../../server/shared/types.js";
 import { detectFilePreviewType, type FilePreviewType } from "../utils/file-preview-type.js";
 import type { FilePreviewAction } from "../components/FilePreviewModal.js";
-import { getSavedDraftUploads, saveDraftUploads } from "../utils/local-storage.js";
+import { getLocalStorageObject, getSavedDraftUploads, saveDraftUploads } from "../utils/local-storage.js";
 import { useSessionStore } from "./session-store.js";
 
 // localStorage-backed set of upload paths the user has explicitly deleted.
 // Prevents hydrateUploads from resurrecting them if the server DELETE fails.
 const DELETED_UPLOADS_KEY = "shipit:deletedUploads";
 function getDeletedUploads(): Set<string> {
-  try { return new Set(JSON.parse(localStorage.getItem(DELETED_UPLOADS_KEY) ?? "[]") as string[]); }
-  catch { return new Set(); }
+  return getLocalStorageObject<Set<string>>(DELETED_UPLOADS_KEY, new Set(), (parsed) => new Set(parsed as string[]));
 }
 export function markUploadDeleted(path: string) {
   const set = getDeletedUploads();

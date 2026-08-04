@@ -1,7 +1,8 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { ToolResult, truncateLines, parseContentForImages } from "./ToolResult.js";
 import type { ToolResultBlock } from "./MessageList.js";
+import { useSessionStore } from "../stores/session-store.js";
 
 afterEach(cleanup);
 
@@ -332,5 +333,77 @@ describe("parseContentForImages", () => {
     ]);
     const parsed = parseContentForImages(content);
     expect(parsed!.images).toHaveLength(1);
+  });
+});
+
+/**
+ * docs/244 — the modal-only path. A result whose content nothing draws inline
+ * arrives with an EMPTY body and a `truncated` marker; `ToolResult` renders
+ * only inside `ToolCallModal`, so mounting is the click that licenses a load.
+ *
+ * This is the half the server tests can't reach: they prove the payload is
+ * stripped, not that the UI then puts the body back on the screen.
+ */
+describe("ToolResult — lazy body fetch (SHI-267 req 1)", () => {
+  const BODY = "line one\nline two\nline three";
+
+  function stripped(): ToolResultBlock {
+    return { toolUseId: "toolu_lazy", content: "", truncated: true, totalLines: 3, totalBytes: BODY.length };
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    useSessionStore.setState({ sessionId: undefined });
+  });
+
+  function stubFetch(impl: () => Promise<unknown>) {
+    const spy = vi.fn((_url: string) => impl());
+    vi.stubGlobal("fetch", spy);
+    return spy;
+  }
+
+  it("shows a loading state instead of '(no output)' for a stripped body", async () => {
+    useSessionStore.setState({ sessionId: "s1" });
+    stubFetch(() => new Promise(() => { /* never resolves */ }));
+
+    render(<ToolResult tool="Bash" result={stripped()} />);
+
+    // The bug this guards: an emptied body previously fell through to
+    // "(no output)", which is a lie about a result with plenty of it.
+    expect(screen.getByText("Loading output…")).toBeInTheDocument();
+    expect(screen.queryByText("(no output)")).not.toBeInTheDocument();
+  });
+
+  it("fetches the body on mount and renders it", async () => {
+    useSessionStore.setState({ sessionId: "s1" });
+    const spy = stubFetch(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ content: BODY }) }));
+
+    render(<ToolResult tool="Bash" result={stripped()} />);
+    await screen.findByText(/line one/);
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0]?.[0]).toBe("/api/sessions/s1/tool-results/toolu_lazy");
+    expect(screen.getByText(/line three/)).toBeInTheDocument();
+    // Once the whole body is in hand, the server's metadata stops being the
+    // authority — a 3-line body needs no "Show all 3 lines" affordance.
+    expect(screen.queryByText(/Show all/)).not.toBeInTheDocument();
+  });
+
+  it("surfaces an error rather than a permanently empty box when the fetch fails", async () => {
+    useSessionStore.setState({ sessionId: "s1" });
+    stubFetch(() => Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) }));
+
+    render(<ToolResult tool="Bash" result={stripped()} />);
+    expect(await screen.findByText("Couldn't load this output.")).toBeInTheDocument();
+  });
+
+  it("does not fetch for a result that arrived whole", () => {
+    useSessionStore.setState({ sessionId: "s1" });
+    const spy = stubFetch(() => Promise.resolve({ ok: true, json: () => Promise.resolve({}) }));
+
+    render(<ToolResult tool="Bash" result={result("all here")} />);
+
+    expect(spy).not.toHaveBeenCalled();
+    expect(screen.getByText(/all here/)).toBeInTheDocument();
   });
 });

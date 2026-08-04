@@ -33,6 +33,8 @@ import {
 } from "./test-helpers.js";
 import type { CredentialStore } from "../credential-store.js";
 import { DatabaseManager } from "../../shared/database.js";
+import { testDispatch } from "./dispatch-test-helpers.js";
+import { imageHash } from "../transcript-projection.js";
 
 type AnyMsg = any;
 
@@ -133,6 +135,50 @@ describe("Integration: live steering (docs/140)", () => {
     // (its default `sendUserMessage` proxies to `writeStdin` for parity with
     // production adapters).
     expect(claude.stdinData).toContain("Steer me");
+
+    client.close();
+  });
+
+  it("echoes a steered image as a content-addressed URL, not base64 (docs/244, SHI-297)", async () => {
+    // The `message_steered` echo is a browser-facing transcript path of its own:
+    // it bypasses `projectMessagesForWire` entirely, so a pasted screenshot went
+    // out in full even though every other delivery of the same row had been
+    // stripped to a URL since docs/244.
+    //
+    // Safe to fix here specifically because the ordering already holds — the row
+    // is recorded and persisted BEFORE the echo is emitted — which is the
+    // invariant every strip in this feature turns on.
+    const png = Buffer.from("steered-png-bytes").toString("base64");
+
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "First message" });
+    const claude = await waitForClaude(() => lastClaude);
+    claude.initSession("steer-image-session");
+
+    client.send({
+      type: "send_message",
+      text: "look at this",
+      images: [{ data: png, mediaType: "image/png" }],
+    });
+
+    const steered = await drainUntil(client, (m) => m.type === "message_steered");
+    expect(steered.images).toHaveLength(1);
+    expect(steered.images[0].data).toBeUndefined();
+    expect(steered.images[0].src).toBe(`/api/sessions/${client.sessionId}/images/${imageHash(png)}`);
+    expect(steered.images[0].mediaType).toBe("image/png");
+
+    // The URL resolves the moment it is on the wire, and storage keeps the bytes.
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/sessions/${client.sessionId}/images/${imageHash(png)}`,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.rawPayload.toString("base64")).toBe(png);
+
+    const stored = chatHistoryManager.load(client.sessionId) as { images?: { data?: string }[] }[];
+    expect(stored.some((m) => m.images?.some((i) => i.data === png))).toBe(true);
 
     client.close();
   });
@@ -463,6 +509,88 @@ describe("Integration: live steering (docs/140)", () => {
     // Same process — no respawn, no kill.
     expect(claude.killed).toBe(false);
     expect(claude.lastPrompt).toBe("Plan it");
+
+    client.close();
+  });
+
+  it("respawns the persistent agent on the newly picked model instead of steering into the old one", async () => {
+    // Regression: unlike the permission mode there is no mid-stream switch for
+    // the model — the streaming CLI keeps its spawn-time `--model` for life. So
+    // picking a new model mid-session moved the picker's checkmark (set_model
+    // persists onto the session) while every following turn still ran on the
+    // OLD process, and the CLI's agent_init reported that old model back into
+    // the trigger label: "I switched Fable → Opus, the dropdown says Opus, the
+    // button says Fable." The resident process is now released on model drift
+    // so the next turn spawns with the model the user actually picked.
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "set_model", model: "claude-fable-5" });
+    client.send({ type: "send_message", text: "Turn one" });
+    const claude1 = await waitForClaude(() => lastClaude);
+    claude1.initSession("model-switch-session");
+    expect(claude1.lastModel).toBe("claude-fable-5");
+
+    // End turn 1 — process stays alive (streaming).
+    claude1.emit("event", {
+      type: "result",
+      subtype: "success",
+      session_id: "model-switch-session",
+      duration_ms: 100,
+    });
+    await drainUntil(client, (m) => m.type === "session_status" && (m as AnyMsg).running === false);
+    expect(claude1.killed).toBe(false);
+
+    // User picks a different model, then sends the next turn.
+    client.send({ type: "set_model", model: "claude-opus-5" });
+    client.send({ type: "send_message", text: "Turn two" });
+
+    const claude2 = await waitForClaude(() => lastClaude, claude1);
+    // A fresh process, spawned with the new model and carrying turn 2's prompt.
+    expect(claude2.lastModel).toBe("claude-opus-5");
+    expect(claude2.lastPrompt).toContain("Turn two");
+    // The old one is gone — not left resident running the model the user moved
+    // away from, and turn 2 was NOT steered into it.
+    expect(claude1.killed).toBe(true);
+    expect(claude1.stdinData.some((d) => d.includes("Turn two"))).toBe(false);
+
+    client.close();
+  });
+
+  it("keeps reusing the persistent agent when the model has NOT changed", async () => {
+    // The complement: the release is drift-only. Re-sending the same model (the
+    // picker fires set_model on every pick, including a no-op re-pick) must not
+    // cost a respawn.
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "set_model", model: "claude-fable-5" });
+    client.send({ type: "send_message", text: "Turn one" });
+    const claude1 = await waitForClaude(() => lastClaude);
+    claude1.initSession("model-same-session");
+
+    claude1.emit("event", {
+      type: "result",
+      subtype: "success",
+      session_id: "model-same-session",
+      duration_ms: 100,
+    });
+    await drainUntil(client, (m) => m.type === "session_status" && (m as AnyMsg).running === false);
+
+    client.send({ type: "set_model", model: "claude-fable-5" });
+    client.send({ type: "send_message", text: "Turn two" });
+
+    await new Promise<void>((resolve, reject) => {
+      const start = Date.now();
+      const check = (): void => {
+        if (claude1.stdinData.some((d) => d.includes("Turn two"))) { resolve(); return; }
+        if (Date.now() - start > 2000) { reject(new Error("Turn two was never steered into the resident process")); return; }
+        setTimeout(check, 10);
+      };
+      check();
+    });
+    expect(lastClaude).toBe(claude1);
+    expect(claude1.killed).toBe(false);
 
     client.close();
   });
@@ -851,12 +979,16 @@ describe("Integration: live steering (docs/140)", () => {
       check();
     });
 
-    runner.dispatch({ text: "Programmatic steer" });
+    runner.dispatch(testDispatch({
+      text: "Programmatic steer",
+      messageOrigin: { sessionId: "parent", sessionTitle: "Parent", relation: "parent" },
+    }));
 
     const steered = await drainUntil(client, (m) => m.type === "message_steered");
     expect(steered).toMatchObject({ type: "message_steered", text: "Programmatic steer" });
     // Injected into the running agent — the fake records sendUserMessage under stdinData.
-    expect(claude.stdinData).toContain("Programmatic steer");
+    expect(claude.stdinData.some((input) => input.includes("Programmatic steer"))).toBe(true);
+    expect(claude.stdinData.some((input) => input.includes('Agent message from PARENT session "Parent" (parent)'))).toBe(true);
     // And it was NOT queued.
     expect(runner.queueLength).toBe(0);
 
@@ -887,7 +1019,7 @@ describe("Integration: live steering (docs/140)", () => {
       check();
     });
 
-    runner.dispatch({ text: "Build the initial thing" });
+    runner.dispatch(testDispatch({ text: "Build the initial thing" }));
     const claude = await waitForClaude(() => lastClaude);
     // The FIX: a dispatched first turn streams when steering is on + supported.
     // Before this change `lastUseStreaming` was falsy and the steer below queued.
@@ -906,7 +1038,7 @@ describe("Integration: live steering (docs/140)", () => {
     });
 
     // Follow-up programmatic message arrives mid-turn — must STEER, not queue.
-    runner.dispatch({ text: "Also handle the edge case" });
+    runner.dispatch(testDispatch({ text: "Also handle the edge case" }));
 
     const steered = await drainUntil(client, (m) => m.type === "message_steered");
     expect(steered).toMatchObject({ type: "message_steered", text: "Also handle the edge case" });
@@ -970,7 +1102,7 @@ describe("Integration: live steering (docs/140)", () => {
 
     // Dispatch a fresh turn (e.g. `shipit session message`). It must REUSE the
     // resident process via sendUserMessage, NOT spawn a second FakeClaudeProcess.
-    runner.dispatch({ text: "Second turn instruction" });
+    runner.dispatch(testDispatch({ text: "Second turn instruction" }));
 
     // Give the dispatch path time to run. The reused process records the prompt
     // under stdinData (sendUserMessage); no new agent is created.
@@ -1023,7 +1155,7 @@ describe("Integration: live steering (docs/140)", () => {
     // Turn steering OFF so the dispatched message is QUEUED (not steered),
     // reproducing the "message sits in the queue" precondition.
     credentialStore.setLiveSteering(false);
-    runner.dispatch({ text: "Queued during turn" });
+    runner.dispatch(testDispatch({ text: "Queued during turn" }));
     const queued = await drainUntil(client, (m) => m.type === "message_queued");
     expect(queued).toMatchObject({ type: "message_queued", text: "Queued during turn" });
 

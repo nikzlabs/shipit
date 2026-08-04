@@ -78,6 +78,12 @@ brokering capabilities on request instead of automatically.
     container still has its agent API egress — so "off" means **no GitHub token
     / no push to the user's repos**, *not* a fully network-sealed box. (If a
     truly sealed posture is wanted, that's an egress concern — see Security.)
+  - `dangerousGitHubOps` (UI label **"Allow merging PRs"**, default **off**) — a
+    sub-grant under GitHub access for outward-facing, effectively-irreversible
+    GitHub verbs (merge being the first). Off ⇒ `gh pr merge` is refused at the
+    broker. Only meaningful when `git` is also granted. See **docs/224** for the
+    full design (guardrails: green checks, no force, branch protection deferred to
+    GitHub).
   - `docker` — **session-scoped** Docker (see below). Off ⇒ no Docker.
   - `network` (UI label **"Network access"**, default **on**) — controls *how
     contained* egress is. It only ever **tightens**, never loosens (a Sandbox is
@@ -132,6 +138,7 @@ the absence of a remote:
 | Session-level auto-commit | Off — **explicitly** skipped for sandbox (not auto-off: `post-turn.ts` commits the session dir unconditionally today; the non-repo root would error otherwise) |
 | Branch-op blocking shim | Off — the agent owns its own branches/PRs (see PR brokering) |
 | `RELEASES` / `NEW_PROJECT` prompt fragments | Dropped, like ops |
+| Spawning sibling sessions (`shipit session create`) | Off — refused with a sandbox-specific 400 (see below) |
 | UI | PR lifecycle card replaced by the orientation banner (same chat-panel slot); side-panel Preview & PR tabs removed (Files + Terminal remain) |
 | Sidebar | Own group + badge, like the Host / Ops group |
 | Warm pool | Cheaper to warm — no clone needed |
@@ -145,6 +152,38 @@ push, and open PRs (via the repo-aware shim below). A Sandbox-specific
 into `/workspace/<name>`; ShipIt won't render previews or PR cards for these; open
 PRs per-repo with `gh` from inside each clone; the workspace persists between
 turns on disk but treat pushed state as the source of truth.
+
+### Spawning is off, and the prompt must say so
+
+`spawnChildSession` resolves the repo to claim as
+`opts.repoUrlOverride ?? parent.remoteUrl` and refuses when it is empty. A
+Sandbox has no `remoteUrl` by construction, and `repoUrlOverride` is set by
+exactly one caller (the Ops `--shipit-source` path, docs/162), so **every**
+spawn from a Sandbox fails — linked or `--detached`. That is the correct
+behavior: a spawned child is branched off the *parent's* `origin/main`, and
+there is nothing to branch from. The repos the agent clones into
+`/workspace/<name>` don't change it — those are the agent's, not the session's.
+
+Two things followed from that being an accident rather than a stated contract:
+
+- **The prompt advertised the capability anyway.** `renderInstructions` composes
+  the per-agent `PARALLEL_SESSIONS` section (which teaches
+  `shipit session create`) on every axis, sandbox included — so a Sandbox agent
+  was told to reach for a command that always 400s. The Sandbox overlay
+  (`prompts/sandbox-session.md`, composed *earlier* in the skeleton) now carries
+  an explicit override naming the command, and points at the fan-out primitives
+  that do work here — in-turn subagents and `shipit agent run`, neither of which
+  needs a repo. Pinned by `agent-instructions.test.ts` (composition + the
+  command token, not the wording).
+- **The error read as a fixable misconfiguration.** "the parent has no remote
+  URL. Spawn requires the parent's repo to be registered" invites the agent to
+  go register a repo — work that cannot succeed. A Sandbox parent now gets its
+  own 400 saying the capability is absent and naming the alternatives.
+
+The gate stays server-side rather than in the shim: `SHIPIT_SANDBOX=1` is set
+only on the Claude CLI spawn (`session/agents/claude/process.ts`), so a shim-side
+early reject would silently not apply to Codex. `spawnChildSession` covers every
+backend uniformly.
 
 ### PR brokering in a Sandbox — the shim must become repo-aware (CRITICAL)
 
@@ -235,6 +274,17 @@ story in one discoverable place and leaves the normal repo-claim flow untouched.
 
 - "Start a session from chat without choosing a repo" (SHI-161 acceptance) ⇒
   Sandbox with both toggles is a one-click empty session.
+
+### Session-switch isolation
+
+Creating a Sandbox immediately resumes it through the normal per-session
+WebSocket path. The route is updated before the active-session store, preventing
+a split render where URL-keyed chrome briefly shows the previous session's title
+bar instead of the Sandbox banner. WebSocket message queues are also scoped to
+one connection generation and cleared when the URL changes, so an undrained
+event from the previous session cannot appear beneath the new Sandbox title
+during the switch. Regression contracts live in `session-actions.test.ts` and
+`useWebSocket.test.ts`.
 
 ## Security notes
 
@@ -356,6 +406,22 @@ What shipped, and where it diverged from the sketch above:
   with the GitHub repo flow. The repo *dialogs* themselves (`AddRepoDialog`)
   independently show an inline `GitHubTokenForm` connect prompt when
   unauthenticated rather than a generic failure toast.)
+
+  **Mobile parity.** The advanced-session menu used to be unreachable on mobile:
+  it lived only in the desktop sidebar top bar (`!mobile`), and the mobile bottom
+  tab bar exposed just the repo-backed quick/voice/new flows — so there was no way
+  to create a Sandbox (or Ops) session from a phone. The sidebar top bar now also
+  renders inside the mobile **Sessions drawer** (`SessionSidebar`, `mobile`): on
+  mobile it shows the `+` advanced menu and the repo switcher (moved here from the
+  app header to declutter it), right-aligned, while quick/voice/new stay in the
+  bottom tab bar to avoid duplication. There's no collapse/close button on mobile
+  — Sessions is one mode of the bottom tab bar's segmented control, so you switch
+  away from it rather than closing it. To keep the drawer reachable
+  everywhere, `MobileTabBar` is now always rendered on mobile (previously hidden on
+  the home screen); on the home screen its Chat/Workspace content tabs are
+  `contentTabsDisabled` (no session to view) while Sessions + creation actions stay
+  live. Opening `SandboxDialog` from the drawer closes the drawer first (the dialog
+  is rendered at App level, so it survives the sidebar unmount).
 
 Phase 2 (building on the stable
 `kind`/`capabilities`/`POST /api/sessions/sandbox` contract) shipped as two

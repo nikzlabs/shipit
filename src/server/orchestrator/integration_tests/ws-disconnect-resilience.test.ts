@@ -36,6 +36,7 @@ import {
   StubAuthManager,
   FakeClaudeProcess,
   waitForClaude,
+  waitFor,
   createTestCredentialStore,
   createTestDatabaseManager,
 } from "./test-helpers.js";
@@ -194,7 +195,12 @@ describe("Integration: WebSocket disconnect resilience", () => {
     client2.close();
   });
 
-  it("unpersisted streaming events emitted after WS close are replayed on reconnect", async () => {
+  // The invariant is that the content reaches a reattaching viewer, not the
+  // wire shape it arrives in. It used to arrive as a cursor-sliced `agent_event`
+  // replay; it now arrives inside the attach-time `turn_snapshot`, which is
+  // sampled at one instant instead of being stitched onto a separately-fetched
+  // history baseline. See `turn-reattach-snapshot.test.ts` for why.
+  it("unpersisted streaming events emitted after WS close reach a reconnecting viewer", async () => {
     const client1 = await TestClient.connect(port);
     await client1.receive();
     const sessionId = client1.sessionId;
@@ -217,9 +223,8 @@ describe("Integration: WebSocket disconnect resilience", () => {
     const replayed = await drainUntil(
       client2,
       (m) =>
-        m.type === "agent_event"
-        && m.event?.type === "agent_assistant"
-        && m.event.content?.some((b: AnyMsg) => b.type === "text" && b.text === "background chunk"),
+        m.type === "turn_snapshot"
+        && m.messages?.some((msg: AnyMsg) => msg.text === "background chunk"),
     );
 
     expect(replayed).toBeTruthy();
@@ -440,14 +445,17 @@ describe("Integration: WebSocket disconnect resilience", () => {
     await settle(150);
 
     // Server-side proof: the replay buffer must not retain the turn's agent
-    // content after the terminal error. The buffer holds at most the trailing
-    // `session_status` (running=false) emitted after the clear — the same
-    // harmless tail the clean `agent_result` path leaves. Before the fix the
-    // buffer still carried the assistant `agent_event`, so the count was
-    // higher and that content got re-emitted on reconnect.
+    // content after the terminal error. What remains is the harmless tail every
+    // terminal path emits AFTER the clear — the trailing `session_status`
+    // (running=false), plus `git_committed` once the error path started
+    // auto-committing the dead turn's edits, which is exactly the tail the
+    // clean `agent_result` path leaves. Asserted on TYPES rather than a
+    // count: the count now has a legitimate reason to exceed 1, but an
+    // `agent_event` in here is the docs/163 regression — it is the turn itself,
+    // and it gets re-emitted on every reconnect.
     const state = await app.inject({ method: "GET", url: `/api/_test/runner/${sessionId}` });
     expect(state.statusCode).toBe(200);
-    expect(state.json().turnEventBufferSize).toBeLessThanOrEqual(1);
+    expect(state.json().turnEventBufferTypes).not.toContain("agent_event");
 
     // Drop the WS and reconnect (the browser-reload path). The reconnecting
     // client must NOT receive the assistant event a second time — it already
@@ -699,9 +707,15 @@ describe("Integration: WebSocket disconnect resilience", () => {
     const status = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/status` });
     expect(status.json().running).toBe(false);
 
-    // Detach the LAST viewer — grace period timer arms.
+    // Detach the LAST viewer — grace period timer arms. Poll for the detach to
+    // land rather than betting on 50 ms: the close travels browser→server and
+    // `detachFromRunner()` runs on the socket's close handler, which a loaded
+    // event loop defers past that budget (observed as viewerCount still 1).
     clientA.close();
-    await settle(50);
+    await waitFor(async () => {
+      const r = await app.inject({ method: "GET", url: `/api/_test/runner/${sessionId}` });
+      return r.json().viewerCount === 0;
+    }, "last viewer detached");
     const stateGone = await app.inject({ method: "GET", url: `/api/_test/runner/${sessionId}` });
     expect(stateGone.json().viewerCount).toBe(0);
     expect(stateGone.json().lastViewerDetachAt).toBeGreaterThan(0);
@@ -783,12 +797,20 @@ describe("Integration: WebSocket disconnect resilience", () => {
     // Drive the agent to completion. The "done" handler runs postTurnCommit()
     // with `runner.turnSummary` captured at turn start.
     claude.finish("agent-pt-1");
-    await settle(300);
 
     // Reconnect and read history — the chat-history entry must be linked to
     // a commit whose message starts with the assistant text.
     const client2 = await TestClient.connect(port, sessionId);
-    await settle(50);
+
+    // Poll for the post-turn commit to be persisted rather than sleeping a
+    // fixed 300 ms + 50 ms. The commit runs `git add -A` + `git commit` plus
+    // chat-history bookkeeping, all of which a loaded machine stretches past
+    // that budget — observed as `expected 0 to be greater than 0` on the
+    // commitHash filter below.
+    await waitFor(async () => {
+      const r = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
+      return r.json().messages.some((m: AnyMsg) => m.commitHash);
+    }, "post-turn commit persisted to history");
 
     const historyRes = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
     expect(historyRes.statusCode).toBe(200);

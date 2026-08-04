@@ -41,6 +41,7 @@ export function resumeSessionInternal(sessionId: string) {
   session.setIsLoading(false);
   session.setActivity(undefined);
   session.setQueuedMessages([]);
+  session.setContainerFreshness(null);
   // docs/178 — the "Compacting…" spinner is a global, transient flag. Clear it
   // on switch so a compaction in flight on the outgoing session doesn't bleed
   // its spinner into the incoming one (it's never persisted, so history reload
@@ -73,8 +74,14 @@ export function handleSessionResume(
   sessionId: string,
   navigate: (path: string) => void,
 ) {
-  resumeSessionInternal(sessionId);
+  // Move the route first. App chrome is intentionally keyed to the URL so a
+  // late async store write cannot visually hijack the session being viewed.
+  // Updating the store first creates a transient split render: the selected
+  // session is new while the URL (and therefore the top chrome) still points
+  // at the previous session. This was visible when entering a Sandbox as the
+  // previous session's title bar flashing before the Sandbox banner.
   navigate(`/session/${sessionId}`);
+  resumeSessionInternal(sessionId);
 }
 
 /**
@@ -100,6 +107,13 @@ export async function createHeadlessSession(opts: {
   branch?: string;
   agent?: AgentId;
   model?: string;
+  /**
+   * docs/217 — per-session reasoning effort (Control B) for the new session's
+   * first turn. Unlike the WS `?reasoning=` connect param (which only reaches
+   * WS-driven turns), this rides the creation request so the server-dispatched
+   * first turn runs with it. Persistence to localStorage stays in the picker.
+   */
+  reasoning?: string;
   /**
    * docs/175 — arm auto-merge for the new session at creation time. Per-session
    * and never persisted (decision #1): the overlay does NOT remember it in

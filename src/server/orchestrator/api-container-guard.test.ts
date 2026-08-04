@@ -236,6 +236,8 @@ const GOLDEN_CONTAINER_ROUTES = [
   "POST /api/sessions/:id/pr/:number/ready",
   "POST /api/sessions/:id/pr/:number/close",
   "POST /api/sessions/:id/pr/:number/reopen",
+  // docs/224 — gated agent merge (`gh pr merge`), sandbox dangerousGitHubOps grant.
+  "POST /api/sessions/:id/pr/:number/merge",
   // github actions — gh run / gh workflow (read-only)
   "GET /api/sessions/:id/actions/runs",
   "GET /api/sessions/:id/actions/runs/view",
@@ -255,6 +257,10 @@ const GOLDEN_CONTAINER_ROUTES = [
   "POST /api/sessions/:sessionId/issue/edit",
   "POST /api/sessions/:sessionId/issue/status",
   "POST /api/sessions/:sessionId/issue/assign",
+  // SHI-230 — `shipit issue label create` broker target; same posture as the
+  // issue writes above (own-session scoped, do-then-surface card with undo,
+  // tracker token stays orchestrator-side).
+  "POST /api/sessions/:sessionId/issue/label/create",
   // source — shipit source (ops sessions)
   "GET /api/sessions/:id/source/status",
   "GET /api/sessions/:id/source/tree",
@@ -263,8 +269,11 @@ const GOLDEN_CONTAINER_ROUTES = [
   "GET /api/sessions/:id/source/log",
   "GET /api/sessions/:id/source/blame",
   "GET /api/sessions/:id/source/show",
-  // agent — shipit agent run
+  // agent — shipit agent run / shipit agent result. The result read is
+  // own-session scoped like the spawn (the worker injects the caller's id), and
+  // returns only that session's own persisted consult cards (SHI-245).
   "POST /api/sessions/:id/agent/spawn",
+  "GET /api/sessions/:id/agent/result",
   // session — shipit session create/list/view/wait/message/archive + notify-on-merge
   "POST /api/sessions/:parentId/spawn",
   "GET /api/sessions/:parentId/children",
@@ -272,6 +281,20 @@ const GOLDEN_CONTAINER_ROUTES = [
   "POST /api/sessions/:parentId/children/:childId/message",
   "POST /api/sessions/:parentId/children/:childId/archive",
   "POST /api/sessions/:parentId/children/:childId/notify-on-merge",
+  // docs/239 — `shipit session notify-on-merge --self` arms a watch on the
+  // CALLER's own PR, and the self-merge wake turn's first act is the explicit,
+  // fully-gated branch reset. Both are own-session scoped (the worker injects the
+  // caller's id) and neither accepts an agent-supplied target. The reset's Cancel
+  // counterpart is deliberately browser-only.
+  "POST /api/sessions/:sessionId/notify-on-merge-self",
+  "POST /api/sessions/:id/branch/reset-to-base",
+  // docs/233 (SHI-241) — the upward channel: `shipit session whoami` resolves
+  // the CALLING session's own cohort, and `shipit session report` pushes a
+  // report to its parent / siblings. Own-session scoped like every route above:
+  // the worker injects the caller's id and recipients are derived server-side
+  // from `parentSessionId`, so neither route accepts an agent-supplied target.
+  "GET /api/sessions/:sessionId/cohort",
+  "POST /api/sessions/:sessionId/report",
   // bridges — voice_note / report_shipit_bug
   "POST /api/sessions/:sessionId/voice-note",
   "POST /api/sessions/:sessionId/bug-report",

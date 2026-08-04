@@ -7,13 +7,14 @@
  */
 
 import { useState, useMemo } from "react";
-import { type Icon, NotePencilIcon, PencilSimpleIcon, TrashIcon, XIcon } from "@phosphor-icons/react";
+import { type Icon, NotePencilIcon, PencilSimpleIcon, TrashIcon } from "@phosphor-icons/react";
 import hljs from "highlight.js";
 import { Dialog, DialogContent } from "./ui/dialog.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import { sessionRelativePath } from "../path-utils.js";
 import { useFileStore } from "../stores/file-store.js";
 import { useSessionStore } from "../stores/session-store.js";
+import { useLazyToolInput } from "../hooks/useLazyToolInput.js";
 
 export interface DiffBlockProps {
   filePath: string;
@@ -28,9 +29,19 @@ export interface DiffBlockProps {
   unifiedDiff?: string;
   /** Override the leading verb ("Edit"/"Write"); used for Codex change kinds. */
   label?: string;
+  /**
+   * docs/244 — the file body was stripped on the serve path. The inline summary
+   * is drawn from `stats` instead of the (absent) strings, and the body is
+   * fetched when the modal opens. Only ever set together with `stats`.
+   */
+  toolUseId?: string;
+  stats?: { added: number; removed: number };
 }
 
-function countLines(text: string): number {
+// Exported so docs/244 can pin the server's stat computation against this one:
+// the `+N -M` summary is drawn from server-computed stats once the body is
+// stripped, so the two must agree exactly or the summary changes on reload.
+export function countLines(text: string): number {
   if (!text) return 0;
   const normalized = text.endsWith("\n") ? text.slice(0, -1) : text;
   return normalized ? normalized.split("\n").length : 0;
@@ -47,13 +58,16 @@ function countDiffLines(diff: string): { added: number; removed: number } {
   return { added, removed };
 }
 
-export function DiffBlock({ filePath, oldString, newString, isWrite, unifiedDiff, label }: DiffBlockProps) {
+export function DiffBlock({ filePath, oldString, newString, isWrite, unifiedDiff, label, toolUseId, stats }: DiffBlockProps) {
   const [showModal, setShowModal] = useState(false);
   const isUnified = unifiedDiff !== undefined;
   const sessionId = useSessionStore((s) => s.sessionId);
-  const { added, removed } = isUnified
+  // Server-computed stats when the body was stripped (docs/244) — computed from
+  // the same `countLines` before stripping, so the summary is byte-identical to
+  // what recomputing here would have produced.
+  const { added, removed } = stats ?? (isUnified
     ? countDiffLines(unifiedDiff)
-    : { added: countLines(newString ?? ""), removed: countLines(oldString ?? "") };
+    : { added: countLines(newString ?? ""), removed: countLines(oldString ?? "") });
   const hasContent = added > 0 || removed > 0;
   const verb = label ?? (isWrite ? "Write" : "Edit");
   const relativePath = sessionRelativePath(filePath);
@@ -98,6 +112,7 @@ export function DiffBlock({ filePath, oldString, newString, isWrite, unifiedDiff
           isWrite={isWrite}
           unifiedDiff={unifiedDiff}
           verb={verb}
+          {...(stats && toolUseId ? { lazyToolUseId: toolUseId } : {})}
           onClose={() => setShowModal(false)}
         />
       )}
@@ -136,36 +151,45 @@ function VerbBadge({ verb }: { verb: string }) {
   );
 }
 
-function DiffModal({ filePath, oldString, newString, isWrite, unifiedDiff, verb, onClose }: {
+function DiffModal({ filePath, oldString, newString, isWrite, unifiedDiff, verb, lazyToolUseId, onClose }: {
   filePath: string;
   oldString?: string;
   newString?: string;
   isWrite?: boolean;
   unifiedDiff?: string;
   verb: string;
+  /** docs/244 — when set, the body was stripped and is fetched on open. */
+  lazyToolUseId?: string;
   onClose: () => void;
 }) {
+  // The body is not in the transcript (docs/244); opening the modal IS the
+  // moment it has to be fetched.
+  const lazy = useLazyToolInput(lazyToolUseId, !!lazyToolUseId);
+  const str = (key: string): string | undefined =>
+    typeof lazy.input?.[key] === "string" ? lazy.input[key] : undefined;
+
+  const pending = lazy.loading;
+  const resolvedOld = str("old_string") ?? oldString;
+  const resolvedNew = str("new_string") ?? str("content") ?? newString;
+
   return (
     <Dialog open onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
     <DialogContent className="w-[min(90vw,56rem)] max-h-[80vh] flex flex-col" aria-label="Diff view">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-(--color-border-primary)">
+      <div className="flex items-center px-4 py-3 border-b border-(--color-border-primary)">
         <span className="text-xs font-semibold text-(--color-text-primary) shrink-0">Tool Call</span>
-        <button
-          onClick={onClose}
-          className="p-1 rounded text-(--color-text-tertiary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors shrink-0 cursor-pointer"
-          aria-label="Close"
-        >
-          <XIcon size={16} />
-        </button>
       </div>
       <div className="flex-1 overflow-auto p-4">
         <pre className="text-xs text-(--color-text-secondary) font-mono whitespace-pre-wrap break-all mb-4 pb-4 border-b border-(--color-border-secondary)">{verb} {sessionRelativePath(filePath)}</pre>
-        {unifiedDiff !== undefined ? (
+        {pending ? (
+          <div className="text-xs text-(--color-text-secondary) italic" role="status">Loading diff…</div>
+        ) : lazy.error ? (
+          <div className="text-xs text-(--color-error)" role="status">Couldn&apos;t load this diff.</div>
+        ) : unifiedDiff !== undefined ? (
           <UnifiedDiff diff={unifiedDiff} />
         ) : isWrite ? (
-          <WriteContent content={newString ?? ""} />
+          <WriteContent content={resolvedNew ?? ""} />
         ) : (
-          <EditDiff oldString={oldString} newString={newString} />
+          <EditDiff oldString={resolvedOld} newString={resolvedNew} />
         )}
       </div>
     </DialogContent>

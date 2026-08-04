@@ -33,15 +33,18 @@ export class CodexLimitsProvider implements LimitsProvider {
   private codexAuthManager: Pick<CodexAuthManager, "getAccessToken">;
   private now: () => number;
   /**
-   * Latest windows pushed from the Codex app-server stream. `null` until
-   * the first `account/rateLimits/updated` arrives (i.e. until a turn has
-   * run), which is also what gates `canFetch()`.
+   * Latest windows pushed from the Codex app-server stream, keyed by **route
+   * id** (docs/150). Empty until the first `account/rateLimits/updated`
+   * arrives for a route (i.e. until a turn has run on it), which is what gates
+   * that route's presence in `routeIds()`. Keyed rather than single-slot
+   * because two connected ChatGPT subscriptions have independent windows —
+   * sharing one slot showed whichever account last took a turn.
    */
-  private latest: {
+  private latest = new Map<string, {
     session: SubscriptionLimitsWindow | null;
     weekly: SubscriptionLimitsWindow | null;
     at: number;
-  } | null = null;
+  }>();
 
   constructor(deps: CodexLimitsDeps) {
     this.codexAuthManager = deps.codexAuthManager;
@@ -57,20 +60,28 @@ export class CodexLimitsProvider implements LimitsProvider {
   setRateLimits(
     session: SubscriptionLimitsWindow | null,
     weekly: SubscriptionLimitsWindow | null,
+    routeId: string,
   ): void {
-    this.latest = { session, weekly, at: this.now() };
+    const now = this.now();
+    const previous = this.latest.get(routeId) ?? null;
+    this.latest.set(routeId, {
+      session: preserveWindowAnchor(previous?.session ?? null, session, now),
+      weekly: preserveWindowAnchor(previous?.weekly ?? null, weekly, now),
+      at: now,
+    });
   }
 
-  canFetch(): boolean {
-    return this.latest !== null;
+  routeIds(): string[] {
+    return [...this.latest.keys()];
   }
 
-  async refreshFetchable(): Promise<boolean> {
-    return this.latest !== null;
+  forgetRoute(routeId: string): void {
+    this.latest.delete(routeId);
   }
 
-  async fetch(): Promise<SubscriptionLimits | null> {
-    if (!this.latest) return null;
+  async fetch(routeId: string): Promise<SubscriptionLimits | null> {
+    const latest = this.latest.get(routeId);
+    if (!latest) return null;
     // Plan tier isn't part of the rate-limit payload (`limitName` is null),
     // so — like Claude reading its tier from the credentials file — we pull
     // it from the auth token's JWT claim. A missing token just means no tier
@@ -82,10 +93,23 @@ export class CodexLimitsProvider implements LimitsProvider {
     }
     return {
       agentId: "codex",
+      routeId,
       plan,
-      session: this.latest.session,
-      weekly: this.latest.weekly,
-      fetchedAt: this.latest.at,
+      session: latest.session,
+      weekly: latest.weekly,
+      fetchedAt: latest.at,
     };
   }
+}
+
+/** Keep Codex's rolling reset updates from moving the time marker back to zero. */
+function preserveWindowAnchor(
+  previous: SubscriptionLimitsWindow | null,
+  incoming: SubscriptionLimitsWindow | null,
+  now: number,
+): SubscriptionLimitsWindow | null {
+  if (!incoming || !previous?.startedAt) return incoming;
+  const previousReset = Date.parse(previous.resetAt);
+  if (!Number.isFinite(previousReset) || previousReset <= now) return incoming;
+  return { ...incoming, startedAt: previous.startedAt };
 }

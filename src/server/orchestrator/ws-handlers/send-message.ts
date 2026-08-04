@@ -7,6 +7,9 @@ import { recordSteeredMessage, persistTurnInProgress } from "./agent-listeners.j
 import { runAgentWithMessage, saveImagesToUploadsDir, assembleAgentPrompt } from "./agent-execution.js";
 import { resolveRunner } from "./resolve-runner.js";
 import { shouldSteerMessage } from "../dispatch-steering.js";
+import { prepareDispatch } from "../prepared-dispatch.js";
+import { agentAuthenticationError, isAgentAuthenticated } from "../services/agent-auth-gate.js";
+import { imageHash, imageUrl } from "../transcript-projection.js";
 
 // Re-export all public symbols from sub-modules for backwards compatibility
 export { CONTEXT_WINDOW_TOKENS, wireAgentListeners, extractToolResults } from "./agent-listeners.js";
@@ -38,51 +41,15 @@ function parseCompactCommand(text: string): { match: boolean; instructions?: str
 function ensureActiveAgentAuthenticated(ctx: FullCtx): boolean {
   const activeAgentId = ctx.getActiveAgentId();
 
-  // docs/155: per-backend auth gate; mirrored in services/agent.ts (HTTP
-  // dispatch path). `AgentAuthManager.isConfigured()` + the
-  // `Map<AgentId, AgentAuthManager>` from `buildAgentRuntime()` could front
-  // this dispatch, but Claude's `checkCredentials()` (re-read on-disk creds)
-  // and Codex's `agentRegistry.refreshAuth("codex")` (re-read env-var) plus
-  // the per-backend error copy are still distinct. Consolidation tracked but
-  // not done; the disables below annotate the surviving branches.
-  // eslint-disable-next-line no-restricted-syntax -- docs/155: per-backend auth gate (see comment above)
-  if (activeAgentId === "claude") {
-    if (!ctx.authManager.authenticated) {
-      ctx.authManager.checkCredentials();
-    }
-    if (!ctx.authManager.authenticated) {
-      // We no longer auto-launch the OAuth flow here. That spawned `claude
-      // /login` and broadcast the verification URL over a global SSE event,
-      // which surfaced a blocking sign-in overlay in *every* open browser
-      // window — including tabs unrelated to the session that triggered it.
-      // Authentication lives in Settings → Agents (the selector already
-      // disables unauthenticated agents); mirror the Codex branch below and
-      // just block the turn with an actionable error.
-      ctx.send({
-        type: "error",
-        message:
-          "Claude is not authenticated. Sign in to Claude or add ANTHROPIC_API_KEY in Settings → Agents.",
-      });
-      return false;
-    }
-    return true;
+  // docs/150 — AgentRegistry's auth check is backed by ProviderAccountManager,
+  // so it sees every connected subscription account. The former Claude-only
+  // gate consulted the legacy singleton AuthManager and rejected a turn before
+  // routing whenever the usable credential lived in an added account row.
+  if (!isAgentAuthenticated(ctx.agentRegistry, activeAgentId)) {
+    ctx.send({ type: "error", message: agentAuthenticationError(activeAgentId) });
+    return false;
   }
-
-  // eslint-disable-next-line no-restricted-syntax -- docs/155: per-backend auth gate (see comment above)
-  if (activeAgentId === "codex") {
-    ctx.agentRegistry.refreshAuth("codex");
-    const info = ctx.agentRegistry.get("codex");
-    if (!info?.authConfigured) {
-      ctx.send({
-        type: "error",
-        message: "Codex is not authenticated. Sign in to Codex or add OPENAI_API_KEY in Settings -> Agents.",
-      });
-      return false;
-    }
-    return true;
-  }
-
-  return false;
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -121,6 +88,10 @@ export async function handleSendMessage(
   // If Claude is already processing, queue this message and return.
   // Resolve runner via registry — survives WS disconnect.
   const runnerForQueue = resolveRunner(ctx);
+  // docs/243 — interactive paths preflight through the exact same runner-owned
+  // admission used by dispatch(), before steering, attachment reads, warm
+  // graduation, persistence, or process mutation.
+  if (runnerForQueue) runnerForQueue.assertCanDispatch();
   if (runnerForQueue?.running) {
     // Verify with the worker that an agent is actually running. The local
     // `running` flag can get stranded `true` if the orchestrator missed a
@@ -128,7 +99,16 @@ export async function handleSendMessage(
     // race). Without this check, the new message would be queued forever
     // and the user sees: "agent starts briefly, nothing happens".
     const actuallyRunning = await runnerForQueue.verifyRunningState();
-    if (actuallyRunning) {
+    // SHI-280 — the recovery inside `verifyRunningState` may have released a
+    // queue entry the phantom turn was blocking, which claims the runner
+    // synchronously. Re-read `running` rather than trusting the return value, or
+    // this message falls through and spawns a second agent against the one the
+    // released turn is already starting — the two-paths-one-`_agent`-slot race
+    // that produced the phantom turn in the first place. Re-entering the block
+    // queues this message behind the entry that was there first (steering and
+    // `/compact` both fall through to the queue: the released turn has no
+    // resident streaming process yet).
+    if (actuallyRunning || runnerForQueue.running) {
       // docs/178 — `/compact` while a turn is in flight: trigger compaction on
       // the resident live process (streaming Claude injects `/compact`; live
       // Codex sends `thread/compact/start`) rather than queuing the literal text.
@@ -288,13 +268,24 @@ export async function handleSendMessage(
             });
             persistTurnInProgress(ctx.chatHistoryManager, runnerForQueue, capturedSessionId);
           }
-          // Broadcast message_steered so all viewers (including other tabs) see it
+          // Broadcast message_steered so all viewers (including other tabs) see it.
+          //
+          // docs/244 / SHI-297 — the echo goes out projected: base64 payloads are
+          // replaced by the same `/images/:hash` URLs `projectMessagesForWire`
+          // builds, so a steered screenshot doesn't cross the wire twice (once
+          // here, once on every later history load). Safe by ordering rather than
+          // by assumption — `recordSteeredMessage` + `persistTurnInProgress`
+          // above have already written the row this URL resolves against, which
+          // is the invariant every strip in this feature turns on.
           if (capturedSessionId) {
             runnerForQueue.emitMessage({
               type: "message_steered",
               text: msg.text,
               sessionId: capturedSessionId,
-              images: historyImages,
+              images: historyImages?.map((img) => ({
+                mediaType: img.mediaType,
+                src: imageUrl(capturedSessionId, imageHash(img.data)),
+              })),
               files: historyFiles,
               uploadPaths: steerUploadPaths,
             });
@@ -308,13 +299,24 @@ export async function handleSendMessage(
       // the "running" branch so dispatch will enqueue and broadcast
       // message_queued via runner.emitMessage (every attached viewer sees
       // it, not just this socket).
-      runnerForQueue.dispatch({
+      runnerForQueue.dispatch(prepareDispatch({
         text: msg.text,
-        ...(msg.images !== undefined ? { images: msg.images } : {}),
-        ...(msg.files !== undefined ? { files: msg.files } : {}),
-        ...(msg.uploads !== undefined ? { uploads: msg.uploads } : {}),
-        ...(msg.permissionMode !== undefined ? { permissionMode: msg.permissionMode } : {}),
-      });
+        agentInterface: undefined,
+        // SHI-255 — a user-typed message: when this queues behind the running
+        // turn, the drain must reproduce an INTERACTIVE turn (the client already
+        // rendered an optimistic bubble, so the dispatched executor's
+        // `system_user_message` echo would double it).
+        execution: "interactive",
+        images: msg.images,
+        files: msg.files,
+        uploads: msg.uploads,
+        permissionMode: msg.permissionMode,
+        activity: undefined,
+        postTurn: undefined,
+        systemTurn: undefined,
+        onTurnComplete: undefined,
+        deliveryId: undefined,
+      }));
       return;
     }
     // Worker reports no agent — verifyRunningState already reset the flag
@@ -420,6 +422,9 @@ export async function handleSendMessage(
           prStatusPoller: ctx.prStatusPoller,
           sseBroadcast: ctx.sseBroadcast,
           ...(ctx.ensureAgentTokenFresh ? { ensureAgentTokenFresh: ctx.ensureAgentTokenFresh } : {}),
+          // docs/150 — AI naming runs on the account a turn would use.
+          ...(ctx.providerAccountManager ? { providerAccountManager: ctx.providerAccountManager } : {}),
+          ...(ctx.credentialsDir ? { credentialsDir: ctx.credentialsDir } : {}),
         },
         {
           sessionId: effectiveSessionId,
@@ -521,6 +526,7 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
   // agent never starts." Routing through `runAgentWithMessage` makes the reset
   // + re-wire unconditional, which is the fix.
   const runnerEarly = resolveRunner(ctx);
+  if (runnerEarly) runnerEarly.assertCanDispatch();
 
   // Preserve the session's permission mode across the answer. An AskUserQuestion
   // answer is a fresh `--resume` turn; if we don't re-pin the mode, a session

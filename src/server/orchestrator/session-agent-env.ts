@@ -20,11 +20,14 @@
 
 import type { SessionRunnerInterface } from "./session-runner.js";
 import type { SessionManager } from "./sessions.js";
+import type { ChatHistoryManager } from "./chat-history.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { ServiceManager } from "./service-manager.js";
 import type { AgentId } from "../shared/types.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import {
+  ensureLocalWorkspaceTrust,
+  ensureSessionAgentUserConfig,
   provisionAgentCredentials,
   provisionProviderAccountCredentials,
   provisionRepoMemory,
@@ -33,11 +36,28 @@ import {
   syncAgentTokenBack,
   syncProviderAccountTokenBack,
   syncMemoryBack,
+  repushAgentToken,
+  repushProviderAccountToken,
 } from "./session-credentials.js";
+import {
+  startTokenWriteBackWatch,
+  stopTokenWriteBackWatch,
+} from "./session-token-publisher.js";
+import {
+  clearAgentHomeCredentialLinks,
+  isLocalRuntime,
+  linkAgentHomeToCredentials,
+} from "./local-agent-credentials.js";
 import { repoUrlToHash } from "./git-utils.js";
-import type { ProviderAccountManager } from "./provider-account-manager.js";
+import { agentHome } from "../shared/agent-home.js";
+import type { ProviderAccountManager, ProviderRoute } from "./provider-account-manager.js";
+import { providerAccountCredentialRoot } from "./provider-account-manager.js";
+import { routeFromSelection } from "./provider-route-preflight.js";
+import { failoverNotice, failoverPinnedSession } from "./services/provider-account-switch.js";
+import { emitNoticeInTurn } from "./chat-card-persistence.js";
 import { refreshExpiredMcpOAuthTokens } from "./services/mcp-oauth.js";
 import { collectMcpAgentEnv } from "./secret-resolver.js";
+import { buildConversationReplay } from "./services/replay.js";
 import { getErrorMessage } from "./validation.js";
 
 /**
@@ -126,6 +146,49 @@ export interface SessionAgentEnvDeps {
    * the token is usable after the call.
    */
   ensureAgentTokenFresh?: (agentId: AgentId, accountId?: string) => Promise<boolean>;
+  /**
+   * Chat history, read only when a session's CLI-side conversation turns out
+   * to be unresumable and the pointer has to be cleared. ShipIt's own
+   * transcript is the durable copy of that conversation, so it is replayed
+   * into the fresh agent conversation instead of starting contextless — the
+   * same `conversationReplay` mechanism the rollback/fork paths use.
+   *
+   * Optional: without it the recovery still clears the dead pointer (so a
+   * session can never get stuck resume-looping), the new conversation just
+   * starts without the prior transcript.
+   */
+  chatHistoryManager?: Pick<ChatHistoryManager, "load" | "replaceInProgress" | "append">;
+}
+
+/**
+ * Seed `sessions.conversation_replay` from ShipIt's persisted transcript so
+ * the next agent spawn continues the visible conversation even though the
+ * CLI-side conversation state is gone.
+ *
+ * Consumed within the SAME turn: `executeAgentTurn` runs `prepareAgentEnv`
+ * before `buildRunParams`, and `buildAgentRunParams` calls
+ * `consumeConversationReplay` — which both appends the replay to the system
+ * prompt and drops the resume id. Verified at `turn-executor.ts`
+ * (`prepareAgentEnv` → `buildRunParams`) and
+ * `session-agent-run-params.ts:buildAgentRunParams`.
+ *
+ * Best-effort by design: a failure here must not block the turn, and the
+ * pointer has already been cleared either way.
+ */
+function armConversationReplay(deps: SessionAgentEnvDeps, sessionId: string): void {
+  const chatHistory = deps.chatHistoryManager;
+  if (!chatHistory) return;
+  try {
+    const messages = chatHistory.load(sessionId);
+    const replay = buildConversationReplay(messages);
+    if (!replay) return;
+    deps.sessionManager.setConversationReplay(sessionId, replay);
+    console.log(
+      `[credentials] armed visible-history replay for ${sessionId} (${messages.length} messages) — the new agent conversation continues the transcript instead of starting empty`,
+    );
+  } catch (err) {
+    console.warn("[credentials] failed to arm conversation replay:", getErrorMessage(err));
+  }
 }
 
 /**
@@ -199,17 +262,136 @@ export interface PrepareSessionAgentEnvironmentResult {
   overrideAgentSessionId?: string | null;
 }
 
+/**
+ * Resolve the provider route for a turn that has not pinned one yet.
+ *
+ * With `enforce`, throws {@link ProviderRouteUnavailableError} when no
+ * connected account can serve the turn (docs/150 req 13). Returns
+ * `undefined` — today's behavior — when there is no router wired at all
+ * (tests, local runtime), when the only problem is that nothing is signed in
+ * (which has its own UX), or when this call isn't the turn's own preflight.
+ */
+function selectRouteForNewTurn(
+  agentId: AgentId,
+  deps: SessionAgentEnvDeps,
+  enforce: boolean,
+): ProviderRoute | undefined {
+  const manager = deps.providerAccountManager;
+  if (!manager) return undefined;
+  const selection = manager.selectAccountForTurn(agentId);
+  if (!enforce) return selection.ok ? selection.route : undefined;
+  return routeFromSelection(agentId, selection);
+}
+
 export async function prepareSessionAgentEnvironment(
   runner: SessionRunnerInterface | null,
-  args: { sessionId: string; agentId: AgentId; deps: SessionAgentEnvDeps },
+  args: {
+    sessionId: string;
+    agentId: AgentId;
+    deps: SessionAgentEnvDeps;
+    /**
+     * docs/150 req 13 — set by the two callers that are the turn's own
+     * pre-spawn step (`turn-executor` via `SystemTurnDeps.prepareAgentEnv`,
+     * for both the WS and dispatched paths). Only there may this function
+     * throw: a blocked turn has to fail *as a turn*, so the agent-error path
+     * writes the reason into the session's transcript, clears turn state, and
+     * drains the queue.
+     *
+     * The service-level warm-up calls (child spawn, headless create, CI fix,
+     * session wake) leave it unset and keep their fail-open contract — they
+     * run before the turn exists, and throwing there would abort a session
+     * *creation* instead of a turn, leaving a session in the sidebar that no
+     * one asked for. Those paths simply pin nothing; the executor's own
+     * preflight, moments later, is what stops the turn and tells the user.
+     */
+    enforceAccountRouting?: boolean;
+    /**
+     * True when this turn will REUSE a resident agent process rather than
+     * spawn a fresh one (live steering, docs/140). Set by the turn executor,
+     * which is the only caller that knows.
+     *
+     * It suppresses the docs/153 leak repair, and only that. The repair is
+     * destructive — unlink `.claude`, re-copy the subtree, merge the orphan,
+     * `rmSync` the orphan root — and running it under a live CLI is what
+     * produced `Not logged in · Please run /login` mid-session
+     * (nikzlabs/shipit#1874): between the unlink and the copy there is a real
+     * window with no `.claude/.credentials.json` on disk, and the CLI re-reads
+     * that file per API call. Nothing the repair produces is consumed by a
+     * reuse turn — the on-disk convergence is for the next `--resume`, and the
+     * recovered `agentSessionId` is read by `buildRunParams`, which the reuse
+     * branch never calls — so deferring it to the next spawn loses nothing.
+     *
+     * The per-turn token copy still runs: that is what keeps a long-lived
+     * process authenticated across a rotation (docs/142 A).
+     */
+    reusingResidentAgent?: boolean;
+  },
 ): Promise<PrepareSessionAgentEnvironmentResult> {
   const { sessionId, agentId, deps } = args;
   const session = deps.sessionManager.get(sessionId);
   if (!session) return {};
+  // docs/150 reqs 3/7/8 — an ALREADY-pinned session whose account is spent
+  // moves to the next eligible one before the turn starts, keeping its
+  // transcript and workspace (req 9). Throws when there is nowhere to go, which
+  // is how req 13's fail-fast reaches existing sessions and not just first
+  // turns. Gated on the same flag as the routing preflight: this rewrites
+  // credentials and kills a process, which a pre-turn warm-up must not do.
+  const failover =
+    args.enforceAccountRouting && deps.providerAccountManager
+      ? failoverPinnedSession(sessionId, {
+          sessionManager: deps.sessionManager,
+          providerAccountManager: deps.providerAccountManager,
+          credentialsDir: deps.credentialsDir,
+        })
+      : null;
+  // Re-read: the failover just repointed `provider_route_id`, and everything
+  // below (provisioning, token sync, sync-back bookkeeping) has to see the
+  // account the turn will actually run on.
+  const routedSession = failover ? (deps.sessionManager.get(sessionId) ?? session) : session;
+
+  // docs/150 reqs 13/17 — route preflight. For a session that has not been
+  // pinned to a route yet this is the decision point, so it is also the last
+  // moment a turn can be stopped *before* pinning and credential provisioning
+  // make it look like it ran on an account.
   const selectedRoute =
-    session.providerRouteKind && session.providerRouteId
-      ? { kind: session.providerRouteKind, id: session.providerRouteId }
-      : deps.providerAccountManager?.selectRouteForTurn(agentId);
+    routedSession.providerRouteKind && routedSession.providerRouteId
+      ? { kind: routedSession.providerRouteKind, id: routedSession.providerRouteId }
+      : selectRouteForNewTurn(agentId, deps, args.enforceAccountRouting ?? false);
+
+  // docs/150 req 21 — stamp the account this turn actually resolved onto, which
+  // is what `balanced` sorts by. Here rather than inside `selectAccountForTurn`
+  // because that function also answers probe questions (route usability, the
+  // `selectRouteForTurn` wrapper), and an account merely *considered* has not
+  // been used. Covers the pinned branch too, deliberately: an account carrying
+  // an active session should keep sorting last while that work continues.
+  if (selectedRoute?.kind === "account" && deps.providerAccountManager) {
+    deps.providerAccountManager.markAccountUsed(agentId, selectedRoute.id);
+  }
+
+  // req 11 — say it in the session, where the user is already looking, and
+  // persist it: a switch the transcript forgets on reload is not a record.
+  const chatHistory = deps.chatHistoryManager;
+  if (failover && runner && chatHistory) {
+    emitNoticeInTurn(runner, sessionId, failoverNotice(failover), chatHistory);
+  }
+
+  // One line per preparation recording the decisions that shaped it: which
+  // route the turn resolved to, whether this call pins it, and whether the
+  // leak repair ran. Diagnosing nikzlabs/shipit#1874 from production logs meant
+  // inferring all three from their side effects — the repair announced itself
+  // only when it fired, so "repaired again" and "never converged" were
+  // indistinguishable from "ran and found nothing". Route ids are opaque
+  // account handles (`acct_…`); no token material is logged here or anywhere
+  // below.
+  const routeLabel = selectedRoute ? `${selectedRoute.kind}:${selectedRoute.id}` : "none";
+  const repairLabel = args.reusingResidentAgent ? "skipped(resident-agent)" : "run";
+  const failoverLabel = failover
+    ? ` failover=${failover.fromAccountId}->${failover.toAccountId}`
+    : "";
+  const pinLabel = routedSession.agentPinned ? "already" : "now";
+  console.log(
+    `[env-prep] ${sessionId} agent=${agentId} route=${routeLabel} pinned=${pinLabel} repair=${repairLabel}${failoverLabel}`,
+  );
 
   // Step 1: provision the pinned agent's credential subtree (write-once),
   // then mark the session as pinned. After the first turn `session.agentPinned`
@@ -238,6 +420,119 @@ export async function prepareSessionAgentEnvironment(
     deps.sessionManager.setAgentId(sessionId, agentId);
     if (selectedRoute) deps.sessionManager.setProviderRoute(sessionId, selectedRoute.kind, selectedRoute.id);
     deps.sessionManager.setAgentPinned(sessionId);
+  } else if (runner instanceof ContainerSessionRunner) {
+    // Provisioning above already normalized the agent's user config, but it runs
+    // exactly once per session — a session pinned before that normalization
+    // existed would stay wrong forever (for Claude: an untrusted `/workspace`,
+    // so the CLI silently drops the workspace's own `permissions.allow`
+    // entries). Re-assert it on every later turn instead. Idempotent and
+    // merge-only: it reads one small JSON file and writes only when a key is
+    // actually missing.
+    try {
+      ensureSessionAgentUserConfig(deps.credentialsDir, sessionId, agentId);
+    } catch (err) {
+      console.warn("[credentials] agent user-config normalization failed:", getErrorMessage(err));
+    }
+  }
+
+  // Step 1b (SHI-282): the local-mode twin of Step 1. Every branch above is
+  // gated on `ContainerSessionRunner`, and in local mode there is no container
+  // — so a dogfood turn spawned a CLI whose HOME had never been given
+  // credentials at all, for either agent.
+  //
+  // This maintains the process-global *fallback* home only. A session turn's
+  // own spawn gets `HOME` pointed straight at its account root by
+  // `local-agent-home.ts`, so it does not read these links; what does is a
+  // spawn with no session route to resolve (`generateText`, and the cases
+  // `resolveLocalAgentHome` deliberately answers `undefined` for). See
+  // `local-agent-credentials.ts` for why linking rather than copying, and for
+  // the one-physical-file invariant that lets both point at the same account.
+  //
+  // Runs on every turn, not just at pin time: local sessions share one home,
+  // so a sibling on another account may have repointed it since.
+  //
+  // A RESERVED route (`claude-api-key` / `claude-env-oauth` / `codex-api-key`)
+  // authenticates from the environment and has no account subtree, so it
+  // *clears* instead of linking. Leaving an earlier account turn's link behind
+  // meant the home held one route's subscription credentials while the turn ran
+  // on another; the CLI's env-beats-disk preference picked the right one by
+  // luck, not by design (docs/150 req 12).
+  if (isLocalRuntime()) {
+    const accountId = selectedRoute?.kind === "account" ? selectedRoute.id : undefined;
+    try {
+      const outcomes = selectedRoute?.kind === "reserved"
+        ? clearAgentHomeCredentialLinks({ agentId })
+        : linkAgentHomeToCredentials({
+          credentialsDir: deps.credentialsDir,
+          agentId,
+          ...(accountId ? { accountId } : {}),
+        });
+      const linked = Object.entries(outcomes).filter(([, o]) => o === "linked");
+      if (linked.length > 0) {
+        console.log(
+          `[local-credentials] ${sessionId} agent=${agentId} linked ${linked.map(([rel]) => rel).join(", ")}`
+            + ` from ${accountId ? `account:${accountId}` : "the flat credentials root"}`,
+        );
+      }
+      const cleared = Object.entries(outcomes).filter(([, o]) => o === "unlinked");
+      if (cleared.length > 0) {
+        console.log(
+          `[local-credentials] ${sessionId} agent=${agentId} cleared ${cleared.map(([rel]) => rel).join(", ")}`
+            + ` — routed to reserved:${selectedRoute?.id ?? "?"}, which authenticates from the environment`,
+        );
+      }
+    } catch (err) {
+      console.warn("[local-credentials] updating agent home links failed:", getErrorMessage(err));
+    }
+
+    // Step 1c (docs/118, SHI-59): the local-mode workspace-trust write — the third
+    // container-gated writer this mode was missing, after SHI-282 and SHI-298.
+    //
+    // The Claude CLI silently drops a workspace's own `.claude/settings.json`
+    // `permissions.allow` entries until that workspace is trusted ("Ignoring N
+    // permissions.allow entries … this workspace has not been trusted"), so the
+    // agent gets approval prompts for tools that were explicitly allowlisted.
+    // A container is covered because its cwd IS `/workspace`, one of
+    // `CLAUDE_PRE_TRUSTED_DIRS`; a local session's workspace is
+    // `<dataDir>/sessions/<id>/workspace`, and trust is keyed by EXACT
+    // directory, so that pre-trust never reaches it.
+    //
+    // The CLI exposes no switch to turn the check off, which is what the
+    // product decision here asked for. Probed against 2.1.219 and all
+    // ineffective: `CLAUDE_CODE_SANDBOXED=1`, `IS_SANDBOX=1`,
+    // `--dangerously-skip-permissions`, `--permission-mode bypassPermissions`,
+    // `--add-dir <workspace>`, a trust key on an ANCESTOR directory, a `"*"` or
+    // glob `projects` key, a top-level `hasTrustDialogAccepted`, and every
+    // plausible `--settings` key. The per-directory key in the user config is
+    // the only mechanism, so local mode writes it per session and
+    // `ensureClaudeWorkspaceTrusted` prunes the entries whose workspace is
+    // gone — which bounds the file at the set of live local sessions rather
+    // than letting it accumulate forever.
+    //
+    // Local mode only, by product decision: it is a testing surface that runs
+    // only trusted repositories, so there is nothing there for the check to
+    // protect against. A container session can hold an arbitrary user
+    // repository — exactly the case the check exists for — and nothing here
+    // runs for it.
+    //
+    // The home mirrors `resolveLocalAgentHome`'s session branch: the CLI is
+    // spawned with HOME at the routed account root, or the process-global
+    // `agentHome()` for a reserved route (which has no account subtree). Both
+    // read `accountId` above, so the config written here is the config the
+    // spawn will read.
+    if (runner) {
+      try {
+        ensureLocalWorkspaceTrust(
+          accountId
+            ? providerAccountCredentialRoot(deps.credentialsDir, agentId, accountId)
+            : agentHome(),
+          agentId,
+          runner.sessionDir,
+        );
+      } catch (err) {
+        console.warn("[local-credentials] workspace trust write failed:", getErrorMessage(err));
+      }
+    }
   }
 
   // Step 2a (docs/179): heal the source OAuth token if it's within the refresh
@@ -295,8 +590,12 @@ export async function prepareSessionAgentEnvironment(
           // known-bad id.
           overrideAgentSessionId = null;
           if (current) {
-            console.log(`[credentials] clearing agent_session_id for ${sessionId} (was ${current}; no resumable jsonl found)`);
+            console.log(`[credentials] clearing agent_session_id for ${sessionId} (was ${current}; no resumable conversation found on disk)`);
             deps.sessionManager.clearAgentSessionId(sessionId);
+            // The CLI-side conversation is unrecoverable, but ShipIt's own
+            // transcript isn't — replay it so the fresh conversation picks up
+            // where the user left off rather than answering from nothing.
+            armConversationReplay(deps, sessionId);
           }
           return;
         }
@@ -311,16 +610,46 @@ export async function prepareSessionAgentEnvironment(
       // disk, but a different one is the latest) and recover by reading
       // the existing `<sessionDir>/.claude/projects/` tree.
       const currentAgentSessionId = session.agentSessionId ?? null;
+      // See `reusingResidentAgent` — the repair is a spawn-time concern and
+      // must not run under a live CLI.
+      const syncOpts = { repairLeakedSubtrees: !args.reusingResidentAgent };
       if (selectedRoute?.kind === "account") {
         syncProviderAccountTokenIn(
           deps.credentialsDir, sessionId, agentId, selectedRoute.id,
-          onRecover, currentAgentSessionId,
+          onRecover, currentAgentSessionId, syncOpts,
         );
       } else if (selectedRoute?.id !== "claude-env-oauth") {
-        syncAgentTokenIn(deps.credentialsDir, sessionId, agentId, onRecover, currentAgentSessionId);
+        syncAgentTokenIn(
+          deps.credentialsDir, sessionId, agentId,
+          onRecover, currentAgentSessionId, syncOpts,
+        );
       }
     } catch (err) {
       console.warn("[credentials] token sync-in failed:", getErrorMessage(err));
+    }
+  }
+
+  // Step 2b (docs/153): publish a rotation the CLI performs DURING this turn
+  // as soon as it lands, instead of at turn end. `syncAgentTokenBack` alone
+  // leaves the source serving a token the rotation already invalidated
+  // upstream for the whole remainder of the turn — minutes, during which every
+  // sibling session's sync-in pulls the dead token and 401s. The watch runs
+  // the same sync-back, guard included; only the timing changes.
+  //
+  // Gated on `enforceAccountRouting` because that flag marks the turn's own
+  // pre-spawn step — the moment a CLI is about to start writing. The
+  // service-level warm-ups (child spawn, headless create, CI fix, wake) run
+  // before any turn exists and are followed by the executor's own call moments
+  // later, which is what arms the watch. Route branching mirrors Step 2's
+  // exactly, including skipping the reserved `claude-env-oauth` route.
+  if (runner instanceof ContainerSessionRunner && args.enforceAccountRouting) {
+    if (selectedRoute?.kind === "account") {
+      startTokenWriteBackWatch({
+        credentialsDir: deps.credentialsDir, sessionId, agentId,
+        accountId: selectedRoute.id, runner,
+      });
+    } else if (selectedRoute?.id !== "claude-env-oauth") {
+      startTokenWriteBackWatch({ credentialsDir: deps.credentialsDir, sessionId, agentId, runner });
     }
   }
 
@@ -360,6 +689,55 @@ export async function prepareSessionAgentEnvironment(
 }
 
 /**
+ * docs/179 — force the orchestrator's source OAuth token into ONE session's
+ * credential subtree, bypassing the per-turn sync-in's expiry-ordering guard.
+ * Called only from the runtime-401 recovery, immediately before the healed turn
+ * is re-dispatched.
+ *
+ * Why the ordinary sync-in isn't enough. Every guard in the credential system —
+ * `syncAgentTokenIn`, `syncAgentTokenBack`, the refresher's schedule, and
+ * `ensureFresh` — keys off one number, `expiresAt`. That is a sound proxy for
+ * *ordering* and no proxy at all for *validity*: a rotating single-use OAuth
+ * token's validity is set membership (only the newest token lives), so a
+ * rotation on another machine, a revocation, or an account change leaves a
+ * perfectly future-dated `expiresAt` on a token that is already dead. The
+ * sync-in's guard then reads that dead-but-later timestamp
+ * (`srcExp <= dstExp` ⇒ `continue`) and *refuses* to hand the session the good
+ * source token — so the quiet retry re-spawns on the identical dead
+ * credentials and 401s again. `repushAgentToken` is the escape hatch the
+ * credential layer already ships for exactly this state (see its docstring),
+ * wired until now only to the manual `auth_complete` re-login.
+ *
+ * Route-aware in the same way `finalizeSessionAgentEnvironment` is: an
+ * account-pinned session (docs/150) is repushed from its account root, a
+ * legacy null-route session from the shared root, and a session on
+ * `claude-env-oauth` is left alone (its credentials aren't ours to write).
+ * Best-effort — a failure here just means the retry runs on whatever the
+ * ordinary sync-in provides, which is today's behavior.
+ */
+export function repushSessionAgentToken(
+  runner: SessionRunnerInterface | null,
+  args: { sessionId: string; agentId: AgentId; deps: Pick<SessionAgentEnvDeps, "credentialsDir" | "sessionManager"> },
+): void {
+  if (!(runner instanceof ContainerSessionRunner)) return;
+  const session = args.deps.sessionManager.get(args.sessionId);
+  try {
+    if (session?.providerRouteKind === "account" && session.providerRouteId) {
+      repushProviderAccountToken(
+        args.deps.credentialsDir,
+        args.sessionId,
+        args.agentId,
+        session.providerRouteId,
+      );
+    } else if (session?.providerRouteId !== "claude-env-oauth") {
+      repushAgentToken(args.deps.credentialsDir, args.sessionId, args.agentId);
+    }
+  } catch (err) {
+    console.warn("[credentials] 401-recovery token repush failed:", getErrorMessage(err));
+  }
+}
+
+/**
  * Write the session's (possibly CLI-refreshed) OAuth token back to the
  * orchestrator source if it advanced. Mirror of `syncAgentTokenIn` — without
  * this, a rotating refresh token landed via the CLI's in-place rewrite is
@@ -372,6 +750,11 @@ export function finalizeSessionAgentEnvironment(
   runner: SessionRunnerInterface | null,
   args: { sessionId: string; agentId: AgentId; deps: SessionAgentEnvDeps },
 ): void {
+  // docs/153 — the turn is over, so the CLI can no longer rotate. Drop the
+  // mid-turn watch (and any debounced publish still pending) first; the
+  // unconditional sync-back below is the authoritative final publication.
+  // Unconditional so a watch can never outlive its turn, whatever the runner.
+  stopTokenWriteBackWatch(args.sessionId);
   if (!(runner instanceof ContainerSessionRunner)) return;
   const session = args.deps.sessionManager.get(args.sessionId);
   try {

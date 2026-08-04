@@ -1,8 +1,84 @@
 ---
-description: Drain in-flight agent turns before swapping the orchestrator container so running sessions survive an Update Now without losing mid-turn work.
+issue: https://linear.app/shipit-ai/issue/SHI-269
+description: Updates replace only the orchestrator; running sessions and mid-turn work survive via boot-time re-adoption, guarded by an additive-only wire-contract CI check.
 ---
 
 # Zero-downtime updates — keep running agents alive across `Update Now`
+
+## Status — shipped (2026-07-31), design revised
+
+Phase 1 landed, in a slimmer shape than the plan below (which predates
+docs/240 and is kept as the option analysis of record):
+
+- **§1 landed.** `deployment/vps/deploy.sh` and `restart.sh` no longer
+  `docker rm -f` session-worker (`shipit-stack=shipit`) or compose service
+  (`shipit-parent-session`) containers. Updates and restarts replace only the
+  orchestrator; the new process re-adopts surviving containers at boot
+  (`rediscoverContainers()`), and orphan GC is owned by the boot cleanup
+  (`cleanupOrphanContainers()` / `cleanupOrphanComposeResources()`), which
+  already existed. (Paths in the plan below say `deployment/hetzner/` — the
+  deployment dir has since moved to `deployment/vps/`.)
+- **§2 (drain mode) is unnecessary and was not built.** The plan assumed a
+  mid-turn agent would lose work across the swap, so updates had to wait for
+  turns to finish. docs/240 removed that premise: session containers keep
+  their CLI running through the swap, and the new orchestrator's boot sweep
+  (`reattachInFlightTurns()`) re-adopts live turns so the post-turn
+  commit/push/PR flow still lands. Nothing needs draining.
+- **§4 (runtime `/version` handshake) is deferred, replaced by a CI guard.**
+  A hand-bumped version is unreliable in both directions (forgotten bumps give
+  false confidence; eager bumps invalidate every session and defeat the
+  feature). Instead, the compatibility guarantee is the additive-only
+  convention on the wire contract, enforced by
+  `src/server/shared/types/worker-wire-contract.test.ts`: frozen copies of the
+  adoption-critical shapes (`WorkerAgentStatus`, `WorkerAgentStartBody` /
+  `AgentRunParams`) with compile-time assignability assertions that fail
+  `npm run typecheck` (CI runs it on every PR) on a non-additive change. Its
+  header tells the developer to either make the change additive or build the
+  §4 handshake first — so the handshake gets built exactly when the first
+  genuinely breaking worker change needs it, not before.
+- **Follow-up (2026-08-01): the browser's SSE now survives the swap.** The
+  post-update page reload is driven by the `system_info` build id, which the
+  orchestrator sends **once per SSE connect** — so it fires only if the stream
+  actually comes back after the orchestrator container is replaced. Native
+  EventSource does not guarantee that: per the HTML spec, auto-reconnect covers
+  *network* errors only, and a response that is not `200 text/event-stream`
+  **fails the connection permanently** (readyState → CLOSED, no retry). During
+  the restart window the ingress (cloudflared) answers with a 502 HTML error
+  page, so any retry landing in that window stranded the tab for the rest of its
+  life. The WebSocket has its own backoff loop and came back, so the app *looked*
+  connected while SSE was dead — the tab kept running the old bundle (and a stale
+  session list / PR status / version badge) until the user reloaded by hand.
+  `useServerEvents` now owns the retry: on CLOSED it reopens with 1s→30s backoff
+  (mirroring `useWebSocket`), and resets the ladder on a successful open.
+
+  The same follow-up fixed a second, independent way the stream failed to come
+  back — reported as "on mobile, every session's git status stays stale until I
+  fully reload". `useServerEvents` re-opened on `visibilitychange` **only**,
+  while `useWebSocket` re-opens on `visibilitychange` + `pageshow` + `focus` +
+  `online`. A standalone-PWA app-switch or bfcache restore surfaces as
+  `pageshow`/`focus`, so the WebSocket recovered and the SSE did not — and since
+  `/api/bootstrap` carries **no** PR state, the `/api/events` connect snapshot
+  (`pr_status` with `isSnapshot: true`) is the *only* thing that refreshes the
+  sidebar's PR / CI indicators. Hence: chat live, every session's status frozen,
+  full reload the only cure. The SSE now listens for the same four signals,
+  coalesced within 1s so one resume opens one stream rather than three.
+
+  Still open, deliberately: an EventSource that stays `OPEN` over a socket the OS
+  killed silently emits no `error`, and there is no SSE heartbeat to detect it —
+  the foreground triggers are what recovers that case. A server-side keepalive +
+  client staleness watchdog would close it for a tab left open in the foreground;
+  no report has called for one yet.
+- **§5 (lazy rotation + telemetry) landed in its minimal form.** Old workers
+  roll forward as the idle enforcer disposes their containers. For visibility,
+  `Dockerfile.session-worker.prod` stamps the image with a `shipit-build-id`
+  label (last instruction, so the per-deploy ARG doesn't bust layer cache),
+  and container adoption (`container-discovery.ts`) logs the adopted worker's
+  build vs the orchestrator's, flagging skew.
+- **User-visible skew indication landed in docs/242.** The same immutable build
+  identity now reaches the active session over a scoped runtime WS signal. A
+  stale worker shows an inline chat warning and reuses the agent-only restart
+  flow, leaving Compose preview services running and disabling restart during
+  an active turn.
 
 ## Problem
 
@@ -418,7 +494,10 @@ forward; you don't need 4 to start.
 - `src/client/hooks/useServerEvents.ts` — handle the new event types.
   Already handles client/server build skew: `system_info.buildId`
   is compared against the browser's baked client build id, and a
-  mismatch triggers a hard page reload.
+  mismatch triggers a hard page reload. Owns the SSE reconnect loop
+  that makes that reload actually fire across a restart (see the
+  Status section's follow-up) — native EventSource gives up for good
+  on the ingress's 502.
 - `src/client/components/Settings.tsx` — surface drain countdown in
   the existing "Software Updates" section.
 

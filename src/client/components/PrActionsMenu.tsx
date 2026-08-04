@@ -19,6 +19,7 @@ import { useUiStore } from "../stores/ui-store.js";
 import { useGitStore } from "../stores/git-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
+import { useSessionDefaultBranch } from "../utils/default-branch.js";
 import { OverflowMenu } from "./ui/overflow-menu.js";
 import { DropdownMenuItem, DropdownMenuSeparator } from "./ui/dropdown-menu.js";
 import { AutoFixPauseToggle, AutoMergeToggle, ClosePrDropdownItem, useClosePr } from "./PrStatusControls.js";
@@ -29,12 +30,14 @@ export function PrActionsMenu({ sessionId }: { sessionId: string }) {
   const session = useSessionStore((s) => s.sessions.find((sess) => sess.id === sessionId));
   const setToast = useUiStore((s) => s.setToast);
   const startRebase = useGitStore((s) => s.startRebase);
+  const resetBranchToBase = useGitStore((s) => s.resetBranchToBase);
   const rebaseStatus = useGitStore((s) => s.rebaseStatus);
   const isAgentRunning = useSessionStore((s) => s.activeRunnerSessions.has(sessionId));
   // docs/186 — the per-session auto-fix pause only makes sense when the global
   // auto-fix-CI setting is on, so the toggle is gated on it (pausing an
   // already-off loop would be a no-op the user can't reason about).
   const globalAutoFixCi = useSettingsStore((s) => s.autoFixCi);
+  const repoDefaultBranch = useSessionDefaultBranch(sessionId);
   const closeState = useClosePr(sessionId);
 
   // Whether the session has a GitHub remote — gates the remote-only actions
@@ -43,9 +46,13 @@ export function PrActionsMenu({ sessionId }: { sessionId: string }) {
   // Prefer card-derived branches because they update mid-turn (e.g. branch
   // rename on graduation), then fall back to the session record.
   const headBranch = card?.pr?.headBranch ?? card?.headBranch ?? session?.branch;
-  const syncBaseBranch = card?.pr?.baseBranch ?? "main";
+  // Pre-PR there's no `pr.baseBranch` to read, so fall back to the repo's real
+  // default branch rather than assuming "main" — "Sync with master" on a
+  // master repo, and a rebase onto a ref that actually exists.
+  const syncBaseBranch = card?.pr?.baseBranch ?? repoDefaultBranch;
   const syncDisabled = isAgentRunning || rebaseStatus !== "idle";
   const isOpen = card?.phase === "open";
+  const isMerged = card?.phase === "merged";
 
   const handleCopyBranch = () => {
     if (!headBranch) return;
@@ -53,12 +60,16 @@ export function PrActionsMenu({ sessionId }: { sessionId: string }) {
     setToast({ message: "Branch name copied" });
   };
 
-  // "Sync with <base>" rebases the branch onto the latest base and pushes,
-  // reusing the conflict-resolution flow that the push-rejected banner and the
-  // "Resolve conflicts" button already drive.
+  // An active branch syncs by rebasing. A merged branch instead uses the
+  // squash-safe reset flow: hard-reset to the merged PR's latest base, heal the
+  // remote, re-arm the PR lifecycle, and record the durable branch-updated card.
   const handleSyncWithBase = () => {
     if (isAgentRunning || useGitStore.getState().rebaseStatus !== "idle") return;
-    void startRebase(sessionId, syncBaseBranch);
+    if (isMerged) {
+      void resetBranchToBase(sessionId);
+    } else {
+      void startRebase(sessionId, syncBaseBranch);
+    }
   };
 
   // The auto-merge toggle is shown here only for the phases without an inline
@@ -104,7 +115,9 @@ export function PrActionsMenu({ sessionId }: { sessionId: string }) {
           title={
             isAgentRunning
               ? "Wait for the agent to finish before syncing"
-              : `Rebase onto ${syncBaseBranch} and push`
+              : isMerged
+                ? `Reset to ${syncBaseBranch} and update the branch`
+                : `Rebase onto ${syncBaseBranch} and push`
           }
         >
           <ArrowsClockwiseIcon size={ICON_SIZE.SM} />

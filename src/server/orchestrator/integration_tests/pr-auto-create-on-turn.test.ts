@@ -30,6 +30,7 @@ import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { UsageManager } from "../usage.js";
 import { CredentialStore } from "../credential-store.js";
+import { RepoStore } from "../repo-store.js";
 import type { WsServerMessage } from "../../shared/types.js";
 
 let tmpDir: string;
@@ -38,6 +39,7 @@ let client: TestClient;
 let githubAuth: StubGitHubAuthManager;
 let sessionManager: SessionManager;
 let credentialStore: CredentialStore;
+let repoStore: RepoStore;
 let latestClaude: FakeClaudeProcess | null = null;
 let dbManager: DatabaseManager;
 // docs/202 — controls the stubbed `advancedBeyondMergedBase` so a test can
@@ -54,6 +56,7 @@ beforeEach(async () => {
   githubAuth.setPrData(null); // No pre-existing PR
 
   sessionManager = new SessionManager(dbManager);
+  repoStore = new RepoStore(dbManager);
   credentialStore = createTestCredentialStore(tmpDir);
 
   app = await buildApp({
@@ -72,6 +75,11 @@ beforeEach(async () => {
           // docs/202 — stub the re-arm detection so a test can flip
           // "progressed" without constructing a real rebase against a remote.
           if (prop === "advancedBeyondMergedBase") return async () => reArmProgressed;
+          // The re-arm helper freshens `origin/<base>` before deciding (a stale
+          // remote-tracking ref inverts the detection — see
+          // `pr-rearm.ts#freshenBaseRef`). There's no real remote here, so a
+          // real fetch would throw and the helper would fail safe.
+          if (prop === "fetch") return async () => {};
           return (target as never)[prop as never];
         },
       });
@@ -84,6 +92,7 @@ beforeEach(async () => {
     authManager: new StubAuthManager() as any,
     githubAuthManager: githubAuth as any,
     sessionManager,
+    repoStore,
     chatHistoryManager: new ChatHistoryManager(dbManager),
     usageManager: new UsageManager(dbManager),
     serveStatic: false,
@@ -146,6 +155,10 @@ async function setupPrimedSession(): Promise<{ sessionId: string; sessionDir: st
     sessionId,
     "https://github.com/test-user/test-repo.git",
   );
+  // Subsequent turns exercise PR lifecycle behavior on a repository that has
+  // already passed the user's Trust action.
+  repoStore.add("https://github.com/test-user/test-repo.git");
+  repoStore.setTrusted("https://github.com/test-user/test-repo.git", true);
   sessionManager.setBranch(sessionId, "shipit/test-feature");
   sessionManager.setBranchRenamed(sessionId, true);
 
@@ -276,9 +289,16 @@ describe("auto-create PR after meaningful turn", () => {
       });
       claude2.finish("agent-session-1");
 
-      // Quiet-period drain so the "no 'creating' event" assertion doesn't
-      // sit on a full timeout.
-      const messages = await client.drain({ quietMs: 250 });
+      // Wait for the 'ready' phase before asserting, rather than draining a
+      // fixed quiet period: `drain({ quietMs: 250 })` returns on the first
+      // 250 ms gap, which on a loaded machine lands before the post-turn PR
+      // flow has emitted anything at all (observed as `expected [] to include
+      // 'ready'`). The quiet tail inside `collectUntil` still gives the
+      // "no 'creating' event" assertion its let-time-pass window.
+      const messages = await client.collectUntil(
+        (m) => m.type === "pr_lifecycle_update" && (m as { phase?: string }).phase === "ready",
+        { quietMs: 250 },
+      );
       const phases = messages
         .filter((m) => m.type === "pr_lifecycle_update")
         .map((m) => (m as { phase: string }).phase);

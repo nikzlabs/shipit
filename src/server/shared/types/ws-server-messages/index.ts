@@ -17,9 +17,12 @@ import type {
   WsAgentAuthPending,
   WsAgentAuthComplete,
   WsAgentAuthFailed,
+  WsAgentAuthProgress,
+  WsAgentAuthLog,
 } from "./auth.js";
 import type {
   WsAgentEvent,
+  WsTurnSnapshot,
   WsSubAgentSpawn,
   WsModelInfo,
   WsMessageQueued,
@@ -60,8 +63,10 @@ import type {
   WsSessionStarted,
   WsSessionRenamed,
   WsContainerRestarting,
+  WsSessionContainerFreshness,
   WsFullResetComplete,
   WsSessionStatus,
+  WsBackgroundTasks,
   WsSessionMemoryExhausted,
   WsSessionAgentStarted,
   WsSessionAgentFinished,
@@ -78,7 +83,13 @@ import type {
   WsSessionForked,
   WsForkBreadcrumb,
 } from "./rollback.js";
-import type { WsSessionSpawned, WsSessionSpawnFailed, WsChildMergedCard } from "./spawn.js";
+import type {
+  WsSessionSpawned,
+  WsSessionSpawnFailed,
+  WsChildMergedCard,
+  WsSelfMergeWatchCard,
+  WsSessionReportCard,
+} from "./spawn.js";
 import type {
   WsPresentContentMessage,
   WsPresentClearedMessage,
@@ -128,6 +139,7 @@ export * from "./misc.js";
 
 export type WsServerMessage =
   | WsAgentEvent
+  | WsTurnSnapshot
   | WsVoiceNote
   | WsCompactionStatus
   | WsCompactionCard
@@ -154,6 +166,8 @@ export type WsServerMessage =
   | WsAgentAuthPending
   | WsAgentAuthComplete
   | WsAgentAuthFailed
+  | WsAgentAuthProgress
+  | WsAgentAuthLog
   | WsSessionList
   | WsSessionStarted
   | WsSessionRenamed
@@ -188,9 +202,11 @@ export type WsServerMessage =
   | WsAgentListMessage
   | WsAgentInterrupted
   | WsContainerRestarting
+  | WsSessionContainerFreshness
   | WsFullResetComplete
   | WsTurnDiff
   | WsSessionStatus
+  | WsBackgroundTasks
   | WsSessionAgentStarted
   | WsSessionAgentFinished
   | WsRepoStatus
@@ -211,6 +227,8 @@ export type WsServerMessage =
   | WsSessionSpawned
   | WsSessionSpawnFailed
   | WsChildMergedCard
+  | WsSelfMergeWatchCard
+  | WsSessionReportCard
   | WsServiceStatus
   | WsServiceList
   | WsServiceOom

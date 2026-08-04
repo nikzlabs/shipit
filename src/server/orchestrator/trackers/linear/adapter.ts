@@ -438,6 +438,55 @@ export class LinearTracker implements Tracker {
     return toTrackerIssue(data.issueCreate.issue);
   }
 
+  async createLabel(input: { name: string; color?: string; description?: string }): Promise<IssueLabel & { id: string }> {
+    if (!this.team) {
+      throw new Error("Linear is not configured (missing team binding)");
+    }
+    // Team-scoped, matching the adapter's binding — the created label shows up in
+    // the same `issueLabels` set `resolveLabelIds` matches `--label` against.
+    // Linear wants a `#rrggbb` color; tolerate a bare hex from the caller.
+    const labelInput: Record<string, unknown> = { teamId: this.team.id, name: input.name };
+    if (input.color) labelInput.color = input.color.startsWith("#") ? input.color : `#${input.color}`;
+    if (input.description) labelInput.description = input.description;
+    const data = await this.gql<{ issueLabelCreate: { success: boolean; issueLabel: { id: string; name: string; color?: string | null } | null } }>(
+      `mutation LabelCreate($input: IssueLabelCreateInput!) {
+        issueLabelCreate(input: $input) {
+          success
+          issueLabel { id name color }
+        }
+      }`,
+      { input: labelInput },
+    );
+    const label = data.issueLabelCreate.issueLabel;
+    if (!data.issueLabelCreate.success || !label) {
+      throw new Error("Linear rejected the label create");
+    }
+    return { id: label.id, name: label.name, ...(label.color ? { color: label.color } : {}) };
+  }
+
+  async deleteUnusedLabel(id: string, name: string): Promise<void> {
+    // Usage check first: undo must never strip a label off issues that adopted
+    // it — one carrier is enough to refuse, so fetch a single node.
+    const data = await this.gql<{ issueLabel: { issues: { nodes: { identifier: string }[] } } | null }>(
+      `query LabelUsage($id: String!) {
+        issueLabel(id: $id) { issues(first: 1) { nodes { identifier } } }
+      }`,
+      { id },
+    );
+    if (!data.issueLabel) return; // already gone — undo is idempotent
+    const carrier = data.issueLabel.issues.nodes[0];
+    if (carrier) {
+      throw new Error(
+        `Label "${name}" is now in use (e.g. on ${carrier.identifier}) — remove it from those issues before deleting it.`,
+      );
+    }
+    const del = await this.gql<{ issueLabelDelete: { success: boolean } }>(
+      `mutation LabelDelete($id: String!) { issueLabelDelete(id: $id) { success } }`,
+      { id },
+    );
+    if (!del.issueLabelDelete.success) throw new Error("Linear rejected the label delete");
+  }
+
   async addComment(id: string, body: string): Promise<TrackerComment> {
     const issueId = await this.resolveUuid(id);
     const data = await this.gql<{

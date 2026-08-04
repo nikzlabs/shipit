@@ -1,11 +1,11 @@
-import { useState, useCallback, useMemo, memo } from "react";
+import { useMemo, memo } from "react";
 import hljs from "highlight.js";
-import { CopyIcon, CheckIcon } from "@phosphor-icons/react";
 import Markdown, { defaultUrlTransform, type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import type { Element as HastElement, Text as HastText } from "hast";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "./ui/tooltip.js";
+import { CopyButton } from "./ui/copy-button.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import type { MessageSegment } from "./MessageList.js";
 import type { OpenIssueRef } from "../stores/issues-store.js";
@@ -86,7 +86,16 @@ function IssueBadge({ issueKey, children }: { issueKey: string; children?: React
  *     be misread by `parseRepoFileLink` as the path `owner/repo` at line 42.
  *  3. **Repo file links** (relative paths, optionally `:line` suffixed) open the
  *     in-app file preview modal — a bare `target="_blank"` would resolve the
- *     relative href against `/sessions/<id>` and 404.
+ *     relative href against `/sessions/<id>` and 404. This branch renders an
+ *     anchor with **no `href` at all**: the click handler is the whole
+ *     behaviour, and a repo file has no URL of its own (the preview is modal
+ *     state, not a route). Keeping a relative `href` for styling made the
+ *     browser advertise a URL that doesn't exist — `/session/src/foo.ts` in the
+ *     status bar on hover, and a real 404 navigation via middle-click,
+ *     ⌘/Ctrl-click, or "Open link in new tab". `role="button"` + `tabIndex`
+ *     restore the keyboard affordance the missing `href` takes away, and the
+ *     `a` *element* still picks up prose link styling (Tailwind Typography
+ *     targets the bare `a` selector, which does not require `href`).
  *  4. **Everything else** keeps the default new-tab behaviour.
  *
  * Store reads happen inside the click handler via `getState()` (not a hook
@@ -140,14 +149,26 @@ function MarkdownLink({
 
   const repoLink = parseRepoFileLink(href);
   if (repoLink) {
-    const openPreview = (e: React.MouseEvent) => {
-      e.preventDefault();
+    const openPreview = () => {
       const sessionId = useSessionStore.getState().sessionId;
       if (!sessionId) return;
       void useFileStore.getState().openPreview(sessionId, repoLink.path, { line: repoLink.line });
     };
+    const onKeyDown = (e: React.KeyboardEvent) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      openPreview();
+    };
     return (
-      <a href={href} title={title} onClick={openPreview} className="cursor-pointer">
+      <a
+        // No `href` — see branch 3 in the doc comment above.
+        role="button"
+        tabIndex={0}
+        title={title ?? `Open ${href}`}
+        onClick={openPreview}
+        onKeyDown={onKeyDown}
+        className="cursor-pointer"
+      >
         {children}
       </a>
     );
@@ -353,8 +374,6 @@ export function MarkdownTooltip({ content, children }: { content: string; childr
  * skips the render entirely when the block's content is unchanged.
  */
 export const CodeBlock = memo(({ code, language }: { code: string; language: string }) => {
-  const [copied, setCopied] = useState(false);
-
   const html = useMemo(() => {
     if (language && hljs.getLanguage(language)) {
       return hljs.highlight(code, { language }).value;
@@ -362,33 +381,19 @@ export const CodeBlock = memo(({ code, language }: { code: string; language: str
     return hljs.highlightAuto(code).value;
   }, [code, language]);
 
-  const handleCopy = useCallback(async () => {
-    try {
-      await navigator.clipboard.writeText(code);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // Browsers may deny clipboard access (insecure context, permission
-      // policy). Silently swallow so the chat doesn't crash — the user can
-      // still select-and-copy manually from the block.
-    }
-  }, [code]);
-
   return (
     <div className="not-prose my-2 rounded-md overflow-hidden bg-(--color-bg-secondary) w-0 min-w-full">
       <div className="flex items-center justify-between gap-2 px-3 py-1 border-b border-(--color-border-primary)">
         <span className="text-xs text-(--color-text-secondary) truncate">
           {language || "code"}
         </span>
-        <button
-          type="button"
-          onClick={() => void handleCopy()}
-          aria-label={copied ? "Copied" : "Copy code"}
-          className="inline-flex items-center gap-1 text-xs text-(--color-text-tertiary) hover:text-(--color-text-primary) transition-colors rounded px-1.5 py-0.5 shrink-0"
-        >
-          {copied ? <CheckIcon size={ICON_SIZE.XS} /> : <CopyIcon size={ICON_SIZE.XS} />}
-          <span>{copied ? "Copied" : "Copy"}</span>
-        </button>
+        <CopyButton
+          text={code}
+          timeout={1500}
+          iconSize={ICON_SIZE.XS}
+          aria-label="Copy code"
+          className="text-(--color-text-tertiary) hover:text-(--color-text-primary) px-1.5 shrink-0"
+        />
       </div>
       <pre className="px-3 py-1 overflow-x-auto text-xs leading-relaxed">
         <code

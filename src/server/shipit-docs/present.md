@@ -1,5 +1,7 @@
 # Present tool — render files in the Present tab
 
+Active rendered HTML artifacts receive the [Agent Interface SDK](./agent-interface-sdk.md), allowing artifact JavaScript to collect input and send a composed instruction to the owning session's agent. Gallery thumbnails, ordinary file views, diffs, SVG, markdown, and images do not receive it.
+
 The `present` tool displays self-contained files to the user in ShipIt's
 dedicated **Present** tab — an HTML page, an SVG diagram, a rendered markdown
 doc, a chart, or an image. You **write the file first** (with the `Write`
@@ -17,6 +19,10 @@ landing-page variants, a before/after pair, a set of charts — **present them
 all**: write each to its own file and call `present` once per file. Don't show a
 single variant and point the user elsewhere for the rest; that limitation
 doesn't exist.
+
+Before/after screenshots belong here, not on a PR — an image can't go in a PR
+body at all ([github.md](github.md)), so present them and describe the change in
+words in the PR body.
 
 ## Throwaway vs. tracked — it's just where you write the file
 

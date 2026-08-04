@@ -24,6 +24,26 @@ function msg(role: "user" | "assistant", text: string, opts?: { toolUse?: ToolUs
 }
 
 describe("MessageList", () => {
+  it("labels an Agent Interface SDK user message with its host surface", () => {
+    render(<MessageList messages={[{
+      role: "user",
+      text: "Build it",
+      agentInterface: { source: "agent_interface_sdk", surface: "present" },
+    }]} isLoading={false} />);
+    expect(screen.getByText("Present · Agent Interface SDK")).toBeInTheDocument();
+    expect(screen.getByText("Build it")).toBeInTheDocument();
+  });
+
+  it("labels a prompt relayed by another session as non-user-originated", () => {
+    render(<MessageList messages={[{
+      role: "user",
+      text: "Check the shared parser",
+      messageOrigin: { sessionId: "parent", sessionTitle: "Parser plan", relation: "parent" },
+    }]} isLoading={false} />);
+
+    expect(screen.getByText("From parent session · Parser plan")).toBeInTheDocument();
+  });
+
   describe("scroll behavior", () => {
     function setScrollMetrics(
       element: Element,
@@ -176,15 +196,36 @@ describe("MessageList", () => {
       );
       const card = screen.getByTestId("user-review-card");
       expect(card).toBeInTheDocument();
-      expect(card.textContent).toContain("Sent comments");
+      expect(card.textContent).toContain("Sent 3 comments");
       expect(card.textContent).toContain("docs/149/plan.md");
-      expect(card.textContent).toContain("3 comments");
+      // Shaped like a user bubble, not an agent-side left-border card — that
+      // similarity is what made it blend into the surrounding agent turns.
+      expect(card.className).toContain("bg-(--color-accent-subtle)");
+      expect(card.className).not.toContain("border-l-2");
       // Prompt body is collapsed by default — the toggle is visible, the body isn't.
       expect(screen.getByTestId("user-review-prompt-toggle")).toBeInTheDocument();
       expect(screen.queryByTestId("user-review-prompt")).not.toBeInTheDocument();
       // Clicking the toggle expands the prompt body.
       fireEvent.click(screen.getByTestId("user-review-prompt-toggle"));
       expect(screen.getByTestId("user-review-prompt").textContent).toContain("comment 1");
+    });
+
+    it("falls back to 'on the diff' when a UserReviewCard has no file paths", () => {
+      render(
+        <MessageList
+          messages={[
+            {
+              role: "user",
+              text: "feedback",
+              userReview: { filePaths: [], commentCount: 1 },
+            },
+          ]}
+          isLoading={false}
+        />,
+      );
+      const card = screen.getByTestId("user-review-card");
+      expect(card.textContent).toContain("Sent 1 comment");
+      expect(card.textContent).toContain("on the diff");
     });
   });
 
@@ -1364,7 +1405,114 @@ describe("MessageList", () => {
     });
   });
 
-  describe("Task/Skill subagent rendering", () => {
+  describe("Task/Agent/Skill subagent rendering", () => {
+    /**
+     * docs/109 regression — the Claude CLI emits the subagent tool as `Agent`,
+     * never `Task` (verified against CLI 2.1.219: `tool_use` name `Agent`,
+     * input `{description, prompt, subagent_type}`, nested events carrying
+     * `parent_tool_use_id`). The renderer gated the transparency view on
+     * `name === "Task"`, so every real subagent call fell through to a strip
+     * that ignored `subagentEvents` entirely — the user saw a subagent get
+     * called, then nothing. These cases use the name the CLI actually sends.
+     */
+    it("renders the full transparency view for the CLI's Agent tool", () => {
+      const messages: ChatMessage[] = [
+        {
+          role: "assistant",
+          text: "",
+          toolUse: [
+            {
+              type: "tool_use",
+              id: "toolu_agent1",
+              name: "Agent",
+              input: {
+                description: "List first 5 docs entries",
+                prompt: "Run exactly this bash command: `ls /workspace/docs | head -5`",
+                subagent_type: "general-purpose",
+              },
+            },
+          ],
+          toolResults: [{ toolUseId: "toolu_agent1", content: "## Output\n\n001-foo" }],
+          subagentEvents: [
+            {
+              kind: "assistant",
+              parentToolUseId: "toolu_agent1",
+              text: "Running the command.",
+              toolUse: [
+                { type: "tool_use", id: "sub-b1", name: "Bash", input: { command: "ls /workspace/docs | head -5" } },
+              ],
+            },
+            {
+              kind: "tool_result",
+              parentToolUseId: "toolu_agent1",
+              toolResults: [{ toolUseId: "sub-b1", content: "001-foo" }],
+            },
+          ],
+        },
+      ];
+      render(<MessageList messages={messages} isLoading={false} />);
+      expect(screen.getByTestId("subagent-call")).toBeInTheDocument();
+      // The subagent's own work is reachable — this is what the Task-only gate
+      // discarded. It sits behind its (collapsed-by-default) disclosure.
+      expect(screen.queryByTestId("subagent-work")).not.toBeInTheDocument();
+      fireEvent.click(screen.getByTestId("subagent-work-toggle"));
+      expect(screen.getByTestId("subagent-work")).toBeInTheDocument();
+      expect(screen.getByText(/Running the command/)).toBeInTheDocument();
+      // And its final report.
+      expect(screen.getByTestId("subagent-final-report")).toBeInTheDocument();
+      expect(screen.getByText(/Output/)).toBeInTheDocument();
+      expect(screen.getByTestId("subagent-done")).toBeInTheDocument();
+    });
+
+    it("keeps the description, subagent type and prompt an Agent call carried before", () => {
+      // The pre-fix strip showed `Agent (general-purpose): <description>` plus
+      // an inline prompt preview. None of that may be lost by routing into
+      // `SubagentCall` — the prompt just moves behind its disclosure.
+      const tools: ToolUseBlock[] = [
+        {
+          type: "tool_use",
+          id: "toolu_agent2",
+          name: "Agent",
+          input: {
+            description: "Audit the review surface",
+            prompt: "Walk the review surface and report findings.",
+            subagent_type: "general-purpose",
+          },
+        },
+      ];
+      render(<MessageList messages={[msg("assistant", "", { toolUse: tools })]} isLoading={false} />);
+      expect(screen.getByText("Subagent (general-purpose):")).toBeInTheDocument();
+      expect(screen.getByText("Audit the review surface")).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId("subagent-prompt-toggle"));
+      expect(screen.getByTestId("subagent-prompt").textContent).toContain("Walk the review surface");
+    });
+
+    it("shows a running indicator for an in-flight Agent call", () => {
+      const messages: ChatMessage[] = [
+        {
+          role: "assistant",
+          text: "",
+          streaming: true,
+          toolUse: [
+            { type: "tool_use", id: "toolu_agent3", name: "Agent", input: { description: "Long task", prompt: "work" } },
+          ],
+        },
+      ];
+      render(<MessageList messages={messages} isLoading={true} />);
+      expect(screen.getByTestId("subagent-running")).toBeInTheDocument();
+    });
+
+    it("Agent tool is not grouped with other tools", () => {
+      const messages: ChatMessage[] = [
+        { role: "assistant", text: "", toolUse: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } }] },
+        { role: "assistant", text: "", toolUse: [{ type: "tool_use", id: "t2", name: "Agent", input: { subagent_type: "Explore", description: "explore", prompt: "..." } }] },
+        { role: "assistant", text: "", toolUse: [{ type: "tool_use", id: "t3", name: "Read", input: { file_path: "a.ts" } }] },
+      ];
+      render(<MessageList messages={messages} isLoading={false} />);
+      expect(screen.getAllByTestId("tool-call-group")).toHaveLength(2);
+      expect(screen.getByTestId("subagent-call")).toBeInTheDocument();
+    });
+
     it("renders Task tool with description (prompt collapsed by default)", () => {
       const tools: ToolUseBlock[] = [
         {
@@ -1460,12 +1608,14 @@ describe("MessageList", () => {
       expect(screen.getByText(/Findings/)).toBeInTheDocument();
       // "Done" status badge once final report has arrived
       expect(screen.getByTestId("subagent-done")).toBeInTheDocument();
-      // Work stays expanded by default — tool calls and per-step text remain
-      // visible after the subagent finishes. Click the toggle to collapse.
+      // Work is collapsed by default — the toggle advertises the action count
+      // so the reader can see something happened without the timeline eating
+      // the transcript. Clicking it reveals the tool calls and per-step text.
+      expect(screen.queryByTestId("subagent-work")).not.toBeInTheDocument();
+      expect(screen.getByTestId("subagent-work-toggle")).toHaveTextContent("2 actions");
+      fireEvent.click(screen.getByTestId("subagent-work-toggle"));
       expect(screen.getByTestId("subagent-work")).toBeInTheDocument();
       expect(screen.getByText(/Reading file/)).toBeInTheDocument();
-      fireEvent.click(screen.getByTestId("subagent-work-toggle"));
-      expect(screen.queryByTestId("subagent-work")).not.toBeInTheDocument();
     });
 
     it("shows running indicator while subagent is still working", () => {

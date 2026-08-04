@@ -40,8 +40,26 @@ import {
   seedRepoCacheWithLocalBare,
 } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
+import {
+  INSTALL_MARKER_FILE,
+  sessionSharedStateDir,
+  sessionStateDirForWorkspace,
+} from "../session-state-dir.js";
 
 const REPO_URL = "https://github.com/owner/test-repo.git";
+
+/**
+ * Where the install marker lives for a session clone — docs/246 moved it out of
+ * `<clone>/.shipit/` into the container-visible slice of the session state dir.
+ * Resolved through the same contract `claim-session` uses, so the test can't
+ * drift from the code.
+ */
+function installMarkerPath(workspaceDir: string): string {
+  return path.join(
+    sessionSharedStateDir(sessionStateDirForWorkspace(workspaceDir)),
+    INSTALL_MARKER_FILE,
+  );
+}
 
 /** Poll until a condition becomes true. */
 async function waitFor(
@@ -90,6 +108,10 @@ describe("Integration: warm session lifecycle", () => {
     // (setTimeout(0)) picks it up and calls warmSessionForRepo.
     repoStore.add(REPO_URL);
     repoStore.setReady(REPO_URL);
+    // docs/243 — graduation runs the first agent turn, which now passes
+    // runner-owned trust admission. This suite exercises the warm-pool
+    // lifecycle after repository consent, not the trust gate itself.
+    repoStore.setTrusted(REPO_URL, true);
 
     app = await buildApp({
       createGitManager: (dir: string) => new GitManager(dir),
@@ -369,9 +391,10 @@ describe("Integration: warm session lifecycle", () => {
       const workspaceDir = warmSession.workspaceDir!;
 
       // Simulate a completed install (marker present)
-      fs.mkdirSync(path.join(workspaceDir, ".shipit"), { recursive: true });
-      fs.writeFileSync(path.join(workspaceDir, ".shipit", ".install-done"), new Date().toISOString());
-      expect(fs.existsSync(path.join(workspaceDir, ".shipit", ".install-done"))).toBe(true);
+      const marker = installMarkerPath(workspaceDir);
+      fs.mkdirSync(path.dirname(marker), { recursive: true });
+      fs.writeFileSync(marker, new Date().toISOString());
+      expect(fs.existsSync(marker)).toBe(true);
 
       // Claim the session — refreshCloneToLatestMain fetches but HEAD hasn't changed
       const encodedUrl = encodeURIComponent(REPO_URL);
@@ -382,7 +405,7 @@ describe("Integration: warm session lifecycle", () => {
 
       expect(res.statusCode).toBe(200);
       // Install marker should still be present (no reinstall needed)
-      expect(fs.existsSync(path.join(workspaceDir, ".shipit", ".install-done"))).toBe(true);
+      expect(fs.existsSync(marker)).toBe(true);
     }, 15000);
 
     it("clears install marker when HEAD changed", async () => {
@@ -396,9 +419,10 @@ describe("Integration: warm session lifecycle", () => {
       const workspaceDir = warmSession.workspaceDir!;
 
       // Simulate a completed install
-      fs.mkdirSync(path.join(workspaceDir, ".shipit"), { recursive: true });
-      fs.writeFileSync(path.join(workspaceDir, ".shipit", ".install-done"), new Date().toISOString());
-      expect(fs.existsSync(path.join(workspaceDir, ".shipit", ".install-done"))).toBe(true);
+      const marker = installMarkerPath(workspaceDir);
+      fs.mkdirSync(path.dirname(marker), { recursive: true });
+      fs.writeFileSync(marker, new Date().toISOString());
+      expect(fs.existsSync(marker)).toBe(true);
 
       // Point the clone's origin to the local shared repo so fetch works
       const repoDir = getRepoCacheDir(tmpDir, REPO_URL);
@@ -423,7 +447,7 @@ describe("Integration: warm session lifecycle", () => {
 
       expect(res.statusCode).toBe(200);
       // Install marker should be cleared (reinstall needed)
-      expect(fs.existsSync(path.join(workspaceDir, ".shipit", ".install-done"))).toBe(false);
+      expect(fs.existsSync(marker)).toBe(false);
     }, 15000);
   });
 

@@ -105,6 +105,49 @@ describe("pr-store", () => {
       expect(usePrStore.getState().cardBySession.s1?.phase).toBe("creating");
     });
 
+    // docs/202 — the re-armed card is ALSO the client's only cue that the poller
+    // silently dropped its snapshot (`reArm` broadcasts no `pr_status` removal —
+    // it would race this card across transports). Without mirroring that clear,
+    // `PrStateBadge` keeps reading the stale merged `statusBySession` entry ahead
+    // of the card phase and renders the purple merged icon on a "ready" card.
+    it("retires the stale poller status when a re-armed card lands", () => {
+      usePrStore.setState({ statusBySession: { s1: makePrStatus({ prState: "merged" }) } });
+      usePrStore.getState().updateCard("s1", makeCard("merged"));
+
+      usePrStore.getState().updateCard(
+        "s1",
+        makeCard("ready", {
+          previousMergedPr: { number: 1, url: "u", title: "Old PR", baseBranch: "main" },
+        }),
+      );
+
+      expect(usePrStore.getState().statusBySession.s1).toBeUndefined();
+      expect(usePrStore.getState().cardBySession.s1?.phase).toBe("ready");
+    });
+
+    it("leaves the poller status alone for an ordinary (non-re-armed) card", () => {
+      usePrStore.setState({ statusBySession: { s1: makePrStatus() } });
+
+      usePrStore.getState().updateCard("s1", makeCard("open"));
+
+      expect(usePrStore.getState().statusBySession.s1?.prNumber).toBe(1);
+    });
+
+    // A terminal card carrying the breadcrumb is the poller re-promoting the
+    // session after its NEW PR merged — that status is current, not stale.
+    it("keeps the poller status when a re-armed session reaches a terminal card", () => {
+      usePrStore.setState({ statusBySession: { s1: makePrStatus({ prState: "merged", prNumber: 2 }) } });
+
+      usePrStore.getState().updateCard(
+        "s1",
+        makeCard("merged", {
+          previousMergedPr: { number: 1, url: "u", title: "Old PR", baseBranch: "main" },
+        }),
+      );
+
+      expect(usePrStore.getState().statusBySession.s1?.prNumber).toBe(2);
+    });
+
     it("still blocks a non-re-armed regression from merged", () => {
       usePrStore.getState().updateCard("s1", makeCard("merged"));
       // No previousMergedPr → the guard holds.
@@ -126,8 +169,8 @@ describe("pr-store", () => {
       );
 
       usePrStore.getState().setNotableFiles("s1", "pr-card-s1", [
-        { path: "docs/a/plan.md", title: "A", kind: "doc", status: "M" },
-        { path: "docs/b/plan.md", title: "B", kind: "doc", status: "A" },
+        { path: "docs/a/plan.md", label: "A", kind: "doc", status: "M" },
+        { path: "docs/b/plan.md", label: "B", kind: "doc", status: "A" },
       ]);
 
       const card = usePrStore.getState().cardBySession.s1;
@@ -142,7 +185,7 @@ describe("pr-store", () => {
 
     it("clears the strip when the recomputed list is empty (authoritative)", () => {
       usePrStore.getState().setNotableFiles("s1", "pr-card-s1", [
-        { path: "docs/a/plan.md", title: "A", kind: "doc", status: "M" },
+        { path: "docs/a/plan.md", label: "A", kind: "doc", status: "M" },
       ]);
       usePrStore.getState().setNotableFiles("s1", "pr-card-s1", []);
 
@@ -154,7 +197,7 @@ describe("pr-store", () => {
       // arrive on independent sockets with no ordering guarantee — the patch must
       // not be dropped if it lands first.
       usePrStore.getState().setNotableFiles("s1", "pr-card-s1", [
-        { path: "docs/a/plan.md", title: "A", kind: "doc", status: "M" },
+        { path: "docs/a/plan.md", label: "A", kind: "doc", status: "M" },
       ]);
       expect(usePrStore.getState().cardBySession.s1).toBeUndefined();
       expect(usePrStore.getState().notableFilesBySession.s1?.map((f) => f.path)).toEqual([
@@ -168,7 +211,7 @@ describe("pr-store", () => {
       // is independent, so it persists.
       usePrStore.getState().updateCard("s1", makeCard("open"));
       usePrStore.getState().setNotableFiles("s1", "pr-card-s1", [
-        { path: "docs/a/plan.md", title: "A", kind: "doc", status: "M" },
+        { path: "docs/a/plan.md", label: "A", kind: "doc", status: "M" },
       ]);
 
       usePrStore.getState().applyPrStatusUpdates([makePrStatus({ prState: "open" })]);
@@ -181,7 +224,7 @@ describe("pr-store", () => {
     it("drops the strip slice when the session's PR is removed", () => {
       usePrStore.getState().updateCard("s1", makeCard("open"));
       usePrStore.getState().setNotableFiles("s1", "pr-card-s1", [
-        { path: "docs/a/plan.md", title: "A", kind: "doc", status: "M" },
+        { path: "docs/a/plan.md", label: "A", kind: "doc", status: "M" },
       ]);
 
       usePrStore.getState().applyPrStatusUpdates([], ["s1"]);
@@ -240,6 +283,25 @@ describe("pr-store", () => {
 
       expect(usePrStore.getState().autoMergeBySession.s1).toEqual(autoMerge);
       expect(usePrStore.getState().cardBySession.s1?.autoMerge).toEqual(autoMerge);
+    });
+
+    // The arming belongs to ONE pull request. The server drops its own state at
+    // the same transition, but its terminal summary carries no `autoMerge`
+    // field — and absent means "unchanged" everywhere else in this reducer — so
+    // the sticky entry has to be retired from `prState` here. Otherwise the
+    // merged card's overflow toggle keeps reading ON and `PrActionsMenu`
+    // (`autoMergeBySession[id] ?? card.autoMerge`) offers to disarm a PR that no
+    // longer exists.
+    it.each(["merged", "closed"] as const)("clears auto-merge arming when the PR goes %s", (prState) => {
+      usePrStore.getState().applyPrStatusUpdates([
+        makePrStatus({ autoMerge: { enabled: true, mergeMethod: "squash" } }),
+      ]);
+      expect(usePrStore.getState().autoMergeBySession.s1?.enabled).toBe(true);
+
+      usePrStore.getState().applyPrStatusUpdates([makePrStatus({ prState })]);
+
+      expect(usePrStore.getState().autoMergeBySession.s1).toBeUndefined();
+      expect(usePrStore.getState().cardBySession.s1?.autoMerge).toBeUndefined();
     });
 
     describe("isSnapshot (authoritative reconnect snapshot)", () => {

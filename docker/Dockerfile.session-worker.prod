@@ -52,7 +52,22 @@ ENV BASE_IMAGE_DIGEST=${BASE_IMAGE_DIGEST}
 # worker. gosu is the Debian-native, no-TTY privilege-drop tool (su-exec is
 # Alpine-only). It is intentionally NOT setuid — it relies on PID 1's
 # CAP_SETUID/CAP_SETGID, which composes with `no-new-privileges`.
-RUN apt-get update && apt-get install -y git curl python3 python3-pip python3-venv make g++ zip unzip ripgrep bubblewrap gosu && rm -rf /var/lib/apt/lists/*
+# `git-lfs` (docs/231): a repo that tracks assets with Git LFS checks its images,
+# audio and other binaries out as ~130-byte pointer stubs unless the LFS filters
+# are installed — broken previews with no error anywhere (nikzlabs/shipit#1729).
+RUN apt-get update && apt-get install -y git git-lfs curl python3 python3-pip python3-venv make g++ zip unzip ripgrep bubblewrap gosu && rm -rf /var/lib/apt/lists/*
+
+# docs/231 — register the LFS filters in /etc/gitconfig, which is the only
+# writable place for them: the container's GIT_CONFIG_GLOBAL points at
+# /credentials/.gitconfig, mounted READ-ONLY, so a runtime `git lfs install`
+# would fail. System config is still read alongside GIT_CONFIG_GLOBAL, so baking
+# it here is what makes LFS work at all inside a session.
+#
+# Full install (no --skip-smudge, unlike the orchestrator images): inside the
+# container the agent and the user expect ordinary LFS behaviour — `git checkout`
+# smudges real content, and committing a new asset cleans it into a pointer.
+# `--skip-repo` keeps it from touching the build context's own repo hooks.
+RUN git lfs install --system --skip-repo
 
 # docs/150 §1 — rename the upstream `node` user (UID/GID 1000 in node:*-slim) to
 # `shipit`. Reusing the existing 1000 account avoids a useradd collision and
@@ -130,6 +145,66 @@ RUN mkdir -p /opt/playwright-browsers \
  && playwright install-deps chromium \
  && HOME=/opt/playwright-browsers playwright-mcp install-browser chrome-for-testing \
  && chmod -R a+rX /opt/playwright-browsers
+
+# ---- Android build toolchain (docs/213) ----
+# Bake the JVM + Android SDK + Gradle so the agent can build, lint, and run
+# JVM/Robolectric and Paparazzi/Roborazzi snapshot tests for ANY Android/Gradle
+# repo with zero per-repo setup — the same "baked, ambient" model as the agent
+# CLIs and Playwright above. The toolchain is then present in every session, so a
+# repo declares nothing to get a working `./gradlew` (no `shipit.yaml` Android
+# fields). A repo's own Gradle/Maven deps still download per build; only the
+# platform toolchain is baked. No emulator/system-image lives here — the
+# running-app tier is a user-declared Compose service (docs/213), not this image.
+#
+# JDK 17 covers AGP 8.x (the current matrix; this repo is AGP 8.6.1 / Gradle 8.7).
+# JAVA_HOME is pinned via a stable /opt/java symlink so it's arch-independent (the
+# apt path is /usr/lib/jvm/java-17-openjdk-<arch>, which differs amd64 vs arm64).
+RUN apt-get update && apt-get install -y openjdk-17-jdk-headless \
+ && rm -rf /var/lib/apt/lists/* \
+ && ln -sfn "$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")" /opt/java
+ENV JAVA_HOME=/opt/java
+ENV PATH="${JAVA_HOME}/bin:${PATH}"
+
+# Android SDK: command-line tools (sdkmanager), platform-tools (adb), and a common
+# compileSdk/build-tools matrix with licenses pre-accepted. Off-matrix components
+# (an older platform, an NDK, CMake) are provisioned on demand via `sdkmanager`
+# — see /shipit-docs/android.md. The SDK dirs are made world-writable (single
+# tenant, no secrets) so those on-demand installs land under ANDROID_SDK_ROOT as
+# the unprivileged `shipit` runtime user (dirs only — keeps the layer small).
+ENV ANDROID_SDK_ROOT=/opt/android-sdk
+ENV ANDROID_HOME=/opt/android-sdk
+ENV ANDROID_CMDLINE_TOOLS_VERSION=11076708
+ENV ANDROID_COMPILE_SDK=35
+ENV ANDROID_BUILD_TOOLS=35.0.0
+# NOTE: the archive is `commandlinetools-linux-…` (ONE word) — the hyphenated
+# `commandline-tools-linux-…` is a permanent 404. `-f` makes curl FAIL on a 404
+# instead of writing the HTML error page into the .zip (which then dies a step
+# later at `unzip` with a misleading "End-of-central-directory" error); --retry
+# rides out transient blips. Same hardening on every download below.
+RUN mkdir -p "${ANDROID_SDK_ROOT}/cmdline-tools" \
+ && curl -fsSL --retry 3 --retry-all-errors -o /tmp/cmdline-tools.zip \
+      "https://dl.google.com/android/repository/commandlinetools-linux-${ANDROID_CMDLINE_TOOLS_VERSION}_latest.zip" \
+ && unzip -q /tmp/cmdline-tools.zip -d "${ANDROID_SDK_ROOT}/cmdline-tools" \
+ && mv "${ANDROID_SDK_ROOT}/cmdline-tools/cmdline-tools" "${ANDROID_SDK_ROOT}/cmdline-tools/latest" \
+ && rm /tmp/cmdline-tools.zip
+ENV PATH="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${PATH}"
+RUN yes | sdkmanager --licenses > /dev/null \
+ && sdkmanager --install "platform-tools" \
+      "platforms;android-34" "platforms;android-${ANDROID_COMPILE_SDK}" \
+      "build-tools;34.0.0" "build-tools;${ANDROID_BUILD_TOOLS}" > /dev/null \
+ && find "${ANDROID_SDK_ROOT}" -type d -exec chmod a+rwx {} +
+
+# A baked Gradle so a wrapperless repo still builds and the wrapper's first run
+# resolves 8.7 fast. A committed wrapper still self-fetches its pinned dist on the
+# first `./gradlew`; the agent can run the baked `gradle` to skip that one-time
+# download. See /shipit-docs/android.md.
+ENV GRADLE_VERSION=8.7
+RUN curl -fsSL --retry 3 --retry-all-errors -o /tmp/gradle.zip "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" \
+ && unzip -q /tmp/gradle.zip -d /opt \
+ && ln -s "/opt/gradle-${GRADLE_VERSION}" /opt/gradle \
+ && rm /tmp/gradle.zip \
+ && chmod -R a+rX "/opt/gradle-${GRADLE_VERSION}"
+ENV PATH="/opt/gradle/bin:${PATH}"
 
 WORKDIR /app
 
@@ -214,3 +289,12 @@ RUN chmod 0755 /usr/local/bin/shipit-entrypoint
 ENTRYPOINT ["/usr/local/bin/shipit-entrypoint"]
 
 CMD ["node", "--import", "tsx", "src/server/session/session-worker.ts"]
+
+# docs/113 — stamp the git SHA this image was built from as a label, so the
+# orchestrator can log skew when it adopts a container that outlived a deploy
+# (containers inherit image labels; container-discovery.ts reads it). Deliberately
+# the LAST instruction: the ARG changes every deploy, and placing it earlier
+# would invalidate the layer cache for everything after it. The :docker variant
+# inherits the label via FROM. Empty when built outside deploy.sh (dev/tests).
+ARG SHIPIT_BUILD_ID
+LABEL shipit-build-id=${SHIPIT_BUILD_ID}

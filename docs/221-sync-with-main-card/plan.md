@@ -60,11 +60,12 @@ dedupes on (the `emitNoticePostTurn` shape). It's gated on a new
 (`api-routes-git.ts`) — the automatic conflict-resolve path keeps its own
 `auto_resolve_result` envelopes and gains no card.
 
-The card emits only when the sync **changed something** — the branch rebased
-(`headFrom !== headTo`) or local `<base>` moved. If nothing changed, no card and
-the "Already up to date" toast stays. To avoid a contradictory toast on the
-up-to-date-but-base-moved path, `WsRebaseComplete` gained `baseMoved?: boolean`;
-`handleRebaseComplete` suppresses the toast when it's set.
+Every manual sync emits the card, including when the branch and local base were
+already current. This gives the menu action one durable confirmation in every PR
+state instead of falling back to an ephemeral "Already up to date" toast. The
+card renders truthful outcome-specific copy for a rebased branch, a local-base-only
+move, or an already-current branch. `WsRebaseComplete.baseMoved` suppresses the
+redundant toast whenever this durable card is emitted.
 
 ## Key files
 
@@ -96,3 +97,14 @@ up-to-date-but-base-moved path, `WsRebaseComplete` gained `baseMoved?: boolean`;
 - Surfacing the card on the automatic conflict-resolve-on-idle path (kept to its
   existing `auto_resolve_result` envelopes).
 - Moving local base for non-rebase flows (only the sync/rebase entry point).
+
+## Follow-up — merged PR cards
+
+The same menu action now branches on lifecycle state. Open and ready branches
+continue through `runRebaseFlow`, while a merged PR calls the existing
+`POST /api/sessions/:id/branch/reset-to-base` flow. A merged branch must not replay
+its already-shipped commits (especially after squash merge), so this path uses the
+docs/218 safety-gated hard reset. That endpoint also heals the remote branch,
+re-arms the lifecycle card, clears reset eligibility, and persists the standard
+"Branch updated to latest base" transcript card—the same result as an agent-driven
+`shipit branch reset-to-base`.

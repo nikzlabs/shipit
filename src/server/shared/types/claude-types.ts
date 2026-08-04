@@ -77,16 +77,88 @@ export interface ClaudeCompactBoundaryEvent {
 }
 
 /**
+ * docs/235 — one entry in the CLI's background-task list. `task_type` is the
+ * CLI's own discriminator (e.g. `"local_bash"` for a `Bash(run_in_background)`
+ * job); `description` is the command or label the CLI shows for it.
+ */
+export interface ClaudeBackgroundTask {
+  task_id: string;
+  task_type?: string;
+  description?: string;
+}
+
+/**
+ * docs/235 — the CLI's `system`/`subtype:"background_tasks_changed"` event. The
+ * `tasks` array is the **complete current list**, not a delta, so any single
+ * event fully re-states the truth (empty array = drained). It is emitted only on
+ * change: neither a new turn nor a fresh `init` re-states an outstanding list,
+ * and there is no heartbeat — see the reliability section of docs/235 for why
+ * the orchestrator therefore decays its copy rather than trusting it forever.
+ */
+export interface ClaudeBackgroundTasksChangedEvent {
+  type: "system";
+  subtype: "background_tasks_changed";
+  session_id?: string;
+  tasks?: ClaudeBackgroundTask[];
+}
+
+/** docs/235 — a background task started. Edge signal; the level lives in {@link ClaudeBackgroundTasksChangedEvent}. */
+export interface ClaudeTaskStartedEvent {
+  type: "system";
+  subtype: "task_started";
+  session_id?: string;
+  task_id?: string;
+  tool_use_id?: string;
+  task_type?: string;
+  description?: string;
+}
+
+/** docs/235 — a background task changed state (`patch.status` e.g. `"completed"`). */
+export interface ClaudeTaskUpdatedEvent {
+  type: "system";
+  subtype: "task_updated";
+  session_id?: string;
+  task_id?: string;
+  patch?: { status?: string; end_time?: number };
+}
+
+/**
+ * docs/235 — a background task finished and the CLI is waking itself to react.
+ * This is the edge that opens a **self-woken turn**: on the wire it is
+ * immediately followed by a fresh `system/init` and, later, a `result`, with no
+ * user message in between.
+ */
+export interface ClaudeTaskNotificationEvent {
+  type: "system";
+  subtype: "task_notification";
+  session_id?: string;
+  task_id?: string;
+  tool_use_id?: string;
+  /** e.g. `"completed"`. */
+  status?: string;
+  /** Path (inside the container) the CLI wrote the task's output to. */
+  output_file?: string;
+  /** Human-readable one-liner, e.g. `Background command "npm test" completed (exit code 0)`. */
+  summary?: string;
+}
+
+/**
  * The CLI's `system` events, discriminated by `subtype`. `init` is the
  * once-per-session handshake; `status` / `compact_boundary` carry the docs/178
- * compaction signals. A mid-stream second `init` (the CLI re-inits after a
- * compaction) is the same shape as the first — the orchestrator, not the type,
- * is responsible for not resetting session/permission state on it.
+ * compaction signals; the `task_*` / `background_tasks_changed` family carries
+ * the docs/235 background-task liveness signals. A mid-stream second `init` (the
+ * CLI re-inits after a compaction, and again when a background task wakes it) is
+ * the same shape as the first — the orchestrator, not the type, is responsible
+ * for not resetting session/permission state on it.
  */
 export type ClaudeSystemEvent =
   | ClaudeSystemInitEvent
   | ClaudeSystemStatusEvent
-  | ClaudeCompactBoundaryEvent;
+  | ClaudeCompactBoundaryEvent
+  | ClaudeBackgroundTasksChangedEvent
+  | ClaudeTaskStartedEvent
+  | ClaudeTaskUpdatedEvent
+  | ClaudeTaskNotificationEvent;
 
 export interface ClaudeContentBlockText {
   type: "text";
@@ -98,6 +170,21 @@ export interface ClaudeContentBlockToolUse {
   id: string;
   name: string;
   input: Record<string, unknown>;
+  /**
+   * docs/244 — one or more input keys were shortened or removed on the serve
+   * path; the whole input is available from
+   * `GET /api/sessions/:id/tool-inputs/:toolUseId`. Which keys, and why, is
+   * `inputKeyTreatment` (`shared/transcript-input-policy.ts`).
+   */
+  bodyTruncated?: true;
+  /** Line stats for the `+N -M` summary, computed before the body was stripped. */
+  diffStats?: { added: number; removed: number };
+  /**
+   * Original character length of each shortened or removed *string* key, for the
+   * labels the transcript draws from a length it no longer holds — today just
+   * `SubagentCall`'s `Prompt (N chars)` toggle (SHI-296).
+   */
+  inputChars?: Record<string, number>;
 }
 
 export type ClaudeContentBlock = ClaudeContentBlockText | ClaudeContentBlockToolUse;
@@ -114,6 +201,21 @@ export interface ClaudeAssistantEvent {
    * nested tree (109 — subagent transparency).
    */
   parent_tool_use_id?: string;
+  /**
+   * True when this "assistant" message is a SYNTHETIC error envelope the CLI
+   * emits in place of model output (`message.model` is `"<synthetic>"`), not
+   * something the model said. An unauthenticated turn's only "reply" is one of
+   * these, carrying the text `Not logged in · Please run /login`.
+   * See {@link error}.
+   */
+  is_api_error_message?: boolean;
+  /**
+   * Machine-readable failure code on a synthetic API-error message — e.g.
+   * `"authentication_failed"`. Present only alongside
+   * {@link is_api_error_message}; it is the reliable signal, since the human
+   * text varies by failure mode. Verified against CLI 2.1.219.
+   */
+  error?: string;
 }
 
 export interface ClaudeUserEvent {
@@ -165,7 +267,21 @@ export interface ClaudeModelUsage {
 
 export interface ClaudeResultEvent {
   type: "result";
-  subtype: "success" | "error";
+  /**
+   * The CLI's terminal classification — NOT a success/failure flag.
+   * `subtype: "success"` only means the turn ran to a normal end-of-turn
+   * boundary: an API failure (auth, quota, overload) also ends
+   * `subtype: "success"` with `is_error: true`. `error_during_execution` is
+   * what an interrupt produces. `"error"` is a legacy value kept for fixtures
+   * and adapters that still emit it; the real CLI never sends it. Read
+   * {@link is_error} to decide whether the turn failed. Verified against CLI
+   * 2.1.219.
+   */
+  subtype: "success" | "error" | "error_max_turns" | "error_during_execution";
+  /** Authoritative "this turn failed" flag, independent of {@link subtype}. */
+  is_error?: boolean;
+  /** Why the turn ended — e.g. `"api_error"` when an upstream call failed. */
+  terminal_reason?: string;
   session_id: string;
   total_cost_usd?: number;
   duration_ms?: number;
@@ -229,7 +345,12 @@ export interface ClaudeRateLimitEvent {
     status?: "allowed" | "allowed_warning" | "rejected";
     resetsAt?: number;
     rateLimitType?: "five_hour" | "seven_day" | "seven_day_opus" | "seven_day_sonnet" | "overage";
-    /** 0–100 (percentage of the window consumed). */
+    /**
+     * 0–1 **fraction** of the window consumed — forwarded verbatim from the
+     * upstream `anthropic-ratelimit-unified-{5h,7d}-utilization` header, which
+     * reads e.g. `0.06` where `/api/oauth/usage` reports `6.0`. Scale by 100
+     * before rendering (`parseRateLimitWindow` in the Claude adapter).
+     */
     utilization?: number;
   };
   session_id?: string;

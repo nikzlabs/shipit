@@ -55,7 +55,6 @@ describe("buildVisualElements", () => {
           voiceNote: {
             id: "voice-1",
             headline: "Done — want me to open a PR?",
-            needsAttention: true,
             kind: "authored",
             createdAt: "2026-06-01T00:00:00.000Z",
           },

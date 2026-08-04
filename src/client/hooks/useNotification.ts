@@ -1,6 +1,6 @@
-// eslint-disable-next-line no-restricted-imports -- useEffect: document visibilitychange listener with cleanup (browser API subscription)
-import { useEffect, useRef, useCallback } from "react";
+import { useRef, useCallback } from "react";
 import { useSettingsStore } from "../stores/settings-store.js";
+import { useEventListener } from "./useEventListener.js";
 
 const DEFAULT_TITLE = "ShipIt";
 
@@ -65,21 +65,15 @@ export function useNotification() {
   const batchRef = useRef<{ count: number; timer: ReturnType<typeof setTimeout> | null }>({ count: 0, timer: null });
 
   // Track tab visibility
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
-  useEffect(() => {
-    const onVisibilityChange = () => {
-      hiddenRef.current = document.hidden;
+  useEventListener(document, "visibilitychange", () => {
+    hiddenRef.current = document.hidden;
 
-      // Restore title when user returns to the tab
-      if (!document.hidden && titleChangedRef.current) {
-        document.title = DEFAULT_TITLE;
-        titleChangedRef.current = false;
-      }
-    };
-
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
-  }, []);
+    // Restore title when user returns to the tab
+    if (!document.hidden && titleChangedRef.current) {
+      document.title = DEFAULT_TITLE;
+      titleChangedRef.current = false;
+    }
+  });
 
   const emitNotification = useCallback((body: string, context?: NotifyContext) => {
     const { notifyOnFinish, soundOnFinish } = useSettingsStore.getState();

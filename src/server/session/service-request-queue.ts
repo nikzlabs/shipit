@@ -39,13 +39,25 @@ export class ServiceRequestQueue {
    * orchestrator calls back with the result. The returned `requestId`
    * should be embedded in the corresponding `service_request` SSE event.
    */
-  enqueue<T = unknown>(action: string): { requestId: string; promise: Promise<T> } {
+  enqueue<T = unknown>(
+    action: string,
+    opts: { timeoutMs?: number; timeoutMessage?: (action: string, timeoutMs: number) => string } = {},
+  ): { requestId: string; promise: Promise<T> } {
     const requestId = `svc-${++this.counter}-${Date.now()}`;
+    // docs/238 — the deadline is per-request, not per-queue: a `start` covers a
+    // full `docker compose up -d --build` (image pull / Dockerfile build) and
+    // needs minutes, while a `list` is an in-memory read. The constructor value
+    // remains the default for callers that don't pass one.
+    const timeoutMs = opts.timeoutMs ?? this.timeoutMs;
     const promise = new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(requestId);
-        reject(new Error(`Service ${action} request timed out`));
-      }, this.timeoutMs);
+        reject(
+          new Error(
+            opts.timeoutMessage?.(action, timeoutMs) ?? `Service ${action} request timed out`,
+          ),
+        );
+      }, timeoutMs);
 
       this.pending.set(requestId, {
         resolve: (value: unknown) => resolve(value as T),

@@ -73,6 +73,13 @@ export function createCommentWidgetManager(
      * Used by `FilePreviewModal` in agent-review snapshot mode.
      */
     readOnly?: boolean;
+    /**
+     * Fires when an unsaved comment editor opens or closes — the add-comment
+     * input or an in-card edit form. Surfaces use it to disable their "Send
+     * comments" button so a half-typed comment can't be dropped by an
+     * accidental submit. Always fires `false` on `dispose()`.
+     */
+    onInputOpenChange?: (open: boolean) => void;
   },
 ): CommentWidgetManager {
   // Resolve the actual code editor instance
@@ -83,6 +90,17 @@ export function createCommentWidgetManager(
   const commentZones: ViewZoneEntry[] = [];
   let inputZone: { id: string; domNode: HTMLDivElement } | null = null;
   let decorationCollection: monaco.editor.IEditorDecorationsCollection | null = null;
+  /** Ids of comments whose in-card edit form is currently open. */
+  const editingIds = new Set<string>();
+  let lastOpenState = false;
+
+  /** Emit the aggregate "an unsaved editor is open" state, on change only. */
+  function syncOpenState(): void {
+    const open = inputZone !== null || editingIds.size > 0;
+    if (open === lastOpenState) return;
+    lastOpenState = open;
+    options.onInputOpenChange?.(open);
+  }
 
   function clearAllZones(): void {
     editor.changeViewZones((accessor) => {
@@ -95,6 +113,9 @@ export function createCommentWidgetManager(
       }
     });
     commentZones.length = 0;
+    // Re-rendering the cards destroys any open edit form with them.
+    editingIds.clear();
+    syncOpenState();
   }
 
   function clearDecorations(): void {
@@ -112,6 +133,7 @@ export function createCommentWidgetManager(
         inputZone = null;
       }
     });
+    syncOpenState();
   }
 
   function createCommentCard(
@@ -178,6 +200,8 @@ export function createCommentWidgetManager(
     editBtn.addEventListener("mouseleave", () => { editBtn.style.color = "#94a3b8"; editBtn.style.background = "none"; });
     editBtn.addEventListener("click", () => {
       // Replace card with edit input
+      editingIds.add(comment.id);
+      syncOpenState();
       card.innerHTML = "";
       const textarea = document.createElement("textarea");
       textarea.value = comment.text;
@@ -361,6 +385,7 @@ export function createCommentWidgetManager(
       });
       inputZone = { id: zoneId, domNode };
     });
+    syncOpenState();
 
     // Focus the textarea after zone is rendered
     setTimeout(() => textarea.focus(), 50);
@@ -433,6 +458,11 @@ export function createCommentWidgetManager(
       clearAllZones();
       clearDecorations();
       glyphDisposable.dispose();
+      // clearAllZones() already emitted `false`; belt-and-braces so a surface
+      // can never be left with Send disabled by a torn-down editor.
+      editingIds.clear();
+      inputZone = null;
+      syncOpenState();
     },
   };
 

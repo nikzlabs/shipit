@@ -450,6 +450,46 @@ export interface PermissionRequestInput {
  */
 export type PermissionRequester = (input: PermissionRequestInput) => Promise<PermissionDecision>;
 
+/**
+ * docs/235 — the agent backend's **complete current** background-task list
+ * (not a delta). An agent can start work that outlives its turn — a
+ * `Bash(run_in_background)` job, a scheduled wake-up — and finishing it makes
+ * the backend start a fresh turn on its own, with no user message. The
+ * orchestrator uses this as the *level* signal for `runner.agentBusy` so the
+ * idle enforcer and the disk-tier ladder stop reclaiming a container that still
+ * has work outstanding.
+ *
+ * Transient live state: emit-only, never persisted to chat history.
+ *
+ * - **Claude**: mapped from the CLI's `system`/`subtype:"background_tasks_changed"`.
+ * - **Codex**: no equivalent today, so its adapter never emits this and the
+ *   behavior degrades to the pre-docs/235 baseline.
+ */
+export interface AgentBackgroundTasksEvent {
+  type: "agent_background_tasks";
+  /** Empty array means drained — the authoritative current state, not a diff. */
+  tasks: { id: string; type?: string; description?: string }[];
+}
+
+/**
+ * docs/235 — the agent backend is starting a turn *on its own* because a
+ * background task finished. The *edge* counterpart to
+ * {@link AgentBackgroundTasksEvent}: the orchestrator marks the runner running
+ * so the session reads as busy for the self-woken turn, which the ordinary
+ * `agent_result` handler then clears.
+ *
+ * - **Claude**: mapped from the CLI's `system`/`subtype:"task_notification"`.
+ * - **Codex**: no equivalent today.
+ */
+export interface AgentSelfWakeEvent {
+  type: "agent_self_wake";
+  taskId?: string;
+  /** Backend's one-line description of what finished. */
+  summary?: string;
+  /** e.g. `"completed"`. */
+  status?: string;
+}
+
 export type AgentEvent =
   | AgentInitEvent
   | AgentAssistantEvent
@@ -461,7 +501,9 @@ export type AgentEvent =
   | AgentCompactionStartedEvent
   | AgentCompactedEvent
   | AgentPermissionRequestEvent
-  | AgentPermissionResolvedEvent;
+  | AgentPermissionResolvedEvent
+  | AgentBackgroundTasksEvent
+  | AgentSelfWakeEvent;
 
 /** Unified content blocks (text or tool use). */
 export type AgentContentBlock =
@@ -515,6 +557,16 @@ export interface AgentRunParams {
    * across cloned repos). Claude-only; other adapters ignore it.
    */
   sandbox?: boolean;
+  /**
+   * SHI-265 — when true, the Claude adapter sets SHIPIT_GUARD_DESTRUCTIVE_GIT=1
+   * in the CLI environment, which arms the managed-settings.json PreToolUse
+   * hook's destructive-git rule (`git reset --hard`, `git checkout -f`,
+   * force-push). Set only when the session is merged with a recorded
+   * `mergedHeadSha` — the state `shipit branch reset-to-base` guards — so a
+   * refused reset can't be worked around with hand-rolled git. Claude-only;
+   * other adapters ignore it. See docs/130-block-branch-ops/plan.md.
+   */
+  guardDestructiveGit?: boolean;
   /**
    * When true, the Claude adapter spawns with --input-format stream-json
    * for live steering. Ignored by non-streaming adapters. (docs/140)
@@ -703,6 +755,18 @@ export interface AgentProcess extends EventEmitter<AgentProcessEvents> {
    */
   setPermissionRequester?(requester: PermissionRequester): void;
   /**
+   * SHI-264 — stamp this turn's durable DELIVERY id onto the next spawn, so the
+   * worker can report it back from `/agent/status` and an orchestrator that
+   * restarted mid-turn can tell WHICH server-originated delivery the surviving
+   * turn belongs to (see `turn-adoption.ts`).
+   *
+   * Optional and orchestrator↔worker only: `ProxyAgentProcess` forwards it in
+   * the `/agent/start` body alongside `runToken`. In-process adapters omit it —
+   * an in-process agent cannot outlive the orchestrator, so there is nothing to
+   * re-identify.
+   */
+  setDeliveryId?(deliveryId: string): void;
+  /**
    * Write whatever MCP configuration this CLI expects before the worker
    * calls `run()`. Each backend owns its own wire format (Claude:
    * `--mcp-config` JSON; Codex: `~/.codex/config.toml`; future Cursor:
@@ -713,4 +777,73 @@ export interface AgentProcess extends EventEmitter<AgentProcessEvents> {
    * `session-worker.ts`.
    */
   writeMcpConfig(ctx: AgentMcpWriteContext): AgentMcpWriteResult;
+}
+
+// ---- Worker agent start body ----
+
+/**
+ * Request body of the worker's `POST /agent/start` — the orchestrator→worker
+ * call that launches a turn (`container-session-runner.ts` sends it,
+ * `session/agent-controller.ts` handles it). Named and shared (rather than
+ * inlined in the route generic) so the wire-contract guard
+ * (`worker-wire-contract.test.ts`) checks the shape the handler actually uses:
+ * since docs/113 Phase 1, old worker images outlive deploys, so changes to
+ * this body must stay additive.
+ */
+export interface WorkerAgentStartBody {
+  agentId: AgentId;
+  params: AgentRunParams;
+  runToken?: string;
+  deliveryId?: string;
+}
+
+// ---- Worker agent status (docs/240) ----
+
+/**
+ * What the session worker's `GET /agent/status` reports about the agent slot
+ * and any turn currently in flight on it.
+ *
+ * Shared because both layers depend on the shape: the worker
+ * (`session/agent-controller.ts`) produces it, and the orchestrator
+ * (`orchestrator/container-session-runner.ts`) consumes it before its first SSE
+ * connect to decide whether to skip a completed turn's replay or ADOPT a turn
+ * that outlived an orchestrator restart.
+ *
+ * Every field beyond `running` / `latestSseSeq` is optional on the wire: a
+ * container started by an older orchestrator build runs an older worker, and the
+ * consumer treats a missing `turnActive` as "unknown" and keeps the pre-docs/240
+ * conservative behavior.
+ */
+export interface WorkerAgentStatus {
+  /** A backend process occupies the single agent slot (may be idle-resident). */
+  running: boolean;
+  /** Highest SSE seq broadcast so far. */
+  latestSseSeq: number;
+  /** Oldest SSE seq still replayable from the ring buffer (0 when empty). */
+  oldestSseSeq?: number;
+  /**
+   * A turn is genuinely mid-flight: started via `/agent/start` or
+   * `/agent/message` and not yet ended by `agent_result` / process exit.
+   * Distinct from `running`, which stays true for a resident streaming process
+   * sitting idle between turns.
+   */
+  turnActive?: boolean;
+  /** SSE seq at the instant the in-flight turn started (0 when none). */
+  turnStartSseSeq?: number;
+  /** The spawning proxy's run token, so a re-created proxy can keep the epoch. */
+  runToken?: string;
+  /**
+   * SHI-264 — the durable DELIVERY id of the turn in flight, when it was
+   * dispatched on behalf of a server-side delivery (a notify-on-merge wake,
+   * either `kind`). Ground truth for "is this delivery still live?": a
+   * restarted orchestrator reads it here, rebinds the delivery's completion
+   * settlement onto the adopted turn, and the watch's reconcile therefore
+   * redispatches only when NO live worker reports the delivery. Absent for an
+   * ordinary user turn, and on a legacy worker.
+   */
+  deliveryId?: string;
+  /** Which backend occupies the slot. */
+  agentId?: AgentId;
+  /** The spawn was started in live-steering (streaming) mode. */
+  streaming?: boolean;
 }

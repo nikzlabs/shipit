@@ -3,9 +3,33 @@ import type { IPty } from "node-pty";
 import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
+import { killChild } from "../../../shared/kill-child.js";
 import type { ClaudeEvent, ImageAttachment, PermissionMode } from "../../../shared/types.js";
 import { stripAnsi } from "../../../shared/strip-ansi.js";
-import { agentHome } from "../../../shared/agent-home.js";
+import type { AgentHomeResolver } from "../../../shared/agent-home.js";
+import { resolveAgentHome } from "../../../shared/agent-home.js";
+
+/**
+ * docs/150 — when a spawn is scoped to a provider account, drop the env-based
+ * Anthropic credentials from its environment.
+ *
+ * Pointing HOME at an account root is not enough on its own: the CLI prefers
+ * `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` over the OAuth credentials on
+ * disk, so an orchestrator that has either configured (the dogfood `dev`
+ * service does — see CLAUDE.md) would keep billing metered API usage while the
+ * router believed the turn ran on the selected subscription. Selection would be
+ * ignored a second way, silently.
+ *
+ * Deliberately only when a scoped home applies: a session pinned to the
+ * RESERVED `claude-api-key` / `claude-env-oauth` route resolves no account root
+ * and must keep exactly those vars — they are its auth. Same shape as the Codex
+ * adapter's existing `delete env.OPENAI_API_KEY` when file auth wins.
+ */
+function scrubEnvAuthForScopedHome(env: Record<string, string>, scopedHome: string | undefined): void {
+  if (!scopedHome) return;
+  delete env.ANTHROPIC_API_KEY;
+  delete env.ANTHROPIC_AUTH_TOKEN;
+}
 
 /**
  * Phrases that signal an auth failure in CLI output. Used both for non-JSON
@@ -26,6 +50,7 @@ const AUTH_ERROR_PATTERNS = [
   "sign in",
   "invalid authentication credentials",
   "authentication_error",
+  "authentication_failed",
   "invalid api key",
   "invalid x-api-key",
 ];
@@ -37,13 +62,120 @@ export function textIndicatesAuthFailure(text: string): boolean {
 }
 
 /**
- * True when a parsed event is an error `result` whose message indicates an auth
- * failure (the runtime-401 case). Other event types and successful results are
- * ignored.
+ * True when a `result` event reports a FAILED turn — `is_error` is the
+ * authoritative flag, not `subtype`. The CLI ends an API-error turn with
+ * `subtype: "success"` and `is_error: true`; the only non-success subtypes it
+ * emits are `error_during_execution` (an interrupt) and `error_max_turns`.
+ * Verified against CLI 2.1.219.
+ */
+export function resultEventIsError(event: ClaudeEvent): boolean {
+  if (event.type !== "result") return false;
+  return event.is_error === true || event.subtype !== "success";
+}
+
+/**
+ * True when a parsed event is a FAILED `result` whose message indicates an auth
+ * failure (the runtime-401 case). Successful results are ignored — that matters
+ * because {@link AUTH_ERROR_PATTERNS} contains generic words ("oauth",
+ * "sign in") a legitimate final answer could contain.
+ *
+ * This gated on `subtype === "error"` until now — a value the real CLI never
+ * emits — so no auth failure was ever detected here in production: no
+ * `auth_required`, hence no docs/179 quiet retry, no refresher nudge, and no
+ * sign-in card. The turn instead "succeeded" carrying the CLI's own
+ * `Not logged in · Please run /login` text, and the user had to re-send.
  */
 export function resultEventIndicatesAuthFailure(event: ClaudeEvent): boolean {
-  if (event.type !== "result" || event.subtype !== "error") return false;
+  if (!resultEventIsError(event) || event.type !== "result") return false;
+
+  // Not every FAILED result is an API failure, and only an API failure can be
+  // an auth failure. Two structural exclusions run before any text matching,
+  // because {@link AUTH_ERROR_PATTERNS} deliberately contains generic words
+  // ("oauth", "sign in") that a *conversation* can contain:
+  //
+  //   - `error_max_turns` / `error_during_execution` are the turn cap and an
+  //     interrupt. Their `result` carries the conversation's trailing text
+  //     rather than a CLI error string, so a session doing OAuth work that
+  //     hit the turn cap would otherwise be misread as unauthenticated —
+  //     swallowed, "healed", and silently re-dispatched, hiding the real
+  //     failure and re-running the turn.
+  //   - a `terminal_reason` that is present and is not `api_error` says
+  //     outright that the upstream call is not what ended the turn. Absent is
+  //     not treated as disqualifying: older CLIs omit it, and failing to
+  //     detect a genuine auth failure is the bug this whole path exists for.
+  if (event.subtype === "error_max_turns" || event.subtype === "error_during_execution") return false;
+  if (typeof event.terminal_reason === "string" && event.terminal_reason !== "api_error") return false;
+
   return typeof event.result === "string" && textIndicatesAuthFailure(event.result);
+}
+
+/**
+ * True when a parsed event is the CLI's SYNTHETIC assistant message for an auth
+ * failure — the first thing an unauthenticated turn emits, ahead of the result
+ * event. It is an error envelope, not model output, so the caller both raises
+ * `auth_required` from it (recovering a turn earlier than the result event
+ * would) and drops it: rendering it would put "Please run /login" in the
+ * transcript as the agent's reply, which is not an instruction a ShipIt user
+ * can act on — there is no CLI to run it in.
+ *
+ * Requires `is_api_error_message`, so a model that merely *talks about* signing
+ * in can't trip it. Other API errors (quota, overload) carry the same flag with
+ * a different `error` code and are deliberately left alone.
+ */
+export function assistantEventIndicatesAuthFailure(event: ClaudeEvent): boolean {
+  if (event.type !== "assistant" || event.is_api_error_message !== true) return false;
+  if (typeof event.error === "string" && textIndicatesAuthFailure(event.error)) return true;
+  return event.message.content.some(
+    (block) => block.type === "text" && textIndicatesAuthFailure(block.text),
+  );
+}
+
+/**
+ * Shared auth-failure gate for the two drain loops. Raises `auth_required` via
+ * `emitAuthRequired` and reports whether the event must be SWALLOWED rather
+ * than forwarded.
+ *
+ * Both of the CLI's auth-failure events are swallowed, because an auth failure
+ * ends the turn and ShipIt — not the CLI — owns what the user sees next: either
+ * the docs/179 quiet heal-and-retry (where a half-rendered failed turn would
+ * flicker in and then have to be undone) or the sign-in card. This is already
+ * the shape the rest of the system expects: a turn that dies on the stderr auth
+ * path emits no `agent_result` either, and `turn-executor` documents that an
+ * auth-required turn legitimately ends without one.
+ *
+ * ## Every event is swallowed, but the raise is latched
+ *
+ * One auth failure produces TWO auth-shaped events (verified, CLI 2.1.219): the
+ * synthetic assistant envelope, then the `is_error` result. Both must be
+ * swallowed — each carries the CLI's "Please run /login" copy, and either one
+ * reaching the transcript is the bug §3 fixed. But `auth_required` must be
+ * raised only ONCE per turn. It is a semantic "this turn failed auth" signal,
+ * and its consumers are emphatically not idempotent: the quiet recovery heals
+ * the token and re-dispatches the entire turn, so a second raise re-runs the
+ * user's turn a second time, side effects and all.
+ *
+ * De-duplication belongs HERE, at the emitter, rather than in each consumer.
+ * The two-event shape is a CLI protocol detail; a consumer receiving a
+ * semantic event should not have to know the wire format produced it twice.
+ * And there is more than one consumer with non-idempotent side effects — the
+ * re-dispatch, plus the visible surface path's error message, refresher nudge
+ * and `session_agent_finished` broadcast — so a consumer-side fix would have
+ * to be repeated at each of them, and re-repeated at the next one added.
+ * Consumers still latch their own turn-scoped work (see
+ * `wireAuthRequiredHandler`), because this gate cannot cover a duplicate
+ * arriving from a *different* source: the non-JSON branch of each drain loop
+ * raises `auth_required` from raw stderr text as well.
+ *
+ * The latch is per-TURN, not per-process: `StreamingClaudeProcess` is resident
+ * across turns, so it resets on each outbound user message. A session that
+ * fails auth, recovers, and fails again later must raise the signal again.
+ */
+function consumeAuthFailureEvent(event: ClaudeEvent, raiseAuthRequiredOnce: () => void): boolean {
+  if (!assistantEventIndicatesAuthFailure(event) && !resultEventIndicatesAuthFailure(event)) {
+    return false;
+  }
+  raiseAuthRequiredOnce();
+  return true;
 }
 
 export interface ClaudeRunOptions {
@@ -91,6 +223,14 @@ export interface ClaudeRunOptions {
    */
   sandbox?: boolean;
   /**
+   * SHI-265 — when true, set SHIPIT_GUARD_DESTRUCTIVE_GIT=1 in the CLI
+   * environment. The managed-settings.json PreToolUse hook arms its
+   * destructive-git rule (hard reset / forced checkout / force-push) on this
+   * var, so the `shipit branch reset-to-base` safety gate can't be worked
+   * around by hand. See docs/130-block-branch-ops/plan.md.
+   */
+  guardDestructiveGit?: boolean;
+  /**
    * docs/193 — the MCP tool the CLI calls for permission prompts
    * (`--permission-prompt-tool`, e.g. `mcp__shipit__permission_prompt`).
    * Routes the CLI's built-in sensitive-file gate to ShipIt's approve/deny card
@@ -104,6 +244,28 @@ export class ClaudeProcess extends EventEmitter {
   private proc: IPty | null = null;
   private buffer = "";
   private watchdog: ReturnType<typeof setTimeout> | null = null;
+  /** Per-turn latch — see {@link consumeAuthFailureEvent}. */
+  private authRaisedThisTurn = false;
+
+  /**
+   * docs/150 — optional per-spawn HOME override. Set only by the local-mode
+   * agent factory, which points it at the provider account this session was
+   * routed to. Undefined (production, tests) keeps `agentHome()`.
+   */
+  constructor(private readonly resolveHome?: AgentHomeResolver) {
+    super();
+  }
+
+  /**
+   * Raise `auth_required` at most once per turn. One auth failure emits two
+   * auth-shaped events plus (on a PTY) possibly a raw stderr line; the signal's
+   * consumers re-dispatch the turn, so raising it twice runs the turn twice.
+   */
+  private raiseAuthRequiredOnce(): void {
+    if (this.authRaisedThisTurn) return;
+    this.authRaisedThisTurn = true;
+    this.emit("auth_required");
+  }
 
   /**
    * Send a prompt to Claude CLI in print mode with streaming JSON output.
@@ -116,7 +278,10 @@ export class ClaudeProcess extends EventEmitter {
    * they're saved to the host uploads directory and referenced in the prompt.
    */
   run(opts: ClaudeRunOptions): void {
-    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, reasoningEffort, settingsPath, autoCreatePr, sandbox, permissionPromptTool } = opts;
+    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, reasoningEffort, settingsPath, autoCreatePr, sandbox, guardDestructiveGit, permissionPromptTool } = opts;
+    // New turn — this process is one-shot, but reset explicitly so the latch's
+    // scope is stated at the turn boundary rather than inferred from lifetime.
+    this.authRaisedThisTurn = false;
 
     // `Skill` is allowlisted in both modes — including plan — so an explicit
     // `/my-skill` invocation is honored in every permission mode. This accepts
@@ -235,13 +400,19 @@ export class ClaudeProcess extends EventEmitter {
     // (e.g. when this orchestrator is itself dogfooded under an outer ShipIt
     // that has the var set) the hook would activate even when `autoCreatePr`
     // is false. Always overwrite with the value derived from this call.
+    // docs/150 — the worker runs as the unprivileged `shipit` user whose home
+    // is /home/shipit; agentHome() resolves to /root in local mode. A scoped
+    // home overrides both in local mode, where it points at the provider
+    // account this session was routed to (there is no per-session credentials
+    // mount to make the process-global home account-correct). Resolved once
+    // per spawn, never at construction.
+    const scopedHome = this.resolveHome?.();
     const spawnEnv: Record<string, string> = {
       ...process.env,
-      // docs/150 — the worker runs as the unprivileged `shipit` user whose
-      // home is /home/shipit; agentHome() resolves to /root in local mode.
-      HOME: agentHome(),
+      HOME: resolveAgentHome(scopedHome),
       NODE_ENV: "development",
     };
+    scrubEnvAuthForScopedHome(spawnEnv, scopedHome);
     if (autoCreatePr) {
       spawnEnv.SHIPIT_AUTO_CREATE_PR = "1";
     } else {
@@ -255,6 +426,14 @@ export class ClaudeProcess extends EventEmitter {
       spawnEnv.SHIPIT_SANDBOX = "1";
     } else {
       delete spawnEnv.SHIPIT_SANDBOX;
+    }
+    // SHI-265 — SHIPIT_GUARD_DESTRUCTIVE_GIT=1 arms the same hook's
+    // destructive-git rule for a session sitting on a merged branch. Normalized
+    // on every spawn for the same reason as the two vars above.
+    if (guardDestructiveGit) {
+      spawnEnv.SHIPIT_GUARD_DESTRUCTIVE_GIT = "1";
+    } else {
+      delete spawnEnv.SHIPIT_GUARD_DESTRUCTIVE_GIT;
     }
 
     try {
@@ -364,15 +543,18 @@ export class ClaudeProcess extends EventEmitter {
       if (!trimmed) continue;
       try {
         const event = JSON.parse(trimmed) as ClaudeEvent;
-        // docs/142 A1 — a runtime 401 arrives as an error `result` event, not a
-        // stderr line; surface it as an auth failure so the session re-auths.
-        if (resultEventIndicatesAuthFailure(event)) this.emit("auth_required");
+        // docs/142 A1, docs/179 — an auth failure arrives as structured events,
+        // not a stderr line: a synthetic assistant message carrying the CLI's
+        // "Please run /login" text, then a result flagged `is_error`. Surface it
+        // as an auth failure so the session heals + retries, and swallow the
+        // CLI's own error copy.
+        if (consumeAuthFailureEvent(event, () => this.raiseAuthRequiredOnce())) continue;
         this.emit("event", event);
       } catch {
         // Not valid JSON — relay as log output.
         // With a PTY, auth-related messages also arrive here (merged stream).
         if (textIndicatesAuthFailure(trimmed)) {
-          this.emit("auth_required");
+          this.raiseAuthRequiredOnce();
         }
         console.warn("[claude] non-JSON line:", trimmed.slice(0, 120));
         this.emit("log", "stdout", trimmed);
@@ -398,8 +580,33 @@ export class StreamingClaudeProcess extends EventEmitter {
   private watchdog: ReturnType<typeof setTimeout> | null = null;
   private requestIdCounter = 0;
 
+  /** See {@link ClaudeProcess}'s constructor — same per-spawn HOME override. */
+  constructor(private readonly resolveHome?: AgentHomeResolver) {
+    super();
+  }
+  /**
+   * Per-TURN latch — see {@link consumeAuthFailureEvent}. This process is
+   * resident across turns, so unlike {@link ClaudeProcess} the reset is
+   * load-bearing: it happens in {@link sendUserMessage}, the one place a new
+   * turn begins. Without it, a session that failed auth once would never raise
+   * the signal again and every later auth failure would go unrecovered.
+   */
+  private authRaisedThisTurn = false;
+
+  /**
+   * Raise `auth_required` at most once per turn. One auth failure emits two
+   * auth-shaped events, and the raw-stderr checkers can add a third; the
+   * signal's consumers re-dispatch the turn, so raising it twice runs the
+   * user's turn twice.
+   */
+  private raiseAuthRequiredOnce(): void {
+    if (this.authRaisedThisTurn) return;
+    this.authRaisedThisTurn = true;
+    this.emit("auth_required");
+  }
+
   run(opts: ClaudeRunOptions): void {
-    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, reasoningEffort, settingsPath, autoCreatePr, sandbox, permissionPromptTool } = opts;
+    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, reasoningEffort, settingsPath, autoCreatePr, sandbox, guardDestructiveGit, permissionPromptTool } = opts;
 
     // See ClaudeProcess.run above for why the named `mcp__shipit__*` tools join
     // `mcp__playwright__*` in both lists (SHI-128; docs/125, docs/149).
@@ -440,13 +647,19 @@ export class StreamingClaudeProcess extends EventEmitter {
       args.push("--exclude-dynamic-system-prompt-sections");
     }
 
+    // docs/150 — the worker runs as the unprivileged `shipit` user whose home
+    // is /home/shipit; agentHome() resolves to /root in local mode. A scoped
+    // home overrides both in local mode, where it points at the provider
+    // account this session was routed to (there is no per-session credentials
+    // mount to make the process-global home account-correct). Resolved once
+    // per spawn, never at construction.
+    const scopedHome = this.resolveHome?.();
     const spawnEnv: Record<string, string> = {
       ...process.env,
-      // docs/150 — the worker runs as the unprivileged `shipit` user whose
-      // home is /home/shipit; agentHome() resolves to /root in local mode.
-      HOME: agentHome(),
+      HOME: resolveAgentHome(scopedHome),
       NODE_ENV: "development",
     };
+    scrubEnvAuthForScopedHome(spawnEnv, scopedHome);
     if (autoCreatePr) {
       spawnEnv.SHIPIT_AUTO_CREATE_PR = "1";
     } else {
@@ -460,6 +673,16 @@ export class StreamingClaudeProcess extends EventEmitter {
       spawnEnv.SHIPIT_SANDBOX = "1";
     } else {
       delete spawnEnv.SHIPIT_SANDBOX;
+    }
+    // SHI-265 — see ClaudeProcess.run above. NOTE: this process is resident
+    // across turns, so the value is fixed at first spawn. That is acceptable
+    // because the hazard window — the docs/239 self-merge wake — arrives as a
+    // SYSTEM turn, and system turns never reuse the resident streaming process
+    // (`dispatched-turn.ts`), so they always spawn with a freshly-computed env.
+    if (guardDestructiveGit) {
+      spawnEnv.SHIPIT_GUARD_DESTRUCTIVE_GIT = "1";
+    } else {
+      delete spawnEnv.SHIPIT_GUARD_DESTRUCTIVE_GIT;
     }
 
     console.log("[streaming-claude] spawning:", "claude", args.slice(0, 8).join(" "), "| cwd:", cwd);
@@ -509,6 +732,10 @@ export class StreamingClaudeProcess extends EventEmitter {
   }
 
   sendUserMessage(text: string, _opts?: { images?: ImageAttachment[] }): void {
+    // A new turn starts here — re-arm the auth latch so a later auth failure on
+    // this resident process raises `auth_required` again. `run()` reaches this
+    // method too, so this is the single reset point for both entry paths.
+    this.authRaisedThisTurn = false;
     const msg = {
       type: "user",
       message: { role: "user", content: [{ type: "text", text }] },
@@ -573,7 +800,7 @@ export class StreamingClaudeProcess extends EventEmitter {
   kill(): void {
     this.clearWatchdog();
     if (this.proc) {
-      this.proc.kill("SIGTERM");
+      killChild(this.proc, "SIGTERM");
       this.proc = null;
     }
   }
@@ -642,7 +869,7 @@ export class StreamingClaudeProcess extends EventEmitter {
       lc.includes("oauth") ||
       lc.includes("sign in")
     ) {
-      this.emit("auth_required");
+      this.raiseAuthRequiredOnce();
     }
   }
 
@@ -664,14 +891,15 @@ export class StreamingClaudeProcess extends EventEmitter {
           // Turn ended — arm watchdog for next potential turn; don't kill process
           this.clearWatchdog();
         }
-        // docs/142 A1 — a runtime 401 comes through as an error `result` event;
-        // surface it as an auth failure so the session re-auths instead of the
-        // turn dying as a generic error.
-        if (resultEventIndicatesAuthFailure(event)) this.emit("auth_required");
+        // docs/142 A1, docs/179 — an auth failure comes through as structured
+        // events (synthetic assistant message + `is_error` result), not as
+        // stderr; surface it as an auth failure so the session re-auths instead
+        // of the turn "succeeding" with the CLI's /login text as its reply.
+        if (consumeAuthFailureEvent(event, () => this.raiseAuthRequiredOnce())) continue;
         this.emit("event", event);
       } catch {
         if (textIndicatesAuthFailure(trimmed)) {
-          this.emit("auth_required");
+          this.raiseAuthRequiredOnce();
         }
         console.warn("[streaming-claude] non-JSON line:", trimmed.slice(0, 120));
         this.emit("log", "stdout", trimmed);

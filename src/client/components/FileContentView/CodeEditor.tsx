@@ -69,6 +69,7 @@ export function CodeEditor({
   const addLineComment = useFileReviewStore((s) => s.addLineComment);
   const editComment = useFileReviewStore((s) => s.editComment);
   const deleteComment = useFileReviewStore((s) => s.deleteComment);
+  const setComposing = useFileReviewStore((s) => s.setComposing);
 
   const lineComments = useMemo<LineCommentLike[]>(() => {
     return comments
@@ -117,6 +118,10 @@ export function CodeEditor({
           if (readOnly) return;
           void deleteComment(sessionId, filePath, id);
         },
+        // An open comment editor blocks the footer's "Send comments" so an
+        // accidental submit can't drop a half-typed comment. The manager emits
+        // `false` on dispose, so unmounting mid-compose clears the flag.
+        onInputOpenChange: (open) => { setComposing(sessionId, filePath, open); },
         readOnly,
       });
 
@@ -155,7 +160,7 @@ export function CodeEditor({
     };
     // The lineComments dep is intentionally omitted: we sync via the
     // separate effect below to avoid tearing down the editor on every change.
-  }, [filePath, content, sessionId, addLineComment, editComment, deleteComment, readOnly, revealLine, language]);
+  }, [filePath, content, sessionId, addLineComment, editComment, deleteComment, setComposing, readOnly, revealLine, language]);
 
   // Sync comments without rebuilding the editor.
   // eslint-disable-next-line no-restricted-syntax -- syncing widget state with store updates

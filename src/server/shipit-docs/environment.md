@@ -59,7 +59,7 @@ Note: your own memory under `~/.claude/projects/<cwd>/memory/` is **not** restri
 ## Installed tools
 
 - **Node.js 24** (with npm; `pnpm` and `yarn` are available via corepack — it reads the repo's `packageManager` field and fetches the pinned version)
-- **git**, **curl**
+- **git**, **git-lfs**, **curl** (see [Git LFS](#git-lfs) below)
 - **python3**, **make**, **g++** (for native npm addons)
 - **Agent CLIs** — both `claude` (Claude Code) and `codex` (Codex) are installed; ShipIt invokes whichever the user selected for the session
 
@@ -68,6 +68,7 @@ Note: your own memory under `~/.claude/projects/<cwd>/memory/` is **not** restri
   - **ChatGPT subscription** (preferred). The user signs in with `Sign in with ChatGPT` in the UI; the credentials are written to `~/.codex/auth.json` (a symlink onto the credentials volume). Bills against their ChatGPT plan / Codex credits.
   - **`OPENAI_API_KEY` env var**. Bills against their OpenAI Platform account. ShipIt only injects this into the agent process when no ChatGPT login is present — when both are configured, the env var is stripped so the user isn't double-billed.
 - **Playwright** with headless Chrome (available via browser tools)
+- **Android build toolchain** — JDK 17 (`JAVA_HOME=/opt/java`), the Android SDK (`ANDROID_SDK_ROOT=/opt/android-sdk` — `sdkmanager`, `adb`, platforms 34/35, build-tools), and Gradle 8.7. Always present, so any Android/Gradle repo builds, lints, and runs JVM/snapshot tests with no per-repo setup (no `shipit.yaml` Android fields). See [android.md](android.md).
 
 ## Automatic behaviors
 
@@ -89,6 +90,34 @@ that added a dependency reinstalls and restarts the preview automatically.
 Docker Compose containers managed by ShipIt. Define them in
 `docker-compose.yml`. See [compose.md](compose.md) for details.
 
+## Git LFS
+
+`git-lfs` is installed and its filters are registered system-wide, so a repo that
+tracks assets with Git LFS works normally: `git checkout` materializes real
+content and committing a new tracked binary stores a pointer. ShipIt runs
+`git lfs pull` when it provisions the workspace, so LFS-tracked files should
+already hold their real bytes when your session starts.
+
+**When they don't, you will see pointer stubs, not an error.** An LFS pointer is
+a ~130-byte text file starting with `version https://git-lfs.github.com/spec/v1`.
+That failure mode is easy to misdiagnose — images render broken, audio fails with
+`Unable to decode audio data`, and the obvious suspects (sandbox networking,
+headless-browser codec support, a corrupt asset) all look plausible. **Before
+chasing any of those, check the file itself**:
+
+```bash
+head -c 120 path/to/asset.png     # a "git-lfs.github.com/spec/v1" header means it's a stub
+```
+
+If it is a stub, fetch the content rather than debugging the renderer:
+
+```bash
+git lfs pull
+```
+
+A deployment can disable automatic LFS downloads (`SHIPIT_GIT_LFS=off`) to avoid
+the bandwidth cost on asset-heavy repos; a manual `git lfs pull` still works.
+
 ## Session container lifecycle — idle containers are destroyed, not paused
 
 When a session sits idle (no one viewing it and no agent turn running), ShipIt
@@ -97,6 +126,14 @@ this "shutting down" or "pausing," but it is a full teardown — `docker stop` +
 `docker rm`, **not** `docker pause`. The container is not frozen and later
 thawed; it is deleted. When the user sends the next message, a **brand-new**
 container is created and `/workspace` is re-cloned from git.
+
+The user can explicitly enable **Keep preview running** for a session from its
+overflow menu. While enabled, ShipIt reserves that session's container and its
+`x-shipit-preview: auto` Compose services across viewer disconnects, idle cleanup,
+memory-pressure eviction, and orchestrator restarts. Capacity is deliberately
+limited by the deployment (one reservation by default). This reservation is for
+managed preview services only: arbitrary shell background processes still have
+no durability guarantee and belong in `docker-compose.yml`.
 
 **What this means for you:**
 

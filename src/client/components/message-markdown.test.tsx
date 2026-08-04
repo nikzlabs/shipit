@@ -39,6 +39,41 @@ describe("MarkdownContent links", () => {
     expect(openPreview).toHaveBeenCalledWith("sess-1", "docs/001-foo/plan.md", { line: undefined });
   });
 
+  it("gives a repo-path link no navigable href", async () => {
+    useSessionStore.setState({ sessionId: "sess-1" });
+    useFileStore.setState({ openPreview: vi.fn().mockResolvedValue(undefined) });
+
+    render(<MarkdownContent text="See [the file](src/server/foo.ts:42) here." />);
+    const link = screen.getByText("the file").closest("a")!;
+
+    // A relative href would resolve against the session route — the browser
+    // would show `/session/src/server/foo.ts` on hover and 404 on
+    // middle-click / ⌘-click / "Open link in new tab".
+    expect(link).not.toHaveAttribute("href");
+    expect(link).not.toHaveAttribute("target");
+    // Still reachable by keyboard, and the tooltip names the file.
+    expect(link).toHaveAttribute("role", "button");
+    expect(link).toHaveAttribute("tabindex", "0");
+    expect(link).toHaveAttribute("title", "Open src/server/foo.ts:42");
+  });
+
+  it("opens the file preview when a bare path in prose is activated by keyboard", async () => {
+    useSessionStore.setState({ sessionId: "sess-1" });
+    const openPreview = vi.fn().mockResolvedValue(undefined);
+    useFileStore.setState({ openPreview });
+
+    render(<MarkdownContent text="One edit to verdicts/flagging_policy.ts" />);
+    const link = screen.getByText("verdicts/flagging_policy.ts").closest("a")!;
+    expect(link).not.toHaveAttribute("href");
+
+    link.focus();
+    await userEvent.keyboard("{Enter}");
+
+    expect(openPreview).toHaveBeenCalledWith("sess-1", "verdicts/flagging_policy.ts", {
+      line: undefined,
+    });
+  });
+
   it("does not intercept external links", async () => {
     useSessionStore.setState({ sessionId: "sess-1" });
     const openPreview = vi.fn().mockResolvedValue(undefined);

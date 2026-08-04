@@ -11,6 +11,7 @@ import {
   extractPlanLabel,
   extractUrlFromBuffer,
 } from "./auth-manager.js";
+import { sanitizeClaudeAuthDiagnostic } from "./auth-diagnostics.js";
 
 // docs/150 — mock node-pty so the scoped-spawn test can assert the CLI is
 // launched with HOME pointed at the account root, without spawning a real
@@ -22,6 +23,8 @@ const ptyHoisted = vi.hoisted(() => ({
   // Captured CLI lifecycle callbacks + a kill counter, so the freshness suite
   // can drive the exit path and assert the PTY isn't SIGHUP'd prematurely.
   exitHandlers: [] as ((e: { exitCode: number }) => void)[],
+  dataHandlers: [] as ((data: string) => void)[],
+  writes: [] as string[],
   killed: 0,
 }));
 vi.mock("node-pty", () => ({
@@ -29,9 +32,9 @@ vi.mock("node-pty", () => ({
     ptyHoisted.calls.push({ cmd, args, opts });
     return {
       pid: 4242,
-      onData: () => {},
+      onData: (cb: (data: string) => void) => { ptyHoisted.dataHandlers.push(cb); },
       onExit: (cb: (e: { exitCode: number }) => void) => { ptyHoisted.exitHandlers.push(cb); },
-      write: () => {},
+      write: (data: string) => { ptyHoisted.writes.push(data); },
       kill: () => { ptyHoisted.killed++; },
     };
   },
@@ -225,6 +228,26 @@ describe("extractUrlFromBuffer", () => {
   });
 });
 
+describe("sanitizeClaudeAuthDiagnostic", () => {
+  it("redacts auth URL details, token-like values, emails, API keys, and credential paths", () => {
+    const sanitized = sanitizeClaudeAuthDiagnostic(
+      "Open https://claude.ai/oauth/authorize?code=true&state=secret-state&code_challenge=secret-challenge " +
+      "for person@example.com with Authorization: Bearer abcdefghijklmnop and sk-ant-secret " +
+      "from /root/.claude/.credentials.json plus /credentials/.claude/auth.json",
+    );
+
+    expect(sanitized).toContain("https://claude.ai/oauth/authorize?[redacted]");
+    expect(sanitized).toContain("[email redacted]");
+    expect(sanitized).toContain("Bearer [redacted]");
+    expect(sanitized).toContain("sk-ant-[redacted]");
+    expect(sanitized).toContain("/root/.[redacted]");
+    expect(sanitized).toContain("/credentials/[redacted]");
+    expect(sanitized).not.toContain("secret-state");
+    expect(sanitized).not.toContain("person@example.com");
+    expect(sanitized).not.toContain("abcdefghijklmnop");
+  });
+});
+
 describe("AuthManager.checkCredentials", () => {
   // Save/restore Anthropic auth env vars so tests don't depend on the host
   // shell and don't leak state between tests. We don't try to assert the
@@ -398,6 +421,7 @@ describe("AuthManager / account-scoped (docs/150)", () => {
 describe("AuthManager / scoped spawn (docs/150)", () => {
   beforeEach(() => {
     ptyHoisted.calls.length = 0;
+    ptyHoisted.dataHandlers.length = 0;
     // Fake timers so the 15s watchdog + wizard-Enter debounce don't leak/fire.
     vi.useFakeTimers();
   });
@@ -419,6 +443,26 @@ describe("AuthManager / scoped spawn (docs/150)", () => {
       expect(ptyHoisted.calls[0].opts.env?.HOME).toBe(tmp);
       expect(mgr.getActiveAccountId()).toBe("acct-7");
       mgr.kill();
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  // docs/150 — `startAccountAuth` refuses while another account owns the flow,
+  // so a scope that outlives its process locks the provider out of sign-in
+  // entirely. A cancel emits no terminal complete/failed event, so `cancel()`
+  // is the only thing that can release it.
+  it("cancel() releases the account scope, not just the PTY", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-claude-home-"));
+    try {
+      const mgr = new AuthManager();
+      mgr.startOAuthFlow({ accountId: "acct-7", credentialDir: tmp });
+      expect(mgr.getActiveAccountId()).toBe("acct-7");
+
+      mgr.cancel();
+
+      // Stale scope here would 409 every later sign-in for this provider.
+      expect(mgr.getActiveAccountId()).toBeNull();
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
@@ -457,16 +501,21 @@ describe("AuthManager / scoped spawn (docs/150)", () => {
     }
   });
 
-  it("strips ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN from the login subprocess env", () => {
+  it("strips ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / CLAUDE_CODE_OAUTH_TOKEN from the login subprocess env", () => {
     // Companion to the on-disk wipe: `claude /login` honors these env vars over
     // the interactive OAuth flow, so a stale key/token in the orchestrator's
     // environment makes the flow hang on "Starting…" no matter how clean the
-    // disk is. The login child must never inherit them — while the
-    // orchestrator's own `process.env` is left untouched.
+    // disk is. All three subscription-bearer vars must never be inherited by
+    // the login child — while the orchestrator's own `process.env` is left
+    // untouched. CLAUDE_CODE_OAUTH_TOKEN (set by `claude setup-token`) is the
+    // third such var and is easy to miss — a forwarded one (e.g. dogfood
+    // secrets) would re-introduce the hang.
     const origKey = process.env.ANTHROPIC_API_KEY;
     const origToken = process.env.ANTHROPIC_AUTH_TOKEN;
+    const origOauth = process.env.CLAUDE_CODE_OAUTH_TOKEN;
     process.env.ANTHROPIC_API_KEY = "sk-ant-stale";
     process.env.ANTHROPIC_AUTH_TOKEN = "stale-bearer";
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = "stale-oauth-token";
     try {
       const mgr = new AuthManager();
       mgr.startOAuthFlow();
@@ -474,17 +523,114 @@ describe("AuthManager / scoped spawn (docs/150)", () => {
       const env = ptyHoisted.calls[0].opts.env!;
       expect(env.ANTHROPIC_API_KEY).toBeUndefined();
       expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+      expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
       // The orchestrator's own env is unchanged — env-var auth still works for
       // agent turns / dogfooding.
       expect(process.env.ANTHROPIC_API_KEY).toBe("sk-ant-stale");
       expect(process.env.ANTHROPIC_AUTH_TOKEN).toBe("stale-bearer");
+      expect(process.env.CLAUDE_CODE_OAUTH_TOKEN).toBe("stale-oauth-token");
       mgr.kill();
     } finally {
       if (origKey !== undefined) process.env.ANTHROPIC_API_KEY = origKey;
       else delete process.env.ANTHROPIC_API_KEY;
       if (origToken !== undefined) process.env.ANTHROPIC_AUTH_TOKEN = origToken;
       else delete process.env.ANTHROPIC_AUTH_TOKEN;
+      if (origOauth !== undefined) process.env.CLAUDE_CODE_OAUTH_TOKEN = origOauth;
+      else delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
     }
+  });
+
+  it("tears down a stale PTY and restarts instead of silently no-oping", () => {
+    // The deadlock that forced users to click "Clear saved credentials" first:
+    // a hung first login left `this.proc` non-null, so every subsequent "Sign
+    // in" early-returned (no-op) and the UI sat on "Starting…" forever — the
+    // only escape was signOut()/kill() via "Clear credentials". Re-starting the
+    // flow must now kill the stale PTY and spawn a fresh one, making "Sign in"
+    // self-healing.
+    ptyHoisted.killed = 0;
+    const mgr = new AuthManager();
+
+    mgr.startOAuthFlow(); // first attempt — leaves a live PTY
+    expect(ptyHoisted.calls).toHaveLength(1);
+    expect(ptyHoisted.killed).toBe(0);
+
+    mgr.startOAuthFlow(); // retry while the first is still "running"
+    // The stale PTY was killed and a brand-new login was spawned (not a no-op).
+    expect(ptyHoisted.killed).toBe(1);
+    expect(ptyHoisted.calls).toHaveLength(2);
+    mgr.kill();
+  });
+});
+
+describe("AuthManager / auth diagnostics", () => {
+  beforeEach(() => {
+    ptyHoisted.calls.length = 0;
+    ptyHoisted.dataHandlers.length = 0;
+    ptyHoisted.exitHandlers.length = 0;
+    ptyHoisted.killed = 0;
+    ptyHoisted.writes.length = 0;
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  it("emits progress and sanitized CLI logs through the auth flow", () => {
+    const mgr = new AuthManager();
+    const progress: { phase: string; message: string; attemptId: string }[] = [];
+    const logs: { source: string; message: string; attemptId: string }[] = [];
+    const pending: string[] = [];
+    mgr.on("progress", (p: { phase: string; message: string; attemptId: string }) => progress.push(p));
+    mgr.on("log", (l: { source: string; message: string; attemptId: string }) => logs.push(l));
+    mgr.on("pending", () => pending.push("pending"));
+
+    mgr.startOAuthFlow();
+    expect(progress.map((p) => p.phase)).toContain("starting");
+    expect(progress.map((p) => p.phase)).toContain("waiting_for_url");
+
+    ptyHoisted.dataHandlers[0](
+      "Browser didn't open?\nhttps://claude.ai/oauth/authorize?code=true&state=super-secret-state\n\nPastecodehereifprompted>",
+    );
+
+    expect(pending).toHaveLength(1);
+    expect(progress.map((p) => p.phase)).toContain("waiting_for_code");
+    const cliLog = logs.find((l) => l.source === "claude_stdout");
+    expect(cliLog?.message).toContain("https://claude.ai/oauth/authorize?[redacted]");
+    expect(cliLog?.message).not.toContain("super-secret-state");
+    expect(new Set(progress.map((p) => p.attemptId)).size).toBe(1);
+    mgr.kill();
+  });
+
+  it("does not submit an empty code when Claude collapses only some prompt spaces", () => {
+    const mgr = new AuthManager();
+    const pending: string[] = [];
+    mgr.on("pending", () => pending.push("pending"));
+
+    mgr.startOAuthFlow();
+    ptyHoisted.dataHandlers[0](
+      "Browser didn't open?\nhttps://claude.com/cai/oauth/authorize?code=true&state=secret\n\nPaste codehereifprompted >",
+    );
+
+    expect(pending).toHaveLength(1);
+    vi.advanceTimersByTime(10_000);
+    expect(ptyHoisted.writes).toEqual([]);
+    mgr.kill();
+  });
+
+  it("emits failed progress and diagnostic log when the process exits without fresh credentials", () => {
+    const mgr = new AuthManager();
+    const progress: { phase: string; message: string }[] = [];
+    const logs: { level: string; message: string }[] = [];
+    mgr.on("progress", (p: { phase: string; message: string }) => progress.push(p));
+    mgr.on("log", (l: { level: string; message: string }) => logs.push(l));
+
+    mgr.startOAuthFlow();
+    for (const cb of ptyHoisted.exitHandlers) cb({ exitCode: 1 });
+
+    expect(progress.at(-1)).toMatchObject({ phase: "failed" });
+    expect(logs.some((l) => l.level === "error" && l.message.includes("without writing fresh credentials"))).toBe(true);
   });
 });
 

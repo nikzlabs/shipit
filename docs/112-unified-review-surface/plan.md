@@ -1,4 +1,8 @@
 
+---
+issue: https://linear.app/shipit-ai/issue/SHI-240
+description: One review surface for files and design docs — anchored comments, drafts per (session, file), send → prompt → history.
+---
 # 112 — Unified Review Surface
 
 > **Successor for the AI Review affordance:** the in-band "AI Review"
@@ -220,6 +224,23 @@ the section or line, and the comment text, and dispatches it to the
 agent in the active session via the existing `send_message` flow. The
 review transitions to "sent" and is added to history.
 
+**Send is held while a comment editor is open.** An unsaved comment —
+the selection/line add-input, or an in-place edit of an existing comment
+— is not part of the draft yet, so sending would freeze the review and
+silently discard whatever is still in the textarea. While any editor is
+open the button is disabled with the reason spelled out beside it
+("Finish your comment first"), and `handleSend` no-ops to match, so a
+keyboard path can't route around the disabled button.
+
+The flag is transient client state (`composingByKey` in
+`file-review-store`, keyed the same `(session, file)` way as the draft) and
+is owned by the renderers that host the editor: `MarkdownSelectionComments`
+emits `onComposingChange`, the Monaco widget emits `onInputOpenChange`.
+Both clear it on teardown (unmount / `dispose()`), so closing the viewer or
+switching files mid-compose can't strand Send in a disabled state.
+`DiffPanel` — still on the legacy comment store — implements the same gate
+with local state off the same widget callback.
+
 ### What goes away
 
 - The "Review" button on doc rows in the docs pane.
@@ -356,7 +377,8 @@ fresh one is created on next open.
 
 | File | Role |
 |---|---|
-| `src/client/stores/file-review-store.ts` | Zustand store. Talks to the new HTTP API via `fetch`. Exposes `load`, `addLineComment`, `addSectionComment`, `editComment`, `deleteComment`, `sendDraft`, `aiReview`, `discardEmptyDraft`. Keys state by `(sessionId, filePath)`. |
+| `src/client/stores/file-review-store.ts` | Zustand store. Talks to the new HTTP API via `fetch`. Exposes `load`, `addLineComment`, `addSectionComment`, `editComment`, `deleteComment`, `sendDraft`, `aiReview`, `discardEmptyDraft`. Keys state by `(sessionId, filePath)`. Also holds the transient `composingByKey` flag (`setComposing`) that gates Send while a comment editor is open. |
+| `src/client/hooks/use-file-review-controls.ts` | Owns the draft/history/send state for both review surfaces. `canSend` requires draft comments **and** no open comment editor; `handleSend` mirrors the same guard. |
 | `src/client/components/FilePreviewModal.tsx` | The unified surface. On open: ensures a draft exists. Header carries AI Review (markdown only) + Send. Footer surfaces draft status, comment count, and a "Past reviews" disclosure. Closing without comments tidies up the empty draft. |
 | `src/client/components/MonacoCommentWidgets.ts` | Now accepts a `LineCommentLike` shape so both the new file-review store (no `filePath`) and the legacy `comment-store` (has `filePath`) work with the same widget. |
 | `src/client/components/DocsViewer.tsx` | "Review" button removed — clicking the doc opens the unified modal instead. |
@@ -366,7 +388,9 @@ fresh one is created on next open.
 
 - **DiffPanel comments** keep using the existing client `comment-store`
   (localStorage). Per the plan, diff-anchored review (commenting on a
-  staged change) is a different surface and out of scope.
+  staged change) is a different surface and out of scope. It does share the
+  Send-while-composing gate, via local state off the widget's
+  `onInputOpenChange`.
 - The legacy `comment-store` is no longer touched by `FilePreviewModal`.
 
 ### Tests

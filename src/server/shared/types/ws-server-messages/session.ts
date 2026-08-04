@@ -1,4 +1,5 @@
-import type { SessionInfo } from "../domain-types.js";
+import type { SessionInfo, SessionMessageOrigin } from "../domain-types.js";
+import type { AgentInterfaceProvenance } from "../../agent-interface-sdk/protocol.js";
 
 export interface WsSessionList {
   type: "session_list";
@@ -59,6 +60,19 @@ export interface WsContainerRestarting {
   message?: string;
 }
 
+/** Runtime comparison between a session worker image and the orchestrator. */
+export type ContainerFreshness =
+  | { state: "current"; workerBuildId: string; orchestratorBuildId: string }
+  | { state: "stale"; workerBuildId: string; orchestratorBuildId: string }
+  | { state: "unknown"; workerBuildId?: string; orchestratorBuildId?: string };
+
+/** Transient, session-scoped worker freshness signal (docs/242). */
+export interface WsSessionContainerFreshness {
+  type: "session_container_freshness";
+  sessionId: string;
+  freshness: ContainerFreshness;
+}
+
 /** Server → Client: full reset completed successfully. */
 export interface WsFullResetComplete {
   type: "full_reset_complete";
@@ -66,7 +80,18 @@ export interface WsFullResetComplete {
 
 // ---- Session runner messages (server → client) ----
 
-/** Server → Client: current runtime state of a session. */
+/**
+ * Server → Client: current runtime state of a session.
+ *
+ * `running` is a **turn transition**, not a poll: every emitter sends this
+ * message because a turn just started or just ended. The client treats it as
+ * authoritative on "is a turn in flight" — it adds/removes the session from
+ * `activeRunnerSessions` and drives the chat spinner off it. Anything that
+ * merely wants to report some *other* piece of session state must therefore get
+ * its own message rather than piggy-backing here with a `running` snapshot: a
+ * snapshot taken at an arbitrary moment reads as "the turn ended" and produces a
+ * spurious idle blip (the docs/235 regression — see {@link WsBackgroundTasks}).
+ */
 export interface WsSessionStatus {
   type: "session_status";
   sessionId: string;
@@ -98,6 +123,32 @@ export interface WsSessionStatus {
    * See docs/124-session-rescue-and-diagnostics §1.4.
    */
   lastInterruptError?: string;
+}
+
+/**
+ * Server → Client: the session's outstanding agent-initiated background tasks
+ * (docs/235) — a `Bash(run_in_background)` job, a scheduled wake-up. Carries the
+ * **complete current list** every time (`count: 0` is the explicit drained
+ * signal), so one message fully re-states the truth.
+ *
+ * Deliberately its own message type rather than a field on
+ * {@link WsSessionStatus}. The first implementation rode along on
+ * `session_status` and had to fill in a `running` value; the CLI drains the task
+ * list ~1ms *before* it emits the self-wake that marks the runner busy again, so
+ * that message carried `running: false` and the client read a turn that was
+ * about to start as a session going idle — clearing the running indicator and
+ * firing the "needs attention" chime, then flipping back a frame later. Splitting
+ * the level signal off means a background-task update can never assert anything
+ * about turn state.
+ *
+ * `descriptions` feeds the chat status line so it can name the work ("Waiting
+ * for: npm test") instead of showing a bare count.
+ */
+export interface WsBackgroundTasks {
+  type: "background_tasks";
+  sessionId: string;
+  count: number;
+  descriptions: string[];
 }
 
 /**
@@ -144,9 +195,13 @@ export interface WsSessionAgentFinished {
 /** Server → Client: a server-initiated user message (e.g. CI fix prompt). */
 export interface WsSystemUserMessage {
   type: "system_user_message";
+  sessionId: string;
   text: string;
   /** Activity label for the UI (e.g. "Auto-fixing CI..."). */
   activity?: string;
+  agentInterface?: AgentInterfaceProvenance;
+  /** Another session's agent supplied this prompt, rather than the user. */
+  messageOrigin?: SessionMessageOrigin;
 }
 
 /**

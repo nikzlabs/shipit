@@ -519,6 +519,17 @@ across CLI versions and `rm`-ing the auth file is sufficient and idempotent.
 
 All four phases described above have landed. The current state:
 
+### Durable app-server threads (2026-07-31 follow-up)
+
+ShipIt persists the thread id returned by `thread/start` and starts a fresh
+`codex app-server` process for the next turn. That makes a disk-backed rollout
+part of the resume contract, but the adapter previously left the protocol's
+`ephemeral` option unspecified. Some Codex starts therefore returned an id
+without materializing a rollout; the next message failed closed at
+`thread/resume` with `no rollout found`. New threads now explicitly send
+`ephemeral: false` in `codex-event-handler.ts`, with the wire request covered by
+`adapter.test.ts`.
+
 ### Phase 1 — credential persistence (shipped)
 
 - `~/.codex → /credentials/.codex` symlink added to all four Dockerfiles

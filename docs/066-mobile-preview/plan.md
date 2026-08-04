@@ -18,10 +18,10 @@ A **device frame toolbar** in the preview header lets users pick a viewport size
 |--------|-------|--------|----------|
 | Responsive (default) | 100% | 100% | — |
 | iPhone SE | 375 | 667 | phone |
-| iPhone 14 | 390 | 844 | phone |
-| iPhone 14 Pro Max | 430 | 932 | phone |
-| Pixel 7 | 412 | 915 | phone |
-| iPad Mini | 768 | 1024 | tablet |
+| iPhone 16 | 393 | 852 | phone |
+| iPhone 16 Pro Max | 440 | 956 | phone |
+| Pixel 9 | 412 | 916 | phone |
+| iPad Mini | 744 | 1133 | tablet |
 | iPad Air | 820 | 1180 | tablet |
 
 Users can also type a custom width/height.
@@ -52,7 +52,7 @@ When a device preset is active (not "Responsive"):
 
 #### Dimension label
 
-Below the iframe (or in the header), show the active dimensions: `390 × 844` so the user always knows the exact viewport.
+Below the iframe (or in the header), show the active dimensions: `393 × 852` so the user always knows the exact viewport.
 
 ### State management
 
@@ -120,16 +120,16 @@ The dropdown menu structure:
 ├──────────────────────────┤
 │  Phones                  │
 │    iPhone SE    375×667  │
-│    iPhone 14   390×844   │
-│    iPhone 14+  430×932   │
-│    Pixel 7     412×915   │
+│    iPhone 16   393×852   │
+│    iPhone 16+  440×956   │
+│    Pixel 9     412×916   │
 ├──────────────────────────┤
 │  Tablets                 │
-│    iPad Mini   768×1024  │
+│    iPad Mini   744×1133  │
 │    iPad Air    820×1180  │
 ├──────────────────────────┤
 │  Custom                  │
-│  [ 390 ] × [ 844 ]      │
+│  [ 393 ] × [ 852 ]      │
 └──────────────────────────┘
 ```
 

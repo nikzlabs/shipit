@@ -27,6 +27,11 @@ const buttonVariants = cva(
         // dropped vertical padding irrelevant.
         md: "h-8 text-sm px-3 gap-1.5",
         lg: "text-sm px-4 py-2 gap-2",
+        // Compact icon button: equal (square) padding around a single icon, with
+        // no fixed height so it sizes to its glyph. The standard square/compact
+        // icon control across the app — pair with `variant="ghost"` for the
+        // tertiary-at-rest, hover-fill treatment those sites hand-rolled before.
+        icon: "p-1 gap-1",
       },
     },
     defaultVariants: {

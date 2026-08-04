@@ -64,7 +64,7 @@ describe("Integration: Preview config and session-switch cleanup", () => {
 
   it("sends preview_status on initial connect", async () => {
     const client = await TestClient.connect(port);
-    const msg = await client.receive();
+    const msg = await client.receiveType("preview_status");
     expect(msg.type).toBe("preview_status");
     expect((msg as any).running).toBe(false);
     client.close();

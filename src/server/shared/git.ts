@@ -1,4 +1,5 @@
 import simpleGit, { type SimpleGit, type LogResult } from "simple-git";
+import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { scanDiffForSecrets, redactSecretsInText, type SecretFinding } from "./secret-scan.js";
@@ -110,6 +111,16 @@ export class GitManager {
   constructor(workspaceDir?: string) {
     this.workspaceDir = workspaceDir ?? DEFAULT_WORKSPACE_DIR;
     this.git = simpleGit(this.workspaceDir);
+  }
+
+  /**
+   * The git working directory this manager operates on. Read-only: callers that
+   * need to run something git can't express through this class (the diff
+   * service's `git lfs smudge`, say) get the path, never the ability to retarget
+   * an existing manager.
+   */
+  get dir(): string {
+    return this.workspaceDir;
   }
 
   /** Get the current HEAD commit hash. Returns null if no commits exist. */
@@ -345,6 +356,34 @@ export class GitManager {
   }
 
   /**
+   * Every diff-stat surface (PR card, diff dialog, re-arm detection) funnels
+   * through this `--numstat` call so their numbers can never disagree.
+   *
+   * `--numstat` is load-bearing: simple-git's default `--stat` parsing derives
+   * per-file insertions/deletions by counting the `+`/`-` characters of git's
+   * histogram bar, which git SCALES DOWN to fit the stat width — on large
+   * diffs those per-file counts (and any total summed from them) are off by
+   * orders of magnitude. The numstat columns are exact.
+   */
+  private async numstatSummary(range: string): Promise<{
+    insertions: number;
+    deletions: number;
+    files: { file: string; insertions: number; deletions: number; binary: boolean }[];
+  }> {
+    const result = await this.git.diffSummary(["--numstat", range]);
+    return {
+      insertions: result.insertions,
+      deletions: result.deletions,
+      files: result.files.map((f) => ({
+        file: f.file,
+        insertions: (f as { insertions?: number }).insertions ?? 0,
+        deletions: (f as { deletions?: number }).deletions ?? 0,
+        binary: (f as { binary?: boolean }).binary === true,
+      })),
+    };
+  }
+
+  /**
    * Get total insertions/deletions between the current branch and a base branch.
    * Tries origin/<branch>, then local <branch>, then common fallbacks.
    */
@@ -356,7 +395,7 @@ export class GitManager {
     ];
     for (const ref of refs) {
       try {
-        const result = await this.git.diffSummary([`${ref}...HEAD`]);
+        const result = await this.numstatSummary(`${ref}...HEAD`);
         return {
           insertions: result.insertions,
           deletions: result.deletions,
@@ -383,7 +422,7 @@ export class GitManager {
    */
   async diffStatTwoDot(ref: string): Promise<{ insertions: number; deletions: number; files: number }> {
     try {
-      const result = await this.git.diffSummary([`${ref}..HEAD`]);
+      const result = await this.numstatSummary(`${ref}..HEAD`);
       return { insertions: result.insertions, deletions: result.deletions, files: result.files.length };
     } catch {
       return { insertions: 0, deletions: 0, files: 0 };
@@ -408,6 +447,14 @@ export class GitManager {
    * squash, two-dot picks up other commits), so a merged session keeps showing
    * "merged" until the user rebases. A missing `origin/<base>` also returns
    * false (fail-safe — stay merged).
+   *
+   * **Precondition — the caller MUST have fetched.** This reads `origin/<base>`
+   * from the local clone, and that ref only moves when this clone fetches. On a
+   * STALE ref clause 1 is trivially satisfied (the merge-base of a branch and
+   * its own fork point *is* that fork point), so the check reports "progressed"
+   * for a branch that was never rebased and carries only already-merged work.
+   * Every caller therefore freshens the ref first — see
+   * `services/pr-rearm.ts#freshenBaseRef`.
    */
   async advancedBeyondMergedBase(baseBranch: string): Promise<boolean> {
     const baseRef = `origin/${baseBranch}`;
@@ -441,7 +488,10 @@ export class GitManager {
    * the user resets.
    *
    * Local git only (no network). Fail-safe false (stay merged) on any
-   * resolution error or a missing `origin/<base>`.
+   * resolution error or a missing `origin/<base>`. Like
+   * {@link advancedBeyondMergedBase} it reads a remote-tracking ref, so the
+   * caller must have fetched — against a stale `origin/<base>` this reads a
+   * branch reset onto an outdated base tip as "at base".
    */
   async headIsAtBase(baseBranch: string): Promise<boolean> {
     const baseRef = `origin/${baseBranch}`;
@@ -515,7 +565,8 @@ export class GitManager {
   }
 
   /**
-   * Get per-file diff summary (files changed with insertions/deletions).
+   * Get per-file diff summary (files changed with insertions/deletions),
+   * from `--numstat` (see {@link numstatSummary} for why not `--stat`).
    * `binary` is true when git reports `-\t-` in --numstat (the canonical
    * binary signal). It's NOT inferred from `insertions === 0 && deletions === 0`
    * because pure renames, mode-only changes, and empty files also produce 0/0.
@@ -523,13 +574,8 @@ export class GitManager {
    */
   async diffSummary(range?: string): Promise<{ file: string; insertions: number; deletions: number; binary: boolean }[]> {
     try {
-      const result = await this.git.diffSummary([range ?? "HEAD~1...HEAD"]);
-      return result.files.map((f) => ({
-        file: f.file,
-        insertions: (f as { insertions?: number }).insertions ?? 0,
-        deletions: (f as { deletions?: number }).deletions ?? 0,
-        binary: (f as { binary?: boolean }).binary === true,
-      }));
+      const result = await this.numstatSummary(range ?? "HEAD~1...HEAD");
+      return result.files;
     } catch {
       return [];
     }
@@ -546,6 +592,40 @@ export class GitManager {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * The repo's default branch as this clone understands it — `main`, `master`,
+   * `trunk`, whatever the remote's HEAD points at.
+   *
+   * Read from `refs/remotes/origin/HEAD`, which `git clone` writes at clone time
+   * (and which the bare cache propagates to per-session clones), so this costs
+   * one local ref read: no network, no credential prompt. Falls back to probing
+   * for `origin/main` then `origin/master`, and finally to the literal "main" —
+   * the same guess every caller made before this method existed, so the worst
+   * case is exactly the old behavior.
+   *
+   * Exists because "the base branch" was previously hard-coded to "main" in a
+   * dozen places (ready-card diff stats, changed-file lists, the diff route),
+   * each of which silently produced wrong or empty results on a `master` repo.
+   */
+  async getDefaultBranch(): Promise<string> {
+    try {
+      const head = await this.git.raw(["symbolic-ref", "refs/remotes/origin/HEAD"]);
+      const match = /refs\/remotes\/[^/]+\/(.+)/.exec(head.trim());
+      if (match) return match[1];
+    } catch {
+      // origin/HEAD not set (older clone, or a repo with no remote) — probe.
+    }
+    for (const candidate of ["main", "master"]) {
+      try {
+        await this.git.revparse(["--verify", `origin/${candidate}`]);
+        return candidate;
+      } catch {
+        // try next candidate
+      }
+    }
+    return "main";
   }
 
   /**
@@ -627,6 +707,32 @@ export class GitManager {
     } catch {
       return "";
     }
+  }
+
+  /**
+   * Read a blob at a commit as raw bytes (not decoded to UTF-8, which would
+   * corrupt binary content like images). Returns `null` when the path doesn't
+   * exist at that commit or the blob exceeds `maxBytes` (default 16 MB).
+   *
+   * Uses `git show` over `execFile` with a Buffer encoding because simple-git's
+   * `.show()`/`.raw()` always decode stdout to a string.
+   */
+  async getFileBufferAtCommit(
+    commitHash: string,
+    filePath: string,
+    maxBytes = 16 * 1_048_576,
+  ): Promise<Buffer | null> {
+    return new Promise((resolve) => {
+      execFile(
+        "git",
+        ["show", `${commitHash}:${filePath}`],
+        { cwd: this.workspaceDir, encoding: "buffer", maxBuffer: maxBytes },
+        (err, stdout) => {
+          if (err || !stdout || stdout.length === 0) resolve(null);
+          else resolve(stdout);
+        },
+      );
+    });
   }
 
   /**

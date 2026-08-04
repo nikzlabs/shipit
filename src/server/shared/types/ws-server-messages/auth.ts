@@ -82,12 +82,49 @@ export interface WsAgentAuthComplete {
  * persisted credentials were revoked. `reason` lets the UI tailor the next
  * step (retry on `timeout`/`denied`/`error`, prompt re-sign-in on
  * `revoked`). (docs/155 Phase 2b)
+ *
+ * `duplicate` (docs/150 req 22) is the odd one out: the sign-in itself
+ * *succeeded*, and was then refused because the account is already connected.
+ * It needs its own reason because retrying is exactly the wrong next step, and
+ * because the refusal usually removes the row it names — so the UI has to
+ * surface `message` somewhere other than that row.
  */
 export interface WsAgentAuthFailed {
   type: "agent_auth_failed";
   agentId: AgentId;
   /** Provider-account id whose flow failed (docs/150), when scoped. */
   accountId?: string;
-  reason?: "timeout" | "denied" | "error" | "revoked";
+  reason?: "timeout" | "denied" | "error" | "revoked" | "duplicate";
   message?: string;
+}
+
+export type AgentAuthPhase =
+  | "starting"
+  | "waiting_for_cli"
+  | "skipping_setup"
+  | "waiting_for_url"
+  | "waiting_for_code"
+  | "checking_credentials"
+  | "complete"
+  | "failed";
+
+export interface WsAgentAuthProgress {
+  type: "agent_auth_progress";
+  agentId: AgentId;
+  accountId?: string;
+  attemptId: string;
+  phase: AgentAuthPhase;
+  message: string;
+  elapsedMs?: number;
+}
+
+export interface WsAgentAuthLog {
+  type: "agent_auth_log";
+  agentId: AgentId;
+  accountId?: string;
+  attemptId: string;
+  timestamp: string;
+  level: "debug" | "info" | "warn" | "error";
+  source: "shipit" | "claude_stdout" | "claude_stderr" | "claude_control";
+  message: string;
 }

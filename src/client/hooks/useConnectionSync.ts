@@ -4,6 +4,7 @@ import type { WsClientMessage } from "../../server/shared/types.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { loadBootstrapData, loadSessionHistory } from "../utils/session-data.js";
+import { useEventListeners } from "./useEventListener.js";
 
 export function useConnectionSync(params: {
   status: string;
@@ -19,32 +20,30 @@ export function useConnectionSync(params: {
 
   // Mobile app switches commonly produce transient WS closes. Give the
   // reconnect/replay path a short window before treating a streaming close as
-  // a real agent error.
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
-  useEffect(() => {
-    function markRecentlyForegrounded() {
-      if (document.hidden) return;
-      recentlyForegroundedRef.current = true;
-      if (foregroundTimerRef.current) clearTimeout(foregroundTimerRef.current);
-      foregroundTimerRef.current = setTimeout(() => {
-        recentlyForegroundedRef.current = false;
-        foregroundTimerRef.current = null;
-      }, 8000);
-    }
+  // a real agent error. Touches refs only, so the per-render closure is safe to
+  // hand to the listener hook (it reads the latest one at fire time).
+  function markRecentlyForegrounded() {
+    if (document.hidden) return;
+    recentlyForegroundedRef.current = true;
+    if (foregroundTimerRef.current) clearTimeout(foregroundTimerRef.current);
+    foregroundTimerRef.current = setTimeout(() => {
+      recentlyForegroundedRef.current = false;
+      foregroundTimerRef.current = null;
+    }, 8000);
+  }
 
-    function handleVisibilityChange() {
-      markRecentlyForegrounded();
-    }
+  useEventListeners([
+    { target: document, type: "visibilitychange", handler: markRecentlyForegrounded },
+    { target: window, type: "pageshow", handler: markRecentlyForegrounded },
+    { target: window, type: "focus", handler: markRecentlyForegrounded },
+  ]);
 
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    window.addEventListener("pageshow", markRecentlyForegrounded);
-    window.addEventListener("focus", markRecentlyForegrounded);
-    return () => {
-      if (foregroundTimerRef.current) clearTimeout(foregroundTimerRef.current);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-      window.removeEventListener("pageshow", markRecentlyForegrounded);
-      window.removeEventListener("focus", markRecentlyForegrounded);
-    };
+  // The foreground timer used to be cleared in the listener effect's cleanup;
+  // useEventListeners only owns the add/remove pairs, so preserve that teardown
+  // here so a pending timeout doesn't fire after unmount.
+  // eslint-disable-next-line no-restricted-syntax -- non-listener cleanup (clear a pending timeout on unmount)
+  useEffect(() => () => {
+    if (foregroundTimerRef.current) clearTimeout(foregroundTimerRef.current);
   }, []);
 
   // Fetch bootstrap data via HTTP — fires once on mount
@@ -98,6 +97,23 @@ export function useConnectionSync(params: {
       // WS would process live events before HTTP history is loaded, causing
       // duplicated or lost messages.
       useSessionStore.getState().setHistoryLoaded(false);
+      // docs/178 — clear the transient "Compacting…" indicator on disconnect.
+      // It's emit-only (never persisted), driven live by `compaction_status`.
+      // A turn that ended while we were disconnected — or whose live
+      // `running:false` we missed because the container died mid-reconnect —
+      // would otherwise leave the spinner stuck on: the cleanly-ended turn's
+      // event buffer is already cleared, so nothing on reconnect clears the
+      // flag. Resetting here (strictly before any reconnect buffer replay) lets
+      // a genuinely in-flight compaction re-establish it via the replayed
+      // `compaction_status active:true`, while an ended turn stays cleared.
+      useSessionStore.getState().setCompacting(false);
+      // A consult can finish while this browser is disconnected. Its terminal
+      // card is persisted, but the completion event is then behind the replay
+      // cursor, so a chip left in client memory would otherwise linger forever
+      // at the transcript footer. Clear live-only chips on disconnect. A consult
+      // that is genuinely still running is restored by its buffered spawn event
+      // after HTTP history hydration.
+      useSessionStore.setState({ subAgentSpawns: {} });
     }
   }, [status, send]);
 

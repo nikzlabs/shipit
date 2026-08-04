@@ -6,14 +6,13 @@ import {
   resolveSecrets,
   collectMcpAgentEnv,
   renderAgentEnvBody,
-  writePerServiceEnvFiles,
   writeServiceEnvFilesToRoot,
-  sweepWorkspaceServiceEnvFiles,
   removeSessionServiceEnvDir,
   removeSessionSecretsDir,
   writeAgentEnvFile,
   writeIsolatedSecretFiles,
   composeSecretFilePath,
+  stageSecretsEntrypoint,
 } from "./secret-resolver.js";
 import type { ComposeService } from "./compose-generator.js";
 
@@ -430,46 +429,73 @@ describe("resolveSecrets — Phase 3 agent injection", () => {
 describe("writeAgentEnvFile", () => {
   let tmpDir: string;
 
+  /**
+   * A real session layout: the clone at `<sessionDir>/workspace`. docs/246 writes
+   * `.env.agent` into the `state/` sibling, resolved from the clone path — and
+   * SHI-286 removed the in-clone fallback, so a bare temp dir is now refused.
+   * Returns the clone.
+   */
   function setup() {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-env-"));
-    return tmpDir;
+    const dir = path.join(tmpDir, "workspace");
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
   }
+
+  /** The state dir for a clone produced by {@link setup}. */
+  const stateOf = (dir: string) => path.resolve(dir, "..", "state");
 
   afterEach(() => {
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("writes .shipit/.env.agent with the given body", () => {
+  it("writes .env.agent into the session state dir, outside the clone", () => {
     const dir = setup();
     const written = writeAgentEnvFile({
       workspaceDir: dir,
       body: "DATABASE_URL=postgres://x\n",
     });
-    expect(written).toBe(".shipit/.env.agent");
-    const contents = fs.readFileSync(path.join(dir, ".shipit/.env.agent"), "utf-8");
+    // Relative to the clone — and it points OUT of it.
+    expect(written).toBe(path.join("..", "state", ".env.agent"));
+    const contents = fs.readFileSync(path.join(stateOf(dir), ".env.agent"), "utf-8");
     expect(contents).toContain("DATABASE_URL=postgres://x");
+    // Nothing lands in the user's repository.
+    expect(fs.existsSync(path.join(dir, ".shipit"))).toBe(false);
   });
 
   it("removes .env.agent when body is empty", () => {
     const dir = setup();
-    const shipit = path.join(dir, ".shipit");
-    fs.mkdirSync(shipit);
-    fs.writeFileSync(path.join(shipit, ".env.agent"), "OLD=1\n");
+    const state = stateOf(dir);
+    fs.mkdirSync(state, { recursive: true });
+    fs.writeFileSync(path.join(state, ".env.agent"), "OLD=1\n");
     const result = writeAgentEnvFile({ workspaceDir: dir, body: "" });
     expect(result).toBeNull();
-    expect(fs.existsSync(path.join(shipit, ".env.agent"))).toBe(false);
+    expect(fs.existsSync(path.join(state, ".env.agent"))).toBe(false);
   });
 
-  it("creates .shipit/ if missing when body is non-empty", () => {
+  it("creates the state dir if missing when body is non-empty", () => {
     const dir = setup();
-    expect(fs.existsSync(path.join(dir, ".shipit"))).toBe(false);
+    expect(fs.existsSync(stateOf(dir))).toBe(false);
     writeAgentEnvFile({ workspaceDir: dir, body: "X=1\n" });
-    expect(fs.existsSync(path.join(dir, ".shipit", ".env.agent"))).toBe(true);
+    expect(fs.existsSync(path.join(stateOf(dir), ".env.agent"))).toBe(true);
   });
 
   it("is a no-op when body is empty and file doesn't exist", () => {
     const dir = setup();
     expect(() => writeAgentEnvFile({ workspaceDir: dir, body: "" })).not.toThrow();
+  });
+
+  // SHI-286 — the legacy flat layout is refused rather than degraded back into
+  // the clone. A session of that shape is unserviceable by decision.
+  it("refuses a clone that is not <sessionDir>/workspace", () => {
+    const flat = fs.mkdtempSync(path.join(os.tmpdir(), "agent-env-flat-"));
+    try {
+      expect(() => writeAgentEnvFile({ workspaceDir: flat, body: "X=1\n" })).toThrow(
+        /<sessionDir>\/workspace/,
+      );
+    } finally {
+      fs.rmSync(flat, { recursive: true, force: true });
+    }
   });
 });
 
@@ -707,11 +733,11 @@ describe("composeSecretFilePath (Phase 1 follow-up)", () => {
   });
 });
 
-describe("writePerServiceEnvFiles", () => {
+describe("stageSecretsEntrypoint (SHI-285)", () => {
   let tmpDir: string;
 
   function setup() {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "secret-resolver-"));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "entrypoint-staging-"));
     return tmpDir;
   }
 
@@ -719,61 +745,79 @@ describe("writePerServiceEnvFiles", () => {
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("writes files into .shipit/ keyed by service name", () => {
+  function bakedWrapper(dir: string): string {
+    const src = path.join(dir, "baked.sh");
+    fs.writeFileSync(src, "#!/bin/sh\nexec \"$@\"\n", { mode: 0o755 });
+    return src;
+  }
+
+  it("copies the wrapper to <rootDir>/_entrypoint/ and returns that path", () => {
     const dir = setup();
-    const written = writePerServiceEnvFiles({
-      workspaceDir: dir,
-      perServiceEnv: {
-        web: "STRIPE_KEY=sk_test\n",
-        api: "DATABASE_URL=postgres://x\n",
-      },
+    const root = path.join(dir, "secrets");
+    const hostPath = stageSecretsEntrypoint({
+      rootDir: root,
+      sessionId: "abc123",
+      sourcePath: bakedWrapper(dir),
     });
-    expect(written).toContain(".shipit/.env.web");
-    expect(written).toContain(".shipit/.env.api");
-    expect(fs.readFileSync(path.join(dir, ".shipit/.env.web"), "utf-8")).toContain("STRIPE_KEY=sk_test");
-    expect(fs.readFileSync(path.join(dir, ".shipit/.env.api"), "utf-8")).toContain("DATABASE_URL=postgres://x");
+    const staged = path.join(root, "_entrypoint", "secrets-entrypoint.sh");
+    expect(hostPath).toBe(staged);
+    expect(fs.readFileSync(staged, "utf-8")).toContain("exec \"$@\"");
+    // Service containers execute it, so it has to be executable by everyone.
+    expect(fs.statSync(staged).mode & 0o777).toBe(0o755);
   });
 
-  it("removes stale .env.<svc> files for services that no longer declare secrets", () => {
+  it("maps the returned path through hostDir (orchestrator-in-container)", () => {
     const dir = setup();
-    const shipit = path.join(dir, ".shipit");
-    fs.mkdirSync(shipit);
-    fs.writeFileSync(path.join(shipit, ".env.removed"), "STALE=1\n");
-    fs.writeFileSync(path.join(shipit, ".env.web"), "OLD=1\n");
-
-    writePerServiceEnvFiles({
-      workspaceDir: dir,
-      perServiceEnv: { web: "NEW=1\n" },
+    const root = path.join(dir, "secrets");
+    const hostPath = stageSecretsEntrypoint({
+      rootDir: root,
+      hostDir: "/var/lib/shipit/secrets",
+      sessionId: "abc123",
+      sourcePath: bakedWrapper(dir),
     });
-
-    // Stale file removed
-    expect(fs.existsSync(path.join(shipit, ".env.removed"))).toBe(false);
-    // web kept and overwritten
-    expect(fs.readFileSync(path.join(shipit, ".env.web"), "utf-8")).toContain("NEW=1");
+    expect(hostPath).toBe("/var/lib/shipit/secrets/_entrypoint/secrets-entrypoint.sh");
+    // ...while the copy still lands where the orchestrator can write it.
+    expect(fs.existsSync(path.join(root, "_entrypoint", "secrets-entrypoint.sh"))).toBe(true);
   });
 
-  it("preserves .env.agent (Phase 3 owns it)", () => {
+  // The staging dir is a SIBLING of the per-session secret dirs, never inside
+  // one: writeIsolatedSecretFiles() sweeps every entry of a session dir that
+  // isn't a declared secret, and teardown removes the dir wholesale.
+  it("survives a session's secret sweep and teardown", () => {
     const dir = setup();
-    const shipit = path.join(dir, ".shipit");
-    fs.mkdirSync(shipit);
-    fs.writeFileSync(path.join(shipit, ".env.agent"), "FROM_AGENT=1\n");
-
-    writePerServiceEnvFiles({
-      workspaceDir: dir,
-      perServiceEnv: { web: "NEW=1\n" },
-    });
-
-    expect(fs.existsSync(path.join(shipit, ".env.agent"))).toBe(true);
+    const root = path.join(dir, "secrets");
+    const staged = stageSecretsEntrypoint({
+      rootDir: root,
+      sessionId: "abc123",
+      sourcePath: bakedWrapper(dir),
+    })!;
+    writeIsolatedSecretFiles({ rootDir: root, sessionId: "abc123", values: { K: "v" } });
+    writeIsolatedSecretFiles({ rootDir: root, sessionId: "abc123", values: {} });
+    fs.rmSync(path.join(root, "abc123"), { recursive: true, force: true });
+    expect(fs.existsSync(staged)).toBe(true);
   });
 
-  it("creates .shipit/ if missing", () => {
+  it("is idempotent across reconciles and refreshes a changed wrapper", () => {
     const dir = setup();
-    expect(fs.existsSync(path.join(dir, ".shipit"))).toBe(false);
-    writePerServiceEnvFiles({
-      workspaceDir: dir,
-      perServiceEnv: { web: "X=1\n" },
-    });
-    expect(fs.existsSync(path.join(dir, ".shipit", ".env.web"))).toBe(true);
+    const root = path.join(dir, "secrets");
+    const src = bakedWrapper(dir);
+    stageSecretsEntrypoint({ rootDir: root, sessionId: "s1", sourcePath: src });
+    fs.writeFileSync(src, "#!/bin/sh\n# v2\nexec \"$@\"\n", { mode: 0o755 });
+    const staged = stageSecretsEntrypoint({ rootDir: root, sessionId: "s2", sourcePath: src })!;
+    expect(fs.readFileSync(staged, "utf-8")).toContain("# v2");
+    // No temp files left behind for either session.
+    expect(fs.readdirSync(path.join(root, "_entrypoint"))).toEqual(["secrets-entrypoint.sh"]);
+  });
+
+  it("returns null (rather than throwing) when the source is missing", () => {
+    const dir = setup();
+    const root = path.join(dir, "secrets");
+    expect(stageSecretsEntrypoint({
+      rootDir: root,
+      sessionId: "s1",
+      sourcePath: path.join(dir, "does-not-exist.sh"),
+    })).toBeNull();
+    expect(fs.readdirSync(path.join(root, "_entrypoint"))).toEqual([]);
   });
 });
 
@@ -823,25 +867,6 @@ describe("writeServiceEnvFilesToRoot (docs/183)", () => {
     expect(fs.existsSync(path.join(workspaceDir, ".shipit", ".env.web"))).toBe(false);
   });
 
-  it("sweeps a pre-183 workspace .shipit/.env.<service> leak but keeps .env.agent", () => {
-    const { workspaceDir, rootDir } = setup();
-    const shipit = path.join(workspaceDir, ".shipit");
-    fs.mkdirSync(shipit, { recursive: true });
-    fs.writeFileSync(path.join(shipit, ".env.web"), "LEAKED=1\n");
-    fs.writeFileSync(path.join(shipit, ".env.agent"), "FROM_AGENT=1\n");
-
-    writeServiceEnvFilesToRoot({
-      rootDir,
-      sessionId: "sess1",
-      workspaceDir,
-      perServiceEnv: { web: "STRIPE_KEY=sk_test\n" },
-    });
-
-    // The leaked service env file is removed from the workspace…
-    expect(fs.existsSync(path.join(shipit, ".env.web"))).toBe(false);
-    // …but the agent env file is left alone (Phase 3 owns it).
-    expect(fs.existsSync(path.join(shipit, ".env.agent"))).toBe(true);
-  });
 
   it("removes stale external .env.<svc> files for services that no longer declare secrets", () => {
     const { workspaceDir, rootDir } = setup();
@@ -942,28 +967,3 @@ describe("writeServiceEnvFilesToRoot (docs/183)", () => {
   });
 });
 
-describe("sweepWorkspaceServiceEnvFiles (docs/183)", () => {
-  let tmpDir: string;
-
-  afterEach(() => {
-    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  it("removes .env.<svc> files but preserves .env.agent; no-op when .shipit missing", () => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sweep-183-"));
-    // No .shipit dir yet — must not throw.
-    expect(() => sweepWorkspaceServiceEnvFiles(tmpDir)).not.toThrow();
-
-    const shipit = path.join(tmpDir, ".shipit");
-    fs.mkdirSync(shipit);
-    fs.writeFileSync(path.join(shipit, ".env.web"), "A=1\n");
-    fs.writeFileSync(path.join(shipit, ".env.api"), "B=1\n");
-    fs.writeFileSync(path.join(shipit, ".env.agent"), "AGENT=1\n");
-
-    sweepWorkspaceServiceEnvFiles(tmpDir);
-
-    expect(fs.existsSync(path.join(shipit, ".env.web"))).toBe(false);
-    expect(fs.existsSync(path.join(shipit, ".env.api"))).toBe(false);
-    expect(fs.existsSync(path.join(shipit, ".env.agent"))).toBe(true);
-  });
-});

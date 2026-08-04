@@ -58,7 +58,13 @@ describe("Integration: Connection", () => {
 
   it("sends preview_status on connect", async () => {
     const client = await TestClient.connect(port);
-    const msg = await client.receive();
+    const freshness = await client.receiveType("session_container_freshness");
+    expect(freshness).toMatchObject({
+      type: "session_container_freshness",
+      sessionId: client.sessionId,
+      freshness: { state: "unknown" },
+    });
+    const msg = await client.receiveType("preview_status");
 
     expect(msg).toMatchObject({
       type: "preview_status",
@@ -71,10 +77,9 @@ describe("Integration: Connection", () => {
 
   it("returns error for invalid JSON", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // consume preview_status
 
     client.sendRaw("not valid json {{{");
-    const msg = await client.receive();
+    const msg = await client.receiveType("error");
 
     expect(msg.type).toBe("error");
     expect((msg as any).message).toBe("Invalid JSON");

@@ -504,6 +504,63 @@ function reportWrite(res: { status: number; body: Record<string, unknown> }, dep
   success(deps.io, lines.join("\n"));
 }
 
+/** Accepted `--color` shapes for `label create` — a 6-digit hex, `#` optional. */
+const LABEL_COLOR_RE = /^#?[0-9a-fA-F]{6}$/;
+
+/**
+ * `shipit issue label create` — mint a tracker label so `--label` can apply it
+ * (SHI-230). Do-then-surface like the other writes: created immediately, with a
+ * provenance card whose Undo deletes the label if it's still unused. Defaults
+ * to Linear (no pointer to infer a tracker from, mirroring `issue create`).
+ * `label` is a verb group so future label verbs can slot in, but only `create`
+ * exists — listing stays on `shipit issue labels`.
+ */
+export async function handleIssueLabel(args: string[], deps: RunDeps): Promise<void> {
+  const sub = args[0];
+  if (sub !== "create") {
+    fail(
+      deps.io,
+      "shipit issue label: only `label create` is supported. " +
+        "List existing labels with `shipit issue labels`; apply them with --label on create/edit.",
+    );
+  }
+  const parsed = parseFlags(args.slice(1), {
+    values: {
+      "--name": "name",
+      "-n": "name",
+      "--color": "color",
+      "--description": "description",
+      "-d": "description",
+      "--tracker": "tracker",
+    },
+    booleans: { "--json": "json" },
+  });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for shipit issue label create: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+  const name = parsed.values.name;
+  if (!name?.trim()) {
+    fail(deps.io, "shipit issue label create: --name is required.");
+  }
+  // No pointer to infer from, so default to Linear — same rule as `issue create`.
+  const tracker = (parsed.values.tracker ?? "linear").toLowerCase();
+  if (!VALID_TRACKERS.has(tracker)) {
+    fail(deps.io, `shipit issue label create: --tracker must be 'github' or 'linear' (got '${parsed.values.tracker}').`);
+  }
+  const color = parsed.values.color;
+  if (color !== undefined && !LABEL_COLOR_RE.test(color.trim())) {
+    fail(deps.io, `shipit issue label create: --color must be a 6-digit hex like '#0ea5e9' (got '${color}').`);
+  }
+  const payload: Record<string, unknown> = { tracker, name: name.trim() };
+  if (color !== undefined) payload.color = color.trim();
+  if (parsed.values.description !== undefined) payload.description = parsed.values.description;
+  const res = await deps.call("POST", "/agent-ops/issue/label/create", payload, deps.env);
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to create label"), 1);
+  }
+  reportWrite(res, deps, parsed.booleans.has("json"));
+}
+
 export async function handleIssueCreate(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
     values: {
@@ -518,7 +575,7 @@ export async function handleIssueCreate(args: string[], deps: RunDeps): Promise<
       "--parent": "parent",
     },
     arrays: { "--label": "label", "-l": "label" },
-    booleans: { "--json": "json" },
+    booleans: { "--json": "json", "--create-missing-labels": "createMissingLabels" },
   });
   if (parsed.unsupported.length > 0) {
     fail(deps.io, `Unsupported flag for shipit issue create: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
@@ -544,6 +601,9 @@ export async function handleIssueCreate(args: string[], deps: RunDeps): Promise<
   // A new issue has no prior parent to clear, so only forward a parent to SET
   // (a truthy key); `none`/detach (null) is a no-op on create.
   if (parent) payload.parent = parent;
+  // Opt-in (SHI-230): unknown --label names are created before being applied.
+  // Without the flag they keep failing with the label-create hint.
+  if (parsed.booleans.has("createMissingLabels")) payload.createMissingLabels = true;
   const res = await deps.call("POST", "/agent-ops/issue/create", payload, deps.env);
   if (res.status < 200 || res.status >= 300) {
     fail(deps.io, formatError(res, "Failed to create issue"), 1);
@@ -583,7 +643,7 @@ export async function handleIssueEdit(args: string[], deps: RunDeps): Promise<vo
       "--parent": "parent",
     },
     arrays: { "--label": "label", "-l": "label" },
-    booleans: { "--json": "json" },
+    booleans: { "--json": "json", "--create-missing-labels": "createMissingLabels" },
   });
   if (parsed.unsupported.length > 0) {
     fail(deps.io, `Unsupported flag for shipit issue edit: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
@@ -604,6 +664,8 @@ export async function handleIssueEdit(args: string[], deps: RunDeps): Promise<vo
   if (priority !== undefined) payload.priority = priority;
   // `parent` may be a key (set) or null (detach); forward both, omit undefined.
   if (parent !== undefined) payload.parent = parent;
+  // Opt-in (SHI-230), mirroring create.
+  if (parsed.booleans.has("createMissingLabels")) payload.createMissingLabels = true;
   const res = await deps.call("POST", "/agent-ops/issue/edit", payload, deps.env);
   if (res.status < 200 || res.status >= 300) {
     fail(deps.io, formatError(res, "Failed to edit issue"), 1);

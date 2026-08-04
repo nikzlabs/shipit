@@ -12,13 +12,23 @@
  * fails new starts → the kick never fires → nothing reclaims).
  */
 
+import { stat } from "node:fs/promises";
 import type { SessionManager } from "./sessions.js";
 import type { SessionInfo } from "../shared/types.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { ServiceManager } from "./service-manager.js";
 import type { GitManager } from "../shared/git.js";
+import type { PersistedMessage } from "./chat-history.js";
+import type { SecretFinding } from "../shared/secret-scan.js";
 import { DEFAULT_DISK_LADDER, type DiskLadderThresholds } from "./sessions.js";
-import { getMessage, sleep, reclaimRegenerableSessionDirs } from "./disk-utils.js";
+import {
+  getMessage,
+  sleep,
+  reclaimRegenerableSessionDirs,
+  reclaimBlockedSessionCaches,
+} from "./disk-utils.js";
+import { emitNoticePostTurn } from "./chat-card-persistence.js";
+import { formatEvictBlockedNotice, type EvictBlockReason } from "./services/evict-blocked-notice.js";
 
 /**
  * docs/161 — dependencies for the disk-tier escalation pass. Distinct from the
@@ -48,6 +58,20 @@ export interface TierEscalationDeps {
    * startup (`assertDiskLadderOrdering`) before passing it here.
    */
   ladder?: DiskLadderThresholds;
+  /**
+   * SHI-294 — chat-history sink for the persisted warning emitted when an
+   * eviction is blocked by uncommittable work. Omit in tests that don't assert
+   * the notice; the block itself never depends on it.
+   */
+  chatHistory?: { append(sessionId: string, message: PersistedMessage): unknown };
+  /**
+   * SHI-294 — session ids already warned about a blocked eviction. Owned by the
+   * caller (one Set per orchestrator process) so the hourly pass warns once per
+   * stuck session instead of appending a row to its transcript every hour. A
+   * restart re-warns, which is the right trade: the notice is cheap and the
+   * condition is still true.
+   */
+  notifiedEvictBlocked?: Set<string>;
   /**
    * Disk-pressure water marks (bytes free). When `getFreeDiskBytes` reports
    * below `diskFreeLow`, the pass escalates LRU-eligible sessions — ignoring the
@@ -79,6 +103,12 @@ export interface TierEscalationResult {
   toEvicted: number;
   /** Eviction skipped because a dirty checkout's push failed (kept at light). */
   evictBlockedByPush: number;
+  /**
+   * SHI-294 — eviction skipped because the pre-eviction auto-commit refused
+   * (secret finding / unresolved merge state), leaving uncommittable work in
+   * the tree. Kept at light, with its regenerable overlay reclaimed.
+   */
+  evictBlockedByDirty: number;
 }
 
 /** docs/161 — idle age for the disk ladder: turn activity OR a recent view. */
@@ -106,7 +136,11 @@ function canAutoDescend(s: SessionInfo, runnerRegistry: SessionRunnerRegistry): 
   // but archive clears the pin first — see SessionManager.archive.)
   if (s.pinnedAt) return false;
   const runner = runnerRegistry.get(s.id);
-  if (runner?.running) return false;
+  // docs/235 — `agentBusy` covers both an orchestrator-started turn and a
+  // self-woken one (background task finished → the CLI started its own turn),
+  // plus a task still pending between turns. `running` alone would let the
+  // `hot → light` rung destroy the container of a session that is mid-work.
+  if (runner?.agentBusy) return false;
   if (runner && runner.viewerCount > 0) return false;
   return true;
 }
@@ -160,41 +194,239 @@ async function reclaimToLight(
 }
 
 /**
- * `light → evicted`: the destructive rung. Remediates a dirty checkout first
- * (auto-commit + push to origin); if the push fails the session stays at
- * `light` so the local commit survives on disk. On success the workspace is
- * wiped — restore re-clones from the bare cache off fresh `origin/main`.
+ * SHI-294 — attribute a refused auto-commit to one of `GitManager.autoCommit`'s
+ * refusal branches, for the user-facing notice only. Nothing branches on the
+ * result: the wipe is already gated on the tree being clean.
+ */
+function describeBlock(r: {
+  secretFindings: SecretFinding[];
+  conflictedFiles: string[];
+  rebaseInProgress: boolean;
+}): EvictBlockReason {
+  if (r.secretFindings.length > 0) return { kind: "secret", findings: r.secretFindings };
+  if (r.conflictedFiles.length > 0 || r.rebaseInProgress) {
+    return { kind: "conflict", conflictedFiles: r.conflictedFiles, rebaseInProgress: r.rebaseInProgress };
+  }
+  return { kind: "unknown" };
+}
+
+/**
+ * SHI-294 — the blocked-eviction outcome: the checkout is the only copy of some
+ * work, so the session keeps it and stays at `light`. The ladder still does the
+ * two things it safely can.
+ *
+ * 1. **Reclaim what is regenerable anyway.** The `overlay/` upper is a pure
+ *    install-delta cache (docs/183) that eviction would have deleted and a
+ *    restore re-installs, so dropping it (with its install marker — see
+ *    `reclaimBlockedSessionCaches`) keeps a session that may stay pinned for
+ *    weeks from also pinning the expensive half of its disk. Done for BOTH
+ *    blocked outcomes: a push failure is usually transient, but "no remote at
+ *    all" is permanent, and the two are indistinguishable from here. The
+ *    `light` rung deliberately does NOT do this — it's the cheap, reversible
+ *    tier, and a session resting there normally should restore fast.
+ * 2. **Tell the user, when they can act on it.** A session pinned at `light` is
+ *    otherwise invisible: it is idle, nothing is attached to it, and the only
+ *    trace is a log line. The warning is persisted chat content (it must survive
+ *    a reload — CLAUDE.md), emitted once per process per session so the hourly
+ *    pass doesn't append a row an hour. Only for the refused-commit case: a
+ *    failed push is usually a transient outage the next pass clears, and warning
+ *    on it would post a row into every idle session during a GitHub blip.
+ *
+ * Deliberately NOT done: committing the work anyway to some rescue ref. A
+ * secret-refused commit is refused to keep the credential out of git history,
+ * and a rescue commit — pushed or not — puts it right back in.
+ */
+async function blockedEvict<T extends "blocked-by-push" | "blocked-by-dirty">(
+  session: SessionInfo,
+  deps: TierEscalationDeps,
+  outcome: T,
+  reason?: EvictBlockReason,
+): Promise<T> {
+  if (reason) {
+    console.warn(
+      `[disk-janitor] evict blocked for ${session.id} — auto-commit refused (${reason.kind}), `
+      + "keeping the checkout at light",
+    );
+  }
+  // Same freshness re-check the wipe path makes: the git/network work that led
+  // here takes seconds, and dropping a dep cache out from under a session the
+  // user just opened (its container may already be installing) is its own small
+  // wreck. The notice is still worth posting, so only the reclaim is skipped.
+  const fresh = deps.sessionManager.get(session.id);
+  const stillIdle = fresh !== undefined && canAutoDescend(fresh, deps.runnerRegistry);
+  if (session.workspaceDir && stillIdle) {
+    // Never rejects — a failed cache reclaim reports and is otherwise ignored;
+    // the block itself is what matters.
+    const r = await reclaimBlockedSessionCaches(session.workspaceDir);
+    if (r.message) {
+      console.warn(`[disk-janitor] evict blocked: cache reclaim failed for ${session.id}:`, r.message);
+    }
+    if (r.removed.length > 0) {
+      console.log(`[disk-janitor] ${session.id}: blocked evict — reclaimed dep caches, kept checkout`);
+    }
+  }
+  const notified = deps.notifiedEvictBlocked;
+  if (reason && deps.chatHistory && !notified?.has(session.id)) {
+    try {
+      const runner = deps.runnerRegistry.get(session.id);
+      emitNoticePostTurn(
+        (m) => runner?.emitMessage(m),
+        deps.chatHistory,
+        session.id,
+        formatEvictBlockedNotice(reason),
+        "warn",
+      );
+      // Marked only AFTER the append succeeds. Marking first would make a
+      // transient DB failure permanent for the life of the process — the notice
+      // would never be retried and the pin would stay silent.
+      notified?.add(session.id);
+    } catch (err) {
+      console.warn(`[disk-janitor] evict blocked: notice failed for ${session.id}:`, getMessage(err));
+    }
+  }
+  return outcome;
+}
+
+/**
+ * SHI-294 — is the branch tip already recoverable from `origin`? "Tip present
+ * in the bare cache" is the wrong question (a fresh push isn't in the cache
+ * until its next fetch), and so is "the working tree is clean" (a committed but
+ * unpushed tip is clean and still exists nowhere else). This asks the only
+ * question that matters before a wipe: is HEAD contained in `origin/<branch>`?
+ *
+ * Fails toward pushing: an unresolvable remote ref (never pushed, no `origin`
+ * at all, pruned tracking ref) returns false, and the caller's push then either
+ * makes the tip durable or blocks the eviction. An empty repo (no HEAD) has
+ * nothing to lose.
+ *
+ * Answered from the local remote-tracking ref rather than a live `ls-remote`,
+ * deliberately. The tracking ref records what THIS clone pushed, which is the
+ * thing at risk, and it needs no network or credentials on a janitor pass. A
+ * live query would also be *wrong* for the ladder's most common eviction: a
+ * merged session whose branch GitHub auto-deleted has no remote branch left,
+ * yet its commits are safely in the base branch — `ls-remote` would say "not
+ * durable" and pin every merged session forever. The residual risk is a remote
+ * branch force-pushed out from under a stale tracking ref, which loses commits
+ * that were nonetheless pushed once.
+ */
+async function tipIsOnOrigin(git: GitManager, branch: string): Promise<boolean> {
+  const head = await git.getHeadHash();
+  if (!head) return true;
+  const remoteTip = await git.getRefHash(`refs/remotes/origin/${branch}`);
+  if (!remoteTip) return false;
+  return remoteTip === head || await git.isAncestor(head, remoteTip);
+}
+
+/**
+ * `light → evicted`: the destructive rung. Everything it wipes must be
+ * recoverable from `origin` first, so it remediates the checkout and refuses to
+ * proceed unless three things hold: the tree is clean, no merge/rebase is
+ * mid-flight, and HEAD is on `origin`. Any of them failing leaves the session at
+ * `light` with its files intact. On success the workspace is wiped — restore
+ * re-clones from the bare cache off fresh `origin/main`.
  */
 async function reclaimToEvicted(
   session: SessionInfo,
   deps: TierEscalationDeps,
-): Promise<"evicted" | "blocked-by-push" | "skipped"> {
+): Promise<"evicted" | "blocked-by-push" | "blocked-by-dirty" | "skipped"> {
   const { sessionManager, createGitManager } = deps;
 
-  // Clean-tree guard: a `light` session keeps its checkout on disk, and the
+  // SHI-294 — a checkout that is already gone has nothing to protect, and every
+  // git question below would throw on it and return "skipped" forever. That
+  // left a `light` row whose workspace is missing pinned in a broken state:
+  // activation's `light → hot` shortcut skips `restoreSessionWorkspace`
+  // (route-registry.ts), so the container bind-mount 404s in a loop. Recording
+  // the truth — it IS evicted — routes the next activation through restore.
+  // Only when a remote can supply the re-clone; without one it is unrecoverable
+  // either way, so leave the row alone rather than assert a lie.
+  const workspaceGone = session.workspaceDir !== undefined
+    && !(await stat(session.workspaceDir).catch(() => null));
+  if (workspaceGone && !session.remoteUrl) {
+    console.warn(`[disk-janitor] evict skipped for ${session.id} — workspace missing and no remote to restore from`);
+    return "skipped";
+  }
+
+  // Durability guard: a `light` session keeps its checkout on disk, and the
   // container is stopped — so we operate git directly on the host checkout.
-  if (createGitManager && session.workspaceDir) {
+  if (createGitManager && session.workspaceDir && !workspaceGone) {
     try {
       const git = createGitManager(session.workspaceDir);
+
+      // 1. Remediate a dirty tree, then re-check it. SHI-294 — `autoCommit`
+      //    returns a null hash from THREE paths and only one of them is safe to
+      //    wipe: "nothing to commit". The other two — an unresolved merge/rebase
+      //    state, and a secret-scanner refusal (docs/213) — are normal returns,
+      //    not throws, so they used to fall straight past the old
+      //    `if (commitHash)` gate into the wipe, destroying uncommitted work
+      //    that has no reflog entry. That is exactly the loss the `catch` below
+      //    exists to prevent.
+      //
+      //    The gate is a RE-CHECK of the tree rather than an inspection of
+      //    `secretFindings` / `conflictedFiles`: both refusals leave the tree
+      //    dirty (the secret path `git reset`s to unstage) while
+      //    nothing-to-commit leaves it clean, so one cause-agnostic question —
+      //    "is the work still only in the working tree?" — separates them, and
+      //    covers any future refusal path (or a commit hook that leaves the tree
+      //    dirty behind a successful commit) by construction. The returned
+      //    fields only explain the block.
       if (!(await git.isClean())) {
-        const { commitHash } = await git.autoCommit(
-          "Auto-commit before disk eviction (docs/161)",
+        const { secretFindings, conflictedFiles, rebaseInProgress } =
+          await git.autoCommit("Auto-commit before disk eviction (docs/161)");
+        if (!(await git.isClean())) {
+          return await blockedEvict(
+            session, deps, "blocked-by-dirty",
+            describeBlock({ secretFindings, conflictedFiles, rebaseInProgress }),
+          );
+        }
+      }
+
+      // 2. A clean tree is not a quiet repo. An interactive rebase stopped at an
+      //    `edit`/`exec` step, or a conflict-free merge awaiting its commit, has
+      //    NOTHING uncommitted yet holds in-flight commits and recovery state
+      //    that live only in `.git`. `autoCommit`'s own conflict branch never
+      //    sees these — step 1 short-circuits on the clean tree — so the check
+      //    has to be made here.
+      const rebasing = await git.isRebaseInProgress();
+      if (rebasing || await git.isMergeOrSequencerInProgress()) {
+        return await blockedEvict(
+          session, deps, "blocked-by-dirty",
+          { kind: "conflict", conflictedFiles: [], rebaseInProgress: rebasing },
         );
-        // Durability gate: the commit must reach `origin` (a recoverable
-        // state — evicted → hot re-clones from the cache, which is refreshed
-        // from origin). "Tip present in the bare cache" is the wrong gate: a
-        // fresh push isn't in the cache until its next fetch. If the push
-        // fails (offline / no auth), do NOT evict — leave it at light.
-        if (commitHash) {
-          try {
-            await git.push("origin", session.branch);
-          } catch (pushErr) {
-            console.warn(
-              `[disk-janitor] evict blocked for ${session.id} — push failed, keeping at light:`,
-              getMessage(pushErr),
-            );
-            return "blocked-by-push";
-          }
+      }
+
+      // 3. Durability gate: the tip must be on `origin` (the recoverable state —
+      //    evicted → hot re-clones from the cache, which is refreshed from
+      //    origin). Checked UNCONDITIONALLY, not only when we just committed:
+      //    a commit this pass made but failed to push leaves a *clean* tree, so
+      //    a later pass used to sail through and wipe it. A session with no
+      //    remote at all can never satisfy this and is never evicted — matching
+      //    `archiveSession`, which likewise refuses to reclaim a repo-less
+      //    workspace because nothing can restore it.
+      //    Both the check and the push key off the CHECKED-OUT branch, not
+      //    `session.branch`: `GitManager.push` pushes the *named local branch*,
+      //    so on a detached HEAD (or a session row whose branch drifted from the
+      //    checkout) pushing `session.branch` reports "Everything up-to-date"
+      //    while HEAD's commits stay local — a successful push that proves
+      //    nothing, followed by a wipe. A detached HEAD has no branch to push at
+      //    all, so it can never be durable: block.
+      const branch = await git.currentBranchOrNull();
+      if (!branch) {
+        console.warn(
+          `[disk-janitor] evict blocked for ${session.id} — HEAD is detached, so its commits `
+          + "belong to no branch that could be pushed; keeping at light",
+        );
+        return await blockedEvict(session, deps, "blocked-by-push");
+      }
+      if (!(await tipIsOnOrigin(git, branch))) {
+        try {
+          await git.push("origin", branch);
+        } catch (pushErr) {
+          console.warn(
+            `[disk-janitor] evict blocked for ${session.id} — the branch tip is not on origin `
+            + "and the push failed (offline / no auth / no remote), keeping at light:",
+            getMessage(pushErr),
+          );
+          return await blockedEvict(session, deps, "blocked-by-push");
         }
       }
     } catch (err) {
@@ -203,6 +435,16 @@ async function reclaimToEvicted(
       console.warn(`[disk-janitor] evict skipped for ${session.id} — git check failed:`, getMessage(err));
       return "skipped";
     }
+  }
+
+  // SHI-294 — the guards were evaluated before the pacing delay and the git /
+  // network work above, which take seconds. Re-read the row and re-run them
+  // immediately before the destructive step so a session the user opened in the
+  // meantime isn't wiped out from under them.
+  const fresh = sessionManager.get(session.id);
+  if (!fresh || !canAutoDescend(fresh, deps.runnerRegistry)) {
+    console.warn(`[disk-janitor] evict skipped for ${session.id} — became active during remediation`);
+    return "skipped";
   }
 
   // Tear down container (no runner should exist at light, but be defensive).
@@ -257,7 +499,9 @@ export async function escalateDiskTiers(
   deps: TierEscalationDeps,
   excludeSessionId?: string,
 ): Promise<TierEscalationResult> {
-  const result: TierEscalationResult = { toLight: 0, toEvicted: 0, evictBlockedByPush: 0 };
+  const result: TierEscalationResult = {
+    toLight: 0, toEvicted: 0, evictBlockedByPush: 0, evictBlockedByDirty: 0,
+  };
   const now = (deps.now ?? Date.now)();
   const ladder = deps.ladder ?? DEFAULT_DISK_LADDER;
   const paceMs = deps.paceMs ?? 0;
@@ -287,6 +531,7 @@ export async function escalateDiskTiers(
         const outcome = await reclaimToEvicted(s, deps);
         if (outcome === "evicted") result.toEvicted += 1;
         else if (outcome === "blocked-by-push") result.evictBlockedByPush += 1;
+        else if (outcome === "blocked-by-dirty") result.evictBlockedByDirty += 1;
       } else if (tier === "hot" && age >= ladder.lightAfterMs) {
         await sleep(paceMs);
         if (await reclaimToLight(s, deps)) result.toLight += 1;
@@ -299,10 +544,11 @@ export async function escalateDiskTiers(
   // --- Disk-pressure LRU descent ---
   await applyDiskPressure(deps, now, excludeSessionId, result);
 
-  if (result.toLight || result.toEvicted || result.evictBlockedByPush) {
+  if (result.toLight || result.toEvicted || result.evictBlockedByPush || result.evictBlockedByDirty) {
     console.log(
       `[disk-janitor] tier escalation: hot→light=${result.toLight} `
-      + `light→evicted=${result.toEvicted} evict-blocked=${result.evictBlockedByPush}`,
+      + `light→evicted=${result.toEvicted} evict-blocked-push=${result.evictBlockedByPush} `
+      + `evict-blocked-dirty=${result.evictBlockedByDirty}`,
     );
   }
   return result;
@@ -362,6 +608,7 @@ async function applyDiskPressure(
       const outcome = await reclaimToEvicted(s, deps);
       if (outcome === "evicted") result.toEvicted += 1;
       else if (outcome === "blocked-by-push") result.evictBlockedByPush += 1;
+      else if (outcome === "blocked-by-dirty") result.evictBlockedByDirty += 1;
     } catch (err) {
       console.warn(`[disk-janitor] pressure evict failed for ${s.id}:`, getMessage(err));
     }

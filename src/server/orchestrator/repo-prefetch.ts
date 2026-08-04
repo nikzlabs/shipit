@@ -33,6 +33,7 @@ import type { RepoStore } from "./repo-store.js";
 import type { RepoGit } from "./repo-git.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import { getErrorMessage } from "./validation.js";
+import { fetchLfsIntoCache } from "./git-lfs-store.js";
 
 /** How often the periodic sweep fetches every ready repo's bare cache. */
 export const PREFETCH_INTERVAL_MS = 3 * 60_000;
@@ -96,6 +97,16 @@ export function createRepoPrefetcher(deps: RepoPrefetcherDeps): RepoPrefetcher {
       // TTL-guarded — a fetch that ran <60s ago (e.g. a claim slow-path
       // just refreshed this cache) is a cheap no-op.
       await cacheGit.fetchCache();
+      // docs/232 — populate the cache-side LFS store so session clones hardlink
+      // the assets instead of each downloading them. Deliberately here and NOT
+      // in `fetchCache`: the claim slow-path awaits that one, and an LFS fetch on
+      // an asset-heavy repo would land a multi-minute transfer straight on the
+      // user's critical path — the exact cost this is meant to move OFF it. The
+      // `setRemoteUrl` above matters for this too: with the plain URL as origin,
+      // the LFS endpoint resolves through the same global credential helper.
+      // Flag-gated off by default and best-effort: a failure only means sessions
+      // keep downloading their own objects.
+      await fetchLfsIntoCache(getBareCacheDir(repoUrl));
     } catch (err) {
       // Best-effort: a transient fetch failure just means the claim path
       // falls back to its synchronous fetch until the next sweep succeeds.

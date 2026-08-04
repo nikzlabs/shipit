@@ -17,6 +17,37 @@ Tracks per-turn API cost, duration, and token usage from agent `result` events.
 4. Clicking the badge opens `UsageModal` with the per-session and all-sessions
    breakdown; the ContextDial rehydrates the per-turn series from `/history`.
 
+## The usage modal
+
+A wide (`max-w-3xl`) two-column dialog — the earlier compact `max-w-md` popup
+had room for a stat list and little else. Left/right columns carry the session
+and all-sessions summaries (each with cost, turns, and an average per turn),
+context occupancy, token totals (input/output plus cache read/write when the
+turns carry them), the per-turn breakdown, and the session breakdown ordered by
+spend. The trend chart spans both columns so its bars stay wide enough to label.
+
+### The trend chart is weekly, not monthly
+
+Buckets are **calendar weeks keyed on the week's Monday** (`YYYY-MM-DD`, UTC).
+A monthly bucket only produced a handful of meaningful bars and blurred a spike
+into a 30-day average; weeks make a burst of spend visible in the same week it
+happened.
+
+- **Bucketing** (`getStats()`): `date(created_at, 'weekday 0', '-6 days')` snaps
+  a timestamp to that week's Monday — advance to the coming Sunday, step back
+  six days.
+- **Gaps are zero-filled** (`fillWeekGaps`) between the first and last active
+  week, so an idle week renders as an empty column instead of collapsing the
+  axis and putting two non-adjacent weeks side by side.
+- **Bounded by the data, not the clock.** The series stops at the last active
+  week rather than extending to "now", which keeps `getStats()` free of a
+  wall-clock dependency (and its tests deterministic).
+- **The window is measured, not fixed.** `WeeklyUsageChart` renders the most
+  recent `floor(chartWidth / 44px)` weeks, clamped to 6–20, so the bigger dialog
+  shows more history and each bar keeps room for its `$12.34` label. It falls
+  back to 12 weeks until measured and wherever `ResizeObserver` is unavailable
+  (jsdom), so tests see a stable 12-week window.
+
 ## Cost is cumulative at the source — we store the per-turn delta
 
 **Load-bearing semantic.** Each turn is a fresh `claude -p … --resume <sessionId>`
@@ -61,7 +92,8 @@ exact.
 ## Key files
 
 - `src/server/orchestrator/usage.ts` — `UsageManager`: `record` (cumulative→delta),
-  `getSessionUsage`, `getPerTurnUsage`, `getStats`, `delete`.
+  `getSessionUsage`, `getPerTurnUsage`, `getStats` (weekly buckets), `delete`;
+  plus the `fillWeekGaps` helper.
 - `src/server/orchestrator/ws-handlers/agent-listeners.ts` — records cost on the
   `result` event; reflects the returned delta onto the live emit.
 - `src/server/session/agents/claude/adapter.ts` — maps `total_cost_usd` →

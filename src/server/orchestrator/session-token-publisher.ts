@@ -1,0 +1,241 @@
+/**
+ * Mid-turn OAuth token publication (docs/153).
+ *
+ * `syncAgentTokenBack` runs at turn END (`finalizeSessionAgentEnvironment`).
+ * That is too late. When a session's CLI rotates the shared rotating refresh
+ * token mid-turn, the previous token is invalidated upstream *immediately*,
+ * but the orchestrator source keeps serving it until the turn finishes — on a
+ * busy host, many minutes later. Every session that starts a turn in that
+ * window runs `syncAgentTokenIn`, pulls the dead source token, and 401s with
+ * "Not logged in · Please run /login". With N containers on one provider
+ * account, a single mid-turn rotation poisons every session that starts during
+ * the rest of that turn — the widest stale window in the credential design.
+ *
+ * This module closes it by watching the session's token file(s) for the
+ * duration of the turn and running the EXISTING sync-back the moment one
+ * actually advances. It changes publication LATENCY only:
+ *
+ *   - The write itself is `syncAgentTokenBack` / `syncProviderAccountTokenBack`
+ *     verbatim, including their expiry guard — a session that FAILED to refresh
+ *     still cannot clobber a fresher source.
+ *   - `sessionTokenIsAheadOfSource` pre-checks that same comparison so an
+ *     unrelated rewrite of `.credentials.json` (the CLI churns the `mcpOAuth`
+ *     key) doesn't drive a sync-back whose copy is guarded away but whose
+ *     trailing recursive chown is not. Debounce + pre-check = no write storm.
+ *   - Everything is fault-tolerant and off the turn's critical path: nothing
+ *     here is awaited by turn execution, and every failure is logged and
+ *     swallowed.
+ *
+ * Why `fs.watchFile` (stat polling) rather than `fs.watch` (inotify): the file
+ * is written by a *different container* into a shared Docker volume and
+ * replaced by atomic rename. Path-based stat polling sees both the in-place
+ * rewrite and the rename-over regardless of whether inotify events propagate
+ * across the mount, and it has no inode-identity failure mode. One stat per
+ * token file per {@link TOKEN_WATCH_POLL_INTERVAL_MS} for the duration of a
+ * turn is negligible.
+ *
+ * Lifecycle: started by `prepareSessionAgentEnvironment` on the turn's own
+ * pre-spawn step, stopped by `finalizeSessionAgentEnvironment` at turn end,
+ * with the runner's `disposed` event as a backstop — idle cleanup destroys
+ * containers aggressively, and a turn cut short that way never reaches
+ * finalize.
+ */
+
+import fs from "node:fs";
+import type { AgentId } from "../shared/types/agent-types.js";
+import {
+  agentTokenFilePaths,
+  sessionTokenIsAheadOfSource,
+  syncAgentTokenBack,
+  syncProviderAccountTokenBack,
+} from "./token-sync-manager.js";
+import { getErrorMessage } from "./validation.js";
+
+/**
+ * Stat-poll cadence. Bounds the stale window a mid-turn rotation can open to
+ * roughly this plus {@link TOKEN_PUBLISH_DEBOUNCE_MS}, down from "the rest of
+ * the turn". Small enough that a sibling session starting a turn almost never
+ * lands inside it; large enough that a dozen concurrent sessions cost a
+ * handful of stats a second.
+ */
+export const TOKEN_WATCH_POLL_INTERVAL_MS = 3_000;
+
+/**
+ * Settle time after a detected change. The CLI's rotation is a read-modify-
+ * write of the same file; debouncing coalesces a burst into one publish and
+ * keeps us from reading a half-written file in the (unlikely) case the CLI
+ * doesn't write atomically.
+ */
+export const TOKEN_PUBLISH_DEBOUNCE_MS = 750;
+
+/** A session's live watch. Keyed by sessionId in {@link watches}. */
+interface TokenWatch {
+  /** `agentId:accountId` — a change means the route moved and the watch must re-arm. */
+  routeKey: string;
+  paths: string[];
+  listener: (curr: fs.Stats, prev: fs.Stats) => void;
+  debounce: NodeJS.Timeout | null;
+  /** Detach the runner's `disposed` backstop, if one was registered. */
+  detachRunner: () => void;
+}
+
+const watches = new Map<string, TokenWatch>();
+
+/** Minimal slice of `ContainerSessionRunner` the backstop needs. */
+export interface TokenWatchRunner {
+  on(event: "disposed", listener: () => void): unknown;
+  off(event: "disposed", listener: () => void): unknown;
+}
+
+export interface StartTokenWriteBackWatchOptions {
+  credentialsDir: string;
+  sessionId: string;
+  agentId: AgentId;
+  /**
+   * docs/150 account route. Set for `kind: "account"` routes so the write-back
+   * targets that account's credential root; omitted for the legacy shared root.
+   * Callers must skip the reserved `claude-env-oauth` route entirely — it is
+   * not refresher-managed and has no source file to publish to.
+   */
+  accountId?: string;
+  /** Runner whose `disposed` event tears the watch down if the turn never ends. */
+  runner?: TokenWatchRunner;
+  /** Overridable for tests. */
+  pollIntervalMs?: number;
+  debounceMs?: number;
+}
+
+/**
+ * Begin publishing this session's token rotations to the source as they
+ * happen. Idempotent: re-arming for the same session + route is a no-op, so
+ * the per-turn `prepareSessionAgentEnvironment` call can run unconditionally.
+ * A route change (account failover) restarts the watch against the new source.
+ *
+ * Never throws.
+ */
+export function startTokenWriteBackWatch(opts: StartTokenWriteBackWatchOptions): void {
+  const { credentialsDir, sessionId, agentId, accountId } = opts;
+  const routeKey = `${agentId}:${accountId ?? ""}`;
+  const existing = watches.get(sessionId);
+  if (existing) {
+    if (existing.routeKey === routeKey) return; // already watching this exact route
+    stopTokenWriteBackWatch(sessionId);
+  }
+
+  let paths: string[];
+  try {
+    paths = agentTokenFilePaths(credentialsDir, sessionId, agentId);
+  } catch (err) {
+    console.warn(`[token-publish] could not resolve token files for ${sessionId}:`, getErrorMessage(err));
+    return;
+  }
+  if (paths.length === 0) return; // agent has no rotating token file
+
+  const debounceMs = opts.debounceMs ?? TOKEN_PUBLISH_DEBOUNCE_MS;
+  const interval = opts.pollIntervalMs ?? TOKEN_WATCH_POLL_INTERVAL_MS;
+
+  const watch: TokenWatch = {
+    routeKey,
+    paths,
+    listener: () => {},
+    debounce: null,
+    detachRunner: () => {},
+  };
+
+  const publish = (): void => {
+    watch.debounce = null;
+    // Only the sessions map entry proves the watch is still live — a stop()
+    // that raced an already-scheduled timer must not publish afterwards.
+    if (watches.get(sessionId) !== watch) return;
+    try {
+      // Pre-check the sync-back's own guard so a non-rotation rewrite (the
+      // CLI churns `mcpOAuth` in the same file) costs two reads instead of a
+      // recursive chown of the session credentials tree.
+      if (!sessionTokenIsAheadOfSource(credentialsDir, sessionId, agentId, accountId)) return;
+      if (accountId) {
+        syncProviderAccountTokenBack(credentialsDir, sessionId, agentId, accountId);
+      } else {
+        syncAgentTokenBack(credentialsDir, sessionId, agentId);
+      }
+      console.log(
+        `[token-publish] published mid-turn ${agentId} token rotation from ${sessionId}${accountId ? ` (account ${accountId})` : ""}`,
+      );
+    } catch (err) {
+      // Credential syncing must never fail a turn — log and wait for the next
+      // change, or for the turn-end sync-back.
+      console.warn(`[token-publish] mid-turn sync-back failed for ${sessionId}:`, getErrorMessage(err));
+    }
+  };
+
+  const schedule = (): void => {
+    if (watch.debounce) clearTimeout(watch.debounce);
+    watch.debounce = setTimeout(publish, debounceMs);
+    watch.debounce.unref?.();
+  };
+
+  watch.listener = (curr: fs.Stats, prev: fs.Stats): void => {
+    // `watchFile` fires on every poll for some platforms/edge cases; compare
+    // explicitly so an unchanged file never schedules work. mtimeMs is 0 when
+    // the file doesn't exist, so creation registers as a change too.
+    if (curr.mtimeMs === prev.mtimeMs && curr.size === prev.size && curr.ino === prev.ino) return;
+    schedule();
+  };
+
+  for (const file of paths) {
+    // `persistent: false` — this poller must never hold the process open.
+    fs.watchFile(file, { interval, persistent: false }, watch.listener);
+  }
+
+  if (opts.runner) {
+    const runner = opts.runner;
+    const onDisposed = (): void => stopTokenWriteBackWatch(sessionId);
+    runner.on("disposed", onDisposed);
+    watch.detachRunner = () => runner.off("disposed", onDisposed);
+  }
+
+  watches.set(sessionId, watch);
+  // Publish once at arm time, not only on an observed change. `fs.watchFile`
+  // takes its baseline stat asynchronously, so a write landing between this
+  // call and that baseline is invisible to the poller forever. It also picks
+  // up a rotation stranded by a previous turn whose finalize never ran (the
+  // container was destroyed mid-turn). Guarded by the same
+  // `sessionTokenIsAheadOfSource` pre-check, so the normal case — the sync-in
+  // just made the session's token equal to the source's — costs two reads.
+  schedule();
+}
+
+/**
+ * Stop publishing for a session. Safe to call when no watch exists (the common
+ * case — local runtime, non-container runners, agents without a token file).
+ * Cancels any pending debounced publish: the caller (turn end) runs the
+ * authoritative sync-back itself.
+ */
+export function stopTokenWriteBackWatch(sessionId: string): void {
+  const watch = watches.get(sessionId);
+  if (!watch) return;
+  watches.delete(sessionId);
+  if (watch.debounce) clearTimeout(watch.debounce);
+  watch.debounce = null;
+  for (const file of watch.paths) {
+    try {
+      fs.unwatchFile(file, watch.listener);
+    } catch {
+      // Best-effort — an unwatch failure leaves at most one stat poller.
+    }
+  }
+  try {
+    watch.detachRunner();
+  } catch {
+    // The runner may already have dropped its listeners in dispose().
+  }
+}
+
+/** Tear every watch down (shutdown, and test cleanup). */
+export function stopAllTokenWriteBackWatches(): void {
+  for (const sessionId of [...watches.keys()]) stopTokenWriteBackWatch(sessionId);
+}
+
+/** Whether a session is currently being watched. Exposed for tests. */
+export function hasTokenWriteBackWatch(sessionId: string): boolean {
+  return watches.has(sessionId);
+}

@@ -1,4 +1,5 @@
-import { useState } from "react";
+// eslint-disable-next-line no-restricted-imports -- useEffect: report edit-mode teardown (unmount) to the parent
+import { useState, useCallback, useEffect, useRef } from "react";
 import { PencilSimpleIcon, TrashIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import { CommentInput } from "./CommentInput.js";
@@ -9,15 +10,36 @@ export function CommentCard({
   showQuote,
   onEdit,
   onDelete,
+  onEditingChange,
   readOnly = false,
 }: {
   comment: SelectionCommentData;
   showQuote: boolean;
   onEdit: (commentId: string, text: string) => void;
   onDelete: (commentId: string) => void;
+  /** Reports the in-place edit form opening/closing so the surface can block
+   *  "Send comments" on an unsaved edit. Also fires `false` on unmount. */
+  onEditingChange?: (commentId: string, editing: boolean) => void;
   readOnly?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
+
+  const onEditingChangeRef = useRef(onEditingChange);
+  onEditingChangeRef.current = onEditingChange;
+
+  // eslint-disable-next-line no-restricted-syntax -- external sync: clear the parent's editing flag if the card unmounts mid-edit
+  useEffect(() => {
+    if (!editing) return;
+    return () => onEditingChangeRef.current?.(comment.id, false);
+  }, [editing, comment.id]);
+
+  const setEditingAndNotify = useCallback(
+    (next: boolean) => {
+      setEditing(next);
+      onEditingChangeRef.current?.(comment.id, next);
+    },
+    [comment.id],
+  );
 
   const isAi = comment.source === "ai";
   const borderColor = isAi ? "border-l-purple-400" : "border-l-blue-400";
@@ -30,9 +52,9 @@ export function CommentCard({
         quotedText={comment.quotedText}
         onSubmit={(text) => {
           onEdit(comment.id, text);
-          setEditing(false);
+          setEditingAndNotify(false);
         }}
-        onCancel={() => setEditing(false)}
+        onCancel={() => setEditingAndNotify(false)}
       />
     );
   }
@@ -56,7 +78,7 @@ export function CommentCard({
         {!readOnly && (
           <div className="flex gap-1 shrink-0 opacity-0 group-hover/comment:opacity-100 transition-opacity">
             <button
-              onClick={() => setEditing(true)}
+              onClick={() => setEditingAndNotify(true)}
               className="p-1 rounded hover:bg-(--color-bg-hover) text-(--color-text-tertiary) hover:text-(--color-text-primary)"
               title="Edit"
             >

@@ -135,6 +135,88 @@ describe("ClaudeAdapter", () => {
 
   // docs/178 — native compaction signals. Before this, the `case "system"`
   // mapped EVERY system subtype to a bogus agent_init; now it discriminates.
+  // docs/235 — the CLI can start a turn on its own when a backgrounded job
+  // finishes. These four `system` subtypes were previously dropped by the
+  // adapter's `default: return null`, which is why the orchestrator never knew.
+  describe("background tasks / self-wake (docs/235)", () => {
+    function harness() {
+      const inner = new FakeInnerProcess();
+      const adapter = new ClaudeAdapter(inner as any);
+      const events: any[] = [];
+      adapter.on("event", (e) => events.push(e));
+      return { inner, events };
+    }
+
+    it("maps background_tasks_changed to the normalized task list", () => {
+      const { inner, events } = harness();
+
+      inner.emit("event", {
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [
+          { task_id: "bqmczrwsu", task_type: "local_bash", description: "npm test" },
+          { task_id: "other" },
+        ],
+      } as ClaudeEvent);
+
+      expect(events).toEqual([{
+        type: "agent_background_tasks",
+        tasks: [
+          { id: "bqmczrwsu", type: "local_bash", description: "npm test" },
+          { id: "other", type: undefined, description: undefined },
+        ],
+      }]);
+    });
+
+    it("maps an empty task list to an explicit drained signal", () => {
+      // `tasks: []` is how the CLI says "nothing outstanding" — it must reach
+      // the runner, otherwise the count never falls back to zero.
+      const { inner, events } = harness();
+      inner.emit("event", { type: "system", subtype: "background_tasks_changed", tasks: [] } as ClaudeEvent);
+      expect(events).toEqual([{ type: "agent_background_tasks", tasks: [] }]);
+    });
+
+    it("tolerates a background_tasks_changed with no tasks field", () => {
+      const { inner, events } = harness();
+      inner.emit("event", { type: "system", subtype: "background_tasks_changed" } as ClaudeEvent);
+      expect(events).toEqual([{ type: "agent_background_tasks", tasks: [] }]);
+    });
+
+    it("maps task_notification to agent_self_wake", () => {
+      const { inner, events } = harness();
+
+      inner.emit("event", {
+        type: "system",
+        subtype: "task_notification",
+        task_id: "bqmczrwsu",
+        status: "completed",
+        summary: 'Background command "npm test" completed (exit code 0)',
+        output_file: "/tmp/claude-1000/x/tasks/bqmczrwsu.output",
+      } as ClaudeEvent);
+
+      expect(events).toEqual([{
+        type: "agent_self_wake",
+        taskId: "bqmczrwsu",
+        status: "completed",
+        summary: 'Background command "npm test" completed (exit code 0)',
+      }]);
+    });
+
+    it("drops task_started / task_updated as redundant per-task deltas", () => {
+      // Their effect is already covered by the authoritative
+      // `background_tasks_changed` list emitted alongside them.
+      const { inner, events } = harness();
+      inner.emit("event", { type: "system", subtype: "task_started", task_id: "a" } as ClaudeEvent);
+      inner.emit("event", {
+        type: "system",
+        subtype: "task_updated",
+        task_id: "a",
+        patch: { status: "completed" },
+      } as ClaudeEvent);
+      expect(events).toHaveLength(0);
+    });
+  });
+
   describe("compaction (docs/178)", () => {
     it("maps system/status status:'compacting' to agent_compaction_started", () => {
       const inner = new FakeInnerProcess();
@@ -495,7 +577,7 @@ describe("ClaudeAdapter", () => {
       rate_limit_info: {
         status: "allowed",
         rateLimitType: "five_hour",
-        utilization: 42,
+        utilization: 0.42,
         resetsAt: 1_800_000_000,
       },
     } satisfies ClaudeEvent);
@@ -508,6 +590,45 @@ describe("ClaudeAdapter", () => {
     });
   });
 
+  it("scales the CLI's 0–1 utilization fraction to a 0–100 percentage", () => {
+    // The CLI forwards `anthropic-ratelimit-unified-*-utilization` verbatim and
+    // that header is a FRACTION: one account read `0.06`/`0.66` in the headers
+    // while /api/oauth/usage reported `6.0`/`67.0` for the same windows.
+    // Treating it as a percentage rendered a real 92% session as "5h 1%".
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+    const events: any[] = [];
+    adapter.on("event", (e) => events.push(e));
+
+    inner.emit("event", {
+      type: "rate_limit_event",
+      rate_limit_info: { rateLimitType: "five_hour", utilization: 0.92, resetsAt: 1_800_000_000 },
+    } satisfies ClaudeEvent);
+    inner.emit("event", {
+      type: "rate_limit_event",
+      rate_limit_info: { rateLimitType: "seven_day", utilization: 0.06, resetsAt: 1_900_000_000 },
+    } satisfies ClaudeEvent);
+
+    expect(events[1].session?.usedPct).toBeCloseTo(92, 6);
+    expect(events[1].weekly?.usedPct).toBeCloseTo(6, 6);
+  });
+
+  it("passes through a utilization above 1 as an already-0–100 percentage", () => {
+    // Defensive: a fraction can't exceed 1 for a capped window, so >1 means the
+    // upstream scale changed. Better to render 42% than to multiply it to 100%.
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+    const events: any[] = [];
+    adapter.on("event", (e) => events.push(e));
+
+    inner.emit("event", {
+      type: "rate_limit_event",
+      rate_limit_info: { rateLimitType: "five_hour", utilization: 42, resetsAt: 1_800_000_000 },
+    } satisfies ClaudeEvent);
+
+    expect(events[0].session?.usedPct).toBe(42);
+  });
+
   it("accumulates five_hour + seven_day across separate events and re-emits both", () => {
     const inner = new FakeInnerProcess();
     const adapter = new ClaudeAdapter(inner as any);
@@ -516,17 +637,17 @@ describe("ClaudeAdapter", () => {
 
     inner.emit("event", {
       type: "rate_limit_event",
-      rate_limit_info: { rateLimitType: "five_hour", utilization: 12, resetsAt: 1_800_000_000 },
+      rate_limit_info: { rateLimitType: "five_hour", utilization: 0.12, resetsAt: 1_800_000_000 },
     } satisfies ClaudeEvent);
     inner.emit("event", {
       type: "rate_limit_event",
-      rate_limit_info: { rateLimitType: "seven_day", utilization: 80, resetsAt: 1_900_000_000 },
+      rate_limit_info: { rateLimitType: "seven_day", utilization: 0.8, resetsAt: 1_900_000_000 },
     } satisfies ClaudeEvent);
 
     expect(events).toHaveLength(2);
     // Second event carries BOTH windows now that the adapter has seen each.
-    expect(events[1].session?.usedPct).toBe(12);
-    expect(events[1].weekly?.usedPct).toBe(80);
+    expect(events[1].session?.usedPct).toBeCloseTo(12, 6);
+    expect(events[1].weekly?.usedPct).toBeCloseTo(80, 6);
   });
 
   it("ignores rate_limit_event for sub-quotas (opus / sonnet / overage)", () => {

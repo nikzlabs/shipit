@@ -3,6 +3,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import type { SessionManager } from "./sessions.js";
 import { repoUrlToHash } from "./git-utils.js";
+import { sessionStateDir, SESSION_WORKSPACE_SUBDIR } from "./session-state-dir.js";
 
 // ---- Session directory creation ----
 
@@ -27,8 +28,12 @@ export function createSessionDirFactory(
   ): Promise<{ appSessionId: string; sessionDir: string; workspaceDir: string }> => {
     const appSessionId = crypto.randomUUID();
     const sessionDir = path.join(sessionsRoot, appSessionId);
-    const workspaceDir = path.join(sessionDir, "workspace");
+    const workspaceDir = path.join(sessionDir, SESSION_WORKSPACE_SUBDIR);
     await fs.mkdir(workspaceDir, { recursive: true });
+    // docs/246 — ShipIt's own generated artifacts live here, a sibling of the
+    // clone, so the post-turn `git add -A` can never stage them into the user's
+    // repository. Created up front: writers treat it as existing.
+    await fs.mkdir(sessionStateDir(sessionDir), { recursive: true });
 
     sessionManager.track(appSessionId, title, workspaceDir);
     console.log("[server] Created session directory:", sessionDir);

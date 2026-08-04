@@ -16,6 +16,7 @@ import { RenderedFrame, svgToMarkup } from "./RenderedFrame.js";
 import type { ContentKind } from "../../utils/file-content-kind.js";
 import type { ViewMode } from "./SourceToggle.js";
 import type { SelectionCommentData } from "../MarkdownSelectionComments.js";
+import type { Ref } from "react";
 
 export interface FileContentViewProps {
   filePath: string;
@@ -32,6 +33,7 @@ export interface FileContentViewProps {
   markdownComments: SelectionCommentData[];
   /** Line comments for the code/source view (from `useFileReviewControls`). */
   codeComments: { id: string; kind: "line"; line: number; text: string }[];
+  agentInterfaceFrameRef?: Ref<HTMLIFrameElement>;
 }
 
 export function FileContentView({
@@ -44,6 +46,7 @@ export function FileContentView({
   revealLine,
   markdownComments,
   codeComments,
+  agentInterfaceFrameRef,
 }: FileContentViewProps) {
   const readOnly = !reviewable;
 
@@ -72,7 +75,12 @@ export function FileContentView({
         language="html"
       />
     ) : (
-      <RenderedFrame kind="html" content={content} />
+      <RenderedFrame
+        kind="html"
+        content={content}
+        enableAgentInterface={!!agentInterfaceFrameRef}
+        frameRef={agentInterfaceFrameRef}
+      />
     );
   }
 

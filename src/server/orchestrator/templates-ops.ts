@@ -348,11 +348,11 @@ can land it.
  * session* (the sidebar "Investigate in Ops session" entry point).
  *
  * The client bakes this into the new ops session's composer draft so the
- * operator lands with the target session's identity and a concrete read-only
- * first step already typed — instead of copy-pasting the session id into a
- * blank ops session by hand. The session id is the handle the agent filters
- * containers by (container names embed it — see
- * prompts/diagnose-stuck-session.md). Mirrors that recipe with the id baked in.
+ * operator lands with only the durable context already typed: which session
+ * is being investigated and that the investigation is read-only. The operator
+ * adds the incident-specific symptoms and request; prescribing Docker,
+ * journal, resource, or reporting steps here made the draft confidently wrong
+ * for investigations that did not need those surfaces.
  */
 export function buildOpsInvestigationSeed(target: {
   id: string;
@@ -363,24 +363,9 @@ export function buildOpsInvestigationSeed(target: {
   const ctx: string[] = [`id \`${target.id}\``];
   if (target.branch) ctx.push(`branch \`${target.branch}\``);
   if (target.remoteUrl) ctx.push(target.remoteUrl);
-  return `Investigate the session "${target.title}" (${ctx.join(", ")}) — it's misbehaving and I want to know why. Read-only.
+  return `Investigate the session "${target.title}" (${ctx.join(", ")}). This is a read-only investigation.
 
-1. Find its container and current state:
-   \`\`\`
-   docker ps -a --filter "name=${target.id}" --format 'table {{.Names}}\\t{{.Status}}\\t{{.Image}}'
-   docker inspect <name> --format '{{json .State}}' | python3 -m json.tool
-   \`\`\`
-2. Resource pressure — is it pinned at its memory/cpu cap?
-   \`\`\`
-   docker stats --no-stream <name>
-   \`\`\`
-3. Recent logs from the container and the orchestrator journal for this session:
-   \`\`\`
-   docker logs --tail 200 <name>
-   journalctl -D /var/log/journal --since "30 min ago" --no-pager | grep ${target.id}
-   \`\`\`
-
-Report the likely root cause and the smallest corrective action — but don't attempt any mutation (the proxy is read-only). If a restart or kill is needed, tell me and I'll act on the host.`;
+Context: `;
 }
 
 export const OPS_TEMPLATE: ProjectTemplate = {

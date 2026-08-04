@@ -17,30 +17,41 @@ import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { UsageManager } from "../usage.js";
 import type { WsServerMessage } from "../../shared/types.js";
+import { CredentialStore } from "../credential-store.js";
+import { ProviderAccountManager } from "../provider-account-manager.js";
 
 let tmpDir: string;
 let app: Awaited<ReturnType<typeof buildApp>>;
 let client: TestClient;
 let githubAuth: StubGitHubAuthManager;
 let latestClaude: FakeClaudeProcess | null = null;
+/** Every FakeClaudeProcess the app created, in order. */
+let allClaudes: FakeClaudeProcess[] = [];
 let dbManager: DatabaseManager;
 let port: number;
+let credentialStore: CredentialStore;
+let credentialsDir: string;
 
 beforeEach(async () => {
   dbManager = createTestDatabaseManager();
   tmpDir = fs.mkdtempSync("/tmp/shipit-rebase-flow-test-");
   latestClaude = null;
+  allClaudes = [];
+  credentialsDir = path.join(tmpDir, "credentials");
+  credentialStore = createTestCredentialStore(tmpDir);
   // Prevent rebase --continue from opening an editor.
   process.env.GIT_EDITOR = "true";
 
   githubAuth = new StubGitHubAuthManager();
 
   app = await buildApp({
-    credentialStore: createTestCredentialStore(tmpDir),
+    credentialStore,
+    credentialsDir,
     workspaceDir: tmpDir,
     agentFactory: () => {
       const c = new FakeClaudeProcess();
       latestClaude = c;
+      allClaudes.push(c);
       return c as any;
     },
     authManager: new StubAuthManager() as any,
@@ -279,6 +290,49 @@ describe("rebase flow: API + WS events", () => {
     const finalContent = fs.readFileSync(path.join(sessionDir, "shared.txt"), "utf-8");
     expect(finalContent).not.toContain("<<<<<<<");
     expect(finalContent).toContain("merged");
+  });
+
+  // docs/150 reqs 13, 20 — the conflict-resolution turn is a system turn on the
+  // shared dispatch path (`runner.dispatch` → `runDispatchedTurn` →
+  // `executeAgentTurn`), so it takes the same provider-account preflight a
+  // user-typed turn does. It hand-rolled its own agent lifecycle before
+  // docs/169; if it ever does again, an exhausted subscription would be
+  // discovered by the provider mid-resolution — with a rebase in progress and
+  // conflict markers in the tree — instead of before the spawn.
+  //
+  // Asserted as "the turn was stopped", not "the flow completed": no CLI
+  // receives the conflict prompt, and the failure names the reset time.
+  it("blocks the conflict-resolution turn when every connected account is out of quota", { timeout: 20_000 }, async () => {
+    await githubAuth.setToken("test-token");
+    const { sessionId, sessionDir } = await createSession();
+    setupDivergence(sessionDir, { conflicting: true });
+
+    // Both connected Claude subscriptions are spent by the time the rebase
+    // needs an agent (the persisted hard-exhaustion stamp, req 7).
+    const accounts = new ProviderAccountManager({ credentialsDir, credentialStore });
+    const resetAt = Date.now() + 45 * 60 * 1000;
+    for (const label of ["Work", "Personal"]) {
+      const acct = accounts.create("claude", label);
+      accounts.setAccountStatus("claude", acct.id, "ready");
+      accounts.markAccountExhausted("claude", acct.id, resetAt);
+    }
+    const spawnedBefore = allClaudes.length;
+
+    const res = await postRebase(sessionId, "main");
+    expect(res.status).toBe(200);
+
+    await waitForMessage("rebase_started");
+    await waitForMessage("rebase_conflicts");
+
+    // The blocked turn surfaces req 13's message rather than an agent crash...
+    const err = await waitForMessage("error", 8_000) as unknown as { message: string };
+    expect(err.message).toContain("out of quota");
+    expect(err.message).toContain(new Date(resetAt).toISOString().slice(0, 16));
+    // ...and the rebase reports the failure instead of silently hanging on a
+    // resolution turn that will never happen.
+    await waitForMessage("rebase_aborted", 8_000);
+    // No CLI was ever handed the conflict prompt.
+    expect(allClaudes.slice(spawnedBefore).some((c) => c.runCalled)).toBe(false);
   });
 
   it("rebase abort endpoint — kills agent, restores tree, emits rebase_aborted", { timeout: 15_000 }, async () => {

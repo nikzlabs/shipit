@@ -15,6 +15,9 @@ import os from "node:os";
 import path from "node:path";
 import { SessionWorker } from "../../session/session-worker.js";
 import { ContainerSessionRunner } from "../container-session-runner.js";
+import type { SystemTurnDeps } from "../session-runner.js";
+import { prepareDispatch, type PreparedDispatch } from "../prepared-dispatch.js";
+import { TURN_COMPLETED, type TurnOutcome } from "../turn-settlement.js";
 import type { AgentProcess, AgentProcessEvents, AgentId, AgentRunParams, PermissionMode } from "../../shared/types.js";
 
 // ---------------------------------------------------------------------------
@@ -87,6 +90,34 @@ async function waitFor(
     await new Promise((r) => setTimeout(r, 50));
   }
   throw new Error(`waitFor(${label}) timed out after ${timeoutMs}ms`);
+}
+
+/**
+ * SHI-280 — a runner that can start dispatched turns but never actually runs
+ * one: `runDispatchedTurn` is replaced by a recorder that hangs, which is
+ * exactly the field condition (a turn whose every event was dropped, so it never
+ * reaches the executor's settling teardown). `dispatchOnRunner` still runs for
+ * real, so `running`, `activeDeliveryId`, and the settlement all behave as they
+ * do in production.
+ */
+function makeDispatchStubbedRunner(
+  sessionId: string,
+  workerUrl: string,
+): ContainerSessionRunner & { dispatched: PreparedDispatch[] } {
+  const runner = new ContainerSessionRunner({
+    sessionId,
+    sessionDir: "/tmp/test",
+    defaultAgentId: "claude",
+    workerUrl,
+  }) as ContainerSessionRunner & { dispatched: PreparedDispatch[] };
+  // Only `canRunDispatchedTurn` is read before the stub takes over.
+  runner.setSystemTurnDeps({} as SystemTurnDeps);
+  runner.dispatched = [];
+  runner.runDispatchedTurn = async (opts: PreparedDispatch): Promise<void> => {
+    runner.dispatched.push(opts);
+    return new Promise<void>(() => { /* never settles — the dropped-events case */ });
+  };
+  return runner;
 }
 
 // ---------------------------------------------------------------------------
@@ -910,6 +941,146 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.dispose({ force: true });
   });
 
+  // SHI-288 (prod incident 2026-08-03, three sessions, every agent event
+  // dropped `(no _agent)` for a whole turn): the retirement blocks in
+  // `dispatched-turn.ts` — the system-turn one (docs/179 §4) and the
+  // account-failover one (docs/150) — retire a resident process with the
+  // synchronous sequence
+  //
+  //     outgoing.kill(); runner.setAgent(null); createAgent(); // → new proxy
+  //
+  // `ProxyAgentProcess.kill()` is FIRE-AND-FORGET: it starts
+  // `killAgentOnWorker()`, whose `POST /agent/kill` is still in flight when the
+  // next two statements run. `killAgentOnWorker` then nulled `_agent`
+  // UNCONDITIONALLY when the POST resolved — tens of ms later, by which time the
+  // slot held the INCOMING proxy. Nothing reinstalls the slot afterwards, so the
+  // new turn's own `agent_init` and `agent_result` were dropped along with every
+  // assistant/tool_result event in between.
+  //
+  // The docs/146 re-adopt net could not save it: the retirement block also sets
+  // `isStreamingActive = false`, and that setter nulls `_streamingProxy`.
+  //
+  // Blast radius in prod: with `agent_result` dropped, `onTurnComplete` never
+  // fired, so `runRebaseResolutionTurn` hung until its 10-minute timeout and ran
+  // `git rebase --abort` — discarding a conflict resolution the agent had
+  // already completed correctly.
+  //
+  // The fix is an identity guard on the kill: `killAgentOnWorker` captures the
+  // proxy it was asked to kill and clears the slot only if that same proxy is
+  // still in it.
+  it("a fire-and-forget kill of the outgoing proxy does NOT null the incoming proxy's slot", async () => {
+    const runner = new ContainerSessionRunner({
+      sessionId: "test-kill-races-new-spawn",
+      sessionDir: "/tmp/test",
+      defaultAgentId: "claude",
+      workerUrl,
+    });
+    runner.attachViewer();
+    await new Promise((r) => setTimeout(r, 200));
+
+    // 1. A resident STREAMING process from a previous turn. `running` is already
+    //    false — a resident streaming process outlives its turn — which is
+    //    exactly why the retirement block believed nothing live was interrupted.
+    const proxyStream = runner.createAgent("claude");
+    proxyStream.run({ prompt: "resident streaming work", cwd: "/workspace", useStreaming: true });
+    await waitFor(() => lastAgent?.runCalled, 3000, "resident agent.run()");
+    const residentAgent = lastAgent;
+    runner.isStreamingActive = true;
+
+    // 2. The retirement block, verbatim and synchronous — no await between the
+    //    fire-and-forget kill and the new spawn, which is what makes the POST
+    //    still be in flight.
+    const outgoing = runner.getAgent();
+    expect(outgoing).toBe(proxyStream);
+    outgoing?.kill();
+    runner.setAgent(null);
+    runner.isStreamingActive = false;
+
+    const proxySystem = runner.createAgent("claude");
+    const systemEvents: string[] = [];
+    proxySystem.on("event", (e: { type?: string }) => { if (e.type) systemEvents.push(e.type); });
+
+    proxySystem.run({ prompt: "rebase resolution turn", cwd: "/workspace" });
+    await waitFor(
+      () => lastAgent !== residentAgent && lastAgent?.lastParams?.prompt === "rebase resolution turn",
+      3000,
+      "system turn agent.run()",
+    );
+    const systemAgent = lastAgent;
+    expect(residentAgent.killed).toBe(true);
+
+    // 3. Give the in-flight `POST /agent/kill` every chance to resolve and wipe
+    //    the slot. Before the fix this is where `_agent` went null.
+    await new Promise((r) => setTimeout(r, 300));
+    expect(runner.getAgent()).toBe(proxySystem);
+
+    // 4. The system turn's own events must be ROUTED, not dropped. `agent_result`
+    //    is the one that matters most: it is what settles the turn and lets the
+    //    rebase driver keep the resolution instead of aborting it on timeout.
+    systemAgent.emit("event", { type: "agent_init", agentId: "claude", sessionId: "s-sys", model: "claude-sonnet-4-6", tools: ["Read"] });
+    systemAgent.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "Resolved 6 conflicts." }] });
+    systemAgent.emit("event", { type: "agent_result", status: "success", sessionId: "s-sys" });
+    await waitFor(() => systemEvents.includes("agent_result"), 3000, "system turn events delivered");
+    expect(systemEvents).toEqual(["agent_init", "agent_assistant", "agent_result"]);
+
+    runner.dispose({ force: true });
+  });
+
+  // SHI-288 defect 2. With the slot correctly held by the incoming proxy, the
+  // RETIRED process's late events are no longer dropped — they are routed into
+  // whatever proxy occupies the slot, because `agent_event` (unlike
+  // `agent_done` / `agent_error` / `agent_auth_required`) carried no `runToken`
+  // and had no `isStaleSpawnEvent` guard.
+  //
+  // A late `agent_result` from the killed process is the dangerous one: it is
+  // the canonical turn-ended signal, so it would settle the INCOMING turn
+  // moments after it started — the post-turn commit runs against a tree the new
+  // agent has not written yet, and the real result later lands on a turn that
+  // already finalized. Stamping the token on the event channel too closes it.
+  it("a late agent_event from the retired spawn is not routed into the incoming turn", async () => {
+    const runner = new ContainerSessionRunner({
+      sessionId: "test-stale-agent-event",
+      sessionDir: "/tmp/test",
+      defaultAgentId: "claude",
+      workerUrl,
+    });
+    runner.attachViewer();
+    await new Promise((r) => setTimeout(r, 200));
+
+    const proxyOld = runner.createAgent("claude");
+    proxyOld.run({ prompt: "resident streaming work", cwd: "/workspace", useStreaming: true });
+    await waitFor(() => lastAgent?.runCalled, 3000, "resident agent.run()");
+    const oldAgent = lastAgent;
+
+    const proxyNew = runner.createAgent("claude");
+    expect(proxyNew.runToken).not.toBe(proxyOld.runToken);
+    const newEvents: string[] = [];
+    proxyNew.on("event", (e: { type?: string }) => { if (e.type) newEvents.push(e.type); });
+
+    proxyNew.run({ prompt: "incoming turn", cwd: "/workspace" });
+    await waitFor(
+      () => lastAgent !== oldAgent && lastAgent?.lastParams?.prompt === "incoming turn",
+      3000,
+      "incoming agent.run()",
+    );
+    const newAgent = lastAgent;
+
+    // The retired process's late result — stamped with the OLD spawn's token.
+    oldAgent.emit("event", { type: "agent_result", status: "success", sessionId: "s-old" });
+    await new Promise((r) => setTimeout(r, 300));
+    expect(newEvents).toHaveLength(0);
+    expect(runner.getAgent()).toBe(proxyNew);
+
+    // The incoming spawn's own events still flow — the guard blocks only the
+    // mismatched token, never the live turn.
+    newAgent.emit("event", { type: "agent_init", agentId: "claude", sessionId: "s-new", model: "claude-sonnet-4-6", tools: ["Read"] });
+    newAgent.emit("event", { type: "agent_result", status: "success", sessionId: "s-new" });
+    await waitFor(() => newEvents.includes("agent_result"), 3000, "incoming events delivered");
+    expect(newEvents).toEqual(["agent_init", "agent_result"]);
+
+    runner.dispose({ force: true });
+  });
+
   // ---- tryPushAgentSecrets (docs/088 compose-less agent-env path) ----
 
   describe("tryPushAgentSecrets()", () => {
@@ -1005,6 +1176,109 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
       runner.dispose();
     });
 
+    // ---- SHI-280 ----
+    //
+    // The reset above is only half a recovery. In the field a session sat wedged
+    // for 40+ minutes with a `Child PR #… merged` wake-turn frozen in its queue:
+    // every SSE event of the running turn was dropped (`no _agent` in the slot
+    // from `agent_init` onward), so the turn never settled, the merge wake was
+    // enqueued behind it, and when the reconciler finally reset `running` it
+    // released neither the queue nor the abandoned turn's settlement.
+
+    it("releases a queued entry through the branded dispatch path after the reset", async () => {
+      const runner = makeDispatchStubbedRunner("test-stuck-drains-queue", workerUrl);
+
+      const outcomes: TurnOutcome[] = [];
+      runner.enqueue({
+        text: "Child PR #1939 merged: Retire the docs/246 one-time clone migration",
+        execution: "dispatched",
+        systemTurn: true,
+        postTurn: "none",
+        activity: "Waking on merge…",
+        deliveryId: "delivery-queued",
+        onTurnComplete: (outcome) => outcomes.push(outcome),
+      });
+
+      runner.running = true;
+      expect(await runner.verifyRunningState()).toBe(false);
+
+      // The entry left the queue and became a real turn.
+      expect(runner.queueLength).toBe(0);
+      expect(runner.dispatched).toHaveLength(1);
+      expect(runner.running).toBe(true);
+
+      // …and it went through `queuedMessageToDispatchOptions`, not a narrowed
+      // interactive re-entry: every turn-execution field survived.
+      const opts = runner.dispatched[0];
+      expect(opts.text).toMatch(/Child PR #1939 merged/);
+      expect(opts.execution).toBe("dispatched");
+      expect(opts.systemTurn).toBe(true);
+      expect(opts.postTurn).toBe("none");
+      expect(opts.activity).toBe("Waking on merge…");
+      expect(opts.deliveryId).toBe("delivery-queued");
+      // The settlement is chained onto the entry's own callback, so the released
+      // turn still reports completion to the watch that queued it.
+      expect(typeof opts.onTurnComplete).toBe("function");
+      opts.onTurnComplete?.(TURN_COMPLETED);
+      expect(outcomes).toEqual([TURN_COMPLETED]);
+
+      runner.dispose({ force: true });
+    });
+
+    it("settles the abandoned turn as dropped and stops publishing its delivery", async () => {
+      const runner = makeDispatchStubbedRunner("test-stuck-settles-turn", workerUrl);
+
+      // A dispatched turn that starts and then loses every event: the stub never
+      // reaches a terminal agent event, so nothing inside the turn machinery can
+      // settle it. Only the reconciler notices.
+      const handle = runner.dispatch(prepareDispatch({
+        text: "wake up",
+        agentInterface: undefined,
+        execution: "dispatched",
+        activity: undefined,
+        images: undefined,
+        files: undefined,
+        uploads: undefined,
+        permissionMode: undefined,
+        postTurn: undefined,
+        systemTurn: true,
+        onTurnComplete: undefined,
+        deliveryId: "delivery-running",
+      }));
+      expect(runner.running).toBe(true);
+      expect(runner.hasDelivery("delivery-running")).toBe(true);
+
+      expect(await runner.verifyRunningState()).toBe(false);
+
+      // Bounded so a regression fails as an unsettled handle rather than hanging
+      // the suite — which is the exact production symptom.
+      const settled = await Promise.race<TurnOutcome | null>([
+        handle.settled,
+        new Promise<null>((r) => setTimeout(() => r(null), 1000)),
+      ]);
+
+      // `dropped`, so the merge-watch supervisor retries instead of reading the
+      // dead attempt as indefinitely in flight.
+      expect(settled?.status).toBe("dropped");
+      expect(runner.activeDeliveryId).toBeUndefined();
+      expect(runner.hasDelivery("delivery-running")).toBe(false);
+
+      runner.dispose({ force: true });
+    });
+
+    it("still signals idle when the queue is empty", async () => {
+      const runner = makeDispatchStubbedRunner("test-stuck-empty-queue", workerUrl);
+
+      runner.running = true;
+      const idlePromise = new Promise<void>((resolve) => { runner.once("idle", () => resolve()); });
+
+      expect(await runner.verifyRunningState()).toBe(false);
+      await idlePromise;
+      expect(runner.dispatched).toHaveLength(0);
+
+      runner.dispose();
+    });
+
     it("returns true and preserves state when worker confirms agent is running", async () => {
       const runner = new ContainerSessionRunner({
         sessionId: "test-confirmed-running",
@@ -1084,8 +1358,9 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
 // `/agent/start` was never POSTed. The session showed `running=false` in the
 // worker and no chat output, until a viewer happened to open it.
 //
-// These tests use a real SessionWorker against a tmp workspaceDir (so the
-// `.shipit/.install-done` marker doesn't pollute the repo) and a trivial
+// These tests use a real SessionWorker against a tmp workspaceDir + stateDir (so
+// the install marker doesn't pollute the repo; docs/246 moved it out of the
+// clone onto the `/session-state` mount, which an in-process worker lacks) and a trivial
 // install command (`true`) so the worker's `runInstallCommands` finishes
 // near-instantly. The key contract: with NO viewer attached, both
 // `runner.runInstall(...)` and `runner._startAgentViaProxy(...)` must complete
@@ -1097,10 +1372,12 @@ describe("Integration: spawn-child install gate (no viewer attached)", () => {
   let lastAgent: FakeWorkerAgent;
   let workerUrl: string;
   let tmpWorkspace: string;
+  let tmpStateDir: string;
 
   beforeEach(async () => {
     lastAgent = null as unknown as FakeWorkerAgent;
     tmpWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-install-gate-"));
+    tmpStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-install-gate-state-"));
 
     worker = new SessionWorker({
       agentFactory: () => {
@@ -1110,6 +1387,7 @@ describe("Integration: spawn-child install gate (no viewer attached)", () => {
       port: 0,
       host: "127.0.0.1",
       workspaceDir: tmpWorkspace,
+      stateDir: tmpStateDir,
     });
 
     const address = await worker.start();
@@ -1123,6 +1401,7 @@ describe("Integration: spawn-child install gate (no viewer attached)", () => {
     await new Promise((r) => setTimeout(r, 50));
     try {
       fs.rmSync(tmpWorkspace, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+      fs.rmSync(tmpStateDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
     } catch {
       // ignore cleanup errors
     }

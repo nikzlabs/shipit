@@ -78,8 +78,14 @@ add-backs should be revisited.
 - Implementing network egress filtering.
 - Making `/credentials` read-only.
 - Changing the orchestrator trust boundary or Docker-per-session architecture.
-- Changing user compose service users. This doc covers the agent/session worker
-  container, not user-declared service containers.
+- ~~Changing user compose service users. This doc covers the agent/session worker
+  container, not user-declared service containers.~~ **Revised (#1646):** the
+  override now DOES set `user:` on compose services to the worker UID — see §7.2.
+  Leaving services as root re-created root-owned caches in the *shared* workspace
+  (e.g. `node_modules/.vite`) that the non-root agent/terminal couldn't delete or
+  rebuild, breaking a one-off `npm run build`. Aligning the UID is required for
+  the shared-workspace invariant to hold; it does not change the user's own
+  *image* or in-container privileges beyond which UID the process runs as.
 
 ## Design
 
@@ -552,6 +558,58 @@ and now chowns the `.shipit` dir + marker to the worker uid, so the worker's
 uid-1000 `writeMarker` can later overwrite the marker when a HEAD change
 invalidates it (otherwise: EACCES, install fails).
 
+**Restore-safe sentinel (#1813).** The entrypoint's one-shot sentinel is valid
+only while its inode ownership survives. Infrastructure backup/volume restore
+can recreate the complete workspace as `root:root`, including
+`.shipit-uid-1000`; an existence-only check then incorrectly skips the recursive
+handoff and leaves restored tracked files unwritable by the worker. This is
+especially visible in Git LFS repositories: `git lfs pull` downloads the full
+objects but cannot replace root-owned pointer files. The entrypoint now accepts
+an existing sentinel only when `stat` reports the configured worker UID as its
+owner. A root-owned restored sentinel forces one recursive chown; ordinary warm
+restarts retain the fast path.
+
+**Addendum — ownership validation must not run on read-only mounts.** The
+sentinel check above treats a *missing* marker as "handoff not done" and falls
+through to `chown -R`. `/uploads` is mounted `:ro`, so its marker can never be
+created and is therefore always missing — every boot took that fallthrough, hit
+`EROFS`, and, under `set -eu`, aborted the entrypoint with exit 1. Session
+containers stopped being creatable instance-wide; the orchestrator's retry loop
+then reported the *sidecars'* downstream `cannot join network namespace of a non
+running container` / `lstat /proc/<pid>/ns/net` errors, which describe the agent
+container's death rather than its cause. Before the ownership check, the loop
+now skips any mount it cannot write (`[ -w "$d" ] || continue`) — a read-only
+mount has no handoff to perform. `test -w` is the correct probe even though the
+entrypoint is still root at that point: `access(2)` reports `EROFS` for `W_OK`
+regardless of privilege. The prior code survived only because a failed
+`mkdir` short-circuited the condition; that accident is now an explicit rule.
+The regression test executes the entrypoint against a non-writable mount instead
+of pattern-matching its source — the source-regex-only guard shipped green while
+this was broken in production.
+
+**Addendum — the dep-dir exclusion still stranded root-owned tool caches (#1666).**
+The handback above (and §7.1) deliberately **excludes** the declared dep dirs:
+re-walking a populated `node_modules` (tens of thousands of files) every boot is
+too expensive, and in overlay mode it would rewrite the shared read-only lowerdir
+(docs/183). But that left a gap — a root process that wrote a build-tool cache
+*inside* a dep dir (a Compose dev server's `node_modules/.vite` before §7.3/#1646
+ran services as the worker uid) leaves a root-owned subtree the handback never
+repairs. On the next `npm run build` the uid-1000 agent can't `rmdir` it
+(`EACCES … rmdir 'node_modules/.vite/deps'`) and has no `sudo` to recover. §7.3
+stops *new* such writes; this closes the residual *leftover*. `selfHealWorkspaceOwnership`
+now also runs a **bounded** dep-dir pass (`reconcileDepDirCacheOwnership`,
+`session-worker-uid.ts`): it only `lstat`s the **direct children** of each
+per-session dep-dir layer and `chownRecursive`s the rare child not already owned
+by the worker (a leaked cache tree a root process created whole), so the common
+case is a shallow scan with **zero** chowns and a leak costs work bounded by the
+leak, never the dep count. The layer it reconciles is always per-session and
+writable — the plain `workspaceDir/<depDir>` (non-overlay) or each overlay spec's
+`upperdir` (where a copied-up/new `.vite` lands) — **never** the shared overlay
+lowerdir, so it can't rewrite a base generation or trigger a copy-up storm. Tests:
+`session-worker-uid.test.ts` → "reconcileDepDirCacheOwnership", and
+`container-lifecycle.test.ts` → the overlay/non-overlay wiring in
+"selfHealWorkspaceOwnership".
+
 **Observability.** The failure used to surface only as a stale `install_ok=false`
 in the overlay-measure line, the real cause (`EACCES … permission denied`) lost in
 the emit-only `install_log` stream. Now the worker captures a bounded stderr tail
@@ -559,6 +617,35 @@ and folds it into the `install_error` message (`install-failure.ts:formatInstall
 and the orchestrator `console.error`s the failure (`container-session-runner.ts`,
 `install_error` SSE case) so a no-viewer recreate-time install failure lands in
 the service-log stream Ops reads instead of being swallowed.
+
+#### 7.3 Addendum — compose services must share the worker UID (#1646)
+
+§7 hands *orchestrator*-written files back to the worker UID, and the entrypoint
+chowns the writable mounts at boot. But the **compose preview services** kept
+running as their image's default user — almost always **root**. They share the
+agent's workspace (the `.` bind mount is rewritten to the same named volume), so a
+running dev server writes its build caches there as `root:root`:
+`node_modules/.vite`, `.next/`, `.svelte-kit/`, etc. The non-root agent/terminal
+(UID 1000) then can't `rmdir`/overwrite those caches, and a one-off
+`npm run build` aborts with `EACCES: permission denied, rmdir '…/node_modules/.vite'`
+— with no `sudo` to recover. This is the exact mismatch §7 fixes for orchestrator
+writes, reappearing through the service containers.
+
+**Fix.** `generateComposeOverride` (`compose-generator.ts`) now emits
+`user: "<uid>:<uid>"` on every service entry whenever `sessionWorkerUid()` is set
+(the same `SHIPIT_SESSION_WORKER_UID` gate as the entrypoint and the §7 chowns), so
+the dev server writes shared-workspace files as the same UID the agent reads/writes
+them with. Symmetric and single-deploy-safe:
+
+- **var unset (legacy default)** → no `user:` emitted; worker AND services are both
+  root, so there's no mismatch to fix. Byte-identical to prior behavior.
+- **var set (e.g. 1000)** → both sides run as 1000; one env flips both.
+
+An explicit `user:` in the user's compose file is **honored, not overridden**
+(`parseComposeFile` captures `svc.user`; the injection is skipped when it's set) —
+documented in `shipit-docs/compose.md` with a warning that `user: root` on a
+workspace-writing service re-introduces the EACCES. Tests:
+`compose-generator.test.ts` → "session-worker UID (#1646)".
 
 ### 8. Playwright browser cache must be reachable by `shipit`
 

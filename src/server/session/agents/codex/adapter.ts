@@ -24,6 +24,7 @@ import { spawn, execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { ChildProcess } from "node:child_process";
+import { killChild } from "../../../shared/kill-child.js";
 import type {
   AgentId,
   AgentCapabilities,
@@ -40,7 +41,8 @@ import {
   PLAYWRIGHT_MCP_ARGS,
   PLAYWRIGHT_MCP_COMMAND,
 } from "../playwright-mcp.js";
-import { CODEX_TOOL_NAMES } from "../../../shared/agent-registry.js";
+import { CODEX_MODELS, CODEX_TOOL_NAMES } from "../../../shared/agent-registry.js";
+import type { AgentHomeResolver } from "../../../shared/agent-home.js";
 import { codexHome } from "../../../shared/agent-home.js";
 import { CodexRateLimits } from "./codex-rate-limits.js";
 import { CodexEventHandler } from "./codex-event-handler.js";
@@ -105,17 +107,18 @@ type JsonRpcInbound = JsonRpcResponse | JsonRpcServerNotification | JsonRpcServe
  * `/root/.codex` in local mode (docs/150). Resolved at call time so the same
  * code serves both runtimes.
  */
-function codexAuthFile(): string {
-  return path.join(codexHome(), "auth.json");
+function codexAuthFile(configDir?: string): string {
+  return path.join(configDir ?? codexHome(), "auth.json");
 }
 
 /**
- * True iff `${agentHome()}/.codex/auth.json` exists and is a non-empty regular
- * file. Exported for unit tests and for reuse by AgentRegistry.checkCodexAuth.
+ * True iff `<configDir>/auth.json` exists and is a non-empty regular file,
+ * where `configDir` defaults to `${agentHome()}/.codex`. Exported for unit
+ * tests and for reuse by AgentRegistry.checkCodexAuth.
  */
-export function hasCodexFileAuth(): boolean {
+export function hasCodexFileAuth(configDir?: string): boolean {
   try {
-    const file = codexAuthFile();
+    const file = codexAuthFile(configDir);
     if (!existsSync(file)) return false;
     const st = statSync(file);
     return st.isFile() && st.size > 0;
@@ -128,8 +131,20 @@ export class CodexAdapter
   extends EventEmitter<AgentProcessEvents>
   implements AgentProcess
 {
-  constructor(private readonly hasFileAuth = hasCodexFileAuth) {
+  /**
+   * docs/150 — the local-mode agent factory passes `resolveHome` so the CLI
+   * spawns against the provider account this session was routed to. Everything
+   * that reads Codex's config root goes through {@link codexConfigDir}, so the
+   * auth probe, the `config.toml` writer, and the spawned child all agree.
+   */
+  private readonly resolveHome: AgentHomeResolver | undefined;
+
+  constructor(
+    private readonly hasFileAuth: (configDir?: string) => boolean = hasCodexFileAuth,
+    opts?: { resolveHome?: AgentHomeResolver },
+  ) {
     super();
+    this.resolveHome = opts?.resolveHome;
     this.rateLimits = new CodexRateLimits();
     this.eventHandler = new CodexEventHandler(
       {
@@ -158,18 +173,9 @@ export class CodexAdapter
     // file-change/apply-patch items, MCP/dynamic tools, subagent collaboration,
     // web/image/tool-discovery items, and ShipIt's ask bridge.
     toolNames: [...CODEX_TOOL_NAMES],
-    // Mirror of agent-registry.ts. Verified against the ChatGPT
-    // `/backend-api/codex/models` endpoint — every entry returned for a
-    // Plus plan with `visibility: list` and `supported_in_api: true`,
-    // including the codex-specialized `gpt-5.3-codex` variant. Keep in
-    // sync with the registry; both feed the same picker in the UI.
-    models: [
-      "gpt-5.5",
-      "gpt-5.4",
-      "gpt-5.4-mini",
-      "gpt-5.3-codex",
-      "gpt-5.2",
-    ],
+    // Mirror of agent-registry.ts. Keep in sync with the registry; both feed
+    // the same picker in the UI.
+    models: CODEX_MODELS,
     // docs/125 — Codex satisfies both ingredients the chat-native review flow
     // needs: subagents (model spawns them via the `spawn_agent` collab tool on
     // explicit instruction — exactly what the composed review prompt asks for)
@@ -202,6 +208,17 @@ export class CodexAdapter
     { resolve: (result: unknown) => void; reject: (err: Error) => void }
   >();
 
+  /**
+   * Codex's config root for this adapter — `<resolved HOME>/.codex` when the
+   * local-mode factory scoped us to an account, else the process-global
+   * {@link codexHome} (which the session container points at the per-session
+   * credentials mount).
+   */
+  private codexConfigDir(): string {
+    const home = this.resolveHome?.();
+    return home ? path.join(home, ".codex") : codexHome();
+  }
+
   setPermissionRequester(requester: PermissionRequester): void {
     this.eventHandler.setPermissionRequester(requester);
   }
@@ -228,6 +245,17 @@ export class CodexAdapter
       ...process.env as Record<string, string>,
     };
 
+    // docs/150 — in local mode the CLI must read the account this session was
+    // routed to, not the orchestrator's process-global home. HOME and
+    // CODEX_HOME are both set so an inherited CODEX_HOME can't win over the
+    // scoped HOME (the CLI prefers CODEX_HOME), and so the child agrees with
+    // `codexConfigDir()`, which is where `writeMcpConfig` wrote config.toml.
+    const scopedHome = this.resolveHome?.();
+    if (scopedHome) {
+      env.HOME = scopedHome;
+      env.CODEX_HOME = this.codexConfigDir();
+    }
+
     // Auth resolution — see docs/119-codex-subscription-auth/plan.md.
     //
     // Two modes:
@@ -242,8 +270,14 @@ export class CodexAdapter
     // key from the spawned child so `codex` doesn't silently route through
     // Platform API billing — that's exactly the bug this feature exists to
     // fix.
-    const hasFileAuth = this.hasFileAuth();
-    const hasEnvAuth = !!env.OPENAI_API_KEY;
+    //
+    // docs/150 req 12 — a spawn scoped to a provider account never falls back
+    // to the env key. Failover moves work between subscription accounts only;
+    // a scoped account with no `auth.json` is an unusable account, and saying
+    // so (`auth_required`) is honest, where quietly billing the orchestrator's
+    // Platform key would look like the account had worked.
+    const hasFileAuth = this.hasFileAuth(this.codexConfigDir());
+    const hasEnvAuth = !scopedHome && !!env.OPENAI_API_KEY;
 
     if (!hasFileAuth && !hasEnvAuth) {
       this.emit("auth_required");
@@ -443,7 +477,7 @@ export class CodexAdapter
 
   kill(): void {
     if (this.proc) {
-      this.proc.kill("SIGTERM");
+      killChild(this.proc, "SIGTERM");
       this.proc = null;
     }
     this.pendingRequests.forEach(({ reject }) => reject(new Error("Process killed")));
@@ -475,7 +509,7 @@ export class CodexAdapter
    * because Codex has no argv env indirection.
    */
   writeMcpConfig(ctx: AgentMcpWriteContext): AgentMcpWriteResult {
-    const codexConfigDir = codexHome();
+    const codexConfigDir = this.codexConfigDir();
     const configPath = path.join(codexConfigDir, "config.toml");
     const runtimeEnv: Record<string, string> = {};
     const lines: string[] = [

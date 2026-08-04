@@ -14,6 +14,7 @@ import {
   unarchiveSession,
   renameSession,
   setSessionPinned,
+  setKeepPreviewRunning,
   reorderSessionPins,
   archiveSession,
   applyTemplate,
@@ -44,6 +45,10 @@ export async function registerSessionCrudRoutes(
     ...(deps.prStatusPoller ? { prStatusPoller: deps.prStatusPoller } : {}),
     sseBroadcast: deps.sseBroadcast,
     ...(deps.ensureAgentTokenFresh ? { ensureAgentTokenFresh: deps.ensureAgentTokenFresh } : {}),
+    // docs/150 — so AI naming runs on the account a turn would use, not the
+    // singleton root (which aliases to the migrated default account).
+    providerAccountManager: deps.providerAccountManager,
+    ...(deps.credentialsDir ? { credentialsDir: deps.credentialsDir } : {}),
   };
 
   // Single shared claim service for every surface that mints a repo-backed
@@ -169,6 +174,40 @@ export async function registerSessionCrudRoutes(
     },
   );
 
+  // PUT /api/sessions/:id/keep-preview-running — docs/241 reservation toggle.
+  app.put<{ Params: { id: string }; Body: { enabled?: unknown } }>(
+    "/api/sessions/:id/keep-preview-running",
+    async (request, reply) => {
+      try {
+        if (typeof request.body?.enabled !== "boolean") {
+          throw new ServiceError(400, "enabled must be a boolean");
+        }
+        const result = setKeepPreviewRunning(
+          sessionManager,
+          request.params.id,
+          request.body.enabled,
+          (session) => {
+            if (!session.workspaceDir) throw new ServiceError(409, "Session has no workspace to preview");
+            if (session.diskTier === "light") sessionManager.setDiskTier(session.id, "hot");
+            deps.runnerRegistry.getOrCreate(
+              session.id,
+              session.workspaceDir,
+              session.agentId ?? deps.defaultAgentId,
+            );
+          },
+        );
+        deps.sseBroadcast("session_list", { sessions: result.sessions });
+        return { session: result.session };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to update preview reservation: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
   // POST /api/sessions/pin-order — reorder a repo's pinned sessions (docs/110 Phase 2)
   app.post<{ Body: { remoteUrl: string; ids: string[] } }>(
     "/api/sessions/pin-order",
@@ -238,7 +277,7 @@ export async function registerSessionCrudRoutes(
   // Sandbox session. `kind` and `capabilities` are stamped server-authoritatively
   // (the body's capabilities are normalized, never trusted as-is) before any
   // container boots, mirroring the ops kind gate. No clone, no remoteUrl.
-  app.post<{ Body: { capabilities?: { git?: boolean; docker?: boolean; network?: boolean } } }>(
+  app.post<{ Body: { capabilities?: { git?: boolean; docker?: boolean; network?: boolean; dangerousGitHubOps?: boolean } } }>(
     "/api/sessions/sandbox",
     async (request, reply) => {
       try {
@@ -302,6 +341,12 @@ export async function registerSessionCrudRoutes(
       agent?: AgentId;
       model?: string;
       /**
+       * docs/217 — per-session reasoning effort (Control B) for the first turn.
+       * Multipart sends it as a string field; validated server-side against the
+       * resolved agent's options in `createHeadlessSession`.
+       */
+      reasoning?: string;
+      /**
        * docs/170 — when present, the new session is seeded from a tracker
        * issue (branch + title + first prompt derived from it). Sent by the
        * Issues tab's "Start session" row action. JSON path only.
@@ -322,6 +367,7 @@ export async function registerSessionCrudRoutes(
       let branch: string | undefined;
       let agent: AgentId | undefined;
       let model: string | undefined;
+      let reasoning: string | undefined;
       let issueRef: IssueRef | undefined;
       let armAutoMerge = false;
       const uploadInputs: { filename: string; data: Buffer }[] = [];
@@ -351,6 +397,9 @@ export async function registerSessionCrudRoutes(
               case "model":
                 model = value;
                 break;
+              case "reasoning":
+                reasoning = value;
+                break;
               case "armAutoMerge":
                 armAutoMerge = value === "true";
                 break;
@@ -369,6 +418,7 @@ export async function registerSessionCrudRoutes(
         branch = body.branch;
         agent = body.agent;
         model = body.model;
+        reasoning = body.reasoning;
         issueRef = body.issueRef;
         if (body.armAutoMerge !== undefined && typeof body.armAutoMerge !== "boolean") {
           reply.code(400).send({ error: "armAutoMerge must be a boolean" });
@@ -389,6 +439,7 @@ export async function registerSessionCrudRoutes(
             ...(branch !== undefined ? { branch } : {}),
             ...(agent !== undefined ? { agent } : {}),
             ...(model !== undefined ? { model } : {}),
+            ...(reasoning !== undefined ? { reasoning } : {}),
             ...(uploadInputs.length > 0 ? { uploads: uploadInputs } : {}),
             armAutoMerge,
           },

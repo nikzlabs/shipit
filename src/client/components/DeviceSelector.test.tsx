@@ -24,9 +24,9 @@ describe("DeviceSelector", () => {
   });
 
   it("shows the active preset label when one is selected", () => {
-    const preset = findPresetById("iphone-14")!;
+    const preset = findPresetById("iphone-16")!;
     render(<DeviceSelector {...baseProps} activePreset={preset} />);
-    expect(screen.getByLabelText("Select device viewport")).toHaveTextContent("iPhone 14");
+    expect(screen.getByLabelText("Select device viewport")).toHaveTextContent("iPhone 16");
   });
 
   it("opens dropdown and lists phones and tablets", async () => {
@@ -49,7 +49,7 @@ describe("DeviceSelector", () => {
   it("calls onSelectPreset with null when Responsive is chosen", async () => {
     const user = userEvent.setup();
     const onSelectPreset = vi.fn();
-    const preset = findPresetById("iphone-14")!;
+    const preset = findPresetById("iphone-16")!;
     render(<DeviceSelector {...baseProps} activePreset={preset} onSelectPreset={onSelectPreset} />);
     await user.click(screen.getByLabelText("Select device viewport"));
     await user.click(screen.getByText("Responsive"));
@@ -71,13 +71,13 @@ describe("DeviceSelector", () => {
   });
 
   it("shows rotate button when a preset is active", () => {
-    const preset = findPresetById("iphone-14")!;
+    const preset = findPresetById("iphone-16")!;
     render(<DeviceSelector {...baseProps} activePreset={preset} />);
     expect(screen.getByLabelText("Switch to landscape")).toBeInTheDocument();
   });
 
   it("toggles landscape label based on isLandscape prop", () => {
-    const preset = findPresetById("iphone-14")!;
+    const preset = findPresetById("iphone-16")!;
     const { rerender } = render(<DeviceSelector {...baseProps} activePreset={preset} />);
     expect(screen.getByLabelText("Switch to landscape")).toBeInTheDocument();
     rerender(<DeviceSelector {...baseProps} activePreset={preset} isLandscape={true} />);
@@ -87,7 +87,7 @@ describe("DeviceSelector", () => {
   it("calls onToggleLandscape when rotate button is clicked", async () => {
     const user = userEvent.setup();
     const onToggleLandscape = vi.fn();
-    const preset = findPresetById("iphone-14")!;
+    const preset = findPresetById("iphone-16")!;
     render(
       <DeviceSelector
         {...baseProps}
@@ -177,8 +177,8 @@ describe("DeviceSelector", () => {
     const user = userEvent.setup();
     render(<DeviceSelector {...baseProps} />);
     await user.click(screen.getByLabelText("Select device viewport"));
-    expect(screen.getByText("390×844")).toBeInTheDocument();
-    expect(screen.getByText("768×1024")).toBeInTheDocument();
+    expect(screen.getByText("393×852")).toBeInTheDocument();
+    expect(screen.getByText("744×1133")).toBeInTheDocument();
   });
 
   it("closes dropdown when clicking outside", async () => {

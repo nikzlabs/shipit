@@ -16,11 +16,16 @@
  */
 
 import http from "node:http";
+import { createHash } from "node:crypto";
 import type { Duplex } from "node:stream";
 import type { FastifyInstance } from "fastify";
 import type { SessionContainerManager } from "./session-container.js";
 import type { ServiceManager } from "./service-manager.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
+import {
+  AGENT_INTERFACE_SDK_MARKER,
+  AGENT_INTERFACE_SDK_SCRIPT,
+} from "../shared/agent-interface-sdk/bootstrap.js";
 
 // ---------------------------------------------------------------------------
 // Subdomain parsing
@@ -82,6 +87,39 @@ const HMR_WS_PATCH = `<script>(function(){` +
   `}` +
   `})()</script>`;
 
+export function injectPreviewBootstrap(html: string): string {
+  const scripts = html.includes(AGENT_INTERFACE_SDK_MARKER)
+    ? HMR_WS_PATCH
+    : HMR_WS_PATCH + AGENT_INTERFACE_SDK_SCRIPT;
+  const headIdx = html.search(/<head[^>]*>/i);
+  if (headIdx === -1) return scripts + html;
+  const insertAt = html.indexOf(">", headIdx) + 1;
+  return html.slice(0, insertAt) + scripts + html.slice(insertAt);
+}
+
+function scriptBody(script: string): string {
+  return script.replace(/^<script[^>]*>/, "").replace(/<\/script>$/, "");
+}
+
+const INJECTED_SCRIPT_HASHES = [HMR_WS_PATCH, AGENT_INTERFACE_SDK_SCRIPT].map((script) =>
+  `'sha256-${createHash("sha256").update(scriptBody(script)).digest("base64")}'`);
+
+/** Permit only ShipIt's two exact injected scripts in an upstream CSP. */
+export function allowPreviewBootstrapInCsp(csp: string): string {
+  return csp.split(",").map((policy) => {
+    const directives = policy.split(";").map((part) => part.trim()).filter(Boolean);
+    const index = directives.findIndex((part) => part === "script-src" || part.startsWith("script-src "));
+    if (index === -1) {
+      directives.push(`script-src ${INJECTED_SCRIPT_HASHES.join(" ")}`);
+    } else {
+      const tokens = directives[index].split(/\s+/).filter((token) => token !== "'none'");
+      for (const hash of INJECTED_SCRIPT_HASHES) if (!tokens.includes(hash)) tokens.push(hash);
+      directives[index] = tokens.join(" ");
+    }
+    return directives.join("; ");
+  }).join(", ");
+}
+
 // ---------------------------------------------------------------------------
 // Forwarded headers
 // ---------------------------------------------------------------------------
@@ -141,14 +179,19 @@ export function buildUpstreamHeaders(
  * and a Logs entry so the user gets observable feedback instead of just a
  * blank iframe / raw 502 JSON.
  *
+ * `report.success(sessionId, port)` is the companion signal: the proxy calls
+ * it whenever a request to that container *does* reach the upstream, which
+ * cancels a pending (not-yet-surfaced) error streak. That's how a transient
+ * `EHOSTUNREACH` during container/network bring-up stays silent — the next
+ * successful request clears it before the grace window elapses.
+ *
  * See docs/124-session-rescue-and-diagnostics §1.5.
  */
-type PreviewErrorReporter = (
-  sessionId: string,
-  port: number,
-  message: string,
-  upgrade: boolean,
-) => void;
+interface PreviewErrorReporter {
+  (sessionId: string, port: number, message: string, upgrade: boolean): void;
+  /** Mark a (sessionId, port) as reachable — clears any pending error streak. */
+  success(sessionId: string, port: number): void;
+}
 
 function proxyHttp(
   containerIp: string,
@@ -159,6 +202,7 @@ function proxyHttp(
   rawReq: http.IncomingMessage,
   rawRes: http.ServerResponse,
   onError?: (message: string) => void,
+  onSuccess?: () => void,
 ): void {
   // Strip accept-encoding so the upstream sends uncompressed content — allows
   // us to inject the HMR WebSocket patch into HTML responses.
@@ -174,6 +218,8 @@ function proxyHttp(
       headers: fwdHeaders,
     },
     (proxyRes) => {
+      // Reached the upstream — clears any pending transient-error streak.
+      if (onSuccess) onSuccess();
       const ct = proxyRes.headers["content-type"] || "";
       const isHtml = method === "GET" && ct.includes("text/html");
 
@@ -182,16 +228,14 @@ function proxyHttp(
         const chunks: Buffer[] = [];
         proxyRes.on("data", (chunk: Buffer) => chunks.push(chunk));
         proxyRes.on("end", () => {
-          let html = Buffer.concat(chunks).toString("utf-8");
-          // Inject right after <head> (or at the start if no <head>)
-          const headIdx = html.search(/<head[^>]*>/i);
-          if (headIdx !== -1) {
-            const insertAt = html.indexOf(">", headIdx) + 1;
-            html = html.slice(0, insertAt) + HMR_WS_PATCH + html.slice(insertAt);
-          } else {
-            html = HMR_WS_PATCH + html;
-          }
+          const html = injectPreviewBootstrap(Buffer.concat(chunks).toString("utf-8"));
           const outHeaders = { ...proxyRes.headers };
+          const csp = outHeaders["content-security-policy"];
+          if (typeof csp === "string") {
+            outHeaders["content-security-policy"] = allowPreviewBootstrapInCsp(csp);
+          } else if (Array.isArray(csp)) {
+            outHeaders["content-security-policy"] = csp.map(allowPreviewBootstrapInCsp);
+          }
           delete outHeaders["content-length"];
           delete outHeaders["content-encoding"];
           delete outHeaders["transfer-encoding"];
@@ -225,6 +269,7 @@ function proxyWebSocket(
   headers: http.IncomingHttpHeaders,
   socket: Duplex,
   onError?: (message: string) => void,
+  onSuccess?: () => void,
 ): void {
   const proxyReq = http.request({
     hostname: containerIp,
@@ -235,6 +280,8 @@ function proxyWebSocket(
   });
 
   proxyReq.on("upgrade", (proxyRes, proxySocket, proxyHead) => {
+    // HMR socket connected — clears any pending transient-error streak.
+    if (onSuccess) onSuccess();
     // Forward the upstream's 101 response verbatim — includes the required
     // Sec-WebSocket-Accept header and any negotiated subprotocols.
     let head = `HTTP/1.1 ${proxyRes.statusCode} ${proxyRes.statusMessage}\r\n`;
@@ -275,6 +322,18 @@ function proxyWebSocket(
 const PREVIEW_ERROR_THROTTLE_MS = 5_000;
 
 /**
+ * Grace window before a preview-proxy failure surfaces. A lone connect error
+ * — overwhelmingly a transient `EHOSTUNREACH`/`ECONNREFUSED` while a Compose
+ * service container is still being wired into the Docker network — is held
+ * back this long. If a later request to the same `(sessionId, port)` reaches
+ * the upstream within the window (`report.success`), the streak is cleared and
+ * nothing is shown. Only a failure that persists past the window (a genuinely
+ * unreachable preview) reaches the banner/Logs. See SHI bug: false "Preview
+ * unreachable" while the preview is in fact working.
+ */
+const PREVIEW_ERROR_GRACE_MS = 2_000;
+
+/**
  * Build a `PreviewErrorReporter` that routes preview-proxy connection
  * failures to (a) a `preview_error` WS message for the in-frame banner
  * and (b) a per-session `log_entry` with `source: "preview"`. Throttles
@@ -288,20 +347,38 @@ const PREVIEW_ERROR_THROTTLE_MS = 5_000;
  */
 export function createPreviewErrorReporter(
   runnerRegistry: SessionRunnerRegistry | undefined,
-  opts: { now?: () => number; throttleMs?: number } = {},
+  opts: { now?: () => number; throttleMs?: number; graceMs?: number } = {},
 ): PreviewErrorReporter {
-  const lastErrorAt = new Map<string, number>();
+  const lastEmitAt = new Map<string, number>();
+  /** Start time of the current unresolved failure streak, per (sessionId, port). */
+  const streakStartAt = new Map<string, number>();
   const now = opts.now ?? (() => Date.now());
   const throttleMs = opts.throttleMs ?? PREVIEW_ERROR_THROTTLE_MS;
-  return (sessionId, port, message, upgrade) => {
+  const graceMs = opts.graceMs ?? PREVIEW_ERROR_GRACE_MS;
+
+  const report = ((sessionId, port, message, upgrade) => {
     if (!runnerRegistry) return;
     const runner = runnerRegistry.get(sessionId);
     if (!runner) return;
     const key = `${sessionId}:${port}`;
     const t = now();
-    const last = lastErrorAt.get(key) ?? 0;
+
+    // Hold a failure back until it proves sustained. The first error in a
+    // streak only starts the clock; a transient bring-up error recovers on the
+    // next successful request (report.success), which clears the streak before
+    // the grace window elapses, so it never surfaces.
+    const streakStart = streakStartAt.get(key);
+    if (streakStart === undefined) {
+      streakStartAt.set(key, t);
+      return;
+    }
+    if (t - streakStart < graceMs) return;
+
+    // Sustained past the grace window — surface it, throttled to avoid spam
+    // from a flapping dev server emitting an error per HTTP/HMR request.
+    const last = lastEmitAt.get(key) ?? 0;
     if (t - last < throttleMs) return;
-    lastErrorAt.set(key, t);
+    lastEmitAt.set(key, t);
     const human = upgrade
       ? `Preview HMR unreachable on port ${port} (${message})`
       : `Preview unreachable on port ${port} (${message})`;
@@ -317,7 +394,15 @@ export function createPreviewErrorReporter(
       channel: "agent",
       records: [{ ts: new Date(t).toISOString(), source: "preview", text: human }],
     });
+  }) as PreviewErrorReporter;
+
+  // A request reached the upstream — the preview is alive, so abandon any
+  // pending error streak for this (sessionId, port).
+  report.success = (sessionId, port) => {
+    streakStartAt.delete(`${sessionId}:${port}`);
   };
+
+  return report;
 }
 
 export function registerPreviewProxy(
@@ -387,6 +472,7 @@ export function registerPreviewProxy(
       request.raw,
       reply.raw,
       (msg) => reportError(sessionId, targetPort, msg, false),
+      () => reportError.success(sessionId, targetPort),
     );
     done();
   });
@@ -477,6 +563,7 @@ export function registerPreviewProxy(
           req.headers,
           socket,
           (msg) => reportError(sessionId, targetPort, msg, true),
+          () => reportError.success(sessionId, targetPort),
         );
         return;
       }

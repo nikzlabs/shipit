@@ -101,9 +101,9 @@ export {
 export {
   resolveAgentDockerLimits,
   readAgentConfig,
-  applyEnvCaps,
+  deriveSessionMemorySizing,
   type AgentDockerLimits,
-  type EffectiveAgentResources,
+  type SessionMemorySizing,
 } from "./container-config-builder.js";
 
 // ---------------------------------------------------------------------------
@@ -114,10 +114,11 @@ export interface ContainerConfig {
   sessionId: string;
   /** Host path: /workspace/sessions/{uuid} */
   sessionDir: string;
-  /** Host path to the git repo directory, mounted as /workspace in the container.
-   *  New layout: /workspace/sessions/{uuid}/workspace
-   *  Falls back to sessionDir for legacy sessions. */
-  workspaceDir?: string;
+  /** Host path to the git repo directory, mounted as /workspace in the container:
+   *  /workspace/sessions/{uuid}/workspace. Always a `workspace/` child of the
+   *  session dir — the pre-`workspace/` flat layout, where the clone WAS the
+   *  session dir, was removed in SHI-286. */
+  workspaceDir: string;
   /** Host path: /workspace/dep-cache/{hash} (shared dependency cache) */
   depCacheDir?: string;
   /**
@@ -139,6 +140,19 @@ export interface ContainerConfig {
    * case) instead of the ephemeral `/tmp`.
    */
   scratchDir?: string;
+  /**
+   * docs/246 — Host path: /workspace/sessions/{uuid}/state. Mounted **rw** at
+   * `/session-state`: ShipIt's OWN per-session artifacts (the install marker,
+   * fetched CI logs, the compose override, the agent env file), kept out of the
+   * user's git clone so the post-turn `git add -A` can never stage them into
+   * their repository. Another sibling of `workspace/`, like `scratch/`.
+   *
+   * Always present: `buildContainerConfig` derives it from the clone path and
+   * refuses a session whose clone isn't `<sessionDir>/workspace` (SHI-286), so
+   * neither the mount nor the worker's `SHIPIT_SESSION_STATE_DIR` has a
+   * "no state dir" case to fall back from.
+   */
+  sessionStateDir: string;
   /** Host path: /credentials (Claude CLI auth, GitHub token) */
   credentialsDir: string;
   /** Container image name. */
@@ -190,6 +204,8 @@ export interface SessionContainer {
   workerUrl: string;
   /** Container lifecycle status. */
   status: "starting" | "running" | "stopping" | "stopped";
+  /** Immutable build ID baked into the worker image, when labeled (docs/242). */
+  workerBuildId?: string;
   /** Host-side workspace directory for bind mount validation. */
   hostWorkspaceDir: string;
   /** Whether this session has Docker access. */
@@ -210,12 +226,13 @@ export interface SessionContainer {
    * `dockerAccess` — unlike `resourceLimits`, which is the child-container
    * budget set only for docker-access sessions.
    *
-   * The claim-time refresh compares this against
-   * `resolveAgentDockerLimits()` of the now-current workspace: when a
-   * warm→claim HEAD jump changed the declared `agent.memory`, the standby
-   * container booted with the wrong (stale) limit and must be re-provisioned
-   * — container memory is immutable at runtime. Absent on rediscovered /
-   * re-adopted containers, where the booted limits genuinely aren't known.
+   * Surfaced in diagnostics next to the live `deriveSessionMemorySizing()`
+   * value: the booted limit is frozen at create, so if host RAM or a
+   * `DEFAULT_SESSION_MEMORY_MB` / `MAX_SESSION_MEMORY_MB` override changed
+   * after this container booted, the two diverge and the panel flags it.
+   * (Since sizing is host-derived (docs/229), a shipit.yaml / HEAD change can
+   * no longer cause that drift — there is no claim-time reprovision.) Absent
+   * on rediscovered / re-adopted containers, where the booted limits aren't known.
    */
   bootedLimits?: { memoryLimit: number; cpuQuota: number; pidsLimit: number };
   /**
@@ -365,6 +382,13 @@ export const CONTAINER_LABEL_VALUE = "true";
 export const CONTAINER_SESSION_ID_LABEL = "shipit-session-id";
 export const CONTAINER_STACK_LABEL = "shipit-stack";
 export const CONTAINER_STANDBY_LABEL = "shipit-standby";
+/**
+ * Image label (not set by the orchestrator) stamped by
+ * Dockerfile.session-worker.prod with the git SHA the worker image was built
+ * from. Containers inherit image labels, so adoption after an orchestrator
+ * redeploy can log which build a grandfathered worker is running (docs/113).
+ */
+export const CONTAINER_BUILD_ID_LABEL = "shipit-build-id";
 
 // ---------------------------------------------------------------------------
 // SessionContainerManager
@@ -439,6 +463,16 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     this.dockerProxyHost = opts.dockerProxyHost;
     this.dockerProxyPort = opts.dockerProxyPort;
     this.resolveEgressConfig = opts.resolveEgressConfig;
+  }
+
+  /**
+   * The manager's configured Docker client (honours the `socketPath` option),
+   * exposed so boot-time sweeps that live OUTSIDE the manager — the disk
+   * janitor's orphan egress-sidecar reap (SHI-222) — talk to the same daemon
+   * rather than constructing a default-socket client of their own.
+   */
+  get dockerClient(): Docker {
+    return this.docker;
   }
 
   /**
@@ -832,6 +866,16 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     return destroyContainer(this.lifecycleDeps(), sessionId);
   }
 
+  /**
+   * Stop and remove only the agent container, preserving Compose services,
+   * networks, and volumes owned by the session. Used when rotating the worker
+   * image after an orchestrator update and by the manual Restart agent flow.
+   */
+  async destroyAgentContainer(sessionId: string): Promise<void> {
+    this.lastCreateErrors.delete(sessionId);
+    return destroyContainer(this.lifecycleDeps(), sessionId, { preserveChildResources: true });
+  }
+
   /** Stop and remove all session containers. Used for full_reset and shutdown. */
   async destroyAll(): Promise<void> {
     const sessionIds = [...this.containers.keys()];
@@ -1051,7 +1095,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   buildConfig(opts: {
     sessionId: string;
     sessionDir: string;
-    workspaceDir?: string;
+    workspaceDir: string;
     credentialsDir: string;
     depCacheDir?: string;
     /** docs/197 Part 2 — shared per-runtime pnpm store host dir; absent for non-pnpm / flag-off sessions. */

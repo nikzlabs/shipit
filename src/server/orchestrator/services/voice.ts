@@ -99,9 +99,10 @@ export async function getCleanupStatus(
   credentialStore: CredentialStore,
   authManager: AuthManager,
   fetchImpl: typeof fetch = fetch,
+  credentialDir?: string,
 ): Promise<{ provider: CleanupProvider["id"] | null }> {
   const key = credentialStore.getVoiceProviderKey(CLEANUP_OPENAI_PROVIDER);
-  const provider = await pickCleanupProvider(authManager, key, fetchImpl);
+  const provider = await pickCleanupProvider(authManager, key, fetchImpl, credentialDir);
   return { provider: provider?.id ?? null };
 }
 
@@ -118,6 +119,7 @@ export async function transcribeVoice(
     sttProvider?: string;
   },
   fetchImpl: typeof fetch = fetch,
+  credentialDir?: string,
 ): Promise<TranscribeResult> {
   const providerId = input.sttProvider ?? DEFAULT_STT_PROVIDER;
   if (!providerSupports(providerId, "stt")) {
@@ -147,7 +149,7 @@ export async function transcribeVoice(
   if (!input.cleanup) return { text: raw, rawText: raw };
 
   const cleanupKey = credentialStore.getVoiceProviderKey(CLEANUP_OPENAI_PROVIDER);
-  const provider = await pickCleanupProvider(authManager, cleanupKey, fetchImpl);
+  const provider = await pickCleanupProvider(authManager, cleanupKey, fetchImpl, credentialDir);
   const result = await cleanTranscript(raw, provider, {
     ...(input.language ? { language: input.language } : {}),
   });

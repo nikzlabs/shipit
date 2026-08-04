@@ -258,6 +258,23 @@ notes worth recording:
   completion synthesizes the `agent_result` that ends the run. The live
   `agent.compact()` method covers the in-flight-turn case.
 
+## Fix (2026-06-25): `/compact` no longer triggers the docs/218 branch reset
+
+A between-turns `/compact` routes through `runAgentWithMessage` with
+`compact: true` (the fresh-spawn path), which also runs the docs/218 **pre-turn
+auto-reset of a merged session's branch** (`autoResetMergedBranchOnContinue`).
+On a merged, reset-eligible session that reset would (a) hard-reset the branch to
+`origin/<base>` and (b) prepend the `[System] Your previous pull request … was
+merged …` prefix to the prompt — so the agent reacted to the merge notice
+**instead of compacting**, and the branch silently moved to main.
+
+`/compact` is a maintenance command, not a continuation of work, so the pre-turn
+reset block in `agent-execution.ts` (`runAgentWithMessage`) is now gated on
+`!opts.compact`: the reset is skipped entirely for a compaction request and runs
+on the user's next real turn, where it belongs. Key file:
+`src/server/orchestrator/ws-handlers/agent-execution.ts` (the docs/218 pre-turn
+reset guard).
+
 ## Fix (2026-06-10): transient indicator bled across session switch
 
 The "Compacting…" spinner is a **global** Zustand flag (`SessionState.compacting`),
@@ -271,3 +288,35 @@ in flight, the spinner visually persisted into the switched-to session. Fix:
 `resumeSessionInternal()` now also calls `setCompacting(false)`. Covered by
 `session-actions.test.ts`. (Not a persistence bug — history reload never brings
 it back; purely a missing reset on the switch path.)
+
+## Fix (2026-06-26): "Compacting…" spinner stuck after the turn ended
+
+Symptom: the spinner persisted even after the matching "Context compacted" card
+had landed and the turn was over — most reliably after a `Session container
+exited unexpectedly` mid-turn.
+
+The flag is transient and emit-only (driven live by `compaction_status`), so it
+must be re-derived from the live stream, never assumed sticky. The stuck states
+all traced to a **WS reconnect** where nothing re-cleared it: a cleanly-ended
+turn already clears its turn-event buffer, so a reconnect replays no balancing
+event; and when the container dies mid-turn the client can miss the live
+`running:false` (the socket drops with the container) and then reconnect to a
+fresh idle runner that — by design — sends no `session_status` for a non-running
+runner. Either way the client kept its stale `compacting:true`.
+
+Fix (client-side, no server/connect-contract change):
+- **`useConnectionSync`** now clears `compacting` on every WS
+  disconnect (`status` → `closed`/`connecting`), alongside the existing
+  `historyLoaded` reset. This runs *strictly before* any reconnect buffer
+  replay, so a genuinely in-flight compaction re-establishes the spinner via the
+  replayed `compaction_status active:true`, while an ended turn stays cleared.
+  Race-free by construction. Test: `useConnectionSync.test.ts` ("clears the
+  transient compacting indicator on disconnect").
+- **`MessageList`** (defense in depth): the spinner renders only when
+  `compacting && isLoading`. A compaction only ever runs mid-turn, so the
+  indicator should never outlive the turn.
+
+(An earlier attempt made the reconnect handler always send `session_status` even
+for idle runners; that broke the "`preview_status` is the last synchronous
+connect message" sentinel contract several integration tests rely on, so the fix
+moved entirely client-side.)

@@ -12,7 +12,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import simpleGit from "simple-git";
 import type { SessionManager } from "../sessions.js";
-import type { ChatHistoryManager } from "../chat-history.js";
+import type { ChatHistoryManager, PersistedMessage } from "../chat-history.js";
+import { projectMessagesForWire } from "../transcript-projection.js";
 import type { UsageManager } from "../usage.js";
 import type { GitManager } from "../../shared/git.js";
 import type { RepoGit } from "../repo-git.js";
@@ -23,8 +24,10 @@ import type { RepoStore } from "../repo-store.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import { generateBranchPrefix } from "../git-utils.js";
 import { chownTreeToSessionWorker } from "../session-worker-uid.js";
+import { materializeLfsWithWarning } from "../git-lfs.js";
 import { reclaimRegenerableSessionDirs } from "../disk-utils.js";
 import { ServiceError } from "./types.js";
+import { validateString, validateStringArray } from "./validation.js";
 
 // Re-exports so external consumers continue to resolve these from "./session.js".
 export { forkSession, mergeSession } from "./session-fork-merge.js";
@@ -95,12 +98,22 @@ export function getSessionStatus(
   };
 }
 
-/** Get chat messages for a session (read-only, no activation side effects). */
+/**
+ * Get chat messages for a session (read-only, no activation side effects).
+ *
+ * This is the browser-facing read, so it is where the docs/244 lazy-body
+ * projection is applied: heavy tool outputs, file bodies behind a `+N -M`
+ * summary, and base64 images are replaced by metadata plus a fetch URL. The
+ * projection deliberately does NOT live in `ChatHistoryManager.load` — that has
+ * internal consumers (rollback handlers, agent env, PR-description building)
+ * which need the real content, and `fromRow` feeds read-modify-write paths that
+ * would persist the truncation.
+ */
 export function getChatHistory(
   chatHistoryManager: { load: (sessionId: string) => unknown[] },
   sessionId: string,
 ) {
-  return chatHistoryManager.load(sessionId);
+  return projectMessagesForWire(sessionId, chatHistoryManager.load(sessionId) as PersistedMessage[]);
 }
 
 /** Get sibling sessions sharing the same repo. */
@@ -127,6 +140,29 @@ export function listAllSessions(
   sessionManager: SessionManager,
 ): SessionInfo[] {
   return sessionManager.listAll();
+}
+
+/**
+ * docs/231 — pull Git LFS content into a freshly re-cloned workspace, then hand
+ * the (root-written) files back to the worker uid.
+ *
+ * The restore paths below re-materialize the worktree with `git checkout`, which
+ * writes LFS **pointer stubs**: the orchestrator deliberately runs with the
+ * smudge filter disabled (see `git-lfs.ts` for why turning it on would break
+ * `clone --local` outright), so content is always restored explicitly.
+ *
+ * These paths have no SSE broadcaster in scope, so a warning goes to the log
+ * rather than a toast — `materializeLfsWithWarning` already logs the failure
+ * detail; this sink adds the session's repo for correlation. Non-LFS repos exit
+ * on a single cheap grep, so this is safe to call unconditionally.
+ */
+async function materializeLfsAndChown(workspaceDir: string, repoUrl: string | undefined): Promise<void> {
+  const result = await materializeLfsWithWarning(workspaceDir, repoUrl ?? workspaceDir, (message) =>
+    console.warn(`[session] ${message}`),
+  );
+  // Only re-chown when the pull actually wrote files — a non-LFS repo shouldn't
+  // pay for a full-tree ownership walk on every restore.
+  if (result.status === "materialized") chownTreeToSessionWorker(workspaceDir);
 }
 
 /** Unarchive (restore) a session, recreating clone if needed. */
@@ -224,6 +260,12 @@ export async function unarchiveSession(
     if (githubAuthManager.authenticated) {
       githubAuthManager.configureGitCredentials(session.workspaceDir);
     }
+
+    // docs/231 — the `checkout -b` above wrote LFS pointer stubs (the
+    // orchestrator's smudge filter is off by design), so restore real content.
+    // Runs after the credential helper is in place — a private repo's LFS
+    // endpoint needs it — and re-chowns because the pull writes as root.
+    await materializeLfsAndChown(session.workspaceDir, session.remoteUrl);
 
     sessionManager.setBranch(sessionId, newBranch);
   }
@@ -395,6 +437,10 @@ async function restoreSessionWorkspaceImpl(
     githubAuthManager.configureGitCredentials(session.workspaceDir);
   }
 
+  // docs/231 — same as the unarchive path: the `checkout` above re-materialized
+  // the worktree as LFS pointer stubs, so pull the real content back.
+  await materializeLfsAndChown(session.workspaceDir, session.remoteUrl);
+
   sessionManager.setDiskTier(sessionId, "hot");
   console.log(
     `[restoreSessionWorkspace] re-materialized workspace for ${sessionId} at ${session.workspaceDir}`,
@@ -433,6 +479,59 @@ export function setSessionPinned(
   return { session: updated, sessions: sessionManager.list() };
 }
 
+/** Default deployment-wide reservation capacity (docs/241). */
+export const DEFAULT_MAX_KEEP_PREVIEW_RUNNING = 1;
+
+/** Resolve the operator cap. Invalid/negative values fail safe to the default. */
+export function resolveMaxKeepPreviewRunning(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.MAX_KEEP_PREVIEW_RUNNING?.trim();
+  if (!raw) return DEFAULT_MAX_KEEP_PREVIEW_RUNNING;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) && parsed >= 0
+    ? parsed
+    : DEFAULT_MAX_KEEP_PREVIEW_RUNNING;
+}
+
+/**
+ * docs/241 — reserve/release a live preview slot. Admission is checked before
+ * mutation. Enabling activates through the ordinary runner factory, whose
+ * onRunnerCreated hook owns install + Compose auto-preview reconciliation.
+ */
+export function setKeepPreviewRunning(
+  sessionManager: SessionManager,
+  sessionId: string,
+  enabled: boolean,
+  activate: (session: SessionInfo) => void,
+  maxReservations = resolveMaxKeepPreviewRunning(),
+): { session: SessionInfo; sessions: SessionInfo[] } {
+  const current = sessionManager.get(sessionId);
+  if (!current) throw new ServiceError(404, "Session not found");
+  if (current.userArchived || current.archived || current.warm) {
+    throw new ServiceError(409, "Only active sessions can keep a preview running");
+  }
+  if (current.kind === "sandbox") {
+    throw new ServiceError(409, "Sandbox sessions do not support managed previews");
+  }
+  if (enabled && !current.workspaceDir) {
+    throw new ServiceError(409, "Session has no workspace to preview");
+  }
+
+  if (enabled && !current.keepPreviewRunning) {
+    const reserved = sessionManager.listAll().filter((s) => s.keepPreviewRunning).length;
+    if (reserved >= maxReservations) {
+      throw new ServiceError(
+        409,
+        `Always-on preview capacity is full (${reserved}/${maxReservations}). Disable another reservation first.`,
+      );
+    }
+  }
+
+  const updated = sessionManager.setKeepPreviewRunning(sessionId, enabled);
+  if (!updated) throw new ServiceError(404, "Session not found");
+  if (enabled) activate(updated);
+  return { session: updated, sessions: sessionManager.list() };
+}
+
 /**
  * docs/110 Phase 2 — reorder a repo's pinned sessions to the order in `ids`.
  * Returns the refreshed sidebar list for the caller to broadcast.
@@ -442,10 +541,8 @@ export function reorderSessionPins(
   remoteUrl: string,
   ids: string[],
 ): { sessions: SessionInfo[] } {
-  if (typeof remoteUrl !== "string") throw new ServiceError(400, "remoteUrl must be a string");
-  if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string")) {
-    throw new ServiceError(400, "ids must be an array of session ids");
-  }
+  validateString(remoteUrl, "remoteUrl");
+  validateStringArray(ids, "ids");
   return { sessions: sessionManager.reorderPins(remoteUrl, ids) };
 }
 
@@ -466,6 +563,9 @@ export function reorderSessionPins(
  * mount pinned to the about-to-be-unlinked inode. After unarchive re-clones
  * a fresh inode at the same path, reconnects to the orphan container see
  * an empty `/workspace`. Optional only so tests without Docker can omit it.
+ *
+ * Archiving cascades through the session's whole spawn brood — except for an
+ * Ops session, which never cascades (see the comment at the cascade loop).
  */
 export async function archiveSession(
   sessionManager: SessionManager,
@@ -492,6 +592,8 @@ export async function archiveSession(
   inProgress = new Set<string>(),
 ): Promise<{ sessions: SessionInfo[] }> {
   inProgress.add(sessionId);
+  const session = sessionManager.get(sessionId);
+
   // Cascade to children first. A spawned child is an independent session
   // (own workspace, branch, container) but it references the parent via
   // `parent_session_id`; leaving children alive after the parent disappears
@@ -499,21 +601,35 @@ export async function archiveSession(
   // means grandchildren are handled by the same path. Children are otherwise
   // never archived automatically (see `markMergedAndPruneExcess`) — they only
   // go away via explicit action on the child, or this cascade from the parent.
-  for (const child of sessionManager.findChildren(sessionId)) {
-    if (inProgress.has(child.id)) continue; // cycle / already in this cascade
-    await archiveSession(
-      sessionManager,
-      runnerRegistry,
-      getBareCacheDir,
-      child.id,
-      pruneVolumes,
-      containerManager,
-      removeSessionLogs,
-      inProgress,
-    );
+  //
+  // EXCEPTION — an Ops session (docs/128) never cascades (docs/162). An Ops
+  // session is a per-host cockpit, not the root of a cohort: its children are
+  // remediation sessions on the *ShipIt source repo*, carrying their own branch
+  // and (usually) an open PR, spawned across unrelated incidents. Archiving the
+  // cockpit — routine after an incident, or to recreate it against a new host —
+  // is a statement about the cockpit, not about the fixes it started, so the
+  // cascade would force-dispose running agents and delete workspaces the
+  // operator still needs. The child keeps its `parent_session_id` breadcrumb:
+  // the sidebar already renders a child whose root isn't visible at top level
+  // (`SessionGroup.tsx` orphan fallback), the merged-view-cap exemption keys off
+  // *live* roots so an archived Ops parent stops pinning its brood open, and
+  // unarchiving the Ops session re-links the tree as it was. Ops children are
+  // reachable and archivable on their own, exactly like any other session.
+  if (session?.kind !== "ops") {
+    for (const child of sessionManager.findChildren(sessionId)) {
+      if (inProgress.has(child.id)) continue; // cycle / already in this cascade
+      await archiveSession(
+        sessionManager,
+        runnerRegistry,
+        getBareCacheDir,
+        child.id,
+        pruneVolumes,
+        containerManager,
+        removeSessionLogs,
+        inProgress,
+      );
+    }
   }
-
-  const session = sessionManager.get(sessionId);
 
   // Signal the compose-stop hook (in app-lifecycle.ts's setupServiceManager
   // disposed handler) to drop the stack's named volumes. Archive is a

@@ -225,16 +225,18 @@ export async function registerFileRoutes(
     // card's notable-files strip uses (`committedChangesVsBase`), so the two
     // surfaces show exactly the same documents. We resolve the base the way the
     // PR lifecycle does (the tracked PR's base, else a re-armed session's prior
-    // base, else `main`) rather than hardcoding `main`, so a PR onto a non-main
-    // base lines up too. Best-effort — on any git error we leave the flag unset
-    // and the client falls back gracefully.
+    // base, else the repo's own default branch) rather than hardcoding `main`,
+    // so a PR onto a non-main base — and a `master`/`trunk` repo — line up too.
+    // Best-effort — on any git error we leave the flag unset and the client
+    // falls back gracefully.
     try {
       const session = sessionManager.get(request.params.id);
+      const git = deps.createGitManager(dir);
       const baseBranch =
         deps.prStatusPoller?.getStatus(request.params.id)?.baseBranch ??
         session?.previousMergedPr?.baseBranch ??
-        "main";
-      const changed = await getSessionChangedPaths(deps.createGitManager(dir), baseBranch);
+        await git.getDefaultBranch();
+      const changed = await getSessionChangedPaths(git, baseBranch);
       for (const doc of docs) {
         if (changed.has(doc.path)) doc.changedInSession = true;
       }

@@ -11,6 +11,12 @@ export interface AttentionInputs {
   isAgentRunning: boolean;
   /** docs/193 (Thread C) — the session is blocked awaiting a permission answer. */
   awaitingPermission: boolean;
+  /**
+   * docs/235 — the session has agent-initiated background work outstanding. It
+   * will speak again on its own when the task finishes, so it is not waiting on
+   * the user even though no turn is in flight.
+   */
+  hasBackgroundTasks: boolean;
   /** Global `autoFixCi` setting — when on, a CI failure has a fix loop coming. */
   autoFixEnabled: boolean;
   /** Global `autoResolveConflicts` setting — when on, a conflict has a resolve loop coming. */
@@ -48,6 +54,7 @@ export function computeAttentionReason({
   status,
   isAgentRunning,
   awaitingPermission,
+  hasBackgroundTasks,
   autoFixEnabled,
   autoResolveEnabled,
   resolved,
@@ -65,7 +72,13 @@ export function computeAttentionReason({
   // This is what makes a permission prompt visible from another session.
   if (awaitingPermission) return "Needs your approval to continue";
 
-  if (isAgentRunning) return null;
+  // docs/235 — outstanding background work is treated exactly like a running
+  // agent: the session will produce more output on its own, so nagging the user
+  // with "Waiting for your input" is wrong. Deliberately placed BELOW the
+  // `awaitingPermission` check above — a session that is both blocked on a
+  // permission prompt and holding a background task still needs the user, and
+  // that block is theirs to clear regardless of what else is pending.
+  if (isAgentRunning || hasBackgroundTasks) return null;
 
   // Terminal PR — merged or closed-without-merge, and not reopened since. There
   // is nothing left for the user to do, so no stale CI/conflict/auto-merge state
@@ -115,11 +128,12 @@ export function useAttentionInfo(sessionId: string): string | null {
   const status = usePrStore((s) => s.statusBySession[sessionId]);
   const isAgentRunning = useSessionStore((s) => s.activeRunnerSessions.has(sessionId));
   const awaitingPermission = useSessionStore((s) => s.awaitingPermissionSessions.has(sessionId));
+  const hasBackgroundTasks = useSessionStore((s) => s.backgroundTaskSessions.has(sessionId));
   const autoFixEnabled = useSettingsStore((s) => s.autoFixCi);
   const autoResolveEnabled = useSettingsStore((s) => s.autoResolveConflicts);
   const resolved = useSessionStore((s) => {
     const session = s.sessions.find((sess) => sess.id === sessionId);
     return session ? isRecentlyResolved(session) : false;
   });
-  return computeAttentionReason({ card, status, isAgentRunning, awaitingPermission, autoFixEnabled, autoResolveEnabled, resolved });
+  return computeAttentionReason({ card, status, isAgentRunning, awaitingPermission, hasBackgroundTasks, autoFixEnabled, autoResolveEnabled, resolved });
 }

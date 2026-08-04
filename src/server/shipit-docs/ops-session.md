@@ -36,6 +36,15 @@ dropped unless the session was created as an ops session.
   populated (journald is `Storage=volatile` with no `/run` journal, or the host
   ships logs elsewhere), fall back to `docker logs` on the orchestrator container.
 
+  If `-D` returns only a few user-scoped lines plus the hint *"you are currently
+  not seeing messages from other users and the system"*, that is a **permissions**
+  failure, not an empty journal: the host's files are `0640 root:systemd-journal`
+  and your uid isn't in the owning group. Confirm with `id` — you should be in a
+  group whose GID matches `stat -c '%g' /var/log/journal`. The container
+  entrypoint arranges that at boot and logs to stderr when it can't, so
+  `docker logs <this-container> 2>&1 | grep shipit-entrypoint` says why. Report
+  it rather than working around it; the journal is supposed to work here.
+
 - **Read-only ShipIt source.** When the incident is likely a ShipIt bug, read
   the source code that runs *this host* — the exact deployed commit, served by
   the orchestrator (not a generic clone, not the repo's default branch):

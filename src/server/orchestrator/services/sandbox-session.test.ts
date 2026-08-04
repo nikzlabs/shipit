@@ -53,7 +53,7 @@ describe("createSandboxSession", () => {
     });
 
     expect(result.session.kind).toBe("sandbox");
-    expect(result.session.capabilities).toEqual({ git: true, docker: false, network: false });
+    expect(result.session.capabilities).toEqual({ git: true, docker: false, network: false, dangerousGitHubOps: false });
     // Repo-less: no cached remote.
     expect(result.session.remoteUrl).toBe("");
     // The invariant: the empty workspace was NOT git-init'd.
@@ -62,21 +62,26 @@ describe("createSandboxSession", () => {
     // Survives a DB round-trip (fromRow reads kind + parses capabilities JSON).
     const reread = sm.get(result.session.id);
     expect(reread?.kind).toBe("sandbox");
-    expect(reread?.capabilities).toEqual({ git: true, docker: false, network: false });
+    expect(reread?.capabilities).toEqual({ git: true, docker: false, network: false, dangerousGitHubOps: false });
   });
 
   it("applies the default capability set (network on, git/docker off) when none are sent", async () => {
     const { sm, createSessionDir } = setup();
     const result = await createSandboxSession(sm, createSessionDir);
     expect(result.capabilities).toEqual(DEFAULT_SANDBOX_CAPABILITIES);
-    expect(result.session.capabilities).toEqual({ git: false, docker: false, network: true });
+    expect(result.session.capabilities).toEqual({ git: false, docker: false, network: true, dangerousGitHubOps: false });
   });
 
   it("normalizes a partial capability payload against the defaults", async () => {
     const { sm, createSessionDir } = setup();
     // Only `docker` supplied — git/network fall back to defaults (off/on).
     const result = await createSandboxSession(sm, createSessionDir, { docker: true });
-    expect(result.session.capabilities).toEqual({ git: false, docker: true, network: true });
+    expect(result.session.capabilities).toEqual({ git: false, docker: true, network: true, dangerousGitHubOps: false });
+
+    // The dangerous-ops sub-grant is opt-in even when explicitly requested
+    // alongside git (docs/224).
+    const granted = await createSandboxSession(sm, createSessionDir, { git: true, dangerousGitHubOps: true });
+    expect(granted.session.capabilities).toEqual({ git: true, docker: false, network: true, dangerousGitHubOps: true });
   });
 
   it("does NOT set kind/capabilities on an ordinary tracked session", () => {

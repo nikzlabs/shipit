@@ -52,6 +52,12 @@ export interface FileReviewControls {
   history: FileReview[];
   /** Whether the Send button should be enabled. */
   canSend: boolean;
+  /**
+   * True while an unsaved comment editor is open (add-comment input or an
+   * in-place edit). Blocks `canSend` so an accidental submit can't drop a
+   * half-typed comment; surfaces render it as a hint next to the button.
+   */
+  composing: boolean;
   /** Whether the "Ask agent to review" affordance should show. */
   showAskReview: boolean;
   /** True while the agent is mid-turn (Ask-review is disabled, not hidden). */
@@ -89,6 +95,7 @@ export function useFileReviewControls({
   const history = useFileReviewStore((s) =>
     key ? s.historyByKey[key] ?? EMPTY_HISTORY : EMPTY_HISTORY,
   );
+  const composing = useFileReviewStore((s) => (key ? s.composingByKey[key] ?? false : false));
   const load = useFileReviewStore((s) => s.load);
   const sendDraft = useFileReviewStore((s) => s.sendDraft);
   const discardEmptyDraft = useFileReviewStore((s) => s.discardEmptyDraft);
@@ -138,7 +145,9 @@ export function useFileReviewControls({
     && content !== null
     && activeAgentSupportsReview
     && !!onAskAgentReview;
-  const canSend = !!onSendComments && commentCount > 0;
+  // An open comment editor holds the Send button: submitting now would send the
+  // draft and silently discard whatever is still in the textarea.
+  const canSend = !!onSendComments && commentCount > 0 && !composing;
 
   const handleAskReview = useCallback(() => {
     if (!sessionId || !onAskAgentReview || agentRunning) return;
@@ -146,7 +155,8 @@ export function useFileReviewControls({
   }, [sessionId, filePath, onAskAgentReview, agentRunning]);
 
   const handleSend = useCallback(async () => {
-    if (!sessionId || !onSendComments) return;
+    // Mirrors the disabled button: never send out from under an open editor.
+    if (!sessionId || !onSendComments || composing) return;
     const result = await sendDraft(sessionId, filePath);
     if (result) {
       onSendComments({
@@ -155,7 +165,7 @@ export function useFileReviewControls({
         commentCount: result.commentCount,
       });
     }
-  }, [sessionId, filePath, sendDraft, onSendComments]);
+  }, [sessionId, filePath, sendDraft, onSendComments, composing]);
 
   const discardEmptyDraftNow = useCallback(() => {
     // The store guards on emptiness, so this is a no-op when comments exist.
@@ -171,6 +181,7 @@ export function useFileReviewControls({
     codeComments,
     history,
     canSend,
+    composing,
     showAskReview,
     agentRunning,
     handleSend,

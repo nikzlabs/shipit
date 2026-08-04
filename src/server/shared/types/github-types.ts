@@ -323,6 +323,17 @@ export interface PrStatusSummary {
     pending: number;
     /** Per-check failure details (populated when state is "failure"). */
     failedChecks?: { name: string; summary: string }[];
+    /**
+     * Epoch ms at which a *forced* pending state expires. Set only when the
+     * poller rewrote a genuine `"none"` reading to `"pending"` because the
+     * repo runs CI but GitHub hasn't registered a check yet (`CiGraceTracker`).
+     *
+     * The client treats `pending` + `total === 0` past this instant as the
+     * terminal "no checks" state. Without it, a summary persisted moments
+     * before polling paused (last viewer detached) rehydrates as a spinner
+     * that never resolves — nikzlabs/shipit#1730.
+     */
+    graceUntil?: number;
   };
   mergeable: PrMergeableState;
   /**
@@ -395,14 +406,19 @@ export interface PrFileStat {
  * docs/205 — a "notable" file changed somewhere across the whole PR: a design
  * doc (`.md`), an allowlisted config file, or an image (added or modified).
  * Powers the PR card's collapsible changed-docs strip, where each entry renders
- * as a chip that opens the file inline. A pure projection of the PR's
- * changed-file list; not persisted.
+ * as a chip that opens the file inline. A pure 1:1 projection of the PR's
+ * changed-file list — one chip per classified file, never collapsed; not
+ * persisted.
  */
 export interface NotableFileChange {
   /** Workspace-relative path (used as the chip's tooltip and the open target). */
   path: string;
-  /** Frontmatter `title` for docs (falls back to a path-derived name); basename for config/images. */
-  title: string;
+  /**
+   * Compact path label shown on the chip — `<parent>/<basename>`, with a
+   * `NNN-slug` feature dir shortened to its number (`246/plan.md`). Derived
+   * purely from `path`, so labels are unique within a diff.
+   */
+  label: string;
   kind: "doc" | "config" | "image";
   /** Normalized git status — Modified, Added, or Deleted (renames/copies map to M). */
   status: "M" | "A" | "D";

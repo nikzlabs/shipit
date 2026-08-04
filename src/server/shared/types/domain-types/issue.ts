@@ -126,8 +126,14 @@ export interface TrackerComment {
   createdAt?: string;
 }
 
-/** Which kind of issue write a provenance card records (docs/177, docs/187). */
-export type IssueWriteVerb = "comment" | "edit" | "status" | "assignee" | "create";
+/**
+ * Which kind of issue write a provenance card records (docs/177, docs/187).
+ * `label` records a label CREATION (`shipit issue label create`, or one minted
+ * by `--create-missing-labels`) — the one write verb that targets tracker
+ * config rather than an issue, so its card carries the label name as the
+ * identifier and no issue id.
+ */
+export type IssueWriteVerb = "comment" | "edit" | "status" | "assignee" | "create" | "label";
 
 /**
  * docs/189 — the human-readable "what changed" values the redesigned write card
@@ -186,7 +192,12 @@ export type IssueWriteUndo =
   | { kind: "assignee"; previousAssigneeId: string | null }
   // docs/187 — a just-created issue has no prior state to restore; undo cancels
   // it (Linear → canceled state, GitHub → close as not_planned) by `card.issueId`.
-  | { kind: "create" };
+  | { kind: "create" }
+  // Label creation — undo deletes the label IF it's still unused; when issues
+  // already carry it the delete refuses with an explanation (shown on the card).
+  // `labelId` is the tracker-internal delete target (Linear UUID; for GitHub the
+  // label name IS the id), `labelName` the display name for messaging.
+  | { kind: "label"; labelId: string; labelName: string };
 
 /** Undo lifecycle of a write provenance card. */
 export type IssueWriteUndoState = "available" | "undoing" | "undone" | "failed";

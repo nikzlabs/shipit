@@ -6,10 +6,11 @@
 import { useCallback } from "react";
 import { useGitStore } from "../../stores/git-store.js";
 import { useSessionStore } from "../../stores/session-store.js";
+import { useSessionDefaultBranch } from "../../utils/default-branch.js";
 import type { PrCardState } from "../../stores/pr-store.js";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "../ui/tooltip.js";
 import { MarkdownContent } from "../message-markdown.js";
-import { GitMergeIcon, CircleNotchIcon } from "@phosphor-icons/react";
+import { CircleNotchIcon } from "@phosphor-icons/react";
 
 // NB: block-level `flex` (not `inline-flex`) so the chip renders at exactly
 // h-6 regardless of its parent. As an inline-flex element it would be
@@ -18,9 +19,16 @@ import { GitMergeIcon, CircleNotchIcon } from "@phosphor-icons/react";
 export const linkClass = "h-6 flex items-center gap-1 text-xs text-(--color-text-tertiary) hover:text-(--color-text-secondary) transition-colors border border-(--color-border-secondary) rounded px-1.5";
 export const MAX_VISIBLE_FAILURES = 5;
 
-const DEFAULT_BRANCHES = new Set(["main", "master"]);
-export function isDefaultBranch(branch: string): boolean {
-  return DEFAULT_BRANCHES.has(branch);
+/**
+ * Conventional default-branch names, used only when the repo's *actual* default
+ * branch isn't known (no session, repo list not hydrated yet). Prefer passing
+ * `repoDefault` — a repo can perfectly well default to `trunk` or `develop`,
+ * and one that does should still get the "just show the head branch" treatment.
+ */
+const CONVENTIONAL_DEFAULT_BRANCHES = new Set(["main", "master"]);
+export function isDefaultBranch(branch: string, repoDefault?: string): boolean {
+  if (repoDefault) return branch === repoDefault;
+  return CONVENTIONAL_DEFAULT_BRANCHES.has(branch);
 }
 
 export function Spinner() {
@@ -49,16 +57,20 @@ export function DiffStats({ ins, del, onClick }: { ins: number; del: number; onC
 /** Fetch diff of HEAD vs a base branch and open it in the diff dialog. */
 export function useOpenPrDiff(baseBranch?: string) {
   const sessionId = useSessionStore((s) => s.sessionId);
+  // Pre-PR (and on the ready card) there's no PR base to pass in, so fall back
+  // to the repo's real default branch. Diffing against a hard-coded "main" on a
+  // `master` repo fails outright — the server can't resolve the base ref.
+  const repoDefault = useSessionDefaultBranch(sessionId ?? undefined);
   return useCallback(async () => {
     if (!sessionId) return;
-    const base = baseBranch || "main";
+    const base = baseBranch || repoDefault;
     try {
       await useGitStore.getState().fetchDiffVsBranch(sessionId, base);
       useGitStore.getState().openDiffDialog(`Changes vs ${base}`);
     } catch {
       // Silently fail
     }
-  }, [sessionId, baseBranch]);
+  }, [sessionId, baseBranch, repoDefault]);
 }
 
 /**
@@ -85,13 +97,19 @@ export function BranchLabel({
   prTitle?: string;
   prBody?: string;
 }) {
+  // Hook before the early return — "is this the default branch?" is answered by
+  // the repo's actual default, so a `trunk`-based repo doesn't render a
+  // redundant "trunk ← shipit/xyz".
+  const sessionId = useSessionStore((s) => s.sessionId);
+  const repoDefault = useSessionDefaultBranch(sessionId ?? undefined);
+
   if (!headBranch && !prTitle) return null;
 
   const labelClass =
     "h-6 text-xs flex items-center gap-1 min-w-0 overflow-hidden text-(--color-text-secondary)";
 
   if (!prTitle) {
-    const content = baseBranch && !isDefaultBranch(baseBranch) ? (
+    const content = baseBranch && !isDefaultBranch(baseBranch, repoDefault) ? (
       <>{baseBranch} <span className="text-(--color-text-tertiary)">←</span> {headBranch}</>
     ) : headBranch;
     return (
@@ -163,6 +181,19 @@ export function SessionTitleLabel({ sessionId }: { sessionId: string }) {
  * the merged state). The session's status indicator is gray like a fresh
  * session; this note is the only sign it shipped once. `withReady` appends the
  * "· ready for a new PR" hint used on the ready card.
+ *
+ * Deliberately text-only — no leading git glyph. The note always sits in a row
+ * that already opens with `PrStateBadge`, and at this size a second
+ * branch/merge icon reads as an accidental duplicate of the badge (user
+ * report), not as extra information the text doesn't already carry.
+ *
+ * Truncation priority (same user report, phone widths): the note YIELDS width
+ * before the session title does — `shrink-[3]` against the title's default
+ * shrink-1, never `shrink-0`. As the row's only shrinkable element, the title
+ * used to absorb the entire squeeze and collapse to a few characters
+ * ("Desi…") while this note kept its full width; of the two, the note is the
+ * less informative once read, and its full text survives in the `title`
+ * tooltip either way.
  */
 export function PreviouslyMergedNote({
   previousMergedPr,
@@ -172,13 +203,12 @@ export function PreviouslyMergedNote({
   withReady?: boolean;
 }) {
   const label = (
-    <>
-      <GitMergeIcon size={12} className="shrink-0" />
+    <span className="truncate">
       Previously merged #{previousMergedPr.number}
       {withReady && " · ready for a new PR"}
-    </>
+    </span>
   );
-  const className = "h-6 text-xs flex items-center gap-1 shrink-0 text-(--color-text-tertiary)";
+  const className = "h-6 text-xs flex items-center gap-1 min-w-0 overflow-hidden shrink-[3] text-(--color-text-tertiary)";
   if (previousMergedPr.url) {
     return (
       <a

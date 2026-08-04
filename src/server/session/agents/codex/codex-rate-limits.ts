@@ -25,8 +25,9 @@ export interface CodexTokenUsage {
 /**
  * One rate-limit window from an `account/rateLimits/updated` notification.
  * `usedPercent` is 0–100, `resetsAt` is epoch *seconds*, `windowDurationMins`
- * distinguishes the 5-hour (300) and weekly (10080) windows. The app-server
- * sends two: `primary` (the 5h session window) and `secondary` (weekly).
+ * distinguishes the 5-hour (300) and weekly (10080) windows. Do not infer a
+ * window's identity from the `primary` / `secondary` slot: some plans expose
+ * only one window, and that single `primary` window can be weekly.
  */
 interface CodexRateLimitWindow {
   usedPercent?: number;
@@ -40,8 +41,8 @@ export class CodexRateLimits {
 
   /** Latest subscription rate-limit snapshot pushed by the app-server. */
   private lastRateLimits: {
-    session: { usedPct: number; resetAt: string } | null;
-    weekly: { usedPct: number; resetAt: string } | null;
+    session: { usedPct: number; resetAt: string; startedAt?: string } | null;
+    weekly: { usedPct: number; resetAt: string; startedAt?: string } | null;
   } = { session: null, weekly: null };
 
   get lastTokenUsage(): CodexTokenUsage | null {
@@ -68,18 +69,26 @@ export class CodexRateLimits {
     const rl = params.rateLimits as Record<string, unknown> | undefined;
     if (!rl || typeof rl !== "object") return null;
 
-    const session = this.parseRateWindow(rl.primary);
-    const weekly = this.parseRateWindow(rl.secondary);
+    const primary = this.parseRateWindow(rl.primary);
+    const secondary = this.parseRateWindow(rl.secondary);
+    const session = this.windowForDuration(primary, secondary, 300)
+      // Backward compatibility for app-server payloads without duration.
+      ?? (primary?.durationMins === null ? primary.window : null);
+    const weekly = this.windowForDuration(primary, secondary, 10_080)
+      ?? (secondary?.durationMins === null ? secondary.window : null);
     if (!session && !weekly) return null;
 
     this.lastRateLimits = { session, weekly };
     return { type: "agent_rate_limits", session, weekly };
   }
 
-  /** Normalize one Codex rate-limit window into `{ usedPct, resetAt }`. */
+  /** Normalize one Codex rate-limit window into the shared window shape. */
   private parseRateWindow(
     raw: unknown,
-  ): { usedPct: number; resetAt: string } | null {
+  ): {
+    window: { usedPct: number; resetAt: string; startedAt?: string };
+    durationMins: number | null;
+  } | null {
     if (!raw || typeof raw !== "object") return null;
     const w = raw as CodexRateLimitWindow;
     if (typeof w.usedPercent !== "number" || !Number.isFinite(w.usedPercent)) return null;
@@ -87,7 +96,27 @@ export class CodexRateLimits {
     const usedPct = Math.min(100, Math.max(0, w.usedPercent));
     // resetsAt is epoch seconds; tolerate a ms value defensively.
     const ms = w.resetsAt < 10_000_000_000 ? w.resetsAt * 1000 : w.resetsAt;
-    return { usedPct, resetAt: new Date(ms).toISOString() };
+    const resetAt = new Date(ms).toISOString();
+    const durationMs =
+      typeof w.windowDurationMins === "number" && Number.isFinite(w.windowDurationMins) && w.windowDurationMins > 0
+        ? w.windowDurationMins * 60_000
+        : null;
+    return {
+      durationMins: durationMs === null ? null : durationMs / 60_000,
+      window: {
+        usedPct,
+        resetAt,
+        ...(durationMs === null ? {} : { startedAt: new Date(ms - durationMs).toISOString() }),
+      },
+    };
+  }
+
+  private windowForDuration(
+    primary: ReturnType<CodexRateLimits["parseRateWindow"]>,
+    secondary: ReturnType<CodexRateLimits["parseRateWindow"]>,
+    durationMins: number,
+  ): { usedPct: number; resetAt: string; startedAt?: string } | null {
+    return [primary, secondary].find((candidate) => candidate?.durationMins === durationMins)?.window ?? null;
   }
 
   /**

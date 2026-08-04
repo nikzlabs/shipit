@@ -54,7 +54,11 @@ function makeRunnerRegistry(sessionId: string) {
   // reads chatMessageGroups for the anchor and pushes onto recordedCards.
   const runner = {
     emitMessage: (m: { type: string }) => emitted.push(m),
+    // The `voice_note` tool fires from inside the agent's turn, so the card
+    // rides the in-progress turn rather than `emitChatCard`'s post-turn append.
+    running: true,
     chatMessageGroups: [] as { text: string; toolUse: unknown[] }[],
+    steeredMessages: [] as unknown[],
     recordedCards: [] as unknown[],
   };
   return {
@@ -103,6 +107,14 @@ async function buildApp(overrides?: {
   credentialStore?: ReturnType<typeof makeCredentialStore>;
   authManager?: ReturnType<typeof makeAuthManager>;
   runnerRegistry?: { get: (id: string) => unknown };
+  chatHistoryManager?: {
+    replaceInProgress: (sessionId: string, messages: unknown[]) => void;
+    append: (sessionId: string, message: unknown) => void;
+  };
+  providerAccountManager?: {
+    selectRouteForTurn: (agentId: string) => unknown;
+    resolveCredentialRoot?: (agentId: string, accountId: string) => string;
+  };
 }): Promise<{
   app: FastifyInstance;
   credentialStore: ReturnType<typeof makeCredentialStore>;
@@ -118,6 +130,13 @@ async function buildApp(overrides?: {
     workspaceDir: tmpDir,
     stateDir: tmpDir,
     runnerRegistry: overrides?.runnerRegistry ?? { get: () => undefined },
+    chatHistoryManager: overrides?.chatHistoryManager ?? { replaceInProgress: vi.fn(), append: vi.fn() },
+    // docs/150 req 19 — cleanup resolves the account whose credentials it reads.
+    // Defaults to a reserved route (no account root), which is the pre-account
+    // shape the rest of these tests assume.
+    providerAccountManager: overrides?.providerAccountManager ?? {
+      selectRouteForTurn: () => ({ kind: "api-key", id: "claude-api-key" }),
+    },
   } as unknown as ApiDeps);
   await app.ready();
   return { app, credentialStore, authManager };
@@ -249,6 +268,49 @@ describe("GET /api/voice/cleanup/status", () => {
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.provider).toBeTruthy();
+    await app.close();
+  });
+
+  // docs/150 req 19 — the singleton config root holds nothing once the legacy
+  // aliases are retired, so cleanup has to read the account the router picks.
+  it("reads the bearer from the credential root of the account the router picks", async () => {
+    const authManager = makeAuthManager("oauth-bearer-token");
+    const { app } = await buildApp({
+      authManager,
+      providerAccountManager: {
+        selectRouteForTurn: () => ({ kind: "account", id: "acct_work" }),
+        resolveCredentialRoot: (agentId, accountId) =>
+          `/credentials/provider-accounts/${agentId}/${accountId}`,
+      },
+    });
+
+    const res = await app.inject({ method: "GET", url: "/api/voice/cleanup/status" });
+
+    expect(res.statusCode).toBe(200);
+    expect(authManager.getAccessToken).toHaveBeenCalledWith(
+      "/credentials/provider-accounts/claude/acct_work",
+    );
+    await app.close();
+  });
+
+  // Cleanup is best-effort: `pickCleanupProvider` already treats a broken
+  // Claude path as "fall through to OpenAI". Account resolution must not be
+  // the one step that escapes that and 500s the request.
+  it("degrades to an unscoped read when account resolution throws", async () => {
+    const authManager = makeAuthManager("oauth-bearer-token");
+    const { app } = await buildApp({
+      authManager,
+      providerAccountManager: {
+        selectRouteForTurn: () => {
+          throw new Error("account store unavailable");
+        },
+      },
+    });
+
+    const res = await app.inject({ method: "GET", url: "/api/voice/cleanup/status" });
+
+    expect(res.statusCode).toBe(200);
+    expect(authManager.getAccessToken).toHaveBeenCalledWith(undefined);
     await app.close();
   });
 });
@@ -442,7 +504,7 @@ describe("POST /api/voice/transcribe", () => {
     });
 
     expect(res.statusCode).toBe(400);
-    expect(res.json().error).toContain("Couldn't transcribe: Whisper returned 400");
+    expect(res.json().error).toContain("Couldn't transcribe: OpenAI transcription returned 400");
     expect(res.json().error).toContain("audio format is unsupported");
     await app.close();
   });
@@ -465,6 +527,25 @@ describe("Voice-note webhook config (docs/163)", () => {
     expect(body.url).toBe("https://hook.example/notes");
     // The token must never be returned.
     expect(JSON.stringify(body)).not.toContain("super-secret");
+    await app.close();
+  });
+
+  it("keeps the stored token when an existing webhook is saved with a blank token", async () => {
+    const credentialStore = makeCredentialStore();
+    credentialStore.setVoiceWebhook("https://hook.example/old", "super-secret");
+    const { app } = await buildApp({ credentialStore });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/voice/webhook",
+      payload: { url: "https://hook.example/new", token: "" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(credentialStore.getVoiceWebhook()).toEqual({
+      url: "https://hook.example/new",
+      token: "super-secret",
+    });
     await app.close();
   });
 
@@ -492,22 +573,28 @@ describe("Voice-note webhook config (docs/163)", () => {
 });
 
 describe("POST /api/sessions/:sessionId/voice-note (docs/163)", () => {
-  it("acks delivered:true for an active runner WITHOUT delivering (observation is the deliverer)", async () => {
-    // docs/163 — the card + webhook are delivered from the event-stream
-    // observation of the voice_note tool call (agent-listeners.ts), built from
-    // the tool input. This relay is a pure ack: it must NOT emit or record a
-    // card, only report that a runner exists to receive the note.
+  it("delivers through the bridge when event-stream observation is unavailable", async () => {
     const { emitted, runner, registry } = makeRunnerRegistry("sess-1");
-    const { app } = await buildApp({ runnerRegistry: registry });
+    const replaceInProgress = vi.fn();
+    const { app } = await buildApp({
+      runnerRegistry: registry,
+      chatHistoryManager: { replaceInProgress, append: vi.fn() },
+    });
     const res = await app.inject({
       method: "POST",
       url: "/api/sessions/sess-1/voice-note",
-      payload: { summary: "Done — want me to open a PR?", needsAttention: true, context: { repo: "shipit" } },
+      payload: { summary: "Done — want me to open a PR?", context: { repo: "shipit" } },
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ delivered: true });
-    expect(emitted).toHaveLength(0);
-    expect(runner.recordedCards).toHaveLength(0);
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]).toMatchObject({
+      type: "voice_note",
+      sessionId: "sess-1",
+      headline: "Done — want me to open a PR?",
+    });
+    expect(runner.recordedCards).toHaveLength(1);
+    expect(replaceInProgress).toHaveBeenCalled();
     await app.close();
   });
 
@@ -517,7 +604,7 @@ describe("POST /api/sessions/:sessionId/voice-note (docs/163)", () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/sessions/sess-1/voice-note",
-      payload: { needsAttention: true },
+      payload: {},
     });
     expect(res.statusCode).toBe(400);
     await app.close();
@@ -528,7 +615,7 @@ describe("POST /api/sessions/:sessionId/voice-note (docs/163)", () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/sessions/gone/voice-note",
-      payload: { summary: "hi", needsAttention: true },
+      payload: { summary: "hi" },
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ delivered: false });

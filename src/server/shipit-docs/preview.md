@@ -1,5 +1,7 @@
 # Preview System
 
+HTML served through an active Preview receives the [Agent Interface SDK](./agent-interface-sdk.md). It exposes `window.shipit.agent.sendMessage()` plus cooperative visibility state. Use visibility to suspend audio, animation, polling, and timers when hidden; background iframe slots remain mounted.
+
 The preview pane shows a live view of the running application. It updates
 automatically as you edit files.
 
@@ -30,6 +32,20 @@ automatically as you edit files.
    origin — absolute asset/API paths like `/assets/app.js` or `/gradio_api/...`
    resolve naturally, with no path prefix to account for. (Bind the server to
    `0.0.0.0`, not `127.0.0.1`, or the proxy can't reach it.)
+
+## Keeping a preview running
+
+The session overflow menu has a checked **Keep preview running** action. Enabling
+it immediately activates the ordinary session runtime and the same `auto`
+Compose-service reconciliation described above. The reservation survives idle
+periods and orchestrator restarts; unexpected agent-container exits are retried
+with a bounded backoff. Disabling only releases the reservation — it does not
+stop a healthy preview immediately, which returns to the normal idle lifecycle.
+
+The URL and access boundary do not change. This is a private ShipIt preview, not
+a public deployment, and the deployment admits only a bounded number (one by
+default). Failures remain visible through the existing session status, service
+error, and Logs surfaces.
 
 ## Repository trust gate
 
@@ -103,7 +119,22 @@ the broken tree, dev server fails with `vite: not found`, container exits
 | `x-shipit-preview` | Behavior |
 |---------------------|----------|
 | `auto` (default for services with ports) | Starts automatically, shown in preview |
-| `manual` (default for services without ports) | User clicks "Start" in UI |
+| `manual` (default for services without ports) | Started on demand — `shipit service start <name>`, or the user clicks "Start" in the UI |
+
+Start a `manual` service yourself whenever your task needs it — a database to
+migrate against, a cache to flush, an emulator to drive. Don't tell the user to
+click Start:
+
+```bash
+shipit service list           # what exists, what's running, each service's url
+shipit service start db
+shipit service logs db --lines 200
+```
+
+The first start may pull a large image or run a `build:`, so it can take
+minutes; `start` waits up to 10 minutes and a timeout means it's still going,
+not that it failed. Full reference: [compose.md](compose.md) →
+"Controlling services".
 
 ## Install gate (`x-shipit-depends-on-install`)
 
@@ -174,6 +205,7 @@ out of the box.
 |--------|--------|
 | Source file edit | Hot reload (no restart) |
 | `shipit.yaml` or compose file edit | Stack reconciliation (restart services) |
+| `shipit.yaml`/compose file changed by a sync/rebase or rollback | Same reconciliation — services added by the incoming config appear without a session restart |
 | Lockfile/manifest change (edit **or** git reset/checkout/rebase) | Install + restart (30s cooldown) |
 
 ## Browser tools
@@ -199,11 +231,14 @@ verify your work:
   for understanding layout)
 - **browser_click** / **browser_type** — interact with elements
 - **browser_take_screenshot** — capture a visual screenshot for layout/styling.
-  Save screenshots to `/tmp/.playwright-mcp/`, not `/workspace/`, to keep them
-  out of git. The Playwright MCP only allows writes under
-  `/tmp/.playwright-mcp/` or `/workspace/` — bare `/tmp/foo.png` paths are
-  rejected. You can also omit the filename and let the MCP auto-generate one
-  in that directory.
+  **Omit `filename`.** The MCP auto-names the file into `/tmp/.playwright-mcp/`
+  (its output dir and cwd), so it stays out of git — and `@playwright/mcp`
+  returns the image itself *only* when `filename` is omitted. Pass one and the
+  result is a text-only link to a file on disk: you never see the page, and the
+  screenshot does not render in the chat transcript. If you truly need a stable
+  name, keep it under `/tmp/.playwright-mcp/` (never `/workspace/`, which gets
+  auto-committed; never a bare `/tmp/foo.png`, which is rejected) and `Read` the
+  file afterwards to actually look at it.
 
 Use browser tools proactively after UI changes to catch issues early.
 
