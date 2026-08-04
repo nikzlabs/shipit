@@ -39,6 +39,20 @@ Two fields we already see on the wire and can capture:
 - `tool_use.input.prompt` — the prompt sent to the subagent.
 - `tool_result.content` — the subagent's final report (markdown).
 
+> **The report is not always a markdown string** (SHI-287). The CLI delivers it
+> as a **JSON-encoded block array** whenever the reply has more than one block —
+> which is the normal case, because the CLI appends its own
+> `agentId` / `subagent_tokens` / `tool_uses` / `duration_ms` footer after the
+> report. The renderer handed that string straight to `MarkdownContent` for as
+> long as this feature has existed, so a real subagent turn showed the user
+> `[{"type":"text","text":"…"}]` with escaped newlines. `parseSubagentReport`
+> now splits it: the text blocks become the report, and a recognized footer is
+> demoted to a muted line instead of being read as prose.
+>
+> Not a docs/244 regression, though it surfaced during that feature's
+> verification: the lazy-body projection **exempts** subagent reports, so the
+> renderer receives byte-for-byte what it always did.
+
 ### UI
 
 In the message renderer (`MessageList.tsx`'s tool-call component), Task tool invocations get a new collapsible structure:
@@ -110,7 +124,7 @@ Component tests for `SubagentCall` covering each disclosure level.
 | `src/server/orchestrator/ws-handlers/agent-listeners.ts` | Forward nested events |
 | `src/server/orchestrator/chat-history.ts` | Persist parent ids |
 | `src/client/components/ToolCall/SubagentCall.tsx` | New component |
-| `src/client/utils/group-events-by-parent.ts` | New util |
+| `src/client/utils/group-events-by-parent.ts` | New util; also `parseSubagentReport` (SHI-287) — splits the CLI's block-array result into report text + accounting footer. Structural parse (`startsWith("[")` → `JSON.parse` → inspect block types), matching `parseContentForImages`; the footer has no structural marker, so it is recognized narrowly (last block only, every line a `key: value` with a known key) because a false positive would eat someone's report. |
 | `src/client/components/MessageList/MessageToolUse.tsx` | Route subagent tools to `SubagentCall` |
 | `src/server/shared/transcript-slice-tools.ts` | `SUBAGENT_TOOL_NAMES` (layout) + `SUBAGENT_REPORT_TOOL_NAMES` (report / slice exemption) |
 | `src/server/orchestrator/transcript-projection.ts` | Exempt the report set from docs/244 slicing |

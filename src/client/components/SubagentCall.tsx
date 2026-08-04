@@ -22,6 +22,7 @@ import { ToolSpinner } from "./StreamingIndicator.js";
 import {
   groupEventsByParent,
   findSubagentFinalReport,
+  parseSubagentReport,
   type SubagentStep,
 } from "../utils/group-events-by-parent.js";
 import type { ToolUseBlock, ToolResultBlock, SubagentEvent } from "./MessageList.js";
@@ -48,6 +49,7 @@ export function SubagentCall({ tool, subagentEvents, parentToolResults, isStream
   const tree = grouped.get(tool.id);
   const steps: SubagentStep[] = tree?.steps ?? [];
   const finalReport = findSubagentFinalReport(tool.id, parentToolResults);
+  const report = finalReport ? parseSubagentReport(finalReport.content) : null;
 
   const [promptExpanded, setPromptExpanded] = useState(false);
   // Keep "work" expanded by default — both while streaming AND after the
@@ -116,8 +118,11 @@ export function SubagentCall({ tool, subagentEvents, parentToolResults, isStream
         </Disclosure>
       )}
 
-      {/* Final report — always visible once present. Renders as markdown. */}
-      {finalReport && (
+      {/* Final report — always visible once present. Renders as markdown.
+          The CLI wraps it in a JSON block array whenever it appends its own
+          accounting footer, which is most of the time, so parse before
+          rendering (SHI-287) — otherwise the user reads escaped JSON. */}
+      {report && (
         <div data-testid="subagent-final-report" className="mt-1">
           <div className="text-xs text-(--color-text-tertiary) mb-1 uppercase tracking-wide">
             {isError ? "Subagent error" : "Final report"}
@@ -129,8 +134,16 @@ export function SubagentCall({ tool, subagentEvents, parentToolResults, isStream
                 : "text-sm text-(--color-text-primary)"
             }
           >
-            <MarkdownContent text={finalReport.content} />
+            <MarkdownContent text={report.text} />
           </div>
+          {report.meta && (
+            <div
+              data-testid="subagent-report-meta"
+              className="mt-1 text-xs text-(--color-text-tertiary) font-mono whitespace-pre-wrap leading-5"
+            >
+              {report.meta}
+            </div>
+          )}
         </div>
       )}
     </div>
