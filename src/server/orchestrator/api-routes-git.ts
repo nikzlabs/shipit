@@ -3,9 +3,14 @@
  * Handles: git log, branches, remotes, commit, push, pull, diff, rollback, merge, workspace-state.
  */
 
+import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
+import type { BranchAutoResetCard, PrStatusSummary, WsServerMessage } from "../shared/types.js";
 import type { ApiDeps } from "./api-routes.js";
 import { resolveSessionDir } from "./api-routes.js";
+import { emitChatCard } from "./chat-card-persistence.js";
+import type { ChatHistoryManager } from "./chat-history.js";
+import type { SessionRunnerInterface } from "./session-runner.js";
 
 import {
   getGitLog,
@@ -21,15 +26,148 @@ import {
   mergeSession,
   rebaseAbort,
   runRebaseFlow,
+  repoDefaultBranch,
   ServiceError,
 } from "./services/index.js";
+import { detectAndReArmResetSession } from "./services/pr-rearm.js";
+import {
+  resetBranchToBaseExplicit,
+  type ExplicitResetOutcome,
+} from "./services/pre-turn-reset.js";
 import { getErrorMessage } from "./validation.js";
+
+interface ExplicitResetPresentationDeps {
+  runner: SessionRunnerInterface | undefined;
+  chatHistoryManager: ChatHistoryManager;
+  sessionId: string;
+  prStatus: PrStatusSummary | null | undefined;
+  /**
+   * SHI-277 — durable PR identity for the card when the live snapshot is gone.
+   * `PrStatusPoller.reArm` nulls `prStatus` on any merged session that gained
+   * new work, which is the ordinary state of a session needing a forced reset —
+   * and without a fallback the destructive move would leave NO transcript
+   * record, which is the one thing the forced path cannot afford. Same durable
+   * source `resolveResetBase` uses (`session.previousMergedPr`).
+   */
+  fallbackPr?: { prNumber: number; prUrl: string } | undefined;
+  outcome: ExplicitResetOutcome;
+  reArmResetSession: () => Promise<void>;
+}
+
+/**
+ * docs/239 + docs/218 — an explicit self-wake reset must settle the same UI
+ * state as the checked composer flow. The git move alone is not enough: the
+ * composer eligibility signal is transient, the merged PR card must re-arm,
+ * and the destructive move needs a durable transcript record.
+ */
+export async function presentExplicitResetSuccess(
+  deps: ExplicitResetPresentationDeps,
+): Promise<void> {
+  if (deps.outcome.outcome === "refused") return;
+
+  deps.runner?.emitMessage({
+    type: "reset_eligible",
+    sessionId: deps.sessionId,
+    eligible: false,
+  });
+  await deps.reArmResetSession();
+
+  const pr = deps.prStatus ?? deps.fallbackPr;
+  if (deps.outcome.outcome !== "reset" || !deps.runner || !pr
+    || !deps.outcome.base || !deps.outcome.fromSha || !deps.outcome.toSha) return;
+
+  const card: BranchAutoResetCard = {
+    cardId: `branch-reset-${randomUUID()}`,
+    base: deps.outcome.base,
+    prNumber: pr.prNumber,
+    prUrl: pr.prUrl,
+    fromSha: deps.outcome.fromSha,
+    toSha: deps.outcome.toSha,
+    createdAt: new Date().toISOString(),
+    ...(deps.outcome.forced
+      ? { forced: true, ...(deps.outcome.forceReason ? { forceReason: deps.outcome.forceReason } : {}) }
+      : {}),
+  };
+  emitChatCard(
+    deps.runner,
+    { type: "branch_auto_reset_card", sessionId: deps.sessionId, card },
+    { role: "assistant", text: "", branchAutoReset: card },
+    { chatHistoryManager: deps.chatHistoryManager, sessionId: deps.sessionId },
+  );
+}
 
 export async function registerGitRoutes(
   app: FastifyInstance,
   deps: ApiDeps,
 ): Promise<void> {
   const { sessionManager, createGitManager } = deps;
+
+  // POST /api/sessions/:id/branch/reset-to-base — docs/239. Backs
+  // `shipit branch reset-to-base`: the explicit, agent-invoked mode over the
+  // docs/218 reset core, used as the first step of a self-merge wake turn.
+  // Container-reachable so the shim can broker it; own-session scoped (the worker
+  // injects the caller's id), and the full safety gate still applies — the arming
+  // is the consent, not a bypass.
+  app.post<{ Params: { id: string }; Body: { force?: boolean; reason?: string } }>(
+    "/api/sessions/:id/branch/reset-to-base",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      const dir = resolveSessionDir(sessionManager, request.params.id, reply);
+      if (!dir) return;
+      const sessionId = request.params.id;
+      const prStatus = sessionManager.getPrStatus(sessionId);
+      // SHI-277 — the break-glass. A force with no stated reason is not a
+      // break-glass, it is a silent bypass: the reason IS what replaces the gate
+      // this mode removes, so it is validated here rather than trusted from the
+      // shim (the HTTP route is container-reachable in its own right).
+      const force = request.body?.force === true;
+      const reason = typeof request.body?.reason === "string" ? request.body.reason.trim() : "";
+      if (force && !reason) {
+        reply.code(400).send({
+          outcome: "refused",
+          reason: "A forced reset requires --reason: it bypasses the check that this branch "
+            + "carries nothing beyond its merged PR, so the transcript record of WHY is the "
+            + "only account of the override.",
+        });
+        return;
+      }
+      const outcome = await resetBranchToBaseExplicit(
+        {
+          getSession: (id: string) => sessionManager.get(id),
+          getPrStatus: (id: string) => sessionManager.getPrStatus(id),
+          createGitManager,
+        },
+        sessionId,
+        dir,
+        ...(force ? [{ force: { reason } }] as const : []),
+      );
+      const previous = sessionManager.get(sessionId)?.previousMergedPr;
+      await presentExplicitResetSuccess({
+        runner: deps.runnerRegistry.get(sessionId),
+        chatHistoryManager: deps.chatHistoryManager,
+        sessionId,
+        prStatus,
+        fallbackPr: previous ? { prNumber: previous.number, prUrl: previous.url } : undefined,
+        outcome,
+        reArmResetSession: async () => {
+          if (!deps.prStatusPoller) return;
+          await detectAndReArmResetSession({
+            deps: {
+              sessionManager,
+              prStatusPoller: deps.prStatusPoller,
+              createGitManager,
+              sseBroadcast: deps.sseBroadcast,
+            },
+            sessionId,
+            sessionDir: dir,
+            emit: (message: WsServerMessage) => deps.runnerRegistry.get(sessionId)?.emitMessage(message),
+            skipFetch: true,
+          });
+        },
+      });
+      return outcome;
+    },
+  );
 
   // GET /api/sessions/:id/git/log — git commit log
   app.get<{ Params: { id: string } }>("/api/sessions/:id/git/log", async (request, reply) => {
@@ -69,7 +207,10 @@ export async function registerGitRoutes(
     async (request, reply) => {
       const dir = resolveSessionDir(sessionManager, request.params.id, reply);
       if (!dir) return;
-      const baseBranch = request.query.base || "main";
+      // No explicit base → the repo's own default branch, not a hard-coded
+      // "main" (which is simply unresolvable on a `master`/`trunk` repo).
+      const baseBranch = request.query.base
+        || repoDefaultBranch(deps.repoStore, sessionManager.get(request.params.id)?.remoteUrl);
       try {
         const git = createGitManager(dir);
         return await getDiffVsBranch(git, baseBranch);
@@ -128,6 +269,16 @@ export async function registerGitRoutes(
       try {
         const git = createGitManager(dir);
         const result = await gitRollback(git, request.body.commitHash);
+        // A rollback rewrites the working tree from the orchestrator, so the
+        // session's `shipit.yaml` / compose file may now describe a different
+        // stack. Re-read it rather than relying on the in-container file
+        // watcher to notice (same reasoning as the rebase path). Best-effort —
+        // never fail a completed rollback on a config re-read.
+        try {
+          deps.runnerRegistry.get(request.params.id)?.reevaluateWorkspaceConfig?.();
+        } catch (err) {
+          console.error("[rollback] config re-evaluation failed:", getErrorMessage(err));
+        }
         return result;
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -255,7 +406,6 @@ export async function registerGitRoutes(
             sessionManager: deps.sessionManager,
             chatHistoryManager: deps.chatHistoryManager,
             usageManager: deps.usageManager,
-            authManager: deps.authManager,
             agentFactory: deps.agentFactory,
             sseBroadcast: deps.sseBroadcast,
             // docs/221 — manual "Sync with <base>" records a persisted card; the
@@ -272,7 +422,7 @@ export async function registerGitRoutes(
           // state and surfaces the failure — without `reason` the old code
           // silently bounced the banner from "in_progress" back to "idle" and
           // the user had no way to tell what went wrong.
-          runner.emitMessage({ type: "rebase_aborted", reason: getErrorMessage(err) });
+          runner.emitMessage({ type: "rebase_aborted", sessionId: runner.sessionId, reason: getErrorMessage(err) });
         });
 
         return { status: "started" };
@@ -309,7 +459,7 @@ export async function registerGitRoutes(
         const git = createGitManager(dir);
         await rebaseAbort(git);
         if (runner) {
-          runner.emitMessage({ type: "rebase_aborted" });
+          runner.emitMessage({ type: "rebase_aborted", sessionId: runner.sessionId });
         }
         return { status: "aborted" };
       } catch (err) {

@@ -63,6 +63,32 @@ describe("per-tool timing derivation (docs/185)", () => {
       const entry = extractToolResults(toolResultEvent([{ tool_use_id: "t1", content: "ok" }]))[0];
       expect(entry.durationMs).toBeUndefined();
     });
+
+    // nikzlabs/shipit#1874 — `content` is `string | ContentBlock[]` per the
+    // Anthropic schema, and a bare string reached production. Unguarded
+    // `content.filter(...)` threw `TypeError: content.filter is not a
+    // function` inside the event listener, stranding the whole turn: no
+    // result, no teardown, a spinner that never stops. These are the
+    // direct unit cases — the integration test covers turn survival.
+    it("does not throw on a non-array content (string)", () => {
+      const event = { type: "agent_tool_result", content: "plain string result" } as unknown as AgentEvent;
+      expect(() => extractToolResults(event)).not.toThrow();
+      expect(extractToolResults(event)).toEqual([]);
+    });
+
+    it("does not throw on other non-array content shapes", () => {
+      for (const content of [{ tool_use_id: "t1" }, 42, null, undefined, true]) {
+        const event = { type: "agent_tool_result", content } as unknown as AgentEvent;
+        expect(() => extractToolResults(event)).not.toThrow();
+        expect(extractToolResults(event)).toEqual([]);
+      }
+    });
+
+    it("stampToolDurations also tolerates a non-array content", () => {
+      const event = { type: "agent_tool_result", content: "plain string result" } as unknown as AgentEvent;
+      expect(() => stampToolDurations(event, new Map([["t1", 1]]), 2)).not.toThrow();
+      expect(stampToolDurations(event, new Map([["t1", 1]]), 2)).toBe(event);
+    });
   });
 });
 

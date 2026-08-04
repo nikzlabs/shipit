@@ -1,7 +1,10 @@
-import { useState } from "react";
+// eslint-disable-next-line no-restricted-imports -- useEffect: fetches the consult output the serve-path projection stripped (docs/244, SHI-297) when the viewer opens, with cancellation on close — an external-system read with cleanup.
+import { useState, useEffect } from "react";
 import { ArrowsOutSimpleIcon, CircleNotchIcon } from "@phosphor-icons/react";
 import type { SubAgentConsultCard as SubAgentConsultCardData } from "../../../../server/shared/types.js";
+import { subAgentPreviewLine } from "../../../../server/shared/transcript-slice.js";
 import type { SubAgentSpawnChip } from "../../../stores/session-store.js";
+import { useSessionStore } from "../../../stores/session-store.js";
 import { MarkdownContent } from "../../message-markdown.js";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../../ui/dialog.js";
 
@@ -20,22 +23,27 @@ export function SubAgentSpawnChipRow({ chip }: { chip: SubAgentSpawnChip }) {
     <div className="flex justify-start" data-testid="sub-agent-spawn-chip">
       <div className="flex items-center gap-2 rounded-lg border border-(--color-border-primary) bg-(--color-bg-tertiary) px-3 py-2 text-xs text-(--color-text-secondary)">
         <CircleNotchIcon size={14} className="animate-spin text-(--color-text-tertiary)" />
-        Asking {name}… <span className="text-(--color-text-tertiary)">(typically 30–120s)</span>
+        Asking {name}… <span className="text-(--color-text-tertiary)">(often several minutes)</span>
       </div>
     </div>
   );
 }
 
-/** Collapse the verbatim output into a single-line preview for the card face. */
-function previewLine(markdown: string): string {
-  const flat = markdown.replace(/\s+/g, " ").trim();
-  return flat.length > 140 ? `${flat.slice(0, 140)}…` : flat;
-}
+/**
+ * Collapse the verbatim output into a single-line preview for the card face.
+ *
+ * docs/244 / SHI-297 — shared with the server, which now BUILDS this line: a
+ * consult's output is modal-only past the preview, so the wire copy carries the
+ * preview and nothing else. Applying it again to the server's own preview is a
+ * no-op, so this call site is correct for both a whole card and a projected one.
+ */
+const previewLine = subAgentPreviewLine;
 
-/** The verb that opens the summary line, derived from the terminal status. */
+/** The verb that opens the summary line, derived from the card's status. */
 function statusVerb(status: SubAgentConsultCardData["status"]): string {
   return (
-    status === "success" ? "Consulted"
+    status === "pending" ? "Asking"
+    : status === "success" ? "Consulted"
     : status === "cancelled" ? "Cancelled"
     : status === "timeout" ? "Timed out asking"
     : "Asked"
@@ -61,8 +69,10 @@ export function SubAgentConsultCardRow({ card }: { card: SubAgentConsultCardData
   const secs = card.durationMs ? Math.round(card.durationMs / 1000) : null;
   const cost = card.costUsd && card.costUsd > 0 ? `$${card.costUsd.toFixed(2)}` : null;
   const verb = statusVerb(card.status);
+  const pending = card.status === "pending";
 
   const parts = [`${verb} ${name}`];
+  if (pending) parts.push("in progress");
   if (secs !== null) parts.push(`${secs}s`);
   if (cost) parts.push(cost);
   if (card.truncated) parts.push("truncated");
@@ -70,8 +80,27 @@ export function SubAgentConsultCardRow({ card }: { card: SubAgentConsultCardData
 
   const output = card.outputMarkdown?.trim() ? card.outputMarkdown : null;
 
+  // SHI-278 — the durable in-flight row. Unlike the transient spinner chip this
+  // is persisted, so it stays put across a session switch, a reload, and a
+  // container restart, and it is anchored at the call site rather than pinned to
+  // the bottom of the transcript.
+  if (pending) {
+    return (
+      <div
+        data-testid="sub-agent-consult-card"
+        data-pending="true"
+        className="flex items-center gap-2 rounded-lg border border-(--color-border-primary) bg-(--color-bg-tertiary) px-3 py-1.5 text-xs text-(--color-text-tertiary)"
+      >
+        <CircleNotchIcon size={14} className="animate-spin text-(--color-text-tertiary)" />
+        {summary}
+      </div>
+    );
+  }
+
   // No output (e.g. a transport failure or empty result) — keep the compact,
-  // non-interactive one-liner exactly as before.
+  // non-interactive one-liner exactly as before, plus ShipIt's own explanation
+  // when there is one (SHI-307: a consult cancelled by an orchestrator restart
+  // is otherwise indistinguishable from one the user cancelled).
   if (!output) {
     return (
       <div
@@ -79,6 +108,11 @@ export function SubAgentConsultCardRow({ card }: { card: SubAgentConsultCardData
         className="rounded-lg border border-(--color-border-primary) bg-(--color-bg-tertiary) px-3 py-1.5 text-xs text-(--color-text-tertiary)"
       >
         {summary}
+        {card.statusDetail && (
+          <div className="mt-1 text-xs text-(--color-text-secondary)" data-testid="sub-agent-consult-status-detail">
+            {card.statusDetail}
+          </div>
+        )}
       </div>
     );
   }
@@ -103,24 +137,81 @@ export function SubAgentConsultCardRow({ card }: { card: SubAgentConsultCardData
         </div>
       </button>
 
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="flex w-[min(92vw,760px)] flex-col md:max-h-[85vh]">
-          <DialogHeader>
-            <DialogTitle>{`${verb} ${name}`}</DialogTitle>
-          </DialogHeader>
-          <div
-            className="overflow-auto px-5 py-4 text-sm"
-            data-testid="sub-agent-consult-output"
-          >
-            <MarkdownContent text={output} />
-            {card.truncated && (
-              <p className="mt-3 text-xs italic text-(--color-text-tertiary)">
-                Output was truncated at the consult limit.
-              </p>
-            )}
-          </div>
-        </DialogContent>
-      </Dialog>
+      {open && (
+        <ConsultOutputDialog
+          card={card}
+          title={`${verb} ${name}`}
+          preview={output}
+          onClose={() => setOpen(false)}
+        />
+      )}
     </>
+  );
+}
+
+/**
+ * The verbatim-output viewer. docs/244 / SHI-297 — opening it IS the click
+ * requirement 8 licenses a loading state for: the transcript payload carries
+ * only the preview line, and the full markdown is fetched here. A card that
+ * arrived whole (short output, or a pre-SHI-297 row) renders immediately and
+ * issues no request at all.
+ */
+function ConsultOutputDialog({ card, title, preview, onClose }: {
+  card: SubAgentConsultCardData;
+  title: string;
+  preview: string;
+  onClose: () => void;
+}) {
+  const sessionId = useSessionStore((s) => s.sessionId);
+  const lazy = card.outputTruncated === true;
+  const [fetched, setFetched] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  // eslint-disable-next-line no-restricted-syntax -- the body is not in the transcript (docs/244); opening the viewer IS the moment it has to be fetched, and the cleanup drops a response that lands after the user closed it.
+  useEffect(() => {
+    if (!lazy || !sessionId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(
+          `/api/sessions/${encodeURIComponent(sessionId)}/sub-agent-consults/${encodeURIComponent(card.cardId)}`,
+        );
+        if (!res.ok) throw new Error(String(res.status));
+        const body = (await res.json()) as { outputMarkdown?: string };
+        if (!cancelled) setFetched(body.outputMarkdown ?? "");
+      } catch {
+        if (!cancelled) setFailed(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [lazy, sessionId, card.cardId]);
+
+  const pending = lazy && fetched === null && !failed;
+
+  return (
+    <Dialog open onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
+      <DialogContent className="flex w-[min(92vw,760px)] flex-col md:max-h-[85vh]">
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+        </DialogHeader>
+        <div
+          className="overflow-auto px-5 py-4 text-sm"
+          data-testid="sub-agent-consult-output"
+        >
+          {pending ? (
+            <div className="text-xs italic text-(--color-text-secondary)" role="status">Loading output…</div>
+          ) : failed ? (
+            <div className="text-xs text-(--color-error)" role="status">Couldn&apos;t load this output.</div>
+          ) : (
+            <MarkdownContent text={fetched ?? preview} />
+          )}
+          {card.truncated && !pending && !failed && (
+            <p className="mt-3 text-xs italic text-(--color-text-tertiary)">
+              Output was truncated at the consult limit.
+            </p>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }

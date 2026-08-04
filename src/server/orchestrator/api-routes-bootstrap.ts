@@ -17,16 +17,16 @@ import {
   clearApiKey,
   listAgents,
   fullReset,
-  startAuth,
-  submitAuthCode,
   listProviderAccounts,
   createProviderAccount,
   renameProviderAccount,
   makePrimaryProviderAccount,
+  reorderProviderAccounts,
   deleteProviderAccount,
   startProviderAccountLogin,
   cancelProviderAccountLogin,
   submitProviderAccountCode,
+  signOutProvider,
   ServiceError,
 } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
@@ -78,13 +78,17 @@ export async function registerBootstrapRoutes(
     agentSubAgentDefaults?: Record<string, SubAgentDefaultsPatch>;
     /** docs/163 — voice-note delivery mode (native / external / both). */
     voiceDeliveryMode?: "native" | "external" | "both";
+    /** docs/150 reqs 4-6 — per-provider proactive failover cutoffs (1-100). */
+    failoverCutoffs?: Record<string, { session?: number; weekly?: number }>;
+    /** docs/150 req 21 — per-provider account selection mode. */
+    accountSelectionMode?: Record<string, "strict" | "balanced">;
   } }>(
     "/api/settings",
     async (request, reply) => {
       try {
         return await saveGlobalSettings({
           agentRegistry: deps.agentRegistry,
-          workspaceDir: deps.workspaceDir,
+          appWorkspaceDir: deps.workspaceDir,
           credentialStore: deps.credentialStore,
           providerAccountManager: deps.providerAccountManager,
           // docs/146 — when the user toggles autoResolveConflicts false → true,
@@ -111,6 +115,8 @@ export async function registerBootstrapRoutes(
           ...(request.body.enableSubAgents !== undefined ? { enableSubAgents: request.body.enableSubAgents } : {}),
           ...(request.body.agentSubAgentDefaults !== undefined ? { agentSubAgentDefaults: request.body.agentSubAgentDefaults } : {}),
           ...(request.body.voiceDeliveryMode !== undefined ? { voiceDeliveryMode: request.body.voiceDeliveryMode } : {}),
+          ...(request.body.failoverCutoffs !== undefined ? { failoverCutoffs: request.body.failoverCutoffs } : {}),
+          ...(request.body.accountSelectionMode !== undefined ? { accountSelectionMode: request.body.accountSelectionMode } : {}),
         });
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -203,6 +209,28 @@ export async function registerBootstrapRoutes(
     },
   );
 
+  // docs/150 req 2 — persist the user's fallback order for a provider.
+  app.put<{ Params: { provider: AgentId }; Body: { accountIds?: unknown } }>(
+    "/api/provider-accounts/:provider/order",
+    async (request, reply) => {
+      try {
+        const result = reorderProviderAccounts(
+          deps.providerAccountManager,
+          request.params.provider,
+          request.body?.accountIds,
+        );
+        deps.sseBroadcast("provider_accounts", { accounts: result.accounts });
+        return result;
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to reorder provider accounts: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
   app.post<{ Params: { provider: AgentId; accountId: string } }>(
     "/api/provider-accounts/:provider/:accountId/primary",
     async (request, reply) => {
@@ -226,16 +254,28 @@ export async function registerBootstrapRoutes(
     },
   );
 
-  app.delete<{ Params: { provider: AgentId; accountId: string } }>(
+  app.delete<{
+    Params: { provider: AgentId; accountId: string };
+    Querystring: { replacementAccountId?: string };
+  }>(
     "/api/provider-accounts/:provider/:accountId",
     async (request, reply) => {
       try {
+        // `replacementAccountId` rides the query string because DELETE bodies
+        // are not reliably forwarded by proxies and Fastify's JSON parser
+        // rejects an empty-but-declared body (the FST_ERR_CTP_EMPTY_JSON_BODY
+        // trap the client already works around elsewhere).
+        const replacementAccountId = request.query.replacementAccountId?.trim();
         const result = deleteProviderAccount(
           deps.providerAccountManager,
           deps.sessionManager,
           deps.runnerRegistry,
           request.params.provider,
           request.params.accountId,
+          {
+            credentialsDir: deps.credentialsDir,
+            ...(replacementAccountId ? { replacementAccountId } : {}),
+          },
         );
         deps.agentRegistry.refreshAuth(request.params.provider);
         deps.sseBroadcast("provider_accounts", { accounts: result.accounts });
@@ -354,99 +394,54 @@ export async function registerBootstrapRoutes(
     "/api/auth/api-key",
     async (_request, reply) => {
       try {
+        // docs/150 req 19 — one call that clears every connected account's
+        // credentials *and* rows, then the singleton path for pre-account
+        // installs. Dropping only the rows (what this did before) left the
+        // OAuth tokens of every account past the migrated default on disk with
+        // no row left to reach them from. Signing back in goes through "Add
+        // account", which creates a fresh row.
+        //
+        // SHI-283 — it also takes the account away from the sessions pinned to
+        // it (resident agent retired, per-session credential copy revoked), and
+        // carries the running-turn guard the per-account disconnect has: never
+        // rewrite credentials under a live agent. It throws before touching
+        // anything, so the API key below is cleared only once sign-out commits.
+        signOutProvider(
+          deps.providerAccountManager,
+          deps.sessionManager,
+          deps.runnerRegistry,
+          "claude",
+          { credentialsDir: deps.credentialsDir },
+        );
         clearApiKey();
-        deps.authManager.signOut();
-        // Drop the stored Claude provider-account rows so authConfigured
-        // actually flips to false. `hasAnyAuthForProvider("claude")` returns
-        // true if any account row exists (see docs/150), so leaving the
-        // migrated `claude-default` row in place would leave the UI showing
-        // "Authenticated" even though we just wiped the credentials. We only
-        // drop the row, not the on-disk dir, so the legacy symlinks at
-        // `<credentialsDir>/.claude` keep pointing at a usable target for the
-        // next sign-in. The `auth_complete` listener in `app-lifecycle.ts`
-        // re-registers the row via `migrateDefaultAccounts()`.
-        for (const account of deps.providerAccountManager.list("claude")) {
-          deps.credentialStore.deleteProviderAccount("claude", account.id);
-        }
         deps.agentRegistry.refreshAuth("claude");
         const agents = listAgents(deps.agentRegistry);
         deps.sseBroadcast("agent_list", { agents });
         deps.sseBroadcast("provider_accounts", { accounts: deps.providerAccountManager.list() });
         return { success: true, agents };
       } catch (err) {
+        // The running-turn refusal is a 409 the user can act on, not a fault.
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
         reply.code(500).send({ error: `Failed to sign out of Claude: ${getErrorMessage(err)}` });
       }
     },
   );
 
-  // POST /api/auth/start — initiate OAuth flow
-  app.post(
-    "/api/auth/start",
-    async (_request, reply) => {
-      try {
-        startAuth(deps.authManager);
-        reply.code(202).send({ success: true });
-      } catch (err) {
-        console.error("[auth] startAuth() threw:", err);
-        reply.code(500).send({ error: `Failed to start auth: ${getErrorMessage(err)}` });
-      }
-    },
-  );
-
-  // POST /api/auth/code — submit OAuth authorization code
-  app.post<{ Body: { code: string } }>(
-    "/api/auth/code",
-    async (request, reply) => {
-      try {
-        submitAuthCode(deps.authManager, request.body.code);
-        return { success: true };
-      } catch (err) {
-        if (err instanceof ServiceError) {
-          reply.code(err.statusCode).send({ error: err.message });
-          return;
-        }
-        reply.code(500).send({ error: `Failed to submit auth code: ${getErrorMessage(err)}` });
-      }
-    },
-  );
+  // docs/150 reqs 16/19 — the singleton subscription sign-in endpoints
+  // (`POST /api/auth/start`, `POST /api/auth/code`, `POST /api/codex-auth/start`,
+  // `POST /api/codex-auth/cancel`) are gone. They were the *other* way to
+  // connect a subscription: no account id, one implicit flow per provider, and
+  // a result the account rows couldn't manage. Every sign-in now goes through
+  // `/api/provider-accounts/:provider/:accountId/login[/cancel|/code]` above,
+  // which is the same path whether it's the user's first account or their
+  // fifth. Sign-*out* is unchanged and still provider-wide below — it clears
+  // credentials that predate accounts as well as the rows themselves.
 
   // ---- Codex (ChatGPT subscription) auth routes ----
   // See docs/119-codex-subscription-auth/plan.md.
-
-  /**
-   * POST /api/codex-auth/start — kick off `codex login --device-auth`.
-   * Idempotent: returning 202 even when a flow is already in flight is the
-   * documented behavior (the manager itself no-ops repeat calls). The actual
-   * URL + user code stream over SSE as a `codex_auth_pending` event.
-   */
-  app.post(
-    "/api/codex-auth/start",
-    async (_request, reply) => {
-      try {
-        deps.codexAuthManager.startDeviceFlow();
-        reply.code(202).send({ success: true, pending: deps.codexAuthManager.pending });
-      } catch (err) {
-        console.error("[codex-auth] startDeviceFlow() threw:", err);
-        reply.code(500).send({ error: `Failed to start Codex auth: ${getErrorMessage(err)}` });
-      }
-    },
-  );
-
-  /**
-   * POST /api/codex-auth/cancel — abort an in-flight device flow. SIGTERMs
-   * the underlying `codex login` so it stops polling. Idempotent.
-   */
-  app.post(
-    "/api/codex-auth/cancel",
-    async (_request, reply) => {
-      try {
-        deps.codexAuthManager.cancel();
-        return { success: true };
-      } catch (err) {
-        reply.code(500).send({ error: `Failed to cancel Codex auth: ${getErrorMessage(err)}` });
-      }
-    },
-  );
 
   /**
    * DELETE /api/codex-auth — sign out of the ChatGPT subscription. Removes
@@ -458,14 +453,21 @@ export async function registerBootstrapRoutes(
     "/api/codex-auth",
     async (_request, reply) => {
       try {
+        // Mirror the Claude sign-out — see the matching block in
+        // DELETE /api/auth/api-key for why the per-account walk, the
+        // per-session revoke and the running-turn guard are all required.
+        signOutProvider(
+          deps.providerAccountManager,
+          deps.sessionManager,
+          deps.runnerRegistry,
+          "codex",
+          { credentialsDir: deps.credentialsDir },
+        );
+        // After the walk: `signOutProvider` already cancels the device flow of
+        // any row it deletes, so this only catches a flow with no row behind it
+        // (legacy). Running it before the guard would abort someone's sign-in
+        // for a sign-out that then 409s.
         deps.codexAuthManager.cancel();
-        deps.codexAuthManager.signOut();
-        // Mirror the Claude sign-out: drop stored Codex provider-account rows
-        // so `hasAnyAuthForProvider("codex")` reflects the wiped credentials.
-        // See the matching block in DELETE /api/auth/api-key for the rationale.
-        for (const account of deps.providerAccountManager.list("codex")) {
-          deps.credentialStore.deleteProviderAccount("codex", account.id);
-        }
         deps.agentRegistry.refreshAuth("codex");
         const agents = deps.agentRegistry.list().map((a) => ({
           id: a.id, name: a.name, installed: a.installed,
@@ -480,6 +482,11 @@ export async function registerBootstrapRoutes(
         deps.sseBroadcast("provider_accounts", { accounts: deps.providerAccountManager.list() });
         return { success: true, agents };
       } catch (err) {
+        // The running-turn refusal is a 409 the user can act on, not a fault.
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
         reply.code(500).send({ error: `Failed to sign out of Codex: ${getErrorMessage(err)}` });
       }
     },

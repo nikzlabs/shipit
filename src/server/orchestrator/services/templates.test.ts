@@ -133,12 +133,15 @@ describe("applyTemplate (service) — ops session", () => {
 
     // Fresh ops session is still created (target is a reference, not retrofit).
     expect(state.kinds["new-sess"]).toBe("ops");
-    // Named after its quarry, and the seed bakes in the concrete target id.
+    // Named after its quarry, and the seed contains only stable context so the
+    // operator can append the incident-specific investigation request.
     expect(createdTitle).toBe("Ops — debug: Flaky checkout flow");
     expect(result.seedPrompt).toBeDefined();
-    expect(result.seedPrompt).toContain("Flaky checkout flow");
-    expect(result.seedPrompt).toContain("target-sess");
-    expect(result.seedPrompt).toContain('--filter "name=target-sess"');
+    expect(result.seedPrompt).toBe(
+      'Investigate the session "Flaky checkout flow" (id `target-sess`, branch `fix/checkout`, https://github.com/owner/shop.git). This is a read-only investigation.\n\nContext: ',
+    );
+    expect(result.seedPrompt).not.toContain("docker");
+    expect(result.seedPrompt).not.toContain("journalctl");
   });
 
   it("ignores an unknown targetSessionId and falls back to a generic ops session", async () => {

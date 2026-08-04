@@ -24,30 +24,19 @@
 
 import type { AgentId, AgentProcess, FileAttachment, ImageAttachment } from "../shared/types.js";
 import { executeAgentTurn } from "./turn-executor.js";
+import { releaseResidentOnModelChange } from "./resident-model-guard.js";
 import { buildTurnMessages, emitNoticePostTurn } from "./chat-card-persistence.js";
 import { resolveFileAttachments, resolveUploadRefs, formatFileContext } from "./validation.js";
 import { saveImagesToUploadsDir, assembleAgentPrompt } from "./prompt-assembly.js";
 import type {
   SessionRunnerInterface,
   SystemTurnDeps,
-  AgentDispatchOptions,
-  QueuedMessage,
 } from "./session-runner.js";
-
-function queuedMessageToDispatchOptions(next: QueuedMessage): AgentDispatchOptions {
-  const nextOpts: AgentDispatchOptions = { text: next.text };
-  if (next.activity !== undefined) nextOpts.activity = next.activity;
-  if (next.images !== undefined) nextOpts.images = next.images;
-  if (next.files !== undefined) nextOpts.files = next.files;
-  if (next.uploads !== undefined) nextOpts.uploads = next.uploads;
-  if (next.permissionMode !== undefined) nextOpts.permissionMode = next.permissionMode;
-  if (next.postTurn !== undefined) nextOpts.postTurn = next.postTurn;
-  if (next.systemTurn !== undefined) nextOpts.systemTurn = next.systemTurn;
-  // docs/196 fix — carry the completion callback so an enqueued turn signals
-  // completion when it drains (the merge-watch busy path depends on this).
-  if (next.onTurnComplete !== undefined) nextOpts.onTurnComplete = next.onTurnComplete;
-  return nextOpts;
-}
+import type { PreparedDispatch } from "./prepared-dispatch.js";
+import { queuedMessageToDispatchOptions } from "./queue-drain.js";
+import type { TurnOutcome } from "./turn-settlement.js";
+import { formatAgentInterfacePrompt } from "../shared/agent-interface-sdk/protocol.js";
+import { formatSessionMessagePrompt } from "./session-message-origin.js";
 
 /**
  * How many times a dispatched first turn that exited WITHOUT producing a result
@@ -62,9 +51,13 @@ export async function runDispatchedTurn(
   runner: SessionRunnerInterface,
   deps: SystemTurnDeps,
   agentId: AgentId,
-  opts: AgentDispatchOptions,
+  opts: PreparedDispatch,
   createAgent: (agentId: AgentId) => AgentProcess,
 ): Promise<void> {
+  // Re-check on queue drain / recovered-turn execution, not only when the item
+  // first entered dispatch. This is currently defense in depth (there is no
+  // trust-revoke UI), and makes later revocation fail closed.
+  runner.assertCanDispatch();
   const { text, activity } = opts;
 
   // docs/163 — a child/quick-session dispatched turn must run as a *streaming*
@@ -138,7 +131,11 @@ export async function runDispatchedTurn(
   const fileContext = validatedFiles.length > 0 ? formatFileContext(validatedFiles) : "";
   const imageContext =
     images && images.length > 0 && sessionDir ? saveImagesToUploadsDir(images, sessionDir) : "";
-  const prompt = assembleAgentPrompt({ userText: text, fileContext, imageContext });
+  const surfacedText = opts.agentInterface ? formatAgentInterfacePrompt(text, opts.agentInterface) : text;
+  const agentText = opts.messageOrigin
+    ? formatSessionMessagePrompt(surfacedText, opts.messageOrigin)
+    : surfacedText;
+  const prompt = assembleAgentPrompt({ userText: agentText, fileContext, imageContext });
 
   // Chat-history metadata for the persisted user row — mirrors the WS path so a
   // reload shows the same inline image / file chips on the dispatched bubble.
@@ -153,6 +150,11 @@ export async function runDispatchedTurn(
         }))
       : undefined;
 
+  // SHI-255 — this drain runs EVERY entry (interactive or dispatched) on the
+  // dispatched executor via the shared `queuedMessageToDispatchOptions`, which
+  // is the superset conversion: nothing can be narrowed away here. The WS drain
+  // (`ws-handlers/agent-execution.ts`), whose re-entry is narrower, routes
+  // through `startQueuedMessage` instead so a dispatched entry lands back here.
   const drainNext = async (): Promise<void> => {
     if (runner.queueLength === 0) return;
     const next = runner.dequeue();
@@ -166,7 +168,46 @@ export async function runDispatchedTurn(
   // its own fresh counter — each message is retried independently).
   let noResultRetries = 0;
 
+  // SHI-260 — ONE settlement for the whole logical turn, spanning every
+  // no-result attempt.
+  //
+  // The old code passed `onTurnComplete` only to attempt zero, reasoning that a
+  // retry re-enters `runOnce` and would otherwise fire it twice. The guard did
+  // prevent a double fire — by firing it ZERO times: when attempt zero exits
+  // with no result and no partial work, the executor returns through its
+  // "handled" branch WITHOUT calling `finishTurn`, so neither the retry's
+  // success nor its failure ever reached the caller. A notify-on-merge wake-turn
+  // that no-result-retried therefore never settled its watch, and (worse, under
+  // SHI-258's supervisor) the runner stayed live so the `inFlight` marker looked
+  // healthy forever.
+  //
+  // Retries are attempts WITHIN one settlement instead. Every attempt is wired
+  // to `settleAttempt`, and a double fire is not expressible: `settled` latches,
+  // and an attempt superseded by a retry is filtered by `currentAttempt`, so the
+  // outcome that reaches the caller is the LAST attempt's — including `errored`.
+  let currentAttempt = 0;
+  let settled = false;
+  const settleAttempt = (attempt: number, outcome: TurnOutcome): void => {
+    // A retry took over this logical turn; the superseded attempt's terminal
+    // teardown must not settle it.
+    if (attempt !== currentAttempt) return;
+    if (settled) return;
+    settled = true;
+    opts.onTurnComplete?.(outcome);
+  };
+
   const runOnce = async (attempt: number): Promise<void> => {
+    // docs/150 — credential switching happens later in env prep, after this
+    // adapter has chosen its agent. Retire a resident process here, before
+    // capture, so we neither steer the turn into the outgoing account nor let
+    // env prep kill the newly-created incoming agent.
+    if (deps.needsAccountFailover?.(runner.sessionId, agentId)) {
+      const outgoing = runner.getAgent();
+      if (outgoing) {
+        try { outgoing.kill(); } catch { /* already gone */ }
+        runner.setAgent(null);
+      }
+    }
     // docs/140 + docs/163 — when a resident streaming process from a previous
     // turn is still alive, REUSE it (carry the message in via `sendUserMessage`)
     // exactly as the WS path does, rather than spawning a fresh agent. Spawning
@@ -191,9 +232,40 @@ export async function runDispatchedTurn(
     // resident process. Only the FIRST attempt can reuse; a no-result retry
     // always spawns fresh (the resident ref was cleared by the `done` handler
     // when the process exited without a result).
+    // Same model-drift release the WS path performs: a resident process runs
+    // the model it was spawned with, so reusing one after the session's model
+    // changed would run the old model behind the user's back. Dispatch reads
+    // the session's persisted model, which is what its run-params use too.
+    if (!opts.systemTurn) {
+      releaseResidentOnModelChange(runner, deps.listenerDeps.getSelectedModel());
+    }
     const resident =
       !opts.systemTurn && attempt === 0 && runner.isStreamingActive ? runner.getAgent() : null;
     const reuse = resident !== null;
+    // docs/179 §4 (issue criterion 3) — a system turn declines to ADOPT the
+    // resident process, but declining does not make it go away: it is still
+    // running in the worker, and env prep (a few lines below, inside
+    // `executeAgentTurn`) is about to rewrite the credential subtree it reads
+    // from on every request. `reusingResidentAgent: false` is the honest answer
+    // to "will this turn reuse it", so the repair correctly believes it may
+    // run — which leaves exactly the window this doc exists to close.
+    //
+    // Retire it here instead, before env prep, mirroring the account-failover
+    // block above. "Topology changes only at a spawn boundary" is only true if
+    // the boundary is real, and it is real once the old process is gone. This
+    // is also strictly tidier than the status quo: `createAgent` would displace
+    // the slot and orphan the process anyway, and the worker's `/agent/start`
+    // would then 409 into a kill+restart (the SIGTERM-143 noise docs/140 fixed
+    // elsewhere). Only reachable with no turn in flight — `dispatchOnRunner`
+    // enqueues while `running` — so nothing live is interrupted.
+    if (opts.systemTurn && !reuse) {
+      const outgoing = runner.getAgent();
+      if (outgoing) {
+        try { outgoing.kill(); } catch { /* already gone */ }
+        runner.setAgent(null);
+        runner.isStreamingActive = false;
+      }
+    }
     const agent = resident ?? createAgent(agentId);
     // A reused process IS the resident streaming process, so this turn streams
     // (and the post-turn handler must key on streaming) even if `useStreaming`
@@ -226,21 +298,28 @@ export async function runDispatchedTurn(
       // docs/169 — post-turn policy + system-turn marker + completion signal.
       ...(opts.postTurn !== undefined ? { postTurn: opts.postTurn } : {}),
       ...(opts.systemTurn !== undefined ? { systemTurn: opts.systemTurn } : {}),
-      // The completion callback only fires on the FIRST attempt's turn — a
-      // no-result retry re-enters runOnce and would otherwise fire it twice.
-      // (The rebase loop never sets onNoResultExit, so retries don't apply to
-      // it; this guard keeps the contract clean regardless.)
-      ...(attempt === 0 && opts.onTurnComplete !== undefined ? { onTurnComplete: opts.onTurnComplete } : {}),
+      // SHI-264 — the durable delivery identity travels with every attempt: a
+      // no-result retry is the SAME delivery, so it publishes the same id and
+      // the worker records it on the fresh spawn too.
+      ...(opts.deliveryId !== undefined ? { deliveryId: opts.deliveryId } : {}),
+      // SHI-260 — EVERY attempt reports its terminal outcome; `settleAttempt`
+      // owns "exactly once" and discards superseded attempts. The old
+      // "attempt zero only" guard is deleted, not corrected.
+      onTurnComplete: (outcome) => settleAttempt(attempt, outcome),
       // Server-initiated message → emit a bubble (no client-side optimistic
       // one). A retry must NOT re-echo the bubble or re-append the user row —
       // both already happened on the first attempt — so only the first run does.
       emitUserEcho: attempt === 0,
+      ...(opts.agentInterface ? { agentInterface: opts.agentInterface } : {}),
+      ...(opts.messageOrigin ? { messageOrigin: opts.messageOrigin } : {}),
       persistUserMessage:
         attempt === 0
           ? (sid) =>
               deps.listenerDeps.chatHistoryManager.append(sid, {
                 role: "user",
                 text,
+                ...(opts.agentInterface ? { agentInterface: opts.agentInterface } : {}),
+                ...(opts.messageOrigin ? { messageOrigin: opts.messageOrigin } : {}),
                 ...(historyImages ? { images: historyImages } : {}),
                 ...(historyFiles ? { files: historyFiles } : {}),
                 ...(uploadPaths && uploadPaths.length > 0 ? { uploadPaths } : {}),
@@ -284,6 +363,9 @@ export async function runDispatchedTurn(
 
         if (!producedPartialWork && noResultRetries < MAX_NO_RESULT_RETRIES) {
           noResultRetries++;
+          // Claim the logical turn for the next attempt BEFORE it starts, so
+          // this (now superseded) attempt's terminal teardown can't settle it.
+          currentAttempt = attempt + 1;
           console.warn(
             `[turn] dispatched turn for ${runner.sessionId} exited (code ${code}) with no result — ` +
               `retrying (attempt ${noResultRetries}/${MAX_NO_RESULT_RETRIES})`,

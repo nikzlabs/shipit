@@ -62,3 +62,19 @@ export function findSubagentFinalReport(
 ): ToolResultBlock | undefined {
   return parentToolResults?.find((r) => r.toolUseId === parentToolId);
 }
+
+/**
+ * Report parsing moved to `server/shared/subagent-report.ts` when the report
+ * stopped shipping whole (docs/109 requirement 8): the projection has to
+ * produce a clamped payload the client parser still understands, so the two
+ * halves must be the same code. Re-exported here so every existing import path
+ * keeps working — same pattern as `visual-elements.ts` re-exporting
+ * `SUBAGENT_TOOL_NAMES`.
+ */
+export {
+  parseSubagentReport,
+  parseReportMeta,
+  isBackgroundLaunchAck,
+  type ParsedSubagentReport,
+  type SubagentReportMeta,
+} from "../../server/shared/subagent-report.js";

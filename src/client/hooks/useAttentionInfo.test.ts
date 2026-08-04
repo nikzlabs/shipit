@@ -10,6 +10,7 @@ function inputs(overrides: Partial<AttentionInputs> = {}): AttentionInputs {
     status: undefined,
     isAgentRunning: false,
     awaitingPermission: false,
+    hasBackgroundTasks: false,
     autoFixEnabled: false,
     autoResolveEnabled: false,
     resolved: false,
@@ -32,6 +33,28 @@ describe("computeAttentionReason", () => {
     expect(
       computeAttentionReason(inputs({ isAgentRunning: true, card: card({ checks: FAILURE }) })),
     ).toBeNull();
+  });
+
+  describe("background tasks (docs/235)", () => {
+    it("stays silent while background work is outstanding", () => {
+      // The session will speak again on its own when the task finishes, so
+      // "Waiting for your input" would be a lie.
+      expect(computeAttentionReason(inputs({ hasBackgroundTasks: true }))).toBeNull();
+    });
+
+    it("reports 'Waiting for your input' once the tasks drain", () => {
+      expect(computeAttentionReason(inputs({ hasBackgroundTasks: false }))).toBe(
+        "Waiting for your input",
+      );
+    });
+
+    it("does NOT mask a blocked permission prompt", () => {
+      // The block is the user's to clear regardless of what else is pending —
+      // this is why the background-task short-circuit sits below it.
+      expect(
+        computeAttentionReason(inputs({ hasBackgroundTasks: true, awaitingPermission: true })),
+      ).toBe("Needs your approval to continue");
+    });
   });
 
   describe("awaiting permission (Thread C)", () => {

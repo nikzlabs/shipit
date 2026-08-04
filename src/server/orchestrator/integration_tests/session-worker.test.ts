@@ -724,7 +724,7 @@ describe("Integration: Session Worker IPC", () => {
 
     // Message queue
     expect(runner.queueLength).toBe(0);
-    runner.enqueue({ text: "msg1" });
+    runner.enqueue({ text: "msg1", execution: "interactive" });
     expect(runner.queueLength).toBe(1);
     expect(runner.getQueueSnapshot()).toEqual([{ text: "msg1", position: 1 }]);
 
@@ -1019,23 +1019,27 @@ describe("Integration: Session Worker permission-mode mapping", () => {
 // ---- Install endpoint and SSE-reconnect resync (fix for "Installing
 // dependencies..." getting stuck after a transient SSE drop) ----
 //
-// These tests use an isolated worker with its own temporary workspaceDir —
-// the worker's install endpoint short-circuits when
-// `<workspaceDir>/.shipit/.install-done` exists, and the repo's own
-// .shipit/ has such a marker when running in-tree.
+// These tests use an isolated worker with its own temporary workspaceDir and
+// stateDir — the worker's install endpoint short-circuits when the marker
+// exists. docs/246 moved that marker OUT of the clone: in production it lives on
+// the `/session-state` mount, so an in-process worker (no mount) must be given a
+// real state dir or the marker write fails at the filesystem root.
 describe("Integration: Session Worker install endpoint", () => {
   let installWorker: SessionWorker;
   let installWorkerPort: number;
   let installWorkerUrl: string;
   let installWorkspaceDir: string;
+  let installStateDir: string;
 
   beforeEach(async () => {
     installWorkspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-install-test-"));
+    installStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-install-state-"));
     installWorker = new SessionWorker({
       agentFactory: () => new FakeWorkerAgent(),
       port: 0,
       host: "127.0.0.1",
       workspaceDir: installWorkspaceDir,
+      stateDir: installStateDir,
     });
 
     const address = await installWorker.start();
@@ -1047,6 +1051,7 @@ describe("Integration: Session Worker install endpoint", () => {
   afterEach(async () => {
     await installWorker.stop();
     fs.rmSync(installWorkspaceDir, { recursive: true, force: true });
+    fs.rmSync(installStateDir, { recursive: true, force: true });
     await new Promise((r) => setTimeout(r, 50));
   });
 
@@ -1175,7 +1180,7 @@ describe("Integration: Session Worker install endpoint", () => {
       return !body.running && body.lastResult?.ok === true;
     }, 5_000, "plain install completed");
 
-    expect(fs.existsSync(path.join(installWorkspaceDir, ".shipit", ".install-done"))).toBe(true);
+    expect(fs.existsSync(path.join(installStateDir, ".install-done"))).toBe(true);
 
     // A second install with the SAME commands short-circuits on the stamped
     // marker (source commit + runtime + commands all match).
@@ -1235,7 +1240,7 @@ describe("Integration: Session Worker install endpoint", () => {
     // does not create it).
     await installWorker.getApp().inject({ method: "POST", url: "/install", payload: { commands: ["true"] } });
     await awaitInstallOk();
-    expect(fs.existsSync(path.join(installWorkspaceDir, ".shipit", ".install-done"))).toBe(true);
+    expect(fs.existsSync(path.join(installStateDir, ".install-done"))).toBe(true);
 
     // Simulate the post-rollback state: an EMPTY node_modules sits in the clone
     // (the old overlay mountpoint), no overlay mount present.

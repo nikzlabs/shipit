@@ -1,17 +1,36 @@
-import { useState, useMemo } from "react";
+// eslint-disable-next-line no-restricted-imports -- useEffect: resets the lazily-fetched body (docs/244) when a different tool result occupies the same slot after a session switch or rewind.
+import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import hljs from "highlight.js";
 import { Button } from "./ui/button.js";
 import type { ToolResultBlock } from "./MessageList.js";
+import { useSessionStore } from "../stores/session-store.js";
 
 interface ToolResultImage {
-  data: string;      // base64-encoded image data
+  /** Base64 payload — only present on results the client parsed locally. */
+  data?: string;
   mediaType: string; // "image/png", etc.
+  /**
+   * docs/244 — content-addressed URL substituted for the base64 payload on the
+   * serve path. An MCP screenshot is ~500 KB of base64 inside the result JSON;
+   * keeping it there made every transcript load carry every screenshot ever
+   * taken. Rendered at the stored resolution, not downscaled: these images have
+   * no click-to-full-size view to recover detail from.
+   */
+  src?: string;
 }
 
-const BASH_MAX_LINES = 30;
-const READ_MAX_LINES = 20;
-const GREP_MAX_LINES = 20;
-const GENERIC_MAX_LINES = 15;
+/**
+ * How many lines each preview draws inline before the "Show all N lines"
+ * expander. Exported because the docs/244 server-side slice is *derived* from
+ * these: `TRANSCRIPT_SLICE_LINES` must be at least the largest of them, or the
+ * transcript would arrive with less than it draws. `tool-result-slice.test.ts`
+ * pins that relationship — raise one of these past the slice and the build
+ * fails rather than silently rendering a short preview.
+ */
+export const BASH_MAX_LINES = 30;
+export const READ_MAX_LINES = 20;
+export const GREP_MAX_LINES = 20;
+export const GENERIC_MAX_LINES = 15;
 
 /** Truncate text to a maximum number of lines, returning whether it was truncated. */
 function truncateLines(text: string, maxLines: number): { text: string; truncated: boolean; totalLines: number } {
@@ -52,15 +71,91 @@ function extractFilePathFromReadContent(content: string): string | null {
   return null;
 }
 
-function BashResult({ content, isError, maxLines }: { content: string; isError?: boolean; maxLines?: number }) {
-  const [expanded, setExpanded] = useState(false);
-  const effectiveMax = maxLines ?? BASH_MAX_LINES;
-  const { text: preview, truncated, totalLines } = useMemo(
-    () => truncateLines(content, effectiveMax),
-    [content, effectiveMax]
-  );
+/**
+ * docs/244 — the lazy tail of a server-sliced result.
+ *
+ * The transcript carries only the head slice of a heavy tool output, plus the
+ * true line count so the "Show all N lines" label stays honest. This bundles
+ * the fetch for the rest; the four preview components below share it through
+ * `useExpandable` so the fetch lives in one place rather than four.
+ */
+export interface LazyResultBody {
+  /** `content` is a server slice (or empty) with the body available behind a fetch. */
+  serverTruncated: boolean;
+  /** The fetch has resolved — `full` is the authoritative body. */
+  fetched: boolean;
+  /** True line count of the whole body. */
+  totalLines?: number;
+  /** The full body, once fetched. */
+  full?: string;
+  loading: boolean;
+  error: boolean;
+  fetchFull: () => void;
+}
 
-  const displayText = expanded ? content : preview;
+/**
+ * Expand/collapse state for a result preview, with the docs/244 lazy fetch
+ * folded in. Falls back to purely client-side truncation when `lazy` is absent
+ * (nothing was sliced server-side), so behavior is unchanged for small results.
+ */
+function useExpandable(content: string, maxLines: number, lazy?: LazyResultBody) {
+  const [expanded, setExpanded] = useState(false);
+  const source = lazy?.full ?? content;
+  const { text: preview, truncated, totalLines } = useMemo(
+    () => truncateLines(source, maxLines),
+    [source, maxLines]
+  );
+  // Once the fetch resolves, `source` IS the whole body, so ordinary
+  // client-side truncation takes over and the server's metadata is no longer
+  // the authority — using it would keep claiming a body is short when we now
+  // hold all of it.
+  const serverTruncated = (lazy?.serverTruncated ?? false) && !(lazy?.fetched ?? false);
+
+  return {
+    expanded,
+    displayText: expanded ? source : preview,
+    // Collapse the box while a slice is still only a slice, so an expanded
+    // fetch-in-flight doesn't render a short body as if it were complete.
+    clipped: !expanded && (truncated || serverTruncated),
+    showToggle: truncated || serverTruncated,
+    totalLines: lazy?.fetched ? totalLines : (lazy?.totalLines ?? totalLines),
+    loading: lazy?.loading ?? false,
+    error: lazy?.error ?? false,
+    toggle: () => {
+      if (!expanded && serverTruncated && lazy?.full === undefined) lazy?.fetchFull();
+      setExpanded(!expanded);
+    },
+  };
+}
+
+type Expandable = ReturnType<typeof useExpandable>;
+
+/** The "Show all N lines" / "Show less" footer shared by every preview. */
+function ExpandToggle({ state }: { state: Expandable }) {
+  if (!state.showToggle) return null;
+  const label = state.error
+    ? "Couldn't load the rest"
+    : state.loading
+      ? "Loading…"
+      : state.expanded
+        ? "Show less"
+        : `Show all ${state.totalLines} lines`;
+  return (
+    <Button
+      variant="ghost"
+      size="md"
+      onClick={state.toggle}
+      className="w-full text-center rounded-none bg-(--color-bg-secondary) hover:bg-(--color-bg-tertiary) border-t border-(--color-border-secondary)/50"
+      aria-label={state.expanded ? "Show less output" : "Show more output"}
+    >
+      {label}
+    </Button>
+  );
+}
+
+function BashResult({ content, isError, maxLines, lazy }: { content: string; isError?: boolean; maxLines?: number; lazy?: LazyResultBody }) {
+  const state = useExpandable(content, maxLines ?? BASH_MAX_LINES, lazy);
+  const { displayText } = state;
 
   return (
     <div
@@ -73,36 +168,20 @@ function BashResult({ content, isError, maxLines }: { content: string; isError?:
       <pre
         className={`p-2 text-xs font-mono whitespace-pre-wrap break-all leading-relaxed ${
           isError ? "text-(--color-error)" : "text-(--color-text-primary)"
-        } ${!expanded && truncated ? "max-h-[20rem] overflow-hidden" : ""}`}
+        } ${state.clipped ? "max-h-[20rem] overflow-hidden" : ""}`}
       >
         {displayText}
       </pre>
-      {truncated && (
-        <Button
-          variant="ghost"
-          size="md"
-          onClick={() => setExpanded(!expanded)}
-          className="w-full text-center rounded-none bg-(--color-bg-secondary) hover:bg-(--color-bg-tertiary) border-t border-(--color-border-secondary)/50"
-          aria-label={expanded ? "Show less output" : "Show more output"}
-        >
-          {expanded ? "Show less" : `Show all ${totalLines} lines`}
-        </Button>
-      )}
+      <ExpandToggle state={state} />
     </div>
   );
 }
 
-function ReadResult({ content, maxLines }: { content: string; maxLines?: number }) {
-  const [expanded, setExpanded] = useState(false);
-  const effectiveMax = maxLines ?? READ_MAX_LINES;
-  const { text: preview, truncated, totalLines } = useMemo(
-    () => truncateLines(content, effectiveMax),
-    [content, effectiveMax]
-  );
+function ReadResult({ content, maxLines, lazy }: { content: string; maxLines?: number; lazy?: LazyResultBody }) {
+  const state = useExpandable(content, maxLines ?? READ_MAX_LINES, lazy);
+  const { displayText } = state;
 
   extractFilePathFromReadContent(content);
-
-  const displayText = expanded ? content : preview;
 
   // Attempt syntax highlighting based on content heuristics
   const highlighted = useMemo(() => {
@@ -116,44 +195,28 @@ function ReadResult({ content, maxLines }: { content: string; maxLines?: number 
 
   return (
     <div className="mt-1 rounded overflow-hidden border border-(--color-border-secondary)/50 bg-(--color-bg-primary)">
-      <pre className={`p-2 text-xs font-mono whitespace-pre-wrap break-all leading-relaxed ${!expanded && truncated ? "max-h-[16rem] overflow-hidden" : ""}`}>
+      <pre className={`p-2 text-xs font-mono whitespace-pre-wrap break-all leading-relaxed ${state.clipped ? "max-h-[16rem] overflow-hidden" : ""}`}>
         {highlighted ? (
           <code className="hljs" dangerouslySetInnerHTML={{ __html: highlighted }} />
         ) : (
           <code className="text-(--color-text-primary)">{displayText}</code>
         )}
       </pre>
-      {truncated && (
-        <Button
-          variant="ghost"
-          size="md"
-          onClick={() => setExpanded(!expanded)}
-          className="w-full text-center rounded-none bg-(--color-bg-secondary) hover:bg-(--color-bg-tertiary) border-t border-(--color-border-secondary)/50"
-          aria-label={expanded ? "Show less output" : "Show more output"}
-        >
-          {expanded ? "Show less" : `Show all ${totalLines} lines`}
-        </Button>
-      )}
+      <ExpandToggle state={state} />
     </div>
   );
 }
 
-function GrepResult({ content, maxLines }: { content: string; maxLines?: number }) {
-  const [expanded, setExpanded] = useState(false);
-  const effectiveMax = maxLines ?? GREP_MAX_LINES;
-  const { text: preview, truncated, totalLines } = useMemo(
-    () => truncateLines(content, effectiveMax),
-    [content, effectiveMax]
-  );
-
-  const displayText = expanded ? content : preview;
+function GrepResult({ content, maxLines, lazy }: { content: string; maxLines?: number; lazy?: LazyResultBody }) {
+  const state = useExpandable(content, maxLines ?? GREP_MAX_LINES, lazy);
+  const { displayText } = state;
 
   // Grep output has file:line:content format — highlight file paths
   const lines = displayText.split("\n");
 
   return (
     <div className="mt-1 rounded overflow-hidden border border-(--color-border-secondary)/50 bg-(--color-bg-primary)">
-      <pre className={`p-2 text-xs font-mono whitespace-pre-wrap break-all leading-relaxed ${!expanded && truncated ? "max-h-[16rem] overflow-hidden" : ""}`}>
+      <pre className={`p-2 text-xs font-mono whitespace-pre-wrap break-all leading-relaxed ${state.clipped ? "max-h-[16rem] overflow-hidden" : ""}`}>
         {lines.map((line, i) => {
           // Match ripgrep-style output: file:line:content or file:line-content
           const match = /^([^:]+):(\d+)[:-](.*)/.exec(line);
@@ -183,30 +246,14 @@ function GrepResult({ content, maxLines }: { content: string; maxLines?: number 
           );
         })}
       </pre>
-      {truncated && (
-        <Button
-          variant="ghost"
-          size="md"
-          onClick={() => setExpanded(!expanded)}
-          className="w-full text-center rounded-none bg-(--color-bg-secondary) hover:bg-(--color-bg-tertiary) border-t border-(--color-border-secondary)/50"
-          aria-label={expanded ? "Show less output" : "Show more output"}
-        >
-          {expanded ? "Show less" : `Show all ${totalLines} lines`}
-        </Button>
-      )}
+      <ExpandToggle state={state} />
     </div>
   );
 }
 
-function GenericResult({ content, isError, maxLines }: { content: string; isError?: boolean; maxLines?: number }) {
-  const [expanded, setExpanded] = useState(false);
-  const effectiveMax = maxLines ?? GENERIC_MAX_LINES;
-  const { text: preview, truncated, totalLines } = useMemo(
-    () => truncateLines(content, effectiveMax),
-    [content, effectiveMax]
-  );
-
-  const displayText = expanded ? content : preview;
+function GenericResult({ content, isError, maxLines, lazy }: { content: string; isError?: boolean; maxLines?: number; lazy?: LazyResultBody }) {
+  const state = useExpandable(content, maxLines ?? GENERIC_MAX_LINES, lazy);
+  const { displayText } = state;
 
   return (
     <div
@@ -219,21 +266,11 @@ function GenericResult({ content, isError, maxLines }: { content: string; isErro
       <pre
         className={`p-2 text-xs font-mono whitespace-pre-wrap break-all leading-relaxed ${
           isError ? "text-(--color-error)" : "text-(--color-text-primary)"
-        } ${!expanded && truncated ? "max-h-[12rem] overflow-hidden" : ""}`}
+        } ${state.clipped ? "max-h-[12rem] overflow-hidden" : ""}`}
       >
         {displayText}
       </pre>
-      {truncated && (
-        <Button
-          variant="ghost"
-          size="md"
-          onClick={() => setExpanded(!expanded)}
-          className="w-full text-center rounded-none bg-(--color-bg-secondary) hover:bg-(--color-bg-tertiary) border-t border-(--color-border-secondary)/50"
-          aria-label={expanded ? "Show less output" : "Show more output"}
-        >
-          {expanded ? "Show less" : `Show all ${totalLines} lines`}
-        </Button>
-      )}
+      <ExpandToggle state={state} />
     </div>
   );
 }
@@ -243,12 +280,13 @@ function ToolResultImages({ images }: { images: ToolResultImage[] }) {
   return (
     <div className="flex gap-2 flex-wrap mt-2" data-testid="tool-result-images">
       {images.map((img, i) => {
-        const src = `data:${img.mediaType};base64,${img.data}`;
+        const src = img.src ?? `data:${img.mediaType};base64,${img.data}`;
         return (
           <img
             key={i}
             src={src}
             alt={`Tool output image ${i + 1}`}
+            loading="lazy"
             className="max-w-full max-h-64 rounded-md border border-(--color-border-secondary)/50 object-contain"
           />
         );
@@ -267,6 +305,11 @@ function ToolResultImages({ images }: { images: ToolResultImage[] }) {
  * The `startsWith("[")` guard is a fast-path to skip plain string content.
  * If content happens to be a JSON array without image blocks, we return null
  * and fall through to normal text rendering.
+ *
+ * If a screenshot renders as raw JSON text instead of an image, the block is
+ * missing *upstream*, not lost here: `@playwright/mcp` only attaches the image
+ * when `browser_take_screenshot` is called without a `filename`. See
+ * `session/agents/playwright-mcp.ts`.
  */
 export function parseContentForImages(content: string): { text: string; images: ToolResultImage[] } | null {
   if (!content.startsWith("[")) return null;
@@ -285,6 +328,14 @@ export function parseContentForImages(content: string): { text: string; images: 
             data: source.data,
             mediaType: (source.media_type as string) ?? "image/png",
           });
+        } else if (typeof source?.shipit_url === "string") {
+          // docs/244 — the projection replaced the base64 with a URL. The array
+          // is still valid JSON with the same block structure, which is why
+          // image-bearing results need no exemption from the line slice.
+          images.push({
+            src: source.shipit_url,
+            mediaType: (source.media_type as string) ?? "image/png",
+          });
         }
       }
     }
@@ -295,16 +346,102 @@ export function parseContentForImages(content: string): { text: string; images: 
   }
 }
 
+/**
+ * docs/244 — fetch the tail of a server-sliced result, once, on first expand.
+ *
+ * The endpoint reads the persisted row, which always holds the whole body: the
+ * projection that produced the slice runs on the serve path only. On the live
+ * path the row is committed synchronously before the WS frame is flushed, so
+ * expanding a result from the turn that just produced it cannot outrun the
+ * write.
+ */
+function useLazyResultBody(result: ToolResultBlock): LazyResultBody | undefined {
+  const sessionId = useSessionStore((s) => s.sessionId);
+  const [full, setFull] = useState<string | undefined>(undefined);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(false);
+  const fetchFullRef = useRef<(() => void) | undefined>(undefined);
+
+  // A new tool result in the same slot (session switch, rewind) must not show
+  // the previous one's body.
+  // eslint-disable-next-line no-restricted-syntax -- resets state owned by an external fetch when its identity key changes; there is no event to hang this on, since the component is re-pointed at a different result rather than interacted with.
+  useEffect(() => {
+    setFull(undefined);
+    setLoading(false);
+    setError(false);
+  }, [result.toolUseId, sessionId]);
+
+  // Fetch as soon as the result is shown. `ToolResult` renders only inside
+  // `ToolCallModal`, so mounting IS the click that requirement 8 licenses a
+  // loading state for — and since docs/244 strips the body of a modal-only
+  // result to nothing, there is no preview to show while waiting.
+  // eslint-disable-next-line no-restricted-syntax -- loads data owned by an external endpoint when the view that displays it mounts; the mount is the user's click, there is no earlier event to hang it on.
+  useEffect(() => {
+    if (result.truncated) fetchFullRef.current?.();
+  }, [result.toolUseId, result.truncated]);
+
+  const fetchFull = useCallback(() => {
+    if (!sessionId || !result.truncated) return;
+    setLoading(true);
+    setError(false);
+    void (async () => {
+      try {
+        const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/tool-results/${encodeURIComponent(result.toolUseId)}`);
+        if (!res.ok) throw new Error(String(res.status));
+        const body = (await res.json()) as { content?: string };
+        setFull(body.content ?? "");
+      } catch {
+        setError(true);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [sessionId, result.toolUseId, result.truncated]);
+  fetchFullRef.current = fetchFull;
+
+  if (!result.truncated) return undefined;
+  return {
+    serverTruncated: true,
+    fetched: full !== undefined,
+    ...(result.totalLines !== undefined ? { totalLines: result.totalLines } : {}),
+    ...(full !== undefined ? { full } : {}),
+    loading,
+    error,
+    fetchFull,
+  };
+}
+
 export function ToolResult({ tool, result }: { tool: string; result: ToolResultBlock }) {
+  const lazy = useLazyResultBody(result);
   const parsed = useMemo(
-    () => parseContentForImages(result.content),
-    [result.content],
+    () => parseContentForImages(lazy?.full ?? result.content),
+    [lazy?.full, result.content],
   );
 
-  const displayContent = parsed?.text ?? result.content;
+  const displayContent = parsed?.text ?? (lazy?.full ?? result.content);
   const images = parsed?.images ?? [];
   const hasImages = images.length > 0;
   const hasContent = !!displayContent;
+
+  // docs/244 — a modal-only result arrives with an EMPTY body and a `truncated`
+  // marker, because nothing renders its content until this modal opens. Show
+  // the fetch rather than "(no output)", which would be a lie about a result
+  // that has plenty.
+  const awaitingBody = !!lazy && !lazy.fetched && !lazy.error;
+  if (!hasContent && !hasImages && awaitingBody) {
+    return (
+      <div className="mt-1 text-xs text-(--color-text-tertiary) font-mono italic" role="status">
+        Loading output…
+      </div>
+    );
+  }
+  if (!hasContent && !hasImages && lazy?.error) {
+    return (
+      <div className="mt-1 text-xs text-(--color-error)" role="status">
+        Couldn&apos;t load this output.
+      </div>
+    );
+  }
 
   if (!hasContent && !result.isError && !hasImages) {
     return (
@@ -320,13 +457,13 @@ export function ToolResult({ tool, result }: { tool: string; result: ToolResultB
   let textResult = null;
   if (hasContent || result.isError) {
     if (tool === "Bash") {
-      textResult = <BashResult content={displayContent} isError={result.isError} maxLines={textMaxLines} />;
+      textResult = <BashResult content={displayContent} isError={result.isError} maxLines={textMaxLines} lazy={lazy} />;
     } else if (tool === "Read") {
-      textResult = <ReadResult content={displayContent} maxLines={textMaxLines} />;
+      textResult = <ReadResult content={displayContent} maxLines={textMaxLines} lazy={lazy} />;
     } else if (tool === "Grep" || tool === "Glob") {
-      textResult = <GrepResult content={displayContent} maxLines={textMaxLines} />;
+      textResult = <GrepResult content={displayContent} maxLines={textMaxLines} lazy={lazy} />;
     } else {
-      textResult = <GenericResult content={displayContent} isError={result.isError} maxLines={textMaxLines} />;
+      textResult = <GenericResult content={displayContent} isError={result.isError} maxLines={textMaxLines} lazy={lazy} />;
     }
   }
 

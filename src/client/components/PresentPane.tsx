@@ -23,6 +23,7 @@
 
 // eslint-disable-next-line no-restricted-imports -- useEffect: unseen badge, keyboard nav, lazy content fetch, view-mode reset, draft cleanup
 import { useEffect, useRef, useState } from "react";
+import { useEventListener } from "../hooks/useEventListener.js";
 import {
   CaretLeftIcon,
   CaretRightIcon,
@@ -40,6 +41,8 @@ import { useFileReviewControls } from "../hooks/use-file-review-controls.js";
 import { kindFromMimeType, supportsSourceToggle } from "../utils/file-content-kind.js";
 import { Button } from "./ui/button.js";
 import type { SendCommentsPayload } from "./FilePreviewModal.js";
+import { handleAgentInterfaceRequest } from "../agent-interface-sdk/handle-request.js";
+import type { AgentInterfaceProvenance } from "../../server/shared/agent-interface-sdk/protocol.js";
 
 interface PresentPaneProps {
   /** When true the pane is currently visible to the user — clears the unseen badge. */
@@ -48,9 +51,10 @@ interface PresentPaneProps {
   onSendComments?: (payload: SendCommentsPayload) => void;
   /** docs/203 — "Ask agent to review" on a workspace-relative artifact. */
   onAskAgentReview?: (filePath: string) => void;
+  onAgentInterfaceMessage?: (text: string, provenance: AgentInterfaceProvenance) => Promise<void>;
 }
 
-export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview }: PresentPaneProps) {
+export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview, onAgentInterfaceMessage }: PresentPaneProps) {
   const presentations = usePresentStore((s) => s.presentations);
   const activeIndex = usePresentStore((s) => s.activePresentIndex);
   const galleryOpen = usePresentStore((s) => s.galleryOpen);
@@ -63,6 +67,7 @@ export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview }: P
   const [viewMode, setViewMode] = useState<ViewMode>("rendered");
   // Ids with an in-flight content fetch, so a re-render doesn't double-fetch.
   const fetching = useRef<Set<string>>(new Set());
+  const agentInterfaceFrameRef = useRef<HTMLIFrameElement | null>(null);
 
   // Active entry (computed before any early return so the hooks below see it).
   const hasEntries = presentations.length > 0;
@@ -72,6 +77,40 @@ export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview }: P
   const activeContent = active?.content;
 
   const kind = kindFromMimeType(active?.mimeType ?? "", active?.filePath ?? "");
+  const agentInterfaceActive = isActiveTab && !galleryOpen && kind === "html" && viewMode === "rendered";
+
+  useEventListener(window, "message", (event) => {
+    const iframe = agentInterfaceFrameRef.current;
+    if (!iframe?.contentWindow || event.source !== iframe.contentWindow || event.origin !== "null") return;
+    const data = event.data as { source?: string; type?: string } | undefined;
+    if (data?.source !== "shipit-preview") return;
+    if (data.type === "ready") {
+      iframe.contentWindow?.postMessage({
+        source: "shipit-preview",
+        type: "visibility",
+        visible: agentInterfaceActive,
+      }, "*");
+      return;
+    }
+    if (data.type === "agent_message" && agentInterfaceActive && onAgentInterfaceMessage) {
+      void handleAgentInterfaceRequest({
+        event,
+        iframe,
+        expectedOrigin: "null",
+        surface: "present",
+        dispatch: onAgentInterfaceMessage,
+      });
+    }
+  });
+
+  // eslint-disable-next-line no-restricted-syntax -- synchronize Present visibility into the sandboxed artifact
+  useEffect(() => {
+    agentInterfaceFrameRef.current?.contentWindow?.postMessage({
+      source: "shipit-preview",
+      type: "visibility",
+      visible: agentInterfaceActive,
+    }, "*");
+  }, [agentInterfaceActive, activePresentId]);
 
   // Review controls — called UNCONDITIONALLY before the empty-state early return
   // (hook-order stability), passing the active artifact's path or "" when none.
@@ -111,37 +150,31 @@ export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview }: P
   // than depending on `safeIndex` so the listener doesn't re-install on every
   // navigation. Declared before the empty-state early return so the hook order
   // stays stable when `presentations` empties on session switch (React #300).
-  // eslint-disable-next-line no-restricted-syntax -- keyboard nav scoped to this pane
-  useEffect(() => {
-    if (!isActiveTab) return;
-    const onKey = (e: KeyboardEvent) => {
-      // Ignore keystrokes that belong to a text field — the listener is on
-      // `window`, and the chat composer is on screen alongside the Present tab,
-      // so without this guard pressing ◀ to move the text cursor while typing
-      // would also step the carousel back (the "it jumps to the previous one
-      // while I type" bug). Mirrors useKeyboardShortcuts' input check.
-      const target = e.target as HTMLElement | null;
-      const tag = target?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target?.isContentEditable) {
-        return;
-      }
-      if (e.key === "Escape") {
-        if (usePresentStore.getState().galleryOpen) usePresentStore.getState().setGalleryOpen(false);
-        return;
-      }
-      // While the gallery is open the arrows belong to it, not the carousel.
-      if (usePresentStore.getState().galleryOpen) return;
-      if (e.key === "ArrowLeft") {
-        const { activePresentIndex } = usePresentStore.getState();
-        usePresentStore.getState().setActiveIndex(activePresentIndex - 1);
-      } else if (e.key === "ArrowRight") {
-        const { activePresentIndex } = usePresentStore.getState();
-        usePresentStore.getState().setActiveIndex(activePresentIndex + 1);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [isActiveTab]);
+  useEventListener(isActiveTab ? window : null, "keydown", (e) => {
+    // Ignore keystrokes that belong to a text field — the listener is on
+    // `window`, and the chat composer is on screen alongside the Present tab,
+    // so without this guard pressing ◀ to move the text cursor while typing
+    // would also step the carousel back (the "it jumps to the previous one
+    // while I type" bug). Mirrors useKeyboardShortcuts' input check.
+    const target = e.target as HTMLElement | null;
+    const tag = target?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target?.isContentEditable) {
+      return;
+    }
+    if (e.key === "Escape") {
+      if (usePresentStore.getState().galleryOpen) usePresentStore.getState().setGalleryOpen(false);
+      return;
+    }
+    // While the gallery is open the arrows belong to it, not the carousel.
+    if (usePresentStore.getState().galleryOpen) return;
+    if (e.key === "ArrowLeft") {
+      const { activePresentIndex } = usePresentStore.getState();
+      usePresentStore.getState().setActiveIndex(activePresentIndex - 1);
+    } else if (e.key === "ArrowRight") {
+      const { activePresentIndex } = usePresentStore.getState();
+      usePresentStore.getState().setActiveIndex(activePresentIndex + 1);
+    }
+  });
 
   // Lazily fetch the active artifact's bytes from disk the first time it's
   // shown (and again after a reload, when the store holds metadata only). The
@@ -296,6 +329,7 @@ export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview }: P
                 reviewable={review.reviewable}
                 markdownComments={review.markdownComments}
                 codeComments={review.codeComments}
+                agentInterfaceFrameRef={kind === "html" ? agentInterfaceFrameRef : undefined}
               />
             )}
           </div>
@@ -307,6 +341,7 @@ export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview }: P
           commentCount={review.commentCount}
           history={review.history}
           canSend={review.canSend}
+          composing={review.composing}
           onSend={review.handleSend}
         />
       )}

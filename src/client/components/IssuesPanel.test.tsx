@@ -1,15 +1,21 @@
-import { describe, it, expect, afterEach } from "vitest";
-import { render, cleanup } from "@testing-library/react";
+import { describe, it, expect, afterEach, vi } from "vitest";
+import { render, cleanup, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { IssuesPanel } from "./IssuesPanel.js";
 import { useIssuesStore } from "../stores/issues-store.js";
+import { useRepoStore } from "../stores/repo-store.js";
 import { UNASSIGNED } from "./issues-filter.js";
 import {
   getSavedIssueFilters,
   saveIssueFilters,
   ISSUE_FILTERS_KEY,
 } from "../utils/local-storage.js";
-import type { TrackerIssue } from "../../server/shared/types.js";
+import type { RepoInfo, TrackerIssue } from "../../server/shared/types.js";
+
+function makeRepo(url: string, over: Partial<RepoInfo> = {}): RepoInfo {
+  return { url, addedAt: "2026-01-01T00:00:00.000Z", lastUsedAt: "2026-01-01T00:00:00.000Z", status: "ready", ...over };
+}
 
 function makeIssue(over: Partial<TrackerIssue> & { id: string }): TrackerIssue {
   return {
@@ -80,6 +86,74 @@ describe("IssuesPanel", () => {
         </MemoryRouter>,
       ),
     ).not.toThrow();
+  });
+});
+
+// docs/236: Linear issues are workspace-wide, so the issue you want to work on
+// often belongs to a repo other than the one your current session is checked
+// out on. The panel offers every registered repo as a start target.
+describe("IssuesPanel repo picker (docs/236)", () => {
+  afterEach(() => {
+    useRepoStore.setState({ repos: [], activeRepoUrl: undefined });
+  });
+
+  function renderWithRepos(repos: RepoInfo[], activeRepoUrl?: string) {
+    useRepoStore.setState({ repos, ...(activeRepoUrl ? { activeRepoUrl } : {}) });
+    useIssuesStore.setState({
+      trackers: [{ id: "linear", label: "Linear", configured: true }],
+      activeTracker: "linear",
+      infoByTracker: { linear: { id: "linear", label: "Linear", configured: true } },
+      issuesByTracker: { linear: [makeIssue({ id: "SHI-1", title: "Auth bug" })] },
+    });
+    const onStartSession = vi.fn();
+    render(
+      <MemoryRouter>
+        <IssuesPanel onStartSession={onStartSession} onConnect={() => {}} />
+      </MemoryRouter>,
+    );
+    return onStartSession;
+  }
+
+  it("forwards the picked repo alongside the issue", async () => {
+    const shipit = makeRepo("https://github.com/acme/shipit.git");
+    const website = makeRepo("https://github.com/acme/website.git");
+    const onStartSession = renderWithRepos([shipit, website], shipit.url);
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /start session in another repository/i }),
+    );
+    await userEvent.click(await screen.findByRole("menuitem", { name: /website/i }));
+
+    expect(onStartSession).toHaveBeenCalledTimes(1);
+    expect(onStartSession.mock.calls[0]![0]).toMatchObject({ identifier: "SHI-1" });
+    expect(onStartSession.mock.calls[0]![1]).toBe(website.url);
+  });
+
+  it("omits hidden repos, but keeps the current target even when hidden", async () => {
+    const hiddenActive = makeRepo("https://github.com/acme/legacy.git", { hidden: true });
+    const visible = makeRepo("https://github.com/acme/website.git");
+    const hiddenOther = makeRepo("https://github.com/acme/archive.git", { hidden: true });
+    renderWithRepos([hiddenActive, visible, hiddenOther], hiddenActive.url);
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /start session in another repository/i }),
+    );
+    // The active repo survives the hidden filter so the checkmark has a home…
+    expect(await screen.findByRole("menuitem", { name: /legacy/i })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: /website/i })).toBeInTheDocument();
+    // …but a repo the user hid and isn't working in stays out of the way.
+    expect(screen.queryByRole("menuitem", { name: /archive/i })).toBeNull();
+  });
+
+  it("leaves the plain click on the implicit target untouched", async () => {
+    const shipit = makeRepo("https://github.com/acme/shipit.git");
+    const onStartSession = renderWithRepos([shipit, makeRepo("https://github.com/acme/website.git")], shipit.url);
+
+    await userEvent.click(screen.getByRole("button", { name: /^start session$/i }));
+
+    expect(onStartSession).toHaveBeenCalledTimes(1);
+    // No explicit repo — App resolves the session's own repo, as it always has.
+    expect(onStartSession.mock.calls[0]![1]).toBeUndefined();
   });
 });
 

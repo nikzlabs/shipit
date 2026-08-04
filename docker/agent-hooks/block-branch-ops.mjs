@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
- * ShipIt PreToolUse hook: keep the agent on the session's dedicated branch.
+ * ShipIt PreToolUse hook: keep the agent on the session's dedicated branch,
+ * and — while the session sits on a merged branch — keep it off hand-rolled
+ * destructive git.
  *
  * Every ShipIt session is created on its own branch — auto-commit, auto-push,
  * and `gh pr create` all target it. If the agent runs `git checkout -b` (or
@@ -12,6 +14,23 @@
  * Code CLI also injects its own built-in git guidance ("if on the default
  * branch, branch first") which the agent sometimes follows. This hook is the
  * structural enforcement layer that doesn't depend on prompt precedence.
+ *
+ * SHI-265 adds a SECOND, narrowly-scoped rule on top of the same mechanism:
+ * when `SHIPIT_GUARD_DESTRUCTIVE_GIT=1`, `git reset --hard`, `git checkout -f`
+ * and force-pushes are blocked too. That env var is set only when the session
+ * is merged with a recorded `mergedHeadSha` — i.e. exactly the state
+ * `shipit branch reset-to-base` guards (docs/239). That command fails closed on
+ * a safety gate (HEAD === mergedHeadSha, clean tree, on the session branch, no
+ * in-progress sequencer), and its refusal is what turns three hazards — a wake
+ * queued behind uncommitted work, a branch advanced between merge and
+ * detection, a duplicate wake after a restart — from unrecoverable data loss
+ * into a visible no-op. A refused agent that reaches for
+ * `git reset --hard origin/main` reproduces the loss in one line, so the
+ * refusal needs the same structural backing as the branch rule.
+ *
+ * It is deliberately NOT a blanket block: outside that state `git reset --hard`
+ * has legitimate uses (throwing away a local mess the user asked to discard),
+ * and blocking it everywhere is a worse trade than the hazard.
  *
  * Wired up via /etc/shipit/managed-settings.json (PreToolUse, matcher "Bash").
  * The settings file is always passed to the Claude CLI (see
@@ -62,10 +81,11 @@ function segments(line) {
 }
 
 /**
- * Inspect one segment. Returns a human-readable reason string if it would
- * create or switch branches, or null otherwise.
+ * Locate the git invocation in one segment. Returns `{ sub, rest, positionals }`
+ * for a segment whose command token is `git`, or null otherwise. Shared by both
+ * rules so they agree on what counts as "actually invoking git".
  */
-function offends(seg) {
+function parseGit(seg) {
   const tokens = seg.trim().split(/\s+/).filter(Boolean);
   // Step past leading `VAR=value` env assignments.
   let i = 0;
@@ -77,9 +97,22 @@ function offends(seg) {
     if (tokens[i] === "-C" || tokens[i] === "-c") i++; // these take a value
     i++;
   }
-  const sub = tokens[i];
   const rest = tokens.slice(i + 1);
-  const positionals = rest.filter((t) => !t.startsWith("-"));
+  return {
+    sub: tokens[i],
+    rest,
+    positionals: rest.filter((t) => !t.startsWith("-")),
+  };
+}
+
+/**
+ * Inspect one segment. Returns a human-readable reason string if it would
+ * create or switch branches, or null otherwise.
+ */
+function offends(seg) {
+  const parsed = parseGit(seg);
+  if (!parsed) return null;
+  const { sub, rest, positionals } = parsed;
 
   if (sub === "checkout") {
     if (rest.includes("-b") || rest.includes("-B")) {
@@ -128,6 +161,50 @@ function offends(seg) {
   return null;
 }
 
+/**
+ * SHI-265 — inspect one segment for hand-rolled destructive git. Only consulted
+ * when the session is in the merged state `shipit branch reset-to-base` guards
+ * (see `guardDestructiveGit` below). Returns a reason string or null.
+ *
+ * Scoped to the three forms that can silently discard this branch's work:
+ * a hard reset, a forced checkout, and a force-push. Everything else — a mixed
+ * or soft reset, `git checkout -- <path>`, a plain push — stays allowed.
+ */
+function offendsDestructive(seg) {
+  const parsed = parseGit(seg);
+  if (!parsed) return null;
+  const { sub, rest } = parsed;
+
+  if (sub === "reset" && rest.includes("--hard")) {
+    return "`git reset --hard` discards this branch's state";
+  }
+  if (sub === "checkout" && rest.some((t) => t === "-f" || t === "--force")) {
+    return "`git checkout -f` overwrites the working tree";
+  }
+  if (
+    sub === "push" &&
+    rest.some(
+      (t) =>
+        t === "-f" ||
+        t === "--force" ||
+        // `--force-with-lease` / `--force-if-includes` also take an `=<ref>` form.
+        t.startsWith("--force-with-lease") ||
+        t.startsWith("--force-if-includes"),
+    )
+  ) {
+    return "`git push --force` rewrites the remote branch";
+  }
+  return null;
+}
+
+// SHI-265 — the destructive-git rule is scoped to the merged-with-recorded-head
+// state; the orchestrator sets SHIPIT_GUARD_DESTRUCTIVE_GIT=1 for exactly those
+// turns (server-derived from the session's `mergedHeadSha`, never anything the
+// agent can write). Outside it the rule is off, so an ordinary "throw away my
+// local mess" reset is untouched. Note the sandbox exit above already covers
+// sandbox sessions, which own their own branches and repos.
+const guardDestructiveGit = process.env.SHIPIT_GUARD_DESTRUCTIVE_GIT === "1";
+
 for (const seg of segments(command)) {
   const reason = offends(seg);
   if (reason) {
@@ -138,6 +215,32 @@ for (const seg of segments(command)) {
         "or switching branches strands your work off the branch ShipIt is " +
         "tracking. Stay on the current branch and run your git / `gh` " +
         "commands there; `gh pr create` pushes the current branch for you.\n",
+    );
+    process.exit(2);
+  }
+
+  const destructive = guardDestructiveGit ? offendsDestructive(seg) : null;
+  if (destructive) {
+    process.stderr.write(
+      `Blocked: ${destructive}.\n\n` +
+        "This session's PR has merged and ShipIt has recorded the merged head " +
+        "commit, so the branch is in exactly the state `shipit branch " +
+        "reset-to-base` exists to handle. Run that command instead — it moves " +
+        "the branch to the fresh base only when doing so is safe (HEAD still " +
+        "at the merged tip, clean tree, on the session branch, no rebase or " +
+        "merge in progress) and refuses otherwise.\n\n" +
+        "If it already refused, that refusal is the signal: the branch is " +
+        "carrying something a reset would destroy, and there is no reflog " +
+        "entry for uncommitted edits. Report what it said and let the user " +
+        "decide — do not reproduce the reset by hand.\n\n" +
+        "SHI-277: if the user tells you to go ahead anyway, the sanctioned " +
+        "override is `shipit branch reset-to-base --force --reason \"<why>\"`, " +
+        "not a manual reset. That path is brokered, so it still refuses over " +
+        "an uncommitted tree (the one loss with no reflog entry) and it " +
+        "records the reason in the transcript. It is also not blocked here — " +
+        "this hook only inspects `git` invocations, so the shim passes " +
+        "through untouched. A hand-rolled reset does the same damage with no " +
+        "check and no record, which is why it stays blocked.\n",
     );
     process.exit(2);
   }

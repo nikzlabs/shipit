@@ -36,6 +36,54 @@ describe("generateSessionName", () => {
     expect(result).toEqual({ slug: "add-login", title: "Add Login Page" });
   });
 
+  // docs/150 — naming is a real provider call and must be billed to a real
+  // account. Forcing HOME=/root sent it through the legacy alias symlink to the
+  // *migrated default* account regardless of which account was primary, and
+  // broke outright once that account was disconnected.
+  it("runs the CLI with HOME at the account credential root when given one", async () => {
+    let seenHome: string | undefined;
+    vi.doMock("node:child_process", () => ({
+      execFile: (
+        _file: string,
+        _args: string[],
+        opts: { env?: Record<string, string> },
+        cb: (err: Error | null, stdout: string, stderr: string) => void,
+      ) => {
+        seenHome = opts.env?.HOME;
+        setImmediate(() => cb(null, '{"slug": "s", "title": "T"}\n', ""));
+        return { on: () => {}, stdin: { end: () => {} } } as unknown;
+      },
+    }));
+
+    const mod = await import("./session-namer.js");
+    await mod.generateSessionName("hi", "claude", "/credentials/provider-accounts/claude/acct_work");
+
+    expect(seenHome).toBe("/credentials/provider-accounts/claude/acct_work");
+  });
+
+  it("falls back to the singleton root when no account root is given", async () => {
+    let seenHome: string | undefined;
+    vi.doMock("node:child_process", () => ({
+      execFile: (
+        _file: string,
+        _args: string[],
+        opts: { env?: Record<string, string> },
+        cb: (err: Error | null, stdout: string, stderr: string) => void,
+      ) => {
+        seenHome = opts.env?.HOME;
+        setImmediate(() => cb(null, '{"slug": "s", "title": "T"}\n', ""));
+        return { on: () => {}, stdin: { end: () => {} } } as unknown;
+      },
+    }));
+
+    const mod = await import("./session-namer.js");
+    await mod.generateSessionName("hi", "claude");
+
+    // A reserved route (API key / env OAuth) has no account root, and the
+    // singleton path is what those legitimately use.
+    expect(seenHome).toBe(process.env.HOME ?? "/root");
+  });
+
   it("invokes the local Codex CLI when the session uses Codex", async () => {
     vi.doMock("node:child_process", () => {
       return {

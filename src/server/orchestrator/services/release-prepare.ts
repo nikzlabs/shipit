@@ -33,6 +33,7 @@ import type { GitHubAuthManager } from "../github-auth.js";
 import type { ChatHistoryManager } from "../chat-history.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { ReleaseBumpType } from "../../shared/types/release-types.js";
+import type { ReleaseProposeInput } from "../release-status-poller.js";
 import { ServiceError } from "./types.js";
 import { agentCreatePr } from "./github.js";
 import {
@@ -237,6 +238,29 @@ export async function planRelease(git: GitManager, args: PlanReleaseArgs): Promi
   };
 }
 
+/**
+ * Build the `proposed`-card input from a computed plan + the repo's mechanism.
+ * Pulled out of the `POST /release/plan` route so the conditional fields — most
+ * importantly `mechanism`, which drives the card's "Confirm & publish" wording
+ * (release-branch opens/merges a bump PR; tag-triggered pushes the tag) — are
+ * unit-testable without spinning a git remote. Mirrors the marker path in
+ * `release-flow.ts`: omit `mechanism` when absent (card defaults to
+ * tag-triggered), and omit `bumpType` for an explicit version. (docs/214)
+ */
+export function buildPlanProposeInput(
+  plan: ReleasePlan,
+  mechanism: string | undefined,
+): ReleaseProposeInput {
+  return {
+    version: plan.version,
+    tag: plan.tag,
+    prerelease: plan.prerelease,
+    ...(plan.bumpType !== "explicit" ? { bumpType: plan.bumpType } : {}),
+    versionSource: plan.versionSource,
+    ...(mechanism ? { mechanism: mechanism as ReleaseProposeInput["mechanism"] } : {}),
+  };
+}
+
 export interface PrepareReleaseArgs extends PlanReleaseArgs {
   remoteUrl?: string;
   /** Final release: the release (maintenance) branch the bump PR targets. */
@@ -402,8 +426,12 @@ async function prepareFinalRelease(
           "Re-run with --bootstrap to create it from the current base for the first release.",
       );
     }
-    const base = remoteBranches.includes("main") ? "main" : remoteBranches.includes("master") ? "master" : null;
-    if (!base) throw new ServiceError(400, "Could not resolve a base branch (main/master) to bootstrap from.");
+    // The remote's actual default branch — a repo defaulting to `trunk` or
+    // `develop` must be able to bootstrap its maintenance branch too, not just
+    // main/master repos (which is all the old literal check accepted).
+    const detected = await git.getDefaultBranch();
+    const base = remoteBranches.includes(detected) ? detected : null;
+    if (!base) throw new ServiceError(400, "Could not resolve the repository's default branch to bootstrap from.");
     // Create the maintenance branch on the remote off the base tip.
     await git.createBranchFrom(releaseBranch, `origin/${base}`);
     await git.push("origin", releaseBranch);

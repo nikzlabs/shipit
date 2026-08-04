@@ -149,6 +149,45 @@ describe("AllSessionsDialog", () => {
     expect(container.innerHTML).toBe("");
   });
 
+  it("offers Sandbox / Host-Ops filters only when such sessions exist and scopes by kind", () => {
+    // docs/128 / docs/211 — repo-less sandbox/ops sessions have no `remoteUrl`,
+    // so the repo dropdown must expose kind-based options to make an archived
+    // one reachable (otherwise it's only visible under "All Repositories").
+    const props = defaultProps();
+    props.sessions = [
+      baseSession({ id: "r1", title: "Repo work", remoteUrl: "https://github.com/acme/app" }),
+      baseSession({ id: "sb1", title: "Sandbox archived", kind: "sandbox", archived: true }),
+      baseSession({ id: "op1", title: "Ops session", kind: "ops" }),
+    ];
+    render(<AllSessionsDialog {...props} />);
+
+    // Both kind options are present.
+    const select = screen.getByRole("combobox") as HTMLSelectElement;
+    expect(screen.getByRole("option", { name: "Sandbox" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Host / Ops" })).toBeTruthy();
+
+    // Selecting Sandbox surfaces the archived sandbox session and hides others.
+    fireEvent.change(select, { target: { value: "__sandbox__" } });
+    expect(screen.getByText("Sandbox archived")).toBeTruthy();
+    expect(screen.queryByText("Repo work")).toBeNull();
+    expect(screen.queryByText("Ops session")).toBeNull();
+
+    // Selecting Host / Ops scopes to ops sessions.
+    fireEvent.change(select, { target: { value: "__ops__" } });
+    expect(screen.getByText("Ops session")).toBeTruthy();
+    expect(screen.queryByText("Sandbox archived")).toBeNull();
+  });
+
+  it("omits the Sandbox / Host-Ops filters when no such sessions exist", () => {
+    const props = defaultProps();
+    props.sessions = [
+      baseSession({ id: "r1", title: "Repo work", remoteUrl: "https://github.com/acme/app" }),
+    ];
+    render(<AllSessionsDialog {...props} />);
+    expect(screen.queryByRole("option", { name: "Sandbox" })).toBeNull();
+    expect(screen.queryByRole("option", { name: "Host / Ops" })).toBeNull();
+  });
+
   it("filters sessions by search query", () => {
     const props = defaultProps();
     props.sessions = [

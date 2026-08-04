@@ -26,7 +26,6 @@ import type { AgentProcess, AgentId, BranchSyncedCard } from "../../shared/types
 import type { ChatHistoryManager } from "../chat-history.js";
 import type { SessionManager } from "../sessions.js";
 import type { UsageManager } from "../usage.js";
-import type { AuthManager } from "../agents/claude/auth-manager.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
 import { ServiceError } from "./types.js";
 import { agentLogAppend } from "../log-emit.js";
@@ -34,6 +33,7 @@ import { isNonFastForwardError } from "./git.js";
 import { getErrorMessage } from "../validation.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 import type { AutoResolveResult } from "../auto-conflict-resolve-manager.js";
+import { prepareDispatch } from "../prepared-dispatch.js";
 
 // Hand the whole session workspace (worktree + `.git`) back to the worker uid
 // after the rebase driver's root git ops (SHI-144). A rebase rewrites BOTH as
@@ -66,7 +66,6 @@ export interface RebaseDriverDeps {
    * `runRebaseResolutionTurn`.
    */
   usageManager: UsageManager;
-  authManager: AuthManager;
   /** Factory for creating agents. Falls back to runner.createAgent if available. */
   agentFactory?: (agentId: AgentId) => AgentProcess;
   sseBroadcast: (event: string, data: unknown) => void;
@@ -156,23 +155,19 @@ async function syncLocalBaseRef(git: GitManager, baseBranch: string): Promise<Lo
 }
 
 /**
- * docs/221 — emit the persisted "Synced with <base>" card, but ONLY when the
- * sync actually changed something (the branch rebased and/or local `<base>`
- * moved). The clean-rebase path is not an agent turn, so the card is appended
+ * docs/221 — emit the persisted branch-updated card whenever a manual sync
+ * completes, including when everything was already current. The clean-rebase
+ * path is not an agent turn, so the card is appended
  * directly to chat history AND broadcast over WS, sharing one `cardId` the
  * client dedupes on (mirrors `emitNoticePostTurn`). Returns true when a card was
- * emitted — the caller uses that to suppress the contradictory "Already up to
- * date" toast on the up-to-date path.
+ * emitted — the caller uses that to suppress the redundant "Already up to date"
+ * toast on the up-to-date path.
  */
 function emitSyncCard(
   deps: RebaseDriverDeps,
   opts: { baseBranch: string; headFrom: string | null; headTo: string | null; baseMove: LocalBaseMove | null; forcePushed: boolean },
 ): boolean {
   const { runner, chatHistoryManager } = deps;
-  const headMoved = !!opts.headFrom && !!opts.headTo && opts.headFrom !== opts.headTo;
-  const baseMoved = !!opts.baseMove && opts.baseMove.from !== opts.baseMove.to;
-  if (!headMoved && !baseMoved) return false;
-
   const card: BranchSyncedCard = {
     cardId: `sync-${randomUUID()}`,
     base: opts.baseBranch,
@@ -186,6 +181,30 @@ function emitSyncCard(
   chatHistoryManager.append(runner.sessionId, { role: "assistant", text: "", branchSynced: card });
   runner.emitMessage({ type: "branch_synced_card", sessionId: runner.sessionId, card });
   return true;
+}
+
+/**
+ * A rebase rewrites the whole working tree from the ORCHESTRATOR, outside the
+ * session container — so the newly-checked-out `shipit.yaml` / compose file can
+ * declare services, an install step, or a compose path the running session
+ * knows nothing about.
+ *
+ * The session's compose stack is otherwise re-evaluated only when the
+ * in-container inotify watcher reports a config file changed, which is the
+ * wrong signal for this: it is started best-effort (a single fire-and-forget
+ * POST per runner) and watches a bind mount the orchestrator wrote to from
+ * another container. When it misses the write — or was never started — the
+ * user rebases onto the latest base and the new service simply never appears.
+ *
+ * The orchestrator knows exactly when it rewrote the tree, so it says so
+ * directly. Best-effort: a config re-read must never fail a completed rebase.
+ */
+function reevaluateSessionConfig(runner: SessionRunnerInterface): void {
+  try {
+    runner.reevaluateWorkspaceConfig?.();
+  } catch (err) {
+    console.error("[rebase] config re-evaluation failed:", getErrorMessage(err));
+  }
 }
 
 /**
@@ -226,17 +245,17 @@ export async function runRebaseFlow(
     // 3. Check ancestry — already up-to-date?
     const isAncestor = await git.isAncestor(baseRef, "HEAD");
     if (isAncestor) {
-      // The branch didn't move, but the local base may have. Emit the card iff
-      // something changed; suppress the "Already up to date" toast when it did.
+      // Manual syncs always leave a durable confirmation card, including the
+      // already-current case. Automatic conflict resolution remains cardless.
       const cardEmitted = recordSync
         ? emitSyncCard(deps, { baseBranch, headFrom: headBefore, headTo: headBefore, baseMove, forcePushed: false })
         : false;
-      runner.emitMessage({ type: "rebase_complete", forcePushed: false, upToDate: true, baseMoved: cardEmitted });
+      runner.emitMessage({ type: "rebase_complete", sessionId: runner.sessionId, forcePushed: false, upToDate: true, baseMoved: cardEmitted });
       return { status: "up_to_date" };
     }
 
     // 4. Begin rebase.
-    runner.emitMessage({ type: "rebase_started", baseBranch });
+    runner.emitMessage({ type: "rebase_started", sessionId: runner.sessionId, baseBranch });
 
     // Errors propagate to the route's `flowPromise.catch`, which emits a single
     // `rebase_aborted` carrying the error message. Don't emit here too — before
@@ -245,11 +264,12 @@ export async function runRebaseFlow(
 
     // 5. Clean rebase — go straight to force push.
     if (result.status === "clean") {
+      reevaluateSessionConfig(runner);
       const forcePushed = await tryForcePush(git, githubAuthManager, runner);
       if (recordSync) {
         emitSyncCard(deps, { baseBranch, headFrom: headBefore, headTo: await git.getHeadHash(), baseMove, forcePushed });
       }
-      runner.emitMessage({ type: "rebase_complete", forcePushed });
+      runner.emitMessage({ type: "rebase_complete", sessionId: runner.sessionId, forcePushed });
       return { status: "rebased", forcePushed };
     }
 
@@ -267,6 +287,7 @@ export async function runRebaseFlow(
 
       runner.emitMessage({
         type: "rebase_conflicts",
+        sessionId: runner.sessionId,
         conflicts: result.conflicts.map((c) => ({ path: c.path })),
       });
 
@@ -297,11 +318,12 @@ export async function runRebaseFlow(
     }
 
     // 7. Force push after successful resolution.
+    reevaluateSessionConfig(runner);
     const forcePushed = await tryForcePush(git, githubAuthManager, runner);
     if (recordSync) {
       emitSyncCard(deps, { baseBranch, headFrom: headBefore, headTo: await git.getHeadHash(), baseMove, forcePushed });
     }
-    runner.emitMessage({ type: "rebase_complete", forcePushed });
+    runner.emitMessage({ type: "rebase_complete", sessionId: runner.sessionId, forcePushed });
     return { status: "conflicts_resolved", iterations: iter, forcePushed };
   } finally {
     // SHI-144 / docs/150 §7: every orchestrator git op above (fetch, rebase,
@@ -399,8 +421,9 @@ function runRebaseResolutionTurn(
     // boundary IS the spawn boundary.
     deps.onAgentSpawned?.();
 
-    runner.dispatch({
+    runner.dispatch(prepareDispatch({
       text: prompt,
+      agentInterface: undefined,
       activity: "Resolving conflicts...",
       // Elide the post-turn commit/push/PR/drain — the rebase owns committing.
       postTurn: "none",
@@ -408,6 +431,12 @@ function runRebaseResolutionTurn(
       // is queued (and drained after the flow) rather than injected into the
       // resolution turn and derailing it.
       systemTurn: true,
+      execution: undefined,
+      images: undefined,
+      files: undefined,
+      uploads: undefined,
+      permissionMode: undefined,
+      deliveryId: undefined,
       onTurnComplete: ({ errored }) => {
         if (errored) {
           // The shared listener already wrote the error row + reset runner
@@ -418,7 +447,7 @@ function runRebaseResolutionTurn(
           resolve();
         }
       },
-    });
+    }));
   });
 }
 
@@ -544,7 +573,7 @@ export async function runAutoResolveAttempt(
         // 7. Surface a `rebase_aborted` so the UI clears the rebase banner
         //    doc 094 raised. The inner driver doesn't emit this on our
         //    timeout path because it never gets the chance.
-        runner.emitMessage({ type: "rebase_aborted" });
+        runner.emitMessage({ type: "rebase_aborted", sessionId: runner.sessionId });
         resolve({ outcome: "error", lastError: "timeout", didWork: true });
       })();
     }, timeoutMs);

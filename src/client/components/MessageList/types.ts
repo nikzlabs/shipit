@@ -6,9 +6,12 @@ import type {
   ActionChecklistCard as ActionChecklistCardData,
   BranchAutoResetCard as BranchAutoResetCardData,
   BranchSyncedCard as BranchSyncedCardData,
+  SelfMergeWatchCard as SelfMergeWatchCardData,
   AiReviewCard,
 } from "../../../server/shared/types.js";
 import type { ReleaseStatusSummary } from "../../../server/shared/types/release-types.js";
+import type { AgentInterfaceProvenance } from "../../../server/shared/agent-interface-sdk/protocol.js";
+import type { SessionMessageOrigin } from "../../../server/shared/types.js";
 
 // ── Type exports (kept here as the canonical location for backward compat) ──
 
@@ -17,6 +20,21 @@ export interface ToolUseBlock {
   id: string;
   name: string;
   input: Record<string, unknown>;
+  /**
+   * docs/244 — one or more input keys were shortened or removed on the serve
+   * path; fetch the whole input from `/api/sessions/:id/tool-inputs/:id` when
+   * the view that shows it opens (the diff modal, the tool-call modal, the
+   * subagent prompt disclosure). What the transcript still draws is covered by
+   * the keys that remain, plus `diffStats` and `inputChars`.
+   */
+  bodyTruncated?: true;
+  /** Line stats for the `+N -M` summary, computed before the body was stripped. */
+  diffStats?: { added: number; removed: number };
+  /**
+   * Original character length of each shortened or removed string key — the
+   * `Prompt (N chars)` label keeps working once the prompt itself is gone.
+   */
+  inputChars?: Record<string, number>;
 }
 
 export interface ToolResultBlock {
@@ -30,6 +48,15 @@ export interface ToolResultBlock {
    * start.
    */
   durationMs?: number;
+  /**
+   * docs/244 — `content` is a head slice; the full body comes from
+   * `/api/sessions/:id/tool-results/:toolUseId` when the user expands it.
+   */
+  truncated?: true;
+  /** True line count of the whole body — what the "Show all N lines" label reports. */
+  totalLines?: number;
+  /** Byte length of the whole body. */
+  totalBytes?: number;
 }
 
 /**
@@ -51,9 +78,15 @@ export type SubagentEvent =
     };
 
 export interface ChatMessageImage {
-  data: string;      // base64-encoded image data
+  /**
+   * Base64-encoded image data. Absent on anything served from history or a
+   * live turn (docs/244): the server sends `src` instead so a transcript load
+   * doesn't carry megabytes of base64 for a 96px thumbnail. Still present on
+   * optimistic messages the browser built locally.
+   */
+  data?: string;
   mediaType: string; // "image/png", etc.
-  /** Optional pre-built src URL (e.g. blob: URL for optimistic messages). When set, used directly instead of building a data: URI from data+mediaType. */
+  /** Pre-built src URL — a blob: URL for optimistic messages, or the content-addressed endpoint (docs/244). When set, used directly instead of building a data: URI. */
   src?: string;
 }
 
@@ -67,11 +100,27 @@ export interface ChatMessageFile {
 export interface ChatMessage {
   role: "user" | "assistant";
   text: string;
+  agentInterface?: AgentInterfaceProvenance;
+  messageOrigin?: SessionMessageOrigin;
+  /** Client-only identity for precise rollback of a rejected optimistic send. */
+  clientRequestId?: string;
   toolUse?: ToolUseBlock[];
   toolResults?: ToolResultBlock[];
   images?: ChatMessageImage[];
   files?: ChatMessageFile[];
   streaming?: boolean;
+  /**
+   * True when this row belongs to a turn that is still running — i.e. it was
+   * rehydrated from an `in_progress` chat-history row, or delivered by the
+   * `turn_snapshot` a reattaching viewer receives.
+   *
+   * Distinct from `streaming`, which only marks the ONE bubble currently being
+   * written to (earlier bubbles of the same running turn are closed as new ones
+   * open). The flag exists so a `turn_snapshot` can replace exactly the
+   * running turn's rows and leave finalized history untouched — see
+   * `turn-snapshot.ts`.
+   */
+  inProgress?: boolean;
   /** When true, this message represents an error (CLI crash, WS drop, etc.) */
   isError?: boolean;
   /**
@@ -166,6 +215,34 @@ export interface ChatMessage {
     prUrl: string;
     prTitle?: string;
     mergeSha?: string;
+    /** SHI-258 — set on the "couldn't wake this session" follow-up card. */
+    deliveryFailure?: { attempts: number; error?: string };
+    createdAt: string;
+  };
+  /**
+   * docs/239 — when set, this message renders a `SelfMergeWatchCard`: this
+   * session armed a watch on its OWN pull request and will be woken with a turn
+   * when it merges. Populated from `self_merge_watch_card` WS events and from
+   * persisted history (static payload, no client store — Cancel's result is
+   * component-local).
+   */
+  selfMergeWatch?: SelfMergeWatchCardData;
+  /**
+   * docs/233 (SHI-241) — when set, this message renders a `SessionReportCard`
+   * inline: another session in this session's cohort (a child, or a sibling on a
+   * `--to cohort` broadcast) pushed a report here with `shipit session report`.
+   * Populated from `session_report_card` WS events and from persisted history
+   * (static payload, no client store).
+   */
+  sessionReport?: {
+    cardId: string;
+    fromSessionId: string;
+    fromTitle: string;
+    fromBranch?: string;
+    relation: "child" | "sibling";
+    severity: "fyi" | "warn" | "blocker";
+    subject?: string;
+    body: string;
     createdAt: string;
   };
   /**
@@ -217,7 +294,6 @@ export interface ChatMessage {
   voiceNote?: {
     id: string;
     headline: string;
-    needsAttention: boolean;
     kind: "authored" | "ask" | "plan";
     createdAt: string;
   };

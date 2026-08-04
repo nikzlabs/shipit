@@ -156,6 +156,19 @@ publish-after-install orchestration + wiring (4b).
       publish; ineligible (no remoteUrl / ops) → no publish; install-failed → skipped-ineligible (no base);
       head-commit unresolvable → skipped; source≠default → skipped-ineligible (no base); tracked-source dep
       dir dropped while the ignored one publishes; per-dir error isolated from healthy dirs.
+- [x] **Crash hardening (prod orchestrator crash, 2026-07-30).** Archiving a session while its
+      dep-snapshot pull was in flight SIGKILLed the worker mid-stream; undici's
+      `TypeError: terminated` (`UND_ERR_SOCKET`) arrived as an unhandled `'error'` **event**, not a
+      rejection, and killed the process. Fixed on both halves: (a) `fetchDepSnapshotStream` latches an
+      `'error'` listener before returning the body, `extractTarStream` swallows `tar`-stdin errors
+      (`pipe()`'s `onerror` re-emits on a listener-less destination), reports the source error as the
+      rejection cause, and replays an already-fired error so the extract can't hang; (b)
+      `OverlayPublishArgs.signal` threads an `AbortSignal` into the head/snapshot fetches, wired in
+      `bootstrap-managers.ts` to the runner's `"disposed"` event (plus a post-`whenWorkerReady()`
+      `runner.disposed` re-check), and the dep-dir loop stops once aborted. Tests: local HTTP server
+      that streams a real tar then destroys the socket (immediate + delayed consumer + abort +
+      pre-aborted), plus publish-level signal-threading / mid-stream-error / abort-stops-remaining.
+      See `plan.md` → "Publish-pull crash safety".
 
 ### Phase 5 — Compose services at dep-dir subpaths
 

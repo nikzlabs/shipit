@@ -25,6 +25,12 @@ class FakeChildProcess extends EventEmitter {
   stdout = new EventEmitter();
   stderr = new EventEmitter();
   killed = false;
+  /**
+   * A real `spawn()` that exec'd sets a numeric pid; only a spawn that FAILED
+   * leaves it `undefined`. `killChild` keys off exactly that, so the fake has
+   * to carry one or it models a process that never started.
+   */
+  pid: number | undefined = 4242;
 
   kill(_signal?: string): boolean {
     this.killed = true;
@@ -100,7 +106,12 @@ describe("CodexAdapter", () => {
   });
 
   /** Helper: create adapter, run it, and complete the init handshake. */
-  async function createAndInit(prompt = "Hello", sessionId?: string, cwd = "/workspace"): Promise<void> {
+  async function createAndInit(
+    prompt = "Hello",
+    sessionId?: string,
+    cwd = "/workspace",
+    model?: string,
+  ): Promise<void> {
     adapter = new CodexAdapter(() => false);
     adapter.on("event", (e) => events.push(e));
 
@@ -108,6 +119,7 @@ describe("CodexAdapter", () => {
       prompt,
       sessionId,
       cwd,
+      ...(model !== undefined ? { model } : {}),
     });
 
     // Allow the microtask for initializeAndRun to start
@@ -177,6 +189,8 @@ describe("CodexAdapter", () => {
     expect(adapter.capabilities.toolNames).not.toContain("file_write");
     expect(adapter.capabilities.toolNames).not.toContain("file_read");
     expect(adapter.capabilities.toolNames).not.toContain("file_edit");
+    expect(adapter.capabilities.models[0]).toBe("gpt-5.6-sol");
+    expect(adapter.capabilities.models).not.toContain("gpt-5.6");
     expect(adapter.capabilities.models).toContain("gpt-5.4");
     // 125 — chat-native AI review requires a subagent primitive plus custom
     // MCP tool registration; Codex ships both (model-invoked `spawn_agent`
@@ -230,6 +244,45 @@ describe("CodexAdapter", () => {
     const threadResume = reqs.find((r) => r.method === "thread/resume");
     expect(threadResume).toBeDefined();
     expect((threadResume!.params as any).threadId).toBe("existing-thread-id");
+  });
+
+  it("starts a durable thread so the next turn can resume its rollout", async () => {
+    await createAndInit("hello");
+
+    const threadStart = fakeProc.getRequests().find((request) => request.method === "thread/start");
+    expect(threadStart).toBeDefined();
+    expect((threadStart!.params as any).ephemeral).toBe(false);
+  });
+
+  it("fails closed instead of starting a contextless thread when resume is rejected", async () => {
+    adapter = new CodexAdapter(() => false);
+    const errors: Error[] = [];
+    const logs: string[] = [];
+    adapter.on("error", (error) => errors.push(error));
+    adapter.on("log", (_source, text) => logs.push(text));
+    adapter.run({
+      prompt: "Is it the Codex only issue or Claude also has this?",
+      cwd: "/workspace",
+      sessionId: "existing-thread-id",
+    });
+
+    await vi.waitFor(() => expect(fakeProc.getRequests().length).toBeGreaterThanOrEqual(1));
+    fakeProc.sendResponse(1, { serverInfo: { name: "codex-app-server" } });
+    await vi.waitFor(() => {
+      expect(fakeProc.getRequests().some((request) => request.method === "thread/resume")).toBe(true);
+    });
+
+    fakeProc.sendErrorResponse(2, -32600, "thread rollout not found");
+
+    await vi.waitFor(() => expect(errors).toHaveLength(1));
+    expect(errors[0].message).toContain("Couldn't resume the previous Codex conversation");
+    expect(errors[0].message).toContain("contextless thread");
+    expect(logs.some((line) =>
+      line.includes("thread/resume failed for existing-thread-id")
+      && line.includes("thread rollout not found")
+    )).toBe(true);
+    expect(fakeProc.getRequests().some((request) => request.method === "thread/start")).toBe(false);
+    expect(fakeProc.getRequests().some((request) => request.method === "turn/start")).toBe(false);
   });
 
   it("passes systemPrompt as developerInstructions on thread/start", async () => {
@@ -344,9 +397,19 @@ describe("CodexAdapter", () => {
       type: "agent_init",
       agentId: "codex",
       sessionId: "thread-abc-123",
-      model: "gpt-5.5",
+      model: "gpt-5.6-sol",
       tools: [...CODEX_TOOL_NAMES],
     });
+  });
+
+  it("normalizes legacy GPT-5.6 alias before reporting or starting a Codex turn", async () => {
+    await createAndInit("Hello", undefined, "/workspace", "gpt-5.6");
+
+    const initEvent = events.find((e) => e.type === "agent_init");
+    expect(initEvent).toMatchObject({ model: "gpt-5.6-sol" });
+
+    const turnStart = fakeProc.getRequests().find((r) => r.method === "turn/start");
+    expect((turnStart!.params as any).model).toBe("gpt-5.6-sol");
   });
 
   it("maps an agentMessage item to agent_assistant text", async () => {
@@ -1093,7 +1156,7 @@ describe("CodexAdapter", () => {
     expect(events).toHaveLength(0);
   });
 
-  it("leaves non-ask mcpToolCalls flowing through under their own tool name", async () => {
+  it("normalizes split Codex MCP identity to ShipIt's canonical tool name", async () => {
     // Regression: the ask special-case must not swallow other MCP tools.
     await createAndInit("Hello");
     events.length = 0;
@@ -1102,7 +1165,8 @@ describe("CodexAdapter", () => {
       item: {
         type: "mcpToolCall",
         id: "call-other-1",
-        tool: "shipit__present",
+        server: "shipit",
+        tool: "present",
         arguments: JSON.stringify({ file: "/persist/diagram.html" }),
       },
     });
@@ -1112,7 +1176,7 @@ describe("CodexAdapter", () => {
     });
     expect(events[0]).toMatchObject({
       type: "agent_assistant",
-      content: [{ type: "tool_use", id: "call-other-1", name: "shipit__present" }],
+      content: [{ type: "tool_use", id: "call-other-1", name: "mcp__shipit__present" }],
     });
   });
 
@@ -1408,7 +1472,7 @@ describe("CodexAdapter", () => {
     expect(reply.result).toEqual({ decision: "approved" });
   });
 
-  it("routes a v2 approval through the injected permission requester and denies (docs/193)", async () => {
+  it("routes a sensitive v2 approval through the injected permission requester and denies (docs/193)", async () => {
     await createAndInit("Edit a protected file");
     const requester = vi.fn().mockResolvedValue({ behavior: "deny" });
     adapter.setPermissionRequester(requester);
@@ -1417,7 +1481,7 @@ describe("CodexAdapter", () => {
     const reqLine = `${JSON.stringify({
       id: 9101,
       method: "item/fileChange/requestApproval",
-      params: { changes: [{ path: ".npmrc" }] },
+      params: { reason: "write to a sensitive file", changes: [{ path: ".npmrc" }] },
     })}\n`;
     fakeProc.stdout.emit("data", Buffer.from(reqLine));
 
@@ -1433,9 +1497,10 @@ describe("CodexAdapter", () => {
     expect(reply.result).toEqual({ decision: "decline" });
   });
 
-  it("routes a v2 command approval through the requester and accepts on allow (docs/193)", async () => {
+  it("auto-accepts a routine v2 command without invoking the permission requester", async () => {
     await createAndInit("Run a command");
-    adapter.setPermissionRequester(() => Promise.resolve({ behavior: "allow" }));
+    const requester = vi.fn().mockResolvedValue({ behavior: "deny" });
+    adapter.setPermissionRequester(requester);
     fakeProc.stdin.written.length = 0;
 
     const reqLine = `${JSON.stringify({
@@ -1451,7 +1516,52 @@ describe("CodexAdapter", () => {
     const reply = fakeProc.getRequests().find((r) => (r as { id?: number }).id === 9102) as unknown as {
       result: { decision: string };
     };
+    expect(requester).not.toHaveBeenCalled();
     expect(reply.result).toEqual({ decision: "accept" });
+  });
+
+  it("auto-accepts a routine v1 file change without invoking the permission requester", async () => {
+    await createAndInit("Edit a workspace file");
+    const requester = vi.fn().mockResolvedValue({ behavior: "deny" });
+    adapter.setPermissionRequester(requester);
+    fakeProc.stdin.written.length = 0;
+
+    fakeProc.stdout.emit("data", Buffer.from(`${JSON.stringify({
+      id: 9103,
+      method: "applyPatchApproval",
+      params: { fileChanges: { "/workspace/src/app.ts": { type: "update", unified_diff: "" } } },
+    })}\n`));
+
+    await vi.waitFor(() => {
+      expect(fakeProc.getRequests().find((r) => (r as { id?: number }).id === 9103)).toBeDefined();
+    });
+    expect(requester).not.toHaveBeenCalled();
+    const reply = fakeProc.getRequests().find((r) => (r as { id?: number }).id === 9103) as unknown as {
+      result: { decision: string };
+    };
+    expect(reply.result).toEqual({ decision: "approved" });
+  });
+
+  it("routes a sensitive v1 command through the requester and honors allow", async () => {
+    await createAndInit("Run a command with extra access");
+    const requester = vi.fn().mockResolvedValue({ behavior: "allow" });
+    adapter.setPermissionRequester(requester);
+    fakeProc.stdin.written.length = 0;
+
+    fakeProc.stdout.emit("data", Buffer.from(`${JSON.stringify({
+      id: 9104,
+      method: "execCommandApproval",
+      params: { command: ["curl", "https://example.com"], reason: "requires network access" },
+    })}\n`));
+
+    await vi.waitFor(() => {
+      expect(fakeProc.getRequests().find((r) => (r as { id?: number }).id === 9104)).toBeDefined();
+    });
+    expect(requester).toHaveBeenCalledWith(expect.objectContaining({ agentId: "codex", toolName: "shell" }));
+    const reply = fakeProc.getRequests().find((r) => (r as { id?: number }).id === 9104) as unknown as {
+      result: { decision: string };
+    };
+    expect(reply.result).toEqual({ decision: "approved" });
   });
 
   it("replies with a JSON-RPC error to an unhandled server request (no hang)", async () => {
@@ -1628,6 +1738,59 @@ describe("CodexAdapter / dual-mode auth (feature 119)", () => {
     });
 
     expect(lastSpawnEnv?.OPENAI_API_KEY).toBe("sk-platform-billing");
+  });
+
+  // docs/150 — in local mode the CLI must read the account this session was
+  // routed to. The default (no resolver) is the containerized path and must
+  // leave HOME/CODEX_HOME exactly as inherited.
+  it("leaves HOME and CODEX_HOME untouched when no resolver is given", async () => {
+    process.env.OPENAI_API_KEY = "sk-platform-billing";
+    const inheritedHome = process.env.HOME;
+
+    const adapter = new CodexAdapter(() => false);
+    adapter.on("event", () => { /* drain */ });
+    adapter.run({ prompt: "Hello", cwd: "/workspace" });
+
+    await vi.waitFor(() => expect(lastSpawnEnv).toBeDefined());
+    expect(lastSpawnEnv?.HOME).toBe(inheritedHome);
+    expect(lastSpawnEnv?.CODEX_HOME).toBe(process.env.CODEX_HOME);
+  });
+
+  it("spawns against the resolved account root, and probes that root's auth.json", async () => {
+    const root = "/credentials/provider-accounts/codex/acct-a";
+    const probed: (string | undefined)[] = [];
+
+    const adapter = new CodexAdapter(
+      (configDir) => { probed.push(configDir); return true; },
+      { resolveHome: () => root },
+    );
+    adapter.on("event", () => { /* drain */ });
+    adapter.run({ prompt: "Hello", cwd: "/workspace" });
+
+    await vi.waitFor(() => expect(lastSpawnEnv).toBeDefined());
+    expect(lastSpawnEnv?.HOME).toBe(root);
+    // CODEX_HOME too: the CLI prefers it over HOME, so an inherited one would
+    // otherwise win over the account we just selected.
+    expect(lastSpawnEnv?.CODEX_HOME).toBe(`${root}/.codex`);
+    // The subscription probe reads the SAME root, so an account with a
+    // credentials file is not mistaken for an unauthenticated one.
+    expect(probed).toContain(`${root}/.codex`);
+  });
+
+  // docs/150 req 12 — failover moves work between subscriptions only.
+  it("does not fall back to the env key for a scoped account with no auth.json", () => {
+    process.env.OPENAI_API_KEY = "sk-platform-billing";
+
+    const adapter = new CodexAdapter(
+      () => false,
+      { resolveHome: () => "/credentials/provider-accounts/codex/acct-a" },
+    );
+    let authRequired = false;
+    adapter.on("auth_required", () => { authRequired = true; });
+    adapter.run({ prompt: "Hello", cwd: "/workspace" });
+
+    expect(authRequired).toBe(true);
+    expect(lastSpawnEnv).toBeUndefined();
   });
 
   it("logs the auth path it chose (Platform API)", async () => {

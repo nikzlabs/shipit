@@ -184,6 +184,21 @@ Grouping in the sidebar:
   **All Sessions** dialog (`AllSessionsDialog.tsx`, `/api/sessions/all` →
   `listAll()`), which already shows every non-warm session.
 
+> **Update — repo-less kinds are reachable in the dialog (SHI restore-archived-sandbox-ops).**
+> The All Sessions dialog scopes its list with a repo dropdown, but **sandbox**
+> (docs/211) and **ops** (docs/128) sessions are repo-less — they carry no
+> `remoteUrl`, so they belong to no repo bucket and only ever appeared under
+> "All Repositories". Once archived they were also gone from the sidebar (the
+> `!userArchived` guard above), leaving an archived sandbox/ops session
+> effectively unreachable. The dialog now adds synthetic **Sandbox** /
+> **Host / Ops** options to the dropdown (rendered only when such sessions
+> exist) that filter by `kind` instead of `remoteUrl`, so they can be found and
+> restored on their own. Server-side restore already worked for these: archive
+> *preserves* a repo-less session's workspace dir (`archiveSession` reclaim is
+> guarded on `remoteUrl`), `unarchive` flips it back to `hot`, and
+> `restoreSessionWorkspace` no-ops on the present dir — so the fix is
+> client-only.
+
 > **Update — closed PRs are "resolved" too.** A closed-without-merge PR is a
 > terminal state just like a merge, so its session must also leave the Active
 > list. The grouping now keys off **`resolvedAt(s) = mergedAt ?? closedAt`** and
@@ -444,12 +459,165 @@ confirm) "running", but still auto-commits dirty work rather than losing it.
     `fetchCache` of that branch, so "branch tip present in the bare cache" can be
     **false immediately after a successful push** and would wrongly block (or, if
     skipped, evict before the work is recoverable). The correct gate is **"the
-    auto-commit was pushed to `origin` successfully"** (a recoverable state —
-    `evicted → hot` re-clones from the cache, which `ensureBareCache` refreshes
-    from `origin`). If the push fails (offline / no GitHub auth), **do not
-    evict** — leave the session at `light` so the local commit survives on disk.
+    tip is on `origin`"** (a recoverable state — `evicted → hot` re-clones from
+    the cache, which `ensureBareCache` refreshes from `origin`). If the push
+    fails (offline / no GitHub auth), **do not evict** — leave the session at
+    `light` so the local commit survives on disk.
+
+**Three ways the wipe used to run against unrecoverable work (SHI-294).** The
+guard above was implemented as *auto-commit, and if that returned a hash, push* —
+which quietly assumed a null hash means "nothing to preserve" and a clean tree
+means "durable". Neither holds:
+
+1. **A refused commit is not a clean tree.** `GitManager.autoCommit` returns
+   `commitHash: null` from **three** paths — an unresolved conflict/rebase,
+   "nothing to commit", and a docs/213 secret-scanner refusal. Two of those are
+   *normal returns, not throws*, so they fell straight past the `if (commitHash)`
+   gate into the wipe, destroying uncommitted work with no reflog entry — the
+   exact loss the surrounding `catch` exists to prevent, and worst in the
+   mid-rebase case, the state a user can least reconstruct. The wipe is now gated
+   on **the tree being clean after the remediation attempt**, not on the returned
+   hash. That single re-check is deliberately cause-agnostic: both refusals leave
+   the tree dirty (the secret path `git reset`s to unstage) while
+   nothing-to-commit leaves it clean, so it separates safe from unsafe and covers
+   any future refusal path — or a commit hook that leaves the tree dirty behind a
+   *successful* commit — by construction.
+2. **A clean tree is not a quiet repo.** An interactive rebase stopped at an
+   `edit`/`exec` step, or a conflict-free merge awaiting its commit, has nothing
+   uncommitted — so step 1 short-circuits, `autoCommit` is never called, and its
+   conflict branch never fires — while the in-flight commits and recovery state
+   live only in `.git`. Checked explicitly
+   (`isRebaseInProgress` / `isMergeOrSequencerInProgress`).
+3. **A clean tree is not a durable branch.** The push only ran when *this pass*
+   had just created a commit. A commit made on an earlier pass whose push failed
+   leaves the tree clean, so the next pass sailed through and wiped a commit that
+   existed nowhere else. The tip check (`tipIsOnOrigin`: is HEAD contained in
+   `refs/remotes/origin/<branch>`?) now runs **unconditionally** before the wipe,
+   pushing when it isn't and blocking when that push fails. It fails toward
+   pushing — an unresolvable remote ref (never pushed, pruned, no `origin` at
+   all) counts as not durable. **Consequence: a session with no remote is never
+   auto-evicted**, since nothing could ever restore it — which is what
+   `archiveSession` has always done for a repo-less workspace, so the automatic
+   ladder now matches the explicit one.
+   Both the check and the push key off the **checked-out** branch
+   (`currentBranchOrNull`), never `session.branch`: `GitManager.push` pushes the
+   *named local branch*, so on a detached HEAD — or a row whose branch drifted
+   from the checkout — pushing `session.branch` reports "Everything up-to-date"
+   while HEAD's commits stay local. That is a green push proving nothing,
+   followed by a wipe. A detached HEAD has no branch to push at all and is
+   therefore never evictable.
+   The tip question is answered from the **local remote-tracking ref, not a live
+   `ls-remote`**, deliberately: the tracking ref records what this clone pushed
+   (the thing at risk) and needs no network or credentials on a janitor pass,
+   and a live query would be actively wrong for the ladder's most common
+   eviction — a merged session whose branch GitHub auto-deleted has no remote
+   branch left even though its commits are safely in the base, so `ls-remote`
+   would pin every merged session forever. Residual risk: a branch force-pushed
+   away behind a stale tracking ref, which loses commits that were pushed once.
+
+See [Blocked eviction](#blocked-eviction-shi-294) for what happens to a session
+that fails any of the three.
 - **Breadcrumb guards** — not a parent with live children, not an un-merged
   child. Preserve existing logic (`services/session.ts:441-453`).
+
+### Blocked eviction (SHI-294)
+
+A session whose uncommitted work cannot be made durable is **not reclaimable**,
+and the ladder says so rather than reclaiming it anyway. That is the whole
+decision; the rest of this section is why it doesn't turn into a disk outage.
+
+**The tension.** The obvious guard — "refused commit ⇒ stay at `light`" — makes a
+session with a secret in its tree, or a half-finished rebase, permanently
+un-evictable. Under disk pressure the janitor would then walk past it forever,
+trading a rare unrecoverable data loss for a slow, silent outage. So a bare
+guard is not enough; the blocked state needs a bound and an exit.
+
+**What we do instead, in the order that matters:**
+
+1. **Never wipe the irreplaceable half.** Uncommitted edits have no reflog entry
+   and no remote copy. Nothing in the disk ladder is worth that, so the checkout
+   stays and the session stays at `light`.
+2. **Still reclaim the regenerable half.** The blocked rung drops the session's
+   `overlay/` upper — the docs/183 install-delta cache — which eviction would
+   have deleted anyway and which a restore re-installs
+   (`reclaimBlockedSessionCaches`). A blocked session therefore holds only its
+   source checkout, not its dependency tree, so the pin is bounded to the bytes
+   that are actually irreplaceable. The `light` rung deliberately does *not* do
+   this: it is the cheap, reversible tier, and a session sitting there normally
+   is expected to restore fast.
+   **The `.install-done` marker goes with the upper**, in the same function, not
+   at the call site. Dropping the upper alone is *not* self-announcing: the dep
+   dir remounts over the shared rolling base, whose lower is usually populated,
+   so the present-but-EMPTY contradiction check (`overlay-dep-check.ts`) does not
+   fire and the marker would skip `agent.install` — leaving the session with the
+   base's dependencies and none of its own. Same unlink `claim-session.ts` does
+   when it hands a clone to a new session. The marker is removed **first**, and
+   its path resolved through `sessionStateDirForWorkspace` *inside* the try: a
+   half-failure must land on "no marker, deps present" (a harmless extra
+   reinstall) rather than the reverse, and an unrecognized layout must fail
+   closed — if the marker can't be located, the deps it describes aren't touched.
+3. **Make the pin visible and actionable.** A session pinned at `light` is
+   otherwise invisible — it is idle, nothing is attached to it, and the only
+   trace is an orchestrator log line nobody reads. The rung appends a persisted
+   `system_notice` (warn) to the session's own transcript naming the cause
+   (redacted secret findings, or the conflicted paths / in-progress rebase), that
+   the work is safe, and what unblocks it. Persisted, not emit-only: it must
+   still be there when the user next opens the session, which is the only moment
+   it can be acted on (CLAUDE.md — *chat transcript content MUST be persisted*).
+   Emitted once per session per orchestrator process (`notifiedEvictBlocked`), so
+   the hourly pass doesn't append a row an hour.
+
+The exit from the blocked state is the user's next turn: fixing the secret or
+resolving the conflict lets the ordinary auto-commit land, and the next pass
+evicts normally. Every pass re-attempts, so nothing has to be re-armed.
+
+**Rejected:**
+
+- **Commit the work to a rescue ref / stash instead of blocking.** The secret
+  scanner refuses precisely to keep a credential out of git history; a rescue
+  commit puts it back, and pushing one publishes it. Non-negotiable.
+- **Bounded retries, then wipe anyway.** Any escalation that ends in a wipe is
+  the original bug on a timer. The retry budget would expire exactly in the case
+  the guard exists for (a user away for a fortnight).
+- **Copy the checkout somewhere else, then wipe.** Moves the bytes without
+  reclaiming them, adds a second copy of a secret-bearing tree, and needs its own
+  lifecycle. All cost, no reclaim.
+- **Treat any null hash as blocking.** Would pin sessions whose commit returned
+  null because there was genuinely *nothing to commit* — a real state on a race
+  between the pre-check and the commit, and safe to wipe.
+
+Outcome accounting: `TierEscalationResult.evictBlockedByDirty` (the commit was
+refused) is distinct from `evictBlockedByPush` (the tip isn't on `origin` and
+couldn't be pushed). Both keep the checkout and both drop the caches — "push
+failed" and "there is no remote" are indistinguishable from here, and the second
+is permanent. They differ only in the notice: the refused-commit case posts one,
+because it names something the user can fix; a push failure is usually a
+transient outage that the next pass clears, and warning on it would post a row
+into every idle session during a GitHub blip.
+
+**Known limitation — ignored files are outside this guarantee.** `git status`
+does not see gitignored files, so a session whose only uncommitted content is,
+say, an ignored `.env` reads as clean and is evicted. Nothing git-shaped can fix
+that (an ignored file can never be committed or pushed), and it is why durable
+scratch has its own home: `/persist` (docs/217) and `uploads/` are siblings of
+the checkout and survive every reclaim path.
+
+**An already-missing checkout is recorded, not skipped.** A `light` row whose
+workspace is gone used to throw on the first git question and return `skipped`
+forever — while activation's `light → hot` shortcut skips
+`restoreSessionWorkspace` (`route-registry.ts`), so the container bind-mount
+404s in the SHI-179 loop. The rung now stats the dir first and, when a remote
+exists to re-clone from, records the truth (`evicted`), which routes the next
+activation through restore. With no remote it stays put — unrecoverable either
+way, so there's nothing to gain by asserting a lie.
+
+**Adjacent, not fully fixed here:** the descend guards are evaluated before the
+pacing delay and the git/network work, so a user activating a session during that
+window races the pass. Both destructive steps — the wipe and the blocked-path
+cache reclaim — now re-read the row and re-run `canAutoDescend` immediately
+before acting, which closes the seconds-long part of the window. It is still not
+a lifecycle reservation: a genuine fix would hold an eviction/activation lease
+across remediation, teardown and removal.
 
 ### Proposed constants (tunable; co-locate with `MAX_MERGED_SESSIONS_PER_REPO`)
 

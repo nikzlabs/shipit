@@ -40,7 +40,7 @@ agent uses **control B**.
 ### Control A is a per-agent "Sub-agent defaults" group
 
 Control A lives on each agent's existing Settings tab — the page that already
-holds that agent's connection/auth info (`ClaudeAuthCard` + `ProviderAccountSection`
+holds that agent's connection/auth info (`ProviderAccountsCard`
 in `ClaudeTab.tsx` / `CodexTab.tsx`). It is framed as a **"Sub-agent defaults"**
 section: the settings a *parent* agent's sub-invocation of *this* agent should
 run with. It has **two members**: a **default model** and a **reasoning effort**.
@@ -162,6 +162,29 @@ seeds new sessions from localStorage.
    (`getSavedModelId`) is gated on `!hasActiveSession`, so an active session at the agent default no
    longer highlights the model last picked elsewhere (its optimistic pick was already session-scoped
    via `pendingSessionRef`). Guarded in `ModelAgentSelector.test.tsx`.
+
+### Control B in the quick-capture composer
+
+The quick-capture overlay (`QuickCaptureOverlay.tsx`) shares the same
+`MessageInput` as the main composer, so the `ReasoningSelector` renders there
+too — it just needs `onReasoningChange` wired (the selector self-hides for
+agents with no `reasoning` knob, same as everywhere). Picks persist to the
+per-agent localStorage seed via the selector's `saveReasoning`, exactly like
+the model picker.
+
+The one difference from a regular new session: a quick session's **first turn
+is dispatched server-side at creation** (docs/205), *before* any WebSocket
+connect — so the `?reasoning=` connect param (item #6) can't reach turn 1. The
+overlay therefore sends the chosen level as a `reasoning` field on the
+`POST /api/sessions/headless` request. The server validates it against the
+resolved agent's options and persists it onto the session row in
+`graduateSession` (alongside `model`), so the server-dispatched first turn reads
+it from the row via `getSelectedReasoning` (`runner-registry-factory.ts`). An
+invalid level (e.g. Claude-only `max` with a Codex model) is dropped, mirroring
+the connect-param validation in `route-registry.ts`. Key files:
+`QuickCaptureOverlay.tsx`, `stores/actions/session-actions.ts`,
+`api-routes-session-crud.ts`, `services/headless-sessions.ts`,
+`services/graduate-session.ts`.
 
 ## Notes / known limitation
 

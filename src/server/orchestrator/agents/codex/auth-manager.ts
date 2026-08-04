@@ -36,6 +36,7 @@ import path from "node:path";
 import type { ChildProcess } from "node:child_process";
 import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { stripAnsi } from "../../../shared/strip-ansi.js";
+import { killChild } from "../../../shared/kill-child.js";
 import {
   ensureConfigDir,
   firstEpochMs,
@@ -210,6 +211,53 @@ export function extractCodexPlan(obj: Record<string, unknown>): string | null {
   };
   const lower = raw.toLowerCase();
   return known[lower] ?? raw.charAt(0).toUpperCase() + raw.slice(1);
+}
+
+/**
+ * docs/150 req 22 — the ChatGPT account this `auth.json` belongs to.
+ *
+ * `chatgpt_account_id` is the stable key: it is the account's own id, so it
+ * survives an email change and tells two accounts on the same plan apart —
+ * which `chatgpt_plan_type` above cannot. The claim was already being decoded
+ * here for the plan label; nothing had ever read it *as identity*.
+ *
+ * `email` is a plain top-level id_token claim (not inside the OpenAI auth
+ * namespace), and is only ever a label — never the key.
+ *
+ * Returns null when there is no usable account id, which is what an older
+ * `auth.json`, an API-key-only file, or an unparseable token all look like.
+ * Exported for unit tests.
+ */
+export function extractCodexIdentity(
+  obj: Record<string, unknown>,
+): { externalId: string; email?: string } | null {
+  const raw = readAuthClaim(obj, "chatgpt_account_id");
+  if (typeof raw !== "string" || raw.length === 0) return null;
+  const email = readTokenClaim(obj, "email");
+  return {
+    externalId: raw,
+    ...(typeof email === "string" && email.length > 0 ? { email } : {}),
+  };
+}
+
+/**
+ * Read a **top-level** claim from the id/access token JWT, as opposed to
+ * {@link readAuthClaim}, which reads inside the `https://api.openai.com/auth`
+ * namespace. `email` lives at the top level.
+ */
+function readTokenClaim(obj: Record<string, unknown>, key: string): unknown {
+  const tokens =
+    obj.tokens && typeof obj.tokens === "object"
+      ? (obj.tokens as Record<string, unknown>)
+      : obj;
+  for (const tokKey of ["id_token", "access_token", "idToken", "accessToken"]) {
+    const jwt = pickString(tokens, tokKey) ?? pickString(obj, tokKey);
+    if (!jwt) continue;
+    const payload = decodeJwtPayload(jwt);
+    const v = payload?.[key];
+    if (v !== undefined && v !== null) return v;
+  }
+  return null;
 }
 
 /** True iff the singleton `auth.json` exists and has non-zero size. */
@@ -543,11 +591,7 @@ export class CodexAuthManager extends EventEmitter implements AgentAuthManager {
     this.clearTimeoutHandle();
     proc.removeAllListeners("close");
     proc.removeAllListeners("error");
-    try {
-      proc.kill("SIGTERM");
-    } catch {
-      // Process already dead — nothing to do.
-    }
+    killChild(proc, "SIGTERM");
     this.clearActiveScope();
   }
 
@@ -627,11 +671,7 @@ export class CodexAuthManager extends EventEmitter implements AgentAuthManager {
     if (!proc) return;
     proc.removeAllListeners("close");
     proc.removeAllListeners("error");
-    try {
-      proc.kill("SIGTERM");
-    } catch {
-      // Already gone.
-    }
+    killChild(proc, "SIGTERM");
   }
 
   /**

@@ -1,7 +1,15 @@
 import type { WsServerMessage } from "../../shared/types.js";
 import type { AgentProcess } from "../../shared/types.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
+import { emitChatCard, persistTurnInProgress } from "../chat-card-persistence.js";
 import type { AgentListenerDeps, WireListenersOpts } from "./agent-listeners.js";
+
+/**
+ * The one actionable sentence a user gets when a turn dies on authentication.
+ * Exported so tests assert against the constant instead of a pasted copy.
+ */
+export const AGENT_NOT_AUTHENTICATED_MESSAGE =
+  "This agent is not authenticated. Open Settings → Agents to sign in, then resend your message.";
 
 /**
  * `auth_required` handling — auth-failure recovery / token refresh (docs/179),
@@ -23,7 +31,27 @@ export function wireAuthRequiredHandler(
   opts: WireListenersOpts,
   emitToViewers: (msg: WsServerMessage) => void,
 ): void {
+  // docs/179 — turn-scoped idempotence latch. `StreamingClaudeProcess` already
+  // raises `auth_required` at most once per turn, but that guarantee covers one
+  // emitter; this handler must be safe against a duplicate from anywhere,
+  // because everything below is destructive or user-visible exactly once —
+  // it kills the turn's agent, and on the surface path emits an error bubble,
+  // nudges the refresher, and broadcasts `session_agent_finished`.
+  //
+  // Crucially this is NOT the same as making `willRecoverAuth` return false on
+  // a second call: `false` means "will not recover", which routes the duplicate
+  // into `surfaceReauth()` and pops a sign-in card *during* a recovery that is
+  // about to succeed silently. A duplicate must do nothing at all.
+  //
+  // Safe as a per-turn closure: `agent-execution.ts` calls
+  // `existingAgent.removeAllListeners()` before re-wiring a reused process, so
+  // exactly one of these handlers is registered per turn.
+  let handledThisTurn = false;
+
   agent.on("auth_required", () => {
+    if (handledThisTurn) return;
+    handledThisTurn = true;
+
     const turnSession = opts.capturedSessionId
       ? deps.sessionManager.get(opts.capturedSessionId)
       : null;
@@ -40,6 +68,46 @@ export function wireAuthRequiredHandler(
     // recovers without the user seeing anything or re-sending.
     const willRecover = opts.willRecoverAuth?.() ?? false;
 
+    /**
+     * Emit + persist the "not authenticated" row. `emitChatCard` needs a runner
+     * (it records the row on `runner.recordedCards` so `buildTurnMessages`
+     * interleaves it at its true transcript position) and a session id; without
+     * either we can only fall back to the legacy emit, which is what the code
+     * did unconditionally before.
+     *
+     * `finalizeInProgress` after the emit is load-bearing on THIS path and only
+     * this one: the row and the turn's partial output are written as
+     * `in_progress=1`, and the auth path is the one turn ending that never
+     * finalizes — `turn-executor`'s `done` skips `onInterruptedTurn` when
+     * `sawAuthRequired` (it defers to "the listener already owns the visible
+     * row", which is us). Left in-progress, the row — and any partial output
+     * beside it — is deleted by the next turn's `replaceInProgress`, i.e. the
+     * docs/156 erasure bug.
+     *
+     * The explicit `persistTurnInProgress` flush is load-bearing for the same
+     * reason. On the no-recovery path the teardown above has ALREADY cleared
+     * `runner.running`, so `emitChatCard` takes its post-turn branch and appends
+     * the error row on its own — correct for the row, but it no longer flushes
+     * whatever the turn streamed since the last tool-result boundary. Flushing
+     * first keeps that partial output in history, and leaves the appended error
+     * row sorting after it. On the recover-then-fail path (`running` still set)
+     * the flush is redundant with `emitChatCard`'s own persist, and harmless.
+     */
+    const persistAuthErrorRow = (): void => {
+      if (!runner || !turnSessionId) {
+        emitToViewers({ type: "error", message: AGENT_NOT_AUTHENTICATED_MESSAGE });
+        return;
+      }
+      persistTurnInProgress(deps.chatHistoryManager, runner, turnSessionId);
+      emitChatCard(
+        runner,
+        { type: "error", message: AGENT_NOT_AUTHENTICATED_MESSAGE, sessionId: turnSessionId },
+        { role: "assistant", text: `Error: ${AGENT_NOT_AUTHENTICATED_MESSAGE}`, isError: true },
+        { chatHistoryManager: deps.chatHistoryManager, sessionId: turnSessionId },
+      );
+      deps.chatHistoryManager.finalizeInProgress(turnSessionId);
+    };
+
     // The visible re-auth flow: tell the user (in the affected session only)
     // to re-authenticate via Settings, nudge the per-agent silent refresher,
     // and mark the turn ended.
@@ -52,11 +120,18 @@ export function wireAuthRequiredHandler(
       // attempt a silent heal (which, on a genuine revocation, broadcasts
       // `agent_auth_failed reason:revoked` → the "Sign in" toast that opens
       // Settings → Agents).
-      emitToViewers({
-        type: "error",
-        message:
-          "This agent is not authenticated. Open Settings → Agents to sign in, then resend your message.",
-      });
+      //
+      // PERSISTED, not merely emitted (CLAUDE.md "Chat transcript content MUST
+      // be persisted"). `emitToViewers` → `runner.emitMessage` is transport
+      // only: it broadcasts to attached viewers and buffers into the per-turn
+      // event log. In the production incident this notice was the user's ONLY
+      // signal that their turn had died, and it reached nobody — no viewer was
+      // attached at the failure instant, and idle-cleanup disposed the runner
+      // five seconds later, taking the replay buffer with it. The user saw a
+      // prompt with no reply and no error, twice. `emitChatCard` broadcasts,
+      // records the row in-band, and writes it to chat history in one call, so
+      // it now survives a detached viewer, a session switch, and a reload.
+      persistAuthErrorRow();
       // docs/153, docs/155 — let the per-agent module decide its side effect on
       // auth failure (Claude nudges the silent OAuth refresher; others register
       // their own hook or none). The listener doesn't know the agent — that's

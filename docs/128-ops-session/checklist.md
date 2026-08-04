@@ -32,7 +32,8 @@
       the sidebar `+` menu (`handleCreateOps`) and the per-row `⋯` "Investigate in Ops
       session" entry are the ops-creation surfaces; the redundant Settings button is gone.
 - [x] Per-session `⋯` menu "Investigate in Ops session" entry point (any non-ops row);
-      seeds the new session's composer draft with a target-scoped investigation prompt.
+      seeds the new session's composer draft only with the target identity and read-only
+      boundary, leaving incident-specific investigation instructions to the operator.
 - [x] `createOpsSession(targetSessionId?)` store action centralizing ops creation
       (Settings + sidebar both use it); refactored the Settings inline fetch onto it.
 - [x] Per-kind right-panel tabs: hide Preview + PR, add read-only Host tab (`HostPanel`).
@@ -115,3 +116,15 @@
 
 - [x] Confirm `kind: "ops"` server-side creation path is wired to the Settings button end-to-end
       in a live environment (live re-audit on the branch-deployed host passed — see "Live re-audit").
+- [x] An ops session can't acquire a remote behind a `gh` read, and never
+      auto-pushes (plan §4d — `resolveGitHubRemote` no longer writes git config;
+      `postTurnCommit` gates the post-turn push on `kind === "ops"`). Diagnosed
+      on host `shipit-16gb` from the ops session at `41699b37`.
+- [x] **The journal pillar survives the non-root runtime (#1917).** The docs/150
+      gosu drop silently un-did the image's journal-group membership, so ops
+      sessions read an empty journal while `id` showed `groups=1000(shipit)`.
+      Fixed in `docker/session-worker/entrypoint.sh`: align to the mount's real
+      (host) GID, then drop with the `gosu <uid>` user form so the supplementary
+      set survives. See plan.md → "Journal access has two runtime preconditions".
+      Verified by `session-worker-entrypoint.test.ts`, which executes the real
+      script; end-to-end confirmation needs a deploy (no Docker daemon in-session).

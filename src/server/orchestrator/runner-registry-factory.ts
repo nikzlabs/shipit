@@ -1,6 +1,6 @@
 import type { GitManager } from "../shared/git.js";
 import type { SessionRunnerFactory } from "./session-runner.js";
-import { SessionRunnerRegistry } from "./session-runner.js";
+import { AgentTurnAdmissionError, SessionRunnerRegistry } from "./session-runner.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import type { SessionManager } from "./sessions.js";
 import type { RepoStore } from "./repo-store.js";
@@ -18,21 +18,26 @@ import type { DepDirPublishOutcome } from "./overlay-publish.js";
 import type { RuntimeMode } from "./app-di.js";
 import type { LogStore } from "./log-store.js";
 import type { UsageManager } from "./usage.js";
-import type { AuthManager } from "./agents/claude/auth-manager.js";
-import type { AgentAuthManager } from "./agent-auth-manager.js";
 import type { PrepareRunParamsFn } from "./agent-run-params-prep.js";
+import type { ProviderAccountManager } from "./provider-account-manager.js";
+import type { TurnOutcome } from "./turn-settlement.js";
 import { pushToOrigin } from "./git-utils.js";
 import { isNonFastForwardError } from "./services/git.js";
 import { getErrorMessage } from "./validation.js";
-import { setupServiceManager } from "./service-manager-setup.js";
+import { applyShipitConfigChange, setupServiceManager } from "./service-manager-setup.js";
 import { buildAgentRunParams } from "./session-agent-run-params.js";
-import { finalizeSessionAgentEnvironment, prepareSessionAgentEnvironment } from "./session-agent-env.js";
+import {
+  finalizeSessionAgentEnvironment,
+  prepareSessionAgentEnvironment,
+  repushSessionAgentToken,
+} from "./session-agent-env.js";
 import { emitPrLifecycleAfterCommit } from "./services/pr-lifecycle.js";
 import { detectAndReArmMergedSession, detectAndReArmResetSession } from "./services/pr-rearm.js";
 import { postTurnCommit } from "./ws-handlers/post-turn.js";
 import { routeVoiceNote } from "./voice/voice-note-router.js";
 import type { VoiceNotePayload, VoiceNoteSource } from "../shared/types/voice-note-types.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
+import { sessionAccountId, sessionNeedsAccountFailover } from "./services/provider-account-switch.js";
 
 // ---- Runner registry setup ----
 
@@ -100,9 +105,10 @@ export interface RunnerRegistryDeps {
   /**
    * docs/183 — orchestrator-private root for per-service compose env files,
    * outside the agent's workspace mount. Forwarded into `setupServiceManager`
-   * → `ServiceManager`. See `ServiceManagerOptions.serviceEnvDir`.
+   * → `ServiceManager`, both of which require it (SHI-290). See
+   * `ServiceManagerOptions.serviceEnvDir`.
    */
-  serviceEnvDir?: string;
+  serviceEnvDir: string;
   /** docs/192 — durable log store, forwarded to `setupServiceManager` for service-log persistence. */
   logStore?: LogStore;
   /**
@@ -126,6 +132,14 @@ export interface RunnerRegistryDeps {
    * Optional so test setups without container creds still work.
    */
   credentialsDir?: string;
+  /**
+   * docs/150 — provider-account router, used by the system-turn env-prep hook
+   * so a dispatched turn (child session, CI fix, wake) runs the same
+   * account-routing preflight the WS path does. Optional: without it the hook
+   * keeps the pre-docs/150 behavior of provisioning the legacy credential
+   * subtree and never blocking on quota.
+   */
+  providerAccountManager?: ProviderAccountManager;
   /**
    * docs/149 — used by the system-turn `buildRunParams` hook to load the
    * user's optional Settings > Instructions suffix. Optional so test setups
@@ -155,19 +169,24 @@ export interface RunnerRegistryDeps {
    */
   getAutoConflictResolveManager?: () => AutoConflictResolveManager | undefined;
   /**
+   * SHI-264 — re-acquire the completion settlement for a server-side DELIVERY
+   * whose turn outlived an orchestrator restart, keyed by the delivery id the
+   * worker reports. Threaded into every runner's `SystemTurnDeps` so turn
+   * adoption can settle the ORIGINAL watch from the adopted turn instead of a
+   * duplicate being dispatched over it.
+   *
+   * Lazy in the same way (and for the same reason) as `getPrStatusPoller`: the
+   * merge-watch manager is constructed after the registry it dispatches into.
+   * Optional — a setup without it adopts turns exactly as before.
+   */
+  rebindDelivery?: (deliveryId: string) => ((outcome: TurnOutcome) => void) | undefined;
+  /**
    * Usage manager — used by `wireAgentListeners` to record per-turn token /
    * cost telemetry on `agent_result`. Shared with the WS path so a system-
    * dispatched turn lands in the same `usage_turns` series as a user-typed
    * turn (cost graph, ContextDial, etc.).
    */
   usageManager: UsageManager;
-  /**
-   * Claude auth manager — used by `wireAgentListeners` to kick off the OAuth
-   * flow when the CLI emits `auth_required`. Without it a system turn that
-   * runs into a stale token would just emit `auth_required` with no
-   * follow-up. Shared with the WS path.
-   */
-  authManager: AuthManager;
   /**
    * Optional — push a fresh rate-limit snapshot for any agent (from an
    * `agent_rate_limits` AgentEvent) into the subscription-limits badge.
@@ -185,6 +204,12 @@ export interface RunnerRegistryDeps {
    * "5h usage limit" message when a session window is exhausted.
    */
   getSubscriptionLimitsSnapshot?: () => SubscriptionLimitsMap;
+  /**
+   * docs/150 req 7 — bench the session's provider account after the provider
+   * fails its turn for quota. Forwarded into the listener so a dispatched /
+   * system turn marks exhaustion exactly like a WS turn does.
+   */
+  markSessionAccountExhausted?: (sessionId: string, until: number) => void;
   /**
    * docs/153 — fire-and-forget nudge to the Claude OAuth refresher. Forwarded
    * into the listener so dispatched/system turns also heal a stale token via
@@ -206,13 +231,6 @@ export interface RunnerRegistryDeps {
    * get the same pre-spawn heal the WS path does.
    */
   ensureAgentTokenFresh?: (agentId: AgentId, accountId?: string) => Promise<boolean>;
-  /**
-   * docs/155 Phase 2c — per-agent auth manager map. Forwarded to the
-   * `AgentListenerDeps` so a system-turn that hits `auth_required` restarts
-   * the failing backend's auth flow (not always Claude OAuth). Optional;
-   * absent in tests that don't construct a real auth manager.
-   */
-  authManagers?: Map<AgentId, AgentAuthManager>;
   /**
    * docs/155 Phase 3 — per-agent run-params prep hooks. Forwarded into the
    * system-turn `buildRunParams` so dispatched/CI-fix turns inject the same
@@ -239,6 +257,23 @@ export interface RunnerRegistryDeps {
 }
 
 /**
+ * Enforce repository trust for ordinary repo-backed sessions. Ops and sandbox
+ * sessions are explicit, server-authored execution environments rather than a
+ * ShipIt-managed checkout, so the repository messaging gate does not apply.
+ */
+export function assertSessionCanDispatch(
+  sessionId: string,
+  session: Pick<SessionInfo, "kind" | "remoteUrl"> | undefined,
+  isTrusted: (remoteUrl: string) => boolean,
+): void {
+  if (!session) throw new AgentTurnAdmissionError(sessionId);
+  if (session.kind === "ops" || session.kind === "sandbox") return;
+  if (session.remoteUrl && !isTrusted(session.remoteUrl)) {
+    throw new AgentTurnAdmissionError(sessionId);
+  }
+}
+
+/**
  * Create and configure the SessionRunnerRegistry with all callbacks.
  */
 export function createRunnerRegistry(
@@ -250,8 +285,9 @@ export function createRunnerRegistry(
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
     getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
     credentialStore, secretStore, dockerSecretsConfig, serviceEnvDir, logStore, runtimeMode, broadcastLog,
-    credentialsDir, readSystemPrompt, generateText, getPrStatusPoller,
-    usageManager, authManager, authManagers, recordAgentRateLimits, getSubscriptionLimitsSnapshot,
+    credentialsDir, providerAccountManager, readSystemPrompt, generateText, getPrStatusPoller, rebindDelivery,
+    usageManager, recordAgentRateLimits, getSubscriptionLimitsSnapshot,
+    markSessionAccountExhausted,
     nudgeClaudeOAuthRefresh, onAgentAuthRequired, ensureAgentTokenFresh, runParamsPreps,
     publishOverlayBases,
   } = registryDeps;
@@ -284,15 +320,14 @@ export function createRunnerRegistry(
         sessionManager,
         chatHistoryManager,
         usageManager,
-        authManager,
         sseBroadcast,
         broadcastLog: (source: LogSource, text: string) =>
           broadcastLog(runner.sessionId, source, text),
         getSelectedModel: () => sessionManager.get(runner.sessionId)?.model,
         getSelectedReasoning: () => sessionManager.get(runner.sessionId)?.reasoningEffort,
-        ...(authManagers ? { authManagers } : {}),
         ...(recordAgentRateLimits ? { recordAgentRateLimits } : {}),
         ...(getSubscriptionLimitsSnapshot ? { getSubscriptionLimitsSnapshot } : {}),
+        ...(markSessionAccountExhausted ? { markSessionAccountExhausted } : {}),
         ...(nudgeClaudeOAuthRefresh ? { nudgeClaudeOAuthRefresh } : {}),
         ...(onAgentAuthRequired ? { onAgentAuthRequired } : {}),
         // docs/163 — derived voice-note delivery for system turns. Only when a
@@ -341,6 +376,12 @@ export function createRunnerRegistry(
         }, autoPushDebounceMs));
       };
       runner.setSystemTurnDeps({
+        authorizeDispatch: (sessionId) => {
+          const session = sessionManager.get(sessionId);
+          assertSessionCanDispatch(sessionId, session, (remoteUrl) =>
+            repoStore.isTrusted(remoteUrl),
+          );
+        },
         agentFactory: (agentId) => {
           if (runner.createAgent) return runner.createAgent(agentId);
           if (agentFactory) return agentFactory(agentId);
@@ -348,6 +389,8 @@ export function createRunnerRegistry(
         },
         // docs/179 — token healer for the runtime-401 auto-retry on system turns.
         ...(ensureAgentTokenFresh ? { ensureAgentTokenFresh } : {}),
+        // SHI-264 — lets turn adoption re-settle a delivery that survived a restart.
+        ...(rebindDelivery ? { rebindDelivery } : {}),
         autoCommit: async (sessionDir, summary) => {
           const git = createGitManager(sessionDir);
           const parentHash = await git.getHeadHash();
@@ -398,20 +441,45 @@ export function createRunnerRegistry(
               deps: { credentialsDir, credentialStore, sessionManager },
             });
           },
+          // docs/179 — the runtime-401 recovery's unconditional token push, at
+          // parity with the WS path. Only the recovery path calls it.
+          repushSessionAgentToken: (sessionId, agentId) => {
+            repushSessionAgentToken(runner, {
+              sessionId,
+              agentId,
+              deps: { credentialsDir, sessionManager },
+            });
+          },
           // Re-sync the freshest OAuth token immediately before spawn, the same
           // late moment the WS path does. Closes the staleness window that let a
           // quick/child/CI-fix turn spawn with a sibling-rotated (dead) token →
           // "Not logged in". Idempotent with the service fn's earlier call.
-          prepareAgentEnv: async (sessionId, agentId) => {
+          prepareAgentEnv: async (sessionId, agentId, envOpts) => {
             await prepareSessionAgentEnvironment(runner, {
               sessionId,
               agentId,
+              // docs/150 req 13 — the dispatched/system-turn twin of the WS
+              // path's preflight, so a child, CI-fix, or wake turn is blocked
+              // by an exhausted provider exactly like a user-typed one.
+              enforceAccountRouting: true,
+              // A dispatched turn reuses the resident streaming process too
+              // (`dispatched-turn.ts` captures it), so it needs the same
+              // no-repair-under-a-live-CLI guarantee as the WS path.
+              ...(envOpts?.reusingResidentAgent ? { reusingResidentAgent: true } : {}),
               deps: {
-                credentialsDir, credentialStore, sessionManager,
+                credentialsDir, credentialStore, sessionManager, chatHistoryManager,
+                ...(providerAccountManager ? { providerAccountManager } : {}),
                 ...(ensureAgentTokenFresh ? { ensureAgentTokenFresh } : {}),
               },
             });
           },
+          ...(providerAccountManager ? {
+            needsAccountFailover: (sessionId: string) =>
+              sessionNeedsAccountFailover(sessionManager.get(sessionId), providerAccountManager),
+            // docs/150 — scope the runtime-401 heal to this turn's account.
+            resolveTurnAccountId: (sessionId: string) =>
+              sessionAccountId(sessionManager.get(sessionId)),
+          } : {}),
         } : {}),
         // Single shared commit helper — same `postTurnCommit` the WS path uses
         // (workspace-locked auto-commit + conflict notice + auto-push + commit
@@ -509,10 +577,14 @@ export function createRunnerRegistry(
         };
         setupServiceManager(runner, setupDeps);
 
-        // Allow re-setup when config files change (e.g. old-format migrated to new)
+        // Re-evaluate the session's config when it changes on disk — an edit
+        // the file watcher reports, or an orchestrator-side workspace rewrite
+        // (rebase/sync) that calls `runner.reevaluateWorkspaceConfig()`.
+        // `applyShipitConfigChange` handles the full delta, including the
+        // no-manager-yet case (which delegates back to `setupServiceManager`).
         if ("onComposeConfigChanged" in runner) {
           (runner as { onComposeConfigChanged?: () => void }).onComposeConfigChanged = () => {
-            setupServiceManager(runner, setupDeps);
+            applyShipitConfigChange(runner, setupDeps);
           };
         }
 

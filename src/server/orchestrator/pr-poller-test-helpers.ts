@@ -43,7 +43,19 @@ export function makeFakeRegistry(): SessionRunnerRegistry & {
 }
 
 /** Convenience: a parsed-workflow stub representing "any workflow, no filter." */
-export const ALWAYS_APPLIES: ParsedWorkflow = { alwaysApplies: true, events: [] };
+export const ALWAYS_APPLIES: ParsedWorkflow = {
+  unparseable: false,
+  events: [
+    {
+      event: "pull_request",
+      pathsInclude: [],
+      pathsIgnore: [],
+      branchesInclude: [],
+      branchesIgnore: [],
+      tagsOnly: false,
+    },
+  ],
+};
 
 export function makeGraphQLPrNode(overrides: Record<string, unknown> = {}) {
   return {

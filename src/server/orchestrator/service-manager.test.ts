@@ -1,15 +1,53 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
+import type { ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { ServiceManager, type ComposeRunner, type ComposeQuery, type SecretsStatusInternalSnapshot } from "./service-manager.js";
+import { SESSION_WORKSPACE_SUBDIR, SESSION_STATE_SUBDIR } from "./session-state-dir.js";
+
+/**
+ * Create a real session layout in a temp dir: the clone at
+ * `<sessionDir>/workspace`, ShipIt's state dir at its `state/` sibling.
+ *
+ * `ServiceManager` resolves the state dir from the clone path (docs/246), and
+ * since SHI-286 it REFUSES a clone that doesn't sit at `workspace/` rather than
+ * falling back to writing into the clone — so a bare temp dir is no longer a
+ * valid workspace. Returns the session dir; the clone is its `workspace/` child.
+ */
+function makeSessionDir(prefix: string): string {
+  const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  fs.mkdirSync(path.join(sessionDir, SESSION_WORKSPACE_SUBDIR), { recursive: true });
+  return sessionDir;
+}
+
+/** The session state dir for a clone produced by {@link makeSessionDir}. */
+function stateOf(workspaceDir: string): string {
+  return path.resolve(workspaceDir, "..", SESSION_STATE_SUBDIR);
+}
+
+/**
+ * The orchestrator-private service-env root for a clone produced by
+ * {@link makeSessionDir} — a sibling of `workspace/`, so it is outside the
+ * clone. `ServiceManager` requires one (SHI-290): there is no longer an
+ * in-clone `.shipit/.env.<svc>` fallback, and a root that resolves inside the
+ * clone is refused outright.
+ */
+function serviceEnvOf(workspaceDir: string): string {
+  return path.resolve(workspaceDir, "..", "service-env");
+}
+
+/** Where `<svc>`'s env file lands for a manager built with {@link serviceEnvOf}. */
+function serviceEnvFile(workspaceDir: string, sessionId: string, svc: string): string {
+  return path.join(serviceEnvOf(workspaceDir), sessionId, `.env.${svc}`);
+}
 
 describe("ServiceManager", () => {
   let tmpDir: string;
 
   function setup() {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "service-mgr-"));
-    return tmpDir;
+    tmpDir = makeSessionDir("service-mgr-");
+    return path.join(tmpDir, SESSION_WORKSPACE_SUBDIR);
   }
 
   afterEach(() => {
@@ -28,6 +66,7 @@ describe("ServiceManager", () => {
     return new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner,
     });
@@ -56,7 +95,7 @@ describe("ServiceManager", () => {
     // start() will fail because docker compose isn't available in test,
     // but the override file should be written before the compose up call
     try { await mgr.start(); } catch { /* expected */ }
-    const overridePath = path.join(dir, ".shipit", "compose.override.yml");
+    const overridePath = path.join(stateOf(dir), "compose.override.yml");
     expect(fs.existsSync(overridePath)).toBe(true);
     const content = fs.readFileSync(overridePath, "utf-8");
     expect(content).toContain("shipit-parent-session: test-session");
@@ -124,6 +163,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner,
       composeQuery,
@@ -238,6 +278,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner,
       composeQuery,
@@ -285,6 +326,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner,
       composeQuery,
@@ -335,14 +377,43 @@ services:
     const mgr = createManager(dir);
     await expect(mgr.restartService("nonexistent")).rejects.toThrow("Unknown service");
   });
+
+  /**
+   * `streamLogs` is the one docker spawn that bypasses the injectable compose
+   * runner, so it execs for real even when a test has stubbed every other
+   * docker call. Inside a ShipIt session container there is no `docker` binary
+   * at all, so the spawn emits ENOENT asynchronously — and an 'error' event
+   * with no listener is rethrown as an uncaughtException that killed the
+   * vitest worker, taking the whole `npm test` run down with it.
+   */
+  it("registers an 'error' listener on the log follower so a failed docker exec can't crash the process", () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['3000:3000']\n");
+    const mgr = createManager(dir);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const cleanup = mgr.streamLogs("web");
+    const logProcesses = (mgr as unknown as { logProcesses: Map<string, ChildProcess> }).logProcesses;
+    const proc = logProcesses.get("web");
+    expect(proc).toBeDefined();
+    expect(proc!.listenerCount("error")).toBeGreaterThan(0);
+
+    // The exact failure a docker-less container produces must be absorbed,
+    // not rethrown, and must retire the dead follower from the registry.
+    expect(() => proc!.emit("error", new Error("spawn docker ENOENT"))).not.toThrow();
+    expect(logProcesses.has("web")).toBe(false);
+
+    cleanup();
+    warn.mockRestore();
+  });
 });
 
 describe("ServiceManager lifecycle (mocked docker)", () => {
   let tmpDir: string;
 
   function setup() {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "service-mgr-lc-"));
-    return tmpDir;
+    tmpDir = makeSessionDir("service-mgr-lc-");
+    return path.join(tmpDir, SESSION_WORKSPACE_SUBDIR);
   }
 
   afterEach(() => {
@@ -367,6 +438,7 @@ describe("ServiceManager lifecycle (mocked docker)", () => {
     return new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner,
       composeQuery,
@@ -507,6 +579,7 @@ describe("ServiceManager lifecycle (mocked docker)", () => {
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner,
       composeQuery,
@@ -544,6 +617,7 @@ describe("ServiceManager lifecycle (mocked docker)", () => {
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner,
       composeQuery,
@@ -607,6 +681,7 @@ describe("ServiceManager lifecycle (mocked docker)", () => {
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner,
       composeQuery,
@@ -649,8 +724,8 @@ describe("ServiceManager secret injection", () => {
   let tmpDir: string;
 
   function setup() {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "service-mgr-secrets-"));
-    return tmpDir;
+    tmpDir = makeSessionDir("service-mgr-secrets-");
+    return path.join(tmpDir, SESSION_WORKSPACE_SUBDIR);
   }
 
   afterEach(() => {
@@ -679,6 +754,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner: fakeRunner,
       secretsLoader: async () => ({ STRIPE_KEY: "sk_test_123", DATABASE_URL: "postgres://x" }),
@@ -687,10 +763,13 @@ services:
 
     try { await mgr.start(); } catch { /* expected — no docker */ }
 
-    const webEnv = fs.readFileSync(path.join(dir, ".shipit/.env.web"), "utf-8");
-    const apiEnv = fs.readFileSync(path.join(dir, ".shipit/.env.api"), "utf-8");
+    const webEnv = fs.readFileSync(serviceEnvFile(dir, "test-session", "web"), "utf-8");
+    const apiEnv = fs.readFileSync(serviceEnvFile(dir, "test-session", "api"), "utf-8");
     expect(webEnv).toContain("STRIPE_KEY=sk_test_123");
     expect(apiEnv).toContain("DATABASE_URL=postgres://x");
+
+    // SHI-290 — and nowhere near the user's clone.
+    expect(fs.existsSync(path.join(dir, ".shipit"))).toBe(false);
 
     // Scoping: web should not see api's secrets and vice versa
     expect(webEnv).not.toContain("DATABASE_URL");
@@ -713,6 +792,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner: fakeRunner,
       secretsLoader: async () => ({ STRIPE_KEY: "sk" }),
@@ -721,8 +801,8 @@ services:
 
     try { await mgr.start(); } catch { /* expected */ }
 
-    expect(fs.existsSync(path.join(dir, ".shipit/.env.web"))).toBe(true);
-    expect(fs.existsSync(path.join(dir, ".shipit/.env.db"))).toBe(false);
+    expect(fs.existsSync(serviceEnvFile(dir, "test-session", "web"))).toBe(true);
+    expect(fs.existsSync(serviceEnvFile(dir, "test-session", "db"))).toBe(false);
   });
 
   it("does nothing when no secretsLoader is provided", async () => {
@@ -739,6 +819,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner: fakeRunner,
       // no secretsLoader
@@ -749,7 +830,7 @@ services:
 
     // The env file is still written (with header only, no values) so compose's
     // env_file: reference doesn't fail with "missing file"
-    const webEnv = fs.readFileSync(path.join(dir, ".shipit/.env.web"), "utf-8");
+    const webEnv = fs.readFileSync(serviceEnvFile(dir, "test-session", "web"), "utf-8");
     expect(webEnv).not.toContain("STRIPE_KEY=");
     expect(webEnv).toContain("# Generated by ShipIt");
   });
@@ -779,6 +860,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner,
       composeQuery,
@@ -787,13 +869,79 @@ services:
     });
 
     await mgr.start();
-    expect(fs.readFileSync(path.join(dir, ".shipit/.env.api"), "utf-8"))
+    expect(fs.readFileSync(serviceEnvFile(dir, "test-session", "api"), "utf-8"))
       .toContain("DATABASE_URL=postgres://old");
 
     secrets = { DATABASE_URL: "postgres://new" };
     await mgr.refreshSecrets();
-    expect(fs.readFileSync(path.join(dir, ".shipit/.env.api"), "utf-8"))
+    expect(fs.readFileSync(serviceEnvFile(dir, "test-session", "api"), "utf-8"))
       .toContain("DATABASE_URL=postgres://new");
+  });
+
+  it("refreshSecrets rewrites secrets without starting an all-manual stack", async () => {
+    const dir = setup();
+    writeCompose(dir, `
+services:
+  worker:
+    image: node:20
+    x-shipit-preview: manual
+    x-shipit-secrets:
+      - API_KEY
+`);
+    let secret = "old";
+    const composeRunner = vi.fn<ComposeRunner>(() => Promise.resolve());
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
+      secretsLoader: async () => ({ API_KEY: secret }),
+      pollIntervalMs: 0,
+    });
+
+    await mgr.start();
+    secret = "new";
+    await mgr.refreshSecrets();
+
+    expect(fs.readFileSync(serviceEnvFile(dir, "test-session", "worker"), "utf-8"))
+      .toContain("API_KEY=new");
+    expect(composeRunner.mock.calls.some(([args]) => args.includes("up"))).toBe(false);
+  });
+
+  it("refreshSecrets restarts only auto services in a mixed stack", async () => {
+    const dir = setup();
+    writeCompose(dir, `
+services:
+  api:
+    image: node:20
+    ports: ['3000:3000']
+    x-shipit-secrets:
+      - API_KEY
+  worker:
+    image: node:20
+    x-shipit-preview: manual
+    x-shipit-secrets:
+      - API_KEY
+`);
+    const composeRunner = vi.fn<ComposeRunner>(() => Promise.resolve());
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
+      secretsLoader: async () => ({ API_KEY: "value" }),
+      pollIntervalMs: 0,
+    });
+
+    await mgr.start();
+    composeRunner.mockClear();
+    await mgr.refreshSecrets();
+
+    const upCall = composeRunner.mock.calls.find(([args]) => args.includes("up"));
+    expect(upCall?.[0]).toContain("api");
+    expect(upCall?.[0]).not.toContain("worker");
   });
 
   it("override file references env_file for services with secrets", async () => {
@@ -810,6 +958,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner: fakeRunner,
       secretsLoader: async () => ({ DATABASE_URL: "postgres://x" }),
@@ -818,9 +967,12 @@ services:
 
     try { await mgr.start(); } catch { /* expected */ }
 
-    const override = fs.readFileSync(path.join(dir, ".shipit/compose.override.yml"), "utf-8");
+    const override = fs.readFileSync(path.join(stateOf(dir), "compose.override.yml"), "utf-8");
     expect(override).toContain("env_file:");
-    expect(override).toContain(".shipit/.env.api");
+    // SHI-290 — the reference is the absolute out-of-clone path, never
+    // `.shipit/.env.api` inside the user's repository.
+    expect(override).toContain(serviceEnvFile(dir, "test-session", "api"));
+    expect(override).not.toContain(".shipit/.env.api");
   });
 
   it("getDeclaredSecretNames returns the union across services", async () => {
@@ -842,6 +994,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner: fakeRunner,
       secretsLoader: async () => ({}),
@@ -855,7 +1008,7 @@ services:
 
   // ---- Phase 3: agent: true → .env.agent + secrets snapshot ----
 
-  it("writes .shipit/.env.agent for `agent: true` declarations", async () => {
+  it("writes the state dir's .env.agent for `agent: true` declarations", async () => {
     const dir = setup();
     writeCompose(dir, `
 services:
@@ -871,6 +1024,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner: fakeRunner,
       secretsLoader: async () => ({ DATABASE_URL: "postgres://x", STRIPE_KEY: "sk" }),
@@ -879,8 +1033,8 @@ services:
 
     try { await mgr.start(); } catch { /* expected */ }
 
-    expect(fs.existsSync(path.join(dir, ".shipit/.env.agent"))).toBe(true);
-    const agentEnv = fs.readFileSync(path.join(dir, ".shipit/.env.agent"), "utf-8");
+    expect(fs.existsSync(path.join(stateOf(dir), ".env.agent"))).toBe(true);
+    const agentEnv = fs.readFileSync(path.join(stateOf(dir), ".env.agent"), "utf-8");
     expect(agentEnv).toContain("DATABASE_URL=postgres://x");
     // STRIPE_KEY is service-only — not agent-injected
     expect(agentEnv).not.toContain("STRIPE_KEY");
@@ -890,11 +1044,11 @@ services:
     expect(snap.agentValues).toEqual({ DATABASE_URL: "postgres://x" });
   });
 
-  it("removes .shipit/.env.agent when no agent: true declarations remain", async () => {
+  it("removes the state dir's .env.agent when no agent: true declarations remain", async () => {
     const dir = setup();
     // Pre-seed an existing .env.agent file from a prior compose definition.
-    fs.mkdirSync(path.join(dir, ".shipit"), { recursive: true });
-    fs.writeFileSync(path.join(dir, ".shipit/.env.agent"), "OLD=1\n");
+    fs.mkdirSync(stateOf(dir), { recursive: true });
+    fs.writeFileSync(path.join(stateOf(dir), ".env.agent"), "OLD=1\n");
 
     writeCompose(dir, `
 services:
@@ -908,6 +1062,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner: fakeRunner,
       secretsLoader: async () => ({ STRIPE_KEY: "sk" }),
@@ -916,7 +1071,7 @@ services:
 
     try { await mgr.start(); } catch { /* expected */ }
 
-    expect(fs.existsSync(path.join(dir, ".shipit/.env.agent"))).toBe(false);
+    expect(fs.existsSync(path.join(stateOf(dir), ".env.agent"))).toBe(false);
   });
 
   // ---- Phase 1 follow-up: Docker-secrets mode ----
@@ -938,6 +1093,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner: fakeRunner,
       secretsLoader: async () => ({ DATABASE_URL: "postgres://x" }),
@@ -958,27 +1114,33 @@ services:
     // No .env.api in the workspace — agent can't read it
     expect(fs.existsSync(path.join(dir, ".shipit/.env.api"))).toBe(false);
 
-    // Entrypoint wrapper copied into workspace .shipit/
-    expect(fs.existsSync(path.join(dir, ".shipit/secrets-entrypoint.sh"))).toBe(true);
+    // SHI-285 — the entrypoint wrapper is staged in the secrets root, NOT in
+    // the clone, where the post-turn `git add -A` would commit it into the
+    // user's repository (docs/246 req 1).
+    const stagedWrapper = path.join(secretsRoot, "_entrypoint", "secrets-entrypoint.sh");
+    expect(fs.existsSync(stagedWrapper)).toBe(true);
+    expect(fs.statSync(stagedWrapper).mode & 0o777).toBe(0o755);
+    expect(fs.existsSync(path.join(dir, ".shipit/secrets-entrypoint.sh"))).toBe(false);
 
-    // Override references Docker secrets, not env_file
-    const override = fs.readFileSync(path.join(dir, ".shipit/compose.override.yml"), "utf-8");
+    // Override references Docker secrets, not env_file, and mounts the wrapper
+    // from its absolute staged path.
+    const override = fs.readFileSync(path.join(stateOf(dir), "compose.override.yml"), "utf-8");
     expect(override).toContain("shipit-DATABASE_URL");
     expect(override).toContain("/shipit/secrets-entrypoint.sh");
+    expect(override).toContain(stagedWrapper);
     expect(override).not.toContain("env_file");
 
     fs.rmSync(secretsRoot, { recursive: true, force: true });
   });
 
-  it("Docker-secrets mode sweeps any leftover .env.<svc> files from prior env-file mode", async () => {
+  // SHI-285 / docs/246 req 1 — the whole point: a Docker-secrets session leaves
+  // the git clone untouched. Before the fix this test failed on
+  // `.shipit/secrets-entrypoint.sh`.
+  it("Docker-secrets mode writes nothing into the clone", async () => {
     const dir = setup();
     const secretsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "isolated-secrets-root-"));
-    const entrypointPath = path.join(secretsRoot, "secrets-entrypoint.sh");
+    const entrypointPath = path.join(secretsRoot, "baked-secrets-entrypoint.sh");
     fs.writeFileSync(entrypointPath, "#!/bin/sh\nexec \"$@\"\n", { mode: 0o755 });
-    // Pre-seed a stale env-file-mode artifact.
-    fs.mkdirSync(path.join(dir, ".shipit"), { recursive: true });
-    fs.writeFileSync(path.join(dir, ".shipit/.env.api"), "STALE=value\n");
-
     writeCompose(dir, `
 services:
   api:
@@ -991,6 +1153,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner: fakeRunner,
       secretsLoader: async () => ({ DATABASE_URL: "postgres://x" }),
@@ -1003,11 +1166,62 @@ services:
 
     try { await mgr.start(); } catch { /* expected */ }
 
-    // Stale .env.api removed
-    expect(fs.existsSync(path.join(dir, ".shipit/.env.api"))).toBe(false);
+    // The clone holds exactly what the user put there.
+    expect(fs.readdirSync(dir).sort()).toEqual(["docker-compose.yml"]);
+
+    // Everything ShipIt generated is elsewhere, and the override points the
+    // service at the staged wrapper by absolute path.
+    const override = fs.readFileSync(path.join(stateOf(dir), "compose.override.yml"), "utf-8");
+    expect(override).toContain(path.join(secretsRoot, "_entrypoint", "secrets-entrypoint.sh"));
 
     fs.rmSync(secretsRoot, { recursive: true, force: true });
   });
+
+  // The staged wrapper is bind-mounted by the DAEMON, so a containerized
+  // orchestrator must express its path in host terms — the same `hostDir`
+  // mapping the top-level `secrets: file:` references already use.
+  it("Docker-secrets mode maps the staged wrapper through hostDir", async () => {
+    const dir = setup();
+    const secretsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "isolated-secrets-root-"));
+    const entrypointPath = path.join(secretsRoot, "baked-secrets-entrypoint.sh");
+    fs.writeFileSync(entrypointPath, "#!/bin/sh\nexec \"$@\"\n", { mode: 0o755 });
+    writeCompose(dir, `
+services:
+  api:
+    image: node:20
+    ports: ['3000:3000']
+    x-shipit-secrets:
+      - DATABASE_URL
+`);
+    const fakeRunner: ComposeRunner = () => Promise.reject(new Error("no docker"));
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner: fakeRunner,
+      secretsLoader: async () => ({ DATABASE_URL: "postgres://x" }),
+      pollIntervalMs: 0,
+      dockerSecretsConfig: {
+        internalDir: secretsRoot,
+        hostDir: "/var/lib/shipit/secrets",
+        entrypointSourcePath: entrypointPath,
+      },
+    });
+
+    try { await mgr.start(); } catch { /* expected */ }
+
+    // Written where the orchestrator can reach it...
+    expect(fs.existsSync(path.join(secretsRoot, "_entrypoint", "secrets-entrypoint.sh"))).toBe(true);
+    // ...referenced where the daemon can, alongside the secret files themselves.
+    const override = fs.readFileSync(path.join(stateOf(dir), "compose.override.yml"), "utf-8");
+    expect(override).toContain("/var/lib/shipit/secrets/_entrypoint/secrets-entrypoint.sh");
+    expect(override).toContain("/var/lib/shipit/secrets/test-session/DATABASE_URL");
+    expect(override).not.toContain(secretsRoot);
+
+    fs.rmSync(secretsRoot, { recursive: true, force: true });
+  });
+
 
   it("Docker-secrets mode removes the internal secrets dir on stop({ removeVolumes: true }) but keeps it otherwise", async () => {
     const dir = setup();
@@ -1026,6 +1240,7 @@ services:
     const make = () => new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner: fakeRunner,
       secretsLoader: async () => ({ DATABASE_URL: "postgres://x" }),
@@ -1089,7 +1304,7 @@ services:
     expect(fs.existsSync(path.join(dir, ".shipit/.env.api"))).toBe(false);
 
     // Override references the absolute external path, not the workspace path.
-    const override = fs.readFileSync(path.join(dir, ".shipit/compose.override.yml"), "utf-8");
+    const override = fs.readFileSync(path.join(stateOf(dir), "compose.override.yml"), "utf-8");
     expect(override).toContain("env_file:");
     expect(override).toContain(externalEnv);
     expect(override).not.toContain(".shipit/.env.api");
@@ -1126,7 +1341,7 @@ services:
     // No workspace leak — the agent can't read either secret-bearing file.
     expect(fs.existsSync(path.join(dir, ".shipit/.env.dev"))).toBe(false);
     // No agent env file, since nothing is marked agent: true.
-    expect(fs.existsSync(path.join(dir, ".shipit/.env.agent"))).toBe(false);
+    expect(fs.existsSync(path.join(stateOf(dir), ".env.agent"))).toBe(false);
 
     // The external service env file holds the values.
     const externalEnv = path.join(serviceEnvRoot, "test-session", ".env.dev");
@@ -1137,38 +1352,6 @@ services:
     fs.rmSync(serviceEnvRoot, { recursive: true, force: true });
   });
 
-  it("serviceEnvDir sweeps a pre-183 in-workspace .shipit/.env.<svc> leak", async () => {
-    const dir = setup();
-    const serviceEnvRoot = fs.mkdtempSync(path.join(os.tmpdir(), "service-env-root-"));
-    // Pre-seed a leaked env file from the old in-workspace write path.
-    fs.mkdirSync(path.join(dir, ".shipit"), { recursive: true });
-    fs.writeFileSync(path.join(dir, ".shipit/.env.api"), "LEAKED=value\n");
-
-    writeCompose(dir, `
-services:
-  api:
-    image: node:20
-    ports: ['3000:3000']
-    x-shipit-secrets:
-      - DATABASE_URL
-`);
-    const fakeRunner: ComposeRunner = () => Promise.reject(new Error("no docker"));
-    const mgr = new ServiceManager({
-      sessionId: "test-session",
-      workspaceDir: dir,
-      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
-      composeRunner: fakeRunner,
-      secretsLoader: async () => ({ DATABASE_URL: "postgres://x" }),
-      pollIntervalMs: 0,
-      serviceEnvDir: serviceEnvRoot,
-    });
-
-    try { await mgr.start(); } catch { /* expected */ }
-
-    expect(fs.existsSync(path.join(dir, ".shipit/.env.api"))).toBe(false);
-
-    fs.rmSync(serviceEnvRoot, { recursive: true, force: true });
-  });
 
   it("refreshSecrets in serviceEnvDir mode rewrites the external file and leaves the override's absolute path intact", async () => {
     const dir = setup();
@@ -1204,7 +1387,7 @@ services:
 
     await mgr.start();
     const externalEnv = path.join(serviceEnvRoot, "test-session", ".env.api");
-    const overrideBefore = fs.readFileSync(path.join(dir, ".shipit/compose.override.yml"), "utf-8");
+    const overrideBefore = fs.readFileSync(path.join(stateOf(dir), "compose.override.yml"), "utf-8");
     expect(fs.readFileSync(externalEnv, "utf-8")).toContain("DATABASE_URL=postgres://old");
     expect(overrideBefore).toContain(externalEnv);
 
@@ -1214,7 +1397,7 @@ services:
     // External file content updated…
     expect(fs.readFileSync(externalEnv, "utf-8")).toContain("DATABASE_URL=postgres://new");
     // …and the absolute env_file path in the override is unchanged (still outside the workspace).
-    const overrideAfter = fs.readFileSync(path.join(dir, ".shipit/compose.override.yml"), "utf-8");
+    const overrideAfter = fs.readFileSync(path.join(stateOf(dir), "compose.override.yml"), "utf-8");
     expect(overrideAfter).toContain(externalEnv);
     expect(fs.existsSync(path.join(dir, ".shipit/.env.api"))).toBe(false);
 
@@ -1281,6 +1464,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner: fakeRunner,
       secretsLoader: async () => ({}), // no values — both surface as missing
@@ -1314,8 +1498,8 @@ describe("ServiceManager install-running retry gate", () => {
   let tmpDir: string;
 
   function setup() {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "service-mgr-install-"));
-    return tmpDir;
+    tmpDir = makeSessionDir("service-mgr-install-");
+    return path.join(tmpDir, SESSION_WORKSPACE_SUBDIR);
   }
 
   afterEach(() => {
@@ -1334,7 +1518,12 @@ describe("ServiceManager install-running retry gate", () => {
    */
   function makeManager(dir: string) {
     const composeUpCalls: string[][] = [];
+    const composeStopCalls: string[] = [];
     let psResponse = "";
+    // What `docker inspect` reports for `State.OOMKilled`. `undefined` models a
+    // daemon that omits the field (the manager treats that as "unknown", not
+    // "not an OOM"). Exit 137 alone no longer implies OOM — see docs/239.
+    let oomKilled: boolean | undefined = false;
 
     const composeRunner: ComposeRunner = (args) => {
       // Track which `up` calls happen (startup vs retry vs post-install)
@@ -1342,19 +1531,27 @@ describe("ServiceManager install-running retry gate", () => {
       if (upIdx >= 0) {
         composeUpCalls.push(args.slice(upIdx));
       }
+      const stopIdx = args.indexOf("stop");
+      if (stopIdx >= 0) composeStopCalls.push(args.slice(stopIdx + 1).join(" "));
       return Promise.resolve();
     };
 
     const composeQuery: ComposeQuery = (args) => {
       const key = args.find(a => a === "ps" || a === "inspect" || a === "rm" || a === "network") ?? args[0];
       if (key === "ps") return Promise.resolve(psResponse);
-      if (key === "inspect") return Promise.resolve(JSON.stringify([{ NetworkSettings: { Networks: {} } }]));
+      if (key === "inspect") {
+        return Promise.resolve(JSON.stringify([{
+          ...(oomKilled === undefined ? {} : { State: { OOMKilled: oomKilled } }),
+          NetworkSettings: { Networks: {} },
+        }]));
+      }
       return Promise.resolve("");
     };
 
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner,
       composeQuery,
@@ -1364,7 +1561,9 @@ describe("ServiceManager install-running retry gate", () => {
     return {
       mgr,
       composeUpCalls,
+      composeStopCalls,
       setPsResponse: (s: string) => { psResponse = s; },
+      setOomKilled: (v: boolean | undefined) => { oomKilled = v; },
     };
   }
 
@@ -1545,9 +1744,10 @@ services:
     vi.useFakeTimers();
     const dir = setup();
     writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
-    const { mgr, composeUpCalls, setPsResponse } = makeManager(dir);
+    const { mgr, composeUpCalls, setPsResponse, setOomKilled } = makeManager(dir);
 
     setPsResponse(exitedPs(137));
+    setOomKilled(true); // the daemon confirms the kernel OOM-killer did it
     // Install gate is closed — this exercises the post-install OOM path.
     await mgr.start();
 
@@ -1569,9 +1769,10 @@ services:
     vi.useFakeTimers();
     const dir = setup();
     writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
-    const { mgr, setPsResponse } = makeManager(dir);
+    const { mgr, setPsResponse, setOomKilled } = makeManager(dir);
 
     setPsResponse(exitedPs(137));
+    setOomKilled(true);
     await mgr.start();
     expect(mgr.getService("web")?.status).toBe("starting"); // retry #1 pending
 
@@ -1598,7 +1799,7 @@ services:
     image: node:20
     x-shipit-preview: manual
 `);
-    const { mgr, setPsResponse } = makeManager(dir);
+    const { mgr, setPsResponse, setOomKilled } = makeManager(dir);
 
     // Manual services aren't started by mgr.start(), so the OOM exit path is
     // reached via an explicit startService + pollStatus.
@@ -1608,6 +1809,7 @@ services:
     setPsResponse(JSON.stringify({
       Service: "worker", ID: "abc", State: "exited", ExitCode: 137,
     }));
+    setOomKilled(true);
     // Simulate a poll where the manual service shows as exited 137.
     // composeRunner just resolves, so the "up" succeeds but the next ps
     // still says exited.
@@ -1616,17 +1818,18 @@ services:
     const worker = mgr.getService("worker");
     // Manual service path is "error" with the bare OOM hint, no auto-retry.
     expect(worker?.status).toBe("error");
-    expect(worker?.error).toContain("Exited with code 137 (likely OOMKilled)");
+    expect(worker?.error).toContain("Exited with code 137 (OOMKilled)");
   });
 
   it("resets OOM counter when user explicitly calls startService", async () => {
     vi.useFakeTimers();
     const dir = setup();
     writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
-    const { mgr, setPsResponse } = makeManager(dir);
+    const { mgr, setPsResponse, setOomKilled } = makeManager(dir);
 
     // Burn through the retry budget.
     setPsResponse(exitedPs(137));
+    setOomKilled(true);
     await mgr.start();
     for (const delay of [1_000, 2_000, 4_000]) {
       await vi.advanceTimersByTimeAsync(delay);
@@ -1640,6 +1843,83 @@ services:
     // "gave up" latch — proving the counter was reset.
     await mgr.startService("web");
     expect(mgr.getService("web")?.status).toBe("starting");
+  });
+
+  // --- Exit 137 is SIGKILL, not proof of OOM (docs/239) ---
+  //
+  // Production incident: a cached ~35ms re-install looping every 30s SIGKILLed
+  // the `dev` service via our own `compose stop` teardown. Every cycle exited
+  // 137 with `OOMKilled: false` on a service using 110 MiB of a 3 GiB limit,
+  // was auto-"OOM"-retried until the budget drained, and then latched to
+  // `error` telling the user to raise a memory limit that was never binding.
+
+  it("does not treat exit 137 as OOM when the daemon reports OOMKilled: false", async () => {
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n    x-shipit-depends-on-install: false\n");
+    const { mgr, composeUpCalls, setPsResponse, setOomKilled } = makeManager(dir);
+
+    setPsResponse(exitedPs(137));
+    setOomKilled(false); // authoritative: this was a plain SIGKILL
+    await mgr.start();
+
+    // No OOM auto-retry — latches immediately with an honest message that does
+    // NOT advise raising a memory limit.
+    const web = mgr.getService("web");
+    expect(web?.status).toBe("error");
+    expect(web?.error).toBe("Exited with code 137 (SIGKILL — not an OOM kill)");
+    expect(web?.error).not.toContain("memory");
+
+    const upCallsBefore = composeUpCalls.length;
+    await vi.advanceTimersByTimeAsync(30_000);
+    await vi.runAllTimersAsync();
+    expect(composeUpCalls.length).toBe(upCallsBefore);
+  });
+
+  it("keeps the hedged 137 message when OOMKilled is unknown", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n    x-shipit-depends-on-install: false\n");
+    const { mgr, setPsResponse, setOomKilled } = makeManager(dir);
+
+    setPsResponse(exitedPs(137));
+    setOomKilled(undefined); // daemon omitted State.OOMKilled
+    await mgr.start();
+
+    // Unconfirmed — we neither auto-retry as an OOM nor assert it happened.
+    const web = mgr.getService("web");
+    expect(web?.status).toBe("error");
+    expect(web?.error).toBe("Exited with code 137 (likely OOMKilled)");
+  });
+
+  it("an unconfirmed 137 inside the post-gate window takes the docs/137 recovery path", async () => {
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+    const { mgr, setPsResponse, setOomKilled } = makeManager(dir);
+
+    mgr.setInstallRunning(true);
+    await mgr.start();
+
+    // Gate opens; the service crashes with 137 inside its first-boot window.
+    // Before docs/239 the `exitCode === 137` branch sat above the post-gate
+    // check and short-circuited it — the recovery path built for exactly this
+    // ("crashed right after the gate opened") never ran. Confirming the OOM
+    // first makes the ordering moot: an unconfirmed 137 now falls through.
+    setPsResponse(exitedPs(137));
+    setOomKilled(false);
+    mgr.setInstallRunning(false);
+    for (let i = 0; i < 20; i++) await vi.advanceTimersByTimeAsync(0);
+
+    // Held in `starting` by the bounded post-gate retry, not latched to error.
+    expect(mgr.getService("web")?.status).toBe("starting");
+
+    // Drain the post-gate budget. The terminal message names which path owned
+    // the crash: the OOM path would have said "gave up after 3 auto-retries"
+    // and told the user to raise a memory limit.
+    await vi.runAllTimersAsync();
+    const web = mgr.getService("web");
+    expect(web?.status).toBe("error");
+    expect(web?.error).toBe("Exited with code 137 (SIGKILL — not an OOM kill)");
   });
 
   it("non-137 exits still latch to error post-install (no auto-retry)", async () => {
@@ -1710,6 +1990,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner,
       composeQuery,
@@ -1758,6 +2039,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner,
       composeQuery,
@@ -1795,6 +2077,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner,
       composeQuery,
@@ -1827,6 +2110,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner,
       composeQuery,
@@ -1850,8 +2134,8 @@ describe("ServiceManager install gate (x-shipit-depends-on-install)", () => {
   let tmpDir: string;
 
   function setup() {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "service-mgr-gate-"));
-    return tmpDir;
+    tmpDir = makeSessionDir("service-mgr-gate-");
+    return path.join(tmpDir, SESSION_WORKSPACE_SUBDIR);
   }
 
   afterEach(() => {
@@ -1889,6 +2173,7 @@ describe("ServiceManager install gate (x-shipit-depends-on-install)", () => {
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner,
       composeQuery,
@@ -2089,6 +2374,84 @@ services:
     expect(lastUp).toContain("b");
   });
 
+  it("holds gated services until the re-install teardown's SIGKILL has landed", async () => {
+    // Regression for docs/239. `compose stop` SIGTERMs and then SIGKILLs when
+    // the 10s grace period expires — and a `command: sh -c "npm install && npm
+    // run dev"` service never forwards SIGTERM, so the kill always lands. The
+    // gate used to reopen ~35ms after the hold (a cached no-op re-install),
+    // i.e. ~10s BEFORE that kill, so the poller saw the exit with the service
+    // no longer gated and reported OUR teardown to the user as an OOM crash.
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+
+    let releaseStop = (): void => {};
+    const stopLanded = new Promise<void>((resolve) => { releaseStop = resolve; });
+    const upCalls: string[][] = [];
+    let psResponse = JSON.stringify({ Service: "web", ID: "abc", State: "running", ExitCode: 0 });
+
+    const composeRunner: ComposeRunner = async (args) => {
+      const upIdx = args.indexOf("up");
+      if (upIdx >= 0) upCalls.push(args.slice(upIdx));
+      // Model the grace period: the stop only resolves when the test says the
+      // container has actually died.
+      if (args.includes("stop")) await stopLanded;
+    };
+    const composeQuery: ComposeQuery = (args) => {
+      const key = args.find(a => a === "ps" || a === "inspect" || a === "rm" || a === "network") ?? args[0];
+      if (key === "ps") return Promise.resolve(psResponse);
+      if (key === "inspect") {
+        return Promise.resolve(JSON.stringify([{
+          State: { OOMKilled: false },
+          NetworkSettings: { Networks: {} },
+        }]));
+      }
+      return Promise.resolve("");
+    };
+
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
+      composeQuery,
+      pollIntervalMs: 0,
+    });
+    const poll = () => (mgr as unknown as { poller: { pollOnce(): Promise<void> } }).poller.pollOnce();
+    const webUps = () => upNames(upCalls).filter(n => n === "web").length;
+
+    mgr.setInstallRunning(true);
+    await mgr.start();
+    mgr.setInstallRunning(false);
+    await flushMicrotasks();
+    expect(mgr.getService("web")?.status).toBe("running");
+    const upsBefore = webUps();
+
+    // Mid-session re-install: hold + tear down, then the (cached, instant)
+    // install completes while the container is still shutting down.
+    mgr.setInstallRunning(true);
+    psResponse = JSON.stringify({ Service: "web", ID: "abc", State: "exited", ExitCode: 137 });
+    mgr.setInstallRunning(false);
+    await flushMicrotasks();
+
+    // Gate still closed — nothing was relaunched into a container we're still
+    // killing, and the poll that sees the 137 is skipped as gated, so the
+    // service stays held in `starting` instead of surfacing as a crash.
+    expect(webUps()).toBe(upsBefore);
+    await poll();
+    expect(mgr.getService("web")?.status).toBe("starting");
+    expect(mgr.getService("web")?.error).toBeUndefined();
+
+    // Teardown lands → gate opens → the service relaunches exactly once.
+    releaseStop();
+    await flushMicrotasks();
+    expect(webUps()).toBe(upsBefore + 1);
+
+    // The gate-open `up` scheduled a post-gate backoff retry (ps still says
+    // exited) — dispose so that timer can't leak into later tests.
+    await mgr.stop();
+  });
+
   // -------------------------------------------------------------------------
   // Post-gate recovery — a gated service that crashes shortly AFTER the gate
   // opens (e.g. the install-complete signal led the dependency tree on a
@@ -2167,6 +2530,7 @@ services:
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner,
       composeQuery,

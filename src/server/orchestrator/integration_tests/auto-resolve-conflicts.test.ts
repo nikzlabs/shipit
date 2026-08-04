@@ -18,6 +18,7 @@ import {
   StubGitHubAuthManager,
   FakeClaudeProcess,
   waitForClaude,
+  waitFor,
   createTestCredentialStore,
   createTestDatabaseManager,
 } from "./test-helpers.js";
@@ -269,8 +270,17 @@ describe("auto-resolve-conflicts integration", () => {
       // Force-error by emitting error event directly. The rebase-driver
       // surfaces this to the wrapper as a post-spawn throw.
       agent.emit("error", new Error("boom"));
-      // Give writeBack time to land.
-      await new Promise((r) => setTimeout(r, 200));
+      // Wait for writeBack to land rather than betting on a fixed 200 ms.
+      // `writeBack` is the ONLY place `attemptCount` is incremented, so the
+      // counter reaching i+1 is the exact "this attempt is fully accounted
+      // for" signal — and it must land before the next iteration calls
+      // `handleTransition`, or that call short-circuits against a still-
+      // `running` state and no agent spawns (the "Timed out waiting for
+      // ClaudeProcess.run()" flake).
+      await waitFor(
+        () => manager!.get(sessionId)?.attemptCount === i + 1,
+        `attempt ${i + 1} written back`,
+      );
     }
 
     expect(manager!.get(sessionId)?.status).toBe("exhausted");
@@ -311,7 +321,6 @@ describe("auto-resolve-conflicts integration", () => {
           sessionManager: app.sessionManager,
           chatHistoryManager: app.chatHistoryManager,
           usageManager: app.usageManager,
-          authManager: new StubAuthManager() as unknown as never,
           sseBroadcast: () => { /* noop */ },
           // Match the production wrapper closure: in-process runners need
           // the fallback factory because they don't supply `createAgent`.
@@ -330,8 +339,10 @@ describe("auto-resolve-conflicts integration", () => {
 
     // Wait for the agent to spawn, but never finish it — the timeout fires.
     await waitForClaude(() => latestClaude, claudeBefore);
-    // The wrapper's timeout will fire after 800ms.
-    await new Promise((r) => setTimeout(r, 1500));
+    // The wrapper's timeout fires after 800 ms and then writes back. Poll for
+    // the write-back instead of sleeping 1500 ms: the fixed sleep only left
+    // 700 ms of slack for the teardown to land, which a loaded machine eats.
+    await waitFor(() => manager!.get(sessionId)?.lastError !== undefined, "timeout written back");
 
     const state = manager!.get(sessionId);
     expect(state?.lastError).toBe("timeout");
@@ -374,14 +385,19 @@ describe("auto-resolve-conflicts integration", () => {
     await manager!.handleTransition(sessionId, makeConflictingSummary(sessionId), "main", "sha-1");
     expect(manager!.get(sessionId)?.status).toBe("deferred");
 
+    // Capture the pre-trigger agent BEFORE firing "idle" — reading it after
+    // would race a synchronous spawn and compare the new agent against itself.
+    const claudeBefore = latestClaude;
+
     // Simulate the user turn finishing — runner emits "idle".
     runner.running = false;
     runner.onAgentFinished();
 
-    // Give onRunnerIdle time to land.
-    const claudeBefore = latestClaude;
-    await new Promise((r) => setTimeout(r, 300));
+    // Wait for onRunnerIdle to land and spawn the resolution turn's agent.
+    // This is a positive assertion despite the `not.toBe` phrasing — a NEW
+    // agent must appear — so it polls rather than betting on a fixed 300 ms.
+    const resolveAgent = await waitForClaude(() => latestClaude, claudeBefore);
     // A new agent was spawned for the resolution turn.
-    expect(latestClaude).not.toBe(claudeBefore);
+    expect(resolveAgent).not.toBe(claudeBefore);
   });
 });

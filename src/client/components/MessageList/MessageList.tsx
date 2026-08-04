@@ -5,6 +5,7 @@ import type { SearchMatch } from "../../hooks/useSearch.js";
 import { buildVisualElements } from "../visual-elements.js";
 import { RewindPoint, type RewindGapAction } from "../RewindPoint.js";
 import type { WsRewindPreview, ReleaseMechanism } from "../../../server/shared/types.js";
+import { isPlanDocumentWrite } from "../../../server/shared/transcript-input-policy.js";
 
 // Sub-component imports
 import { ToolUseItem } from "../message-tools.js";
@@ -110,6 +111,9 @@ export function MessageList({
 
   const voicePlaybackEnabled = useSettingsStore((s) => s.voicePlaybackEnabled);
   // docs/178 — transient "Compacting…" indicator (emit-only; not persisted).
+  // docs/239 — the transcript's owning session; the self merge-watch card's
+  // Cancel targets it.
+  const activeSessionId = useSessionStore((s) => s.sessionId);
   const compacting = useSessionStore((s) => s.compacting);
   // docs/144 — transient sub-agent spawn chips (emit-only; not persisted).
   const subAgentSpawns = useSessionStore((s) => s.subAgentSpawns);
@@ -162,6 +166,12 @@ export function MessageList({
 
   // Find plan content for ExitPlanMode tools by searching backward for a Write
   // tool that wrote to a .claude/plans/ path and extracting the file content.
+  //
+  // This is the one place a Write's *body* is drawn inline in the transcript,
+  // with no click and no fetch behind it — which is why docs/244's projection
+  // has to exempt exactly these writes. `isPlanDocumentWrite` is the shared
+  // predicate both ends use, so neither can quietly change what counts as a plan
+  // document (SHI-296).
   const findPlanContent = useMemo(() => {
     return (exitPlanMsgIndex: number): string | undefined => {
       for (let i = exitPlanMsgIndex; i >= 0; i--) {
@@ -169,7 +179,7 @@ export function MessageList({
         if (!tools) continue;
         for (let j = tools.length - 1; j >= 0; j--) {
           const t = tools[j];
-          if (t.name === "Write" && typeof t.input.file_path === "string" && t.input.file_path.includes(".claude/plans/")) {
+          if (isPlanDocumentWrite(t.name, t.input)) {
             return t.input.content as string | undefined;
           }
         }
@@ -283,6 +293,7 @@ export function MessageList({
         // own — render the card and skip the bubble path. Order is preserved
         // verbatim inside `renderMessageCard`.
         const card = renderMessageCard(msg, {
+          ...(activeSessionId ? { sessionId: activeSessionId } : {}),
           onResumeSession,
           onSubmitBugReport,
           onEgressDecision,
@@ -323,7 +334,18 @@ export function MessageList({
                 !useMarkdown && !hasCodeBlocks ? "whitespace-pre-wrap" : ""
               } ${
                 msg.role === "user"
-                  ? "max-w-full rounded-lg px-4 py-3 break-words min-w-0"
+                  ? `rounded-lg px-4 py-3 break-words min-w-0 ${
+                      // A user message with code blocks needs a reasonable
+                      // minimum width so the block isn't squeezed to nothing
+                      // (a code-only message would otherwise collapse, since
+                      // `CodeBlock` contributes ~0 to the bubble's intrinsic
+                      // width via `w-0`). `min(32rem,100%)` floors the width at
+                      // 32rem while the `100%` cap (relative to the full-width
+                      // row) guarantees it never exceeds the column — so long
+                      // lines scroll inside the block instead of widening the
+                      // whole chat into a horizontal scrollbar.
+                      hasCodeBlocks ? "w-[min(32rem,100%)]" : "max-w-full"
+                    }`
                   : "w-full min-w-0"
               } ${
                 msg.isError
@@ -341,6 +363,16 @@ export function MessageList({
                   : "text-(--color-text-primary)"
               }`}
             >
+              {msg.agentInterface && (
+                <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-(--color-accent-text)/75">
+                  {msg.agentInterface.surface === "preview" ? "Preview" : "Present"} · Agent Interface SDK
+                </div>
+              )}
+              {msg.messageOrigin && (
+                <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-(--color-accent-text)/75">
+                  From {msg.messageOrigin.relation} session · {msg.messageOrigin.sessionTitle}
+                </div>
+              )}
               {msg.queued && (
                 <div className="flex items-center gap-1.5 mb-1.5 text-xs text-(--color-accent-text)/80 font-medium">
                   <CircleNotchIcon size={12} className="animate-spin" />
@@ -447,7 +479,12 @@ export function MessageList({
         );
       })}
 
-      {compacting && (
+      {/* Gate on isLoading: a compaction only ever runs mid-turn, so the
+          transient "Compacting…" indicator should never outlive the turn. This
+          backstops any path that leaves the global `compacting` flag stuck true
+          after the turn ended (e.g. a reconnect that replayed a buffered
+          `compaction_status active:true` without a balancing clear). */}
+      {compacting && isLoading && (
         <div className="flex justify-start" data-testid="compacting-indicator">
           <div className="flex items-center gap-2 rounded-lg border border-(--color-border-primary) bg-(--color-bg-tertiary) px-3 py-2 text-xs text-(--color-text-secondary)">
             <CircleNotchIcon size={14} className="animate-spin text-(--color-text-tertiary)" />
@@ -456,9 +493,17 @@ export function MessageList({
         </div>
       )}
 
-      {Object.values(subAgentSpawns).map((chip) => (
-        <SubAgentSpawnChipRow key={chip.spawnId} chip={chip} />
-      ))}
+      {/*
+        SHI-278 — the durable pending consult card (inline, at the call site) is
+        now the primary in-flight surface. The transient chip is only shown for a
+        spawn that has no card in the transcript yet, so the two can never render
+        two spinners for the same consult.
+      */}
+      {Object.values(subAgentSpawns)
+        .filter((chip) => !messages.some((m) => m.subAgentConsult?.spawnId === chip.spawnId))
+        .map((chip) => (
+          <SubAgentSpawnChipRow key={chip.spawnId} chip={chip} />
+        ))}
 
       {!isLoading && messages.length > 0 && renderRewindPoint(messages.length, true)}
     </div>

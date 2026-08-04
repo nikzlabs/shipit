@@ -9,7 +9,7 @@ import type { Handler } from "./types.js";
  * hands-free mode is on and unlocked, autoplay the spoken headline.
  *
  * The card carries only the ear-shaped headline; the body stays on screen.
- * `needsAttention: false` notes render as a silent bubble (no autoplay).
+ * Every note means the agent needs the user, so there is no silent variant.
  */
 export const handleVoiceNote: Handler<WsVoiceNote> = (_ctx, data) => {
   const session = useSessionStore.getState();
@@ -31,7 +31,6 @@ export const handleVoiceNote: Handler<WsVoiceNote> = (_ctx, data) => {
             voiceNote: {
               id: data.id,
               headline: data.headline,
-              needsAttention: data.needsAttention,
               kind: data.kind,
               createdAt: data.createdAt,
             },
@@ -39,9 +38,5 @@ export const handleVoiceNote: Handler<WsVoiceNote> = (_ctx, data) => {
         ],
   );
 
-  autoplayVoiceNote({
-    id: data.id,
-    headline: data.headline,
-    needsAttention: data.needsAttention,
-  });
+  autoplayVoiceNote({ id: data.id, headline: data.headline });
 };

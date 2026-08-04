@@ -173,6 +173,88 @@ describe("PreviewFrame", () => {
     );
   });
 
+  it("replies to the SDK ready handshake with authoritative visibility", async () => {
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} {...defaultProps} />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+    const postMessage = vi.spyOn(iframe.contentWindow!, "postMessage");
+
+    window.dispatchEvent(new MessageEvent("message", {
+      data: { source: "shipit-preview", type: "ready" },
+      source: iframe.contentWindow,
+      origin: "http://localhost:5173",
+    }));
+
+    expect(postMessage).toHaveBeenCalledWith({
+      source: "shipit-preview",
+      type: "visibility",
+      visible: true,
+    }, "http://localhost:5173");
+  });
+
+  it("rejects a ready handshake after the iframe navigates to another origin", async () => {
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} {...defaultProps} />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+    const postMessage = vi.spyOn(iframe.contentWindow!, "postMessage");
+    postMessage.mockClear();
+
+    window.dispatchEvent(new MessageEvent("message", {
+      data: { source: "shipit-preview", type: "ready" },
+      source: iframe.contentWindow,
+      origin: "https://unexpected.example",
+    }));
+
+    expect(postMessage).not.toHaveBeenCalled();
+  });
+
+  it("dispatches an SDK request only from the active exact-origin preview", async () => {
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    const onAgentInterfaceMessage = vi.fn().mockResolvedValue(undefined);
+    render(<PreviewFrame
+      preview={preview}
+      {...defaultProps}
+      onAgentInterfaceMessage={onAgentInterfaceMessage}
+    />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+
+    window.dispatchEvent(new MessageEvent("message", {
+      data: {
+        source: "shipit-preview",
+        type: "agent_message",
+        requestId: "sdk-1",
+        payload: { text: "Apply the selected settings" },
+      },
+      source: iframe.contentWindow,
+      origin: "http://localhost:5173",
+    }));
+
+    await vi.waitFor(() => {
+      expect(onAgentInterfaceMessage).toHaveBeenCalledWith(
+        "Apply the selected settings",
+        { source: "agent_interface_sdk", surface: "preview" },
+      );
+    });
+  });
+
+  it("emits hidden visibility when a mounted preview stops running", async () => {
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    const { rerender } = render(<PreviewFrame preview={preview} {...defaultProps} />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+    const postMessage = vi.spyOn(iframe.contentWindow!, "postMessage");
+    postMessage.mockClear();
+
+    rerender(<PreviewFrame preview={{ ...preview, running: false }} {...defaultProps} />);
+
+    await vi.waitFor(() => {
+      expect(postMessage).toHaveBeenCalledWith({
+        source: "shipit-preview",
+        type: "visibility",
+        visible: false,
+      }, "http://localhost:5173");
+    });
+  });
+
   it("selector label matches selectedPort", () => {
     const preview: PreviewStatus = { running: true, port: 3001, url: "http://localhost:3001", source: "detected", detectedPorts: [3001, 8080] };
     render(<PreviewFrame preview={preview} {...defaultProps} detectedPorts={[3001, 8080]} selectedPort={8080} onSelectPort={vi.fn()} />);
@@ -731,31 +813,31 @@ describe("PreviewFrame", () => {
   });
 
   it("applies explicit width/height to the iframe when a preset is active", async () => {
-    const preset = findPresetById("iphone-14")!;
+    const preset = findPresetById("iphone-16")!;
     usePreviewStore.setState({ devicePreset: preset, isLandscape: false, customSize: null });
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     render(<PreviewFrame preview={preview} {...defaultProps} />);
     const iframe = await screen.findByTitle("Live Preview");
-    expect(iframe.style.width).toBe("390px");
-    expect(iframe.style.height).toBe("844px");
+    expect(iframe.style.width).toBe("393px");
+    expect(iframe.style.height).toBe("852px");
   });
 
   it("swaps width and height when isLandscape is true", async () => {
-    const preset = findPresetById("iphone-14")!;
+    const preset = findPresetById("iphone-16")!;
     usePreviewStore.setState({ devicePreset: preset, isLandscape: true, customSize: null });
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     render(<PreviewFrame preview={preview} {...defaultProps} />);
     const iframe = await screen.findByTitle("Live Preview");
-    expect(iframe.style.width).toBe("844px");
-    expect(iframe.style.height).toBe("390px");
+    expect(iframe.style.width).toBe("852px");
+    expect(iframe.style.height).toBe("393px");
   });
 
   it("shows dimension label when a preset is active", async () => {
-    const preset = findPresetById("iphone-14")!;
+    const preset = findPresetById("iphone-16")!;
     usePreviewStore.setState({ devicePreset: preset, isLandscape: false, customSize: null });
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     render(<PreviewFrame preview={preview} {...defaultProps} />);
-    expect(screen.getByText(/390×844/)).toBeInTheDocument();
+    expect(screen.getByText(/393×852/)).toBeInTheDocument();
   });
 
   it("does not show dimension label when responsive is active", () => {

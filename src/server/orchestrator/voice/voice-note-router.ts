@@ -2,21 +2,22 @@
  * Voice-note router (docs/163).
  *
  * One router behind the single agent-facing voice primitive. It takes a
- * payload `{ summary, needsAttention, context }` plus the user's delivery
- * setting and fans out to:
+ * payload `{ summary, context }` plus the user's delivery setting and fans out
+ * to:
  *
  *   - the **native** sink — `runner.emitMessage` of a `voice_note` WS message
  *     (buffers into the turn-event log, survives reconnects); the client
- *     decides whether to autoplay based on `needsAttention` + hands-free mode.
+ *     decides whether to autoplay based on hands-free mode.
  *   - the **external** sink — a `POST` of `{ v: 1, summary, needsAttention,
  *     context }` to the user's webhook with `Authorization: Bearer <token>`.
+ *     `needsAttention` is a constant `true` kept for `v: 1` receiver compat.
  *
- * Invariants enforced here (server-side, source-agnostic):
- *   - `needsAttention: false` → a *silent* native bubble (no webhook). A chatty
- *     agent costs nothing.
- *   - per-turn cap on attention-grabbing notes: beyond the cap a note still
- *     renders, but its attention is downgraded (no autoplay-eligible flag, no
- *     webhook) so an over-narrating agent can't spam chimes / pushes.
+ * A voice note always means "the agent needs the user", so both sinks always
+ * fire. The former `needsAttention: false` mode and the per-turn attention cap
+ * were removed: a silent note duplicated on-screen prose with no audio and no
+ * webhook, and the cap was redundant with the client's 20s chime debounce while
+ * being actively inverted against latest-wins playback — it silenced the newest
+ * note and left stale speech playing. See docs/163.
  *
  * The delivery mechanism never leaks to the agent — it always calls the same
  * tool; *this* module is where "the user chooses the mechanism" lives.
@@ -34,12 +35,6 @@ import { VOICE_WEBHOOK_BODY_VERSION } from "../../shared/types/voice-note-types.
 import { getErrorMessage } from "../../shared/utils.js";
 
 /**
- * Max attention-grabbing notes per turn. Beyond this, notes still render but
- * are downgraded to silent so an over-narrating agent can't spam the user.
- */
-export const MAX_ATTENTION_NOTES_PER_TURN = 3;
-
-/**
  * The namespaced name of the built-in `voice_note` tool as it appears in the
  * agent event stream (`mcp__<server>__<tool>`, server `shipit`). The
  * orchestrator matches this to deliver an authored note's native card the
@@ -52,8 +47,9 @@ export const VOICE_NOTE_TOOL_NAME = "mcp__shipit__voice_note";
 interface VoiceTurnState {
   /** True once an *authored* note (the built-in tool) routed this turn. */
   authored: boolean;
-  /** Count of attention-grabbing notes routed this turn (for the cap). */
-  attentionCount: number;
+  /** Authored payloads already delivered, regardless of whether they arrived
+   * through event-stream observation or the HTTP bridge fallback. */
+  authoredPayloads: Map<string, { id: string; path: "observation" | "bridge" }>;
 }
 
 // Per-turn voice state keyed by runner. A WeakMap keeps both runner
@@ -65,7 +61,7 @@ const turnStates = new WeakMap<object, VoiceTurnState>();
 function stateFor(runner: object): VoiceTurnState {
   let s = turnStates.get(runner);
   if (!s) {
-    s = { authored: false, attentionCount: 0 };
+    s = { authored: false, authoredPayloads: new Map() };
     turnStates.set(runner, s);
   }
   return s;
@@ -114,6 +110,9 @@ export interface RouteVoiceNoteDeps {
   chatHistoryManager: InProgressPersister;
   /** Where this note came from (authored / derived). */
   source: VoiceNoteSource;
+  /** Which authored-tool transport reached the router. Used only to collapse
+   * the event observation and HTTP fallback for the same call. */
+  authoredPath?: "observation" | "bridge";
   /** Injectable for tests; defaults to the global fetch. */
   fetchImpl?: typeof fetch;
   /** Injectable id factory (synthetic note id). */
@@ -132,10 +131,8 @@ export interface RouteVoiceNoteResult {
   /** Webhook POST outcome, when attempted. */
   webhookStatus?: number;
   webhookError?: string;
-  /** Effective attention after the per-turn cap (drives audio + webhook). */
-  attention: boolean;
-  /** True when the per-turn attention cap downgraded this note to silent. */
-  capped: boolean;
+  /** The same authored call was already delivered through the other path. */
+  duplicate: boolean;
 }
 
 let fallbackCounter = 0;
@@ -161,31 +158,47 @@ export async function routeVoiceNote(
   deps: RouteVoiceNoteDeps,
 ): Promise<RouteVoiceNoteResult> {
   const { runner, sessionId, credentialStore, source, chatHistoryManager } = deps;
-  const id = (deps.idFactory ?? defaultId)();
-  const nowIso = (deps.now ?? (() => new Date().toISOString()))();
-
   const state = stateFor(runner);
-  if (source === "authored") state.authored = true;
-
-  // Per-turn attention cap. A `needsAttention: false` note is silent by
-  // construction; an attention note past the cap is downgraded to silent.
-  let attention = payload.needsAttention;
-  let capped = false;
-  if (attention) {
-    state.attentionCount += 1;
-    if (state.attentionCount > MAX_ATTENTION_NOTES_PER_TURN) {
-      attention = false;
-      capped = true;
+  if (source === "authored") {
+    state.authored = true;
+    // The event stream is the preferred low-latency path, while the bridge is
+    // a reliability fallback for adapters that don't surface MCP tool calls in
+    // an observable assistant event. Both carry the same sanitized payload, so
+    // suppress whichever path arrives second. Mark synchronously before any
+    // webhook await so racing paths cannot double-send.
+    const fingerprint = JSON.stringify({
+      summary: payload.summary,
+      context: payload.context ?? null,
+    });
+    const path = deps.authoredPath ?? "observation";
+    const existing = state.authoredPayloads.get(fingerprint);
+    if (existing && existing.path !== path) {
+      state.authoredPayloads.delete(fingerprint);
+      return {
+        id: existing.id,
+        native: false,
+        webhook: false,
+        duplicate: true,
+      };
     }
+    const id = (deps.idFactory ?? defaultId)();
+    state.authoredPayloads.set(fingerprint, { id, path });
   }
+
+  const id = source === "authored"
+    ? state.authoredPayloads.get(JSON.stringify({
+        summary: payload.summary,
+        context: payload.context ?? null,
+      }))!.id
+    : (deps.idFactory ?? defaultId)();
+  const nowIso = (deps.now ?? (() => new Date().toISOString()))();
 
   const mode = credentialStore.getVoiceDeliveryMode();
   const result: RouteVoiceNoteResult = {
     id,
     native: false,
     webhook: false,
-    attention,
-    capped,
+    duplicate: false,
   };
 
   // ---- Native sink ----
@@ -193,7 +206,6 @@ export async function routeVoiceNote(
     const voiceNote = {
       id,
       headline: payload.summary,
-      needsAttention: attention,
       kind: source,
       createdAt: nowIso,
     };
@@ -214,8 +226,7 @@ export async function routeVoiceNote(
   }
 
   // ---- External (webhook) sink ----
-  // Gated on effective attention: an FYI / silent note is not pushed out.
-  if ((mode === "external" || mode === "both") && attention) {
+  if (mode === "external" || mode === "both") {
     const webhook = credentialStore.getVoiceWebhook();
     if (webhook) {
       result.webhook = true;
@@ -230,7 +241,9 @@ export async function routeVoiceNote(
           body: JSON.stringify({
             v: VOICE_WEBHOOK_BODY_VERSION,
             summary: payload.summary,
-            needsAttention: payload.needsAttention,
+            // Constant `true`: every note is attention-worthy now. Kept in the
+            // body so existing `v: 1` receivers that branch on it keep working.
+            needsAttention: true,
             ...(payload.context ? { context: payload.context } : {}),
           }),
         });

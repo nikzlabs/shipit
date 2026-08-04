@@ -17,6 +17,7 @@ import {
   DialogDescription,
 } from "../ui/dialog.js";
 import { Button } from "../ui/button.js";
+import { Alert } from "../ui/banner.js";
 import { WithTooltip } from "../ui/tooltip.js";
 import { ICON_SIZE } from "../../design-tokens.js";
 import { useUiStore } from "../../stores/ui-store.js";
@@ -247,15 +248,16 @@ export function SessionSettingsDialog({
         )}
 
         {showEnforcementWarning && (
-          <div
-            className="mx-5 mb-1 flex items-start gap-2 rounded-md border border-(--color-warning) bg-(--color-warning-subtle) px-3 py-2"
+          <Alert
+            variant="warning"
+            className="mx-5 mb-1"
             data-testid="session-settings-enforcement-warning"
           >
             <span className="mt-0.5 shrink-0 text-(--color-warning)"><WarningIcon size={ICON_SIZE.SM} weight="fill" /></span>
-            <p className="text-xs text-(--color-warning)">
+            <p>
               Not enforced on this deployment — contained sessions fail to start. See the install notes.
             </p>
-          </div>
+          </Alert>
         )}
 
         <p className="px-5 pb-4.5 pt-2 text-[11px] text-(--color-text-tertiary)">

@@ -25,6 +25,7 @@ import { usePrStore } from "../../stores/pr-store.js";
 import { useGitStore } from "../../stores/git-store.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import type { PrCardState } from "../../stores/pr-store.js";
+import { useCiDisplay, type CiDisplay } from "../../hooks/useCiDisplay.js";
 import {
   AutoMergeToggle,
   FixCIButton,
@@ -33,22 +34,32 @@ import {
 } from "../PrStatusControls.js";
 import { PrActionsMenu } from "../PrActionsMenu.js";
 
-function ChecksSummary({ checks }: { checks: PrCardState["checks"] }) {
-  if (!checks || checks.state === "none") {
+function ChecksSummary({ display, checks }: { display: CiDisplay; checks: PrCardState["checks"] }) {
+  if (display.kind === "unknown") {
     return <p className="text-sm text-(--color-text-tertiary)">No CI checks for this PR.</p>;
+  }
+  if (display.kind === "none") {
+    // Terminal, and worth spelling out: "no workflow matched" points the user
+    // straight at the fix (add a `pull_request` trigger) instead of leaving
+    // them to wonder whether CI is merely slow. docs/230.
+    return (
+      <p className="text-sm text-(--color-text-tertiary)">
+        No CI checks ran for this PR — no workflow matched the pull request event.
+      </p>
+    );
   }
 
   let icon: React.ReactNode;
   let label: string;
-  if (checks.state === "success") {
+  if (display.kind === "success") {
     icon = <CheckCircleIcon size={ICON_SIZE.SM} className="text-(--color-success)" />;
-    label = `${checks.passed}/${checks.total} checks passed`;
-  } else if (checks.state === "failure") {
+    label = `${display.total}/${display.total} checks passed`;
+  } else if (display.kind === "failure") {
     icon = <XCircleIcon size={ICON_SIZE.SM} className="text-(--color-error)" />;
-    label = `${checks.failed} of ${checks.total} checks failing`;
+    label = `${display.failed} of ${display.total} checks failing`;
   } else {
     icon = <CircleNotchIcon size={ICON_SIZE.SM} className="text-(--color-warning) animate-spin" />;
-    label = checks.total === 0 ? "Waiting for CI to start" : `${checks.passed}/${checks.total} checks complete`;
+    label = display.total === 0 ? "Waiting for CI to start" : `${display.passed}/${display.total} checks complete`;
   }
 
   return (
@@ -56,7 +67,7 @@ function ChecksSummary({ checks }: { checks: PrCardState["checks"] }) {
       <div className="flex items-center gap-2 text-sm text-(--color-text-secondary)">
         {icon} {label}
       </div>
-      {checks.failedChecks && checks.failedChecks.length > 0 && (
+      {checks?.failedChecks && checks.failedChecks.length > 0 && (
         <ul className="mt-1.5 space-y-1 pl-6">
           {checks.failedChecks.map((c) => (
             <li key={c.name} className="text-xs text-(--color-text-secondary)">
@@ -106,11 +117,12 @@ export function PrStatusSection({ sessionId, card }: { sessionId: string; card: 
   const rebaseStatus = useGitStore((s) => s.rebaseStatus);
   const autoFixCi = useSettingsStore((s) => s.autoFixCi);
   const checks = card.checks ?? (status ? status.checks : undefined);
+  const ciDisplay = useCiDisplay(checks);
   const autoFix = card.autoFix;
   const autoMerge = card.autoMerge;
-  const isCiFailed = checks?.state === "failure";
-  const isCiPassed = checks?.state === "success";
-  const isCiNone = checks?.state === "none";
+  const isCiFailed = ciDisplay.kind === "failure";
+  const isCiPassed = ciDisplay.kind === "success";
+  const isCiNone = ciDisplay.kind === "none";
   const isConflicting = mergeable === "conflicting";
   // docs/174 — gate the merge button on GitHub's review decision too.
   const isReviewBlocked = reviewDecision === "review_required" || reviewDecision === "changes_requested";
@@ -129,7 +141,7 @@ export function PrStatusSection({ sessionId, card }: { sessionId: string; card: 
         Status
       </h3>
 
-      <ChecksSummary checks={checks} />
+      <ChecksSummary display={ciDisplay} checks={checks} />
 
       <ReviewSummary reviewDecision={reviewDecision} />
 

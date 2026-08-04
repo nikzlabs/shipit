@@ -26,7 +26,6 @@ import type { AutoResolveResult, RebaseAndResolveCb } from "./auto-conflict-reso
 import type { AutoFixResult } from "./auto-fix-manager.js";
 import type { ChatHistoryManager } from "./chat-history.js";
 import type { UsageManager } from "./usage.js";
-import type { AuthManager } from "./agents/claude/auth-manager.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { SessionManager } from "./sessions.js";
 import { repushAgentToken, repushProviderAccountToken } from "./session-credentials.js";
@@ -34,12 +33,22 @@ import type { RepoGit } from "./repo-git.js";
 import type { GitManager } from "../shared/git.js";
 import type { AgentAuthManager, AgentAuthFailedPayload } from "./agent-auth-manager.js";
 import type { AgentAuthPendingDetails } from "../shared/types/ws-server-messages.js";
+import type {
+  AgentAuthLogPayload,
+  AgentAuthProgressPayload,
+} from "./agents/claude/auth-diagnostics.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { ProviderAccountManager } from "./provider-account-manager.js";
+import type { LocalAgentFactory } from "./local-agent-home.js";
+import { resolveLocalAgentHome } from "./local-agent-home.js";
+import type { LocalAgentMcpDeps } from "./local-agent-mcp.js";
+import { applyLocalMcp } from "./local-agent-mcp.js";
+import { refuseIfAlreadyConnected } from "./provider-account-identity.js";
 import type { AgentRegistry } from "../shared/agent-registry.js";
 import type { AgentId, AgentProcess, LogSource, LogRingEntry } from "../shared/types.js";
 import type { AppDeps, RuntimeMode } from "./app-di.js";
 import { SessionRunner } from "./session-runner.js";
+import { prepareDispatch } from "./prepared-dispatch.js";
 import { listAgents } from "./services/settings.js";
 import { sweepSubAgentCredentialsOnSignOut } from "./services/sub-agent.js";
 
@@ -294,25 +303,27 @@ export interface RunnerFactoryDeps {
    * can re-register artifacts with the new worker to serve their bytes again.
    */
   presentStore?: PresentStore;
+  /**
+   * docs/150 — local mode only. The account-scoped agent factory; each
+   * in-process runner gets a `createAgent` bound to it so its CLI spawns
+   * against the provider account THIS session was routed to. Absent (or with
+   * no `providerAccountManager`) the local runner keeps no `createAgent` and
+   * callers fall through to the process-wide `agentFactory`, i.e. the
+   * process-global home.
+   */
+  localAgentFactory?: LocalAgentFactory;
+  /** docs/150 — resolves a cross-provider sub-agent spawn's account. */
+  providerAccountManager?: ProviderAccountManager;
+  /**
+   * SHI-298 — local mode only. Source of the MCP env a local spawn carries
+   * (`applyLocalMcp`), standing in for the worker `PUT /secrets` push that
+   * `prepareSessionAgentEnvironment` skips outside container mode. Absent ⇒ the
+   * local runner spawns with no MCP at all, which is the pre-SHI-298 behavior.
+   */
+  credentialStore?: LocalAgentMcpDeps["credentialStore"];
 }
 
-/**
- * Single entry point for creating a container and wiring it to a runner.
- *
- * Both runner-factory paths that materialize a new container — the
- * standby-fallback path (after the in-progress standby timed out) and the
- * fresh-create path (no existing or stale container) — go through here.
- * Keeping the [destroy-existing → build config → create → wire runner →
- * handle failure] sequence in one place means the per-session resource
- * limits and error-handling stay in lock-step across all real container
- * creation flows.
- *
- * The warm-pool standby creator does NOT go through this helper because
- * it produces a standby (no runner to wire) and reports failures
- * differently — it uses `mgr.createStandby` + `mgr.buildConfigForWorkspace`
- * directly.
- */
-async function createContainerForRunner(opts: {
+interface CreateContainerForRunnerOpts {
   mgr: SessionContainerManager;
   runner: ContainerSessionRunner;
   sessionId: string;
@@ -335,7 +346,58 @@ async function createContainerForRunner(opts: {
   broadcastLog?: (sessionId: string, source: LogSource, text: string) => void;
   /** OOM circuit breaker — when tripped, creation is refused. */
   oomBreaker?: SessionOomCircuitBreaker;
-}): Promise<void> {
+}
+
+/**
+ * How many times {@link createContainerForRunner} tries to bring a session
+ * container up before giving up.
+ *
+ * Container creation fails transiently more often than it fails for good: a
+ * slow image pull, a busy Docker daemon, a veth/IP allocation race, a worker
+ * health check that misses its window under host load. Every one of those used
+ * to dispose the runner on the FIRST error, which stranded the turn the user
+ * had already sent — they saw an error, typed "continue", and the fresh runner
+ * (with its fresh container) then worked. The retry IS that "continue", done
+ * automatically and *before* the turn is torn down, so the prompt is never
+ * lost: a turn parked on the runner's worker-ready gate just starts a few
+ * seconds late.
+ */
+const MAX_CONTAINER_CREATE_ATTEMPTS = 3;
+
+/** Backoff before create attempt N+1. Short — a user's turn is parked on this. */
+const CONTAINER_CREATE_RETRY_DELAYS_MS = [1000, 3000];
+
+/**
+ * Failures worth another attempt. Everything is retryable EXCEPT causes known
+ * to be deterministic, where retrying only delays the error the user needs to
+ * see: a workspace that could not be restored, and a deployment whose egress
+ * sidecar image isn't configured.
+ */
+function isRetryableCreateFailure(errMsg: string): boolean {
+  return !/Session workspace is missing|SESSION_EGRESS_SIDECAR_IMAGE is not set/i.test(errMsg);
+}
+
+/**
+ * Single entry point for creating a container and wiring it to a runner.
+ *
+ * Both runner-factory paths that materialize a new container — the
+ * standby-fallback path (after the in-progress standby timed out) and the
+ * fresh-create path (no existing or stale container) — go through here.
+ * Keeping the [destroy-existing → build config → create → wire runner →
+ * handle failure] sequence in one place means the per-session resource
+ * limits and error-handling stay in lock-step across all real container
+ * creation flows.
+ *
+ * Failures are retried up to {@link MAX_CONTAINER_CREATE_ATTEMPTS} times; only
+ * when the budget is exhausted (or the cause is deterministic) is the runner
+ * marked unavailable and disposed.
+ *
+ * The warm-pool standby creator does NOT go through this helper because
+ * it produces a standby (no runner to wire) and reports failures
+ * differently — it uses `mgr.createStandby` + `mgr.buildConfigForWorkspace`
+ * directly.
+ */
+async function createContainerForRunner(opts: CreateContainerForRunnerOpts): Promise<void> {
   const { mgr, runner, sessionId } = opts;
 
   // Circuit-break before doing any work. If the breaker is tripped the
@@ -347,12 +409,79 @@ async function createContainerForRunner(opts: {
     console.warn(`[container] Refusing to create container for ${sessionId}: OOM circuit breaker tripped`);
     mgr.recordCreateError(sessionId, errMsg);
     opts.broadcastLog?.(sessionId, "server", errMsg);
+    runner.markWorkerUnavailable(errMsg);
     runner.dispose({ force: true });
     return;
   }
 
+  for (let attempt = 0; attempt < MAX_CONTAINER_CREATE_ATTEMPTS; attempt++) {
+    // A retry always clears whatever the failed attempt left behind. The
+    // create path's own catch removes the container and its overlay volumes,
+    // but `destroy` additionally drops the manager entry and reaps
+    // parent-session-labeled children, so the next attempt starts clean.
+    const destroyFirst = attempt > 0 || opts.destroyExisting;
+    const err = await attemptContainerCreate({ ...opts, destroyFirst });
+    if (!err) return;
+
+    const errMsg = getErrorMessage(err);
+    const lastAttempt = attempt === MAX_CONTAINER_CREATE_ATTEMPTS - 1;
+
+    // The runner went away mid-attempt (session archived, full reset, shutdown).
+    // Nothing is waiting on this container any more.
+    if (runner.disposed) {
+      console.warn(`[container] Abandoning container creation for ${sessionId} — runner disposed: ${errMsg}`);
+      return;
+    }
+
+    if (!lastAttempt && isRetryableCreateFailure(errMsg)) {
+      const delayMs = CONTAINER_CREATE_RETRY_DELAYS_MS[attempt] ?? 3000;
+      console.warn(
+        `[container] Container creation for ${sessionId} failed (attempt ${attempt + 1}/${MAX_CONTAINER_CREATE_ATTEMPTS}), `
+        + `retrying in ${delayMs}ms: ${errMsg}`,
+      );
+      opts.broadcastLog?.(
+        sessionId,
+        "server",
+        `Container creation failed (attempt ${attempt + 1}/${MAX_CONTAINER_CREATE_ATTEMPTS}) — retrying: ${errMsg}`,
+      );
+      await new Promise((r) => setTimeout(r, delayMs));
+      continue;
+    }
+
+    console.error(`[container] Failed to start container for ${sessionId}:`, errMsg);
+    // Record so the health endpoint can surface it to the UI — without this
+    // async creation failures from the fire-and-forget block are invisible.
+    mgr.recordCreateError(sessionId, errMsg);
+    // Mirror into the per-session ring — `lastCreateError` is wiped on
+    // the next successful create, but a copied diagnostic still shows the
+    // failure in recentLogs.
+    const qualifier = opts.failureContext ? ` (${opts.failureContext})` : "";
+    opts.broadcastLog?.(sessionId, "server", `Container creation failed${qualifier}: ${errMsg}`);
+    // Record the cause BEFORE disposing. `dispose()` resolves the runner's
+    // worker-ready gate, releasing any turn parked on it; without this the
+    // released turn POSTs to the `0.0.0.0:0` placeholder and the user gets
+    // `Error: connect ECONNREFUSED 0.0.0.0` instead of the real reason.
+    runner.markWorkerUnavailable(errMsg);
+    // Forced — container start failed, the runner is unusable and must be
+    // torn down. The agent isn't running on any worker yet, but if some
+    // race ever flipped `_isRunning` (early enqueue, etc.), an unforced
+    // dispose would silently no-op and leak the registry entry.
+    runner.dispose({ force: true });
+    return;
+  }
+}
+
+/**
+ * One container-creation attempt. Returns the error instead of throwing so the
+ * retry loop in {@link createContainerForRunner} owns all the policy (backoff,
+ * terminal-failure detection, error recording) in one place.
+ */
+async function attemptContainerCreate(
+  opts: CreateContainerForRunnerOpts & { destroyFirst: boolean },
+): Promise<unknown> {
+  const { mgr, runner, sessionId } = opts;
   try {
-    if (opts.destroyExisting) await mgr.destroy(sessionId);
+    if (opts.destroyFirst) await mgr.destroy(sessionId);
     // SHI-179 — fail fast with a clear, terminal message if the workspace clone
     // is missing. The activation path (route-registry `activateSession`)
     // re-materializes an evicted/missing workspace from the bare cache before
@@ -405,22 +534,9 @@ async function createContainerForRunner(opts: {
     console.log(`[container] Container ready for ${sessionId} at ${sc.workerUrl}`);
     runner.setWorkerUrl(sc.workerUrl);
     mgr.clearCreateError(sessionId);
+    return null;
   } catch (err) {
-    const errMsg = getErrorMessage(err);
-    console.error(`[container] Failed to start container for ${sessionId}:`, errMsg);
-    // Record so the health endpoint can surface it to the UI — without this
-    // async creation failures from the fire-and-forget block are invisible.
-    mgr.recordCreateError(sessionId, errMsg);
-    // Mirror into the per-session ring — `lastCreateError` is wiped on
-    // the next successful create, but a copied diagnostic still shows the
-    // failure in recentLogs.
-    const qualifier = opts.failureContext ? ` (${opts.failureContext})` : "";
-    opts.broadcastLog?.(sessionId, "server", `Container creation failed${qualifier}: ${errMsg}`);
-    // Forced — container start failed, the runner is unusable and must be
-    // torn down. The agent isn't running on any worker yet, but if some
-    // race ever flipped `_isRunning` (early enqueue, etc.), an unforced
-    // dispose would silently no-op and leak the registry entry.
-    runner.dispose({ force: true });
+    return err ?? new Error("Container creation failed");
   }
 }
 
@@ -437,23 +553,67 @@ async function createContainerForRunner(opts: {
 export function buildRunnerFactory(
   factoryDeps: RunnerFactoryDeps,
 ): SessionRunnerFactory | undefined {
-  const { deps, containerManager, credentialsDir, sessionManager, runtimeMode, broadcastLog, oomBreaker, presentStore } = factoryDeps;
+  const {
+    deps, containerManager, credentialsDir, sessionManager, runtimeMode, broadcastLog,
+    oomBreaker, presentStore, localAgentFactory, providerAccountManager, credentialStore,
+  } = factoryDeps;
 
   // Explicit injection always wins (tests, custom orchestrations).
   if (deps.runnerFactory) return deps.runnerFactory;
 
   // Local mode: in-process SessionRunner. Agent subprocesses are launched via
-  // the process-level `agentFactory` (claude-adapter / codex-adapter) — there
-  // is no `runner.createAgent` because there is no container worker to proxy
-  // to. The registry's onRunnerCreated wiring falls through to `agentFactory`
-  // when `runner.createAgent` is undefined.
+  // the local agent factory (claude-adapter / codex-adapter) — there is no
+  // container worker to proxy to.
+  //
+  // docs/150 — the runner still gets a `createAgent`, not because there is
+  // anything to proxy, but because it is the ONE per-session hook every spawn
+  // path already prefers over the process-wide `agentFactory` (the WS handler
+  // context, system turns, the rebase driver, `spawnSubAgent`). Binding the
+  // session's account-scoped HOME here reaches all of them without widening a
+  // single factory signature. Without a `sessionManager` there is no session to
+  // resolve a route from, so we leave `createAgent` unset and behave as before.
   if (runtimeMode === "local") {
     return (o: Parameters<SessionRunnerFactory>[0]) => {
-      return new SessionRunner({
+      const runner = new SessionRunner({
         sessionId: o.sessionId,
         sessionDir: o.sessionDir,
         defaultAgentId: o.defaultAgentId,
       });
+      if (localAgentFactory && sessionManager) {
+        const homeDeps = {
+          sessionManager,
+          credentialsDir,
+          ...(providerAccountManager ? { providerAccountManager } : {}),
+        };
+        runner.createAgent = (agentId: AgentId): AgentProcess => {
+          // Resolved lazily, inside the spawn: `createAgent` runs before
+          // `prepareSessionAgentEnvironment` has pinned the route, and a
+          // failover repoints an already-pinned session under this same runner.
+          const agent = localAgentFactory(agentId, () =>
+            resolveLocalAgentHome(o.sessionId, agentId, homeDeps));
+          // SHI-298 — and the same reasoning carries MCP. The worker performs
+          // two writes before a spawn (the adapter's `writeMcpConfig`, and the
+          // agent-env push that its `$secret:` resolution and the MCP children
+          // read); local mode runs neither, so the CLI spawned with no MCP at
+          // all. `applyLocalMcp` does both here, at the spawn, for the same
+          // reason HOME is resolved here rather than provisioned per session.
+          return credentialStore
+            ? applyLocalMcp(agent, {
+              credentialStore,
+              onServerFailed: (name, reason) => {
+                runner.emitMessage({
+                  type: "mcp_server_status",
+                  sessionId: o.sessionId,
+                  name,
+                  state: "failed",
+                  reason,
+                });
+              },
+            })
+            : agent;
+        };
+      }
+      return runner;
     };
   }
 
@@ -613,6 +773,16 @@ export function createMissingContainerReconciler(
       if (!runner) continue;
       if (containerManager.isStandby(sid)) continue;
       if (containerManager.get(sid)) continue;
+      // Creation in flight — NOT orphaned. `getOrCreate` registers the runner
+      // synchronously and kicks `createContainerForRunner` off fire-and-forget,
+      // but the manager's map entry is only written partway into
+      // `createContainer`. Destroying a stale container, resolving overlay
+      // specs, and building the config all happen before that, so a healthy
+      // session activating right now looks container-less to this pass.
+      // Force-disposing it there resolved the runner's worker-ready gate while
+      // the URL was still the `0.0.0.0:0` placeholder, and the parked turn then
+      // dialed it — surfacing as `Error: connect ECONNREFUSED 0.0.0.0` in chat.
+      if (runner.awaitingContainer) continue;
       // Inverse-leak backstop (C3): the runner has no container entry, but
       // a live Docker container may still exist — orphaned because a
       // `die`/`oom` event deleted a healthy container's map entry. Try to
@@ -686,6 +856,7 @@ export interface PrPollerDeps {
   sessionManager: SessionManager;
   sseBroadcast: (event: string, data: unknown) => void;
   runnerRegistry: SessionRunnerRegistry;
+  defaultAgentId: AgentId;
   createRepoGit: (dir: string) => RepoGit;
   /**
    * Factory for a GitManager bound to a session's workspace dir. Passed to
@@ -735,7 +906,6 @@ export interface PrPollerDeps {
    */
   chatHistoryManager?: ChatHistoryManager;
   usageManager?: UsageManager;
-  authManager?: AuthManager;
   credentialStore?: CredentialStore;
   /**
    * docs/146 — exposed for the wrapper's drain hook. When the rebase-driver's
@@ -763,9 +933,9 @@ export function createPrStatusPoller(
 ): PrStatusPoller {
   const {
     deps, githubAuthManager, sessionManager, sseBroadcast,
-    runnerRegistry, createRepoGit, getBareCacheDir, pruneSessionVolumes,
+    runnerRegistry, defaultAgentId, createRepoGit, getBareCacheDir, pruneSessionVolumes,
     onRepoMainAdvanced, containerManager, mergeWatchManager,
-    createGitManager, chatHistoryManager, usageManager, authManager, credentialStore,
+    createGitManager, chatHistoryManager, usageManager, credentialStore,
     drainQueueForSession, agentFactory,
   } = pollerDeps;
 
@@ -775,7 +945,7 @@ export function createPrStatusPoller(
   // and git manager per-call. Skipped in degraded test setups that omit any
   // of the deps — the auto-resolve feature stays inactive.
   let rebaseAndResolveCb: RebaseAndResolveCb | undefined;
-  if (createGitManager && chatHistoryManager && usageManager && authManager) {
+  if (createGitManager && chatHistoryManager && usageManager) {
     rebaseAndResolveCb = async (sessionId, baseBranch): Promise<AutoResolveResult> => {
       const runner = runnerRegistry.get(sessionId);
       if (!runner) {
@@ -792,7 +962,6 @@ export function createPrStatusPoller(
           sessionManager,
           chatHistoryManager,
           usageManager,
-          authManager,
           sseBroadcast,
           // Container runners supply `createAgent` themselves so this is
           // unused in production; in-process runners (tests, local mode)
@@ -822,6 +991,15 @@ export function createPrStatusPoller(
     isAutoResolveEnabled: credentialStore ? (() => credentialStore.getAutoResolveConflicts()) : (() => false),
     // docs/169 — global gate for the auto-fix-CI loop, read at decision time.
     isAutoFixEnabled: credentialStore ? (() => credentialStore.getAutoFixCi()) : (() => false),
+    ensureRunner: async (sessionId) => {
+      const session = sessionManager.get(sessionId);
+      if (!session?.workspaceDir) return undefined;
+      return runnerRegistry.getOrCreate(
+        sessionId,
+        session.workspaceDir,
+        session.agentId ?? defaultAgentId,
+      );
+    },
     ...(rebaseAndResolveCb ? { rebaseAndResolveCb } : {}),
     // docs/169 — the auto-fix loop's per-attempt callback. Fetches CI logs and
     // dispatches the fix as a `systemTurn` (suppressing live-steering), then
@@ -837,14 +1015,40 @@ export function createPrStatusPoller(
       if (logs.length === 0) return { outcome: "noop", lastError: "no_logs" };
       const prompt = buildCIFixPrompt(logs);
 
-      await new Promise<void>((resolve) => {
-        runner.dispatch({
-          text: prompt,
-          activity: "Auto-fixing CI...",
-          systemTurn: true,
-          onTurnComplete: () => resolve(),
-        });
-      });
+      // docs/240 — await the OWNED settlement the dispatch hands back rather
+      // than a hand-rolled `new Promise(resolve => onTurnComplete: resolve)`.
+      // The raw callback fires only from a real turn's completion, so a turn
+      // whose runner went away never resolved it and this `await` never
+      // returned — leaving `AutoFixManager` parked in `running` (its only exit
+      // is the post-turn write) with the arbiter claim held, which silently
+      // disabled managed auto-merge and auto-resolve for the session. The
+      // settlement resolves on every terminal outcome, including `dropped` when
+      // the runner is disposed mid-turn.
+      const outcome = await runner.dispatch(prepareDispatch({
+        text: prompt,
+        agentInterface: undefined,
+        activity: "Auto-fixing CI...",
+        systemTurn: true,
+        onTurnComplete: undefined,
+        execution: undefined,
+        images: undefined,
+        files: undefined,
+        uploads: undefined,
+        permissionMode: undefined,
+        postTurn: undefined,
+        deliveryId: undefined,
+      })).settled;
+      // A turn that NEVER RAN doesn't burn budget: `dropped` (runner disposed
+      // mid-turn, queue cleared) and `steered` (unreachable for a system turn,
+      // mapped for completeness) are "noop", so the loop re-arms on the shorter
+      // deferred cooldown with the budget intact. `errored` / `no-result` DID
+      // consume an attempt — they are counted, exactly as before this call site
+      // learned to tell the outcomes apart, so a session whose fix turns keep
+      // dying still exhausts after MAX_AUTO_FIX_ATTEMPTS instead of retrying
+      // forever.
+      if (outcome.status === "dropped" || outcome.status === "steered") {
+        return { outcome: "noop", lastError: `fix turn ${outcome.status}` };
+      }
       return { outcome: "fixed" };
     },
     // docs/194 — drive the issue-lifecycle "→ completed" transition off the
@@ -907,6 +1111,28 @@ export function createPrStatusPoller(
         if (repoUrl) onRepoMainAdvanced?.(repoUrl);
       } catch (err) {
         console.error(`[pr-poller] Post-merge handling failed for ${sessionId}:`, err);
+      }
+
+      // docs/239 — fire a SELF merge-watch here, not from `onPrTerminalState`.
+      // This point is after `markMergedAndPruneExcess` has resolved, so the merge
+      // bookkeeping is complete and the remote head-branch deletion has already
+      // happened — a wake fired earlier could hand the agent a branch about to be
+      // deleted. `setPrStatus` / `setMergedHeadSha` both ran before this callback,
+      // so the deliverer reads the PR facts straight from the persisted snapshot
+      // and this sessionId-only signature needs no widening. No-ops unless the
+      // session carries an armed self-watch.
+      //
+      // Deliberately OUTSIDE the block above, not inside it: the poller's
+      // `alreadyTerminal` guard means this callback fires exactly once per merge,
+      // so a throw in the archive/prune step would otherwise strand the wake until
+      // an orchestrator restart. Its own failures are handled internally (recorded
+      // as a delivery attempt for the retry supervisor).
+      if (mergeWatchManager) {
+        try {
+          await mergeWatchManager.handleSelfMerge(sessionId);
+        } catch (err) {
+          console.error(`[pr-poller] self merge-watch delivery failed for ${sessionId}:`, err);
+        }
       }
     },
   });
@@ -1007,6 +1233,17 @@ export interface EventWiringDeps {
   credentialsDir: string;
   /** Session metadata — used to find sessions pinned to an agent on re-auth (A3). */
   sessionManager: SessionManager;
+  /**
+   * docs/179 §4 — true when a CLI process is alive for this session right now.
+   * The A3 re-push below still writes the rotated token when it returns true,
+   * but must not rewrite credential *topology* underneath a live process.
+   *
+   * Optional so minimal test setups keep working; when absent the re-push
+   * behaves exactly as it did before (repair always allowed), which is correct
+   * for a build with no runner registry — there are no agent processes to
+   * disturb.
+   */
+  hasLiveAgent?: (sessionId: string) => boolean;
 }
 
 export function markProviderAccountUnauthenticated(opts: {
@@ -1068,7 +1305,7 @@ export function markProviderAccountReauthenticated(opts: {
 
 /** Wire auth event handlers. */
 export function wireEventHandlers(eventDeps: EventWiringDeps): void {
-  const { authManagers, githubAuthManager, agentRegistry, providerAccountManager, sseBroadcast, credentialsDir, sessionManager } = eventDeps;
+  const { authManagers, githubAuthManager, agentRegistry, providerAccountManager, sseBroadcast, credentialsDir, sessionManager, hasLiveAgent } = eventDeps;
 
   /**
    * A3 (docs/142): after a Claude/Codex re-auth, force the fresh source token
@@ -1085,9 +1322,14 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
       if (!session.agentPinned || session.agentId !== agentId) continue;
       if (accountId && (session.providerRouteKind !== "account" || session.providerRouteId !== accountId)) continue;
       try {
+        // docs/179 §4 — a sign-in can complete at any moment, including while
+        // a streaming CLI is resident. Deliver the fresh token, but leave
+        // credential topology alone under a live process: the leak repair's
+        // unlink→copy window makes that process report itself unauthenticated.
+        const opts = { repairLeakedSubtrees: !hasLiveAgent?.(session.id) };
         const wrote = accountId
-          ? repushProviderAccountToken(credentialsDir, session.id, agentId, accountId)
-          : repushAgentToken(credentialsDir, session.id, agentId);
+          ? repushProviderAccountToken(credentialsDir, session.id, agentId, accountId, undefined, undefined, opts)
+          : repushAgentToken(credentialsDir, session.id, agentId, undefined, undefined, opts);
         if (wrote) healed++;
       } catch (err) {
         console.error(`[auth] A3 token re-push failed for session ${session.id}:`, err);
@@ -1129,6 +1371,14 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
   // the concrete classes for back-compat with the unit tests and any
   // remaining direct listeners, but no SSE wiring depends on them.
   for (const [agentId, mgr] of authManagers) {
+    mgr.on("progress", (payload: AgentAuthProgressPayload) => {
+      sseBroadcast("agent_auth_progress", payload);
+    });
+
+    mgr.on("log", (payload: AgentAuthLogPayload) => {
+      sseBroadcast("agent_auth_log", payload);
+    });
+
     mgr.on("pending", (details: AgentAuthPendingDetails) => {
       // docs/150 — qualify the broadcast with the account being authenticated
       // (read synchronously here, while the flow is still active) so the
@@ -1138,22 +1388,43 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
     });
 
     mgr.on("complete", () => {
+      // docs/150 req 19 — every flow is account-scoped (`start` requires the
+      // scope), so a completion always names its account. The old `else` here
+      // re-ran `migrateDefaultAccounts()` to re-register a default row after a
+      // singleton sign-in; there is no singleton sign-in any more, and a user
+      // signing in after a sign-out goes through "Add account", which creates
+      // the row before the flow starts. A null here would mean a manager
+      // emitted `complete` without a start, which is a bug worth seeing rather
+      // than papering over with a migration.
       const accountId = mgr.getActiveAccountId() ?? undefined;
       if (accountId) {
-        // docs/150 — a scoped login finished: flip the row to `ready` and
-        // re-push the fresh token only into sessions pinned to this account.
+        // docs/150 req 22 — the CLI has written credentials; find out WHOSE
+        // before anything treats the row as connected. A refusal must happen
+        // here rather than on the next turn: once the row goes `ready` it is
+        // selectable, and a duplicate account is worst precisely when it gets
+        // picked as a failover target for the account it duplicates.
+        const refusal = refuseIfAlreadyConnected(agentId, accountId, providerAccountManager);
+        if (refusal) {
+          agentRegistry.refreshAuth(agentId);
+          sseBroadcast("agent_auth_failed", {
+            agentId,
+            accountId,
+            reason: "duplicate",
+            message: refusal,
+          });
+          sseBroadcast("agent_list", agentListPayload());
+          sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
+          return;
+        }
+        // A scoped login finished: flip the row to `ready` and re-push the
+        // fresh token only into sessions pinned to this account.
         try {
           providerAccountManager.setAccountStatus(agentId, accountId, "ready");
         } catch (err) {
           console.error(`[auth] failed to mark account ${accountId} ready:`, err);
         }
       } else {
-        // Singleton sign-in: re-register the default provider-account row if it
-        // was dropped on the previous sign-out. The migration is a no-op when
-        // any account row for the agent already exists, so re-auth into an
-        // existing account stays untouched. See the matching teardown in
-        // `DELETE /api/auth/api-key` (Claude) and `DELETE /api/codex-auth`.
-        providerAccountManager.migrateDefaultAccounts();
+        console.warn(`[auth] ${agentId} reported a completed sign-in with no account scope; nothing to mark ready`);
       }
       agentRegistry.refreshAuth(agentId);
       repushTokenToPinnedSessions(agentId, accountId);
@@ -1208,8 +1479,18 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
 /**
  * Start the server when running as the entry point (not imported by tests).
  */
+export function resolveAutoStartDeps(env: NodeJS.ProcessEnv = process.env): AppDeps {
+  const localStateDir = env.RUNTIME_MODE === "local"
+    ? env.SHIPIT_STATE_DIR
+    : undefined;
+  return {
+    serveStatic: true,
+    ...(localStateDir ? { credentialsDir: path.join(localStateDir, "credentials") } : {}),
+  };
+}
+
 export async function autoStart(buildApp: (deps: AppDeps) => Promise<FastifyInstance>): Promise<void> {
-  const app = await buildApp({ serveStatic: true });
+  const app = await buildApp(resolveAutoStartDeps());
 
   let shuttingDown = false;
   const shutdown = async () => {

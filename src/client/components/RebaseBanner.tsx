@@ -8,6 +8,7 @@
  */
 
 import { useGitStore } from "../stores/git-store.js";
+import { useSessionDefaultBranch, useSessionHasBaseBranch } from "../utils/default-branch.js";
 import { Button } from "./ui/button.js";
 import {
   ArrowsClockwiseIcon,
@@ -33,7 +34,19 @@ export function RebaseBanner({ sessionId }: { sessionId: string }) {
   const startRebase = useGitStore((s) => s.startRebase);
   const abortRebase = useGitStore((s) => s.abortRebase);
 
-  const baseBranch = "main";
+  // The repo's real default branch — a `master` repo must not be told its
+  // branch is behind "main" (and must not be rebased onto a ref that
+  // doesn't exist). Falls back to "main" until the repo list hydrates.
+  const baseBranch = useSessionDefaultBranch(sessionId);
+
+  // …but only a repo-backed session HAS a base branch. On an ops or sandbox
+  // session (no remote, no PR lifecycle) `baseBranch` is the "main" fallback,
+  // so a stray push rejection rendered "Branch is behind main" against a branch
+  // that doesn't exist, with an "Update branch" button that would rebase onto
+  // an unresolvable ref. Suppress the nudge rather than the whole banner: a
+  // rebase that somehow got started still reports its own progress and errors.
+  const hasBaseBranch = useSessionHasBaseBranch(sessionId);
+  const showPushRejected = pushRejected && hasBaseBranch;
 
   // Error state takes priority over the push-rejected / idle branches: a
   // failed rebase was just attempted, so surface the reason even if a
@@ -47,7 +60,7 @@ export function RebaseBanner({ sessionId }: { sessionId: string }) {
             <div className="text-(--color-text-secondary)">Rebase failed</div>
             <div className="mt-0.5 text-(--color-text-tertiary) break-words">{rebaseError}</div>
           </div>
-          {pushRejected && (
+          {showPushRejected && (
             <Button
               size="md"
               variant="secondary"
@@ -71,7 +84,7 @@ export function RebaseBanner({ sessionId }: { sessionId: string }) {
   }
 
   // Nothing to show
-  if (!pushRejected && rebaseStatus === "idle") return null;
+  if (!showPushRejected && rebaseStatus === "idle") return null;
 
   // `last:mb-2` provides 8px gap to the MessageInput only when this banner is
   // the last rendered child of the bottom-stack wrapper. Otherwise the
@@ -80,7 +93,7 @@ export function RebaseBanner({ sessionId }: { sessionId: string }) {
     <div className="mx-4 last:mb-2">
       <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) text-xs">
         {/* Push rejected — offer rebase */}
-        {pushRejected && rebaseStatus === "idle" && (
+        {showPushRejected && rebaseStatus === "idle" && (
           <>
             <WarningIcon size={ICON_SIZE.SM} className="text-(--color-warning) shrink-0" />
             <span className="text-(--color-text-secondary) flex-1">
@@ -138,15 +151,8 @@ export function RebaseBanner({ sessionId }: { sessionId: string }) {
           <>
             <Spinner />
             <span className="text-(--color-text-secondary) flex-1">
-              Agent is resolving merge conflicts…
+              Rebase in progress — agent is resolving conflicts…
             </span>
-            <Button
-              size="md"
-              variant="secondary"
-              onClick={() => abortRebase(sessionId)}
-            >
-              Abort rebase
-            </Button>
           </>
         )}
       </div>

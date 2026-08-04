@@ -18,7 +18,13 @@ escalated command or file change. Headless, there is no human at the prompt, so:
   appeared** — an approved, benign change became unwriteable. The agent couldn't
   route around it either (Write, then `cat >`, then `printf >>` all re-gated).
 - **Codex** silently **auto-approved** every escalation — the opposite failure:
-  the user never saw the gate at all.
+  the user never saw the gate at all. A later implementation routed every
+  native approval RPC through the broker, but Codex can emit those RPCs for
+  ordinary commands and workspace changes even under `approvalPolicy: "never"`,
+  causing repeated approval cards after worker recreation. ShipIt now uses the
+  v1/v2 payload's explicit extra-access fields (`reason`, `grantRoot`, network
+  context, or policy amendments) as the broker boundary; requests without such
+  evidence are immediately accepted inside the isolated worker container.
 
 The gate is correct in intent; the defect was the missing grant affordance. This
 feature adds one — an **agent-agnostic** approve/deny (+ remember) card that any
@@ -104,7 +110,9 @@ Key properties:
   interrupt/resume. Approving lets the agent's *next write* succeed directly.
 - **No prompt spam.** Claude's `--permission-prompt-tool` only fires for
   "ask"-tier calls; allowlisted working-dir edits still auto-approve. Codex only
-  raises a request for genuinely escalated actions.
+  routes native requests to the broker when their payload explicitly requests
+  extra filesystem, network, or execution-policy access; routine v1/v2 command
+  and workspace-change requests receive the native allow decision directly.
 - **ShipIt-handled interrupt tools are never gated.** `AskUserQuestion` and
   `ExitPlanMode` are control-class tools ShipIt resolves via its own
   interrupt/resume flow (question card / PlanApproval card), but the Claude CLI

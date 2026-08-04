@@ -242,6 +242,103 @@ describe("ProjectSettings - Secrets tab", () => {
     );
   });
 
+  // A stored key renders under "Custom variables" only until `secrets_status`
+  // says a compose service declared it. The snapshot is live, so it can arrive
+  // after the tab mounted — and after the user pinned `customRows` by touching
+  // a row. The key must still move into the declared section rather than
+  // rendering in both.
+  it("moves a stored key out of Custom variables when it becomes declared", async () => {
+    renderOnSecretsTab({ onSecretsLoad: async () => ["STRIPE_KEY", "OTHER"] });
+    await waitFor(() => {
+      expect(screen.getByTestId("secret-key-0")).toHaveValue("STRIPE_KEY");
+    });
+    // Pin `customRows` the way any edit would.
+    await userEvent.click(screen.getByTestId("secret-add"));
+
+    usePreviewStore.getState().setSecrets({
+      declared: [{ name: "STRIPE_KEY", services: ["api"] }],
+      missingByService: {},
+      missingRequired: [],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("secret-declared-STRIPE_KEY")).toBeInTheDocument();
+    });
+    const customKeys = screen
+      .getAllByTestId(/^secret-key-\d+$/)
+      .map((el) => (el as HTMLInputElement).value);
+    expect(customKeys).not.toContain("STRIPE_KEY");
+    expect(customKeys).toContain("OTHER");
+  });
+
+  // The rendered custom list is filtered, so row handlers must index the
+  // FILTERED list. Indexing the pinned `customRows` state instead is off by
+  // however many keys have since moved into the declared section — the click
+  // would remove the wrong row.
+  it("removes the clicked custom row after a key moved to the declared section", async () => {
+    renderOnSecretsTab({ onSecretsLoad: async () => ["STRIPE_KEY", "KEEP_ME", "DROP_ME"] });
+    await waitFor(() => {
+      expect(screen.getByTestId("secret-key-0")).toHaveValue("STRIPE_KEY");
+    });
+    // Pin `customRows` while STRIPE_KEY is still in it.
+    await userEvent.click(screen.getByTestId("secret-add"));
+
+    usePreviewStore.getState().setSecrets({
+      declared: [{ name: "STRIPE_KEY", services: ["api"] }],
+      missingByService: {},
+      missingRequired: [],
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("secret-key-0")).toHaveValue("KEEP_ME");
+    });
+
+    // Rendered: [KEEP_ME, DROP_ME, ""] — index 1 is DROP_ME.
+    await userEvent.click(screen.getByTestId("secret-remove-1"));
+    const customKeys = screen
+      .getAllByTestId(/^secret-key-\d+$/)
+      .map((el) => (el as HTMLInputElement).value);
+    expect(customKeys).toEqual(["KEEP_ME", ""]);
+  });
+
+  // A key hidden from the custom section is hidden, not dropped: `declared` can
+  // go back to empty (compose file edited again), and a row removed from state
+  // would then be in neither section — so Save would put it in neither `set`
+  // nor `keep` and the server would delete the stored secret.
+  it("does not drop a stored key that was hidden while declared and then undeclared", async () => {
+    const onSecretsSave = vi.fn();
+    renderOnSecretsTab({ onSecretsSave, onSecretsLoad: async () => ["STRIPE_KEY"] });
+    await waitFor(() => {
+      expect(screen.getByTestId("secret-key-0")).toHaveValue("STRIPE_KEY");
+    });
+
+    usePreviewStore.getState().setSecrets({
+      declared: [{ name: "STRIPE_KEY", services: ["api"] }],
+      missingByService: {},
+      missingRequired: [],
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("secret-declared-STRIPE_KEY")).toBeInTheDocument();
+    });
+    // Pin `customRows` while STRIPE_KEY is filtered out of the rendered list.
+    await userEvent.click(screen.getByTestId("secret-add"));
+
+    // The compose file drops `x-shipit-secrets` again.
+    usePreviewStore.getState().setSecrets({
+      declared: [],
+      missingByService: {},
+      missingRequired: [],
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("secret-key-0")).toHaveValue("STRIPE_KEY");
+    });
+
+    await userEvent.click(screen.getByTestId("secrets-save"));
+    expect(onSecretsSave).toHaveBeenCalledWith(
+      "https://github.com/org/repo",
+      { set: {}, keep: ["STRIPE_KEY"] },
+    );
+  });
+
   it("clears a set declared value via the Clear control", async () => {
     const onSecretsSave = vi.fn();
     usePreviewStore.getState().setSecrets({

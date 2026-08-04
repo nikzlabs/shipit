@@ -102,6 +102,9 @@ describe("Integration: quick-capture headless sessions", () => {
     });
     repoStore.add(REPO_URL);
     repoStore.setReady(REPO_URL);
+    // Quick capture starts an agent turn immediately, so its repository
+    // fixture represents one the user has already trusted.
+    repoStore.setTrusted(REPO_URL, true);
 
     githubAuth = new StubGitHubAuthManager();
     app = await buildApp({
@@ -291,7 +294,7 @@ describe("Integration: quick-capture headless sessions", () => {
         initialPrompt: "Use the model's agent",
         branch: "quick/agent-derive",
         agent: "codex",
-        model: "claude-opus-4-8",
+        model: "claude-opus-5",
       },
     });
 
@@ -299,7 +302,7 @@ describe("Integration: quick-capture headless sessions", () => {
     const body = res.json() as { sessionId: string };
     const session = sessionManager.get(body.sessionId);
     expect(session).toMatchObject({
-      model: "claude-opus-4-8",
+      model: "claude-opus-5",
       agentId: "claude",
       agentPinned: true,
     });

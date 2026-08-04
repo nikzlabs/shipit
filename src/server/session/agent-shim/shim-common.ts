@@ -225,6 +225,17 @@ function requestJsonUnbounded(
  *   `headersTimeout` would otherwise abort a multi-minute sub-agent consult with
  *   the opaque "fetch failed" — misread as an unreachable worker.
  */
+/**
+ * Statuses a resilient wait loop must treat as "the transport hiccuped, retry"
+ * rather than as an outcome: 0 is the shim's own unreachable/aborted marker,
+ * and 502/503/504 are a proxy or a restarting orchestrator. Shared by
+ * `shipit session wait` (docs/182) and `shipit agent result --wait` (docs/248)
+ * so the two loops cannot drift apart on what counts as transient.
+ */
+export function isTransientStatus(status: number): boolean {
+  return status === 0 || status === 502 || status === 503 || status === 504;
+}
+
 export async function callBroker(
   method: "GET" | "POST" | "PATCH",
   path: string,
@@ -357,6 +368,24 @@ export function fail(io: ShimIO, message: string, code = 2): never {
 export function success(io: ShimIO, message: string): void {
   io.stdout(message.endsWith("\n") ? message : `${message}\n`);
   io.exit(0);
+}
+
+/**
+ * Run `handler` if the shim is asked to terminate while a long call is in
+ * flight, and return a release function to call once it isn't (SHI-245).
+ *
+ * Node's default SIGTERM behavior is to die with no output, which is precisely
+ * wrong for a command whose work continues on the server after the process is
+ * gone: the caller is left with nothing, and nothing that says there is
+ * anything to go back for. Installing a listener replaces that default, so the
+ * handler is responsible for exiting.
+ */
+export function onTerminationSignal(handler: () => void): () => void {
+  const signals: NodeJS.Signals[] = ["SIGTERM", "SIGINT", "SIGHUP"];
+  for (const signal of signals) process.on(signal, handler);
+  return () => {
+    for (const signal of signals) process.off(signal, handler);
+  };
 }
 
 // ---------------------------------------------------------------------------

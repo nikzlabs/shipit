@@ -156,6 +156,31 @@ describe("runShim — help and version", () => {
     expect(out.exitCode).toBe(0);
   });
 
+  it.each([
+    ["session", "message", "/shipit-docs/sessions.md"],
+    ["source", "status", "/shipit-docs/ops-session.md"],
+    ["issue", "list", "/shipit-docs/issues.md"],
+    ["agent", "result", "/shipit-docs/agent.md"],
+    ["service", "list", "/shipit-docs/compose.md"],
+    ["release", "plan", "/shipit-docs/release.md"],
+    ["branch", "reset-to-base", "/shipit-docs/sessions.md"],
+  ])("supports --help for shipit %s %s", async (domain, sub, docsPath) => {
+    const { run } = makeRunner();
+    const out = await run([domain, sub, "--help"]);
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain(`shipit ${domain} ${sub}`);
+    expect(out.stdout).toContain(docsPath);
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("supports the -h alias after positional arguments", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "message", "ses_a", "-h"]);
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("/shipit-docs/sessions.md");
+    expect(out.calls).toHaveLength(0);
+  });
+
   it("--version prints the shim version", async () => {
     const { run } = makeRunner();
     const out = await run(["--version"]);
@@ -509,11 +534,17 @@ describe("shipit session list", () => {
 // ---------------------------------------------------------------------------
 
 describe("shipit session view", () => {
-  it("requires a session id", async () => {
+  it("with no id, resolves THIS session instead of erroring (docs/233)", async () => {
     const { run } = makeRunner();
-    const out = await run(["session", "view"]);
-    expect(out.exitCode).not.toBe(0);
-    expect(out.stderr).toContain("child session id is required");
+    const out = await run(["session", "view"], {
+      "GET /agent-ops/session/cohort": {
+        status: 200,
+        body: { self: { id: "ses_self", title: "Me", status: "running" }, siblings: [], children: [] },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].path).toBe("/agent-ops/session/cohort");
+    expect(out.stdout).toContain("session:  Me (ses_self)");
   });
 
   it("prints the plain-text view for a child", async () => {
@@ -1059,6 +1090,184 @@ describe("shipit session archive", () => {
     );
     expect(out.exitCode).not.toBe(0);
     expect(out.stderr).toContain("not a descendant of this parent");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// shipit session whoami / report  (docs/233, SHI-241) — the upward channel
+// ---------------------------------------------------------------------------
+
+const COHORT_BODY = {
+  self: { id: "ses_me", title: "Elementalist catalog", branch: "shipit/elem", status: "running" },
+  parent: { id: "ses_parent", title: "Spell catalogs", branch: "shipit/plan", status: "idle" },
+  siblings: [{ id: "ses_druid", title: "Druid catalog", branch: "shipit/druid", status: "idle" }],
+  children: [],
+};
+
+describe("shipit session whoami", () => {
+  it("prints this session, its parent, and its cohort", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "whoami"], {
+      "GET /agent-ops/session/cohort": { status: 200, body: COHORT_BODY },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0]).toMatchObject({ method: "GET", path: "/agent-ops/session/cohort" });
+    expect(out.stdout).toContain("session:  Elementalist catalog (ses_me)");
+    expect(out.stdout).toContain("parent:   Spell catalogs (ses_parent)");
+    expect(out.stdout).toContain("ses_druid");
+    expect(out.stdout).toContain("children: (none)");
+  });
+
+  it("says so when this session has no parent (report is unavailable)", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "whoami"], {
+      "GET /agent-ops/session/cohort": {
+        status: 200,
+        body: { self: { id: "ses_solo", title: "Solo", status: "idle" }, siblings: [], children: [] },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("parent:   (none");
+    expect(out.stdout).toContain("shipit session report` is unavailable");
+  });
+
+  it("--json passes the broker response through verbatim", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "whoami", "--json"], {
+      "GET /agent-ops/session/cohort": { status: 200, body: COHORT_BODY },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(JSON.parse(out.stdout)).toEqual(COHORT_BODY);
+  });
+});
+
+describe("shipit session report", () => {
+  const DELIVERED = {
+    status: 200,
+    body: {
+      reportId: "r-1",
+      severity: "blocker",
+      to: "cohort",
+      recipients: [
+        { sessionId: "ses_parent", title: "Spell catalogs", relation: "child", woken: true },
+        { sessionId: "ses_druid", title: "Druid catalog", relation: "sibling", woken: true },
+      ],
+    },
+  };
+
+  it("requires a body", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "report"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("--body");
+  });
+
+  it("posts body/severity/target and prints per-recipient delivery", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["session", "report", "-b", "regen wipes every catalog", "--severity", "blocker", "--to", "cohort", "--subject", "regen"],
+      { "POST /agent-ops/session/report": DELIVERED },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0]).toMatchObject({ method: "POST", path: "/agent-ops/session/report" });
+    expect(out.calls[0].body).toEqual({
+      body: "regen wipes every catalog",
+      severity: "blocker",
+      to: "cohort",
+      subject: "regen",
+    });
+    expect(out.stdout).toContain("delivered: 2/2 recipient(s) woken");
+    expect(out.stdout).toContain("parent Spell catalogs (ses_parent): woken");
+    expect(out.stdout).toContain("sibling Druid catalog (ses_druid): woken");
+  });
+
+  it("defaults to severity fyi and the parent target", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "report", "-b", "fyi note"], {
+      "POST /agent-ops/session/report": {
+        status: 200,
+        body: { reportId: "r", severity: "fyi", to: "parent", recipients: [{ sessionId: "p", title: "P", relation: "child", woken: true }] },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toEqual({ body: "fyi note", severity: "fyi", to: "parent" });
+  });
+
+  it("--cohort is shorthand for --to cohort", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "report", "-b", "x", "--cohort"], {
+      "POST /agent-ops/session/report": DELIVERED,
+    });
+    expect((out.calls[0].body as { to: string }).to).toBe("cohort");
+  });
+
+  it("reads the body from --body-file - (stdin-style file path)", async () => {
+    const file = await promptFile("Long finding with `backticks` and $(literal) intact.\n");
+    const { run } = makeRunner();
+    const out = await run(["session", "report", "--body-file", file], {
+      "POST /agent-ops/session/report": {
+        status: 200,
+        body: { reportId: "r", severity: "fyi", to: "parent", recipients: [{ sessionId: "p", title: "P", relation: "child", woken: true }] },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect((out.calls[0].body as { body: string }).body).toContain("$(literal)");
+  });
+
+  it("rejects an unknown severity and an unknown target before calling the broker", async () => {
+    const { run } = makeRunner();
+    const bad = await run(["session", "report", "-b", "x", "--severity", "urgent"]);
+    expect(bad.exitCode).not.toBe(0);
+    expect(bad.stderr).toContain("unknown --severity");
+    expect(bad.calls).toHaveLength(0);
+
+    const { run: run2 } = makeRunner();
+    const badTarget = await run2(["session", "report", "-b", "x", "--to", "ses_someone_else"]);
+    expect(badTarget.exitCode).not.toBe(0);
+    expect(badTarget.stderr).toContain("cannot target an arbitrary session id");
+    expect(badTarget.calls).toHaveLength(0);
+  });
+
+  it("exits non-zero when no recipient's agent could be woken", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "report", "-b", "x"], {
+      "POST /agent-ops/session/report": {
+        status: 200,
+        body: {
+          reportId: "r",
+          severity: "fyi",
+          to: "parent",
+          recipients: [{ sessionId: "p", title: "P", relation: "child", woken: false, error: "container could not be resumed" }],
+        },
+      },
+    });
+    expect(out.exitCode).toBe(1);
+    expect(out.stdout).toContain("NOT woken (container could not be resumed)");
+    expect(out.stdout).toContain("the card was still posted");
+  });
+
+  it("surfaces a 400 'no parent' rejection from the orchestrator", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "report", "-b", "x"], {
+      "POST /agent-ops/session/report": {
+        status: 400,
+        body: { error: "This session has no parent to report to" },
+      },
+    });
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("no parent to report to");
+  });
+
+  it("surfaces the 429 rate limit", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "report", "-b", "x"], {
+      "POST /agent-ops/session/report": {
+        status: 429,
+        body: { error: "Report rate limit reached (5 per 10 minutes)." },
+      },
+    });
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("rate limit reached");
   });
 });
 
@@ -1932,22 +2141,118 @@ describe("shipit issue", () => {
 
   // ---- per-subcommand --help (SHI-199, smaller note) ---------------------
 
-  it("`issue list --help` prints list usage, not an unsupported-flag error", async () => {
+  it("`issue list --help` points to the canonical issue docs", async () => {
     const { run } = makeRunner();
     const out = await run(["issue", "list", "--help"]);
     expect(out.exitCode).toBe(0);
     expect(out.stdout).toContain("shipit issue list");
-    expect(out.stdout).toContain("--full");
+    expect(out.stdout).toContain("/shipit-docs/issues.md");
     // No broker call — help short-circuits before the handler.
     expect(out.calls).toHaveLength(0);
   });
 
-  it("`issue labels -h` prints labels usage", async () => {
+  it("`issue labels -h` points to the canonical issue docs", async () => {
     const { run } = makeRunner();
     const out = await run(["issue", "labels", "-h"]);
     expect(out.exitCode).toBe(0);
     expect(out.stdout).toContain("shipit issue labels");
+    expect(out.stdout).toContain("/shipit-docs/issues.md");
     expect(out.calls).toHaveLength(0);
+  });
+
+  // ---- label create (SHI-230) --------------------------------------------
+
+  it("label create posts to the broker and reports the summary", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["issue", "label", "create", "--name", "t3code", "--color", "#0ea5e9", "--description", "T3 code area"],
+      {
+        "POST /agent-ops/issue/label/create": {
+          status: 200,
+          body: { ok: true, summary: 'created label "t3code"', label: { name: "t3code", color: "#0ea5e9" } },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0]).toMatchObject({
+      method: "POST",
+      path: "/agent-ops/issue/label/create",
+      // Defaults to Linear — no pointer to infer a tracker from.
+      body: { tracker: "linear", name: "t3code", color: "#0ea5e9", description: "T3 code area" },
+    });
+    expect(out.stdout).toContain('created label "t3code"');
+  });
+
+  it("label create --tracker github targets the session repo", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "label", "create", "--name", "t3code", "--tracker", "github"], {
+      "POST /agent-ops/issue/label/create": { status: 200, body: { ok: true, summary: 'created label "t3code"' } },
+    });
+    expect(out.exitCode).toBe(0);
+    expect((out.calls[0].body as Record<string, unknown>).tracker).toBe("github");
+  });
+
+  it("label create requires --name and rejects a malformed --color before any call", async () => {
+    const { run } = makeRunner();
+    const missing = await run(["issue", "label", "create"]);
+    expect(missing.exitCode).not.toBe(0);
+    expect(missing.stderr).toContain("--name is required");
+    expect(missing.calls).toHaveLength(0);
+
+    const badColor = await run(["issue", "label", "create", "--name", "x", "--color", "blue"]);
+    expect(badColor.exitCode).not.toBe(0);
+    expect(badColor.stderr).toContain("--color must be a 6-digit hex");
+    expect(badColor.calls).toHaveLength(0);
+  });
+
+  it("label rejects verbs other than create", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "label", "delete", "t3code"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("only `label create` is supported");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("label create surfaces a duplicate (409) as exit 1", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "label", "create", "--name", "security"], {
+      "POST /agent-ops/issue/label/create": { status: 409, body: { error: 'Label "security" already exists on Linear — nothing to create.' } },
+    });
+    expect(out.exitCode).toBe(1);
+    expect(out.stderr).toContain("already exists");
+  });
+
+  it("create forwards --create-missing-labels (SHI-230)", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["issue", "create", "--title", "T", "--label", "t3code", "--create-missing-labels"],
+      {
+        "POST /agent-ops/issue/create": { status: 200, body: { ok: true, summary: "created SHI-9", identifier: "SHI-9" } },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toMatchObject({ labels: ["t3code"], createMissingLabels: true });
+  });
+
+  it("create omits createMissingLabels without the flag", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "create", "--title", "T", "--label", "t3code"], {
+      "POST /agent-ops/issue/create": { status: 200, body: { ok: true, summary: "created SHI-9" } },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body as Record<string, unknown>).not.toHaveProperty("createMissingLabels");
+  });
+
+  it("edit forwards --create-missing-labels (SHI-230)", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["issue", "edit", "SHI-9", "--label", "t3code", "--create-missing-labels"],
+      {
+        "POST /agent-ops/issue/edit": { status: 200, body: { ok: true, summary: "edited labels on SHI-9" } },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toMatchObject({ id: "SHI-9", labels: ["t3code"], createMissingLabels: true });
   });
 });
 
@@ -2057,5 +2362,623 @@ describe("runShim — agent run", () => {
     const out = await run(["agent", "frobnicate"]);
     expect(out.exitCode).not.toBe(0);
     expect(out.stderr).toContain("Unsupported shipit agent subcommand");
+  });
+
+  it("names the run and points at `agent result` so a copy can be re-read (SHI-245)", async () => {
+    const { run } = makeRunner();
+    const file = await promptFile("review");
+    const out = await run(["agent", "run", "--agent", "codex", "--prompt-file", file], {
+      "POST /agent-ops/agent/spawn": {
+        status: 200,
+        body: { status: "success", text: "findings", truncated: false, durationMs: 10, costUsd: 0, spawnId: "run-77" },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("findings");
+    expect(out.stderr).toContain("run-77");
+    expect(out.stderr).toContain("shipit agent result run-77");
+    // The id belongs on stderr — stdout stays the sub-agent's text, verbatim.
+    expect(out.stdout).not.toContain("run-77");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// shipit agent result (SHI-245 — re-read a finished run's persisted output)
+// ---------------------------------------------------------------------------
+
+describe("runShim — agent result", () => {
+  it("fetches the latest run when no id is given and prints its output", async () => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "result"], {
+      "GET /agent-ops/agent/result": {
+        status: 200,
+        body: {
+          cardId: "c1",
+          spawnId: "run-77",
+          subAgentId: "codex",
+          status: "success",
+          outputMarkdown: "## Findings\n\n1. digest excludes the envelope",
+          createdAt: "2026-07-28T00:00:00Z",
+        },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].path).toBe("/agent-ops/agent/result");
+    expect(out.stdout).toContain("digest excludes the envelope");
+    expect(out.stderr).toContain("run-77");
+  });
+
+  it("passes a run id through as ?spawnId", async () => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "result", "run-77"], {
+      "GET /agent-ops/agent/result": {
+        status: 200,
+        body: { cardId: "c1", spawnId: "run-77", subAgentId: "codex", status: "success", outputMarkdown: "text", createdAt: "x" },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].path).toBe("/agent-ops/agent/result?spawnId=run-77");
+  });
+
+  it("prints the whole card with --json", async () => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "result", "--json"], {
+      "GET /agent-ops/agent/result": {
+        status: 200,
+        body: { cardId: "c1", spawnId: "run-77", subAgentId: "codex", status: "success", outputMarkdown: "text", createdAt: "x" },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(JSON.parse(out.stdout)).toMatchObject({ spawnId: "run-77", outputMarkdown: "text" });
+  });
+
+  it("says so plainly when the run produced no output", async () => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "result"], {
+      "GET /agent-ops/agent/result": {
+        status: 200,
+        body: { cardId: "c1", spawnId: "run-77", subAgentId: "codex", status: "error", createdAt: "x" },
+      },
+    });
+    // docs/248 — the status now reaches the exit code (this run errored).
+    expect(out.exitCode).toBe(3);
+    expect(out.stderr).toContain("no output");
+    expect(out.stdout).toBe("");
+  });
+
+  it("surfaces a not-found lookup with a non-zero exit", async () => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "result", "nope"], {
+      "GET /agent-ops/agent/result": { status: 404, body: { error: "No sub-agent runs in this session yet." } },
+    });
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("No sub-agent runs");
+  });
+
+  it("rejects more than one run id", async () => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "result", "a", "b"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("at most one run id");
+    expect(out.calls).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// shipit agent result — status-carrying exit codes (docs/248)
+//
+// The point of these codes: a caller that backgrounded a long consult branches
+// on `$?` instead of grepping the run's own output for the word "pending",
+// which a finished code review can perfectly well contain.
+// ---------------------------------------------------------------------------
+
+describe("shipit agent result — exit codes (docs/248)", () => {
+  const card = (status: string, extra: Record<string, unknown> = {}) => ({
+    status: 200,
+    body: {
+      cardId: "c1",
+      spawnId: "run-77",
+      subAgentId: "codex",
+      status,
+      outputMarkdown: "the review",
+      createdAt: "x",
+      ...extra,
+    },
+  });
+
+  it("exits 0 on a successful run", async () => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "result"], { "GET /agent-ops/agent/result": card("success") });
+    expect(out.exitCode).toBe(0);
+  });
+
+  it.each(["error", "timeout", "cancelled"])("exits 3 when the run ended %s", async (status) => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "result"], { "GET /agent-ops/agent/result": card(status) });
+    expect(out.exitCode).toBe(3);
+    // The output still prints — a failed run's partial text is what the caller
+    // is here for.
+    expect(out.stdout).toContain("the review");
+  });
+
+  it("exits 4 while the run is still going, and names the command that waits", async () => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "result"], { "GET /agent-ops/agent/result": card("pending") });
+    expect(out.exitCode).toBe(4);
+    expect(out.stderr).toContain("still going");
+    expect(out.stderr).toContain("shipit agent result run-77 --wait");
+  });
+
+  it("keeps 'still running' distinct from every failure code", async () => {
+    // Requirement 3: a caller retrying until the command succeeds must not spin
+    // forever against a mistyped run id or a bad flag, so "still running" cannot
+    // share a code with either. 1 = lookup failed, 2 = bad invocation
+    // (the shim-wide `fail()` default), 4 = come back later.
+    const { run } = makeRunner();
+    const pending = await run(["agent", "result"], { "GET /agent-ops/agent/result": card("pending") });
+    const badId = await run(["agent", "result", "nope"], {
+      "GET /agent-ops/agent/result": { status: 404, body: { error: "No sub-agent run with id \"nope\"" } },
+    });
+    const badFlags = await run(["agent", "result", "a", "b"]);
+    expect(pending.exitCode).toBe(4);
+    expect(badId.exitCode).toBe(1);
+    expect(badFlags.exitCode).toBe(2);
+    expect(new Set([pending.exitCode, badId.exitCode, badFlags.exitCode]).size).toBe(3);
+  });
+
+  it("carries the status into the --json exit code too", async () => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "result", "--json"], { "GET /agent-ops/agent/result": card("pending") });
+    expect(out.exitCode).toBe(4);
+    expect(JSON.parse(out.stdout)).toMatchObject({ status: "pending" });
+  });
+
+  it("still exits non-zero for a failed run that produced no output at all", async () => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "result"], {
+      "GET /agent-ops/agent/result": {
+        status: 200,
+        body: { cardId: "c1", spawnId: "run-77", subAgentId: "codex", status: "error", createdAt: "x" },
+      },
+    });
+    expect(out.exitCode).toBe(3);
+    expect(out.stderr).toContain("no output");
+  });
+
+  // SHI-307 — the boot reconcile turns a card stranded `pending` by an
+  // orchestrator restart into a terminal `cancelled` one. That is a deliberate
+  // change in what a waiting caller observes: the same poll that used to answer
+  // 4 ("come back later") forever now answers 3 ("the run failed"), which is the
+  // only thing that lets a retry loop terminate.
+  it("exits 3 — not 4 — for a consult cancelled by an orchestrator restart", async () => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "result"], {
+      "GET /agent-ops/agent/result": {
+        status: 200,
+        body: {
+          cardId: "c1", spawnId: "run-77", subAgentId: "codex", status: "cancelled",
+          statusDetail: "ShipIt restarted while this consult was running, so its result was lost.",
+          createdAt: "x",
+        },
+      },
+    });
+    expect(out.exitCode).toBe(3);
+    expect(out.stderr).not.toContain("still going");
+  });
+
+  it("prints ShipIt's explanation on stderr, keeping stdout in the sub-agent's voice", async () => {
+    // `statusDetail` is ShipIt's commentary, not the consultant's words. Putting
+    // it on stdout would hand a caller our apology as if Codex had written it —
+    // the SHI-245 "one artifact" guarantee runs the other way.
+    const { run } = makeRunner();
+    const out = await run(["agent", "result"], {
+      "GET /agent-ops/agent/result": {
+        status: 200,
+        body: {
+          cardId: "c1", spawnId: "run-77", subAgentId: "codex", status: "cancelled",
+          statusDetail: "ShipIt restarted while this consult was running, so its result was lost.",
+          createdAt: "x",
+        },
+      },
+    });
+    expect(out.stderr).toContain("ShipIt restarted while this consult was running");
+    expect(out.stdout).not.toContain("ShipIt restarted");
+  });
+
+  it("surfaces the explanation to a --json caller too", async () => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "result", "--json"], {
+      "GET /agent-ops/agent/result": {
+        status: 200,
+        body: {
+          cardId: "c1", spawnId: "run-77", subAgentId: "codex", status: "cancelled",
+          statusDetail: "ShipIt restarted", createdAt: "x",
+        },
+      },
+    });
+    expect(out.exitCode).toBe(3);
+    expect(JSON.parse(out.stdout)).toMatchObject({
+      status: "cancelled",
+      statusDetail: "ShipIt restarted",
+      outcome: "finished",
+    });
+  });
+
+  it("rejects --timeout without --wait rather than silently blocking", async () => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "result", "--timeout", "60"]);
+    expect(out.exitCode).toBe(2);
+    expect(out.stderr).toContain("--timeout only applies with --wait");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("rejects a nonsense --timeout", async () => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "result", "--wait", "--timeout", "abc"]);
+    expect(out.exitCode).toBe(2);
+    expect(out.stderr).toContain("positive number of seconds");
+    expect(out.calls).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// shipit agent result --wait — the resilient segment loop (docs/248)
+// ---------------------------------------------------------------------------
+
+/**
+ * Run `shipit agent result --wait ...` against a queue of responses (shifted in
+ * order, last entry reused once exhausted) with a virtual clock, mirroring
+ * `runWait` for the child-session loop. A `pending` segment advances the clock
+ * the way a real server holding a segment open would, so the overall deadline
+ * genuinely bounds the loop.
+ */
+async function runResultWait(
+  argv: string[],
+  queue: WaitMockResponse[],
+): Promise<{ stdout: string; stderr: string; exitCode: number | null; paths: string[] }> {
+  let stdout = "";
+  let stderr = "";
+  let exitCode: number | null = null;
+  const paths: string[] = [];
+  const io: ShimIO = {
+    stdout: (t) => { stdout += t; },
+    stderr: (t) => { stderr += t; },
+    exit: (code) => { exitCode = code; throw new Error("__shim_exit__"); },
+  };
+  const clock = virtualClock();
+  const call = async (_m: string, path: string) => {
+    paths.push(path);
+    const res = queue.length > 1 ? queue.shift()! : (queue[0] ?? { status: 200, body: { outcome: "pending" } });
+    if (res.status >= 200 && res.status < 300 && res.body.outcome === "pending") {
+      await clock.sleep(25_000);
+    }
+    return res;
+  };
+  try {
+    await runShim(argv, io, {}, call as never, { sleep: clock.sleep, now: clock.now });
+  } catch (err) {
+    if (err instanceof Error && err.message !== "__shim_exit__") throw err;
+  }
+  return { stdout, stderr, exitCode, paths };
+}
+
+describe("shipit agent result --wait (docs/248)", () => {
+  const finished = (status: string) => ({
+    status: 200,
+    body: {
+      cardId: "c1",
+      spawnId: "run-77",
+      subAgentId: "codex",
+      status,
+      outputMarkdown: "the review",
+      createdAt: "x",
+      outcome: "finished",
+    },
+  });
+  const pendingSegment = {
+    status: 200,
+    body: {
+      cardId: "c1",
+      spawnId: "run-77",
+      subAgentId: "codex",
+      status: "pending",
+      outputMarkdown: "",
+      createdAt: "x",
+      outcome: "pending",
+    },
+  };
+
+  it("loops over pending segments and returns the run's output when it finishes", async () => {
+    const out = await runResultWait(["agent", "result", "run-77", "--wait"], [
+      pendingSegment,
+      pendingSegment,
+      finished("success"),
+    ]);
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("the review");
+    expect(out.paths).toHaveLength(3);
+    // Every segment asks the server to wait, and carries the pinned run id.
+    expect(out.paths[0]).toContain("wait=true");
+    expect(out.paths[0]).toContain("spawnId=run-77");
+    expect(out.paths[0]).toContain("segment=25");
+  });
+
+  it("exits 3 when the run it waited for turns out to have failed", async () => {
+    const out = await runResultWait(["agent", "result", "--wait"], [pendingSegment, finished("error")]);
+    expect(out.exitCode).toBe(3);
+  });
+
+  // SHI-307 — the scenario this whole reconcile exists for, from the waiting
+  // caller's side. The orchestrator dies mid-consult; the wait rides out the
+  // resets; the rebooted orchestrator's boot sweep has marked the card
+  // `cancelled`, so the wait ENDS instead of running to its timeout and being
+  // re-issued forever.
+  it("ends the wait when a restart-stranded run comes back cancelled", async () => {
+    const out = await runResultWait(["agent", "result", "run-77", "--wait"], [
+      pendingSegment,
+      { status: 0, body: { error: "connection reset" } },
+      {
+        status: 200,
+        body: {
+          cardId: "c1", spawnId: "run-77", subAgentId: "codex", status: "cancelled",
+          statusDetail: "ShipIt restarted while this consult was running, so its result was lost.",
+          createdAt: "x", outcome: "finished",
+        },
+      },
+    ]);
+    expect(out.exitCode).toBe(3);
+    expect(out.stderr).toContain("ShipIt restarted while this consult was running");
+    // Not "still running after Ns" — the wait resolved on an answer.
+    expect(out.stderr).not.toContain("still running after");
+  });
+
+  it("retries a transport reset beneath the deadline instead of reporting it", async () => {
+    // Requirement 5: a blip costs part of the wait, not the wait.
+    const out = await runResultWait(["agent", "result", "--wait"], [
+      { status: 0, body: { error: "connection reset" } },
+      { status: 503, body: { error: "orchestrator restarting" } },
+      finished("success"),
+    ]);
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("the review");
+    expect(out.stderr).toContain("transport retried");
+  });
+
+  it("exits 4 at the timeout and tells the caller how to resume", async () => {
+    const out = await runResultWait(
+      ["agent", "result", "run-77", "--wait", "--timeout", "60"],
+      [pendingSegment],
+    );
+    expect(out.exitCode).toBe(4);
+    expect(out.stderr).toContain("still running after 60s");
+    expect(out.stderr).toContain("shipit agent result run-77 --wait");
+    // The deadline genuinely bounds the loop: 60s of 25s segments, not forever.
+    expect(out.paths.length).toBeLessThanOrEqual(3);
+  });
+
+  it("reports a lookup failure as 1, not as a timeout, when nothing ever answered", async () => {
+    // Every attempt died in transport, so we never learned anything about the
+    // run — that is a broken lookup, not "still pending".
+    const out = await runResultWait(
+      ["agent", "result", "run-77", "--wait", "--timeout", "5"],
+      [{ status: 0, body: { error: "connection refused" } }],
+    );
+    expect(out.exitCode).toBe(1);
+    expect(out.stderr).toContain("connection refused");
+  });
+
+  it("surfaces an unknown run id immediately rather than waiting it out", async () => {
+    const out = await runResultWait(
+      ["agent", "result", "nope", "--wait"],
+      [{ status: 404, body: { error: "No sub-agent run with id \"nope\" in this session." } }],
+    );
+    expect(out.exitCode).toBe(1);
+    expect(out.stderr).toContain("No sub-agent run with id");
+    expect(out.paths).toHaveLength(1);
+  });
+
+  it("terminates against an older orchestrator that sends no `outcome` field", async () => {
+    const legacy = {
+      status: 200,
+      body: { cardId: "c1", spawnId: "run-77", subAgentId: "codex", status: "success", outputMarkdown: "old server", createdAt: "x" },
+    };
+    const out = await runResultWait(["agent", "result", "--wait"], [legacy]);
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("old server");
+  });
+
+  // -------------------------------------------------------------------------
+  // Adversarial cases — found by a fresh-context review of this branch. Each
+  // one previously produced a WRONG exit code, which is the single thing this
+  // command must never do: the whole feature is "trust $? instead of the text".
+  // -------------------------------------------------------------------------
+
+  it("never reports success for a 2xx body that isn't a card", async () => {
+    // `callBroker` turns a body reset or truncated after its 2xx headers into
+    // `{}`. Defaulting that to "success" would tell the caller a run finished
+    // cleanly on the strength of a corrupted response.
+    const out = await runResultWait(["agent", "result", "--wait", "--timeout", "5"], [
+      { status: 200, body: {} },
+    ]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.exitCode).toBe(1);
+    expect(out.stderr).toContain("not a consult card");
+  });
+
+  it("treats a status-less pending response as pending, not as success", async () => {
+    const out = await runResultWait(["agent", "result", "--wait", "--timeout", "60"], [
+      { status: 200, body: { outcome: "pending" } },
+    ]);
+    expect(out.exitCode).toBe(4);
+  });
+
+  it("recovers when an unreadable response is followed by a good one", async () => {
+    const out = await runResultWait(["agent", "result", "--wait"], [
+      { status: 200, body: {} },
+      finished("success"),
+    ]);
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("the review");
+  });
+
+  it("pins the run across segments so a newer consult can't hijack the wait", async () => {
+    // No run id ⇒ "the most recent run". The server pins only within a segment,
+    // so without shim-side pinning the second request would re-resolve to a
+    // newer run started mid-wait and report ITS status.
+    const out = await runResultWait(["agent", "result", "--wait"], [
+      pendingSegment,
+      finished("success"),
+    ]);
+    expect(out.exitCode).toBe(0);
+    // First request names no run; every later one carries the id the server
+    // reported, so they all follow the same run.
+    expect(out.paths[0]).not.toContain("spawnId");
+    expect(out.paths[1]).toContain("spawnId=run-77");
+  });
+
+  it("re-pins a prefix to the full id, so it can't turn ambiguous mid-wait", async () => {
+    const out = await runResultWait(["agent", "result", "run", "--wait"], [
+      pendingSegment,
+      finished("success"),
+    ]);
+    expect(out.paths[0]).toContain("spawnId=run");
+    expect(out.paths[1]).toContain("spawnId=run-77");
+  });
+
+  it("does not spin hot against a server that answers pending instantly", async () => {
+    // An older orchestrator ignores `wait` and returns immediately. Without a
+    // floor, the loop issues ~1000 requests/second for the whole timeout.
+    const instantPending = {
+      status: 200,
+      body: { cardId: "c1", spawnId: "run-77", subAgentId: "codex", status: "pending", createdAt: "x" },
+    };
+    const out = await runResultWait(
+      ["agent", "result", "run-77", "--wait", "--timeout", "10"],
+      [instantPending],
+    );
+    expect(out.exitCode).toBe(4);
+    // 10s of wait, paced at >=1s per iteration.
+    expect(out.paths.length).toBeLessThanOrEqual(11);
+  });
+
+  it("keeps the per-request budget within the caller's stated timeout", async () => {
+    // `--timeout 5` must not hand the first request a 15-second abort budget.
+    const budgets: number[] = [];
+    const clock = virtualClock();
+    const io: ShimIO = { stdout: () => {}, stderr: () => {}, exit: () => { throw new Error("__shim_exit__"); } };
+    const call = async (_m: string, _p: string, _b: unknown, _e: unknown, timeoutMs?: number) => {
+      budgets.push(timeoutMs ?? 0);
+      await clock.sleep(5_000);
+      return { status: 200, body: { cardId: "c1", spawnId: "run-77", subAgentId: "codex", status: "pending", createdAt: "x" } };
+    };
+    try {
+      await runShim(["agent", "result", "run-77", "--wait", "--timeout", "5"], io, {}, call as never, {
+        sleep: clock.sleep,
+        now: clock.now,
+      });
+    } catch (err) {
+      if (err instanceof Error && err.message !== "__shim_exit__") throw err;
+    }
+    expect(budgets[0]).toBeLessThanOrEqual(5_000 + 2_000);
+  });
+
+  it("surfaces the outcome, transport damage and resume hint in --json too", async () => {
+    const out = await runResultWait(["agent", "result", "run-77", "--wait", "--timeout", "60", "--json"], [
+      { status: 0, body: { error: "connection reset" } },
+      pendingSegment,
+    ]);
+    expect(out.exitCode).toBe(4);
+    const parsed = JSON.parse(out.stdout);
+    expect(parsed.outcome).toBe("pending");
+    expect(parsed.lastTransportError).toContain("connection reset");
+    expect(parsed.resumeCommand).toContain("--wait");
+  });
+
+  it("honours a sub-second --timeout instead of flooring it to zero", async () => {
+    // `--timeout 0.5` floored to 0 skipped the lookup entirely and then blamed
+    // the orchestrator for being unreachable.
+    const out = await runResultWait(["agent", "result", "--wait", "--timeout", "0.5"], [finished("success")]);
+    expect(out.exitCode).toBe(0);
+    expect(out.paths.length).toBeGreaterThan(0);
+  });
+
+  it("clamps --timeout to the sub-agent's own 30-minute cap", async () => {
+    const out = await runResultWait(
+      ["agent", "result", "--wait", "--timeout", "99999"],
+      [finished("success")],
+    );
+    expect(out.exitCode).toBe(0);
+    // First segment's overall `timeout` param reflects the clamp, not 99999.
+    expect(out.paths[0]).toContain("timeout=1800");
+  });
+});
+
+/**
+ * SHI-277 — the `--force` break-glass. The shim's job is the flag contract and
+ * the request body; the safety decision is the orchestrator's (and is re-checked
+ * there, because the HTTP route is container-reachable on its own).
+ */
+describe("shipit branch reset-to-base --force", () => {
+  const RESET = "POST /agent-ops/branch/reset-to-base";
+
+  it("sends no force fields on an ordinary reset", async () => {
+    const { run } = makeRunner();
+    const out = await run(["branch", "reset-to-base"], {
+      [RESET]: { status: 200, body: { outcome: "reset", base: "main", fromSha: "a".repeat(40), toSha: "b".repeat(40) } },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toEqual({});
+  });
+
+  it("forwards force + reason", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["branch", "reset-to-base", "--force", "--reason", "shipped via cherry-pick; branch stranded"],
+      {
+        [RESET]: {
+          status: 200,
+          body: { outcome: "reset", base: "main", fromSha: "a".repeat(40), toSha: "b".repeat(40), forced: true },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toEqual({ force: true, reason: "shipped via cherry-pick; branch stranded" });
+    // The agent must be able to tell a forced reset from a gated one.
+    expect(out.stdout).toContain("FORCED");
+    expect(out.stdout).toContain("recorded in the transcript");
+  });
+
+  it("refuses --force without a reason, before reaching the broker", async () => {
+    const { run } = makeRunner();
+    const out = await run(["branch", "reset-to-base", "--force"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("--force requires --reason");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("refuses a whitespace-only reason", async () => {
+    const { run } = makeRunner();
+    const out = await run(["branch", "reset-to-base", "--force", "--reason", "   "]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("refuses --reason without --force, rather than silently ignoring it", async () => {
+    const { run } = makeRunner();
+    const out = await run(["branch", "reset-to-base", "--reason", "because"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("only meaningful with --force");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("names the override in the refusal guidance, so a refusal is not a dead end", async () => {
+    const { run } = makeRunner();
+    const out = await run(["branch", "reset-to-base"], {
+      [RESET]: { status: 200, body: { outcome: "refused", reason: "carries unmerged work" } },
+    });
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("--force --reason");
+    // …but still forbids the hand-rolled equivalent.
+    expect(out.stderr).toContain("git reset --hard");
   });
 });

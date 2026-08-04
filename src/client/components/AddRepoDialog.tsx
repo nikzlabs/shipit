@@ -1,11 +1,12 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: auto-close on async repo clone completion (reacts to external process finishing)
 import { useState, useRef, useEffect } from "react";
-import { XIcon, CircleNotchIcon, GithubLogoIcon, EyeIcon } from "@phosphor-icons/react";
+import { CircleNotchIcon, GithubLogoIcon, EyeIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import type { RepoInfo } from "../../server/shared/types.js";
 import { parseRepoLabel } from "../utils/repo-label.js";
 import { Badge } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
+import { Alert } from "./ui/banner.js";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
 import { GitHubTokenForm } from "./GitHubTokenForm.js";
 
@@ -113,17 +114,8 @@ export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, onRepoReady, 
   return (
     <Dialog open={open} onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
       <DialogContent className="w-full max-w-lg rounded-lg border-(--color-border-secondary)">
-        <div className="flex items-center justify-between border-b border-(--color-border-secondary) px-4 py-3">
+        <div className="flex items-center border-b border-(--color-border-secondary) px-4 py-3">
           <DialogTitle className="text-sm font-medium text-(--color-text-primary)">Add Repository</DialogTitle>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onClose}
-            className="h-9 w-9 max-md:h-10 max-md:w-10"
-            aria-label="Close"
-          >
-            <XIcon size={ICON_SIZE.MD} weight="bold" />
-          </Button>
         </div>
 
         {!githubAuthenticated ? (
@@ -144,10 +136,10 @@ export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, onRepoReady, 
         <div className="p-4">
           {/* Clone progress indicator */}
           {isCloning && (
-            <div className="mb-3 flex items-center gap-2 rounded-md border border-(--color-warning)/50 bg-(--color-warning-subtle) px-3 py-2">
+            <Alert variant="warning" className="mb-3 items-center">
               <CircleNotchIcon size={ICON_SIZE.SM} className="animate-spin text-(--color-warning)" />
-              <span className="text-xs text-(--color-warning)">Cloning repository...</span>
-            </div>
+              <span>Cloning repository...</span>
+            </Alert>
           )}
 
           <div className="relative">

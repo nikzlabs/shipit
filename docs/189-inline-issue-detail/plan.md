@@ -48,6 +48,18 @@ All routes go through `issues-store.openIssue(ref)`:
    out. It now opens the inline detail when `App.handleOpenIssue` is wired and the
    pointer resolves to a known tracker (via `parseIssueRef`). An unknown-shape
    pointer keeps the external link, since there's no inline view to open it in.
+5. **Rendered-doc frontmatter chip** (`FrontmatterHeader` — the same `issue:`
+   pointer as (4), but shown while *reading* the doc in the file viewer/preview
+   modal rather than in the docs list) — also opens the inline detail. It reads
+   the ui/issues stores directly via `getState()` instead of taking an
+   `onOpenIssue` prop, because the markdown renderer sits four components below
+   `App` and is reused by the preview modal, the Files tab, and the diff review
+   view; the same `getState()` shape is already used by `message-markdown.tsx`
+   and `ChangedDocsStrip`. It also calls `file-store.closePreview()` first — the
+   doc is usually being read in the preview modal, which would otherwise cover
+   the Issues tab it just switched to. The link-out icon is dropped on this
+   chip since the click no longer leaves ShipIt; it survives only on the
+   unknown-pointer external fallback.
 
 Cards only carry the display identifier (+ a native `issueId` on the write
 card). `issueLookupId()` derives the tracker-native lookup id from the display
@@ -144,6 +156,9 @@ action). Self-contained dark-theme HTML.
 - `src/client/components/DocsViewer.tsx` — the doc `issue:` chip opens the inline
   detail (via the `onOpenIssue` prop, wired to `App.handleOpenIssue`) for a
   known tracker; external link kept only for unknown-shape pointers.
+- `src/client/components/MarkdownSelectionComments/FrontmatterHeader.tsx` — the
+  rendered doc's `issue:` chip opens the inline detail (direct store
+  `getState()`, no prop drilling), closing the file-preview modal first.
 - `src/client/components/MessageList.tsx` + `App.tsx` — thread `onOpenIssue`
   (switches the right panel to Issues, reveals it on mobile, then `openIssue`).
 

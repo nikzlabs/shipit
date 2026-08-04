@@ -16,7 +16,7 @@ beforeEach(() => {
 
 describe("handleSubAgentSpawn (docs/144)", () => {
   it("adds an in-flight spinner keyed by spawnId", () => {
-    const msg: WsSubAgentSpawn = { type: "sub_agent_spawn", spawnId: "x1", subAgentId: "codex" };
+    const msg: WsSubAgentSpawn = { type: "sub_agent_spawn", sessionId: "s1", spawnId: "x1", subAgentId: "codex" };
     handleSubAgentSpawn(ctx, msg);
     expect(useSessionStore.getState().subAgentSpawns.x1).toMatchObject({ subAgentId: "codex" });
   });
@@ -35,7 +35,7 @@ describe("handleSubAgentConsultCard (docs/144)", () => {
   };
 
   it("clears the in-flight spinner and appends a persisted consult card", () => {
-    handleSubAgentSpawn(ctx, { type: "sub_agent_spawn", spawnId: "x1", subAgentId: "codex" });
+    handleSubAgentSpawn(ctx, { type: "sub_agent_spawn", sessionId: "s1", spawnId: "x1", subAgentId: "codex" });
     handleSubAgentConsultCard(ctx, { type: "sub_agent_consult_card", sessionId: "s1", card });
 
     const state = useSessionStore.getState();

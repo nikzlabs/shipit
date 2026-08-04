@@ -14,7 +14,9 @@ import { collectPrCardIssueRefs } from "../../utils/pr-card-issue-refs.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import { useIsMobile } from "../../hooks/useMediaQuery.js";
 import { PrActionsMenu } from "../PrActionsMenu.js";
+import { Button } from "../ui/button.js";
 import { ChangedDocsStrip } from "../ChangedDocsStrip.js";
+import { PrMergeActions, PrStatusActions } from "./PrStatusActions.js";
 import {
   getSavedChangedDocsExpanded,
   saveChangedDocsExpanded,
@@ -26,6 +28,7 @@ import {
 } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import { isDefaultBranch } from "./shared.js";
+import { useSessionDefaultBranch } from "../../utils/default-branch.js";
 import { ReadyPhase, OpenPhase, TerminalPhase, ErrorPhase } from "./phases/index.js";
 import type { NotableFileChange } from "../../../server/shared/types/github-types.js";
 
@@ -101,6 +104,9 @@ export function PrLifecycleCard({
   // client: the PR body (poller `prBody`, falling back to the lifecycle card's
   // `pr.body`) for Closes/Refs, and the session's first user message for the
   // issue it was started from. No server round-trip.
+  // The repo's real default branch, so "Merged: … into <base>" only annotates a
+  // genuinely non-default base (a `master` repo shouldn't read "into master").
+  const repoDefaultBranch = useSessionDefaultBranch(sessionId);
   const prBody = usePrStore((s) => s.statusBySession[sessionId]?.prBody) ?? card?.pr?.body;
   const firstUserText = useSessionStore((s) => s.messages.find((m) => m.role === "user")?.text);
   const issueRefs = useMemo(
@@ -118,7 +124,8 @@ export function PrLifecycleCard({
   // value) rather than reaching for useEffect — the React-endorsed "store info
   // from previous render" pattern, so a session switch restores that session's
   // own expanded/collapsed preference without an effect.
-  const defaultExpanded = !useIsMobile();
+  const isMobile = useIsMobile();
+  const defaultExpanded = !isMobile;
   const [docsState, setDocsState] = useState(() => ({
     sessionId,
     expanded: getSavedChangedDocsExpanded(sessionId, defaultExpanded),
@@ -166,21 +173,45 @@ export function PrLifecycleCard({
   // When the strip drops in below, it owns the assembly's bottom border — so the
   // header drops its own `border-b` to avoid a divider line between the two,
   // letting header + strip read as one seamless card (they share the same
-  // transparent background).
+  // transparent background). The mobile action row sits between the two and
+  // plays the same game: whichever element is last carries the border.
   const stripShown = hasPanelContent && docsExpanded;
+  // On mobile the open card's status chips + actions break out of the header's
+  // left column into a full-width row of their own. The header's right-hand
+  // icon cluster is a sibling column, so it narrows every wrapped row inside
+  // that column — leaving too little for the auto-merge toggle and the merge
+  // button to share a line. See PrStatusActions.
+  const actionsRowShown = isMobile && card?.phase === "open" && !!card.pr;
 
   // Key the inner subtree on sessionId so transient per-session UI state
   // (e.g. MergeButton's "Merging..." flag, CreatePR's "Creating..." flag,
   // OpenPhase's "Fixing..." flag) resets when the user switches sessions.
   // Without this, switching sessions while a merge is in flight leaves the
   // button stuck on "Merging..." against the new session.
+  //
+  // The mobile actions row below is keyed on sessionId too, and must keep being:
+  // on mobile PrStatusActions is hoisted OUT of this subtree into a sibling row,
+  // taking every one of those transient flags with it. A key only on the header
+  // remounts the desktop copy — the mobile copy survived the switch and left
+  // "Merging..." (and "Fixing CI...", "Resolving...", "Sending...") pinned to
+  // whatever session the user landed on, for the rest of the page's life.
+  //
+  // The two keys MUST stay namespaced apart (`header:`/`actions:`), never the
+  // bare sessionId on both. Keys only have to be unique among *siblings*, and
+  // these two divs are siblings in this fragment — a bare sessionId on both made
+  // them duplicates. React's keyed reconciler indexes the previous children into
+  // a Map by key, so the second div overwrote the first; on a session switch
+  // every key changed, React created fresh nodes and then deleted "the rest" from
+  // that Map — which no longer held the old header. Its DOM node was orphaned in
+  // place, so on mobile (the only viewport where the second keyed div renders)
+  // every session switch stacked one more stale PR header under the app chrome.
   const phaseContent = card ? (
     <>
       {(card.phase === "ready" || card.phase === "creating") && <ReadyPhase card={card} sessionId={sessionId} creating={card.phase === "creating"} onCreatePr={onCreatePr} />}
       {card.phase === "open" && <OpenPhase card={card} sessionId={sessionId} canAutoMerge={canAutoMerge} />}
       {card.phase === "merged" && (
         <TerminalPhase card={card} sessionId={sessionId}
-          text={`Merged: ${card.pr?.title ?? `PR #${card.pr?.number}`}${card.pr?.baseBranch && !isDefaultBranch(card.pr.baseBranch) ? ` into ${card.pr.baseBranch}` : ""}`}
+          text={`Merged: ${card.pr?.title ?? `PR #${card.pr?.number}`}${card.pr?.baseBranch && !isDefaultBranch(card.pr.baseBranch, repoDefaultBranch) ? ` into ${card.pr.baseBranch}` : ""}`}
         />
       )}
       {card.phase === "closed" && (
@@ -198,29 +229,47 @@ export function PrLifecycleCard({
   return (
     <>
       <div
-        key={sessionId}
+        key={`header:${sessionId}`}
         onClick={handleClick}
         aria-label={clickable ? "Open PR details" : undefined}
-        className={`shrink-0 flex items-start gap-2 px-3 sm:px-4 py-2 ${stripShown ? "" : "border-b border-(--color-border-primary)"} ${clickable ? "cursor-pointer hover:bg-(--color-bg-hover)/40 transition-colors" : ""}`}
+        className={`shrink-0 flex items-start gap-2 px-3 sm:px-4 pt-2 ${actionsRowShown ? "pb-1" : "pb-2"} ${stripShown || actionsRowShown ? "" : "border-b border-(--color-border-primary)"} ${clickable ? "cursor-pointer hover:bg-(--color-bg-hover)/40 transition-colors" : ""}`}
       >
         <div className="min-w-0 flex-1 flex items-center">
           {phaseContent}
         </div>
         <div className="shrink-0 h-6 flex items-center gap-1">
           {onSearch && (
-            <button
+            <Button
+              variant="ghost"
+              size="icon"
               onClick={onSearch}
-              className="p-1 rounded text-(--color-text-tertiary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors"
               title="Search conversation"
               aria-label="Search conversation"
             >
               <MagnifyingGlassIcon size={ICON_SIZE.SM} weight="bold" />
-            </button>
+            </Button>
           )}
           {hasPanelContent && <ChangedDocsToggle expanded={docsExpanded} onToggle={toggleDocs} />}
           <PrActionsMenu sessionId={sessionId} />
         </div>
       </div>
+      {actionsRowShown && card && (
+        // Left padding reproduces the PR title's own offset so the chips and
+        // merge controls start on the title's text edge, not under the badge:
+        // header px-3 (12) + badge w-5 (20) + OpenPhase's gap-x-3 (12) = 44px =
+        // pl-11. The header widens to px-4 at `sm`, and this row is rendered up
+        // to 767px (useIsMobile), so it has to track that: 16 + 20 + 12 = 48px =
+        // sm:pl-12. Right padding mirrors the header's px-3/sm:px-4.
+        <div
+          key={`actions:${sessionId}`}
+          className={`shrink-0 flex flex-wrap items-center gap-x-3 gap-y-1 pl-11 sm:pl-12 pr-3 sm:pr-4 pb-2 ${stripShown ? "" : "border-b border-(--color-border-primary)"}`}
+        >
+          <PrStatusActions card={card} sessionId={sessionId} />
+          {/* `basis-full` inside this wrapping row keeps the merge controls on a
+              line of their own, below the chips. */}
+          <PrMergeActions card={card} sessionId={sessionId} canAutoMerge={canAutoMerge} />
+        </div>
+      )}
       {hasPanelContent && docsExpanded && (
         <ChangedDocsStrip sessionId={sessionId} notableFiles={notableFiles} issueRefs={issueRefs} />
       )}

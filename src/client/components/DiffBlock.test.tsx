@@ -128,3 +128,96 @@ describe("DiffBlock", () => {
     });
   });
 });
+
+/**
+ * docs/244 — the lazy Edit/Write body. The server strips `oldString`/`newString`
+ * from the transcript and sends `stats` plus the `toolUseId` to fetch with; the
+ * modal is the moment the body has to arrive.
+ *
+ * The independent requirements review flagged this half as unpinned: an
+ * integration test proved the *endpoint*, but nothing proved the UI calls it,
+ * renders what comes back, or degrades sanely when it doesn't. So a refactor
+ * that dropped the fetch would have left every diff modal permanently blank
+ * with a green suite.
+ */
+describe("DiffBlock lazy body (docs/244)", () => {
+  const LAZY_PROPS = { filePath: "src/app.ts", toolUseId: "toolu_lazy", stats: { added: 3, removed: 1 } };
+
+  function stubSession() {
+    useSessionStore.setState({ sessionId: "session-1" });
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("renders the summary from server stats, with no body present", () => {
+    stubSession();
+    render(<DiffBlock {...LAZY_PROPS} />);
+
+    // The whole point: the inline row looks identical to a non-lazy one, so
+    // requirement 8's "no loading states in the transcript" holds.
+    expect(screen.getByText("+3")).toBeInTheDocument();
+    expect(screen.getByText("-1")).toBeInTheDocument();
+  });
+
+  it("fetches the body from the tool-inputs endpoint when the modal opens", async () => {
+    stubSession();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ input: { file_path: "src/app.ts", old_string: "before", new_string: "after" } }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<DiffBlock {...LAZY_PROPS} />);
+    // Nothing is fetched until the user asks for it.
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show diff" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(fetchMock.mock.calls[0]![0]).toBe("/api/sessions/session-1/tool-inputs/toolu_lazy");
+    await waitFor(() => expect(screen.getByLabelText("Diff view")).toHaveTextContent("after"));
+  });
+
+  it("shows a loading state while the body is in flight, not a false empty diff", async () => {
+    stubSession();
+    // A fetch that never settles — the state the user sees on a slow link.
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+
+    render(<DiffBlock {...LAZY_PROPS} />);
+    fireEvent.click(screen.getByRole("button", { name: "Show diff" }));
+
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Loading diff"));
+  });
+
+  it("surfaces an error rather than an empty diff when the fetch fails", async () => {
+    stubSession();
+    // A 404 is the realistic failure: the row was rewound out from under the id.
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 404 }));
+
+    render(<DiffBlock {...LAZY_PROPS} />);
+    fireEvent.click(screen.getByRole("button", { name: "Show diff" }));
+
+    await waitFor(() => {
+      const modal = screen.getByLabelText("Diff view");
+      expect(modal.textContent).not.toContain("Loading diff");
+      // The claim under test is "an ordinary error is surfaced", not the exact
+      // sentence — but an empty modal would pass a looser check, so anchor on
+      // the failure being *stated*.
+      expect(modal.textContent).toContain("load this diff");
+    });
+  });
+
+  it("does not fetch for a diff that arrived whole", async () => {
+    stubSession();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<DiffBlock filePath="src/app.ts" oldString="before" newString="after" />);
+    fireEvent.click(screen.getByRole("button", { name: "Show diff" }));
+
+    await waitFor(() => expect(screen.getByLabelText("Diff view")).toHaveTextContent("after"));
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});

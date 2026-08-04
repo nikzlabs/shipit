@@ -25,6 +25,7 @@ import {
   userSetIssuePriority,
   userSetIssueLabels,
   createIssueForTracker,
+  createLabelForTracker,
   commentOnIssueForTracker,
   updateIssueForTracker,
   setIssueStatusForTracker,
@@ -35,6 +36,7 @@ import {
   disconnectLinear,
   ServiceError,
   type IssueWriteOutcome,
+  type LabelCreation,
 } from "./services/index.js";
 import type { GitHubTrackerContext } from "./trackers/index.js";
 import type { GitHubAuthManager } from "./github-auth.js";
@@ -610,6 +612,43 @@ export async function registerIssueRoutes(
   }
 
   /**
+   * Emit + persist the provenance card for one label creation (SHI-230) — used
+   * by the standalone `label create` route and by `--create-missing-labels` on
+   * create/edit (one card per minted label, so a flag-driven creation is as
+   * visible and undoable as an explicit one). The card reuses the issue-write
+   * stack with verb `label`: the label name rides in `identifier`, there is no
+   * issue, so `issueId`/`title` stay empty and the client renders it non-
+   * navigable. Undo deletes the label if it's still unused.
+   */
+  function emitLabelCreationCard(
+    runner: NonNullable<ReturnType<typeof deps.runnerRegistry.get>>,
+    sessionId: string,
+    trackerId: string,
+    creation: LabelCreation,
+  ): IssueWriteCard {
+    const card: IssueWriteCard = {
+      cardId: `issue-write-${randomUUID()}`,
+      tracker: trackerId as TrackerId,
+      issueId: "",
+      identifier: creation.label.name,
+      title: "",
+      verb: "label",
+      summary: creation.summary,
+      attribution: trackerId === "github" ? "user" : "workspace",
+      undo: creation.undo,
+      undoState: "available",
+      createdAt: new Date().toISOString(),
+    };
+    emitChatCard(
+      runner,
+      { type: "issue_write_card", sessionId, card },
+      { role: "assistant", text: "", issueWrite: card },
+      { chatHistoryManager: deps.chatHistoryManager, sessionId },
+    );
+    return card;
+  }
+
+  /**
    * Shared write handler: run the brokered write, then emit + persist the
    * do-then-surface provenance card (with the undo snapshot) into the session's
    * transcript, and return a compact result to the shim. Requires an active
@@ -653,6 +692,11 @@ export async function registerIssueRoutes(
       sendServiceError(reply, err, fallback);
       return;
     }
+    // Labels minted by --create-missing-labels each get their own card, BEFORE
+    // the main write card — the creation happened first (SHI-230).
+    for (const creation of outcome.labelCreations ?? []) {
+      emitLabelCreationCard(runner, sessionId, trackerId, creation);
+    }
     // For a create the issue id isn't known until the tracker assigns it, so
     // fall back to the created issue's id (the undo target).
     const card: IssueWriteCard = {
@@ -693,21 +737,26 @@ export async function registerIssueRoutes(
       // Reflect the resolved parent (SHI-206) so `--json` shows the nesting that
       // was applied; absent when the issue is top-level.
       ...(outcome.issue.parentIdentifier ? { parent: outcome.issue.parentIdentifier } : {}),
+      // Labels minted on the fly by --create-missing-labels (SHI-230), so the
+      // shim can report exactly what was created vs merely applied.
+      ...(outcome.labelCreations && outcome.labelCreations.length > 0
+        ? { createdLabels: outcome.labelCreations.map((c) => c.label.name) }
+        : {}),
     };
     recentWrites.set(dedupKey, { at: now, result });
     return result;
   }
 
   // POST /api/sessions/:sessionId/issue/create
-  //   { tracker, title, body, labels?, priority? } (docs/187, SHI-92)
+  //   { tracker, title, body, labels?, priority?, createMissingLabels? } (docs/187, SHI-92, SHI-230)
   app.post<{
     Params: { sessionId: string };
-    Body: { tracker?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null };
+    Body: { tracker?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null; createMissingLabels?: boolean };
   }>(
     "/api/sessions/:sessionId/issue/create",
     { config: { containerAccessible: true } },
     async (request, reply) => {
-      const { tracker, title, body, labels, priority, parent } = request.body ?? {};
+      const { tracker, title, body, labels, priority, parent, createMissingLabels } = request.body ?? {};
       if (!tracker || !title?.trim()) {
         reply.code(400).send({ error: "tracker and title are required" });
         return;
@@ -717,10 +766,71 @@ export async function registerIssueRoutes(
       const parentToSet = parent ?? undefined;
       // The issue id is assigned by the tracker, so pass "" and let handleWrite
       // stamp the card's issueId from the created issue.
-      const dedup = { verb: "create", content: JSON.stringify({ title, body: body ?? "", labels: labels ?? [], priority: priority ?? null, parent: parentToSet ?? null }) };
+      const dedup = { verb: "create", content: JSON.stringify({ title, body: body ?? "", labels: labels ?? [], priority: priority ?? null, parent: parentToSet ?? null, createMissingLabels: createMissingLabels === true }) };
       return handleWrite(request.params.sessionId, tracker, "", reply, "Failed to create issue", dedup, (github) =>
-        createIssueForTracker(credentialStore, tracker, title, body ?? "", { labels, priority, parent: parentToSet }, trackerFetchImpl, github),
+        createIssueForTracker(credentialStore, tracker, title, body ?? "", { labels, priority, parent: parentToSet, createMissingLabels: createMissingLabels === true }, trackerFetchImpl, github),
       );
+    },
+  );
+
+  // POST /api/sessions/:sessionId/issue/label/create { tracker, name, color?, description? }
+  //   (SHI-230) — mint a tracker label so `--label` can apply it. Do-then-surface
+  //   like every other write: created immediately, provenance card with Undo
+  //   (undo deletes the label if it's still unused). The one write that targets
+  //   tracker CONFIG rather than an issue, so it bypasses handleWrite (no
+  //   TrackerIssue in the outcome) but shares its runner/dedup/card machinery.
+  app.post<{
+    Params: { sessionId: string };
+    Body: { tracker?: string; name?: string; color?: string; description?: string };
+  }>(
+    "/api/sessions/:sessionId/issue/label/create",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      const { tracker, name, color, description } = request.body ?? {};
+      if (!tracker || !name?.trim()) {
+        reply.code(400).send({ error: "tracker and name are required" });
+        return;
+      }
+      const sessionId = request.params.sessionId;
+      const runner = deps.runnerRegistry.get(sessionId);
+      if (!runner) {
+        reply.code(409).send({ error: "Session is not active — open it to record the write." });
+        return;
+      }
+      const now = Date.now();
+      pruneWrites(now);
+      const dedupKey = `${sessionId}::${tracker}::label-create::::${createHash("sha256")
+        .update(JSON.stringify({ name, color: color ?? null, description: description ?? null }))
+        .digest("hex")}`;
+      const cached = recentWrites.get(dedupKey);
+      if (cached && now - cached.at <= WRITE_DEDUP_WINDOW_MS) {
+        cached.at = now;
+        return cached.result;
+      }
+      const github = resolveGitHubContext(sessionId);
+      let creation: LabelCreation;
+      try {
+        creation = await createLabelForTracker(
+          credentialStore,
+          tracker,
+          name,
+          { ...(color ? { color } : {}), ...(description ? { description } : {}) },
+          trackerFetchImpl,
+          github,
+        );
+      } catch (err) {
+        sendServiceError(reply, err, "Failed to create label");
+        return;
+      }
+      const card = emitLabelCreationCard(runner, sessionId, tracker, creation);
+      const result = {
+        ok: true,
+        cardId: card.cardId,
+        summary: creation.summary,
+        label: creation.label,
+      };
+      recentWrites.set(dedupKey, { at: now, result });
+      return result;
     },
   );
 
@@ -741,15 +851,15 @@ export async function registerIssueRoutes(
   );
 
   // POST /api/sessions/:sessionId/issue/edit
-  //   { tracker, id, title?, body?, labels?, priority? } (SHI-92)
+  //   { tracker, id, title?, body?, labels?, priority?, createMissingLabels? } (SHI-92, SHI-230)
   app.post<{
     Params: { sessionId: string };
-    Body: { tracker?: string; id?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null };
+    Body: { tracker?: string; id?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null; createMissingLabels?: boolean };
   }>(
     "/api/sessions/:sessionId/issue/edit",
     { config: { containerAccessible: true } },
     async (request, reply) => {
-      const { tracker, id, title, body, labels, priority, parent } = request.body ?? {};
+      const { tracker, id, title, body, labels, priority, parent, createMissingLabels } = request.body ?? {};
       const hasLabels = labels !== undefined && labels.length > 0;
       if (!tracker || !id || (title === undefined && body === undefined && !hasLabels && priority === undefined && parent === undefined)) {
         reply.code(400).send({ error: "tracker, id and at least one of title/body/label/priority/parent are required" });
@@ -763,8 +873,11 @@ export async function registerIssueRoutes(
         // `parent: null` is meaningful (detach) — forward when the key is present.
         ...(parent !== undefined ? { parent } : {}),
       };
-      return handleWrite(request.params.sessionId, tracker, id, reply, "Failed to edit issue", { verb: "edit", content: JSON.stringify(patch) }, (github) =>
-        updateIssueForTracker(credentialStore, tracker, id, patch, trackerFetchImpl, github),
+      const dedupContent = JSON.stringify({ ...patch, createMissingLabels: createMissingLabels === true });
+      return handleWrite(request.params.sessionId, tracker, id, reply, "Failed to edit issue", { verb: "edit", content: dedupContent }, (github) =>
+        updateIssueForTracker(credentialStore, tracker, id, patch, trackerFetchImpl, github, {
+          createMissingLabels: createMissingLabels === true,
+        }),
       );
     },
   );

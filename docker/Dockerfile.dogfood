@@ -26,8 +26,16 @@ WORKDIR /workspace
 # orch's GitManager shells out to it for clone/commit/diff. The others keep the
 # inner orch's behavior at parity with a real session container.
 RUN apt-get update \
-    && apt-get install -y git curl python3 make g++ zip unzip ripgrep bubblewrap \
+    && apt-get install -y git git-lfs curl python3 make g++ zip unzip ripgrep bubblewrap \
     && rm -rf /var/lib/apt/lists/*
+
+# docs/231 — Git LFS for the inner orchestrator. `--skip-smudge` matches the
+# other orchestrator images (clean on so auto-commit writes pointers, smudge off
+# so `git clone --local` from the bare cache can't fail on a bogus LFS endpoint);
+# canonical comment in Dockerfile.prod. In RUNTIME_MODE=local this container is
+# also the agent's host, so a manual `git checkout` here writes pointer stubs —
+# run `git lfs pull` after one. Real session containers get the full install.
+RUN git lfs install --system --skip-repo --skip-smudge
 
 # Install the agent CLIs so the inner orchestrator (RUNTIME_MODE=local) can
 # spawn them in-process via claude-adapter / codex-adapter. The shared
@@ -47,6 +55,30 @@ RUN ln -sf /opt/agent-cli/node_modules/.bin/claude /usr/local/bin/claude \
  && ln -sf /opt/agent-cli/node_modules/.bin/codex /usr/local/bin/codex \
  && ln -sf /opt/agent-cli/node_modules/.bin/playwright-mcp /usr/local/bin/playwright-mcp
 
+# SHI-298 — Chromium + its system libraries for the Playwright MCP browser
+# tools. `playwright-mcp` being on PATH (above) is only half of it: the server
+# still has to launch a browser, and neither the binary nor the ~50 shared libs
+# Chromium links against are in node:24-slim. Without this layer every
+# `browser_*` tool fails on first call, which is exactly the state SHI-298
+# found — MCP config written, tools advertised, nothing behind them.
+#
+# Copied from Dockerfile.session-worker.prod (canonical comment there): install
+# system deps via the pinned `playwright` CLI, then fetch the chrome-for-testing
+# build via @playwright/mcp's own installer, both invoked by bare name off
+# /opt/agent-cli's PATH rather than `npx <pkg>` (which would re-fetch an
+# unpinned copy). The browser is pinned to a shared readable path because this
+# container does NOT necessarily run as root: with SHIPIT_SESSION_WORKER_UID set
+# on the deployment the compose generator forces `user: <uid>:<uid>` onto the
+# `dev` service, and the default install location ($HOME/.cache/ms-playwright)
+# would then be unreadable — the same SHI-282 constraint that moved AGENT_HOME
+# out of /root. `--isolated` in PLAYWRIGHT_MCP_ARGS keeps the writable profile
+# dir in /tmp, so read-only here is enough (docs/150 §8).
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
+RUN mkdir -p /opt/playwright-browsers \
+ && playwright install-deps chromium \
+ && HOME=/opt/playwright-browsers playwright-mcp install-browser chrome-for-testing \
+ && chmod -R a+rX /opt/playwright-browsers
+
 # No-op git credential helper. Session workspaces carry a local
 # `credential.helper = /usr/local/bin/shipit-git-credential` (the brokering
 # binary, installed only in the session-worker images). When the orchestrator —
@@ -58,12 +90,34 @@ RUN ln -sf /opt/agent-cli/node_modules/.bin/claude /usr/local/bin/claude \
 RUN printf '#!/bin/sh\nexec cat >/dev/null 2>&1\n' > /usr/local/bin/shipit-git-credential \
  && chmod 0755 /usr/local/bin/shipit-git-credential
 
-# docs/150 §9 — local mode (RUNTIME_MODE=local) keeps the orchestrator on root.
-# It hosts the agent processes in-process (claude-adapter / codex-adapter), which
-# resolve their HOME via agentHome(). Since DEFAULT_AGENT_HOME is /home/shipit,
-# we MUST pin AGENT_HOME=/root here (no `shipit` user exists in this image) or
-# the agent CLIs would read credentials from a non-existent home and auth would
-# break. The non-root hardening intentionally does not apply to dogfood/local
-# mode — see docs/118-shipit-ui-local/plan.md.
+# The managed-settings file and the hooks it points at. Both session-worker
+# images install these; this one did not, and in local mode the agent spawns
+# HERE — `prepareClaudeRunParams` hardcodes `--settings
+# /etc/shipit/managed-settings.json`, and the Claude CLI treats a missing
+# settings file as fatal. So every dogfood turn died on
+# `Error: Settings file not found` before the model was ever reached, which
+# made the docs/118 "chat-driven dev loop on the ShipIt source" unable to run
+# a single turn.
+#
+# The hooks come along because the settings file references them by path; a
+# settings file whose hook commands don't exist would trade one failure for a
+# subtler one.
+COPY docker/agent-hooks/stop-pr-check.sh /etc/shipit/agent-hooks/stop-pr-check.sh
+COPY docker/agent-hooks/block-branch-ops.mjs /etc/shipit/agent-hooks/block-branch-ops.mjs
+COPY docker/agent-hooks/managed-settings.json /etc/shipit/managed-settings.json
+RUN chmod 0755 /etc/shipit/agent-hooks/stop-pr-check.sh /etc/shipit/agent-hooks/block-branch-ops.mjs
+
+# docs/150 §9 — local mode (RUNTIME_MODE=local) hosts the agent processes
+# in-process (claude-adapter / codex-adapter), which resolve their HOME via
+# agentHome(). DEFAULT_AGENT_HOME is /home/shipit, a user this image does not
+# have, so AGENT_HOME must be pinned to something that exists and is writable.
+#
+# `/root` is the image-level fallback only. The real value comes from
+# docker-compose.yml, which points AGENT_HOME at a dir under the bind-mounted
+# state dir — because this image cannot know the mount path, and because the
+# container does NOT necessarily run as root: with SHIPIT_SESSION_WORKER_UID set
+# on the deployment, the compose generator forces `user: <uid>:<uid>` onto every
+# service that doesn't declare its own, and a non-root process cannot write
+# /root (SHI-282). Read the compose comment before changing either value.
 ENV HOME=/root
 ENV AGENT_HOME=/root

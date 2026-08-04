@@ -1,4 +1,5 @@
 ---
+issue: https://linear.app/shipit-ai/issue/SHI-223
 description: Move Claude OAuth refresh out of session CLIs into a single orchestrator-owned process to eliminate the multi-session refresh stampede that breaks every Claude session ~8h after auth.
 ---
 
@@ -163,6 +164,32 @@ In-process `Promise<RefreshResult>` mutex. Any caller — scheduled tick, on-dem
 promise if one exists, never starts a parallel attempt. Because there is only one
 orchestrator process per host, this fully serializes refresh.
 
+### Failure classification: only `invalid_grant` means revoked (2026-07 fix)
+
+The original implementation classified generic 401 phrases (`unauthorized`,
+`authentication_error`, `invalid authentication credentials`) as **revoked** — flip the
+account to "needs sign-in", broadcast `agent_auth_failed reason:revoked`, stop
+scheduling. That was wrong, and it was the cause of the "Claude logs out every day"
+symptom that persisted after this design shipped:
+
+- Once the access token is past expiry (a routine, recurring state — the tier-1-noop →
+  generic-backoff cadence regularly overshoots expiry by a few minutes), **every**
+  tier-2 run's first API attempt 401s, and `--debug api` captures that
+  `authentication_error` response verbatim *before* refresh-on-use fires.
+- If the refresh then fails *transiently* (OAuth endpoint 429, the 60s tier-2 timeout,
+  a network blip), the tick ends with no rotation and a combined output full of 401
+  phrases → misclassified as revoked → user signed out, schedule stopped.
+- The Codex refresher only ever matched `invalid_grant` / `invalid_refresh_token`,
+  which is why Codex never exhibited the daily logout.
+
+`TERMINAL_AUTH_FAILURE_PATTERNS` is now narrowed to the `invalid_grant` family — the
+only signal where the OAuth server actually evaluated and rejected the refresh token.
+A genuine revocation still surfaces it in the debug capture, so detection is not lost;
+everything else (including expired-token 401s) falls through to `rate_limited` or
+`unknown_failure`, which back off and retry until the transient clears. Regression
+tests: `oauth-refresher.test.ts` ("401 … unknown_failure (NOT revoked)",
+"expired-token 401 + refresh 429 as rate_limited").
+
 ### Detecting refresh outcomes
 
 The CLI is a native binary; we can't introspect it statically. We rely on two
@@ -197,6 +224,64 @@ The source path for account `claude-default` resolves via:
 
 The refresher writes the new token to the account-aware path. The symlink ensures
 legacy readers still see the rotated content.
+
+### Publication latency: a rotation must reach the source mid-turn (2026-08 fix)
+
+Moving refresh ownership to the orchestrator removed the *stampede*. It did not
+remove the case where a session CLI rotates anyway — and when that happens, the
+write-back path was too slow.
+
+`syncAgentTokenBack` ran from exactly two places: `finalizeSessionAgentEnvironment`
+(turn end) and sub-agent teardown. So a rotation performed by a session's CLI at
+minute 1 of a twelve-minute turn stayed private to that session for eleven
+minutes, while the rotating refresh token it replaced was already invalid
+upstream. Every other session that started a turn in that window ran
+`syncAgentTokenIn`, pulled the dead source token, and 401'd with
+"Not logged in · Please run /login". With ~12 concurrent agent containers on one
+provider account, a single mid-turn rotation could poison every session that
+started during the rest of that turn. This was the widest stale window left in
+the credential design (production incident, 2026-08-02).
+
+The fix is publication timing only, in `session-token-publisher.ts`:
+
+- While a turn is running, the session's token file(s) are watched with
+  `fs.watchFile` (stat polling, 3 s). Stat polling rather than `fs.watch`
+  because the file is written by a *different container* into a shared Docker
+  volume and replaced by atomic rename — path-based polling sees both the
+  in-place rewrite and the rename-over with no inode-identity failure mode and
+  no dependency on inotify events crossing the mount.
+- On a detected change, a 750 ms debounce, then the **existing**
+  `syncAgentTokenBack` / `syncProviderAccountTokenBack` — unchanged, expiry
+  guard included. A session that FAILED to refresh still cannot clobber a
+  fresher source.
+- `sessionTokenIsAheadOfSource` (a read-only twin of that same guard, exported
+  from `token-sync-manager.ts`) pre-checks before every publish. The CLI
+  rewrites `.credentials.json` for reasons other than rotation — the `mcpOAuth`
+  key churns during a turn — and without the pre-check each of those would
+  drive a sync-back whose *copy* is guarded away but whose trailing recursive
+  `chownSessionCredentialsTree` is not. Debounce + pre-check is what keeps this
+  from becoming a write storm.
+- The watch also publishes once at arm time. `fs.watchFile` takes its baseline
+  stat asynchronously, so a write landing in that window would otherwise be
+  invisible forever; the same pass recovers a rotation stranded by a previous
+  turn whose finalize never ran.
+
+Lifecycle — armed in `prepareSessionAgentEnvironment` gated on
+`enforceAccountRouting`, which is precisely the flag marking the turn's own
+pre-spawn step (the service-level warm-ups run before any turn exists and are
+followed moments later by the executor's own call). Torn down unconditionally at
+the top of `finalizeSessionAgentEnvironment`, so the turn-end sync-back remains
+the authoritative final publication, with the runner's `disposed` event as a
+backstop for a turn cut short by idle container cleanup. Route branching mirrors
+the sync-in exactly: account routes publish to that account's credential root,
+and the reserved `claude-env-oauth` route is skipped.
+
+Nothing here is awaited by turn execution and every failure is logged and
+swallowed — credential syncing must never block or fail a turn.
+
+Scope note: this addresses publication **latency**. The separate gap that the
+`TOKEN_FRESHNESS` guards key off `expiresAt`, which tracks ordering but cannot
+detect *revocation*, is not addressed here.
 
 ## Wiring
 
@@ -366,6 +451,61 @@ event carries the accountId for docs/150 to consume.
 - **Codex.** Codex's auth flow is unaffected — different identity provider, different
   refresh model. No Codex changes in this PR.
 
+## Addendum — a second, unrelated cause of "Not logged in · Please run /login"
+
+Confirmed on a dogfooding session container 2026-08-02. This is **not** the OAuth
+refresh stampede above; it is a separate mechanism that produces a similar
+symptom, and it destroys the session permanently rather than for one turn.
+
+**Mechanism.** `initializeManagers` (`app-di.ts`) defaulted `credentialsDir` to
+the literal `/credentials`, then constructed a `ProviderAccountManager` and
+called `migrateDefaultAccounts()` (`app-di.ts:369`). That runs
+`migrateProviderDefault`, a one-shot legacy migration ending in `fs.renameSync`
+— a **move**. Its only guard is `if (this.list(provider).length > 0) return`,
+which never fires in production (accounts exist) but **always** fires against a
+fresh test database.
+
+99 test files call `buildApp()`; 86 of them pass `workspaceDir: tmpDir` but no
+`credentialsDir`, so they inherited `/credentials`. Inside a session container
+that path is *not* the orchestrator's credentials volume — `container-lifecycle
+.ts:265` mounts `<root>/sessions/<sessionId>` there, so it is that session's own
+live agent home. Running the test suite in-container therefore moved the running
+CLI's `.claude/` (credential **and** conversation jsonl) and `.claude.json` into
+`provider-accounts/claude/claude-default/`. Nothing moves them back, so every
+subsequent turn 401s forever.
+
+This tracked *running the suite*, not subject matter: `connection.test.ts` and
+`http-bootstrap.test.ts` are smoke tests, so `npm run test:dev` triggered it
+regardless of what the session was working on. It also explains the artifacts —
+the orphan is named `claude-default` because that is the migration's literal
+target; it holds the real credential and a multi-megabyte conversation because
+it *is* the moved home; and "no resumable jsonl on disk (DB pointed at `<id>`)"
+happened because the jsonl moved with it. The DB pointer was always correct.
+
+**Fix — three independent layers**, since any one alone still leaves a live home
+reachable:
+
+1. `resolveCredentialsDir` (`app-di.ts`) — under test mode an omitted
+   `credentialsDir` gets a fresh `mkdtemp` dir, never the live volume, and an
+   *explicit* live path is a hard error. Enforced in one place rather than at 86
+   call sites, so a future test author cannot reintroduce it by omission. (Temp
+   roots are created under `os.tmpdir()` rather than under `workspaceDir`,
+   because a test that passes neither would otherwise write into the real
+   `/workspace` git tree.)
+2. `isSessionContainerCredentialRoot` (`provider-account-manager.ts`) — the
+   migration refuses to run when `SHIPIT_SESSION_ID` is set. That env var is on
+   every session container and nothing else, which is the only reliable signal:
+   a session home and a pre-account orchestrator volume have identical *shape*
+   (`.claude/`, `.claude.json`), which is exactly why the migration confused
+   them.
+3. Copy-then-verify instead of `renameSync` — the source is removed only after
+   the copy is confirmed at the destination, so an interrupted or misdirected
+   migration costs disk rather than the only copy of a live credential.
+
+The orphan-discovery and rescue work in `token-sync-manager.ts` is what recovers
+sessions already broken by this, including reuniting them with the conversation
+history that was moved into the orphan.
+
 ## Key files (planned)
 
 - `src/server/orchestrator/claude-oauth-refresher.ts` — new module
@@ -374,3 +514,29 @@ event carries the accountId for docs/150 to consume.
 - `src/server/orchestrator/app-di.ts` — pass `providerAccountManager` into the refresher
 - `src/server/orchestrator/ws-handlers/agent-listeners.ts` — optional: route
   `auth_required` through `refresher.refreshNow()` before propagating to the client
+
+### Key files (addendum — live-home destruction)
+
+- `src/server/orchestrator/app-di.ts` — `resolveCredentialsDir`, `LIVE_CREDENTIALS_DIR`
+- `src/server/orchestrator/app-di-credentials.test.ts` — the default/refusal rules
+- `src/server/orchestrator/provider-account-manager.ts` —
+  `isSessionContainerCredentialRoot`, copy-then-verify migration
+- `src/server/orchestrator/provider-account-manager.test.ts` — `live-home safety`
+- `src/server/orchestrator/token-sync-manager.ts` — orphan discovery + rescue
+- `src/server/orchestrator/session-credentials-scaffold.ts` — never write through a
+  symlink at a credential destination
+
+### Key files (mid-turn publication)
+
+- `src/server/orchestrator/session-token-publisher.ts` — the watch: arm/disarm,
+  debounce, publish via the existing sync-back
+- `src/server/orchestrator/session-token-publisher.test.ts` — publication,
+  expiry-guard preservation, no-op-on-churn, account routing, teardown
+- `src/server/orchestrator/token-sync-manager.ts` — adds the read-only
+  `agentTokenFilePaths` / `sessionTokenIsAheadOfSource`; the sync-back functions
+  themselves are unchanged
+- `src/server/orchestrator/session-agent-env.ts` — arms the watch in
+  `prepareSessionAgentEnvironment` (Step 2b), disarms it in
+  `finalizeSessionAgentEnvironment`
+- `src/server/orchestrator/shutdown-manager.ts` — drops every remaining watch
+  on `onClose`

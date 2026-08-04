@@ -40,7 +40,7 @@ jobs:
   #     releases; rc's use the tag path.
   resolve:
     name: Resolve release tag
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     outputs:
       tag: ${{ steps.resolve.outputs.tag }}
       is_branch: ${{ steps.resolve.outputs.is_branch }}
@@ -112,10 +112,9 @@ jobs:
     name: Tag matches package.json
     needs: [resolve]
     if: needs.resolve.outputs.proceed == 'true' && needs.resolve.outputs.is_branch != 'true'
-    # Trivial job (one `node -p`): a 2vcpu runner is plenty. Blacksmith free
-    # minutes scale inversely with vcpu (2vcpu costs half the quota per wall-
-    # minute of 4vcpu), and a bigger machine gives no speedup here.
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    # Trivial job (one `node -p`). GitHub-hosted standard runner (free for
+    # public repos).
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -138,7 +137,7 @@ jobs:
     name: Lint, Type Check & Build
     needs: [resolve]
     if: needs.resolve.outputs.proceed == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -155,7 +154,7 @@ jobs:
     name: Test
     needs: [resolve]
     if: needs.resolve.outputs.proceed == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -182,8 +181,8 @@ jobs:
       (needs.version-guard.result == 'success' || needs.version-guard.result == 'skipped') &&
       needs.check.result == 'success' &&
       needs.test.result == 'success'
-    # Pure git + gh I/O, no compute — 2vcpu (see resolve note).
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    # Pure git + gh I/O, no compute.
+    runs-on: ubuntu-24.04
     concurrency:
       group: release-${{ needs.resolve.outputs.tag }}
       cancel-in-progress: false
@@ -260,7 +259,7 @@ jobs:
       needs.resolve.outputs.is_branch == 'true' &&
       needs.resolve.outputs.proceed == 'true' &&
       needs.publish.result == 'success'
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
       pull-requests: write
@@ -287,21 +286,36 @@ jobs:
           fi
 
           SYNC_BRANCH="release-sync/$TAG"
-          if git ls-remote --exit-code --heads origin "$SYNC_BRANCH" >/dev/null 2>&1; then
-            echo "Sync branch $SYNC_BRANCH already exists — leaving the existing PR."
+
+          # Idempotency keys on the PR, not the branch. A prior run can push the
+          # branch and then fail to open the PR (e.g. GitHub blocks Actions from
+          # creating PRs) — so "branch exists" does NOT imply "PR exists". Keying
+          # on an open PR lets a re-run recover by (re)opening the PR for a branch
+          # an earlier run already pushed.
+          if [ -n "$(gh pr list --head "$SYNC_BRANCH" --base main --state open \
+                       --json number --jq '.[0].number' 2>/dev/null)" ]; then
+            echo "Open sync PR for $SYNC_BRANCH already exists — nothing to do."
             exit 0
           fi
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b "$SYNC_BRANCH"
 
-          # Same bump the local script + the release PR use: rewrites package.json
-          # AND package-lock.json with no git side effects, so the commit is ours.
-          npm version "$VERSION" --no-git-tag-version --allow-same-version
-          git add package.json package-lock.json
-          git commit -m "Sync version to $TAG on main"
-          git push origin "$SYNC_BRANCH"
+          # Reuse the branch if a prior run already pushed it (PR-create failed);
+          # otherwise create it with the version bump. Same bump the local script +
+          # the release PR use: rewrites package.json AND package-lock.json with no
+          # git side effects, so the commit is ours.
+          if git ls-remote --exit-code --heads origin "$SYNC_BRANCH" >/dev/null 2>&1; then
+            echo "Reusing existing sync branch $SYNC_BRANCH (prior run pushed it but could not open the PR)."
+            git fetch origin "$SYNC_BRANCH"
+            git checkout -B "$SYNC_BRANCH" "origin/$SYNC_BRANCH"
+          else
+            git checkout -b "$SYNC_BRANCH"
+            npm version "$VERSION" --no-git-tag-version --allow-same-version
+            git add package.json package-lock.json
+            git commit -m "Sync version to $TAG on main"
+            git push origin "$SYNC_BRANCH"
+          fi
 
           # Build the body with printf so no YAML/bash indentation leaks in as
           # leading whitespace (which markdown would render as a code block).
@@ -317,9 +331,19 @@ jobs:
           # the default GITHUB_TOKEN does not re-trigger `on: pull_request`
           # workflows, so ci.yml won't run on it — acceptable for a version-only
           # bump that CI already vetted on the release commit.
-          gh pr create \
-            --base main \
-            --head "$SYNC_BRANCH" \
-            --title "Sync version to $TAG on main" \
-            --label ignore-for-release \
-            --body "$BODY"
+          #
+          # `gh pr create` fails closed if the repo/org has not enabled
+          # "Allow GitHub Actions to create and approve pull requests"
+          # (Settings → Actions → General → Workflow permissions). The branch is
+          # already pushed, so surface an actionable message + a one-click compare
+          # URL rather than a bare GraphQL error, and keep the job red so the
+          # version drift is never silent.
+          if ! gh pr create \
+                 --base main \
+                 --head "$SYNC_BRANCH" \
+                 --title "Sync version to $TAG on main" \
+                 --label ignore-for-release \
+                 --body "$BODY"; then
+            echo "::error title=Version-sync PR not created::Could not open the sync PR for $SYNC_BRANCH. If the failure is 'GitHub Actions is not permitted to create or approve pull requests', enable Settings → Actions → General → Workflow permissions → 'Allow GitHub Actions to create and approve pull requests' (at the org and/or repo level). The sync branch is already pushed — open the PR manually here: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/main...${SYNC_BRANCH}?expand=1"
+            exit 1
+          fi

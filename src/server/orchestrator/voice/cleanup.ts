@@ -48,14 +48,24 @@ export interface CleanupResult {
 /**
  * Resolve the cleanup provider to use, in order of preference. Returns null
  * when neither a Claude OAuth bearer nor an OpenAI key is available.
+ *
+ * `credentialDir` scopes the OAuth read to a provider account (docs/150 req 19).
+ * Unscoped, `getAccessToken()` reads the singleton config root — which used to
+ * be an alias into the migrated default account, and since req 19 retired those
+ * aliases holds nothing on a migrated install. Passing nothing here would drop
+ * cleanup to the OpenAI fallback (or to no provider at all) for every user with
+ * a connected Claude subscription. A reserved route has no account root, so
+ * `undefined` is still correct there: those routes legitimately use the
+ * singleton path / `ANTHROPIC_AUTH_TOKEN`.
  */
 export async function pickCleanupProvider(
   authManager: AuthManager,
   openaiKey: string | null,
   fetchImpl: typeof fetch = fetch,
+  credentialDir?: string,
 ): Promise<CleanupProvider | null> {
   try {
-    const token = await authManager.getAccessToken();
+    const token = await authManager.getAccessToken(credentialDir);
     if (token.token) {
       return createClaudeCleanupProvider(token.token, fetchImpl);
     }

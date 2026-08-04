@@ -42,6 +42,7 @@ import {
   createTestCredentialStore,
   createTestDatabaseManager,
 } from "./test-helpers.js";
+import { testDispatch } from "./dispatch-test-helpers.js";
 
 type AnyMsg = Record<string, unknown> & { type: string };
 
@@ -320,7 +321,7 @@ describe("Integration: dispatched turn vs WS turn race", () => {
     // Live steering OFF → the next dispatch recomputes useStreaming=false. Old
     // code would spawn a competing one-shot here.
     credentialStore.setLiveSteering(false);
-    runner.dispatch({ text: "second instruction" });
+    runner.dispatch(testDispatch({ text: "second instruction" }));
 
     // The follow-up is delivered into the resident process via sendUserMessage
     // (the fake records it under stdinData), and NO second agent is spawned.

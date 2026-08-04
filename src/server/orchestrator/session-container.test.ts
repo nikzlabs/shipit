@@ -5,7 +5,7 @@
  * orphan cleanup, and health monitoring without a real Docker daemon.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
@@ -193,10 +193,33 @@ function createMockDocker() {
 // Test helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * A writable stand-in for the production `/workspace/sessions/<id>` layout:
+ * session dir, the clone at its `workspace/` child, ShipIt's state dir at its
+ * `state/` sibling.
+ *
+ * These have to be REAL paths, not the `/workspace/...` literals they used to
+ * be: `createContainer` mkdirs the state dir, and since SHI-286 it does so
+ * unconditionally (there is no "session without a state dir" left to skip for),
+ * so a non-writable literal is an EACCES rather than a no-op.
+ */
+const TEST_SESSION_DIR = path.join(
+  fs.mkdtempSync(path.join(os.tmpdir(), "session-container-cfg-")),
+  "sessions",
+  "test-session-1",
+);
+const TEST_WORKSPACE_DIR = path.join(TEST_SESSION_DIR, "workspace");
+
+afterAll(() => {
+  fs.rmSync(path.dirname(path.dirname(TEST_SESSION_DIR)), { recursive: true, force: true });
+});
+
 function buildConfig(overrides?: Partial<ContainerConfig>): ContainerConfig {
   return {
     sessionId: "test-session-1",
-    sessionDir: "/workspace/sessions/test-session-1",
+    sessionDir: TEST_SESSION_DIR,
+    workspaceDir: TEST_WORKSPACE_DIR,
+    sessionStateDir: path.join(TEST_SESSION_DIR, "state"),
     credentialsDir: "/credentials",
     imageName: "shipit-session-worker:test",
     memoryLimit: 512 * 1024 * 1024,
@@ -343,7 +366,8 @@ describe("SessionContainerManager", () => {
           },
           HostConfig: expect.objectContaining({
             Binds: expect.arrayContaining([
-              "/workspace/sessions/test-session-1:/workspace:rw",
+              // The CLONE is what lands at /workspace — `<sessionDir>/workspace`.
+              `${TEST_WORKSPACE_DIR}:/workspace:rw`,
               // docs/138 — the container gets its private per-session credentials
               // subtree, never the shared root.
               "/credentials/sessions/test-session-1:/credentials:rw",
@@ -638,9 +662,15 @@ describe("SessionContainerManager", () => {
       await ovlManager.dispose();
     });
 
+    /**
+     * A real session layout — the clone at `<sessionDir>/workspace`, which is
+     * what the state dir is resolved from (docs/246 / SHI-286). Returns the clone.
+     */
     async function ws(opts: { gitignore?: string; shipitYaml?: string; dirs?: string[] } = {}): Promise<string> {
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "prep-overlay-"));
-      tmpDirs.push(dir);
+      const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), "prep-overlay-"));
+      tmpDirs.push(sessionDir);
+      const dir = path.join(sessionDir, "workspace");
+      fs.mkdirSync(dir, { recursive: true });
       const git = (await import("simple-git")).default;
       await git(dir).init();
       if (opts.gitignore !== undefined) fs.writeFileSync(path.join(dir, ".gitignore"), opts.gitignore);
@@ -698,7 +728,9 @@ describe("SessionContainerManager", () => {
         expect(fs.existsSync(specs[0].orchDirs!.lowerdir)).toBe(false);
         await mgr.create(mgr.buildConfigForWorkspace({
           sessionId: "cold-scope-1",
-          sessionDir: dir,
+          // `dir` is the CLONE; the session dir is its parent, so `uploadsDir`
+          // and `scratchDir` default to siblings of the clone as in production.
+          sessionDir: path.dirname(dir),
           workspaceDir: dir,
           credentialsDir: "/credentials",
           overlaySpecs: specs,
@@ -744,7 +776,7 @@ describe("SessionContainerManager", () => {
       const overlaySpecs = await ovlManager.prepareOverlaySpecs({ sessionId: "e2e-session-1", workspaceDir: dir, session: eligible });
       const config = ovlManager.buildConfigForWorkspace({
         sessionId: "e2e-session-1",
-        sessionDir: dir,
+        sessionDir: path.dirname(dir),
         workspaceDir: dir,
         credentialsDir: "/credentials",
         overlaySpecs,
@@ -775,7 +807,7 @@ describe("SessionContainerManager", () => {
       });
       expect(overlaySpecs).toHaveLength(1);
       const config = ovlManager.buildConfigForWorkspace({
-        sessionId: appSessionId, sessionDir: dir, workspaceDir: dir,
+        sessionId: appSessionId, sessionDir: path.dirname(dir), workspaceDir: dir,
         credentialsDir: "/credentials", overlaySpecs,
       });
       const sc = await ovlManager.createStandby(config);
@@ -796,7 +828,7 @@ describe("SessionContainerManager", () => {
       });
       expect(overlaySpecs).toEqual([]);
       const config = ovlManager.buildConfigForWorkspace({
-        sessionId: "warm-off-1", sessionDir: dir, workspaceDir: dir,
+        sessionId: "warm-off-1", sessionDir: path.dirname(dir), workspaceDir: dir,
         credentialsDir: "/credentials", overlaySpecs,
       });
       await ovlManager.createStandby(config);
@@ -906,7 +938,7 @@ describe("SessionContainerManager", () => {
         expect(overlaySpecs).toEqual([]);
         const pnpmStoreDir = mgr.preparePnpmStore({ workspaceDir: dir, session: eligible });
         const config = mgr.buildConfigForWorkspace({
-          sessionId: "pnpm-e2e-1", sessionDir: dir, workspaceDir: dir,
+          sessionId: "pnpm-e2e-1", sessionDir: path.dirname(dir), workspaceDir: dir,
           credentialsDir: "/credentials", overlaySpecs, pnpmStoreDir,
         });
         await mgr.create(config);
@@ -1048,6 +1080,7 @@ describe("SessionContainerManager", () => {
       const config = manager.buildConfig({
         sessionId: "s1",
         sessionDir: "/ws/s1",
+        workspaceDir: "/ws/s1/workspace",
         credentialsDir: "/creds",
       });
 
@@ -1061,6 +1094,7 @@ describe("SessionContainerManager", () => {
       const config = manager.buildConfig({
         sessionId: "s1",
         sessionDir: "/ws/s1",
+        workspaceDir: "/ws/s1/workspace",
         credentialsDir: "/creds",
         memoryLimit: 1024 * 1024 * 1024,
         cpuQuota: 100_000,
@@ -1098,7 +1132,14 @@ describe("SessionContainerManager", () => {
       expect(manager.get("test-session-1")).toBeUndefined();
     });
 
-    it("emits container_exited with OOM error on oom event", async () => {
+    it("does NOT treat a bare oom event as a container exit", async () => {
+      // Docker fires `oom` when the cgroup's OOM-killer kills *a process* — not
+      // necessarily the container. In a session container PID 1 is the worker and
+      // the agent CLI is a child, so the common case is the one where the container
+      // SURVIVES: the CLI is killed, the worker keeps serving. Emitting
+      // `container_exited` here would finalize the live turn as crashed, dispose
+      // the runner, and trip the OOM circuit breaker against a healthy container.
+      // If PID 1 really was the victim, a `die` follows — and that one is proof.
       await manager.create(buildConfig());
       await manager.startHealthMonitor();
 
@@ -1115,7 +1156,45 @@ describe("SessionContainerManager", () => {
         },
       })));
 
+      expect(exited).not.toHaveBeenCalled();
+      expect(manager.get("test-session-1")).toBeDefined(); // session left alone
+    });
+
+    it("reports 'Out of memory' on the die that FOLLOWS an oom", async () => {
+      // The PID-1 OOM: `oom` then `die`, milliseconds apart. The `oom` records why;
+      // the `die` is what actually ends the container, and it carries the reason
+      // through so the OOM circuit breaker and the crash breadcrumb still see it.
+      await manager.create(buildConfig());
+      await manager.startHealthMonitor();
+
+      const exited = vi.fn();
+      manager.on("container_exited", exited);
+
+      const attrs = { [CONTAINER_SESSION_ID_LABEL]: "test-session-1", exitCode: "137" };
+      mockDocker._eventEmitter.emit("data", Buffer.from(JSON.stringify({
+        Action: "oom", Actor: { Attributes: attrs },
+      })));
+      mockDocker._eventEmitter.emit("data", Buffer.from(JSON.stringify({
+        Action: "die", Actor: { Attributes: attrs },
+      })));
+
       expect(exited).toHaveBeenCalledWith("test-session-1", 137, "Out of memory");
+      expect(manager.get("test-session-1")).toBeUndefined();
+    });
+
+    it("reports no OOM reason on a plain die with no preceding oom", async () => {
+      await manager.create(buildConfig());
+      await manager.startHealthMonitor();
+
+      const exited = vi.fn();
+      manager.on("container_exited", exited);
+
+      mockDocker._eventEmitter.emit("data", Buffer.from(JSON.stringify({
+        Action: "die",
+        Actor: { Attributes: { [CONTAINER_SESSION_ID_LABEL]: "test-session-1", exitCode: "1" } },
+      })));
+
+      expect(exited).toHaveBeenCalledWith("test-session-1", 1, undefined);
     });
 
     it("ignores events for unknown sessions", async () => {
@@ -1290,16 +1369,15 @@ describe("readAgentConfig (W4a)", () => {
     const config = readAgentConfig(tmpDir);
 
     // Fallback is preserved — a broken config must not block the session.
-    expect(config.agent.memory).toBe(1536);
-    expect(config.agent.cpu).toBe(0.5);
-    expect(config.agent.pids).toBe(4096);
+    expect(config.agent.install).toEqual([]);
+    expect(config.agent.depDirs).toEqual(["node_modules"]);
 
     // ...but it is NOT silent: the catch logs the workspace dir + the cause
     // so a default-sized container never appears with zero trace.
     expect(errSpy).toHaveBeenCalledTimes(1);
     const logged = String(errSpy.mock.calls[0]?.[0] ?? "");
     expect(logged).toContain(tmpDir);
-    expect(logged).toMatch(/default agent resources/i);
+    expect(logged).toMatch(/default agent config/i);
 
     errSpy.mockRestore();
   });
@@ -1309,7 +1387,7 @@ describe("readAgentConfig (W4a)", () => {
 
     const config = readAgentConfig(tmpDir); // no shipit.yaml written
 
-    expect(config.agent.memory).toBe(1536);
+    expect(config.agent.install).toEqual([]);
     // Absent file resolves to defaults *without* hitting the catch — only a
     // genuinely broken file is loud.
     expect(errSpy).not.toHaveBeenCalled();
@@ -1317,13 +1395,15 @@ describe("readAgentConfig (W4a)", () => {
     errSpy.mockRestore();
   });
 
-  it("returns the declared values for a valid new-format shipit.yaml", () => {
+  it("parses a valid new-format shipit.yaml and ignores removed resource fields", () => {
     fs.writeFileSync(
       path.join(tmpDir, "shipit.yaml"),
-      "agent:\n  memory: 3072\n  cpu: 2\n  pids: 2048\n",
+      "agent:\n  install: npm install\n  memory: 3072\n",
     );
     const config = readAgentConfig(tmpDir);
-    expect(config.agent).toMatchObject({ memory: 3072, cpu: 2, pids: 2048 });
+    expect(config.agent.install).toEqual(["npm install"]);
+    // Removed resource fields are warned-and-ignored, not surfaced on AgentConfig.
+    expect(config.warnings.join("\n")).toMatch(/`agent.memory` is no longer used/);
   });
 });
 
@@ -1344,6 +1424,9 @@ describe("buildConfigForWorkspace — sandbox Docker capability (docs/211)", () 
     // An empty sandbox workspace has NO shipit.yaml, so the workspace-derived
     // dockerAccess is always false — the capability grant is the only source.
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sandbox-docker-"));
+    // Sandboxes come from `createSessionDir` like every other session, so the
+    // clone is `<sessionDir>/workspace` — the layout the state dir resolves from.
+    fs.mkdirSync(path.join(tmpDir, "workspace"), { recursive: true });
   });
   afterEach(async () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -1354,7 +1437,7 @@ describe("buildConfigForWorkspace — sandbox Docker capability (docs/211)", () 
     mgr.buildConfigForWorkspace({
       sessionId: "sbx123456789",
       sessionDir: tmpDir,
-      workspaceDir: tmpDir,
+      workspaceDir: path.join(tmpDir, "workspace"),
       credentialsDir: "/credentials",
       ...(dockerAccess !== undefined ? { dockerAccess } : {}),
     });

@@ -2,7 +2,7 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import { DiffEditor } from "@monaco-editor/react";
 import type { DiffOnMount } from "@monaco-editor/react";
-import { XIcon, PaperPlaneTiltIcon, CaretRightIcon, CaretDownIcon, CaretLeftIcon } from "@phosphor-icons/react";
+import { PaperPlaneTiltIcon, CaretRightIcon, CaretDownIcon, CaretLeftIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import { useIsMobile } from "../hooks/useMediaQuery.js";
@@ -15,6 +15,8 @@ import type { FileDiff } from "../../server/shared/types.js";
 import type { PrReviewThread } from "../../server/shared/types/github-types.js";
 import { buildFileTree, type FileTreeNode } from "./diff-utils.js";
 import { DiffTreeNode } from "./DiffTreeNode.js";
+import { ImageDiffView, SvgDiffView, isSvgPath } from "./DiffMediaView.js";
+import { SourceToggle, type ViewMode } from "./FileContentView/SourceToggle.js";
 import type { SendCommentsPayload } from "./FilePreviewModal.js";
 
 /** Map file extensions to Monaco language IDs. */
@@ -112,10 +114,17 @@ const DIFF_EDITOR_OPTIONS = {
 export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: DiffPanelProps) {
   const [selectedFileIndex, setSelectedFileIndex] = useState(0);
   const [collapsedFiles, setCollapsedFiles] = useState<Set<number>>(new Set());
+  // Per-file "rendered | source" mode for SVGs. Defaults to "source" (the text
+  // diff) so nothing changes until the user opts into the rendered comparison.
+  const [svgViewModes, setSvgViewModes] = useState<Record<string, ViewMode>>({});
   // Mobile master-detail: on narrow viewports we show either the file list or a
   // single file's diff, not both. Desktop ignores this state entirely.
   const [mobileView, setMobileView] = useState<"list" | "detail">("list");
   const isMobile = useIsMobile();
+  // Paths whose inline comment editor (add input or in-card edit) is open.
+  // Send is held while any is open so an accidental click can't submit the
+  // review and silently drop the half-typed comment.
+  const [composingPaths, setComposingPaths] = useState<ReadonlySet<string>>(() => new Set());
   const fileSectionRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const editorContainerRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const managersRef = useRef<Map<string, CommentWidgetManager>>(new Map());
@@ -179,6 +188,17 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
       fileSectionRefs.current.get(index)?.scrollIntoView({ behavior: "smooth", block: "start" });
     });
   }, []);
+
+  const setComposingForPath = useCallback((filePath: string, open: boolean) => {
+    setComposingPaths((prev) => {
+      if (prev.has(filePath) === open) return prev;
+      const next = new Set(prev);
+      if (open) next.add(filePath);
+      else next.delete(filePath);
+      return next;
+    });
+  }, []);
+  const composing = composingPaths.size > 0;
 
   const toggleFileCollapse = useCallback((index: number) => {
     setCollapsedFiles((prev) => {
@@ -246,16 +266,18 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
       onAddComment: (line, text) => addLineComment(sessionId, file.path, line, text),
       onEditComment: (id, text) => editComment(sessionId, id, text),
       onDeleteComment: (id) => deleteComment(sessionId, id),
+      onInputOpenChange: (open) => { setComposingForPath(file.path, open); },
       side: "modified",
     });
     manager.setComments(
       visibleComments.filter((c) => c.filePath === file.path),
     );
     managersRef.current.set(file.path, manager);
-  }, [diff.files, sessionId, addLineComment, editComment, deleteComment, visibleComments]);
+  }, [diff.files, sessionId, addLineComment, editComment, deleteComment, setComposingForPath, visibleComments]);
 
   const handleSendComments = useCallback(() => {
-    if (commentCount === 0 || !onSendComments) return;
+    // Mirrors the disabled button: never send out from under an open editor.
+    if (commentCount === 0 || !onSendComments || composing) return;
     const fileContents = new Map<string, string>();
     for (const file of diff.files) {
       fileContents.set(file.path, file.newContent);
@@ -293,22 +315,13 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
     const filePaths = Array.from(byFile.keys());
     onSendComments({ prompt, filePaths, commentCount });
     clearComments(sessionId);
-  }, [commentCount, onSendComments, allComments, diff.files, clearComments, sessionId]);
+  }, [commentCount, onSendComments, allComments, diff.files, clearComments, sessionId, composing]);
 
   if (diff.files.length === 0) {
     return (
       <div className="flex flex-col h-full">
-        <div className="flex items-center justify-between px-4 py-2 border-b border-(--color-border-secondary) bg-(--color-bg-elevated)">
+        <div className="flex items-center px-4 py-2 border-b border-(--color-border-secondary) bg-(--color-bg-elevated)">
           <span className="text-sm text-(--color-text-secondary)">No changes</span>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onClose}
-            className="text-(--color-text-tertiary) h-7 w-7 p-0"
-            aria-label="Close diff panel"
-          >
-            <XIcon size={ICON_SIZE.SM} />
-          </Button>
         </div>
         <div className="flex-1 flex items-center justify-center text-(--color-text-secondary) text-sm">
           No file changes in this turn.
@@ -320,7 +333,8 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
   return (
     <div className="flex flex-col h-full bg-(--color-bg-primary)">
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-1.5 border-b border-(--color-border-secondary) bg-(--color-bg-elevated) shrink-0 gap-2">
+      {/* pr-10 clears the dialog's corner close button so the stats don't sit under it */}
+      <div className="flex items-center px-3 py-1.5 pr-10 border-b border-(--color-border-secondary) bg-(--color-bg-elevated) shrink-0 gap-2">
         <div className="flex items-center gap-2 text-sm min-w-0">
           {isMobile && mobileView === "detail" && (
             <Button
@@ -339,15 +353,6 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
           <span className="text-(--color-error) shrink-0">-{diff.stats.totalDeletions}</span>
           <span className="text-(--color-text-secondary) shrink-0">({diff.stats.filesChanged} file{diff.stats.filesChanged !== 1 ? "s" : ""})</span>
         </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onClose}
-          className="text-(--color-text-tertiary) h-7 w-7 p-0"
-          aria-label="Close diff panel"
-        >
-          <XIcon size={ICON_SIZE.SM} />
-        </Button>
       </div>
 
       {/* Main area: file tree sidebar + stacked diffs.
@@ -379,6 +384,9 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
           {diff.files.map((file, i) => {
             if (isMobile && i !== selectedFileIndex) return null;
             const collapsed = !isMobile && collapsedFiles.has(i);
+            // SVGs are text (Monaco diff) but can also render side by side.
+            const isSvg = !file.binary && isSvgPath(file.path);
+            const svgMode = svgViewModes[file.path] ?? "source";
             return (
               <div
                 key={file.path}
@@ -399,7 +407,20 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
                   <span className="text-xs text-(--color-text-primary) truncate">
                     {file.oldPath ? `${file.oldPath} \u2192 ${file.path}` : file.path}
                   </span>
-                  <span className="ml-auto shrink-0 flex gap-1.5 text-xs font-mono">
+                  {isSvg && !collapsed && (
+                    <div
+                      className="ml-auto shrink-0"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <SourceToggle
+                        value={svgMode}
+                        onChange={(mode) =>
+                          setSvgViewModes((prev) => ({ ...prev, [file.path]: mode }))
+                        }
+                      />
+                    </div>
+                  )}
+                  <span className={`${isSvg && !collapsed ? "" : "ml-auto"} shrink-0 flex gap-1.5 text-xs font-mono`}>
                     {file.insertions > 0 && <span className="text-(--color-success)">+{file.insertions}</span>}
                     {file.deletions > 0 && <span className="text-(--color-error)">-{file.deletions}</span>}
                   </span>
@@ -407,7 +428,11 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
 
                 {/* Diff editor (collapsible) */}
                 {!collapsed && (
-                  file.binary ? (
+                  file.image ? (
+                    <ImageDiffView file={file} />
+                  ) : isSvg && svgMode === "rendered" ? (
+                    <SvgDiffView file={file} />
+                  ) : file.binary ? (
                     <div className="flex items-center justify-center py-8 text-(--color-text-secondary) text-sm">
                       Binary file — cannot display diff
                     </div>
@@ -441,7 +466,7 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
       </div>
 
       {/* Footer */}
-      <div className="flex items-center gap-2 px-3 py-1.5 border-t border-(--color-border-secondary) bg-(--color-bg-elevated) shrink-0">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-1.5 border-t border-(--color-border-secondary) bg-(--color-bg-elevated) shrink-0">
         <Button
           variant="secondary"
           size="md"
@@ -450,14 +475,29 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
           Close
         </Button>
         {onSendComments && commentCount > 0 && (
-          <Button variant="primary" size="md" onClick={handleSendComments}>
+          <Button
+            variant="primary"
+            size="md"
+            onClick={handleSendComments}
+            disabled={composing}
+            title={composing ? "Save or cancel the open comment before sending" : undefined}
+          >
             <PaperPlaneTiltIcon size={ICON_SIZE.SM} className="mr-1" />
             Send {commentCount} comment{commentCount !== 1 ? "s" : ""}
           </Button>
         )}
-        <span className="ml-auto text-[10px] text-(--color-text-tertiary) font-mono">
-          {diff.fromCommit.slice(0, 7)}..{diff.toCommit.slice(0, 7)}
-        </span>
+        {/* One trailing status slot: while a comment editor is open it explains
+            why Send is held, otherwise it shows the commit range. Reusing the
+            slot keeps the footer the same width on a phone either way. */}
+        {composing ? (
+          <span className="ml-auto text-xs text-(--color-text-tertiary) whitespace-nowrap">
+            Finish your comment first
+          </span>
+        ) : (
+          <span className="ml-auto text-[10px] text-(--color-text-tertiary) font-mono">
+            {diff.fromCommit.slice(0, 7)}..{diff.toCommit.slice(0, 7)}
+          </span>
+        )}
       </div>
     </div>
   );

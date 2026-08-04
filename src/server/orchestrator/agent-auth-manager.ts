@@ -23,27 +23,44 @@
 import type { EventEmitter } from "node:events";
 import type { AgentId } from "../shared/types.js";
 import type { AgentAuthPendingDetails } from "../shared/types/ws-server-messages.js";
+import type {
+  AgentAuthLogPayload,
+  AgentAuthProgressPayload,
+} from "./agents/claude/auth-diagnostics.js";
 
 /** Optional payload accompanying the {@link AgentAuthManager} `failed` event. */
 export interface AgentAuthFailedPayload {
-  /** Coarse failure category — drives the next-step copy in the UI. */
-  reason?: "timeout" | "denied" | "error" | "revoked";
+  /**
+   * Coarse failure category — drives the next-step copy in the UI.
+   *
+   * `duplicate` is never emitted by a manager: it is ShipIt refusing an
+   * otherwise-successful sign-in that resolved to an already-connected account
+   * (docs/150 req 22). It shares this payload so the client has one failure
+   * channel per provider flow.
+   */
+  reason?: "timeout" | "denied" | "error" | "revoked" | "duplicate";
   /** Human-readable detail. Surfaced in the sign-in card error toast. */
   message?: string;
 }
 
 /**
- * Options for starting an account-scoped auth flow (docs/150). When a
- * `credentialDir` is supplied, the manager forces the provider CLI to read
- * and write credentials under that directory instead of the legacy singleton
- * root (`/root/.claude`, `/root/.codex`). The directory is a provider-account
- * root (`provider-accounts/<provider>/acct_<id>`) whose layout already mirrors
+ * Options for starting an account-scoped auth flow (docs/150). The manager
+ * forces the provider CLI to read and write credentials under `credentialDir`
+ * instead of the singleton root (`/root/.claude`, `/root/.codex`). The
+ * directory is a provider-account root
+ * (`provider-accounts/<provider>/acct_<id>`) whose layout already mirrors
  * `$HOME` — `<root>/.claude` + `<root>/.claude.json` for Claude, `<root>/.codex`
  * for Codex — so scoping a flow is just spawning the CLI with `HOME` set to it.
  *
- * Omitting both fields preserves the pre-150 singleton behavior, so existing
- * call sites (`startAuth`, shutdown `kill`, AgentRegistry auth checks) keep
- * working unchanged.
+ * docs/150 req 19 — both fields are **required**. They were optional during the
+ * migration, when `startAuth` could still begin an account-less flow; that
+ * endpoint and its callers are gone, and `startAccountAuth` is now the only way
+ * a flow begins. Keeping them optional would leave a second way for provider
+ * auth to work — the thing req 19 exists to remove — and it is not inert: the
+ * client files every challenge under an account row and drops an
+ * `agent_auth_*` event that names none, so an unscoped flow would prompt a CLI
+ * the user could never see or answer. Requiring the scope makes that
+ * unrepresentable rather than merely unused.
  */
 export interface AgentAuthStartOptions {
   /**
@@ -51,13 +68,9 @@ export interface AgentAuthStartOptions {
    * {@link AgentAuthManager.getActiveAccountId} so the SSE wiring can qualify
    * `agent_auth_*` events to the originating Settings row.
    */
-  accountId?: string;
-  /**
-   * Credential root (account directory) the CLI should read/write. When set,
-   * the manager spawns the CLI with `HOME` pointed here. When omitted, the
-   * legacy singleton paths are used.
-   */
-  credentialDir?: string;
+  accountId: string;
+  /** Credential root (account directory) the CLI reads and writes. */
+  credentialDir: string;
 }
 
 /** Options for the account-scoped read/sign-out methods. */
@@ -71,14 +84,17 @@ export interface AgentAuthManager extends EventEmitter {
   readonly agentId: AgentId;
 
   /**
-   * Start the agent's auth flow. Idempotent — no-op if a flow is already
-   * in-flight. Concrete classes may re-broadcast cached pending state to
-   * accommodate page reloads mid-flow (Codex's device-code replay).
+   * Start the agent's auth flow for a specific provider account. Idempotent —
+   * no-op if a flow is already in-flight. Concrete classes may re-broadcast
+   * cached pending state to accommodate page reloads mid-flow (Codex's
+   * device-code replay).
    *
-   * Pass {@link AgentAuthStartOptions} to scope the flow to a specific
-   * provider account (docs/150); omit them for the legacy singleton flow.
+   * docs/150 req 19 — the scope is required; there is no account-less flow.
+   * `ProviderAccountManager.startAccountAuth` is the only caller, and it also
+   * refuses to start while another account holds the provider's single login
+   * process.
    */
-  start(opts?: AgentAuthStartOptions): void;
+  start(opts: AgentAuthStartOptions): void;
 
   /**
    * Cancel any in-flight flow. Idempotent. Used by explicit cancel routes
@@ -144,4 +160,6 @@ export interface AgentAuthManagerEvents {
   pending: [details: AgentAuthPendingDetails];
   complete: [];
   failed: [payload?: AgentAuthFailedPayload];
+  progress: [payload: AgentAuthProgressPayload];
+  log: [payload: AgentAuthLogPayload];
 }

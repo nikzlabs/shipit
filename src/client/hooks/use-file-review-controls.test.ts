@@ -1,9 +1,11 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import { renderHook, cleanup } from "@testing-library/react";
+import { renderHook, cleanup, act } from "@testing-library/react";
 import { useFileReviewControls } from "./use-file-review-controls.js";
+import { useFileReviewStore } from "../stores/file-review-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import type { AgentOption } from "../agent-types.js";
+import type { FileReview } from "../../server/shared/types.js";
 
 const claude: AgentOption = {
   id: "claude", name: "Claude Code", installed: true, authConfigured: true,
@@ -27,6 +29,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  useFileReviewStore.setState({ draftByKey: {}, historyByKey: {}, composingByKey: {} });
   useSessionStore.getState().setSessionId(undefined);
   useUiStore.getState().setAgentList([]);
   useUiStore.getState().setActiveAgentId("claude");
@@ -101,5 +104,55 @@ describe("useFileReviewControls — canSend", () => {
     );
     expect(result.current.commentCount).toBe(0);
     expect(result.current.canSend).toBe(false);
+  });
+
+  it("is false while a comment editor is open, even with draft comments", async () => {
+    const onSendComments = vi.fn();
+    const { result } = renderHook(() =>
+      useFileReviewControls({ filePath: "docs/x.md", kind: "markdown", content: "# x", onSendComments }),
+    );
+
+    // Seed a draft comment so only the composing flag can hold Send back. The
+    // mount-time draft load resolves against the stubbed fetch (empty draft),
+    // so re-seed after any awaited flush.
+    const seedDraft = () => {
+      act(() => {
+        useFileReviewStore.setState({
+          draftByKey: {
+            "sess_1::docs/x.md": {
+              id: "d1",
+              sessionId: "sess_1",
+              filePath: "docs/x.md",
+              status: "draft",
+              comments: [{
+                id: "c1", kind: "selection", quotedText: "q", contextBefore: "", contextAfter: "",
+                text: "note", source: "human",
+              }],
+              createdAt: "", updatedAt: "",
+            } as unknown as FileReview,
+          },
+        });
+      });
+    };
+
+    seedDraft();
+    expect(result.current.canSend).toBe(true);
+
+    act(() => {
+      useFileReviewStore.getState().setComposing("sess_1", "docs/x.md", true);
+    });
+    expect(result.current.composing).toBe(true);
+    expect(result.current.canSend).toBe(false);
+
+    // …and handleSend is a no-op while held, so a stray keyboard submit can't
+    // send the draft out from under the open editor.
+    await act(async () => { await result.current.handleSend(); });
+    expect(onSendComments).not.toHaveBeenCalled();
+
+    seedDraft();
+    act(() => {
+      useFileReviewStore.getState().setComposing("sess_1", "docs/x.md", false);
+    });
+    expect(result.current.canSend).toBe(true);
   });
 });

@@ -9,6 +9,27 @@
  */
 export const CONTAINER_WORKSPACE_DIR = "/workspace";
 
+/**
+ * docs/246 — mount point for ShipIt's per-session **state dir** inside session
+ * containers. Holds ShipIt's own generated artifacts (the install marker,
+ * fetched CI logs) so they no longer sit in the user's git clone, where the
+ * post-turn `git add -A` staged them into their repository.
+ *
+ * Lives in `shared/` rather than beside the orchestrator's host-path helpers
+ * (`orchestrator/session-state-dir.ts`) because BOTH layers need it and session
+ * code may not import from `orchestrator/`.
+ */
+export const CONTAINER_SESSION_STATE_DIR = "/session-state";
+
+/** Generated compose merge file (`docker compose -f … -f <this>`). */
+export const COMPOSE_OVERRIDE_FILE = "compose.override.yml";
+/** Install-skip marker, written in-container after `agent.install` succeeds. */
+export const INSTALL_MARKER_FILE = ".install-done";
+/** Fetched CI failure logs, read by the agent during a CI fix. */
+export const CI_LOGS_SUBDIR = "ci-logs";
+/** Agent-container env file (`agent: true` values + MCP credentials). */
+export const AGENT_ENV_FILE = ".env.agent";
+
 export const WORKSPACE_SKIP_DIRS = new Set([
   "node_modules",
   ".git",

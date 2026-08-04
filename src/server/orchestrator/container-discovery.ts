@@ -7,10 +7,12 @@
 import type Docker from "dockerode";
 import type { SessionContainer } from "./session-container.js";
 import {
+  CONTAINER_BUILD_ID_LABEL,
   CONTAINER_SESSION_ID_LABEL,
   CONTAINER_STANDBY_LABEL,
 } from "./session-container.js";
 import { cleanupSessionDockerResources } from "./container-lifecycle.js";
+import { getContainerFreshness } from "./container-freshness.js";
 
 // ---------------------------------------------------------------------------
 // Internal types for dependency injection
@@ -23,6 +25,34 @@ export interface DiscoveryDeps {
   networkName: string;
   workerPort: number;
   labelFilters: () => string[];
+}
+
+// ---------------------------------------------------------------------------
+// Adoption skew telemetry (docs/113)
+// ---------------------------------------------------------------------------
+
+/**
+ * Log which image build an adopted container's worker is running, versus the
+ * orchestrator's own build. Since deploy.sh stopped killing session containers
+ * on update (docs/113 Phase 1), a worker can legitimately outlive the deploy
+ * that built its image — the wire contract is additive-only (guarded by
+ * worker-wire-contract.test.ts), so skew is expected and observational, but it
+ * must be visible in the logs when debugging a grandfathered session.
+ */
+function logAdoptedWorkerBuild(
+  sessionId: string,
+  containerId: string,
+  labels: Record<string, string> | undefined,
+): void {
+  const workerBuild = labels?.[CONTAINER_BUILD_ID_LABEL];
+  const orchBuild = process.env.SHIPIT_BUILD_ID;
+  const freshness = getContainerFreshness(workerBuild, orchBuild);
+  const skew = freshness.state === "stale"
+    ? " — build skew: grandfathered worker from a previous deploy"
+    : "";
+  console.log(
+    `[adopt] session ${sessionId} container ${containerId.slice(0, 12)}: worker build ${workerBuild ?? "unknown"}, orchestrator build ${orchBuild ?? "unknown"}${skew}`,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -73,6 +103,7 @@ export async function rediscoverContainers(
           containerIp: networkInfo.IPAddress,
           workerUrl: `http://${networkInfo.IPAddress}:${deps.workerPort}`,
           status: "running",
+          workerBuildId: ci.Labels?.[CONTAINER_BUILD_ID_LABEL] || undefined,
           hostWorkspaceDir: resolved.workspaceDir,
           dockerAccess,
           sessionNetworkName: dockerAccess ? `shipit-session-${sessionId.slice(0, 12)}` : undefined,
@@ -81,6 +112,7 @@ export async function rediscoverContainers(
         if (ci.Labels?.[CONTAINER_STANDBY_LABEL] === "true") {
           deps.standbySessionIds.add(sessionId);
         }
+        logAdoptedWorkerBuild(sessionId, ci.Id, ci.Labels);
         count++;
       } catch {
         // Container may have exited between list and inspect
@@ -142,6 +174,7 @@ export async function adoptRunningContainer(
           containerIp: networkInfo.IPAddress,
           workerUrl: `http://${networkInfo.IPAddress}:${deps.workerPort}`,
           status: "running",
+          workerBuildId: ci.Labels?.[CONTAINER_BUILD_ID_LABEL] || undefined,
           hostWorkspaceDir: resolved.workspaceDir,
           dockerAccess,
           sessionNetworkName: dockerAccess ? `shipit-session-${sessionId.slice(0, 12)}` : undefined,
@@ -150,6 +183,7 @@ export async function adoptRunningContainer(
         if (ci.Labels?.[CONTAINER_STANDBY_LABEL] === "true") {
           deps.standbySessionIds.add(sessionId);
         }
+        logAdoptedWorkerBuild(sessionId, ci.Id, ci.Labels);
         return true;
       } catch (err) {
         // Usually the container exited between `listContainers` and

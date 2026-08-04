@@ -3,6 +3,7 @@ import type { DockerMemoryStats, SubscriptionLimitsMap } from "../../server/shar
 import { DockerMemoryBadge } from "./DockerMemoryBadge.js";
 import { SubscriptionLimitsBadge } from "./SubscriptionLimitsBadge.js";
 import { UptimeBadge } from "./UptimeBadge.js";
+import { useSettingsStore } from "../stores/settings-store.js";
 
 interface MobileStatusPanelProps {
   subscriptionLimits: SubscriptionLimitsMap;
@@ -16,9 +17,16 @@ interface MobileStatusPanelProps {
  * (start date, memory percentage, plan name). Mobile has no hover,
  * so this panel surrounds each pill with a label header and an
  * explanatory caption so the popover is self-describing.
+ *
+ * Radix unmounts `PopoverContent` on close, so this component mounts exactly
+ * when the dropdown opens — which is what `autoRefresh` on the subscription
+ * badge hangs off. Opening the dropdown is the user asking for the number, so
+ * it spends one `/api/oauth/usage` call (throttled, lockout-aware) instead of
+ * making them tap the refresh glyph as a second step.
  */
 export function MobileStatusPanel({ subscriptionLimits, dockerMemory, processStartedAt }: MobileStatusPanelProps) {
-  const hasSubscription = Object.values(subscriptionLimits).some((s) => s);
+  const hasProviderAccounts = useSettingsStore((s) => s.providerAccounts.length > 0);
+  const hasSubscription = hasProviderAccounts || Object.values(subscriptionLimits).some((s) => s);
   const hasMemoryLimit = dockerMemory && dockerMemory.totalBytes > 0;
 
   return (
@@ -26,7 +34,7 @@ export function MobileStatusPanel({ subscriptionLimits, dockerMemory, processSta
       {hasSubscription && (
         <Section label="Subscription">
           <div className="flex flex-col items-start gap-1">
-            <SubscriptionLimitsBadge limits={subscriptionLimits} />
+            <SubscriptionLimitsBadge limits={subscriptionLimits} autoRefresh />
           </div>
         </Section>
       )}

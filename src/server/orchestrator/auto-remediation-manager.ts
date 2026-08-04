@@ -89,6 +89,8 @@ export interface RemediationManagerConfig {
   onChange: (sessionId: string) => void;
   /** Resolve the per-session runner for the pre-attempt gate. */
   getRunner: (sessionId: string) => SessionRunnerInterface | undefined;
+  /** Boot a runner when a headless server-driven attempt needs one. */
+  ensureRunner?: (sessionId: string) => Promise<SessionRunnerInterface | undefined>;
   /** Read the global enable setting at decision time (not mirrored per-session). */
   isGlobalEnabled: () => boolean;
   /**
@@ -204,6 +206,19 @@ export abstract class AutoRemediationManager<TSignal> {
   /** Clear subclass-owned caches for a session. Default no-op. */
   protected onDelete(_sessionId: string): void { /* override to clear caches */ }
 
+  /**
+   * True when a "fire" signal merely repeats work this session has ALREADY had
+   * dispatched — e.g. the same failed CI run, re-reported by GitHub in the lag
+   * window after a retrigger push (a new commit, an empty retrigger commit, a
+   * manual re-run) before the new head's checks register. The base treats such a
+   * signal like "ignore": skip it silently and wait for a poll carrying a
+   * genuinely fresh verdict (new identifiers), rather than re-sending identical
+   * work the agent already saw. Default: never stale; only auto-fix overrides it.
+   */
+  protected isStaleFire(_sessionId: string, _signal: TSignal): boolean {
+    return false;
+  }
+
   // ---- Shared state-machine drivers --------------------------------------
 
   /**
@@ -256,20 +271,46 @@ export abstract class AutoRemediationManager<TSignal> {
    *  2. cache the signal (subclass) BEFORE the enable check.
    *  3. global enable check.
    *  4. first-seen init.
-   *  5. running / exhausted short-circuits.
-   *  6. head-SHA-change budget reset.
-   *  7. resolved signal → drop state.
+   *  5. resolved signal → drop state (UNCONDITIONALLY — see below).
+   *  6. running / exhausted short-circuits.
+   *  7. head-SHA-change budget reset.
    *  8. arbiter stale-signal guard (Workstream C).
    *  9. cap gate.
    * 10. cooldown gate.
    * 11. pre-attempt runner gate (the load-bearing deferred-emit-before-verify
    *     ordering).
    * 12. arbiter claim + fire.
+   *
+   * Steps 5 and 6 are in the opposite order to docs/146's original listing, and
+   * deliberately so. The resolved-signal cleanup used to sit BEHIND the
+   * `status === "running"` short-circuit, which made `running` a terminal trap:
+   * the only exit from `running` is the subclass's terminal write, so an attempt
+   * that never settled left the state — and its arbiter claim — wedged forever,
+   * and the trigger going away could not clear it. Observed in production as a PR
+   * card stuck on "Auto-fixing…" over a green CI, with managed auto-merge and
+   * auto-resolve-conflicts both silently disabled for that session by the leaked
+   * claim. The trigger is gone; that fact does not become less true because an
+   * attempt is in flight, so it is now acted on first. The same reordering also
+   * clears a stale `exhausted` banner once CI goes green.
+   *
+   * The in-flight attempt is ABANDONED rather than cancelled: it is a real agent
+   * turn already running in the session container, and killing it mid-way would
+   * strand partial work. Its terminal write finds no state and takes each
+   * subclass's documented no-state branch, which releases the arbiter claim.
+   * Everything below step 6 is untouched — in particular step 11's
+   * deferred-emit-before-verify contract.
    */
   protected async runTransition(sessionId: string, signal: TSignal, headSha: string): Promise<void> {
     // 1.
     const kind = this.classify(signal);
     if (kind === "ignore") return;
+
+    // 1b — a "fire" signal that only repeats already-dispatched work is not a
+    // fresh verdict: it's GitHub re-reporting the prior run after a retrigger
+    // push, before the new head's checks exist. Skip it like an "ignore" so we
+    // don't re-send identical work; the next poll carrying new identifiers falls
+    // through and fires. No-op unless a subclass overrides `isStaleFire`.
+    if (kind === "fire" && this.isStaleFire(sessionId, signal)) return;
 
     // 2 — cache unconditionally (even while disabled) so a first-enable poll
     // has the right baseline.
@@ -288,11 +329,21 @@ export abstract class AutoRemediationManager<TSignal> {
       this.states.set(sessionId, state);
     }
 
-    // 5.
+    // 5 — trigger no longer active: drop state so the maps shrink. Runs BEFORE
+    // the status short-circuits so a `running` (or `exhausted`) status can never
+    // outlive the condition that created it — see the ordering note above.
+    if (kind !== "fire") {
+      this.states.delete(sessionId);
+      this.onDelete(sessionId);
+      this.onChange(sessionId);
+      return;
+    }
+
+    // 6.
     if (state.status === "running") return;
     if (state.status === "exhausted") return;
 
-    // 6 — head-SHA-change budget reset. A new head normally means fresh
+    // 7 — head-SHA-change budget reset. A new head normally means fresh
     // external code, so reset the per-head attempt budget. BUT a head change
     // inside an open settle window is almost certainly OUR own force-push
     // landing: the upstream verdict for the new head hasn't been recomputed yet
@@ -313,14 +364,6 @@ export abstract class AutoRemediationManager<TSignal> {
       }
     }
     state.lastHeadSha = headSha;
-
-    // 7 — trigger no longer active: drop state so the maps shrink.
-    if (kind !== "fire") {
-      this.states.delete(sessionId);
-      this.onDelete(sessionId);
-      this.onChange(sessionId);
-      return;
-    }
 
     if (
       state.postPushSettledHeadSha !== undefined
@@ -356,7 +399,8 @@ export abstract class AutoRemediationManager<TSignal> {
     if (state.nextEligibleAt !== undefined && this.now() < state.nextEligibleAt) return;
 
     // 11 — pre-attempt runner gate.
-    const runner = this.cfg.getRunner(sessionId);
+    let runner = this.cfg.getRunner(sessionId);
+    if (!runner && this.cfg.ensureRunner) runner = await this.cfg.ensureRunner(sessionId);
     if (!runner) {
       this.defer(sessionId, state);
       return;
@@ -411,7 +455,8 @@ export abstract class AutoRemediationManager<TSignal> {
     }
     if (state.nextEligibleAt !== undefined && this.now() < state.nextEligibleAt) return;
 
-    const runner = this.cfg.getRunner(sessionId);
+    let runner = this.cfg.getRunner(sessionId);
+    if (!runner && this.cfg.ensureRunner) runner = await this.cfg.ensureRunner(sessionId);
     if (!runner) return; // stay deferred — next poll / idle retries
     if (runner.running) {
       const stillRunning = await runner.verifyRunningState();
@@ -422,6 +467,9 @@ export abstract class AutoRemediationManager<TSignal> {
 
     const signal = this.rebuildSignalForIdle(sessionId);
     if (!signal) return; // shouldn't happen — handleTransition seeds the cache first
+    // Same guard as the poll path: don't re-fire an already-dispatched verdict
+    // when the runner frees up — wait for a fresh one.
+    if (this.isStaleFire(sessionId, signal)) return;
 
     if (!this.tryClaim(sessionId, state.lastHeadSha)) return;
     state.status = "running";

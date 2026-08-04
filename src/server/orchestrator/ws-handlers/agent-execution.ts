@@ -3,15 +3,18 @@ import type { WsServerMessage, ImageAttachment, FileAttachment, PermissionMode, 
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import { getErrorMessage, resolveFileAttachments, resolveUploadRefs, formatFileContext } from "../validation.js";
 import { buildTurnMessages, type AgentListenerDeps } from "./agent-listeners.js";
-import { emitChatCard } from "../chat-card-persistence.js";
+import { emitChatCard, emitNoticeInTurn } from "../chat-card-persistence.js";
 import { postTurnCommit } from "./post-turn.js";
 import { resolveRunner } from "./resolve-runner.js";
 import { autoResetMergedBranchOnContinue, isResetEligible } from "../services/pre-turn-reset.js";
+import { sessionAccountId, sessionNeedsAccountFailover } from "../services/provider-account-switch.js";
 import { routeVoiceNote } from "../voice/voice-note-router.js";
-import type { SessionRunnerInterface, SystemTurnDeps } from "../session-runner.js";
+import type { SessionRunnerInterface, SystemTurnDeps, QueuedMessage } from "../session-runner.js";
+import { startQueuedMessage } from "../queue-drain.js";
 import {
   prepareSessionAgentEnvironment,
   finalizeSessionAgentEnvironment,
+  repushSessionAgentToken,
   selectAgentEnvForPush,
 } from "../session-agent-env.js";
 import { buildAgentRunParams } from "../session-agent-run-params.js";
@@ -19,6 +22,7 @@ import { emitPrLifecycleAfterCommit } from "../services/pr-lifecycle.js";
 import { detectAndReArmMergedSession, detectAndReArmResetSession } from "../services/pr-rearm.js";
 import { reactToReleaseMarkers } from "../services/release-flow.js";
 import { executeAgentTurn } from "../turn-executor.js";
+import { releaseResidentOnModelChange } from "../resident-model-guard.js";
 import { saveImagesToUploadsDir, assembleAgentPrompt } from "../prompt-assembly.js";
 
 // docs/149 — re-export so existing `selectAgentEnvForPush` consumers (unit
@@ -73,8 +77,16 @@ function persistInterruptedTurn(
  *
  * Callers must have already cleared the runner's `_agent` reference and set
  * `running = false`. This helper sets `running = true` again when it shifts
- * a message off, and recursively calls `runAgentWithMessage` to drive the
- * new turn.
+ * a message off, and starts the new turn via `startQueuedMessage`.
+ *
+ * SHI-255 — the re-entry below (`runAgentWithMessage`) can only express an
+ * INTERACTIVE turn: text, attachments, permission mode. A server-dispatched
+ * entry also carries `systemTurn`, `onTurnComplete`, `postTurn`, and `activity`,
+ * which this path used to drop on the floor — a docs/196 wake-turn queued behind
+ * a user turn ran as an ordinary turn and its merge watch never advanced. So the
+ * dequeued entry is routed by `startQueuedMessage`: dispatched entries go back
+ * through `runner.runDispatchedTurn` with the full option set, and only
+ * interactive ones reach the narrower re-entry here.
  */
 export async function drainNextQueuedMessage(
   ctx: FullCtx,
@@ -103,6 +115,28 @@ export async function drainNextQueuedMessage(
   });
   runner.running = true;
 
+  await startQueuedMessage(runner, next, (queued) =>
+    runQueuedInteractiveMessage(ctx, runner, capturedSessionId, capturedSessionDir, emit, queued),
+  ).catch((err: unknown) => {
+    console.error("[queue] Error processing queued message:", getErrorMessage(err));
+    runner.running = false;
+  });
+}
+
+/**
+ * The WS transport's own queue re-entry: resolve the entry's attachments and
+ * start an interactive turn. Reached ONLY for `execution: "interactive"` entries
+ * (see `startQueuedMessage`) — a server-dispatched entry would lose its
+ * `systemTurn` / `onTurnComplete` here.
+ */
+async function runQueuedInteractiveMessage(
+  ctx: FullCtx,
+  runner: SessionRunnerInterface,
+  capturedSessionId: string | undefined,
+  capturedSessionDir: string | null | undefined,
+  emit: (msg: WsServerMessage) => void,
+  next: QueuedMessage,
+): Promise<void> {
   const nextImages = next.images && next.images.length > 0 ? next.images : undefined;
   const nextFileRefs = next.files && next.files.length > 0 ? next.files : undefined;
   let nextValidatedFiles: FileAttachment[] = [];
@@ -229,6 +263,38 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   // a new one.
   const agentInfo = ctx.agentRegistry.get(agentId);
   const useStreaming = ctx.credentialStore.getLiveSteering() && (agentInfo?.capabilities.supportsSteering ?? false);
+  // docs/150 reqs 3/7/8 — a resident streaming process holds the OUTGOING
+  // account's token in memory, so a failover has to kill it. Env-prep does the
+  // switch, but it runs inside `executeAgentTurn`, by which point this function
+  // has already handed the executor an agent to write into — killing it there
+  // would leave `sendUserMessage` addressing a dead process. So release it
+  // here, before it can be captured; env-prep still owns the switch itself,
+  // and with no resident agent the turn simply spawns a fresh one against the
+  // new account's credentials.
+  if (
+    useStreaming &&
+    sessionNeedsAccountFailover(
+      capturedSessionId ? ctx.sessionManager.get(capturedSessionId) : undefined,
+      ctx.providerAccountManager,
+    )
+  ) {
+    const resident = runner?.getAgent() ?? null;
+    if (resident) {
+      try {
+        resident.kill();
+      } catch {
+        // Already gone is the state we wanted.
+      }
+      runner?.setAgent(null);
+    }
+  }
+  // A resident streaming process keeps its spawn-time `--model` for life, so
+  // reusing one after the user picked a different model would silently run the
+  // old one (and report it back into the picker's trigger label, contradicting
+  // the dropdown). Release it here — before it can be captured below — so this
+  // turn spawns fresh on the newly-selected model. Same shape as the failover
+  // release above; see `resident-model-guard.ts`.
+  if (useStreaming) releaseResidentOnModelChange(runner, ctx.getSelectedModel());
   const existingAgent = useStreaming ? (runner?.getAgent() ?? null) : null;
   const currentAgent = existingAgent ?? ctx.agentFactory(agentId);
   if (!existingAgent && runner) runner.setAgent(currentAgent);
@@ -275,9 +341,24 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   // the branch un-moved and the turn runs normally. On a real move we prepend a
   // context prefix to the prompt (agent: don't re-apply shipped work) and emit a
   // persisted "branch updated" card right after the user row (see below).
+  //
+  // Skip entirely for a `/compact` request (docs/178): compaction is a
+  // maintenance command, not a continuation of work, so it must NOT trigger the
+  // destructive branch move — and the `[System] …PR was merged…` prefix the
+  // reset prepends would derail the compaction (the agent reacts to the merge
+  // notice instead of compacting). The reset still runs on the user's next real
+  // turn, where it belongs.
+  //
+  // SHI-295 — a skip is no longer silent. When the session IS merged and the
+  // reset was refused, the helper returns the clause that refused it; we persist
+  // that as a transcript notice (same anchor as the card below) and prepend the
+  // agent-facing half to this turn's prompt. The user's report was "it silently
+  // didn't sync and it was not clear to me that this was a failure mode" — and
+  // the agent, equally unaware, went on to author a commit for a merged PR.
   let branchResetCard: BranchAutoResetCard | null = null;
+  let resetSkipNotice: { message: string; level: "info" | "warn" } | null = null;
   let resetAgentPrefix = "";
-  if (capturedSessionId && capturedSessionDir && runner) {
+  if (capturedSessionId && capturedSessionDir && runner && !opts.compact) {
     const reset = await autoResetMergedBranchOnContinue(
       {
         getSession: (id) => ctx.sessionManager.get(id),
@@ -319,6 +400,10 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
         sessionId: capturedSessionId,
         sessionDir: capturedSessionDir,
         emit: (msg) => runner.emitMessage(msg),
+        // The reset itself just fetched and moved the branch onto
+        // `origin/<base>`, so the base ref is current — skip the helper's own
+        // freshening fetch rather than pay for it in front of the user's turn.
+        skipFetch: true,
       });
       // docs/218 — the branch now sits at the fresh base (HEAD !== mergedHeadSha),
       // so the session is no longer reset-eligible. Push `reset_eligible: false`
@@ -327,6 +412,9 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       // the post-turn recompute fires. This covers every send path (composer,
       // action buttons, programmatic), unlike the client-side optimistic clear.
       runner.emitMessage({ type: "reset_eligible", sessionId: capturedSessionId, eligible: false });
+    } else if (reset.skip) {
+      resetAgentPrefix = reset.agentPrefix ?? "";
+      resetSkipNotice = { message: reset.skip.notice, level: reset.skip.level };
     }
   }
 
@@ -347,15 +435,36 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   // `afterUserMessagePersisted` hook so it lands in the FRESH turn (post
   // `resetRunnerTurnState`) at its true transcript anchor. `emitChatCard` makes it
   // durable in the same call, so the destructive move always has a record.
+  //
+  // SHI-295 — the skip notice rides the same hook and the same anchor. The two
+  // are mutually exclusive (the branch either moved or it didn't), and both are
+  // wrapped: this hook is called un-awaited and unguarded by the executor, so a
+  // throw here would abort the turn setup. A missing notice is a regression; a
+  // notice that kills the turn is a worse one.
   const afterUserMessagePersisted =
-    branchResetCard && runner
+    (branchResetCard || resetSkipNotice) && runner
       ? (sid: string): void => {
-          emitChatCard(
-            runner,
-            { type: "branch_auto_reset_card", sessionId: sid, card: branchResetCard },
-            { role: "assistant", text: "", branchAutoReset: branchResetCard },
-            { chatHistoryManager: ctx.chatHistoryManager, sessionId: sid },
-          );
+          try {
+            if (branchResetCard) {
+              emitChatCard(
+                runner,
+                { type: "branch_auto_reset_card", sessionId: sid, card: branchResetCard },
+                { role: "assistant", text: "", branchAutoReset: branchResetCard },
+                { chatHistoryManager: ctx.chatHistoryManager, sessionId: sid },
+              );
+            }
+            if (resetSkipNotice) {
+              emitNoticeInTurn(
+                runner,
+                sid,
+                resetSkipNotice.message,
+                ctx.chatHistoryManager,
+                resetSkipNotice.level,
+              );
+            }
+          } catch (err) {
+            console.error(`[pre-turn-reset] pre-turn transcript record failed for ${sid}:`, err);
+          }
         }
       : undefined;
 
@@ -364,13 +473,12 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     sessionManager: ctx.sessionManager,
     chatHistoryManager: ctx.chatHistoryManager,
     usageManager: ctx.usageManager,
-    authManager: ctx.authManager,
-    authManagers: ctx.authManagers,
     sseBroadcast: ctx.sseBroadcast,
     broadcastLog: ctx.broadcastLog,
     getSelectedModel: ctx.getSelectedModel,
     recordAgentRateLimits: ctx.recordAgentRateLimits,
     getSubscriptionLimitsSnapshot: ctx.getSubscriptionLimitsSnapshot,
+    markSessionAccountExhausted: ctx.markSessionAccountExhausted,
     nudgeClaudeOAuthRefresh: ctx.nudgeClaudeOAuthRefresh,
     onAgentAuthRequired: ctx.onAgentAuthRequired,
     deliverVoiceNote: (payload, runner, source) =>
@@ -389,6 +497,9 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     agentFactory: (id) => ctx.agentFactory(id),
     // docs/179 — token healer for the runtime-401 auto-retry.
     ...(ctx.ensureAgentTokenFresh ? { ensureAgentTokenFresh: ctx.ensureAgentTokenFresh } : {}),
+    // docs/150 — and the account to heal, so a revoked sibling account can't
+    // make a healthy account's turn look unhealable.
+    resolveTurnAccountId: (sid: string) => sessionAccountId(ctx.sessionManager.get(sid)),
     autoCommit: async (sessionDir, summary) => {
       const git = ctx.createGitManager(sessionDir);
       const parentHash = await git.getHeadHash();
@@ -422,15 +533,21 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
         ...(opts.compact ? { compact: true } : {}),
       });
     },
-    prepareAgentEnv: async (sessionId, id) => {
+    prepareAgentEnv: async (sessionId, id, envOpts) => {
       await prepareSessionAgentEnvironment(runner, {
         sessionId,
         agentId: id,
+        // docs/150 req 13 — this IS the turn's pre-spawn step, so an
+        // unroutable turn fails here rather than spawning against an
+        // exhausted account.
+        enforceAccountRouting: true,
+        ...(envOpts?.reusingResidentAgent ? { reusingResidentAgent: true } : {}),
         deps: {
           credentialsDir: ctx.credentialsDir,
           credentialStore: ctx.credentialStore,
           sessionManager: ctx.sessionManager,
           providerAccountManager: ctx.providerAccountManager,
+          chatHistoryManager: ctx.chatHistoryManager,
           ...(ctx.ensureAgentTokenFresh ? { ensureAgentTokenFresh: ctx.ensureAgentTokenFresh } : {}),
         },
       });
@@ -445,6 +562,15 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
           sessionManager: ctx.sessionManager,
           providerAccountManager: ctx.providerAccountManager,
         },
+      });
+    },
+    // docs/179 — the runtime-401 recovery's unconditional token push. Only the
+    // recovery path calls it; the ordinary per-turn sync-in stays guarded.
+    repushSessionAgentToken: (sessionId, id) => {
+      repushSessionAgentToken(runner, {
+        sessionId,
+        agentId: id,
+        deps: { credentialsDir: ctx.credentialsDir, sessionManager: ctx.sessionManager },
       });
     },
     commitTurn: ({ sessionDir, sessionId, summary, turnStartHeadHash: tsh, runner: r, emit }) =>

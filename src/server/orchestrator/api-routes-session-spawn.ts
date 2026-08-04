@@ -23,6 +23,10 @@ import {
   waitForChildIdle,
   assertArchivableChild,
   registerMergeWatch,
+  armSelfMergeWatch,
+  cancelSelfMergeWatch,
+  deliverSessionReport,
+  resolveSessionCohort,
   archiveSession,
   DEFAULT_WAIT_FOR_CHILD_IDLE_MS,
   MAX_WAIT_FOR_CHILD_IDLE_MS,
@@ -52,6 +56,10 @@ export async function registerSessionSpawnRoutes(
     ...(deps.prStatusPoller ? { prStatusPoller: deps.prStatusPoller } : {}),
     sseBroadcast: deps.sseBroadcast,
     ...(deps.ensureAgentTokenFresh ? { ensureAgentTokenFresh: deps.ensureAgentTokenFresh } : {}),
+    // docs/150 — so AI naming runs on the account a turn would use, not the
+    // singleton root (which aliases to the migrated default account).
+    providerAccountManager: deps.providerAccountManager,
+    ...(deps.credentialsDir ? { credentialsDir: deps.credentialsDir } : {}),
   };
 
   // Single shared claim service for every surface that mints a repo-backed
@@ -84,7 +92,7 @@ export async function registerSessionSpawnRoutes(
       reply.code(404).send({ error: "Session not found" });
       return;
     }
-    const messages = getChatHistory(deps.chatHistoryManager, request.params.id) as Record<string, unknown>[];
+    const messages = getChatHistory(deps.chatHistoryManager, request.params.id) as unknown as Record<string, unknown>[];
 
     let commits: Awaited<ReturnType<typeof getGitLog>> = [];
     let fileTree: Awaited<ReturnType<typeof getFileTree>> = [];
@@ -104,6 +112,13 @@ export async function registerSessionSpawnRoutes(
 
     const runner = deps.runnerRegistry.get(request.params.id);
     const agentRunning = runner?.running ?? false;
+    // docs/235 — the standing background-task list, so a session loaded purely
+    // from HTTP history (session switch, page reload) knows it is *waiting*
+    // rather than idle. `background_tasks` is emit-only live state: it is
+    // buffered into the turn-event log, which the next turn start clears, so a
+    // switch into a between-turns session with outstanding work has nothing to
+    // replay and would otherwise hydrate as finished.
+    const backgroundTasks = runner?.backgroundTaskDescriptions ?? [];
     const rewindSnapshot = deps.chatHistoryManager.latestRewindSnapshot(request.params.id);
 
     // Don't reconstruct in-progress messages from runner.chatMessageGroups here.
@@ -132,6 +147,7 @@ export async function registerSessionSpawnRoutes(
       commits,
       fileTree,
       agentRunning,
+      backgroundTasks,
       rewindSnapshot,
       turnUsage,
       sessionUsage,
@@ -266,9 +282,10 @@ export async function registerSessionSpawnRoutes(
             ...(body.spawnedByTurn !== undefined ? { spawnedByTurn: body.spawnedByTurn } : {}),
             ...(body.detached ? { detached: true } : {}),
             ...(repoUrlOverride !== undefined ? { repoUrlOverride } : {}),
-            // docs/162 — fix-session spawns get a lower per-turn cap than
-            // generic fan-out children (they each claim the ShipIt repo and
-            // open a PR). Only bites when a turn id is supplied to count against.
+            // docs/162 — fix-session spawns get their own per-turn cap, sized
+            // for an Ops investigation that legitimately finds several
+            // independent defects in one pass. Only bites when a turn id is
+            // supplied to count against.
             ...(body.shipitSource
               ? { maxSpawnedSessionsPerTurn: DEFAULT_MAX_SHIPIT_FIX_SESSIONS_PER_TURN }
               : {}),
@@ -580,6 +597,146 @@ export async function registerSessionSpawnRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to register merge watch: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/sessions/:sessionId/notify-on-merge-self — docs/239.
+  // `shipit session notify-on-merge --self`: arm a watch that wakes THIS session
+  // with a turn when its OWN PR merges. Own-session scoped like every other
+  // container-reachable route (the worker injects the caller's id), and there is
+  // no payload — the session's transcript already holds the plan.
+  app.post<{ Params: { sessionId: string } }>(
+    "/api/sessions/:sessionId/notify-on-merge-self",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      try {
+        const result = await armSelfMergeWatch(
+          {
+            sessionManager,
+            githubAuthManager: deps.githubAuthManager,
+            createGitManager,
+            runnerRegistry: deps.runnerRegistry,
+            chatHistoryManager: deps.chatHistoryManager,
+            ...(deps.mergeWatchManager ? { mergeWatchManager: deps.mergeWatchManager } : {}),
+          },
+          request.params.sessionId,
+        );
+        return { armed: true, ...result };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to arm self merge-watch: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/sessions/:sessionId/notify-on-merge-self/cancel — docs/239.
+  // The arm card's Cancel. Browser-only (deliberately NOT containerAccessible):
+  // the agent re-arms rather than cancels. `watchId` is required and compared, so
+  // a stale card from an earlier chain link can't cancel the current watch.
+  app.post<{ Params: { sessionId: string }; Body: { watchId?: string } }>(
+    "/api/sessions/:sessionId/notify-on-merge-self/cancel",
+    async (request, reply) => {
+      const watchId = request.body?.watchId;
+      if (!watchId) {
+        reply.code(400).send({ error: "watchId is required" });
+        return;
+      }
+      try {
+        return cancelSelfMergeWatch(
+          {
+            sessionManager,
+            ...(deps.mergeWatchManager ? { mergeWatchManager: deps.mergeWatchManager } : {}),
+          },
+          request.params.sessionId,
+          watchId,
+        );
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to cancel self merge-watch: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // ===========================================================================
+  // Upward / lateral session reports (docs/233, SHI-241)
+  //
+  // The counterpart to the parent→child routes above: these two are called with
+  // the REPORTING session's own id (the worker injects it), so a child can at
+  // last resolve its own cohort and push a finding to its parent + siblings.
+  // Every recipient is derived server-side from `parentSessionId` — there is no
+  // agent-supplied target — so a report can only travel inside the tree the
+  // parent already coordinates.
+  // ===========================================================================
+
+  // GET /api/sessions/:sessionId/cohort — self + parent + siblings + children.
+  // Backs `shipit session whoami`, and fixes the dead end where a child asking
+  // for its own id got "not a descendant of this parent" from the child routes.
+  app.get<{ Params: { sessionId: string } }>(
+    "/api/sessions/:sessionId/cohort",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      try {
+        return resolveSessionCohort(
+          sessionManager,
+          deps.runnerRegistry,
+          request.params.sessionId,
+          childProjections,
+        );
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to resolve session cohort: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/sessions/:sessionId/report — push a report up to the parent (or
+  // across the whole cohort). Each recipient gets a persisted card AND a queued
+  // system turn, so the report is pushed rather than waiting to be pulled.
+  app.post<{
+    Params: { sessionId: string };
+    Body: { body?: string; subject?: string; severity?: string; to?: string };
+  }>(
+    "/api/sessions/:sessionId/report",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      const payload = request.body ?? {};
+      try {
+        const result = await deliverSessionReport(
+          {
+            sessionManager,
+            runnerRegistry: deps.runnerRegistry,
+            chatHistoryManager: deps.chatHistoryManager,
+            defaultAgentId: deps.defaultAgentId,
+            credentialsDir: deps.credentialsDir,
+            credentialStore: deps.credentialStore,
+            providerAccountManager: deps.providerAccountManager,
+            containerManager: deps.containerManager,
+          },
+          request.params.sessionId,
+          {
+            body: payload.body ?? "",
+            ...(payload.subject !== undefined ? { subject: payload.subject } : {}),
+            ...(payload.severity !== undefined ? { severity: payload.severity } : {}),
+            ...(payload.to !== undefined ? { to: payload.to } : {}),
+          },
+        );
+        return result;
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to deliver session report: ${getErrorMessage(err)}` });
       }
     },
   );

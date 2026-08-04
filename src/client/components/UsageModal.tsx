@@ -1,10 +1,8 @@
-import { useState } from "react";
-import { XIcon } from "@phosphor-icons/react";
-import { Button } from "./ui/button.js";
+import { useLayoutEffect, useRef, useState } from "react";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
-import { ICON_SIZE } from "../design-tokens.js";
 import type { SessionInfo, TurnUsage } from "../../server/shared/types.js";
 import { formatTokenCount, getContextLevel, type ModelInfo } from "../utils/model-info.js";
+import { formatModelName } from "../utils/format-model.js";
 
 export interface SessionUsage {
   sessionId: string;
@@ -13,8 +11,8 @@ export interface SessionUsage {
   turnCount: number;
 }
 
-export interface MonthlyUsage {
-  month: string;
+export interface WeeklyUsage {
+  week: string;
   costUsd: number;
   turns: number;
 }
@@ -23,7 +21,7 @@ export interface UsageStats {
   sessions: SessionUsage[];
   totalCostUsd: number;
   totalTurns: number;
-  monthly: MonthlyUsage[];
+  weekly: WeeklyUsage[];
 }
 
 interface UsageModalProps {
@@ -46,46 +44,106 @@ function formatCost(usd: number): string {
   return `$${usd.toFixed(2)}`;
 }
 
-/** `2026-06` → `Jun '26`, for compact x-axis labels. */
-function formatMonth(month: string): string {
-  const [year, mon] = month.split("-");
-  const names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  const idx = Number(mon) - 1;
-  const name = names[idx] ?? mon;
-  return `${name} '${year.slice(2)}`;
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/**
+ * `2026-06-01` → `Jun 1`, for compact x-axis labels. Parsed from the string
+ * parts rather than `new Date(...)` so a westward local timezone can't shift the
+ * label back a day.
+ */
+function formatWeek(week: string): string {
+  const [, mon, day] = week.split("-");
+  const name = MONTH_NAMES[Number(mon) - 1] ?? mon;
+  return `${name} ${Number(day)}`;
 }
 
-type MonthlyMetric = "cost" | "turns";
+/** `2026-06-01` → `Jun 1 – Jun 7`, the full Mon–Sun span, for hover tooltips. */
+function formatWeekRange(week: string): string {
+  const end = new Date(`${week}T00:00:00Z`);
+  end.setUTCDate(end.getUTCDate() + 6);
+  return `${formatWeek(week)} – ${formatWeek(end.toISOString().slice(0, 10))}`;
+}
+
+type WeeklyMetric = "cost" | "turns";
 
 /** Compact metric label for the hover tooltip / average line. */
-function formatMonthlyValue(metric: MonthlyMetric, costUsd: number, turns: number): string {
+function formatWeeklyValue(metric: WeeklyMetric, costUsd: number, turns: number): string {
   return metric === "cost" ? formatCost(costUsd) : `${turns}`;
 }
 
-/**
- * Compact per-month bar chart for the all-sessions trend. Pure CSS/Tailwind
- * (no charting lib, matching the ContextDial sparkline), toggles between cost
- * and turns, scaled to the largest bar in the series. Windowed to the most
- * recent 12 months so the x-axis stays readable as data accumulates; draws an
- * average baseline and emphasizes the current (most recent) month.
- */
-function MonthlyUsageChart({ monthly }: { monthly: MonthlyUsage[] }) {
-  const [metric, setMetric] = useState<MonthlyMetric>("cost");
+/** Minimum column width that keeps both a `$12.34` value and a `Apr 13` x-axis
+ *  label legible (below this the axis labels start truncating). */
+const MIN_BAR_PX = 44;
+const DEFAULT_WEEKS = 12;
+const MIN_WEEKS = 6;
+const MAX_WEEKS = 20;
 
-  // Keep the x-axis bounded — only the latest 12 months are charted.
-  const recent = monthly.slice(-12);
-  const value = (m: MonthlyUsage) => (metric === "cost" ? m.costUsd : m.turns);
-  const max = recent.reduce((hi, m) => Math.max(hi, value(m)), 0);
-  const total = recent.reduce((sum, m) => sum + value(m), 0);
+/**
+ * How many weekly bars fit in the chart's measured width. Returns
+ * `DEFAULT_WEEKS` until measured (and wherever `ResizeObserver` is unavailable,
+ * e.g. jsdom), so the chart renders ~12 weeks by default and widens only when
+ * the dialog actually has the room.
+ */
+function useVisibleWeeks(ref: React.RefObject<HTMLElement | null>): number {
+  const [weeks, setWeeks] = useState(DEFAULT_WEEKS);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const measure = () => {
+      const w = el.clientWidth;
+      // Ignore a zero width (detached / display:none) so we don't collapse to
+      // the minimum before the dialog has real dimensions.
+      if (w <= 0) return;
+      setWeeks(Math.max(MIN_WEEKS, Math.min(MAX_WEEKS, Math.floor(w / MIN_BAR_PX))));
+    };
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    measure();
+    return () => ro.disconnect();
+  }, [ref]);
+
+  return weeks;
+}
+
+/**
+ * Per-week bar chart for the all-sessions trend. Pure CSS/Tailwind (no charting
+ * lib, matching the ContextDial sparkline), toggles between cost and turns,
+ * scaled to the largest bar in the series. Windowed to as many recent weeks as
+ * fit the chart's width (~12 at the dialog's default size) so the x-axis stays
+ * readable; draws an average baseline and emphasizes the most recent week.
+ */
+function WeeklyUsageChart({ weekly }: { weekly: WeeklyUsage[] }) {
+  const [metric, setMetric] = useState<WeeklyMetric>("cost");
+  const chartRef = useRef<HTMLDivElement>(null);
+  const visibleWeeks = useVisibleWeeks(chartRef);
+
+  // Keep the x-axis bounded — only the latest weeks that fit are charted.
+  const recent = weekly.slice(-visibleWeeks);
+  const value = (w: WeeklyUsage) => (metric === "cost" ? w.costUsd : w.turns);
+  const max = recent.reduce((hi, w) => Math.max(hi, value(w)), 0);
+  const total = recent.reduce((sum, w) => sum + value(w), 0);
   const avg = recent.length > 0 ? total / recent.length : 0;
-  const avgPct = max > 0 ? (avg / max) * 100 : 0;
-  const fmt = (m: MonthlyUsage) => formatMonthlyValue(metric, m.costUsd, m.turns);
+  // Cap bar height below 100% so the persistent value label above the tallest
+  // bar still fits inside the chart area. The avg baseline uses the same scale.
+  const BAR_SCALE = 82;
+  const avgPct = max > 0 ? (avg / max) * BAR_SCALE : 0;
+  const fmt = (w: WeeklyUsage) => formatWeeklyValue(metric, w.costUsd, w.turns);
   const avgLabel = metric === "cost" ? formatCost(avg) : `${Math.round(avg)}`;
+  const totalLabel = metric === "cost" ? formatCost(total) : `${total}`;
 
   return (
-    <section data-testid="monthly-usage-section">
+    <section data-testid="weekly-usage-section">
       <div className="flex items-center justify-between mb-2">
-        <h3 className="text-sm font-medium text-(--color-text-secondary)">Monthly trend</h3>
+        <div className="flex items-baseline gap-2 min-w-0">
+          <h3 className="text-sm font-medium text-(--color-text-secondary)">Weekly trend</h3>
+          <span
+            className="text-xs text-(--color-text-secondary) truncate"
+            data-testid="weekly-usage-window"
+          >
+            last {recent.length} {recent.length === 1 ? "week" : "weeks"} · {totalLabel}
+          </span>
+        </div>
         <div className="flex gap-1 text-xs">
           {(["cost", "turns"] as const).map((m) => (
             <button
@@ -105,25 +163,34 @@ function MonthlyUsageChart({ monthly }: { monthly: MonthlyUsage[] }) {
       </div>
       {/* Bars and labels are separate rows with matching flex-1 columns so the
           percentage-height bars resolve against a definite-height ancestor. */}
-      <div className="relative flex items-end gap-1 h-20" data-testid="monthly-usage-chart">
-        {recent.map((m, i) => {
-          const h = max > 0 ? Math.max(2, (value(m) / max) * 100) : 2;
+      <div
+        ref={chartRef}
+        className="relative flex items-end gap-1 h-32"
+        data-testid="weekly-usage-chart"
+      >
+        {recent.map((w, i) => {
+          const h = max > 0 ? Math.max(2, (value(w) / max) * BAR_SCALE) : 2;
           const isCurrent = i === recent.length - 1;
           return (
             <div
-              key={m.month}
-              className="group relative flex-1 h-full flex items-end min-w-0"
+              key={w.week}
+              className="group relative flex-1 h-full flex flex-col justify-end min-w-0"
             >
-              {/* Hover value label, floats above the bar. */}
-              <span className="pointer-events-none absolute bottom-full left-1/2 z-10 mb-1 hidden -translate-x-1/2 whitespace-nowrap rounded bg-(--color-bg-tertiary) px-1.5 py-0.5 text-[10px] text-(--color-text-primary) shadow group-hover:block">
-                {fmt(m)}
+              {/* Persistent per-week value label, sits directly above the bar. */}
+              <span
+                className={`pointer-events-none mb-0.5 text-center text-[9px] leading-tight tabular-nums truncate ${
+                  isCurrent ? "text-(--color-text-primary) font-medium" : "text-(--color-text-secondary)"
+                }`}
+                data-testid="weekly-usage-bar-label"
+              >
+                {fmt(w)}
               </span>
               <div
                 className={`w-full rounded-sm bg-(--color-accent) transition-all group-hover:opacity-80 ${
                   isCurrent ? "" : "opacity-55"
                 }`}
                 style={{ height: `${h}%` }}
-                title={`${formatMonth(m.month)}: ${fmt(m)}`}
+                title={`${formatWeekRange(w.week)}: ${fmt(w)}`}
               />
             </div>
           );
@@ -133,7 +200,7 @@ function MonthlyUsageChart({ monthly }: { monthly: MonthlyUsage[] }) {
           <div
             className="pointer-events-none absolute left-0 right-0 flex items-center"
             style={{ bottom: `${avgPct}%` }}
-            data-testid="monthly-usage-avg"
+            data-testid="weekly-usage-avg"
           >
             <span className="mr-1 rounded bg-(--color-bg-secondary) px-1 text-[9px] leading-tight text-(--color-text-secondary)">
               avg {avgLabel}
@@ -143,16 +210,16 @@ function MonthlyUsageChart({ monthly }: { monthly: MonthlyUsage[] }) {
         )}
       </div>
       <div className="flex gap-1 mt-1">
-        {recent.map((m, i) => {
+        {recent.map((w, i) => {
           const isCurrent = i === recent.length - 1;
           return (
             <span
-              key={m.month}
+              key={w.week}
               className={`flex-1 text-[10px] truncate text-center ${
                 isCurrent ? "text-(--color-text-primary) font-medium" : "text-(--color-text-secondary)"
               }`}
             >
-              {formatMonth(m.month)}
+              {formatWeek(w.week)}
             </span>
           );
         })}
@@ -170,14 +237,29 @@ function formatDuration(ms: number): string {
   return `${minutes}m ${seconds}s`;
 }
 
-import { formatModelName } from "../utils/format-model.js";
-
 const levelBarColors: Record<string, string> = {
   green: "bg-(--color-success)",
   yellow: "bg-(--color-warning)",
   orange: "bg-(--color-context-high)",
   red: "bg-(--color-error)",
 };
+
+/** Shared column template for the per-turn breakdown's header and rows. */
+const TURN_ROW_COLS = "grid grid-cols-[2.5rem_1fr_1fr_1fr_1fr] gap-2";
+
+/** Label/value row — the modal's standard stat line. */
+function Stat({ label, value, testId }: { label: string; value: string; testId?: string }) {
+  return (
+    <div className="flex justify-between gap-3">
+      <span className="text-(--color-text-secondary)">{label}</span>
+      <span className="text-(--color-text-primary) tabular-nums" data-testid={testId}>{value}</span>
+    </div>
+  );
+}
+
+function SectionHeading({ children }: { children: React.ReactNode }) {
+  return <h3 className="text-sm font-medium text-(--color-text-secondary) mb-2">{children}</h3>;
+}
 
 export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, modelInfo, contextTokens, turnUsage }: UsageModalProps) {
   // Look up session titles by ID
@@ -194,53 +276,67 @@ export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, m
   // Compute cumulative token totals from turn data
   const totalInputTokens = turnUsage?.reduce((sum, t) => sum + t.inputTokens, 0) ?? 0;
   const totalOutputTokens = turnUsage?.reduce((sum, t) => sum + t.outputTokens, 0) ?? 0;
+  const totalCacheRead = turnUsage?.reduce((sum, t) => sum + (t.cacheRead ?? 0), 0) ?? 0;
+  const totalCacheCreate = turnUsage?.reduce((sum, t) => sum + (t.cacheCreate ?? 0), 0) ?? 0;
   const hasTurnTokens = (turnUsage?.length ?? 0) > 0;
+
+  const sessionAvgCost =
+    currentSessionUsage && currentSessionUsage.turnCount > 0
+      ? currentSessionUsage.totalCostUsd / currentSessionUsage.turnCount
+      : 0;
+  const allAvgCost =
+    allUsage && allUsage.totalTurns > 0 ? allUsage.totalCostUsd / allUsage.totalTurns : 0;
+  // Costliest first — with room for a full list, ordering by spend is what makes
+  // the breakdown answer "where did the money go?".
+  const rankedSessions = allUsage ? [...allUsage.sessions].sort((a, b) => b.totalCostUsd - a.totalCostUsd) : [];
 
   return (
     <Dialog open onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
       <DialogContent
-        className="rounded-lg border-(--color-border-secondary) max-w-md w-full mx-4 max-h-[80vh] overflow-y-auto"
+        className="rounded-lg border-(--color-border-secondary) max-w-3xl w-full mx-4 max-h-[85vh] overflow-y-auto"
         data-testid="usage-modal-backdrop"
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-(--color-border-secondary)">
+        <div className="flex items-center px-5 py-4 border-b border-(--color-border-secondary)">
           <DialogTitle className="text-lg font-semibold">Usage Summary</DialogTitle>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onClose}
-            className="h-9 w-9 max-md:h-10 max-md:w-10"
-            aria-label="Close"
-          >
-            <XIcon size={ICON_SIZE.MD} weight="bold" />
-          </Button>
         </div>
 
-        {/* Body */}
-        <div className="px-5 py-4 space-y-5">
+        {/* Body — two columns on desktop, single column on mobile. The trend
+            chart spans both so its bars stay wide enough to label. */}
+        <div className="px-5 py-4 grid md:grid-cols-2 gap-x-6 gap-y-5">
           {/* Current session */}
           <section>
-            <h3 className="text-sm font-medium text-(--color-text-secondary) mb-2">This session</h3>
+            <SectionHeading>This session</SectionHeading>
             {currentSessionUsage ? (
               <div className="space-y-1 text-sm">
                 {modelInfo && (
-                  <div className="flex justify-between">
-                    <span className="text-(--color-text-secondary)">Model</span>
-                    <span className="text-(--color-text-primary)" data-testid="usage-model-name">{formatModelName(modelInfo.model)}</span>
-                  </div>
+                  <Stat label="Model" value={formatModelName(modelInfo.model)} testId="usage-model-name" />
                 )}
-                <div className="flex justify-between">
-                  <span className="text-(--color-text-secondary)">Cost</span>
-                  <span className="text-(--color-text-primary)">{formatCost(currentSessionUsage.totalCostUsd)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-(--color-text-secondary)">Turns</span>
-                  <span className="text-(--color-text-primary)">{currentSessionUsage.turnCount}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-(--color-text-secondary)">Duration</span>
-                  <span className="text-(--color-text-primary)">{formatDuration(currentSessionUsage.totalDurationMs)}</span>
-                </div>
+                <Stat label="Cost" value={formatCost(currentSessionUsage.totalCostUsd)} />
+                <Stat label="Turns" value={`${currentSessionUsage.turnCount}`} />
+                <Stat label="Duration" value={formatDuration(currentSessionUsage.totalDurationMs)} />
+                {/* Only meaningful past the first turn — with one turn the
+                    average is just the cost row again. */}
+                {currentSessionUsage.turnCount > 1 && (
+                  <Stat label="Avg / turn" value={formatCost(sessionAvgCost)} testId="usage-session-avg" />
+                )}
+              </div>
+            ) : (
+              <p className="text-sm text-(--color-text-secondary)">No usage data yet</p>
+            )}
+          </section>
+
+          {/* All sessions */}
+          <section>
+            <SectionHeading>All sessions</SectionHeading>
+            {allUsage && allUsage.totalTurns > 0 ? (
+              <div className="space-y-1 text-sm">
+                <Stat label="Cost" value={formatCost(allUsage.totalCostUsd)} />
+                <Stat label="Turns" value={`${allUsage.totalTurns}`} />
+                <Stat label="Sessions" value={`${allUsage.sessions.length}`} testId="usage-session-count" />
+                {allUsage.totalTurns > 1 && (
+                  <Stat label="Avg / turn" value={formatCost(allAvgCost)} testId="usage-all-avg" />
+                )}
               </div>
             ) : (
               <p className="text-sm text-(--color-text-secondary)">No usage data yet</p>
@@ -250,11 +346,11 @@ export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, m
           {/* Context usage */}
           {modelInfo && contextTokens !== undefined && contextTokens > 0 && (
             <section data-testid="context-usage-section">
-              <h3 className="text-sm font-medium text-(--color-text-secondary) mb-2">Context usage</h3>
+              <SectionHeading>Context usage</SectionHeading>
               <div className="space-y-2 text-sm">
                 <div className="flex justify-between">
                   <span className="text-(--color-text-secondary)">Tokens used</span>
-                  <span className="text-(--color-text-primary)">
+                  <span className="text-(--color-text-primary) tabular-nums">
                     {formatTokenCount(contextTokens)} / {formatTokenCount(modelInfo.contextWindowTokens)}
                   </span>
                 </div>
@@ -270,27 +366,58 @@ export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, m
             </section>
           )}
 
+          {/* Token totals */}
+          {hasTurnTokens && (
+            <section data-testid="token-totals-section">
+              <SectionHeading>Token totals</SectionHeading>
+              <div className="space-y-1 text-sm">
+                <Stat label="Input" value={`${formatTokenCount(totalInputTokens)} tokens`} />
+                <Stat label="Output" value={`${formatTokenCount(totalOutputTokens)} tokens`} />
+                {totalCacheRead > 0 && (
+                  <Stat label="Cache read" value={`${formatTokenCount(totalCacheRead)} tokens`} testId="usage-cache-read" />
+                )}
+                {totalCacheCreate > 0 && (
+                  <Stat label="Cache write" value={`${formatTokenCount(totalCacheCreate)} tokens`} testId="usage-cache-create" />
+                )}
+              </div>
+            </section>
+          )}
+
+          {/* Weekly trend chart — full width so the bars stay legible */}
+          {allUsage && allUsage.weekly.length > 0 && (
+            <div className="md:col-span-2">
+              <WeeklyUsageChart weekly={allUsage.weekly} />
+            </div>
+          )}
+
           {/* Per-turn token breakdown */}
           {hasTurnTokens && turnUsage && turnUsage.length > 0 && (
             <section data-testid="turn-breakdown-section">
-              <h3 className="text-sm font-medium text-(--color-text-secondary) mb-2">Per-turn breakdown</h3>
-              <div className="space-y-1 max-h-40 overflow-y-auto">
+              <SectionHeading>Per-turn breakdown</SectionHeading>
+              {/* Header + rows share one column template so the labels line up
+                  with their values — with a header the rows no longer need to
+                  spell out "In:" / "Out:" inline. */}
+              <div className={`${TURN_ROW_COLS} text-[10px] uppercase tracking-wide text-(--color-text-secondary) pb-1 border-b border-(--color-border-primary)`}>
+                <span>Turn</span>
+                <span className="text-right">In</span>
+                <span className="text-right">Out</span>
+                <span className="text-right">Cost</span>
+                <span className="text-right">Time</span>
+              </div>
+              <div className="max-h-64 overflow-y-auto">
                 {[...turnUsage].reverse().map((turn, i) => {
                   const turnNum = turnUsage.length - i;
                   return (
                     <div
                       key={i}
-                      className="flex items-center justify-between text-xs py-1 border-b border-(--color-border-primary) last:border-0 font-mono"
+                      className={`${TURN_ROW_COLS} items-center text-xs py-1 border-b border-(--color-border-primary) last:border-0 font-mono tabular-nums`}
+                      data-testid="turn-breakdown-row"
                     >
-                      <span className="text-(--color-text-secondary) w-8">#{turnNum}</span>
-                      <span className="text-(--color-text-primary)">
-                        In: {formatTokenCount(turn.inputTokens)}
-                      </span>
-                      <span className="text-(--color-text-primary)">
-                        Out: {formatTokenCount(turn.outputTokens)}
-                      </span>
-                      <span className="text-(--color-text-secondary)">{formatCost(turn.costUsd)}</span>
-                      <span className="text-(--color-text-secondary)">{formatDuration(turn.durationMs ?? 0)}</span>
+                      <span className="text-(--color-text-secondary)">#{turnNum}</span>
+                      <span className="text-(--color-text-primary) text-right">{formatTokenCount(turn.inputTokens)}</span>
+                      <span className="text-(--color-text-primary) text-right">{formatTokenCount(turn.outputTokens)}</span>
+                      <span className="text-(--color-text-secondary) text-right">{formatCost(turn.costUsd)}</span>
+                      <span className="text-(--color-text-secondary) text-right">{formatDuration(turn.durationMs ?? 0)}</span>
                     </div>
                   );
                 })}
@@ -298,53 +425,12 @@ export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, m
             </section>
           )}
 
-          {/* Token totals */}
-          {hasTurnTokens && (
-            <section data-testid="token-totals-section">
-              <h3 className="text-sm font-medium text-(--color-text-secondary) mb-2">Token totals</h3>
-              <div className="space-y-1 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-(--color-text-secondary)">Input</span>
-                  <span className="text-(--color-text-primary)">{formatTokenCount(totalInputTokens)} tokens</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-(--color-text-secondary)">Output</span>
-                  <span className="text-(--color-text-primary)">{formatTokenCount(totalOutputTokens)} tokens</span>
-                </div>
-              </div>
-            </section>
-          )}
-
-          {/* All sessions */}
-          <section>
-            <h3 className="text-sm font-medium text-(--color-text-secondary) mb-2">All sessions</h3>
-            {allUsage && allUsage.totalTurns > 0 ? (
-              <div className="space-y-1 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-(--color-text-secondary)">Cost</span>
-                  <span className="text-(--color-text-primary)">{formatCost(allUsage.totalCostUsd)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-(--color-text-secondary)">Turns</span>
-                  <span className="text-(--color-text-primary)">{allUsage.totalTurns}</span>
-                </div>
-              </div>
-            ) : (
-              <p className="text-sm text-(--color-text-secondary)">No usage data yet</p>
-            )}
-          </section>
-
-          {/* Monthly trend chart */}
-          {allUsage && allUsage.monthly.length > 0 && (
-            <MonthlyUsageChart monthly={allUsage.monthly} />
-          )}
-
           {/* Per-session breakdown */}
-          {allUsage && allUsage.sessions.length > 0 && (
-            <section>
-              <h3 className="text-sm font-medium text-(--color-text-secondary) mb-2">Recent sessions</h3>
-              <div className="space-y-1">
-                {allUsage.sessions.map((s) => (
+          {rankedSessions.length > 0 && (
+            <section data-testid="recent-sessions-section">
+              <SectionHeading>Recent sessions</SectionHeading>
+              <div className="space-y-1 max-h-64 overflow-y-auto">
+                {rankedSessions.map((s) => (
                   <div
                     key={s.sessionId}
                     className="flex items-center justify-between text-sm py-1 border-b border-(--color-border-primary) last:border-0"
@@ -352,7 +438,12 @@ export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, m
                     <span className="text-(--color-text-primary) truncate mr-3" title={s.sessionId}>
                       {getSessionTitle(s.sessionId)}
                     </span>
-                    <span className="text-(--color-text-primary) shrink-0">{formatCost(s.totalCostUsd)}</span>
+                    <span className="shrink-0 flex items-center gap-3 tabular-nums">
+                      <span className="text-(--color-text-secondary) text-xs">
+                        {s.turnCount} {s.turnCount === 1 ? "turn" : "turns"}
+                      </span>
+                      <span className="text-(--color-text-primary)">{formatCost(s.totalCostUsd)}</span>
+                    </span>
                   </div>
                 ))}
               </div>

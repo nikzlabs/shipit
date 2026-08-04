@@ -14,11 +14,14 @@ import {
   StubAuthManager,
   FakeClaudeProcess,
   waitForClaude,
+  waitFor,
   createTestCredentialStore,
   createTestDatabaseManager,
   createTestSession,
 } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
+import { ProviderAccountManager } from "../provider-account-manager.js";
+import type { CredentialStore } from "../credential-store.js";
 
 describe("Integration: AskUserQuestion / answer_question flow", () => {
   let app: FastifyInstance;
@@ -27,22 +30,32 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
   let sessionManager: SessionManager;
   /** Most recently created FakeClaudeProcess — set by agentFactory. */
   let lastClaude: FakeClaudeProcess = null as any;
+  /** Every FakeClaudeProcess this app created, in order. */
+  let allClaudes: FakeClaudeProcess[];
   let dbManager: DatabaseManager;
+  let credentialStore: CredentialStore;
+  let credentialsDir: string;
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
     lastClaude = null as any;
+    allClaudes = [];
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-ask-question-"));
+    credentialsDir = path.join(tmpDir, "credentials");
 
     sessionManager = new SessionManager(dbManager);
 
+    credentialStore = createTestCredentialStore(tmpDir);
+
     app = await buildApp({
-      credentialStore: createTestCredentialStore(tmpDir),
+      credentialStore,
+      credentialsDir,
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       agentFactory: () => {
         lastClaude = new FakeClaudeProcess();
+        allClaudes.push(lastClaude);
         return lastClaude as any;
       },
       workspaceDir: tmpDir,
@@ -121,7 +134,10 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
 
     // Now Claude is null — send an answer
     client.send({ type: "answer_question", toolUseId: "tool-2", answers: { "0": "PostgreSQL" } });
-    await new Promise((r) => setTimeout(r, 50));
+    // Poll for the respawn instead of betting on 50 ms: spawning goes through
+    // `createSessionDir()`'s async mkdir, which a loaded machine stretches
+    // well past that budget.
+    await waitForClaude(() => lastClaude, firstClaude);
 
     // A new ClaudeProcess should have been created
     expect(lastClaude).not.toBe(firstClaude);
@@ -243,7 +259,7 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
     await client.receive(); // preview_status
 
     client.send({ type: "answer_question", toolUseId: "tool-3", answers: {} });
-    const msg = await client.receive();
+    const msg = await client.receiveType("error");
 
     expect(msg.type).toBe("error");
     expect((msg as any).message).toBe("Answer cannot be empty");
@@ -322,6 +338,7 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
       authManager: new StubAuthManager() as unknown as AuthManager,
       agentFactory: () => {
         lastClaude = new FakeClaudeProcess();
+        allClaudes.push(lastClaude);
         return lastClaude as any;
       },
       workspaceDir: tmpDir,
@@ -401,6 +418,7 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
       authManager: new StubAuthManager() as unknown as AuthManager,
       agentFactory: () => {
         lastClaude = new FakeClaudeProcess();
+        allClaudes.push(lastClaude);
         return lastClaude as any;
       },
       workspaceDir: tmpDir,
@@ -455,7 +473,9 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
       answers: { "0": "Redis" },
       text: "Redis",
     });
-    await new Promise((r) => setTimeout(r, 50));
+    // Poll for the answer reaching the resident process rather than betting on
+    // 50 ms — delivery goes through the WS handler and the runner registry.
+    await waitFor(() => claude.stdinData.includes("Redis"), "answer delivered to stdin");
     // Reused process — not killed, not respawned, answer delivered.
     expect(claude.killed).toBe(false);
     expect(lastClaude).toBe(claude);
@@ -654,6 +674,162 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
       }
     }
     expect(sawSuppressedResult).toBe(false);
+
+    client.close();
+  });
+
+  it("survives a tool_result whose content is a bare string while suppression is active", async () => {
+    // The Anthropic message schema permits `content` as a plain string, and the
+    // adapter passes `message.content` through untouched — so the suppression
+    // filter met a string and threw `TypeError: content.filter is not a
+    // function` out of the SSE parser mid-turn, stranding the turn and
+    // requeuing an unacknowledged steer (nikzlabs/shipit#1874). Nothing is
+    // suppressible in a string, so the event must pass through intact.
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "Pick one" });
+    await waitForClaude(() => lastClaude);
+
+    lastClaude.emit("event", {
+      type: "assistant",
+      message: {
+        content: [{
+          type: "tool_use",
+          id: "ask-string-1",
+          name: "AskUserQuestion",
+          input: {
+            questions: [{
+              question: "Pick a backend",
+              header: "Backend",
+              options: [{ label: "Redis", description: "" }],
+              multiSelect: false,
+            }],
+          },
+        }],
+      },
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(lastClaude.interrupted).toBe(true);
+
+    lastClaude.emit("event", {
+      type: "user",
+      message: { content: "plain string content" as unknown as unknown[] },
+    });
+
+    let sawStringToolResult = false;
+    const deadline = Date.now() + 200;
+    while (Date.now() < deadline) {
+      let msg;
+      try {
+        msg = await client.receive(80);
+      } catch {
+        break;
+      }
+      if (msg.type === "agent_event") {
+        const event = (msg as { event: { type: string; content?: unknown } }).event;
+        if (event.type === "agent_tool_result" && event.content === "plain string content") {
+          sawStringToolResult = true;
+        }
+      }
+    }
+    expect(sawStringToolResult).toBe(true);
+
+    // Everything above only proves the event was BROADCAST, and the broadcast
+    // happens before the downstream extraction that actually threw. So the
+    // assertions that matter come after: the reported failure was not "the
+    // event went missing", it was that the TypeError escaped mid-listener and
+    // stranded the turn — leaving the steer that followed unacknowledged and
+    // the session wedged. Drive exactly that sequence.
+    const strandedClaude = lastClaude;
+    client.send({
+      type: "answer_question",
+      toolUseId: "ask-string-1",
+      answers: { "0": "Redis" },
+      text: "Redis",
+    });
+
+    // The steer is honored: this build has live steering off, so the
+    // interrupted process has already exited (the interrupt ends a non-
+    // streaming turn) and the answer resumes on a FRESH agent carrying it as
+    // the prompt. A listener that died on the malformed event never gets here —
+    // the turn would still be marked running and the answer dropped as a
+    // duplicate.
+    await waitForClaude(() => lastClaude, strandedClaude);
+    expect(lastClaude).not.toBe(strandedClaude);
+    expect(lastClaude.lastPrompt).toBe("Redis");
+
+    // And the answered turn still reaches a terminal state rather than
+    // spinning forever.
+    lastClaude.initSession("string-content-session");
+    lastClaude.emit("event", {
+      type: "agent_result",
+      status: "success",
+      sessionId: "string-content-session",
+    });
+    lastClaude.emit("done", 0);
+
+    let sawFinished = false;
+    const finishDeadline = Date.now() + 500;
+    while (Date.now() < finishDeadline) {
+      let msg;
+      try {
+        msg = await client.receive(120);
+      } catch {
+        break;
+      }
+      if (msg.type === "session_status" && (msg as { running?: boolean }).running === false) {
+        sawFinished = true;
+        break;
+      }
+    }
+    expect(sawFinished).toBe(true);
+
+    client.close();
+  });
+  // docs/150 reqs 13, 20 — an answer is a full turn, so it takes the shared
+  // provider-account preflight. `handleAnswerQuestion` delegates to
+  // `runAgentWithMessage`, which is the wiring under test: if the answer path
+  // ever grew its own `agent.run(...)` again (it hand-rolled one before
+  // docs/169), an exhausted subscription would be discovered by the provider
+  // mid-turn instead of by ShipIt before the spawn.
+  //
+  // The assertion is that the turn was STOPPED, not merely that it "worked":
+  // the error carries the earliest reset time, and no CLI ever received the
+  // answer.
+  it("blocks an answer when every connected account is out of quota", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // A first turn, on an install with no accounts yet, so the session exists
+    // and is pinned to an agent before quota enters the picture.
+    client.send({ type: "send_message", text: "Ask me something" });
+    const firstClaude = await waitForClaude(() => lastClaude);
+    firstClaude.finish(client.sessionId);
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Now both connected Claude subscriptions are spent. `markAccountExhausted`
+    // is the persisted hard-exhaustion stamp (req 7), which is what the router
+    // reads before any fresh quota snapshot exists.
+    const accounts = new ProviderAccountManager({ credentialsDir, credentialStore });
+    const resetAt = Date.now() + 30 * 60 * 1000;
+    for (const label of ["Work", "Personal"]) {
+      const acct = accounts.create("claude", label);
+      accounts.setAccountStatus("claude", acct.id, "ready");
+      accounts.markAccountExhausted("claude", acct.id, resetAt);
+    }
+    const spawnedBefore = allClaudes.length;
+
+    client.send({ type: "answer_question", toolUseId: "tool-quota", answers: { "0": "Redis" } });
+
+    const err = await client.receiveType("error") as unknown as { message: string };
+    expect(err.message).toContain("out of quota");
+    expect(err.message).toContain(new Date(resetAt).toISOString().slice(0, 16));
+    // req 13 — the prompt is not held for later, so the user is told to resend.
+    expect(err.message).toContain("Send this message again");
+    // Nothing ran the answer: the preflight stopped the turn before `agent.run`.
+    expect(allClaudes.slice(spawnedBefore).some((c) => c.runCalled)).toBe(false);
+    expect(allClaudes.every((c) => c.lastPrompt !== "Redis")).toBe(true);
 
     client.close();
   });

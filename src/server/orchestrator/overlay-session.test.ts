@@ -364,9 +364,17 @@ describe("preStampInstallMarker (docs/183 base-hit pre-stamp)", () => {
     for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
   });
 
+  /**
+   * A real session layout — the clone at `<sessionDir>/workspace`. docs/246 puts
+   * the install marker in the `state/` sibling, resolved from the clone path, and
+   * SHI-286 made a clone that isn't `workspace/` an error rather than a fallback
+   * into `<clone>/.shipit/`.
+   */
   async function gitWorkspace(installCmd = "npm install"): Promise<{ dir: string; head: string }> {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "prestamp-"));
-    tmpDirs.push(dir);
+    const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), "prestamp-"));
+    tmpDirs.push(sessionDir);
+    const dir = path.join(sessionDir, "workspace");
+    fs.mkdirSync(dir, { recursive: true });
     const git = simpleGit(dir);
     await git.init();
     await git.addConfig("user.email", "t@t");
@@ -416,6 +424,11 @@ describe("preStampInstallMarker (docs/183 base-hit pre-stamp)", () => {
 
   const WORKER_RT = "img|x64|glibc-2.36|node24";
 
+  /** Where docs/246 puts the marker for a clone: `<sessionDir>/state/shared/`. */
+  function markerPathFor(workspaceDir: string): string {
+    return path.join(path.dirname(workspaceDir), "state", "shared", ".install-done");
+  }
+
   it("stamps the marker when commit, generation, commands, and runtime key all line up", async () => {
     const { dir, head } = await gitWorkspace();
     const ok = await preStampInstallMarker({
@@ -425,7 +438,7 @@ describe("preStampInstallMarker (docs/183 base-hit pre-stamp)", () => {
       readPointer: () => pointer(head, 3, { runtimeKey: WORKER_RT, installCommands: ["npm install"] }),
     });
     expect(ok).toBe(true);
-    const written = JSON.parse(fs.readFileSync(path.join(dir, ".shipit", ".install-done"), "utf8"));
+    const written = JSON.parse(fs.readFileSync(markerPathFor(dir), "utf8"));
     expect(written).toMatchObject({
       version: 2,
       sourceCommit: head,
@@ -448,7 +461,7 @@ describe("preStampInstallMarker (docs/183 base-hit pre-stamp)", () => {
       readPointer: () => pointer(head, 3, { runtimeKey: WORKER_RT, installCommands: ["npm install"] }),
     });
     expect(ok).toBe(true);
-    const written = JSON.parse(fs.readFileSync(path.join(dir, ".shipit", ".install-done"), "utf8"));
+    const written = JSON.parse(fs.readFileSync(markerPathFor(dir), "utf8"));
     expect(typeof written.depsHash).toBe("string");
     expect(written.depsHash).toHaveLength(64);
   });
@@ -466,10 +479,10 @@ describe("preStampInstallMarker (docs/183 base-hit pre-stamp)", () => {
         stateDir: "/state", workspaceDir: dir, specs: [spec("h1", 3)], readPointer: () => ptr,
       })).toBe(false);
     }
-    expect(fs.existsSync(path.join(dir, ".shipit", ".install-done"))).toBe(false);
+    expect(fs.existsSync(markerPathFor(dir))).toBe(false);
   });
 
-  it("hands the written marker dir + file back to the worker uid (no root-owned .shipit)", async () => {
+  it("hands the written marker dir + file back to the worker uid (no root-owned state dir)", async () => {
     const { dir, head } = await gitWorkspace();
     const chown = vi.fn();
     const ok = await preStampInstallMarker({
@@ -482,8 +495,8 @@ describe("preStampInstallMarker (docs/183 base-hit pre-stamp)", () => {
     expect(ok).toBe(true);
     // Both the `.shipit` dir and the marker file are chowned to the worker uid,
     // so the worker can later overwrite the marker when HEAD invalidates it.
-    expect(chown).toHaveBeenCalledWith(path.join(dir, ".shipit"));
-    expect(chown).toHaveBeenCalledWith(path.join(dir, ".shipit", ".install-done"));
+    expect(chown).toHaveBeenCalledWith(path.dirname(markerPathFor(dir)));
+    expect(chown).toHaveBeenCalledWith(markerPathFor(dir));
   });
 
   it("does not chown when no marker is written (declined pre-stamp)", async () => {
@@ -502,8 +515,8 @@ describe("preStampInstallMarker (docs/183 base-hit pre-stamp)", () => {
 
   it("never clobbers an existing marker", async () => {
     const { dir, head } = await gitWorkspace();
-    fs.mkdirSync(path.join(dir, ".shipit"), { recursive: true });
-    fs.writeFileSync(path.join(dir, ".shipit", ".install-done"), "EXISTING");
+    fs.mkdirSync(path.dirname(markerPathFor(dir)), { recursive: true });
+    fs.writeFileSync(markerPathFor(dir), "EXISTING");
     const ok = await preStampInstallMarker({
       stateDir: "/state",
       workspaceDir: dir,
@@ -511,7 +524,7 @@ describe("preStampInstallMarker (docs/183 base-hit pre-stamp)", () => {
       readPointer: () => pointer(head, 3, { runtimeKey: WORKER_RT, installCommands: ["npm install"] }),
     });
     expect(ok).toBe(false);
-    expect(fs.readFileSync(path.join(dir, ".shipit", ".install-done"), "utf8")).toBe("EXISTING");
+    expect(fs.readFileSync(markerPathFor(dir), "utf8")).toBe("EXISTING");
   });
 
   // docs/198 — the content path: a base built at a DIFFERENT commit whose dep
@@ -530,7 +543,7 @@ describe("preStampInstallMarker (docs/183 base-hit pre-stamp)", () => {
         pointer("f".repeat(40), 3, { runtimeKey: WORKER_RT, installCommands: ["npm install"], depsHash }),
     });
     expect(ok).toBe(true);
-    const written = JSON.parse(fs.readFileSync(path.join(dir, ".shipit", ".install-done"), "utf8"));
+    const written = JSON.parse(fs.readFileSync(markerPathFor(dir), "utf8"));
     // sourceCommit is THIS session's HEAD, not the pointer's — truthful for this workspace.
     expect(written.sourceCommit).toBe(head);
     expect(written.depsHash).toBe(depsHash);
@@ -549,7 +562,7 @@ describe("preStampInstallMarker (docs/183 base-hit pre-stamp)", () => {
         pointer("f".repeat(40), 3, { runtimeKey: WORKER_RT, installCommands: ["npm install"], depsHash: otherHash }),
     });
     expect(ok).toBe(false);
-    expect(fs.existsSync(path.join(dir, ".shipit", ".install-done"))).toBe(false);
+    expect(fs.existsSync(markerPathFor(dir))).toBe(false);
   });
 
   it("does NOT take the content path against a legacy pointer with no depsHash (docs/198)", async () => {

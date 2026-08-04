@@ -64,14 +64,29 @@ describe("escalateDiskTiers", () => {
 
   /** Minimal runner-registry fake: only `get`/`dispose` are exercised. */
   function fakeRegistry(
-    runners: Record<string, { running?: boolean; viewerCount?: number }> = {},
+    runners: Record<string, {
+      running?: boolean;
+      viewerCount?: number;
+      /** docs/235 — outstanding agent-initiated background tasks. */
+      backgroundTaskCount?: number;
+    }> = {},
   ): { registry: SessionRunnerRegistry; disposed: string[] } {
     const disposed: string[] = [];
     const registry = {
-      get: (id: string) =>
-        runners[id]
-          ? { running: runners[id].running ?? false, viewerCount: runners[id].viewerCount ?? 0 }
-          : undefined,
+      get: (id: string) => {
+        const r = runners[id];
+        if (!r) return undefined;
+        const running = r.running ?? false;
+        const backgroundTaskCount = r.backgroundTaskCount ?? 0;
+        return {
+          running,
+          viewerCount: r.viewerCount ?? 0,
+          backgroundTaskCount,
+          // Mirrors the real runner's derivation so the guard under test sees
+          // the same union the production code does.
+          agentBusy: running || backgroundTaskCount > 0,
+        };
+      },
       dispose: (id: string) => { disposed.push(id); },
     } as unknown as SessionRunnerRegistry;
     return { registry, disposed };
@@ -90,7 +105,13 @@ describe("escalateDiskTiers", () => {
     };
   }
 
-  async function initRepo(dir: string, opts: { dirty?: boolean } = {}) {
+  /**
+   * A session checkout on `main`. SHI-294 — pushed to a bare `origin` by
+   * default, because eviction now requires the tip to be recoverable from the
+   * remote; `noRemote` produces the un-evictable "this checkout is the only
+   * copy" shape.
+   */
+  async function initRepo(dir: string, opts: { dirty?: boolean; noRemote?: boolean } = {}) {
     fs.mkdirSync(dir, { recursive: true });
     const g = simpleGit(dir);
     await g.init(["--initial-branch=main"]);
@@ -99,6 +120,12 @@ describe("escalateDiskTiers", () => {
     fs.writeFileSync(path.join(dir, "a.txt"), "hello");
     await g.add(".");
     await g.commit("init");
+    if (!opts.noRemote) {
+      const remoteDir = `${dir}-remote.git`;
+      await simpleGit().init(["--bare", "--initial-branch=main", remoteDir]);
+      await g.addRemote("origin", remoteDir);
+      await g.push("origin", "main", ["--set-upstream"]);
+    }
     if (opts.dirty) fs.writeFileSync(path.join(dir, "b.txt"), "uncommitted");
   }
 
@@ -124,6 +151,31 @@ describe("escalateDiskTiers", () => {
     expect(disposed).toContain("old-hot");
     // light NEVER wipes the checkout.
     expect(fs.existsSync(path.join(wsDir, "keep.txt"))).toBe(true);
+  });
+
+  // docs/235 — `hot → light` destroys the container. A session whose agent is
+  // waiting on (or was woken by) background work has `running === false`, so
+  // the old `running`-only guard would tear it down mid-work.
+  it("docs/235: never descends a session holding outstanding background tasks", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-bg");
+    fs.mkdirSync(wsDir, { recursive: true });
+    insertSession({
+      id: "bg-old",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.lightAfterMs / 86_400_000 + 1),
+      diskTier: "hot",
+      workspaceDir: wsDir,
+    });
+
+    const { registry, disposed } = fakeRegistry({
+      "bg-old": { running: false, backgroundTaskCount: 1 },
+    });
+    const result = await escalateDiskTiers(baseDeps(sm, registry));
+
+    expect(result.toLight).toBe(0);
+    expect(sm.get("bg-old")?.diskTier).toBe("hot");
+    expect(disposed).not.toContain("bg-old");
   });
 
   it("docs/110: NEVER descends a pinned session, even when ancient and idle", async () => {
@@ -346,7 +398,7 @@ describe("escalateDiskTiers", () => {
     setup();
     const sm = new SessionManager(dbManager!);
     const wsDir = path.join(tmpDir, "ws-dirty");
-    await initRepo(wsDir, { dirty: true }); // no `origin` remote → push fails
+    await initRepo(wsDir, { dirty: true, noRemote: true }); // no `origin` → push fails
     insertSession({
       id: "dirty-light",
       lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
@@ -366,6 +418,402 @@ describe("escalateDiskTiers", () => {
     // Stays at light, checkout preserved — the local commit survives on disk.
     expect(sm.get("dirty-light")?.diskTier).toBe("light");
     expect(fs.existsSync(wsDir)).toBe(true);
+  });
+
+  // ---------------------------------------------------------------------
+  // SHI-294 — `autoCommit` returns a null hash from THREE paths, and only one
+  // of them ("nothing to commit") is safe to wipe. The other two are normal
+  // returns, not throws, so they used to fall past the `if (commitHash)` gate
+  // straight into the wipe — destroying uncommitted work with no reflog entry.
+  // Each cause is pinned separately because the correct behaviour differs.
+  // ---------------------------------------------------------------------
+
+  /** Chat-history double: records the persisted rows the ladder appends. */
+  function fakeChatHistory() {
+    const appended: { sessionId: string; text: string }[] = [];
+    return {
+      appended,
+      chatHistory: {
+        append: (sessionId: string, message: { text?: string }) => {
+          appended.push({ sessionId, text: message.text ?? "" });
+        },
+      },
+    };
+  }
+
+  // The literal would trip ShipIt's own secret scanner on THIS file's
+  // auto-commit (it isn't on the scanner's path allowlist), so the fixture
+  // token is assembled at runtime. The scan reads the staged diff, where the
+  // two halves never appear adjacent.
+  const FIXTURE_AWS_KEY = ["AKIA", "IOSFODNN7EXAMPLE"].join("");
+
+  it("SHI-294: a secret-refused auto-commit blocks the wipe (keeps the checkout)", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const sessionRoot = path.join(tmpDir, "sess-secret");
+    const wsDir = path.join(sessionRoot, "workspace");
+    await initRepo(wsDir);
+    // Uncommitted work, one file of which trips the docs/213 scanner. The
+    // commit is refused WHOLESALE, so every uncommitted edit here is at stake.
+    fs.writeFileSync(path.join(wsDir, "notes.md"), "a week of uncommitted work");
+    fs.writeFileSync(path.join(wsDir, ".env"), `AWS_ACCESS_KEY_ID=${FIXTURE_AWS_KEY}\n`);
+    // Regenerable install-delta cache (docs/183) + a durable upload sibling.
+    const overlayUpper = path.join(sessionRoot, "overlay", "deadbeef", "upper", "dep");
+    fs.mkdirSync(path.dirname(overlayUpper), { recursive: true });
+    fs.writeFileSync(overlayUpper, "install delta");
+    const uploadFile = path.join(sessionRoot, "uploads", "photo.png");
+    fs.mkdirSync(path.dirname(uploadFile), { recursive: true });
+    fs.writeFileSync(uploadFile, "user upload");
+    insertSession({
+      id: "secret-light",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
+      diskTier: "light",
+      workspaceDir: wsDir,
+      branch: "main",
+    });
+
+    const { registry } = fakeRegistry();
+    const { appended, chatHistory } = fakeChatHistory();
+    const result = await escalateDiskTiers({
+      ...baseDeps(sm, registry),
+      createGitManager: (dir) => new GitManager(dir),
+      chatHistory,
+      notifiedEvictBlocked: new Set<string>(),
+    });
+
+    expect(result.toEvicted).toBe(0);
+    expect(result.evictBlockedByDirty).toBe(1);
+    expect(result.evictBlockedByPush).toBe(0);
+    expect(sm.get("secret-light")?.diskTier).toBe("light");
+    // The unrecoverable half survives…
+    expect(fs.existsSync(path.join(wsDir, "notes.md"))).toBe(true);
+    expect(fs.existsSync(path.join(wsDir, ".env"))).toBe(true);
+    expect(fs.existsSync(uploadFile)).toBe(true);
+    // …and nothing was committed behind the scanner's back.
+    const log = await simpleGit(wsDir).log();
+    expect(log.all.length).toBe(1);
+    // …while the regenerable half is still reclaimed, so a session that may
+    // stay pinned for weeks doesn't hoard the expensive part of its disk.
+    expect(fs.existsSync(path.join(sessionRoot, "overlay"))).toBe(false);
+    // The user is told, in their own transcript, why cleanup stopped.
+    expect(appended).toHaveLength(1);
+    expect(appended[0]!.sessionId).toBe("secret-light");
+    expect(appended[0]!.text).toContain("Disk cleanup paused");
+    expect(appended[0]!.text).toContain("AWS access key ID"); // the secret cause, named
+    expect(appended[0]!.text).toContain(".env");
+    // Redacted, never the token body (the notice is persisted to the DB).
+    expect(appended[0]!.text).not.toContain(FIXTURE_AWS_KEY);
+  });
+
+  it("SHI-294: an unresolved merge state blocks the wipe (keeps the checkout)", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-conflict");
+    await initRepo(wsDir);
+    // A genuine conflicted merge — the state a user can least reconstruct.
+    const g = simpleGit(wsDir);
+    await g.checkoutLocalBranch("other");
+    fs.writeFileSync(path.join(wsDir, "a.txt"), "theirs");
+    await g.add(".");
+    await g.commit("theirs");
+    await g.checkout("main");
+    fs.writeFileSync(path.join(wsDir, "a.txt"), "mine");
+    await g.add(".");
+    await g.commit("mine");
+    await g.merge(["other"]).catch(() => { /* expected conflict */ });
+    insertSession({
+      id: "conflict-light",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
+      diskTier: "light",
+      workspaceDir: wsDir,
+      branch: "main",
+    });
+
+    const { registry } = fakeRegistry();
+    const { appended, chatHistory } = fakeChatHistory();
+    const result = await escalateDiskTiers({
+      ...baseDeps(sm, registry),
+      createGitManager: (dir) => new GitManager(dir),
+      chatHistory,
+      notifiedEvictBlocked: new Set<string>(),
+    });
+
+    expect(result.toEvicted).toBe(0);
+    expect(result.evictBlockedByDirty).toBe(1);
+    expect(sm.get("conflict-light")?.diskTier).toBe("light");
+    expect(fs.existsSync(wsDir)).toBe(true);
+    expect(appended[0]!.text).toContain("unresolved merge state");
+  });
+
+  it("SHI-294: still evicts when the null hash meant 'nothing to commit'", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-race");
+    await initRepo(wsDir);
+    insertSession({
+      id: "race-light",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
+      diskTier: "light",
+      workspaceDir: wsDir,
+      branch: "main",
+    });
+
+    // Dirty on the pre-check, clean by the time the commit is attempted (the
+    // benign race). Nothing to preserve, so the wipe must still proceed —
+    // a blanket "null hash ⇒ blocked" guard would make this un-evictable.
+    let cleanCalls = 0;
+    const stubGit = {
+      isClean: () => Promise.resolve(cleanCalls++ > 0),
+      autoCommit: () => Promise.resolve({
+        commitHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [],
+      }),
+      isRebaseInProgress: () => Promise.resolve(false),
+      isMergeOrSequencerInProgress: () => Promise.resolve(false),
+      currentBranchOrNull: () => Promise.resolve("main"),
+      getHeadHash: () => Promise.resolve("abc"),
+      getRefHash: () => Promise.resolve("abc"), // tip already on origin
+      isAncestor: () => Promise.resolve(true),
+      push: () => Promise.resolve(""),
+    } as unknown as GitManager;
+
+    const { registry } = fakeRegistry();
+    const { appended, chatHistory } = fakeChatHistory();
+    const result = await escalateDiskTiers({
+      ...baseDeps(sm, registry),
+      createGitManager: () => stubGit,
+      chatHistory,
+      notifiedEvictBlocked: new Set<string>(),
+    });
+
+    expect(result.toEvicted).toBe(1);
+    expect(result.evictBlockedByDirty).toBe(0);
+    expect(sm.get("race-light")?.diskTier).toBe("evicted");
+    expect(fs.existsSync(wsDir)).toBe(false);
+    expect(appended).toHaveLength(0);
+  });
+
+  // The clean-tree question is not the durability question. A commit this pass
+  // made but could not push leaves the tree CLEAN, so the next pass sailed
+  // straight through the remediation block and wiped a commit that exists
+  // nowhere else. Two passes is the whole point of this test.
+  it("SHI-294: a commit that failed to push is not wiped by the NEXT pass", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-unpushed");
+    await initRepo(wsDir, { dirty: true, noRemote: true });
+    insertSession({
+      id: "unpushed-light",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
+      diskTier: "light",
+      workspaceDir: wsDir,
+      branch: "main",
+    });
+
+    const { registry } = fakeRegistry();
+    const deps = { ...baseDeps(sm, registry), createGitManager: (dir: string) => new GitManager(dir) };
+
+    const first = await escalateDiskTiers(deps);
+    expect(first.evictBlockedByPush).toBe(1);
+    // The auto-commit landed locally, so the tree is clean from here on.
+    expect(await new GitManager(wsDir).isClean()).toBe(true);
+
+    const second = await escalateDiskTiers(deps);
+
+    expect(second.toEvicted).toBe(0);
+    expect(second.evictBlockedByPush).toBe(1);
+    expect(sm.get("unpushed-light")?.diskTier).toBe("light");
+    expect(fs.existsSync(path.join(wsDir, "b.txt"))).toBe(true);
+  });
+
+  // A clean tree is not a quiet repo: an interactive rebase stopped at an
+  // `edit`/`exec` step has nothing uncommitted, so `autoCommit` is never even
+  // called and its conflict branch never fires — but the in-flight commits and
+  // recovery state live only in `.git`.
+  it("SHI-294: a CLEAN checkout with a rebase in progress blocks the wipe", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-rebasing");
+    await initRepo(wsDir);
+    expect(await new GitManager(wsDir).isClean()).toBe(true);
+    // The sentinel git writes for an in-progress interactive rebase.
+    fs.mkdirSync(path.join(wsDir, ".git", "rebase-merge"), { recursive: true });
+    insertSession({
+      id: "rebasing-light",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
+      diskTier: "light",
+      workspaceDir: wsDir,
+      branch: "main",
+    });
+
+    const { registry } = fakeRegistry();
+    const { appended, chatHistory } = fakeChatHistory();
+    const result = await escalateDiskTiers({
+      ...baseDeps(sm, registry),
+      createGitManager: (dir) => new GitManager(dir),
+      chatHistory,
+      notifiedEvictBlocked: new Set<string>(),
+    });
+
+    expect(result.toEvicted).toBe(0);
+    expect(result.evictBlockedByDirty).toBe(1);
+    expect(fs.existsSync(wsDir)).toBe(true);
+    expect(appended[0]!.text).toContain("rebase is in progress");
+  });
+
+  // A repo-less session's checkout is the only copy there will ever be —
+  // `restoreSessionWorkspace` returns a terminal 410 for it. `archiveSession`
+  // already refuses to reclaim one; the automatic ladder now matches.
+  it("SHI-294: never evicts a session whose work has no remote to live on", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-standalone");
+    await initRepo(wsDir, { noRemote: true }); // clean, committed, nowhere else
+    insertSession({
+      id: "standalone-light",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
+      diskTier: "light",
+      workspaceDir: wsDir,
+      branch: "main",
+    });
+
+    const { registry } = fakeRegistry();
+    const result = await escalateDiskTiers({
+      ...baseDeps(sm, registry),
+      createGitManager: (dir) => new GitManager(dir),
+    });
+
+    expect(result.toEvicted).toBe(0);
+    expect(result.evictBlockedByPush).toBe(1);
+    expect(fs.existsSync(path.join(wsDir, "a.txt"))).toBe(true);
+  });
+
+  // `GitManager.push` pushes the NAMED LOCAL BRANCH, not HEAD. On a detached
+  // HEAD, pushing `session.branch` succeeds with "Everything up-to-date" while
+  // HEAD's commits stay local — a green push that proves nothing, followed by
+  // a wipe.
+  it("SHI-294: a detached HEAD is never evicted (its commits belong to no branch)", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-detached");
+    await initRepo(wsDir); // main pushed to origin
+    const g = simpleGit(wsDir);
+    await g.checkout(["--detach"]);
+    fs.writeFileSync(path.join(wsDir, "detached-work.txt"), "only on this commit");
+    await g.add(".");
+    await g.commit("work on a detached HEAD");
+    expect(await new GitManager(wsDir).isClean()).toBe(true);
+    insertSession({
+      id: "detached-light",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
+      diskTier: "light",
+      workspaceDir: wsDir,
+      branch: "main", // the row still says main; the checkout disagrees
+    });
+
+    const { registry } = fakeRegistry();
+    const result = await escalateDiskTiers({
+      ...baseDeps(sm, registry),
+      createGitManager: (dir) => new GitManager(dir),
+    });
+
+    expect(result.toEvicted).toBe(0);
+    expect(result.evictBlockedByPush).toBe(1);
+    expect(fs.existsSync(path.join(wsDir, "detached-work.txt"))).toBe(true);
+  });
+
+  // The descend guards run before the pacing delay and seconds of git/network
+  // work. A session the user opened in that window must not be wiped.
+  it("SHI-294: does not wipe a session that became active during remediation", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-activated");
+    await initRepo(wsDir);
+    insertSession({
+      id: "activated-light",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
+      diskTier: "light",
+      workspaceDir: wsDir,
+      branch: "main",
+    });
+
+    // A viewer attaches after the initial guard pass — the registry reports no
+    // runner on the first lookup and an attached one from then on.
+    let lookups = 0;
+    const registry = {
+      get: () => (lookups++ === 0
+        ? undefined
+        : { running: false, agentBusy: false, viewerCount: 1 }),
+      dispose: () => {},
+    } as unknown as SessionRunnerRegistry;
+
+    const result = await escalateDiskTiers({
+      ...baseDeps(sm, registry),
+      createGitManager: (dir) => new GitManager(dir),
+    });
+
+    expect(result.toEvicted).toBe(0);
+    expect(sm.get("activated-light")?.diskTier).toBe("light");
+    expect(fs.existsSync(wsDir)).toBe(true);
+  });
+
+  // A `light` row whose checkout is already gone was pinned forever ("git check
+  // failed" → skipped), and activation's `light → hot` shortcut skips
+  // `restoreSessionWorkspace` — so the container bind-mount 404s in a loop.
+  // Recording the truth routes the next activation through restore.
+  it("SHI-294: records an already-missing workspace as evicted (restorable), not stuck at light", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-vanished", "workspace");
+    insertSession({
+      id: "vanished-light",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
+      diskTier: "light",
+      workspaceDir: wsDir, // never created
+      branch: "main",
+    });
+
+    const { registry } = fakeRegistry();
+    const result = await escalateDiskTiers({
+      ...baseDeps(sm, registry),
+      createGitManager: (dir) => new GitManager(dir),
+    });
+
+    expect(result.toEvicted).toBe(1);
+    expect(sm.get("vanished-light")?.diskTier).toBe("evicted");
+  });
+
+  it("SHI-294: warns once per session, not once per escalation pass", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-secret-repeat");
+    await initRepo(wsDir);
+    fs.writeFileSync(path.join(wsDir, ".env"), `AWS_ACCESS_KEY_ID=${FIXTURE_AWS_KEY}\n`);
+    insertSession({
+      id: "repeat-light",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
+      diskTier: "light",
+      workspaceDir: wsDir,
+      branch: "main",
+    });
+
+    const { registry } = fakeRegistry();
+    const { appended, chatHistory } = fakeChatHistory();
+    const notifiedEvictBlocked = new Set<string>();
+    const deps = {
+      ...baseDeps(sm, registry),
+      createGitManager: (dir: string) => new GitManager(dir),
+      chatHistory,
+      notifiedEvictBlocked,
+    };
+
+    const first = await escalateDiskTiers(deps);
+    const second = await escalateDiskTiers(deps);
+
+    // Blocked every pass (the condition is still true) but warned only once —
+    // the hourly timer must not append a transcript row every hour.
+    expect(first.evictBlockedByDirty).toBe(1);
+    expect(second.evictBlockedByDirty).toBe(1);
+    expect(appended).toHaveLength(1);
   });
 
   it("disk-pressure: escalates LRU hot → light regardless of age until high mark", async () => {

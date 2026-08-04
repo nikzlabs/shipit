@@ -215,6 +215,32 @@ After restart, the `containers` map (in-memory) is empty even though Docker
 containers survived. `rediscover()` restores it so the runner factory can
 reconnect to existing containers instead of creating duplicates.
 
+### Adopting a Turn That Outlived the Restart (docs/240)
+
+Rediscovery restores the container map and the SSE transport — it does NOT
+restore the *turn*. A container whose CLI was mid-turn when the orchestrator died
+keeps emitting; without adoption those replayed events hit the `(no _agent)` drop
+branch, the session renders as stopped, and the post-turn commit/push/PR flow
+never runs.
+
+So the worker distinguishes **turn liveness** from **process residency**:
+`GET /agent/status` reports `turnActive` (set by `/agent/start`, or by a message
+into an idle resident process; cleared on `agent_result` / exit) and
+`turnStartSseSeq`, alongside the long-standing `running` — which stays true for a
+resident streaming process idling between turns and is therefore NOT a turn
+signal.
+
+Before its FIRST SSE connect a runner probes that endpoint
+(`reconcileWorkerTurnBeforeFirstConnect`). On a live turn with no local agent it
+adopts: anchor the replay cursor at `turnStartSseSeq`, create a
+`ProxyAgentProcess` carrying the **worker's** `runToken` (a fresh one would make
+`isStaleSpawnEvent` ignore the turn's `agent_done`), and run it through
+`executeAgentTurn` in `adopt` mode — same listeners and post-turn flow, no spawn.
+The slot must be filled before the stream opens, which is why
+`ensureWorkerResourcesStarted` serializes concurrent callers.
+`restart-turn-reattach.ts` runs the same path at boot for containers reporting a
+live turn, so the flow completes even in sessions nobody opens.
+
 ### Container Persistence Across Runner Disposal
 
 When a `ContainerSessionRunner` is disposed (idle container cleanup), the Docker container is destroyed along with the runner. However, when a runner is disposed without explicit container destruction (e.g. server shutdown cleanup), the `dispose()` method:

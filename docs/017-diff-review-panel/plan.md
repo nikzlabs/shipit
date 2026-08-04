@@ -1,3 +1,8 @@
+---
+issue: https://linear.app/shipit-ai/issue/SHI-211
+description: Read-only turn diff panel — with side-by-side image diffs and a rendered/source toggle for SVGs.
+---
+
 # 017 — Visual Diff Review Panel
 
 ## Summary
@@ -199,6 +204,47 @@ Use a client-side diff rendering library. Options:
 
 Recommended: start with custom rendering using the structured data from the server. The server does the parsing; the client just renders `DiffHunk[]` with appropriate styling. This avoids adding a heavy dependency and keeps the look consistent with ShipIt's Tailwind-based design.
 
+#### Image & SVG diffs (media diffs)
+
+Binary files used to render a flat "Binary file — cannot display diff" placeholder. Two media kinds now get a visual before/after comparison instead (`DiffMediaView.tsx`):
+
+- **Raster images** (`png/jpg/jpeg/gif/webp/avif/bmp/ico`). The server flags the `FileDiff` with `image: true` and embeds each side's bytes as a base64 `data:` URI in `oldContent`/`newContent` (empty string for the side that doesn't exist — added has no old, deleted has no new). Loaded via `GitManager.getFileBufferAtCommit()` (a Buffer-encoded `git show`, since simple-git decodes to UTF-8 and would corrupt binary). Capped at 2 MB/side (`MAX_DIFF_IMAGE_BYTES`); over the cap (or unreadable) the `image` flag stays false and the placeholder shows. `ImageDiffView` renders the two `<img>`s side by side over a checkerboard backdrop so transparency is visible.
+- **SVGs** are *text*, so they still get the Monaco text diff by default. A per-file **Rendered / Source** `SourceToggle` in the file header switches to `SvgDiffView`, which renders the old/new markup through the shared sandboxed `RenderedFrame` (docs/219) side by side. No server change — the SVG markup is already in `oldContent`/`newContent`.
+
+The content builder is shared by both diff producers via `buildFileDiffContent()` in `services/git.ts` (`getTurnDiff` and `getDiffVsBranch`), so the two surfaces can't drift.
+
+#### Git LFS images
+
+An LFS-tracked image rendered its **sha256 as text**, because the diff reads
+*committed blobs* and in an LFS repo the committed blob is always the ~130-byte
+pointer stub. docs/231's provisioning-time `git lfs pull` doesn't help: it
+materializes the **working tree**, which this panel never reads.
+
+The pointer also arrives on the **text** path, not the binary one — the
+conventional `*.png filter=lfs diff=lfs merge=lfs -text` leaves git's `diff`
+attribute *set* and `-text` only disables eol munging, so git sniffs ASCII and
+reports an ordinary +2/−2 text diff. Keying the fix off `binary` would have
+missed it entirely.
+
+`git-lfs-blob.ts` resolves a pointer to real bytes: first
+`.git/lfs/objects/<a>/<b>/<oid>` (a plain file read — this hits for the "after"
+side, which provisioning already pulled and docs/232 hardlinks in), then
+`git lfs smudge` over the network for the "before" side, which `git lfs pull`
+never fetched because it only covers the current checkout. Explicitly invoking
+`smudge` is unaffected by the orchestrator's `--skip-smudge` install, which
+writes a `--skip` *argument* into `filter.lfs.smudge` rather than a mode.
+
+Two bounds keep a slow or unreachable LFS remote from holding the panel open:
+15 s per smudge (`SHIPIT_GIT_LFS_DIFF_TIMEOUT_MS`) and 8 network fetches per
+diff request (`SHIPIT_GIT_LFS_DIFF_FETCH_BUDGET`). Anything not resolved renders
+as an **empty pane labelled "(Git LFS content unavailable)"** — `missingPaneLabel`
+distinguishes "this version doesn't exist" (added/deleted) from "we couldn't load
+it", so an unfetchable side no longer claims the file was just added. Rasters
+keep `image: true` even when *neither* side resolved, because two labelled panes
+beat an empty Monaco diff; SVGs keep their pointer text, since they still have a
+working text diff to fall back on. The one thing never done is diffing the
+pointers.
+
 ### Diff Badge in Chat
 
 After each Claude turn, add a small clickable badge to the assistant message in the chat:
@@ -245,8 +291,15 @@ When auto-fix sends errors to Claude, the resulting changes should also be revie
 | `src/server/types.ts` | Add `WsGetTurnDiff`, `WsRejectChanges`, `WsDiffComment`, `WsTurnDiff`, `FileDiff`, `DiffHunk`, `DiffLine` |
 | `src/server/git.ts` | Add `diff()`, `diffStat()`, `checkoutFile()` methods |
 | `src/server/index.ts` | Add handlers for `get_turn_diff`, `reject_changes`, `diff_comment` |
-| `src/client/components/DiffPanel.tsx` | New component |
+| `src/client/components/DiffPanel.tsx` | New component; media-diff branch + per-file SVG render toggle |
+| `src/client/components/DiffMediaView.tsx` | `ImageDiffView` / `SvgDiffView` before/after renderers |
 | `src/client/components/DiffPanel.test.tsx` | Component tests |
+| `src/server/shared/git.ts` | `getFileBufferAtCommit()` (Buffer-safe blob read for images); `dir` accessor |
+| `src/server/orchestrator/services/git.ts` | `buildFileDiffContent()` + image embedding for `getTurnDiff`/`getDiffVsBranch`; `lfsMediaSide()` |
+| `src/server/orchestrator/git-lfs-blob.ts` | LFS pointer parsing + object-store/smudge resolution for diff rendering |
+| `src/server/orchestrator/git-lfs-blob.test.ts` | Pointer parsing, store layout, budget, "never return the echoed pointer" |
+| `src/server/orchestrator/services/git-lfs-diff.test.ts` | End-to-end: an LFS repo's diff yields data URIs, not checksums |
+| `src/server/shared/types/domain-types/git.ts` | `FileDiff.image` / `FileDiff.lfs` flags |
 | `src/client/App.tsx` | Add diff state, trigger on `git_committed`, wire up panel |
 | `src/server/integration_tests/diff-review.test.ts` | Integration tests |
 

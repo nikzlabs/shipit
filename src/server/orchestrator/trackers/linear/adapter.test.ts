@@ -411,6 +411,57 @@ describe("LinearTracker writes (docs/177)", () => {
     ]);
   });
 
+  it("creates a team-scoped label and returns its id for undo (SHI-230)", async () => {
+    const fetchImpl = routerFetch([
+      {
+        match: "issueLabelCreate",
+        data: { issueLabelCreate: { success: true, issueLabel: { id: "lbl-1", name: "t3code", color: "#0ea5e9" } } },
+      },
+    ]);
+    const tracker = new LinearTracker({ token: "t", team: TEAM, fetchImpl });
+    const label = await tracker.createLabel({ name: "t3code", color: "0ea5e9", description: "T3 code area" });
+    expect(label).toEqual({ id: "lbl-1", name: "t3code", color: "#0ea5e9" });
+    const input = JSON.parse(fetchImpl.mock.calls[0][1]?.body as string).variables.input;
+    // Bound to the adapter's team, and a bare hex is normalized to Linear's `#rrggbb`.
+    expect(input).toEqual({ teamId: TEAM.id, name: "t3code", color: "#0ea5e9", description: "T3 code area" });
+  });
+
+  it("throws creating a label without a team binding (SHI-230)", async () => {
+    const tracker = new LinearTracker({ token: "t", team: null, fetchImpl: routerFetch([]) });
+    await expect(tracker.createLabel({ name: "x" })).rejects.toThrow(/team binding/);
+  });
+
+  it("deletes an unused label on undo (SHI-230)", async () => {
+    const fetchImpl = routerFetch([
+      { match: "LabelUsage", data: { issueLabel: { issues: { nodes: [] } } } },
+      { match: "issueLabelDelete", data: { issueLabelDelete: { success: true } } },
+    ]);
+    const tracker = new LinearTracker({ token: "t", team: TEAM, fetchImpl });
+    await tracker.deleteUnusedLabel("lbl-1", "t3code");
+    const deleteCall = fetchImpl.mock.calls.find((c) =>
+      (JSON.parse(c[1]?.body as string).query as string).includes("issueLabelDelete"),
+    );
+    expect(deleteCall).toBeDefined();
+  });
+
+  it("refuses to delete a label that issues now carry, naming a carrier (SHI-230)", async () => {
+    const fetchImpl = routerFetch([
+      { match: "LabelUsage", data: { issueLabel: { issues: { nodes: [{ identifier: "SHI-9" }] } } } },
+    ]);
+    const tracker = new LinearTracker({ token: "t", team: TEAM, fetchImpl });
+    await expect(tracker.deleteUnusedLabel("lbl-1", "t3code")).rejects.toThrow(/in use.*SHI-9/);
+    // No delete mutation was attempted.
+    for (const call of fetchImpl.mock.calls) {
+      expect(JSON.parse(call[1]?.body as string).query).not.toContain("issueLabelDelete");
+    }
+  });
+
+  it("treats an already-deleted label as an idempotent undo no-op (SHI-230)", async () => {
+    const fetchImpl = routerFetch([{ match: "LabelUsage", data: { issueLabel: null } }]);
+    const tracker = new LinearTracker({ token: "t", team: TEAM, fetchImpl });
+    await expect(tracker.deleteUnusedLabel("lbl-gone", "old")).resolves.toBeUndefined();
+  });
+
   it("edits title/description via issueUpdate", async () => {
     const fetchImpl = routerFetch([
       { match: "IssueId", data: { issue: { id: "uuid-1" } } },

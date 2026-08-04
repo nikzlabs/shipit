@@ -5,7 +5,16 @@
  * persisted chat history. The Claude CLI emits subagent events with a
  * top-level `parent_tool_use_id`, which the orchestrator preserves on the
  * outgoing AgentEvent so the client can render the subagent's prompt, work,
- * and final report under the parent Task tool.
+ * and final report under the parent tool call.
+ *
+ * The fake stream uses the tool name the CLI actually emits — `Agent`, verified
+ * against Claude Code CLI 2.1.219. These tests previously injected a synthetic
+ * `Task`, a name the real CLI never sends, which is precisely why they stayed
+ * green through the whole life of the docs/109 renderer bug: the client gated
+ * its transparency view on `Task`, so the branch under test was the one branch
+ * production never reached. The orchestrator half is name-agnostic (it routes
+ * on `parentToolUseId` alone); the client-side handling of legacy persisted
+ * `Task` rows is covered in `MessageList.test.tsx`.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -85,7 +94,7 @@ describe("Integration: Subagent transparency (109)", () => {
     lastClaude.emit("event", { type: "system", subtype: "init", session_id: "subagent-session-1" });
     await client.receiveType("session_started");
 
-    // Parent assistant message with a Task tool call
+    // Parent assistant message with an Agent tool call
     lastClaude.emit("event", {
       type: "assistant",
       message: {
@@ -94,7 +103,7 @@ describe("Integration: Subagent transparency (109)", () => {
           {
             type: "tool_use",
             id: "task-1",
-            name: "Task",
+            name: "Agent",
             input: { description: "Audit review", prompt: "Walk through the review feature." },
           },
         ],
@@ -146,7 +155,7 @@ describe("Integration: Subagent transparency (109)", () => {
     const sessionStarted = await client.receiveType("session_started");
     const appSessionId = (sessionStarted as { session: { id: string } }).session.id;
 
-    // Parent: Task tool call
+    // Parent: Agent tool call
     lastClaude.emit("event", {
       type: "assistant",
       message: {
@@ -155,7 +164,7 @@ describe("Integration: Subagent transparency (109)", () => {
           {
             type: "tool_use",
             id: "task-1",
-            name: "Task",
+            name: "Agent",
             input: { description: "Audit", prompt: "Audit the codebase." },
           },
         ],
@@ -188,7 +197,7 @@ describe("Integration: Subagent transparency (109)", () => {
       },
     });
 
-    // Parent receives the Task tool's final result
+    // Parent receives the Agent tool's final result
     lastClaude.emit("event", {
       type: "user",
       message: {
@@ -201,14 +210,14 @@ describe("Integration: Subagent transparency (109)", () => {
     try { for (let i = 0; i < 20; i++) await client.receive(300); } catch { /* drain */ }
 
     // The persisted message should have:
-    //   - toolUse: [Task tool]
-    //   - toolResults: [the Task tool's final result]
+    //   - toolUse: [Agent tool]
+    //   - toolResults: [the Agent tool's final result]
     //   - subagentEvents: [3 entries — assistant, tool_result, assistant]
     const messages = chatHistoryManager.load(appSessionId);
-    const assistantMsg = messages.find((m) => m.role === "assistant" && m.toolUse?.some((t) => t.name === "Task"));
+    const assistantMsg = messages.find((m) => m.role === "assistant" && m.toolUse?.some((t) => t.name === "Agent"));
     expect(assistantMsg).toBeDefined();
     expect(assistantMsg!.toolUse).toHaveLength(1);
-    expect(assistantMsg!.toolUse![0].name).toBe("Task");
+    expect(assistantMsg!.toolUse![0].name).toBe("Agent");
     expect(assistantMsg!.toolResults).toBeDefined();
     expect(assistantMsg!.toolResults![0].toolUseId).toBe("task-1");
     expect(assistantMsg!.toolResults![0].content).toContain("Audit Report");
@@ -237,19 +246,19 @@ describe("Integration: Subagent transparency (109)", () => {
     const sessionStarted = await client.receiveType("session_started");
     const appSessionId = (sessionStarted as { session: { id: string } }).session.id;
 
-    // Parent message: a Task tool call
+    // Parent message: an Agent tool call
     lastClaude.emit("event", {
       type: "assistant",
       message: {
         content: [
-          { type: "tool_use", id: "task-1", name: "Task", input: { description: "Audit", prompt: "..." } },
+          { type: "tool_use", id: "task-1", name: "Agent", input: { description: "Audit", prompt: "..." } },
         ],
       },
     });
 
     // Subagent does its own Bash call — this MUST NOT end up in the parent
     // message's toolUse list, otherwise the user sees nested actions floating
-    // outside their Task call.
+    // outside their Agent call.
     lastClaude.emit("event", {
       type: "assistant",
       parent_tool_use_id: "task-1",
@@ -277,18 +286,18 @@ describe("Integration: Subagent transparency (109)", () => {
     try { for (let i = 0; i < 20; i++) await client.receive(300); } catch { /* drain */ }
 
     const messages = chatHistoryManager.load(appSessionId);
-    const assistantMsg = messages.find((m) => m.role === "assistant" && m.toolUse?.some((t) => t.name === "Task"));
+    const assistantMsg = messages.find((m) => m.role === "assistant" && m.toolUse?.some((t) => t.name === "Agent"));
     expect(assistantMsg).toBeDefined();
-    // The parent's toolUse should ONLY contain the Task tool — never the
+    // The parent's toolUse should ONLY contain the Agent tool — never the
     // subagent's Bash. The subagent's Bash should live in subagentEvents.
     expect(assistantMsg!.toolUse).toHaveLength(1);
-    expect(assistantMsg!.toolUse![0].name).toBe("Task");
+    expect(assistantMsg!.toolUse![0].name).toBe("Agent");
     // The Bash lives in subagentEvents.
     const subBashStep = assistantMsg!.subagentEvents?.find(
       (e) => e.kind === "assistant" && e.toolUse.some((t) => t.name === "Bash"),
     );
     expect(subBashStep).toBeDefined();
-    // The parent's toolResults should ONLY contain the Task's result, not the
+    // The parent's toolResults should ONLY contain the Agent's result, not the
     // subagent's Bash result.
     expect(assistantMsg!.toolResults).toHaveLength(1);
     expect(assistantMsg!.toolResults![0].toolUseId).toBe("task-1");
@@ -316,7 +325,7 @@ describe("Integration: Subagent transparency (109)", () => {
       type: "assistant",
       message: {
         content: [
-          { type: "tool_use", id: "task-1", name: "Task", input: { description: "Multi", prompt: "..." } },
+          { type: "tool_use", id: "task-1", name: "Agent", input: { description: "Multi", prompt: "..." } },
         ],
       },
     });
@@ -349,7 +358,7 @@ describe("Integration: Subagent transparency (109)", () => {
     try { for (let i = 0; i < 20; i++) await client.receive(300); } catch { /* drain */ }
 
     const messages = chatHistoryManager.load(appSessionId);
-    const assistantMsg = messages.find((m) => m.role === "assistant" && m.toolUse?.some((t) => t.name === "Task"));
+    const assistantMsg = messages.find((m) => m.role === "assistant" && m.toolUse?.some((t) => t.name === "Agent"));
     expect(assistantMsg).toBeDefined();
     const subStep = assistantMsg!.subagentEvents?.find((e) => e.kind === "assistant");
     expect(subStep).toBeDefined();

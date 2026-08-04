@@ -10,6 +10,26 @@
  * takes any `Readable` (the producer's tar stdout in tests, the HTTP body in prod),
  * and `fetchDepSnapshotStream` is the thin fetch wrapper the publish flow composes
  * with it. Nothing here is wired into a live publish until the Phase-4b caller.
+ *
+ * ## Crash safety (SHI — prod orchestrator crash, 2026-07-30)
+ *
+ * The producer is a container that can be SIGKILLed at any moment (archive →
+ * `dispose(force)` → `destroyContainer`), so the snapshot stream dying mid-transfer
+ * is a NORMAL event, not an exceptional one. Every failure here must surface as a
+ * **rejected promise** the publish caller can log — never as an unhandled `'error'`
+ * event, which is a process-level `uncaughtException` and (there being deliberately
+ * no `uncaughtException` handler, `app-lifecycle.ts`) kills the orchestrator.
+ *
+ * Three places leaked an unhandled `'error'`, all fixed below:
+ *   1. the fetched body between `fetchDepSnapshotStream` returning and the caller
+ *      attaching its own handler (an `await` tick the socket close fits inside) —
+ *      fixed by latching a listener on the stream before it is ever returned;
+ *   2. `tar`'s stdin, destroyed with an error on a source failure: `pipe()`'s own
+ *      `onerror` removes itself and re-emits on a listener-less stream — fixed by
+ *      an explicit swallow listener, with the real cause carried out via `done`;
+ *   3. a source that had ALREADY errored before `pipe()` — the `'error'` event had
+ *      fired, so nothing ever ended tar's stdin and `done` hung — fixed by
+ *      replaying `tarStream.errored` after attaching.
  */
 
 import { spawn } from "node:child_process";
@@ -19,7 +39,10 @@ import { Readable } from "node:stream";
 /**
  * Extract a tar stream into `destDir` (created if absent) via `tar -x`. Rejects on
  * a non-zero tar exit or a source-stream error, so a truncated archive (the worker's
- * tar failed mid-export and destroyed the stream) never silently yields a partial base.
+ * tar failed mid-export and destroyed the stream, or its container was killed
+ * mid-transfer) never silently yields a partial base — and never escapes as an
+ * unhandled `'error'` event. See the module docstring for the three leaks this
+ * guards.
  */
 export async function extractTarStream(tarStream: Readable, destDir: string): Promise<void> {
   // Synchronous mkdir so we never yield the event loop between receiving
@@ -41,10 +64,23 @@ export async function extractTarStream(tarStream: Readable, destDir: string): Pr
   }
   const stdin = proc.stdin;
 
+  // Swallow errors on tar's stdin. We destroy it ourselves on a source failure,
+  // and `pipe()` installs an `onerror` that removes itself and then re-emits on a
+  // listener-less destination — which would throw ERR_UNHANDLED_ERROR out of the
+  // event loop. The real cause is carried out through `done` (`sourceError`), so
+  // nothing is lost by ignoring the pipe-teardown noise (EPIPE/ERR_STREAM_DESTROYED).
+  stdin.on("error", () => {});
+
+  // First source-stream failure, if any. Preferred over tar's exit status when
+  // reporting, since "tar exited 2" is a symptom and this is the cause.
+  let sourceError: Error | null = null;
+
   const done = new Promise<void>((resolve, reject) => {
     proc.on("error", reject);
     proc.on("close", (code) => {
-      if (code === 0) {
+      if (sourceError) {
+        reject(sourceError);
+      } else if (code === 0) {
         resolve();
       } else {
         const detail = stderr.trim() ? `: ${stderr.trim()}` : "";
@@ -53,11 +89,27 @@ export async function extractTarStream(tarStream: Readable, destDir: string): Pr
     });
   });
 
-  // Pipe the source tar into tar's stdin (auto-ends stdin on source end). A source
-  // error (e.g. the worker destroyed a truncated stream) is forwarded so the child
-  // sees a broken pipe and `done` rejects rather than producing a partial tree.
-  tarStream.on("error", (err) => stdin.destroy(err instanceof Error ? err : new Error(String(err))));
+  // A source error (the worker destroyed a truncated stream, or its container was
+  // SIGKILLed mid-transfer) records the cause and closes tar's stdin, so the child
+  // hits EOF, exits, and `done` rejects rather than producing a partial tree.
+  // `destroy()` without an argument: we already hold the error, and passing it would
+  // only re-emit it on stdin.
+  const onSourceError = (err: unknown): void => {
+    sourceError ??= err instanceof Error ? err : new Error(String(err));
+    if (!stdin.destroyed) stdin.destroy();
+  };
+  tarStream.on("error", onSourceError);
   tarStream.pipe(stdin);
+
+  // The source may have already failed before we got here — the fetched body can
+  // terminate during the `await` tick between the pull and this call. Its `'error'`
+  // event has therefore already fired, so `onSourceError` would never run and
+  // `pipe()` would never end tar's stdin: `done` would hang forever. Replay it.
+  if (tarStream.errored) {
+    onSourceError(tarStream.errored);
+  } else if (tarStream.destroyed && !tarStream.readableEnded) {
+    onSourceError(new Error("snapshot stream was destroyed before extraction started"));
+  }
 
   await done;
 }
@@ -65,14 +117,34 @@ export async function extractTarStream(tarStream: Readable, destDir: string): Pr
 /**
  * Fetch a dep dir's snapshot from the session worker as a Node `Readable`. Thin
  * glue over `fetch` so `extractTarStream` stays HTTP-free and testable.
+ *
+ * `signal` aborts the request AND the in-flight body — the publish flow passes the
+ * session runner's disposal signal so a pull from a container that is being
+ * destroyed stops immediately instead of streaming into a socket that is about to
+ * be killed.
+ *
+ * The returned stream carries a latched no-op `'error'` listener: a container
+ * SIGKILLed mid-transfer surfaces as `TypeError: terminated` (undici
+ * `UND_ERR_SOCKET`) on this stream, and until the consumer attaches its own
+ * handler that would be an unhandled `'error'` — i.e. an orchestrator crash.
+ * The error is still observable to the consumer via `stream.errored` and via any
+ * listener it attaches later.
  */
-export async function fetchDepSnapshotStream(workerUrl: string, depDir: string): Promise<Readable> {
+export async function fetchDepSnapshotStream(
+  workerUrl: string,
+  depDir: string,
+  signal?: AbortSignal,
+): Promise<Readable> {
   const url = `${workerUrl}/workspace/dep-snapshot?path=${encodeURIComponent(depDir)}`;
-  const res = await fetch(url);
+  const res = await fetch(url, signal ? { signal } : {});
   if (!res.ok || !res.body) {
+    // Drain so the socket is released rather than left half-read.
+    await res.body?.cancel().catch(() => {});
     throw new Error(`dep-snapshot fetch failed (${res.status}) for ${depDir}`);
   }
-  return Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]);
+  const stream = Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]);
+  stream.on("error", () => {});
+  return stream;
 }
 
 /** The worker's merged-workspace HEAD plus its runtime fingerprint. */
@@ -96,9 +168,12 @@ export interface WorkspaceHeadInfo {
  * Returns null on any failure so the publish path conservatively declines
  * rather than stamping a candidate with a guessed commit.
  */
-export async function fetchWorkspaceHeadInfo(workerUrl: string): Promise<WorkspaceHeadInfo | null> {
+export async function fetchWorkspaceHeadInfo(
+  workerUrl: string,
+  signal?: AbortSignal,
+): Promise<WorkspaceHeadInfo | null> {
   try {
-    const res = await fetch(`${workerUrl}/workspace/head-commit`);
+    const res = await fetch(`${workerUrl}/workspace/head-commit`, signal ? { signal } : {});
     if (!res.ok) return null;
     const body = (await res.json()) as { commit?: string | null; runtimeKey?: string | null };
     if (typeof body.commit !== "string" || body.commit.length === 0) return null;

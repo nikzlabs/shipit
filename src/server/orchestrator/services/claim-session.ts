@@ -16,6 +16,7 @@
  */
 
 import { existsSync, unlinkSync } from "node:fs";
+import { sessionStateDirForWorkspace, sessionSharedStateDir, INSTALL_MARKER_FILE } from "../session-state-dir.js";
 import { rm } from "node:fs/promises";
 import path from "node:path";
 import simpleGit from "simple-git";
@@ -32,10 +33,10 @@ import {
   isWorkspaceCloneInSyncWithCache,
   syncLocalDefaultBranchToOrigin,
 } from "../git-utils.js";
-import { resolveAgentDockerLimits } from "../session-container.js";
 import { ensureBareCache } from "../repo-git.js";
 import { getErrorMessage } from "../../shared/utils.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
+import { materializeLfsWithWarning } from "../git-lfs.js";
 
 export interface ClaimSessionDeps {
   sessionManager: SessionManager;
@@ -168,46 +169,6 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
   }
 
   /**
-   * After a claim-time clone refresh moved HEAD, the standby container may
-   * have booted with resource limits derived from a now-stale `shipit.yaml`
-   * — the irreducible warm→claim time gap (warm provisions from commit C1,
-   * claim refreshes to C2). Container memory is immutable at runtime, so the
-   * only fix is to destroy the standby: the runner factory's fresh-create
-   * path rebuilds it with the current limits on first attach.
-   */
-  async function reprovisionStandbyIfLimitsChanged(
-    sessionId: string,
-    workspaceDir: string,
-  ): Promise<void> {
-    const cm = deps.containerManager;
-    if (!cm) return;
-    const container = cm.get(sessionId);
-    if (!container?.bootedLimits) return;
-    let fresh;
-    try {
-      fresh = resolveAgentDockerLimits(workspaceDir);
-    } catch (err) {
-      console.warn(`[claim-session] Cannot re-derive limits for ${sessionId}: ${getErrorMessage(err)}`);
-      return;
-    }
-    const booted = container.bootedLimits;
-    if (
-      fresh.memoryLimit === booted.memoryLimit &&
-      fresh.cpuQuota === booted.cpuQuota &&
-      fresh.pidsLimit === booted.pidsLimit
-    ) {
-      return;
-    }
-    console.warn(
-      `[claim-session] Standby container for ${sessionId} booted with stale resource limits ` +
-        `(mem ${booted.memoryLimit} → ${fresh.memoryLimit}, cpu ${booted.cpuQuota} → ${fresh.cpuQuota}, ` +
-        `pids ${booted.pidsLimit} → ${fresh.pidsLimit}) after a HEAD change — destroying so it ` +
-        `rebuilds with the current shipit.yaml on first attach.`,
-    );
-    await cm.destroy(sessionId);
-  }
-
-  /**
    * Surface a workspace-clone fetch that silently no-op'd during a claim —
    * the W2 root cause. When `fetched` is false the clone was *not* refreshed
    * against the real remote, so the claimed session may be on stale code.
@@ -232,6 +193,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
    */
   async function refreshCloneToLatestMain(
     sessionDir: string,
+    repoLabel: string,
     onAuthError?: (err: Error) => void,
   ): Promise<{ headChanged: boolean; fetched: boolean; fetchDurationMs: number }> {
     const sessionGit = deps.createGitManager(sessionDir);
@@ -246,6 +208,32 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
     // Keep local `main` aligned with `origin/main` on warm/reuse hand-out too,
     // so the agent's `main..HEAD` PR review matches what the PR contains (docs/194).
     await syncLocalDefaultBranchToOrigin(sessionDir);
+    // docs/231 — the `rollback` above is a `git reset --hard`, and the
+    // orchestrator's git has the LFS *smudge* filter disabled (see git-lfs.ts),
+    // so that reset re-writes pointer stubs over any content a previous
+    // materialization put there. Re-pull before handing the clone out, or a
+    // warm-reuse hand-out gives the agent a tree of stubs — #1729, reintroduced
+    // on the hot path. (With smudge off, git even reads a *materialized* LFS
+    // worktree as dirty, so a reset to the same commit still rewrites it.)
+    //
+    // Cost, stated honestly because this IS the hot path: no network — the
+    // objects are already in `.git/lfs`, so `git lfs fetch` is a no-op — but
+    // `git lfs checkout` then rewrites every tracked LFS file from the local
+    // store, because the reset just turned all of them back into pointers. On an
+    // asset-heavy repo that is thousands of local file writes per claim. The
+    // earlier "degenerates to a local checkout" note undersold that: local I/O,
+    // not zero I/O.
+    //
+    // Kept UNCONDITIONAL deliberately, rather than gated on `resetTarget` being
+    // truthy. Gating would skip the pull on claims where the fetch found nothing
+    // to reset to (where it is indeed pure waste), but it would also give up the
+    // self-heal this provides: a clone left holding stubs by an earlier failed
+    // materialization is repaired on its next claim. Correctness on a path that
+    // silently produces stubs beats the saving until the latency is measured to
+    // matter. See docs/232 "Known gaps".
+    await materializeLfsWithWarning(sessionDir, repoLabel, (message) =>
+      deps.sseBroadcast("error", { message }),
+    );
     // docs/150 §7 addendum (SHI-145): the fetch/rollback/branch-realign git ops
     // above run as the root orchestrator against the (already-booted) warm
     // clone. The `rollback` is a `git reset --hard`, which re-materializes the
@@ -255,21 +243,21 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
     const headAfter = await sessionGit.getHeadHash();
     const headChanged = headBefore !== headAfter;
     if (headChanged) {
-      try { unlinkSync(path.join(sessionDir, ".shipit", ".install-done")); } catch { /* marker may not exist */ }
+      // docs/246 — the marker lives in the session state dir, outside the clone.
+      const stateDir = sessionStateDirForWorkspace(sessionDir);
+      try { unlinkSync(path.join(sessionSharedStateDir(stateDir), INSTALL_MARKER_FILE)); } catch { /* marker may not exist */ }
     }
     return { headChanged, fetched, fetchDurationMs };
   }
 
   /**
    * Shared tail of the reuse / warm / waiting sub-paths: refresh the claimed
-   * session's clone to latest main, surface a stale-fetch warning, and
-   * re-provision the standby if a HEAD move invalidated its booted limits.
-   * Returns the fetch duration (for timing). Deliberately does NOT re-warm
-   * the pool — that's the caller's concern.
+   * session's clone to latest main and surface a stale-fetch warning. Returns
+   * the fetch duration (for timing). Deliberately does NOT re-warm the pool —
+   * that's the caller's concern.
    */
   async function refreshClaimedSession(
     url: string,
-    sessionId: string,
     workspaceDir: string,
     forceFetch: boolean,
   ): Promise<number> {
@@ -288,12 +276,10 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
     try {
       const r = await refreshCloneToLatestMain(
         workspaceDir,
+        url,
         (err) => deps.githubAuthManager.markTokenInvalid(`claim-session refresh failed for ${url}: ${err.message}`),
       );
       warnIfStaleClaimFetch(r.fetched, url);
-      if (r.headChanged) {
-        await reprovisionStandbyIfLimitsChanged(sessionId, workspaceDir);
-      }
       return r.fetchDurationMs;
     } catch (err) {
       console.error(`[claim-session] Failed to refresh clone to latest main:`, getErrorMessage(err));
@@ -347,7 +333,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
           existsSync(path.join(reusable.workspaceDir, ".git"))
         ) {
           claimPath = "reuse";
-          const fetchDurationMs = await refreshClaimedSession(url, reusable.id, reusable.workspaceDir, forceFetch);
+          const fetchDurationMs = await refreshClaimedSession(url, reusable.workspaceDir, forceFetch);
           return { sessionId: reusable.id, workspaceDir: reusable.workspaceDir, fetchDurationMs };
         }
 
@@ -359,7 +345,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
             claimPath = "warm";
             const sessionId = currentRepo.warmSessionId;
             deps.repoStore.setWarmSessionId(url, undefined);
-            const fetchDurationMs = await refreshClaimedSession(url, sessionId, warmSession.workspaceDir, forceFetch);
+            const fetchDurationMs = await refreshClaimedSession(url, warmSession.workspaceDir, forceFetch);
             rewarmPool(url);
             return { sessionId, workspaceDir: warmSession.workspaceDir, fetchDurationMs };
           }
@@ -376,7 +362,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
               claimPath = "waiting";
               const sessionId = freshRepo.warmSessionId;
               deps.repoStore.setWarmSessionId(url, undefined);
-              const fetchDurationMs = await refreshClaimedSession(url, sessionId, warmSession.workspaceDir, forceFetch);
+              const fetchDurationMs = await refreshClaimedSession(url, warmSession.workspaceDir, forceFetch);
               rewarmPool(url);
               return { sessionId, workspaceDir: warmSession.workspaceDir, fetchDurationMs };
             }
@@ -442,6 +428,13 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
         // would make a later `main..HEAD` PR review include already-merged
         // commits (docs/194).
         await syncLocalDefaultBranchToOrigin(workspaceDir);
+        // docs/231 — pull Git LFS content after the `checkout -b` that
+        // materialized the worktree (as pointer stubs) and before the chown
+        // below. This is the one LFS path that IS on the user's critical path,
+        // which is why `materializeLfsContent` caps the pull with a timeout.
+        await materializeLfsWithWarning(workspaceDir, url, (message) =>
+          deps.sseBroadcast("error", { message }),
+        );
         // docs/150 §7 addendum (SHI-145): hand the workspace back to the worker
         // uid after the root orchestrator's fetch + `checkout -b` + ref
         // realignment. `checkout -b <resetTarget>` re-materializes the WORKTREE,

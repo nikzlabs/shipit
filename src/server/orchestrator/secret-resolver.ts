@@ -3,6 +3,11 @@
  * against user-saved secrets (SecretStore) and writes per-service env files
  * that the compose override references via `env_file:`.
  *
+ * Every file this module writes lands OUTSIDE the session's git clone — the
+ * orchestrator-private service-env root (docs/183), the Docker-secrets root, or
+ * the session state dir. There is no in-clone placement left for any of them
+ * (docs/246 req 7, enforced with no exemptions by `no-clone-writes.test.ts`).
+ *
  * Responsibilities:
  *   - Phase 1: simple string form (`x-shipit-secrets: [STRIPE_KEY, ...]`) +
  *     per-service env-file output.
@@ -12,8 +17,8 @@
  *     UI can surface a "configure secrets" banner.
  *
  * Later phases extend this module to:
- *   - Agent container env file (`.shipit/.env.agent`) for `agent: true`
- *     entries (Phase 3)
+ *   - Agent container env file (`.env.agent`) for `agent: true` entries
+ *     (Phase 3) — written to the session state dir, outside the clone (docs/246)
  *   - Docker secrets-based delivery instead of env files for stronger
  *     isolation (Phase 1 follow-up)
  *
@@ -35,6 +40,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { ComposeService } from "./compose-generator.js";
+import { AGENT_ENV_FILE, sessionStateDirForWorkspace } from "./session-state-dir.js";
 import type { SecretRequirement } from "../shared/types/domain-types.js";
 import type { CredentialStore } from "./credential-store.js";
 
@@ -73,9 +79,9 @@ export interface SecretResolution {
   /**
    * Env-file body containing only secrets marked `agent: true` across any
    * service (Phase 3). Empty string when no `agent: true` declarations
-   * exist or when none have values. Written to `.shipit/.env.agent` on the
-   * orchestrator filesystem and pushed to the agent container's
-   * `process.env` via the worker `/secrets` endpoint.
+   * exist or when none have values. Written to the session state dir's
+   * `.env.agent` (docs/246 — orchestrator-side, outside the clone) and pushed
+   * to the agent container's `process.env` via the worker `/secrets` endpoint.
    *
    * The agent container is NOT a compose service — it gets these env vars
    * via direct injection, not via compose `env_file:`. Designed for
@@ -412,66 +418,17 @@ function renderEnvFile(entries: { key: string; value: string }[]): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Write per-service env files to `.shipit/.env.<service>` inside `workspaceDir`.
- *
- * - Creates the `.shipit/` directory if missing.
- * - Files are written with mode 0600 (the workspace volume is shared with the
- *   agent — file mode is a defense-in-depth measure but does not prevent
- *   process.env exfiltration through agent-authored code; see plan §"Security").
- * - Stale `.shipit/.env.<svc>` files for services that no longer declare
- *   secrets (or were removed from compose) are deleted, so a service can't
- *   re-pick up a leftover file from a previous compose definition.
- *
- * Returns the list of file paths written (relative to `workspaceDir`).
- */
-export function writePerServiceEnvFiles(opts: {
-  workspaceDir: string;
-  perServiceEnv: Record<string, string>;
-}): string[] {
-  const { workspaceDir, perServiceEnv } = opts;
-  const shipitDir = path.join(workspaceDir, ".shipit");
-  fs.mkdirSync(shipitDir, { recursive: true });
-
-  // Remove stale `.env.<svc>` files for services that no longer declare secrets.
-  // We only sweep files we own (the `.env.` prefix) and leave `.env.agent`
-  // alone (Phase 3 owns it).
-  let existing: string[];
-  try {
-    existing = fs.readdirSync(shipitDir);
-  } catch {
-    existing = [];
-  }
-  const keep = new Set<string>();
-  for (const svc of Object.keys(perServiceEnv)) keep.add(`.env.${svc}`);
-  for (const entry of existing) {
-    if (!entry.startsWith(".env.")) continue;
-    if (entry === ".env.agent") continue; // Phase 3 owns this
-    if (keep.has(entry)) continue;
-    try {
-      fs.unlinkSync(path.join(shipitDir, entry));
-    } catch {
-      // Best-effort cleanup
-    }
-  }
-
-  const written: string[] = [];
-  for (const [serviceName, body] of Object.entries(perServiceEnv)) {
-    const filePath = path.join(shipitDir, `.env.${serviceName}`);
-    fs.writeFileSync(filePath, body, { mode: 0o600 });
-    written.push(path.relative(workspaceDir, filePath));
-  }
-  return written;
-}
-
-/**
  * Write per-service env files to an orchestrator-private root OUTSIDE the
  * session workspace (docs/183): `<rootDir>/<sessionId>/.env.<service>`.
  *
- * This is the default delivery mode in containerized runtime — it keeps
- * service-only secrets out of the agent-readable workspace while preserving
- * the env-var semantics inside the service container. The generated compose
- * override references the returned absolute paths via `env_file:` rather than
- * the workspace-relative `.shipit/.env.<service>`.
+ * This is the ONLY env-file delivery mode. It keeps service-only secrets out of
+ * the agent-readable workspace while preserving the env-var semantics inside the
+ * service container; the generated compose override references the returned
+ * absolute paths via `env_file:`. The in-workspace `.shipit/.env.<service>`
+ * writer this replaced is gone (SHI-290) — it survived docs/183 as a fallback
+ * for callers that configured no root, which production never was, and it was
+ * the last thing in the codebase that put a ShipIt-generated file inside a
+ * user's git clone (docs/246 req 7).
  *
  * Why this is agent-invisible: in production `rootDir` defaults to
  * `<stateDir>/service-env`, where `stateDir` is the workspace-volume root. The
@@ -491,8 +448,6 @@ export function writePerServiceEnvFiles(opts: {
  *   - Files are written with mode 0600.
  *   - Stale `.env.<svc>` files in the session dir (services that no longer
  *     declare secrets) are swept.
- *   - Any leftover workspace `.shipit/.env.<svc>` files from the pre-183
- *     write path are swept so a prior leak doesn't linger in the agent view.
  *
  * Returns a map of service name → absolute env-file path (for the override)
  * plus the per-session directory.
@@ -536,35 +491,7 @@ export function writeServiceEnvFilesToRoot(opts: {
     serviceEnvFiles[serviceName] = filePath;
   }
 
-  // Sweep any pre-183 workspace service env files so the agent can't read
-  // stale plaintext values left behind by the old in-workspace write path.
-  sweepWorkspaceServiceEnvFiles(workspaceDir);
-
   return { serviceEnvFiles, sessionDir };
-}
-
-/**
- * Remove workspace `.shipit/.env.<service>` files (every `.env.*` except
- * `.env.agent`, which Phase 3 owns). Used when service env files moved out of
- * the workspace (docs/183) and by Docker-secrets mode, so stale plaintext
- * service secrets don't linger in the agent-readable workspace.
- */
-export function sweepWorkspaceServiceEnvFiles(workspaceDir: string): void {
-  const shipitDir = path.join(workspaceDir, ".shipit");
-  let existing: string[];
-  try {
-    existing = fs.readdirSync(shipitDir);
-  } catch {
-    return;
-  }
-  for (const entry of existing) {
-    if (!entry.startsWith(".env.") || entry === ".env.agent") continue;
-    try {
-      fs.unlinkSync(path.join(shipitDir, entry));
-    } catch {
-      // Best-effort cleanup
-    }
-  }
 }
 
 /**
@@ -768,28 +695,105 @@ export function composeSecretFilePath(opts: {
 }
 
 /**
- * Write (or remove) the agent-container env file at `.shipit/.env.agent`
- * inside `workspaceDir`. Phase 3 — agent gets the subset of secrets marked
- * `agent: true`.
+ * Subdirectory of the Docker-secrets root that holds the staged entrypoint
+ * wrapper. Sits BESIDE the per-session `<rootDir>/<sessionId>/` directories,
+ * never inside one: {@link writeIsolatedSecretFiles} sweeps every entry of a
+ * session dir that isn't a currently-declared secret name, and
+ * `removeSessionSecretsDir()` drops the whole thing on teardown — either would
+ * take the wrapper with it. The leading underscore can't collide with a session
+ * id (they're uuids).
+ */
+const SECRETS_ENTRYPOINT_SUBDIR = "_entrypoint";
+
+/** Filename of the staged wrapper. Matches the baked source for greppability. */
+const SECRETS_ENTRYPOINT_FILE = "secrets-entrypoint.sh";
+
+/**
+ * SHI-285 — stage the Docker-secrets entrypoint wrapper where the Docker
+ * **daemon** can bind-mount it into service containers, and return the path to
+ * reference from the compose override.
+ *
+ * The wrapper is baked into the orchestrator image
+ * (`/usr/local/share/shipit/secrets-entrypoint.sh`), which is a path inside the
+ * orchestrator's own container — not something the daemon can resolve. So it has
+ * to be copied somewhere with a known daemon-side path. ShipIt used to copy it
+ * into the session's git clone and mount it through the workspace volume, which
+ * put a generated file where the post-turn `git add -A` commits it into the
+ * user's repository (docs/246 req 1).
+ *
+ * The Docker-secrets root is the natural home: it is the one directory this mode
+ * already requires a daemon-side mapping for (`hostDir`, used by
+ * {@link composeSecretFilePath} for every `secrets: file:` reference), so the
+ * wrapper needs no configuration the mode doesn't already have. One shared copy
+ * serves every session — the file is a static asset, identical for all of them,
+ * not per-session state.
+ *
+ * Written via write-temp-then-rename so a concurrent reconcile in another
+ * session can never expose a half-written script to a starting container. The
+ * temp name is session-scoped for the same reason.
+ *
+ * Returns the compose-side (daemon-visible) absolute path, or `null` if staging
+ * failed — the caller decides what to do without a wrapper.
+ */
+export function stageSecretsEntrypoint(opts: {
+  /** Orchestrator-internal Docker-secrets root. */
+  rootDir: string;
+  /** Daemon-side view of `rootDir`, when the orchestrator runs in a container. */
+  hostDir?: string;
+  /** Session staging this copy — used only to make the temp filename unique. */
+  sessionId: string;
+  /** Baked wrapper inside the orchestrator image. */
+  sourcePath: string;
+}): string | null {
+  const dir = path.join(opts.rootDir, SECRETS_ENTRYPOINT_SUBDIR);
+  const dest = path.join(dir, SECRETS_ENTRYPOINT_FILE);
+  const tmp = `${dest}.${opts.sessionId}.tmp`;
+  try {
+    // 0755 on the directory, not the 0700 the per-session secret dirs get: this
+    // holds no secret, and the traversal happens daemon-side at mount time.
+    fs.mkdirSync(dir, { recursive: true, mode: 0o755 });
+    fs.copyFileSync(opts.sourcePath, tmp);
+    fs.chmodSync(tmp, 0o755);
+    fs.renameSync(tmp, dest);
+  } catch (err) {
+    try { fs.unlinkSync(tmp); } catch { /* nothing to clean up */ }
+    console.warn(`[secrets] failed to stage entrypoint wrapper:`, (err as Error).message);
+    return null;
+  }
+  const base = opts.hostDir ?? opts.rootDir;
+  return path.join(base, SECRETS_ENTRYPOINT_SUBDIR, SECRETS_ENTRYPOINT_FILE);
+}
+
+/**
+ * Write (or remove) the agent-container env file (`.env.agent`) in the session's
+ * state dir. Phase 3 — agent gets the subset of secrets marked `agent: true`.
+ *
+ * docs/246 moved it out of `<clone>/.shipit/`, restoring what docs/087 §403
+ * specified ("this file is on the orchestrator's filesystem, not the workspace
+ * volume"); the state dir's root is not part of the container's `/session-state`
+ * mount, so the placement is orchestrator-only by layout rather than by claim.
  *
  * - Empty `body` removes the file (no agent entries currently resolved).
  *   The agent's process.env is also cleaned up via the worker `/secrets`
  *   endpoint with a delete-keys list.
- * - Non-empty `body` writes the file with mode 0600. The file lives in the
- *   workspace volume, NOT on a separate orchestrator-only volume — see the
- *   security note in the plan: `agent: true` entries are intentionally
- *   reserved for connection strings, not real secrets, so workspace-volume
- *   visibility is acceptable.
+ * - Non-empty `body` writes the file with mode 0600.
  *
- * Returns the relative path written, or `null` when the file was removed.
+ * Returns the path written relative to `workspaceDir`, or `null` when the file
+ * was removed.
  */
 export function writeAgentEnvFile(opts: {
+  /**
+   * The session's clone. Resolves the session state dir the file is written to
+   * (orchestrator-side, outside the clone) — there is no in-clone placement any
+   * more (SHI-286).
+   */
   workspaceDir: string;
   body: string;
 }): string | null {
   const { workspaceDir, body } = opts;
-  const shipitDir = path.join(workspaceDir, ".shipit");
-  const filePath = path.join(shipitDir, ".env.agent");
+  const targetDir = sessionStateDirForWorkspace(workspaceDir);
+  const filePath = path.join(targetDir, AGENT_ENV_FILE);
+
   if (!body) {
     try {
       fs.unlinkSync(filePath);
@@ -798,7 +802,7 @@ export function writeAgentEnvFile(opts: {
     }
     return null;
   }
-  fs.mkdirSync(shipitDir, { recursive: true });
+  fs.mkdirSync(targetDir, { recursive: true });
   fs.writeFileSync(filePath, body, { mode: 0o600 });
   return path.relative(workspaceDir, filePath);
 }

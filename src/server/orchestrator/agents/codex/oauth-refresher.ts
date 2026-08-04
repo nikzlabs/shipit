@@ -19,6 +19,7 @@ import { EventEmitter } from "node:events";
 import { spawn as nodeSpawn } from "node:child_process";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import type { AgentId, ProviderAccount } from "../../../shared/types.js";
+import { killChild } from "../../../shared/kill-child.js";
 import type { ProviderAccountManager } from "../../provider-account-manager.js";
 import type { RuntimeMode } from "../../app-di.js";
 import { readCodexTokenFreshness } from "../../session-credentials.js";
@@ -318,7 +319,11 @@ export class CodexOAuthRefresher extends EventEmitter {
     state.emittedUnauthenticated = true;
     this.emit("account_unauthenticated", accountId);
     this.deps.sseBroadcast("codex_account_unauthenticated", { accountId });
-    this.deps.sseBroadcast("agent_auth_failed", { agentId: "codex", reason: "revoked" });
+    // docs/150 req 19 — `accountId` is not optional decoration. The client
+    // files sign-in state per account and has no provider-wide slot left to
+    // fall back to, so an unqualified `agent_auth_failed` is dropped: the row
+    // of the account that was actually revoked would keep reading "ready".
+    this.deps.sseBroadcast("agent_auth_failed", { agentId: "codex", accountId, reason: "revoked" });
   }
 
   private spawnCliInRoot(args: string[], accountRoot: string, timeoutMs: number): Promise<string> {
@@ -349,7 +354,7 @@ export class CodexOAuthRefresher extends EventEmitter {
       const timer = setTimeout(() => {
         if (settled) return;
         settled = true;
-        try { child.kill("SIGKILL"); } catch { /* best-effort */ }
+        killChild(child, "SIGKILL");
         finish("[timeout] codex CLI did not exit in time");
       }, timeoutMs);
       if (typeof timer.unref === "function") timer.unref();

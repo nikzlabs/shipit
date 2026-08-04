@@ -15,3 +15,11 @@
 - [x] Unit + poller-wire + integration tests, guard tests
 - [x] `npm run lint:dev` + `npm run typecheck` clean
 - [x] Design doc + Linear issue
+- [x] SHI-254 — a `systemTurn` dispatch is never live-steered into a running turn
+- [x] SHI-255 — the interactive queue drain no longer narrows a queued entry
+      (`QueuedMessage.execution` tag + the shared `startQueuedMessage` router)
+- [x] SHI-258 — a failed wake-turn delivery is retried in-process (retry
+      supervisor + `inFlight` in-flight discrimination + persisted
+      `deliveryAttempts`/`lastAttemptAt` backoff), capped at a terminal
+      `delivery-failed` with a persisted failure card; stale "next poll retries"
+      comments corrected

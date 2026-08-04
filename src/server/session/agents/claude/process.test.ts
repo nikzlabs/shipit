@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import { ClaudeProcess, StreamingClaudeProcess } from "./process.js";
+import { agentHome } from "../../../shared/agent-home.js";
 
 // Mock node-pty
 vi.mock("node-pty", () => {
@@ -261,6 +262,108 @@ describe("ClaudeProcess", () => {
         expect(authRequired).toBe(true);
       }
     });
+
+    it("raises auth_required from the structured events a real unauthenticated run emits", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      const events: unknown[] = [];
+      let authRequiredCount = 0;
+      claude.on("event", (e) => events.push(e));
+      claude.on("auth_required", () => { authRequiredCount += 1; });
+
+      claude.run({ prompt: "test" });
+
+      // Verbatim shape from CLI 2.1.219: a synthetic assistant message, then a
+      // result whose `subtype` is "success" and whose `is_error` is true. Both
+      // used to slip through as ordinary turn content, so the CLI's own
+      // "run /login" line was rendered as the agent's reply.
+      mockProc.simulateData(
+        `${JSON.stringify({
+          type: "assistant",
+          message: { content: [{ type: "text", text: "Not logged in · Please run /login" }] },
+          error: "authentication_failed",
+          is_api_error_message: true,
+        })}\n${JSON.stringify({
+          type: "result",
+          subtype: "success",
+          is_error: true,
+          terminal_reason: "api_error",
+          session_id: "abc",
+          result: "Not logged in · Please run /login",
+        })}\n`,
+      );
+
+      // ONE signal for one failure, even though the CLI describes it twice.
+      // `auth_required` consumers heal the token and re-dispatch the whole
+      // turn, so a second raise re-runs the user's turn — see
+      // `consumeAuthFailureEvent`.
+      expect(authRequiredCount).toBe(1);
+      // But BOTH events are still swallowed: ShipIt owns the recovery and the
+      // sign-in copy, and either one reaching the transcript renders the CLI's
+      // "run /login" line as the agent's reply.
+      expect(events).toEqual([]);
+    });
+
+    it("raises auth_required again on a later turn of a resident streaming process", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      const claude = new StreamingClaudeProcess();
+      let authRequiredCount = 0;
+      claude.on("auth_required", () => { authRequiredCount += 1; });
+
+      const authFailure = `${JSON.stringify({
+        type: "assistant",
+        message: { content: [{ type: "text", text: "Not logged in · Please run /login" }] },
+        error: "authentication_failed",
+        is_api_error_message: true,
+      })}\n${JSON.stringify({
+        type: "result",
+        subtype: "success",
+        is_error: true,
+        terminal_reason: "api_error",
+        session_id: "abc",
+        result: "Not logged in · Please run /login",
+      })}\n`;
+
+      claude.run({ prompt: "first" });
+      mockProc.stdout.emit("data", Buffer.from(authFailure));
+      expect(authRequiredCount).toBe(1);
+
+      // The latch is per-turn, not per-process. This process is resident across
+      // turns, so a failure on a LATER turn must raise the signal again —
+      // otherwise one auth failure would permanently disable recovery for the
+      // life of the session.
+      claude.sendUserMessage("second");
+      mockProc.stdout.emit("data", Buffer.from(authFailure));
+      expect(authRequiredCount).toBe(2);
+    });
+
+    it("still forwards a normal assistant message and a clean result", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      const events: unknown[] = [];
+      let authRequired = false;
+      claude.on("event", (e) => events.push(e));
+      claude.on("auth_required", () => { authRequired = true; });
+
+      claude.run({ prompt: "test" });
+      mockProc.simulateData(
+        `${JSON.stringify({
+          type: "assistant",
+          message: { content: [{ type: "text", text: "Added the sign in button." }] },
+        })}\n${JSON.stringify({
+          type: "result", subtype: "success", session_id: "abc", result: "Added the sign in button.",
+        })}\n`,
+      );
+
+      expect(authRequired).toBe(false);
+      expect(events).toHaveLength(2);
+    });
   });
 
   describe("spawn arguments", () => {
@@ -443,6 +546,102 @@ describe("ClaudeProcess", () => {
 
       const spawnOpts = mockPtySpawn.mock.calls[0][2] as { env: Record<string, string> };
       expect(spawnOpts.env.SHIPIT_AUTO_CREATE_PR).toBeUndefined();
+    });
+
+    it("SHI-265 — sets SHIPIT_GUARD_DESTRUCTIVE_GIT=1 when guardDestructiveGit is true", () => {
+      // Arms the managed-settings.json PreToolUse hook's destructive-git rule
+      // for a session sitting on a merged branch. See docs/130.
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "test", guardDestructiveGit: true });
+
+      const spawnOpts = mockPtySpawn.mock.calls[0][2] as { env: Record<string, string> };
+      expect(spawnOpts.env.SHIPIT_GUARD_DESTRUCTIVE_GIT).toBe("1");
+    });
+
+    it("SHI-265 — does not set SHIPIT_GUARD_DESTRUCTIVE_GIT when guardDestructiveGit is falsy", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "test" });
+
+      const spawnOpts = mockPtySpawn.mock.calls[0][2] as { env: Record<string, string> };
+      expect(spawnOpts.env.SHIPIT_GUARD_DESTRUCTIVE_GIT).toBeUndefined();
+    });
+
+    // docs/150 — account selection reaches a local-mode CLI through HOME.
+    // The default (no resolver) is the containerized/worker path and MUST keep
+    // resolving `agentHome()`; that is the regression that would matter most.
+    it("spawns with the process-global agentHome() when no resolver is given", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "test" });
+
+      const spawnOpts = mockPtySpawn.mock.calls[0][2] as { env: Record<string, string> };
+      expect(spawnOpts.env.HOME).toBe(agentHome());
+    });
+
+    it("spawns with the resolver's home when one is given, resolved per spawn", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      let home = "/credentials/provider-accounts/claude/acct-a";
+      const claude = new ClaudeProcess(() => home);
+      claude.run({ prompt: "test" });
+      expect((mockPtySpawn.mock.calls[0][2] as { env: Record<string, string> }).env.HOME)
+        .toBe("/credentials/provider-accounts/claude/acct-a");
+
+      // A mid-session failover repoints the session at another account under
+      // the same process object, so the answer is re-read on the next spawn
+      // rather than captured at construction.
+      home = "/credentials/provider-accounts/claude/acct-b";
+      claude.run({ prompt: "again" });
+      expect((mockPtySpawn.mock.calls[1][2] as { env: Record<string, string> }).env.HOME)
+        .toBe("/credentials/provider-accounts/claude/acct-b");
+    });
+
+    // docs/150 — the CLI prefers an env key/token over the OAuth credentials at
+    // HOME, so pointing HOME at an account root without this would keep billing
+    // metered API usage while the router believed the turn ran on the account.
+    it("drops the env-based Anthropic credentials when scoped to an account", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+      process.env.ANTHROPIC_API_KEY = "sk-metered";
+      process.env.ANTHROPIC_AUTH_TOKEN = "oauth-token";
+      try {
+        new ClaudeProcess(() => "/credentials/provider-accounts/claude/acct-a")
+          .run({ prompt: "test" });
+        const env = (mockPtySpawn.mock.calls[0][2] as { env: Record<string, string> }).env;
+        expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+        expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+
+        // A reserved route resolves no account root and must KEEP them — they
+        // are its auth.
+        new ClaudeProcess().run({ prompt: "test" });
+        const unscoped = (mockPtySpawn.mock.calls[1][2] as { env: Record<string, string> }).env;
+        expect(unscoped.ANTHROPIC_API_KEY).toBe("sk-metered");
+        expect(unscoped.ANTHROPIC_AUTH_TOKEN).toBe("oauth-token");
+      } finally {
+        delete process.env.ANTHROPIC_API_KEY;
+        delete process.env.ANTHROPIC_AUTH_TOKEN;
+      }
+    });
+
+    it("falls back to agentHome() when the resolver has no account to name", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      // A reserved route (API key / env OAuth) has no account root.
+      const claude = new ClaudeProcess(() => undefined);
+      claude.run({ prompt: "test" });
+
+      const spawnOpts = mockPtySpawn.mock.calls[0][2] as { env: Record<string, string> };
+      expect(spawnOpts.env.HOME).toBe(agentHome());
     });
 
     it("maps guarded mode to --permission-mode auto (docs/138)", () => {
@@ -866,6 +1065,24 @@ describe("StreamingClaudeProcess", () => {
       const args = mockChildSpawn.mock.calls[0][1] as string[];
       const tools = args[args.indexOf("--allowedTools") + 1];
       expect(tools.split(",")).toContain("ExitPlanMode");
+    });
+  });
+
+  // docs/150 — same contract as ClaudeProcess: the resident streaming process
+  // is what a live-steering local-mode session actually spawns.
+  describe("account-scoped HOME", () => {
+    it("uses agentHome() by default and the resolver's home when scoped", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as never);
+
+      new StreamingClaudeProcess().run({ prompt: "first" });
+      expect((mockChildSpawn.mock.calls[0][2] as { env: Record<string, string> }).env.HOME)
+        .toBe(agentHome());
+
+      const scoped = new StreamingClaudeProcess(() => "/credentials/provider-accounts/claude/acct-a");
+      scoped.run({ prompt: "first" });
+      expect((mockChildSpawn.mock.calls[1][2] as { env: Record<string, string> }).env.HOME)
+        .toBe("/credentials/provider-accounts/claude/acct-a");
     });
   });
 

@@ -1,6 +1,7 @@
-import { describe, it, expect, afterEach } from "vitest";
-import { render, screen, cleanup, fireEvent } from "@testing-library/react";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
+import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { ToolUseItem, formatToolDuration } from "./message-tools.js";
+import { useSessionStore } from "../stores/session-store.js";
 import type { ToolUseBlock } from "./MessageList.js";
 
 afterEach(() => {
@@ -162,6 +163,56 @@ describe("ToolUseItem output modal input", () => {
   });
 });
 
+describe("ToolUseItem pending tool calls", () => {
+  it("is clickable while pending and shows input + a running indicator (no result yet)", () => {
+    render(
+      <ToolUseItem
+        tool={tool("Bash", { command: "sleep 5" })}
+        // No result — the tool is the last one in a still-streaming message.
+        isLast
+        isStreaming
+        isQuestionDisabled
+      />,
+    );
+
+    // Pending tools expose a "Show input" affordance (vs "Show output" once done).
+    fireEvent.click(screen.getByLabelText("Show input"));
+
+    // Input is shown.
+    expect(screen.getByText("command")).toBeInTheDocument();
+    // Output section renders a running indicator instead of a tool result.
+    expect(screen.getByText("Output")).toBeInTheDocument();
+    expect(screen.getByText("Running…")).toBeInTheDocument();
+  });
+
+  it("updates the open dialog in place when the result arrives", () => {
+    const t = tool("Bash", { command: "run-job" });
+    const { rerender } = render(
+      <ToolUseItem tool={t} isLast isStreaming isQuestionDisabled />,
+    );
+
+    // Open the dialog while pending.
+    fireEvent.click(screen.getByLabelText("Show input"));
+    expect(screen.getByText("Running…")).toBeInTheDocument();
+
+    // Result arrives — same component instance (stable position) re-renders with it.
+    rerender(
+      <ToolUseItem
+        tool={t}
+        result={{ toolUseId: "t1", content: "job complete", durationMs: 1234 }}
+        isLast={false}
+        isStreaming={false}
+        isQuestionDisabled
+      />,
+    );
+
+    // The running indicator is replaced in place by the output, no re-click needed.
+    expect(screen.queryByText("Running…")).toBeNull();
+    expect(screen.getByText("1.2 s")).toBeInTheDocument();
+    expect(screen.getByText("job complete")).toBeInTheDocument();
+  });
+});
+
 describe("formatToolDuration (docs/185)", () => {
   it("renders sub-second values in whole milliseconds", () => {
     expect(formatToolDuration(0)).toBe("0 ms");
@@ -179,5 +230,132 @@ describe("formatToolDuration (docs/185)", () => {
   it("returns empty string for invalid input", () => {
     expect(formatToolDuration(-5)).toBe("");
     expect(formatToolDuration(NaN)).toBe("");
+  });
+});
+
+/**
+ * SHI-296 — the tool-call modal is the only view that draws a tool's whole
+ * input, so it is where the keys docs/244's projection removed come back.
+ * Opening the modal is the click requirement 8 licenses a loading state for.
+ *
+ * The transcript line itself must be unchanged, which is the first test: the
+ * server ships exactly the characters the line slices to, so a truncated
+ * `command` and a whole one render identically above the fold.
+ */
+describe("ToolUseItem lazy tool input (docs/244)", () => {
+  beforeEach(() => {
+    useSessionStore.setState({ sessionId: "session-1" });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    useSessionStore.getState().reset();
+  });
+
+  function truncatedBash(): ToolUseBlock {
+    return {
+      ...tool("Bash", { command: "echo one" }),
+      bodyTruncated: true,
+      inputChars: { command: 4096, description: 900 },
+    } as ToolUseBlock;
+  }
+
+  it("draws the transcript line from the shipped prefix, with no fetch", () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <ToolUseItem
+        tool={truncatedBash()}
+        result={{ toolUseId: "t1", content: "out" }}
+        isLast={false}
+        isStreaming={false}
+        isQuestionDisabled
+      />,
+    );
+
+    expect(screen.getByText("echo one")).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("fetches the whole input when the modal opens and renders the recovered keys", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ input: { command: "echo one two three", description: "say hello" } }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <ToolUseItem
+        tool={truncatedBash()}
+        result={{ toolUseId: "t1", content: "out" }}
+        isLast={false}
+        isStreaming={false}
+        isQuestionDisabled
+      />,
+    );
+    fireEvent.click(screen.getByLabelText("Show output"));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(fetchMock.mock.calls[0]![0]).toBe("/api/sessions/session-1/tool-inputs/t1");
+    // `description` was dropped on the wire entirely — its field only exists
+    // because the fetch brought it back.
+    await waitFor(() => expect(screen.getByText("description")).toBeInTheDocument());
+    expect(screen.getByLabelText("Tool output")).toHaveTextContent("echo one two three");
+  });
+
+  it("keeps the fields it has and says more is coming, rather than blanking", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+
+    render(
+      <ToolUseItem
+        tool={truncatedBash()}
+        result={{ toolUseId: "t1", content: "out" }}
+        isLast={false}
+        isStreaming={false}
+        isQuestionDisabled
+      />,
+    );
+    fireEvent.click(screen.getByLabelText("Show output"));
+
+    await waitFor(() => expect(screen.getByText("Loading input…")).toBeInTheDocument());
+    // The prefix already on the wire is still shown while the rest is in flight.
+    expect(screen.getByLabelText("Tool output")).toHaveTextContent("echo one");
+  });
+
+  it("surfaces a failed fetch instead of silently showing a partial input", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 404 }));
+
+    render(
+      <ToolUseItem
+        tool={truncatedBash()}
+        result={{ toolUseId: "t1", content: "out" }}
+        isLast={false}
+        isStreaming={false}
+        isQuestionDisabled
+      />,
+    );
+    fireEvent.click(screen.getByLabelText("Show output"));
+
+    await waitFor(() => expect(screen.getByLabelText("Tool output")).toHaveTextContent("load the full input"));
+  });
+
+  it("does not fetch for an input that arrived whole", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <ToolUseItem
+        tool={tool("Bash", { command: "ls" })}
+        result={{ toolUseId: "t1", content: "out" }}
+        isLast={false}
+        isStreaming={false}
+        isQuestionDisabled
+      />,
+    );
+    fireEvent.click(screen.getByLabelText("Show output"));
+
+    await waitFor(() => expect(screen.getByText("command")).toBeInTheDocument());
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

@@ -12,8 +12,25 @@ import type { SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemI
 import { getLoadedClientBuildId, shouldReloadForServerBuild } from "../utils/client-build.js";
 import { getSavedModelId, saveAgentId, saveModelId } from "../utils/local-storage.js";
 import { resolveAuthedSelection } from "../utils/resolve-authed-selection.js";
+import { useEventListeners } from "./useEventListener.js";
 
 let reloadingForClientUpdate = false;
+
+/**
+ * Exponential backoff for our own reconnect loop: 1s, 2s, 4s, … capped at 30s.
+ * Matches `useWebSocket`'s shape (jitter omitted — one tab, no herd).
+ */
+function backoffMs(attempt: number): number {
+  return Math.min(1000 * Math.pow(2, attempt), 30_000);
+}
+
+/**
+ * One window reactivation fires several listeners within a few milliseconds
+ * (`visibilitychange` + `focus`, plus `pageshow` on a bfcache restore). Treat
+ * them as one signal so a resume opens ONE stream, not three — same constant and
+ * reason as `useWebSocket`'s `handleForeground`.
+ */
+const FOREGROUND_COALESCE_MS = 1000;
 
 /**
  * SSE hook for global push events — session list, repo updates, auth, activity dots.
@@ -23,14 +40,41 @@ let reloadingForClientUpdate = false;
  * often silently terminates the underlying TCP connection. Native EventSource
  * keeps `readyState === OPEN` and never fires `error`, so its built-in
  * auto-reconnect never triggers and PR/CI status updates stop arriving — the
- * UI shows stale data until the user reloads the page. We watch
- * `visibilitychange` and force a fresh connection when the tab returns to the
- * foreground; the server re-sends its snapshot (PR statuses, sessions, repos
- * — see `/api/events` initial-state writes) so the UI catches up immediately.
+ * UI shows stale data until the user reloads the page. We force a fresh
+ * connection whenever the app returns to the foreground; the server re-sends its
+ * snapshot (PR statuses, sessions, repos — see `/api/events` initial-state
+ * writes) so the UI catches up immediately.
+ *
+ * That foreground signal must be the SAME set the WebSocket listens for —
+ * `visibilitychange` + `pageshow` + `focus` + `online` — not `visibilitychange`
+ * alone. A standalone-PWA app-switch or a bfcache restore surfaces as
+ * `pageshow`/`focus` with `visibilitychange` either absent or already delivered
+ * while the page was frozen, so a visibility-only trigger misses the resume the
+ * WebSocket recovers from. That asymmetry is directly visible in the product:
+ * the chat reconnects and looks healthy while every *cross-session* surface fed
+ * only by SSE — the sidebar's PR / CI indicators above all, since
+ * `/api/bootstrap` carries no PR state and nothing else re-fetches it — stays
+ * frozen at its pre-background values until a full page reload.
+ *
+ * Restart resilience: native EventSource auto-reconnect only covers *network*
+ * errors. Per the HTML spec, a response that is not `200 text/event-stream`
+ * **fails the connection permanently** — readyState goes to CLOSED and the
+ * browser never retries. That is exactly what an orchestrator restart produces:
+ * while the container is being replaced, the ingress (cloudflared) answers with
+ * a 502 HTML error page, so any retry landing inside that window kills the
+ * stream for the lifetime of the page. The WebSocket has its own backoff loop
+ * and comes back, so the app *looks* connected while SSE is silently dead — and
+ * because the post-update page reload is driven by the `system_info` build id
+ * delivered on SSE *connect*, the tab never reloads onto the new client bundle
+ * (it also strands the session list, PR status and version badge). So we own the
+ * retry: on CLOSED we reconnect with backoff instead of giving up.
  */
 export function useServerEvents(): void {
   const eventSourceRef = useRef<EventSource | null>(null);
   const [connectAttempt, setConnectAttempt] = useState(0);
+  const reconnectAttemptRef = useRef(0);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastForegroundReconnectRef = useRef(0);
 
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
@@ -61,12 +105,24 @@ export function useServerEvents(): void {
     });
 
     es.addEventListener("session_agent_started", (e: MessageEvent) => {
-      const data = JSON.parse(e.data as string) as { sessionId: string };
-      useSessionStore.getState().setActiveRunnerSessions((prev) => {
+      const data = JSON.parse(e.data as string) as { sessionId: string; activity?: string };
+      const store = useSessionStore.getState();
+      store.setActiveRunnerSessions((prev) => {
         const next = new Set(prev);
         next.add(data.sessionId);
         return next;
       });
+      // Reflect the running state in the active session's chat. A system-initiated
+      // turn — a wake-up (e.g. resuming after a `shipit agent run` consult with
+      // Codex finishes), a child-session notify, Fix CI — has no client-side
+      // `send` to set `isLoading`, and a no-echo turn emits no `system_user_message`
+      // either, so without this the "Working…" indicator never appears even though
+      // the agent is running. Idempotent for user-initiated turns (already loading).
+      // Symmetric with the `session_agent_finished` handler that clears it.
+      if (data.sessionId === store.sessionId) {
+        store.setIsLoading(true);
+        if (data.activity) store.setActivity({ label: data.activity });
+      }
     });
 
     es.addEventListener("session_agent_finished", (e: MessageEvent) => {
@@ -98,12 +154,25 @@ export function useServerEvents(): void {
     es.addEventListener("session_attention", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as {
         awaitingPermissionSessionIds?: string[];
+        backgroundTaskSessionIds?: string[];
         sessionId?: string;
         awaitingPermission?: boolean;
       };
       const store = useSessionStore.getState();
       if (Array.isArray(data.awaitingPermissionSessionIds)) {
         store.setAwaitingPermissionSessions(() => new Set(data.awaitingPermissionSessionIds));
+        // docs/235 — the snapshot form carries both sets. Reconciled wholesale
+        // (not merged) for the same reason as the permission set: this event is
+        // authoritative on connect, so a session that drained its tasks while
+        // the tab was away must lose its marker rather than keep a stale one.
+        // Defaults to empty so an older orchestrator that omits the field
+        // clears rather than strands the set.
+        // Ids only — the snapshot has no room for task descriptions, so the
+        // status line falls back to its unnamed label until the next live
+        // `background_tasks` message re-states them.
+        store.setBackgroundTaskSessions(
+          () => new Map((data.backgroundTaskSessionIds ?? []).map((id) => [id, []])),
+        );
         return;
       }
       if (data.sessionId) {
@@ -140,58 +209,124 @@ export function useServerEvents(): void {
     // `codex_auth_*`) are gone; adding a new backend is one variant added to
     // the discriminated `details.kind` union, not three new listeners here.
     // docs/155: the three SSE auth handlers below dispatch on the runtime
-    // event's `agentId` + `details.kind` to route each backend's payload into
-    // a different store slice (sessionStore.setAuthUrl vs
-    // settingsStore.setCodexDeviceAuth*). That's discriminated-union
-    // narrowing of received wire data, not abstraction-leaking dispatch —
-    // adding a backend means adding one more `else if` here that targets
-    // whatever store slice owns its sign-in card. The disables sit inline
-    // so a new backend wires its narrowing without re-tripping the leak guard.
+    // event's `agentId` + `details.kind` to shape each backend's payload into
+    // the account-keyed challenge slice. That's discriminated-union narrowing
+    // of received wire data, not abstraction-leaking dispatch — adding a
+    // backend means adding one more `else if` here for its payload shape. The
+    // disables sit inline so a new backend wires its narrowing without
+    // re-tripping the leak guard.
+    //
+    // docs/150 req 16/19: every subscription sign-in is account-scoped, so an
+    // event without `accountId` has no home and is ignored rather than
+    // falling back to a provider-wide slot. The provider-wide slots
+    // (`sessionStore.authUrl`, `settingsStore.codexDeviceAuth*`) are gone with
+    // the singleton endpoints that fed them. Claude's *diagnostics* are still
+    // provider-wide and are updated regardless — they're a debug buffer, not a
+    // challenge.
     es.addEventListener("agent_auth_pending", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as {
         agentId: AgentId;
+        accountId?: string;
         details:
           | { kind: "code-paste-url"; verificationUri: string }
           | { kind: "device-code"; verificationUri: string; userCode: string; expiresInSec: number };
       };
       // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
       if (data.agentId === "claude" && data.details.kind === "code-paste-url") {
-        useSessionStore.getState().setAuthUrl(data.details.verificationUri);
+        if (data.accountId) {
+          useSettingsStore.getState().setProviderAccountAuth("claude", data.accountId, {
+            provider: "claude",
+            accountId: data.accountId,
+            verificationUri: data.details.verificationUri,
+          });
+          useSettingsStore.getState().setProviderAccountAuthError("claude", data.accountId, null);
+        }
+        // docs/150 — advance only THIS account's diagnostics, and only if it
+        // already has an attempt in flight to advance.
+        const accountId = data.accountId;
+        const currentAttemptId = accountId
+          ? useSettingsStore.getState().claudeAuthDiagnostics[accountId]?.attemptId
+          : undefined;
+        if (accountId && currentAttemptId) {
+          useSettingsStore.getState().setClaudeAuthProgress(accountId, {
+            attemptId: currentAttemptId,
+            phase: "waiting_for_code",
+            message: "Authentication link received. Paste the authorization code after signing in.",
+          });
+        }
       // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
       } else if (data.agentId === "codex" && data.details.kind === "device-code") {
-        useSettingsStore.getState().setCodexDeviceAuth({
-          verificationUri: data.details.verificationUri,
-          userCode: data.details.userCode,
-          expiresInSec: data.details.expiresInSec,
-        });
-        useSettingsStore.getState().setCodexDeviceAuthError(null);
+        // docs/150 req 16 — an account-scoped Codex sign-in belongs on its own
+        // row. Before this, `accountId` was dropped here and every device code
+        // landed in the provider-wide slot, so connecting a second Codex
+        // account rendered its challenge in the singleton card instead of the
+        // row that started it.
+        if (data.accountId) {
+          useSettingsStore.getState().setProviderAccountAuth("codex", data.accountId, {
+            provider: "codex",
+            accountId: data.accountId,
+            verificationUri: data.details.verificationUri,
+            userCode: data.details.userCode,
+          });
+          useSettingsStore.getState().setProviderAccountAuthError("codex", data.accountId, null);
+        }
       }
     });
 
     es.addEventListener("agent_auth_complete", (e: MessageEvent) => {
-      const data = JSON.parse(e.data as string) as { agentId: AgentId };
+      const data = JSON.parse(e.data as string) as { agentId: AgentId; accountId?: string };
       // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
       if (data.agentId === "claude") {
-        useSessionStore.getState().setAuthUrl(null);
+        if (data.accountId) {
+          useSettingsStore.getState().setProviderAccountAuth("claude", data.accountId, null);
+          useSettingsStore.getState().setProviderAccountAuthError("claude", data.accountId, null);
+        }
+        if (data.accountId) {
+          useSettingsStore.getState()
+            .finishClaudeAuthDiagnostics(data.accountId, "complete", "Claude sign-in completed.");
+        }
       // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
       } else if (data.agentId === "codex") {
-        useSettingsStore.getState().setCodexDeviceAuth(null);
-        useSettingsStore.getState().setCodexDeviceAuthError(null);
+        if (data.accountId) {
+          useSettingsStore.getState().setProviderAccountAuth("codex", data.accountId, null);
+          useSettingsStore.getState().setProviderAccountAuthError("codex", data.accountId, null);
+        }
       }
     });
 
     es.addEventListener("agent_auth_failed", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as {
         agentId: AgentId;
-        reason?: "timeout" | "denied" | "error" | "revoked";
+        accountId?: string;
+        reason?: "timeout" | "denied" | "error" | "revoked" | "duplicate";
         message?: string;
       };
+      // docs/150 req 22 — a refused duplicate connect usually DELETES the row
+      // it names, so the per-row error below has nowhere to land. Toast it
+      // first, for every provider, and skip the retry-flavoured copy: retrying
+      // this sign-in would only be refused again.
+      if (data.reason === "duplicate") {
+        useUiStore.getState().setToast({
+          message: data.message ?? "That account is already connected.",
+          duration: 12000,
+        });
+        if (data.accountId) {
+          useSettingsStore.getState().setProviderAccountAuth(data.agentId, data.accountId, null);
+        }
+        return;
+      }
       // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
       if (data.agentId === "claude") {
         // Clear the URL so the sign-in card flips back to "Sign in" — also
         // the path the legacy `auth_required {}` broadcast took for
         // refresher-revoked accounts.
-        useSessionStore.getState().setAuthUrl(null);
+        const claudeFailure = data.message
+          ?? "Claude sign-in failed. You can retry or copy the diagnostic details.";
+        if (data.accountId) {
+          useSettingsStore.getState().setProviderAccountAuth("claude", data.accountId, null);
+          useSettingsStore.getState().setProviderAccountAuthError("claude", data.accountId, claudeFailure);
+          useSettingsStore.getState().finishClaudeAuthDiagnostics(data.accountId, "failed", claudeFailure);
+        }
         if (data.reason === "revoked") {
           useUiStore.getState().setToast({
             message: data.message ?? "Claude authentication expired. Sign in again.",
@@ -207,13 +342,60 @@ export function useServerEvents(): void {
         }
       // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
       } else if (data.agentId === "codex") {
-        useSettingsStore.getState().setCodexDeviceAuth(null);
         const fallback = data.reason === "timeout"
           ? "Sign-in timed out. Try again."
           : data.reason === "denied"
             ? "Sign-in was denied."
             : "Sign-in failed. Try again.";
-        useSettingsStore.getState().setCodexDeviceAuthError(data.message ?? fallback);
+        if (data.accountId) {
+          useSettingsStore.getState().setProviderAccountAuth("codex", data.accountId, null);
+          useSettingsStore.getState().setProviderAccountAuthError("codex", data.accountId, data.message ?? fallback);
+        }
+      }
+    });
+
+    es.addEventListener("agent_auth_progress", (e: MessageEvent) => {
+      const data = JSON.parse(e.data as string) as {
+        agentId: AgentId;
+        accountId?: string;
+        attemptId: string;
+        phase: "starting" | "waiting_for_cli" | "skipping_setup" | "waiting_for_url" | "waiting_for_code" | "checking_credentials" | "complete" | "failed";
+        message: string;
+        elapsedMs?: number;
+      };
+      // docs/150 — diagnostics are per account. An unscoped payload has no row
+      // that could render it, so it is dropped rather than pooled provider-wide.
+      // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing for unified auth events.
+      if (data.agentId === "claude" && data.accountId) {
+        useSettingsStore.getState().setClaudeAuthProgress(data.accountId, {
+          attemptId: data.attemptId,
+          phase: data.phase,
+          message: data.message,
+          ...(data.elapsedMs !== undefined ? { elapsedMs: data.elapsedMs } : {}),
+        });
+      }
+    });
+
+    es.addEventListener("agent_auth_log", (e: MessageEvent) => {
+      const data = JSON.parse(e.data as string) as {
+        agentId: AgentId;
+        accountId?: string;
+        attemptId: string;
+        timestamp: string;
+        level: "debug" | "info" | "warn" | "error";
+        source: "shipit" | "claude_stdout" | "claude_stderr" | "claude_control";
+        message: string;
+      };
+      // See `agent_auth_progress` above for why an unscoped payload is dropped.
+      // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing for unified auth events.
+      if (data.agentId === "claude" && data.accountId) {
+        useSettingsStore.getState().appendClaudeAuthLog(data.accountId, {
+          attemptId: data.attemptId,
+          timestamp: data.timestamp,
+          level: data.level,
+          source: data.source,
+          message: data.message,
+        });
       }
     });
 
@@ -430,35 +612,62 @@ export function useServerEvents(): void {
       }
     });
 
+    // A stream that opened is a healthy generation — restart the backoff ladder
+    // so the next outage retries promptly instead of inheriting an old delay.
+    es.onopen = () => {
+      reconnectAttemptRef.current = 0;
+    };
+
     es.onerror = () => {
-      // Connection lost — EventSource auto-reconnects.
-      // Only log if the connection was previously open.
-      if (es.readyState === EventSource.CLOSED) {
-        console.warn("[sse] Connection closed");
-      }
+      // CONNECTING means the browser's own auto-reconnect is already in flight
+      // (a plain network error) — leave it alone. CLOSED means the connection
+      // was *failed*, which the browser never retries: a non-200 / non-
+      // `text/event-stream` response, i.e. the ingress's 502 page while the
+      // orchestrator restarts. That is ours to recover from.
+      if (es.readyState !== EventSource.CLOSED) return;
+      const attempt = reconnectAttemptRef.current;
+      reconnectAttemptRef.current = attempt + 1;
+      const delay = backoffMs(attempt);
+      console.warn(`[sse] Connection closed — reconnecting in ${delay}ms`);
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = setTimeout(() => setConnectAttempt((n) => n + 1), delay);
     };
 
     return () => {
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      es.onopen = null;
+      es.onerror = null;
       es.close();
       eventSourceRef.current = null;
     };
   }, [connectAttempt]);
 
-  // Force a fresh SSE connection when the tab returns from the background.
-  // Native EventSource readyState often stays OPEN over a dead socket on
-  // mobile, so we tear down and re-open instead of waiting for a (never-firing)
-  // error event. Closing the previous EventSource is handled by the effect's
-  // cleanup, which re-runs when `connectAttempt` changes.
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
-  useEffect(() => {
-    function handleVisibilityChange() {
-      if (!document.hidden) {
-        setConnectAttempt((n) => n + 1);
-      }
-    }
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () => {
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-  }, []);
+  // Force a fresh SSE connection when the app returns from the background, or
+  // when the network comes back. Native EventSource readyState often stays OPEN
+  // over a dead socket on mobile, so we tear down and re-open instead of waiting
+  // for a (never-firing) error event. Closing the previous EventSource and
+  // cancelling any pending backoff timer are both handled by the effect's
+  // cleanup, which re-runs when `connectAttempt` changes. The attempt counter is
+  // reset first so a user-visible return to the app reconnects immediately
+  // rather than inheriting a long backoff delay from the outage.
+  function reconnectNow(): void {
+    reconnectAttemptRef.current = 0;
+    setConnectAttempt((n) => n + 1);
+  }
+  function handleForeground(): void {
+    if (document.hidden) return;
+    const now = Date.now();
+    if (now - lastForegroundReconnectRef.current < FOREGROUND_COALESCE_MS) return;
+    lastForegroundReconnectRef.current = now;
+    reconnectNow();
+  }
+  useEventListeners([
+    { target: document, type: "visibilitychange", handler: handleForeground },
+    { target: window, type: "pageshow", handler: handleForeground },
+    { target: window, type: "focus", handler: handleForeground },
+    { target: window, type: "online", handler: handleForeground },
+  ]);
 }

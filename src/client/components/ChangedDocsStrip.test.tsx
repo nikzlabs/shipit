@@ -12,9 +12,9 @@ afterEach(() => {
 });
 
 const files: NotableFileChange[] = [
-  { path: "docs/205-pr-changed-docs/plan.md", title: "PR-scoped changed docs", kind: "doc", status: "A" },
-  { path: "shipit.yaml", title: "shipit.yaml", kind: "config", status: "M" },
-  { path: "docs/205-pr-changed-docs/mockup.png", title: "mockup.png", kind: "image", status: "A" },
+  { path: "docs/205-pr-changed-docs/plan.md", label: "205/plan.md", kind: "doc", status: "A" },
+  { path: "shipit.yaml", label: "shipit.yaml", kind: "config", status: "M" },
+  { path: "docs/205-pr-changed-docs/mockup.png", label: "205/mockup.png", kind: "image", status: "A" },
 ];
 
 describe("ChangedDocsStrip", () => {
@@ -25,21 +25,21 @@ describe("ChangedDocsStrip", () => {
     useFileStore.setState({ openPreview } as Partial<ReturnType<typeof useFileStore.getState>>);
   });
 
-  it("renders a chip per notable file with its title", () => {
+  it("renders a chip per notable file with its compact path label", () => {
     render(<ChangedDocsStrip sessionId="s1" notableFiles={files} />);
-    expect(screen.getByText("PR-scoped changed docs")).toBeInTheDocument();
+    expect(screen.getByText("205/plan.md")).toBeInTheDocument();
     expect(screen.getByText("shipit.yaml")).toBeInTheDocument();
   });
 
   it("opens the file inline via openPreview when a chip is clicked", () => {
     render(<ChangedDocsStrip sessionId="s1" notableFiles={files} />);
-    fireEvent.click(screen.getByText("PR-scoped changed docs"));
+    fireEvent.click(screen.getByText("205/plan.md"));
     expect(openPreview).toHaveBeenCalledWith("s1", "docs/205-pr-changed-docs/plan.md");
   });
 
   it("renders an image chip that opens the asset inline when clicked", () => {
     render(<ChangedDocsStrip sessionId="s1" notableFiles={files} />);
-    fireEvent.click(screen.getByText("mockup.png"));
+    fireEvent.click(screen.getByText("205/mockup.png"));
     expect(openPreview).toHaveBeenCalledWith("s1", "docs/205-pr-changed-docs/mockup.png");
   });
 

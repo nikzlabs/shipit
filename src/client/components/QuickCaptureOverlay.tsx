@@ -1,5 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- focus restoration, Escape listener
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useEventListener } from "../hooks/useEventListener.js";
 import { CircleNotchIcon, XIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { useSessionStore } from "../stores/session-store.js";
@@ -7,11 +8,21 @@ import { useRepoStore } from "../stores/repo-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { startQuickSessionInBackground } from "../stores/actions/session-actions.js";
-import { getSavedAgentId, getSavedModelId, saveAgentId, saveModelId } from "../utils/local-storage.js";
+import {
+  getSavedAgentId,
+  getSavedModelId,
+  getSavedQuickSessionRepo,
+  getSavedReasoning,
+  saveAgentId,
+  saveModelId,
+  saveQuickSessionRepo,
+} from "../utils/local-storage.js";
 import { agentIdForModel } from "../utils/agent-for-model.js";
 import { parseRepoLabel } from "../utils/repo-label.js";
 import { MessageInput, type SendPayload } from "./MessageInput.js";
 import { Button } from "./ui/button.js";
+import { Alert } from "./ui/banner.js";
+import { Dialog } from "./ui/dialog.js";
 import type { FileContextRef, SessionInfo } from "../../server/shared/types.js";
 
 export function QuickCaptureOverlay({
@@ -34,6 +45,13 @@ export function QuickCaptureOverlay({
   const [selectedRepoUrl, setSelectedRepoUrl] = useState<string | undefined>(undefined);
   const [pendingFiles, setPendingFiles] = useState<FileContextRef[]>([]);
   const [selectedModel, setSelectedModel] = useState<string | undefined>(getSavedModelId());
+  // docs/217 — per-session reasoning effort (Control B), seeded from the active
+  // agent's localStorage pick. Mirrors the regular composer's new-session
+  // behavior, but a quick session's first turn is dispatched server-side at
+  // creation (docs/205) — before any WS connect — so the `?reasoning=` connect
+  // param can't reach turn 1. We therefore send the chosen level in the
+  // creation params (below). `undefined` falls back to the saved seed at send.
+  const [selectedReasoning, setSelectedReasoning] = useState<string | undefined>(undefined);
   // docs/175-auto-merge-at-session-creation/plan.md decision #1: this toggle is
   // per-session and must NEVER be persisted. Do NOT wire it to localStorage the
   // way the model/agent pickers are — a sticky auto-merge is an invisible,
@@ -62,7 +80,23 @@ export function QuickCaptureOverlay({
     () => sessions.find((s) => s.id === sessionId)?.remoteUrl,
     [sessions, sessionId],
   );
-  const defaultRepoUrl = activeSessionRepo ?? activeRepoUrl ?? repos[0]?.url;
+  // The last quick session's repo wins over the repo the user is currently
+  // sitting in. Quick capture is the "I just spotted a gap" surface, and that
+  // gap is usually in a *different* repo than the one being worked in (the
+  // canonical case: working in a product repo, filing work into ShipIt itself).
+  // Re-targeting to the current session every time meant re-picking the same
+  // repo on every capture. The remembered value is validated against the loaded
+  // repo list so a removed/renamed repo silently falls back instead of
+  // selecting nothing. Only when there's no remembered quick session do we fall
+  // back to the current context. See docs/145 "Repo / target context".
+  // `open` is in the deps so the value is re-read from localStorage on every
+  // opening — a send earlier in this page session must be reflected without a
+  // reload.
+  const lastQuickSessionRepo = useMemo(() => {
+    const saved = getSavedQuickSessionRepo();
+    return saved && repos.some((r) => r.url === saved) ? saved : undefined;
+  }, [repos, open]);
+  const defaultRepoUrl = lastQuickSessionRepo ?? activeSessionRepo ?? activeRepoUrl ?? repos[0]?.url;
   const effectiveRepoUrl = selectedRepoUrl ?? defaultRepoUrl;
   const selectedRepo = repos.find((r) => r.url === effectiveRepoUrl);
 
@@ -81,6 +115,8 @@ export function QuickCaptureOverlay({
     }
     wasOpenRef.current = true;
     setSelectedModel(getSavedModelId());
+    // Clear any explicit pick so the picker previews each agent's saved seed.
+    setSelectedReasoning(undefined);
     // docs/175 decision #1 — auto-merge never persists across openings either.
     // Reset to off on every open so a prior session's opt-in can't carry over.
     setArmAutoMerge(false);
@@ -99,18 +135,12 @@ export function QuickCaptureOverlay({
     });
   };
 
-  // eslint-disable-next-line no-restricted-syntax -- Escape key listener while modal is open
-  useEffect(() => {
-    if (!open) return undefined;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        close();
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [open]);
+  useEventListener(open ? window : null, "keydown", (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      close();
+    }
+  });
 
   if (!open) return null;
 
@@ -128,14 +158,23 @@ export function QuickCaptureOverlay({
       setError("Add a repo first.");
       return;
     }
+    // docs/217 — the explicit pick wins; otherwise the active agent's saved
+    // seed (the ReasoningSelector persists every pick via `saveReasoning`), so
+    // the level carries forward to new quick sessions exactly like the model.
+    const reasoning = selectedReasoning ?? getSavedReasoning(selectedAgentId);
     const params = {
       repoUrl: selectedRepo.url,
       initialPrompt: payload.text,
       agent: selectedAgentId,
       ...(selectedModel ? { model: selectedModel } : {}),
+      ...(reasoning ? { reasoning } : {}),
       ...(armAutoMerge ? { armAutoMerge: true } : {}),
       ...(payload.deferredFiles.length > 0 ? { files: payload.deferredFiles } : {}),
     };
+    // Remember the target so the next quick capture defaults to it (see
+    // `lastQuickSessionRepo`). Written on send, not on picker change, so an
+    // abandoned overlay can't move the default.
+    saveQuickSessionRepo(selectedRepo.url);
     setPendingFiles([]);
     close();
     // Let the app graduate the URL when the server reused the session the user
@@ -146,6 +185,11 @@ export function QuickCaptureOverlay({
   };
 
   return (
+    // Wrapped in the shared Dialog purely to inherit Back-button dismissal (the
+    // wrapper pushes a history entry and maps Back → onOpenChange(false)). The
+    // bespoke top-anchored, command-palette layout is kept as-is rather than
+    // forced into DialogContent's centered / fullscreen-on-mobile mold.
+    <Dialog open={open} onOpenChange={(o) => { if (!o) close(); }}>
     <div
       role="dialog"
       aria-label="Quick capture"
@@ -194,14 +238,14 @@ export function QuickCaptureOverlay({
           </Button>
         </div>
         {error && (
-          <div className="mx-4 mt-3 rounded-md border border-(--color-error)/40 bg-(--color-error-subtle) px-3 py-2 text-sm text-(--color-error)">
+          <Alert variant="error" className="mx-4 mt-3 text-sm">
             {error}
-          </div>
+          </Alert>
         )}
         {selectedRepo && selectedRepo.status !== "ready" && (
-          <div className="mx-4 mt-3 rounded-md border border-(--color-warning)/40 bg-(--color-warning-subtle) px-3 py-2 text-sm text-(--color-warning)">
+          <Alert variant="warning" className="mx-4 mt-3 text-sm">
             This repo is still cloning.
-          </div>
+          </Alert>
         )}
         <div className="py-3">
           <MessageInput
@@ -229,7 +273,16 @@ export function QuickCaptureOverlay({
             onModelChange={(model) => {
               saveModelId(model);
               setSelectedModel(model);
+              // Reasoning is per-agent; a model switch can change the agent, so
+              // drop the explicit pick and let the new agent's seed take over.
+              setSelectedReasoning(undefined);
             }}
+            // No `sessionReasoning` here: there's no session yet, and the
+            // selector's own seed fallback (`seedFromHistory`) + post-pick
+            // `pending` state drive the displayed value. We only need the
+            // callback to (a) make the control visible and (b) capture the pick
+            // for the creation params below.
+            onReasoningChange={(effort) => setSelectedReasoning(effort ?? undefined)}
             modelInfo={modelInfo}
             hasActiveSession={false}
           />
@@ -262,5 +315,6 @@ export function QuickCaptureOverlay({
         </div>
       </div>
     </div>
+    </Dialog>
   );
 }

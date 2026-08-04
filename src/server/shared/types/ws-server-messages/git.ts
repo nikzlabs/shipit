@@ -35,18 +35,29 @@ export interface WsGitPushRejected {
 /** Server → Client: rebase has started. */
 export interface WsRebaseStarted {
   type: "rebase_started";
+  /**
+   * Owning session. `useGitStore` is a GLOBAL client store while this message
+   * rides a per-session socket, so every rebase-lifecycle message names its
+   * session and the handler drops the foreign ones — the same scoping
+   * `auto_resolve_started` (which interleaves with these) already had.
+   */
+  sessionId: string;
   baseBranch: string;
 }
 
 /** Server → Client: rebase encountered conflicts. */
 export interface WsRebaseConflicts {
   type: "rebase_conflicts";
+  /** Owning session — see `WsRebaseStarted.sessionId`. */
+  sessionId: string;
   conflicts: { path: string }[];
 }
 
 /** Server → Client: rebase completed successfully. */
 export interface WsRebaseComplete {
   type: "rebase_complete";
+  /** Owning session — see `WsRebaseStarted.sessionId`. */
+  sessionId: string;
   forcePushed: boolean;
   /**
    * Set when the branch already contained every commit from the base branch,
@@ -68,6 +79,8 @@ export interface WsRebaseComplete {
 /** Server → Client: rebase was aborted. */
 export interface WsRebaseAborted {
   type: "rebase_aborted";
+  /** Owning session — see `WsRebaseStarted.sessionId`. */
+  sessionId: string;
   /**
    * Set when the abort was caused by a server-side failure (e.g. fetch
    * error, unresolvable base ref, non-conflict git rebase failure, runner

@@ -68,28 +68,49 @@ export async function emitPrLifecycleAfterCommit(args: {
   const previousMergedPr = session.previousMergedPr;
 
   try {
+    // Refresh the changed-docs strip on EVERY post-turn commit — unconditionally,
+    // exactly like the diff stat refreshes via the always-emitted `git_committed`.
+    // The strip's `notableFiles` is git-derived locally and the poller never
+    // recomputes it (it preserves the last-known list), so it has to be re-pushed
+    // here or it goes stale (docs/210).
+    //
+    // This recompute USED to live inside the `if (prStatus)` branch below, which
+    // coupled it to the PR-lifecycle state machine: a turn that took the
+    // PR-recovery early-return (poller had no status cached yet — right after the
+    // PR was created, or after an orchestrator restart, where `getStatus` is
+    // briefly null while `forceRefreshSession` repopulates it) committed new docs
+    // but never re-emitted the strip. It stayed frozen until the next qualifying
+    // turn or a session-switch re-seed (`activateSession`) — the reported "docs
+    // aren't visible until I switch sessions, but the diff numbers update
+    // immediately." Hoisting it above the branching decouples the strip refresh
+    // from which lifecycle path runs, so it tracks the branch turn-by-turn.
+    //
+    // Base resolution mirrors the session-switch re-seed: the tracked PR's base,
+    // else a re-armed session's prior base, else the repo's own default branch
+    // (main / master / trunk — read from the clone, not assumed). A
+    // notableFiles-only patch merges into the live card without touching the
+    // poller-owned fields.
+    try {
+      const stripGit = deps.createGitManager(sessionDir);
+      const base =
+        deps.prStatusPoller.getStatus(sessionId)?.baseBranch
+        ?? previousMergedPr?.baseBranch
+        ?? await stripGit.getDefaultBranch();
+      const notableFiles = await notableFilesForBranch(stripGit, base);
+      emit({
+        type: "pr_notable_files",
+        sessionId,
+        cardId: `pr-card-${sessionId}`,
+        notableFiles,
+      });
+    } catch {
+      // Best-effort — a git error just leaves the last-known strip in place.
+    }
+
     const prStatus = deps.prStatusPoller.getStatus(sessionId);
     if (prStatus) {
-      // The poller drives phase/status/CI for an existing PR over SSE, so the
-      // lifecycle-update path stops here. But the changed-docs strip's
-      // notableFiles is git-derived locally and the poller never recomputes it
-      // (it preserves the last-known list) — without this refresh the strip
-      // stays frozen at the PR-creation snapshot and misses docs changed in
-      // later turns (docs/210). Re-derive it from the current branch and emit a
-      // notableFiles-only patch that merges into the live card without touching
-      // the poller-owned fields.
-      try {
-        const git = deps.createGitManager(sessionDir);
-        const notableFiles = await notableFilesForBranch(git, sessionDir, prStatus.baseBranch);
-        emit({
-          type: "pr_notable_files",
-          sessionId,
-          cardId: `pr-card-${sessionId}`,
-          notableFiles,
-        });
-      } catch {
-        // Best-effort — a git error just leaves the last-known strip in place.
-      }
+      // The poller drives phase/status/CI for an existing PR over SSE, and the
+      // strip was already refreshed above, so the lifecycle-update path stops here.
       return; // poller drives the rest via SSE
     }
 
@@ -156,7 +177,7 @@ export async function emitPrLifecycleAfterCommit(args: {
         const autoMerge = deps.prStatusPoller.getAutoMergeState(sessionId);
         // docs/205 — the changed-docs strip's notable-file list, derived from
         // the same base...HEAD diff that produced the PR.
-        const notableFiles = await notableFilesForBranch(git, sessionDir, result.baseBranch);
+        const notableFiles = await notableFilesForBranch(git, result.baseBranch);
         emit({
           type: "pr_lifecycle_update",
           sessionId,
@@ -201,13 +222,15 @@ export async function emitPrLifecycleAfterCommit(args: {
 
     // Ready card: diff stats vs. the base branch so the user can click "open
     // PR". For a re-armed session use the prior PR's base (re-arm knows it);
-    // otherwise default to "main" (the generic cold-session limitation).
+    // otherwise the repo's own default branch. Hard-coding "main" here made the
+    // ready card report 0 changed files on any `master`/`trunk` repo, because
+    // `diffStatVsBranch` had no ref to diff against.
     const headBranch = session.branch || await git.getCurrentBranch();
-    const readyBase = previousMergedPr?.baseBranch ?? "main";
+    const readyBase = previousMergedPr?.baseBranch ?? await git.getDefaultBranch();
     const { insertions: totalInsertions, deletions: totalDeletions } = await git.diffStatVsBranch(readyBase);
     // docs/205 — notable files (docs + config) changed vs the base, for the
     // card's collapsible changed-docs strip.
-    const notableFiles = await notableFilesForBranch(git, sessionDir, readyBase);
+    const notableFiles = await notableFilesForBranch(git, readyBase);
     const autoMerge = deps.prStatusPoller.getAutoMergeState(sessionId);
     emit({
       type: "pr_lifecycle_update",

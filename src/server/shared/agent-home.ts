@@ -31,3 +31,35 @@ export function agentHome(): string {
 export function codexHome(): string {
   return process.env.CODEX_HOME || `${agentHome()}/.codex`;
 }
+
+/**
+ * Per-spawn HOME override for an agent CLI (docs/150 req 19).
+ *
+ * The process-global {@link agentHome} is correct inside a session container,
+ * where the image symlinks `~/.claude` / `~/.codex` at the per-session
+ * credentials mount, so the CLI transparently reads the account this session
+ * was routed to. In `RUNTIME_MODE=local` (dogfood) there is no container and no
+ * mount, so every session in the process would otherwise read the SAME
+ * credential set regardless of which provider account the router selected.
+ *
+ * An adapter constructed with a resolver calls it **at spawn time** — never at
+ * construction — and uses its result as the CLI's HOME. Returning `undefined`
+ * means "no account-scoped home applies" (a reserved API-key / env-OAuth route,
+ * or a session with no pinned account), which keeps {@link agentHome}. It hands
+ * the adapter a *path*, never credential material: the orchestrator still owns
+ * what is written there.
+ *
+ * Spawn time, not construction time, because the agent object is created before
+ * `prepareSessionAgentEnvironment` pins the route, and because a mid-session
+ * failover repoints the session at a different account under the same runner.
+ */
+export type AgentHomeResolver = () => string | undefined;
+
+/**
+ * The HOME an agent CLI spawns with: the account-scoped root when a resolver
+ * produced one, else the process-global {@link agentHome}. An empty string is
+ * treated as "none" — spawning with `HOME=""` is worse than the global home.
+ */
+export function resolveAgentHome(scopedHome?: string): string {
+  return scopedHome || agentHome();
+}

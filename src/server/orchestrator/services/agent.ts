@@ -13,6 +13,7 @@
 import type { AgentRegistry } from "../../shared/agent-registry.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
+import type { SessionManager } from "../sessions.js";
 import type { AuthManager } from "../agents/claude/auth-manager.js";
 import type {
   PermissionMode,
@@ -26,7 +27,11 @@ import {
   resolveFileAttachments,
   resolveUploadRefs,
 } from "../validation.js";
+import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js";
 import { ServiceError } from "./types.js";
+import { prepareDispatch } from "../prepared-dispatch.js";
+import type { AgentInterfaceProvenance } from "../../shared/agent-interface-sdk/protocol.js";
+import { agentAuthenticationError, isAgentAuthenticated } from "./agent-auth-gate.js";
 
 const PERMISSION_MODES: ReadonlySet<PermissionMode> = new Set<PermissionMode>([
   "auto",
@@ -39,6 +44,7 @@ const MAX_ACTIVITY_LEN = 200;
 
 export interface DispatchAgentMessageInput {
   text: string;
+  agentInterface?: AgentInterfaceProvenance;
   activity?: string;
   permissionMode?: PermissionMode;
   images?: ImageAttachment[];
@@ -57,6 +63,20 @@ export interface DispatchAgentMessageDeps {
   agentRegistry: AgentRegistry;
   credentialStore: CredentialStore;
   authManager: AuthManager;
+  sessionManager: SessionManager;
+  /**
+   * Everything `graduateSession` needs, minus the `runnerRegistry` this
+   * service already has. Warm-graduation is not optional — a dispatch is a
+   * first message like any other (see step 5 below).
+   */
+  graduation: Omit<GraduateSessionDeps, "runnerRegistry" | "sessionManager">;
+  /**
+   * Refill the warm pool after a warm session is consumed. Like the WS
+   * `send_message` path, this surface reaches graduation without going through
+   * `claimSessionService.claim`, so nothing else re-warms. Optional — runtimes
+   * without a pool (tests, local mode) omit it.
+   */
+  warmSessionForRepo?: (repoUrl: string) => Promise<void>;
 }
 
 /**
@@ -67,7 +87,8 @@ export interface DispatchAgentMessageDeps {
  *   2. Runner resolution (404 if no runner is registered for this session).
  *   3. Auth gate (401 if the active agent isn't authenticated).
  *   4. Attachment resolution (read files / uploads from disk, validate sizes).
- *   5. `runner.dispatch(...)` — the funnel owns the send-vs-queue decision.
+ *   5. Warm-session graduation (docs/156) — a dispatch is a first message.
+ *   6. `runner.dispatch(...)` — the funnel owns the send-vs-queue decision.
  */
 export async function dispatchAgentMessage(
   deps: DispatchAgentMessageDeps,
@@ -91,6 +112,12 @@ export async function dispatchAgentMessage(
   if (input.permissionMode !== undefined && !PERMISSION_MODES.has(input.permissionMode)) {
     throw new ServiceError(400, `Unknown permission mode: ${input.permissionMode}`);
   }
+  if (input.agentInterface !== undefined && (
+    input.agentInterface.source !== "agent_interface_sdk"
+    || (input.agentInterface.surface !== "preview" && input.agentInterface.surface !== "present")
+  )) {
+    throw new ServiceError(400, "Invalid agent interface provenance");
+  }
   if (input.images && input.images.length > 0) {
     const imageError = validateImages(input.images);
     if (imageError) throw new ServiceError(400, imageError);
@@ -104,40 +131,18 @@ export async function dispatchAgentMessage(
   if (!runner || runner.disposed) {
     throw new ServiceError(404, "Session is not active");
   }
+  // docs/243 — reject before auth refresh, attachment reads, warm graduation,
+  // persistence, queueing, or process start. dispatch() repeats this check at
+  // the shared boundary to cover races and every non-HTTP ingress.
+  runner.assertCanDispatch();
 
   // 3. Auth gate — mirror ensureActiveAgentAuthenticated from the WS handler.
   //    Without this, the dispatched run would hang the same way an
   //    unauthenticated `send_message` would.
   //
-  //    docs/155: per-backend auth gate. `AgentAuthManager.isConfigured()`
-  //    exists and could front a `Map<AgentId, …>` dispatch, but the
-  //    per-backend behavior still differs (Claude refreshes from disk via
-  //    `checkCredentials()`; Codex re-reads its env-var via
-  //    `agentRegistry.refreshAuth`) and the error copy differs per backend.
-  //    Consolidating both is tracked but not done; the disables below
-  //    annotate the surviving branches.
   const activeAgentId = runner.agentId;
-  // eslint-disable-next-line no-restricted-syntax -- docs/155: per-backend auth gate (see comment above)
-  if (activeAgentId === "claude") {
-    if (!deps.authManager.authenticated) {
-      deps.authManager.checkCredentials();
-    }
-    if (!deps.authManager.authenticated) {
-      throw new ServiceError(
-        401,
-        "Claude is not authenticated. Sign in to Claude or add ANTHROPIC_API_KEY in Settings → Agents.",
-      );
-    }
-  // eslint-disable-next-line no-restricted-syntax -- docs/155: per-backend auth gate (see comment above)
-  } else if (activeAgentId === "codex") {
-    deps.agentRegistry.refreshAuth("codex");
-    const info = deps.agentRegistry.get("codex");
-    if (!info?.authConfigured) {
-      throw new ServiceError(
-        401,
-        "Codex is not authenticated. Sign in to Codex or add OPENAI_API_KEY in Settings.",
-      );
-    }
+  if (!isAgentAuthenticated(deps.agentRegistry, activeAgentId)) {
+    throw new ServiceError(401, agentAuthenticationError(activeAgentId));
   }
 
   // 4. Resolve file attachments + upload refs against the runner's session dir
@@ -159,17 +164,44 @@ export async function dispatchAgentMessage(
     }
   }
 
-  // 5. Dispatch — the funnel decides send vs enqueue and broadcasts
+  // 5. Graduate a warm session — a dispatched button press is a first message
+  //    like any other. Without this the session row stays `warm: true`: it
+  //    never appears in the session list, keeps its placeholder title and
+  //    `shipit/<random>` branch, and the next "New Session" for the repo
+  //    recycles it out from under the running turn (findUngraduatedWarm).
+  //    graduate-session.ts owns the whole warm → active transition (docs/156) —
+  //    do not inline setWarm / track / rename / repoStore.touch / sseBroadcast.
+  const session = deps.sessionManager.get(sessionId);
+  if (session?.warm) {
+    graduateSession(
+      { ...deps.graduation, sessionManager: deps.sessionManager, runnerRegistry: deps.runnerRegistry },
+      { sessionId, userText: text, agentId: session.agentId ?? activeAgentId },
+    );
+    // Same reasoning as ws-handlers/send-message.ts: warm-graduation is the one
+    // path that doesn't reach graduation via `claimSessionService.claim`, so
+    // the consumed warm clone would otherwise never be replaced.
+    if (session.remoteUrl && deps.warmSessionForRepo) {
+      void deps.warmSessionForRepo(session.remoteUrl);
+    }
+  }
+
+  // 6. Dispatch — the funnel decides send vs enqueue and broadcasts
   //    message_queued via the runner if it enqueued.
   const wasRunning = runner.running;
-  runner.dispatch({
+  runner.dispatch(prepareDispatch({
     text,
-    ...(input.activity !== undefined ? { activity: input.activity } : {}),
-    ...(allImages !== undefined ? { images: allImages } : {}),
-    ...(validatedFiles.length > 0 ? { files: validatedFiles.map(asFileContextRef) } : {}),
-    ...(input.uploads !== undefined ? { uploads: input.uploads } : {}),
-    ...(input.permissionMode !== undefined ? { permissionMode: input.permissionMode } : {}),
-  });
+    agentInterface: input.agentInterface,
+    activity: input.activity,
+    images: allImages,
+    files: validatedFiles.length > 0 ? validatedFiles.map(asFileContextRef) : undefined,
+    uploads: input.uploads,
+    permissionMode: input.permissionMode,
+    execution: undefined,
+    postTurn: undefined,
+    systemTurn: undefined,
+    onTurnComplete: undefined,
+    deliveryId: undefined,
+  }));
 
   return { ok: true, queued: wasRunning };
 }

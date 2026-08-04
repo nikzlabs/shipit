@@ -1,18 +1,18 @@
 import type { FastifyInstance } from "fastify";
-import path from "node:path";
-import fs from "node:fs/promises";
 import { getAuthEnvKey } from "../shared/agent-registry.js";
 import type { AgentId } from "../shared/types.js";
 import type { WsClientMessage, WsServerMessage, WsLogRecord, LogSource } from "../shared/types.js";
 import { agentLogAppend } from "./log-emit.js";
 import { getErrorMessage } from "./validation.js";
 import { getGitIdentity } from "./git-config.js";
+import { readGlobalSystemPrompt } from "./global-system-prompt.js";
 import { pushToOrigin, isGitAuthError } from "./git-utils.js";
 import { isNonFastForwardError } from "./services/git.js";
 import { notableFilesForBranch } from "./services/notable-files.js";
 import { isResetEligible } from "./services/pre-turn-reset.js";
-import type { SessionRunnerInterface } from "./session-runner.js";
+import { AgentTurnAdmissionError, type SessionRunnerInterface } from "./session-runner.js";
 import { registerPreviewProxy } from "./preview-proxy.js";
+import { projectTurnSnapshotForWire } from "./transcript-projection.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./ws-handlers/types.js";
 import * as terminalHandlers from "./ws-handlers/terminal-handlers.js";
 import * as miscHandlers from "./ws-handlers/misc-handlers.js";
@@ -25,6 +25,7 @@ import * as permissionHandlers from "./ws-handlers/permission-handlers.js";
 import * as issueWriteHandlers from "./ws-handlers/issue-write-handlers.js";
 import * as serviceHandlers from "./ws-handlers/service-handlers.js";
 import { registerApiRoutes } from "./api-routes.js";
+import { buildTurnMessages } from "./chat-card-persistence.js";
 import type { GitManager } from "../shared/git.js";
 import { readDockerMemoryStats } from "./docker-memory.js";
 import { pruneSessionVolumes } from "./disk-janitor.js";
@@ -34,6 +35,8 @@ import { listAgents } from "./services/settings.js";
 import { serveStaticClient } from "./app-assembly.js";
 import type { OrchestratorRuntime } from "./bootstrap-managers.js";
 import type { StartupMonitors } from "./startup-monitors.js";
+import { getContainerFreshness } from "./container-freshness.js";
+import { buildComposeAttachReplay } from "./compose-attach-replay.js";
 
 /**
  * Register the long-lived `/api/events` SSE endpoint. Kept as its own step so
@@ -103,13 +106,20 @@ export function registerSseEndpoint(app: FastifyInstance, rt: OrchestratorRuntim
     // the sidebar "needs your approval" attention signal is correct on first
     // paint and survives a reconnect (the worker keeps holding the request).
     const awaitingPermissionSessions: string[] = [];
+    // docs/235 — sessions holding outstanding background tasks. Snapshotted for
+    // the same reason as the permission set: the client cannot re-derive it
+    // after a reconnect (the backend reports the task list only on change, and
+    // a reload misses every prior event), so without this a page refresh during
+    // a long background task would show a session that looks finished.
+    const backgroundTaskSessions: string[] = [];
     for (const session of sessions) {
       const runner = runnerRegistry.get(session.id);
       if (runner?.running) activeRunnerSessions.push(session.id);
       if (runner && runner.awaitingPermissionIds.size > 0) awaitingPermissionSessions.push(session.id);
+      if (runner && runner.backgroundTaskCount > 0) backgroundTaskSessions.push(session.id);
     }
     client.write(`event: active_runners\ndata: ${JSON.stringify({ sessionIds: activeRunnerSessions })}\n\n`);
-    client.write(`event: session_attention\ndata: ${JSON.stringify({ awaitingPermissionSessionIds: awaitingPermissionSessions })}\n\n`);
+    client.write(`event: session_attention\ndata: ${JSON.stringify({ awaitingPermissionSessionIds: awaitingPermissionSessions, backgroundTaskSessionIds: backgroundTaskSessions })}\n\n`);
 
     // Current PR statuses so inline cards and sidebar icons are correct on
     // connect — must precede session_list to avoid a one-frame flash of the
@@ -161,10 +171,17 @@ export function registerSseEndpoint(app: FastifyInstance, rt: OrchestratorRuntim
     // until completion), so the in-flight state outlives any single tab.
     // Driven by the auth-manager map — adding a backend that wants replay
     // is one `getPendingPayload()` implementation. (docs/155 Phase 2b)
+    //
+    // The replay must carry `accountId` for the same reason the live broadcast
+    // does (app-lifecycle.ts): the client files a challenge under the account
+    // row that started it (docs/150 req 16), and there is no provider-wide slot
+    // to fall back to. Omitting it here — as this did before — meant a reload
+    // mid-sign-in replayed a challenge the UI had nowhere to put.
     for (const [agentId, mgr] of authManagers) {
       const details = mgr.getPendingPayload();
       if (details) {
-        client.write(`event: agent_auth_pending\ndata: ${JSON.stringify({ agentId, details })}\n\n`);
+        const accountId = mgr.getActiveAccountId() ?? undefined;
+        client.write(`event: agent_auth_pending\ndata: ${JSON.stringify({ agentId, ...(accountId ? { accountId } : {}), details })}\n\n`);
       }
     }
 
@@ -232,9 +249,9 @@ export async function registerRoutes(
     nudgeClaudeOAuthRefresh, onAgentAuthRequired, ensureAgentTokenFresh,
     authManagers, runParamsPreps,
     runnerRegistry, repoPrefetcher, mergeWatchManager,
-    prStatusPoller, releaseStatusPoller, limitsRegistry, recordAgentRateLimits,
+    prStatusPoller, releaseStatusPoller, limitsRegistry, recordAgentRateLimits, markSessionAccountExhausted,
     createSessionDir, warmSessionForRepo, waitForWarmSession,
-    clientDir, logStore,
+    clientDir, logStore, buildId,
   } = rt;
   const { kickDiskEscalation } = monitors;
 
@@ -266,8 +283,8 @@ export async function registerRoutes(
     sseBroadcast,
     ...(limitsRegistry
       ? {
-          refreshSubscriptionLimits: (agentId: AgentId, reason: "manual" | "seed") =>
-            limitsRegistry.refreshNow(agentId, reason),
+          refreshSubscriptionLimits: (agentId: AgentId, reason: "manual" | "seed", routeId?: string) =>
+            limitsRegistry.refreshNow(agentId, reason, routeId),
           // docs/144 — let the sub-agent spawn route forward a consult's
           // rate-limit snapshot into the matching provider.
           recordAgentRateLimits,
@@ -390,10 +407,16 @@ export async function registerRoutes(
           lastViewerDetachAt: runner.lastViewerDetachAt,
           disposed: runner.disposed,
           queueLength: runner.queueLength,
-          // Size of the post-turn replay buffer. A terminal turn (result,
-          // error, interrupt) must leave this at 0 so a reconnect doesn't
-          // re-emit a completed turn (docs/163).
+          // The post-turn replay buffer. A terminal turn (result, error,
+          // interrupt) must leave no AGENT CONTENT in it, so a reconnect can't
+          // re-emit a completed turn (docs/163). The message types matter more
+          // than the raw count: every terminal path legitimately emits a short
+          // tail AFTER clearing the buffer (the trailing `session_status`, and
+          // the post-turn `git_committed` when the turn's edits were committed),
+          // so a count alone can't tell "harmless tail" from "the turn is still
+          // in there".
           turnEventBufferSize: runner.getTurnEventBuffer().length,
+          turnEventBufferTypes: runner.getTurnEventBuffer().map((m) => m.type),
         };
       },
     );
@@ -534,6 +557,20 @@ export async function registerRoutes(
         }
       };
 
+      const sendContainerFreshness = (sid: string) => {
+        const container = containerManager?.get(sid);
+        send({
+          type: "session_container_freshness",
+          sessionId: sid,
+          freshness: getContainerFreshness(container?.workerBuildId, buildId),
+        });
+      };
+
+      const onContainerStarted = (sid: string) => {
+        if (sid === activeAppSessionId) sendContainerFreshness(sid);
+      };
+      containerManager?.on("container_started", onContainerStarted);
+
       // ---- Runner attach/detach (same as /ws) ----
       const attachToRunner = (runner: SessionRunnerInterface) => {
         if (attachedRunner === runner) return;
@@ -555,12 +592,53 @@ export async function registerRoutes(
         // ticks. See docs/064 "Polling budget."
         prStatusPoller.notifyViewerAttached();
         releaseStatusPoller.notifyViewerAttached();
-        // Replay only the part of the turn buffer that has not already been
-        // folded into HTTP chat history. Codex can stream assistant text for a
-        // long stretch before a tool-result/final persistence boundary; when a
-        // backgrounded tab reconnects, HTTP history may therefore be stale. The
-        // client queues these early agent events until its history load
-        // completes, then applies them on top of that baseline.
+        // The running turn's transcript, as of THIS instant. Built in the same
+        // synchronous block that subscribed the socket above, so it covers
+        // exactly everything up to the attach and every later event arrives
+        // live on this socket — no gap, no overlap.
+        //
+        // This replaces reconstructing the turn from the `GET /history` DB
+        // snapshot plus a cursor-sliced `agent_event` replay. Those are sampled
+        // at two different times (the browser's history fetch is a round trip
+        // that lands before or after this attach, depending on latency), and a
+        // tool-result boundary landing between them either erased a slice of
+        // the turn from the transcript or duplicated it — the "switch away
+        // mid-turn and the earlier messages are gone" bug. The client applies
+        // this by REPLACING its in-progress rows, so either order self-corrects.
+        // See `WsTurnSnapshot`.
+        if (runner.running) {
+          send({
+            type: "turn_snapshot",
+            sessionId: runner.sessionId,
+            // docs/244 req 6 — the byte bound applies to reconnects too. This
+            // snapshot is built from the runner's in-memory groups, not read
+            // through `getChatHistory`, so it is its own projection site;
+            // without this a mid-turn reconnect re-sent every heavy body the
+            // history path had just stripped.
+            //
+            // SHI-297 — `committedBodyIds` says which half of the in-flight turn
+            // a boundary has already written, so the already-committed prefix is
+            // stripped too and only the genuinely in-memory tail ships whole.
+            messages: projectTurnSnapshotForWire(
+              runner.sessionId,
+              buildTurnMessages(
+                runner.chatMessageGroups,
+                runner.steeredMessages,
+                runner.recordedCards,
+                { inProgress: true },
+              ),
+              runner.committedBodyIds,
+            ),
+          });
+        }
+        // Replay the part of the turn buffer that has not already been folded
+        // into HTTP chat history — the non-transcript signals (compaction
+        // status, usage, spawn chips, …) that the snapshot above doesn't
+        // express.
+        //
+        // `agent_event` is deliberately skipped: the snapshot is now the
+        // authoritative rebuild of the turn's messages, and replaying the same
+        // events on top of it would double the assistant text and tool calls.
         //
         // `terminal_output` / `terminal_exit` / `terminal_reconnecting` are
         // deliberately skipped: xterm.js keeps its own scrollback across WS
@@ -571,6 +649,13 @@ export async function registerRoutes(
         // replay paths (`terminal_start` handler + `onSseOpen`) that prefix
         // with `\x1bc` to keep xterm.js renderer state coherent.
         for (const buffered of runner.getTurnEventBuffer().slice(runner.lastPersistedBufferIndex)) {
+          if (buffered.type === "agent_event") continue;
+          // A buffered snapshot belongs to the attach (or turn end) that
+          // produced it. Replaying one against a viewer that has since loaded
+          // history would append the turn a second time — its rows are no
+          // longer marked in-progress there, so the replace-filter has nothing
+          // to remove. This attach sent its own current snapshot above.
+          if (buffered.type === "turn_snapshot") continue;
           // Agent log lines are re-seeded by the `log_snapshot` above, so skip
           // the buffered `log_append`s here to avoid duplicating the backlog.
           if (buffered.type === "log_append") continue;
@@ -585,30 +670,12 @@ export async function registerRoutes(
         if (runner.running || runner.queueLength > 0) {
           send({ type: "session_status", sessionId: runner.sessionId, running: runner.running, queueLength: runner.queueLength });
         }
-        // Replay current service/compose state so the UI is correct after reload
+        // Replay current compose state (stack error, services, declared
+        // secrets) so the UI is correct after a reload / session switch — none
+        // of it is re-emitted on its own. See `compose-attach-replay.ts`.
         const mgr = serviceManagers.get(runner.sessionId);
         if (mgr) {
-          if (mgr.startError) {
-            send({
-              type: "compose_error",
-              sessionId: runner.sessionId,
-              message: mgr.startError,
-            });
-          }
-          const services = mgr.getServices();
-          if (services.length > 0) {
-            send({
-              type: "service_list",
-              sessionId: runner.sessionId,
-              services: services.map(s => ({
-                name: s.name,
-                status: s.status,
-                port: s.port,
-                preview: s.preview,
-                error: s.error,
-              })),
-            });
-          }
+          for (const msg of buildComposeAttachReplay(mgr, runner.sessionId)) send(msg);
         }
         // Replay agent-emitted presentations (docs/093) so the Present tab
         // hydrates from the runner's authoritative cache. Without this, a tab
@@ -837,10 +904,12 @@ export async function registerRoutes(
             const seedDir = dir;
             void (async () => {
               try {
-                const base =
-                  prStatusPoller.getStatus(sid)?.baseBranch ?? s.previousMergedPr?.baseBranch ?? "main";
                 const git = createGitManager(seedDir);
-                const notableFiles = await notableFilesForBranch(git, seedDir, base);
+                const base =
+                  prStatusPoller.getStatus(sid)?.baseBranch
+                  ?? s.previousMergedPr?.baseBranch
+                  ?? await git.getDefaultBranch();
+                const notableFiles = await notableFilesForBranch(git, base);
                 send({
                   type: "pr_notable_files",
                   sessionId: sid,
@@ -877,6 +946,7 @@ export async function registerRoutes(
           }
         }
         if (dir) void checkGitIdentity(dir);
+        sendContainerFreshness(sid);
         // docs/161 — after the session is up and the user has control, kick a
         // background disk-tier escalation pass over the OTHER idle sessions
         // (this one is excluded + guarded anyway). Never awaited — adds no
@@ -889,13 +959,10 @@ export async function registerRoutes(
         send({ type: "git_identity_required" });
       };
 
-      const readSystemPrompt = async (): Promise<string | undefined> => {
-        try {
-          const content = await fs.readFile(path.join(workspaceDir, ".shipit", "system-prompt.md"), "utf-8");
-          const trimmed = content.trim();
-          return trimmed || undefined;
-        } catch { return undefined; }
-      };
+      // `workspaceDir` in this scope is the orchestrator's own root, not this
+      // session's clone — the system prompt is a global setting.
+      const readSystemPrompt = (): Promise<string | undefined> =>
+        readGlobalSystemPrompt(workspaceDir);
 
       // Wrap broadcastLog so it both buffers (per-session) AND sends to attached WS viewers.
       // The sessionId is captured from the URL — every log line emitted on
@@ -958,6 +1025,7 @@ export async function registerRoutes(
         prStatusPoller,
         releaseStatusPoller,
         recordAgentRateLimits,
+        markSessionAccountExhausted,
         getSubscriptionLimitsSnapshot: () => limitsRegistry?.getSnapshot() ?? {},
         nudgeClaudeOAuthRefresh,
         onAgentAuthRequired,
@@ -1018,7 +1086,17 @@ export async function registerRoutes(
               try {
                 const git = createGitManager(session.workspaceDir!);
                 const headBranch = session.branch || await git.getCurrentBranch();
-                const { insertions, deletions } = await git.diffStatVsBranch("main");
+                // docs/202 — a re-armed session (merged → advanced, no new PR
+                // yet) carries a `previousMergedPr` breadcrumb. Mirror
+                // `emitPrLifecycleAfterCommit`'s base resolution so the diff is
+                // measured against the prior PR's base rather than a hardcoded
+                // "main", and thread the breadcrumb through: it renders the
+                // "previously merged #N" note AND is what lets this card
+                // override a viewer's stale terminal merged card in
+                // `pr-store.updateCard`'s regress guard.
+                const previousMergedPr = session.previousMergedPr;
+                const readyBase = previousMergedPr?.baseBranch ?? await git.getDefaultBranch();
+                const { insertions, deletions } = await git.diffStatVsBranch(readyBase);
                 send({
                   type: "pr_lifecycle_update",
                   sessionId,
@@ -1027,6 +1105,7 @@ export async function registerRoutes(
                   headBranch,
                   totalInsertions: insertions,
                   totalDeletions: deletions,
+                  ...(previousMergedPr ? { previousMergedPr } : {}),
                 });
               } catch (err) {
                 send({
@@ -1285,13 +1364,19 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
           // down the whole orchestrator this way.
           console.error(`[ws] handler error for "${msg.type}" (session ${sessionId}):`, err);
           try {
-            send({ type: "error", message: err instanceof Error ? err.message : "Request failed" });
+            if (err instanceof AgentTurnAdmissionError) {
+              const requestId = "requestId" in msg && typeof msg.requestId === "string" ? msg.requestId : undefined;
+              send({ type: "error", message: err.message, code: err.code, sessionId: err.sessionId, ...(requestId ? { requestId } : {}) });
+            } else {
+              send({ type: "error", message: err instanceof Error ? err.message : "Request failed" });
+            }
           } catch { /* socket may already be closed */ }
         }
       });
 
       socket.on("close", () => {
         console.log(`[ws] session client disconnected: ${sessionId}`);
+        containerManager?.off("container_started", onContainerStarted);
         detachFromRunner();
         // Intentionally do NOT call enforceIdleContainerLimit() here.
         // WebSocket lifecycle MUST NOT affect runner/container lifecycle —

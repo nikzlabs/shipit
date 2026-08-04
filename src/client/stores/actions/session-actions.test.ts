@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { createHeadlessSession, resumeSessionInternal, startQuickSessionInBackground } from "./session-actions.js";
+import { createHeadlessSession, handleSessionResume, resumeSessionInternal, startQuickSessionInBackground } from "./session-actions.js";
 import { useSessionStore } from "../session-store.js";
 import { useUiStore } from "../ui-store.js";
 import type { SessionInfo } from "../../../server/shared/types.js";
@@ -165,5 +165,26 @@ describe("resumeSessionInternal", () => {
     resumeSessionInternal("session-b");
 
     expect(useUiStore.getState().mobilePanel).toBe("chat");
+  });
+});
+
+describe("handleSessionResume", () => {
+  afterEach(() => {
+    useSessionStore.getState().reset();
+    useSessionStore.setState({ sessionId: undefined });
+  });
+
+  it("updates the route before the session store so old URL chrome cannot flash", () => {
+    useSessionStore.setState({ sessionId: "session-a" });
+    const observedSessionIds: (string | undefined)[] = [];
+    const navigate = vi.fn(() => {
+      observedSessionIds.push(useSessionStore.getState().sessionId);
+    });
+
+    handleSessionResume("sandbox-b", navigate);
+
+    expect(navigate).toHaveBeenCalledWith("/session/sandbox-b");
+    expect(observedSessionIds).toEqual(["session-a"]);
+    expect(useSessionStore.getState().sessionId).toBe("sandbox-b");
   });
 });

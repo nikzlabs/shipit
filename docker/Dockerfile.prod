@@ -20,12 +20,27 @@ RUN --mount=type=cache,target=/root/.npm npm prune --omit=dev && npm install tsx
 FROM node:24-slim@sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45efcbc9c5f5d
 ARG SHIPIT_BUILD_ID
 
-RUN apt-get update && apt-get install -y git curl ca-certificates gnupg \
+RUN apt-get update && apt-get install -y git git-lfs curl ca-certificates gnupg \
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list \
     && apt-get update && apt-get install -y docker-ce-cli docker-compose-plugin \
     && rm -rf /var/lib/apt/lists/*
+
+# docs/231 — Git LFS in the ORCHESTRATOR, installed with `--skip-smudge`.
+#
+# The clean filter is load-bearing: `postTurnCommit` runs orchestrator-side
+# against the session's bind-mounted workspace, so without it `git add -A` would
+# commit raw binaries into an LFS repo and corrupt it.
+#
+# Smudge is deliberately OFF. `RepoGit.cloneFromCache` runs `git clone --local`
+# from the bare cache, whose `origin` is a local filesystem path at that moment;
+# an active smudge filter would try to resolve an LFS endpoint from that path,
+# fail, and — because `filter.lfs.required = true` — fail the whole checkout.
+# Content is instead materialized explicitly by a batched `git lfs pull` at the
+# end of provisioning (src/server/orchestrator/git-lfs.ts), which is also faster
+# than smudge's serial per-file downloads.
+RUN git lfs install --system --skip-repo --skip-smudge
 
 # Agent CLIs for local/dogfood mode (RUNTIME_MODE=local spawns the adapters
 # in-process inside this orchestrator container — see app-di.ts

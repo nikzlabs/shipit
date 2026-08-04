@@ -95,37 +95,52 @@ export function ModelAgentSelector({
   //   - the first model the active agent supports is the final fallback
   const savedModel = getSavedModelId();
   const seededModel = hasActiveSession ? undefined : savedModel;
-  const persistedSelection = sessionModel ?? seededModel ?? activeAgent?.models[0];
 
-  // Which hardcoded model is selected — drives the dropdown checkmark. A pending
-  // pick wins so a mid-session switch highlights immediately, before the next
-  // turn's agent_init confirms it. Because this is always a hardcoded row key, a
-  // model the CLI may have switched to that we don't offer matches no row and so
-  // highlights nothing; we still surface it in the label below.
   const pendingModelForCurrentSession = pendingSessionRef.current === sessionId ? pendingModel : undefined;
-  const selectedModel = pendingModelForCurrentSession ?? persistedSelection;
 
-  // The raw model id the CLI reported running this turn (e.g. "claude-opus-4-8"
-  // or the versioned "claude-sonnet-4-6"); undefined before the first turn.
+  // The raw model id the CLI reported running this turn (e.g. "claude-opus-5"
+  // or a versioned "claude-sonnet-5-20260101"); undefined before the first turn.
+  // `modelInfo` is global UI state, so it is trusted only when the reported
+  // model belongs to the active session's agent; otherwise a session switch
+  // could show the previous session's model.
   const liveModel = modelInfo?.model ?? undefined;
   const liveModelAlias = liveModel ? resolveModelAlias(liveModel) : undefined;
-  const liveModelMatchesCurrentAgent =
-    !!liveModel &&
-    !!displayAgent &&
-    (displayAgent.models.includes(liveModel) ||
-      (liveModelAlias ? displayAgent.models.includes(liveModelAlias) : false));
-  const scopedLiveModel = liveModelMatchesCurrentAgent ? liveModel : undefined;
+  const liveModelRow =
+    liveModel && displayAgent
+      ? (displayAgent.models.includes(liveModel)
+          ? liveModel
+          : liveModelAlias && displayAgent.models.includes(liveModelAlias)
+            ? liveModelAlias
+            : undefined)
+      : undefined;
+  const scopedLiveModel = liveModelRow ? liveModel : undefined;
 
-  // The trigger label. An optimistic pick wins for instant feedback; otherwise
-  // show whatever the CLI actually reported this turn (so a mid-turn switch is
-  // reflected and the right name survives a page reload), falling back to the
-  // persisted selection before the first turn. `modelInfo` is global UI state,
-  // so it is trusted only when the reported model belongs to the active
-  // session's agent; otherwise session switches can show a stale model from the
-  // previous session in the trigger while the menu rows are already correct.
-  // formatModelName maps both versioned ids and our hardcoded keys to pretty
-  // names, and shows the raw id for anything it doesn't recognize.
-  const displayedModel = pendingModelForCurrentSession ?? scopedLiveModel ?? persistedSelection;
+  // ONE precedence, shared by the trigger label and the dropdown checkmark, so
+  // the two can never contradict each other:
+  //
+  //   1. the optimistic pending pick — instant feedback before the next turn
+  //   2. the session's persisted model — the authoritative answer to "what will
+  //      this session run next", set by the user's pick (`set_model`) and
+  //      surviving reloads and session switches
+  //   3. the model the CLI last reported — only meaningful for a session that
+  //      never had a model explicitly picked
+  //   4. localStorage's last pick, for the new-session view only, then the
+  //      agent's first model
+  //
+  // The persisted selection deliberately outranks the live model. It used to be
+  // the other way round, which made the picker contradict itself whenever the
+  // two disagreed: the trigger showed the CLI's last-reported model while the
+  // checkmark sat on the newly-picked one ("says Fable, dropdown says Opus").
+  // The live model is still surfaced verbatim in the usage modal, which is the
+  // right home for "what actually ran".
+  const displayedModel =
+    pendingModelForCurrentSession ?? sessionModel ?? scopedLiveModel ?? seededModel ?? activeAgent?.models[0];
+  // Same rungs, but resolved to a hardcoded row key at the live-model rung so a
+  // versioned id still highlights its row. A model the CLI switched to that we
+  // don't offer matches no row and so highlights nothing; the label still shows
+  // it.
+  const selectedModel =
+    pendingModelForCurrentSession ?? sessionModel ?? liveModelRow ?? seededModel ?? activeAgent?.models[0];
   const displayName = formatModelName(displayedModel ?? "");
   // Show the $ on the (collapsed) trigger too, so the usage-based cue stays
   // visible once the metered model is the active one — not only while the
@@ -162,10 +177,15 @@ export function ModelAgentSelector({
     [onAgentChange, onModelChange, pinnedAgentId, sessionId],
   );
 
-  // Clear the optimistic pending pick once the CLI confirms a model for the
-  // turn, after which liveModel / persistedSelection drive the label and checkmark.
+  // Drop the optimistic pending pick once the session record catches up with it
+  // — from then on `sessionModel` drives both the label and the checkmark, and
+  // they agree by construction. Keep the older CLI-confirmation clear as the
+  // escape hatch for a pick the server never persisted (e.g. it was rejected),
+  // so a stale pending pick can't outlive a turn.
   const prevLiveRef = useRef(liveModel);
-  if (liveModel && liveModel !== prevLiveRef.current) {
+  if (pendingModel && sessionModel === pendingModel) {
+    setPendingModel(undefined);
+  } else if (liveModel && liveModel !== prevLiveRef.current) {
     setPendingModel(undefined);
   }
   prevLiveRef.current = liveModel;

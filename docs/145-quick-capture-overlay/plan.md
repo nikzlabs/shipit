@@ -1,4 +1,5 @@
 ---
+issue: https://linear.app/shipit-ai/issue/SHI-248
 description: Global-hotkey overlay that captures a prompt and spawns a new session in the background, without leaving the current view.
 ---
 
@@ -357,16 +358,19 @@ These defaults are computed client-side and sent on the request
 body, so the route's behaviour is fully deterministic given its
 input.
 
-**Why agent/model don't inherit from the active session but repo
-does** — different signal. Quick-capture is overwhelmingly used
-mid-task ("I'm working in `shipit` and just thought of a related
-thing"), so the active session's repo is a strong prior. Agent and
-model are tied to the *kind of work* the user wants to do, not the
-repo they happen to be in; a user editing a Codex session may
-quick-capture a Claude task in the same repo, or vice-versa, and
-defaulting on the active session's agent would silently flip them
-to the wrong one. Treating repo and agent/model symmetrically would
-get one of them wrong; the asymmetry is deliberate.
+**Why none of agent / model / repo inherit from the active session
+(revised).** Agent and model are tied to the *kind of work* the user
+wants to do, not the repo they happen to be in; a user editing a Codex
+session may quick-capture a Claude task in the same repo, or
+vice-versa, and defaulting on the active session's agent would
+silently flip them to the wrong one. The original draft treated repo
+asymmetrically — inheriting it from the active session on the theory
+that quick capture is used for a *related* thought — but practice
+contradicted that (see "Repo / target context"). All three now default
+to the user's **last explicit choice**, remembered in localStorage.
+What differs is only the fallback when nothing is remembered yet:
+agent/model fall back to the bootstrap defaults, repo falls back to
+the active session's.
 
 ### Naming
 
@@ -455,15 +459,42 @@ fire-and-forget surface, the sessions list is where you go to follow up."
 
 The badge defaults to:
 
-1. The repo of the currently active session, if one is open.
-2. Otherwise, the most-recently-used repo from `RepoStore`.
-3. If `RepoStore` is not yet hydrated (the user opens the overlay
+1. **The repo of the last quick session** (`shipit-last-quick-session-repo`
+   in localStorage, written on submit), if that repo is still in the
+   loaded repo list.
+2. Otherwise, the repo of the currently active session, if one is open.
+3. Otherwise, the most-recently-used repo from `RepoStore`.
+4. If `RepoStore` is not yet hydrated (the user opens the overlay
    immediately on page load before bootstrap completes), the overlay
    shows a brief spinner in the badge position and keeps the input
    disabled until repos load.
-4. If bootstrap has completed and no repo exists at all, the overlay
+5. If bootstrap has completed and no repo exists at all, the overlay
    shows an inline message ("Add a repo first") with a link to the
    existing add-repo flow, and the prompt input is disabled.
+
+**Why the last quick session outranks the current session (revised).** The
+original ordering put the active session's repo first, on the theory that
+quick capture is used mid-task for a *related* thought. In practice the
+dominant pattern is the opposite: the user is working in a product repo and
+keeps firing captures at a *different*, stable target — most often the tool
+they're building with, when they notice a gap in it while using it. Under the
+old ordering that meant re-picking the same repo from the selector on every
+single capture, with the failure mode being silent (submit into the wrong
+repo). The remembered target is a much stronger prior than "wherever I happen
+to be standing," and the current-session repo remains the fallback for a user
+who has never fired a quick session.
+
+The remembered value is validated against the loaded repo list on every open,
+so a removed or renamed repo degrades to the fallback chain rather than
+selecting nothing. It is written on **submit**, not on picker change — an
+overlay that is opened, re-targeted, and then dismissed must not move the
+default. It is deliberately a single global value (not per-repo or
+per-session): the whole point is that the target is stable *across* whatever
+the user is currently doing.
+
+This applies identically to the voice entry point (Mode B, doc 144) and the
+mobile tab-bar actions — every trigger opens the same overlay, so there is
+one repo-default rule, not one per entry point.
 
 Branch defaults to the repo's default branch. The badge is clickable to
 open a small inline picker for both repo and branch — same affordances
@@ -647,7 +678,7 @@ as the registry evolves.
 - `src/client/components/MessageInput.tsx` — new `surface` prop (gates `prefillText` subscription, `focusKey` auto-focus, `ContextDialMount`)
 - `src/client/hooks/useNotification.ts` — wrap `notify` in a coalescer that batches ≥2 calls within ~3s into a single "N sessions finished" notification. Coalescing lives at the `notify`-callback layer (not in `useAttentionNotifications`'s reason computation) so every future caller of `useNotification` benefits.
 - `src/client/stores/settings-store.ts` — `quickCaptureHotkey` field
-- `src/client/utils/local-storage.ts` — hotkey persister
+- `src/client/utils/local-storage.ts` — hotkey persister; `getSavedQuickSessionRepo` / `saveQuickSessionRepo` (`shipit-last-quick-session-repo`) for the remembered target repo
 - `src/client/components/Settings.tsx` — hotkey setting UI
 
 ### Server (new)

@@ -10,11 +10,13 @@ import { EventEmitter } from "node:events";
 import crypto from "node:crypto";
 import { execSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import WebSocket from "ws";
 import type { WsServerMessage, WsClientMessage } from "../../shared/types.js";
 import type { SessionManager } from "../sessions.js";
 import { GitManager } from "../../shared/git.js";
+import { RepoGit } from "../repo-git.js";
 import { DatabaseManager } from "../../shared/database.js";
 import { CredentialStore } from "../credential-store.js";
 import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
@@ -193,6 +195,41 @@ export class TestClient {
     return messages;
   }
 
+  /**
+   * Collect messages until `predicate` matches one, then keep draining until
+   * the stream is quiet for `quietMs`. Returns everything collected.
+   *
+   * This is the right shape for a test that asserts BOTH that something
+   * happened AND that something else did not — e.g. "the push-failure log was
+   * emitted, and no successful `github_push_result` was". {@link drain} alone
+   * can't express that: it stops after the first quiet gap, so the awaited
+   * message is simply missing from the buffer if the work ran slow, and the
+   * positive half of the assertion fails under load. Waiting for the anchor
+   * first makes the positive half deterministic, while the quiet tail
+   * preserves the negative half's "let time pass with nothing happening".
+   */
+  async collectUntil(
+    predicate: (msg: WsServerMessage) => boolean,
+    opts: { timeoutMs?: number; quietMs?: number } = {},
+  ): Promise<WsServerMessage[]> {
+    const { timeoutMs = 10_000, quietMs = 250 } = opts;
+    const messages: WsServerMessage[] = [];
+    const deadline = Date.now() + timeoutMs;
+    let matched = false;
+    while (!matched && Date.now() < deadline) {
+      let msg: WsServerMessage;
+      try {
+        msg = await this.receive(deadline - Date.now());
+      } catch {
+        break;
+      }
+      messages.push(msg);
+      if (predicate(msg)) matched = true;
+    }
+    messages.push(...(await this.drain({ quietMs })));
+    return messages;
+  }
+
   /** Send a typed client message. */
   send(msg: WsClientMessage): void {
     this.ws.send(JSON.stringify(msg));
@@ -232,13 +269,20 @@ export class StubAuthManager extends EventEmitter {
   // docs/155 Phase 2 — AgentAuthManager surface. Aliases mirror the real
   // `AuthManager` so the stub satisfies the interface the orchestrator
   // dispatches through (e.g. agent-listeners' auth_required handler).
-  start() { this.startOAuthFlow(); }
-  cancel() { this.kill(); }
+  start(opts?: { accountId?: string }) {
+    this.startOAuthFlow();
+    // docs/150 — the real managers run ONE login per provider and claim the
+    // account scope for its duration; `cancel()` releases it. Model that here
+    // or the stub can't exercise the ownership guards (submit-code and
+    // start-while-busy both key off `getActiveAccountId()`).
+    this.activeAccountId = opts?.accountId ?? null;
+  }
+  cancel() { this.kill(); this.activeAccountId = null; }
   submitCode(_code: string) { /* no-op */ }
   isConfigured() { return this.checkCredentials(); }
   getPendingPayload() { return null; }
-  // docs/150 — scoped-flow account id. The stub never runs a scoped flow.
-  getActiveAccountId(): string | null { return null; }
+  private activeAccountId: string | null = null;
+  getActiveAccountId(): string | null { return this.activeAccountId; }
 }
 
 /**
@@ -816,6 +860,7 @@ interface RawClaudeEvent {
   tools?: string[];
   message?: { content?: unknown[] };
   subtype?: string;
+  is_error?: boolean;
   total_cost_usd?: number | null;
   usage?: {
     input_tokens?: number;
@@ -906,9 +951,11 @@ function mapClaudeEvent(raw: RawClaudeEvent): Record<string, unknown> | null {
           }
         }
       }
+      // Mirrors ClaudeAdapter: `is_error` (not `subtype`) is the failure flag.
+      const errored = raw.is_error === true || (raw.subtype !== undefined && raw.subtype !== "success");
       return {
         type: "agent_result",
-        status: raw.subtype,
+        status: errored ? "error" : "success",
         sessionId: raw.session_id,
         cost: raw.total_cost_usd !== null && raw.total_cost_usd !== undefined ? { totalUsd: raw.total_cost_usd } : undefined,
         tokens: u && (u.input_tokens !== undefined || u.output_tokens !== undefined)
@@ -922,7 +969,7 @@ function mapClaudeEvent(raw: RawClaudeEvent): Record<string, unknown> | null {
         contextTokens,
         contextWindow,
         durationMs: raw.duration_ms,
-        error: raw.subtype === "error" ? raw.result : undefined,
+        error: errored ? raw.result : undefined,
         permissionDenials: raw.permission_denials?.length
           ? raw.permission_denials.map((d) => ({
               toolName: d.tool_name,
@@ -961,6 +1008,44 @@ export async function createTestSession(
   await git.init();
   sessionManager.track(sessionId, title, sessionDir);
   return { sessionId, sessionDir };
+}
+
+/**
+ * Poll a condition until it becomes true, or throw at the deadline.
+ *
+ * WHY THIS EXISTS — the integration suite is full of `await new Promise((r) =>
+ * setTimeout(r, N))` followed by an assertion. A fixed sleep is a *bet* that
+ * the work lands within N ms: it passes on an idle machine and fails under
+ * load, which is exactly the intermittent-flake signature. Polling instead
+ * makes the test wait for the observable it actually cares about, so a slow
+ * machine costs latency rather than a red build.
+ *
+ * Use this ONLY when there is a condition to poll for. A test asserting that
+ * something did NOT happen ("no second turn was dispatched", "no event was
+ * emitted") legitimately needs a fixed sleep to let time pass with nothing
+ * occurring — converting one of those to a condition-wait silently makes it
+ * assert nothing. Those sleeps are load-bearing and must stay.
+ *
+ * The predicate may be sync or async; a throwing predicate is treated as
+ * "not yet true" so callers can dereference optional chains freely.
+ */
+export async function waitFor(
+  fn: () => boolean | Promise<boolean>,
+  label = "condition",
+  timeoutMs = 5000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    let ok: boolean;
+    try {
+      ok = await fn();
+    } catch {
+      ok = false;
+    }
+    if (ok) return;
+    if (Date.now() > deadline) throw new Error(`waitFor(${label}) timed out after ${timeoutMs}ms`);
+    await new Promise((r) => setTimeout(r, 10));
+  }
 }
 
 /**
@@ -1115,4 +1200,141 @@ export function seedRepoCacheWithLocalBare(opts: {
     `git config --file "${gitConfigGlobal}" "url.file://${repoDir}/.insteadOf" "${repoUrl}"`,
     { stdio: "ignore" },
   );
+}
+
+/**
+ * Pin git's own transport allowlist to local paths for the duration of a suite,
+ * and return the restore function to call in `afterEach`.
+ *
+ * Several routes fetch or clone the workspace's `origin` for real —
+ * `fetchAndResolveDefaultBranch` behind the warm pool, `ensureBareCache` on the
+ * claim-session slow path — and neither is covered by the usual `push` /
+ * `fetchCache` stubs. The URLs in tests are fake, so the request always fails;
+ * the question is only how expensively. On a dev box a DNS + TLS round-trip to
+ * github.com costs ~230 ms and hides; on a shared CI runner it is unbounded, and
+ * it is why these suites time out in CI and never locally.
+ *
+ * `GIT_ALLOW_PROTOCOL=file` makes git refuse https/ssh in ~5 ms with
+ * `transport 'https' not allowed`, before any packet leaves. Local paths and
+ * `file://` remotes — what every legitimate git operation in the server suite
+ * uses, including `seedRepoCacheWithLocalBare`'s `insteadOf` redirect — are
+ * untouched. `GIT_TERMINAL_PROMPT=0` rides along so a fetch can't stall on a
+ * credential prompt either.
+ */
+export function pinGitToLocalTransports(): () => void {
+  const origAllowProtocol = process.env.GIT_ALLOW_PROTOCOL;
+  const origTerminalPrompt = process.env.GIT_TERMINAL_PROMPT;
+  process.env.GIT_ALLOW_PROTOCOL = "file";
+  process.env.GIT_TERMINAL_PROMPT = "0";
+  return () => {
+    if (origAllowProtocol === undefined) delete process.env.GIT_ALLOW_PROTOCOL;
+    else process.env.GIT_ALLOW_PROTOCOL = origAllowProtocol;
+    if (origTerminalPrompt === undefined) delete process.env.GIT_TERMINAL_PROMPT;
+    else process.env.GIT_TERMINAL_PROMPT = origTerminalPrompt;
+  };
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/repos (create-with-template) — fast git stand-ins
+// ---------------------------------------------------------------------------
+
+/**
+ * `createRepoWithTemplate` mkdtemp's its throwaway scaffold worktree as
+ * `${os.tmpdir()}/shipit-template-XXXXXX` (see `services/templates.ts`). The
+ * factories below key off that prefix so only the scaffold's git is faked and
+ * every other directory — session workspaces, the bare cache clone the warm
+ * pool cuts from — keeps a real {@link GitManager}.
+ */
+function isTemplateScaffoldDir(dir: string): boolean {
+  return path.basename(dir).startsWith("shipit-template-");
+}
+
+/**
+ * A tiny bare repo with one commit on `main`, built once per worker process and
+ * reused by every {@link createTemplateRepoGitFactories} stub. Stands in for the
+ * `git clone --bare <scaffold>` the create-with-template path performs, so the
+ * clone becomes an `fs.cpSync` instead of a subprocess.
+ *
+ * Shape matches what `RepoGit.cloneBare` leaves behind: bare, `main` present,
+ * and `remote.origin.fetch` set (the refspec `ensureFetchRefspec` writes, without
+ * which a later cache fetch never advances `refs/heads/*`).
+ */
+let cachedBareFixtureDir: string | null = null;
+function templateBareFixture(): string {
+  if (cachedBareFixtureDir && fs.existsSync(cachedBareFixtureDir)) return cachedBareFixtureDir;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-bare-fixture-"));
+  const workDir = path.join(root, "work");
+  const bareDir = path.join(root, "cache.git");
+  fs.mkdirSync(workDir);
+  execSync("git init -q -b main", { cwd: workDir, stdio: "ignore" });
+  fs.writeFileSync(path.join(workDir, "index.html"), "<!doctype html>\n");
+  execSync(
+    'git add -A && git -c user.email=t@t.com -c user.name=Test commit -q -m "Initial setup" --no-gpg-sign',
+    { cwd: workDir, stdio: "ignore" },
+  );
+  execSync(`git clone -q --bare "${workDir}" "${bareDir}"`, { stdio: "ignore" });
+  execSync('git config remote.origin.fetch "+refs/heads/*:refs/heads/*"', { cwd: bareDir, stdio: "ignore" });
+  fs.rmSync(workDir, { recursive: true, force: true });
+  cachedBareFixtureDir = bareDir;
+  process.on("exit", () => fs.rmSync(root, { recursive: true, force: true }));
+  return bareDir;
+}
+
+/**
+ * `createGitManager` / `createRepoGit` factories for suites that drive
+ * `POST /api/repos` with a `templateId`.
+ *
+ * That route runs ~13 real `git` subprocesses (scaffold `init` + `addRemote` +
+ * `autoCommit`, then `clone --bare` into the shared cache) purely to produce a
+ * bare cache the warm pool can clone from — none of which any HTTP-level
+ * assertion inspects. `services/templates.test.ts` already covers that git work
+ * end-to-end against a real local origin (bare-ness, pushed refs, origin URL,
+ * owner threading), so replaying it per integration test buys nothing and costs
+ * ~380 ms a test — enough to blow Vitest's default timeout on a CI runner under
+ * full-suite load.
+ *
+ * So: the scaffold's git is a no-op and `cloneBare` copies {@link
+ * templateBareFixture} into the cache dir. Everything downstream stays real —
+ * `setRemoteUrl` still points the cache at the created repo, and the warm pool
+ * still cuts a genuine `git clone` + `checkout -b` from that cache, which is
+ * what makes the route's `sessionId` in the response meaningful.
+ *
+ * The warm pool's own workspace fetch is a separate cost — pair this with
+ * {@link pinGitToLocalTransports} to keep that off the network too.
+ *
+ * Caveat for future assertions: the cache carries the fixture's commit, not the
+ * requested template's files. A suite that needs to inspect what the template
+ * actually scaffolded belongs in `services/templates.test.ts`, against real git.
+ */
+export function createTemplateRepoGitFactories(): {
+  createGitManager: (dir: string) => GitManager;
+  createRepoGit: (dir: string) => RepoGit;
+} {
+  return {
+    createGitManager: (dir: string) => {
+      const gm = new GitManager(dir);
+      // Stub push so it doesn't attempt a real remote push
+      gm.push = async () => "pushed (stub)";
+      if (isTemplateScaffoldDir(dir)) {
+        gm.init = async () => {};
+        gm.addRemote = async () => {};
+        gm.autoCommit = async () => ({
+          commitHash: null,
+          conflictedFiles: [],
+          rebaseInProgress: false,
+          secretFindings: [],
+        });
+      }
+      return gm;
+    },
+    createRepoGit: (dir: string) => {
+      const rg = new RepoGit(dir);
+      // Stub fetchCache to avoid network calls to fake GitHub URLs
+      rg.fetchCache = async () => {};
+      rg.cloneBare = async () => {
+        fs.cpSync(templateBareFixture(), dir, { recursive: true });
+      };
+      return rg;
+    },
+  };
 }

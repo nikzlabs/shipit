@@ -39,6 +39,7 @@ import { RepoStore } from "../repo-store.js";
 import { AuthManager } from "../agents/claude/auth-manager.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import { DatabaseManager } from "../../shared/database.js";
+import { DEFAULT_MAX_SPAWNED_SESSIONS_PER_TURN } from "../services/child-sessions.js";
 import {
   StubAuthManager,
   StubGitHubAuthManager,
@@ -115,6 +116,10 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     });
     repoStore.add(SPAWN_REPO_URL);
     repoStore.setReady(SPAWN_REPO_URL);
+    // Agent-spawned turns inherit the parent's repository trust boundary.
+    // This suite exercises spawning behavior, so make its registered fixture
+    // explicitly trusted rather than relying on the pre-docs/243 default.
+    repoStore.setTrusted(SPAWN_REPO_URL, true);
 
     app = await buildApp({
       credentialStore,
@@ -321,10 +326,11 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
   it("POST /spawn enforces the per-turn quota and surfaces 429", { timeout: 30_000 }, async () => {
     const parentId = await createParentSession();
 
-    // Default per-turn cap is 4. Spawning a 5th with the same turn id should
-    // hit the limit. Branch names are auto-generated per spawn so there's no
-    // collision concern.
-    for (let i = 0; i < 4; i++) {
+    // Fill the per-turn cap exactly, then one more with the same turn id should
+    // hit the limit. Derived from the constant, not hardcoded, so a change to
+    // the default doesn't silently turn this into a no-op. Branch names are
+    // auto-generated per spawn so there's no collision concern.
+    for (let i = 0; i < DEFAULT_MAX_SPAWNED_SESSIONS_PER_TURN; i++) {
       const ok = await app.inject({
         method: "POST",
         url: `/api/sessions/${parentId}/spawn`,
@@ -335,7 +341,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     const limited = await app.inject({
       method: "POST",
       url: `/api/sessions/${parentId}/spawn`,
-      payload: { prompt: "child-5", spawnedByTurn: "turn-1" },
+      payload: { prompt: "child-over-cap", spawnedByTurn: "turn-1" },
     });
     expect(limited.statusCode).toBe(429);
     expect(limited.json().error).toContain("Per-turn spawn limit");
@@ -457,8 +463,8 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     const parentClient = await TestClient.connect(port, parentId);
 
     try {
-      // Saturate the per-turn cap (default 4).
-      for (let i = 0; i < 4; i++) {
+      // Saturate the per-turn cap, derived from the constant.
+      for (let i = 0; i < DEFAULT_MAX_SPAWNED_SESSIONS_PER_TURN; i++) {
         const ok = await app.inject({
           method: "POST",
           url: `/api/sessions/${parentId}/spawn`,
@@ -467,13 +473,13 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
         expect(ok.statusCode).toBe(200);
       }
 
-      // The 5th spawn under the same turn should 429 and emit a failure event.
+      // One past the cap under the same turn should 429 and emit a failure event.
       const limited = await app.inject({
         method: "POST",
         url: `/api/sessions/${parentId}/spawn`,
         payload: {
           prompt: "Spin up another worker for the migration",
-          title: "Worker 5",
+          title: "Worker over cap",
           spawnedByTurn: "turn-1",
         },
       });
@@ -494,7 +500,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
       expect(failedMsg.statusCode).toBe(429);
       expect(failedMsg.reason).toBe("quota_per_turn");
       expect(failedMsg.message).toContain("Per-turn spawn limit");
-      expect(failedMsg.title).toBe("Worker 5");
+      expect(failedMsg.title).toBe("Worker over cap");
       expect(failedMsg.promptPreview).toContain("Spin up another worker");
       expect(typeof failedMsg.failedAt).toBe("string");
     } finally {
@@ -624,6 +630,12 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     const body = res.json() as { queuePosition: number; enqueued: boolean };
     expect(body.enqueued).toBe(true);
     expect(body.queuePosition).toBeGreaterThanOrEqual(1);
+    const runner = (app as unknown as { runnerRegistry: { get(id: string): { messageQueue: { messageOrigin?: unknown }[] } } }).runnerRegistry.get(childId);
+    expect(runner.messageQueue.at(-1)?.messageOrigin).toEqual({
+      sessionId: parentId,
+      sessionTitle: "Parent",
+      relation: "parent",
+    });
   });
 
   it("POST /children/:childId/message starts a turn directly when the child is idle", { timeout: 15_000 }, async () => {
@@ -1153,6 +1165,53 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     expect(spawnRes.json().error).toMatch(/no remote URL/i);
   });
 
+  it("POST /spawn refuses a sandbox parent with a sandbox-specific reason", { timeout: 15_000 }, async () => {
+    // docs/211 — a sandbox has no `remoteUrl` by construction, so it lands on
+    // the same guard as the test above. The generic "register the parent's
+    // repo" wording reads as a fixable misconfiguration and sends the agent
+    // chasing a fix that doesn't exist; the sandbox path must say the
+    // capability is absent and name what does work instead.
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/_test/sessions",
+      payload: { title: "Sandbox" },
+    });
+    const { sessionId: parentId } = res.json() as { sessionId: string };
+    sessionManager.setKind(parentId, "sandbox");
+
+    const spawnRes = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "spin up a sibling", title: "Sibling" },
+    });
+    expect(spawnRes.statusCode).toBe(400);
+    const error = spawnRes.json().error as string;
+    expect(error).toMatch(/sandbox/i);
+    expect(error).not.toMatch(/no remote URL/i);
+    // Names a usable alternative rather than dead-ending.
+    expect(error).toMatch(/shipit agent run/);
+  });
+
+  it("POST /spawn --detached also refuses a sandbox parent", { timeout: 15_000 }, async () => {
+    // A detached spawn skips the parent-linkage quotas but still claims a repo,
+    // so the sandbox refusal must not be reachable only on the linked path.
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/_test/sessions",
+      payload: { title: "Sandbox" },
+    });
+    const { sessionId: parentId } = res.json() as { sessionId: string };
+    sessionManager.setKind(parentId, "sandbox");
+
+    const spawnRes = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "spin up a sibling", title: "Sibling", detached: true },
+    });
+    expect(spawnRes.statusCode).toBe(400);
+    expect(spawnRes.json().error).toMatch(/sandbox/i);
+  });
+
   // -------------------------------------------------------------------------
   // docs/205 — detached spawns (completely separate, no linkage/coordination)
   // -------------------------------------------------------------------------
@@ -1242,8 +1301,12 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
   it("detached spawns count against the per-turn cap (alongside linked children)", { timeout: 30_000 }, async () => {
     const parentId = await createParentSession();
 
-    // Mix linked + detached under one turn: 2 + 2 = 4 (the default cap).
-    for (let i = 0; i < 2; i++) {
+    // Mix linked + detached under one turn so the two kinds together — not
+    // either kind alone — exactly fill the cap. Split from the constant so the
+    // test keeps proving that detached spawns are counted when the cap moves.
+    const linkedCount = Math.floor(DEFAULT_MAX_SPAWNED_SESSIONS_PER_TURN / 2);
+    const detachedCount = DEFAULT_MAX_SPAWNED_SESSIONS_PER_TURN - linkedCount;
+    for (let i = 0; i < linkedCount; i++) {
       const linked = await app.inject({
         method: "POST",
         url: `/api/sessions/${parentId}/spawn`,
@@ -1251,7 +1314,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
       });
       expect(linked.statusCode).toBe(200);
     }
-    for (let i = 0; i < 2; i++) {
+    for (let i = 0; i < detachedCount; i++) {
       const det = await app.inject({
         method: "POST",
         url: `/api/sessions/${parentId}/spawn`,
@@ -1260,14 +1323,13 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
       expect(det.statusCode).toBe(200);
     }
 
-    // The 5th spawn this turn — detached or not — is over the cap.
+    // One past the cap this turn — detached or not — is refused.
     const limited = await app.inject({
       method: "POST",
       url: `/api/sessions/${parentId}/spawn`,
-      payload: { prompt: "detached-3", title: "Detached 3", detached: true, spawnedByTurn: "turn-1" },
+      payload: { prompt: "detached-over-cap", title: "Detached over cap", detached: true, spawnedByTurn: "turn-1" },
     });
     expect(limited.statusCode).toBe(429);
     expect(limited.json().error).toContain("Per-turn spawn limit");
   });
 });
-

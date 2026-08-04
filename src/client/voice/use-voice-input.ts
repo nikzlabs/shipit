@@ -17,6 +17,7 @@
 // eslint-disable-next-line no-restricted-imports -- global keyboard + media lifecycle with cleanup
 import { useCallback, useEffect, useRef, useState } from "react";
 import { startCapture, MicPermissionError, type ActiveCapture } from "./capture.js";
+import { useEventListener, useEventListeners } from "../hooks/useEventListener.js";
 
 export type VoiceInputState = "idle" | "recording" | "transcribing" | "error";
 
@@ -293,56 +294,51 @@ export function useVoiceInput(options: UseVoiceInputOptions): VoiceInputApi {
     setCleanupWarning(null);
   }, []);
 
-  // Hotkey push-to-talk listeners.
-  // eslint-disable-next-line no-restricted-syntax -- global PTT shortcut with cleanup
-  useEffect(() => {
-    if (!enabled || !hotkey) return undefined;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.repeat) return; // autorepeat — first keydown already started
-      if (!eventMatchesPtt(e, hotkey)) return;
-      e.preventDefault();
-      startRecording();
-    };
-    const onKeyUp = (e: KeyboardEvent) => {
-      if (!eventMatchesPtt(e, hotkey)) return;
-      e.preventDefault();
-      stopRecording();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("keyup", onKeyUp);
-    return () => {
-      window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("keyup", onKeyUp);
-    };
-  }, [enabled, hotkey, startRecording, stopRecording]);
+  // Hotkey push-to-talk listeners. A null target while disabled / hotkey-less
+  // reproduces the old `if (!enabled || !hotkey) return` gate; the latest
+  // `hotkey` / `startRecording` / `stopRecording` fire via the latest-callback ref.
+  const pttTarget = enabled && hotkey ? window : null;
+  useEventListener(pttTarget, "keydown", (e) => {
+    if (e.repeat) return; // autorepeat — first keydown already started
+    if (!hotkey || !eventMatchesPtt(e, hotkey)) return;
+    e.preventDefault();
+    startRecording();
+  });
+  useEventListener(pttTarget, "keyup", (e) => {
+    if (!hotkey || !eventMatchesPtt(e, hotkey)) return;
+    e.preventDefault();
+    stopRecording();
+  });
 
   // Stop (and transcribe) when the user tabs away mid-press — keyup is
   // unreliable once focus leaves the window.
-  // eslint-disable-next-line no-restricted-syntax -- focus/visibility lifecycle with cleanup
-  useEffect(() => {
-    if (!enabled) return undefined;
-    const onBlur = () => {
-      if (!captureRef.current) return;
-      // A window blur also fires when focus moves *into* an embedded iframe —
-      // e.g. ShipIt's preview pane hot-reloading after the active session's
-      // agent edits files, then autofocusing an input inside the reloaded
-      // page. That is NOT the user tabbing away, and finalizing here cuts a
-      // dictation short at a moment the user can't predict (the bug: voice
-      // "randomly stops" while another session's agent is working). On a real
-      // tab/app switch `activeElement` stays on `<body>`; an iframe focus-steal
-      // makes it the `<iframe>` element. Skip the latter — an actual tab *hide*
-      // is still caught by the visibilitychange handler below.
-      if (document.activeElement instanceof HTMLIFrameElement) return;
-      void finishRecording();
-    };
-    const onVisibility = () => { if (document.hidden && captureRef.current) void finishRecording(); };
-    window.addEventListener("blur", onBlur);
-    document.addEventListener("visibilitychange", onVisibility);
-    return () => {
-      window.removeEventListener("blur", onBlur);
-      document.removeEventListener("visibilitychange", onVisibility);
-    };
-  }, [enabled, finishRecording]);
+  useEventListeners([
+    {
+      target: enabled ? window : null,
+      type: "blur",
+      handler: () => {
+        if (!captureRef.current) return;
+        // A window blur also fires when focus moves *into* an embedded iframe —
+        // e.g. ShipIt's preview pane hot-reloading after the active session's
+        // agent edits files, then autofocusing an input inside the reloaded
+        // page. That is NOT the user tabbing away, and finalizing here cuts a
+        // dictation short at a moment the user can't predict (the bug: voice
+        // "randomly stops" while another session's agent is working). On a real
+        // tab/app switch `activeElement` stays on `<body>`; an iframe focus-steal
+        // makes it the `<iframe>` element. Skip the latter — an actual tab *hide*
+        // is still caught by the visibilitychange handler below.
+        if (document.activeElement instanceof HTMLIFrameElement) return;
+        void finishRecording();
+      },
+    },
+    {
+      target: enabled ? document : null,
+      type: "visibilitychange",
+      handler: () => {
+        if (document.hidden && captureRef.current) void finishRecording();
+      },
+    },
+  ]);
 
   // Session switch mid-recording → discard audio, insert nothing. Also drop a
   // lingering cleanup warning: it described the previous session's transcript

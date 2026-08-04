@@ -31,7 +31,6 @@ import type { GitHubAuthManager } from "../github-auth.js";
 import type { ChatHistoryManager } from "../chat-history.js";
 import type { SessionManager } from "../sessions.js";
 import type { UsageManager } from "../usage.js";
-import type { AuthManager } from "../agents/claude/auth-manager.js";
 
 /**
  * Fake agent for rebase tests. The test injects a "resolution function" that
@@ -200,9 +199,6 @@ function makeStubUsageManager(): UsageManager {
   } as unknown as UsageManager;
 }
 
-function makeStubAuthManager(): AuthManager {
-  return { startOAuthFlow: () => {} } as unknown as AuthManager;
-}
 
 /**
  * docs/169 — the conflict-resolution turn now runs through `runner.dispatch`,
@@ -224,7 +220,6 @@ async function runFlow(
       sessionManager: deps.sessionManager,
       chatHistoryManager: deps.chatHistoryManager,
       usageManager: deps.usageManager,
-      authManager: deps.authManager,
       sseBroadcast: deps.sseBroadcast,
       broadcastLog: () => { /* rebase flow doesn't surface CLI log lines */ },
       getSelectedModel: () => deps.sessionManager.get(deps.runner.sessionId)?.model,
@@ -282,7 +277,6 @@ describe("rebase-driver: runRebaseFlow", () => {
       chatHistoryManager: makeStubHistory(captured),
       agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
       usageManager: makeStubUsageManager(),
-      authManager: makeStubAuthManager(),
       sseBroadcast: () => {},
     }, "main");
 
@@ -316,7 +310,6 @@ describe("rebase-driver: runRebaseFlow", () => {
       chatHistoryManager: makeStubHistory([]),
       agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
       usageManager: makeStubUsageManager(),
-      authManager: makeStubAuthManager(),
       sseBroadcast: () => {},
     }, "main");
 
@@ -342,6 +335,64 @@ describe("rebase-driver: runRebaseFlow", () => {
       expect(pushResult.success).toBe(true);
       expect(pushResult.branch).toBe("feature");
     }
+  });
+
+  // A rebase rewrites the working tree from the orchestrator, so the incoming
+  // `shipit.yaml` / compose file can declare services the running session knows
+  // nothing about. The in-container inotify watcher is not a dependable signal
+  // for a cross-container write (and is started best-effort), so the driver
+  // tells the runner directly. Without this, "sync with main" silently leaves
+  // the session running the pre-rebase compose stack.
+  it("clean rebase — re-evaluates the session's shipit.yaml/compose config", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: workDir,
+      defaultAgentId: "claude",
+    });
+    const reevaluate = vi.fn();
+    (runner as unknown as { reevaluateWorkspaceConfig: () => void }).reevaluateWorkspaceConfig = reevaluate;
+
+    const result = await runFlow({
+      git,
+      githubAuthManager: makeStubAuth(false),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory([]),
+      agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      sseBroadcast: () => {},
+    }, "main");
+
+    expect(result.status).toBe("rebased");
+    expect(reevaluate).toHaveBeenCalledTimes(1);
+  });
+
+  it("up-to-date branch — does NOT re-evaluate config (the tree never changed)", async () => {
+    const { workDir, git } = setupRepoWithRemote(tmpDir);
+
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: workDir,
+      defaultAgentId: "claude",
+    });
+    const reevaluate = vi.fn();
+    (runner as unknown as { reevaluateWorkspaceConfig: () => void }).reevaluateWorkspaceConfig = reevaluate;
+
+    await runFlow({
+      git,
+      githubAuthManager: makeStubAuth(false),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory([]),
+      agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      sseBroadcast: () => {},
+    }, "main");
+
+    expect(reevaluate).not.toHaveBeenCalled();
   });
 
   it("force push failure — surfaces github_push_result(success=false) + log_entry", async () => {
@@ -371,7 +422,6 @@ describe("rebase-driver: runRebaseFlow", () => {
         chatHistoryManager: makeStubHistory([]),
         agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
         usageManager: makeStubUsageManager(),
-      authManager: makeStubAuthManager(),
       sseBroadcast: () => {},
       }, "main");
 
@@ -413,7 +463,6 @@ describe("rebase-driver: runRebaseFlow", () => {
       chatHistoryManager: makeStubHistory([]),
       agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
       usageManager: makeStubUsageManager(),
-      authManager: makeStubAuthManager(),
       sseBroadcast: () => {},
     }, "main");
 
@@ -454,7 +503,6 @@ describe("rebase-driver: runRebaseFlow", () => {
         return "Resolved shared.txt by merging both edits.";
       }) as unknown as AgentProcess,
       usageManager: makeStubUsageManager(),
-      authManager: makeStubAuthManager(),
       sseBroadcast: () => {},
     }, "main");
 
@@ -563,7 +611,6 @@ describe("rebase-driver: runRebaseFlow", () => {
       agentFactory: () =>
         new FakeToolUsingAgent(path.join(workDir, "shared.txt"), "merged result\n") as unknown as AgentProcess,
       usageManager: makeStubUsageManager(),
-      authManager: makeStubAuthManager(),
       sseBroadcast: () => {},
     }, "main");
 
@@ -613,7 +660,6 @@ describe("rebase-driver: runRebaseFlow", () => {
         chatHistoryManager: makeStubHistory([]),
         agentFactory: () => new FakeRebaseAgent(() => "ok") as unknown as AgentProcess,
         usageManager: makeStubUsageManager(),
-      authManager: makeStubAuthManager(),
       sseBroadcast: () => {},
       }, "main"),
     ).rejects.toThrow(/Cannot rebase while an agent turn is in progress/);
@@ -636,7 +682,6 @@ describe("rebase-driver: runRebaseFlow", () => {
         chatHistoryManager: makeStubHistory([]),
         agentFactory: () => new FakeRebaseAgent(() => "ok") as unknown as AgentProcess,
         usageManager: makeStubUsageManager(),
-      authManager: makeStubAuthManager(),
       sseBroadcast: () => {},
       }, "nonexistent-branch-xyz"),
     ).rejects.toThrow(/Cannot resolve base branch/);
@@ -660,7 +705,6 @@ describe("rebase-driver: runRebaseFlow", () => {
       chatHistoryManager: makeStubHistory([]),
       agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
       usageManager: makeStubUsageManager(),
-      authManager: makeStubAuthManager(),
       sseBroadcast: () => {},
     }, "main");
 
@@ -682,7 +726,6 @@ describe("rebase-driver: runRebaseFlow", () => {
       chatHistoryManager: makeStubHistory([]),
       agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
       usageManager: makeStubUsageManager(),
-      authManager: makeStubAuthManager(),
       sseBroadcast: () => {},
     }, "main");
 
@@ -713,7 +756,6 @@ describe("rebase-driver: runRebaseFlow", () => {
         return "Resolved.";
       }) as unknown as AgentProcess,
       usageManager: makeStubUsageManager(),
-      authManager: makeStubAuthManager(),
       sseBroadcast: () => {},
     }, "main");
 
@@ -737,7 +779,6 @@ describe("rebase-driver: runRebaseFlow", () => {
         chatHistoryManager: makeStubHistory([]),
         agentFactory: () => new FakeRebaseAgent(() => "ok") as unknown as AgentProcess,
         usageManager: makeStubUsageManager(),
-        authManager: makeStubAuthManager(),
         sseBroadcast: () => {},
       }, "nonexistent-branch-xyz"),
     ).rejects.toThrow(/Cannot resolve base branch/);
@@ -791,7 +832,6 @@ describe("rebase-driver: docs/221 sync card + local base move", () => {
     chatHistoryManager: makeStubHistory(captured),
     agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
     usageManager: makeStubUsageManager(),
-    authManager: makeStubAuthManager(),
     sseBroadcast: () => {},
   });
 
@@ -874,7 +914,7 @@ describe("rebase-driver: docs/221 sync card + local base move", () => {
     }
   });
 
-  it("nothing to do (local main already current) — no card, no baseMoved", async () => {
+  it("nothing to do (local main already current) — still records the manual sync", async () => {
     const { workDir, git } = setupRepoWithRemote(tmpDir);
     // No divergence: session is on main, which already matches origin/main.
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
@@ -884,10 +924,15 @@ describe("rebase-driver: docs/221 sync card + local base move", () => {
     const result = await runFlow({ ...baseDeps(git, runner, [], false), recordSyncCard: true }, "main");
 
     expect(result.status).toBe("up_to_date");
-    expect(messages.find((m) => m.type === "branch_synced_card")).toBeUndefined();
+    const card = messages.find((m) => m.type === "branch_synced_card");
+    expect(card).toBeDefined();
+    if (card?.type === "branch_synced_card") {
+      expect(card.card.headFromSha).toBe(card.card.headToSha);
+      expect(card.card.baseFromSha).toBe(card.card.baseToSha);
+    }
     const complete = messages.find((m) => m.type === "rebase_complete");
     if (complete?.type === "rebase_complete") {
-      expect(complete.baseMoved).toBeFalsy();
+      expect(complete.baseMoved).toBe(true);
     }
   });
 });

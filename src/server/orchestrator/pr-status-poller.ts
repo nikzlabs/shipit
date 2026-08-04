@@ -30,6 +30,7 @@ import {
   type GraphQLResponse,
   parsePrNode,
   extractHeadSha,
+  extractCurrentHeadOid,
   extractBaseSha,
   extractFailedCheckRuns,
   extractChangedFiles,
@@ -43,6 +44,7 @@ import { RemediationArbiter } from "./auto-remediation-arbiter.js";
 import type { MergedPrInfo } from "./issue-lifecycle.js";
 import { PrSessionTracker } from "./pr-session-tracker.js";
 import { PollingGlobalGate } from "./polling-global-gate.js";
+import type { SessionRunnerInterface } from "./session-runner.js";
 import {
   PrPollingSupervisor,
   PR_STATUS_POLL_INTERVAL_MS,
@@ -74,7 +76,7 @@ export interface PrTerminalStateInfo {
 // Re-export the pure parser helpers so existing callers
 // (`pr-status-poller.test.ts`, `services/github-ci-fix.ts`) keep working
 // without an import path change.
-export { parsePrNode, extractHeadSha, extractBaseSha, extractFailedCheckRuns, extractChangedFiles };
+export { parsePrNode, extractHeadSha, extractCurrentHeadOid, extractBaseSha, extractFailedCheckRuns, extractChangedFiles };
 
 export class PrStatusPoller {
   private githubAuth: GitHubAuthManager;
@@ -200,6 +202,8 @@ export class PrStatusPoller {
     rebaseAndResolveCb?: RebaseAndResolveCb;
     /** docs/169 — global gate getter for the auto-fix-CI loop. */
     isAutoFixEnabled?: () => boolean;
+    /** Server-owned runner activation for viewerless remediation. */
+    ensureRunner?: (sessionId: string) => Promise<SessionRunnerInterface | undefined>;
   }) {
     this.githubAuth = opts.githubAuth;
     this.sessionManager = opts.sessionManager;
@@ -230,6 +234,7 @@ export class PrStatusPoller {
       // `autoFixCiPaused` opts out of the auto-fix loop even with the global
       // setting on. Read at decision time so a resume takes effect next poll.
       (sessionId) => !this.sessionManager.get(sessionId)?.autoFixCiPaused,
+      opts.ensureRunner,
     );
     this.autoMerge = new AutoMergeManager(this.githubAuth, onSessionChange);
     this.graceTracker = new CiGraceTracker(opts.getSharedRepoDir);
@@ -246,6 +251,7 @@ export class PrStatusPoller {
         opts.rebaseAndResolveCb,
         undefined,
         this.remediationArbiter,
+        opts.ensureRunner,
       );
     }
 
@@ -411,8 +417,13 @@ export class PrStatusPoller {
     const polledOwner = repoKey.slice(0, slash);
     const polledRepo = repoKey.slice(slash + 1);
     const { owner, repo } = await this.resolveCanonicalApiTarget(repoKey, polledOwner, polledRepo);
-    await this.verifyMissingPr(sessionId, owner, repo, session.branch);
-    this.tracker.verifiedAbsent.add(sessionId);
+    const outcome = await this.verifyMissingPr(sessionId, owner, repo, session.branch);
+    // Arm the single-probe debounce for every resting outcome EXCEPT a
+    // superseded-PR suppression — see the matching note in `pollRepo`'s missing-
+    // PR branch. A suppressed verify means the only PR on the branch is still the
+    // re-armed session's OLD merged PR (docs/202); arming here would wedge
+    // convergence if the NEW PR opens-and-merges before being observed open.
+    if (outcome !== "suppressed") this.tracker.verifiedAbsent.add(sessionId);
   }
 
   /** Untrack a session (archived, PR merged, etc.). */
@@ -651,12 +662,30 @@ export class PrStatusPoller {
   private attachAutomationState(summary: PrStatusSummary): PrStatusSummary {
     let result = summary;
     const fixState = this.autoFix.get(summary.sessionId);
-    if (fixState) {
+    // Never attach auto-fix state over a GREEN rollup. The manager's state is
+    // the loop's bookkeeping, not a display flag: green means there is nothing
+    // to fix, so an "Auto-fixing…" spinner or an "Auto-fix exhausted" note on a
+    // passing card is wrong however the state got there. The state machine now
+    // settles itself on a resolved poll (`runTransition` step 5); this is the
+    // belt-and-suspenders half, the same shape docs/146 applies to auto-resolve.
+    // Deliberately only `success` — a `pending` rollup (CI re-running after the
+    // fix turn pushed) must keep showing the line, or it would flicker away
+    // mid-attempt.
+    if (fixState && summary.checks.state !== "success") {
       result = {
         ...result,
         autoFix: {
+          // The 1-based number of the attempt being DISPLAYED. `attemptCount`
+          // counts COMPLETED attempts — it is incremented post-turn, in
+          // `completeTurn` — so while one is in flight the card would otherwise
+          // read "attempt 0/3" for the first attempt. The manager already
+          // computes this number for `fireAttempt`; publishing it here keeps the
+          // client from reconstructing it in each of the two places that render
+          // the line. Never exceeds `maxAttempts`: the cap gate refuses to fire
+          // once `attemptCount >= maxAttempts`.
+          attemptCount:
+            fixState.status === "running" ? fixState.attemptCount + 1 : fixState.attemptCount,
           status: fixState.status,
-          attemptCount: fixState.attemptCount,
           maxAttempts: MAX_AUTO_FIX_ATTEMPTS,
         },
       };
@@ -913,9 +942,17 @@ export class PrStatusPoller {
             repoKey,
             repoUrl: session.remoteUrl,
             headSha,
+            headBranch: summary.headBranch,
+            baseBranch: summary.baseBranch,
             changedFiles: extractChangedFiles(prNode),
           });
-          if (force) summary.checks.state = "pending";
+          if (force) {
+            summary.checks.state = "pending";
+            // Publish the deadline so the client can retire the spinner on its
+            // own even if polling pauses before we observe the expiry.
+            const until = this.graceTracker.graceDeadlineFor(session.id);
+            if (until !== undefined) summary.checks.graceUntil = until;
+          }
         } else {
           // Any non-"none" state means GitHub registered something — no need
           // to keep the grace timer running.
@@ -1009,13 +1046,35 @@ export class PrStatusPoller {
         // `verifiedAbsent` until the PR reappears in a bulk response.
         if ((!opts.force && this.tracker.verifiedAbsent.has(session.id)) || this.tracker.inFlightVerify.has(session.id)) continue;
         this.tracker.inFlightVerify.add(session.id);
+        // eslint-disable-next-line no-restricted-syntax -- fire-and-forget in the synchronous poll loop; the outcome decides whether to arm the debounce
         const verify = this.verifyMissingPr(session.id, owner, repo, session.branch)
+          .then((outcome) => {
+            // Arm the single-probe debounce for every resting outcome EXCEPT a
+            // superseded-PR suppression. A `"suppressed"` verify means the only
+            // PR on the branch is still the re-armed session's OLD merged PR
+            // (docs/202) — the session's NEW PR hasn't been observed yet. If we
+            // armed the debounce here, a NEW PR that opens AND merges entirely
+            // between two polls (so it never appears in the OPEN bulk view to
+            // clear `verifiedAbsent` — exactly the `gh pr create` → merge-on-
+            // GitHub case, especially while the tab is closed) would never be
+            // REST-verified again. The suppression also never clears (it only
+            // clears when a *different*-numbered PR is observed), so the session
+            // stays stuck with no PR card — the gray "Branch" badge — instead of
+            // converging to GitHub's terminal `merged`/`closed` state. Leaving the
+            // debounce un-armed for the suppressed case lets the next poll
+            // re-verify and promote once `findPullRequestAnyState` returns the
+            // different-numbered (now-terminal) PR.
+            if (outcome !== "suppressed") this.tracker.verifiedAbsent.add(session.id);
+          })
           .catch((err: unknown) => {
             console.error(`[pr-poller] REST verify error for ${session.id}:`, err);
+            // On a transient REST/GraphQL error, arm the debounce as before so a
+            // persistent failure doesn't re-probe every poll; the next forced
+            // refresh (viewer attach / activation) clears it and retries.
+            this.tracker.verifiedAbsent.add(session.id);
           })
           .finally(() => {
             this.tracker.inFlightVerify.delete(session.id);
-            this.tracker.verifiedAbsent.add(session.id);
           });
         if (opts.waitForMissingVerify) await verify;
       }
@@ -1044,10 +1103,21 @@ export class PrStatusPoller {
    *     alone and wait for the next GraphQL poll to pick the PR back up.
    *   - Closed or merged: promote, persist, broadcast, and trigger the
    *     archive callback for merged.
+   *
+   * Returns the resting outcome so the caller can decide whether to arm the
+   * `verifiedAbsent` single-probe debounce. Crucially, a `"suppressed"` result
+   * (the superseded re-armed PR, docs/202) must NOT arm the debounce, or a NEW
+   * PR that opens-and-merges between polls is never re-verified and the session
+   * never converges to its terminal state (see the callers).
    */
-  private async verifyMissingPr(sessionId: string, owner: string, repo: string, branch: string): Promise<void> {
+  private async verifyMissingPr(
+    sessionId: string,
+    owner: string,
+    repo: string,
+    branch: string,
+  ): Promise<"absent" | "open" | "terminal" | "suppressed"> {
     const pr = await this.githubAuth.findPullRequestAnyState(owner, repo, branch);
-    if (!pr) return;
+    if (!pr) return "absent";
 
     const isMerged = pr.merged_at !== null;
     const prState = isMerged ? "merged" as const : pr.state === "closed" ? "closed" as const : "open" as const;
@@ -1065,7 +1135,11 @@ export class PrStatusPoller {
     } else if (superseded !== undefined && prState !== "open") {
       // Same-numbered terminal PR — the one we're suppressing. Treat as "no
       // current PR": leave the session active with its `ready` card standing.
-      return;
+      // Reported as `"suppressed"` so the caller does NOT arm `verifiedAbsent`:
+      // the session's NEW PR hasn't appeared yet, and the next poll must stay
+      // free to re-verify and catch it (even if it opens-and-merges between
+      // polls, never showing in the OPEN bulk view).
+      return "suppressed";
     }
 
     if (prState === "open") {
@@ -1073,7 +1147,7 @@ export class PrStatusPoller {
       // A GraphQL-derived open snapshot is strictly richer than anything REST
       // gives us here (real check rollup, mergeable, conversation, files), so
       // never clobber it — the next GraphQL poll keeps it fresh.
-      if (prev?.prState === "open") return;
+      if (prev?.prState === "open") return "open";
 
       // Either a brand-new PR that the bulk GraphQL view hasn't indexed yet
       // (GitHub's eventual consistency right after `gh pr create` — the forced
@@ -1090,14 +1164,16 @@ export class PrStatusPoller {
       // is expected to register, mirroring the GraphQL path's grace override. We
       // don't have the head SHA from REST, so grace falls back to its time-based
       // window; the next GraphQL poll supplies the real SHA and reconciles.
-      const checksState: PrStatusSummary["checks"]["state"] = this.graceTracker.shouldForcePending({
+      const forcePending = this.graceTracker.shouldForcePending({
         sessionId,
         repoKey: `${owner}/${repo}`,
         repoUrl: this.sessionManager.get(sessionId)?.remoteUrl,
         headSha: "",
-      })
-        ? "pending"
-        : "none";
+        headBranch: branch,
+        baseBranch: pr.base,
+      });
+      const checksState: PrStatusSummary["checks"]["state"] = forcePending ? "pending" : "none";
+      const graceUntil = forcePending ? this.graceTracker.graceDeadlineFor(sessionId) : undefined;
 
       const summary: PrStatusSummary = {
         sessionId,
@@ -1110,7 +1186,14 @@ export class PrStatusPoller {
         headBranch: branch,
         insertions: pr.additions,
         deletions: pr.deletions,
-        checks: { state: checksState, total: 0, passed: 0, failed: 0, pending: 0 },
+        checks: {
+          state: checksState,
+          total: 0,
+          passed: 0,
+          failed: 0,
+          pending: 0,
+          ...(graceUntil !== undefined ? { graceUntil } : {}),
+        },
         mergeable: "unknown",
         reviewDecision: "none",
         autoMergeEnabled: false,
@@ -1118,7 +1201,7 @@ export class PrStatusPoller {
       this.tracker.lastKnown.set(sessionId, summary);
       this.sessionManager.setPrStatus(sessionId, summary);
       this.sseBroadcast("pr_status", { updates: [this.attachAutomationState(summary)] });
-      return;
+      return "open";
     }
 
     // Capture whether this session was already promoted to a terminal state
@@ -1189,6 +1272,20 @@ export class PrStatusPoller {
     this.autoConflictResolveManager?.delete(sessionId);
     this.autoFix.delete(sessionId);
     this.remediationArbiter.delete(sessionId);
+    // Auto-merge is armed per *task*, not per session (docs/175: "a sticky
+    // auto-merge is a footgun"). The PR it was armed for is now terminal, so
+    // this — not `untrackSession`, which nothing in production calls — is the
+    // release point. Leaving the state armed was actively wrong in both
+    // directions: `activatePendingAutoMergeForPr` reads a lingering `enabled`
+    // as "pre-armed" and would silently arm the session's NEXT PR (exactly the
+    // review-intended PR that docs/175 refuses to ship on a remembered
+    // toggle), while the docs/077 `completed` short-circuit — set when the
+    // managed REST merge succeeded and deliberately NOT cleared at the merge —
+    // rode along with it, so `handleManaged` returned early forever and the
+    // still-ON toggle never merged anything. Dropping the state fixes both.
+    // A re-arm (docs/202/216) therefore starts from OFF, and re-arming
+    // auto-merge for the next task is a fresh, conscious toggle.
+    this.autoMerge.delete(sessionId);
     this.sseBroadcast("pr_status", { updates: [summary] });
 
     // docs/196 — fire the notify-on-merge watch hook for BOTH terminal outcomes.
@@ -1245,5 +1342,7 @@ export class PrStatusPoller {
         });
       }
     }
+
+    return "terminal";
   }
 }

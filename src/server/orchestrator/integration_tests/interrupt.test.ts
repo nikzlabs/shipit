@@ -223,6 +223,47 @@ describe("Integration: Interrupt and Redirect", () => {
     client.close();
   });
 
+  it("commits partial work when a STREAMING interrupt leaves the process resident", async () => {
+    // The case the fallback actually exists for. The test above lets
+    // FakeClaudeProcess exit on interrupt, so `done` fires and the abnormal-exit
+    // path in turn-executor commits within ~10ms — the 2s fallback never
+    // matters. Under live steering the CLI does NOT exit on a control_request
+    // interrupt and may never emit a `result` for the aborted turn, so NEITHER
+    // `agent_result` nor `done` runs and `scheduleInterruptCommit` is the only
+    // thing that can commit the partial work.
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    const session = sessionManager.get(client.sessionId);
+    const sessionDir = session!.workspaceDir!;
+
+    client.send({ type: "send_message", text: "edit a file" });
+    const claude = await waitForClaude(() => lastClaude);
+    claude.emit("event", { type: "system", subtype: "init", session_id: "streaming-interrupt" });
+    await client.receiveType("session_started");
+
+    // Resident process: interrupt ends the turn but never exits, and the test
+    // deliberately never emits a `result`.
+    claude.streamingInterrupt = true;
+
+    fs.writeFileSync(path.join(sessionDir, "partial-work.txt"), "in progress");
+
+    client.send({ type: "interrupt_agent" });
+    await client.receiveType("agent_interrupted");
+
+    const committed = await client.receiveType("git_committed", 8000);
+    expect((committed as { hash?: string }).hash).toBeTruthy();
+    // The process was never killed and never exited — only the fallback ran.
+    expect(claude.killed).toBe(false);
+    expect(
+      fs.readFileSync(path.join(sessionDir, "partial-work.txt"), "utf8"),
+    ).toBe("in progress");
+
+    client.close();
+    // The fallback is deliberately deferred by 2s, so this one needs more than
+    // the 5s default.
+  }, 20000);
+
   it("preserves the interrupted turn's assistant work in chat history", async () => {
     // Regression: when the user interrupted mid-turn the agent exited without
     // an `agent_result`, leaving in_progress=1 rows. The next turn's first

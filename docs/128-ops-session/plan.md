@@ -1,4 +1,5 @@
 ---
+issue: https://linear.app/shipit-ai/issue/SHI-280
 description: Special session type letting operators debug the production ShipIt host (stuck containers, OOM, Docker state) without leaving the ShipIt UI.
 ---
 
@@ -399,6 +400,47 @@ independently.)
       the warm pool and always take the fresh-create path with the ops gate set. No
       code change needed; the invariant is load-bearing and noted in the code.
 
+4d. **An ops session must never acquire a remote, and never auto-push.** Found on
+    the live host: the ops session at `41699b37` had
+    `origin → https://github.com/nikzlabs/shipit.git` in its throwaway template
+    workspace, and the orchestrator log showed the remote being added *mid-turn*,
+    53 ms after `.git/config`'s mtime — followed by a post-turn commit with no
+    matching `[git] Pushed to origin/...` line, which is the silent signature of
+    the non-fast-forward branch.
+
+    The chain: `resolveGitHubRemote` (`services/github.ts`) sits on the read path
+    of every brokered `gh` operation and repaired `origin` on any mismatch with
+    the caller's `remoteUrl`. But `remoteUrl` is often **not** the session's repo
+    — `resolvePrTarget` maps an explicit `gh --repo owner/name` straight through
+    — so `gh pr list --repo nikzlabs/shipit` *wrote* that repo into the ops
+    workspace as `origin`. `pushToOrigin`'s no-origin early return, the thing that
+    kept a remote-less session inert, then no longer applied: the next post-turn
+    auto-push tried to push the ops workspace's `main` at the real ShipIt repo. It
+    was rejected — the histories are unrelated — and the rejection is emitted
+    silently as `git_push_rejected`, which is what put a "Branch is behind `main`.
+    Update to resolve." banner in an ops session's chat.
+
+    Two fixes, both load-bearing, because the near-miss is worse than the symptom:
+    a workspace seeded from a clone rather than a fresh `git init` would have
+    *succeeded* in pushing an ops session's commits to `main` on the target repo.
+
+    - **Reads don't write.** `resolveGitHubRemote` no longer creates an `origin`,
+      and no longer repoints an existing one at a `--repo` target. The repair is
+      narrowed to the case it was written for: an origin that is still a local
+      filesystem path (the `git clone --local` bare-cache artifact), which was
+      never a push target.
+    - **Ops sessions commit but never auto-push.** `postTurnCommit`
+      (`ws-handlers/post-turn.ts`) gates both `scheduleAutoPush` call sites on
+      `kind === "ops"`, alongside the existing sandbox gate. An ops session's
+      history is part of the incident log so the commit stays; pushing was never
+      part of the design (a ShipIt fix goes out through a spawned
+      `--shipit-source` session or a filed issue). Only the debounced post-turn
+      push is gated — an explicit agent-driven `gh pr create` is unaffected.
+
+    Tests: `services/github-remote-resolution.test.ts`,
+    `ws-handlers/post-turn.test.ts`. The client half — never rendering a
+    "Branch is behind" nudge on a session with no base branch — is in docs/239.
+
 5. **Session `kind` + sidebar group** — add a `kind?: "ops"` field to
    `SessionInfo` (`src/server/shared/types/domain-types.ts`); there is
    no `kind` field today, session types are distinguished by ad-hoc
@@ -479,6 +521,39 @@ independently.)
    - Gating: the Settings "Create ops session" button is hidden/
      disabled for a non-operator.
 
+## Journal access has two runtime preconditions (#1917)
+
+Mounting `/var/log/journal` read-only is necessary but nowhere near
+sufficient. The host's journal files are `0640 root:systemd-journal`, and
+the original live re-audit passed only because the worker still ran as
+root. Once docs/150 dropped the worker to `shipit`, ops sessions silently
+went back to reading nothing — `journalctl -D /var/log/journal` returned
+four lines of user-scoped noise and `id` reported `groups=1000(shipit)`,
+from an image whose build *asserts* membership in `systemd-journal` and
+`adm`. Two independent things have to hold, both handled in
+`docker/session-worker/entrypoint.sh`:
+
+1. **The GID must match numerically, not by name.** A bind mount carries
+   the host's *numeric* GID through unchanged and the kernel checks that
+   number, so the image's build-time `groupadd -rf systemd-journal`
+   (which allocates whatever GID is free in the image) grants nothing.
+   The entrypoint stats each mounted journal dir and joins whichever
+   group actually owns it, creating one at that exact GID if none does.
+2. **The membership must survive the privilege drop.** `gosu <uid>:<gid>`
+   takes runc's explicit-group path, which resolves the primary GID and
+   then calls `setgroups()` with an empty list — discarding every
+   supplementary group microseconds before the agent starts. The
+   entrypoint uses the `gosu <uid>` user form, which initializes the
+   supplementary set from `/etc/group`. (This is the same distinction as
+   `docker run --user 1000:1000` vs `--user shipit`; gosu links runc's
+   `libcontainer/user`, so the semantics are shared.)
+
+Both steps are best-effort and log to stderr on failure: an unreadable
+journal must never fail a container boot, but it must also never fail
+*silently* again — that is what let this regression sit unnoticed.
+`session-worker-entrypoint.test.ts` executes the real script against
+stubbed `stat`/`getent`/`groupadd`/`usermod`/`gosu` to pin both.
+
 ## Risks / open questions
 
 - **Read-only journal access is platform-specific.** `/var/log/journal`
@@ -549,20 +624,22 @@ Data flow (no new races, no new dispatch wiring):
    privilege gate is untouched. When the target resolves it (a) names
    the new session `Ops — debug: <title>` and (b) returns a
    `seedPrompt` built by `buildOpsInvestigationSeed` (`templates-ops.ts`),
-   which mirrors the `diagnose-stuck-session` recipe with the concrete
-   target id baked into the `docker ps --filter` / `journalctl | grep`
-   steps. An unknown id is silently ignored → generic ops session.
+   containing only the target identity and the read-only investigation
+   boundary. The operator adds the symptoms and desired investigation;
+   the starter does not assume Docker, journal, resource, or reporting
+   steps are relevant. An unknown id is silently ignored → generic ops
+   session.
 3. The store writes `seedPrompt` into the new session's composer draft
    via `saveDraftMessage(id, …)` **before** navigation. `MessageInput`
    loads the per-session draft on `focusKey` change, so the operator
-   lands in the new ops session with the investigation prompt already
-   typed. It is a *draft*, not an auto-dispatched turn: the operator
+   lands in the new ops session with the starter context already typed.
+   It is a *draft*, not an auto-dispatched turn: the operator
    reviews and presses send. That keeps a human in the loop on a
    privileged session and sidesteps any race with container boot /
    runner registration (no dependency on `/agent/dispatch`, which 404s
    until a runner exists).
 
-The session id is the right handle because container names embed it —
+The session id remains the stable handle for correlating the target —
 the agent filters on it directly (same convention the embedded
 prompts already use).
 

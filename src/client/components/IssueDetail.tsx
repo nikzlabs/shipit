@@ -29,6 +29,7 @@ import {
   WarningCircleIcon,
   XIcon,
 } from "@phosphor-icons/react";
+import { Avatar } from "./ui/avatar.js";
 import { Banner } from "./ui/banner.js";
 import { Button } from "./ui/button.js";
 import { StartSessionButton } from "./StartSessionButton.js";
@@ -51,6 +52,7 @@ import type { IssueSelection } from "../stores/issues-store.js";
 import type {
   IssueLabel,
   IssuePriorityLevel,
+  RepoInfo,
   TrackerComment,
   TrackerInfo,
   TrackerIssue,
@@ -66,6 +68,13 @@ export interface IssueDetailProps {
   info?: TrackerInfo;
   /** Whether a repo is available to seed a session on. */
   canStart: boolean;
+  /**
+   * Repos offered by the Start-session repo picker (docs/236). Two or more
+   * turns the footer button into a split control.
+   */
+  repos: RepoInfo[];
+  /** Repo a plain Start-session click lands in — checkmarked in the picker. */
+  targetRepoUrl?: string;
   /** The open issue's comment thread; null until the fetch lands. */
   comments: TrackerComment[] | null;
   commentsLoading: boolean;
@@ -92,7 +101,8 @@ export interface IssueDetailProps {
   canEditLabels: boolean;
   onBack: () => void;
   onRefresh: () => void;
-  onStartSession: (issue: TrackerIssue) => void;
+  /** Seed a session from this issue; `repoUrl` overrides the default target repo. */
+  onStartSession: (issue: TrackerIssue, repoUrl?: string) => void;
   /** Post a user comment; resolves to an error message, or null on success. */
   onPostComment: (body: string) => Promise<string | null>;
   /** Set the open issue's status; resolves to an error message, or null. */
@@ -139,6 +149,8 @@ export function IssueDetail({
   error,
   info,
   canStart,
+  repos,
+  targetRepoUrl,
   comments,
   commentsLoading,
   commentsError,
@@ -291,8 +303,10 @@ export function IssueDetail({
                           />
                           {label.name}
                           {canEditLabels && (
-                            <button
+                            <Button
                               type="button"
+                              variant="ghost"
+                              size="icon"
                               aria-label={`Remove ${label.name}`}
                               onClick={() =>
                                 void onSetLabels(
@@ -301,10 +315,10 @@ export function IssueDetail({
                                     .filter((n) => n !== label.name),
                                 )
                               }
-                              className="ml-0.5 inline-flex size-3.5 items-center justify-center rounded-full text-(--color-text-tertiary) hover:bg-(--color-bg-active) hover:text-(--color-text-primary) cursor-pointer"
+                              className="ml-0.5 p-0 size-3.5 rounded-full hover:bg-(--color-bg-active) cursor-pointer"
                             >
                               <XIcon size={10} weight="bold" />
-                            </button>
+                            </Button>
                           )}
                         </span>
                       ))}
@@ -350,6 +364,9 @@ export function IssueDetail({
             variant="primary"
             disabled={!canStart}
             onClick={() => onStartSession(detail)}
+            repos={repos}
+            {...(targetRepoUrl ? { targetRepoUrl } : {})}
+            onStartInRepo={(repoUrl) => onStartSession(detail, repoUrl)}
             title={canStart ? "Seed a ShipIt session prompt from this issue" : "Add a repo first to start a session"}
           />
         </div>
@@ -360,14 +377,7 @@ export function IssueDetail({
 
 /** Round avatar with a single-letter fallback when the tracker omits an image. */
 function CommentAvatar({ name, avatarUrl }: { name: string; avatarUrl?: string }) {
-  if (avatarUrl) {
-    return <img src={avatarUrl} alt="" className="size-5 shrink-0 rounded-full object-cover" loading="lazy" />;
-  }
-  return (
-    <div className="size-5 shrink-0 rounded-full bg-(--color-bg-tertiary) text-(--color-text-tertiary) flex items-center justify-center text-[10px] font-semibold uppercase">
-      {name.charAt(0) || "?"}
-    </div>
-  );
+  return <Avatar name={name} avatarUrl={avatarUrl} alt="" />;
 }
 
 function IssueCommentItem({

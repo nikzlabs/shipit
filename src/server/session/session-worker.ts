@@ -32,7 +32,7 @@ import type { PermissionDecision } from "../shared/types.js";
 import { PermissionBroker } from "./permission-broker.js";
 import { TerminalProcess } from "./terminal.js";
 import { FileWatcher } from "./file-watcher.js";
-import { CONTAINER_WORKSPACE_DIR } from "../shared/fs-constants.js";
+import { CONTAINER_WORKSPACE_DIR, CONTAINER_SESSION_STATE_DIR } from "../shared/fs-constants.js";
 import { getErrorMessage } from "../shared/utils.js";
 import { ClaudeProcess } from "./agents/claude/process.js";
 import { ClaudeAdapter } from "./agents/claude/adapter.js";
@@ -41,6 +41,7 @@ import { registerAgentOpsRoutes } from "./agent-ops-routes.js";
 import { normalizeAskQuestions } from "./ask-question.js";
 import type { OrchestratorClient } from "./orchestrator-client.js";
 import { ServiceRequestQueue } from "./service-request-queue.js";
+import { serviceRequestTimeoutMs, serviceTimeoutMessage } from "./service-request-timeouts.js";
 import { SseBroadcaster } from "./sse-broadcaster.js";
 import type { SseClient, WorkerSSEEvent } from "./sse-broadcaster.js";
 import { PresentRegistry, derivePresentId } from "./present-registry.js";
@@ -70,6 +71,12 @@ export interface SessionWorkerDeps {
   host?: string;
   /** Workspace directory inside the container. Defaults to "/workspace". */
   workspaceDir?: string;
+  /**
+   * docs/246 — ShipIt's per-session state dir inside the container, where the
+   * install marker is written. Defaults to the `/session-state` mount; tests
+   * (which run the worker in-process, with no mount) pass a temp dir.
+   */
+  stateDir?: string;
   /** Factory for creating FileWatcher (injectable for testing). */
   createFileWatcher?: () => FileWatcher;
   /** Factory for creating TerminalProcess (injectable for testing). */
@@ -93,6 +100,7 @@ export class SessionWorker extends EventEmitter {
   private port: number;
   private host: string;
   private workspaceDir: string;
+  private stateDir: string;
   private _createOrchestratorClient?: () => OrchestratorClient;
 
   // Per-concern controllers — each owns its endpoint group and the state behind
@@ -129,6 +137,9 @@ export class SessionWorker extends EventEmitter {
     this.port = deps.port ?? 9100;
     this.host = deps.host ?? "0.0.0.0";
     this.workspaceDir = deps.workspaceDir ?? "/workspace";
+    this.stateDir = deps.stateDir
+      ?? process.env.SHIPIT_SESSION_STATE_DIR
+      ?? CONTAINER_SESSION_STATE_DIR;
     this._createOrchestratorClient = deps.createOrchestratorClient;
 
     const broadcast = (event: WorkerSSEEvent): void => this.sse.broadcast(event);
@@ -151,6 +162,7 @@ export class SessionWorker extends EventEmitter {
       permissionBroker: this.permissionBroker,
       mcpConfig: this.mcpConfig,
       latestSseSeq: () => this.sse.latestSeq,
+      oldestSseSeq: () => this.sse.oldestSeq,
     });
     this.terminalController = new TerminalController({
       createTerminal: deps.createTerminal ?? (() => new TerminalProcess()),
@@ -165,6 +177,7 @@ export class SessionWorker extends EventEmitter {
     });
     this.installController = new InstallController({
       workspaceDir: this.workspaceDir,
+      stateDir: this.stateDir,
       broadcast,
       mcpConfig: this.mcpConfig,
     });
@@ -204,12 +217,27 @@ export class SessionWorker extends EventEmitter {
       return this.sendServiceRequest("list");
     });
 
-    app.post<{ Body: { name: string } }>("/services/start", async (request, reply) => {
-      const { name } = request.body ?? {};
+    // docs/238 — `logs` joins the bridge so the whole service verb set lives
+    // behind one interface. Previously logs were only on the orchestrator route
+    // (GET /api/sessions/:id/services/:name/logs), a different host and port
+    // from every other service call; that route still works and is unchanged.
+    app.get<{ Querystring: { name?: string; lines?: string } }>("/services/logs", async (request, reply) => {
+      const { name, lines } = request.query ?? {};
       if (typeof name !== "string" || !name) {
         return reply.code(400).send({ error: "name is required" });
       }
-      return this.sendServiceRequest("start", name);
+      const parsed = parseInt(lines ?? "", 10);
+      return this.sendServiceRequest("logs", name, {
+        lines: Number.isFinite(parsed) && parsed > 0 ? parsed : undefined,
+      });
+    });
+
+    app.post<{ Body: { name: string; timeoutMs?: number } }>("/services/start", async (request, reply) => {
+      const { name, timeoutMs } = request.body ?? {};
+      if (typeof name !== "string" || !name) {
+        return reply.code(400).send({ error: "name is required" });
+      }
+      return this.sendServiceRequest("start", name, { timeoutMs });
     });
 
     app.post<{ Body: { name: string } }>("/services/stop", async (request, reply) => {
@@ -220,12 +248,12 @@ export class SessionWorker extends EventEmitter {
       return this.sendServiceRequest("stop", name);
     });
 
-    app.post<{ Body: { name: string } }>("/services/restart", async (request, reply) => {
-      const { name } = request.body ?? {};
+    app.post<{ Body: { name: string; timeoutMs?: number } }>("/services/restart", async (request, reply) => {
+      const { name, timeoutMs } = request.body ?? {};
       if (typeof name !== "string" || !name) {
         return reply.code(400).send({ error: "name is required" });
       }
-      return this.sendServiceRequest("restart", name);
+      return this.sendServiceRequest("restart", name, { timeoutMs });
     });
 
     // --- Service callback endpoint (called by orchestrator with results) ---
@@ -558,11 +586,21 @@ export class SessionWorker extends EventEmitter {
    * for the callback response. The orchestrator handles the request via
    * ServiceManager and POSTs the result back to /services/_callback.
    */
-  private sendServiceRequest(action: string, name?: string): Promise<unknown> {
-    const { requestId, promise } = this.serviceRequests.enqueue(action);
+  private sendServiceRequest(
+    action: string,
+    name?: string,
+    opts: { timeoutMs?: number; lines?: number } = {},
+  ): Promise<unknown> {
+    // docs/238 — the deadline is chosen per action. A caller may lower it
+    // (`shipit service start --timeout`) but never raise it past the ceiling.
+    const timeoutMs = serviceRequestTimeoutMs(action, opts.timeoutMs);
+    const { requestId, promise } = this.serviceRequests.enqueue(action, {
+      timeoutMs,
+      timeoutMessage: serviceTimeoutMessage,
+    });
     this.broadcastSSE({
       type: "service_request",
-      data: { requestId, action, name },
+      data: { requestId, action, name, lines: opts.lines },
     });
     return promise;
   }

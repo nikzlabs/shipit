@@ -5,9 +5,6 @@
  *
  *   version: 1          # optional schema version
  *   agent:              # optional agent container config
- *     memory: 2048
- *     cpu: 1.0
- *     pids: 4096
  *     install:
  *       - npm install
  *       - npx prisma generate
@@ -16,7 +13,10 @@
  *   compose: docker-compose.yml   # string or object form
  *
  * Old-format keys (preview, resources, capabilities, services) emit warnings
- * with migration hints.
+ * with migration hints. The `agent.memory` / `agent.cpu` / `agent.pids`
+ * resource fields were removed (docs/229): session sizing is now automatic
+ * (derived from host capacity), so a shipit.yaml that still sets them is
+ * warned-and-ignored rather than honored.
  */
 
 import fs from "node:fs";
@@ -29,12 +29,6 @@ import type { ReleaseMechanism } from "./types/release-types.js";
 // ---------------------------------------------------------------------------
 
 export interface AgentConfig {
-  /** Memory limit in MB. Default: 1024 */
-  memory: number;
-  /** CPU cores as float. Default: 0.5 */
-  cpu: number;
-  /** Max PIDs. Default: 4096 */
-  pids: number;
   /** Install commands, run sequentially before compose starts. Default: [] */
   install: string[];
   /**
@@ -173,9 +167,6 @@ export class ShipitConfigError extends Error {
 export const DEFAULT_DEP_DIRS: readonly string[] = ["node_modules"];
 
 export const AGENT_DEFAULTS: Readonly<AgentConfig> = {
-  memory: 1536,
-  cpu: 0.5,
-  pids: 4096,
   install: [],
   depDirs: [...DEFAULT_DEP_DIRS],
   installInputs: null,
@@ -186,7 +177,19 @@ export const AGENT_DEFAULTS: Readonly<AgentConfig> = {
 // ---------------------------------------------------------------------------
 
 const KNOWN_TOP_LEVEL_KEYS = new Set(["version", "agent", "compose", "release", "x-shipit-host-mounts"]);
-const KNOWN_AGENT_KEYS = new Set(["memory", "cpu", "pids", "install", "dep-dirs", "install-inputs"]);
+const KNOWN_AGENT_KEYS = new Set(["install", "dep-dirs", "install-inputs"]);
+
+/**
+ * Removed `agent.*` resource keys (docs/229). Session sizing is now derived
+ * automatically from host capacity, so these are warned-and-ignored rather
+ * than reported as generic unknown keys.
+ */
+const DEPRECATED_AGENT_KEYS: Record<string, string> = {
+  memory:
+    "`agent.memory` is no longer used — session memory is sized automatically from host capacity (docs/229). Set the deployment env `DEFAULT_SESSION_MEMORY_MB` / `MAX_SESSION_MEMORY_MB` to override.",
+  cpu: "`agent.cpu` is no longer used — CPU is no longer a per-repo limit (docs/229).",
+  pids: "`agent.pids` is no longer used — the per-session process ceiling is fixed (docs/229).",
+};
 
 /**
  * docs/128 — the only host paths an ops session may bind-mount (read-only) into
@@ -205,7 +208,7 @@ export const ALLOWED_HOST_MOUNT_SOURCES: Readonly<Record<string, string>> = {
 /** Old-format keys that trigger migration warnings. */
 const OLD_FORMAT_KEYS: Record<string, string> = {
   preview: "The `preview` block has been removed. Define services in docker-compose.yml instead. See /shipit-docs/compose.md.",
-  resources: "The `resources` block has been replaced by `agent` (flat fields: memory, cpu, pids). Preview resources are now set per-service in docker-compose.yml.",
+  resources: "The `resources` block has been removed. Session sizing is automatic (docs/229); preview resources are set per-service in docker-compose.yml.",
   capabilities: "The `capabilities` block has been replaced. Use `compose.docker-socket: true` instead of `capabilities.docker: true`.",
   services: "The `services` block has been removed. Define services in docker-compose.yml instead.",
   install: "The top-level `install` field has moved to `agent.install`.",
@@ -320,21 +323,21 @@ function parseAgentConfig(raw: unknown, warnings: string[]): AgentConfig {
 
   const obj = raw as Record<string, unknown>;
 
-  // Check for unknown agent keys
+  // Removed resource keys get a specific migration warning; anything else
+  // unrecognized gets the generic unknown-key warning.
   for (const key of Object.keys(obj)) {
-    if (!KNOWN_AGENT_KEYS.has(key)) {
+    if (key in DEPRECATED_AGENT_KEYS) {
+      warnings.push(DEPRECATED_AGENT_KEYS[key]);
+    } else if (!KNOWN_AGENT_KEYS.has(key)) {
       warnings.push(`Unknown key \`agent.${key}\` in shipit.yaml.`);
     }
   }
 
-  const memory = parsePositiveNumber(obj.memory, AGENT_DEFAULTS.memory, true);
-  const cpu = parsePositiveNumber(obj.cpu, AGENT_DEFAULTS.cpu, false);
-  const pids = parsePositiveNumber(obj.pids, AGENT_DEFAULTS.pids, true);
   const install = parseInstallList(obj.install);
   const depDirs = parseDepDirs(obj["dep-dirs"], warnings);
   const installInputs = parseInstallInputs(obj["install-inputs"], warnings);
 
-  return { memory, cpu, pids, install, depDirs, installInputs };
+  return { install, depDirs, installInputs };
 }
 
 /** Glob metacharacters — `agent.dep-dirs` accepts literal paths only (docs/183). */
@@ -457,13 +460,6 @@ function normalizeLiteralRelPath(
   if (segments.length === 0) return drop("must not be the workspace root");
 
   return segments.join("/");
-}
-
-function parsePositiveNumber(val: unknown, fallback: number, floor: boolean): number {
-  if (typeof val !== "number" || !Number.isFinite(val) || val <= 0) {
-    return fallback;
-  }
-  return floor ? Math.floor(val) : val;
 }
 
 function parseInstallList(val: unknown): string[] {

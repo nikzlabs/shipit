@@ -30,6 +30,7 @@ import { ICON_SIZE } from "../design-tokens.js";
 import type {
   IssueLabel,
   IssuePriorityLevel,
+  RepoInfo,
   TrackerId,
   TrackerInfo,
   TrackerIssue,
@@ -64,6 +65,14 @@ export interface IssuesViewerProps {
   error: string | null;
   /** Whether a repo is available to start a session on. */
   canStart: boolean;
+  /**
+   * Repos offered by the Start-session repo picker (docs/236). Two or more
+   * turns the button into a split control whose caret starts the issue in an
+   * explicitly chosen repo.
+   */
+  repos: RepoInfo[];
+  /** Repo a plain Start-session click lands in — checkmarked in the picker. */
+  targetRepoUrl?: string;
   /** Whether the loaded list includes done/completed issues (fetch-scope). */
   includeDone: boolean;
   /** The active tracker's assignable statuses, for the inline status editor (docs/191). */
@@ -90,7 +99,8 @@ export interface IssuesViewerProps {
   onSetStatus: (issue: TrackerIssue, status: string) => Promise<string | null>;
   /** Set a row's priority inline (Linear-only); resolves to an error, or null. */
   onSetPriority: (issue: TrackerIssue, level: IssuePriorityLevel) => Promise<string | null>;
-  onStartSession: (issue: TrackerIssue) => void;
+  /** Seed a session from an issue; `repoUrl` overrides the default target repo. */
+  onStartSession: (issue: TrackerIssue, repoUrl?: string) => void;
   /** Open Settings → Trackers so the user can connect/bind Linear. */
   onConnect: () => void;
   onSetQuery: (query: string) => void;
@@ -195,11 +205,20 @@ function IssueLabels({ labels }: { labels?: IssueLabel[] }) {
  * the independent header and row grids resolve to identical column tracks (with
  * `auto`, the header sized it to "Action" while rows sized it to the wider
  * button, and the `1fr` title absorbed the difference — misaligning the two).
+ *
+ * That fixed width MUST fit the widest form of the action button, because the
+ * cell centers its content: anything wider overflows the track by half the
+ * excess on each side, and the right-hand overflow eats the row's `pr-3` and
+ * runs off the panel edge (there is no column to its right to absorb it). The
+ * split repo-picker control (docs/236) measures ~164px — 138px for the main
+ * half ("Start session" + rocket at `size="md"`) plus a 26px caret half sharing
+ * one border — so the track is 168px, not the 134px that fit the pre-picker
+ * plain button. Re-measure it if the label, the icon, or the button size change.
  */
 const ROW_GRID =
   "grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 " +
   "[grid-template-areas:'id_pri'_'title_title'_'meta_meta'_'nested_nested'_'action_action'] " +
-  "@md:grid-cols-[56px_minmax(96px,1fr)_84px_96px_92px_134px] @md:gap-x-2.5 @md:items-start " +
+  "@md:grid-cols-[56px_minmax(96px,1fr)_84px_96px_92px_168px] @md:gap-x-2.5 @md:items-start " +
   "@md:[grid-template-areas:'id_title_pri_status_assignee_action']";
 
 // Every cell's FIRST line shares one fixed-height band, vertically centered, so
@@ -228,6 +247,8 @@ const MOBILE_INDENT_MAX_DEPTH = 3;
 function IssueRow({
   row,
   canStart,
+  repos,
+  targetRepoUrl,
   availableStatuses,
   canEditPriority,
   surfaceLum,
@@ -239,6 +260,8 @@ function IssueRow({
 }: {
   row: IssueRowItem;
   canStart: boolean;
+  repos: RepoInfo[];
+  targetRepoUrl?: string;
   availableStatuses: IssueStatusRef[];
   canEditPriority: boolean;
   /** Luminance of the row surface, for contrast-adapting the status dot. */
@@ -247,7 +270,7 @@ function IssueRow({
   onSetCollapsed: (issueId: string, collapsed: boolean) => void;
   onSetStatus: (issue: TrackerIssue, status: string) => Promise<string | null>;
   onSetPriority: (issue: TrackerIssue, level: IssuePriorityLevel) => Promise<string | null>;
-  onStartSession: (issue: TrackerIssue) => void;
+  onStartSession: (issue: TrackerIssue, repoUrl?: string) => void;
 }) {
   const { issue, depth, hasChildren, childCount, collapsed, orphan } = row;
   // Both layouts indent the whole row by depth via the row's own left padding —
@@ -446,6 +469,9 @@ function IssueRow({
             e.stopPropagation();
             onStartSession(issue);
           }}
+          repos={repos}
+          {...(targetRepoUrl ? { targetRepoUrl } : {})}
+          onStartInRepo={(repoUrl) => onStartSession(issue, repoUrl)}
           className="w-full @md:w-auto"
         />
       </div>
@@ -486,6 +512,8 @@ export function IssuesViewer({
   loading,
   error,
   canStart,
+  repos,
+  targetRepoUrl,
   includeDone,
   availableStatuses,
   canEditPriority,
@@ -728,6 +756,8 @@ export function IssuesViewer({
                         key={row.issue.id}
                         row={row}
                         canStart={canStart}
+                        repos={repos}
+                        {...(targetRepoUrl ? { targetRepoUrl } : {})}
                         availableStatuses={availableStatuses}
                         canEditPriority={canEditPriority}
                         surfaceLum={rowSurfaceLum}

@@ -11,9 +11,20 @@ import type { ToolResultEntry } from "../session-runner.js";
  * them back.
  */
 
-/** Extract tool result entries from an agent_tool_result event. */
+/**
+ * Extract tool result entries from an agent_tool_result event.
+ *
+ * `content` is `unknown[]` by declaration but not by guarantee: the Anthropic
+ * message schema also permits a bare string, and the Claude adapter passes
+ * `message.content` through untouched. A string here threw
+ * `TypeError: content.filter is not a function` out of the SSE event parser
+ * mid-turn, stranding the turn and requeuing an unacknowledged steer
+ * (nikzlabs/shipit#1874). A non-array carries no tool_result blocks, so the
+ * right answer is an empty list — same guard `stampToolDurations` uses below.
+ */
 export function extractToolResults(event: AgentEvent): ToolResultEntry[] {
-  const content = (event as { content?: unknown[] }).content ?? [];
+  const raw = (event as { content?: unknown }).content;
+  const content: unknown[] = Array.isArray(raw) ? raw : [];
   return content
     .filter((b): b is Record<string, unknown> =>
       typeof b === "object" && b !== null && (b as Record<string, unknown>).type === "tool_result" && !!(b as Record<string, unknown>).tool_use_id)
@@ -151,6 +162,12 @@ export interface AgentToolTracker {
    * `state: "crashed"`.
    */
   reportMcpCrashesFromResults(results: ToolResultEntry[]): void;
+  /**
+   * Name of the tool that produced a given tool_use id, for the docs/244 wire
+   * projection — a Task/Skill/Agent result carries the subagent's final report
+   * and is the one body never sliced.
+   */
+  getToolName(id: string): string | undefined;
   /** Per-tool start timestamps, consumed by `stampToolDurations`. */
   readonly toolUseStartTimes: Map<string, number>;
 }
@@ -202,5 +219,7 @@ export function createAgentToolTracker(
     }
   };
 
-  return { recordToolUses, reportMcpCrashesFromResults, toolUseStartTimes };
+  const getToolName = (id: string): string | undefined => toolUseIdToName.get(id);
+
+  return { recordToolUses, reportMcpCrashesFromResults, getToolName, toolUseStartTimes };
 }

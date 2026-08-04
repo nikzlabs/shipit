@@ -5,7 +5,14 @@ import { isPresentTool } from "./tool-names.js";
 export const STANDALONE_TOOLS = new Set(["AskUserQuestion", "TodoWrite", "EnterPlanMode", "ExitPlanMode"]);
 
 // Tools extracted into their own top-level visual elements (not grouped, not inside message bubbles)
-export const SUBAGENT_TOOLS = new Set(["Task", "Skill", "Agent"]);
+//
+// Re-exported from shared rather than redeclared so the layout decision has one
+// definition. The narrower `SUBAGENT_REPORT_TOOL_NAMES` (Task/Agent) is what
+// `MessageToolUse` routes to `SubagentCall` and what the docs/244 projection
+// exempts from slicing — those two must not drift, which is why they read the
+// same set.
+export { SUBAGENT_TOOL_NAMES as SUBAGENT_TOOLS } from "../../server/shared/transcript-slice-tools.js";
+import { SUBAGENT_TOOL_NAMES as SUBAGENT_TOOLS } from "../../server/shared/transcript-slice-tools.js";
 
 /**
  * A tool that must NOT be folded into the clipped `ToolCallGroup` container
@@ -58,6 +65,8 @@ export const CARD_MESSAGE_FIELDS = [
   "spawnFailed",
   "forkChild",
   "childMerged",
+  "selfMergeWatch",
+  "sessionReport",
 ] as const satisfies readonly (keyof ChatMessage)[];
 
 export type VisualElement =

@@ -23,6 +23,7 @@ import type {
   AgentProcessEvents,
   AgentRunParams,
 } from "../agent-process.js";
+import type { AgentHomeResolver } from "../../../shared/agent-home.js";
 import type { McpServerStatus } from "../../../shared/types/mcp-types.js";
 import type { SubscriptionLimitsWindow } from "../../../shared/types/usage-limits-types.js";
 import { resolveMcpServer } from "../../mcp-resolve.js";
@@ -102,9 +103,18 @@ export class ClaudeAdapter
    */
   private _permissionPromptTool: string | undefined;
 
-  constructor(inner?: ClaudeProcess) {
+  /**
+   * docs/150 — the local-mode agent factory passes `resolveHome` so the CLI
+   * spawns with HOME at the provider account this session was routed to. Held
+   * on the adapter (not only on `inner`) because the streaming swap in `run()`
+   * constructs a second process, which needs the same override.
+   */
+  private readonly resolveHome: AgentHomeResolver | undefined;
+
+  constructor(inner?: ClaudeProcess, opts?: { resolveHome?: AgentHomeResolver }) {
     super();
-    this.inner = inner ?? new ClaudeProcess();
+    this.resolveHome = opts?.resolveHome;
+    this.inner = inner ?? new ClaudeProcess(this.resolveHome);
     this.wireEvents(this.inner);
   }
 
@@ -186,6 +196,38 @@ export class ClaudeAdapter
             if (typeof meta?.duration_ms === "number") event.durationMs = meta.duration_ms;
             return event;
           }
+          case "background_tasks_changed":
+            // docs/235 — the LEVEL signal. `tasks` is the complete current list
+            // (empty = drained), so this one event fully re-states the runner's
+            // background-task state. Normalized to agent-neutral field names so
+            // a future backend with the same concept maps onto it.
+            return {
+              type: "agent_background_tasks",
+              tasks: (raw.tasks ?? []).map((t) => ({
+                id: t.task_id,
+                type: t.task_type,
+                description: t.description,
+              })),
+            };
+          case "task_notification":
+            // docs/235 — the EDGE signal: a background task finished and the CLI
+            // is waking itself. On the wire this is immediately followed by a
+            // fresh `init` and eventually a `result`, with no user message in
+            // between — i.e. a turn the orchestrator never started.
+            return {
+              type: "agent_self_wake",
+              taskId: raw.task_id,
+              summary: raw.summary,
+              status: raw.status,
+            };
+          case "task_started":
+          case "task_updated":
+            // docs/235 — deliberately dropped. Both are per-task deltas whose
+            // effect is already covered by the authoritative
+            // `background_tasks_changed` list that accompanies them; mapping
+            // them too would mean maintaining a second, weaker view of the same
+            // state.
+            return null;
           default:
             return null;
         }
@@ -248,9 +290,19 @@ export class ClaudeAdapter
             }
           }
         }
+        // The CLI's `subtype` is not a success/failure flag: an API-error turn
+        // ends `subtype: "success"` with `is_error: true`, and the only
+        // non-success subtypes are `error_during_execution` (an interrupt) and
+        // `error_max_turns`. `"error"` — what this used to test for — is a
+        // value the real CLI never emits, so `error` here was ALWAYS undefined
+        // and everything gated on it was dead in production: the docs/182
+        // turn-errored flag and the docs/150 req 7 quota-exhaustion stamp that
+        // makes the next turn fail over to another account. Normalize both
+        // signals into the adapter-neutral success/error status instead.
+        const errored = raw.is_error === true || raw.subtype !== "success";
         return {
           type: "agent_result",
-          status: raw.subtype,
+          status: errored ? "error" : "success",
           sessionId: raw.session_id,
           cost: raw.total_cost_usd !== null && raw.total_cost_usd !== undefined
             ? { totalUsd: raw.total_cost_usd }
@@ -266,7 +318,7 @@ export class ClaudeAdapter
           contextTokens,
           contextWindow,
           durationMs: raw.duration_ms,
-          error: raw.subtype === "error" ? raw.result : undefined,
+          error: errored ? raw.result : undefined,
           // docs/138 — normalize the CLI's snake_case classifier denials into
           // the camelCase shape the orchestrator consumes for inline surfacing.
           permissionDenials: raw.permission_denials?.length
@@ -313,7 +365,7 @@ export class ClaudeAdapter
         return;
       }
       // First turn with streaming: swap in a StreamingClaudeProcess.
-      const streaming = new StreamingClaudeProcess();
+      const streaming = new StreamingClaudeProcess(this.resolveHome);
       // Remove previous inner process listeners before replacing
       this.inner.removeAllListeners();
       this.inner = streaming;
@@ -339,6 +391,9 @@ export class ClaudeAdapter
       autoCreatePr: params.autoCreatePr,
       // docs/211 — sets SHIPIT_SANDBOX=1 so the branch-block hook self-gates off.
       sandbox: params.sandbox,
+      // SHI-265 — sets SHIPIT_GUARD_DESTRUCTIVE_GIT=1 so the same hook blocks
+      // hand-rolled destructive git while the session sits on a merged branch.
+      guardDestructiveGit: params.guardDestructiveGit,
       // docs/193 — set when writeMcpConfig registered the permission bridge.
       permissionPromptTool: this._permissionPromptTool,
     });
@@ -529,8 +584,16 @@ export class ClaudeAdapter
  */
 /**
  * Normalize the Claude CLI's `rate_limit_info` payload (one window) into the
- * shared `SubscriptionLimitsWindow` shape. The CLI reports `utilization` as
- * 0–100 and `resetsAt` as Unix epoch seconds.
+ * shared `SubscriptionLimitsWindow` shape. `resetsAt` is Unix epoch seconds.
+ *
+ * **`utilization` is a 0–1 FRACTION here, not a percentage.** The CLI forwards
+ * the upstream `anthropic-ratelimit-unified-{5h,7d}-utilization` response
+ * header verbatim, and that header is a fraction. Verified against one account
+ * at one moment: the headers read `0.06` / `0.66` while `/api/oauth/usage`
+ * reported `6.0` / `67.0` for the same two windows. So we scale by 100 — the
+ * opposite convention from `ClaudeLimitsProvider`'s `/api/oauth/usage` parse,
+ * which is already 0–100 and must NOT be scaled. Reading this one as a
+ * percentage is what made a real 92% session render as "5h 1%".
  *
  * `resetsAt` is required — without a reset time there's nothing to render. But
  * `utilization` is optional: Claude CLI 2.1.140 only includes it once a
@@ -553,7 +616,11 @@ function parseRateLimitWindow(
   if (typeof utilization !== "number" || !Number.isFinite(utilization)) {
     return { usedPct: null, resetAt };
   }
-  const usedPct = Math.min(100, Math.max(0, utilization));
+  // A fraction can't exceed 1 for a capped window, so a value above 1 means the
+  // upstream scale changed to 0–100 — pass it through rather than multiplying a
+  // real 42% into a pinned-at-100% false alarm.
+  const pct = utilization > 1 ? utilization : utilization * 100;
+  const usedPct = Math.min(100, Math.max(0, pct));
   return { usedPct, resetAt };
 }
 

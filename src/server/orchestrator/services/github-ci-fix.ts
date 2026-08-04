@@ -6,6 +6,12 @@
  */
 
 import fs from "node:fs";
+import {
+  sessionStateDirForWorkspace,
+  sessionSharedStateDir,
+  CI_LOGS_SUBDIR,
+  CONTAINER_SESSION_STATE_DIR,
+} from "../session-state-dir.js";
 import path from "node:path";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
@@ -18,13 +24,15 @@ import { extractFailedCheckRuns } from "../pr-status-poller.js";
 import { prepareSessionAgentEnvironment } from "../session-agent-env.js";
 import { ServiceError } from "./types.js";
 import { chownToSessionWorker, chownTreeToSessionWorker } from "../session-worker-uid.js";
+import { prepareDispatch } from "../prepared-dispatch.js";
 
 // ---- CI fix operations ----
 
 /**
  * Fetch CI failure logs for each failed check run.
- * Full logs are written to .shipit/ci-logs/ in the session directory;
- * the returned CIFailureLog contains only the last 30 lines as a snippet.
+ * Full logs are written to `ci-logs/` in the session's state dir (mounted at
+ * `/session-state` in the container); the returned CIFailureLog contains only
+ * the last 30 lines as a snippet.
  */
 export async function fetchCIFailureLogs(
   githubAuth: GitHubAuthManager,
@@ -33,25 +41,24 @@ export async function fetchCIFailureLogs(
   failedChecks: { databaseId: number; name: string; conclusion: string; title: string }[],
   sessionDir?: string,
 ): Promise<CIFailureLog[]> {
-  // Prepare log directory and ensure .shipit is gitignored
-  const logDir = sessionDir ? path.join(sessionDir, ".shipit", "ci-logs") : null;
+  // docs/246 — logs go to the session's state dir, mounted at `/session-state`
+  // in the container. They used to land in `<clone>/.shipit/ci-logs/`, inside
+  // the user's repository, which forced the old `ensureShipitGitignored()`
+  // workaround: appending `.shipit` to the user's TRACKED `.gitignore` so
+  // ShipIt's own logs wouldn't be committed. That mutation is gone with the
+  // files it existed for.
+  // `sessionDir` is optional (callers without a session write no logs at all,
+  // only the inline excerpt), so `logDir` stays nullable — but when a clone IS
+  // given, its state dir always resolves.
+  const logDir = sessionDir
+    ? path.join(sessionSharedStateDir(sessionStateDirForWorkspace(sessionDir)), CI_LOGS_SUBDIR)
+    : null;
   if (logDir) {
     fs.mkdirSync(logDir, { recursive: true });
-    ensureShipitGitignored(sessionDir!);
-    // docs/150 §7 — these dirs/files are written by the root orchestrator into
-    // the workspace mount but read by the agent's `shipit` user. Hand the
-    // `.shipit` tree and `.gitignore` to the worker UID (no-op unless
-    // SHIPIT_SESSION_WORKER_UID is set).
-    chownTreeToSessionWorker(path.join(sessionDir!, ".shipit"));
-    chownToSessionWorker(path.join(sessionDir!, ".gitignore"));
+    // docs/150 §7 — written by the root orchestrator, read by the agent's
+    // `shipit` user through the mount. No-op unless the flag is set.
+    chownTreeToSessionWorker(logDir);
   }
-
-  // One timestamp per fetch batch — disambiguates logs from different CI runs of
-  // the same check. Without it, a re-run of the same failing check overwrites the
-  // previous log at an identical path, and the agent (which sees the path twice in
-  // chat history) can't tell whether it's looking at a fresh failure or a stale one.
-  // Filesystem-safe: ISO with colons/dots swapped for dashes (e.g. 2026-06-22T14-30-00-000Z).
-  const batchTimestamp = new Date().toISOString().replace(/[:.]/g, "-");
 
   const logs: CIFailureLog[] = [];
 
@@ -71,13 +78,29 @@ export async function fetchCIFailureLogs(
     const cleanLog = stripCILogBloat(fullLog);
     let logFilePath: string | undefined;
     if (logDir && cleanLog) {
+      // Name the log file after the check run's GitHub database ID — its stable,
+      // per-run identity — NOT the wall-clock time we happened to fetch it. The
+      // databaseId is unique per (commit, re-run attempt, job): a genuinely fresh
+      // CI run (a new push, an empty retrigger commit, a manual re-run) always
+      // gets a new ID and therefore a new file, while re-fetching the SAME failed
+      // run lands at the SAME path (overwriting identical content).
+      //
+      // This is what lets the agent tell a stale re-send from a real new failure.
+      // The poller can re-fire CI-fix in the window after a retrigger commit but
+      // before GitHub has produced a verdict for the new head — fetching the
+      // previous run's logs again. A fetch-timestamp filename made each of those
+      // identical re-sends look like a distinct failure (a new path every time);
+      // keying on the run ID makes the repeat visibly the same file in chat
+      // history, so the agent won't re-debug an already-resolved/flaky run.
       const safeName = check.name.replace(/[^a-zA-Z0-9_-]/g, "_");
-      const fileName = `${safeName}-${batchTimestamp}.log`;
+      const fileName = `${safeName}-${check.databaseId}.log`;
       const absPath = path.join(logDir, fileName);
       fs.writeFileSync(absPath, cleanLog, "utf-8");
       chownToSessionWorker(absPath); // docs/150 §7 — agent reads as `shipit`
-      // Store relative path — the agent runs from the workspace root
-      logFilePath = `.shipit/ci-logs/${fileName}`;
+      // docs/246 — an ABSOLUTE container path. The agent used to get a
+      // workspace-relative path because the logs lived in its clone; they now
+      // live on the `/session-state` mount, which is outside `/workspace`.
+      logFilePath = `${CONTAINER_SESSION_STATE_DIR}/${CI_LOGS_SUBDIR}/${fileName}`;
     }
     const errorLines = extractErrorLines(cleanLog);
     const lines = cleanLog.split("\n");
@@ -189,19 +212,6 @@ export function extractErrorLines(cleanLog: string, maxLines = 30): string[] {
   return errors.slice(0, maxLines);
 }
 
-/** Ensure .shipit is listed in .gitignore so CI logs don't get committed. */
-function ensureShipitGitignored(dir: string): void {
-  const gitignorePath = path.join(dir, ".gitignore");
-  try {
-    const content = fs.existsSync(gitignorePath) ? fs.readFileSync(gitignorePath, "utf-8") : "";
-    if (!content.split("\n").some((line) => line.trim() === ".shipit")) {
-      fs.appendFileSync(gitignorePath, `${content.endsWith("\n") ? "" : "\n"}.shipit\n`);
-    }
-  } catch {
-    // Best-effort — don't fail CI fix if gitignore can't be written
-  }
-}
-
 /** Build a fix prompt from CI failure logs. */
 export function buildCIFixPrompt(logs: CIFailureLog[]): string {
   const sections = logs.map((log) => {
@@ -307,7 +317,20 @@ export async function triggerCIFix(
   // "Fixing CI…" (the auto-loop path uses "Auto-fixing CI..." in app-lifecycle's
   // fetchAndFixCb).
   const queued = runner.running;
-  runner.dispatch({ text: prompt, activity: "Fixing CI…" });
+  runner.dispatch(prepareDispatch({
+    text: prompt,
+    agentInterface: undefined,
+    activity: "Fixing CI…",
+    execution: undefined,
+    images: undefined,
+    files: undefined,
+    uploads: undefined,
+    permissionMode: undefined,
+    postTurn: undefined,
+    systemTurn: undefined,
+    onTurnComplete: undefined,
+    deliveryId: undefined,
+  }));
   // attemptNumber is vestigial (the client ignores it); a manual fix is always a
   // single one-shot, so report 1.
   return { status: queued ? "queued" : "sent", attemptNumber: 1 };

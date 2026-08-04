@@ -151,7 +151,7 @@ export function attachToolResultsToGroup(
 export function recordSteeredMessage(
   runner: { chatMessageGroups: ChatMessageGroup[]; steeredMessages: SteeredMessage[] },
   text: string,
-  extra?: Pick<SteeredMessage, "images" | "files" | "uploadPaths" | "assembledPrompt">,
+  extra?: Pick<SteeredMessage, "images" | "files" | "uploadPaths" | "assembledPrompt" | "agentInterface">,
 ): void {
   const afterGroupIndex = runner.chatMessageGroups.filter((g) => g.text || g.toolUse.length > 0).length;
   runner.steeredMessages = [
@@ -159,6 +159,7 @@ export function recordSteeredMessage(
     {
       afterGroupIndex,
       text,
+      agentInterface: extra?.agentInterface,
       images: extra?.images,
       files: extra?.files,
       uploadPaths: extra?.uploadPaths,
@@ -224,7 +225,13 @@ export function requeueUndeliveredSteers(
   // double-render the bubble on reload (same reasoning as steer-rejected).
   runner.steeredMessages = steers.filter((s) => !isUndelivered(s));
   for (const s of undelivered) {
-    const queued: QueuedMessage = { text: s.text };
+    // A user-typed steer that fell into the turn-end gap — re-queued as the
+    // interactive turn it always was (SHI-255).
+    const queued: QueuedMessage = {
+      text: s.text,
+      execution: s.agentInterface ? "dispatched" : "interactive",
+      ...(s.agentInterface ? { agentInterface: s.agentInterface } : {}),
+    };
     if (s.images && s.images.length > 0) queued.images = s.images;
     if (s.files && s.files.length > 0) queued.files = s.files.map((f) => ({ path: f.path }));
     const position = runner.enqueue(queued);

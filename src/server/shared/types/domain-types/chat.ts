@@ -1,5 +1,12 @@
 import type { AgentId } from "../agent-types.js";
 
+/** Provenance for a prompt delivered by another ShipIt session's agent. */
+export interface SessionMessageOrigin {
+  sessionId: string;
+  sessionTitle: string;
+  relation: "parent" | "child" | "sibling";
+}
+
 /**
  * docs/178 — a persisted "Context compacted" transcript card. Shared verbatim by
  * the live WS payload (`WsCompactionCard`), the persisted chat-history row
@@ -32,6 +39,14 @@ export interface CompactionCard {
  * inline at the spawn position, persisted in chat history). Renders for every
  * terminal status, not just success (a cancelled/timed-out/failed consult is
  * still a fact the transcript should keep).
+ *
+ * SHI-278 — the card is now created in a `pending` state at SPAWN time and
+ * patched to its terminal status on completion, so an in-flight consult has a
+ * DURABLE surface. The transient `sub_agent_spawn` chip is live activity only
+ * and dies on the first session switch; since docs/236 tells agents to
+ * background long consults, the in-flight state routinely outlives both its
+ * turn and every switch the user makes, and a spawn whose container was
+ * restarted mid-flight used to leave no trace at all.
  */
 export interface SubAgentConsultCard {
   /** Stable id — keeps the live append + history rehydration idempotent. */
@@ -40,8 +55,26 @@ export interface SubAgentConsultCard {
   spawnId: string;
   /** The agent that was consulted (display: "Consulted Codex"). */
   subAgentId: AgentId;
-  /** Terminal status — drives the verb ("Consulted" / "Cancelled" / …). */
-  status: "success" | "error" | "timeout" | "cancelled";
+  /**
+   * `pending` while the spawn is in flight; otherwise the terminal status,
+   * which drives the verb ("Consulted" / "Cancelled" / …).
+   */
+  status: "pending" | "success" | "error" | "timeout" | "cancelled";
+  /**
+   * SHI-307 — a SHIPIT-authored one-line explanation of a terminal status, for
+   * the cases where the status alone is misleading. Currently set only by the
+   * boot reconcile, which cancels consults stranded `pending` by an orchestrator
+   * restart: without it "Cancelled Codex" is indistinguishable from a consult
+   * the user cancelled.
+   *
+   * Deliberately NOT `outputMarkdown`. That field is the sub-agent's verbatim
+   * words — it is what `shipit agent result` prints on stdout and what SHI-245
+   * guarantees is the same artifact the user reads — so putting ShipIt's own
+   * prose there would hand a caller our apology in the consultant's voice. This
+   * field renders as ShipIt's commentary on both surfaces (the card face, and
+   * the shim's stderr).
+   */
+  statusDetail?: string;
   durationMs?: number;
   costUsd?: number;
   /** True when the sub-agent's output hit the wall-clock or character cap. */
@@ -55,6 +88,14 @@ export interface SubAgentConsultCard {
    * transport-failure card (no output was produced) and on empty output.
    */
   outputMarkdown?: string;
+  /**
+   * docs/244 / SHI-297 — set on the SERVE path only: `outputMarkdown` carries
+   * just the one-line preview the card face draws, and the full text is fetched
+   * from `/api/sessions/:id/sub-agent-consults/:cardId` when the viewer opens.
+   * Never persisted — the stored card always holds the whole output, which is
+   * what `shipit agent result` reads.
+   */
+  outputTruncated?: true;
   createdAt: string;
 }
 
@@ -137,6 +178,20 @@ export interface BranchAutoResetCard {
   toSha: string;
   /** Emit time — doubles as the provenance stamp. */
   createdAt: string;
+  /**
+   * SHI-277 — this reset ran under `shipit branch reset-to-base --force`, which
+   * bypasses the "this branch is exactly what merged" safety clause. The forced
+   * path is trust-based rather than gated, so the transcript record IS the
+   * accountability: absent these two fields the card describes a reset that
+   * passed the full gate, which is a materially different claim.
+   *
+   * Both optional, and the whole card serializes to ONE json column
+   * (`messages.branch_auto_reset`), so this needs no migration and no
+   * `CARD_MESSAGE_FIELDS` change — existing rows simply parse without them.
+   */
+  forced?: boolean;
+  /** The operator-supplied justification, required whenever `forced` is true. */
+  forceReason?: string;
 }
 
 /**
@@ -214,8 +269,11 @@ export interface WsChatHistoryMessage {
     input: Record<string, unknown>;
   }[];
   images?: {
-    data: string;      // base64 image data (inlined for small images)
+    /** Base64 payload. Replaced by `src` on the serve path (docs/244). */
+    data?: string;
     mediaType: string;
+    /** docs/244 — content-addressed URL, set instead of `data` on the wire. */
+    src?: string;
   }[];
   files?: {
     path: string;

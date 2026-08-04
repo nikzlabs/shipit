@@ -1,4 +1,5 @@
 ---
+issue: https://linear.app/shipit-ai/issue/SHI-234
 description: Send system-initiated prompts (Create PR, preview/compose errors, service logs) directly to the agent instead of prefilling the input, and funnel every server-side dispatch through the same send-or-queue primitive.
 ---
 
@@ -50,7 +51,7 @@ The two error/auto-fix callsites are explicitly **included** to avoid a worse mi
 - `AgentDispatchOptions` carries every field a queued WS message can carry: `{ text, activity?, images?, files?, uploads?, permissionMode?, reviewFilePath? }`.
 - Generalize `runSystemTurn` (rename to `runDispatchedTurn` for consistency) to accept the full options and thread them into `agent.run({...})`. The recursive self-call at `session-runner.ts:204` that drains the queue must read all `QueuedMessage` fields, not just `next.text`.
 - Add `POST /api/sessions/:id/agent/dispatch` (new file `api-routes-agent.ts`) accepting the same `AgentDispatchOptions` body. Body validation gates non-empty text and bounded permission mode.
-- Refactor WS `send_message` and `send_review_message` to delegate their "queue or start" branch to `runner.dispatch(...)`. The pre-dispatch work (resolving attachments from disk, killing stale agents, warm-session graduation, branch naming) stays in the handler — only the inline `messageQueue.push(...)` at `ws-handlers/send-message.ts:138` and the `runAgentWithMessage` call later in the handler are replaced. Structural placement: the delegation **stays above** `staleAgent.kill()` (line 162) and attachment resolution (lines 172-205) for the queue-branch path, matching today; the new-turn path runs the existing resolution and then calls `runner.dispatch(...)` with the resolved fields.
+- Refactor WS `send_message` and `send_review_message` to delegate their "queue or start" branch to `runner.dispatch(...)`. The pre-dispatch work (resolving attachments from disk, killing stale agents, warm-session graduation, branch naming) stays in the handler — but note that "stays in the handler" was **wrong for graduation**: the HTTP route needs its own call too, since a button press on a `/{slug}/new` route is a warm session's first message. See "Graduation is part of the gate list" above — only the inline `messageQueue.push(...)` at `ws-handlers/send-message.ts:138` and the `runAgentWithMessage` call later in the handler are replaced. Structural placement: the delegation **stays above** `staleAgent.kill()` (line 162) and attachment resolution (lines 172-205) for the queue-branch path, matching today; the new-turn path runs the existing resolution and then calls `runner.dispatch(...)` with the resolved fields.
 
 ### Out of scope
 
@@ -146,8 +147,15 @@ The service (`services/agent.ts::dispatchAgentMessage`) is responsible for:
 2. **Runner resolution** — `runnerRegistry.get(sessionId)`. Throws `ServiceError(404, "Session not active")` if missing or disposed (check both `!runner` and `runner.disposed`).
 3. **Auth gate** — mirror `ws-handlers/send-message.ts:23` (`ensureActiveAgentAuthenticated`). If the active agent isn't authenticated, throw `ServiceError(401, ...)` so the client can prompt re-auth. Without this, the dispatched run hangs the same way an unauthenticated WS `send_message` would.
 4. **Attachment resolution** — if `files` or `uploads` are present, call `resolveFileAttachments` / `resolveUploadRefs` (already used by the WS handler) before dispatching, so the runner receives resolved paths.
-5. **Dispatch** — `runner.dispatch({ text, activity, images, files: validatedFiles, uploads, permissionMode, reviewFilePath })`.
-6. **Return** — `{ ok: true, queued: runner.running }` so the client can distinguish "started now" from "queued behind a running turn" (the queued case still emits `message_queued` over the WS, so this is informational, not the canonical signal).
+5. **Warm-session graduation** — if the session row is still `warm`, call `graduateSession` (docs/156) with the dispatched text as `userText`, then refill the pool via `warmSessionForRepo`. See "Graduation is part of the gate list" below.
+6. **Dispatch** — `runner.dispatch({ text, activity, images, files: validatedFiles, uploads, permissionMode, reviewFilePath })`.
+7. **Return** — `{ ok: true, queued: runner.running }` so the client can distinguish "started now" from "queued behind a running turn" (the queued case still emits `message_queued` over the WS, so this is informational, not the canonical signal).
+
+#### Graduation is part of the gate list
+
+The original design (see "WS handlers delegate" below) said warm-session graduation "stays in the handler" — true for the WS path, but it left the HTTP route with no graduation at all. A dispatch is a **first message** like any other: on a `/{owner}/{repo}/new` route the session behind the compose-hint, compose-error, and Create PR buttons is still warm, so pressing one started a real turn against a session that stayed `warm: 1`. Consequences: it never entered the session list, kept its placeholder title and `shipit/<random>` branch, never got AI-named, and `findUngraduatedWarm` would hand it to the next "New Session" click for the same repo — recycling a session with a turn running in it.
+
+`services/agent.ts` is therefore a first-class `graduateSession` call site and is listed in that module's contract docblock. The client side pairs with it: the converted buttons in `App.tsx` navigate `/{slug}/new` → `/session/{id}` (`isNewSessionRoute` guard), the same URL graduation `handleSend` does.
 
 The service exists as a function in `services/agent.ts`, not inlined in the route — same pattern as `services/github.ts`. Tests target the service directly; the route is a thin adapter.
 

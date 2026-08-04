@@ -18,4 +18,14 @@ export const handleGlobalSettings: Handler<WsGlobalSettings> = (_ctx, data) => {
   if (data.autoResetMergedBranch !== undefined) settings.setAutoResetMergedBranch(data.autoResetMergedBranch);
   if (data.enableSubAgents !== undefined) settings.setEnableSubAgents(data.enableSubAgents);
   if (data.agentSubAgentDefaults !== undefined) settings.setAgentSubAgentDefaults(data.agentSubAgentDefaults);
+  if (data.failoverCutoffs !== undefined) {
+    for (const [agentId, cutoffs] of Object.entries(data.failoverCutoffs)) {
+      settings.setFailoverCutoffs(agentId, cutoffs);
+    }
+  }
+  if (data.accountSelectionMode !== undefined) {
+    for (const [agentId, mode] of Object.entries(data.accountSelectionMode)) {
+      settings.setAccountSelectionMode(agentId, mode);
+    }
+  }
 };

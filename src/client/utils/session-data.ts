@@ -17,6 +17,7 @@ import { useEgressPromptStore, type EgressPromptCardState } from "../stores/egre
 import { usePermissionStore, type PermissionCardState } from "../stores/permission-store.js";
 import { useIssueWriteStore } from "../stores/issue-write-store.js";
 import { usePresentStore } from "../stores/present-store.js";
+import { backgroundTaskLabel } from "../hooks/message-handlers/background-tasks.js";
 import type { IssueWriteCard } from "../../server/shared/types.js";
 
 interface PreviewStatusResponse {
@@ -43,6 +44,12 @@ interface HistoryResponse {
   commits: GitCommit[];
   fileTree: FileTreeNode[];
   agentRunning?: boolean;
+  /**
+   * docs/235 — descriptions of the outstanding agent-initiated background tasks.
+   * A session can be between turns (`agentRunning: false`) and still be waiting
+   * on work; this is the authoritative snapshot of that state at load time.
+   */
+  backgroundTasks?: string[];
   /**
    * Per-turn usage series for this session — sourced from `usage_turns` so
    * the ContextDial popover sees a complete history (not just turns observed
@@ -92,6 +99,9 @@ interface BootstrapResponse {
     autoResetMergedBranch?: boolean;
     enableSubAgents?: boolean;
     providerAccounts?: ProviderAccount[];
+    /** docs/150 reqs 4-6 — per-provider proactive failover cutoffs, keyed by agent id. */
+    failoverCutoffs?: Record<string, { session: number; weekly: number }>;
+    accountSelectionMode?: Record<string, "strict" | "balanced">;
   };
   /** Orchestrator runtime mode (feature 118). Defaults to "containerized". */
   runtimeMode?: RuntimeMode;
@@ -104,17 +114,54 @@ interface BootstrapResponse {
 }
 
 /**
+ * Monotonic id of the most recently *issued* history load. A response may only
+ * be applied if no later load has been issued since — "last request wins",
+ * not "last response wins".
+ *
+ * Without this, more than one load can be in flight at once and the responses
+ * can land out of order, because nothing cancels a load when the connection it
+ * was issued for is replaced. A window reactivation is the common way in:
+ * `useWebSocket` force-reconnects on foreground, so a load issued for the
+ * outgoing socket is still in flight when the incoming socket opens and issues
+ * its own. When the stale one lands last it does two destructive things:
+ *
+ *   1. `setMessages` rewinds the transcript to the DB snapshot it read. For a
+ *      running turn the DB only holds rows up to the last tool-result boundary,
+ *      so everything the turn produced since — text, tool calls, cards — is
+ *      wiped. Live events only append after that, so the hole never heals; a
+ *      reload repairs it because the DB itself was fine. That is the reported
+ *      "messages disappeared on reactivation, reload brought them back".
+ *   2. `setHistoryLoaded(true)` fires mid-reconnect, which breaks the ordering
+ *      invariant `turn_snapshot` depends on (`useMessageHandler` queues the
+ *      snapshot only while history is *not* loaded, so it lands on top of the
+ *      baseline). A snapshot dispatched immediately instead applies its
+ *      replace-filter against whatever the transcript happens to hold.
+ *
+ * Scoping by session id alone doesn't catch either — both loads are for the
+ * same session.
+ */
+let historyLoadSeq = 0;
+
+/**
  * Fetch session history via HTTP and populate stores.
  * Shared between useConnectionSync (WS reconnect) and session-actions (session resume).
  */
 export async function loadSessionHistory(sessionId: string): Promise<void> {
+  const seq = ++historyLoadSeq;
   const res = await fetch(`/api/sessions/${sessionId}/history`);
   const data = await res.json() as HistoryResponse;
-  const isStillActiveSession = () => useSessionStore.getState().sessionId === sessionId;
+  // Still the newest load for this session? A superseded response must not
+  // write anything — see `historyLoadSeq`.
+  const isStillActiveSession = () =>
+    historyLoadSeq === seq && useSessionStore.getState().sessionId === sessionId;
   if (!isStillActiveSession()) {
     return;
   }
   const session = useSessionStore.getState();
+  // `inProgress` rides through to the ChatMessage: it marks the rows that
+  // belong to a still-running turn, which is exactly the set an attach-time
+  // `turn_snapshot` replaces (see `turn-snapshot.ts`). `streaming` stays the
+  // narrower "this bubble is being written to" flag the renderer uses.
   session.setMessages(
     data.messages.map((m) => ({
       ...m,
@@ -177,8 +224,29 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
   // empty) so a now-cleared session drops a stale tab.
   usePresentStore.getState().hydrate(data.presentations ?? []);
 
+  // docs/235 — reconcile the standing background-task marker from the payload
+  // before deciding the chat status line. This load is authoritative for THIS
+  // session (and only this session): it carries the descriptions the SSE
+  // `session_attention` snapshot has no room for, so switching in upgrades the
+  // unnamed fallback label to the named one.
+  const backgroundTasks = data.backgroundTasks ?? [];
+  session.setBackgroundTaskSessions((prev) => {
+    const next = new Map(prev);
+    if (backgroundTasks.length > 0) { next.set(sessionId, backgroundTasks); } else { next.delete(sessionId); }
+    return next;
+  });
+
   if (data.agentRunning) {
     session.setIsLoading(true);
+  } else if (backgroundTasks.length > 0) {
+    // Between turns with work outstanding the session is not idle, it is
+    // waiting — clearing the bar here reads as "finished". This is the same
+    // rule `handleSessionStatus` applies at turn end; without it, hydration
+    // raced the live/replayed `background_tasks` message and wiped the status
+    // line a moment after the switch. `tool` is deliberately left unset — no
+    // tool call is running, so the tool spinner would be a lie.
+    session.setIsLoading(true);
+    session.setActivity({ label: backgroundTaskLabel(backgroundTasks) });
   } else {
     session.setIsLoading(false);
     session.setActivity(undefined);

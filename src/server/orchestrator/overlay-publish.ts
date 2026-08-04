@@ -20,7 +20,12 @@
  *
  * Best-effort by construction: a publish never affects the install or the session.
  * The caller swallows a thrown hook; within a dep-dir loop a per-dir failure is
- * recorded as an `"error"` outcome and the other dirs still publish.
+ * recorded as an `"error"` outcome and the other dirs still publish. That guarantee
+ * is only as strong as the pull's error surface — see `overlay-snapshot.ts` for why
+ * a mid-stream socket death must reject rather than emit (it crashed prod on
+ * 2026-07-30). `args.signal` closes the other half: the runner's disposal aborts the
+ * in-flight pull, so archiving a session cancels its publish instead of racing the
+ * container's SIGKILL.
  *
  * ## Eligibility (plan §3)
  *
@@ -79,8 +84,8 @@ export interface OverlayPublishDeps {
   getBareCacheDir: (repoUrl: string) => string;
   env?: NodeJS.ProcessEnv;
   /** HTTP/tar glue — injectable so the orchestration is unit-testable without a worker. */
-  fetchSnapshot?: (workerUrl: string, depDir: string) => Promise<Readable>;
-  fetchHeadInfo?: (workerUrl: string) => Promise<WorkspaceHeadInfo | null>;
+  fetchSnapshot?: (workerUrl: string, depDir: string, signal?: AbortSignal) => Promise<Readable>;
+  fetchHeadInfo?: (workerUrl: string, signal?: AbortSignal) => Promise<WorkspaceHeadInfo | null>;
   extract?: (stream: Readable, destDir: string) => Promise<void>;
   /** Root for per-dep-dir extraction temp dirs (defaults to the OS temp dir). */
   tmpRoot?: string;
@@ -100,6 +105,14 @@ export interface OverlayPublishArgs {
    * only the pre-stamp optimization is forgone.
    */
   installCommands?: string[];
+  /**
+   * Cancels the pull the moment the session's runner is disposed/archived. The
+   * snapshot producer is the session container; archiving SIGKILLs it mid-stream,
+   * so without this the orchestrator keeps reading from a socket that is about to
+   * be torn down (a ~295 MB read on the prod crash of 2026-07-30). Aborting turns
+   * that race into a prompt, ordinary rejection instead.
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -167,7 +180,7 @@ export async function publishDepDirOverlayBases(
   const extract = deps.extract ?? extractTarStream;
 
   // Without the source commit we can't stamp a candidate — decline conservatively.
-  const headInfo = await fetchHeadInfo(args.workerUrl);
+  const headInfo = await fetchHeadInfo(args.workerUrl, args.signal);
   if (!headInfo) {
     return valid.map((depDir) => ({ depDir, outcome: "skipped-ineligible" as const }));
   }
@@ -203,10 +216,16 @@ export async function publishDepDirOverlayBases(
   const tmpRoot = deps.tmpRoot ?? os.tmpdir();
   const outcomes: DepDirPublishOutcome[] = [];
   for (const depDir of valid) {
+    // The container may have been destroyed while an earlier dir was streaming —
+    // don't start another multi-hundred-MB pull against a dead worker.
+    if (args.signal?.aborted) {
+      outcomes.push({ depDir, outcome: "error", error: "publish aborted (session disposed)" });
+      continue;
+    }
     let tmpDir: string | null = null;
     try {
       tmpDir = fs.mkdtempSync(path.join(tmpRoot, "ovl-pub-"));
-      const stream = await fetchSnapshot(args.workerUrl, depDir);
+      const stream = await fetchSnapshot(args.workerUrl, depDir, args.signal);
       await extract(stream, tmpDir);
       // Never publish an empty snapshot. A legitimate post-install dep dir is
       // never empty (npm/pnpm always materialize at least a lockfile shadow);

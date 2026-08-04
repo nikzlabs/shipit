@@ -70,11 +70,11 @@ services:
     # requiring a `vite build` round-trip.
     command: >
       sh -c "
-      mkdir -p $${SHIPIT_STATE_DIR:-/workspace/.inner-shipit} &&
+      mkdir -p $${SHIPIT_STATE_DIR:-/workspace/.inner-shipit} $${AGENT_HOME:-/root} &&
       while [ ! -x node_modules/.bin/vite ]; do
         echo '[dev] waiting for agent.install to populate node_modules…'; sleep 1;
       done &&
-      (PORT=4000 npm run dev 2>&1 | sed 's/^/[orch] /' &) &&
+      PORT=4000 npm run dev &
       API_PORT=4000 exec npx vite --host 0.0.0.0 --port 3000
       "
     working_dir: /workspace
@@ -86,11 +86,23 @@ services:
     init: true
     environment:
       RUNTIME_MODE: local
-      # docs/150 §9 — local mode hosts agent processes in-process and keeps the
-      # orchestrator on root with HOME=/root. Pin AGENT_HOME so agentHome()
-      # (whose default is now /home/shipit) resolves to /root here, matching the
-      # dogfood image. Belt-and-suspenders over the image ENV.
-      AGENT_HOME: /root
+      # docs/150 §9 — local mode hosts agent processes in-process, so agentHome()
+      # (default /home/shipit, a user this image doesn't have) has to be pinned
+      # to something the runtime user can actually write.
+      #
+      # This used to be `/root`, on the premise that local mode "keeps the
+      # orchestrator on root". That stopped being true: with
+      # SHIPIT_SESSION_WORKER_UID set on the deployment, `compose-generator`
+      # forces `user: <uid>:<uid>` onto every service without an explicit
+      # `user:` — including this one. So the inner orch runs as uid 1000 against
+      # HOME=/root and every credential write failed with
+      # `EACCES: permission denied, lstat '/root/.codex'` (SHI-282).
+      #
+      # The state dir is the natural home: bind-mounted, owned by the same uid,
+      # already gitignored, and it survives a service restart. Kept out of
+      # Dockerfile.dogfood's ENV on purpose — the image can't know the mount
+      # path, so compose is the only place that can be right.
+      AGENT_HOME: /workspace/.inner-shipit/agent-home
       # Note: the orchestrator's PORT (4000) and Vite's port (3000) are set
       # inline in the `command:` above, not here, because we run two
       # processes with different ports inside this single service.
@@ -154,3 +166,132 @@ services:
       - { name: ANTHROPIC_API_KEY }
       - { name: ANTHROPIC_AUTH_TOKEN }
       - { name: GITHUB_TOKEN }
+
+  # Agent Interface SDK test preview (docs/242).
+  #
+  # A ~40-line static server whose page reports the live state of `window.shipit`
+  # — installed? handshake resolved? visibility? — and can send a real message to
+  # this session's agent. It exists because the SDK's Preview path can only be
+  # exercised through an actual proxied service: the bootstrap is injected by
+  # `preview-proxy.ts` into a cross-origin iframe, which no unit test reproduces.
+  # Both bugs it caught (a `__name` reference that killed the script under the
+  # production tsx transform, and a `document.referrer`-derived parent origin that
+  # broke after any in-preview navigation) were invisible from the client bundle.
+  #
+  # Manual, like `dev` — it's cheap to run but it would otherwise claim the
+  # preview pane on every session. Start it with `shipit service start sdk-test`.
+  #
+  # The page inlines the bootstrap itself (the proxy skips a response that already
+  # carries the marker), so it exercises the bootstrap from the *checkout* rather
+  # than from the orchestrator serving the preview. That's deliberate: a bootstrap
+  # fix can be verified in production ShipIt before the orchestrator ships it.
+  sdk-test:
+    image: node:24-slim
+    working_dir: /workspace
+    init: true
+    # tsx comes from the agent container's bind-mounted node_modules, populated by
+    # `agent.install`; wait for it rather than racing that install (feature 137).
+    command: >
+      sh -c "
+      while [ ! -x node_modules/.bin/tsx ]; do
+        echo '[sdk-test] waiting for agent.install to populate node_modules…'; sleep 1;
+      done &&
+      exec node --import tsx test-preview/server.ts
+      "
+    environment:
+      # Matches the production orchestrator's own loader, so the injected
+      # bootstrap here is transpiled exactly the way production transpiles it.
+      PORT: "3002"
+    volumes:
+      - .:/workspace
+    ports:
+      - "3002:3002"
+    x-shipit-preview: manual
+
+  # Android emulator preview — dogfoods docs/213's interactive-preview tier on
+  # the in-repo native test app (`android-snapshot-test/`). The old `android/`
+  # WebView wrapper was removed (superseded by the PWA, docs/222); the test app
+  # is now the canonical Android target for build, snapshot, and preview.
+  # Marked `manual` like `dev`: it's heavy (~2–4 GiB + a booting Android OS) and
+  # needs host KVM, so it boots only when the user explicitly starts it, never on
+  # every session.
+  #
+  # Once started, the outer preview proxy routes `<sessionId>--6080.localhost` to
+  # the container's noVNC web UI and renders it in the preview pane. The agent
+  # reaches adb on the Compose network by service DNS: `adb connect emulator:5555`.
+  #
+  # The emulator boots a BLANK device — it doesn't know about our app. The
+  # `android` service below builds the APK, installs it, and hot-reloads it on
+  # change. `depends_on: [android]` makes starting this preview bring that builder
+  # up too (compose `up emulator` starts its dependencies), so the user clicks one
+  # thing and the app appears — like the web `dev` service. (The reverse edge —
+  # `android` needing the device — is handled by polling adb in the build script,
+  # not a depends_on, to avoid a dependency cycle.)
+  #
+  # Requires `/dev/kvm` on the outer host (verify with `kvm-ok`) and that the
+  # deployment hasn't disabled the device passthrough (`SESSION_ALLOW_DEV_KVM=0`).
+  # `/dev/kvm:/dev/kvm` is the only `devices:` mapping ShipIt's compose generator
+  # permits. No KVM → use a cloud device farm instead (the emulator is too slow).
+  emulator:
+    image: budtmo/docker-android:emulator_14.0
+    # REQUIRED. ShipIt otherwise runs every compose service as the session-worker
+    # UID (docs/150 §7) so dev-server writes into the shared workspace stay
+    # agent-owned. This image ships its own unprivileged user and keeps its
+    # startup scripts under /home/androidusr, which that UID cannot execute:
+    #   sh: /home/androidusr/docker-android/mixins/scripts/run.sh: Permission denied
+    # Declaring `user:` explicitly is honored verbatim by the compose generator
+    # (it never overrides a deliberate choice), so the image starts as intended.
+    # Nothing here writes to the shared workspace, so the UID-matching rationale
+    # doesn't apply.
+    user: androidusr
+    environment:
+      # REQUIRED — without WEB_VNC the image boots the emulator (adb works) but
+      # never starts the noVNC web server, so the preview pane stays blank.
+      - WEB_VNC=true
+      - EMULATOR_DEVICE=Samsung Galaxy S10
+    devices:
+      - "/dev/kvm:/dev/kvm"
+    ports:
+      # ports[0] is preview metadata — the container port x-shipit-preview renders
+      # (the noVNC web UI). Host bindings are stripped; routing is via the proxy.
+      - "6080:6080"
+    expose:
+      # adb, reachable on the Compose network by service name (not host-published).
+      - "5555"
+    depends_on:
+      - android
+    x-shipit-preview: manual
+
+  # Android build + hot-reload service — the Android analog of the web `dev`
+  # service. Holds the SDK + Gradle (docker/Dockerfile.android-dev); it builds the
+  # `android-snapshot-test/` debug APK, installs it onto `emulator` over adb, and
+  # then watches the source tree and rebuilds + reinstalls + relaunches on every
+  # change. That's the "hot reload" loop — coarser than web HMR (a full rebuild +
+  # reinstall, not a code hot-swap, because native Android has no headless
+  # hot-swap), but it keeps the preview reflecting the current code with no agent.
+  #
+  # No `x-shipit-preview` marker: this is a worker, not a previewable surface. It
+  # starts because `emulator` depends_on it (see above). The build runs only when
+  # the user opens the emulator preview — it does NOT tax normal web sessions
+  # (which is why the APK build lives here and not in `agent.install`).
+  android:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.android-dev
+    image: shipit-android-dev:local
+    working_dir: /workspace/android-snapshot-test
+    init: true
+    # Unlike `emulator` above, this service deliberately KEEPS ShipIt's
+    # session-worker UID: it writes Gradle build output into the shared workspace,
+    # so matching the agent's UID is exactly what we want (docs/150 §7). But that
+    # UID has no home directory inside this image, and both Gradle and adb need a
+    # writable HOME for their caches/keys — so point them at the (UID-owned)
+    # workspace instead of a root-owned `/`. Both dirs are gitignored.
+    environment:
+      HOME: /workspace/.android-home
+      GRADLE_USER_HOME: /workspace/.gradle-android
+    volumes:
+      # Live source (the build reads it; the watch loop reacts to edits) + the
+      # APK output the install step reads. Shared with the outer workspace.
+      - .:/workspace
+    command: ["bash", "/workspace/docker/android-hot-reload.sh"]

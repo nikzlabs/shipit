@@ -24,6 +24,16 @@
  *   - **Stale `pnpm-store/<hash>` dirs** (docs/197 Part 2) — one shared store per
  *     runtime fingerprint; a worker-image rebuild rotates the hash, leaving the
  *     prior runtime's store behind. Gated on a `pnpmStoreRuntimeHash` source.
+ *   - **Cache-side Git LFS objects** (docs/232) under `repo-cache/<hash>/lfs/objects`
+ *     that **no session clone hardlinks** (`nlink === 1`) and that nothing has
+ *     touched within `DISK_JANITOR_LFS_OBJECT_DAYS` (default 14). This one grows
+ *     *inside a live cache* as LFS refs advance and superseded asset versions pile
+ *     up — the whole-directory cache sweep above only helps once the repo itself
+ *     goes cold, which for an actively-used asset-heavy repo is never. Safe with no
+ *     live-session coordination because `nlink` is an exact, never-stale liveness
+ *     signal and LFS objects are content-addressed (a wrong delete costs a
+ *     re-download). Ungated: with sharing off the store is empty, so the walk
+ *     no-ops.
  *
  * Why periodic (not boot-only): unlike the failure-recovery sweeps in
  * `runDiskJanitor` (orphan volumes/networks/workspaces/credentials/logs/branches —
@@ -43,6 +53,10 @@
  *   - DISK_JANITOR_CACHE_DAYS: age in days at which unreferenced `repo-cache/<hash>`,
  *     `dep-cache/<hash>`, `repo-memory/<hash>`, and stale `pnpm-store/<hash>` dirs are
  *     deleted. Default `30`.
+ *   - DISK_JANITOR_LFS_OBJECT_DAYS: age in days at which an unreferenced cache-side
+ *     LFS object is unlinked. Default `14` — tighter than the cold-artifact window
+ *     because these are superseded asset versions in a *live* repo, and a wrong
+ *     delete costs only a re-download.
  *   - The pace between destructive ops is wired by the caller (the escalation pass's
  *     `DISK_ESCALATION_PACE_MS`).
  */
@@ -59,12 +73,26 @@ import { getMessage, sleep, defaultRunDocker } from "./disk-utils.js";
 
 const DEFAULT_CACHE_DAYS = 30;
 
+/**
+ * docs/232 — retention for cache-side Git LFS objects. Tighter than the 30-day
+ * cold-artifact window because these are *superseded asset versions* inside a
+ * repo that is still live, not an abandoned repo's cache, and because getting it
+ * wrong costs a re-download rather than anything unrecoverable.
+ */
+const DEFAULT_LFS_OBJECT_DAYS = 14;
+const LFS_OBJECT_DAYS_ENV = "DISK_JANITOR_LFS_OBJECT_DAYS";
+
 export interface SteadyStateReclaimDeps {
   /** Root that holds `repo-cache/<hash>`, `dep-cache/<hash>`, `overlay-base/<hash>`, `pnpm-store/<hash>`. */
   stateDir: string;
   repoStore: RepoStore;
   /** Age threshold (days) for unreferenced cache / memory / pnpm-store directories. */
   cacheDays?: number;
+  /**
+   * docs/232 — age threshold (days) for cache-side LFS objects no clone links.
+   * Defaults to `DISK_JANITOR_LFS_OBJECT_DAYS`, else 14.
+   */
+  lfsObjectDays?: number;
   /**
    * docs/138 / docs/155 — source-of-truth credentials root (e.g. `/credentials`).
    * When provided, the `repo-memory/<hash>` sweep runs. Omitted in tests / runtimes
@@ -112,6 +140,10 @@ export interface SteadyStateReclaimResult {
   overlayBasesRemoved: number;
   /** docs/197 Part 2 — stale `pnpm-store/<hash>` dirs removed (non-current runtime, past cutoff). */
   pnpmStoresRemoved: number;
+  /** docs/232 — cache-side LFS objects unlinked (unreferenced by any clone, past cutoff). */
+  lfsObjectsRemoved: number;
+  /** docs/232 — bytes actually reclaimed by the LFS object sweep. */
+  lfsBytesFreed: number;
 }
 
 /**
@@ -127,6 +159,8 @@ export async function runSteadyStateReclaim(
     repoMemoryDirsRemoved: 0,
     overlayBasesRemoved: 0,
     pnpmStoresRemoved: 0,
+    lfsObjectsRemoved: 0,
+    lfsBytesFreed: 0,
   };
   const runDocker = deps.runDocker ?? defaultRunDocker;
   const paceMs = deps.paceMs ?? 0;
@@ -183,20 +217,160 @@ export async function runSteadyStateReclaim(
     }
   }
 
+  // docs/232 — prune the cache-side LFS store. Deliberately NOT gated on
+  // `SHIPIT_GIT_LFS_SHARED_STORE`: a deployment that enabled sharing and later
+  // turned it off still has objects to reclaim, and with sharing off the store is
+  // empty so the walk is a no-op anyway. Runs after the cache sweep above, which
+  // may already have removed whole `repo-cache/<hash>` dirs (objects included).
+  try {
+    const lfs = await sweepCacheLfsObjects(deps.stateDir, lfsObjectDays(deps), paceMs);
+    result.lfsObjectsRemoved = lfs.removed;
+    result.lfsBytesFreed = lfs.bytesFreed;
+  } catch (err) {
+    console.warn("[disk-janitor] cache LFS object sweep failed:", getMessage(err));
+  }
+
   // Log only when something was reclaimed — this pass fires per-activation, so an
   // unconditional line would be noise (mirrors `escalateDiskTiers`).
   if (
     result.cachesRemoved || result.overlayBasesRemoved
     || result.pnpmStoresRemoved || result.repoMemoryDirsRemoved
+    || result.lfsObjectsRemoved
   ) {
     console.log(
       `[disk-janitor] steady-state reclaim: caches=${result.cachesRemoved} `
       + `overlay-bases=${result.overlayBasesRemoved} `
       + `pnpm-stores=${result.pnpmStoresRemoved} `
-      + `repo-memory=${result.repoMemoryDirsRemoved}`,
+      + `repo-memory=${result.repoMemoryDirsRemoved} `
+      + `lfs-objects=${result.lfsObjectsRemoved} `
+      + `(${Math.round(result.lfsBytesFreed / 1_048_576)} MiB)`,
     );
   }
   return result;
+}
+
+function lfsObjectDays(deps: SteadyStateReclaimDeps): number {
+  if (deps.lfsObjectDays !== undefined) return deps.lfsObjectDays;
+  // Read here rather than threading it through the caller like `cacheDays`: no
+  // other sweep shares this window, so a second plumbing hop would buy nothing.
+  const raw = Number(process.env[LFS_OBJECT_DAYS_ENV]);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_LFS_OBJECT_DAYS;
+}
+
+/**
+ * docs/232 — reclaim cache-side Git LFS objects that no session clone references
+ * and that nothing has touched inside the retention window.
+ *
+ * ## Why this is safe without coordinating with live sessions
+ *
+ * Two properties do all the work, and neither needs a reachability computation:
+ *
+ *  - **`nlink` is a free, exact liveness signal.** `linkLfsObjectsIntoClone`
+ *    seeds a session by *hardlinking* the cache's object, so an object with
+ *    `nlink > 1` is one some clone still holds. Only `nlink === 1` objects are
+ *    touched — meaning the unlink genuinely frees the bytes AND cannot affect a
+ *    live session. This is exactly the property that made hardlinks the right
+ *    design over a shared `lfs.storage`, now paying off a second time: the
+ *    kernel already tracks what we would otherwise have to compute, and it can't
+ *    be stale.
+ *  - **LFS objects are content-addressed, so deletion is recoverable.** Dropping
+ *    one the cache still wanted costs a re-download on the next session's
+ *    `git lfs pull` — the pre-docs/232 behavior — not a broken checkout. That is
+ *    what lets an age heuristic be good enough here.
+ *
+ * Note this is NOT `git lfs prune`: that needs the binary, its bare-repo support
+ * is unverified, and it prunes on a reachability view this doesn't need. An
+ * mtime + `nlink` sweep is testable with plain filesystem calls and can't be
+ * wrong in a way that matters.
+ *
+ * Returns the object count and the bytes actually reclaimed.
+ */
+async function sweepCacheLfsObjects(
+  stateDir: string,
+  days: number,
+  paceMs: number,
+): Promise<{ removed: number; bytesFreed: number }> {
+  const cacheRoot = path.join(stateDir, "repo-cache");
+  let entries;
+  try {
+    entries = await fs.readdir(cacheRoot, { withFileTypes: true });
+  } catch {
+    return { removed: 0, bytesFreed: 0 }; // no repo caches on this host yet
+  }
+  const cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000;
+  let removed = 0;
+  let bytesFreed = 0;
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const objectsDir = path.join(cacheRoot, entry.name, "lfs", "objects");
+    const swept = await pruneLfsObjectTree(objectsDir, cutoffMs);
+    removed += swept.removed;
+    bytesFreed += swept.bytesFreed;
+    // Paced per repo-cache dir, not per object: unlinking an object is a cheap
+    // metadata op (unlike the `docker volume rm` / recursive rmtree the other
+    // sweeps pace), and a per-object pause would stretch a few thousand assets
+    // into minutes of sleeping.
+    if (paceMs > 0 && swept.removed > 0) await sleep(paceMs);
+  }
+  return { removed, bytesFreed };
+}
+
+/**
+ * Recursive half of {@link sweepCacheLfsObjects}. Unlinks eligible object files,
+ * then removes fanout directories that end up empty so the two-level fanout
+ * doesn't leave inode litter behind. Never throws — a file that vanishes
+ * mid-sweep (a concurrent clone seeding from this store) is simply skipped.
+ */
+async function pruneLfsObjectTree(
+  dir: string,
+  cutoffMs: number,
+): Promise<{ removed: number; bytesFreed: number; emptied: boolean }> {
+  let entries;
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch {
+    return { removed: 0, bytesFreed: 0, emptied: false }; // not an LFS cache
+  }
+  let removed = 0;
+  let bytesFreed = 0;
+  let survivors = 0;
+  for (const entry of entries) {
+    const child = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      const swept = await pruneLfsObjectTree(child, cutoffMs);
+      removed += swept.removed;
+      bytesFreed += swept.bytesFreed;
+      if (swept.emptied) {
+        try {
+          await fs.rmdir(child);
+        } catch {
+          survivors++; // raced with a concurrent write — leave it
+        }
+      } else {
+        survivors++;
+      }
+      continue;
+    }
+    if (!entry.isFile()) {
+      survivors++; // symlink/socket — not ours to reclaim
+      continue;
+    }
+    try {
+      const stat = await fs.lstat(child);
+      // `nlink > 1` → a live clone holds this object; unlinking frees nothing and
+      // would cost that clone's next reader a re-download.
+      if (stat.nlink > 1 || stat.mtimeMs >= cutoffMs) {
+        survivors++;
+        continue;
+      }
+      await fs.unlink(child);
+      removed++;
+      bytesFreed += stat.size;
+    } catch {
+      survivors++; // vanished or unreadable — skip
+    }
+  }
+  return { removed, bytesFreed, emptied: survivors === 0 };
 }
 
 /**

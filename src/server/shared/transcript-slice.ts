@@ -1,0 +1,135 @@
+/**
+ * Pure slicing primitives for the lazy transcript-body projection (docs/244,
+ * SHI-267). Kept dependency-free and isomorphic — the orchestrator uses these
+ * to build the wire payload, and the client imports the constants to prove its
+ * inline previews still fit inside a slice.
+ *
+ * The line cap is the primary bound and is *derived*, not picked: the largest
+ * inline preview any render path draws is Bash at 30 lines
+ * (`client/components/ToolResult.tsx`), so a 40-line slice covers every path
+ * with headroom. `tool-result-slice.test.ts` asserts that relationship so a
+ * future render path that shows more lines fails the build rather than
+ * silently rendering a short preview.
+ *
+ * The byte cap is a *backstop* for what a line cap cannot bound: a single
+ * minified-JSON or base64 line can be megabytes on its own. It is the one
+ * place this feature knowingly shows less than it does today — the
+ * alternative, honouring 40 lines at any width, re-admits the unbounded
+ * payload the feature exists to remove.
+ */
+
+/** Max lines carried inline before the tail moves behind a fetch. */
+export const TRANSCRIPT_SLICE_LINES = 40;
+
+/** Hard byte backstop for pathologically long single lines. */
+export const TRANSCRIPT_SLICE_BYTES = 16 * 1024;
+
+/**
+ * Below this, a modal-only result body is left on the wire instead of being
+ * stripped.
+ *
+ * Requirement 1 is absolute in principle — don't transfer what isn't visible
+ * without a click — but stripping is not free: an emptied body is replaced by
+ * `truncated` + `totalLines` + `totalBytes`, which is roughly 60 bytes of JSON.
+ * For a result like `"ok"` that makes the payload strictly *larger*, and buys a
+ * network round-trip to fetch two characters. This floor is where the mechanism
+ * stops paying for itself.
+ *
+ * Deliberately small: at 200 bytes, even a transcript of 50 short results
+ * carries under 10 KB of un-stripped bodies, which is noise against the
+ * megabytes this feature exists to remove.
+ */
+export const RESULT_STRIP_FLOOR_BYTES = 200;
+
+/**
+ * Characters of a sub-agent consult's output drawn on the card face (SHI-297).
+ *
+ * The consult card renders a single collapsed preview line and puts the rest
+ * behind a click (`SubAgentCards.tsx`), so the preview is the only part of a
+ * `sub_agent_consult_card` requirement 1 lets onto the wire. Shared rather than
+ * duplicated because the server now *builds* the preview the client used to
+ * derive: if the two ever disagreed the card face would change on reload.
+ */
+export const SUB_AGENT_PREVIEW_CHARS = 140;
+
+/**
+ * Collapse a consult's markdown into the one-line preview the card face draws.
+ *
+ * Idempotent by construction: re-applying it to its own output returns that
+ * output unchanged (the ellipsis is re-appended to the same 140-char head), so
+ * the client can call it on either the full body or the server-built preview
+ * and get the same line.
+ */
+export function subAgentPreviewLine(markdown: string): string {
+  const flat = markdown.replace(/\s+/g, " ").trim();
+  return flat.length > SUB_AGENT_PREVIEW_CHARS
+    ? `${flat.slice(0, SUB_AGENT_PREVIEW_CHARS)}…`
+    : flat;
+}
+
+export interface SlicedBody {
+  /** The head slice — a prefix of the original. */
+  content: string;
+  /** True line count of the *whole* body, for the "Show all N lines" label. */
+  totalLines: number;
+  /** Byte length of the whole body. */
+  totalBytes: number;
+}
+
+const encoder = new TextEncoder();
+const decoder = new TextDecoder("utf-8");
+
+/**
+ * Truncate `bytes` to at most `max` bytes without splitting a UTF-8 codepoint.
+ * Walks back off any continuation byte (`0b10xxxxxx`) straddling the boundary,
+ * so the decoded string never ends in a replacement character.
+ */
+function sliceUtf8(bytes: Uint8Array, max: number): string {
+  if (bytes.length <= max) return decoder.decode(bytes);
+  let end = max;
+  while (end > 0 && ((bytes[end] ?? 0) & 0xc0) === 0x80) end--;
+  return decoder.decode(bytes.subarray(0, end));
+}
+
+/** Count lines the same way the client's `truncateLines` does. */
+function countLines(text: string): number {
+  let lines = 1;
+  for (const ch of text) if (ch === "\n") lines++;
+  return lines;
+}
+
+/**
+ * Slice a body down to the inline budget. Returns `null` when the body already
+ * fits — the common case by far, and the caller leaves the payload untouched so
+ * small results carry no extra JSON at all.
+ */
+export function sliceBody(
+  content: string,
+  lineLimit: number = TRANSCRIPT_SLICE_LINES,
+  byteLimit: number = TRANSCRIPT_SLICE_BYTES,
+): SlicedBody | null {
+  const bytes = encoder.encode(content);
+  const totalLines = countLines(content);
+  if (totalLines <= lineLimit && bytes.length <= byteLimit) return null;
+
+  // Line cap first — it is the bound derived from what the UI draws.
+  let head = content;
+  if (totalLines > lineLimit) {
+    let cut = -1;
+    let seen = 0;
+    for (let i = 0; i < content.length; i++) {
+      if (content[i] !== "\n") continue;
+      if (++seen === lineLimit) {
+        cut = i;
+        break;
+      }
+    }
+    if (cut >= 0) head = content.slice(0, cut);
+  }
+
+  // Byte backstop, applied to whatever the line cap left.
+  const headBytes = encoder.encode(head);
+  if (headBytes.length > byteLimit) head = sliceUtf8(headBytes, byteLimit);
+
+  return { content: head, totalLines, totalBytes: bytes.length };
+}

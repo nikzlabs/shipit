@@ -41,3 +41,35 @@ for (const key of keysToClear) {
 if (process.env.SESSION_EGRESS_ENFORCE === undefined) {
   process.env.SESSION_EGRESS_ENFORCE = "0";
 }
+
+/**
+ * No server test may touch the network through git.
+ *
+ * Several integration tests drive paths that clone or fetch from a *fake*
+ * GitHub URL and assert the resulting failure — `claim-session`'s slow path
+ * self-heals a missing bare cache with `ensureBareCache(url)`, and
+ * `fetchAndResolveDefaultBranch` fetches the workspace's origin directly. Those
+ * URLs don't exist, but git still performs a real DNS + TLS + HTTP round-trip
+ * to github.com before finding that out. On a developer box that costs ~230ms
+ * and looks harmless; on a CI runner sharing a NAT with hundreds of parallel
+ * jobs it is unbounded, and it timed out two different 5s tests on consecutive
+ * runs (`repos.test.ts` claim-session, `http-phase3.test.ts` repo creation)
+ * with no code change to explain either.
+ *
+ * `GIT_ALLOW_PROTOCOL` is git's own transport allowlist. Restricting it to
+ * `file` turns every https/ssh operation into an immediate
+ * `fatal: transport 'https' not allowed` (~5ms, no packets), while local-path
+ * and `file://` remotes — which is what every legitimate git test uses for its
+ * bare remotes — keep working unchanged. The tests that assert a failure still
+ * assert a failure; they just stop paying for a round-trip to learn it.
+ *
+ * `GIT_TERMINAL_PROMPT=0` is belt-and-braces for any transport that slips
+ * through: git must fail rather than block on a credential prompt. Individual
+ * tests already set this; defaulting it here means a new test can't forget.
+ */
+if (process.env.GIT_ALLOW_PROTOCOL === undefined) {
+  process.env.GIT_ALLOW_PROTOCOL = "file";
+}
+if (process.env.GIT_TERMINAL_PROMPT === undefined) {
+  process.env.GIT_TERMINAL_PROMPT = "0";
+}

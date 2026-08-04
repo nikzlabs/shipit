@@ -197,6 +197,55 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
     });
   });
 
+  describe("docs/241: PUT /api/sessions/:id/keep-preview-running", () => {
+    it("persists, activates, broadcasts through the canonical list, and disables without stopping", async () => {
+      await createSession("keep-1", "Keep me");
+      const enabled = await app.inject({
+        method: "PUT",
+        url: "/api/sessions/keep-1/keep-preview-running",
+        payload: { enabled: true },
+      });
+      expect(enabled.statusCode).toBe(200);
+      expect(sessionManager.get("keep-1")?.keepPreviewRunning).toBe(true);
+      expect(app.runnerRegistry.get("keep-1")).toBeDefined();
+
+      const disabled = await app.inject({
+        method: "PUT",
+        url: "/api/sessions/keep-1/keep-preview-running",
+        payload: { enabled: false },
+      });
+      expect(disabled.statusCode).toBe(200);
+      expect(sessionManager.get("keep-1")?.keepPreviewRunning).toBeUndefined();
+      expect(app.runnerRegistry.get("keep-1")).toBeDefined();
+    });
+
+    it("rejects invalid bodies and missing sessions", async () => {
+      await createSession("keep-2", "Keep me");
+      const invalid = await app.inject({
+        method: "PUT", url: "/api/sessions/keep-2/keep-preview-running", payload: { enabled: "yes" },
+      });
+      expect(invalid.statusCode).toBe(400);
+      const missing = await app.inject({
+        method: "PUT", url: "/api/sessions/nope/keep-preview-running", payload: { enabled: true },
+      });
+      expect(missing.statusCode).toBe(404);
+    });
+
+    it("enforces the default capacity before mutating the second session", async () => {
+      await createSession("keep-a", "A");
+      await createSession("keep-b", "B");
+      await app.inject({
+        method: "PUT", url: "/api/sessions/keep-a/keep-preview-running", payload: { enabled: true },
+      });
+      const overflow = await app.inject({
+        method: "PUT", url: "/api/sessions/keep-b/keep-preview-running", payload: { enabled: true },
+      });
+      expect(overflow.statusCode).toBe(409);
+      expect(overflow.json()).toMatchObject({ error: expect.stringContaining("capacity") });
+      expect(sessionManager.get("keep-b")?.keepPreviewRunning).toBeUndefined();
+    });
+  });
+
   describe("DELETE /api/sessions/:id (archive)", () => {
     it("archives a session and returns updated list", async () => {
       await createSession("s1", "Session 1");
@@ -503,7 +552,11 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
         .map((account) => account.id)).toEqual([secondId]);
     });
 
-    it("rejects disconnecting an account pinned to an existing session", async () => {
+    // docs/150 req 23 — this used to 409. With no other connected account there
+    // is nowhere to move the pinned session to, and refusing made the last
+    // subscription undisconnectable, so the disconnect goes through and reports
+    // the session it left without an account.
+    it("disconnects the last account over HTTP, reporting the sessions it stranded", async () => {
       const created = await app.inject({
         method: "POST",
         url: "/api/provider-accounts",
@@ -520,8 +573,82 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
         url: `/api/provider-accounts/codex/${accountId}`,
       });
 
+      expect(deleted.statusCode).toBe(200);
+      const body = deleted.json() as {
+        accounts: { provider: string; id: string }[];
+        switchedSessionIds: string[];
+        strandedSessionIds: string[];
+      };
+      expect(body.strandedSessionIds).toEqual(["pinned-session"]);
+      expect(body.switchedSessionIds).toEqual([]);
+      expect(body.accounts.filter((account) => account.provider === "codex")).toEqual([]);
+    });
+
+    // The refusal that remains: a session mid-turn. Unlike the one above,
+    // waiting clears it, so it names what to wait for.
+    it("still refuses to disconnect an account whose pinned session is mid-turn", async () => {
+      const created = await app.inject({
+        method: "POST",
+        url: "/api/provider-accounts",
+        payload: { provider: "codex", label: "Team ChatGPT" },
+      });
+      const accountId = (created.json() as { account: { id: string } }).account.id;
+      const session = sessionManager.track("running-session", "Running session", path.join(tmpDir, "session"));
+      sessionManager.setAgentId(session.id, "codex");
+      sessionManager.setProviderRoute(session.id, "account", accountId);
+      sessionManager.setAgentPinned(session.id);
+      const runner = app.runnerRegistry.getOrCreate(session.id, path.join(tmpDir, "session"), "codex");
+      runner.running = true;
+
+      const deleted = await app.inject({
+        method: "DELETE",
+        url: `/api/provider-accounts/codex/${accountId}`,
+      });
+
       expect(deleted.statusCode).toBe(409);
-      expect((deleted.json() as { error: string }).error).toMatch(/pinned/i);
+      expect((deleted.json() as { error: string }).error).toMatch(/"Running session"/);
+      runner.running = false;
+    });
+
+    // docs/150 req 2 — the reorder control's whole job is to change the order
+    // the user *sees*. Writing `priority` while every wire response still
+    // carried storage order is what made the buttons read as broken, so this
+    // asserts the order over HTTP, where the client actually reads it.
+    it("PUT /order changes the order returned by the reorder response AND by GET", async () => {
+      const mk = async (label: string): Promise<string> => {
+        const res = await app.inject({
+          method: "POST", url: "/api/provider-accounts", payload: { provider: "claude", label },
+        });
+        return (res.json() as { account: { id: string } }).account.id;
+      };
+      const a = await mk("Account A");
+      const b = await mk("Account B");
+      const c = await mk("Account C");
+
+      const claudeIds = (payload: unknown): string[] =>
+        (payload as { accounts: { id: string; provider: string }[] }).accounts
+          .filter((row) => row.provider === "claude")
+          .map((row) => row.id);
+
+      // Creation order to start with.
+      expect(claudeIds((await app.inject({ method: "GET", url: "/api/provider-accounts" })).json()))
+        .toEqual([a, b, c]);
+
+      const reordered = await app.inject({
+        method: "PUT",
+        url: "/api/provider-accounts/claude/order",
+        payload: { accountIds: [c, a, b] },
+      });
+      expect(reordered.statusCode).toBe(200);
+      // The response the button's own fetch feeds straight into the store.
+      expect(claudeIds(reordered.json())).toEqual([c, a, b]);
+      // ...and a fresh read agrees, so a reload doesn't snap the rows back.
+      expect(claudeIds((await app.inject({ method: "GET", url: "/api/provider-accounts" })).json()))
+        .toEqual([c, a, b]);
+      // Position 0 owns the primary badge, so the order and the badge agree.
+      const rows = ((await app.inject({ method: "GET", url: "/api/provider-accounts" })).json() as
+        { accounts: { id: string; isPrimary?: boolean }[] }).accounts;
+      expect(rows.find((row) => row.id === c)?.isPrimary).toBe(true);
     });
 
     it("starts, feeds a code to, and cancels an account-scoped login (docs/150)", async () => {
@@ -562,6 +689,44 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       });
       expect(cancelled.statusCode).toBe(200);
       expect((cancelled.json() as { account: { status: string } }).account.status).toBe("ready");
+    });
+
+    // docs/150 — one CLI login per provider. A second concurrent sign-in is a
+    // conflict the user resolves, not a 500.
+    it("refuses a second concurrent sign-in with 409, and frees up after cancel", async () => {
+      const mk = async (label: string): Promise<string> => {
+        const res = await app.inject({
+          method: "POST", url: "/api/provider-accounts", payload: { provider: "claude", label },
+        });
+        return (res.json() as { account: { id: string } }).account.id;
+      };
+      const first = await mk("First Anthropic");
+      const second = await mk("Second Anthropic");
+
+      expect((await app.inject({
+        method: "POST", url: `/api/provider-accounts/claude/${first}/login`,
+      })).statusCode).toBe(202);
+
+      const blocked = await app.inject({
+        method: "POST", url: `/api/provider-accounts/claude/${second}/login`,
+      });
+      expect(blocked.statusCode).toBe(409);
+      // The message has to name the row holding the flow — "conflict" alone
+      // leaves the user with no idea what to go cancel.
+      expect((blocked.json() as { error: string }).error).toContain("First Anthropic");
+
+      // A code pasted on the row that does not own the challenge is refused too.
+      expect((await app.inject({
+        method: "POST",
+        url: `/api/provider-accounts/claude/${second}/login/code`,
+        payload: { code: "abc-123" },
+      })).statusCode).toBe(409);
+
+      // Cancelling the owner frees the provider.
+      await app.inject({ method: "POST", url: `/api/provider-accounts/claude/${first}/login/cancel` });
+      expect((await app.inject({
+        method: "POST", url: `/api/provider-accounts/claude/${second}/login`,
+      })).statusCode).toBe(202);
     });
 
     it("rejects an empty login code and an unknown account (docs/150)", async () => {
@@ -641,6 +806,87 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       expect(Array.isArray(body.agents)).toBe(true);
       const claude = body.agents.find((a: { id: string }) => a.id === "claude");
       expect(claude?.authConfigured).toBe(false);
+    });
+
+    // docs/150 — provider-wide sign-out drops every account row, so it needs
+    // the running-turn guard the per-account disconnect already has. Signing
+    // out mid-turn rewrites credentials under a live agent, and the user gets
+    // a 401 instead of an answer.
+    it("refuses while a pinned session is mid-turn, and allows it once idle", async () => {
+      await createSession("signout-1", "Mid-turn session");
+      sessionManager.setAgentId("signout-1", "claude");
+      sessionManager.setProviderRoute("signout-1", "account", "acct_live");
+      const runner = app.runnerRegistry.getOrCreate("signout-1", "/tmp/signout-1", "claude");
+      runner.running = true;
+
+      const blocked = await app.inject({ method: "DELETE", url: "/api/auth/api-key" });
+      expect(blocked.statusCode).toBe(409);
+      expect((blocked.json() as { error: string }).error).toMatch(/mid-turn/i);
+
+      // The turn ends; sign-out proceeds.
+      runner.running = false;
+      expect((await app.inject({ method: "DELETE", url: "/api/auth/api-key" })).statusCode).toBe(200);
+    });
+
+    // A session pinned to an account that sign-out removed is NOT stranded:
+    // the route reads as unusable, so its next turn's preflight fails it over
+    // (or reports auth_required if nothing is connected). Only the mid-turn
+    // case is unrecoverable, which is why that is the only thing guarded.
+    //
+    // SHI-283 — but it does have to actually *lose* the account. The row is not
+    // where the token lives: the session holds its own copy, that copy is what
+    // the CLI in its container reads, and nothing else ever deletes it (first-
+    // turn provisioning is guarded on `agentPinned`, and only a switch to
+    // another account overwrites it). Scoping detail is covered by
+    // `services/provider-signout.test.ts`.
+    it("still signs out with an idle pinned session, revoking its copy and leaving it to re-route", async () => {
+      const now = Date.now();
+      credentialStore.upsertProviderAccount({
+        id: "acct_gone", provider: "claude", label: "Gone", isPrimary: true,
+        priority: 0, status: "ready", createdAt: now, updatedAt: now,
+      });
+      await createSession("signout-2", "Idle pinned session");
+      sessionManager.setAgentId("signout-2", "claude");
+      sessionManager.setProviderRoute("signout-2", "account", "acct_gone");
+      const sessionToken = path.join(tmpDir, "sessions", "signout-2", ".claude", ".credentials.json");
+      const resume = path.join(tmpDir, "sessions", "signout-2", ".claude", "projects", "abc.jsonl");
+      fs.mkdirSync(path.dirname(resume), { recursive: true });
+      fs.writeFileSync(sessionToken, '{"accessToken":"live"}');
+      fs.writeFileSync(resume, "{}");
+
+      expect((await app.inject({ method: "DELETE", url: "/api/auth/api-key" })).statusCode).toBe(200);
+
+      // Signed out has to mean the CLI can no longer spend the subscription.
+      expect(fs.existsSync(sessionToken)).toBe(false);
+      // The conversation is not collateral damage — reconnecting resumes it.
+      expect(fs.existsSync(resume)).toBe(true);
+      // The pin is left in place on purpose — the preflight re-routes it.
+      expect(sessionManager.get("signout-2")?.providerRouteId).toBe("acct_gone");
+    });
+
+    // docs/150 req 19 — the route used to drop the account rows and clear only
+    // the singleton path, which on a migrated install aliased the *first*
+    // account. Every account connected after that kept live OAuth tokens on
+    // disk, with its row deleted so nothing in the UI could reach them.
+    it("erases the on-disk credentials of every connected account, not just the first", async () => {
+      const now = Date.now();
+      const accountDirs = ["claude-default", "acct_work"].map((id, index) => {
+        credentialStore.upsertProviderAccount({
+          id, provider: "claude", label: id, isPrimary: index === 0,
+          priority: index, status: "ready", createdAt: now, updatedAt: now,
+        });
+        const dir = path.join(tmpDir, "provider-accounts", "claude", id, ".claude");
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, ".credentials.json"), '{"accessToken":"live"}');
+        return path.join(tmpDir, "provider-accounts", "claude", id);
+      });
+
+      expect((await app.inject({ method: "DELETE", url: "/api/auth/api-key" })).statusCode).toBe(200);
+
+      expect(credentialStore.listProviderAccounts("claude")).toEqual([]);
+      for (const dir of accountDirs) {
+        expect(fs.existsSync(dir)).toBe(false);
+      }
     });
   });
 

@@ -1,4 +1,5 @@
-import { useState, useMemo, useCallback, useRef } from "react";
+// eslint-disable-next-line no-restricted-imports -- useEffect: mirror the transient "composing" flag out to the review store
+import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import { parseFrontmatter } from "../../utils/markdown-frontmatter.js";
 import { FrontmatterHeader } from "./FrontmatterHeader.js";
 import { MarkdownBlock } from "./MarkdownBlock.js";
@@ -31,6 +32,14 @@ export interface MarkdownSelectionCommentsProps {
    * mutate them. Used by `FilePreviewModal` in agent-review snapshot mode.
    */
   readOnly?: boolean;
+  /**
+   * Fires whenever an unsaved comment editor opens or closes — the
+   * add-comment input, or an in-place edit of an existing comment. The review
+   * surface uses it to disable "Send comments" so a half-typed comment can't
+   * be dropped by an accidental submit. Always fires `false` on unmount, so a
+   * viewer closed mid-compose can't strand the flag.
+   */
+  onComposingChange?: (composing: boolean) => void;
 }
 
 export function MarkdownSelectionComments({
@@ -40,9 +49,40 @@ export function MarkdownSelectionComments({
   onEditComment,
   onDeleteComment,
   readOnly = false,
+  onComposingChange,
 }: MarkdownSelectionCommentsProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [pendingSelection, setPendingSelection] = useState<PendingSelection | null>(null);
+  // Ids of comments currently open in their in-place edit form. A Set (rather
+  // than a single id) because nothing stops the user opening two cards.
+  const [editingIds, setEditingIds] = useState<ReadonlySet<string>>(() => new Set());
+
+  const composing = pendingSelection !== null || editingIds.size > 0;
+
+  // Keep the callback in a ref so the sync effect below depends only on
+  // `composing` — a parent re-creating the handler must not re-fire it.
+  const onComposingChangeRef = useRef(onComposingChange);
+  onComposingChangeRef.current = onComposingChange;
+
+  // Mirror the open-editor state out to the review surface. The cleanup is what
+  // makes "close the viewer mid-compose" safe: it clears the flag on unmount as
+  // well as on the transition back to idle.
+  // eslint-disable-next-line no-restricted-syntax -- external sync: transient composing state → review store, with unmount cleanup
+  useEffect(() => {
+    onComposingChangeRef.current?.(composing);
+    if (!composing) return;
+    return () => onComposingChangeRef.current?.(false);
+  }, [composing]);
+
+  const handleEditingChange = useCallback((commentId: string, editing: boolean) => {
+    setEditingIds((prev) => {
+      if (prev.has(commentId) === editing) return prev;
+      const next = new Set(prev);
+      if (editing) next.add(commentId);
+      else next.delete(commentId);
+      return next;
+    });
+  }, []);
 
   const fm = useMemo(() => parseFrontmatter(content), [content]);
   const blocks = useMemo(() => splitIntoTopLevelBlocks(fm.body), [fm.body]);
@@ -110,6 +150,7 @@ export function MarkdownSelectionComments({
                 showQuote
                 onEdit={onEditComment}
                 onDelete={onDeleteComment}
+                onEditingChange={handleEditingChange}
                 readOnly={readOnly}
               />
             ))}
@@ -133,6 +174,7 @@ export function MarkdownSelectionComments({
               showQuote
               onEdit={onEditComment}
               onDelete={onDeleteComment}
+              onEditingChange={handleEditingChange}
               readOnly={readOnly}
             />
           ))}

@@ -9,6 +9,7 @@ import {
   chownWorkspaceGitToSessionWorker,
   chownWorktreeToSessionWorker,
   handWorkspaceBackToWorker,
+  reconcileDepDirCacheOwnership,
 } from "./session-worker-uid.js";
 
 describe("session-worker-uid (docs/150 §7)", () => {
@@ -122,6 +123,62 @@ describe("session-worker-uid (docs/150 §7)", () => {
         // Rewritten/appended metadata: chowned.
         expect(chowned.has(path.join(gitDir, "index"))).toBe(true);
         expect(chowned.has(path.join(gitDir, "logs", "HEAD"))).toBe(true);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("chownWorkspaceGitToSessionWorker skips LFS object files but chowns their fanout dirs", () => {
+      const myUid = process.getuid?.();
+      if (myUid === undefined) return; // not POSIX — skip
+      process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
+      const gitDir = path.join(tmpDir, ".git");
+      // docs/232: LFS uses a TWO-level fanout, `<ab>/<cd>/<oid>`.
+      const lfsObjects = path.join(gitDir, "lfs", "objects");
+      const lfsObj = path.join(lfsObjects, "ab", "cd", "abcdef0123");
+      fs.mkdirSync(path.dirname(lfsObj), { recursive: true });
+      fs.writeFileSync(lfsObj, "asset-bytes");
+      // Non-object LFS metadata still gets chowned (it's rewritten in place).
+      fs.writeFileSync(path.join(gitDir, "lfs", "cache-meta"), "");
+
+      const spy = vi.spyOn(fs, "lchownSync");
+      try {
+        chownWorkspaceGitToSessionWorker(tmpDir);
+        const chowned = new Set(spy.mock.calls.map((c) => c[0] as string));
+        // The object file is a hardlink into the shared cache store — chowning it
+        // would hand that store to the session uid, since an inode has one owner
+        // across every link.
+        expect(chowned.has(lfsObj)).toBe(false);
+        // Every fanout dir IS chowned, at BOTH levels: a root-owned `ab/` would
+        // stop the worker creating a new `cd/` when it commits a new asset.
+        expect(chowned.has(lfsObjects)).toBe(true);
+        expect(chowned.has(path.join(lfsObjects, "ab"))).toBe(true);
+        expect(chowned.has(path.join(lfsObjects, "ab", "cd"))).toBe(true);
+        // Ordinary `.git/lfs` metadata is unaffected by the object-store branch.
+        expect(chowned.has(path.join(gitDir, "lfs", "cache-meta"))).toBe(true);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("chownWorkspaceGitToSessionWorker leaves a hardlinked LFS object owned as-is", () => {
+      const myUid = process.getuid?.();
+      if (myUid === undefined) return; // not POSIX — skip
+      process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
+      // The end-to-end property docs/232 depends on: a cache object hardlinked
+      // into a clone must not have its ownership rewritten by the handback.
+      const cacheObj = path.join(tmpDir, "cache", "lfs", "objects", "ab", "cd", "oid1");
+      fs.mkdirSync(path.dirname(cacheObj), { recursive: true });
+      fs.writeFileSync(cacheObj, "shared");
+      const cloneObj = path.join(tmpDir, ".git", "lfs", "objects", "ab", "cd", "oid1");
+      fs.mkdirSync(path.dirname(cloneObj), { recursive: true });
+      fs.linkSync(cacheObj, cloneObj);
+      expect(fs.statSync(cloneObj).ino).toBe(fs.statSync(cacheObj).ino);
+
+      const spy = vi.spyOn(fs, "lchownSync");
+      try {
+        chownWorkspaceGitToSessionWorker(tmpDir);
+        expect(new Set(spy.mock.calls.map((c) => c[0] as string)).has(cloneObj)).toBe(false);
       } finally {
         spy.mockRestore();
       }
@@ -284,6 +341,89 @@ describe("session-worker-uid (docs/150 §7)", () => {
         expect(() => chownTreeToSessionWorker(tmpDir)).not.toThrow();
       } finally {
         fs.rmSync(outside, { recursive: true, force: true });
+      }
+    });
+  });
+
+  // #1666 — bounded dep-dir cache reconciliation. Repairs root-owned tool caches
+  // (e.g. `node_modules/.vite`) the worktree handback's dep-dir exclusion skips.
+  describe("reconcileDepDirCacheOwnership", () => {
+    // Build a node_modules with an installed package and a `.vite` cache subtree.
+    function seedNodeModules(): { nm: string; pkgFile: string; viteFile: string } {
+      const nm = path.join(tmpDir, "node_modules");
+      const pkgFile = path.join(nm, "left-pad", "index.js");
+      const viteFile = path.join(nm, ".vite", "deps", "chunk.js");
+      fs.mkdirSync(path.dirname(pkgFile), { recursive: true });
+      fs.mkdirSync(path.dirname(viteFile), { recursive: true });
+      fs.writeFileSync(pkgFile, "module.exports = 1;");
+      fs.writeFileSync(viteFile, "//");
+      return { nm, pkgFile, viteFile };
+    }
+
+    it("is a no-op when SHIPIT_SESSION_WORKER_UID is unset", () => {
+      delete process.env.SHIPIT_SESSION_WORKER_UID;
+      const { nm } = seedNodeModules();
+      const spy = vi.spyOn(fs, "lchownSync");
+      try {
+        reconcileDepDirCacheOwnership(nm);
+        expect(spy).not.toHaveBeenCalled();
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("never throws on a missing dep dir (no install yet)", () => {
+      process.env.SHIPIT_SESSION_WORKER_UID = String(process.getuid?.() ?? 0);
+      const spy = vi.spyOn(fs, "lchownSync");
+      try {
+        expect(() => reconcileDepDirCacheOwnership(path.join(tmpDir, "node_modules"))).not.toThrow();
+        expect(spy).not.toHaveBeenCalled();
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    // Common case: everything already worker-owned → a shallow scan that chowns
+    // nothing (the steady-state cost is just the direct-child lstats).
+    it("skips children already owned by the worker uid (zero chowns)", () => {
+      const myUid = process.getuid?.();
+      if (myUid === undefined) return; // not POSIX — skip
+      process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
+      const { nm } = seedNodeModules();
+      const spy = vi.spyOn(fs, "lchownSync");
+      try {
+        reconcileDepDirCacheOwnership(nm);
+        expect(spy).not.toHaveBeenCalled();
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    // Leak case: a direct child not owned by the worker is chowned wholesale,
+    // recursing into its subtree (so `.vite/deps/chunk.js` is repaired too).
+    it("recursively chowns a direct child not owned by the worker uid", () => {
+      const myUid = process.getuid?.();
+      if (myUid === undefined) return; // not POSIX — skip
+      // A uid we don't own → every real file lstats as "not worker-owned", so the
+      // reconcile treats each direct child as a leaked tree and walks it. The
+      // chown itself EPERMs (we lack CAP_CHOWN) and is swallowed; the spy records
+      // the attempted paths, proving the bounded recursion.
+      process.env.SHIPIT_SESSION_WORKER_UID = String(myUid + 1);
+      const { nm, pkgFile, viteFile } = seedNodeModules();
+      const spy = vi.spyOn(fs, "lchownSync");
+      try {
+        reconcileDepDirCacheOwnership(nm);
+        const chowned = new Set(spy.mock.calls.map((c) => c[0] as string));
+        // Direct children of node_modules are reconciled...
+        expect(chowned.has(path.join(nm, ".vite"))).toBe(true);
+        expect(chowned.has(path.join(nm, "left-pad"))).toBe(true);
+        // ...recursively, so nested cache files are repaired too.
+        expect(chowned.has(viteFile)).toBe(true);
+        expect(chowned.has(pkgFile)).toBe(true);
+        // node_modules itself is NOT chowned — only its children (bounded scan).
+        expect(chowned.has(nm)).toBe(false);
+      } finally {
+        spy.mockRestore();
       }
     });
   });

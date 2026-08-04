@@ -236,12 +236,23 @@ describe("usePreviewErrors", () => {
     expect(result.current.errors).toHaveLength(0);
   });
 
-  it("cleans up listener on unmount", async () => {
+  it("cleans up listener on unmount (removes the same reference it added)", async () => {
+    const addSpy = vi.spyOn(window, "addEventListener");
+    const removeSpy = vi.spyOn(window, "removeEventListener");
     const { unmount } = renderHook(() => usePreviewErrors());
-    const spy = vi.spyOn(window, "removeEventListener");
+
+    const addedMessageCall = addSpy.mock.calls.find((c) => c[0] === "message");
+    expect(addedMessageCall).toBeDefined();
+
     unmount();
-    expect(spy).toHaveBeenCalledWith("message", expect.any(Function));
-    spy.mockRestore();
+
+    const removedMessageCall = removeSpy.mock.calls.find((c) => c[0] === "message");
+    expect(removedMessageCall).toBeDefined();
+    // The migration to useEventListener must remove the exact listener it added.
+    expect(removedMessageCall![1]).toBe(addedMessageCall![1]);
+
+    addSpy.mockRestore();
+    removeSpy.mockRestore();
   });
 
   it("store.reset() clears errors (session switch)", async () => {

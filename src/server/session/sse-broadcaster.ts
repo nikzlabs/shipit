@@ -169,6 +169,16 @@ export class SseBroadcaster {
     return this.nextSeq - 1;
   }
 
+  /**
+   * Oldest seq still replayable from the ring buffer (0 when empty). docs/240 —
+   * `/agent/status` publishes it so an orchestrator adopting a turn that was in
+   * flight across its restart can tell a COMPLETE replay of that turn from a
+   * partial one (the buffer having evicted the turn's early events).
+   */
+  get oldestSeq(): number {
+    return this.buffer[0]?.seq ?? 0;
+  }
+
   /** Current number of buffered events. For diagnostics/tests. */
   get bufferSize(): number {
     return this.buffer.length;

@@ -21,7 +21,6 @@ function makeAccount(id: string, overrides: Partial<ProviderAccount> = {}): Prov
     label: id,
     isPrimary: true,
     status: "ready",
-    plan: "plus",
     createdAt: 0,
     updatedAt: 0,
     ...overrides,
@@ -274,9 +273,12 @@ describe("CodexOAuthRefresher", () => {
     await rig.refresher.refreshNow("codex-default");
     expect(result!.outcome).toBe("revoked");
     expect(rig.sseCalls.filter((c) => c.event === "codex_account_unauthenticated")).toHaveLength(1);
+    // docs/150 req 19 — must name the revoked account. The client drops an
+    // `agent_auth_failed` with no `accountId` (there is no provider-wide slot
+    // left), so without this the revoked row would keep reading "ready".
     expect(rig.sseCalls).toContainEqual({
       event: "agent_auth_failed",
-      data: { agentId: "codex", reason: "revoked" },
+      data: { agentId: "codex", accountId: "codex-default", reason: "revoked" },
     });
   });
 

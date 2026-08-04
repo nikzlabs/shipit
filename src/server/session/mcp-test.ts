@@ -13,6 +13,7 @@
 import { spawn } from "node:child_process";
 import type { McpServerConfig, McpTestResult, McpTool } from "../shared/types/mcp-types.js";
 import { getErrorMessage } from "../shared/utils.js";
+import { killChild } from "../shared/kill-child.js";
 
 const TEST_TIMEOUT_MS = 30_000;
 const PROTOCOL_VERSION = "2025-06-18";
@@ -73,7 +74,7 @@ function testStdioServer(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      try { proc.kill("SIGKILL"); } catch { /* already gone */ }
+      killChild(proc, "SIGKILL");
       action();
     }
 

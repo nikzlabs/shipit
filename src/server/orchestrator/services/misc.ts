@@ -91,6 +91,12 @@ export async function getBootstrapData(deps: {
         gitIdentity: { name: "", email: "" },
         systemPrompt: "",
         agents: listAgents(deps.agentRegistry),
+        // docs/150 — an empty map is honest here: this is the "settings could
+        // not be read" fallback, and the client renders the per-provider rows
+        // from whatever it gets rather than inventing cutoffs of its own.
+        failoverCutoffs: {},
+        // req 21 — same reasoning: no invented modes in the fallback shape.
+        accountSelectionMode: {},
         maxIdleContainers: deps.credentialStore?.getMaxIdleContainers() ?? 5,
         agentSystemInstructionsEnabled: true,
         agentSystemInstructions: "",

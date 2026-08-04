@@ -15,11 +15,18 @@ import type {
   SessionContainerManagerEvents,
 } from "./session-container.js";
 import {
+  CONTAINER_BUILD_ID_LABEL,
   CONTAINER_SESSION_ID_LABEL,
 } from "./session-container.js";
 import { CONTAINER_WORKSPACE_DIR } from "../shared/fs-constants.js";
+import {
+  CONTAINER_SESSION_STATE_DIR,
+  sessionStateDirForWorkspace,
+  sessionSharedStateDir,
+} from "./session-state-dir.js";
 import { agentHome } from "../shared/agent-home.js";
 import type { HostMount } from "../shared/shipit-config.js";
+import { DEFAULT_DEP_DIRS, resolveShipitConfig } from "../shared/shipit-config.js";
 import {
   ensureSessionCredentialsScaffold,
   perSessionCredentialsDir,
@@ -27,7 +34,11 @@ import {
 } from "./session-credentials.js";
 import { createOverlayVolume, removeOverlayVolume } from "./overlay-volume.js";
 import { preStampInstallMarker, type DepDirOverlaySpec } from "./overlay-session.js";
-import { chownToSessionWorker, handWorkspaceBackToWorker } from "./session-worker-uid.js";
+import {
+  chownToSessionWorker,
+  handWorkspaceBackToWorker,
+  reconcileDepDirCacheOwnership,
+} from "./session-worker-uid.js";
 import { buildTierAEgressInputs, installEgressFirewall } from "./egress-firewall-install.js";
 import {
   buildResolverConfigB64,
@@ -178,6 +189,17 @@ export const DEP_CACHE_CONTAINER_PATH = "/dep-cache";
 export const PLAYWRIGHT_BROWSERS_PATH = "/opt/playwright-browsers";
 
 /**
+ * docs/213 — baked Android toolchain paths. The session-worker image installs
+ * the Android SDK and a JDK at these locations (a stable /opt/java symlink keeps
+ * JAVA_HOME arch-independent). Like PLAYWRIGHT_BROWSERS_PATH, they're set as ENV
+ * in the image AND mirrored at the launch boundary (buildEnv) so they're explicit
+ * even if the image ENV drifts. The toolchain is ambient — present in every
+ * session — so any Android/Gradle repo builds with no per-repo configuration.
+ */
+export const ANDROID_SDK_ROOT = "/opt/android-sdk";
+export const JAVA_HOME = "/opt/java";
+
+/**
  * docs/198 — container-internal mount point for the shared per-runtime pnpm
  * store. It must be **pnpm's own relocation target**, not an arbitrary path:
  * pnpm 11 ignores `npm_config_store_dir` (and `pnpm config set store-dir`) and,
@@ -207,9 +229,9 @@ export function buildMounts(
   const binds: string[] = [];
   const mounts: MountSpec["mounts"] = [];
   const workspaceDir = CONTAINER_WORKSPACE_DIR;
-  // config.workspaceDir is the git repo directory (session.workspaceDir).
-  // It may be the same as sessionDir (legacy) or a subdirectory (new layout).
-  const hostWorkspaceDir = config.workspaceDir ?? config.sessionDir;
+  // config.workspaceDir is the git repo directory (session.workspaceDir),
+  // always `<sessionDir>/workspace`.
+  const hostWorkspaceDir = config.workspaceDir;
 
   // The workspace mount is ALWAYS the normal host clone (source + `.git`,
   // authoritative). docs/183 dep-dir design: even for overlay sessions
@@ -290,6 +312,30 @@ export function buildMounts(
     } else {
       binds.push(`${config.scratchDir}:/persist:rw`);
     }
+  }
+
+  // docs/246 — Mount ShipIt's own per-session state dir at /session-state
+  // **read-write**. This is what keeps ShipIt's generated artifacts out of the
+  // user's git clone: the install marker is written here by the worker after
+  // `agent.install`, and the agent reads fetched CI logs from here during a CI
+  // fix. Both used to live in `<clone>/.shipit/`, where the post-turn
+  // `git add -A` staged them into the user's repository.
+  //
+  // Not everything in the state dir is exposed by this mount being present —
+  // the compose override and `.env.agent` are orchestrator-only and simply
+  // aren't read from inside the container. Worker-UID ownership comes from the
+  // entrypoint chown loop, same as /persist.
+  if (workspaceVolume) {
+    const stateRelPath = sessionSharedStateDir(config.sessionStateDir).replace(/^\/workspace\//, "");
+    mounts.push({
+      Type: "volume",
+      Source: workspaceVolume,
+      Target: CONTAINER_SESSION_STATE_DIR,
+      ReadOnly: false,
+      VolumeOptions: { Subpath: stateRelPath },
+    });
+  } else {
+    binds.push(`${sessionSharedStateDir(config.sessionStateDir)}:${CONTAINER_SESSION_STATE_DIR}:rw`);
   }
 
   // Mount the per-repo dependency cache so npm/yarn/pnpm share downloaded
@@ -384,6 +430,11 @@ export function buildEnv(
   const env: string[] = [
     `SESSION_ID=${config.sessionId}`,
     `WORKSPACE_DIR=${workspaceDir}`,
+    // docs/246 — where the worker writes the install marker: the mounted slice
+    // of the session's state dir, never a path inside the clone. Every session
+    // gets the mount (SHI-286 removed the un-mountable flat layout), so this is
+    // unconditional and the worker can rely on the directory existing.
+    `SHIPIT_SESSION_STATE_DIR=${CONTAINER_SESSION_STATE_DIR}`,
     `WORKER_PORT=${workerPort}`,
     "WORKER_MODE=session",
     // docs/150 — the worker drops to the unprivileged `shipit` user whose home
@@ -399,6 +450,12 @@ export function buildEnv(
     // image sets this ENV too; mirror it here so it's explicit at the launch
     // boundary and survives an image whose ENV drifts.
     `PLAYWRIGHT_BROWSERS_PATH=${PLAYWRIGHT_BROWSERS_PATH}`,
+    // docs/213 — baked, ambient Android toolchain. Mirrored here like the
+    // Playwright path so any Android/Gradle repo builds with no per-repo setup.
+    // ANDROID_HOME is the legacy alias some tools still read; keep both.
+    `ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}`,
+    `ANDROID_HOME=${ANDROID_SDK_ROOT}`,
+    `JAVA_HOME=${JAVA_HOME}`,
     // Point git inside the container at the same global config the orchestrator
     // uses. The credentials directory is mounted at /credentials, and the
     // orchestrator writes user.name/user.email there via initGlobalGitConfig().
@@ -587,26 +644,60 @@ export function prepareOverlayDirs(specs: DepDirOverlaySpec[] | undefined): void
  * `node_modules` overlay) — and idempotent (an already-worker-owned tree costs a
  * no-op `lchown` per node), so the steady-state cost is negligible.
  *
+ * The dep-dir exclusion above left one gap (#1666): a root process that wrote a
+ * tool cache *inside* a dep dir — a Compose dev server's `node_modules/.vite`
+ * before #1646 ran services as the worker uid — leaves a root-owned subtree the
+ * worktree handback never repairs, and the next `npm run build` EACCESes trying
+ * to `rmdir` it (no `sudo` to recover). So we *also* run a **bounded** dep-dir
+ * reconciliation here ({@link reconcileDepDirCacheOwnership}): it only `lstat`s
+ * the direct children of each per-session dep-dir layer and chowns the rare
+ * non-worker-owned cache tree, never re-walking the whole `node_modules` or the
+ * shared overlay lowerdir. For an overlay session the per-session writable layer
+ * is each spec's `upperdir` (where a copied-up/new `.vite` lands); otherwise it's
+ * `workspaceDir/<depDir>`.
+ *
  * Gated twice:
- *  - `handWorkspaceBackToWorker` is a no-op when `SHIPIT_SESSION_WORKER_UID` is
- *    unset (legacy root runtime — byte-for-byte unchanged); and
+ *  - the chown helpers are a no-op when `SHIPIT_SESSION_WORKER_UID` is unset
+ *    (legacy root runtime — byte-for-byte unchanged); and
  *  - we skip entirely in dev/dogfood bind-mount mode (no `workspaceVolume`),
  *    where `/workspace` is the developer's host source tree and a recursive
  *    chown would rewrite host ownership (docs/150 §2/§9, mirrors the entrypoint's
  *    `SHIPIT_SKIP_WORKSPACE_CHOWN`).
  *
- * Exported + the chown injectable so the gating is unit-testable without root.
+ * Exported + the chown fns injectable so the gating is unit-testable without root.
  */
 export function selfHealWorkspaceOwnership(
-  config: Pick<ContainerConfig, "workspaceDir">,
+  config: Pick<ContainerConfig, "workspaceDir" | "overlaySpecs">,
   workspaceVolume: string | undefined,
   handBack: (workspaceDir: string) => void = handWorkspaceBackToWorker,
+  reconcileDepDir: (depDirPath: string) => void = reconcileDepDirCacheOwnership,
 ): void {
   // Dev/dogfood bind mount — never chown the host source tree.
   if (!workspaceVolume) return;
   const workspaceDir = config.workspaceDir;
-  if (!workspaceDir) return;
   handBack(workspaceDir);
+
+  // #1666 — repair root-owned tool caches the handback's dep-dir exclusion skips.
+  const overlaySpecs = config.overlaySpecs;
+  if (overlaySpecs && overlaySpecs.length > 0) {
+    // Overlay session: reconcile each per-session upperdir (the writable layer
+    // where a root-leaked `node_modules/.vite` copy-up/new dir lands). Never the
+    // shared lowerdir.
+    for (const spec of overlaySpecs) {
+      if (spec.orchDirs) reconcileDepDir(spec.orchDirs.upperdir);
+    }
+  } else {
+    // Non-overlay session: the dep dir is a plain subtree of the workspace.
+    let depDirs: string[];
+    try {
+      depDirs = resolveShipitConfig(workspaceDir).agent.depDirs;
+    } catch {
+      depDirs = [...DEFAULT_DEP_DIRS];
+    }
+    for (const depDir of depDirs) {
+      reconcileDepDir(path.join(workspaceDir, depDir));
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -632,6 +723,15 @@ export async function createContainer(
   if (config.scratchDir) {
     fs.mkdirSync(config.scratchDir, { recursive: true });
   }
+
+  // docs/246 — same for ShipIt's per-session state dir. Created here as well as
+  // in `createSessionDirFactory` because a session whose dir predates the state
+  // dir (or a warm clone claimed into place) must still get one before the
+  // mount resolves.
+  fs.mkdirSync(config.sessionStateDir, { recursive: true });
+  // The mounted slice must exist before the mount resolves, or Docker creates
+  // it root-owned and the entrypoint chown races the worker's first write.
+  fs.mkdirSync(sessionSharedStateDir(config.sessionStateDir), { recursive: true });
 
   // Ensure the dep cache directory exists on the host before mounting.
   if (config.depCacheDir) {
@@ -889,6 +989,7 @@ export async function createContainer(
 
     // Get the container's IP on the bridge network
     const info = await container.inspect();
+    sc.workerBuildId = info.Config?.Labels?.[CONTAINER_BUILD_ID_LABEL] || undefined;
     const networks = info.NetworkSettings.Networks;
     const networkInfo = networks[deps.networkName];
     if (!networkInfo?.IPAddress) {
@@ -1029,9 +1130,11 @@ export async function createContainer(
     // lowerdir is pinned, so the generation check is race-correct) and before
     // the caller resolves the runner's worker URL (so /install can't race the
     // write). Best-effort: any failure just means a real install runs.
-    if (config.overlaySpecs && config.overlaySpecs.length > 0 && deps.stateDir && config.workspaceDir) {
+    if (config.overlaySpecs && config.overlaySpecs.length > 0 && deps.stateDir) {
       try {
         const stamped = await preStampInstallMarker({
+          // The ORCHESTRATOR's state dir (overlay base pointers). The session
+          // state dir the marker goes in is resolved from the clone path.
           stateDir: deps.stateDir,
           workspaceDir: config.workspaceDir,
           specs: config.overlaySpecs,
@@ -1144,8 +1247,14 @@ export async function cleanupSessionDockerResources(
         await container.remove({ force: true });
       } catch (err) {
         const code = err && typeof err === "object" && "statusCode" in err ? (err as { statusCode: number }).statusCode : 0;
-        // 304 = container already stopped, 409 = removal already in progress — safe to ignore
-        if (code !== 304 && code !== 409) {
+        // 304 = already stopped, 409 = removal already in progress, 404 = already
+        // gone — all safe to ignore, they're the outcome we wanted.
+        //
+        // 404 is now *routine*, not exceptional (SHI-222): every orchestrator
+        // teardown stops the agent container, which fires a Docker `die`, which
+        // fires the crash-site egress reap — so the reaper and this sweep race for
+        // the same two sidecars on every healthy destroy. Whoever loses sees a 404.
+        if (code !== 304 && code !== 409 && code !== 404) {
           console.warn(`[containers] Failed to clean up child container ${ci.Id.slice(0, 12)} for session ${sessionId}:`, err);
         }
       }
@@ -1196,6 +1305,7 @@ export async function cleanupSessionDockerResources(
 export async function destroyContainer(
   deps: LifecycleDeps,
   sessionId: string,
+  opts: { preserveChildResources?: boolean } = {},
 ): Promise<void> {
   // Diagnostic: emit a stack trace at every destroy entry. Field reports
   // show session containers receiving SIGTERM with exit 0 (consistent
@@ -1227,8 +1337,12 @@ export async function destroyContainer(
     // Container may already be gone
   }
 
-  // Clean up Docker resources created through the proxy (after session is stopped)
-  await cleanupSessionDockerResources(deps.docker, sessionId);
+  // A full session-container teardown owns its proxy/Compose children. The
+  // agent-only restart path deliberately leaves those resources alive so a
+  // worker refresh does not interrupt the user's preview stack.
+  if (!opts.preserveChildResources) {
+    await cleanupSessionDockerResources(deps.docker, sessionId);
+  }
 
   // Remove the session container
   try {
@@ -1267,7 +1381,7 @@ export function buildContainerConfig(
   opts: {
     sessionId: string;
     sessionDir: string;
-    workspaceDir?: string;
+    workspaceDir: string;
     credentialsDir: string;
     depCacheDir?: string;
     /** docs/197 Part 2 — shared per-runtime pnpm store host dir; absent for non-pnpm / flag-off sessions. */
@@ -1297,6 +1411,18 @@ export function buildContainerConfig(
     pnpmStoreDir: opts.pnpmStoreDir,
     uploadsDir: opts.uploadsDir ?? path.join(opts.sessionDir, "uploads"),
     scratchDir: opts.scratchDir ?? path.join(opts.sessionDir, "scratch"),
+    // docs/246 — ALWAYS resolved from the clone path via the one contract the
+    // host-side callers share, so the mount and every host writer agree on where
+    // this session's state lives. Throws for a clone that isn't
+    // `<sessionDir>/workspace`.
+    //
+    // Deliberately NOT overridable (SHI-286). It used to accept an explicit
+    // `sessionStateDir`, which no production caller ever passed and which the
+    // overlay pre-stamp would now ignore: `preStampInstallMarker` derives the
+    // marker's home from the clone path, so an override would mount
+    // `<custom>/shared` while the pre-stamp wrote `<sessionDir>/state/shared` —
+    // an unreadable marker and a full `agent.install` on every base hit.
+    sessionStateDir: sessionStateDirForWorkspace(opts.workspaceDir),
     imageName: deps.imageName,
     memoryLimit: opts.memoryLimit ?? deps.defaultMemoryLimit,
     cpuQuota: opts.cpuQuota ?? deps.defaultCpuQuota,

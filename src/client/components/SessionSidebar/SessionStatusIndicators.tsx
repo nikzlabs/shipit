@@ -2,14 +2,23 @@ import { CloudArrowDownIcon, GitMergeIcon, HardDrivesIcon, CheckCircleIcon, XCir
 import { AUTO_MERGE_ICON_CLASS, ICON_SIZE } from "../../design-tokens.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import { usePrStore } from "../../stores/pr-store.js";
+import { useCiDisplay } from "../../hooks/useCiDisplay.js";
 import type { SessionInfo } from "../../../server/shared/types.js";
 
 /** Consolidated status dot replacing separate AgentDot + CiDot. */
 export function SessionStatusDot({ sessionId }: { sessionId: string }) {
   const card = usePrStore((s) => s.cardBySession[sessionId]);
-  const isAgentRunning = useSessionStore((s) => s.activeRunnerSessions.has(sessionId));
+  // docs/235 — background work counts as "working" here. From the sidebar's
+  // altitude the useful fact is binary — this session is busy, don't read it as
+  // done — and the existing green dot already says exactly that. A second glyph
+  // would introduce a distinction in the surface least able to explain it; the
+  // nuance (thinking vs. waiting on a task) belongs in the chat status bar,
+  // where there is room for words.
+  const isAgentRunning = useSessionStore(
+    (s) => s.activeRunnerSessions.has(sessionId) || s.backgroundTaskSessions.has(sessionId),
+  );
 
-  const checks = card?.checks;
+  const ci = useCiDisplay(card?.checks);
   const autoFix = card?.autoFix;
 
   // Priority 1: Auto-fix running (a specific form of agent activity)
@@ -25,21 +34,24 @@ export function SessionStatusDot({ sessionId }: { sessionId: string }) {
   }
 
   // Priority 3: CI failed (auto-fix not running and agent idle, both checked above)
-  if (checks?.state === "failure") {
-    return <span className="shrink-0 text-(--color-error) flex" title={`CI failed ${checks.failed} of ${checks.total}`}><XCircleIcon size={ICON_SIZE.XS} /></span>;
+  if (ci.kind === "failure") {
+    return <span className="shrink-0 text-(--color-error) flex" title={`CI failed ${ci.failed} of ${ci.total}`}><XCircleIcon size={ICON_SIZE.XS} /></span>;
   }
 
-  // Priority 4: CI pending
-  if (checks?.state === "pending") {
-    return <span className="shrink-0 text-(--color-warning) flex" title={`CI running ${checks.passed}/${checks.total}`}><CircleNotchIcon size={ICON_SIZE.XS} className="animate-spin" /></span>;
+  // Priority 4: CI pending. Routed through `useCiDisplay` so an expired grace
+  // override doesn't leave a permanent spinner in the sidebar either.
+  if (ci.kind === "pending") {
+    return <span className="shrink-0 text-(--color-warning) flex" title={`CI running ${ci.passed}/${ci.total}`}><CircleNotchIcon size={ICON_SIZE.XS} className="animate-spin" /></span>;
   }
 
   // Priority 5: CI passed
-  if (checks?.state === "success") {
-    return <span className="shrink-0 text-(--color-success) flex" title={`CI passed ${checks.total}/${checks.total}`}><CheckCircleIcon size={ICON_SIZE.XS} /></span>;
+  if (ci.kind === "success") {
+    return <span className="shrink-0 text-(--color-success) flex" title={`CI passed ${ci.total}/${ci.total}`}><CheckCircleIcon size={ICON_SIZE.XS} /></span>;
   }
 
-  // Priority 6: idle / no data
+  // Priority 6: idle / no data / no CI configured. A dot per no-CI session
+  // would be noise on every row of a repo without PR workflows — the fact is
+  // reported once, on the PR card, where it's actionable.
   return null;
 }
 

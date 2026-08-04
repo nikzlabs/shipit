@@ -6,6 +6,12 @@ import type { SubscriptionLimitsMap } from "../usage-limits-types.js";
 export interface WsError {
   type: "error";
   message: string;
+  /** Stable machine-readable code for actionable transport errors. */
+  code?: string;
+  /** Authoritative owning session when the error is session-scoped. */
+  sessionId?: string;
+  /** Correlates rejection with the client's optimistic user bubble. */
+  requestId?: string;
 }
 
 // ---- Global settings messages ----
@@ -41,6 +47,17 @@ export interface WsGlobalSettings {
   }[];
   /** When true, mid-turn messages steer the running agent. (docs/140) */
   liveSteering: boolean;
+  /**
+   * docs/150 reqs 4-6 — per-provider proactive failover cutoffs, keyed by agent
+   * id. Optional so an older orchestrator's payload still parses.
+   */
+  failoverCutoffs?: Record<string, { session: number; weekly: number }>;
+  /**
+   * docs/150 req 21 — per-provider account selection mode, keyed by agent id.
+   * Optional for the same reason as the cutoffs above: an older orchestrator's
+   * payload must still parse, and its absence means "strict".
+   */
+  accountSelectionMode?: Record<string, "strict" | "balanced">;
   /** docs/146 — global gate for the auto-resolve-conflicts loop. */
   autoResolveConflicts?: boolean;
   /** docs/169 — global gate for the auto-fix-CI loop. */

@@ -4,6 +4,7 @@ import type { SessionRunnerInterface } from "../session-runner.js";
 import { withWorkspaceLock } from "../services/marketplace.js";
 import { formatUnresolvedConflictNotice } from "../services/conflict-marker-notice.js";
 import { formatSecretScanNotice } from "../services/secret-scan-notice.js";
+import { evaluateMergedBranchPush, formatMergedPushNotice } from "../services/merged-push-guard.js";
 import { scanDiffForSecrets } from "../../shared/secret-scan.js";
 import { emitNoticePostTurn } from "../chat-card-persistence.js";
 import { chownWorkspaceGitToSessionWorker } from "../session-worker-uid.js";
@@ -64,6 +65,25 @@ export async function postTurnCommit(
   if (opts.sessionId && ctx.sessionManager.get(opts.sessionId)?.kind === "sandbox") {
     return null;
   }
+  // docs/128 — an ops session's workspace is a throwaway cockpit (the ops
+  // template's README + prompts, plus whatever the investigation writes). It
+  // has no remote, no branch lifecycle and no PR card, and the way it fixes a
+  // ShipIt bug is by spawning a `--shipit-source` session or filing an issue —
+  // never by pushing itself. So it COMMITS (the workspace is a real repo and
+  // the history is part of the incident log) but never auto-pushes.
+  //
+  // This is the second half of the ops-session push bug: `resolveGitHubRemote`
+  // is no longer able to hand this workspace an `origin` behind a `gh pr list`,
+  // and even if some other path does, the push never fires. Worth having both,
+  // because the failure mode is an ops session pushing its template commits at
+  // whatever repo it acquired, on branch `main` — that one was caught by
+  // unrelated histories, which is luck, not a guarantee.
+  //
+  // Only the debounced POST-TURN push is gated. An explicit agent-driven
+  // `gh pr create` still pushes through its own path, so a cwd-scoped clone
+  // inside an ops workspace is unaffected.
+  const isOpsSession =
+    !!opts.sessionId && ctx.sessionManager.get(opts.sessionId)?.kind === "ops";
   return withWorkspaceLock(opts.sessionDir, async () => {
     try {
       return await commitInLock();
@@ -77,6 +97,59 @@ export async function postTurnCommit(
       chownWorkspaceGitToSessionWorker(opts.sessionDir);
     }
   });
+
+  /**
+   * SHI-295 — the single auto-push site for this turn, gated on the merged-branch
+   * guard (`services/merged-push-guard.ts`, which carries the full rationale).
+   *
+   * A merged session's branch has no open pull request and, on most repos, no
+   * remote branch either — so the ordinary debounced push RECREATES it, stranding
+   * the commit as an orphan nobody reviews. The commit above still stands (work is
+   * never lost); only the silent push is refused, and only this one: an explicit
+   * `gh pr create` pushes through its own force-pushing path, exactly like the
+   * ops-session gate above.
+   *
+   * The refusal is loud by construction — it is the *silence* that made this a
+   * user-reported bug twice, so a blocked push always leaves a persisted notice.
+   */
+  async function pushUnlessMerged(
+    git: ReturnType<AppCtx["createGitManager"]>,
+    commitHash: string | null,
+  ): Promise<void> {
+    if (isOpsSession) return;
+    const sessionId = opts.sessionId;
+    const block = sessionId
+      ? await evaluateMergedBranchPush(
+          ctx.sessionManager.get(sessionId),
+          () => ctx.sessionManager.getPrStatus(sessionId),
+          git,
+        )
+      : null;
+    if (!block || !sessionId) {
+      ctx.scheduleAutoPush(git, opts.sessionId);
+      return;
+    }
+    console.warn(
+      `[merged-push-guard] auto-push refused for ${sessionId}: pull request `
+        + `${block.prNumber ? `#${block.prNumber}` : "(unknown)"} already merged and this commit `
+        + `${commitHash ? `(${commitHash.slice(0, 7)}) ` : ""}is stacked on the merged tip.`,
+    );
+    try {
+      emitNoticePostTurn(
+        opts.emit,
+        ctx.chatHistoryManager,
+        sessionId,
+        formatMergedPushNotice(block, commitHash),
+        "warn",
+      );
+    } catch (err) {
+      // The notice is the point, but it must not be able to fail the turn: this
+      // runs inside the post-turn commit, whose caller treats a throw as "the
+      // commit failed" and skips the PR flow. Losing the notice is bad; losing
+      // the PR card because the notice threw is worse.
+      console.error(`[merged-push-guard] notice failed for ${sessionId}:`, err);
+    }
+  }
 
   async function commitInLock(): Promise<string | null> {
     const git = ctx.createGitManager(opts.sessionDir);
@@ -144,7 +217,7 @@ export async function postTurnCommit(
             return null;
           }
         }
-        ctx.scheduleAutoPush(git, opts.sessionId);
+        await pushUnlessMerged(git, currentHeadHash);
       }
       return null;
     }
@@ -157,7 +230,7 @@ export async function postTurnCommit(
     // after explicit confirmation (the agent's `git push origin vX.Y.Z`, see
     // /shipit-docs/release.md). A published tag is outward-facing and effectively
     // irreversible, so it is never an automatic side-effect of a turn.
-    ctx.scheduleAutoPush(git, opts.sessionId);
+    await pushUnlessMerged(git, commitHash);
 
     if (opts.sessionId && parentHash) {
       // Stash the link info on the runner FIRST so the agent_result handler

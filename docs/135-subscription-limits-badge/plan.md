@@ -20,6 +20,11 @@ time-until-reset text inline next to that window (for example,
 `5h 96% resets in 2h` or `7d 94% resets in 3d`). Below that threshold,
 reset times stay in the tooltip so the header remains compact.
 
+Both the `5h` and `7d` blocks remain visible even when an upstream event
+temporarily omits one window; the missing block renders an explicit `—`
+instead of disappearing. Each block owns its window-specific tooltip so its
+percentage and reset time cannot be mistaken for the other quota.
+
 This pulls upstream rate-limit data — which today lives **only** behind a
 non-ShipIt surface (`claude /usage` in the Claude TUI, `codex /status` in
 the Codex TUI, or the chatgpt.com/codex web dashboard) — into ShipIt and
@@ -169,8 +174,13 @@ it draws its own `/status` line from:
     "secondary": { "usedPercent": 1, "windowDurationMins": 10080, "resetsAt": <epoch s> } } }
 ```
 
-`primary` (300 min) → the 5h session window, `secondary` (10080 min) →
-weekly. `CodexAdapter` captures the notification and emits an
+The adapter classifies each window by `windowDurationMins` (300 min → the 5h
+session window, 10080 min → weekly), not by its `primary` / `secondary`
+container. This matters for plans where Codex emits only a weekly window in
+`primary`; treating the container name as the quota identity mislabeled that
+weekly reset as a 5h reset. Payloads from older app-server versions that omit
+duration retain the legacy primary/session and secondary/weekly fallback.
+`CodexAdapter` captures the notification and emits an
 `agent_rate_limits` AgentEvent; it flows through the normal agent event
 stream (worker SSE → `ProxyAgentProcess` → `wireAgentListeners`), where
 the orchestrator calls the unified `recordAgentRateLimits("codex", …)`
@@ -180,6 +190,13 @@ the plan tier (read from the `chatgpt_plan_type` JWT claim via
 `CodexAuthManager.extractCodexPlan`, since the payload's `limitName` is
 null). `LimitsRegistry.markAuthRefreshed("codex")` immediately
 rebroadcasts so the pill updates within seconds.
+
+The normalized Codex window also carries `startedAt`, inferred from
+`resetsAt - windowDurationMins`. Because Codex's rolling `resetsAt` can move
+forward on each notification, `CodexLimitsProvider` preserves the first anchor
+until that observed window ends. The client uses this stable anchor for the
+time-progress marker; deriving the start from every fresh reset made the marker
+jump back to zero after each turn.
 
 The adapter also keeps the most recent pushed snapshot locally for error
 classification. Codex app-server has been observed returning the generic

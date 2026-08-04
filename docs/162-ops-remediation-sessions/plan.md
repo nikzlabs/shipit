@@ -1,4 +1,5 @@
 ---
+issue: https://linear.app/shipit-ai/issue/SHI-305
 description: Give Ops sessions read-only ShipIt source access for diagnosis, then spawn targeted repo-backed fix sessions that can open normal PRs.
 ---
 
@@ -222,6 +223,34 @@ parent can `view`, `wait`, and `message` the child using existing spawned
 session controls, but it cannot read the child's filesystem directly or push its
 branch.
 
+**Archiving the Ops session does not archive its fix sessions.** `archiveSession`
+normally cascades through a session's whole spawn brood (docs/117/201): a
+spawned cohort is one unit of work, so hiding the root hides the fan-out. An Ops
+session is not that shape. It is a long-lived per-host cockpit whose children are
+independent remediation sessions on the *ShipIt source repo*, each with its own
+branch and (usually) an open PR, spawned across unrelated incidents. Archiving
+the cockpit — routine after an incident, or to recreate it against a new host —
+says nothing about the fixes it started, so the cascade would force-dispose
+running agents and delete workspaces the operator still needs. `archiveSession`
+therefore skips the child loop when `session.kind === "ops"`.
+
+The child keeps its `parent_session_id` breadcrumb rather than being detached, so
+nothing is lost when the Ops session is unarchived. The consequences of a
+dangling-but-archived parent are already handled:
+
+- **Sidebar** — `SessionGroup.tsx` renders a session whose root isn't visible in
+  its repo group at top level (the orphan fallback), and a fix session is in the
+  ShipIt-source repo group anyway, not the Ops one.
+- **Merged-view cap** — the parent/child exemption keys off *live* roots, so an
+  archived Ops parent stops pinning its brood open and each fix session is capped
+  on its own merits.
+- **Merge watch** — `handleChildPrTerminal` already drops a watch whose parent is
+  archived, so a fix session whose Ops parent went away simply loses the
+  merge-notification wake-turn and keeps its work.
+
+The exemption is scoped to the Ops session itself: an ordinary session inside the
+brood still cascades to its own descendants when archived.
+
 ### Read-Only Access Without Write Access
 
 Some operators may be able to run or inspect ShipIt in an ORC-style deployment
@@ -416,12 +445,30 @@ PR base vs. deployed ref (mergeability):
 
 Quota:
 
-- Fix-session spawns get a lower per-turn cap than generic fan-out children:
+- Fix-session spawns get their own per-turn cap:
   `DEFAULT_MAX_SHIPIT_FIX_SESSIONS_PER_TURN` (env
-  `MAX_SHIPIT_FIX_SESSIONS_PER_TURN`, default 2), passed as
+  `MAX_SHIPIT_FIX_SESSIONS_PER_TURN`, default 6), passed as
   `maxSpawnedSessionsPerTurn` only when `shipitSource` is set. The per-parent cap
-  (16) still applies. Each fix child claims the ShipIt repo and opens a PR, so it
-  is heavier and higher-stakes than a research/codegen fan-out child.
+  (16) still applies. The cap smooths one turn's container burst — each fix child
+  claims the ShipIt repo, boots a container, and opens a PR. It is deliberately
+  *not* a containment boundary against a runaway agent: there is no spawn-depth
+  limit for sessions (docs/117 dropped grandchild quotas), so nested spawns
+  route around any per-turn number, and the per-parent cap (16) is evaded the
+  same way. Note that docs/117's "global container ceiling" does **not** exist —
+  `createContainerForRunner` gates only on the per-session OOM breaker, and
+  `idle-enforcer` reclaims only *idle* containers (it skips `agentBusy` runners
+  even under memory pressure). Since a spawned child is born busy, this cap is
+  load-bearing for simultaneity rather than a mere burst smoother. It was
+  raised from the original 2 because an Ops investigation is precisely the
+  workflow that legitimately produces several *independent* defects in one
+  pass — batching unrelated fixes into one PR, or splitting a diagnosis across
+  turns, is worse than the burst a lower cap prevents.
+- The generic per-turn cap (`DEFAULT_MAX_SPAWNED_SESSIONS_PER_TURN`) was raised
+  to 6 in the same change, so the two coincide today. They are **not** coupled
+  and should not be collapsed into one constant: they answer different
+  questions (generic = parallel width across slices of *one* task; Ops = how
+  many *independent* findings one investigation may ship, each as its own PR)
+  and carry separate env overrides. Expect them to diverge again.
 
 TOCTOU between inspection and spawn:
 

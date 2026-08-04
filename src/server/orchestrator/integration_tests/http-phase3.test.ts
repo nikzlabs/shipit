@@ -4,7 +4,6 @@ import os from "node:os";
 import path from "node:path";
 import { buildApp } from "../index.js";
 import { GitManager } from "../../shared/git.js";
-import { RepoGit } from "../repo-git.js";
 import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { AuthManager } from "../agents/claude/auth-manager.js";
@@ -16,6 +15,8 @@ import {
   StubGitHubAuthManager,
   FakeClaudeProcess,
   createTestDatabaseManager,
+  createTemplateRepoGitFactories,
+  pinGitToLocalTransports,
 } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
 import { GitHubAuthManager } from "../github-auth.js";
@@ -32,11 +33,16 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
   let stubAuthManager: StubAuthManager;
   let generateTextResult: string;
   let dbManager: DatabaseManager;
+  let restoreGitTransports: () => void;
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-http-phase3-"));
     generateTextResult = "## Summary\nTest PR description";
+
+    // `POST /api/repos` warms a session, and the warm pool fetches the
+    // workspace clone's origin for real against the fake github.com URL.
+    restoreGitTransports = pinGitToLocalTransports();
 
     sessionManager = new SessionManager(dbManager);
     githubAuthManager = new StubGitHubAuthManager();
@@ -46,19 +52,10 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
     chatHistoryManager = new ChatHistoryManager(dbManager);
     stubAuthManager = new StubAuthManager();
 
+    const { createGitManager, createRepoGit } = createTemplateRepoGitFactories();
     app = await buildApp({
-      createGitManager: (dir: string) => {
-        const gm = new GitManager(dir);
-        // Stub push so it doesn't attempt a real remote push
-        gm.push = async () => "pushed (stub)";
-        return gm;
-      },
-      createRepoGit: (dir: string) => {
-        const rg = new RepoGit(dir);
-        // Stub fetchCache to avoid network calls to fake GitHub URLs
-        rg.fetchCache = async () => {};
-        return rg;
-      },
+      createGitManager,
+      createRepoGit,
       sessionManager,
       authManager: stubAuthManager as unknown as AuthManager,
       githubAuthManager: githubAuthManager as unknown as GitHubAuthManager,
@@ -72,6 +69,7 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
   });
 
   afterEach(async () => {
+    restoreGitTransports();
     await app.close();
     dbManager.close();
     await new Promise((r) => setTimeout(r, 50));
@@ -261,6 +259,16 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
   // ---- POST /api/repos ----
 
   describe("POST /api/repos", () => {
+    // The only test in this file that drives the whole template-creation path,
+    // and the only one that needs a raised timeout. Network is out of the
+    // picture — `push` and `fetchCache` are stubbed in `beforeEach` (5809d53d)
+    // and `GIT_ALLOW_PROTOCOL=file` in `server-test-setup.ts` fails the origin
+    // fetch this path also makes, instantly. What remains is ~8 real git
+    // subprocesses (init, addRemote, autoCommit, cloneBare, setRemoteUrl) plus
+    // scaffolding and a session clone: ~700ms on an idle box, against a 5s
+    // default, on a CI runner sharing cores with 600+ other test files that
+    // also shell out to git. A raised limit is the fix rather than a mask —
+    // the work is genuinely serial process spawns, and a real hang still fails.
     it("creates a repo with template when authenticated", async () => {
       // Authenticate with GitHub first via HTTP
       await app.inject({ method: "POST", url: "/api/github/token", payload: { token: "ghp_test" } });
@@ -280,7 +288,7 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
       expect(body.success).toBe(true);
       expect(body.repoUrl).toBeDefined();
       expect(body.sessionId).toBeDefined();
-    });
+    }, 20000);
 
     it("returns 400 for empty repo name", async () => {
       await app.inject({ method: "POST", url: "/api/github/token", payload: { token: "ghp_test" } });
@@ -322,39 +330,22 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
     });
   });
 
-  // ---- POST /api/auth/start ----
-
-  describe("POST /api/auth/start", () => {
-    it("returns 202 and starts OAuth flow", async () => {
-      const res = await app.inject({
-        method: "POST",
-        url: "/api/auth/start",
-      });
-      expect(res.statusCode).toBe(202);
-      expect(res.json()).toMatchObject({ success: true });
-    });
-  });
-
-  // ---- POST /api/auth/code ----
-
-  describe("POST /api/auth/code", () => {
-    it("submits auth code successfully", async () => {
-      const res = await app.inject({
-        method: "POST",
-        url: "/api/auth/code",
-        payload: { code: "test-auth-code-123" },
-      });
-      expect(res.statusCode).toBe(200);
-      expect(res.json()).toMatchObject({ success: true });
-    });
-
-    it("returns 400 for empty code", async () => {
-      const res = await app.inject({
-        method: "POST",
-        url: "/api/auth/code",
-        payload: { code: "  " },
-      });
-      expect(res.statusCode).toBe(400);
+  // ---- Retired singleton subscription sign-in (docs/150 reqs 16, 19) ----
+  //
+  // These were the "connect your first account" endpoints. They took no
+  // account id, so whatever they authenticated could not afterwards be
+  // renamed, reordered, or failed over — a second way for provider auth to
+  // work, which req 19 says must not survive the migration. The account-scoped
+  // replacements are covered in http-mutations.test.ts.
+  describe("singleton subscription auth endpoints are gone", () => {
+    it.each([
+      ["POST", "/api/auth/start"],
+      ["POST", "/api/auth/code"],
+      ["POST", "/api/codex-auth/start"],
+      ["POST", "/api/codex-auth/cancel"],
+    ])("%s %s is not registered", async (method, url) => {
+      const res = await app.inject({ method: method as "POST", url, payload: {} });
+      expect(res.statusCode).toBe(404);
     });
   });
 });

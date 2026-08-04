@@ -17,6 +17,12 @@ import type { ProviderRouteKind } from "./provider.js";
  *               = the standard Tier A allowlist every session runs under; `false`
  *               = lifeline-only (LLM API + ShipIt, plus github.com when `git` is
  *               granted). It only ever tightens, never widens. Defaults to `true`.
+ *   - `dangerousGitHubOps` (docs/224, UI "Allow merging PRs") — a sub-grant under
+ *               `git` for outward-facing, effectively-irreversible GitHub verbs
+ *               (merge being the first). Off ⇒ `gh pr merge` is refused at the
+ *               broker. Only meaningful when `git` is also granted. Defaults to
+ *               `false`; this is the most prompt-injection-exposed verb, so it is
+ *               never on unless the user explicitly opts in at creation.
  *
  * Capability *wiring* (threading `docker`/`network`/`git` into the container and
  * brokers) lands in docs/211 Phase 2; the foundation persists the chosen set.
@@ -25,6 +31,7 @@ export interface SessionCapabilities {
   git: boolean;
   docker: boolean;
   network: boolean;
+  dangerousGitHubOps: boolean;
 }
 
 /**
@@ -37,6 +44,7 @@ export const DEFAULT_SANDBOX_CAPABILITIES: SessionCapabilities = {
   git: false,
   docker: false,
   network: true,
+  dangerousGitHubOps: false,
 };
 
 /**
@@ -51,7 +59,12 @@ export function normalizeCapabilities(input: unknown): SessionCapabilities {
     const v = obj[key];
     return typeof v === "boolean" ? v : DEFAULT_SANDBOX_CAPABILITIES[key];
   };
-  return { git: flag("git"), docker: flag("docker"), network: flag("network") };
+  return {
+    git: flag("git"),
+    docker: flag("docker"),
+    network: flag("network"),
+    dangerousGitHubOps: flag("dangerousGitHubOps"),
+  };
 }
 
 export interface SessionInfo {
@@ -126,6 +139,12 @@ export interface SessionInfo {
    * hidden and persistent.
    */
   pinnedAt?: string;
+  /**
+   * docs/241 — explicit runtime reservation for this session's agent container
+   * and auto-preview Compose services. Independent from `pinnedAt`: a sidebar
+   * pin protects list/disk persistence, while this flag consumes live capacity.
+   */
+  keepPreviewRunning?: boolean;
   /** Branch name for sessions cloned from a repo. */
   branch?: string;
   /** If true, this is a pre-created warm session not yet visible in the sidebar. */
@@ -280,22 +299,91 @@ export interface SessionMergeWatch {
   /** Session that registered the watch and receives the wake-turn + merge card. */
   parentSessionId: string;
   /**
+   * docs/239 — `"self"` marks a SELF-merge watch: the session asked to be woken
+   * when its OWN PR merges (`shipit session notify-on-merge --self`), so
+   * `parentSessionId === ` the watched session's own id. Absent (the default) is
+   * docs/196's parent→child watch.
+   *
+   * Deliberately one optional discriminator on the EXISTING row rather than a
+   * second watch subsystem: `merge-observed`, the SHI-258 retry supervisor, the
+   * polling gate and `reconcilePending` then all come by inheritance. The
+   * accepted cost is that a session cannot be parent-watched and self-watching
+   * at the same time — the row holds one watch — so a self-arm is refused while
+   * a genuine parent→child watch is live.
+   */
+  kind?: "self";
+  /**
+   * docs/239 — identity of THIS arming, for a self-watch. Checked on every
+   * asynchronous settlement, and carried by the arm card's Cancel.
+   *
+   * Load-bearing rather than decorative: chaining re-arms the watch *inside* the
+   * wake turn, i.e. BEFORE that turn settles, so without an expected-identity
+   * check the old turn's settlement would mark the newly-armed watch delivered
+   * (and a stale card's Cancel would cancel the next PR's watch).
+   */
+  watchId?: string;
+  /**
+   * docs/239 — the open PR number this self-watch is anchored to, resolved by a
+   * LIVE `findPullRequest` at arm time. The merge is only acted on when the
+   * merged PR matches; a mismatch means a docs/202 re-arm replaced the work
+   * before the merge landed, which is a note, not a wake.
+   */
+  prNumber?: number;
+  /**
    * - `armed` — registered, waiting for the child's PR to reach a terminal state
    *   (the PR need not exist yet).
    * - `merge-observed` — the poller saw the merge and surfaced the card, but the
-   *   actionable wake-turn hasn't been enqueued into the parent yet (a transient
-   *   step; re-tried on the next poll if enqueue couldn't complete).
-   * - `delivered` — the merge wake-turn was enqueued. Terminal, fire-once.
+   *   actionable wake-turn has not RUN to completion yet. Covers both "queued
+   *   behind a busy parent" and "the last delivery attempt threw"; the retry
+   *   supervisor tells those apart (SHI-258, see `merge-watch.ts`).
+   * - `delivered` — the merge wake-turn actually ran. Terminal, fire-once.
    * - `closed-unmerged` — the PR closed without merging; a distinct wake-turn was
    *   enqueued so the parent doesn't proceed as if the work shipped. Terminal.
+   * - `delivery-failed` — delivery threw `MAX_DELIVERY_ATTEMPTS` times; the watch
+   *   gives up and surfaces a failure card into the parent instead of retrying
+   *   forever (SHI-258). Terminal.
    */
-  state: "armed" | "merge-observed" | "delivered" | "closed-unmerged";
+  state: "armed" | "merge-observed" | "delivered" | "closed-unmerged" | "delivery-failed";
   /** ISO instant the watch was armed. */
   registeredAt: string;
   /** ISO instant the terminal PR state was first observed. */
   observedAt?: string;
   /** ISO instant the wake-turn was enqueued into the parent. */
   deliveredAt?: string;
+  /**
+   * SHI-258 — how many times `deliverWakeTurn` has been *invoked* for this watch
+   * (not how many times it failed). Persisted so the attempt budget survives an
+   * orchestrator restart; drives both the retry backoff and the
+   * `delivery-failed` cap.
+   */
+  deliveryAttempts?: number;
+  /**
+   * SHI-258 — ISO instant of the most recent delivery attempt. The retry
+   * supervisor's backoff anchor: a stalled watch is only re-attempted once the
+   * backoff window since this instant has elapsed.
+   */
+  lastAttemptAt?: string;
+  /**
+   * SHI-264 — durable identity of the most recent delivery attempt
+   * (`watchId:attempt`), stamped onto the wake-turn, sent to the worker, and
+   * reported back from its `/agent/status`.
+   *
+   * This is what makes liveness DERIVABLE rather than tracked. An orchestrator
+   * that restarts mid-wake has no memory of the dispatch, but the turn is still
+   * running inside a surviving container: matching this id against the worker's
+   * report lets turn adoption rebind the watch's completion settlement to that
+   * turn, and lets `reconcilePending` redispatch only when nothing reports it.
+   * Without it, the adopted turn settled nothing and reconcile queued a
+   * duplicate wake behind it.
+   *
+   * Scoped to the arming via `watchId`, so a docs/202 re-arm (which replaces the
+   * row) can never have an old delivery re-settle the new watch.
+   */
+  deliveryId?: string;
+  /** SHI-258 — message from the most recent failed delivery attempt, if any. */
+  lastDeliveryError?: string;
+  /** SHI-258 — ISO instant the watch gave up (`delivery-failed`). */
+  failedAt?: string;
 }
 
 /**
@@ -321,6 +409,88 @@ export interface ChildMergedCard {
   prTitle?: string;
   /** Merge commit SHA, when known (merged outcome only). */
   mergeSha?: string;
+  /**
+   * SHI-258 — when set, this card is the *delivery-failure* variant: the merge
+   * (or close) was observed and the first card already told the user, but the
+   * actionable wake-turn could never be delivered into this session (the
+   * container wouldn't boot, credentials wouldn't refresh, …) and the watch has
+   * given up after `attempts` tries. Rendered warning-toned with a "reply to
+   * continue manually" hint, so a permanently-failed watch is visible in the
+   * transcript rather than vanishing into a server log.
+   */
+  deliveryFailure?: {
+    /** How many delivery attempts were made before giving up. */
+    attempts: number;
+    /** Message from the last failed attempt, when available. */
+    error?: string;
+  };
+  createdAt: string;
+}
+
+/**
+ * docs/239 — payload for the inline "will continue when PR #N merges" card the
+ * agent's `shipit session notify-on-merge --self` surfaces into its OWN
+ * transcript. One card, at arm time, with a Cancel; terminal outcomes append a
+ * plain note rather than transitioning this card (there is deliberately no card
+ * lifecycle here — see the plan's "Resolved decisions").
+ *
+ * `watchId` is what Cancel sends back, so a stale card left in the scrollback
+ * from an earlier link of a chain cannot cancel the CURRENT watch.
+ */
+export interface SelfMergeWatchCard {
+  /** Server-generated stable id — used for live-append idempotency on reconnect. */
+  cardId: string;
+  /** Identity of the armed watch. Cancel carries it; a mismatch is a no-op. */
+  watchId: string;
+  /** The open PR this watch is anchored to (resolved by a live lookup at arm time). */
+  prNumber: number;
+  prUrl: string;
+  prTitle?: string;
+  /** The session's branch, for display. */
+  branch?: string;
+  createdAt: string;
+}
+
+/**
+ * docs/233 (SHI-241) — how urgently a session report needs the recipient's
+ * attention. Shapes both the card's tone and the wake-turn's instruction:
+ *
+ * - `fyi`     — informational; the recipient probably needs no action.
+ * - `warn`    — factor this in; it may invalidate part of the recipient's work.
+ * - `blocker` — stop and reassess before continuing the current plan.
+ */
+export type SessionReportSeverity = "fyi" | "warn" | "blocker";
+
+/**
+ * docs/233 (SHI-241) — payload for the inline "session report" transcript card
+ * surfaced into a RECIPIENT session when another session in its cohort pushes a
+ * report upward (`shipit session report`).
+ *
+ * Static (no mutable lifecycle): persisted on the message row and rendered
+ * directly, no client store. Carries the reporter's identity plus the full
+ * report text so the card stands alone after a reload — the actionable wake-turn
+ * is enqueued separately and carries the same facts.
+ */
+export interface SessionReportCard {
+  /** Server-generated stable id — used for live-append idempotency on reconnect. */
+  cardId: string;
+  /** The reporting session's id (the card's "Open" target). */
+  fromSessionId: string;
+  /** Reporting session's title, for display. */
+  fromTitle: string;
+  /** Reporting session's branch, when it has one. */
+  fromBranch?: string;
+  /**
+   * How the recipient relates to the reporter:
+   * - `child`   — the reporter is this recipient's own spawned child.
+   * - `sibling` — the reporter shares this recipient's parent (cohort broadcast).
+   */
+  relation: "child" | "sibling";
+  severity: SessionReportSeverity;
+  /** Optional one-line subject the reporter supplied. */
+  subject?: string;
+  /** The report body, verbatim (capped server-side). */
+  body: string;
   createdAt: string;
 }
 
@@ -353,4 +523,18 @@ export interface RepoInfo {
    * Remove, which archives sessions and reclaims disk. Defaults to visible.
    */
   hidden?: boolean;
+  /**
+   * The repo's real default branch — `main`, `master`, `trunk`, whatever the
+   * remote's `HEAD` points at. Resolved from the bare cache after clone (and at
+   * boot for already-cloned repos) by `refreshRepoDefaultBranch`, and shipped to
+   * the browser on the existing `repo_list` SSE.
+   *
+   * Exists so the UI stops hard-coding `"main"` in the surfaces that need a base
+   * branch before a PR exists (the rebase banner's "Branch is behind <base>",
+   * "Sync with <base>", the "Changes vs <base>" diff). `undefined` means "not
+   * resolved yet" — callers fall back to `"main"` exactly as before, so a repo
+   * added by an older build degrades to the previous behavior rather than
+   * breaking.
+   */
+  defaultBranch?: string;
 }

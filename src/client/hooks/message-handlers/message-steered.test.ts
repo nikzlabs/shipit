@@ -100,4 +100,20 @@ describe("handleMessageSteered (echo reconciliation)", () => {
     expect(messages).toHaveLength(1);
     expect(messages[0]).toMatchObject({ role: "user", text: "with an image", images });
   });
+
+  it("carries inter-session provenance and reconciles it onto a matching bubble", () => {
+    useSessionStore.setState({ messages: [{ role: "user", text: "same text" }] });
+    handleMessageSteered(ctx, {
+      type: "message_steered",
+      text: "same text",
+      sessionId: "child",
+      messageOrigin: { sessionId: "parent", sessionTitle: "Parent", relation: "parent" },
+    });
+
+    expect(useSessionStore.getState().messages).toEqual([{
+      role: "user",
+      text: "same text",
+      messageOrigin: { sessionId: "parent", sessionTitle: "Parent", relation: "parent" },
+    }]);
+  });
 });

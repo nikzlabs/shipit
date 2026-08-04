@@ -79,8 +79,43 @@ Why this is squash-safe with no squash-specific code:
   up other people's commits). The existing `diffStatVsBranch` uses **three-dot**,
   which is exactly the squash-breaking comparison — we must not reuse it here.
 
-The check is **local git only — no network.** It keys directly off the user's
-own action (the rebase).
+The comparison itself is **local git only — no GitHub API** — it keys directly
+off the user's own action (the rebase).
+
+### The base ref must be current (fix, SHI-238)
+
+Both clauses read `origin/<base>` **from the session's own clone**, and that
+remote-tracking ref moves only when *that clone* fetches. Nothing on the merge
+path does: the poller talks to the GitHub API, the post-merge hook prunes
+volumes, the post-turn flow commits and pushes. So by the time a merged session
+resumes, `origin/<base>` is typically still the commit the branch **forked
+from**.
+
+A stale ref doesn't weaken the detection — it **inverts** it. The merge-base of a
+branch and its own fork point *is* that fork point, so clause 1 ("rebased onto
+the current base") passes for a branch that was never rebased, and the two-dot
+diff is then just the branch's own already-merged work. The observed symptom: the
+first committing turn on a merged session **un-merged it** and left a gray
+"ready" card showing the stale full-branch diff plus a "Create PR" button, while
+the branch still carried nothing but shipped commits. And because `clearMerged`
+also drops `mergedHeadSha`, the docs/218 pre-turn auto-advance could never fire
+for that session again — the false re-arm *disabled* the very feature whose
+absence it looked like.
+
+So the shared helper freshens the ref before deciding
+(`pr-rearm.ts#freshenBaseRef` → `git fetch origin`), and **fails safe on a fetch
+failure** (stay merged rather than decide off a ref known to be stale). Two things
+keep that cheap:
+
+- The helper still early-returns for non-merged sessions before touching git, so
+  the fetch is scoped to merged sessions' turns.
+- A branch still sitting exactly on the docs/218 `mergedHeadSha` anchor cannot be
+  either "progressed" or "at base", so `unmovedSinceMerge` decides that locally
+  and skips the fetch — the common "user resumes a merged session" case stays
+  network-free.
+
+The docs/218 pre-turn reset fetches immediately before it moves the branch, so it
+passes `skipFetch: true` and doesn't pay for a second fetch in front of the turn.
 
 ## Turn-gated evaluation — no extra GitHub load
 
@@ -88,8 +123,11 @@ Detection and re-arm run **only from the post-turn flow**, once per assistant
 turn for that session. There is deliberately **no poller-tick sweep** over merged
 sessions:
 
-- The local check (merge-base + two-dot diff) is cheap and offline, so running
-  it per turn is free.
+- The local check (merge-base + two-dot diff) is cheap, and it runs only for
+  sessions that are actually merged. Its `git fetch` prerequisite (see "The base
+  ref must be current") is scoped the same way and skipped entirely when the
+  branch hasn't moved off the merged tip — so a merged session that isn't
+  progressing costs no GitHub API queries and, in the common case, no network.
 - GitHub polling only **resumes** for a merged session if that local check says
   the branch genuinely progressed — i.e. only when there's a real new PR to
   track. Merged sessions that aren't moving cost zero GitHub queries.
@@ -283,6 +321,27 @@ purple. The two parts come from different places:
   (the per-row indicator returns `null` for a session with no live PR card /
   CI). So "gray like a new session" requires **no extra styling work** — it is
   the natural consequence of the un-merge.
+  - **…except for `PrStateBadge`, which needed the client to mirror the silent
+    clear (double-merge-icon report).** The badge resolves
+    `status?.prState ?? <card-phase fallback>` — the **poller status wins over
+    the card** — and it renders in both the card's ready phase and the sidebar
+    row. `reArm` clears the server's `lastKnown` *silently* (by design: a
+    `pr_status { removals }` broadcast would race the WS card across two
+    transports and could wipe it), and `updateCard` only replaced
+    `cardBySession`, so `statusBySession` kept the merged summary until a
+    reconnect snapshot pruned it. Symptom: the re-armed **ready** card rendered
+    the purple merged `GitMergeIcon` immediately left of the note's own
+    `GitMergeIcon` — two identical glyphs — and the Active sidebar row showed a
+    merged badge. Fix: `updateCard` deletes `statusBySession[sessionId]` when the
+    incoming card is **non-terminal AND carries `previousMergedPr`** — the same
+    signal that already overrides the terminal guard, so the client converges
+    exactly where the server did, still without the racy removal. A *terminal*
+    card carrying the breadcrumb is deliberately exempt: that is the poller
+    re-promoting the session after its **new** PR merged, so the status is
+    current. An `open` re-armed card also drops the stale status, but the badge
+    stays correct via the card-phase fallback (green `GitPullRequestIcon`) while
+    the next poll (≤5s) refills the poller-only fields (deployments, mergeable,
+    review decision) — showing none beats showing the *old merged PR's*.
 - **The breadcrumb needs a retained reference.** Because re-arm clears both
   `merged_at` and `pr_status`, the prior PR identity is gone. To still render
   "previously merged #N", retain a **lightweight breadcrumb** on the session —
@@ -346,7 +405,7 @@ once.
 | Re-arm orchestration | **shared helper** called by both `postTurnPrFlow` sites — `ws-handlers/agent-execution.ts` AND `runner-registry-factory.ts` (dispatch/system-turn) | Both have `sseBroadcast` + poller in scope: detect → `clearMerged` → `reArm` → `sseBroadcast("session_list")` → then card emit. Wiring only one drops re-arm for spawned/CI/programmatic turns |
 | Card | `src/client/components/PrLifecycleCard.tsx` | Render "Previously merged #N" note on the re-armed `ready`/`open` card |
 | Sidebar | `src/client/components/SessionSidebar.tsx` | No styling change — gray/Active is the natural result of cleared `merged_at`; requires the `session_list` SSE rebroadcast to regroup live, not just on reload |
-| Client store | `src/client/stores/pr-store.ts` | Amend `updateCard`'s terminal-regress guard (lines 311-314) to let a card carrying `previousMergedPr` replace a `merged`/`closed` card (order-independent override; no removal broadcast to race it) |
+| Client store | `src/client/stores/pr-store.ts` | Amend `updateCard`'s terminal-regress guard (lines 311-314) to let a card carrying `previousMergedPr` replace a `merged`/`closed` card (order-independent override; no removal broadcast to race it). Same call also retires `statusBySession[sessionId]` for a **non-terminal** re-armed card, mirroring the poller's silent `lastKnown` clear so `PrStateBadge` stops reading the stale merged state |
 
 ## Testing
 
@@ -395,6 +454,32 @@ _None — see "Re-armed card presentation"._
   `previousMergedPr` breadcrumbs over `list()` (a re-armed session is always in
   the visible Active list, so no archived-row scan is needed) so the suppression
   survives a restart before the new PR exists.
+
+- **Suppression must not arm the `verifiedAbsent` debounce (terminal-convergence
+  bug fix, SHI gray-badge report).** `verifyMissingPr` now returns its resting
+  outcome (`"absent" | "open" | "terminal" | "suppressed"`), and both callers —
+  `pollRepo`'s missing-PR branch and `forceVerifySessionPrState` — arm
+  `verifiedAbsent` for every outcome **except** `"suppressed"`. Why: a re-armed
+  session whose only branch PR is still the superseded merged one returns
+  `"suppressed"`, and the old code armed the single-probe debounce after it. If
+  the session's NEW PR was then opened **and merged externally** (e.g. via the
+  `gh pr create` shim, then merged on GitHub) without ever being observed OPEN in
+  the bulk view — common when the tab is closed, or when it opens-and-merges
+  between two polls — nothing ever cleared `verifiedAbsent` (it only clears on a
+  bulk-view reappearance or a forced refresh), so every periodic poll skipped the
+  REST verify and the merge of the *different-numbered* new PR was never caught.
+  The session stayed with no PR snapshot — the gray "Branch" fallback in
+  `PrStateBadge` — instead of converging to GitHub's terminal state. The
+  superseded suppression also never cleared (it only clears when a
+  different-numbered PR is *observed*), so it was self-reinforcing. Leaving the
+  debounce un-armed for the suppressed case lets the next periodic poll re-verify
+  and promote the moment `findPullRequestAnyState` returns the new (now-terminal)
+  PR — no forced refresh / viewer attach required. The `"open"` and `"absent"`
+  outcomes still arm the debounce (a known open PR is sustained by the
+  coverage-alias query; a genuinely absent branch must not re-probe every poll),
+  so steady-state REST load is unchanged for non-re-armed sessions. Coverage:
+  `pr-status-poller.test.ts` "converges to merged when the NEW PR opens and merges
+  between polls (never seen open)".
 - **New-PR creation**: `quickCreatePr` takes a `reArm?: { baseBranch?;
   forceWithLease? }` arg — re-arm targets the prior PR's base (not auto-detected
   main/master) and pushes with `--force-with-lease` (the old remote branch often
@@ -407,7 +492,33 @@ _None — see "Re-armed card presentation"._
   destructive removal to race it). `PrLifecycleCard` renders a subtle
   "Previously merged #N" breadcrumb (linked to the prior PR) on the re-armed
   ready/open card; the gray/Active sidebar treatment is the natural result of the
-  cleared `merged_at` (no sidebar styling change).
+  cleared `merged_at` (no sidebar styling change). The breadcrumb is **text-only**
+  — it originally led with its own 12px `GitMergeIcon`, but the note always sits
+  in a row that opens with `PrStateBadge`, and at that size a second git glyph
+  read as an accidental duplicate of the badge (user report, follow-up to the
+  stale-status fix below) rather than as information the text doesn't carry.
+  **Truncation priority** (same report, phone widths): the note *yields* width
+  before the session title does — `shrink-[3]` + `min-w-0` + a truncating
+  label, never `shrink-0`. As originally shipped the note was `shrink-0`, which
+  made the title the row's only shrinkable element; on a phone the note kept
+  its full "Previously merged #N · ready for a new PR" width and the title
+  collapsed to a few characters ("Desi…"). Of the two, the note is the less
+  informative once read, and its full text survives in the `title` tooltip, so
+  it absorbs the squeeze 3× faster than the title's default shrink-1.
+- **`statusBySession` must be retired alongside the card (double-merge-icon
+  fix).** The card override above was necessary but not sufficient: it left the
+  poller-owned `statusBySession` entry in place, and `PrStateBadge` reads
+  `status?.prState` **ahead of** the card phase, so the re-armed ready card kept
+  a purple merged badge immediately left of the note's own `GitMergeIcon` (and
+  the Active sidebar row showed merged too) until a reconnect snapshot pruned
+  it. `updateCard` now deletes `statusBySession[sessionId]` when the incoming
+  card is non-terminal AND carries `previousMergedPr` — the client-side mirror of
+  `reArm`'s deliberately silent `lastKnown` clear, with none of the transport
+  race a `pr_status { removals }` broadcast would reintroduce. Rationale for the
+  narrowing in "Re-armed card presentation"; coverage in `pr-store.test.ts`
+  ("retires the stale poller status when a re-armed card lands", plus the
+  non-re-armed and terminal-card negatives) and `PrLifecycleCard.test.tsx`
+  ("falls back to the gray branch badge …").
 - **Not a chat-history card**: the breadcrumb lives on the *session* row (like
   `pr_status`), not the `messages` table, so the `CARD_MESSAGE_FIELDS` /
   chat-history round-trip machinery does not apply.
@@ -448,3 +559,33 @@ _None — see "Re-armed card presentation"._
   orchestrator images (`docker/Dockerfile.{prod,dev,dogfood}`) so git's
   `store`/`erase` calls to the broker are absorbed; the orchestrator still
   authenticates via its own global inline helper.
+
+- **Detection must fetch before comparing (bug fix, SHI-238).** The detection is
+  base-relative, and `origin/<base>` in a session clone only moves when that clone
+  fetches — nothing on the merge path does. Deciding off a stale ref inverted the
+  answer (a branch's merge-base with its own fork point *is* the fork point), so
+  the first committing turn on a merged session un-merged it and left a "ready"
+  card with the stale full-branch diff + "Create PR", with the branch still
+  carrying only shipped commits. `clearMerged` also drops `mergedHeadSha`, so the
+  false re-arm permanently disabled the docs/218 auto-advance for that session —
+  which is why the symptom read as "the branch-advance feature didn't work."
+  `pr-rearm.ts` now freshens the ref first (`freshenBaseRef`, fail-safe: a fetch
+  failure stays merged) in BOTH detectors, short-circuits network-free when HEAD
+  still sits on the `mergedHeadSha` anchor (`unmovedSinceMerge`), and accepts
+  `skipFetch` for the docs/218 pre-turn path that just fetched. The primitives'
+  docstrings (`advancedBeyondMergedBase`, `headIsAtBase`) now state the
+  caller-must-fetch precondition. Coverage: `pr-rearm.test.ts` ("base-ref
+  freshness" — fetch-before-decide ordering, fail-safe on fetch failure, anchor
+  short-circuit, no-anchor fallthrough, `skipFetch`) and
+  `git-rearm-detect.test.ts` ("stale origin/<base>" — the same repo state
+  answering differently before and after the fetch, which is what pins the
+  precondition down).
+
+  The same commit fixed the **reconnect seed** of the ready card
+  (`route-registry.ts`): it diffed against a hardcoded `"main"` and dropped the
+  `previousMergedPr` breadcrumb, so on session-switch / reload a re-armed session
+  showed diff numbers measured against the wrong base, lost its "previously
+  merged #N" note, and — lacking the breadcrumb — could no longer override a
+  viewer's stale terminal merged card. It now mirrors
+  `emitPrLifecycleAfterCommit`'s base resolution (`previousMergedPr?.baseBranch ??
+  "main"`) and threads the breadcrumb.

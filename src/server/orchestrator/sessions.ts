@@ -52,6 +52,8 @@ interface SessionRow {
   auto_fix_ci_paused: number;
   /** docs/110 — ISO instant the session was pinned (persistent); NULL = not pinned. */
   pinned_at: string | null;
+  /** docs/241 — 1 while the session owns an always-on preview reservation. */
+  keep_preview_running: number;
   /** docs/196 — JSON `SessionMergeWatch` for the notify-on-merge watch, or NULL. */
   merge_watch: string | null;
   /** docs/194 — JSON string[] of applied merge→issue-lifecycle effect keys, or NULL. */
@@ -202,7 +204,8 @@ export function reopenedAfterResolve(s: SessionInfo): boolean {
  * docs/201): the merged view cap is a form of *automatic* archiving, and spawned
  * clusters are exempt from it — they only leave the sidebar via an explicit user
  * archive (which `archiveSession` cascades from a session through its whole
- * brood). The exemption keys off the ROOT ancestor (`rootSessionId`) rather than
+ * brood — except from an Ops session, which never cascades; docs/162). The
+ * exemption keys off the ROOT ancestor (`rootSessionId`) rather than
  * the immediate parent so it is depth-independent. Concretely, the cap never
  * demotes:
  *   - a root that still has a live (non-user-archived) descendant — a root with
@@ -322,6 +325,7 @@ export class SessionManager {
     if (row.last_turn_errored) info.lastTurnErrored = true;
     if (row.auto_fix_ci_paused) info.autoFixCiPaused = true;
     if (row.pinned_at) info.pinnedAt = row.pinned_at;
+    if (row.keep_preview_running) info.keepPreviewRunning = true;
     if (row.merge_watch) {
       try {
         info.mergeWatch = JSON.parse(row.merge_watch) as SessionInfo["mergeWatch"];
@@ -666,6 +670,15 @@ export class SessionManager {
     return this.get(id) ?? null;
   }
 
+  /** Persist the docs/241 runtime reservation without changing pin or idle clocks. */
+  setKeepPreviewRunning(id: string, enabled: boolean): SessionInfo | null {
+    const result = this.db.prepare(
+      "UPDATE sessions SET keep_preview_running = ? WHERE id = ?",
+    ).run(enabled ? 1 : 0, id);
+    if (result.changes === 0) return null;
+    return this.get(id) ?? null;
+  }
+
   /**
    * docs/110 Phase 2 — reorder a repo's pinned sessions to match `ids`. Pins
    * sort by `pinned_at` descending, so we rewrite `pinned_at` to a strictly
@@ -951,8 +964,14 @@ export class SessionManager {
    * docs/196 — every session that carries a merge-watch in a non-terminal state
    * (`armed` or `merge-observed`). Used by the startup reconcile to re-fire any
    * watch whose child PR already reached a terminal state while the orchestrator
-   * was down. Includes archived rows (a merged child is archived by the
-   * post-merge path, but its un-delivered watch must still fire).
+   * was down, by the retry supervisor to find stalled deliveries (SHI-258), and
+   * by `PollingGlobalGate` to keep the PR poll loop alive for a viewerless child
+   * awaiting a human merge. Includes archived rows (a merged child is archived
+   * by the post-merge path, but its un-delivered watch must still fire).
+   *
+   * The terminal states — `delivered`, `closed-unmerged`, and `delivery-failed`
+   * — are excluded, which is what stops a watch that has given up from holding
+   * the polling gate open forever.
    */
   listPendingMergeWatches(): { childSessionId: string; watch: SessionMergeWatch }[] {
     const rows = this.db.prepare(

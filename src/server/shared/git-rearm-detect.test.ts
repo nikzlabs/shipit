@@ -228,4 +228,51 @@ describe("GitManager.advancedBeyondMergedBase (docs/202 re-arm detection)", () =
       await expect(git.resetHardToRemoteBase("does-not-exist")).rejects.toThrow();
     });
   });
+
+  /**
+   * The precondition every caller of these two predicates must satisfy: the
+   * session clone's `origin/<base>` has to be CURRENT. That remote-tracking ref
+   * moves only when this clone fetches, and nothing on the merge path does — so
+   * in production it is typically still the branch's fork point by the time a
+   * merged session resumes.
+   *
+   * A stale ref doesn't degrade the answer, it INVERTS it: `merge-base(fork
+   * point, HEAD)` is the fork point, so the "rebased onto the current base"
+   * clause passes for a branch that was never rebased. `services/pr-rearm.ts`
+   * therefore fetches (`freshenBaseRef`) before deciding, and treats a failed
+   * fetch as "stay merged". These two cases pin that reasoning down: the same
+   * repo state answers differently before and after the fetch.
+   */
+  describe("stale origin/<base> — the precondition callers must satisfy", () => {
+    /** Squash-merge on the remote and advance main, WITHOUT fetching the clone. */
+    function mergeOnRemoteWithoutFetchingTheClone(): void {
+      run("git fetch origin", maintainerDir);
+      run("git checkout main", maintainerDir);
+      run("git merge --squash origin/feature", maintainerDir);
+      run("git commit -m 'Squash-merge feature'", maintainerDir);
+      fs.writeFileSync(path.join(maintainerDir, "other.txt"), "someone else's work\n");
+      run("git add -A && git commit -m 'other work'", maintainerDir);
+      run("git push origin main", maintainerDir);
+    }
+
+    it("false-positives on an untouched merged branch while the base ref is stale", async () => {
+      mergeOnRemoteWithoutFetchingTheClone();
+      const git = new GitManager(workDir);
+      // The branch is exactly the merged tip — nothing new to open a PR from.
+      // Reported as "progressed" purely because origin/main is the fork point.
+      expect(await git.advancedBeyondMergedBase("main")).toBe(true);
+    });
+
+    it("answers correctly once the base ref is freshened", async () => {
+      mergeOnRemoteWithoutFetchingTheClone();
+      const git = new GitManager(workDir);
+      await git.fetch("origin");
+      expect(await git.advancedBeyondMergedBase("main")).toBe(false);
+      // Still false after a new commit on the un-rebased branch: the branch has
+      // to be rebased onto the real base before its work counts as new.
+      fs.writeFileSync(path.join(workDir, "new.txt"), "brand new\n");
+      run("git add -A && git commit -m 'new work'", workDir);
+      expect(await git.advancedBeyondMergedBase("main")).toBe(false);
+    });
+  });
 });

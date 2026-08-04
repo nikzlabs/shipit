@@ -5,8 +5,12 @@
  * `npm run lint` (full type-aware lint over all 697 TS files) peaks at
  * ~2.85 GiB RSS and ~50 s wall time because typescript-eslint's
  * `strictTypeChecked` loads the whole TS program. This script lints only
- * files that differ from `origin/main` plus any uncommitted/staged changes —
- * the same scope a reviewer would see in the PR. ~50 s → ~8 s typical.
+ * files that differ from `origin/main` plus any uncommitted/staged/untracked
+ * changes — the same scope a reviewer would see in the PR. ~50 s → ~8 s typical.
+ *
+ * Untracked files count as changed (see `changed-files.ts`): an agent's newly
+ * created file is untracked for its whole turn, so leaving it out reported a
+ * green lint for files that were never linted.
  *
  * Caveats vs full lint:
  * - Type-aware rules can flag *unchanged* files when their dependencies
@@ -15,62 +19,56 @@
  *   as the source of truth.
  * - Peak memory is only ~25% lower than a full lint (the TS program load
  *   dominates), so `--max-old-space-size` is still required to avoid OOM.
+ * - Only `src/` is linted, matching `npm run lint`'s target. Changes to
+ *   `scripts/`, config, or docs are not linted by either.
+ * - Past MAX_INCREMENTAL_FILES changed files this defers to the full lint:
+ *   the incremental path has no advantage once the TS program load dominates,
+ *   and a very large untracked tree would otherwise build an unbounded argv.
  *
  * Usage:
  *   npx tsx scripts/lint-dev.ts          # lint changed files
  *   npx tsx scripts/lint-dev.ts --list   # show which files would be linted
  *   npx tsx scripts/lint-dev.ts --all    # fall through to full lint
  */
-import { execSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import path from "node:path";
+import { findMergeBase, isLintableSource, listChangedFiles } from "./changed-files.js";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 
-function git(cmd: string): string {
-  try {
-    return execSync(`git ${cmd}`, { cwd: ROOT, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-  } catch {
-    return "";
-  }
-}
-
 /**
- * Resolve the merge base against main. Prefers `origin/main` (matches CI),
- * falls back to local `main`. Returns null when neither exists, in which
- * case we fall through to a full lint — better safe than silently skipping.
+ * Above this many changed files, the per-file invocation stops paying for
+ * itself (the whole-program load dominates either way) and `npm run lint`'s
+ * warm cache is the better deal. Also bounds argv against a pathological
+ * untracked tree.
  */
-function findMergeBase(): string | null {
-  for (const ref of ["origin/main", "main"]) {
-    const base = git(`merge-base ${ref} HEAD`);
-    if (base) return base;
-  }
-  return null;
-}
+const MAX_INCREMENTAL_FILES = 250;
 
-function getChangedFiles(): string[] {
-  const sources: string[] = [];
-  const base = findMergeBase();
-  if (base) sources.push(git(`diff --name-only ${base}...HEAD`));
-  sources.push(git("diff --name-only"));
-  sources.push(git("diff --staged --name-only"));
-  const all = sources.join("\n").split("\n").filter(Boolean);
-  return [...new Set(all)]
-    .filter((f) => f.startsWith("src/") && /\.(ts|tsx)$/.test(f));
+function runFullLint(): never {
+  const result = spawnSync("npm", ["run", "lint"], { cwd: ROOT, stdio: "inherit" });
+  process.exit(result.status ?? 1);
 }
 
 const args = process.argv.slice(2);
 const listOnly = args.includes("--list");
 const forceAll = args.includes("--all");
 
-if (forceAll || findMergeBase() === null) {
+// No merge base means we can't scope the diff — fall through to a full lint
+// rather than silently skipping files.
+if (forceAll || findMergeBase(ROOT) === null) {
   if (!forceAll) {
     console.warn("No merge base against main found — falling back to full lint.");
   }
-  const result = spawnSync("npm", ["run", "lint"], { cwd: ROOT, stdio: "inherit" });
-  process.exit(result.status ?? 1);
+  runFullLint();
 }
 
-const files = getChangedFiles();
+const files = listChangedFiles(ROOT, { mergeBase: findMergeBase(ROOT) }).filter(isLintableSource);
+
+if (files.length > MAX_INCREMENTAL_FILES) {
+  console.warn(`${files.length} changed files exceeds the incremental threshold (${MAX_INCREMENTAL_FILES}) — falling back to full lint.`);
+  if (listOnly) process.exit(0);
+  runFullLint();
+}
 
 if (files.length === 0) {
   console.log("No changed TS/TSX files under src/. Skipping lint.");

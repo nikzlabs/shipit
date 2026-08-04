@@ -3,9 +3,13 @@
  *
  * One payload contract, identical regardless of source (the built-in voice
  * tool, or a derived AskUserQuestion / ExitPlanMode headline) or sink (the
- * native inline note, or the external webhook). The shape is the verbatim
- * docs/159 `notify_turn_end` contract — `{ summary, needsAttention, context }`
- * — so existing receivers keep working.
+ * native inline note, or the external webhook).
+ *
+ * A voice note means exactly one thing: **the agent needs the user**. There is
+ * no silent/FYI mode — the former `needsAttention` gate was removed because a
+ * `false` note produced no audio and no webhook, leaving a transcript bubble
+ * that only restated prose already on screen. The webhook body still carries a
+ * constant `needsAttention: true` for `v: 1` receiver compatibility.
  */
 
 /**
@@ -31,12 +35,11 @@ export type VoiceNoteSource = "authored" | "ask" | "plan";
 
 /**
  * The one payload contract. `summary` is an ear-shaped one-or-two-sentence
- * headline; `needsAttention` is the gate (true → emit audio/webhook, false →
- * silent bubble).
+ * headline. Every note is attention-worthy by construction, so there is no
+ * gate field.
  */
 export interface VoiceNotePayload {
   summary: string;
-  needsAttention: boolean;
   context?: VoiceNoteContext;
 }
 

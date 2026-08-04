@@ -9,7 +9,8 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { buildUpstreamHeaders } from "./preview-proxy.js";
+import { AGENT_INTERFACE_SDK_MARKER } from "../shared/agent-interface-sdk/bootstrap.js";
+import { allowPreviewBootstrapInCsp, buildUpstreamHeaders, injectPreviewBootstrap } from "./preview-proxy.js";
 
 describe("buildUpstreamHeaders", () => {
   it("rewrites Host to loopback for the upstream", () => {
@@ -64,5 +65,37 @@ describe("buildUpstreamHeaders", () => {
     );
     expect(out["user-agent"]).toBe("test");
     expect(out.cookie).toBe("a=b");
+  });
+});
+
+describe("injectPreviewBootstrap", () => {
+  it("injects the shared SDK immediately after head", () => {
+    const html = injectPreviewBootstrap("<!doctype html><html><head><title>App</title></head></html>");
+    expect(html).toContain(`<head><script>`);
+    expect(html).toContain(AGENT_INTERFACE_SDK_MARKER);
+    expect(html.indexOf(AGENT_INTERFACE_SDK_MARKER)).toBeLessThan(html.indexOf("<title>"));
+  });
+
+  it("prepends scripts when HTML has no head", () => {
+    expect(injectPreviewBootstrap("<main>App</main>")).toMatch(/^<script>/);
+  });
+
+  it("does not inject a second SDK into an already-instrumented document", () => {
+    const once = injectPreviewBootstrap("<html><head></head></html>");
+    const twice = injectPreviewBootstrap(once);
+    expect(twice.split(AGENT_INTERFACE_SDK_MARKER)).toHaveLength(2);
+  });
+});
+
+describe("allowPreviewBootstrapInCsp", () => {
+  it("replaces script-src none with exact injected-script hashes", () => {
+    const result = allowPreviewBootstrapInCsp("default-src 'self'; script-src 'none'; connect-src 'self'");
+    expect(result).not.toContain("script-src 'none'");
+    expect(result.match(/'sha256-[^']+'/g)).toHaveLength(2);
+    expect(result).toContain("connect-src 'self'");
+  });
+
+  it("adds a script directive when only default-src exists", () => {
+    expect(allowPreviewBootstrapInCsp("default-src 'none'")).toMatch(/script-src 'sha256-/);
   });
 });

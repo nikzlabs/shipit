@@ -2,12 +2,14 @@ import type { WsServerMessage, ClaudeContentBlockText, ClaudeContentBlockToolUse
 import type { AgentEvent, AgentProcess } from "../../shared/types.js";
 import type { AgentId, SubscriptionLimitsMap } from "../../shared/types.js";
 import type { SessionRunnerInterface, QueuedMessage } from "../session-runner.js";
+import { resetRunnerTurnState } from "../session-runner.js";
 import type { ChatHistoryManager, PersistedPermissionRequest } from "../chat-history.js";
 import type { SessionManager } from "../sessions.js";
 import type { UsageManager } from "../usage.js";
-import type { AuthManager } from "../agents/claude/auth-manager.js";
-import type { AgentAuthManager } from "../agent-auth-manager.js";
-import { getContextWindowForModel, DEFAULT_CONTEXT_WINDOW_TOKENS } from "../../shared/agent-registry.js";
+import {
+  getContextWindowForModel,
+  DEFAULT_CONTEXT_WINDOW_TOKENS,
+} from "../../shared/agent-registry.js";
 import type { VoiceNotePayload, VoiceNoteSource } from "../../shared/types/voice-note-types.js";
 import { emitChatCard, emitNoticeInTurn, buildTurnMessages, persistTurnInProgress, updateRecordedCard } from "../chat-card-persistence.js";
 import type { CompactionCard } from "../../shared/types.js";
@@ -21,6 +23,7 @@ import {
   isWellFormedAskUserQuestion,
   createAgentToolTracker,
 } from "./agent-event-normalizer.js";
+import { projectAgentEventForWire, markMessagesCommitted } from "../transcript-projection.js";
 import {
   accumulateAssistantGroups,
   attachSubagentAssistant,
@@ -30,7 +33,12 @@ import {
 } from "./agent-message-builder.js";
 import { observeVoiceNotes } from "./agent-voice-handler.js";
 import { wireAuthRequiredHandler } from "./agent-auth-handler.js";
-import { normalizeAgentUsageLimitError } from "./agent-rate-limits.js";
+import {
+  detectHardExhaustion,
+  exhaustionLockoutUntil,
+  normalizeAgentUsageLimitError,
+} from "./agent-rate-limits.js";
+import { ProviderRouteUnavailableError } from "../provider-route-preflight.js";
 
 // `buildTurnMessages` / `persistTurnInProgress` now live in
 // `chat-card-persistence.ts` (co-located with `recordChatCard`, which shares
@@ -62,15 +70,6 @@ export interface AgentListenerDeps {
   sessionManager: SessionManager;
   chatHistoryManager: ChatHistoryManager;
   usageManager: UsageManager;
-  authManager: AuthManager;
-  /**
-   * Per-agent auth manager map. The `auth_required` handler looks up the
-   * turn's backend and calls `.start()` on the matching manager — so a
-   * Codex turn that fails on auth kicks off the Codex device flow, not
-   * Claude OAuth. Optional for tests; falls back to the legacy Claude-only
-   * `authManager.startOAuthFlow()` when absent. (docs/155 Phase 2c)
-   */
-  authManagers?: Map<AgentId, AgentAuthManager>;
   /** App-level SSE broadcaster (session_list, session_started, etc.). */
   sseBroadcast: (event: string, data: unknown) => void;
   /** Append a line to the per-session log buffer. */
@@ -82,9 +81,27 @@ export interface AgentListenerDeps {
     agentId: AgentId,
     session: { usedPct: number | null; resetAt: string } | null,
     weekly: { usedPct: number | null; resetAt: string } | null,
+    /**
+     * docs/150 — the session whose turn reported these numbers, so the
+     * orchestrator can attribute them to that session's pinned provider
+     * account. Omitted only where no session owns the turn.
+     */
+    sessionId?: string,
   ) => void;
   /** Optional: latest subscription-limits snapshot, used to reclassify generic CLI errors. */
   getSubscriptionLimitsSnapshot?: () => SubscriptionLimitsMap;
+  /**
+   * docs/150 req 7 — the provider failed this turn saying the subscription is
+   * spent. Stamps the account the turn ran on so the router stops choosing it,
+   * which is what makes the *next* turn fail over instead of hitting the same
+   * wall. `until` is epoch ms.
+   *
+   * A callback rather than the manager itself: the listener knows only "the
+   * turn for session X died of quota", and resolving that to an account is the
+   * orchestrator's job, not this module's. Optional — tests and local runtime
+   * omit it, in which case the live quota telemetry remains the only signal.
+   */
+  markSessionAccountExhausted?: (sessionId: string, until: number) => void;
   /**
    * docs/153 — fire-and-forget nudge to the orchestrator-owned Claude OAuth
    * refresher. Triggered from the session-level `auth_required` handler so a
@@ -174,6 +191,12 @@ export interface WireListenersOpts {
    * when the heal failed — in which case the handler surfaces the sign-in card.
    */
   recoverAuth?: () => Promise<boolean>;
+  /**
+   * Runtime stale-resume recovery. Called with the id parsed from Claude's
+   * "No conversation found" stderr. Returning true means the executor has
+   * claimed recovery, so the listener suppresses the user-facing error.
+   */
+  recoverMissingConversation?: (agentSessionId: string) => boolean;
   /**
    * True when this turn is being run on a persistent streaming agent
    * (live steering active, docs/140). In streaming mode the CLI can
@@ -308,14 +331,36 @@ export function wireAgentListeners(
     // listener stops the pending agent_session_id from clobbering the DB,
     // and surface a chat-level error so the user sees why the turn aborted
     // (vs. the previous silent loop).
-    if (source === "stderr" && /No conversation found with session ID/i.test(text)) {
+    const missingConversation = source === "stderr"
+      ? /No conversation found with session ID:\s*([^\s]+)/i.exec(text)
+      : null;
+    if (missingConversation) {
       if (!missingConversationDetected) {
         missingConversationDetected = true;
         pendingAgentSessionId = null;
-        emitToViewers({
-          type: "error",
-          message: "Couldn't resume the previous conversation — it appears to have been moved or removed. Send your next message to start a fresh thread.",
-        });
+        const invalidId = missingConversation[1];
+        const recovering = opts.recoverMissingConversation?.(invalidId) ?? false;
+        if (!recovering) {
+          const message = "Couldn't resume the previous conversation. ShipIt could not start a fresh thread automatically; resend your message or open Settings → Agents if the problem continues.";
+          // Persisted, not merely emitted — same rule as the auth notice in
+          // `agent-auth-handler.ts`: this is the user's only explanation for a
+          // turn that produced nothing, so it has to survive a detached viewer,
+          // a session switch, and a reload. Recorded in-band (rather than
+          // appended) so the `done` handler's `onInterruptedTurn` finalize
+          // rebuilds it at its true position alongside any partial output,
+          // instead of the two racing to write separate rows.
+          const turnSessionId = opts.capturedSessionId;
+          if (runner && turnSessionId) {
+            emitChatCard(
+              runner,
+              { type: "error", message, sessionId: turnSessionId },
+              { role: "assistant", text: `Error: ${message}`, isError: true },
+              { chatHistoryManager: deps.chatHistoryManager, sessionId: turnSessionId },
+            );
+          } else {
+            emitToViewers({ type: "error", message });
+          }
+        }
       }
     }
   });
@@ -330,7 +375,7 @@ export function wireAgentListeners(
     // single callback — the orchestrator dispatches to the right provider.
     // See docs/135.
     if (event.type === "agent_rate_limits") {
-      deps.recordAgentRateLimits?.(agent.agentId, event.session, event.weekly);
+      deps.recordAgentRateLimits?.(agent.agentId, event.session, event.weekly, opts.capturedSessionId);
       return;
     }
 
@@ -365,7 +410,9 @@ export function wireAgentListeners(
         // drain feeds it as the next turn once the current (non-steerable) turn
         // ends. Fall back to the adapter-echoed text if there's no record.
         const requeueText = dropped?.text ?? event.text;
-        const queued: QueuedMessage = { text: requeueText };
+        // A rejected user steer — re-queued as the interactive turn it always
+        // was (SHI-255).
+        const queued: QueuedMessage = { text: requeueText, execution: "interactive" };
         if (dropped?.images && dropped.images.length > 0) queued.images = dropped.images;
         if (dropped?.files && dropped.files.length > 0) {
           queued.files = dropped.files.map((f) => ({ path: f.path }));
@@ -420,6 +467,78 @@ export function wireAgentListeners(
           active: true,
           ...(event.trigger ? { trigger: event.trigger } : {}),
         });
+      }
+      return;
+    }
+
+    // docs/235 — the LEVEL signal: the backend's complete current
+    // background-task list. Transient live state, so it is emit-only and
+    // deliberately NOT persisted — the tasks are gone by the time anyone
+    // reloads the transcript tomorrow. The durable consequence is the runner
+    // state, which keeps the idle enforcer and the disk-tier ladder from
+    // reclaiming a container that still has work outstanding.
+    if (event.type === "agent_background_tasks") {
+      const turnSessionId = opts.capturedSessionId;
+      if (runner) {
+        runner.setBackgroundTasks(event.tasks);
+        if (turnSessionId) {
+          // Its OWN message type, never a `session_status`. This event fires at
+          // arbitrary moments relative to turn boundaries — in particular the CLI
+          // drains the list ~1ms BEFORE the `task_notification` that wakes it (see
+          // the wire trace in docs/235), and again while `handleSendMessage` is
+          // still setting up a turn it hasn't flagged `running` for yet. Riding on
+          // `session_status` meant filling in a `running` snapshot at exactly those
+          // moments, which the client reads as "the turn ended": indicator off,
+          // "needs attention" chime, then back on a frame later.
+          emitToViewers({
+            type: "background_tasks",
+            sessionId: turnSessionId,
+            count: runner.backgroundTaskCount,
+            descriptions: runner.backgroundTaskDescriptions,
+          });
+        }
+      }
+      return;
+    }
+
+    // docs/235 — the EDGE signal: a background task finished and the CLI is
+    // starting a turn nobody asked it for. Mark the runner running so the
+    // session reads as busy for the duration; the ordinary `agent_result`
+    // handler below clears it exactly as it would for a user-initiated turn.
+    // Emit-only for the same reason as above: the spinner is live state, while
+    // the turn's actual output persists through the normal path.
+    if (event.type === "agent_self_wake") {
+      const turnSessionId = opts.capturedSessionId;
+      if (runner) {
+        // docs/235 §6 — give the wake turn a CLEAN accumulator, exactly as
+        // `turn-executor` does via `resetRunnerTurnState` at the start of a
+        // user-initiated turn. Nothing calls that for a turn the orchestrator
+        // never started, so without this the wake turn's output appends to the
+        // PREVIOUS turn's `chatMessageGroups` and its `agent_result` persists
+        // the combined set — duplicating the earlier turn in the transcript.
+        //
+        // ONLY when no turn is in flight. This event rides on the CLI's
+        // `task_notification`, which fires whenever a `Bash(run_in_background)`
+        // job finishes — and a job started earlier in the CURRENT turn commonly
+        // reports back while that same turn is still streaming. That is not a
+        // wake; it is a mid-turn notification, and resetting there DESTROYS the
+        // running turn: `chatMessageGroups` is cleared, and the next
+        // tool-result boundary's `replaceInProgress` deletes every in_progress
+        // row for the session and re-inserts from the truncated accumulator.
+        // The live viewer never notices (it doesn't re-read), but the turn's
+        // opening is gone from chat history for good — a reload or a session
+        // switch shows the turn missing its first half, permanently. See
+        // `integration_tests/self-wake-midturn.test.ts`.
+        if (!runner.running) resetRunnerTurnState(runner);
+        runner.running = true;
+        if (turnSessionId) {
+          emitToViewers({
+            type: "session_status",
+            sessionId: turnSessionId,
+            running: true,
+            queueLength: runner.queueLength,
+          });
+        }
       }
       return;
     }
@@ -563,14 +682,23 @@ export function wireAgentListeners(
     }
 
     if (event.type === "agent_result" && event.error) {
-      event = {
-        ...event,
-        error: normalizeAgentUsageLimitError(
-          agent.agentId,
-          event.error,
-          deps.getSubscriptionLimitsSnapshot?.(),
-        ),
-      };
+      const normalizedError = normalizeAgentUsageLimitError(
+        agent.agentId,
+        event.error,
+        deps.getSubscriptionLimitsSnapshot?.(),
+      );
+      // docs/150 req 7 — a turn the provider killed for quota is the most
+      // reliable exhaustion signal there is: it is the account refusing work,
+      // not telemetry describing it. Stamp it against the NORMALIZED text,
+      // which is where the reset instant ends up when we could recover one.
+      const exhaustedSessionId = opts.capturedSessionId;
+      if (exhaustedSessionId && deps.markSessionAccountExhausted) {
+        const detected = detectHardExhaustion(normalizedError);
+        if (detected) {
+          deps.markSessionAccountExhausted(exhaustedSessionId, exhaustionLockoutUntil(detected));
+        }
+      }
+      event = { ...event, error: normalizedError };
     }
 
     // Drop auto-resolved tool_result blocks for AskUserQuestion calls we
@@ -578,8 +706,21 @@ export function wireAgentListeners(
     // filtering removes every block, skip the whole event — the client has
     // nothing to render and per-type handling below would no-op on empty
     // content anyway.
-    if (event.type === "agent_tool_result" && suppressedToolResultIds.size > 0) {
-      const content = (event as { content?: unknown[] }).content ?? [];
+    // `content` is `unknown[]` by declaration but not by guarantee: the
+    // Anthropic message schema also permits a bare string, and the adapter
+    // passes `message.content` through untouched. A string here threw
+    // `TypeError: content.filter is not a function` out of the SSE event
+    // parser mid-turn, which stranded the turn and requeued an unacknowledged
+    // steer. Skip the filter for a non-array (there are no blocks to suppress)
+    // rather than trusting the type — `stampToolDurations` right below already
+    // guards the same way.
+    const toolResultContent = (event as { content?: unknown }).content;
+    if (
+      event.type === "agent_tool_result" &&
+      suppressedToolResultIds.size > 0 &&
+      Array.isArray(toolResultContent)
+    ) {
+      const content: unknown[] = toolResultContent;
       const filtered = content.filter((b) => {
         if (typeof b !== "object" || b === null) return true;
         const id = (b as Record<string, unknown>).tool_use_id;
@@ -602,7 +743,24 @@ export function wireAgentListeners(
     const isInternalStreamCompletion =
       event.type === "agent_assistant" && event.isStreamCompletion;
     if (!isInternalStreamCompletion) {
-      emitToViewers({ type: "agent_event", event });
+      // docs/244 — project heavy bodies out of the WIRE copy only. `event`
+      // itself must stay whole: it flows on to `extractToolResults` below and
+      // is what gets persisted, and the fetch endpoints read the persisted row.
+      // Projecting in place here would store the slice and destroy the tail.
+      //
+      // A client cannot outrun the write, but only because this projects tool
+      // RESULTS and nothing else: the `replaceInProgress` that commits them is
+      // a synchronous better-sqlite3 call in the `agent_tool_result` branch
+      // below, in this same tick, so the row lands before the frame reaches the
+      // network. That does NOT extend to `agent_assistant` — an Edit/Write body
+      // arriving there is not committed until the *next* tool-result boundary,
+      // so stripping it here would leave the diff modal with nothing to fetch
+      // for as long as the tool takes to run. Hence tool inputs are projected
+      // on the history path only; see `WireProjectionOptions`.
+      const wireEvent = opts.capturedSessionId
+        ? projectAgentEventForWire(opts.capturedSessionId, event, (id) => toolTracker.getToolName(id))
+        : event;
+      emitToViewers({ type: "agent_event", event: wireEvent });
     }
 
     if (event.type === "agent_init") {
@@ -912,6 +1070,11 @@ export function wireAgentListeners(
           { inProgress: true },
         );
         deps.chatHistoryManager.replaceInProgress(usageSessionId, inProgressMessages);
+        // docs/244 / SHI-297 — this boundary is what puts the turn's Edit/Write
+        // inputs and its nested subagent results on disk. Recording them lets a
+        // mid-turn reconnect strip the committed prefix instead of re-sending
+        // every body the history path had just removed.
+        if (runner) markMessagesCommitted(runner.committedBodyIds, inProgressMessages);
         if (runner) runner.lastPersistedBufferIndex = runner.getTurnEventBuffer().length;
       }
     }
@@ -1148,9 +1311,17 @@ export function wireAgentListeners(
   wireAuthRequiredHandler(agent, runner, deps, opts, emitToViewers);
 
   agent.on("error", async (err: Error) => {
-    console.error("[agent] process error:", err.message);
-    deps.broadcastLog("server", `Agent process error: ${err.message}`);
-    emitToViewers({ type: "error", message: `Agent process error: ${err.message}` });
+    // docs/150 req 13 — a turn blocked because no connected account can serve
+    // it is a routing decision, not a crashed process. It reaches this handler
+    // (env-prep throws, `executeAgentTurn` re-emits as `error`) so it inherits
+    // the whole terminal-turn cleanup below, but the user must not be told
+    // their agent crashed: the message already says what happened and what to
+    // do, so it is surfaced verbatim.
+    const blocked = err instanceof ProviderRouteUnavailableError;
+    const display = blocked ? err.message : `Agent process error: ${err.message}`;
+    console.error(blocked ? "[agent] turn blocked:" : "[agent] process error:", err.message);
+    deps.broadcastLog("server", display);
+    emitToViewers({ type: "error", message: display });
     const turnSessionId = opts.capturedSessionId;
     if (turnSessionId) {
       // Preserve whatever partial turn the agent produced before it errored.
@@ -1173,7 +1344,7 @@ export function wireAgentListeners(
       deps.chatHistoryManager.finalizeInProgress(turnSessionId);
       deps.chatHistoryManager.append(turnSessionId, {
         role: "assistant",
-        text: `Error: ${err.message}`,
+        text: blocked ? err.message : `Error: ${err.message}`,
         isError: true,
       });
     }
@@ -1192,6 +1363,12 @@ export function wireAgentListeners(
         runner.setAgent(null);
         // docs/140 — streaming process is gone; reset the gate.
         runner.isStreamingActive = false;
+        // docs/235 — and its background tasks died with it (the CLI reaps them
+        // on exit). Without this a crashed process would leave a non-zero count
+        // pinning `agentBusy` true, making the runner permanently
+        // unreclaimable — the same failure this whole block guards against for
+        // `running`.
+        runner.clearBackgroundTasks();
       }
       runner.running = false;
       // docs/182 — a process-level error is a terminal turn error: record it on

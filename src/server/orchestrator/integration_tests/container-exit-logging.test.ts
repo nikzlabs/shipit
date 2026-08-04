@@ -604,6 +604,58 @@ describe("setupContainerHealthMonitoring → oomBreaker integration", () => {
     expect(logs.some((l) => l.text.includes("Session disabled"))).toBe(true);
   });
 
+  // -------------------------------------------------------------------------
+  // Compose-service exits (`service_exited`). Same principle as
+  // "does not assume exit 137 is OOMKilled when no explicit error string is
+  // given" above, applied to the service path: 137 is SIGKILL, and inside
+  // ShipIt the most frequent sender is our own re-install teardown
+  // (`compose stop` → SIGTERM → 10s grace → SIGKILL) against a service that
+  // doesn't forward SIGTERM. Field report docs/239: every cycle of a 30s
+  // re-install loop was reported as an OOM on a service using 110 MiB of a
+  // 3 GiB limit, so the user was told to raise a limit that never bound.
+  // -------------------------------------------------------------------------
+
+  it("does not report a compose service exit 137 as OOM when the event says oom: false", () => {
+    const { manager, fake, logs, sessionId } = setup();
+    manager.emit("service_exited", sessionId, {
+      serviceName: "dev", containerId: "c1", exitCode: 137, oom: false,
+    });
+
+    const serviceLogs = logs.filter((l) => l.text.includes("dev"));
+    expect(serviceLogs).toHaveLength(1);
+    expect(serviceLogs[0]?.text).toContain("exited with code 137");
+    expect(serviceLogs[0]?.text).not.toContain("OOM");
+    // No memory advice — raising the limit is inert for a plain SIGKILL.
+    expect(serviceLogs[0]?.text).not.toContain("memory");
+    // And no `service_oom` card claiming an OOM that didn't happen.
+    expect(fake.emitted.some((m) => m.type === "service_oom")).toBe(false);
+  });
+
+  it("still reports a confirmed compose service OOM as one", () => {
+    const { manager, fake, logs, sessionId } = setup();
+    manager.emit("service_exited", sessionId, {
+      serviceName: "dev", containerId: "c1", exitCode: 137, oom: true,
+    });
+
+    const serviceLogs = logs.filter((l) => l.text.includes("dev"));
+    expect(serviceLogs[0]?.text).toContain("OOM-killed");
+    expect(serviceLogs[0]?.text).toContain("Increase memory limits");
+    expect(fake.emitted.some((m) => m.type === "service_oom")).toBe(true);
+  });
+
+  it("a compose service exit never touches the agent-container OOM breaker", () => {
+    // The agent container is fine; only a sibling died. A teardown-induced 137
+    // on a service must not count toward disabling the session.
+    const { manager, breaker, sessionId } = setup();
+    for (let i = 0; i < 5; i++) {
+      manager.emit("service_exited", sessionId, {
+        serviceName: "dev", containerId: `c${i}`, exitCode: 137, oom: false,
+      });
+    }
+    expect(breaker.getState(sessionId).countInWindow).toBe(0);
+    expect(breaker.isTripped(sessionId)).toBe(false);
+  });
+
   it("emits session_memory_exhausted exactly once across both trip paths", () => {
     // OOM record-tripped the breaker; a subsequent loop alert must NOT
     // re-emit because forceTrip is idempotent (justTripped=false after

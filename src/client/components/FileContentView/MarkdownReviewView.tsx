@@ -28,6 +28,14 @@ export function MarkdownReviewView({
   const addSelectionComment = useFileReviewStore((s) => s.addSelectionComment);
   const editComment = useFileReviewStore((s) => s.editComment);
   const deleteComment = useFileReviewStore((s) => s.deleteComment);
+  const setComposing = useFileReviewStore((s) => s.setComposing);
+
+  // An open comment editor blocks "Send comments" in the footer, so an
+  // accidental submit can't drop a half-typed comment.
+  const handleComposingChange = useCallback(
+    (composing: boolean) => { setComposing(sessionId, filePath, composing); },
+    [sessionId, filePath, setComposing],
+  );
 
   const handleAdd = useCallback(
     (quotedText: string, contextBefore: string, contextAfter: string, text: string) => {
@@ -83,6 +91,7 @@ export function MarkdownReviewView({
         onAddComment={handleAdd}
         onEditComment={handleEdit}
         onDeleteComment={handleDelete}
+        onComposingChange={handleComposingChange}
         readOnly={readOnly}
       />
     </div>

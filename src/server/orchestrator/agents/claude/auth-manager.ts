@@ -1,15 +1,25 @@
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, statSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, statSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import * as pty from "node-pty";
 import type { IPty } from "node-pty";
 import { stripAnsi } from "../../../shared/strip-ansi.js";
+import {
+  sanitizeClaudeAuthDiagnostic,
+  type AgentAuthLogPayload,
+  type AgentAuthProgressPayload,
+  type ClaudeAuthLogLevel,
+  type ClaudeAuthLogSource,
+  type ClaudeAuthPhase,
+} from "./auth-diagnostics.js";
 import {
   firstEpochMs,
   pickString,
   probeNestedString,
   resolveSymlinkTarget,
 } from "../agent-auth-base.js";
+import { ensureClaudeUserConfigDefaults } from "./user-config.js";
 import type {
   AgentAuthManager,
   AgentAuthStartOptions,
@@ -178,8 +188,12 @@ const CLAUDE_USER_CONFIG = "/root/.claude.json";
  */
 const CLAUDE_CREDENTIAL_FILES = [".credentials.json", "credentials.json", "auth.json"];
 
-/** Trigger phrases that indicate the code-paste URL has been printed. */
-const CODE_PASTE_TRIGGERS = ["Paste code here", "Pastecodehereifprompted"];
+/**
+ * Prompt that indicates the code-paste URL has been printed. Ink can omit an
+ * arbitrary subset of spaces when its terminal output is flattened, so match
+ * each boundary independently instead of enumerating observed renderings.
+ */
+const CODE_PASTE_TRIGGER = /paste\s*code\s*here(?:\s*if\s*prompted)?/i;
 
 /**
  * Ensure the Claude CLI's onboarding wizard and workspace trust prompt
@@ -193,44 +207,22 @@ const CODE_PASTE_TRIGGERS = ["Paste code here", "Pastecodehereifprompted"];
  * `userConfig` / `configDir` are passed in so the same routine works for the
  * singleton path (`/root/.claude.json`, `/root/.claude`) and for an
  * account-scoped flow whose HOME is a provider-account root (docs/150).
+ *
+ * The config write itself lives in {@link ensureClaudeUserConfigDefaults} —
+ * shared with per-session credential provisioning, which has to write the same
+ * keys into each session container's own `.claude.json`.
  */
 function ensureOnboardingComplete(userConfig: string, configDir: string): void {
   try {
-    let config: Record<string, unknown> = {};
-    if (existsSync(userConfig)) {
-      const raw = readFileSync(userConfig, "utf-8");
-      config = JSON.parse(raw) as Record<string, unknown>;
-    }
-
-    let changed = false;
-
-    if (!config.hasCompletedOnboarding) {
-      config.hasCompletedOnboarding = true;
-      changed = true;
-    }
-
-    // Pre-trust known directories so the CLI doesn't show the workspace trust prompt.
-    // /app is the container WORKDIR (where the server runs), /workspace is the data volume.
-    const projects = (config.projects ?? {}) as Record<string, Record<string, unknown>>;
-    for (const dir of ["/app", "/workspace"]) {
-      if (!projects[dir]?.hasTrustDialogAccepted) {
-        projects[dir] = { ...projects[dir], hasTrustDialogAccepted: true };
-        changed = true;
-      }
-    }
-    if (changed) config.projects = projects;
-
     // Ensure the CLI's config directory exists. In Docker, /root/.claude is a
     // symlink to /credentials/.claude — mkdirSync fails on a broken symlink, so
     // resolve the target and create that instead (see resolveSymlinkTarget).
     mkdirSync(resolveSymlinkTarget(configDir), { recursive: true });
-
-    if (changed) {
-      writeFileSync(userConfig, JSON.stringify(config, null, 2));
-      console.log("[auth] Updated", userConfig, "— onboarding + trust");
-    }
   } catch (err) {
-    console.warn("[auth] Failed to pre-create Claude config:", err);
+    console.warn("[auth] Failed to pre-create Claude config dir:", err);
+  }
+  if (ensureClaudeUserConfigDefaults(userConfig)) {
+    console.log("[auth] Updated", userConfig, "— onboarding + trust");
   }
 }
 
@@ -260,6 +252,9 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
   private activeCredentialDir: string | null = null;
   /** Provider-account id for the in-flight flow, or `null` when singleton. */
   private activeFlowAccountId: string | null = null;
+  /** Per-start id used to correlate progress/log diagnostics for one login attempt. */
+  private activeAttemptId: string | null = null;
+  private activeAttemptStartedAt = 0;
   /**
    * Newest credential-file mtime (epoch ms) observed in the active flow's
    * config dir at the moment the flow *started*, or `0` when no credential
@@ -314,8 +309,21 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
     this.startOAuthFlow(opts);
   }
 
+  /**
+   * Abort an in-flight sign-in.
+   *
+   * docs/150 — releases the account scope as well as the process. `kill()`
+   * alone tears down the PTY but leaves `activeFlowAccountId` set, and since
+   * a cancel emits no terminal `complete`/`failed` event, nothing else would
+   * ever clear it. That used to be invisible; now that `startAccountAuth`
+   * refuses while another account owns the flow, a stale scope would reject
+   * every subsequent sign-in for the provider — permanently, with no way out
+   * from the UI. Codex's `cancel()` has always cleared its scope; this is the
+   * same contract.
+   */
   cancel(): void {
     this.kill();
+    this.clearActiveScope();
   }
 
   /** {@link AgentAuthManager.submitCode} — alias for {@link sendCode}. */
@@ -342,6 +350,45 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
     this.lastPendingDetails = details;
     this.emit("auth_url", url);
     this.emit("pending", details);
+  }
+
+  private authEventBase(): { agentId: "claude"; accountId?: string; attemptId: string } {
+    return {
+      agentId: "claude",
+      ...(this.activeFlowAccountId ? { accountId: this.activeFlowAccountId } : {}),
+      attemptId: this.activeAttemptId ?? "unknown",
+    };
+  }
+
+  private elapsedMs(): number | undefined {
+    return this.activeAttemptStartedAt ? Date.now() - this.activeAttemptStartedAt : undefined;
+  }
+
+  private emitProgress(phase: ClaudeAuthPhase, message: string): void {
+    const payload: AgentAuthProgressPayload = {
+      ...this.authEventBase(),
+      phase,
+      message: sanitizeClaudeAuthDiagnostic(message),
+      ...(this.elapsedMs() !== undefined ? { elapsedMs: this.elapsedMs() } : {}),
+    };
+    this.emit("progress", payload);
+  }
+
+  private emitDiagnosticLog(
+    level: ClaudeAuthLogLevel,
+    source: ClaudeAuthLogSource,
+    message: string,
+  ): void {
+    const sanitized = sanitizeClaudeAuthDiagnostic(message);
+    if (!sanitized) return;
+    const payload: AgentAuthLogPayload = {
+      ...this.authEventBase(),
+      timestamp: new Date().toISOString(),
+      level,
+      source,
+      message: sanitized,
+    };
+    this.emit("log", payload);
   }
 
   /**
@@ -498,8 +545,16 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
    */
   startOAuthFlow(opts?: AgentAuthStartOptions): void {
     if (this.proc) {
-      console.log("[auth] startOAuthFlow() skipped — PTY process already running (pid %d)", this.proc.pid);
-      return;
+      // A prior flow left a PTY alive (a hung/incomplete attempt, or a stale
+      // `claude /login` that never exited). Don't silently no-op — that's the
+      // deadlock that forced users to click "Clear saved credentials" first:
+      // the only path that called kill() was signOut(), so a stale proc made
+      // every "Sign in" retry a no-op while the UI sat on "Starting…". Tear it
+      // down here so re-clicking "Sign in" always restarts from a clean slate,
+      // mirroring signOut()'s teardown.
+      console.log("[auth] startOAuthFlow() — tearing down stale PTY (pid %d) before restart", this.proc.pid);
+      this.emitDiagnosticLog("warn", "shipit", "Tearing down a stale Claude login process before starting a new attempt.");
+      this.kill();
     }
 
     console.log("[auth] Starting OAuth flow (node-pty)...");
@@ -507,11 +562,15 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
     this.authUrlEmitted = false;
     this.wizardEnterCount = 0;
     this.lastPendingDetails = null;
+    this.activeAttemptId = randomUUID();
+    this.activeAttemptStartedAt = Date.now();
     // Scope this flow to a provider account (docs/150) — or `null` for the
     // legacy singleton flow. The CLI runs with HOME pointed at the account
     // root, so it reads/writes `<root>/.claude` + `<root>/.claude.json`.
     this.activeCredentialDir = opts?.credentialDir ?? null;
     this.activeFlowAccountId = opts?.accountId ?? null;
+    this.emitProgress("starting", "Starting Claude sign-in.");
+    this.emitDiagnosticLog("info", "shipit", "Start requested for Claude sign-in.");
     // Remove any stale/expired credential files for this scope *before*
     // spawning the CLI. `claude /login` only presents the full OAuth code-paste
     // flow when it starts from a clean slate; with an expired
@@ -534,6 +593,8 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
       this.claudeUserConfig(this.activeCredentialDir),
       this.claudeConfigDir(this.activeCredentialDir),
     );
+    this.emitProgress("skipping_setup", "Prepared Claude CLI onboarding and workspace trust state.");
+    this.emitDiagnosticLog("info", "shipit", "Prepared Claude CLI config before spawning login.");
 
     // Strip env-var auth from the login subprocess. `claude /login` honors
     // `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` *over* the interactive OAuth
@@ -548,6 +609,12 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
     const loginEnv: NodeJS.ProcessEnv = { ...process.env, HOME: home };
     delete loginEnv.ANTHROPIC_API_KEY;
     delete loginEnv.ANTHROPIC_AUTH_TOKEN;
+    // `CLAUDE_CODE_OAUTH_TOKEN` (set by `claude setup-token`) is a third
+    // subscription bearer the CLI honors over the interactive flow — strip it
+    // too so a forwarded token (e.g. dogfood secrets) can't short-circuit the
+    // code-paste flow into the same "Starting…" hang.
+    delete loginEnv.CLAUDE_CODE_OAUTH_TOKEN;
+    this.emitProgress("waiting_for_cli", "Launching Claude CLI login.");
 
     // Use a wide terminal to minimize URL wrapping
     this.proc = pty.spawn("claude", ["/login"], {
@@ -557,12 +624,16 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
       env: loginEnv,
     });
     console.log("[auth] Spawned claude /login (pid %d)", this.proc.pid);
+    this.emitDiagnosticLog("info", "shipit", `Spawned claude /login process with pid ${this.proc.pid}.`);
+    this.emitProgress("waiting_for_url", "Waiting for Claude CLI to print an authentication link.");
 
     // Watchdog: if no output after 15s, log diagnostic info
     const watchdog = setTimeout(() => {
       if (!this.authUrlEmitted && this.outputBuffer.length === 0 && this.proc) {
         console.warn("[auth] Watchdog: no output received after 15s. Process pid:", this.proc.pid);
         console.warn("[auth] Watchdog: sending Enter to probe");
+        this.emitDiagnosticLog("warn", "shipit", "No Claude CLI output after 15s; sending Enter to probe the prompt.");
+        this.emitProgress("waiting_for_cli", "Still waiting for Claude CLI output.");
         this.proc.write("\r");
       }
     }, 15000);
@@ -573,8 +644,10 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
       this.outputBuffer += cleaned;
       if (cleaned.trim()) {
         console.log("[auth output]", cleaned.trim());
+        this.emitDiagnosticLog("info", "claude_stdout", cleaned.trim());
       } else if (data.length > 0) {
         console.log("[auth] Received %d bytes of terminal control data", data.length);
+        this.emitDiagnosticLog("debug", "claude_control", `Received ${data.length} bytes of terminal control data.`);
       }
 
       // Try to detect the auth URL in the accumulated output.
@@ -588,6 +661,8 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
           if (url) {
             console.log("[auth] Detected code-paste auth URL:", url);
             this.authUrlEmitted = true;
+            this.emitDiagnosticLog("info", "shipit", "Detected Claude authentication URL.");
+            this.emitProgress("waiting_for_code", "Authentication link detected. Waiting for authorization code.");
             this.emitAuthUrl(url);
           }
         } else {
@@ -596,6 +671,8 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
           if (url) {
             console.log("[auth] Detected auth URL (fallback):", url);
             this.authUrlEmitted = true;
+            this.emitDiagnosticLog("info", "shipit", "Detected Claude authentication URL with fallback parser.");
+            this.emitProgress("waiting_for_code", "Authentication link detected. Waiting for authorization code.");
             this.emitAuthUrl(url);
           }
         }
@@ -608,6 +685,7 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
 
     this.proc.onExit(({ exitCode }) => {
       console.log("[auth] OAuth process exited with code", exitCode);
+      this.emitDiagnosticLog(exitCode === 0 ? "info" : "warn", "shipit", `Claude login process exited with code ${exitCode}.`);
       this.proc = null;
 
       // Last chance: try to extract URL from buffer if not yet emitted
@@ -617,6 +695,8 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
         const url = extractUrlFromBuffer(buf);
         if (url) {
           this.authUrlEmitted = true;
+          this.emitDiagnosticLog("info", "shipit", "Detected Claude authentication URL after process exit.");
+          this.emitProgress("waiting_for_code", "Authentication link detected. Waiting for authorization code.");
           this.emitAuthUrl(url);
         }
       }
@@ -625,6 +705,8 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
       // stale file must not count — see `credentialBaselineMtime`.
       if (this.hasFreshCredentials()) {
         console.log("[auth] Authentication successful");
+        this.emitProgress("complete", "Claude sign-in completed.");
+        this.emitDiagnosticLog("info", "shipit", "Fresh Claude credentials were written.");
         // Only the singleton flow owns the global `_authenticated` flag; a
         // scoped flow's success is reflected on its account row instead.
         if (!this.activeCredentialDir) this._authenticated = true;
@@ -639,6 +721,8 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
         this.emit("complete");
       } else {
         console.log("[auth] Authentication may have failed (no credentials found)");
+        this.emitProgress("failed", "Claude sign-in ended before fresh credentials were written.");
+        this.emitDiagnosticLog("error", "shipit", "Claude login process exited without writing fresh credentials.");
         this.lastPendingDetails = null;
         this.emit("auth_failed");
         // `error` is the catch-all reason for "we tried, it didn't work" —
@@ -659,6 +743,8 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
   private clearActiveScope(): void {
     this.activeCredentialDir = null;
     this.activeFlowAccountId = null;
+    this.activeAttemptId = null;
+    this.activeAttemptStartedAt = 0;
   }
 
   /**
@@ -673,6 +759,7 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
         console.log("[auth] Exhausted Enter attempts. Buffer (%d chars):", this.outputBuffer.length);
         const redacted = this.outputBuffer.substring(0, 500).replace(/https?:\/\/\S+/g, "[URL REDACTED]");
         console.log("[auth] Buffer contents (URLs redacted):", redacted);
+        this.emitDiagnosticLog("warn", "shipit", `Exhausted wizard Enter attempts. Buffered output length: ${this.outputBuffer.length} characters.`);
       }
       return;
     }
@@ -684,6 +771,7 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
       if (!this.authUrlEmitted && this.proc && this.findTriggerPos() === -1 && this.wizardEnterCount < 10) {
         this.wizardEnterCount++;
         console.log(`[auth] Wizard: sending Enter (${this.wizardEnterCount}/10)`);
+        this.emitDiagnosticLog("debug", "shipit", `Sent Enter to Claude CLI wizard (${this.wizardEnterCount}/10).`);
         this.proc.write("\r");
         // Self-schedule: if the CLI doesn't produce output after this
         // Enter, we'll still send the next one after a longer delay.
@@ -694,11 +782,7 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
 
   /** Find the position of the first trigger phrase in the output buffer. */
   private findTriggerPos(): number {
-    for (const trigger of CODE_PASTE_TRIGGERS) {
-      const pos = this.outputBuffer.indexOf(trigger);
-      if (pos !== -1) return pos;
-    }
-    return -1;
+    return this.outputBuffer.search(CODE_PASTE_TRIGGER);
   }
 
   /** Write an authorization code to the PTY (for the "Paste code here" prompt). */
@@ -706,6 +790,8 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
     if (this.proc) {
       const trimmed = code.trim();
       console.log("[auth] Sending auth code to PTY (%d chars)", trimmed.length);
+      this.emitProgress("checking_credentials", "Authorization code submitted. Checking for credentials.");
+      this.emitDiagnosticLog("info", "shipit", `Authorization code submitted (${trimmed.length} characters redacted).`);
       // Write code characters first, then Enter (\r) after a short delay.
       // Sending them separately ensures the CLI's Ink input handler processes
       // the code text before receiving the Enter keypress.
@@ -713,6 +799,7 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
       setTimeout(() => {
         if (this.proc) {
           console.log("[auth] Sending Enter to confirm code");
+          this.emitDiagnosticLog("debug", "shipit", "Sent Enter to confirm the authorization code.");
           this.proc.write("\r");
         }
       }, 200);
@@ -722,6 +809,7 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
       this.startCredentialsPoll();
     } else {
       console.warn("[auth] Cannot send code — no PTY process");
+      this.emitDiagnosticLog("warn", "shipit", "Cannot submit authorization code because no Claude login process is active.");
     }
   }
 
@@ -730,11 +818,15 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
     this.clearCredentialsPoll();
     const configDir = this.claudeConfigDir(this.activeCredentialDir);
     console.log("[auth] Starting credentials poll (checking", configDir, "for a fresh write every 500ms)");
+    this.emitProgress("checking_credentials", "Checking whether Claude wrote fresh credentials.");
+    this.emitDiagnosticLog("info", "shipit", "Started credential polling after code submission.");
     let attempts = 0;
     this.credentialsPollInterval = setInterval(() => {
       attempts++;
       if (this.hasFreshCredentials()) {
         console.log("[auth] Fresh credentials detected on disk after code submission");
+        this.emitProgress("complete", "Claude sign-in completed.");
+        this.emitDiagnosticLog("info", "shipit", "Fresh Claude credentials detected on disk.");
         if (!this.activeCredentialDir) this._authenticated = true;
         this.lastPendingDetails = null;
         this.clearCredentialsPoll();
@@ -747,6 +839,8 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
       } else if (attempts >= 60) {
         // Give up after 30 seconds (60 × 500ms)
         console.log("[auth] Credentials poll timed out — no fresh credentials written to", configDir);
+        this.emitProgress("failed", "Timed out waiting for Claude credentials.");
+        this.emitDiagnosticLog("error", "shipit", "Credentials poll timed out after 30 seconds.");
         this.lastPendingDetails = null;
         this.clearCredentialsPoll();
         this.emit("auth_failed");

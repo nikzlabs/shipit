@@ -29,12 +29,14 @@ import {
   contentToAddedDiff,
   fileChangeKindLabel,
   isAskUserQuestionTool,
+  normalizeMcpToolName,
   normalizeFileChangeDiff,
   normalizeWebSearchItem,
   summarizeCodexSubagentPrompt,
   unwrapShellCommand,
   type CodexItem,
 } from "./codex-tool-normalizer.js";
+import { normalizeCodexModelId } from "../../../shared/agent-registry.js";
 
 /** Inbound request (app-server → client) — has BOTH an id and a method. */
 interface JsonRpcServerRequest {
@@ -47,6 +49,23 @@ interface JsonRpcServerRequest {
 interface JsonRpcServerNotification {
   method: string;
   params?: Record<string, unknown>;
+}
+
+/**
+ * Native approval requests are not, by themselves, evidence that an action is
+ * sensitive: Codex may emit them for routine work even with approvalPolicy
+ * "never". The v1/v2 schemas reserve these fields for requests that need extra
+ * filesystem, network, or execution-policy access, so only those requests need
+ * a user decision inside ShipIt's already-isolated worker container.
+ */
+function requiresUserApproval(params: Record<string, unknown>): boolean {
+  if (typeof params.reason === "string" && params.reason.trim()) return true;
+  if (typeof params.grantRoot === "string" && params.grantRoot.trim()) return true;
+  if (params.networkApprovalContext !== null && params.networkApprovalContext !== undefined) return true;
+  if (params.additionalPermissions !== null && params.additionalPermissions !== undefined) return true;
+
+  return [params.proposedExecpolicyAmendment, params.proposedNetworkPolicyAmendments]
+    .some((value) => Array.isArray(value) && value.length > 0);
 }
 
 /**
@@ -172,10 +191,10 @@ export class CodexEventHandler {
    * escalated permissions; leaving it unanswered is THE bug behind "Codex stuck
    * on Thinking…".
    *
-   * docs/193 — instead of always auto-accepting (which routed around the user
-   * for genuinely escalated actions), route the request through the shared
-   * `PermissionBroker` when one is injected, so it surfaces the same approve/
-   * deny card as Claude's sensitive-file gate. When no requester is wired
+   * docs/193 — approval methods are also emitted for ordinary commands and
+   * workspace changes despite ShipIt's `approvalPolicy: "never"`. Auto-accept
+   * those routine requests; only requests whose payload explicitly describes
+   * extra access are routed through the shared `PermissionBroker`. When no requester is wired
    * (tests / the broker is unavailable) OR the broker path throws, fall back to
    * the historical auto-accept so a turn can never hang waiting on a human who
    * isn't being asked.
@@ -218,7 +237,7 @@ export class CodexEventHandler {
     const accept = protocol === "v2" ? "accept" : "approved";
     const reject = protocol === "v2" ? "decline" : "denied";
 
-    if (!this.requestPermission) {
+    if (!this.requestPermission || !requiresUserApproval(req.params ?? {})) {
       this.ctx.sendResponse(req.id, { decision: accept });
       return;
     }
@@ -453,10 +472,13 @@ export class CodexEventHandler {
             input = { raw: item.arguments };
           }
         }
+        const toolName = item.type === "mcpToolCall"
+          ? normalizeMcpToolName(item.server, item.tool)
+          : item.tool ?? "tool";
         if (phase === "started") {
-          this.emitToolUseOnce(id, item.tool ?? "tool", input);
+          this.emitToolUseOnce(id, toolName, input);
         } else {
-          this.emitToolUseOnce(id, item.tool ?? "tool", input);
+          this.emitToolUseOnce(id, toolName, input);
           const payload = item.result ?? item.error ?? "";
           this.emitToolResult(id, typeof payload === "string" ? payload : JSON.stringify(payload));
         }
@@ -648,18 +670,41 @@ export class CodexEventHandler {
 
     let threadResult: unknown;
     if (params.sessionId) {
-      // Resume existing thread
+      // Resume the existing thread. This MUST fail closed: the persisted
+      // `sessionId` is the only link between ShipIt's visible chat history and
+      // the context Codex sends to the model. The old fallback caught every
+      // resume error and silently called `thread/start`; the follow-up then ran
+      // successfully in an empty thread and produced a plausible but
+      // contextless answer (most visible when the user referred to "the issue
+      // you just fixed"). A missing/corrupt rollout and a transient/protocol
+      // rejection are not permission to discard the conversation.
       try {
         threadResult = await this.ctx.sendRequest("thread/resume", {
           ...threadBase,
           threadId: params.sessionId,
         });
-      } catch {
-        // If resume fails, start a new thread
-        threadResult = await this.ctx.sendRequest("thread/start", { ...threadBase });
+      } catch (err: unknown) {
+        const reason = err instanceof Error ? err.message : String(err);
+        this.ctx.emitLog("codex", `thread/resume failed for ${params.sessionId}: ${reason}`);
+        throw new Error(
+          `Couldn't resume the previous Codex conversation (${reason}). ` +
+            "The follow-up was not sent in a new, contextless thread.",
+          { cause: err },
+        );
       }
     } else {
-      threadResult = await this.ctx.sendRequest("thread/start", { ...threadBase });
+      // ShipIt tears down the app-server after each turn and starts a fresh
+      // process for the next message, so the returned thread id is useful only
+      // when Codex also materializes its rollout on disk. Do not inherit the
+      // app-server's default here: that default has varied across CLI releases
+      // and an ephemeral thread still returns a perfectly valid id, which
+      // ShipIt then persists before the next `thread/resume` fails with
+      // "no rollout found". Pinning this false makes the thread-id persistence
+      // contract explicit at the boundary where the thread is created.
+      threadResult = await this.ctx.sendRequest("thread/start", {
+        ...threadBase,
+        ephemeral: false,
+      });
     }
 
     // Extract thread ID from the response.
@@ -677,12 +722,14 @@ export class CodexEventHandler {
       this.threadId = resolvedThreadId;
     }
 
+    const model = normalizeCodexModelId(params.model) ?? "gpt-5.6-sol";
+
     // Emit agent_init so the server can track the session
     this.ctx.emitEvent({
       type: "agent_init",
       agentId: "codex",
       sessionId: this.threadId ?? `codex-${Date.now()}`,
-      model: params.model ?? "gpt-5.5",
+      model,
       tools: this.toolNames,
     });
 
@@ -737,9 +784,7 @@ export class CodexEventHandler {
       turnParams.cwd = params.cwd;
     }
 
-    if (params.model) {
-      turnParams.model = params.model;
-    }
+    turnParams.model = model;
 
     // Step 4: Start the turn (this triggers streaming notifications).
     // TurnStartResponse carries the turn id — capture it as a fallback in

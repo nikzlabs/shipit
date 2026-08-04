@@ -9,6 +9,7 @@ import type { SessionContainerManager } from "./session-container.js";
 import type { SessionOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import { generateBranchPrefix, fetchAndResolveDefaultBranch, syncLocalDefaultBranchToOrigin } from "./git-utils.js";
 import { handWorkspaceBackToWorker } from "./session-worker-uid.js";
+import { materializeLfsWithWarning } from "./git-lfs.js";
 import { getErrorMessage } from "./validation.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { workerInstall, workerGet } from "./worker-http.js";
@@ -169,6 +170,14 @@ export function createWarmPool(
         // commits that are already on main but ahead of the stale bare-cache
         // snapshot this clone was cut from (docs/194).
         await syncLocalDefaultBranchToOrigin(workspaceDir);
+        // docs/231 — pull Git LFS content. Must come after the `checkout -b`
+        // above (which re-writes pointer stubs into the worktree) and before the
+        // chown below (the pull writes files as root). Warming happens off the
+        // user's critical path, so this is the cheapest place to absorb the
+        // transfer for asset-heavy repos.
+        await materializeLfsWithWarning(workspaceDir, repoUrl, (message) =>
+          sseBroadcast("error", { message }),
+        );
         // docs/150 §7 addendum (SHI-145): hand the workspace back to the worker
         // uid after the root orchestrator's fetch + `checkout -b` + ref
         // realignment. `checkout -b <resetTarget>` re-materializes the WORKTREE
@@ -263,10 +272,12 @@ export function createWarmPool(
                 console.log(`[warm:install:${appSessionId}] Skipping pre-install for untrusted remote ${repoUrl} — awaiting first-clone trust`);
               } else {
                 // Pre-run agent.install so the user doesn't wait for it on activation.
-                // The standby's workspace is bind-mounted from `workspaceDir`, so the
-                // success marker (`.shipit/.install-done`) persists for the future
-                // runner: on activation, `runner.runInstall()` hits the worker, sees
-                // the marker, and short-circuits with `{ skipped: true }`. If the
+                // docs/246 — the success marker is written to the session's STATE dir
+                // (mounted at `/session-state`), not into the clone. The standby and
+                // the activated session are the same session, hence the same session
+                // dir, so it persists for the future runner exactly as before: on
+                // activation, `runner.runInstall()` hits the worker, sees the marker,
+                // and short-circuits with `{ skipped: true }`. If the
                 // user activates *during* pre-install, the worker's /install endpoint
                 // joins the in-flight run (no longer 409s) and the orchestrator-side
                 // SSE listener resolves on the same `install_done`/`install_error`.

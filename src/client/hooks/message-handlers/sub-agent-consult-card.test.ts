@@ -56,7 +56,7 @@ const card = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
-const spawnEvent: WsSubAgentSpawn = { type: "sub_agent_spawn", spawnId: "sp-1", subAgentId: "codex" } as unknown as WsSubAgentSpawn;
+const spawnEvent: WsSubAgentSpawn = { type: "sub_agent_spawn", sessionId: "s1", spawnId: "sp-1", subAgentId: "codex" } as unknown as WsSubAgentSpawn;
 const consultCardEvent: WsSubAgentConsultCard = { type: "sub_agent_consult_card", sessionId: "s1", card: card() } as unknown as WsSubAgentConsultCard;
 
 /** The card is "visible" only if buildVisualElements emits a renderable element for it. */
@@ -95,6 +95,37 @@ describe("consult card survival (docs/144, docs/220)", () => {
     // The turn-event buffer replays the pre-card Bash agent_assistant on top of the snapshot.
     handleAgentEvent(ctx, assistantEvent("Let me ask Codex.", [{ id: "bash-1", name: "Bash", input: { command: "shipit agent run" } }]));
     expect(cardVisible()).toBe(true);
+  });
+
+  it("patches the pending card in place on completion — one row, not two (SHI-278)", () => {
+    handleSubAgentSpawn(ctx, spawnEvent);
+    // At spawn the card lands `pending`; the transient chip stays up alongside
+    // it only until the durable row exists.
+    handleSubAgentConsultCard(ctx, {
+      ...consultCardEvent,
+      card: card({ status: "pending", durationMs: undefined, costUsd: undefined, outputMarkdown: undefined }),
+    } as unknown as WsSubAgentConsultCard);
+    expect(useSessionStore.getState().subAgentSpawns["sp-1"]).toBeDefined();
+    expect(useSessionStore.getState().messages).toHaveLength(1);
+    expect(useSessionStore.getState().messages[0].subAgentConsult?.status).toBe("pending");
+
+    // Completion re-delivers the SAME cardId with a terminal status.
+    handleSubAgentConsultCard(ctx, consultCardEvent);
+    const { messages, subAgentSpawns } = useSessionStore.getState();
+    expect(messages).toHaveLength(1);
+    expect(messages[0].subAgentConsult).toMatchObject({
+      status: "success",
+      outputMarkdown: "Favorite: Strong and specific.",
+    });
+    // the terminal card clears the transient spinner
+    expect(subAgentSpawns["sp-1"]).toBeUndefined();
+    expect(cardVisible()).toBe(true);
+  });
+
+  it("stays idempotent when the terminal card is replayed on reconnect", () => {
+    handleSubAgentConsultCard(ctx, consultCardEvent);
+    handleSubAgentConsultCard(ctx, consultCardEvent);
+    expect(useSessionStore.getState().messages).toHaveLength(1);
   });
 
   it("survives a full reload (clean server structure: bash group, card, relayed prose)", () => {

@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import fs from "node:fs";
 import {
   buildAgentSystemInstructions,
   AGENT_SYSTEM_INSTRUCTIONS,
@@ -74,6 +75,27 @@ describe("buildAgentSystemInstructions", () => {
     }
   });
 
+  it("composes the shared requirements-discipline fragment into every variant", () => {
+    const fragment = fs.readFileSync(
+      new URL("./prompts/spec-discipline.md", import.meta.url),
+      "utf8",
+    ).trim();
+    const variants: AgentSystemInstructionOptions[] = [
+      {},
+      { agentId: "claude" },
+      { agentId: "codex" },
+      { isOps: true },
+      { agentId: "claude", isOps: true },
+      { agentId: "codex", isOps: true },
+      { isSandbox: true },
+      { agentId: "claude", isSandbox: true },
+      { agentId: "codex", isSandbox: true },
+    ];
+    for (const opts of variants) {
+      expect(buildAgentSystemInstructions(opts)).toContain(fragment);
+    }
+  });
+
   // docs/117 Phase 2 — per-agent "Parallel sessions" guidance is composed in
   // only when an `agentId` is supplied, and the Claude/Codex fragments differ.
   // Assert the variants DIFFER (the switch fired), not which words landed.
@@ -86,6 +108,51 @@ describe("buildAgentSystemInstructions", () => {
     expect(codex).not.toBe(none);
     // The Claude and Codex fragments are different → distinct prompts.
     expect(claude).not.toBe(codex);
+  });
+
+  // docs/245 — Codex's conservative default needs an explicit tie-breaker for
+  // confirmation-shaped continuations. Keep it backend-specific: Claude
+  // already acts on these requests and must not receive a prompt change.
+  it("tells Codex, but not Claude, to execute clearly implied in-scope actions", () => {
+    const fragment = fs.readFileSync(
+      new URL("./agents/codex/implied-action.md", import.meta.url),
+      "utf8",
+    ).trim();
+
+    expect(buildAgentSystemInstructions({ agentId: "codex" })).toContain(fragment);
+    expect(buildAgentSystemInstructions({ agentId: "claude" })).not.toContain(fragment);
+    expect(buildAgentSystemInstructions()).not.toContain(fragment);
+
+    // The behavioral boundaries are part of the regression contract: act on
+    // a clear continuation, preserve information-only questions, and do not
+    // infer authority for risky or out-of-scope work.
+    expect(fragment).toContain("answer the question and perform that action");
+    expect(fragment).toContain("genuine information-only questions read-only");
+    expect(fragment).toContain("ambiguous, destructive, externally consequential");
+    expect(fragment).toContain("Treat that gate as an intermediate phase");
+    expect(fragment).toContain("without requiring the user to ping you");
+    expect(fragment).toContain("genuinely requires user input or new authority");
+
+    // req 8 — the gate paragraph above covers a *pending* review; this covers
+    // the one that came back. Codex was relaying a cross-backend review's
+    // findings and ending the turn instead of fixing them.
+    expect(fragment).toContain("input to your work, not the deliverable");
+    expect(fragment).toContain("shipit agent run");
+    expect(fragment).toContain("do not relay them and stop");
+  });
+
+  it("keeps Claude's pre-existing section boundary byte-for-byte unchanged", () => {
+    const claudeParallelSection = fs.readFileSync(
+      new URL("./agents/claude/system-prompt.md", import.meta.url),
+      "utf8",
+    );
+
+    // Before docs/245 the skeleton placed exactly one newline between the
+    // parallel-sessions token and this heading. The optional Codex token must
+    // not leave another blank line in Claude's rendered prompt.
+    expect(buildAgentSystemInstructions({ agentId: "claude" })).toContain(
+      `${claudeParallelSection}\n## ShipIt platform docs`,
+    );
   });
 
   // docs/128 — ops overlay. docs/211 — sandbox overlay. Both are mutually
@@ -118,6 +185,35 @@ describe("buildAgentSystemInstructions", () => {
     expect(buildAgentSystemInstructions({ isOps: true, isSandbox: true })).toBe(
       buildAgentSystemInstructions({ isOps: true }),
     );
+  });
+
+  // docs/211 — the per-agent "Parallel sessions" section teaches
+  // `shipit session create`, and the skeleton composes it AFTER the overlay.
+  // A sandbox can't spawn (spawning claims the parent's repo; a sandbox has
+  // none), so the sandbox overlay carries the override — which only works if
+  // the overlay lands in EVERY sandbox variant, including the ones that also
+  // get the per-agent section. Assert composition + the command token the
+  // override has to name; never the surrounding wording.
+  it("composes the sandbox overlay, which overrides the spawn guidance, into every sandbox variant", () => {
+    const fragment = fs.readFileSync(
+      new URL("./prompts/sandbox-session.md", import.meta.url),
+      "utf8",
+    ).trim();
+    // The override is only meaningful if it names the command it overrides.
+    expect(fragment).toContain("shipit session create");
+
+    const sandboxVariants: AgentSystemInstructionOptions[] = [
+      { isSandbox: true },
+      { agentId: "claude", isSandbox: true },
+      { agentId: "codex", isSandbox: true },
+    ];
+    for (const opts of sandboxVariants) {
+      expect(buildAgentSystemInstructions(opts)).toContain(fragment);
+    }
+    // ...and nowhere else: a std or ops session has a repo and can spawn.
+    expect(buildAgentSystemInstructions()).not.toContain(fragment);
+    expect(buildAgentSystemInstructions({ agentId: "claude" })).not.toContain(fragment);
+    expect(buildAgentSystemInstructions({ isOps: true })).not.toContain(fragment);
   });
 
   it("composes each overlay with the per-agent axis into a distinct variant", () => {

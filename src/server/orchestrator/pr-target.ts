@@ -135,3 +135,26 @@ export function gitCredentialAllowed(
 ): boolean {
   return !(session.kind === "sandbox" && !session.capabilities?.git);
 }
+
+/**
+ * Whether the agent (via `gh pr merge`) may merge a PR for this session
+ * (docs/224 — gated "dangerous GitHub operations").
+ *
+ * Merge is an outward-facing, effectively-irreversible act and the verb most
+ * exposed to prompt-injection, so it is opt-in and **sandbox-only**:
+ *   - `"allowed"` — a sandbox session whose `dangerousGitHubOps` grant is on.
+ *   - `"not-sandbox"` — any non-sandbox (repo-bound / ops) session. These merge
+ *     from the PR lifecycle card in the ShipIt UI, not the shim; the route
+ *     turns this into a 403 pointing the agent back at that card.
+ *   - `"not-granted"` — a sandbox where the grant was left off at creation. The
+ *     403 tells the agent the user must opt in when creating the sandbox.
+ *
+ * The grant is set server-authoritatively at creation and never inferred from
+ * workspace files, so an agent cannot self-elevate into a merge.
+ */
+export function mergeDisposition(
+  session: Pick<SessionInfo, "kind" | "capabilities">,
+): "allowed" | "not-sandbox" | "not-granted" {
+  if (session.kind !== "sandbox") return "not-sandbox";
+  return session.capabilities?.dangerousGitHubOps ? "allowed" : "not-granted";
+}

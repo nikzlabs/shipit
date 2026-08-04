@@ -59,6 +59,8 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  // The mobile-layout test stubs matchMedia; unstub so the rest render desktop.
+  vi.unstubAllGlobals();
   cleanup();
 });
 
@@ -193,10 +195,35 @@ describe("PrLifecycleCard", () => {
 
     expect(screen.getByText(/Previously merged #42/)).toBeInTheDocument();
     // It links to the prior PR.
-    expect(screen.getByRole("link", { name: /Previously merged #42/ })).toHaveAttribute(
-      "href",
-      "https://github.com/o/r/pull/42",
-    );
+    const breadcrumb = screen.getByRole("link", { name: /Previously merged #42/ });
+    expect(breadcrumb).toHaveAttribute("href", "https://github.com/o/r/pull/42");
+    // Text-only: the row already opens with PrStateBadge's glyph, and a second
+    // 12px git icon here read as a doubled badge (user report).
+    expect(breadcrumb.querySelector("svg")).toBeNull();
+  });
+
+  // Truncation priority (docs/202, phone widths): the breadcrumb must YIELD
+  // width, not hold it. With `shrink-0` it kept its full width and the session
+  // title — the row's only shrinkable element — collapsed to a few characters.
+  it("breadcrumb yields width instead of crushing the session title", () => {
+    setCard("s1", {
+      cardId: "c1",
+      phase: "ready",
+      totalInsertions: 5,
+      totalDeletions: 1,
+      previousMergedPr: { number: 42, url: "https://github.com/o/r/pull/42", title: "Old PR", baseBranch: "main" },
+    });
+
+    render(<PrLifecycleCard sessionId="s1" onCreatePr={vi.fn()} />);
+
+    const breadcrumb = screen.getByRole("link", { name: /Previously merged #42/ });
+    expect(breadcrumb.className).not.toContain("shrink-0");
+    // Shrinkable + truncating: it gives up width faster than the title…
+    expect(breadcrumb.className).toContain("min-w-0");
+    expect(breadcrumb.className).toContain("shrink-[3]");
+    expect(breadcrumb.querySelector(".truncate")).not.toBeNull();
+    // …while the full text survives in the tooltip.
+    expect(breadcrumb).toHaveAttribute("title", "Previously merged: Old PR");
   });
 
   it("renders the breadcrumb on a re-armed open card too (docs/202)", () => {
@@ -615,7 +642,11 @@ describe("PrLifecycleCard", () => {
     expect(screen.queryByText("Auto-fix")).toBeNull();
   });
 
-  it("shows auto-fix running state with attempt counter", () => {
+  // `attemptCount` on the wire is the 1-BASED number of the attempt being
+  // DISPLAYED: the manager only increments its counter post-turn, so the poller
+  // adds the in-flight attempt in `attachAutomationState`. The card renders it
+  // exactly as received — a `+ 1` here would double-count it.
+  it("shows auto-fix running state with the attempt counter as sent", () => {
     setCard("s1", {
       ...openPrCard,
       checks: { state: "failure", total: 3, passed: 1, failed: 2, pending: 0 },
@@ -625,6 +656,20 @@ describe("PrLifecycleCard", () => {
     render(<PrLifecycleCard sessionId="s1" />);
 
     expect(screen.getByText(/Auto-fixing \(attempt 2\/3\)/)).toBeInTheDocument();
+  });
+
+  it("renders the FIRST in-flight attempt as 1/3, never 0/3", () => {
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "failure", total: 3, passed: 1, failed: 2, pending: 0 },
+      // What the poller now sends while the first fix turn is in flight.
+      autoFix: { status: "running", attemptCount: 1, maxAttempts: 3 },
+    });
+
+    render(<PrLifecycleCard sessionId="s1" />);
+
+    expect(screen.getByText(/Auto-fixing \(attempt 1\/3\)/)).toBeInTheDocument();
+    expect(screen.queryByText(/attempt 0\/3/)).toBeNull();
   });
 
   it("shows auto-fix exhausted state", () => {
@@ -741,6 +786,23 @@ describe("PrLifecycleCard", () => {
     expect(screen.getByText("Squash and merge")).toBeInTheDocument();
   });
 
+  it("puts the merge controls on a row of their own, apart from the diff/CI chips", () => {
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "success", total: 3, passed: 3, failed: 0, pending: 0 },
+    });
+
+    render(<PrLifecycleCard sessionId="s1" />);
+
+    // The merge row is `basis-full`, which is what forces the line break in the
+    // wrapping rows that host it. Without it the toggle and button get pulled
+    // up onto the diff/CI line.
+    const mergeRow = screen.getByText("Squash and merge").closest("div.basis-full");
+    expect(mergeRow).not.toBeNull();
+    // The chips live outside that row.
+    expect(mergeRow).not.toContainElement(screen.getByText("+100"));
+  });
+
   it("does not render merge button when CI is pending", () => {
     setCard("s1", {
       ...openPrCard,
@@ -852,13 +914,102 @@ describe("PrLifecycleCard", () => {
     // an `md:hidden` container.
     expect(inlineToggle.closest(".md\\:hidden")).toBeNull();
     expect(container.querySelector(".md\\:hidden")).toBeNull();
-    // Still sits next to the CI indicator in the badge row.
-    const wrapper = inlineToggle.closest("span.shrink-0");
-    expect(wrapper?.previousElementSibling).toHaveTextContent("CI 1/3");
+    // Still sits next to the CI indicator in the badge row. The toggle now
+    // shares a wrap-as-one-unit group with the merge button, so the CI
+    // indicator is the group's previous sibling.
+    const group = inlineToggle.closest("span.flex.items-center")?.parentElement;
+    expect(group).toContainElement(inlineToggle);
+    expect(group?.previousElementSibling).toHaveTextContent("CI 1/3");
     expect(inlineToggle).toHaveTextContent("Auto-merge");
 
     await user.click(inlineToggle);
     expect(toggleAutoMerge).toHaveBeenCalledWith("s1", true);
+  });
+
+  it("moves the status/action cluster to a full-width row below the header on mobile", () => {
+    // The header's icon cluster (search / docs / ⋯) is a sibling column, so it
+    // narrows every wrapped row inside the left column — on a phone that leaves
+    // ~258px, and the auto-merge toggle (~123px) plus "Squash and merge"
+    // (~137px) need ~272px, which is why the button used to wrap onto a row of
+    // its own. Breaking the cluster out to the card's full width fits both at
+    // their real labels.
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query.includes("767"),
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    }));
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "success", total: 3, passed: 3, failed: 0, pending: 0 },
+      autoMerge: { enabled: false, mergeMethod: "squash" },
+    });
+
+    const { container } = render(<PrLifecycleCard sessionId="s1" canAutoMerge />);
+
+    // Full labels — no compacting needed once the row spans the card.
+    const toggle = screen.getByRole("button", { name: /Auto-merge/ });
+    const mergeButton = screen.getByText("Squash and merge");
+    // Both moved out of the header row (the element that hosts the icon
+    // cluster) and into the row below it.
+    const header = container.firstElementChild;
+    expect(header).not.toContainElement(toggle);
+    expect(header).not.toContainElement(mergeButton);
+    const actionsRow = header?.nextElementSibling;
+    expect(actionsRow).toContainElement(toggle);
+    expect(actionsRow).toContainElement(mergeButton);
+    // …and they still wrap as one unit within that row.
+    const group = toggle.closest("span.flex.items-center")?.parentElement;
+    expect(group).toContainElement(mergeButton);
+  });
+
+  it("starts the merge row's auto-merge toggle on the PR title's text edge, not its button padding", () => {
+    // Regression: the ghost toggle carries `px-2`, so its visible switch sat 8px
+    // right of the PR title it hangs under — invisible at rest, then obvious on
+    // hover when the ghost background painted the button's real box out to the
+    // title's edge. `pl-0` puts the switch AND its hover background on that
+    // edge. Asserted on the class because the offset is pure CSS: jsdom does no
+    // layout, so a geometric assertion here would pass either way.
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "success", total: 3, passed: 3, failed: 0, pending: 0 },
+      autoMerge: { enabled: false, mergeMethod: "squash" },
+    });
+
+    render(<PrLifecycleCard sessionId="s1" canAutoMerge />);
+
+    const toggle = screen.getByRole("button", { name: /Auto-merge/ });
+    expect(toggle.className).toContain("pl-0");
+    // Only the leading edge is flush — the right padding stays, so the toggle
+    // keeps its hover-target breathing room against the merge button.
+    expect(toggle.className).toContain("px-2");
+  });
+
+  it("indents the mobile actions row to the PR title's offset, tracking the header's sm padding", () => {
+    // The row is hoisted out of the header, so it has to reproduce the title's
+    // offset by hand: px-3 (12) + badge w-5 (20) + gap-x-3 (12) = 44 = pl-11,
+    // and 48 = sm:pl-12 once the header widens to px-4 at 640px — a width this
+    // row still renders at, since it's shown below 768px.
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query.includes("767"),
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    }));
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "success", total: 3, passed: 3, failed: 0, pending: 0 },
+      autoMerge: { enabled: false, mergeMethod: "squash" },
+    });
+
+    const { container } = render(<PrLifecycleCard sessionId="s1" canAutoMerge />);
+
+    const actionsRow = container.firstElementChild?.nextElementSibling;
+    expect(actionsRow).toContainElement(screen.getByRole("button", { name: /Auto-merge/ }));
+    expect(actionsRow?.className).toContain("pl-11");
+    expect(actionsRow?.className).toContain("sm:pl-12");
   });
 
   it("uses the shared neutral auto-merge icon color in the top-bar overflow", async () => {
@@ -908,6 +1059,92 @@ describe("PrLifecycleCard", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  it("resets the 'Merging...' state on a session switch on mobile too", async () => {
+    // Regression: the desktop fix keyed only the header subtree, but on mobile
+    // PrStatusActions (and with it MergeButton's `merging` flag) is hoisted OUT
+    // of that subtree into a sibling row. The sibling wasn't keyed, so it
+    // survived the switch and pinned "Merging..." onto every session the user
+    // visited afterwards — the state the user hit after merging one session in
+    // the background and switching away mid-merge.
+    mockMatchMedia(true);
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "success", total: 3, passed: 3, failed: 0, pending: 0 },
+    });
+    setCard("s2", {
+      ...openPrCard,
+      checks: { state: "success", total: 3, passed: 3, failed: 0, pending: 0 },
+    });
+
+    // Never-resolving fetch so the merge stays in flight, exactly as a
+    // background merge does from the moment the user switches away.
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(() => new Promise(() => {})) as unknown as typeof fetch;
+
+    try {
+      const { rerender, container } = render(<PrLifecycleCard sessionId="s1" />);
+
+      // Sanity: on mobile the button really is in the hoisted sibling row, not
+      // the keyed header — otherwise this test would pass for the wrong reason.
+      const button = screen.getByText("Squash and merge");
+      expect(container.firstElementChild).not.toContainElement(button);
+
+      await act(async () => {
+        fireEvent.click(button);
+      });
+      expect(screen.getByText("Merging...")).toBeInTheDocument();
+
+      rerender(<PrLifecycleCard sessionId="s2" />);
+
+      expect(screen.queryByText("Merging...")).toBeNull();
+      expect(screen.getByText("Squash and merge")).toBeInTheDocument();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("renders exactly one header row after repeated session switches on mobile", () => {
+    // Regression: the header div and the hoisted mobile actions row are siblings
+    // in the same fragment, and both were keyed on the bare sessionId. React only
+    // requires keys to be unique among siblings, so those were duplicates: the
+    // previous children got indexed into a Map by key, the actions row overwrote
+    // the header, and on a session switch React deleted what remained in that Map
+    // — never the header. Its DOM node stayed behind, so each switch stacked one
+    // more stale PR header (with the previous session's title) under the app
+    // chrome. Desktop was unaffected: it renders only one keyed div.
+    mockMatchMedia(true);
+    const withTitle = (title: string): PrCardState => ({
+      ...openPrCard,
+      pr: {
+        number: 42,
+        url: "https://github.com/o/r/pull/42",
+        baseBranch: "main",
+        headBranch: "feature-branch",
+        insertions: 100,
+        deletions: 20,
+        title,
+      },
+    });
+    setCard("s1", withTitle("PR one"));
+    setCard("s2", withTitle("PR two"));
+    setCard("s3", withTitle("PR three"));
+
+    const onOpenDetails = vi.fn();
+    const { rerender, container } = render(
+      <PrLifecycleCard sessionId="s1" onOpenDetails={onOpenDetails} />,
+    );
+    rerender(<PrLifecycleCard sessionId="s2" onOpenDetails={onOpenDetails} />);
+    rerender(<PrLifecycleCard sessionId="s3" onOpenDetails={onOpenDetails} />);
+
+    // Only the current session's PR title is on screen — no orphaned headers
+    // from the sessions the user passed through.
+    expect(screen.getByText("PR three")).toBeInTheDocument();
+    expect(screen.queryByText("PR one")).toBeNull();
+    expect(screen.queryByText("PR two")).toBeNull();
+    // And exactly one header + one actions row, not one pair per visited session.
+    expect(container.querySelectorAll('[aria-label="Open PR details"]')).toHaveLength(1);
   });
 
   it("hides merge button when auto-merge is enabled", () => {
@@ -1255,6 +1492,46 @@ describe("PrStateBadge", () => {
     expect(screen.getByTitle("PR open")).toBeInTheDocument();
   });
 
+  // docs/202 — a re-armed session must read as a fresh branch: the badge is the
+  // gray GitBranch icon, and the "Previously merged #N" note is the only sign it
+  // shipped once. Regression guard for the stale merged badge (which also put
+  // two identical GitMerge glyphs side by side on the ready card).
+  it("falls back to the gray branch badge once a re-armed card retires the merged status", () => {
+    setStatus("s1", "merged");
+    usePrStore.getState().updateCard("s1", {
+      cardId: "pr-card-s1",
+      phase: "merged",
+      pr: {
+        number: 1,
+        title: "Test PR",
+        url: "https://github.com/o/r/pull/1",
+        baseBranch: "main",
+        headBranch: "feature",
+        insertions: 10,
+        deletions: 5,
+      },
+    });
+
+    usePrStore.getState().updateCard("s1", {
+      cardId: "pr-card-s1",
+      phase: "ready",
+      headBranch: "feature",
+      totalInsertions: 3,
+      totalDeletions: 1,
+      previousMergedPr: {
+        number: 1,
+        url: "https://github.com/o/r/pull/1",
+        title: "Old PR",
+        baseBranch: "main",
+      },
+    });
+
+    render(<PrStateBadge sessionId="s1" />);
+
+    expect(screen.getByTitle("Branch")).toBeInTheDocument();
+    expect(screen.queryByTitle("PR merged")).not.toBeInTheDocument();
+  });
+
   it("renders a distinct red closed badge for a closed PR (not the gray branch badge)", () => {
     usePrStore.setState({
       statusBySession: {
@@ -1345,8 +1622,8 @@ describe("PrLifecycleCard — changed-docs strip", () => {
   });
 
   const docFiles: NotableFileChange[] = [
-    { path: "docs/205-pr-changed-docs/plan.md", title: "PR-scoped changed docs", kind: "doc", status: "A" },
-    { path: "shipit.yaml", title: "shipit.yaml", kind: "config", status: "M" },
+    { path: "docs/205-pr-changed-docs/plan.md", label: "205/plan.md", kind: "doc", status: "A" },
+    { path: "shipit.yaml", label: "shipit.yaml", kind: "config", status: "M" },
   ];
   // docs/210 — the strip is sourced from the standalone `notableFilesBySession`
   // slice, so a card + a slice entry together drive it.
@@ -1376,7 +1653,7 @@ describe("PrLifecycleCard — changed-docs strip", () => {
     expect(toggle).toBeInTheDocument();
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     // Strip is expanded → chips rendered.
-    expect(screen.getByText("PR-scoped changed docs")).toBeInTheDocument();
+    expect(screen.getByText("205/plan.md")).toBeInTheDocument();
   });
 
   it("defaults to collapsed on mobile, where header height is precious", () => {
@@ -1385,7 +1662,7 @@ describe("PrLifecycleCard — changed-docs strip", () => {
     render(<PrLifecycleCard sessionId="s1" />);
     const toggle = screen.getByLabelText("Related issues and changed docs in this PR");
     expect(toggle).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByText("PR-scoped changed docs")).not.toBeInTheDocument();
+    expect(screen.queryByText("205/plan.md")).not.toBeInTheDocument();
   });
 
   it("lets a stored collapse preference win over the desktop default", () => {
@@ -1403,7 +1680,7 @@ describe("PrLifecycleCard — changed-docs strip", () => {
     seedDocs("s1");
     const { unmount } = render(<PrLifecycleCard sessionId="s1" />);
     fireEvent.click(screen.getByLabelText("Related issues and changed docs in this PR"));
-    expect(screen.getByText("PR-scoped changed docs")).toBeInTheDocument();
+    expect(screen.getByText("205/plan.md")).toBeInTheDocument();
     expect(screen.getByLabelText("Related issues and changed docs in this PR")).toHaveAttribute("aria-expanded", "true");
 
     // Remount (e.g. page reload) — the expanded state is restored from storage.
@@ -1411,7 +1688,7 @@ describe("PrLifecycleCard — changed-docs strip", () => {
     seedDocs("s1");
     render(<PrLifecycleCard sessionId="s1" />);
     expect(screen.getByLabelText("Related issues and changed docs in this PR")).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByText("PR-scoped changed docs")).toBeInTheDocument();
+    expect(screen.getByText("205/plan.md")).toBeInTheDocument();
   });
 
   it("keeps collapse state independent across sessions", () => {

@@ -31,10 +31,23 @@ const HOOK_SCRIPT = path.resolve(
 );
 
 function runHook(payload: unknown, env?: Record<string, string>): { status: number | null; stderr: string } {
+  // Scrub the hook's own control variables from the inherited environment
+  // before layering the case's `env` on top. ShipIt sets
+  // `SHIPIT_GUARD_DESTRUCTIVE_GIT=1` inside a session whose PR has merged, so
+  // an agent running this suite in that state inherited it — and the
+  // "outside the guarded state" case then asserted against an environment that
+  // was, in fact, guarded, and failed. CI never sets it, which is why this only
+  // ever bit in-session. `SHIPIT_SANDBOX` is scrubbed for the mirror-image
+  // reason: inheriting it would silently disarm the *blocked* cases.
+  const {
+    SHIPIT_GUARD_DESTRUCTIVE_GIT: _guard,
+    SHIPIT_SANDBOX: _sandbox,
+    ...ambient
+  } = process.env;
   const r = spawnSync("node", [HOOK_SCRIPT], {
     input: typeof payload === "string" ? payload : JSON.stringify(payload),
     encoding: "utf8",
-    ...(env ? { env: { ...process.env, ...env } } : {}),
+    env: { ...ambient, ...env },
   });
   return { status: r.status, stderr: r.stderr };
 }
@@ -118,6 +131,103 @@ describe("block-branch-ops.mjs", () => {
     it("still blocks when SHIPIT_SANDBOX is unset / not '1'", () => {
       expect(runHook(bash("git switch -c x"), { SHIPIT_SANDBOX: "0" }).status).toBe(2);
       expect(runHook(bash("git switch -c x")).status).toBe(2);
+    });
+  });
+
+  describe("SHI-265 — destructive git while the session sits on a merged branch", () => {
+    const guarded = { SHIPIT_GUARD_DESTRUCTIVE_GIT: "1" };
+
+    const blocked = [
+      "git reset --hard",
+      "git reset --hard origin/main",
+      "git reset --hard HEAD~3",
+      "git checkout -f",
+      "git checkout --force main",
+      "git push --force",
+      "git push -f origin HEAD",
+      "git push --force-with-lease",
+      "git push --force-with-lease=refs/heads/x:abc123",
+      "git push --force-if-includes --force-with-lease origin HEAD",
+      // Buried in a compound command / behind an env prefix / after git globals.
+      "git fetch origin && git reset --hard origin/main",
+      "GIT_PAGER=cat git reset --hard origin/main",
+      "git -C /workspace reset --hard origin/main",
+    ];
+    for (const command of blocked) {
+      it(`blocks when guarded: ${command}`, () => {
+        const r = runHook(bash(command), guarded);
+        expect(r.status).toBe(2);
+        expect(r.stderr).toContain("Blocked:");
+        // The refusal must route the agent at the safe command, not just say no.
+        expect(r.stderr).toContain("shipit branch reset-to-base");
+      });
+    }
+
+    it("leaves the same commands alone outside the guarded state", () => {
+      for (const command of blocked) {
+        const r = runHook(bash(command));
+        expect({ command, status: r.status, stderr: r.stderr }).toEqual({
+          command,
+          status: 0,
+          stderr: "",
+        });
+      }
+    });
+
+    it("does not arm on a value other than '1'", () => {
+      expect(runHook(bash("git reset --hard"), { SHIPIT_GUARD_DESTRUCTIVE_GIT: "0" }).status).toBe(0);
+      expect(runHook(bash("git reset --hard"), { SHIPIT_GUARD_DESTRUCTIVE_GIT: "true" }).status).toBe(0);
+    });
+
+    it("docs/211 — stays off for a sandbox session even when armed", () => {
+      const r = runHook(bash("git reset --hard origin/main"), {
+        ...guarded,
+        SHIPIT_SANDBOX: "1",
+      });
+      expect(r.status).toBe(0);
+      expect(r.stderr).toBe("");
+    });
+
+    describe("allows non-destructive git even when guarded", () => {
+      const allowed = [
+        // `shipit branch reset-to-base` is the sanctioned path — it relays to the
+        // orchestrator, so the agent never invokes git and the hook must not
+        // catch it. Guarding against a `git`-prefix false positive.
+        "shipit branch reset-to-base",
+        "shipit branch reset-to-base && npm test",
+        // SHI-277 — the brokered break-glass must pass too. It is the only
+        // sanctioned override, so a hook that caught it would leave a stranded
+        // session with nothing but the hand-rolled reset this hook blocks.
+        'shipit branch reset-to-base --force --reason "content shipped via cherry-pick"',
+        "git fetch origin && shipit branch reset-to-base --force --reason 'stranded'",
+        "git reset", // mixed reset — unstages, destroys nothing
+        "git reset --soft HEAD~1",
+        "git reset HEAD -- src/index.ts",
+        "git checkout -- src/index.ts", // discard one file, still allowed
+        "git checkout src/index.ts",
+        "git push",
+        "git push origin HEAD",
+        "git fetch origin",
+        "git status",
+        "git log --oneline",
+        "git commit -m 'git reset --hard in a message'",
+        'echo "git reset --hard"',
+        "npm test -- --force",
+      ];
+      for (const command of allowed) {
+        it(`allows: ${command}`, () => {
+          const r = runHook(bash(command), guarded);
+          expect(r.status).toBe(0);
+          expect(r.stderr).toBe("");
+        });
+      }
+    });
+
+    it("still blocks branch ops with the branch-op message, not the reset one", () => {
+      const r = runHook(bash("git checkout -b feature/foo"), guarded);
+      expect(r.status).toBe(2);
+      expect(r.stderr).toContain("dedicated branch");
+      expect(r.stderr).not.toContain("shipit branch reset-to-base");
     });
   });
 

@@ -1,5 +1,5 @@
-// eslint-disable-next-line no-restricted-imports -- useEffect: window keydown listener + DOM scrollIntoView (browser API subscriptions with cleanup)
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useRef, useCallback } from "react";
+import { useEventListener } from "../hooks/useEventListener.js";
 import { FileIcon } from "@phosphor-icons/react";
 import { PopoverContent } from "./ui/popover.js";
 import type { FileTreeNode } from "../../server/shared/types.js";
@@ -95,11 +95,7 @@ export function FileAutoComplete({
     [matches, selectedIndex, onSelect, onDismiss, scrollSelectedIntoView],
   );
 
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
-  useEffect(() => {
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [handleKeyDown]);
+  useEventListener(window, "keydown", handleKeyDown);
 
   if (matches.length === 0) {
     return (
