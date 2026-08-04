@@ -996,6 +996,50 @@ describe("PrLifecycleCard", () => {
     }
   });
 
+  it("resets the 'Merging...' state on a session switch on mobile too", async () => {
+    // Regression: the desktop fix keyed only the header subtree, but on mobile
+    // PrStatusActions (and with it MergeButton's `merging` flag) is hoisted OUT
+    // of that subtree into a sibling row. The sibling wasn't keyed, so it
+    // survived the switch and pinned "Merging..." onto every session the user
+    // visited afterwards — the state the user hit after merging one session in
+    // the background and switching away mid-merge.
+    mockMatchMedia(true);
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "success", total: 3, passed: 3, failed: 0, pending: 0 },
+    });
+    setCard("s2", {
+      ...openPrCard,
+      checks: { state: "success", total: 3, passed: 3, failed: 0, pending: 0 },
+    });
+
+    // Never-resolving fetch so the merge stays in flight, exactly as a
+    // background merge does from the moment the user switches away.
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(() => new Promise(() => {})) as unknown as typeof fetch;
+
+    try {
+      const { rerender, container } = render(<PrLifecycleCard sessionId="s1" />);
+
+      // Sanity: on mobile the button really is in the hoisted sibling row, not
+      // the keyed header — otherwise this test would pass for the wrong reason.
+      const button = screen.getByText("Squash and merge");
+      expect(container.firstElementChild).not.toContainElement(button);
+
+      await act(async () => {
+        fireEvent.click(button);
+      });
+      expect(screen.getByText("Merging...")).toBeInTheDocument();
+
+      rerender(<PrLifecycleCard sessionId="s2" />);
+
+      expect(screen.queryByText("Merging...")).toBeNull();
+      expect(screen.getByText("Squash and merge")).toBeInTheDocument();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("hides merge button when auto-merge is enabled", () => {
     setCard("s1", {
       ...openPrCard,

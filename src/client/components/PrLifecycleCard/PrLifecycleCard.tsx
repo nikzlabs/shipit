@@ -188,6 +188,13 @@ export function PrLifecycleCard({
   // OpenPhase's "Fixing..." flag) resets when the user switches sessions.
   // Without this, switching sessions while a merge is in flight leaves the
   // button stuck on "Merging..." against the new session.
+  //
+  // The mobile actions row below carries the SAME key, and must keep doing so:
+  // on mobile PrStatusActions is hoisted OUT of this subtree into a sibling row,
+  // taking every one of those transient flags with it. A key only on the header
+  // remounts the desktop copy — the mobile copy survived the switch and left
+  // "Merging..." (and "Fixing CI...", "Resolving...", "Sending...") pinned to
+  // whatever session the user landed on, for the rest of the page's life.
   const phaseContent = card ? (
     <>
       {(card.phase === "ready" || card.phase === "creating") && <ReadyPhase card={card} sessionId={sessionId} creating={card.phase === "creating"} onCreatePr={onCreatePr} />}
@@ -240,6 +247,7 @@ export function PrLifecycleCard({
         // `pl-8` = the header's px-3 plus the PR badge (w-5) and its gap, so the
         // row lines up under the PR title rather than under the badge.
         <div
+          key={sessionId}
           className={`shrink-0 flex flex-wrap items-center gap-x-3 gap-y-1 pl-8 pr-3 pb-2 ${stripShown ? "" : "border-b border-(--color-border-primary)"}`}
         >
           <PrStatusActions card={card} sessionId={sessionId} canAutoMerge={canAutoMerge} />
