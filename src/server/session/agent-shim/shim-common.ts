@@ -225,6 +225,17 @@ function requestJsonUnbounded(
  *   `headersTimeout` would otherwise abort a multi-minute sub-agent consult with
  *   the opaque "fetch failed" — misread as an unreachable worker.
  */
+/**
+ * Statuses a resilient wait loop must treat as "the transport hiccuped, retry"
+ * rather than as an outcome: 0 is the shim's own unreachable/aborted marker,
+ * and 502/503/504 are a proxy or a restarting orchestrator. Shared by
+ * `shipit session wait` (docs/182) and `shipit agent result --wait` (docs/248)
+ * so the two loops cannot drift apart on what counts as transient.
+ */
+export function isTransientStatus(status: number): boolean {
+  return status === 0 || status === 502 || status === 503 || status === 504;
+}
+
 export async function callBroker(
   method: "GET" | "POST" | "PATCH",
   path: string,

@@ -15,6 +15,7 @@
 import {
   asString,
   fail,
+  isTransientStatus,
   parseFlags,
   readBodyFromFileOrStdin,
   success,
@@ -381,11 +382,6 @@ interface SingleWaitResult {
   lastTransportError?: string;
   /** Human message for not-found / http-error outcomes. */
   errorMessage?: string;
-}
-
-/** Transient (retry) vs terminal HTTP/transport statuses. */
-function isTransientStatus(status: number): boolean {
-  return status === 0 || status === 502 || status === 503 || status === 504;
 }
 
 /**

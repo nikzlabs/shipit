@@ -2440,7 +2440,8 @@ describe("runShim — agent result", () => {
         body: { cardId: "c1", spawnId: "run-77", subAgentId: "codex", status: "error", createdAt: "x" },
       },
     });
-    expect(out.exitCode).toBe(0);
+    // docs/248 — the status now reaches the exit code (this run errored).
+    expect(out.exitCode).toBe(3);
     expect(out.stderr).toContain("no output");
     expect(out.stdout).toBe("");
   });
@@ -2460,6 +2461,257 @@ describe("runShim — agent result", () => {
     expect(out.exitCode).not.toBe(0);
     expect(out.stderr).toContain("at most one run id");
     expect(out.calls).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// shipit agent result — status-carrying exit codes (docs/248)
+//
+// The point of these codes: a caller that backgrounded a long consult branches
+// on `$?` instead of grepping the run's own output for the word "pending",
+// which a finished code review can perfectly well contain.
+// ---------------------------------------------------------------------------
+
+describe("shipit agent result — exit codes (docs/248)", () => {
+  const card = (status: string, extra: Record<string, unknown> = {}) => ({
+    status: 200,
+    body: {
+      cardId: "c1",
+      spawnId: "run-77",
+      subAgentId: "codex",
+      status,
+      outputMarkdown: "the review",
+      createdAt: "x",
+      ...extra,
+    },
+  });
+
+  it("exits 0 on a successful run", async () => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "result"], { "GET /agent-ops/agent/result": card("success") });
+    expect(out.exitCode).toBe(0);
+  });
+
+  it.each(["error", "timeout", "cancelled"])("exits 3 when the run ended %s", async (status) => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "result"], { "GET /agent-ops/agent/result": card(status) });
+    expect(out.exitCode).toBe(3);
+    // The output still prints — a failed run's partial text is what the caller
+    // is here for.
+    expect(out.stdout).toContain("the review");
+  });
+
+  it("exits 4 while the run is still going, and names the command that waits", async () => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "result"], { "GET /agent-ops/agent/result": card("pending") });
+    expect(out.exitCode).toBe(4);
+    expect(out.stderr).toContain("still going");
+    expect(out.stderr).toContain("shipit agent result run-77 --wait");
+  });
+
+  it("keeps 'still running' distinct from every failure code", async () => {
+    // Requirement 3: a caller retrying until the command succeeds must not spin
+    // forever against a mistyped run id or a bad flag, so "still running" cannot
+    // share a code with either. 1 = lookup failed, 2 = bad invocation
+    // (the shim-wide `fail()` default), 4 = come back later.
+    const { run } = makeRunner();
+    const pending = await run(["agent", "result"], { "GET /agent-ops/agent/result": card("pending") });
+    const badId = await run(["agent", "result", "nope"], {
+      "GET /agent-ops/agent/result": { status: 404, body: { error: "No sub-agent run with id \"nope\"" } },
+    });
+    const badFlags = await run(["agent", "result", "a", "b"]);
+    expect(pending.exitCode).toBe(4);
+    expect(badId.exitCode).toBe(1);
+    expect(badFlags.exitCode).toBe(2);
+    expect(new Set([pending.exitCode, badId.exitCode, badFlags.exitCode]).size).toBe(3);
+  });
+
+  it("carries the status into the --json exit code too", async () => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "result", "--json"], { "GET /agent-ops/agent/result": card("pending") });
+    expect(out.exitCode).toBe(4);
+    expect(JSON.parse(out.stdout)).toMatchObject({ status: "pending" });
+  });
+
+  it("still exits non-zero for a failed run that produced no output at all", async () => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "result"], {
+      "GET /agent-ops/agent/result": {
+        status: 200,
+        body: { cardId: "c1", spawnId: "run-77", subAgentId: "codex", status: "error", createdAt: "x" },
+      },
+    });
+    expect(out.exitCode).toBe(3);
+    expect(out.stderr).toContain("no output");
+  });
+
+  it("rejects --timeout without --wait rather than silently blocking", async () => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "result", "--timeout", "60"]);
+    expect(out.exitCode).toBe(2);
+    expect(out.stderr).toContain("--timeout only applies with --wait");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("rejects a nonsense --timeout", async () => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "result", "--wait", "--timeout", "abc"]);
+    expect(out.exitCode).toBe(2);
+    expect(out.stderr).toContain("positive number of seconds");
+    expect(out.calls).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// shipit agent result --wait — the resilient segment loop (docs/248)
+// ---------------------------------------------------------------------------
+
+/**
+ * Run `shipit agent result --wait ...` against a queue of responses (shifted in
+ * order, last entry reused once exhausted) with a virtual clock, mirroring
+ * `runWait` for the child-session loop. A `pending` segment advances the clock
+ * the way a real server holding a segment open would, so the overall deadline
+ * genuinely bounds the loop.
+ */
+async function runResultWait(
+  argv: string[],
+  queue: WaitMockResponse[],
+): Promise<{ stdout: string; stderr: string; exitCode: number | null; paths: string[] }> {
+  let stdout = "";
+  let stderr = "";
+  let exitCode: number | null = null;
+  const paths: string[] = [];
+  const io: ShimIO = {
+    stdout: (t) => { stdout += t; },
+    stderr: (t) => { stderr += t; },
+    exit: (code) => { exitCode = code; throw new Error("__shim_exit__"); },
+  };
+  const clock = virtualClock();
+  const call = async (_m: string, path: string) => {
+    paths.push(path);
+    const res = queue.length > 1 ? queue.shift()! : (queue[0] ?? { status: 200, body: { outcome: "pending" } });
+    if (res.status >= 200 && res.status < 300 && res.body.outcome === "pending") {
+      await clock.sleep(25_000);
+    }
+    return res;
+  };
+  try {
+    await runShim(argv, io, {}, call as never, { sleep: clock.sleep, now: clock.now });
+  } catch (err) {
+    if (err instanceof Error && err.message !== "__shim_exit__") throw err;
+  }
+  return { stdout, stderr, exitCode, paths };
+}
+
+describe("shipit agent result --wait (docs/248)", () => {
+  const finished = (status: string) => ({
+    status: 200,
+    body: {
+      cardId: "c1",
+      spawnId: "run-77",
+      subAgentId: "codex",
+      status,
+      outputMarkdown: "the review",
+      createdAt: "x",
+      outcome: "finished",
+    },
+  });
+  const pendingSegment = {
+    status: 200,
+    body: {
+      cardId: "c1",
+      spawnId: "run-77",
+      subAgentId: "codex",
+      status: "pending",
+      outputMarkdown: "",
+      createdAt: "x",
+      outcome: "pending",
+    },
+  };
+
+  it("loops over pending segments and returns the run's output when it finishes", async () => {
+    const out = await runResultWait(["agent", "result", "run-77", "--wait"], [
+      pendingSegment,
+      pendingSegment,
+      finished("success"),
+    ]);
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("the review");
+    expect(out.paths).toHaveLength(3);
+    // Every segment asks the server to wait, and carries the pinned run id.
+    expect(out.paths[0]).toContain("wait=true");
+    expect(out.paths[0]).toContain("spawnId=run-77");
+    expect(out.paths[0]).toContain("segment=25");
+  });
+
+  it("exits 3 when the run it waited for turns out to have failed", async () => {
+    const out = await runResultWait(["agent", "result", "--wait"], [pendingSegment, finished("error")]);
+    expect(out.exitCode).toBe(3);
+  });
+
+  it("retries a transport reset beneath the deadline instead of reporting it", async () => {
+    // Requirement 5: a blip costs part of the wait, not the wait.
+    const out = await runResultWait(["agent", "result", "--wait"], [
+      { status: 0, body: { error: "connection reset" } },
+      { status: 503, body: { error: "orchestrator restarting" } },
+      finished("success"),
+    ]);
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("the review");
+    expect(out.stderr).toContain("transport retried");
+  });
+
+  it("exits 4 at the timeout and tells the caller how to resume", async () => {
+    const out = await runResultWait(
+      ["agent", "result", "run-77", "--wait", "--timeout", "60"],
+      [pendingSegment],
+    );
+    expect(out.exitCode).toBe(4);
+    expect(out.stderr).toContain("still running after 60s");
+    expect(out.stderr).toContain("shipit agent result run-77 --wait");
+    // The deadline genuinely bounds the loop: 60s of 25s segments, not forever.
+    expect(out.paths.length).toBeLessThanOrEqual(3);
+  });
+
+  it("reports a lookup failure as 1, not as a timeout, when nothing ever answered", async () => {
+    // Every attempt died in transport, so we never learned anything about the
+    // run — that is a broken lookup, not "still pending".
+    const out = await runResultWait(
+      ["agent", "result", "run-77", "--wait", "--timeout", "5"],
+      [{ status: 0, body: { error: "connection refused" } }],
+    );
+    expect(out.exitCode).toBe(1);
+    expect(out.stderr).toContain("connection refused");
+  });
+
+  it("surfaces an unknown run id immediately rather than waiting it out", async () => {
+    const out = await runResultWait(
+      ["agent", "result", "nope", "--wait"],
+      [{ status: 404, body: { error: "No sub-agent run with id \"nope\" in this session." } }],
+    );
+    expect(out.exitCode).toBe(1);
+    expect(out.stderr).toContain("No sub-agent run with id");
+    expect(out.paths).toHaveLength(1);
+  });
+
+  it("terminates against an older orchestrator that sends no `outcome` field", async () => {
+    const legacy = {
+      status: 200,
+      body: { cardId: "c1", spawnId: "run-77", subAgentId: "codex", status: "success", outputMarkdown: "old server", createdAt: "x" },
+    };
+    const out = await runResultWait(["agent", "result", "--wait"], [legacy]);
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("old server");
+  });
+
+  it("clamps --timeout to the sub-agent's own 30-minute cap", async () => {
+    const out = await runResultWait(
+      ["agent", "result", "--wait", "--timeout", "99999"],
+      [finished("success")],
+    );
+    expect(out.exitCode).toBe(0);
+    // First segment's overall `timeout` param reflects the clamp, not 99999.
+    expect(out.paths[0]).toContain("timeout=1800");
   });
 });
 

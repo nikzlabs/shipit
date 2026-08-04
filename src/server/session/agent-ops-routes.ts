@@ -489,16 +489,40 @@ export function registerAgentOpsRoutes(
     async (request, reply) => relay("POST", "/agent/spawn", request.body ?? {}, reply, { timeoutMs: 0 }),
   );
 
-  // GET /agent-ops/agent/result[?spawnId=…] — SHI-245. Re-read a completed
-  // spawn's persisted consult card: the same artifact the UI renders, so the
-  // agent can verify its copy or recover one whose `shipit agent run` died
-  // before the text reached it. Cheap read; the default timeout applies.
-  app.get<{ Querystring: { spawnId?: string } }>(
+  // GET /agent-ops/agent/result[?spawnId=…&wait=true&timeout=N&segment=S] —
+  // SHI-245. Re-read a completed spawn's persisted consult card: the same
+  // artifact the UI renders, so the agent can verify its copy or recover one
+  // whose `shipit agent run` died before the text reached it. Cheap read; the
+  // default timeout applies.
+  //
+  // docs/248 — `wait`/`timeout`/`segment` are forwarded verbatim for
+  // `shipit agent result --wait`, which drives a resumable segment loop over
+  // this route. Same shape as the child-session wait broker below.
+  app.get<{ Querystring: { spawnId?: string; wait?: string; timeout?: string; segment?: string } }>(
     "/agent-ops/agent/result",
     async (request, reply) => {
-      const spawnId = request.query.spawnId;
-      const qs = spawnId ? `?spawnId=${encodeURIComponent(spawnId)}` : "";
-      return relay("GET", `/agent/result${qs}`, undefined, reply);
+      const { spawnId, wait, timeout, segment } = request.query;
+      const params = new URLSearchParams();
+      if (spawnId) params.set("spawnId", spawnId);
+      if (wait === "true") params.set("wait", "true");
+      if (timeout) params.set("timeout", timeout);
+      if (segment) params.set("segment", segment);
+      const qs = params.toString();
+      // Bound the worker→orchestrator leg of a segmented wait so a half-open
+      // socket fails fast (→ status 0, which the shim retries) instead of
+      // hanging. Budget = segment (or overall timeout) + margin for the
+      // server's own resolve. Unbounded reads keep the default timeout.
+      const boundSecs = wait === "true" ? Number(segment) || Number(timeout) : NaN;
+      const timeoutMs = Number.isFinite(boundSecs) && boundSecs > 0
+        ? boundSecs * 1000 + 10_000
+        : undefined;
+      return relay(
+        "GET",
+        `/agent/result${qs ? `?${qs}` : ""}`,
+        undefined,
+        reply,
+        timeoutMs !== undefined ? { timeoutMs } : undefined,
+      );
     },
   );
 

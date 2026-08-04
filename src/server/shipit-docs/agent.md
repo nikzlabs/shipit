@@ -42,7 +42,7 @@ is for a *different* agent (or a deliberately fresh-context helper).
 
 ```
 shipit agent run --agent claude|codex --prompt-file FILE [--model M] [--json]
-shipit agent result [RUN-ID] [--json]
+shipit agent result [RUN-ID] [--wait [--timeout SECONDS]] [--json]
 ```
 
 - **`--agent`** (required) — the agent to spawn (`claude` or `codex`). May be the
@@ -116,6 +116,46 @@ the same thing: the consult card appears in the transcript the moment the run
 starts, shows an in-progress row for the duration, and turns into the finished
 record when the run ends. So a backgrounded consult is visible to the user the
 whole time, and neither of you has to guess whether it is still going.
+
+### Waiting for a backgrounded run — use `--wait`, never a poll loop
+
+```
+shipit agent result <RUN-ID> --wait                  # block up to 5 minutes
+shipit agent result <RUN-ID> --wait --timeout 600    # …or up to 10, max 30
+```
+
+`--wait` returns as soon as the run reaches a terminal status. It absorbs
+dropped connections beneath your timeout, so a network blip costs a few seconds
+rather than the whole wait. If the timeout elapses with the run still going it
+exits **4** and prints the command to resume — every call re-derives the answer
+from the persisted card, so an interrupted wait has lost nothing. Pick a
+`--timeout` that fits under your own shell's foreground cap and re-run as needed.
+
+**Branch on the exit code, never on the output text:**
+
+| Exit | Meaning |
+|---|---|
+| `0` | The run finished successfully. |
+| `4` | Still running (no `--wait`, or the wait timed out). |
+| `3` | The run failed — errored, timed out, or was cancelled. |
+| `1` | The lookup failed: unknown run id, ambiguous prefix, orchestrator unreachable. |
+| `2` | Bad invocation (unknown flag, two run ids, `--timeout` without `--wait`). |
+
+Do **not** write a `sleep`-and-`grep` loop:
+
+```sh
+# WRONG — gives up after 45s on a run that can last 30 minutes, and a finished
+# review whose text happens to contain "pending" reads as still-running.
+for i in 1 2 3; do sleep 15; shipit agent result "$ID" 2>&1 | tee /tmp/r.txt;
+  if ! grep -q 'pending' /tmp/r.txt; then break; fi; done
+
+# RIGHT
+shipit agent result "$ID" --wait --timeout 540
+```
+
+"Still running" (`4`) is deliberately distinct from every failure code: a bare
+retry-until-it-succeeds loop would otherwise spin forever against a mistyped run
+id or a bad flag, since neither condition can ever clear.
 
 ## What to expect
 
