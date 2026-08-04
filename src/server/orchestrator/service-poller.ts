@@ -41,6 +41,37 @@ export interface PollerService {
  */
 export const MISSING_CONTAINER_GRACE_MS = 30_000;
 
+/**
+ * Container states that exist but tell us nothing usable about whether the
+ * service is up, and are therefore fed into the missing-container
+ * reconciliation pass rather than left to the forward pass (SHI-314).
+ *
+ *  - `created` — the container exists but has never been started. Compose
+ *    leaves one here when `up` created it and then failed to start it. It is
+ *    not coming up on its own, and the forward pass has no branch for it, so
+ *    before this the service stayed pinned at `starting` forever: exactly the
+ *    SHI-314 failure (no preview URL, no `containerIp`), reached through a row
+ *    that exists rather than a row that is missing.
+ *  - `removing` — on its way out. The next poll will find no row at all.
+ *
+ * Routing these through reconciliation rather than giving them a forward-pass
+ * branch is the point: a container is also *briefly* `created` in the middle
+ * of a healthy `compose up`, so a naive `created` → `stopped` mapping would
+ * flap a starting service. Reconciliation already answers that exact question
+ * correctly — it exempts an in-flight `compose up`, holds gated services, and
+ * requires a continuous grace window before it acts.
+ *
+ * Deliberately an allow-list of states we understand, NOT "every state the
+ * forward pass lacks a branch for". An unrecognized state — a future docker
+ * state, a changed `ps` JSON shape — keeps today's leave-it-alone behavior,
+ * because reinterpreting it as "no container" would let one parsing surprise
+ * walk the entire stack to `stopped` while it is happily running. Same reason
+ * the failing-`ps` path above bails out instead of reconciling.
+ *
+ * `paused` is deliberately absent — see the note in `reconcileMissingServices`.
+ */
+const INCONCLUSIVE_CONTAINER_STATES = new Set(["created", "removing"]);
+
 export interface ServicePollerOptions {
   sessionId: string;
   workspaceDir: string;
@@ -189,7 +220,12 @@ export class ServicePoller {
     // Parse container info and collect names for IP resolution
     const containerNames = new Map<string, string>();
     const statusUpdates: { name: string; state: string; exitCode: number }[] = [];
-    /** Services `ps` returned a row for — the input to the reconcile pass. */
+    /**
+     * Services `ps` returned a *conclusive* row for — the input to the
+     * reconcile pass. A row in an {@link INCONCLUSIVE_CONTAINER_STATES} state
+     * counts as no container at all, so those services fall through to
+     * reconciliation alongside the ones with no row.
+     */
     const seen = new Set<string>();
 
     for (const line of stdout.split("\n")) {
@@ -205,7 +241,7 @@ export class ServicePoller {
       if (!svc) continue;
       // Recorded before the gate check: a gated service with a container is
       // still "present", and reconciliation must not reason about it at all.
-      seen.add(svc.name);
+      if (!INCONCLUSIVE_CONTAINER_STATES.has(entry.State ?? "")) seen.add(svc.name);
 
       // Skip gated services — the install gate owns their status. A `ps`
       // reading here (e.g. a container exiting during re-install teardown)
@@ -313,6 +349,19 @@ export class ServicePoller {
    * The remaining grace window covers only the genuinely brief ambiguity: a
    * container being *recreated* is removed before its replacement is created,
    * so a poll landing in that gap sees no row for a service that is fine.
+   *
+   * A `paused` container is deliberately NOT routed here, and gets no forward
+   * branch either — it is left at whatever status it already had. Pausing is
+   * something only a human with a shell does; nothing in ShipIt pauses a
+   * service container. And neither answer we can express is true: `stopped` is
+   * wrong because the process is intact and `docker unpause` resumes it
+   * mid-instruction, while `running` is wrong because connections to it hang.
+   * The honest status is a `paused` member of the `ServiceStatus` union, which
+   * would ripple through the preview gating, the client and the agent's
+   * service registry for a state ShipIt never produces. Leaving it alone is
+   * the cheap correct-enough answer; what matters is that it counts as a
+   * conclusive row, so reconciliation cannot walk a paused service to
+   * `stopped` 30 seconds later.
    */
   private reconcileMissingServices(seen: Set<string>): void {
     const now = Date.now();

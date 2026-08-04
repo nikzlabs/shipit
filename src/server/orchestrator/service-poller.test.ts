@@ -265,6 +265,118 @@ describe("ServicePoller — missing-container reconciliation (SHI-314)", () => {
     expect(stoppedCalls(updateServiceStatus)).toHaveLength(1);
   });
 
+  /**
+   * Poller over a single `web` service whose `ps` row reports `state`. Used for
+   * the states the forward pass has no branch for.
+   */
+  function buildStatePoller(
+    svc: PollerService,
+    state: string,
+    overrides: Partial<ServicePollerOptions> = {},
+  ) {
+    const updateServiceStatus = vi.fn((_n: string, status: PollerService["status"]) => {
+      svc.status = status;
+    });
+    const poller = buildPoller({
+      composeQuery: async (args) =>
+        args.includes("ps")
+          ? JSON.stringify({ Service: "web", ID: "c1", State: state, ExitCode: 0 })
+          : JSON.stringify([{ NetworkSettings: { Networks: {} } }]),
+      getService: () => svc,
+      listServices: () => [svc],
+      updateServiceStatus,
+      ...overrides,
+    });
+    return { poller, updateServiceStatus };
+  }
+
+  it("reconciles a container stuck in `created` — a row that exists but never started", async () => {
+    vi.useFakeTimers();
+    const svc: PollerService = { name: "web", preview: "auto", status: "starting" };
+    const { poller, updateServiceStatus } = buildStatePoller(svc, "created");
+
+    // Same user-visible failure as a missing row: the forward pass has no
+    // branch, so before this the service stayed `starting` forever.
+    await poller.pollOnce();
+    expect(stoppedCalls(updateServiceStatus)).toHaveLength(0);
+
+    vi.advanceTimersByTime(MISSING_CONTAINER_GRACE_MS + 1);
+    await poller.pollOnce();
+    expect(updateServiceStatus).toHaveBeenCalledWith("web", "stopped");
+  });
+
+  it("does not flap a container that is briefly `created` during a healthy start", async () => {
+    vi.useFakeTimers();
+    const svc: PollerService = { name: "web", preview: "auto", status: "starting" };
+    const state = { value: "created" };
+    const updateServiceStatus = vi.fn((_n: string, status: PollerService["status"]) => {
+      svc.status = status;
+    });
+    const poller = buildPoller({
+      composeQuery: async (args) =>
+        args.includes("ps")
+          ? JSON.stringify({ Service: "web", ID: "c1", State: state.value, ExitCode: 0 })
+          : JSON.stringify([
+              { NetworkSettings: { Networks: { "shipit-session-sess-1": { IPAddress: "172.20.0.5" } } } },
+            ]),
+      getService: () => svc,
+      listServices: () => [svc],
+      // A `compose up` is in flight — the container is `created` on its way to
+      // `running`, which is why `created` must not map straight to `stopped`.
+      isStartInFlight: () => state.value === "created",
+      updateServiceStatus,
+    });
+
+    await poller.pollOnce();
+    vi.advanceTimersByTime(MISSING_CONTAINER_GRACE_MS * 2);
+    await poller.pollOnce();
+    expect(stoppedCalls(updateServiceStatus)).toHaveLength(0);
+
+    state.value = "running";
+    await poller.pollOnce();
+    expect(updateServiceStatus).toHaveBeenCalledWith("web", "running");
+    expect(stoppedCalls(updateServiceStatus)).toHaveLength(0);
+  });
+
+  it("reconciles a container in `removing` once it is gone", async () => {
+    vi.useFakeTimers();
+    const svc: PollerService = { name: "web", preview: "auto", status: "running" };
+    const { poller, updateServiceStatus } = buildStatePoller(svc, "removing");
+
+    await poller.pollOnce();
+    vi.advanceTimersByTime(MISSING_CONTAINER_GRACE_MS + 1);
+    await poller.pollOnce();
+    expect(updateServiceStatus).toHaveBeenCalledWith("web", "stopped");
+  });
+
+  it("leaves a `paused` container's status alone rather than calling it stopped", async () => {
+    vi.useFakeTimers();
+    // Nothing in ShipIt pauses a service container, and neither status we can
+    // express is true — but the service must not drift to `stopped` either.
+    const svc: PollerService = { name: "web", preview: "auto", status: "running" };
+    const { poller, updateServiceStatus } = buildStatePoller(svc, "paused");
+
+    await poller.pollOnce();
+    vi.advanceTimersByTime(MISSING_CONTAINER_GRACE_MS * 3);
+    await poller.pollOnce();
+    expect(updateServiceStatus).not.toHaveBeenCalled();
+    expect(svc.status).toBe("running");
+  });
+
+  it("leaves an unrecognized state alone instead of reconciling it away", async () => {
+    vi.useFakeTimers();
+    // Only states we understand are reinterpreted as "no container". A future
+    // docker state or a changed `ps` shape must not walk a healthy stack to
+    // `stopped` — same conservatism as the failing-`ps` bail-out.
+    const svc: PollerService = { name: "web", preview: "auto", status: "running" };
+    const { poller, updateServiceStatus } = buildStatePoller(svc, "some-future-state");
+
+    await poller.pollOnce();
+    vi.advanceTimersByTime(MISSING_CONTAINER_GRACE_MS * 3);
+    await poller.pollOnce();
+    expect(updateServiceStatus).not.toHaveBeenCalled();
+  });
+
   it("does not mark the stack stopped when the compose query itself fails", async () => {
     vi.useFakeTimers();
     const svc: PollerService = { name: "web", preview: "auto", status: "running" };
