@@ -16,7 +16,7 @@ import { useIsMobile } from "../../hooks/useMediaQuery.js";
 import { PrActionsMenu } from "../PrActionsMenu.js";
 import { Button } from "../ui/button.js";
 import { ChangedDocsStrip } from "../ChangedDocsStrip.js";
-import { PrStatusActions } from "./PrStatusActions.js";
+import { PrMergeActions, PrStatusActions } from "./PrStatusActions.js";
 import {
   getSavedChangedDocsExpanded,
   saveChangedDocsExpanded,
@@ -250,7 +250,10 @@ export function PrLifecycleCard({
           key={sessionId}
           className={`shrink-0 flex flex-wrap items-center gap-x-3 gap-y-1 pl-8 pr-3 pb-2 ${stripShown ? "" : "border-b border-(--color-border-primary)"}`}
         >
-          <PrStatusActions card={card} sessionId={sessionId} canAutoMerge={canAutoMerge} />
+          <PrStatusActions card={card} sessionId={sessionId} />
+          {/* `basis-full` inside this wrapping row keeps the merge controls on a
+              line of their own, below the chips. */}
+          <PrMergeActions card={card} sessionId={sessionId} canAutoMerge={canAutoMerge} />
         </div>
       )}
       {hasPanelContent && docsExpanded && (

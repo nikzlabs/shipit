@@ -6,7 +6,7 @@ import { useCiDisplay } from "../../../hooks/useCiDisplay.js";
 import { useIsMobile } from "../../../hooks/useMediaQuery.js";
 import { WarningIcon } from "@phosphor-icons/react";
 import { PrStateBadge } from "../PrStateBadge.js";
-import { PrStatusActions } from "../PrStatusActions.js";
+import { PrMergeActions, PrStatusActions } from "../PrStatusActions.js";
 import { BranchLabel, Spinner } from "../shared.js";
 import { FailedChecksList, DeploymentStatusRow } from "../indicators/index.js";
 
@@ -68,10 +68,13 @@ export function OpenPhase({
               the auto-merge toggle + merge button don't fit in what's left. */}
           {!isMobile && (
             <span className="min-w-0 flex flex-wrap items-center gap-x-3 gap-y-1">
-              <PrStatusActions card={card} sessionId={sessionId} canAutoMerge={canAutoMerge} />
+              <PrStatusActions card={card} sessionId={sessionId} />
             </span>
           )}
         </div>
+        {/* The auto-merge toggle + merge button always get a line of their own,
+            below the title/chips row rather than crammed onto its end. */}
+        {!isMobile && <PrMergeActions card={card} sessionId={sessionId} canAutoMerge={canAutoMerge} />}
         {/* docs/175 decision #2 — durable, conditional transparency line. Shown
             ONLY once we know the head commit has zero CI checks (`isCiNone`)
             AND auto-merge is armed: that combination means the PR will merge as
