@@ -24,7 +24,7 @@
 - [x] Build incident packets for spawned ShipIt fix sessions. (`buildShipitFixPrompt`)
 - [x] Enforce a clear failure mode when the operator lacks write access to the ShipIt repo. (403 with a "produce an incident report" hint.)
 - [x] Reconcile the fix child's base with the default branch for PR mergeability. (Child branches from the exact deployed commit to reproduce; incident packet instructs it to rebase onto the latest default branch before opening the PR. GitHub's three-dot diff keeps the displayed diff clean since merge-base = deployed commit.)
-- [x] Add a lower Ops-specific per-turn quota for `--shipit-source` fix spawns. (`MAX_SHIPIT_FIX_SESSIONS_PER_TURN`, default 2.)
+- [x] Add an Ops-specific per-turn quota for `--shipit-source` fix spawns. (`MAX_SHIPIT_FIX_SESSIONS_PER_TURN`, default 5 — sized to smooth one turn's container burst, not as a containment boundary.)
 - [x] Don't cascade archive from an Ops session to its spawned fix sessions (`archiveSession` skips the child loop when `kind === "ops"`; the breadcrumb survives for unarchive).
 - [ ] Redact raw log excerpts copied into incident packets (the diagnosis prompt is passed through verbatim today). Tracked separately — Open Question 4. NOT done in this pass.
 

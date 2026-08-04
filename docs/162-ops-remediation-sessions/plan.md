@@ -445,12 +445,20 @@ PR base vs. deployed ref (mergeability):
 
 Quota:
 
-- Fix-session spawns get a lower per-turn cap than generic fan-out children:
+- Fix-session spawns get their own per-turn cap:
   `DEFAULT_MAX_SHIPIT_FIX_SESSIONS_PER_TURN` (env
-  `MAX_SHIPIT_FIX_SESSIONS_PER_TURN`, default 2), passed as
+  `MAX_SHIPIT_FIX_SESSIONS_PER_TURN`, default 5), passed as
   `maxSpawnedSessionsPerTurn` only when `shipitSource` is set. The per-parent cap
-  (16) still applies. Each fix child claims the ShipIt repo and opens a PR, so it
-  is heavier and higher-stakes than a research/codegen fan-out child.
+  (16) still applies. The cap smooths one turn's container burst — each fix child
+  claims the ShipIt repo, boots a container, and opens a PR. It is deliberately
+  *not* a containment boundary: there is no spawn-depth limit for sessions
+  (docs/117 dropped grandchild quotas), so nested spawns route around any
+  per-turn number; the per-parent cap and the global container ceiling are the
+  real bounds. It sits above the generic per-turn cap of 4 because an Ops
+  investigation is precisely the workflow that legitimately produces several
+  *independent* defects in one pass — batching unrelated fixes into one PR, or
+  splitting a diagnosis across turns, is worse than the burst a lower cap
+  prevents.
 
 TOCTOU between inspection and spawn:
 

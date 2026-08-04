@@ -173,9 +173,10 @@ spawned session is identifiable in the sidebar.
 The child branch *starts* at the inspected deployed commit (so it can reproduce
 the production bug), which is usually behind the repo's default branch; the
 incident packet tells the child to rebase onto the latest default branch before
-opening its PR so the PR stays mergeable. Fix-session spawns also have a lower
-per-turn cap than generic fan-out children (default 2, env
-`MAX_SHIPIT_FIX_SESSIONS_PER_TURN`).
+opening its PR so the PR stays mergeable. Fix-session spawns have their own
+per-turn cap (default 5, env `MAX_SHIPIT_FIX_SESSIONS_PER_TURN`) — an Ops
+investigation that turns up several independent defects can spin up a fix
+session per defect in a single turn rather than batching them into one PR.
 
 ### Example
 

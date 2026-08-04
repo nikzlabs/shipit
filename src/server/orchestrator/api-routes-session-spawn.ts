@@ -282,9 +282,10 @@ export async function registerSessionSpawnRoutes(
             ...(body.spawnedByTurn !== undefined ? { spawnedByTurn: body.spawnedByTurn } : {}),
             ...(body.detached ? { detached: true } : {}),
             ...(repoUrlOverride !== undefined ? { repoUrlOverride } : {}),
-            // docs/162 — fix-session spawns get a lower per-turn cap than
-            // generic fan-out children (they each claim the ShipIt repo and
-            // open a PR). Only bites when a turn id is supplied to count against.
+            // docs/162 — fix-session spawns get their own per-turn cap, sized
+            // for an Ops investigation that legitimately finds several
+            // independent defects in one pass. Only bites when a turn id is
+            // supplied to count against.
             ...(body.shipitSource
               ? { maxSpawnedSessionsPerTurn: DEFAULT_MAX_SHIPIT_FIX_SESSIONS_PER_TURN }
               : {}),

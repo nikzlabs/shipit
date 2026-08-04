@@ -57,14 +57,34 @@ export const DEFAULT_MAX_SPAWNED_SESSIONS_PER_TURN =
   readPositiveIntEnv("MAX_SPAWNED_SESSIONS_PER_TURN") ?? 4;
 
 /**
- * docs/162 — lower per-turn cap for Ops `--shipit-source` fix-session spawns.
- * A ShipIt fix session is heavier and higher-stakes than a generic fan-out
- * child (it claims the ShipIt repo and opens a PR against it), so we bound how
- * many an Ops turn can kick off. Overridable via `MAX_SHIPIT_FIX_SESSIONS_PER_TURN`
- * (positive integer); the compile-time default is `2`. Read once at module init.
+ * docs/162 — per-turn cap for Ops `--shipit-source` fix-session spawns.
+ *
+ * What this bounds: the container burst of a *single* Ops turn. Each fix child
+ * claims the ShipIt repo, boots its own container, and opens a PR, so a turn
+ * that fans out a dozen of them is a capacity spike worth smoothing.
+ *
+ * What this is **not**: a containment boundary. There is no spawn-depth limit
+ * for sessions — docs/117 dropped grandchild quotas deliberately ("the
+ * per-parent + global container caps bound runaway depth in practice"), and a
+ * child can spawn grandchildren of its own. A runaway or adversarial agent
+ * therefore routes around any per-turn number by nesting spawns. The real
+ * blast-radius bounds are {@link DEFAULT_MAX_ACTIVE_SPAWNED_SESSIONS} (16
+ * active children per parent) and the orchestrator's global container ceiling.
+ * (Distinct from docs/144's depth-1 cap, which bounds *sub-agent* recursion —
+ * a different mechanism entirely.)
+ *
+ * Sized at `5`, above the generic {@link DEFAULT_MAX_SPAWNED_SESSIONS_PER_TURN}
+ * of `4`: an Ops investigation is exactly the workflow that legitimately finds
+ * several *independent* defects in one pass, and the alternatives a low cap
+ * forces — batching unrelated fixes into one muddled PR, or splitting a
+ * diagnosis across turns and losing the connective tissue between findings —
+ * are worse than the burst it prevents.
+ *
+ * Overridable via `MAX_SHIPIT_FIX_SESSIONS_PER_TURN` (positive integer). Read
+ * once at module init.
  */
 export const DEFAULT_MAX_SHIPIT_FIX_SESSIONS_PER_TURN =
-  readPositiveIntEnv("MAX_SHIPIT_FIX_SESSIONS_PER_TURN") ?? 2;
+  readPositiveIntEnv("MAX_SHIPIT_FIX_SESSIONS_PER_TURN") ?? 5;
 
 export interface SpawnChildSessionOptions {
   /** The required initial user prompt that the spawned session's agent runs. */
