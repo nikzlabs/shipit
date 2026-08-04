@@ -46,6 +46,30 @@ describe("SubAgentConsultCardRow (docs/220)", () => {
     expect(screen.queryByTestId("sub-agent-consult-output")).toBeNull();
   });
 
+  // SHI-307 — a consult the boot reconcile cancelled reads exactly like one the
+  // USER cancelled unless the card says otherwise, so ShipIt's own explanation
+  // renders on the card face.
+  it("shows ShipIt's explanation of a terminal status alongside the summary", () => {
+    render(<SubAgentConsultCardRow card={card({
+      status: "cancelled",
+      durationMs: undefined,
+      costUsd: 0,
+      statusDetail: "ShipIt restarted while this consult was running, so its result was lost.",
+    })} />);
+
+    const row = screen.getByTestId("sub-agent-consult-card");
+    expect(row.textContent).toContain("Cancelled Codex");
+    expect(screen.getByTestId("sub-agent-consult-status-detail").textContent)
+      .toContain("ShipIt restarted while this consult was running");
+    // Still not a spinner — the whole point is that it stops claiming to run.
+    expect(row.getAttribute("data-pending")).toBeNull();
+  });
+
+  it("omits the explanation row when the card carries none", () => {
+    render(<SubAgentConsultCardRow card={card({ status: "cancelled", costUsd: 0 })} />);
+    expect(screen.queryByTestId("sub-agent-consult-status-detail")).toBeNull();
+  });
+
   // SHI-278 — the same card also carries the DURABLE in-flight state, so a
   // backgrounded consult still shows up after a switch/reload/restart.
   it("renders the pending state as an in-progress row", () => {

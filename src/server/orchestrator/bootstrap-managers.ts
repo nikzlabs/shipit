@@ -37,6 +37,7 @@ import {
 import { refreshAllRepoDefaultBranches } from "./services/repo-default-branch.js";
 import { restoreSessionWorkspace } from "./services/session.js";
 import { reattachInFlightTurns } from "./restart-turn-reattach.js";
+import { reconcileOrphanedConsultCards } from "./consult-card-reconcile.js";
 import { createOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import { MergeWatchManager } from "./merge-watch.js";
 import { createSessionLoopDetector } from "./loop-detector.js";
@@ -810,6 +811,16 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     repoStore, sessionManager, chatHistoryManager, usageManager,
     containerManager, getBareCacheDir, warmSessionForRepo, credentialStore,
   }, migratedRepoUrls);
+
+  // ---- SHI-307 / docs/249: finish consult cards the previous orchestrator couldn't ----
+  // `runSubAgent` holds the only handle that can flip a consult card out of
+  // `pending`, and that handle died with the previous process — so every pending
+  // card in the DB right now is orphaned, by construction (the sweep runs before
+  // any route can accept a new spawn). Ordered BEFORE the adoption sweep below on
+  // purpose: a consult spawned by a foreground `shipit agent run` is still inside
+  // its originating turn, so its row is `in_progress=1`, and the adopted turn's
+  // `replaceInProgress` would delete it outright. Synchronous and non-throwing.
+  reconcileOrphanedConsultCards(chatHistoryManager);
 
   // ---- docs/240: adopt agent turns that outlived the previous orchestrator ----
   // Session containers survive an orchestrator crash/redeploy with their CLI

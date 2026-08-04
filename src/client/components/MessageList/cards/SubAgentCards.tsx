@@ -98,7 +98,9 @@ export function SubAgentConsultCardRow({ card }: { card: SubAgentConsultCardData
   }
 
   // No output (e.g. a transport failure or empty result) — keep the compact,
-  // non-interactive one-liner exactly as before.
+  // non-interactive one-liner exactly as before, plus ShipIt's own explanation
+  // when there is one (SHI-307: a consult cancelled by an orchestrator restart
+  // is otherwise indistinguishable from one the user cancelled).
   if (!output) {
     return (
       <div
@@ -106,6 +108,11 @@ export function SubAgentConsultCardRow({ card }: { card: SubAgentConsultCardData
         className="rounded-lg border border-(--color-border-primary) bg-(--color-bg-tertiary) px-3 py-1.5 text-xs text-(--color-text-tertiary)"
       >
         {summary}
+        {card.statusDetail && (
+          <div className="mt-1 text-xs text-(--color-text-secondary)" data-testid="sub-agent-consult-status-detail">
+            {card.statusDetail}
+          </div>
+        )}
       </div>
     );
   }

@@ -2545,6 +2545,65 @@ describe("shipit agent result — exit codes (docs/248)", () => {
     expect(out.stderr).toContain("no output");
   });
 
+  // SHI-307 — the boot reconcile turns a card stranded `pending` by an
+  // orchestrator restart into a terminal `cancelled` one. That is a deliberate
+  // change in what a waiting caller observes: the same poll that used to answer
+  // 4 ("come back later") forever now answers 3 ("the run failed"), which is the
+  // only thing that lets a retry loop terminate.
+  it("exits 3 — not 4 — for a consult cancelled by an orchestrator restart", async () => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "result"], {
+      "GET /agent-ops/agent/result": {
+        status: 200,
+        body: {
+          cardId: "c1", spawnId: "run-77", subAgentId: "codex", status: "cancelled",
+          statusDetail: "ShipIt restarted while this consult was running, so its result was lost.",
+          createdAt: "x",
+        },
+      },
+    });
+    expect(out.exitCode).toBe(3);
+    expect(out.stderr).not.toContain("still going");
+  });
+
+  it("prints ShipIt's explanation on stderr, keeping stdout in the sub-agent's voice", async () => {
+    // `statusDetail` is ShipIt's commentary, not the consultant's words. Putting
+    // it on stdout would hand a caller our apology as if Codex had written it —
+    // the SHI-245 "one artifact" guarantee runs the other way.
+    const { run } = makeRunner();
+    const out = await run(["agent", "result"], {
+      "GET /agent-ops/agent/result": {
+        status: 200,
+        body: {
+          cardId: "c1", spawnId: "run-77", subAgentId: "codex", status: "cancelled",
+          statusDetail: "ShipIt restarted while this consult was running, so its result was lost.",
+          createdAt: "x",
+        },
+      },
+    });
+    expect(out.stderr).toContain("ShipIt restarted while this consult was running");
+    expect(out.stdout).not.toContain("ShipIt restarted");
+  });
+
+  it("surfaces the explanation to a --json caller too", async () => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "result", "--json"], {
+      "GET /agent-ops/agent/result": {
+        status: 200,
+        body: {
+          cardId: "c1", spawnId: "run-77", subAgentId: "codex", status: "cancelled",
+          statusDetail: "ShipIt restarted", createdAt: "x",
+        },
+      },
+    });
+    expect(out.exitCode).toBe(3);
+    expect(JSON.parse(out.stdout)).toMatchObject({
+      status: "cancelled",
+      statusDetail: "ShipIt restarted",
+      outcome: "finished",
+    });
+  });
+
   it("rejects --timeout without --wait rather than silently blocking", async () => {
     const { run } = makeRunner();
     const out = await run(["agent", "result", "--timeout", "60"]);
@@ -2647,6 +2706,30 @@ describe("shipit agent result --wait (docs/248)", () => {
   it("exits 3 when the run it waited for turns out to have failed", async () => {
     const out = await runResultWait(["agent", "result", "--wait"], [pendingSegment, finished("error")]);
     expect(out.exitCode).toBe(3);
+  });
+
+  // SHI-307 — the scenario this whole reconcile exists for, from the waiting
+  // caller's side. The orchestrator dies mid-consult; the wait rides out the
+  // resets; the rebooted orchestrator's boot sweep has marked the card
+  // `cancelled`, so the wait ENDS instead of running to its timeout and being
+  // re-issued forever.
+  it("ends the wait when a restart-stranded run comes back cancelled", async () => {
+    const out = await runResultWait(["agent", "result", "run-77", "--wait"], [
+      pendingSegment,
+      { status: 0, body: { error: "connection reset" } },
+      {
+        status: 200,
+        body: {
+          cardId: "c1", spawnId: "run-77", subAgentId: "codex", status: "cancelled",
+          statusDetail: "ShipIt restarted while this consult was running, so its result was lost.",
+          createdAt: "x", outcome: "finished",
+        },
+      },
+    ]);
+    expect(out.exitCode).toBe(3);
+    expect(out.stderr).toContain("ShipIt restarted while this consult was running");
+    // Not "still running after Ns" — the wait resolved on an answer.
+    expect(out.stderr).not.toContain("still running after");
   });
 
   it("retries a transport reset beneath the deadline instead of reporting it", async () => {
