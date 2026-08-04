@@ -182,16 +182,50 @@ const RESULT_WAIT_INITIAL_BACKOFF_MS = 500;
 const RESULT_WAIT_MAX_BACKOFF_MS = 8_000;
 /** Per-request abort budget: one segment plus margin for the server's resolve. */
 const RESULT_WAIT_REQUEST_MARGIN_MS = 10_000;
+/**
+ * Slack the per-request abort budget may add past the overall deadline. Without
+ * it, `--timeout 5` would hand the first request a 15-second budget and blow the
+ * caller's stated bound by 3x.
+ */
+const RESULT_WAIT_DEADLINE_GRACE_MS = 2_000;
+/**
+ * Floor on how long one `pending` iteration may take before the loop re-issues.
+ * A server that ignores `wait` and answers `pending` instantly would otherwise
+ * spin the loop at request-per-millisecond rates for the whole timeout.
+ */
+const RESULT_WAIT_MIN_SEGMENT_MS = 1_000;
+
+/** Consult-card statuses that end a wait. */
+const TERMINAL_CARD_STATUSES = new Set(["success", "error", "timeout", "cancelled"]);
+
+/**
+ * Recognize a consult card in a 2xx body, or `null` when the body is not one.
+ *
+ * The `null` case is load-bearing: `callBroker` turns an unparseable body — a
+ * response truncated or reset after its 2xx headers — into `{}`, and a caller
+ * that defaulted a missing status to "success" would report a *finished,
+ * successful run* on the strength of a corrupted response. That is the one
+ * failure this command's exit code must never produce.
+ */
+function cardStatusOf(body: Record<string, unknown>): string | null {
+  const status = asString(body.status);
+  if (TERMINAL_CARD_STATUSES.has(status) || status === "pending") return status;
+  // A wait response may legibly say "still going" without restating the card.
+  if (body.outcome === "pending") return "pending";
+  return null;
+}
 
 /** Map a consult card's status to this command's exit code. */
 function exitCodeForResultStatus(status: string): number {
   if (status === "pending") return RESULT_EXIT_PENDING;
   if (status === "success") return RESULT_EXIT_SUCCESS;
   // error | timeout | cancelled — the run reached a terminal state that wasn't
-  // success. An unrecognized status is treated as success by the caller below
-  // (it defaults the field), preserving the pre-docs/248 behavior.
+  // success. Unrecognized statuses never reach here: `cardStatusOf` rejects the
+  // body as unreadable before it becomes an outcome.
   return RESULT_EXIT_RUN_FAILED;
 }
+
+const UNREADABLE_RESPONSE = "the orchestrator returned a response that is not a consult card";
 
 interface ResultLookup {
   body: Record<string, unknown>;
@@ -218,9 +252,14 @@ async function waitForResult(
   let backoff = RESULT_WAIT_INITIAL_BACKOFF_MS;
   let lastTransportError: string | undefined;
   let lastBody: Record<string, unknown> | undefined;
+  // The run this wait is following. Starts as whatever the caller named (a full
+  // id, a prefix, or nothing at all) and is replaced by the full id from the
+  // first readable response — see the pinning note below.
+  let pinnedId = runId;
 
   while (deps.now() < deadline) {
-    const remainingMs = deadline - deps.now();
+    const iterationStart = deps.now();
+    const remainingMs = deadline - iterationStart;
     const segSecs = Math.max(1, Math.min(RESULT_WAIT_SEGMENT_SECS, Math.ceil(remainingMs / 1000)));
     const overallSecs = Math.max(1, Math.ceil(remainingMs / 1000));
     const params = new URLSearchParams({
@@ -228,14 +267,18 @@ async function waitForResult(
       timeout: String(overallSecs),
       segment: String(segSecs),
     });
-    if (runId) params.set("spawnId", runId);
+    if (pinnedId) params.set("spawnId", pinnedId);
 
     const res = await deps.call(
       "GET",
       `/agent-ops/agent/result?${params.toString()}`,
       undefined,
       deps.env,
-      segSecs * 1000 + RESULT_WAIT_REQUEST_MARGIN_MS,
+      // Never overshoot the caller's stated timeout by more than the grace.
+      Math.min(
+        segSecs * 1000 + RESULT_WAIT_REQUEST_MARGIN_MS,
+        remainingMs + RESULT_WAIT_DEADLINE_GRACE_MS,
+      ),
     );
 
     if (isTransientStatus(res.status)) {
@@ -257,14 +300,43 @@ async function waitForResult(
       };
     }
 
+    const cardStatus = cardStatusOf(res.body);
+    if (cardStatus === null) {
+      // 2xx, but not a card — a body reset or truncated after its headers parses
+      // to `{}`. Retry it like any other transport damage rather than letting it
+      // become a terminal (and, by default, successful) outcome.
+      lastTransportError = UNREADABLE_RESPONSE;
+      const sleepMs = Math.min(backoff, Math.max(0, deadline - deps.now()));
+      if (sleepMs <= 0) break;
+      await deps.sleep(sleepMs);
+      backoff = Math.min(backoff * 2, RESULT_WAIT_MAX_BACKOFF_MS);
+      continue;
+    }
+
     backoff = RESULT_WAIT_INITIAL_BACKOFF_MS;
     lastBody = res.body;
-    // Prefer the server's explicit outcome; fall back to the card's own status
-    // so an older orchestrator (no `outcome` field) still terminates the loop.
-    const outcome = res.body.outcome;
-    const cardStatus = asString(res.body.status);
-    if (outcome === "finished" || (outcome !== "pending" && cardStatus !== "pending")) {
+    // Pin to the FULL id the server just reported. The server pins only within
+    // one segment, so without this a wait that named no id (or a prefix) would
+    // re-resolve "the most recent run" on every segment and silently switch to a
+    // newer consult started mid-wait — then report ITS status as the answer.
+    const reportedId = asString(res.body.spawnId);
+    if (reportedId) pinnedId = reportedId;
+
+    if (cardStatus !== "pending") {
       return { body: res.body, waitTimedOut: false, ...(lastTransportError ? { lastTransportError } : {}) };
+    }
+
+    // Still pending. A conforming server has already spent a segment holding the
+    // request open; one that answered instantly (an older build that ignores
+    // `wait`) has not, so pace the loop rather than hammering it.
+    const elapsed = deps.now() - iterationStart;
+    if (elapsed < RESULT_WAIT_MIN_SEGMENT_MS) {
+      const sleepMs = Math.min(
+        RESULT_WAIT_MIN_SEGMENT_MS - elapsed,
+        Math.max(0, deadline - deps.now()),
+      );
+      if (sleepMs <= 0) break;
+      await deps.sleep(sleepMs);
     }
   }
 
@@ -290,7 +362,7 @@ async function waitForResult(
  * The exit code carries the run's status (see `RESULT_EXIT_*`), and `--wait`
  * blocks until the run is terminal, so a caller that backgrounded a long consult
  * never needs a hand-written `sleep`/`grep` loop. A wait that hits its timeout
- * exits `2` and says how to resume — every call re-derives from durable state,
+ * exits `4` and says how to resume — every call re-derives from durable state,
  * so being interrupted loses nothing.
  */
 export async function handleAgentResult(args: string[], deps: RunDeps): Promise<void> {
@@ -318,7 +390,10 @@ export async function handleAgentResult(args: string[], deps: RunDeps): Promise<
     if (!Number.isFinite(n) || n <= 0) {
       fail(deps.io, "shipit agent result: --timeout must be a positive number of seconds.");
     }
-    overallSecs = Math.min(Math.floor(n), MAX_RESULT_WAIT_SECS);
+    // Floor to whole seconds, but never to zero: `--timeout 0.5` is a positive
+    // timeout the caller meant, and rounding it to 0 would skip the lookup
+    // entirely and then blame the orchestrator for being unreachable.
+    overallSecs = Math.min(Math.max(1, Math.floor(n)), MAX_RESULT_WAIT_SECS);
   }
 
   let lookup: ResultLookup;
@@ -327,12 +402,17 @@ export async function handleAgentResult(args: string[], deps: RunDeps): Promise<
   } else {
     const qs = runId ? `?spawnId=${encodeURIComponent(runId)}` : "";
     const res = await deps.call("GET", `/agent-ops/agent/result${qs}`, undefined, deps.env);
+    const unreadable = res.status >= 200 && res.status < 300 && cardStatusOf(res.body) === null;
     lookup = {
       body: res.body,
       waitTimedOut: false,
       ...(res.status < 200 || res.status >= 300
         ? { lookupError: formatError(res, "Sub-agent result lookup failed") }
-        : {}),
+        : unreadable
+          // Same guard as the wait loop: a body damaged after its 2xx headers
+          // must not be read as a finished, successful run.
+          ? { lookupError: `Sub-agent result lookup failed: ${UNREADABLE_RESPONSE}.` }
+          : {}),
     };
   }
 
@@ -341,13 +421,24 @@ export async function handleAgentResult(args: string[], deps: RunDeps): Promise<
   }
 
   const output = asString(lookup.body.outputMarkdown);
-  const status = asString(lookup.body.status) || "success";
+  // Non-null past the lookupError guard above.
+  const status = cardStatusOf(lookup.body) ?? "success";
   const subAgentId = asString(lookup.body.subAgentId);
   const spawnId = asString(lookup.body.spawnId);
   const exitCode = exitCodeForResultStatus(status);
+  const resume = `shipit agent result${spawnId ? ` ${spawnId}` : ""} --wait`;
 
   if (parsed.booleans.has("json")) {
-    deps.io.stdout(`${JSON.stringify(lookup.body)}\n`);
+    // Mirror what text mode puts on stderr, so a `--json` caller is not the one
+    // consumer that cannot see a degraded wait or learn how to resume it.
+    deps.io.stdout(
+      `${JSON.stringify({
+        ...lookup.body,
+        outcome: status === "pending" ? "pending" : "finished",
+        ...(lookup.lastTransportError ? { lastTransportError: lookup.lastTransportError } : {}),
+        ...(status === "pending" ? { resumeCommand: resume } : {}),
+      })}\n`,
+    );
     deps.io.exit(exitCode);
     return;
   }
@@ -361,7 +452,6 @@ export async function handleAgentResult(args: string[], deps: RunDeps): Promise<
     // The run is alive. Say how to keep waiting — resumable because each call
     // re-derives the answer from the persisted card, so nothing is lost by
     // having been interrupted.
-    const resume = `shipit agent result${spawnId ? ` ${spawnId}` : ""} --wait`;
     deps.io.stderr(
       lookup.waitTimedOut
         ? `shipit agent result: still running after ${overallSecs}s. Re-run to keep waiting: ${resume}\n`

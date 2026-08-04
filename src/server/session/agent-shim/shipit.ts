@@ -218,7 +218,9 @@ Sub-agents (docs/144 — spawn another agent for a one-shot sub-task):
   sessions" setting to be enabled. Blocks until the sub-agent finishes: a real
   consult routinely runs for many minutes, up to a 30-minute cap, so run it in
   the BACKGROUND — most shell tools cap foreground commands well below that. A
-  killed 'run' does not stop the spawn; recover it with 'result'. Example:
+  killed 'run' does not stop the spawn; recover it with 'result'. Never pipe it
+  through tail/head/grep — the sub-agent's report IS the deliverable, and the
+  finding you need is as likely to be at the top as the bottom. Example:
 
     shipit agent run --agent codex --prompt-file - <<'EOF'
     Review this diff for bugs. Report findings as file:line — comment.
