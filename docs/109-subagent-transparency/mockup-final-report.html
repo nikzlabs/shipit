@@ -1,0 +1,498 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Subagent final report — formatting prototype</title>
+<style>
+  /* ── Claude Light tokens (src/client/themes/claude-light.css) ───────────── */
+  :root {
+    --color-bg-primary: #faf5ef;
+    --color-bg-secondary: #f0e8de;
+    --color-bg-tertiary: #e6dcd0;
+    --color-text-primary: #2a2018;
+    --color-text-secondary: #5c5040;
+    --color-text-tertiary: #9a8c78;
+    --color-border-primary: #e4d8c8;
+    --color-border-secondary: #d0c0ac;
+    --color-accent: #d97757;
+    --color-success: #3a8a50;
+    --color-success-subtle: rgba(58, 138, 80, 0.1);
+    --color-error: #c43838;
+    --color-error-subtle: rgba(196, 56, 56, 0.1);
+    --color-warning: #b87020;
+    --color-warning-subtle: rgba(184, 112, 32, 0.1);
+    --color-syntax-string: #387838;
+    --color-syntax-keyword: #b85030;
+    --font-ui: ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 32px 28px 80px;
+    background: var(--color-bg-primary);
+    color: var(--color-text-primary);
+    font-family: var(--font-ui);
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  .page { max-width: 1180px; margin: 0 auto; }
+
+  h1.doc {
+    font-size: 20px; font-weight: 600; margin: 0 0 6px;
+  }
+  p.doc-sub {
+    margin: 0 0 32px; color: var(--color-text-secondary); font-size: 13px; max-width: 78ch;
+  }
+
+  section { margin-bottom: 44px; }
+  h2.case {
+    font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--color-text-tertiary); margin: 0 0 4px;
+    padding-bottom: 8px; border-bottom: 1px solid var(--color-border-primary);
+  }
+  p.case-note {
+    margin: 10px 0 16px; font-size: 12.5px; color: var(--color-text-secondary); max-width: 88ch;
+  }
+
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
+  @media (max-width: 1000px) { .pair { grid-template-columns: 1fr; } }
+  .col-label {
+    font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+    margin-bottom: 8px; display: flex; align-items: center; gap: 6px;
+  }
+  .col-label.now { color: var(--color-text-tertiary); }
+  .col-label.next { color: var(--color-success); }
+  .col-label .tag {
+    font-weight: 500; letter-spacing: 0; text-transform: none; font-size: 11px;
+    color: var(--color-text-tertiary);
+  }
+
+  /* ── The subagent card shell (shared) ──────────────────────────────────── */
+  .subagent {
+    border-left: 2px solid rgba(58, 138, 80, .4);
+    padding-left: 12px;
+  }
+  .sa-head { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+  .sa-head .icon { color: var(--color-success); font-size: 13px; }
+  .sa-head .who { font-weight: 600; color: var(--color-success); }
+  .sa-head .desc { color: var(--color-text-primary); }
+  .badge {
+    margin-left: auto; display: inline-flex; align-items: center; gap: 4px;
+    font-size: 11.5px; white-space: nowrap;
+  }
+  .badge.done { color: var(--color-success); }
+  .badge.bg { color: var(--color-warning); }
+  .badge.err { color: var(--color-error); }
+
+  .disclosure {
+    display: flex; align-items: center; gap: 4px;
+    font-size: 12px; color: var(--color-text-tertiary);
+    margin-top: 6px; cursor: default;
+  }
+  .caret { font-size: 9px; }
+
+  /* ── CURRENT final-report rendering ────────────────────────────────────── */
+  .now-label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--color-text-tertiary); margin: 8px 0 4px;
+  }
+  .now-body { font-size: 14px; line-height: 1.55; color: var(--color-text-primary); }
+  .now-body p { margin: 0 0 8px; }
+  .now-body h3 { font-size: 20px; font-weight: 700; margin: 14px 0 8px; }
+  .now-body ul { margin: 0 0 8px; padding-left: 22px; }
+  .now-meta {
+    font-family: var(--font-mono); font-size: 11.5px; color: var(--color-text-tertiary);
+    white-space: pre-wrap; margin-top: 6px;
+  }
+
+  /* ── PROPOSED final-report rendering ───────────────────────────────────── */
+  .report {
+    margin-top: 8px;
+    border: 1px solid var(--color-border-primary);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, .55);
+    overflow: hidden;
+  }
+  .report.error { border-color: rgba(196, 56, 56, .35); background: var(--color-error-subtle); }
+
+  .report-head {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 10px;
+    background: var(--color-bg-secondary);
+    border-bottom: 1px solid var(--color-border-primary);
+  }
+  .report.error .report-head { background: rgba(196, 56, 56, .09); border-bottom-color: rgba(196, 56, 56, .25); }
+  .report-title {
+    font-size: 11px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase;
+    color: var(--color-text-secondary);
+  }
+  .report.error .report-title { color: var(--color-error); }
+  .chips { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+  .chip {
+    font-size: 11px; color: var(--color-text-tertiary);
+    display: inline-flex; align-items: center; gap: 3px; white-space: nowrap;
+  }
+  .chip .n { font-variant-numeric: tabular-nums; color: var(--color-text-secondary); }
+  .icon-btn {
+    font-size: 11px; color: var(--color-text-tertiary);
+    border: 1px solid transparent; border-radius: 4px; padding: 1px 4px; background: none;
+  }
+
+  .report-body {
+    padding: 10px 12px 12px;
+    font-size: 13.5px; line-height: 1.6;
+    color: var(--color-text-primary);
+    max-width: 78ch;
+  }
+  /* Markdown scale — deliberately flattened so a subagent's H1 can't out-shout
+     the parent transcript it is nested inside. */
+  .report-body h1, .report-body h2, .report-body h3 {
+    font-size: 13.5px; font-weight: 650; margin: 14px 0 5px;
+    color: var(--color-text-primary); letter-spacing: -.005em;
+  }
+  .report-body h1:first-child, .report-body h2:first-child, .report-body h3:first-child { margin-top: 0; }
+  .report-body h1::before, .report-body h2::before, .report-body h3::before {
+    content: ""; display: inline-block; width: 3px; height: 11px; border-radius: 2px;
+    background: var(--color-accent); margin-right: 7px; vertical-align: -1px; opacity: .75;
+  }
+  .report-body p { margin: 0 0 9px; }
+  .report-body p:last-child, .report-body ul:last-child { margin-bottom: 0; }
+  .report-body ul, .report-body ol { margin: 0 0 9px; padding-left: 18px; }
+  .report-body li { margin: 0 0 3px; }
+  .report-body li::marker { color: var(--color-text-tertiary); }
+  .report-body code {
+    font-family: var(--font-mono); font-size: 12px;
+    background: var(--color-bg-tertiary); border-radius: 3px; padding: 0 4px;
+  }
+  .report-body pre {
+    margin: 0 0 9px; padding: 8px 10px; border-radius: 6px; overflow-x: auto;
+    background: var(--color-bg-secondary); border: 1px solid var(--color-border-primary);
+    font-family: var(--font-mono); font-size: 12px; line-height: 1.5;
+  }
+  .report-body pre code { background: none; padding: 0; }
+  .report-body .fileref {
+    font-family: var(--font-mono); font-size: 12px; color: var(--color-accent);
+    text-decoration: none; border-bottom: 1px dotted rgba(217, 119, 87, .5);
+  }
+  .report-body strong { font-weight: 650; }
+  .report-body table { border-collapse: collapse; font-size: 12.5px; margin: 0 0 9px; }
+  .report-body th, .report-body td {
+    border: 1px solid var(--color-border-primary); padding: 3px 8px; text-align: left;
+  }
+  .report-body th { background: var(--color-bg-secondary); font-weight: 600; }
+
+  /* Clamp + fade for long reports */
+  .clamped { position: relative; max-height: 190px; overflow: hidden; }
+  .clamped::after {
+    content: ""; position: absolute; inset: auto 0 0 0; height: 60px;
+    background: linear-gradient(to bottom, rgba(255,255,255,0), rgba(253, 250, 246, .96));
+  }
+  .more {
+    display: flex; align-items: center; gap: 5px; width: 100%;
+    padding: 5px 12px; font-size: 11.5px; color: var(--color-text-secondary);
+    background: var(--color-bg-secondary); border: none;
+    border-top: 1px solid var(--color-border-primary);
+    font-family: inherit;
+  }
+
+  /* Background-launch state (replaces the bogus "final report") */
+  .bg-note {
+    margin-top: 8px; display: flex; align-items: center; gap: 8px;
+    padding: 7px 10px; border-radius: 8px;
+    background: var(--color-warning-subtle);
+    border: 1px solid rgba(184, 112, 32, .28);
+    font-size: 12.5px; color: var(--color-text-secondary);
+  }
+  .bg-note .dot {
+    width: 7px; height: 7px; border-radius: 50%; background: var(--color-warning); flex: none;
+  }
+
+  .callout {
+    margin-top: 14px; padding: 10px 12px; border-radius: 8px;
+    background: var(--color-bg-secondary); border: 1px solid var(--color-border-primary);
+    font-size: 12.5px; color: var(--color-text-secondary);
+  }
+  .callout b { color: var(--color-text-primary); font-weight: 600; }
+  .callout ul { margin: 6px 0 0; padding-left: 18px; }
+  .callout li { margin-bottom: 3px; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <h1 class="doc">Subagent final report — formatting prototype</h1>
+  <p class="doc-sub">
+    Four cases, current rendering on the left and the proposal on the right. The report is the one part of
+    the card the reader actually reads, and today it is undifferentiated body text glued to the bottom of the
+    card — indistinguishable from the parent agent's own prose, at full transcript width, with the CLI's
+    accounting footer dumped raw underneath.
+  </p>
+
+  <!-- ═══════════════════════════ CASE 1 ═══════════════════════════ -->
+  <section>
+    <h2 class="case">Case 1 — Backgrounded agent (the screenshot)</h2>
+    <p class="case-note">
+      A <code>run_in_background</code> Task returns a launch acknowledgement, not a report. It is addressed to
+      the <em>agent</em> and explicitly says "never quote any part of it" — yet the card prints it verbatim under
+      <b>FINAL REPORT</b> and stamps the header <b>done</b> while the subagent is still running. This is a
+      content bug wearing a formatting bug's clothes: the fix is to recognise the acknowledgement and not
+      render it as a report at all.
+    </p>
+    <div class="pair">
+      <div>
+        <div class="col-label now">Now <span class="tag">— internal metadata shown as the report</span></div>
+        <div class="subagent">
+          <div class="sa-head">
+            <span class="icon">▣</span><span class="who">Subagent (general-purpose):</span>
+            <span class="desc">Idea 4: HoMM3-style variant</span>
+            <span class="badge done">✔ done</span>
+          </div>
+          <div class="disclosure"><span class="caret">▸</span> Prompt (6186 chars)</div>
+          <div class="disclosure"><span class="caret">▸</span> Subagent's work (6 actions)</div>
+          <div class="now-label">Final report</div>
+          <div class="now-body">
+            <p>Async agent launched successfully. (This tool result is internal metadata — never quote or paste any part of it, including the agentId below, into a user-facing reply.)</p>
+            <p>agentId: a90130de265682eb8 (internal ID - do not mention to user. Use SendMessage with to: 'a90130de265682eb8', summary: '&lt;5-10 word recap&gt;' to continue this agent.)</p>
+            <p>The agent is working in the background. You will be notified automatically when it completes. You know nothing about its results until that notification arrives — do not report, assume, or predict them; continue other work or respond to the user in the meantime.</p>
+            <p>output_file: /tmp/claude-1000/-workspace/637e5d57-5387-4faa-ad66-a1a80d40e175/tasks/a90130de265682eb8.output</p>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div class="col-label next">Proposed <span class="tag">— acknowledgement recognised, status corrected</span></div>
+        <div class="subagent">
+          <div class="sa-head">
+            <span class="icon">▣</span><span class="who">Subagent (general-purpose):</span>
+            <span class="desc">Idea 4: HoMM3-style variant</span>
+            <span class="badge bg">◷ in background</span>
+          </div>
+          <div class="disclosure"><span class="caret">▸</span> Prompt (6186 chars)</div>
+          <div class="disclosure"><span class="caret">▸</span> Subagent's work (6 actions)</div>
+          <div class="bg-note">
+            <span class="dot"></span>
+            Running in the background — its report will appear here when it finishes.
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════ CASE 2 ═══════════════════════════ -->
+  <section>
+    <h2 class="case">Case 2 — An ordinary report</h2>
+    <p class="case-note">
+      The core formatting change. The report gets a labelled panel so it reads as <em>quoted output from
+      another agent</em> rather than as the parent's own voice; a measure cap (78ch) so it stops running the
+      full width of the transcript; a flattened heading scale so a subagent's <code>#</code> can't out-shout
+      the conversation it's nested in; and the CLI's accounting footer parsed into chips on the header
+      instead of a raw <code>key: value</code> blob under the text.
+    </p>
+    <div class="pair">
+      <div>
+        <div class="col-label now">Now</div>
+        <div class="subagent">
+          <div class="sa-head">
+            <span class="icon">▣</span><span class="who">Subagent (Explore):</span>
+            <span class="desc">Find the preview proxy routing</span>
+            <span class="badge done">✔ done</span>
+          </div>
+          <div class="disclosure"><span class="caret">▸</span> Prompt (1204 chars)</div>
+          <div class="disclosure"><span class="caret">▸</span> Subagent's work (11 actions)</div>
+          <div class="now-label">Final report</div>
+          <div class="now-body">
+            <h3>Preview routing</h3>
+            <p>Subdomain routing is primary and path-based is the fallback. The proxy lives in src/server/orchestrator/preview-proxy.ts and is mounted by buildApp() before the SPA catch-all, which is what keeps /preview/* from being swallowed by the client router.</p>
+            <ul>
+              <li>preview-proxy.ts:142 — resolveTarget() maps {sessionId}--{port}.localhost to the container IP</li>
+              <li>preview-proxy.ts:311 — patchHmrUrl() rewrites Vite's HMR websocket URL so hot reload survives the proxy</li>
+              <li>service-manager.ts:88 — ports are allocated per service, not per session</li>
+            </ul>
+            <p>The path-based fallback conflicts with Vite's base path when a project sets one; docs/175 moved to subdomain-only for that reason.</p>
+          </div>
+          <div class="now-meta">agentId: a90130de265682eb8
+subagent_tokens: 21437
+tool_uses: 11
+duration_ms: 102400</div>
+        </div>
+      </div>
+      <div>
+        <div class="col-label next">Proposed</div>
+        <div class="subagent">
+          <div class="sa-head">
+            <span class="icon">▣</span><span class="who">Subagent (Explore):</span>
+            <span class="desc">Find the preview proxy routing</span>
+            <span class="badge done">✔ done</span>
+          </div>
+          <div class="disclosure"><span class="caret">▸</span> Prompt (1204 chars)</div>
+          <div class="disclosure"><span class="caret">▸</span> Subagent's work (11 actions)</div>
+          <div class="report">
+            <div class="report-head">
+              <span class="report-title">Final report</span>
+              <span class="chips">
+                <span class="chip">◷ <span class="n">1m 42s</span></span>
+                <span class="chip">⚒ <span class="n">11</span> tools</span>
+                <span class="chip">◆ <span class="n">21.4k</span> tokens</span>
+                <button class="icon-btn">⧉ copy</button>
+              </span>
+            </div>
+            <div class="report-body">
+              <h3>Preview routing</h3>
+              <p>Subdomain routing is primary and path-based is the fallback. The proxy lives in
+                <a class="fileref" href="#">preview-proxy.ts</a> and is mounted by <code>buildApp()</code> before the
+                SPA catch-all, which is what keeps <code>/preview/*</code> from being swallowed by the client router.</p>
+              <ul>
+                <li><a class="fileref" href="#">preview-proxy.ts:142</a> — <code>resolveTarget()</code> maps <code>{sessionId}--{port}.localhost</code> to the container IP</li>
+                <li><a class="fileref" href="#">preview-proxy.ts:311</a> — <code>patchHmrUrl()</code> rewrites Vite's HMR websocket URL so hot reload survives the proxy</li>
+                <li><a class="fileref" href="#">service-manager.ts:88</a> — ports are allocated per service, not per session</li>
+              </ul>
+              <p>The path-based fallback conflicts with Vite's base path when a project sets one; docs/175 moved to
+                subdomain-only for that reason.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════ CASE 3 ═══════════════════════════ -->
+  <section>
+    <h2 class="case">Case 3 — A long report</h2>
+    <p class="case-note">
+      Three parallel subagents each returning 60 lines buries the parent transcript. Clamp past ~10 lines with a
+      fade and a one-click expand; the header chips still say how big it is, so nothing is hidden silently.
+    </p>
+    <div class="pair">
+      <div>
+        <div class="col-label now">Now <span class="tag">— unbounded, pushes the conversation off-screen</span></div>
+        <div class="subagent">
+          <div class="sa-head">
+            <span class="icon">▣</span><span class="who">Subagent (general-purpose):</span>
+            <span class="desc">Audit the turn-executor commit paths</span>
+            <span class="badge done">✔ done</span>
+          </div>
+          <div class="now-label">Final report</div>
+          <div class="now-body">
+            <h3>Findings</h3>
+            <p>runCommitAndPr is reachable from four places in turn-executor.ts. Three of them previously ended at tryDrain() alone, which commits only when something is queued.</p>
+            <ul>
+              <li>Clean end — streaming agent_result / non-streaming done. Committed correctly.</li>
+              <li>Streaming abnormal exit — done with no agent_result. Crash, OOM kill, SIGTERM from a container restart.</li>
+              <li>Adapter-level error — onError, where a dispatched crash lands via dispatched-turn.ts.</li>
+              <li>Failed auth heal — the recovery path re-runs the turn but never commits the partial tree.</li>
+            </ul>
+            <p>The memoisation on runCommitAndPr is what makes calling it unconditionally from all four safe: a duplicate call is a no-op rather than a second GitHub round-trip.</p>
+            <p>Guard tests: turn-crash-commit.test.ts and turn-drain-commit-ordering.test.ts cover paths 1–3. Path 4 has no test.</p>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div class="col-label next">Proposed <span class="tag">— clamped with an explicit expand</span></div>
+        <div class="subagent">
+          <div class="sa-head">
+            <span class="icon">▣</span><span class="who">Subagent (general-purpose):</span>
+            <span class="desc">Audit the turn-executor commit paths</span>
+            <span class="badge done">✔ done</span>
+          </div>
+          <div class="report">
+            <div class="report-head">
+              <span class="report-title">Final report</span>
+              <span class="chips">
+                <span class="chip">◷ <span class="n">4m 08s</span></span>
+                <span class="chip">⚒ <span class="n">34</span> tools</span>
+                <span class="chip">◆ <span class="n">88.1k</span> tokens</span>
+                <button class="icon-btn">⧉ copy</button>
+              </span>
+            </div>
+            <div class="report-body clamped">
+              <h3>Findings</h3>
+              <p><code>runCommitAndPr</code> is reachable from four places in
+                <a class="fileref" href="#">turn-executor.ts</a>. Three of them previously ended at
+                <code>tryDrain()</code> alone, which commits only when something is queued.</p>
+              <ul>
+                <li>Clean end — streaming <code>agent_result</code> / non-streaming <code>done</code>. Committed correctly.</li>
+                <li>Streaming abnormal exit — <code>done</code> with no <code>agent_result</code>. Crash, OOM kill, SIGTERM.</li>
+                <li>Adapter-level <code>error</code> — where a dispatched crash lands.</li>
+                <li>Failed auth heal — re-runs the turn but never commits the partial tree.</li>
+              </ul>
+            </div>
+            <button class="more"><span class="caret">▾</span> Show the full report — 24 more lines</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════ CASE 4 ═══════════════════════════ -->
+  <section>
+    <h2 class="case">Case 4 — A failed subagent</h2>
+    <p class="case-note">
+      Today the error body is a red-tinted box that reuses the report's font size, so a stack trace wraps as
+      prose. Proposed: same panel shell in the error colour, monospace body, and the header carries the
+      failure instead of a second label.
+    </p>
+    <div class="pair">
+      <div>
+        <div class="col-label now">Now</div>
+        <div class="subagent" style="border-left-color: rgba(196,56,56,.4)">
+          <div class="sa-head">
+            <span class="icon" style="color:var(--color-error)">▣</span>
+            <span class="who" style="color:var(--color-error)">Subagent (general-purpose):</span>
+            <span class="desc">Run the migration</span>
+            <span class="badge err">⚠ failed</span>
+          </div>
+          <div class="now-label">Subagent error</div>
+          <div class="now-body" style="background: var(--color-error-subtle); border:1px solid rgba(196,56,56,.4); border-radius:4px; padding:8px; color: var(--color-error)">
+            <p>Error: ENOENT: no such file or directory, open '/workspace/prisma/schema.prisma' at Object.openSync (node:fs:596:3) at readFileSync (node:fs:464:35)</p>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div class="col-label next">Proposed</div>
+        <div class="subagent" style="border-left-color: rgba(196,56,56,.4)">
+          <div class="sa-head">
+            <span class="icon" style="color:var(--color-error)">▣</span>
+            <span class="who" style="color:var(--color-error)">Subagent (general-purpose):</span>
+            <span class="desc">Run the migration</span>
+            <span class="badge err">⚠ failed</span>
+          </div>
+          <div class="report error">
+            <div class="report-head">
+              <span class="report-title">Subagent failed</span>
+              <span class="chips">
+                <span class="chip">◷ <span class="n">12s</span></span>
+                <span class="chip">⚒ <span class="n">3</span> tools</span>
+                <button class="icon-btn">⧉ copy</button>
+              </span>
+            </div>
+            <div class="report-body" style="font-family: var(--font-mono); font-size:12px; line-height:1.55; color: var(--color-error)">
+              Error: ENOENT: no such file or directory, open '/workspace/prisma/schema.prisma'<br>
+              &nbsp;&nbsp;&nbsp;&nbsp;at Object.openSync (node:fs:596:3)<br>
+              &nbsp;&nbsp;&nbsp;&nbsp;at readFileSync (node:fs:464:35)
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="callout">
+    <b>What this changes, in order of how much it matters</b>
+    <ul>
+      <li><b>1. The backgrounded-launch acknowledgement stops being rendered as a report</b>, and the header stops
+        claiming <code>done</code> for an agent that is still running. Content fix, not cosmetic.</li>
+      <li><b>2. The report gets a panel</b> — label row, border, faint surface — so it reads as another agent's
+        output rather than as the parent's own prose.</li>
+      <li><b>3. The accounting footer becomes chips</b> (duration / tools / tokens) on the header; the
+        <code>agentId</code> is dropped from view entirely since it is internal.</li>
+      <li><b>4. Typography</b>: 13.5px / 1.6, a 78ch measure, flattened headings with an accent tick, tightened
+        lists, real <code>&lt;pre&gt;</code> and table styling.</li>
+      <li><b>5. Long reports clamp</b> at ~10 lines with a fade and an explicit expand.</li>
+    </ul>
+  </div>
+
+</div>
+</body>
+</html>
