@@ -63,15 +63,25 @@ export const DEFAULT_MAX_SPAWNED_SESSIONS_PER_TURN =
  * claims the ShipIt repo, boots its own container, and opens a PR, so a turn
  * that fans out a dozen of them is a capacity spike worth smoothing.
  *
- * What this is **not**: a containment boundary. There is no spawn-depth limit
- * for sessions — docs/117 dropped grandchild quotas deliberately ("the
- * per-parent + global container caps bound runaway depth in practice"), and a
- * child can spawn grandchildren of its own. A runaway or adversarial agent
- * therefore routes around any per-turn number by nesting spawns. The real
- * blast-radius bounds are {@link DEFAULT_MAX_ACTIVE_SPAWNED_SESSIONS} (16
- * active children per parent) and the orchestrator's global container ceiling.
- * (Distinct from docs/144's depth-1 cap, which bounds *sub-agent* recursion —
- * a different mechanism entirely.)
+ * What this is **not**: a containment boundary against a runaway agent. There
+ * is no spawn-depth limit for sessions — docs/117 dropped grandchild quotas
+ * deliberately — and a child can spawn grandchildren of its own, so nested
+ * spawns route around any per-turn number. The only other gate on that path is
+ * {@link DEFAULT_MAX_ACTIVE_SPAWNED_SESSIONS} (16 active children per parent),
+ * which is also per-parent and so is evaded the same way. (Distinct from
+ * docs/144's depth-1 cap, which bounds *sub-agent* recursion — a different
+ * mechanism entirely.)
+ *
+ * Do **not** read "the global container ceiling" as the backstop, as docs/117
+ * does — verified absent at `app-lifecycle.ts:createContainerForRunner`, which
+ * gates only on the per-session OOM breaker: nothing anywhere counts live
+ * containers and refuses. Capacity control is reclaim-only and idle-only
+ * (`idle-enforcer.ts` skips any runner with `agentBusy` or an attached viewer,
+ * even under memory pressure). A spawned child is born busy, so a fleet of them
+ * is exempt from every reclaim path for as long as it works. That makes this
+ * cap load-bearing for simultaneity, not merely a smoother of bursts — raise it
+ * with that in mind, and prefer host-derived sizing (docs/229) or real
+ * admission control over a larger constant.
  *
  * Sized at `5`, above the generic {@link DEFAULT_MAX_SPAWNED_SESSIONS_PER_TURN}
  * of `4`: an Ops investigation is exactly the workflow that legitimately finds

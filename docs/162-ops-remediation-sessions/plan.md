@@ -451,10 +451,15 @@ Quota:
   `maxSpawnedSessionsPerTurn` only when `shipitSource` is set. The per-parent cap
   (16) still applies. The cap smooths one turn's container burst — each fix child
   claims the ShipIt repo, boots a container, and opens a PR. It is deliberately
-  *not* a containment boundary: there is no spawn-depth limit for sessions
-  (docs/117 dropped grandchild quotas), so nested spawns route around any
-  per-turn number; the per-parent cap and the global container ceiling are the
-  real bounds. It sits above the generic per-turn cap of 4 because an Ops
+  *not* a containment boundary against a runaway agent: there is no spawn-depth
+  limit for sessions (docs/117 dropped grandchild quotas), so nested spawns
+  route around any per-turn number, and the per-parent cap (16) is evaded the
+  same way. Note that docs/117's "global container ceiling" does **not** exist —
+  `createContainerForRunner` gates only on the per-session OOM breaker, and
+  `idle-enforcer` reclaims only *idle* containers (it skips `agentBusy` runners
+  even under memory pressure). Since a spawned child is born busy, this cap is
+  load-bearing for simultaneity rather than a mere burst smoother. It sits
+  above the generic per-turn cap of 4 because an Ops
   investigation is precisely the workflow that legitimately produces several
   *independent* defects in one pass — batching unrelated fixes into one PR, or
   splitting a diagnosis across turns, is worse than the burst a lower cap
