@@ -447,7 +447,7 @@ Quota:
 
 - Fix-session spawns get their own per-turn cap:
   `DEFAULT_MAX_SHIPIT_FIX_SESSIONS_PER_TURN` (env
-  `MAX_SHIPIT_FIX_SESSIONS_PER_TURN`, default 5), passed as
+  `MAX_SHIPIT_FIX_SESSIONS_PER_TURN`, default 6), passed as
   `maxSpawnedSessionsPerTurn` only when `shipitSource` is set. The per-parent cap
   (16) still applies. The cap smooths one turn's container burst — each fix child
   claims the ShipIt repo, boots a container, and opens a PR. It is deliberately
@@ -458,12 +458,17 @@ Quota:
   `createContainerForRunner` gates only on the per-session OOM breaker, and
   `idle-enforcer` reclaims only *idle* containers (it skips `agentBusy` runners
   even under memory pressure). Since a spawned child is born busy, this cap is
-  load-bearing for simultaneity rather than a mere burst smoother. It sits
-  above the generic per-turn cap of 4 because an Ops
-  investigation is precisely the workflow that legitimately produces several
-  *independent* defects in one pass — batching unrelated fixes into one PR, or
-  splitting a diagnosis across turns, is worse than the burst a lower cap
-  prevents.
+  load-bearing for simultaneity rather than a mere burst smoother. It was
+  raised from the original 2 because an Ops investigation is precisely the
+  workflow that legitimately produces several *independent* defects in one
+  pass — batching unrelated fixes into one PR, or splitting a diagnosis across
+  turns, is worse than the burst a lower cap prevents.
+- The generic per-turn cap (`DEFAULT_MAX_SPAWNED_SESSIONS_PER_TURN`) was raised
+  to 6 in the same change, so the two coincide today. They are **not** coupled
+  and should not be collapsed into one constant: they answer different
+  questions (generic = parallel width across slices of *one* task; Ops = how
+  many *independent* findings one investigation may ship, each as its own PR)
+  and carry separate env overrides. Expect them to diverge again.
 
 TOCTOU between inspection and spawn:
 

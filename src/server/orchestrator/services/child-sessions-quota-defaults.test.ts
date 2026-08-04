@@ -5,9 +5,13 @@
  * env-override case re-imports the module under `vi.resetModules()` with the
  * var stubbed. The bare-default cases assert the compile-time numbers and the
  * one relationship that is a deliberate design decision rather than an
- * accident: the Ops fix-session per-turn cap sits *above* the generic fan-out
- * per-turn cap, because an Ops investigation legitimately produces several
- * independent defects in a single turn.
+ * accident: the per-parent cap stays the wider bound, so it is what binds over
+ * a session's life rather than something a single turn can exhaust.
+ *
+ * Deliberately NOT asserted: any ordering between the two per-turn caps. They
+ * are equal today but independent by design (separate env overrides, different
+ * questions), so pinning `>`/`<`/`===` between them would encode a coincidence
+ * as a contract and fail the next time one moves on its own.
  */
 
 import { describe, it, expect, afterEach, vi } from "vitest";
@@ -32,15 +36,12 @@ afterEach(() => {
 describe("spawn quota defaults", () => {
   it("uses the compile-time defaults when no env override is set", () => {
     expect(DEFAULT_MAX_ACTIVE_SPAWNED_SESSIONS).toBe(16);
-    expect(DEFAULT_MAX_SPAWNED_SESSIONS_PER_TURN).toBe(4);
-    expect(DEFAULT_MAX_SHIPIT_FIX_SESSIONS_PER_TURN).toBe(5);
+    expect(DEFAULT_MAX_SPAWNED_SESSIONS_PER_TURN).toBe(6);
+    expect(DEFAULT_MAX_SHIPIT_FIX_SESSIONS_PER_TURN).toBe(6);
   });
 
-  it("allows more ShipIt-fix spawns per turn than generic fan-out spawns", () => {
-    expect(DEFAULT_MAX_SHIPIT_FIX_SESSIONS_PER_TURN).toBeGreaterThan(DEFAULT_MAX_SPAWNED_SESSIONS_PER_TURN);
-  });
-
-  it("keeps the per-parent cap as the wider bound", () => {
+  it("keeps the per-parent cap as the wider bound than either per-turn cap", () => {
+    expect(DEFAULT_MAX_ACTIVE_SPAWNED_SESSIONS).toBeGreaterThan(DEFAULT_MAX_SPAWNED_SESSIONS_PER_TURN);
     expect(DEFAULT_MAX_ACTIVE_SPAWNED_SESSIONS).toBeGreaterThan(DEFAULT_MAX_SHIPIT_FIX_SESSIONS_PER_TURN);
   });
 });
@@ -54,14 +55,15 @@ describe("spawn quota env overrides", () => {
     });
     expect(mod.DEFAULT_MAX_ACTIVE_SPAWNED_SESSIONS).toBe(32);
     expect(mod.DEFAULT_MAX_SPAWNED_SESSIONS_PER_TURN).toBe(7);
-    // Below the generic cap: the override can still take the Ops cap lower.
+    // The two per-turn caps move independently: the Ops override can take it
+    // well below the generic cap even though they coincide by default.
     expect(mod.DEFAULT_MAX_SHIPIT_FIX_SESSIONS_PER_TURN).toBe(1);
   });
 
   it("falls back to the compile-time default on an unparseable override", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const mod = await importWithEnv({ MAX_SHIPIT_FIX_SESSIONS_PER_TURN: "not-a-number" });
-    expect(mod.DEFAULT_MAX_SHIPIT_FIX_SESSIONS_PER_TURN).toBe(5);
+    expect(mod.DEFAULT_MAX_SHIPIT_FIX_SESSIONS_PER_TURN).toBe(6);
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
   });
@@ -69,7 +71,7 @@ describe("spawn quota env overrides", () => {
   it("falls back to the compile-time default on a non-positive override", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const mod = await importWithEnv({ MAX_SHIPIT_FIX_SESSIONS_PER_TURN: "0" });
-    expect(mod.DEFAULT_MAX_SHIPIT_FIX_SESSIONS_PER_TURN).toBe(5);
+    expect(mod.DEFAULT_MAX_SHIPIT_FIX_SESSIONS_PER_TURN).toBe(6);
     warn.mockRestore();
   });
 });
