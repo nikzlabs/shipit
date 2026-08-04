@@ -14,9 +14,7 @@
 import {
   resolveSecrets,
   renderAgentEnvBody,
-  writePerServiceEnvFiles,
   writeServiceEnvFilesToRoot,
-  sweepWorkspaceServiceEnvFiles,
   writeAgentEnvFile,
   writeIsolatedSecretFiles,
   composeSecretFilePath,
@@ -91,16 +89,20 @@ export interface ServiceSecretsResolverOptions {
   mcpAgentEnvLoader?: () => Record<string, string>;
   dockerSecretsConfig?: DockerSecretsConfig;
   /**
-   * docs/183 — orchestrator-private root for per-service env files, OUTSIDE
-   * the session workspace. When set (and Docker-secrets mode is not active),
-   * service env files are written to `<serviceEnvDir>/<sessionId>/.env.<svc>`
-   * and the compose override references those absolute paths via `env_file:`,
-   * instead of the agent-readable workspace `.shipit/.env.<svc>`.
+   * docs/183 — orchestrator-private root for per-service env files, OUTSIDE the
+   * session workspace. Unless Docker-secrets mode is active, service env files
+   * are written to `<serviceEnvDir>/<sessionId>/.env.<svc>` and the compose
+   * override references those absolute paths via `env_file:`.
    *
-   * When omitted, falls back to the legacy in-workspace write path — used by
-   * tests and non-container setups where workspace isolation doesn't apply.
+   * **Required** (SHI-290). It used to be optional, and omitting it fell back to
+   * writing `.shipit/.env.<svc>` into the agent-readable git clone — the last
+   * in-clone writer in the codebase (docs/246 req 7). Production never took that
+   * branch (`bootstrap-managers.ts` always computes a root, defaulting to
+   * `<stateDir>/service-env`), so only tests reached it; requiring the option
+   * makes "service secrets never land in the clone" a property of the type
+   * rather than of the wiring.
    */
-  serviceEnvDir?: string;
+  serviceEnvDir: string;
   /**
    * Called after every `sync()` pass. Receives a *defensive copy* of the
    * latest snapshot so the resolver and its subscribers don't share mutable
@@ -127,7 +129,7 @@ export class ServiceSecretsResolver {
   private secretsLoader?: () => Promise<Record<string, string>>;
   private readonly mcpAgentEnvLoader?: () => Record<string, string>;
   private readonly dockerSecretsConfig?: DockerSecretsConfig;
-  private readonly serviceEnvDir?: string;
+  private readonly serviceEnvDir: string;
   private readonly onSnapshot?: (snapshot: SecretsStatusInternalSnapshot) => void;
   private readonly onPlatformSourceWarning?: (serviceName: string, text: string) => void;
   /** (service, name, source) tuples already warned about — see onPlatformSourceWarning. */
@@ -155,9 +157,9 @@ export class ServiceSecretsResolver {
   private dockerSecretsBuild?: DockerSecretsBuild;
   /**
    * docs/183 — service-name → absolute env-file path from the most recent
-   * `sync()`, populated only in out-of-workspace env-file mode (serviceEnvDir
-   * set, Docker-secrets mode off). The compose generator reads this to emit
-   * absolute `env_file:` paths. `undefined` in legacy in-workspace mode.
+   * `sync()`. The compose generator reads this to emit absolute `env_file:`
+   * paths. `undefined` before the first `sync()`, and in Docker-secrets mode
+   * (which delivers via `secrets:` instead).
    */
   private serviceEnvFiles?: Record<string, string>;
 
@@ -216,10 +218,9 @@ export class ServiceSecretsResolver {
 
   /**
    * docs/183 — service-name → absolute env-file path for the most recent
-   * compose override. Only populated in out-of-workspace env-file mode
-   * (`serviceEnvDir` set, Docker-secrets mode off). The compose generator
-   * uses this to emit absolute `env_file:` paths; `undefined` means the
-   * legacy in-workspace `.shipit/.env.<svc>` fallback applies.
+   * compose override. The compose generator uses this to emit absolute
+   * `env_file:` paths. `undefined` before the first `sync()` and in
+   * Docker-secrets mode, both of which mean "no `env_file:` entries to emit".
    */
   getServiceEnvFiles(): Record<string, string> | undefined {
     return this.serviceEnvFiles ? { ...this.serviceEnvFiles } : undefined;
@@ -293,19 +294,20 @@ export class ServiceSecretsResolver {
     this.synced = true;
     this.onSnapshot?.(cloneSnapshot(this.snapshot));
 
+    // Two delivery modes, both writing outside the session's git clone. There is
+    // no third: the in-workspace `.shipit/.env.<svc>` fallback was deleted with
+    // SHI-290, and `serviceEnvDir` is required so there is nothing to fall back
+    // from.
     if (this.dockerSecretsConfig) {
       // Phase 1 follow-up: Docker-secrets mode. Write per-secret files to
       // the orchestrator-private directory and build the override metadata.
-      // Sweep any leftover .env.<svc> files so the agent can't read stale
-      // values from a previous reconcile.
       this.serviceEnvFiles = undefined;
       this.applyDockerSecretsMode(resolution);
-    } else if (this.serviceEnvDir) {
-      // docs/183: default containerized mode — write service env files to an
+    } else {
+      // docs/183: default mode — write service env files to an
       // orchestrator-private root OUTSIDE the workspace and reference the
       // returned absolute paths from the compose override. Keeps service-only
-      // secrets out of the agent-readable workspace. `writeServiceEnvFilesToRoot`
-      // also sweeps any pre-183 leftover `.shipit/.env.<svc>` files.
+      // secrets out of the agent-readable workspace.
       const { serviceEnvFiles } = writeServiceEnvFilesToRoot({
         rootDir: this.serviceEnvDir,
         sessionId: this.sessionId,
@@ -313,15 +315,6 @@ export class ServiceSecretsResolver {
         perServiceEnv: resolution.perServiceEnv,
       });
       this.serviceEnvFiles = serviceEnvFiles;
-    } else {
-      // Legacy / test fallback: write service env files into the workspace
-      // `.shipit/.env.<svc>`. The override references the workspace-relative
-      // path (no `serviceEnvFiles` map needed).
-      this.serviceEnvFiles = undefined;
-      writePerServiceEnvFiles({
-        workspaceDir: this.workspaceDir,
-        perServiceEnv: resolution.perServiceEnv,
-      });
     }
 
     // Phase 3 (087) + docs/088: write the agent env file from the merged
@@ -368,8 +361,6 @@ export class ServiceSecretsResolver {
    *      secrets it declared — scoping is preserved at the compose layer).
    *   4. Stage the entrypoint wrapper beside those files (SHI-285), so compose
    *      can bind-mount it into service containers by absolute path.
-   *   5. Sweep any stale `.shipit/.env.<svc>` files from a prior
-   *      env-file-mode run.
    */
   private applyDockerSecretsMode(resolution: ReturnType<typeof resolveSecrets>): void {
     const cfg = this.dockerSecretsConfig;
@@ -425,10 +416,6 @@ export class ServiceSecretsResolver {
       }),
       ...(entrypointHostPath ? { entrypointHostPath } : {}),
     };
-
-    // Sweep any leftover env-file-mode `.shipit/.env.<svc>` files so the
-    // agent can't read stale plaintext values.
-    sweepWorkspaceServiceEnvFiles(this.workspaceDir);
   }
 }
 

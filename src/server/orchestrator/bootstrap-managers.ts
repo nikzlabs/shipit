@@ -1,8 +1,8 @@
 import path from "node:path";
-import fs from "node:fs/promises";
 import Docker from "dockerode";
 import type { AgentId, DockerMemoryStats } from "../shared/types.js";
 import type { SessionInfo } from "../shared/types.js";
+import { readGlobalSystemPrompt } from "./global-system-prompt.js";
 import { LogStore } from "./log-store.js";
 import type { PrStatusPoller } from "./pr-status-poller.js";
 import { ReleaseStatusPoller } from "./release-status-poller.js";
@@ -363,13 +363,10 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   };
   // docs/149 — same shape as the WS handler's readSystemPrompt, hoisted to
   // app scope so the system-turn hook can read it without per-connection state.
-  const readSystemPromptApp = async (): Promise<string | undefined> => {
-    try {
-      const content = await fs.readFile(path.join(workspaceDir, ".shipit", "system-prompt.md"), "utf-8");
-      const trimmed = content.trim();
-      return trimmed || undefined;
-    } catch { return undefined; }
-  };
+  // `workspaceDir` here is the orchestrator's own root, not a session clone —
+  // which is exactly what `readGlobalSystemPrompt` wants.
+  const readSystemPromptApp = (): Promise<string | undefined> =>
+    readGlobalSystemPrompt(workspaceDir);
 
   // docs/155 Phase 5 — per-agent runtime tables. `buildAgentRuntime()` lives in
   // `agents/index.ts` and assembles every `Map<AgentId, …>` lookup the

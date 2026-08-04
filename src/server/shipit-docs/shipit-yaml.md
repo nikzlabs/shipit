@@ -227,16 +227,23 @@ inside ShipIt). Other security policies still apply.
 ## Onboarding a repository
 
 Nothing to add to `.gitignore` for ShipIt's sake. ShipIt keeps its own
-per-session state (the install marker, fetched CI logs, the generated compose
-override, the agent env file) **outside your repository**, in a directory that
-is a sibling of the clone rather than inside it. The parts the agent needs are
-mounted at `/session-state`.
+per-session state **outside your repository**, in a directory that is a sibling
+of the clone rather than inside it: the install marker, fetched CI logs, the
+generated compose override and the agent env file all live there, and only the
+parts the agent needs (the marker and the CI logs) are mounted, at
+`/session-state`. Per-service secret env files are *not* in that directory and
+are never mounted into the agent container at all — they go to a separate
+orchestrator-private root (`<stateDir>/service-env/<sessionId>/`), so service-only
+secrets stay out of the agent's reach entirely.
 
-Earlier versions wrote that state to `.shipit/` in the repo root, which is why
-older projects often carry a `.shipit` line in `.gitignore` — it is no longer
-needed, and ShipIt sweeps any leftover files from the working tree on session
-start. (Copies already committed to your history are left alone; remove them
-yourself if you want them gone.)
+Earlier versions wrote state to `.shipit/` in the repo root, which is why older
+projects often carry a `.shipit` line in `.gitignore` — it is no longer needed.
+No current code writes there, and the one-time cleanup that removed such
+leftovers has been retired now that it had nothing left to find. Two residues
+are possible and both are yours to delete: a stray `.shipit/` left in an old
+session's working tree, and copies already committed to your history. (A session
+container that predates the change and has not been recreated still runs the old
+worker, which writes `.shipit/.install-done` until it is recreated.)
 
 ## Config changes at runtime
 

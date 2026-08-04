@@ -3,6 +3,11 @@
  * against user-saved secrets (SecretStore) and writes per-service env files
  * that the compose override references via `env_file:`.
  *
+ * Every file this module writes lands OUTSIDE the session's git clone — the
+ * orchestrator-private service-env root (docs/183), the Docker-secrets root, or
+ * the session state dir. There is no in-clone placement left for any of them
+ * (docs/246 req 7, enforced with no exemptions by `no-clone-writes.test.ts`).
+ *
  * Responsibilities:
  *   - Phase 1: simple string form (`x-shipit-secrets: [STRIPE_KEY, ...]`) +
  *     per-service env-file output.
@@ -74,9 +79,9 @@ export interface SecretResolution {
   /**
    * Env-file body containing only secrets marked `agent: true` across any
    * service (Phase 3). Empty string when no `agent: true` declarations
-   * exist or when none have values. Written to `.shipit/.env.agent` on the
-   * orchestrator filesystem and pushed to the agent container's
-   * `process.env` via the worker `/secrets` endpoint.
+   * exist or when none have values. Written to the session state dir's
+   * `.env.agent` (docs/246 — orchestrator-side, outside the clone) and pushed
+   * to the agent container's `process.env` via the worker `/secrets` endpoint.
    *
    * The agent container is NOT a compose service — it gets these env vars
    * via direct injection, not via compose `env_file:`. Designed for
@@ -413,66 +418,17 @@ function renderEnvFile(entries: { key: string; value: string }[]): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Write per-service env files to `.shipit/.env.<service>` inside `workspaceDir`.
- *
- * - Creates the `.shipit/` directory if missing.
- * - Files are written with mode 0600 (the workspace volume is shared with the
- *   agent — file mode is a defense-in-depth measure but does not prevent
- *   process.env exfiltration through agent-authored code; see plan §"Security").
- * - Stale `.shipit/.env.<svc>` files for services that no longer declare
- *   secrets (or were removed from compose) are deleted, so a service can't
- *   re-pick up a leftover file from a previous compose definition.
- *
- * Returns the list of file paths written (relative to `workspaceDir`).
- */
-export function writePerServiceEnvFiles(opts: {
-  workspaceDir: string;
-  perServiceEnv: Record<string, string>;
-}): string[] {
-  const { workspaceDir, perServiceEnv } = opts;
-  const shipitDir = path.join(workspaceDir, ".shipit");
-  fs.mkdirSync(shipitDir, { recursive: true });
-
-  // Remove stale `.env.<svc>` files for services that no longer declare secrets.
-  // We only sweep files we own (the `.env.` prefix) and leave `.env.agent`
-  // alone (Phase 3 owns it).
-  let existing: string[];
-  try {
-    existing = fs.readdirSync(shipitDir);
-  } catch {
-    existing = [];
-  }
-  const keep = new Set<string>();
-  for (const svc of Object.keys(perServiceEnv)) keep.add(`.env.${svc}`);
-  for (const entry of existing) {
-    if (!entry.startsWith(".env.")) continue;
-    if (entry === ".env.agent") continue; // Phase 3 owns this
-    if (keep.has(entry)) continue;
-    try {
-      fs.unlinkSync(path.join(shipitDir, entry));
-    } catch {
-      // Best-effort cleanup
-    }
-  }
-
-  const written: string[] = [];
-  for (const [serviceName, body] of Object.entries(perServiceEnv)) {
-    const filePath = path.join(shipitDir, `.env.${serviceName}`);
-    fs.writeFileSync(filePath, body, { mode: 0o600 });
-    written.push(path.relative(workspaceDir, filePath));
-  }
-  return written;
-}
-
-/**
  * Write per-service env files to an orchestrator-private root OUTSIDE the
  * session workspace (docs/183): `<rootDir>/<sessionId>/.env.<service>`.
  *
- * This is the default delivery mode in containerized runtime — it keeps
- * service-only secrets out of the agent-readable workspace while preserving
- * the env-var semantics inside the service container. The generated compose
- * override references the returned absolute paths via `env_file:` rather than
- * the workspace-relative `.shipit/.env.<service>`.
+ * This is the ONLY env-file delivery mode. It keeps service-only secrets out of
+ * the agent-readable workspace while preserving the env-var semantics inside the
+ * service container; the generated compose override references the returned
+ * absolute paths via `env_file:`. The in-workspace `.shipit/.env.<service>`
+ * writer this replaced is gone (SHI-290) — it survived docs/183 as a fallback
+ * for callers that configured no root, which production never was, and it was
+ * the last thing in the codebase that put a ShipIt-generated file inside a
+ * user's git clone (docs/246 req 7).
  *
  * Why this is agent-invisible: in production `rootDir` defaults to
  * `<stateDir>/service-env`, where `stateDir` is the workspace-volume root. The
@@ -492,8 +448,6 @@ export function writePerServiceEnvFiles(opts: {
  *   - Files are written with mode 0600.
  *   - Stale `.env.<svc>` files in the session dir (services that no longer
  *     declare secrets) are swept.
- *   - Any leftover workspace `.shipit/.env.<svc>` files from the pre-183
- *     write path are swept so a prior leak doesn't linger in the agent view.
  *
  * Returns a map of service name → absolute env-file path (for the override)
  * plus the per-session directory.
@@ -537,35 +491,7 @@ export function writeServiceEnvFilesToRoot(opts: {
     serviceEnvFiles[serviceName] = filePath;
   }
 
-  // Sweep any pre-183 workspace service env files so the agent can't read
-  // stale plaintext values left behind by the old in-workspace write path.
-  sweepWorkspaceServiceEnvFiles(workspaceDir);
-
   return { serviceEnvFiles, sessionDir };
-}
-
-/**
- * Remove workspace `.shipit/.env.<service>` files (every `.env.*` except
- * `.env.agent`, which Phase 3 owns). Used when service env files moved out of
- * the workspace (docs/183) and by Docker-secrets mode, so stale plaintext
- * service secrets don't linger in the agent-readable workspace.
- */
-export function sweepWorkspaceServiceEnvFiles(workspaceDir: string): void {
-  const shipitDir = path.join(workspaceDir, ".shipit");
-  let existing: string[];
-  try {
-    existing = fs.readdirSync(shipitDir);
-  } catch {
-    return;
-  }
-  for (const entry of existing) {
-    if (!entry.startsWith(".env.") || entry === ".env.agent") continue;
-    try {
-      fs.unlinkSync(path.join(shipitDir, entry));
-    } catch {
-      // Best-effort cleanup
-    }
-  }
 }
 
 /**

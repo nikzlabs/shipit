@@ -17,6 +17,7 @@
 - [x] Full suite green (one pre-existing, environment-only failure in `mcp-bridge-bundle.test.ts` — reproduces on clean `main`)
 - [x] Fresh-context adversarial review (Codex) against the requirements — 6 findings, 4 fixed here, 2 recorded as known gaps below
 - [x] One-time migration retired after it had served its purpose — see below
+- [x] In-clone allowlist emptied and then deleted; docs/183's in-workspace env-file fallback removed (SHI-290) — see below
 
 ## The migration is done, and the code for it is gone
 
@@ -127,14 +128,76 @@ local mode to be missing.
   been retired (above), so there is no sweep to be missing from that path; the residual it
   described is the same accepted residual recorded there.
 
-## Out of scope, surfaced by SHI-286
+## Surfaced by SHI-286, closed by SHI-290
 
-- **docs/183's in-clone per-service env fallback.** `writePerServiceEnvFiles`
-  (`secret-resolver.ts`) still writes `.shipit/.env.<svc>` into the clone when
-  neither Docker-secrets mode nor `serviceEnvDir` is configured. That is not a
-  docs/246 artifact and has its own migration story
-  (`writeServiceEnvFilesToRoot` sweeps the leftovers), and it is unreachable in
-  production — `serviceEnvDir` defaults to `<stateDir>/service-env`
-  (`bootstrap-managers.ts`), so only tests and non-container setups take it. It
-  is why `secret-resolver.ts` keeps its `ALLOWED` entry; recorded here rather
-  than allowlisted silently.
+- [x] **docs/183's in-clone per-service env fallback — deleted.** It was recorded
+  here as out of scope because it is not a docs/246 artifact; SHI-290 finished
+  the job anyway, because it was the last thing in the codebase that put a
+  ShipIt-generated file inside a user's clone. `writePerServiceEnvFiles` and
+  `sweepWorkspaceServiceEnvFiles` are gone, `serviceEnvDir` is required all the
+  way up the wiring (`ServiceSecretsResolver` → `ServiceManager` →
+  `setupServiceManager` → `createRunnerRegistry`), and the compose generator no
+  longer falls back to a workspace-relative `.shipit/.env.<svc>` path. Same trade
+  as SHI-286's flat-layout deletion: a branch only tests reached, removed rather
+  than maintained.
+- [x] **The `ALLOWED` allowlist is gone, not merely empty.** With the fallback
+  deleted and the three app-scope `system-prompt.md` sites routed through
+  `global-system-prompt.ts` (whose parameter is named `appWorkspaceDir`, because
+  the ambiguity between the orchestrator's root and a session clone is what
+  caused the flat-layout bug above), nothing composes an in-clone `.shipit` path.
+  The filter and the stale-entry test were removed with it: an `ALLOWED = {}`
+  that nothing reads still reads as "there is a category of exemption, currently
+  empty", which is an invitation to add a row. The guard now asserts "no source
+  file does", which also dissolves its documented per-FILE granularity
+  limitation — with nothing exempt there is nowhere for a new writer to hide, so
+  the per-line allowlisting recorded as a follow-up is not needed.
+
+### Fixed from the SHI-290 fresh-context review (Codex)
+
+The review found no reachable path where a secret-declaring service loses its
+env file, and confirmed `serviceEnvDir` is threaded unconditionally through
+every production construction (bootstrap → runner registry → `setupServiceManager`,
+including recovery, warm activation and ops sessions; local mode builds no
+`ServiceManager`). Its four findings were all about coverage and stale prose:
+
+- [x] **The production wiring hop had no effect-level test.** The `ServiceManager`
+  tests construct a manager directly with an explicit root, so they proved the
+  resolver honours what it is handed, not that `setupServiceManager` hands it the
+  deps' root — and the failure mode is *type-correct* (pass a clone-derived root;
+  the compiler is happy, `assertServiceEnvRootOutsideWorkspace` fails the stack at
+  start). `service-manager-setup.test.ts` now drives the real construction path
+  and asserts where the file lands. Confirmed to fail when the wiring is pointed
+  at `<clone>/.shipit/service-env`.
+- [x] **The global-prompt tests proved the helper, not the app-scope consumer.**
+  The WS turn and the server-dispatched (system) turn read the prompt through
+  different closures, and only the WS one was covered — so disconnecting
+  `readSystemPromptApp` would have silently dropped the prompt from CI-fix, child
+  and wake turns. `integration_tests/system-prompt.test.ts` now dispatches over
+  HTTP and asserts the prompt arrives. Confirmed to fail when
+  `readSystemPromptApp` is stubbed to `undefined`.
+- [x] **Stale prose describing the deleted paths as current.** Fixed in
+  `docs/183-compose-secret-isolation/{plan,checklist}.md`,
+  `docs/118-shipit-ui-local/checklist.md` (including its now-void
+  "secrets-leak mitigation" item), and the module docblocks of
+  `api-routes-secrets.ts`, `secret-store.ts` and `api-routes-mcp.ts`.
+- [x] **The guard was blind to untracked files and to string concatenation.**
+  `git grep` without `--untracked` searches only what is already in the index, so
+  a brand-new writer in an unstaged file was invisible on the machine that wrote
+  it and only turned red after someone else pulled — exactly backwards for a
+  guard whose value is catching the mistake as it is made. Adding `--untracked`
+  and a `+ "/.shipit…"` alternative closes both; verified with a probe file that
+  is untracked *and* uses concatenation, which the old guard missed on both
+  counts. The residual — a path composed through an alias (`const root =
+  workspaceDir`) — is now **stated in the header** rather than left implied: no
+  grep can follow it, and pretending otherwise is worse than naming it.
+- [x] **New project templates still emitted `.shipit` into `.gitignore`.**
+  `template-gitignores.ts` added a ShipIt-specific ignore line to every scaffold
+  (frontend, backend, full-stack, Python) for a directory nothing writes —
+  directly contradicting the "nothing to add to `.gitignore` for ShipIt's sake"
+  outcome this feature exists to deliver. Removed.
+- [x] **The agent-facing topology description was wrong.** `shipit-yaml.md`
+  had grouped per-service env files into the clone-sibling state dir; they live
+  in a separate orchestrator-private root and are never mounted into the agent
+  container at all. It also now names the one residue that can still appear — a
+  grandfathered container running the old worker, which writes
+  `.shipit/.install-done` until it is recreated (the accepted gap recorded above).

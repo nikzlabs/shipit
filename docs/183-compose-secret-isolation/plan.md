@@ -5,6 +5,16 @@ description: Keep compose-service secrets out of the agent-readable workspace wh
 
 # 183 — Compose Service Secret Isolation
 
+> **Superseded in part (SHI-290 / docs/246).** Everything below that describes an
+> in-workspace `.shipit/.env.<service-name>` fallback — kept here as the "tests and
+> legacy/local paths" escape hatch — is **gone**. `serviceEnvDir` is required,
+> `writePerServiceEnvFiles()` and `sweepWorkspaceServiceEnvFiles()` are deleted, and the
+> compose generator emits no `env_file:` for a service absent from the map rather than a
+> workspace-relative path. `.env.agent` likewise no longer lives in the workspace: docs/246
+> moved it to the session state dir outside the clone. Text describing the pre-183 state as
+> the problem statement is left intact as history; text describing the fallback as *current
+> design* is not accurate. See `docs/246-shipit-state-out-of-clone/plan.md`.
+>
 > **Scope.** This doc covers isolating **user-supplied** service secrets from the agent.
 > The separate, higher-severity problem — ShipIt auto-forwarding the user's *platform*
 > identity (Claude/GitHub/MCP OAuth) into repo-declared services via `source: platform:*` —
@@ -131,8 +141,9 @@ The exact root is configurable:
 
 - `SHIPIT_SERVICE_ENV_DIR` if set.
 - Otherwise `<stateDir>/service-env` in containerized runtime.
-- Tests and legacy/local paths can still inject no root and fall back to the old
-  workspace `.shipit/.env.<service-name>` behavior where needed.
+- ~~Tests and legacy/local paths can still inject no root and fall back to the old
+  workspace `.shipit/.env.<service-name>` behavior where needed.~~ **Removed by SHI-290** —
+  the root is required and there is no fallback; tests supply a root like everyone else.
 
 **Why `<stateDir>/service-env` is agent-invisible in production — and not by accident.**
 The isolation does not come from the path string "looking outside" `/workspace`; in
@@ -191,8 +202,10 @@ The important invariant becomes:
 
 ### 3. Extend compose override generation with service env-file paths
 
-`generateComposeOverride()` currently assumes each service env file lives at
-`.shipit/.env.<service-name>`. Add an optional service env-file map:
+`generateComposeOverride()` assumed each service env file lived at
+`.shipit/.env.<service-name>`. Add an optional service env-file map (SHI-290 later
+deleted that in-clone assumption entirely, so the map is the only source of an
+`env_file:` path):
 
 ```ts
 serviceEnvFiles?: Record<string, string>;
@@ -293,18 +306,21 @@ x-shipit-secrets[agent: true]
   service env files to `<rootDir>/<sessionId>/.env.<svc>` outside the workspace, returns the
   service-name → absolute-path map, and fails closed via
   `assertServiceEnvRootOutsideWorkspace()` if the root resolves inside the agent workspace.
-  `sweepWorkspaceServiceEnvFiles()` removes any pre-183 in-workspace `.env.<svc>` leak (also
-  reused by Docker-secrets mode). `removeSessionServiceEnvDir()` (env-file mode) and
+  (`sweepWorkspaceServiceEnvFiles()`, which removed a pre-183 in-workspace `.env.<svc>` leak,
+  is gone — SHI-290 retired it along with the writer that created such files.)
+  `removeSessionServiceEnvDir()` (env-file mode) and
   `removeSessionSecretsDir()` (Docker-secrets `<internalDir>/<sessionId>/`) both delegate to a
   shared `removeSessionSecretDir()` best-effort remover — recursive, force, no-op on empty
   `sessionId`.
-- `src/server/orchestrator/service-secrets-resolver.ts` — `serviceEnvDir` option selects the
-  out-of-workspace write path; `getServiceEnvFiles()` carries the env-file map from secret
-  sync to compose override generation. Delivery precedence: Docker-secrets mode →
-  out-of-workspace env files (`serviceEnvDir`) → legacy in-workspace `.shipit/.env.<svc>`.
+- `src/server/orchestrator/service-secrets-resolver.ts` — `serviceEnvDir` (**required** since
+  SHI-290) is the out-of-workspace write root; `getServiceEnvFiles()` carries the env-file map
+  from secret sync to compose override generation. Delivery is two modes, not three:
+  Docker-secrets mode → out-of-workspace env files (`serviceEnvDir`). The legacy in-workspace
+  `.shipit/.env.<svc>` tier is deleted.
 - `src/server/orchestrator/compose-generator.ts` — `ComposeOverrideOptions.serviceEnvFiles`
-  emits absolute `env_file:` paths per service; falls back to `.shipit/.env.<svc>` when a
-  service is absent from the map (tests / legacy).
+  emits absolute `env_file:` paths per service; a service absent from the map gets NO
+  `env_file:` entry (SHI-290 removed the `.shipit/.env.<svc>` fallback, which after the
+  writer's deletion would have named a file nothing creates).
 - `src/server/orchestrator/service-manager.ts` — `serviceEnvDir` option threaded to the
   resolver; `start()` reads `getServiceEnvFiles()` into the override opts. In env-file mode
   the override references a stable path, so `refreshSecrets()` only rewrites file content
@@ -330,9 +346,11 @@ x-shipit-secrets[agent: true]
 Add focused coverage for the boundary:
 
 - `secret-resolver.test.ts`: writing service env files to an external root returns paths
-  under that root and does not create `.shipit/.env.<service-name>`.
-- `compose-generator.test.ts`: override uses supplied absolute env-file paths and falls
-  back to `.shipit/.env.<service-name>` when none are supplied.
+  under that root and does not create `.shipit/.env.<service-name>`. (Since SHI-290 the
+  external root is the only mode, so this is the whole behaviour rather than one branch.)
+- `compose-generator.test.ts`: override uses supplied absolute env-file paths. (The
+  fallback-when-none-supplied case was removed by SHI-290; the test now asserts no
+  `env_file:` is emitted for a service absent from the map.)
 - `service-manager.test.ts`: service-only secrets are written outside the workspace and
   the generated override references the external env file.
 - Regression: with dogfood-style service-only secrets (`ANTHROPIC_API_KEY`,
@@ -344,7 +362,7 @@ Add focused coverage for the boundary:
 1. Ship code that writes new service env files outside the workspace.
 2. Restart active compose stacks through the normal reconcile path so generated overrides
    point at the new file locations.
-3. Leave `.shipit/.env.agent` behavior unchanged.
+3. Leave `.env.agent` behavior unchanged. (docs/246 later moved it out of the clone.)
 4. Update docs to say service env files are orchestrator-private in containerized mode,
    with Docker-secrets mode available for stronger isolation.
 

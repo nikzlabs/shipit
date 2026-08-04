@@ -6,10 +6,11 @@
  * names of values to keep (resolved against stored values server-side).
  *
  * Secrets are stored in the orchestrator's SQLite database (SecretStore),
- * keyed by repo URL. After a save, the orchestrator rewrites
- * `.shipit/.env.<service>` files for every active session backed by that
- * repo and runs `docker compose up -d` so compose recreates the affected
- * containers with the new env values.
+ * keyed by repo URL. After a save, the orchestrator rewrites the per-service
+ * env files for every active session backed by that repo — at
+ * `<serviceEnvDir>/<sessionId>/.env.<service>`, outside the session's git clone
+ * (docs/183, SHI-290) — and runs `docker compose up -d` so compose recreates
+ * the affected containers with the new env values.
  */
 
 import type { FastifyInstance } from "fastify";
@@ -104,8 +105,8 @@ export async function registerSecretsRoutes(
       secretStore.saveSecrets(repoUrl, secrets);
 
       // Push secrets to every active session backed by this repo. Each
-      // session's ServiceManager rewrites its per-service `.shipit/.env.<svc>`
-      // files and runs `docker compose up -d` so compose recreates containers
+      // session's ServiceManager rewrites its per-service env files (outside
+      // the clone) and runs `docker compose up -d` so compose recreates containers
       // whose env file content changed. Fire-and-forget per session — a failure
       // in one session shouldn't block the API response or the others.
       const sessions = sessionManager.findAllByRemoteUrl(repoUrl);

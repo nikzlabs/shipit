@@ -153,7 +153,7 @@ export interface ServiceManagerOptions {
    * Loads user-saved secrets for the session's repo (from SecretStore).
    *
    * Called once before each compose start/reconcile so secret values reach
-   * compose services via per-service env files (`.shipit/.env.<service>`).
+   * compose services via per-service env files.
    * Returning an empty object is fine — services with declared
    * `x-shipit-secrets` whose values aren't configured simply get an empty env
    * file (Phase 2 surfaces this as a missing-secrets warning).
@@ -164,8 +164,8 @@ export interface ServiceManagerOptions {
    * `CredentialStore.agentEnv`) — docs/088. Called inside the secret-sync
    * pass after `resolveSecrets()` runs; the result is merged into the
    * resolved `agentValues` map (compose-declared entries win on key
-   * collision) before `.shipit/.env.agent` is written and pushed to the
-   * worker. Synchronous — `CredentialStore` is an in-memory JSON store.
+   * collision) before the session state dir's `.env.agent` is written and
+   * pushed to the worker. Synchronous — `CredentialStore` is an in-memory JSON store.
    */
   mcpAgentEnvLoader?: () => Record<string, string>;
   /**
@@ -183,23 +183,26 @@ export interface ServiceManagerOptions {
    *     (the Docker daemon reads paths from the host's filesystem). Omit
    *     for orchestrator-on-host setups.
    *   - `entrypointSourcePath`: orchestrator path to the
-   *     `secrets-entrypoint.sh` baked into the image. Copied into
-   *     `.shipit/secrets-entrypoint.sh` at compose-start so service
-   *     containers can mount it.
+   *     `secrets-entrypoint.sh` baked into the image. Staged into the
+   *     Docker-secrets root at compose-start (SHI-285) so service containers
+   *     can bind-mount it by absolute path.
    *
    * When omitted, the manager falls back to the env-file mode (Phase 1
    * baseline).
    */
   dockerSecretsConfig?: DockerSecretsConfig;
   /**
-   * docs/183 — orchestrator-private root for per-service env files, OUTSIDE
-   * the session workspace. When set (and Docker-secrets mode is off), service
-   * env files are written to `<serviceEnvDir>/<sessionId>/.env.<svc>` and the
-   * compose override references those absolute paths, keeping service-only
-   * secrets out of the agent-readable workspace. Omit for tests / non-container
-   * setups, which fall back to the legacy workspace `.shipit/.env.<svc>` path.
+   * docs/183 — orchestrator-private root for per-service env files, OUTSIDE the
+   * session workspace. Unless Docker-secrets mode is on, service env files are
+   * written to `<serviceEnvDir>/<sessionId>/.env.<svc>` and the compose override
+   * references those absolute paths, keeping service-only secrets out of the
+   * agent-readable workspace.
+   *
+   * **Required** (SHI-290) — see `ServiceSecretsResolverOptions.serviceEnvDir`
+   * for why the optional form had to go. The root must resolve outside
+   * `workspaceDir` or the write throws.
    */
-  serviceEnvDir?: string;
+  serviceEnvDir: string;
   /**
    * docs/183 Phase 5 — per-session overlay dep-dir volumes for an overlay-eligible
    * session. Forwarded into `generateComposeOverride` so services that share the
@@ -272,7 +275,7 @@ export class ServiceManager extends EventEmitter {
   /** docs/128 — periodic agent network-attachment self-heal (see options). */
   private readonly networkHealFn?: (networkName: string) => Promise<void>;
   /** docs/183 — external service-env root, for teardown cleanup. */
-  private readonly serviceEnvDir?: string;
+  private readonly serviceEnvDir: string;
   /**
    * docs/246 — where the generated compose override is written: the session's
    * state dir, always outside the clone.
@@ -384,7 +387,7 @@ export class ServiceManager extends EventEmitter {
       ...(opts.secretsLoader ? { secretsLoader: opts.secretsLoader } : {}),
       ...(opts.mcpAgentEnvLoader ? { mcpAgentEnvLoader: opts.mcpAgentEnvLoader } : {}),
       ...(opts.dockerSecretsConfig ? { dockerSecretsConfig: opts.dockerSecretsConfig } : {}),
-      ...(opts.serviceEnvDir ? { serviceEnvDir: opts.serviceEnvDir } : {}),
+      serviceEnvDir: opts.serviceEnvDir,
       onSnapshot: (snapshot) => this.emit("secrets_status", snapshot),
       // docs/184: relay the now-unhonored `source: platform:*` notice into the
       // service's log stream so it surfaces in the same place as its output.
@@ -1153,7 +1156,7 @@ export class ServiceManager extends EventEmitter {
     // the workspace checkout, so neither archive nor the disk-janitor would
     // otherwise reclaim them. Idle eviction / reconcile keep `removeVolumes`
     // false, preserving the files for resume.
-    if (opts.removeVolumes && this.serviceEnvDir) {
+    if (opts.removeVolumes) {
       removeSessionServiceEnvDir({ rootDir: this.serviceEnvDir, sessionId: this.sessionId });
     }
 
@@ -1177,7 +1180,7 @@ export class ServiceManager extends EventEmitter {
    * Refresh secret env files and apply them to the running stack.
    *
    * Called when the user saves secrets via `PUT /api/secrets`. Re-parses the
-   * compose file (in case it changed), rewrites `.shipit/.env.<service>`
+   * compose file (in case it changed), rewrites the per-service env
    * files, and runs `docker compose up -d` so compose detects the env
    * changes and recreates affected containers. Safe to call when the stack
    * isn't started — env files are written but no compose call happens.

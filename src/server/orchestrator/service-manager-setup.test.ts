@@ -64,6 +64,8 @@ function makeDeps(remoteUrl: string | undefined) {
     composeWarnings: new Map<string, string>(),
     composeNotConfigured: new Set<string>(),
     containerManager: null,
+    // Sibling of the workspace — required (SHI-290) and must resolve outside it.
+    serviceEnvDir: path.join(tmpDir, "..", "service-env"),
   };
 }
 
@@ -307,5 +309,53 @@ describe("applyShipitConfigChange — compose-removal is gated on a trustworthy 
     expect(deps.composeNotConfigured.has("s1")).toBe(false);
     expect(mgr.stop).not.toHaveBeenCalled();
     expect(mgr.reconcile).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * SHI-290 — `serviceEnvDir` is required, and the wiring hop that supplies it is
+ * `ServiceSetupDeps → ServiceManagerOptions → ServiceSecretsResolver`.
+ *
+ * The `ServiceManager` tests construct a manager directly with an explicit root,
+ * so they prove the resolver honours whatever root it is handed but not that
+ * `setupServiceManager` hands it the deps' one. That gap matters because the
+ * failure mode is a *type-correct* mistake: pass a clone-derived root and the
+ * compiler is satisfied while `assertServiceEnvRootOutsideWorkspace` fails the
+ * whole stack at start. This test closes it by asserting the effect — where the
+ * env file actually lands — through the real construction path.
+ */
+describe("setupServiceManager threads serviceEnvDir to the secrets resolver (SHI-290)", () => {
+  it("writes service env files under the deps' root, never into the clone", async () => {
+    // A real session layout: the clone at `<sessionDir>/workspace`, which is what
+    // `ServiceManager` resolves its state dir from.
+    const sessionDir = path.join(tmpDir, "session");
+    const clone = path.join(sessionDir, "workspace");
+    fs.mkdirSync(clone, { recursive: true });
+    fs.writeFileSync(
+      path.join(clone, "docker-compose.yml"),
+      "services:\n  api:\n    image: node:20\n    x-shipit-secrets:\n      - DATABASE_URL\n",
+    );
+    fs.writeFileSync(path.join(clone, "shipit.yaml"), "compose: docker-compose.yml\n");
+    const serviceEnvDir = path.join(tmpDir, "service-env");
+
+    const runner = makeRunner();
+    const deps = {
+      ...makeDeps(""), // no remote → trusted, so the gate lets it through
+      sessionManager: {
+        get: () => ({ workspaceDir: clone, remoteUrl: undefined }),
+      } as unknown as SessionManager,
+      serviceEnvDir,
+    };
+
+    setupServiceManager(runner, deps);
+
+    const mgr = deps.serviceManagers.get("s1");
+    expect(mgr).toBeDefined();
+    // `refreshSecrets()` runs the resolver and returns early when the stack
+    // isn't started, so this needs no Docker.
+    await mgr!.refreshSecrets();
+
+    expect(fs.existsSync(path.join(serviceEnvDir, "s1", ".env.api"))).toBe(true);
+    expect(fs.existsSync(path.join(clone, ".shipit"))).toBe(false);
   });
 });

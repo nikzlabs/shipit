@@ -255,9 +255,10 @@ export interface ServiceSetupDeps {
   dockerSecretsConfig?: { internalDir: string; hostDir?: string; entrypointSourcePath: string };
   /**
    * docs/183 — orchestrator-private root for per-service compose env files,
-   * outside the agent's workspace mount. Passed to `ServiceManager`.
+   * outside the agent's workspace mount. Passed to `ServiceManager`, which
+   * requires it (SHI-290): there is no in-clone fallback to omit it in favour of.
    */
-  serviceEnvDir?: string;
+  serviceEnvDir: string;
   /** docs/192 — durable log store, forwarded to `ServiceManager` for service-log persistence. */
   logStore?: LogStore;
   broadcastLog?: (sessionId: string, source: LogSource, text: string) => void;
@@ -514,7 +515,7 @@ export function setupServiceManager(
     secretsLoader,
     mcpAgentEnvLoader,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
-    ...(serviceEnvDir ? { serviceEnvDir } : {}),
+    serviceEnvDir,
     ...(logStore ? { logStore } : {}),
     networkJoinFn: containerManager
       ? async (networkName: string) => {

@@ -3,8 +3,6 @@
  * (git identity, global settings, agents, API key).
  */
 
-import path from "node:path";
-import fs from "node:fs/promises";
 import type { CredentialStore } from "../credential-store.js";
 import type { AgentRegistry } from "../../shared/agent-registry.js";
 import { getAuthEnvKey, isAllowedAgentEnvKey } from "../../shared/agent-registry.js";
@@ -13,6 +11,7 @@ import { DEFAULT_FAILOVER_CUTOFF, DEFAULT_SELECTION_MODE } from "../../shared/ty
 import type { VoiceDeliveryMode } from "../../shared/types/voice-note-types.js";
 import { getGitIdentity, setGitIdentity as writeGitIdentity } from "../git-config.js";
 import { buildAgentSystemInstructions } from "../agent-instructions.js";
+import { readGlobalSystemPrompt, writeGlobalSystemPrompt } from "../global-system-prompt.js";
 import { ServiceError } from "./types.js";
 import type { AgentInfo, GlobalSettings } from "./types.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
@@ -40,10 +39,16 @@ export function listAgents(agentRegistry: AgentRegistry): AgentInfo[] {
   }));
 }
 
-/** Get global settings (git identity, system prompt, agents, resource limits). */
+/**
+ * Get global settings (git identity, system prompt, agents, resource limits).
+ *
+ * `appWorkspaceDir` is the orchestrator's own workspace root, not a session
+ * clone — it is where the GLOBAL system prompt lives (see
+ * `global-system-prompt.ts`).
+ */
 export async function getGlobalSettings(
   agentRegistry: AgentRegistry,
-  workspaceDir: string,
+  appWorkspaceDir: string,
   credentialStore?: CredentialStore,
   providerAccountManager?: ProviderAccountManager,
 ): Promise<GlobalSettings> {
@@ -52,17 +57,7 @@ export async function getGlobalSettings(
     ? { name: stored.name, email: stored.email }
     : { name: "", email: "" };
 
-  let systemPrompt = "";
-  try {
-    systemPrompt = (
-      await fs.readFile(
-        path.join(workspaceDir, ".shipit", "system-prompt.md"),
-        "utf-8",
-      )
-    ).trim();
-  } catch {
-    /* no file */
-  }
+  const systemPrompt = (await readGlobalSystemPrompt(appWorkspaceDir)) ?? "";
 
   const agents = listAgents(agentRegistry);
   const maxIdleContainers = credentialStore?.getMaxIdleContainers() ?? 5;
@@ -128,7 +123,11 @@ export function setGitIdentityService(
  */
 export interface SaveGlobalSettingsOptions {
   agentRegistry: AgentRegistry;
-  workspaceDir: string;
+  /**
+   * The orchestrator's own workspace root, not a session clone — the GLOBAL
+   * system prompt lives under it (see `global-system-prompt.ts`).
+   */
+  appWorkspaceDir: string;
   credentialStore: CredentialStore;
   providerAccountManager?: ProviderAccountManager;
   /** docs/146 — fired exactly when `autoResolveConflicts` transitions false → true. */
@@ -171,7 +170,7 @@ export async function saveGlobalSettings(
   opts: SaveGlobalSettingsOptions,
 ): Promise<GlobalSettings> {
   const {
-    agentRegistry, workspaceDir, credentialStore, providerAccountManager,
+    agentRegistry, appWorkspaceDir, credentialStore, providerAccountManager,
     onAutoResolveConflictsEnabled,
     gitIdentity, systemPrompt, maxIdleContainers,
     agentSystemInstructionsEnabled, autoCreatePr, liveSteering,
@@ -194,15 +193,7 @@ export async function saveGlobalSettings(
   if (systemPrompt !== undefined) {
     const content = typeof systemPrompt === "string" ? systemPrompt : "";
     if (content.length > 50_000) throw new ServiceError(400, "System prompt too long (max 50,000 characters)");
-    const dir = path.join(workspaceDir, ".shipit");
-    const filePath = path.join(dir, "system-prompt.md");
-    const trimmed = content.trim();
-    if (trimmed) {
-      await fs.mkdir(dir, { recursive: true });
-      await fs.writeFile(filePath, `${trimmed  }\n`, "utf-8");
-    } else {
-      try { await fs.unlink(filePath); } catch { /* ok if missing */ }
-    }
+    await writeGlobalSystemPrompt(appWorkspaceDir, content);
   }
 
   // Save max idle containers if provided
@@ -326,7 +317,7 @@ export async function saveGlobalSettings(
     credentialStore.setAutoResetMergedBranch(autoResetMergedBranch);
   }
 
-  return getGlobalSettings(agentRegistry, workspaceDir, credentialStore, providerAccountManager);
+  return getGlobalSettings(agentRegistry, appWorkspaceDir, credentialStore, providerAccountManager);
 }
 
 /** Validate and set the active agent. Returns the agent ID or throws. */
