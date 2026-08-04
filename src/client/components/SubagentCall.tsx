@@ -7,8 +7,9 @@
  *
  * Disclosure layers:
  *   1. Header (always visible): description + status indicator
- *   2. Prompt (click to expand): the prompt sent to the subagent
- *   3. Subagent's work (click to expand): nested tool calls in order
+ *   2. Prompt (collapsed; click to expand): the prompt sent to the subagent
+ *   3. Subagent's work (collapsed; click to expand): nested tool calls in
+ *      order, with a live action count on the toggle
  *   4. Final report (always visible when present): the markdown the
  *      subagent returned to the parent agent
  */
@@ -52,13 +53,17 @@ export function SubagentCall({ tool, subagentEvents, parentToolResults, isStream
   const report = finalReport ? parseSubagentReport(finalReport.content) : null;
 
   const [promptExpanded, setPromptExpanded] = useState(false);
-  // Keep "work" expanded by default — both while streaming AND after the
-  // final report arrives. The previous auto-collapse (`!finalReport`) hid
-  // the individual tool calls (Edit, Read, Bash, …) and per-step text the
-  // moment the subagent finished, leaving only the (often run-on) final
-  // report. The user can still collapse manually via the caret.
+  // "Work" is collapsed by default — while streaming AND after the final
+  // report arrives. A subagent's timeline is long and mostly uninteresting to
+  // the reader (it's the *parent's* conversation they're following), and two
+  // or three concurrent subagents expanded at once bury the main transcript.
+  // The toggle carries a live action count, so the collapsed state still
+  // shows that something is happening; the caret opens it on demand. Earlier
+  // revisions defaulted to expanded (and before that, auto-collapsed on the
+  // final report) — both traded the transcript's readability for detail
+  // nobody had asked to see yet.
   const [userOverride, setUserOverride] = useState<boolean | null>(null);
-  const workExpanded = userOverride ?? true;
+  const workExpanded = userOverride ?? false;
 
   const isError = finalReport?.isError ?? false;
   const inProgress = !finalReport && isStreaming;
@@ -92,8 +97,8 @@ export function SubagentCall({ tool, subagentEvents, parentToolResults, isStream
         </Disclosure>
       )}
 
-      {/* Subagent's work — auto-expanded while streaming, collapsed once
-          the final report arrives. Click to toggle. */}
+      {/* Subagent's work — collapsed by default; the action count ticks up
+          live while the subagent runs. Click to toggle. */}
       {steps.length > 0 && (
         <Disclosure
           label={`Subagent's work (${countSteps(steps)} action${countSteps(steps) === 1 ? "" : "s"})`}

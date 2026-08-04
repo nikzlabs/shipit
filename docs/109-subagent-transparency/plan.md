@@ -71,7 +71,7 @@ Three disclosure levels:
 
 1. **Header** — always visible, shows description and runtime.
 2. **Prompt** — collapsed by default, click to expand. Renders as fenced markdown.
-3. **Subagent's work** — collapsed by default. Expands to show the nested tool calls (file reads, greps, edits) the subagent performed. This is the "swarm" view.
+3. **Subagent's work** — collapsed by default, in every state (running and finished alike). The toggle carries a live action count, so the collapsed row still says "something is happening" without spending the vertical space. Expands to show the nested tool calls (file reads, greps, edits) the subagent performed. This is the "swarm" view.
 4. **Final report** — always visible (it's the actionable bit), rendered as markdown.
 
 ### How nested events get captured
@@ -147,8 +147,9 @@ The shipped implementation matches the plan with a few clarifications:
 - **Client tree rendering.** `groupEventsByParent` (new util) trees the flat
   list of subagent events by parent id. `SubagentCall.tsx` (new component)
   renders the four disclosure layers from the plan: header, prompt
-  (collapsed), work timeline (auto-collapses once the final report arrives —
-  user toggle wins), and the markdown final report. `MessageToolUse` swaps the
+  (collapsed), work timeline (collapsed — see
+  [The work timeline's default state](#the-work-timelines-default-state)), and
+  the markdown final report. `MessageToolUse` swaps the
   legacy "Subagent: <description>" strip for `SubagentCall` whenever the tool
   name is in `SUBAGENT_REPORT_TOOL_NAMES` (`Task`, `Agent`) — see
   [What actually shipped broken](#what-actually-shipped-broken-and-the-fix);
@@ -285,6 +286,32 @@ that is exempted but renders nothing ships an unbounded body for no reason.
   status badge, collapsed prompt, expanded work timeline with the subagent's
   own `Bash` call, and the markdown final report.
 - Client regression tests that fail against the pre-fix renderer.
+
+## The work timeline's default state
+
+The work disclosure has been through three defaults, and the current one is
+deliberate:
+
+1. **Auto-collapse on the final report** (shipped first) — expanded while
+   streaming, collapsed the moment the subagent finished. Wrong because it
+   yanked content away mid-read: the tool calls and per-step narration
+   disappeared exactly when the user went to look at them.
+2. **Always expanded** — fixed (1) by never collapsing. Wrong for the opposite
+   reason: a subagent's timeline is long, and the reader is following the
+   *parent's* conversation. A turn with two or three concurrent subagents
+   buried the main transcript under nested tool calls nobody had asked to see.
+3. **Always collapsed** (current) — the timeline is opt-in in every state.
+
+What makes (3) work rather than just hiding things is that the collapsed row is
+not silent: the toggle reads `Subagent's work (N actions)` and **N ticks up
+live** as the subagent streams, next to the header's `working…` spinner. The
+reader sees that work is happening and how much of it, and opens the caret when
+they want the detail. The user override (`userOverride ?? false`) still wins for
+the lifetime of the card, so expanding is sticky within a session view.
+
+The prompt and the final report are unaffected: the prompt was always collapsed,
+and the report stays always-visible — it is the actionable output, and it is
+what the parent agent itself acts on.
 
 ## Future extensions
 
