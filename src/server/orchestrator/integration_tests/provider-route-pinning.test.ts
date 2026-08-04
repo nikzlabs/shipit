@@ -399,10 +399,22 @@ describe("provider route pinning (docs/150)", () => {
         },
       });
 
+      // Matched on the clause every failover sentence shares, not on the
+      // reason-specific half: `failoverNotice` has one sentence per reason, so
+      // anchoring here on "out of quota" pinned the *exhaustion* wording to a
+      // test whose scenario is a 95% **cutoff**. It passed only because both
+      // cases once shared a single hardcoded string, and broke the moment they
+      // stopped — which is the distinction this test should be asserting, not
+      // tripping over.
       const notices = chatHistoryManager
         .load("s1")
-        .filter((m) => (m.text ?? "").includes("out of quota"));
+        .filter((m) => (m.text ?? "").includes("continuing this session on"));
       expect(notices).toHaveLength(1);
+      // The account is at 95% of the 90% cutoff — it has quota left and is
+      // being moved by policy, so telling the user it "is out of quota" would
+      // be false (docs/150 req 6: a cutoff moves work, it does not stop it).
+      expect(notices[0]?.text).toContain("reached your usage cutoff");
+      expect(notices[0]?.text).not.toContain("out of quota");
       // Named by the user's own account labels — "acct_9f3e… → acct_1b77…"
       // would not tell them which subscription is now paying.
       expect(notices[0]?.text).toContain("Work");
