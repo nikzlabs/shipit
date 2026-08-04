@@ -1372,3 +1372,181 @@ describe("credential topology under a resident agent (nikzlabs/shipit#1874)", ()
 
 // Silence vi import lint when no `vi` calls remain after refactors.
 void vi;
+
+/**
+ * docs/118 (SHI-59) — local-mode workspace trust.
+ *
+ * The Claude CLI silently drops a workspace's own `.claude/settings.json`
+ * `permissions.allow` entries until that exact directory is trusted. A
+ * container is covered because its cwd IS `/workspace`, one of
+ * `CLAUDE_PRE_TRUSTED_DIRS`; a local session's workspace is
+ * `<dataDir>/sessions/<id>/workspace` and trust is keyed by exact directory,
+ * so the pre-trust never reaches it.
+ *
+ * The regression that would matter is the containerized one — trust there is
+ * real security posture, since a container session can hold an arbitrary user
+ * repository. So both directions are pinned: local mode writes the key, and
+ * containerized mode is byte-for-byte what it was.
+ */
+describe("local-mode workspace trust (docs/118, SHI-59)", () => {
+  let tmpDir: string;
+  let home: string;
+  let runtimeModeBefore: string | undefined;
+  let agentHomeBefore: string | undefined;
+
+  /** A plain (non-container) runner — what local mode actually builds. */
+  function makeLocalRunner(sessionDir: string): SessionRunnerInterface {
+    const runner = new EventEmitter() as unknown as { sessionId: string; sessionDir: string };
+    runner.sessionId = "s1";
+    runner.sessionDir = sessionDir;
+    return runner as unknown as SessionRunnerInterface;
+  }
+
+  /** A git-inited local session workspace, as `GitManager.init` leaves it. */
+  function makeWorkspace(id: string): string {
+    const ws = path.join(tmpDir, "sessions", id, "workspace");
+    fs.mkdirSync(path.join(ws, ".git"), { recursive: true });
+    return ws;
+  }
+
+  function prepare(
+    runner: SessionRunnerInterface,
+    sm: SessionManager,
+  ): Promise<unknown> {
+    return prepareSessionAgentEnvironment(runner, {
+      sessionId: "s1",
+      agentId: "claude",
+      deps: {
+        credentialsDir: tmpDir,
+        credentialStore: makeFakeCredentialStore(),
+        sessionManager: sm,
+      },
+    });
+  }
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-local-trust-"));
+    home = path.join(tmpDir, "agent-home");
+    fs.mkdirSync(home, { recursive: true });
+    runtimeModeBefore = process.env.RUNTIME_MODE;
+    agentHomeBefore = process.env.AGENT_HOME;
+    // AGENT_HOME is redirected for every case, including the containerized
+    // ones: a leak would otherwise write into the developer's real home.
+    process.env.AGENT_HOME = home;
+  });
+
+  afterEach(() => {
+    if (runtimeModeBefore === undefined) delete process.env.RUNTIME_MODE;
+    else process.env.RUNTIME_MODE = runtimeModeBefore;
+    if (agentHomeBefore === undefined) delete process.env.AGENT_HOME;
+    else process.env.AGENT_HOME = agentHomeBefore;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("trusts the session's workspace in the account root the CLI will spawn against", async () => {
+    process.env.RUNTIME_MODE = "local";
+    const accountRoot = path.join(tmpDir, "provider-accounts", "claude", "acct-a");
+    fs.mkdirSync(path.join(accountRoot, ".claude"), { recursive: true });
+    const ws = makeWorkspace("s1");
+    const { sm } = makeFakeSessionManager({
+      agentPinned: true,
+      providerRouteKind: "account",
+      providerRouteId: "acct-a",
+    });
+
+    await prepare(makeLocalRunner(ws), sm);
+
+    const config = JSON.parse(
+      fs.readFileSync(path.join(accountRoot, ".claude.json"), "utf-8"),
+    ) as { projects: Record<string, { hasTrustDialogAccepted?: boolean }> };
+    expect(config.projects[ws]?.hasTrustDialogAccepted).toBe(true);
+  });
+
+  it("falls back to the process-global agent home for a reserved route", async () => {
+    process.env.RUNTIME_MODE = "local";
+    const ws = makeWorkspace("s1");
+    const { sm } = makeFakeSessionManager({
+      agentPinned: true,
+      providerRouteKind: "reserved",
+      providerRouteId: "claude-api-key",
+    });
+
+    await prepare(makeLocalRunner(ws), sm);
+
+    const config = JSON.parse(
+      fs.readFileSync(path.join(home, ".claude.json"), "utf-8"),
+    ) as { projects: Record<string, { hasTrustDialogAccepted?: boolean }> };
+    expect(config.projects[ws]?.hasTrustDialogAccepted).toBe(true);
+  });
+
+  it("prunes a dead sibling workspace, so the shared config stays bounded", async () => {
+    process.env.RUNTIME_MODE = "local";
+    const accountRoot = path.join(tmpDir, "provider-accounts", "claude", "acct-a");
+    fs.mkdirSync(path.join(accountRoot, ".claude"), { recursive: true });
+    const dead = path.join(tmpDir, "sessions", "gone", "workspace");
+    fs.writeFileSync(
+      path.join(accountRoot, ".claude.json"),
+      JSON.stringify({ projects: { [dead]: { hasTrustDialogAccepted: true } } }),
+    );
+    const ws = makeWorkspace("s1");
+    const { sm } = makeFakeSessionManager({
+      agentPinned: true,
+      providerRouteKind: "account",
+      providerRouteId: "acct-a",
+    });
+
+    await prepare(makeLocalRunner(ws), sm);
+
+    const config = JSON.parse(
+      fs.readFileSync(path.join(accountRoot, ".claude.json"), "utf-8"),
+    ) as { projects: Record<string, unknown> };
+    expect(Object.keys(config.projects)).toEqual([ws]);
+  });
+
+  // ── The regression that matters ────────────────────────────────────────────
+
+  it("CONTAINERIZED: writes no workspace trust key — the posture is unchanged", async () => {
+    delete process.env.RUNTIME_MODE;
+    fs.mkdirSync(path.join(tmpDir, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, ".claude.json"), "{}");
+    const { sm } = makeFakeSessionManager({ agentPinned: false });
+    const runner = new FakeContainerRunner() as unknown as SessionRunnerInterface;
+    // A container runner's sessionDir is the HOST path; the agent's cwd inside
+    // the container is `/workspace`. Nothing may key trust off the host path.
+    (runner as unknown as { sessionDir: string }).sessionDir = path.join(tmpDir, "sessions", "s1");
+
+    await prepare(runner, sm);
+
+    const sessionConfig = JSON.parse(
+      fs.readFileSync(path.join(tmpDir, "sessions", "s1", ".claude.json"), "utf-8"),
+    ) as { hasCompletedOnboarding: boolean; projects: Record<string, unknown> };
+    // Exactly CLAUDE_PRE_TRUSTED_DIRS, and nothing else.
+    expect(sessionConfig.hasCompletedOnboarding).toBe(true);
+    expect(sessionConfig.projects).toEqual({
+      "/app": { hasTrustDialogAccepted: true },
+      "/workspace": { hasTrustDialogAccepted: true },
+    });
+    // And the local-mode writer never ran against the fallback home either.
+    expect(fs.existsSync(path.join(home, ".claude.json"))).toBe(false);
+  });
+
+  it("CONTAINERIZED: an already-pinned session's re-assert is still pre-trusted dirs only", async () => {
+    delete process.env.RUNTIME_MODE;
+    const sessionDir = path.join(tmpDir, "sessions", "s1");
+    fs.mkdirSync(path.join(sessionDir, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(sessionDir, ".claude.json"), "{}");
+    const { sm } = makeFakeSessionManager({ agentPinned: true });
+    const runner = new FakeContainerRunner() as unknown as SessionRunnerInterface;
+    (runner as unknown as { sessionDir: string }).sessionDir = sessionDir;
+
+    await prepare(runner, sm);
+
+    const sessionConfig = JSON.parse(
+      fs.readFileSync(path.join(sessionDir, ".claude.json"), "utf-8"),
+    ) as { projects: Record<string, unknown> };
+    expect(sessionConfig.projects).toEqual({
+      "/app": { hasTrustDialogAccepted: true },
+      "/workspace": { hasTrustDialogAccepted: true },
+    });
+  });
+});

@@ -26,6 +26,7 @@ import type { ServiceManager } from "./service-manager.js";
 import type { AgentId } from "../shared/types.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import {
+  ensureLocalWorkspaceTrust,
   ensureSessionAgentUserConfig,
   provisionAgentCredentials,
   provisionProviderAccountCredentials,
@@ -48,7 +49,9 @@ import {
   linkAgentHomeToCredentials,
 } from "./local-agent-credentials.js";
 import { repoUrlToHash } from "./git-utils.js";
+import { agentHome } from "../shared/agent-home.js";
 import type { ProviderAccountManager, ProviderRoute } from "./provider-account-manager.js";
+import { providerAccountCredentialRoot } from "./provider-account-manager.js";
 import { routeFromSelection } from "./provider-route-preflight.js";
 import { failoverPinnedSession } from "./services/provider-account-switch.js";
 import { emitNoticeInTurn } from "./chat-card-persistence.js";
@@ -460,8 +463,8 @@ export async function prepareSessionAgentEnvironment(
   // on another; the CLI's env-beats-disk preference picked the right one by
   // luck, not by design (docs/150 req 12).
   if (isLocalRuntime()) {
+    const accountId = selectedRoute?.kind === "account" ? selectedRoute.id : undefined;
     try {
-      const accountId = selectedRoute?.kind === "account" ? selectedRoute.id : undefined;
       const outcomes = selectedRoute?.kind === "reserved"
         ? clearAgentHomeCredentialLinks({ agentId })
         : linkAgentHomeToCredentials({
@@ -485,6 +488,55 @@ export async function prepareSessionAgentEnvironment(
       }
     } catch (err) {
       console.warn("[local-credentials] updating agent home links failed:", getErrorMessage(err));
+    }
+
+    // Step 1c (docs/118, SHI-59): the local-mode workspace-trust write — the third
+    // container-gated writer this mode was missing, after SHI-282 and SHI-298.
+    //
+    // The Claude CLI silently drops a workspace's own `.claude/settings.json`
+    // `permissions.allow` entries until that workspace is trusted ("Ignoring N
+    // permissions.allow entries … this workspace has not been trusted"), so the
+    // agent gets approval prompts for tools that were explicitly allowlisted.
+    // A container is covered because its cwd IS `/workspace`, one of
+    // `CLAUDE_PRE_TRUSTED_DIRS`; a local session's workspace is
+    // `<dataDir>/sessions/<id>/workspace`, and trust is keyed by EXACT
+    // directory, so that pre-trust never reaches it.
+    //
+    // The CLI exposes no switch to turn the check off, which is what the
+    // product decision here asked for. Probed against 2.1.219 and all
+    // ineffective: `CLAUDE_CODE_SANDBOXED=1`, `IS_SANDBOX=1`,
+    // `--dangerously-skip-permissions`, `--permission-mode bypassPermissions`,
+    // `--add-dir <workspace>`, a trust key on an ANCESTOR directory, a `"*"` or
+    // glob `projects` key, a top-level `hasTrustDialogAccepted`, and every
+    // plausible `--settings` key. The per-directory key in the user config is
+    // the only mechanism, so local mode writes it per session and
+    // `ensureClaudeWorkspaceTrusted` prunes the entries whose workspace is
+    // gone — which bounds the file at the set of live local sessions rather
+    // than letting it accumulate forever.
+    //
+    // Local mode only, by product decision: it is a testing surface that runs
+    // only trusted repositories, so there is nothing there for the check to
+    // protect against. A container session can hold an arbitrary user
+    // repository — exactly the case the check exists for — and nothing here
+    // runs for it.
+    //
+    // The home mirrors `resolveLocalAgentHome`'s session branch: the CLI is
+    // spawned with HOME at the routed account root, or the process-global
+    // `agentHome()` for a reserved route (which has no account subtree). Both
+    // read `accountId` above, so the config written here is the config the
+    // spawn will read.
+    if (runner) {
+      try {
+        ensureLocalWorkspaceTrust(
+          accountId
+            ? providerAccountCredentialRoot(deps.credentialsDir, agentId, accountId)
+            : agentHome(),
+          agentId,
+          runner.sessionDir,
+        );
+      } catch (err) {
+        console.warn("[local-credentials] workspace trust write failed:", getErrorMessage(err));
+      }
     }
   }
 

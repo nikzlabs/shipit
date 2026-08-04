@@ -33,6 +33,7 @@ export {
 
 // ---- Per-agent / provider-account credential provisioning ----
 export {
+  ensureLocalWorkspaceTrust,
   ensureSessionAgentUserConfig,
   provisionAgentCredentials,
   provisionProviderAccountCredentials,
