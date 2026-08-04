@@ -11,7 +11,9 @@ This replaces the deleted `docs/089-shipit-in-shipit/` plan, which tried to make
 
 > **Related:** `docs/131-dogfood-seed-sessions/plan.md` builds on this — a seed
 > script that provisions reproducible repo-backed inner sessions on dev-service
-> boot, and decouples the inner orch's GitHub token from the outer user's.
+> boot, plus the calls the outer agent uses to drive the inner ShipIt. (It also
+> once proposed decoupling the inner orch's GitHub token from the outer user's;
+> `docs/184-remove-platform-secret-forwarding` did that first.)
 
 ## Goal & non-goals
 
