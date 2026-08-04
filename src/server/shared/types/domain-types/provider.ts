@@ -50,7 +50,16 @@ export interface ProviderAccount {
    */
   labelIsGenerated?: boolean;
   status: ProviderAccountStatus;
-  plan?: string | null;
+  /**
+   * docs/150 — there is deliberately **no** persisted quota snapshot or plan
+   * label here. The pill's numbers and its plan label both come from the live
+   * per-account snapshot in `LimitsRegistry`, and selection reads that same
+   * live snapshot; a stored copy would be a second source of truth for a fact
+   * that changes every turn. The one quota fact that must outlive a restart —
+   * a hard exhaustion — is `exhaustedUntil` below, which is a scalar with a
+   * built-in expiry rather than a snapshot that never goes stale. See
+   * `plan.md` → "Struck: persisting quota snapshots onto accounts".
+   */
   capabilities?: ProviderAccountCapabilities;
   lastUsedAt?: number;
   exhaustedUntil?: number | null;
