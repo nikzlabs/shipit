@@ -27,7 +27,22 @@
 
 ## Known gaps
 
-- **Grandfathered containers (review finding 1).** `deploy.sh` deliberately preserves session containers across an upgrade (docs/113), and boot rotation only replaces a worker when no turn is active. Such a container keeps the OLD worker: it writes the marker in the clone, never runs the sweep, and — the real regression — the new CI-fix code hands its agent `/session-state/ci-logs/...`, a path that container has no mount for, so a full-log read fails. The log excerpt and error lines are inline in the prompt regardless, and the container self-heals on next recreate. Closing it properly means gating reuse on mount compatibility, which is a container-lifecycle change beyond this feature.
+- **Grandfathered containers — ACCEPTED, will not be fixed (SHI-284, closed).**
+  `deploy.sh` deliberately preserves session containers across an upgrade
+  (docs/113), and boot rotation only replaces a worker when no turn is active.
+  Such a container keeps the OLD worker: it writes the marker in the clone,
+  never runs the sweep, and the new CI-fix code hands its agent
+  `/session-state/ci-logs/...` — a path that container has no mount for, so the
+  full-log read fails.
+
+  Accepted because it degrades rather than breaks (the log excerpt and extracted
+  error lines are inline in the prompt regardless, so the agent still has the
+  failure content) and self-heals on the next container recreate. Both fixes cost
+  more than the problem: gating container reuse on mount compatibility would
+  force recreation of every session on deploy, which is precisely what docs/113
+  stopped doing, and suppressing the path via a container-mount inspection adds a
+  Docker round-trip plus a branch to the CI-fix path to save one failed file read
+  in a shrinking window. Recorded here so it isn't re-litigated.
 - ~~**Docker-secrets entrypoint.**~~ **Closed by SHI-285.** The wrapper is now staged at `<SHIPIT_SECRETS_INTERNAL_DIR>/_entrypoint/secrets-entrypoint.sh` and bind-mounted into service containers by absolute path, so the mount no longer rides the workspace volume and nothing is written into the clone. It went to the secrets root rather than the state dir because the mount source is resolved by the Docker **daemon**: the secrets root is the one directory this mode already maps daemon-side (`SHIPIT_SECRETS_HOST_DIR`, used by every `secrets: file:` reference), while the state dir has no daemon-side path when the orchestrator is containerized and sessions live on a named volume. The wrapper is also a static baked asset, identical for every session — not session state. The `service-secrets-resolver.ts` entry is gone from `ALLOWED` in `no-clone-writes.test.ts`, so req 1 is now mechanically enforced for this mode too. `secrets-entrypoint.sh` joined `LEGACY_CLONE_ARTIFACTS` so an upgraded session loses the copy an earlier version left in its clone (req 6).
 - ~~**Legacy flat-layout sessions.**~~ **Closed by SHI-286.** A census of the
   production database answered the open question — `flat == 0` of 307 rows,
