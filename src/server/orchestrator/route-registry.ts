@@ -37,6 +37,7 @@ import type { OrchestratorRuntime } from "./bootstrap-managers.js";
 import type { StartupMonitors } from "./startup-monitors.js";
 import { getContainerFreshness } from "./container-freshness.js";
 import { buildComposeAttachReplay } from "./compose-attach-replay.js";
+import { startSseKeepalive, startWebSocketKeepalive } from "./keepalive.js";
 
 /**
  * Register the long-lived `/api/events` SSE endpoint. Kept as its own step so
@@ -212,8 +213,14 @@ export function registerSseEndpoint(app: FastifyInstance, rt: OrchestratorRuntim
       }
     }
 
+    // Keep the stream non-idle so a reverse proxy (Cloudflare cuts at ~100s)
+    // doesn't drop it during a quiet stretch with no session activity. See
+    // `keepalive.ts`.
+    const stopKeepalive = startSseKeepalive(client);
+
     request.raw.on("close", () => {
       client.closed = true;
+      stopKeepalive();
       sseClients.delete(client);
     });
   });
@@ -457,6 +464,17 @@ export async function registerRoutes(
         return;
       }
       console.log(`[ws] session client connected: ${sessionId}`);
+
+      // A session between turns sends nothing, and a reverse proxy in front of
+      // ShipIt (Cloudflare cuts at ~100s) kills the socket for being idle. The
+      // client then reconnects on backoff and re-runs the full attach burst,
+      // which is the flicker-plus-log-churn failure this guards against. See
+      // `keepalive.ts`.
+      const stopKeepalive = startWebSocketKeepalive(socket, {
+        onUnresponsive: () => {
+          console.log(`[ws] session client unresponsive, terminating: ${sessionId}`);
+        },
+      });
 
       // Per-connection state — initialized from URL params
       let activeAppSessionId: string | undefined = sessionId;
@@ -1376,6 +1394,7 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
 
       socket.on("close", () => {
         console.log(`[ws] session client disconnected: ${sessionId}`);
+        stopKeepalive();
         containerManager?.off("container_started", onContainerStarted);
         detachFromRunner();
         // Intentionally do NOT call enforceIdleContainerLimit() here.
