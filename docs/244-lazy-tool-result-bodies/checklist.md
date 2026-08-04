@@ -17,8 +17,13 @@
 - [x] Determine whether the SHI-266 / `rowId` dependency is real (it isn't)
 - [x] Decide: project the live WS path as well as history
 - [x] Confirm slice size → 40 lines, capped at 16 KB (derived from Bash's 30). That derivation expired when the previews moved into the modal; the slice now governs only the unknown-tool fallback and image-result text — see *Requirement 1 — met* below.
-- [x] Confirm thumbnail size → no thumbnail; serve at stored resolution
+- [x] Confirm thumbnail size → **no thumbnail is generated at all**; served at stored resolution and scaled down with CSS
 - [x] Decide thumbnail storage → no new store; bytes stay in SQLite
+
+> Those two lines read as decisions *about* thumbnails and have been misread as
+> implying that thumbnailing exists. It does not: there is no image processing
+> anywhere in the repo. Both are decisions **not** to thumbnail — one about
+> generating, one about storing. See requirement 9 and SHI-300.
 
 ## Server — tool results
 - [x] Add `truncated` / `totalLines` / `totalBytes` to the tool-result type
@@ -120,7 +125,7 @@
 - [x] ~~Byte backstop on a single long line removes text that used to render inline, and labels it "Show all 1 lines" (reqs 1/8)~~ — **stale, withdrawn.** Written when the previews were in the transcript. `ToolResult` now renders only inside the click-opened `ToolOutputModal`, where req 8 expressly permits loading, so this is no longer a transcript-level finding.
 - [x] ~~A >16 KB free-form AskUserQuestion answer would be sliced (req 4)~~ — **fixed (SHI-291).** It broke reqs 2 and 8 as well as 4: the Ask branch returns before the output modal, so the tail was unreachable rather than deferred, and the Ask card *is* the transcript. `WHOLE_RESULT_TOOL_NAMES` is now the set every bound agrees on — the server's 16 KB backstop and the client's 1 MB cap both read it. That also fixed a second, opposite error the review had not named: the client cap keyed off `SUBAGENT_TOOLS`, the *layout* set, so it spared `Skill` (no report, fetchable) while capping `AskUserQuestion` (no recovery).
 - [ ] A modal-only result at or under `RESULT_STRIP_FLOOR_BYTES` (200) ships whole though nothing renders it without a click (req 1) — **undisclosed until the review**. Recorded here as the deviation it is; the floor itself stays deliberate.
-- [x] ~~Inline image thumbnails point at the full-resolution URL, so the bytes transfer on viewport entry rather than on click (reqs 1 and 9)~~ — **accepted, not fixed (SHI-292).** Human decision, 2026-08-04: images are infrequent enough that transferring them with the transcript is fine. Requirement 9 amended to say so, with a dated receipt in `requirements.md`. One open question remains there on the wording — whether the stated 256×256 is a bound on transferred pixels (needing server-side downsampling, and a new dependency) or a description of the inline render size.
+- [x] ~~Inline image thumbnails point at the full-resolution URL, so the bytes transfer on viewport entry rather than on click (reqs 1 and 9)~~ — **accepted, not fixed (SHI-292).** Human decision, 2026-08-04: images are infrequent enough that transferring them with the transcript is fine. Requirement 9 now states the actual position — **no resizing at ingest or when serving** — with two dated receipts in `requirements.md`. An interim "up to 256×256" bound was written and then dropped: it assumed downsampling happened somewhere, and nothing in the repo resizes images at any point. **SHI-300** revisits image handling end to end, including whether the agent's copy has to stay full-fidelity (it reads these images too, which is what makes ingest-time resizing unattractive).
 - [x] ~~`message_steered` echoes full base64 images unprojected~~ — **fixed (SHI-297).**
 - [x] ~~`sub_agent_consult_card.outputMarkdown` is modal-only content shipped whole~~ — **fixed (SHI-297).**
 - [x] ~~Reconnect snapshot resends already-committed tool inputs~~ — **fixed (SHI-297).** Live nested subagent results stay unprojected, which is correct and is now named as such rather than left implicit.
@@ -226,7 +231,7 @@ Run after the req-1 fix merged. Two of the five checks are done and are now
 
 Blocked, with the reason:
 
-- [ ] **A screenshot result end-to-end.** Still no real-shape data. Neither local
+- [ ] **A screenshot result end-to-end** (blocked on **SHI-298**). Still no real-shape data. Neither local
       CLI transcript contains an image block, and the dogfood cannot produce one
       either — inner sessions have no Playwright MCP server, so the agent has no
       browser tool at all (it said so itself when asked). The synthetic coverage

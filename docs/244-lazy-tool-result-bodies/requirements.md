@@ -22,35 +22,35 @@
 8. The transcript itself must look exactly as it does today and must not
    introduce loading states of its own. A view the user opens by clicking may
    load data on demand, and may show a loading state while it does.
-9. Images may render inline at reduced resolution, with the full-resolution
-   image loaded when the user opens the full-size preview. Sending an image
-   with the transcript rather than deferring it to a click is acceptable for
-   images up to 256×256; requirement 1 does not apply to them.
+9. Images are not resized — not at ingest, and not when served. They are
+   stored and served at whatever resolution they arrived at. Inline they render
+   at reduced *display* size only, and their bytes transfer with the transcript
+   rather than waiting for a click, so requirement 1 does not apply to them.
+   This is the accepted position for now, not a permanent one: SHI-300 revisits
+   image handling end to end.
 
 ## Open questions
 
-- Requirement 9's 256×256 allowance is written as a bound on the image being
-  sent, but the code sends whatever resolution was stored — the 96×96 inline
-  thumbnail points at the same content-addressed URL as the full-size preview,
-  so a 4000×3000 screenshot transfers in full on viewport entry. So either:
-  (a) the allowance describes the inline **render** size and the transfer stays
-  deliberately unbounded, in which case requirement 9's wording should say so
-  and no code changes; or (b) it is a real bound on transferred pixels, in
-  which case images above it must be downsampled server-side — which needs a
-  new image-processing dependency, since the repo has none, and reads against
-  "accept the gap". Recorded as an open question rather than guessed at,
-  because the two readings differ by a whole subsystem. SHI-292.
+None.
 
 ## Resolved questions
 
+- 2026-08-04 — Does requirement 9's "images up to 256×256 may be sent" bound
+  the *transferred* pixels, or describe the inline *render* size? Answer:
+  neither — drop the bound. We do not resize images at ingest or when serving,
+  at the moment. Recorded in requirement 9, superseding the same-day receipt
+  below, and SHI-300 opened to revisit image handling as a whole. The 256×256
+  wording was written on the assumption that downsampling happened somewhere;
+  it does not — there is no image processing anywhere in the repo, so no bound
+  on transferred pixels was ever achievable without new machinery.
 - 2026-08-04 — Should inline image thumbnails be downsampled so requirement 1's
   "nothing transfers without a click" holds for images, or is transferring them
-  with the transcript acceptable? Answer: acceptable — accept the gap, allow
-  images up to 256×256 to be sent, they are infrequent anyway. Recorded in
-  requirement 9. (Raised by the independent requirements review, which found
+  with the transcript acceptable? Answer: acceptable — accept the gap, they are
+  infrequent anyway. (Raised by the independent requirements review, which found
   that the 96×96 thumbnail loads full-resolution bytes on viewport entry rather
-  than on click, making requirement 9's second clause unreachable. SHI-292.)
-
+  than on click, making requirement 9's second clause unreachable. SHI-292.) The
+  "up to 256×256" qualifier this originally carried is superseded by the
+  receipt above.
 - 2026-08-01 — Should the byte bound apply to the live WebSocket path or only
   to history loads? Answer: both. Recorded as requirement 6.
 - 2026-08-01 — Is "the transcript looks and behaves exactly as today" a hard
