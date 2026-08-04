@@ -898,13 +898,30 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   /** docs/235 — descriptions of the outstanding background tasks, for the chat status line. */
   readonly backgroundTaskDescriptions: string[];
   /**
-   * docs/235 — the union liveness axis every container-reclaim path must
-   * consult: `running || backgroundTaskCount > 0`.
+   * SHI-296 — number of sub-agent spawns this runner is currently brokering
+   * (docs/144 `shipit agent run`). Non-zero means a consult is live *right now*
+   * on the worker, independent of whether any turn is running: docs/236 tells
+   * agents to background long consults, so the primary turn routinely ends
+   * while a 30-minute review is still in flight.
+   *
+   * Distinct from {@link backgroundTaskCount}, which is a decayed *hint*
+   * reported by the CLI and gated on a resident streaming process. This is a
+   * fact the orchestrator owns — it is the size of the in-flight request set —
+   * so it needs no liveness gate. Bounded by the transport timeout
+   * (`SUB_AGENT_TRANSPORT_TIMEOUT_MS`), so a wedged spawn cannot pin it forever.
+   */
+  readonly subAgentSpawnsInFlight: number;
+  /**
+   * docs/235, SHI-296 — the union liveness axis every container-reclaim path
+   * must consult: `running || backgroundTaskCount > 0 || subAgentSpawnsInFlight > 0`.
    *
    * `running` alone is NOT sufficient — it is only ever set by an
    * orchestrator-initiated turn, so a session whose agent woke itself (or is
    * waiting on background work that will wake it) reads as idle and gets its
-   * container destroyed underneath it.
+   * container destroyed underneath it. Neither is `running || backgroundTaskCount`:
+   * a backgrounded sub-agent consult ends the primary turn (`running` false) and
+   * needs no resident streaming process (so `backgroundTaskCount` reads 0), which
+   * is how SHI-296 reaped a live 12-minute Codex review.
    *
    * Conversely `running` must NOT be widened to cover background tasks:
    * `send-message.ts` branches on it to decide whether an incoming user message
@@ -1348,7 +1365,12 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   // streaming process the answer is definitionally zero.
   get backgroundTaskCount(): number { return this._backgroundTasks.count(this._isStreamingActive); }
   get backgroundTaskDescriptions(): string[] { return this._backgroundTasks.descriptions(this._isStreamingActive); }
-  get agentBusy(): boolean { return this._isRunning || this.backgroundTaskCount > 0; }
+  // SHI-296 — a live consult is a fact we own (the in-flight handle set), not a
+  // reported hint, so it needs no `isStreamingActive` gate.
+  get subAgentSpawnsInFlight(): number { return this._subAgentHandles.size; }
+  get agentBusy(): boolean {
+    return this._isRunning || this.backgroundTaskCount > 0 || this.subAgentSpawnsInFlight > 0;
+  }
   setBackgroundTasks(tasks: BackgroundTaskInfo[]): void { this._backgroundTasks.set(tasks); }
   clearBackgroundTasks(): void { this._backgroundTasks.clear(); }
   get appliedPermissionMode(): PermissionMode | undefined { return this._appliedPermissionMode; }
@@ -1581,6 +1603,17 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     // pass `{ force: true }`.
     if (this._isRunning && !opts?.force) {
       console.log(`[session-runner:${this.sessionId}] dispose() skipped — agent is running`);
+      return;
+    }
+    // SHI-296 — same protection for a BACKGROUNDED sub-agent consult, mirroring
+    // ContainerSessionRunner. The primary turn ends while the spawn keeps
+    // running, so `_isRunning` is false and a lifecycle-driven teardown would
+    // otherwise cancel a live review. An explicit `{ force: true }` still
+    // proceeds and cancels the handles below.
+    if (this._subAgentHandles.size > 0 && !opts?.force) {
+      console.log(
+        `[session-runner:${this.sessionId}] dispose() skipped — ${this._subAgentHandles.size} sub-agent spawn(s) in flight`,
+      );
       return;
     }
     this._disposed = true;
