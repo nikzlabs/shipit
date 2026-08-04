@@ -23,14 +23,17 @@ function ToggleSwitch({
   enabled,
   onToggle,
   title,
+  className,
 }: {
   label: ReactNode;
   enabled: boolean;
   onToggle: () => void;
   title: string;
+  /** Extra classes for the button box — used to drop the leading padding when the toggle starts a left-aligned row. */
+  className?: string;
 }) {
   return (
-    <Button variant="ghost" size="sm" onClick={onToggle} title={title}>
+    <Button variant="ghost" size="sm" onClick={onToggle} title={title} className={className}>
       <span className={`inline-block w-6 h-3.5 rounded-full transition-colors ${enabled ? "bg-(--color-success)" : "bg-(--color-text-tertiary)"}`}>
         <span className={`block w-2.5 h-2.5 mt-0.5 rounded-full bg-(--color-text-inverse) transition-transform ${enabled ? "translate-x-3" : "translate-x-0.5"}`} />
       </span>
@@ -111,7 +114,22 @@ export function AutoFixPauseToggle({ sessionId }: { sessionId: string }) {
   );
 }
 
-export function AutoMergeToggle({ sessionId, autoMerge }: { sessionId: string; autoMerge?: PrCardState["autoMerge"] }) {
+export function AutoMergeToggle({
+  sessionId,
+  autoMerge,
+  className,
+}: {
+  sessionId: string;
+  autoMerge?: PrCardState["autoMerge"];
+  /**
+   * Extra classes for the toggle's button box. The ghost button carries `px-2`,
+   * which insets the visible switch from its own left edge — invisible at rest
+   * but revealed by the hover background. Call sites that put this toggle at the
+   * left edge of a text-aligned column pass `pl-0` so the switch, not the box's
+   * padding, lands on the alignment line. See PrMergeActions.
+   */
+  className?: string;
+}) {
   const toggleAutoMerge = usePrStore((s) => s.toggleAutoMerge);
   const enabled = autoMerge?.enabled ?? false;
 
@@ -122,6 +140,7 @@ export function AutoMergeToggle({ sessionId, autoMerge }: { sessionId: string; a
         enabled={enabled}
         onToggle={() => toggleAutoMerge(sessionId, !enabled)}
         title={enabled ? "Disable auto-merge" : "Enable auto-merge"}
+        className={className}
       />
       {autoMerge?.managed && <ManagedMergeInfo settingsUrl={autoMerge.settingsUrl} reason={autoMerge.reason} />}
     </span>

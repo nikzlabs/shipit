@@ -964,6 +964,54 @@ describe("PrLifecycleCard", () => {
     expect(group).toContainElement(mergeButton);
   });
 
+  it("starts the merge row's auto-merge toggle on the PR title's text edge, not its button padding", () => {
+    // Regression: the ghost toggle carries `px-2`, so its visible switch sat 8px
+    // right of the PR title it hangs under — invisible at rest, then obvious on
+    // hover when the ghost background painted the button's real box out to the
+    // title's edge. `pl-0` puts the switch AND its hover background on that
+    // edge. Asserted on the class because the offset is pure CSS: jsdom does no
+    // layout, so a geometric assertion here would pass either way.
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "success", total: 3, passed: 3, failed: 0, pending: 0 },
+      autoMerge: { enabled: false, mergeMethod: "squash" },
+    });
+
+    render(<PrLifecycleCard sessionId="s1" canAutoMerge />);
+
+    const toggle = screen.getByRole("button", { name: /Auto-merge/ });
+    expect(toggle.className).toContain("pl-0");
+    // Only the leading edge is flush — the right padding stays, so the toggle
+    // keeps its hover-target breathing room against the merge button.
+    expect(toggle.className).toContain("px-2");
+  });
+
+  it("indents the mobile actions row to the PR title's offset, tracking the header's sm padding", () => {
+    // The row is hoisted out of the header, so it has to reproduce the title's
+    // offset by hand: px-3 (12) + badge w-5 (20) + gap-x-3 (12) = 44 = pl-11,
+    // and 48 = sm:pl-12 once the header widens to px-4 at 640px — a width this
+    // row still renders at, since it's shown below 768px.
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query.includes("767"),
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    }));
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "success", total: 3, passed: 3, failed: 0, pending: 0 },
+      autoMerge: { enabled: false, mergeMethod: "squash" },
+    });
+
+    const { container } = render(<PrLifecycleCard sessionId="s1" canAutoMerge />);
+
+    const actionsRow = container.firstElementChild?.nextElementSibling;
+    expect(actionsRow).toContainElement(screen.getByRole("button", { name: /Auto-merge/ }));
+    expect(actionsRow?.className).toContain("pl-11");
+    expect(actionsRow?.className).toContain("sm:pl-12");
+  });
+
   it("uses the shared neutral auto-merge icon color in the top-bar overflow", async () => {
     const user = userEvent.setup();
     // No card → the toggle lives in the overflow (pre-PR arming), which is the

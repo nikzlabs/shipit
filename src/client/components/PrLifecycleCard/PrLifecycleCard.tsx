@@ -254,11 +254,15 @@ export function PrLifecycleCard({
         </div>
       </div>
       {actionsRowShown && card && (
-        // `pl-8` = the header's px-3 plus the PR badge (w-5) and its gap, so the
-        // row lines up under the PR title rather than under the badge.
+        // Left padding reproduces the PR title's own offset so the chips and
+        // merge controls start on the title's text edge, not under the badge:
+        // header px-3 (12) + badge w-5 (20) + OpenPhase's gap-x-3 (12) = 44px =
+        // pl-11. The header widens to px-4 at `sm`, and this row is rendered up
+        // to 767px (useIsMobile), so it has to track that: 16 + 20 + 12 = 48px =
+        // sm:pl-12. Right padding mirrors the header's px-3/sm:px-4.
         <div
           key={`actions:${sessionId}`}
-          className={`shrink-0 flex flex-wrap items-center gap-x-3 gap-y-1 pl-8 pr-3 pb-2 ${stripShown ? "" : "border-b border-(--color-border-primary)"}`}
+          className={`shrink-0 flex flex-wrap items-center gap-x-3 gap-y-1 pl-11 sm:pl-12 pr-3 sm:pr-4 pb-2 ${stripShown ? "" : "border-b border-(--color-border-primary)"}`}
         >
           <PrStatusActions card={card} sessionId={sessionId} />
           {/* `basis-full` inside this wrapping row keeps the merge controls on a
