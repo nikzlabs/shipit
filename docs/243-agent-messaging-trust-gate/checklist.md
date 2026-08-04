@@ -2,7 +2,7 @@
 
 ## Product decisions still open
 
-- [ ] Decide where the existing trust explanation appears when the user is not on the Preview tab
+- [x] Decide where the existing trust explanation appears when the user is not on the Preview tab — **keep both surfaces** (2026-08-04, requirement 6): the Preview banner stays and `RepoTrustNotice` above the composer carries its own Trust action, because a Preview-only consent is unreachable in modes with no Preview tab
 - [ ] Decide how an AskUserQuestion answer control renders while repository messaging is blocked
 - [ ] Decide whether blocked programmatic/system turns settle as blocked or retry after trust is granted
 - [ ] If trust revocation is added later, define its effect on running and queued work; revocation is not part of the current requirements
@@ -43,7 +43,7 @@
 - [x] Keep send disabled while a known remote's trust state is unresolved or explicitly untrusted
 - [x] Add repository trust to `MessageInput.disabled` without weakening existing connection-state disabling
 - [ ] Apply the same client guard to review, answer, Create PR, send-logs/errors, auto-fix, and other messaging affordances for clean UX
-- [x] Keep the existing “Trust this repository” action as the only consent action
+- [x] ~~Keep the existing “Trust this repository” action as the only consent action~~ — superseded 2026-08-04 by requirement 6: the same action now also renders above the composer (`RepoTrustNotice`), sharing `useRepoTrust` with the banner. "One consent *decision*, reachable from every mode" replaced "one consent *control*".
 - [x] Update the existing trust explanation to say agent messages, install, and services remain blocked until trust
 - [x] Enable messaging only after the authoritative trust response/SSE state update
 - [x] On trust-request failure, keep messaging disabled, reset the Trust button busy state with `try/finally`, and surface the error
