@@ -118,6 +118,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   // false or on dispose.
   private _streamingProxy: ProxyAgentProcess | null = null;
   private _appliedPermissionMode: PermissionMode | undefined = undefined;
+  /** See `SessionRunnerInterface.appliedModel` — the resident CLI's `--model`. */
+  private _appliedModel: string | undefined = undefined;
 
   // Per-runner mutex for `_startAgentViaProxy`. Concurrent callers chain on
   // this promise so docs/142's B2 kill+restart cannot interleave with another
@@ -392,6 +394,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   clearBackgroundTasks(): void { this._backgroundTasks.clear(); }
   get appliedPermissionMode(): PermissionMode | undefined { return this._appliedPermissionMode; }
   set appliedPermissionMode(v: PermissionMode | undefined) { this._appliedPermissionMode = v; }
+  get appliedModel(): string | undefined { return this._appliedModel; }
+  set appliedModel(v: string | undefined) { this._appliedModel = v; }
 
   get accumulatedText(): string { return this.turn.accumulatedText; }
   set accumulatedText(s: string) { this.turn.accumulatedText = s; }
@@ -510,7 +514,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // streaming process is still alive (`isStreamingActive`); a genuine process
     // exit clears the flag and the next non-reuse spawn overwrites the mode at
     // `run()` anyway.
-    if (a === null && !this._isStreamingActive) this._appliedPermissionMode = undefined;
+    if (a === null && !this._isStreamingActive) {
+      this._appliedPermissionMode = undefined;
+      // The spawn-time model follows the same rule: the worker's streaming
+      // process outlives proxy recreation and keeps running its `--model`, so
+      // the drift check must keep comparing against it until the process
+      // genuinely exits.
+      this._appliedModel = undefined;
+    }
   }
 
   // --- Message queue ---
@@ -2375,6 +2386,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // here keeps the tracker from holding a stale list across a respawn.
     this._backgroundTasks.clear();
     this._appliedPermissionMode = undefined;
+    this._appliedModel = undefined;
     this._agent = null;
     this.emitMessage({
       type: "session_status",
@@ -2468,6 +2480,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // here keeps the tracker from holding a stale list across a respawn.
     this._backgroundTasks.clear();
     this._appliedPermissionMode = undefined;
+    this._appliedModel = undefined;
     this.termBuf.reset();
     this.emit("disposed");
     this.removeAllListeners();

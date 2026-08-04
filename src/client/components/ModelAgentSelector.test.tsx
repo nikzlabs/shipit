@@ -256,6 +256,60 @@ describe("ModelAgentSelector — mid-session model picking", () => {
     expect(screen.getByTestId("model-agent-trigger")).toHaveTextContent(/opus/i);
   });
 
+  it("trigger and checkmark never disagree after a model switch (regression: label said Fable, dropdown said Opus)", async () => {
+    // The reported bug. Session is on Fable; the user picks Opus. `set_model`
+    // persists Opus onto the session (checkmark moves), but the CLI keeps
+    // reporting the model it is actually running — Fable, because a resident
+    // streaming process holds its spawn-time `--model`. The trigger used to
+    // prefer that live report, so the button read "Fable 5" while the open
+    // dropdown checked "Opus 4.8". The persisted selection now wins on both.
+    const agentsWithFable: AgentOption[] = [
+      { ...agents[0], models: ["claude-opus-4-8", "claude-fable-5"] },
+    ];
+    setSessionState(makeSession({ id: "s1", model: "claude-fable-5", agentId: "claude", agentPinned: true }));
+    const props = {
+      agents: agentsWithFable,
+      activeAgentId: "claude" as const,
+      onAgentChange: vi.fn(),
+      onModelChange: vi.fn(),
+      hasActiveSession: true,
+    };
+    const user = userEvent.setup();
+    const { rerender } = render(<ModelAgentSelector {...props} modelInfo={null} />);
+
+    await user.click(screen.getByTestId("model-agent-trigger"));
+    await user.click(screen.getByTestId("model-option-claude-opus-4-8"));
+    // The server persists the pick; the session record catches up.
+    setSessionState(makeSession({ id: "s1", model: "claude-opus-4-8", agentId: "claude", agentPinned: true }));
+    // A turn runs and the CLI still reports Fable (versioned id, as agent_init
+    // emits it) — this is the moment the label used to snap back.
+    rerender(
+      <ModelAgentSelector {...props} modelInfo={{ model: "claude-fable-5", contextWindowTokens: 200_000 }} />,
+    );
+
+    expect(screen.getByTestId("model-agent-trigger")).toHaveTextContent("Opus 4.8");
+    expect(screen.getByTestId("model-agent-trigger")).not.toHaveTextContent("Fable");
+    await user.click(screen.getByTestId("model-agent-trigger"));
+    expect(screen.getByTestId("model-option-claude-opus-4-8").querySelector("svg")).not.toBeNull();
+  });
+
+  it("falls back to the CLI-reported model only when the session never picked one", () => {
+    // The live report still has a job: a session with no persisted model shows
+    // what the agent actually ran rather than guessing at the agent default.
+    setSessionState(makeSession({ id: "s1", agentId: "claude", agentPinned: true }));
+    render(
+      <ModelAgentSelector
+        agents={agents}
+        activeAgentId="claude"
+        onAgentChange={vi.fn()}
+        onModelChange={vi.fn()}
+        modelInfo={{ model: "haiku", contextWindowTokens: 200_000 }}
+        hasActiveSession={true}
+      />,
+    );
+    expect(screen.getByTestId("model-agent-trigger")).toHaveTextContent("Haiku");
+  });
+
   it("keeps the full model name when the CLI confirms it mid-turn (regression: showed bare 'opus')", () => {
     // Reproduces the reload-mid-turn bug: the session is on Opus 4.8, and the
     // CLI's agent_init arrives after the initial render reporting the versioned

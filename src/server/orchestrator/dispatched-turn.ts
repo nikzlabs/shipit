@@ -24,6 +24,7 @@
 
 import type { AgentId, AgentProcess, FileAttachment, ImageAttachment } from "../shared/types.js";
 import { executeAgentTurn } from "./turn-executor.js";
+import { releaseResidentOnModelChange } from "./resident-model-guard.js";
 import { buildTurnMessages, emitNoticePostTurn } from "./chat-card-persistence.js";
 import { resolveFileAttachments, resolveUploadRefs, formatFileContext } from "./validation.js";
 import { saveImagesToUploadsDir, assembleAgentPrompt } from "./prompt-assembly.js";
@@ -231,6 +232,13 @@ export async function runDispatchedTurn(
     // resident process. Only the FIRST attempt can reuse; a no-result retry
     // always spawns fresh (the resident ref was cleared by the `done` handler
     // when the process exited without a result).
+    // Same model-drift release the WS path performs: a resident process runs
+    // the model it was spawned with, so reusing one after the session's model
+    // changed would run the old model behind the user's back. Dispatch reads
+    // the session's persisted model, which is what its run-params use too.
+    if (!opts.systemTurn) {
+      releaseResidentOnModelChange(runner, deps.listenerDeps.getSelectedModel());
+    }
     const resident =
       !opts.systemTurn && attempt === 0 && runner.isStreamingActive ? runner.getAgent() : null;
     const reuse = resident !== null;

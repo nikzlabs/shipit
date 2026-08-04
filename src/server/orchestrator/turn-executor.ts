@@ -1143,6 +1143,11 @@ export async function executeAgentTurn(
       // undefined so the run params are unchanged from the system-turn shape.
       agent.run(input.useStreaming !== undefined ? { ...runParams, useStreaming: input.useStreaming } : runParams);
       if (runner) runner.appliedPermissionMode = input.permissionMode;
+      // Record the model this process is actually running. The next turn
+      // compares its selection against this to decide whether the resident
+      // process can be reused (`resident-model-guard.ts`) — without it a
+      // mid-session model change is silently a no-op under live steering.
+      if (runner) runner.appliedModel = runParams.model;
     }
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));

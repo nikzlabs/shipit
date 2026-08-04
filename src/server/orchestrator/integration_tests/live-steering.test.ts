@@ -468,6 +468,88 @@ describe("Integration: live steering (docs/140)", () => {
     client.close();
   });
 
+  it("respawns the persistent agent on the newly picked model instead of steering into the old one", async () => {
+    // Regression: unlike the permission mode there is no mid-stream switch for
+    // the model — the streaming CLI keeps its spawn-time `--model` for life. So
+    // picking a new model mid-session moved the picker's checkmark (set_model
+    // persists onto the session) while every following turn still ran on the
+    // OLD process, and the CLI's agent_init reported that old model back into
+    // the trigger label: "I switched Fable → Opus, the dropdown says Opus, the
+    // button says Fable." The resident process is now released on model drift
+    // so the next turn spawns with the model the user actually picked.
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "set_model", model: "claude-fable-5" });
+    client.send({ type: "send_message", text: "Turn one" });
+    const claude1 = await waitForClaude(() => lastClaude);
+    claude1.initSession("model-switch-session");
+    expect(claude1.lastModel).toBe("claude-fable-5");
+
+    // End turn 1 — process stays alive (streaming).
+    claude1.emit("event", {
+      type: "result",
+      subtype: "success",
+      session_id: "model-switch-session",
+      duration_ms: 100,
+    });
+    await drainUntil(client, (m) => m.type === "session_status" && (m as AnyMsg).running === false);
+    expect(claude1.killed).toBe(false);
+
+    // User picks a different model, then sends the next turn.
+    client.send({ type: "set_model", model: "claude-opus-5" });
+    client.send({ type: "send_message", text: "Turn two" });
+
+    const claude2 = await waitForClaude(() => lastClaude, claude1);
+    // A fresh process, spawned with the new model and carrying turn 2's prompt.
+    expect(claude2.lastModel).toBe("claude-opus-5");
+    expect(claude2.lastPrompt).toContain("Turn two");
+    // The old one is gone — not left resident running the model the user moved
+    // away from, and turn 2 was NOT steered into it.
+    expect(claude1.killed).toBe(true);
+    expect(claude1.stdinData.some((d) => d.includes("Turn two"))).toBe(false);
+
+    client.close();
+  });
+
+  it("keeps reusing the persistent agent when the model has NOT changed", async () => {
+    // The complement: the release is drift-only. Re-sending the same model (the
+    // picker fires set_model on every pick, including a no-op re-pick) must not
+    // cost a respawn.
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "set_model", model: "claude-fable-5" });
+    client.send({ type: "send_message", text: "Turn one" });
+    const claude1 = await waitForClaude(() => lastClaude);
+    claude1.initSession("model-same-session");
+
+    claude1.emit("event", {
+      type: "result",
+      subtype: "success",
+      session_id: "model-same-session",
+      duration_ms: 100,
+    });
+    await drainUntil(client, (m) => m.type === "session_status" && (m as AnyMsg).running === false);
+
+    client.send({ type: "set_model", model: "claude-fable-5" });
+    client.send({ type: "send_message", text: "Turn two" });
+
+    await new Promise<void>((resolve, reject) => {
+      const start = Date.now();
+      const check = (): void => {
+        if (claude1.stdinData.some((d) => d.includes("Turn two"))) { resolve(); return; }
+        if (Date.now() - start > 2000) { reject(new Error("Turn two was never steered into the resident process")); return; }
+        setTimeout(check, 10);
+      };
+      check();
+    });
+    expect(lastClaude).toBe(claude1);
+    expect(claude1.killed).toBe(false);
+
+    client.close();
+  });
+
   it("does NOT push setPermissionMode when the requested mode matches what's already applied (docs/138)", async () => {
     // The mismatch check exists so we don't spam the CLI with redundant
     // control_requests when the user just clicks Send twice in the same mode.
