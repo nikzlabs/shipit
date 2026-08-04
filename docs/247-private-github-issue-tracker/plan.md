@@ -164,7 +164,7 @@ The user creates the repository and declares it. ShipIt does not create it, does
 not request repository-creation permission, and implements no naming, ownership,
 collision, or initialization flow.
 
-Because nothing is "saved", there is no moment at which to validate (req 8).
+Because nothing is "saved", there is no moment at which to validate.
 ShipIt does not check that a declared repository exists, is private, or has
 Issues enabled; a declared tracker is exercised by ordinary requests and its tab
 surfaces an inline error when one fails. Two accepted consequences follow:
@@ -190,7 +190,7 @@ failures. Neither response invalidates otherwise valid GitHub credentials; only
 an authentication failure may do that.
 
 There is no poller and no periodic membership/visibility check; normal GitHub
-requests surface authorization and availability failures inline (req 8). The
+requests surface authorization and availability failures inline (req 3). The
 operator remains responsible for keeping the repository private in GitHub.
 
 Changing a declaration gets no dedicated mechanism (req 3). A target ShipIt
