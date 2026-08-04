@@ -932,6 +932,21 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    */
   appliedPermissionMode: PermissionMode | undefined;
   /**
+   * The model the resident agent process was SPAWNED with (`--model`), i.e. the
+   * model it is actually running. Unlike the permission mode there is no
+   * mid-stream control_request we push for it, so a resident streaming process
+   * keeps its spawn-time model for life — which is why the model picker used to
+   * be a no-op mid-session: `set_model` persisted the new model to the session
+   * record (so the dropdown checkmark moved) while every subsequent turn was
+   * still steered into the old process, and the CLI's `agent_init` kept
+   * reporting the OLD model back into the trigger label. Compared against the
+   * session's selected model before a turn reuses the resident process; on drift
+   * the process is released so the next turn respawns with the new `--model`
+   * (see `resident-model-guard.ts`). Volatile, and preserved across proxy churn
+   * on exactly the same rule as `appliedPermissionMode`.
+   */
+  appliedModel: string | undefined;
+  /**
    * docs/182 — true when the runner's most recent completed turn ended in an
    * error (agent process error, or an errored `agent_result` that wasn't a
    * deliberate interrupt). Set definitively at every turn completion (false on a
@@ -1241,6 +1256,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _backgroundTasks = new BackgroundTaskTracker();
   private _isStreamingActive = false;
   private _appliedPermissionMode: PermissionMode | undefined = undefined;
+  private _appliedModel: string | undefined = undefined;
   private _accumulatedText = "";
   private _accumulatedToolUse: ClaudeContentBlockToolUse[] = [];
   private _turnSummary = "";
@@ -1312,6 +1328,8 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   clearBackgroundTasks(): void { this._backgroundTasks.clear(); }
   get appliedPermissionMode(): PermissionMode | undefined { return this._appliedPermissionMode; }
   set appliedPermissionMode(v: PermissionMode | undefined) { this._appliedPermissionMode = v; }
+  get appliedModel(): string | undefined { return this._appliedModel; }
+  set appliedModel(v: string | undefined) { this._appliedModel = v; }
   get accumulatedText(): string { return this._accumulatedText; }
   set accumulatedText(s: string) { this._accumulatedText = s; }
   get accumulatedToolUse(): ClaudeContentBlockToolUse[] { return this._accumulatedToolUse; }
@@ -1380,7 +1398,13 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     // would make the mode-change gate compare against `undefined` and never
     // free a plan-pinned CLI ("can't exit plan mode"). A genuine process exit
     // clears `isStreamingActive`, after which the reset runs as before.
-    if (a === null && !this._isStreamingActive) this._appliedPermissionMode = undefined;
+    if (a === null && !this._isStreamingActive) {
+      this._appliedPermissionMode = undefined;
+      // Same rule for the spawn-time model: while the streaming process is
+      // still alive it is still running its `--model`, so the drift check must
+      // keep comparing against it across proxy/ref churn.
+      this._appliedModel = undefined;
+    }
   }
 
   get messageQueue(): QueuedMessage[] { return this._messageQueue; }
@@ -1552,6 +1576,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     this._isStreamingActive = false;
     this._backgroundTasks.clear();
     this._appliedPermissionMode = undefined;
+    this._appliedModel = undefined;
     this.emit("disposed");
     this.removeAllListeners();
   }

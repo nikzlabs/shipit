@@ -471,6 +471,51 @@ re-queued — the `[steer-requeue]` / `[steer-send]` diagnostics make such a rep
 visible, and the escalation lever is to drop the echo from the delivered
 predicate and rely on the assistant-activity signal alone.
 
+**Phase 6.10 — a mid-session model change never reached the resident process.**
+User report: "if a model was Fable and I change it to Opus, after the turn ends
+it is shown as Fable again, but the drop-down shows Opus." Root cause is the
+same class as Phase 6.5's permission-mode gap, one flag over: the streaming CLI
+keeps its spawn-time `--model` for life, and unlike `set_permission_mode` there
+is no control_request ShipIt pushes for the model between turns. So `set_model`
+persisted the new model onto the session record — which is what the picker's
+dropdown checkmark reads — while every following turn was still steered into the
+process spawned with the OLD model, and that process's `agent_init` reported the
+old model back into the picker's trigger label. The two surfaces disagreed
+permanently, and the *turn* ran on the model the user had moved away from, which
+matters directly for a metered model like Fable.
+
+Fix, in two halves:
+
+- **Make the spawn boundary real** (`resident-model-guard.ts`). Before a turn
+  reuses a resident process, `releaseResidentOnModelChange` compares the
+  session's selected model against `runner.appliedModel` — the model that
+  process was actually spawned with, recorded in `turn-executor.ts` right where
+  `appliedPermissionMode` is. On drift it drops the previous turn's listeners,
+  kills the process, and clears the resident refs, so the turn spawns fresh with
+  the new `--model` and `--resume <session>`. That is the same kill-and-resume
+  the auth-heal and quota-failover retries already rely on for continuity, and
+  it is backend-agnostic — Codex has the same spawn-time-model constraint and no
+  mid-stream switch either, so pushing a per-agent `set_model` through the
+  worker HTTP surface would have bought a rare, user-initiated respawn at the
+  cost of a new wire protocol in every adapter. Drift-only, and skipped when
+  `appliedModel` is `undefined` (an unknown baseline, e.g. a process adopted
+  across an orchestrator restart) so a reused process can't respawn every turn.
+  Called from both turn paths: `agent-execution.ts` (WS) and `dispatched-turn.ts`.
+- **Stop the picker contradicting itself** (`ModelAgentSelector.tsx`). The
+  trigger label and the dropdown checkmark now share one precedence — pending
+  pick → the session's persisted model → the CLI's last-reported model → the
+  localStorage seed / agent default. The persisted selection deliberately
+  outranks the live report: it is the answer to "what will this session run
+  next", and it is the only rung the user controls. The live model is still
+  shown verbatim in the usage modal. Without this half the same contradiction is
+  reachable with no resident process at all — pick a model, reload before
+  running a turn, and the trigger seeds itself from the last turn's usage row.
+
+Coverage: `resident-model-guard.test.ts`, two `live-steering.test.ts` cases
+(drift respawns on the new model and does not steer into the old process;
+an unchanged model still reuses), and a `ModelAgentSelector.test.tsx` regression
+pinning trigger/checkmark agreement.
+
 ## Open questions to resolve during build
 
 - ~~Exact `result subtype` taxonomy we should treat as "turn ended normally" vs.
@@ -510,5 +555,8 @@ predicate and rely on the assistant-activity signal alone.
   `container-session-runner.ts` — container proxy.
 - `src/server/orchestrator/ws-handlers/send-message.ts`,
   `agent-execution.ts` — routing + turn lifecycle.
+- `src/server/orchestrator/resident-model-guard.ts` — release the resident
+  process when the session's model no longer matches its spawn-time `--model`
+  (Phase 6.10); paired with `runner.appliedModel`, set in `turn-executor.ts`.
 - `src/client/components/MessageInput.tsx`, `QueueIndicator.tsx`,
   `src/client/stores/session-store.ts` — client UX + settings toggle.
