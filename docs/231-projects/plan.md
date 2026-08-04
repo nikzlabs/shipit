@@ -5,6 +5,11 @@ description: Multiple isolated Projects per deployment — each with its own rep
 
 # Projects — multiple isolated project spaces in one deployment
 
+Later human-owned additions are recorded in
+[requirements.md](./requirements.md). In particular, private planning tracker
+bindings become per Project when this feature ships; see
+[doc 247](../247-private-github-issue-tracker/requirements.md).
+
 > Twice revised (2026-07) after two rounds of adversarial review, each by two
 > independent agents (Codex + Opus) checking the doc against the actual code.
 > Round 1 killed the original phase 1 (SSE tagging, store-reset switching, "GitHub
@@ -110,6 +115,7 @@ Ruling for every deployment-global surface found in the audits. Phase column ref
 | Usage tracking | **Project** | 1a | `project_id` stamped at insert; `UsageManager.getStats()` and the session-usage route return deployment-wide aggregates today — scoped in 1a or blindness leaks every Project's spend. |
 | Per-Project reset / delete | **Project** | 1a | See the deletion protocol above. Deployment-wide `clearAll()` remains the nuclear option (its table list is also the reset checklist's source; note it omits the dead pre-migration-7 `doc_reviews`/`review_comments` tables and global `marketplaces` — deliberately). |
 | Linear binding | **Project** | 1a | Token + team in the Project file. `TrackerRegistry` is already rebuilt per request — it binds Linear from the Project's store; ~10 `buildTrackerRegistry` call sites in `services/issues.ts` swap stores. `setLinearTeam` takes an explicit projectId. |
+| Private planning GitHub tracker binding | **Project** | **1c** | Each Project selects its own user-created private issue repository. The binding is resolved from the session's Project and uses that Project's GitHub identity; it never falls back to another Project or the active code remote. This private destination coexists with the public ShipIt user bug tracker. Detailed routing invariants: [doc 247](../247-private-github-issue-tracker/plan.md). |
 | GitHub identity | **Project** | **1c** | Token / App-account choice + git author per Project. See [Per-project git](#per-project-git-identity--credentials). GitHub *App registration* (app id, private key — env config) stays host-global; App installation tokens are minted per repo, and the existing `owner/repo`-keyed installation-token cache stays correct because a repo's installation is repo-derived, not Project-chosen. |
 | PR / release polling, prefetch, auto-push, auto-merge, auto-fix-CI | Global machinery, per-project credentials | 1c | All hold the singleton `GitHubAuthManager` + one rate-limit gate. Job keys become `(projectId, repo)` and each call resolves the job's Project credentials; per-project rate-limit state. **Also re-key the bare-`repoKey` caches**: `release-status-poller.ts#releasedByKey` (A's release card would dedup B's), `pr-polling-supervisor.ts#lastPolledAt` (A's poll satisfies B's cadence), `ci-grace-tracker.ts` sticky observed-checks state (drives auto-fix-CI verdicts). |
 | Upstream bug reports | Invoking Project | 1c | `services/bug-report.ts` files issues under the user's GitHub identity via the singleton token — after 1c it uses the invoking session's Project token. |
@@ -204,7 +210,7 @@ Each later phase peels its surface off the singleton into `ProjectContext`.
 
 **Field ownership** (exhaustive over the `CredentialData` type): host-owned —
 `maxIdleContainers`, `providerAccounts`. Project-owned — everything else
-(`githubToken`, `linear`, `mcpServers`, `mcpOAuth`, `mcpOAuthClients`, `agentEnv`,
+(`githubToken`, `linear`, `privateGithubTracker`, `mcpServers`, `mcpOAuth`, `mcpOAuthClients`, `agentEnv`,
 `voiceProviderKeys`, `voiceDeliveryMode`, `voiceWebhook`, `autoCreatePr`,
 `liveSteering`, `autoResolveConflicts`, `autoFixCi`, `autoResetMergedBranch`,
 `enableSubAgents`, `agentSubAgentDefaults`, `agentSystemInstructionsEnabled`). One
@@ -491,7 +497,8 @@ correct intermediate at every point.
   `api-routes-marketplace.ts` — creation-path matrix, composite keys
 - `api-routes-session-repos.ts` (`/api/repos/trust` fan-out), `service-manager-setup.ts`
   — trust gate sites
-- `trackers/registry.ts`, `services/issues.ts` — Linear per Project
+- `trackers/registry.ts`, `services/issues.ts` — Linear and private planning
+  GitHub tracker bindings per Project
 - `app-lifecycle.ts` (broadcast forms), `route-registry.ts` (snapshot, auto-push,
   identity gate), `api-routes-bootstrap.ts` + `services/misc.ts` (scoped bootstrap)
 - `pr-status-poller.ts`, `release-status-poller.ts`, `pr-polling-supervisor.ts`,
