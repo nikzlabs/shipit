@@ -78,6 +78,35 @@ agent**, and the consult vanished — no card, no `shipit agent result`, no logs
 - [x] Tests: post-turn-finalize persistence, dispose-while-in-flight →
       cancelled card, transport bound + abort wiring, pending → terminal patch
 
+## Post-v0 — commit work a consult left after its turn (SHI-299, plan.md §10)
+
+The incident: a backgrounded Codex consult ran 100 minutes past its parent
+turn's auto-commit. What it wrote entered git two minutes AFTER the PR merged,
+under the next turn's summary — reported twice as "changes missing from the
+merged PR" — and the dirty tree it left blocked the docs/218 pre-turn
+auto-reset, so the merged session was never synced back to base.
+
+- [x] `services/sub-agent-commit.ts` — `commitSubAgentWork`, called from
+      `runSubAgent`'s `finally` so it runs on success, error, timeout and cancel
+      alike (a cancelled consult writes files too)
+- [x] Fires only when the parent turn has already ended (`runner.running`,
+      re-resolved from the registry); a foreground consult stays the ordinary
+      post-turn commit's business
+- [x] Routed through `flushPendingTurnCommit` (docs/116) rather than a third
+      commit path — inherits the docs/213 secret refusal + notice and the
+      conflict notice — with an explicit `summary` override so the commit is
+      attributable instead of wearing the previous turn's subject
+- [x] `withWorkspaceLock` (docs/149); sandbox skipped entirely; ops commits but
+      never pushes
+- [x] Push via `SessionRunnerInterface.schedulePostTurnPush()` → the shared
+      `SystemTurnDeps.scheduleAutoPush` closure, so post-turn push gates (the
+      merged-PR gate) are inherited, not duplicated
+- [x] One persisted `system_notice` naming the commit — this incident is about
+      an invisible state change
+- [x] Tests: commits after the turn ended, does not double-commit during a live
+      turn, tree left clean for the docs/218 gate, the workspace lock is held,
+      secret finding still refuses, and result delivery survives a commit failure
+
 ## Deferred / follow-up
 
 - [ ] Ground consult duration in real data rather than a characterisation: the

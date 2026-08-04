@@ -1246,6 +1246,23 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   runDispatchedTurn(opts: PreparedDispatch): Promise<void>;
   /** True once `setSystemTurnDeps` has been called — i.e. `runDispatchedTurn` is usable. */
   readonly canRunDispatchedTurn: boolean;
+  /**
+   * SHI-299 — arm the shared debounced post-turn push for this runner's
+   * workspace, for a commit made OUTSIDE a turn.
+   *
+   * The one caller today is the sub-agent completion path
+   * (`services/sub-agent-commit.ts`): a backgrounded `shipit agent run` routinely
+   * outlives the turn that started it, so its edits are committed after
+   * `postTurnCommit` has already fired and nothing else would ever push them.
+   *
+   * Deliberately delegates to `SystemTurnDeps.scheduleAutoPush` rather than
+   * re-implementing a push: that closure (`schedulePushGit` in
+   * `runner-registry-factory.ts`) is the SAME one `commitTurn` → `postTurnCommit`
+   * pushes through, so any gate added to the post-turn push — the merged-PR gate
+   * in particular — is inherited here for free instead of having to be added a
+   * second time. A no-op until `setSystemTurnDeps` has run.
+   */
+  schedulePostTurnPush(): void;
 
   // Lifecycle
   onAgentFinished(): void;
@@ -1567,6 +1584,11 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   }
 
   get canRunDispatchedTurn(): boolean { return this._systemTurnDeps !== null; }
+
+  /** SHI-299 — see `SessionRunnerInterface.schedulePostTurnPush`. */
+  schedulePostTurnPush(): void {
+    this._systemTurnDeps?.scheduleAutoPush(this.sessionDir);
+  }
 
   async runDispatchedTurn(opts: PreparedDispatch): Promise<void> {
     const deps = this._systemTurnDeps!;

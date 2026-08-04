@@ -7,7 +7,7 @@ import path from "node:path";
 import type { GitManager } from "../../shared/git.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { WorkflowRunSummary, WorkflowJobSummary, WorkflowSummary } from "../github-auth-actions.js";
-import type { ChatHistoryManager } from "../chat-history.js";
+import type { ChatHistoryManager, PersistedMessage } from "../chat-history.js";
 import type { PrAutoMergeError } from "../../shared/types/github-types.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
@@ -671,15 +671,28 @@ export async function flushPendingTurnCommit(
     sessionId?: string;
     runnerRegistry?: SessionRunnerRegistry;
     /** When provided, the conflict notice is persisted (append) as well as
-     * emitted, so it survives a reload — not just a reconnect. */
-    chatHistory?: ChatHistoryManager;
+     * emitted, so it survives a reload — not just a reconnect. Structural (only
+     * `append` is used) so non-`ChatHistoryManager` callers can pass a stub. */
+    chatHistory?: { append(sessionId: string, message: PersistedMessage): unknown };
+    /**
+     * SHI-299 — override the commit subject. The default (`runner.turnSummary`)
+     * is right for the mid-turn `gh pr create` flush, where the work being
+     * committed IS the turn's work. It is wrong for a flush that happens outside
+     * a turn — a sub-agent consult finishing after its parent turn already
+     * committed — where the last turn's summary would misattribute the commit to
+     * work the agent did not do. Callers on that path pass their own subject.
+     */
+    summary?: string;
   },
 ): Promise<{ commitHash: string | null; secretBlocked: boolean }> {
   const runner = deps.sessionId && deps.runnerRegistry
     ? deps.runnerRegistry.get(deps.sessionId)
     : null;
 
-  const summary = runner?.turnSummary?.split("\n")[0]?.slice(0, 120) || "Agent turn";
+  const summary =
+    deps.summary?.split("\n")[0]?.slice(0, 120)
+    || runner?.turnSummary?.split("\n")[0]?.slice(0, 120)
+    || "Agent turn";
   const parentHash = await git.getHeadHash();
   const { commitHash, conflictedFiles, rebaseInProgress, secretFindings } = await git.autoCommit(summary);
   const secretBlocked = secretFindings.length > 0;

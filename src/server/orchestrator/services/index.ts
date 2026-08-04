@@ -39,6 +39,7 @@ export * from "./release-branch-adopt.js";
 export * from "./post-interrupt-commit.js";
 export * from "./agent.js";
 export * from "./sub-agent.js";
+export * from "./sub-agent-commit.js";
 export * from "./voice.js";
 export * from "./redaction.js";
 export * from "./bug-report.js";
