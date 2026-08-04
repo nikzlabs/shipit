@@ -21,6 +21,7 @@
 ## Client
 - [x] Inline trust consent (`RepoTrustBanner`) for untrusted remotes (no link-out, no modal escape) — rendered as the Preview tab's restricted empty state: a centered card overlaying the (empty) preview frame, visible only on the Preview tab
 - [x] Wire accept action (`trustRepo` store action); reflect trusted state from the repo's `trusted` flag; persists in RepoStore so it doesn't recur per session
+- [x] Make the consent reachable in modes with **no Preview tab**. `RepoTrustBanner` lives inside the preview frame, and local mode (`RUNTIME_MODE=local` — the dogfood `dev` service) renders no Preview tab and keeps that wrapper `invisible pointer-events-none`. Once docs/243 made the gate fail-closed for messaging, every repo-backed dogfood session was stuck: composer disabled, no way to grant trust, and the notice above it pointed at the missing tab. Added `RepoTrustNotice` above the composer (the chat column exists in every mode); both surfaces share `useRepoTrust` so the lookup and grant can't drift.
 - [x] Show the banner *before the first turn* on a freshly-added/claimed repo. `App.tsx` keyed the banner off `currentSession?.remoteUrl`, but a just-claimed session stays **warm** (`warm=1`) until its first turn graduates it, and `SessionManager.list()` excludes warm sessions — so `currentSession` (and thus `currentRepoUrl`) was undefined and the banner silently bailed, leaving only the misleading "Installing dependencies" startup overlay until the first agent turn. Fixed by falling back to the `/{slug}/new` route's repo: `currentRepoUrl = currentSession?.remoteUrl ?? newSessionRepoUrl`.
 
 ## Tests
@@ -29,6 +30,7 @@
 - [x] Trust cached per remote — `RepoStore` unit tests (canonical identity, per-remote isolation, persistence across instances)
 - [x] Repo added by URL is untrusted by default; `POST /api/repos/trust` trusts it (repos integration test)
 - [x] Client banner shows for untrusted / hides for trusted / accept clears it
+- [x] Composer notice grants trust with no Preview tab in the tree, keeps explaining the block when the remote isn't a tracked repo (nothing the endpoint would accept), and never names the Preview tab (`RepoTrustNotice.test.tsx`)
 - [x] Warm pre-install executor covered against a real worker stub (`warm-pool-preinstall.test.ts`): forwards the repo's resolved `agent.install` to `/install`, and — the gate's intent at the helper level — **never touches the worker when there is no install config**. The full standby-level "untrusted *added* repo skips warm pre-install" assertion remains structural (the `isTrusted` gate sits in the standby callback; covered by the `repoStore.isTrusted` unit tests + warm flow staying green), since a worker-call assertion there needs the full standby+container harness.
 
 ## Docs

@@ -49,6 +49,7 @@ import type { RewindGapAction } from "./components/RewindPoint.js";
 import { RocketLaunch } from "./components/RocketLaunch.js";
 import { PreviewFrame } from "./components/PreviewFrame.js";
 import { RepoTrustBanner } from "./components/RepoTrustBanner.js";
+import { RepoTrustNotice } from "./components/RepoTrustNotice.js";
 import {
   usePreviewErrors,
   type PreviewError,
@@ -1907,10 +1908,12 @@ export default function App() {
           </div>
         </div>
       )}
+      {/* docs/178 + docs/243 — the consent that unblocks the composer, rendered
+          next to the composer it blocks. It used to be a line of text pointing
+          at the Preview tab, which local mode doesn't render at all, leaving
+          dogfood sessions with a disabled composer and nowhere to grant trust. */}
       {agentMessagingBlocked && (!showHomeScreen || showNewSessionView) && (
-        <p className="px-4 pb-2 text-xs text-center text-(--color-warning)" role="status">
-          Trust this repository in Preview before sending messages to the agent.
-        </p>
+        <RepoTrustNotice repoUrl={currentRepoUrl} />
       )}
       {(!showHomeScreen || showNewSessionView) && (
         <MessageInput

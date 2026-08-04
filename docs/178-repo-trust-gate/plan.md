@@ -107,6 +107,28 @@ restricted**. This is a one-time security *consent*, not a shell-shaped action b
 (§5) — the agent still operates the box; the user is granting the box permission to run
 foreign code once. The decision persists, so it does not recur per session.
 
+#### The consent must not live only in the Preview tab
+
+`RepoTrustBanner` renders as the Preview tab's restricted empty state, which is the right
+home for "why is the preview empty" — but it was for a while the **only** surface in the
+client that could grant trust. Not every mode has a Preview tab: local mode
+(`RUNTIME_MODE=local`, what the dogfood `dev` service runs) omits the tab entirely and
+keeps the preview wrapper permanently `invisible pointer-events-none`, so the banner never
+mounts. Once `docs/243` made the gate fail-closed for agent messaging, that combination
+became a **dead end**: the composer was disabled with no reachable way to lift it, and the
+notice above it told the user to trust the repo "in Preview" — a tab that does not exist
+there.
+
+So the consent also renders where the block is felt: `RepoTrustNotice`, in the chat column
+above the composer, which exists in every mode. Both surfaces share `useRepoTrust`
+(`hooks/useRepoTrust.ts`) for the repo lookup, the in-flight flag and the POST, so they
+cannot drift. Granting from either one is the same one-time, per-remote decision.
+
+The general rule this encodes: **a gate's consent surface must be reachable in every mode
+the gate itself is active in.** The trust gate is active in local mode, so its consent
+cannot be hosted by a panel local mode doesn't render. Adding a third surface later means
+adding it to `useRepoTrust`'s callers, not re-implementing the lookup.
+
 ## Open questions / decisions to make
 
 > **Status (implemented).** All four questions below are resolved and built.
