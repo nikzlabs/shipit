@@ -14,10 +14,9 @@ Choosing GitHub Issues means accepting its feature set rather than passing a
 separate parity gate. Every product question in
 [requirements.md](./requirements.md) is resolved.
 
-**The core is implemented.** Declarations, `--repo`, qualified routing, the extra
-Issues tab, and the fail-closed access error all ship; see
-[checklist.md](./checklist.md) for what remains (chiefly the session-seeding and
-PR-lifecycle branch-naming work in requirement 1). The hard part was never CRUD —
+**Implemented.** Declarations, `--repo`, qualified routing, the extra Issues tab,
+the fail-closed access error, and pointer-only branch names all ship; a
+fresh-context requirements review is the only checklist item left. The hard part was never CRUD —
 it was preserving the authoritative repository target through every UI, CLI,
 Undo, session-start, and PR-lifecycle path, and the section below records how
 that ended up being achieved with **one** piece of state rather than a parallel
@@ -140,10 +139,22 @@ planning issue; issue contents remain inaccessible without repository access.
 Bare numbers and opaque ShipIt pointer aliases are not part of the initial
 design.
 
-Sessions seeded from private planning issues keep the issue title in ShipIt,
-but derive pushed branch names and public PR titles from the qualified pointer
-alone. This prevents the existing title-based branch and PR naming path from
-publishing private content.
+Sessions seeded from an issue keep the title in ShipIt — it is still the session
+title and still opens the seed prompt — but the **pushed branch name is the
+qualified pointer alone** (`seedFromIssueRef`). A branch reaches a public remote,
+so a title from a private planning issue would be published there.
+
+The rule is **unconditional**, not scoped to declared or "private" trackers.
+Dropping the connect step (req 5) also dropped the only thing that could have
+told ShipIt which repositories are private: a declared planning repo may be
+public and a session's own code repo may be private, so any narrower rule would
+be a guess dressed as a policy. The cost — `shi-67` instead of
+`shi-67-inline-tracker-issues-tab`, for Linear and code-repo issues too — was
+accepted explicitly. Determinism is unchanged: the branch was already a pure
+function of the issue.
+
+Public PR **titles** are outside this: the agent writes them with
+`gh pr create -t`, so ShipIt generates no PR title to derive from a pointer.
 
 ## Configuration and authentication
 

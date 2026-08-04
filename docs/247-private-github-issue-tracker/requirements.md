@@ -1,6 +1,6 @@
 # Private GitHub issue tracker — product requirements
 
-1. The planning repository is private on GitHub and separate from ShipIt's public repository. ShipIt does not publish private issue content—including titles, bodies, comments, status, labels, or assignees—to public surfaces. The only approved public disclosure is the qualified pointer metadata in requirement 7. When a session starts from a private planning issue, pushed branch names and public PR titles are derived from the qualified pointer only; the issue title remains inside ShipIt.
+1. The planning repository is private on GitHub and separate from ShipIt's public repository. ShipIt does not publish private issue content—including titles, bodies, comments, status, labels, or assignees—to public surfaces. The only approved public disclosure is the qualified pointer metadata in requirement 7. When a session starts from a tracker issue, the pushed branch name is derived from the qualified pointer only, and never from the issue title. This applies to **every** tracker issue, not only ones on a declared repository: ShipIt has no way to tell which repositories are private, so the rule is unconditional rather than conditional on a judgement it cannot make. Readable branch names derived from issue titles are given up as the cost.
 2. All supported private-planning workflows are available inline in ShipIt. Missing inline coverage is a backlog or inline degraded-state concern, not a required GitHub step. A secondary GitHub link may remain for repository administration and exceptional manual recovery.
 3. Every issue operation declares its destination, and the destination is a repository rather than a separate tracker identity. `github` continues to mean GitHub Issues. An operation names the repository explicitly (`--repo owner/name` on the CLI, the equivalent selection in the UI); one that names none uses the active session's code repository exactly as it does today; and a bare issue number resolves against whichever repository the operation resolved. A named repository is used as named: ShipIt does not restrict it to a known set, and never substitutes another repository — the active code repository included — for one that was named. GitHub authorization is the only gate on which repositories are reachable; a repository the credential cannot access fails closed with an inline access error. ShipIt's public bug-report workflow is separate from both tracker destinations and continues to target the public ShipIt repository. A destination ShipIt recorded earlier—an issue-write card's Undo target, or a qualified pointer in a PR body—stays valid for that recorded `owner/repo` even after the declarations change; GitHub authorization is what fails such an operation closed.
 4. Three uses coexist without replacing one another: a declared repository holds the owner's planning work; each code repository can continue using its own GitHub Issues tracker; and the existing in-product ShipIt bug-report flow files user reports only in ShipIt's public repository.
@@ -24,36 +24,11 @@
 
 ## Open questions
 
-- **Which issues get pointer-only branch and PR names?** Requirement 1 says a
-  session started from a *private planning* issue must derive its pushed branch
-  name and public PR title from the qualified pointer alone, so the issue title
-  stays inside ShipIt. Today the branch is `<identifier>-<title-slug>`
-  (`seedFromIssueRef`), so a title would leak. The rule was written when a single
-  connected repository *was* "the private planning tracker"; with declarations
-  (requirement 5) and no connect-time validation, ShipIt has no signal for which
-  repositories are private — a declared repository may be public, and a session's
-  own code repository may be private. So "private planning issue" no longer picks
-  out a set the code can identify. Which should it be?
-  - **(a) Every issue.** Always derive branch/PR names from the pointer. Simplest
-    and leak-proof, but it changes today's behavior for Linear and code-repo
-    GitHub issues, where readable branch names are a feature nobody complained
-    about.
-  - **(b) Declared trackers only.** Treat a `shipit.yaml` declaration as the
-    "this is my planning tracker" signal. Matches the intent, changes no existing
-    behavior — but it is an inference ShipIt is making, and a declared *public*
-    repository would get pointer-only names it doesn't need.
-  - **(c) An explicit opt-in on the declaration** (e.g. `private: true`), so the
-    user states it rather than ShipIt guessing. Honest, but adds a field for
-    something no other part of the design needs.
-  - **(d) Drop the requirement.** Accept that titles appear in branch names, on
-    the grounds that requirement 7 already accepts disclosing the repository slug
-    and issue number.
-
-  Nothing else in the feature depends on this; it is the last unimplemented item
-  in requirement 1.
+None.
 
 ## Resolved questions
 
+- 2026-08-04 — Asked which issues get pointer-only branch names now that "private planning issue" no longer names a set the code can identify, the user chose **every issue**. Branch names are therefore derived from the qualified pointer unconditionally, and the accepted cost is that title-derived readable branch names go away for Linear and code-repository GitHub issues too. Scoping the rule to declared trackers, adding an explicit `private: true` opt-in, and dropping the requirement were all rejected. Public PR *titles* are not covered by this: the agent writes them with `gh pr create -t`, so ShipIt generates no PR title to derive — a separate question if it ever needs constraining.
 - 2026-08-02 — The user selected a private GitHub repository as an option worth designing separately from the broader native/open-source tracker evaluation. The repository may be hosted on GitHub, but it must not be ShipIt's public source repository.
 - 2026-08-04 — The initial focused requirements included free/no-subscription and classified wrapper parity. The user superseded both: GitHub's cost and feature set are accepted assumptions rather than implementation gates.
 - 2026-08-03 — The user distinguished two coexisting uses: public issues reported by ShipIt users remain in the public ShipIt repository, including the existing in-product bug-report flow; the private tracker is for the owner's planning work.

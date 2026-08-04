@@ -37,10 +37,10 @@
 - [x] Preserve repository targets through agent operations and persisted Undo cards. *(Undo resolves `card.tracker`, which is now qualified — no new persisted field, no migration, no legacy-card path.)*
 - [x] Keep public user bug reports routed to ShipIt's public repository while private planning issues use the private tracker. *(`services/bug-report.ts` stays outside the tracker registry; untouched by this change.)*
 - [x] Keep each active code repository's GitHub Issues routed independently of the private planning tracker.
+- [x] Requirement 1's public-surface derivation: pushed branch names come from the qualified pointer only, for **every** tracker issue (the user resolved the "which issues" question as unconditional).
+- [x] Verify private issue content does not reach public surfaces beyond explicitly accepted disclosures. *(The branch is the only public surface ShipIt itself generates from an issue; PR titles are agent-authored via `gh pr create -t`, so there is no ShipIt-generated PR title to derive.)*
 - [x] Run focused tests, the full suite, `npm run lint:dev`, and `npm run typecheck`.
 
 Remaining:
 
-- [ ] **Blocked on an open question** — requirement 1's public-surface derivation: seed pushed branch names and public PR titles from the qualified pointer rather than the issue title. Which issues this applies to is no longer decidable from the code now that there is no connected "private planning repository"; see `## Open questions` in requirements.md.
-- [ ] Verify private issue content does not reach public surfaces beyond explicitly accepted disclosures (depends on the item above).
 - [ ] Complete a fresh-context requirements review.
