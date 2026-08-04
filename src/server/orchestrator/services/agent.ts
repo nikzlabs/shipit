@@ -28,6 +28,7 @@ import {
   resolveUploadRefs,
 } from "../validation.js";
 import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js";
+import type { MaterializeRunnerOutcome } from "./materialize-runner.js";
 import { ServiceError } from "./types.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
 import type { AgentInterfaceProvenance } from "../../shared/agent-interface-sdk/protocol.js";
@@ -77,6 +78,16 @@ export interface DispatchAgentMessageDeps {
    * without a pool (tests, local mode) omit it.
    */
   warmSessionForRepo?: (repoUrl: string) => Promise<void>;
+  /**
+   * docs/131 (reqs 8–10) — bring up a session that has no runner, the way a WS
+   * connect does. Without it this service can only reach sessions someone
+   * currently has open, because only the WS path calls `getOrCreate`. The outer
+   * agent driving the inner dogfood ShipIt has no WS, and a session from an
+   * earlier boot (or one that went idle) is exactly the case it needs.
+   *
+   * Optional: runtimes that omit it keep the old 404-on-no-runner behavior.
+   */
+  wakeSession?: (sessionId: string) => Promise<MaterializeRunnerOutcome>;
 }
 
 /**
@@ -127,9 +138,25 @@ export async function dispatchAgentMessage(
   //    already-disposed runners (see `SessionRunnerRegistry.get`), so the
   //    second `disposed` check is defensive against the brief window where
   //    a runner may still be referenced before the dispose event lands.
-  const runner = deps.runnerRegistry.get(sessionId);
+  //
+  //    No runner is not, by itself, an error: a session nobody has open still
+  //    exists and can be woken (docs/131 req 8). `wakeSession` is the same
+  //    materialization a WS connect runs, so an archived session stays
+  //    unreachable and a lost checkout is restored before a container boots.
+  let runner = deps.runnerRegistry.get(sessionId);
   if (!runner || runner.disposed) {
-    throw new ServiceError(404, "Session is not active");
+    if (!deps.wakeSession) throw new ServiceError(404, "Session is not active");
+    const outcome = await deps.wakeSession(sessionId);
+    if (outcome.status === "restore-failed") {
+      throw new ServiceError(
+        503,
+        `Session workspace could not be restored: ${outcome.message}`,
+      );
+    }
+    // "archived" and "no-workspace" are both "there is nothing to dispatch at",
+    // and both keep the pre-existing 404 wording that clients already match on.
+    if (outcome.status !== "ready") throw new ServiceError(404, "Session is not active");
+    runner = outcome.runner;
   }
   // docs/243 — reject before auth refresh, attachment reads, warm graduation,
   // persistence, queueing, or process start. dispatch() repeats this check at

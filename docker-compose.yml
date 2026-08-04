@@ -68,6 +68,13 @@ services:
     # preview proxy (which already patches dev-server WS URLs in
     # `preview-proxy.ts`) — client edits hot-reload instead of
     # requiring a `vite build` round-trip.
+    #
+    # The seed step (docs/131) adds and trusts the repos in
+    # `scripts/dogfood-seed.json` so the inner ShipIt comes up with something
+    # to work in instead of an empty slate. It is backgrounded and detached
+    # (`( … &)`) so Vite starts immediately and the inner UI is usable while
+    # the clones land; it waits for the orch itself, exits 0 on any failure,
+    # skips repos that are already present, and no-ops on DOGFOOD_SEED=0.
     command: >
       sh -c "
       mkdir -p $${SHIPIT_STATE_DIR:-/workspace/.inner-shipit} $${AGENT_HOME:-/root} &&
@@ -75,6 +82,7 @@ services:
         echo '[dev] waiting for agent.install to populate node_modules…'; sleep 1;
       done &&
       PORT=4000 npm run dev &
+      (node scripts/seed-inner-sessions.js 2>&1 | sed 's/^/[seed] /' &) &&
       API_PORT=4000 exec npx vite --host 0.0.0.0 --port 3000
       "
     working_dir: /workspace

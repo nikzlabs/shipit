@@ -1,0 +1,6 @@
+{
+  "$comment": "Repos the dogfood inner ShipIt is seeded with at dev-service boot (docs/131). Committed on purpose: reading this file tells you what the inner ShipIt will contain, and it is the same for everyone. Each entry costs a bare-cache clone at boot, so keep the list short. Set DOGFOOD_SEED=0 to skip seeding entirely.",
+  "repos": [
+    { "url": "https://github.com/nicolasalt-shipit/todo-list" }
+  ]
+}

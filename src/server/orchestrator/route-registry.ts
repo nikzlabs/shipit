@@ -30,7 +30,7 @@ import type { GitManager } from "../shared/git.js";
 import { readDockerMemoryStats } from "./docker-memory.js";
 import { pruneSessionVolumes } from "./disk-janitor.js";
 import { ensureCatalogCloned, getCatalogCacheRoot } from "./services/marketplace.js";
-import { restoreSessionWorkspace } from "./services/session.js";
+import { finishRestore, materializeRunnerSync } from "./services/materialize-runner.js";
 import { listAgents } from "./services/settings.js";
 import { serveStaticClient } from "./app-assembly.js";
 import type { OrchestratorRuntime } from "./bootstrap-managers.js";
@@ -811,76 +811,48 @@ export async function registerRoutes(
         activeAppSessionId = sid;
         const dir = s?.workspaceDir ?? null;
 
-        // Never resurrect or re-track an archived session. A stray WS connection
-        // to an archived session id must not `getOrCreate` a runner (which boots
-        // a container) or re-arm the PR poller — either would let an archived
-        // session start receiving updates again, violating the "archived sessions
-        // receive nothing" invariant. The legitimate restore path
-        // (`unarchiveSession`) flips `archived` → false BEFORE the client
-        // activates, so this only short-circuits genuinely-archived ids; the
-        // session's history still loads read-only over HTTP (`GET /history`).
-        if (s?.archived || s?.userArchived) {
+        // The archived guard, the session-agent reconciliation and the
+        // evicted-workspace restore all live in `materializeRunner` — shared
+        // with the HTTP dispatch path so a session woken by the outer agent
+        // (docs/131 reqs 8–10) comes up exactly the way a WS connect brings it
+        // up. Everything below the switch is per-connection and stays here.
+        // The synchronous half runs before any `await` on purpose: this function
+        // is called as `void activateSession(sid)` and the connect handler keeps
+        // sending frames right after, so yielding here would push
+        // `session_container_freshness` behind them. Only a session whose
+        // checkout has to be re-cloned reaches the async half — as was the case
+        // before this logic moved out of here.
+        const materializeDeps = {
+          sessionManager, runnerRegistry, createRepoGit, getBareCacheDir, githubAuthManager, repoStore,
+        };
+        const sync = materializeRunnerSync(materializeDeps, sid, perConnectionAgentId);
+        const outcome = sync.status === "needs-restore"
+          ? await finishRestore(materializeDeps, sid, sync)
+          : sync;
+        if (outcome.status === "ready") {
+          attachToRunner(outcome.runner);
+        } else if (outcome.status === "restore-failed") {
+          // Recovery is genuinely impossible (no remote / bare cache also
+          // gone). Surface a terminal, user-visible state instead of booting a
+          // doomed container.
+          broadcastLog(sid, "server", `Session workspace could not be restored: ${outcome.message}`);
+          send({
+            type: "session_status",
+            sessionId: sid,
+            running: false,
+            error: "This session's workspace was lost and could not be restored from the repository.",
+          });
           detachFromRunner();
           if (dir !== activeSessionDir) activeSessionDir = dir;
           return;
-        }
-        // The session's persisted agent is authoritative. A runner is seeded
-        // with the global default agent at creation (warm pool, container
-        // recovery), and the real choice is meant to be applied on WS
-        // connect — see RecoveryDeps.defaultAgentId. activateSession is that
-        // application point: without it, getActiveAgentId() returns the
-        // runner's stale agent (e.g. claude) while the model is the session's
-        // (e.g. gpt-5.5), spawning `claude --model gpt-5.5` which the CLI
-        // rejects as "issue with the selected model". Don't disturb a runner
-        // mid-turn.
-        const sessionAgentId = s?.agentId ?? perConnectionAgentId;
-        const existingRunner = runnerRegistry.get(sid);
-        if (existingRunner) {
-          if (!existingRunner.running && existingRunner.agentId !== sessionAgentId) {
-            existingRunner.agentId = sessionAgentId;
-          }
-          attachToRunner(existingRunner);
-        } else if (dir) {
-          // docs/161 — a `light` session kept its checkout but had its deps
-          // dropped; booting the runner re-materializes node_modules via the
-          // normal `agent.install` / dep-cache path, so selecting it IS the
-          // restore. Flip the tier back to `hot` now that we're bringing it up.
-          if (s?.diskTier === "light") {
-            sessionManager.setDiskTier(sid, "hot");
-          } else if (s?.remoteUrl) {
-            // docs/161 / SHI-179 — a non-archived session whose workspace is
-            // missing (disk-evicted, or lost to a real fs failure) must be
-            // re-materialized from the bare cache BEFORE we boot a container,
-            // or the workspace bind-mount source 404s and the connect → create
-            // → 404 → dispose cycle loops forever. This preserves the committed
-            // branch (unlike user-archive restore). `restoreSessionWorkspace`
-            // is a fast no-op when the checkout is already present.
-            try {
-              await restoreSessionWorkspace(
-                sessionManager, createRepoGit, getBareCacheDir, githubAuthManager, repoStore, sid,
-              );
-            } catch (err) {
-              // Recovery is genuinely impossible (no remote / bare cache also
-              // gone). Surface a terminal, user-visible state instead of
-              // booting a doomed container — do NOT getOrCreate.
-              const errMsg = getErrorMessage(err);
-              console.error(`[activate] workspace restore failed for ${sid}:`, errMsg);
-              broadcastLog(sid, "server", `Session workspace could not be restored: ${errMsg}`);
-              send({
-                type: "session_status",
-                sessionId: sid,
-                running: false,
-                error: "This session's workspace was lost and could not be restored from the repository.",
-              });
-              detachFromRunner();
-              if (dir !== activeSessionDir) activeSessionDir = dir;
-              return;
-            }
-          }
-          const runner = runnerRegistry.getOrCreate(sid, dir, sessionAgentId);
-          attachToRunner(runner);
         } else {
+          // "archived" — the session's history still loads read-only over HTTP
+          // (`GET /history`) — or "no-workspace": nothing to attach to.
           detachFromRunner();
+          if (outcome.status === "archived") {
+            if (dir !== activeSessionDir) activeSessionDir = dir;
+            return;
+          }
         }
         if (dir !== activeSessionDir) {
           activeSessionDir = dir;
