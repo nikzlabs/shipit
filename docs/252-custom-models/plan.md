@@ -6,9 +6,8 @@ description: Separate harness from service so a user can run any configured serv
 
 # 252 — Custom models
 
-Implements [`requirements.md`](./requirements.md). **Open questions in that document
-block implementation**; the sections below marked _Deferred_ are the ones whose shape
-those answers decide.
+Implements [`requirements.md`](./requirements.md), which has no open questions
+remaining — the design below is settled and implementation is unblocked.
 
 ## The idea
 
@@ -141,8 +140,7 @@ spike is scaffolding.
 
 ## Design
 
-_Partly deferred_ — the residual usage-indicator question is open, so one resting state
-is unwritten. The rest of the shape is settled.
+Settled by the 2026-08-05 answers; no part of this is deferred.
 
 **Data model.** A user-owned list of **services** (req 10), each carrying a display
 name, a credential (key *or* subscription), a base URL, the API style(s) it speaks, and
@@ -199,14 +197,16 @@ Note this is two distinct things, and only the first is at issue: **quota teleme
 fed by `rate_limit_event` or `/api/oauth/usage`) versus **token and cost accounting**
 (`RecordedTurn` — `costUsd`, input/output tokens, cache reads, context occupancy),
 which ShipIt already records per turn for every provider. A key-based service has no
-quota to report but full token accounting, and a key-based route already renders no
-pill today — so the open question is a confirmation of existing behavior, not a new
-decision.
+quota to report but full token accounting. Req 13 keeps that slot **empty** for such a
+service, which is what a key-based route already does today — so this is inherited
+behavior to preserve, not new behavior to build. Putting spend in that slot is
+deliberately out of scope; the data exists, but it is its own feature.
 
-**The three known-wrong behaviors** are then not three fixes: eligibility subsumes the
-auth-flow misfire (a 401 from a service should re-prompt for *that service's*
-credential), req 12 subsumes the non-turn failures, and the usage pill is req 13 plus
-the one open question.
+**The three known-wrong behaviors** are then not three fixes, and one is not a fix at
+all: eligibility subsumes the auth-flow misfire (a 401 from a service should re-prompt
+for *that service's* credential), req 12 subsumes the non-turn failures, and the "empty
+usage pill" turns out to be correct behavior once the pill is per-service — a service
+with no quota should show nothing. Only the first two are work.
 
 ## Key files
 

@@ -1,11 +1,7 @@
 # Custom models checklist
 
-Blocked: one open question remains in `requirements.md` (the resting state of the usage
-indicator for a service that reports nothing), and implementation does not start while
-any is open.
+`requirements.md` has no open questions — implementation is unblocked.
 
-- [ ] Answer the residual usage-indicator question; record a dated receipt under
-      `## Resolved questions` and fold it into the numbered requirements, same change.
 - [ ] Service data model: user-owned list of services with credential (key *or*
       subscription), base URL, API style(s), and offered model ids (reqs 7, 10).
 - [ ] Make Anthropic and OpenAI ordinary rows in that list — no built-in or default
@@ -27,7 +23,8 @@ any is open.
       broken when that service stops working.
 - [ ] Re-prompt for the *failing service's* credential on a 401, not a vendor OAuth
       flow (req 11).
-- [ ] Per-service usage reporting, shaped to accommodate a service exposing its own
-      subscription later (req 13).
+- [ ] Per-service quota reporting, shaped to accommodate a service exposing its own
+      subscription later; no indicator for a service with no quota (req 13). Guard
+      test that a key-based service renders nothing rather than an empty pill.
 - [ ] Retire or generalize the PR #1997 spike — it must not ship as-is.
 - [ ] Fresh-context review of the branch diff against every numbered requirement.

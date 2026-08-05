@@ -2,7 +2,7 @@
 
 The design that implements these requirements is in [`plan.md`](./plan.md).
 
-**Status: one open question below still blocks implementation.**
+**Status: no open questions — implementation is unblocked.**
 
 ## Requirements
 
@@ -54,7 +54,9 @@ The design that implements these requirements is in [`plan.md`](./plan.md).
 
 13. Usage is reported per **service**, not per model. A service may expose its own
     quota or subscription, and the indicator reflects whatever the service in use
-    reports.
+    reports. A service with no quota to report — an ordinary API key, which has no
+    allowance and nothing that resets — shows no indicator at all, rather than an
+    empty or placeholder one.
 
 14. ShipIt is honest about what a session is running on. The user can tell which
     model and which service are in use, and whether that service bills a key or a
@@ -62,19 +64,18 @@ The design that implements these requirements is in [`plan.md`](./plan.md).
 
 ## Open questions
 
-- **What should the indicator show for a service that has no quota to report?**
-  Requirement 13 settles that the indicator is per-service. "Quota" here means what
-  the header pill shows today — a plan tier, a rolling window, a percentage consumed
-  and a reset time. A service authenticated by a plain API key has none of these:
-  there is no window and nothing resets. It does still produce per-turn token counts
-  and cost, which ShipIt already records for every turn.
-
-  So: (a) render no indicator, which is what a key-based route does today; (b) render
-  an explicit "no quota" state; (c) put accumulated spend or token counts in that slot
-  instead. *Recommendation: (a) — it is the status quo rather than a new behavior, and
-  (c) is a separate feature that should not be decided as a side effect of this one.*
+_None._
 
 ## Resolved questions
+
+- 2026-08-05 — What should the indicator show for a service that has no quota to
+  report? **Chosen: (a) render no indicator.** This is the status quo rather than a
+  new behavior — a key-based route (`claude-api-key`) already renders no pill today,
+  because snapshot-less routes are omitted and reserved routes have no account row to
+  fall back on. Showing accumulated spend or token counts in that slot was considered
+  and rejected *for this feature*: ShipIt already records per-turn cost and tokens, so
+  it is buildable, but it is a separate feature and should not be decided as a side
+  effect of this one. Folded into requirement 13.
 
 - 2026-08-05 — How far should "any custom model" reach: only providers already
   serving a harness-compatible API, or also OpenAI-compatible ones through a
@@ -142,7 +143,9 @@ human, but most of the mechanism did not. What the human actually said, in order
 - "a 'service' may have its own subscriptions that ShipIt may support (in the
   future) … the usage indicator already shows usage for a service, not for a model"
   → req 13.
-- Answers of 2026-08-05 → reqs 10, 11, 12.
+- "(a) render no indicator, which is what a key-based route does today" → the closing
+  sentence of req 13.
+- Answers of 2026-08-05 → reqs 10, 11, 12, 13.
 
 Reqs 6 and 14 are the agent's reading of "works like any other session" and of
 ShipIt's existing product principles. They are stated as requirements rather than open
