@@ -416,11 +416,11 @@ describe("ProviderAccountManager", () => {
       const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
 
       expect(mgr.create("claude").label).toBe("Claude");
-      expect(mgr.create("claude").label).toBe("Claude 2");
-      expect(mgr.create("claude").label).toBe("Claude 3");
+      expect(mgr.create("claude").label).toBe("Claude2");
+      expect(mgr.create("claude").label).toBe("Claude3");
       // Numbering is per provider — Codex starts over at its own name.
       expect(mgr.create("codex").label).toBe("Codex");
-      expect(mgr.create("codex").label).toBe("Codex 2");
+      expect(mgr.create("codex").label).toBe("Codex2");
     });
 
     it("skips labels already taken, including user-typed ones", () => {
@@ -428,7 +428,7 @@ describe("ProviderAccountManager", () => {
       const first = mgr.create("claude", "Work");
       mgr.rename("claude", first.id, "Claude");
 
-      expect(mgr.create("claude").label).toBe("Claude 2");
+      expect(mgr.create("claude").label).toBe("Claude2");
     });
 
     it("leaves a supplied label alone", () => {

@@ -1067,7 +1067,7 @@ export function providerDisplayLabel(provider: AgentId): string {
 
 /**
  * The placeholder label for a newly created account: the provider's own name
- * ("Claude", "Codex") for the first one, then "Claude 2", "Claude 3", … The
+ * ("Claude", "Codex") for the first one, then "Claude2", "Claude3", … The
  * common case is a single account per provider, and there "Claude account 1"
  * read as machine-generated bookkeeping for a number the user never chose.
  *
@@ -1079,7 +1079,7 @@ function generatedAccountLabel(provider: AgentId, existing: readonly ProviderAcc
   const taken = new Set(existing.map((account) => account.label));
   if (!taken.has(base)) return base;
   for (let n = 2; ; n++) {
-    const candidate = `${base} ${n}`;
+    const candidate = `${base}${n}`;
     if (!taken.has(candidate)) return candidate;
   }
 }

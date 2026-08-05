@@ -2831,7 +2831,7 @@ an email can change while the row should not lose its identity. Both are read
 defensively: an absent `oauthAccount` (older CLI, env-only auth) degrades to the
 generated placeholder label rather than failing the connect — the provider's own
 name for the first account ("Claude", "Codex") and a numbered suffix after that
-("Claude 2", "Claude 3"), since the common case is one account per provider and
+("Claude2", "Claude3"), since the common case is one account per provider and
 a number the user never chose read as bookkeeping. The
 external id is what makes the duplicate check possible at all — today two rows
 can be the same account, sharing one quota pool, which turns req 3's failover
