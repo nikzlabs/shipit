@@ -189,15 +189,18 @@ spike is scaffolding.
 
 ## Design
 
-Settled by the 2026-08-05 answers. No design decision is deferred; one implementation
-unknown is flagged inline under mid-session switching.
+Settled by the 2026-08-05 answers. Nothing here is deferred.
 
 **Data model.** A user-owned list of **services** (req 10), each carrying a display
-name, a credential (key *or* subscription), a base URL, the API style(s) it speaks, and
-the model ids it offers. Anthropic and OpenAI are rows in that list, not special cases
-(req 7). `AgentId` keeps meaning *harness* only, and gains a declared API style. The
-picker's model list becomes derived — for the active harness, every model from every
-configured service whose style set includes that harness's style (reqs 7–9, 11).
+name, a credential (key *or* subscription), a base URL, and the API styles it speaks —
+with, per style, the models it declares as working there (req 8). Anthropic and OpenAI
+are rows in that list, not special cases (req 7). `AgentId` keeps meaning *harness*
+only, and gains a declared API style.
+
+The picker's list for the active harness is then every `(service, model)` pair the
+service declares under that harness's style, filtered to services with a usable
+credential (reqs 9, 11). Note the entry is the **pair**, not the model id — the same id
+can come from more than one service at different prices.
 
 **Full separation is the point.** No code path should ask "which vendor's agent is
 this?" to decide anything about credentials. Concretely, req 2 means a user with only a
