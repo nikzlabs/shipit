@@ -484,10 +484,26 @@ export interface AgentBackgroundTasksEvent {
 export interface AgentSelfWakeEvent {
   type: "agent_self_wake";
   taskId?: string;
-  /** Backend's one-line description of what finished. */
+  /**
+   * What finished, in the backend's words. A background **shell** task supplies
+   * a one-liner; a background **subagent** supplies its whole final report (the
+   * CLI sets the task's terminal summary to the agent's joined final text). The
+   * two are indistinguishable by content, so a consumer that wants the report
+   * must key off {@link toolUseId} — never off the shape of this string.
+   */
   summary?: string;
-  /** e.g. `"completed"`. */
+  /** e.g. `"completed"`. Terminal in every case: `completed | failed | stopped`. */
   status?: string;
+  /**
+   * The tool call that STARTED the finished task, when the backend correlates
+   * one — for a backgrounded `Task`/`Agent` this is the very tool_use id whose
+   * `tool_result` is sitting in the transcript as the CLI's launch
+   * acknowledgement. It is what lets the orchestrator find that card and retire
+   * it (docs/109 reqs 10–11); without it the completion is only a liveness edge.
+   */
+  toolUseId?: string;
+  /** Subagent accounting, when the backend has it — the docs/109 req 5 chips. */
+  usage?: { totalTokens?: number; toolUses?: number; durationMs?: number };
 }
 
 export type AgentEvent =

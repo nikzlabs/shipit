@@ -36,6 +36,15 @@ Design: [`plan.md`](./plan.md). Visual reference:
    permanently lost by not sending it.
 9. A failed subagent's error must stay visually distinct from a successful
    report and must remain readable as the machine output it is.
+10. Once a subagent that was launched in the background **finishes**, its card
+    must stop presenting it as still running. This holds for every way it can
+    finish — completing, failing, or being stopped — and it must hold after a
+    reload, not only for the reader who happened to be watching.
+11. The card promises the reader that the report "will appear here when it
+    finishes", so when the subagent finishes and produced a report, the card
+    must show it, in the same form as any other final report. When it finished
+    without one, the card must say plainly what happened instead of leaving the
+    promise outstanding.
 
 ## Open questions
 
@@ -57,3 +66,14 @@ None.
   requirements 7 and 8. The second clause is why 8 exists as a requirement
   rather than as an implementation detail: sending less is part of what was
   asked for, not merely a consequence of the modal.
+* **2026-08-04 — What should a finished background subagent's card show?** Raised
+  from production by an Ops session: a `run_in_background` Task's card stayed on
+  "Running in the background — its report will appear here when it finishes."
+  forever, including across reloads, long after the subagent had finished and the
+  parent agent had acted on its output. The incident packet stated the goal in
+  the reader's terms — "the reader is told a subagent is still working when it
+  finished minutes ago, and the promised report never appears" — and named
+  marking the card finished as the *minimum* acceptable outcome. Requirement 10
+  is that minimum; requirement 11 is the promise the existing copy already makes,
+  which is why showing the report is a requirement here rather than an inference.
+  Nothing about the intended behaviour was ambiguous, so no question was opened.

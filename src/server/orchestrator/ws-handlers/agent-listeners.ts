@@ -32,6 +32,7 @@ import {
   requeueUndeliveredSteers,
 } from "./agent-message-builder.js";
 import { observeVoiceNotes } from "./agent-voice-handler.js";
+import { retireFinishedBackgroundSubagent } from "./subagent-retire.js";
 import { wireAuthRequiredHandler } from "./agent-auth-handler.js";
 import {
   detectHardExhaustion,
@@ -539,6 +540,24 @@ export function wireAgentListeners(
             queueLength: runner.queueLength,
           });
         }
+      }
+      // docs/109 reqs 10–11 — the SAME event is also the only completion signal
+      // a backgrounded subagent ever produces. Its `tool_result` was written
+      // once at launch (the CLI's acknowledgement) and is never superseded, so
+      // without this the card claims "Running in the background" forever, across
+      // reloads, after the parent agent has already acted on the report.
+      //
+      // Deliberately AFTER the liveness block and behind its own guards: this is
+      // a second, independent consumer of one event, and a failure to find the
+      // card must not cost the session its busy state.
+      if (turnSessionId && event.toolUseId) {
+        retireFinishedBackgroundSubagent(deps.chatHistoryManager, runner, emitToViewers, {
+          sessionId: turnSessionId,
+          toolUseId: event.toolUseId,
+          status: event.status,
+          summary: event.summary,
+          usage: event.usage,
+        });
       }
       return;
     }

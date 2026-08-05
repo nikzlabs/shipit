@@ -24,6 +24,7 @@ import type {
   WsAgentEvent,
   WsTurnSnapshot,
   WsSubAgentSpawn,
+  WsSubagentReportUpdate,
   WsModelInfo,
   WsMessageQueued,
   WsQueueUpdated,
@@ -186,6 +187,7 @@ export type WsServerMessage =
   | WsTemplateApplied
   | WsGlobalSettings
   | WsSubAgentSpawn
+  | WsSubagentReportUpdate
   | WsFilesChanged
   | WsGitHubStatus
   | WsGitHubPushResult
