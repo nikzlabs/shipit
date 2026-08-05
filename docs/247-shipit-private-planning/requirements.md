@@ -7,10 +7,10 @@ routing, tracker names — is a separate feature
 
 ## The planning tracker
 
-1. ShipIt's planning issues live in a private GitHub repository, separate from
-   ShipIt's public source repository, declared in ShipIt's own `shipit.yaml` under
-   the name `planning` — so every reference to a planning issue reads
-   `planning#123`.
+1. ShipIt's planning issues live in `nikzlabs/shipit-planning`, a private GitHub
+   repository separate from ShipIt's public source repository. It is declared in
+   ShipIt's own `shipit.yaml` under the name `planning`, so every reference to a
+   planning issue reads `planning#123`.
 2. Planning issue content — titles, bodies, comments, status, labels, assignees —
    is not published to public surfaces.
 3. Three disclosures are accepted:
@@ -47,20 +47,7 @@ routing, tracker names — is a separate feature
 
 ## Open questions
 
-- **The planning repository has to be created.** ShipIt does not create it (req 5),
-  so the migration cannot start until it exists. The deployment's GitHub credential
-  must also reach it — that credential is account-wide rather than repo-scoped, so
-  a fine-grained token limited to the source repository would fail there.
-
-  On the slug: `nikzlabs/shipit-planning` reads better than
-  `nikzlabs/shipit-issue-tracker`, because the latter sits next to a public
-  repository whose codebase contains an actual issue-tracker feature, and a sibling
-  by that name invites the reading that it *is* that feature. It also pairs with
-  the `planning` name in requirement 1. Either way the slug is the cheap half of
-  the decision: renaming the repository later costs one line in `shipit.yaml`
-  ([248](../248-declared-issue-trackers/requirements.md) req 13). The **name** is
-  the expensive half — it is written into every reference, so changing it after the
-  rewrite means sweeping ~620 files a second time.
+None.
 ## Resolved questions
 
 Receipts about the tracker *mechanism* live in
@@ -73,13 +60,16 @@ to ShipIt's own planning. The full deliberation history of the superseded
   are the same person, so the distinction has no observable effect. Comments still
   carry their original date (req 9), which is what preserves a discussion's
   chronology.
-- 2026-08-05 — The user proposed `planning` as the tracker's name (req 1) and
-  `nikzlabs/shipit-issue-tracker` as a candidate slug. The name is recorded because
-  it is the load-bearing half — it is written into every reference, so it must be
-  final before the reference rewrite. The slug remains open pending repository
-  creation; `nikzlabs/shipit-planning` is recommended over
-  `nikzlabs/shipit-issue-tracker` to avoid reading as a component of the product's
-  own issue-tracker feature.
+- 2026-08-05 — The user set the tracker's name to `planning` and, after weighing
+  `nikzlabs/shipit-issue-tracker`, chose **`nikzlabs/shipit-planning`** as the
+  repository (req 1). `shipit-issue-tracker` was rejected because it would sit
+  beside a public repository whose codebase contains an actual issue-tracker
+  feature, so a sibling by that name reads as that feature rather than as a
+  planning board. Of the two identifiers the **name** is the load-bearing one: it
+  is written into every reference, so it must be final before the reference
+  rewrite, whereas renaming the repository later costs one line in `shipit.yaml`
+  ([248](../248-declared-issue-trackers/requirements.md) req 13). Creating the
+  repository remains a task rather than an open requirement.
 - 2026-08-05 — "Does *fully retire Linear* extend to the product?" is answered by
   the user's decision to make `linear` a declared tracker kind
   ([248](../248-declared-issue-trackers/requirements.md) req 3): Linear support

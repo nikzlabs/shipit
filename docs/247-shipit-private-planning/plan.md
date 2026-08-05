@@ -12,9 +12,15 @@ this doc is only about ShipIt's own use of it and the one-time migration.
 
 ## Status
 
-**Not started.** The mechanism ships (248), but the migration is blocked on two
-things: the planning repository does not exist yet, and the `--repo` support this
-depends on is merged to `main` but not deployed.
+**Not started**, and gated on [248](../248-declared-issue-trackers/plan.md) rather
+than on anything here. A first version of the tracker mechanism shipped, but 248's
+requirements have since replaced `--repo` with declared tracker names, so what this
+migration needs is the *reworked* 248 deployed — not the version currently on
+`main`. The planning repository also does not exist yet.
+
+Sequencing that outward: references must be written in the `planning#123` form the
+first time, so 248's name support has to land, ship, and reach the deployment
+before the reference rewrite begins.
 
 ## Why a private repository
 
@@ -41,9 +47,10 @@ wrong summary of this change.
 
 Three facts set the order, each verified rather than assumed:
 
-1. **`--repo` is not deployed.** The `shipit` shim inside a session container is
-   the *deployed* orchestrator's, and it rejects `--repo` today. Nothing can be
-   written to a planning repository until the merged support ships.
+1. **A merge is not a deploy.** The `shipit` shim inside a session container comes
+   from the *deployed* orchestrator, so nothing can be written to the planning
+   repository until 248's rework reaches the deployment — not when it lands on
+   `main`.
 2. **`shipit issue list` cannot enumerate Linear.** The adapter queries
    `first: 100` with no pagination (`trackers/linear/adapter.ts`), so the list tops
    out at the 100 most-recently-updated issues. The tracker holds roughly 316
@@ -70,15 +77,15 @@ shape conflicts with every open branch.
 
 ### Steps
 
-1. **Create the private repository** (req 5 — the user does this; recommended
-   slug `nikzlabs/shipit-planning`) and confirm the deployment's GitHub credential
-   reaches it. The credential is account-wide
+1. **Create `nikzlabs/shipit-planning`** (req 5 — the user does this) and confirm
+   the deployment's GitHub credential reaches it. The credential is account-wide
    (`githubAuthManager.getToken()`), not the repo-scoped installation token, so a
    fine-grained PAT limited to the source repository fails here. One
    `shipit issue list` against it settles that; a 403/404 surfaces as the inline
    access error.
-2. **Release and deploy** the merged `--repo` support, then re-probe from a fresh
-   session to confirm the shim has it.
+2. **Land, release and deploy 248's rework**, then re-probe from a fresh session
+   to confirm the shim addresses trackers by name. The `shipit` binary in a session
+   container is the deployed orchestrator's, so a merge alone changes nothing here.
 3. **Export Linear** — walk `SHI-1…SHI-316`, capturing title, body, comments
    (author, timestamp, body), labels, priority, status, and sub-issue parent.
    Read-only, and it doubles as the archive. Written outside the git workspace:
@@ -129,5 +136,6 @@ separate feature.
 - Making GitHub's web UI the primary planning workflow.
 - Redirecting the public user bug-report flow into the planning repository.
 - Continuous two-way synchronization with Linear.
-- Removing Linear support from the product — see the open question in
-  [requirements.md](./requirements.md).
+- Removing Linear support from the product. Linear stays a declared tracker kind
+  ([248](../248-declared-issue-trackers/requirements.md) req 3); ShipIt retires it
+  for itself by not declaring it.
