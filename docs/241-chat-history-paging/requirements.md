@@ -23,7 +23,9 @@
   focus/foreground event refetches history and replaces the transcript, which
   would discard everything the user scroll-loaded. Req 3 does not say whether
   that progress must persist. *Recommendation: yes, preserve it — otherwise
-  backgrounding the tab for a few seconds silently undoes req 3.*
+  backgrounding the tab for a few seconds silently undoes req 3.* (The separate
+  question of whether that refetch should happen at all when nothing changed is
+  SHI-322, and does not depend on this answer.)
 ## Resolved questions
 
 - 2026-08-05 — *Should the ~10-turn window also carry a row floor and cap?*

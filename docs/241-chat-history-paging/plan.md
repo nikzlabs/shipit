@@ -53,7 +53,10 @@ The two costs that are actually worth paging for:
    `historyLoadedRef` and re-runs `loadSessionHistory`
    (`useConnectionSync.ts:60-100`) — a *full* `/history` fetch. On mobile that
    recurs on every app switch. Windowing turns a recurring O(transcript) cost
-   into a recurring O(window) one.
+   into a recurring O(window) one. **The complementary fix — making that refetch
+   conditional so an unchanged history returns 304 — is SHI-322**, filed
+   separately because it helps today and is far smaller. This design bounds how
+   much a refetch costs; SHI-322 bounds how often the cost is paid at all.
 
 Also note base64 `images` compress poorly — already-compressed bytes in a text
 encoding — so the heaviest rows benefit least from edge compression.

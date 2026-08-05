@@ -42,7 +42,7 @@ design work continues. Items below marked *(open)* depend on an unanswered one.
 - [ ] Scroll-top trigger → fetch previous page → prepend, behind a single in-flight latch
 - [ ] Scroll anchoring on prepend (element anchor; `content-visibility: visible` during correction)
 - [ ] Prepend signal in `useMessageScroll` — must also suppress the `appendedUserMessage` branch (`:143-145`), which bypasses the scrolled-away guard
-- [ ] *(open)* **Reconnect preserves the loaded span**: refetch with `limit = max(window, loadedCount)`, or merge instead of replace — pending the requirements question
+- [ ] *(open)* **Reconnect preserves the loaded span**: refetch with `limit = max(window, loadedCount)`, or merge instead of replace — pending the requirements question. Related but separate: SHI-322 makes the refetch conditional
 - [ ] Card-store seeding runs per prepended page, seed-if-absent
 - [ ] `handleReleaseCard`: drop when card not found and `hasMore` (do not append)
 - [ ] Client starts sending `limit` — only after §2 and the search/export items below
