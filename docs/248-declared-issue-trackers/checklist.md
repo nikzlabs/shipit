@@ -1,48 +1,78 @@
 # Declared issue trackers — checklist
 
-## Resolved
+Ordered by dependency: config shape first, then the registry it feeds, then
+resolution, then the surfaces that consume it. See [plan.md](./plan.md) for why
+each item is where it is.
 
-- [x] Settle the reference syntax for Linear. *(All three forms are recognized — req 10.)*
-- [x] Decide whether GitHub's `owner/repo#42` stays recognized. *(Generalized: every backend's canonical address format is supported — req 10.)*
-- [x] Confirm the break with existing behavior. *(Accepted — req 19: nothing survives unless a requirement names it.)*
+## Decide first
 
-## Built against the earlier requirements
+- [ ] Whether a persisted issue-write card records the tracker name alongside the resolved id. Req 15 says a name resolves at use, but a card stores an id — so storing only the id freezes the destination. This is the one item that touches the database, and the answer changes the card schema, so settle it before building the resolver.
+- [ ] How an unresolvable or ambiguous name renders — fail closed and stay legible, never a broken link (req 11).
+- [ ] Whether a tracker name may collide with a GitHub owner name, given `owner/repo#42` and `name#123` are distinguished only by the slash.
 
-Shipped and working, but written for a GitHub-only, purely-additive design. Each
-still stands unless a requirement below supersedes it.
+## Config shape
 
-- [x] Preserve structured destination identity through parsing and all issue operations.
-- [x] Parse the `issues.trackers` block as a `kind`-discriminated list; warn and skip a malformed entry or an unrecognized `kind` rather than failing the session.
-- [x] Widen `TrackerId` for derived per-destination ids; make the GitHub adapter's id/label configurable; register one tracker per declaration.
-- [x] Render a declared tracker as its own Issues tab, with reachability failures inline on that tab.
-- [x] Fail closed on an unreachable destination with an error naming both "missing" and "inaccessible" (req 17).
-- [x] Add same-numbered code/tracker repository regression coverage.
-- [x] Destination-qualified deduplication, lifecycle-card, and persisted effect keys.
-- [x] Preserve destinations through agent operations and persisted Undo cards.
-- [x] Derive pushed branch names from the reference only, for every tracker issue (req 21).
+- [ ] Add `name` to an `issues.trackers` entry: required, unique per repository, warn-and-skip on a duplicate (reqs 2, 6).
+- [ ] Add `kind: linear`, identified by its team key (reqs 3, 5).
+- [ ] Update `shipit-docs/shipit-yaml.md` for both.
 
-## Rework required by the current requirements
+## Registry
 
-- [ ] Declare every tracker (req 1): remove the implicit Linear fallback and the assumption that a session always has a Linear destination.
-- [ ] Add `kind: linear` as a declared backend (req 3), identified by its team key (req 5).
-- [ ] Move the Linear team binding out of Settings and into the declaration (req 4); Settings keeps the credential only.
-- [ ] Recognize all three reference forms — `name#KEY`, `name#number`, and each backend's canonical address (`SHI-304`, `owner/repo#42`) — covering the UI highlight as well as the CLI (req 10).
-- [ ] Make a canonical address that identifies no declared tracker fail closed, and an ambiguous one fail rather than resolve to a match (req 11). This is a behavior change: `owner/repo#42` currently reaches any repository the credential can see.
-- [ ] Give each `kind` a declared canonical-address format, so adding a backend later brings its own without special-casing (req 10).
-- [ ] Add the mandatory, repository-unique `name` field (req 2, 6) and the `shipit.yaml` docs for it.
-- [ ] Replace `--repo owner/name` with naming the tracker (req 12), keeping the session's own GitHub Issues as the one unnamed exception.
-- [ ] Resolve names in a layer above `parseIssueRef`, keeping that parser pure and context-free; audit every call site.
-- [ ] Emit the name form everywhere ShipIt generates a reference (req 14) — PR bodies and comments, provenance and read cards, `shipit issue` output, doc frontmatter — through a single formatter rather than per-call-site.
-- [ ] Surface declaration warnings in `shipit` CLI output (req 8).
-- [ ] Honor a self-declaration: remove the registry's skip of a declaration matching the session's own repo, without producing a duplicate tab.
-- [ ] Audit the places that assume a recorded destination is immutable — req 15 removes that guarantee.
-- [ ] Decide the remaining mechanism points: duplicate/conflicting names across declarations, and how an unresolvable name renders (fail closed, stay legible).
-- [ ] Add test coverage: a name resolving to its declared destination; a name re-pointed to a second destination re-targeting an existing recorded card; a self-declaration producing a name without a duplicate tab; ShipIt-generated PR bodies carrying the name form; an unresolvable name failing closed; a repository declaring nothing.
+- [ ] Build the registry from the declarations plus the session's own repository, instead of always constructing a Linear tracker from `CredentialStore` (req 1).
+- [ ] Take `LinearTracker`'s team from its declaration; support two Linear declarations on different teams.
+- [ ] Retire `getLinearTeam` / `setLinearTeam` and the stored `linear.team` field; Settings keeps the token (req 4).
+- [ ] Remove the team picker from `SettingsTrackers.tsx`; keep `listLinearTeams` as a lookup for writing a declaration.
+- [ ] Drop the self-declaration skip in `buildTrackerRegistry`, without producing a duplicate tab (req 12).
+- [ ] Delete the `get()` synthesizer so `get()` and `list()` agree — an address naming no declared tracker must fail closed (req 11). This changes the Undo path: a card whose destination is no longer declared now fails closed.
 
-## Superseded
+## Resolution
 
-- ~~`issues.default`~~ — `shipit issue create`'s hardcoded Linear fallback disappears with requirement 1, which removes implicit destinations entirely. No default key is needed.
+- [ ] Add a resolver layer above `parseIssueRef`, keeping that parser pure and context-free. Req 11's fail-closed and ambiguity rules live in the resolver, not at each caller.
+- [ ] Resolve all three forms: `name#123`, `name#SHI-304`, and each backend's canonical address (req 10).
+- [ ] Give each `kind` its canonical-address format, so a backend added later brings its own instead of being special-cased in the parser.
+- [ ] Route the eight current `parseIssueRef` call sites through the resolver — `tracker-link.ts`, `DocsViewer.tsx`, `FrontmatterHeader.tsx`, `pr-issue-refs.ts`, `shipit-issue.ts` (×3), `issue-lifecycle.ts`.
+- [ ] Feed the client resolver from the store that already holds the tracker list, rather than adding a second fetch.
+
+## Emitting references
+
+- [ ] Add one formatter and call it from both reference producers — `parseIssueRef`'s branches and `github/adapter.ts`'s `${owner}/${repo}#${number}` — so a name renders wherever the destination has one (req 14).
+- [ ] Instruct the agent to write the name form (req 14). Prompt composition, not a code path: the text belongs in the `.md` fragment, per this repo's prompt rules.
+
+## CLI and errors
+
+- [ ] Replace `--repo` with addressing a tracker by name, and remove the `"linear"` fallback passed to `resolveTrackerFlag` by both `issue create` and `label create` (reqs 1, 12).
+- [ ] Surface declaration warnings in `shipit` CLI output (req 8) — they currently reach only a `service-manager-setup.ts` chat message and `diagnostics.ts`.
+- [ ] Surface resolution and reachability failures where the operation started: inline in the Issues UI for a user action, CLI output for an agent action (req 18).
+- [ ] Update `shipit-docs/issues.md` for name addressing.
+
+## Tests
+
+- [ ] A repository declaring nothing has only its own GitHub Issues, and no Linear tab.
+- [ ] `kind: linear` declared, including two teams at once.
+- [ ] Each of the three reference forms resolves, in the UI highlight and in the CLI.
+- [ ] A canonical address naming an undeclared destination fails closed; an ambiguous reference fails rather than resolving to one match.
+- [ ] A self-declaration produces a name without a duplicate tab.
+- [ ] A name re-pointed at a different destination re-targets an existing recorded card (req 15).
+- [ ] ShipIt-emitted references carry the name form (req 14).
+- [ ] Declaration warnings and resolution failures appear in CLI output (reqs 8, 18).
+- [ ] The shipped two-repository `#42` fixture still passes — the regression guard for the routing invariant that carries over.
+
+## Carries over unchanged
+
+Listed so absence is not mistaken for oversight: `tracker-id.ts`'s qualified-id
+vocabulary, the per-request `shipit.yaml` read in `resolveGitHubTrackerContext`,
+`accessError()`'s missing-vs-inaccessible wording, `issue-lifecycle.ts`'s
+pointer-derived destinations, `seedFromIssueRef`'s pointer-only branch names
+(req 21), and the `kind`-discriminated parse that warns and skips rather than
+failing a session (req 7).
+
+## Settled earlier
+
+- [x] Reference syntax for Linear — all three forms are recognized (req 10).
+- [x] Whether GitHub's `owner/repo#42` stays recognized — generalized to every backend's canonical address format (req 10).
+- [x] The break with existing behavior — accepted (req 19).
+- ~~`issues.default`~~ — superseded. Req 1 removes implicit destinations, so `shipit issue create` has no fallback left to point anywhere.
 
 ## Follow-on
 
-- [ ] `shipit issue list` on Linear queries `first: 100` with no pagination, so it cannot enumerate a tracker larger than that.
+- [ ] `shipit issue list` on Linear queries `first: 100` with no pagination, so it cannot enumerate a tracker larger than that. Out of scope here; blocks [247](../247-shipit-private-planning/checklist.md)'s export step.

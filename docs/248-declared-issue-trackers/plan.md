@@ -1,303 +1,303 @@
 ---
 issue: https://linear.app/shipit-ai/issue/SHI-318
 title: Declared issue trackers
-description: Declare additional issue trackers in shipit.yaml, route every operation to a named repository, and reference issues through rename-proof names.
+description: Declare every issue tracker in shipit.yaml, address destinations by name, and resolve references through the declarations.
 ---
 
 # 248 — Declared issue trackers
 
-Implements [requirements.md](./requirements.md). Supersedes
-`247-private-github-issue-tracker`, which held both this mechanism and ShipIt's
-own private-planning policy; that policy now lives in
-[247](../247-shipit-private-planning/plan.md). The tracker comparison that led
-here is the [evaluation](../246-native-issue-tracker-evaluation/plan.md).
+Implements [requirements.md](./requirements.md). ShipIt's own use of the mechanism
+is [247](../247-shipit-private-planning/plan.md); the comparison that led here is
+the [evaluation](../246-native-issue-tracker-evaluation/plan.md).
 
 ## Status
 
-**The design below is behind the requirements and is being reworked.** A first
-implementation shipped — declarations, `--repo`, repository-qualified routing, the
-extra Issues tab, the fail-closed access error, and pointer-only branch names —
-against an earlier, GitHub-only, purely-additive version of the requirements.
+A first version shipped, built when this was an additive GitHub-only feature.
+The requirements have since become general and non-additive, so the work now is a
+**rework of the shipped mechanism**, not a greenfield build.
 
-The current requirements changed three things that invalidate parts of it:
+One part of the shipped design survives unchanged and carries the rest: the
+destination lives in the tracker id. Everything else — how trackers come into
+existence, how an operation names one, and what a reference resolves through —
+changes.
 
-- **All trackers are declared** (req 1, 3). Linear stops being a built-in
-  destination, and a repository that declares nothing has only its own GitHub
-  Issues. The shipped code treats Linear as always-present and `--repo` as an
-  addition to it.
-- **Destinations are named, and the name is mandatory** (req 6, 11). `--repo
-  owner/name` is replaced by the tracker's declared name, which also retires the
-  shipped rule that `--repo` may reach any repository the credential can see.
-- **References resolve at use** (req 15), removing the shipped guarantee that a
-  recorded destination stays pinned to what it resolved to when written.
-- **Three reference forms are recognized** (req 10), including an unqualified
-  backend id resolved through the declaration whose identity matches it — which is
-  also why a Linear declaration carries its team key (req 5) and why that binding
-  moves out of Settings (req 4).
+Requirement 19 means the rework owes nothing to the current CLI surface, the
+implicit Linear destination, or the `--tracker` flag.
 
-Requirement 19 settles the cost question: nothing is preserved for compatibility
-unless a requirement names it, so the rework is free to break the current CLI
-surface, the implicit Linear destination, and the `--tracker` flag. Sections below
-marked *(as built)* describe what exists today, not what the requirements now ask
-for.
+## What carries over: the destination lives in the tracker id
 
-The hard part was never CRUD — it was preserving the authoritative repository
-target through every UI, CLI, Undo, session-start, and PR-lifecycle path, with
-**one** piece of state rather than a parallel field threaded through each of them.
-
-## How repository identity is carried
-
-The implementation collapsed onto a single idea: **the repository lives in the
-tracker id**. `"github"` keeps its old meaning (the session's own code repo) and
-`` `github:${owner}/${repo}` `` names one explicitly, so `TrackerId` widened from
-a closed union to include that template-literal member.
-
-That one change satisfies the core invariant everywhere at once, because the
-tracker id was *already* the thing every surface round-trips:
+The shipped implementation collapsed onto one idea. `TrackerId` is not a closed
+union: `` `github:${owner}/${repo}` `` names a destination explicitly, and every
+surface already round-trips the id, so a single widening routed all of them at
+once:
 
 | Surface | Why it routes correctly |
 |---|---|
-| `?tracker=` on the routes + `/agent-ops/issue/*` | Already carried the id verbatim; the relay is a pass-through, so no schema change. |
-| `IssueWriteCard.tracker`, persisted in chat history | Undo resolves `card.tracker` — so an Undo replays against the repository the write hit, with **no new column and no migration**. |
-| `parseIssueRef` dedup key (`tracker:issueId`) | Becomes qualified for free, so `a/x#42` and `b/y#42` stop colliding. |
-| PR-body `Closes` / `Refs` pointers | `parsePrBodyIssueRefs` delegates to `parseIssueRef`, so merge effects inherit the qualified destination. |
+| `?tracker=` on the routes + `/agent-ops/issue/*` | Carries the id verbatim; the relay is a pass-through, so no schema change. |
+| `IssueWriteCard.tracker`, persisted in chat history | Undo resolves `card.tracker`, so it replays against the destination the write hit — no column, no migration. |
+| `parseIssueRef` dedup key (`tracker:issueId`) | Qualified for free, so `a/x#42` and `b/y#42` stop colliding. |
+| PR-body `Closes` / `Refs` pointers | `parsePrBodyIssueRefs` delegates to `parseIssueRef` and inherits the destination. |
 | The Issues sub-tab | Already keyed by tracker id. |
 
-The alternative — a parallel `repo` field beside a `tracker: "github"` — was
-rejected precisely because it re-creates the bug it was meant to fix: a
-display-ish `tracker` sitting next to the real routing data invites exactly the
-reduction the invariant forbids, and it would have needed a persisted-card field,
-a DB migration, and a legacy-card fail-closed path. Comparisons therefore use
-`isGitHubTracker(id)` from `shared/tracker-id.ts`, never `=== "github"`.
+The rejected alternative — a `repo` field beside `tracker: "github"` — re-creates
+the bug it was meant to fix: a display-ish `tracker` next to the real routing data
+invites the reduction the invariant forbids, and it needs a persisted-card field,
+a DB migration, and a legacy-card path. Comparisons go through
+`isGitHubTracker(id)` in `shared/tracker-id.ts`, never `=== "github"`.
 
-## Core invariant: repository identity is routing data
+**This is the substrate for names.** A name resolves to a tracker id; nothing
+downstream of resolution needs to learn what a name is. The rework is therefore
+concentrated at two seams — where trackers are built, and where a reference is
+turned into an id — rather than spread through the operation paths.
 
-Every GitHub operation carries a structured target of `owner`, `repo`, and issue
-number. Repository identity is never reduced to display text and reconstructed
-later. The resolver's rules:
+## Destination identity is routing data
 
-1. An operation that names a repository — `--repo owner/name`, or a qualified
-   `owner/repo#number` pointer — uses **that** repository, verbatim. ShipIt does
-   not check it against a known set: any repository the credential can reach is
-   reachable, and GitHub authorization is the only gate (superseded: req 12 replaces `--repo` with a declared name, so reachability is now what the repository declared). A repository the
-   credential cannot see fails closed with an inline access error naming both
-   possibilities (missing or inaccessible).
-2. An operation that names none keeps its current meaning: the active session's
-   code repository. This is what makes the feature backward-compatible — no
-   existing command changes destination.
-3. ShipIt never substitutes one repository for another. A named repository is
-   never rewritten to the active code remote, and a failure is never retried
-   against a fallback.
-4. Bare issue numbers resolve against the repository the operation resolved by
-   rules 1–2 — never against a different one.
-5. Missing configuration or repository access fails closed; there is no code
-   repository fallback.
-6. Every identity key derived from an issue — parser deduplication, persisted
-   merge-effect guards, and deterministic card IDs — includes the qualified
-   repository as well as the issue number.
+Unchanged from the shipped design, and still the point of the feature:
 
-These rules apply equally to reads and mutations, including Undo and delayed
-effects after a PR merge. The binding is resolved at the operation boundary and
-captured for asynchronous work rather than reread from whichever session later
-happens to be active.
+1. A destination named by an operation is used as named, verbatim (req 16).
+2. ShipIt never substitutes one destination for another, and never retries a
+   failure against a fallback (req 16).
+3. An unreachable destination fails closed with no fallback (req 17).
+4. Every identity key derived from an issue — parser deduplication, persisted
+   merge-effect guards, deterministic card IDs — includes the destination as well
+   as the issue number.
 
-The prior behavior this fixes: the shared pointer parser retained `owner/repo` in
-a display identifier while downstream services received a bare issue number and
-reconstructed context from the code remote — so a pointer such as
-`other-owner/other-repo#42` could mutate code-repository issue `#42`.
+These hold for reads and mutations alike, including Undo and post-merge effects.
+The destination is resolved at the operation boundary and captured for
+asynchronous work, never reread from whichever session is active later.
 
-### Branch names (req 21)
+The bug this exists to prevent: the pointer parser used to keep `owner/repo` in a
+display string while downstream services got a bare number and rebuilt context
+from the code remote — so `other-owner/other-repo#42` could mutate the session
+repository's issue `#42`.
 
-Sessions seeded from an issue keep the title in ShipIt — it is still the session
-title and still opens the seed prompt — but the **pushed branch name is the
-pointer alone** (`seedFromIssueRef`). A branch reaches a public remote, so a title
-from a private issue would be published there.
+## The rework
 
-The rule is **unconditional**, not scoped to declared trackers. There is no
-connect step (req 1), and therefore nothing that could tell ShipIt which
-repositories are private: a declared repo may be public and a session's own code
-repo may be private, so any narrower rule would be a guess dressed as a policy.
-The cost — `shi-67` instead of `shi-67-inline-tracker-issues-tab`, for every
-tracker — was accepted explicitly. Determinism is unchanged: the branch was
-already a pure function of the issue. Public PR **titles** are outside this: the
-agent writes them with `gh pr create -t`, so ShipIt generates no PR title to
-derive from a pointer.
+### 1. Every tracker is declared (reqs 1, 3–5)
+
+Today `buildTrackerRegistry` constructs a `LinearTracker` unconditionally from
+`credentialStore.getLinearToken()` and `getLinearTeam()`, and a bare-`github`
+tracker from the session's remote. Linear is therefore present in every session
+whether or not the repository wants it.
+
+Under req 1 the registry is built from the declarations plus the session's own
+repository. `kind: linear` becomes a declared backend identified by its team key
+(req 5), which means:
+
+- **The team binding moves out of `CredentialStore` into the declaration** (req 4).
+  `getLinearTeam` / `setLinearTeam` and the stored `linear.team` field retire, as
+  does the team picker in `SettingsTrackers.tsx`. Settings keeps the token.
+  `listLinearTeams` stays useful — but as a lookup for *writing* a declaration,
+  not as a picker that persists a binding.
+- **`LinearTracker` takes its team from its declaration**, so a repository can
+  declare two Linear trackers on different teams. Its `isConfigured()` already
+  requires a token and a team; the team now arrives from config rather than
+  storage.
+- Deployments that have a stored team lose their Linear tab until the repository
+  declares one. Req 19 permits this; it is worth calling out because it is the
+  one change a user notices without doing anything.
+
+### 2. A destination is addressed by name (reqs 6, 12)
+
+`--repo owner/name` goes away, replaced by the declared name. The session's own
+repository stays the one unnamed destination.
+
+This inverts an asymmetry the shipped registry documents at length. `get()`
+currently **synthesizes** a tracker for any well-formed `github:owner/repo` id it
+does not hold, precisely so `--repo` could reach any repository the credential can
+see. Req 11 forbids exactly that: an address identifying no declared tracker fails
+closed. So the synthesizer is deleted and `get()` narrows to the registered set —
+`list()` and `get()` stop disagreeing.
+
+That deletion has a consequence worth stating, because the registry docstring
+currently sells the synthesizer as load-bearing: it is what let a persisted Undo
+card resolve `github:owner/repo` with no extra state. After the change, a card
+whose destination is no longer declared fails closed on Undo. That is req 11
+applied consistently rather than a regression, but it is a behavior change to the
+Undo path and needs its own test.
+
+### 3. References resolve through the declarations (reqs 10, 11, 14, 15)
+
+Three forms resolve: `planning#123`, `roadmap#304`, and each backend's canonical
+address (`SHI-304`, `owner/repo#42`).
+
+`name#123` is a free slot in the existing grammar — `GITHUB_SHORT_RE` requires the
+slash, and bare `#42` is deliberately rejected as ambiguous — so no existing form
+becomes ambiguous by adding it.
+
+The structural problem is that **`parseIssueRef` is pure and context-free**, which
+is why the client chip and the server shim share it. A name cannot be resolved
+without the declarations. Two shapes:
+
+- thread a context parameter through every call site, or
+- **resolve in a thin layer above the parser**, which stays pure.
+
+Prefer the second. `parseIssueRef` keeps answering "what shape is this string",
+and a resolver answers "which declared tracker does that identify" — which is also
+where req 11's fail-closed and ambiguity rules live, in one place rather than at
+each caller.
+
+The call sites to audit, all current:
+
+| Site | Needs |
+|---|---|
+| `client/utils/tracker-link.ts` | resolution — it decides what a chip links to |
+| `client/components/DocsViewer.tsx` | resolution — `issue:` frontmatter |
+| `client/components/MarkdownSelectionComments/FrontmatterHeader.tsx` | resolution |
+| `server/shared/pr-issue-refs.ts` | resolution — `Closes`/`Refs` destinations |
+| `server/session/agent-shim/shipit-issue.ts` (3 uses) | resolution — pointers and `--parent` |
+| `server/orchestrator/issue-lifecycle.ts` | resolution — seed and merge effects |
+
+The client sites need the declarations in the browser. They are already fetched
+for the tab list, so the resolver should read from that same store rather than a
+second fetch.
+
+**Emitting the name (req 14).** Only two places in the codebase produce a
+reference string: `parseIssueRef`'s four branches, and `github/adapter.ts`, which
+builds `${owner}/${repo}#${number}` from an API response. That is a much smaller
+surface than "everywhere a reference is shown", and it is the argument for a single
+formatter — both producers should call it, so a name is rendered wherever the
+destination has one. The agent's own text is not rewritten; ShipIt instructs it
+which form to write (req 14), which is an `agent-instructions` change, not a code
+path.
+
+**Resolution happens at use (req 15).** Nothing pins a name to what it resolved to
+when written, including persisted Undo targets. Since a card stores a tracker id
+and not a name, this needs care: storing the *resolved id* freezes the
+destination, which is what req 15 forbids for a name-written reference. The design
+question is whether a card records the name it was written with alongside the
+resolved id. That is a persisted-field change, so it is the one place this rework
+touches the database.
+
+### 4. Failures surface where the operation started (reqs 8, 18)
+
+Declaration warnings today reach two places, neither of them the agent:
+`service-manager-setup.ts` posts a "shipit.yaml needs migration" chat message, and
+`diagnostics.ts` exposes `cfg.warnings`. Req 8 puts them in `shipit` CLI output so
+the agent can repair a declaration; req 18 extends the same rule to resolution and
+reachability failures — inline in the Issues UI for a user action (the viewer
+already renders an inline error bar), in CLI output for an agent action.
 
 ## Configuration
 
-**Trackers are declared, not connected** (req 1). Additional trackers are listed
-in the repository's `shipit.yaml`, alongside the `agent`, `compose`, and `release`
-blocks it already carries. Each entry is a **tagged union discriminated on
-`kind`** (the same discriminator the issue domain types already use for
-`IssueWriteUndo`), not a bare list of repositories. The identifying fields belong
-to the kind — `repo` is GitHub's — so a tracker identified by something else can
-be added later without reshaping the block or migrating existing configs. An
-entry whose `kind` the running ShipIt does not recognize is skipped with a
-warning, so a config written against a newer version degrades instead of failing
-the session.
+Trackers are declared in the repository's `shipit.yaml`, alongside `agent`,
+`compose`, and `release`. Each entry is a tagged union on `kind` — the same
+discriminator the issue domain types use for `IssueWriteUndo` — so the identifying
+fields belong to the kind and a backend identified by something other than a
+repository needs no reshaping. An unrecognized `kind` is skipped with a warning, so
+a config written against a newer ShipIt degrades instead of failing the session.
 
-This is the pattern the product already uses for stack shape — declared in the
-repo, versioned with it, reconciled by ShipIt — rather than a Settings surface the
-user operates. It buys three things at once:
+This is the pattern the product already uses for stack shape: declared in the repo,
+versioned with it, reconciled by ShipIt. It buys **no configuration subsystem** (no
+connect flow, no credential-store binding, no validation endpoint, no migration),
+**Project scoping for free** (`shipit.yaml` is per repository, so
+[Projects](../231-projects/plan.md) needs no tracker work), and **plurality at no
+cost**.
 
-- **No configuration subsystem.** No Settings connect flow, no `CredentialStore`
-  field, no connection-time validation endpoint, no migration.
-- **Project scoping for free.** `shipit.yaml` is per repository, so a Project's
-  sessions see exactly the trackers their own repositories declare. The
-  [Projects](../231-projects/plan.md) design consequently needs no tracker work at
-  phase 1c — there is no deployment-wide binding to scope.
-- **Plural at no extra cost.** A repository may declare several.
-
-**There is no new fixed tracker identity either.** On the CLI the destination is a
-*repository*, named on the operation: `shipit issue … --tracker github --repo
-owner/name` (superseded by req 12). An operation naming no repository still resolves the active
-session's code remote, so neither a declaration nor a setting can silently change
-where an existing command writes. `--repo` accepts any repository the credential
-can reach, so it is not limited to what `shipit.yaml` declares; declarations drive
-the *UI tabs*, not the CLI's reachable set. That asymmetry is why `registry.get()`
-synthesizes any well-formed qualified id while `registry.list()` returns only
-declared ones.
-
-Because nothing is "saved", there is no moment at which to validate. ShipIt does
-not check that a declared repository exists, is private, or has Issues enabled; a
-declared tracker is exercised by ordinary requests and its tab surfaces an inline
-error when one fails. Two accepted consequences: declaring a *public* repository
-is not caught, and on a public code repository the committed `shipit.yaml`
-discloses the declared repository's slug.
+Because nothing is saved, there is no moment at which to validate. ShipIt does not
+check that a declared destination exists, is private, or has Issues enabled; a
+declaration is exercised by ordinary requests and its tab surfaces an inline error
+when one fails. Two accepted consequences: declaring a *public* repository is not
+caught, and on a public repository the committed `shipit.yaml` discloses what it
+declares.
 
 ## Authentication
 
-Tracker calls use the same contextual GitHub credential as ShipIt's other GitHub
-operations: the deployment credential initially, the owning Project's credential
-after Projects phase 1c. There is no second tracker credential, no tracker ACL,
-and no per-viewer GitHub-membership check — GitHub authorizes the credential, not
-the viewer (req 23). For GitHub App authentication the installation must include
-the repository; for a user token, that token must grant Issues access there.
+Tracker calls use the same contextual credential as ShipIt's other operations
+against that backend: the deployment credential now, the owning Project's after
+Projects phase 1c. There is no second tracker credential, no tracker ACL, and no
+per-viewer membership check — the backend authorizes the credential, not the
+viewer (req 23).
 
-Note the credential is the **account-wide** token (`githubAuthManager.getToken()`),
-not the repo-scoped installation token — a fine-grained PAT scoped to one
-repository will fail on every other one.
+For GitHub the credential is the **account-wide** token
+(`githubAuthManager.getToken()`), not the repo-scoped installation token, so a
+fine-grained PAT scoped to one repository fails on every other one. For Linear the
+token defines the workspace, which is why a declaration identifies a *team* and
+not a workspace.
 
-Credentials remain outside session containers. GitHub returns `404` for a private
-repository the credential cannot see, so ShipIt cannot distinguish "missing" from
-"inaccessible"; the inline error names both. Repository-scoped `403` responses are
-also access failures. Neither invalidates otherwise valid credentials; only an
-authentication failure may do that. There is no poller and no periodic
-membership/visibility check.
+Credentials stay outside session containers. GitHub returns `404` for a private
+repository the credential cannot see, so "missing" and "inaccessible" are
+indistinguishable and the error names both. Repository-scoped `403`s are also
+access failures. Neither invalidates otherwise valid credentials; only an
+authentication failure may. There is no poller and no periodic visibility check.
 
-## Tracker names (requirements 10–14)
+## Open design points
 
-**Not implemented.** A declaration may carry a `name`, and `planning#123` then
-resolves through it. Two things make this cheap and one makes it invasive.
+Mechanism choices, not requirements questions:
 
-**Cheap:** `name#123` is a free slot in the pointer grammar. `parseIssueRef`
-matches `owner/repo#N` (`GITHUB_SHORT_RE` requires the slash), bare Linear keys,
-and full URLs, and deliberately rejects bare `#42` as tracker-ambiguous — so a
-single bare token before `#` matches nothing today. And the resolution target is
-an existing qualified id, so everything downstream of the parser is unchanged.
+- Duplicate or conflicting names across declarations — req 6 makes `name` unique
+  per repository, so this is a validation-and-warning shape, not a resolution rule.
+- Whether a name may collide with a GitHub owner name, given `owner/repo#42` and
+  `name#123` are distinguished by the slash.
+- How an unresolvable name renders: it must fail closed and stay legible rather
+  than degrade to a broken link.
+- Whether a persisted card records the name alongside the resolved id (see §3).
 
-**Invasive:** `parseIssueRef` is currently **pure and context-free** — it takes a
-string and nothing else, which is why the client chip and the server shim can
-share it. A name cannot be resolved without the declarations, so either the
-function grows a context parameter threaded through every call site, or name
-resolution happens in a thin layer above it that both consumers call. The second
-keeps the parser pure and is the shape to prefer; the call-site audit is the real
-work.
+## Key files
 
-Three consequences to design against, each following from a requirement:
+Current state; each is a rework site unless noted.
 
-- **ShipIt emits the name everywhere** (req 14). Every site that today
-  formats a qualified pointer — the PR-body `Closes`/`Refs` writer, provenance and
-  read cards, `shipit issue` output, doc `issue:` frontmatter written by the agent
-  — must render the name when the target tracker has one. This is the bulk of the
-  work and it is spread across surfaces that currently format independently, so it
-  wants a single formatter rather than N call sites learning about names.
-- **A self-declaration must be honored** (req 12). `buildTrackerRegistry` currently
-  *skips* a declaration whose `owner/repo` case-insensitively matches the
-  session's own repo, on the reasoning that it duplicates the bare `github`
-  tracker. That skip has to go: a self-declaration is how a code repository gets
-  a name. The resulting entry must not produce a duplicate tab.
-- **Resolution happens at use, not at write** (req 15). Nothing pins a name to
-  the repository it resolved to when written — including persisted Undo card
-  targets. Re-pointing a name re-targets history written against it, and the UI
-  shows the repository it now resolves to. This *removes* a guarantee the shipped
-  code currently provides, so the audit is for places that assume a recorded
-  target is immutable.
-
-Open design points (not requirements questions — these are mechanism choices):
-duplicate/conflicting names across declarations, whether a name may collide
-with a GitHub owner name, and what an unresolvable name renders as (it must fail
-closed and stay legible, not silently degrade to a broken link).
-
-## Key files (as built)
-
-- `src/server/shared/tracker-id.ts` — the qualified-id vocabulary:
-  `githubTrackerId`, `parseGitHubTrackerId`, `isGitHubTracker`, `parseOwnerRepo`.
-  Every comparison goes through it so nothing reduces an id back to `"github"`.
-- `src/server/shared/shipit-config.ts` — `parseIssuesConfig` / the
-  `DeclaredTracker` union. Nothing here throws: unlike the other blocks, which gate
-  the container, a tracker declaration gates one tab, so a malformed entry or an
-  unrecognized `kind` warns and skips.
-- `src/server/shared/issue-ref.ts` — `ParsedIssueRef.tracker` is a `TrackerId`, so
-  a GitHub pointer resolves to its own repository. Pure and context-free; see
-  [Names](#names-requirement-6).
-- `src/server/shared/pr-issue-refs.ts` — `Refs`/`Closes`/`Fixes`/`Resolves`
-  pointers inherit the qualified destination via `parseIssueRef`.
-- `src/server/orchestrator/trackers/registry.ts` — one tracker per declaration;
-  `get()` synthesizes any well-formed qualified id (the `list()`/`get()` asymmetry
-  documented in that file).
-- `src/server/orchestrator/trackers/github/adapter.ts` — configurable `id`/`label`;
-  `accessError()` names both "missing" and "inaccessible" for the 403/404 pair.
+- `src/server/shared/tracker-id.ts` — qualified-id vocabulary. **Carries over.**
+- `src/server/shared/shipit-config.ts` — `parseIssuesConfig` / `DeclaredTracker`.
+  Gains `name`, `kind: linear`, and the team field. Nothing here throws: a
+  declaration gates a tab, not the container.
+- `src/server/shared/issue-ref.ts` — stays pure and context-free; a resolver layer
+  goes above it.
+- `src/server/shared/pr-issue-refs.ts` — inherits whatever the resolver returns.
+- `src/server/orchestrator/trackers/registry.ts` — the largest change: build from
+  declarations, drop the self-declaration skip, delete the `get()` synthesizer.
+- `src/server/orchestrator/trackers/linear/adapter.ts` — team from declaration
+  rather than `CredentialStore`.
+- `src/server/orchestrator/trackers/github/adapter.ts` — `accessError()` carries
+  over; `identifier` construction moves to the shared formatter.
+- `src/server/orchestrator/credential-store.ts` — `getLinearTeam`/`setLinearTeam`
+  and the stored `linear.team` retire.
+- `src/client/components/SettingsTrackers.tsx` — team picker retires.
 - `src/server/orchestrator/api-routes-issues.ts` — `resolveGitHubTrackerContext`
-  reads the session workspace's `shipit.yaml` per request (uncached: editing the
-  file must change the tabs on the next request; a parse failure degrades to no
-  declarations rather than breaking the tab).
-- `src/server/orchestrator/issue-lifecycle.ts` — carries the target through seeded
-  Started effects and merged-PR completion effects. Note the merge path resolves
-  the destination from the *pointer*, which is what makes a `Closes` line target a
-  different repository than the PR's own — GitHub's own keyword handling never
-  closes cross-repository.
-- `src/server/session/agent-shim/shipit-issue.ts` — `--repo` on every verb, via
-  `resolveTrackerFlag` / `resolveIssuePointer`.
+  reads `shipit.yaml` per request (uncached, so editing the file changes tabs on
+  the next request; a parse failure degrades to no declarations). **Carries over.**
+- `src/server/orchestrator/issue-lifecycle.ts` — resolves destinations from the
+  pointer, which is what lets a `Closes` line target a different repository than
+  the PR's own (GitHub never closes cross-repository itself). **Carries over**,
+  with resolution routed through the new layer.
+- `src/server/session/agent-shim/shipit-issue.ts` — `--repo` and the `"linear"`
+  fallback in `resolveTrackerFlag` both go; verbs take a tracker name.
 - `src/server/orchestrator/services/headless-sessions.ts` — `seedFromIssueRef`
-  builds the branch from the identifier alone (req 21).
-- Agent-facing docs: `src/server/shipit-docs/issues.md` (repository-resolution
-  rules) and `shipit-docs/shipit-yaml.md` (the `issues:` block).
+  builds the branch from the identifier alone (req 21). **Carries over.**
+- Agent-facing docs: `src/server/shipit-docs/issues.md`,
+  `shipit-docs/shipit-yaml.md`, and `agent-instructions` for the reference form.
 
 ## Validation
 
-The safety fixture contains two repositories, each with issue `#42`. Every
-operation names one and asserts the other is unchanged. Coverage includes list,
-detail, create, edit, status, labels, assignees, comments; agent writes and their
-Undo; starting a session from an issue; PR `Refs` comments and merged `Closes`
-effects, including a PR body containing same-numbered issues in both repositories
-(deduplication, effect-guard keys, card IDs); reload or session switching before
-delayed lifecycle work finishes; unreachable repository, insufficient permission,
-and revoked access all failing without fallback and naming both "missing" and
-"inaccessible"; a malformed or absent `issues.trackers` block, a `github` entry
-missing `repo`, and an unrecognized `kind`, each warning and skipping; and an
-operation naming `--repo` versus one naming none each reaching the repository
-the requirements say it should.
+Shipped and still valid: the two-repository fixture where both hold issue `#42`,
+asserting every operation touches only the one it named — across list, detail,
+create, edit, status, labels, assignees, comments, agent writes and Undo,
+session-start, `Refs` comments and merged `Closes` effects, dedup and effect-guard
+keys, reload/session-switch mid-effect, and the fail-closed cases.
 
-Name coverage is not written yet. It needs, at minimum: a name pointer
-resolving to its declared repository; a name re-pointed to a second repository
-re-targeting an existing recorded card (req 15); a self-declaration producing an
-name without a duplicate tab; ShipIt-generated PR bodies containing the name
-form rather than the qualified slug (req 14); and an unresolvable name failing
-closed.
+The rework needs:
+
+- a repository declaring nothing — only its own GitHub Issues, no Linear tab;
+- `kind: linear` declared, including two teams declared at once;
+- each of the three reference forms resolving, in the UI highlight and the CLI;
+- a canonical address naming an undeclared destination failing closed;
+- an ambiguous reference failing rather than resolving to one match;
+- a self-declaration producing a name without a duplicate tab;
+- a name re-pointed at a different destination re-targeting an existing recorded
+  card (req 15);
+- ShipIt-emitted references carrying the name form (req 14);
+- declaration warnings and resolution failures appearing in CLI output (reqs 8, 18).
 
 ## Out of scope
 
 Backend capability differences — status workflows beyond Open/Closed, priority
 conventions, parent/sub-issue mapping — are not part of this feature. Priority
-writes in particular are tracked as
-[SHI-310](https://linear.app/shipit-ai/issue/SHI-310), because they are a property
-of the shared GitHub adapter rather than of any declaration.
+writes are tracked as [SHI-310](https://linear.app/shipit-ai/issue/SHI-310), as a
+property of the shared GitHub adapter rather than of any declaration.
 
 ## Non-goals
 
-- Making GitHub's web UI the primary issue workflow.
-- Inferring a declared repository from the active code remote.
-- Silently routing arbitrary cross-repository pointers.
-- Emulating non-GitHub capabilities merely to preserve wrapper parity.
+- Making a backend's own web UI the primary issue workflow.
+- Inferring a declared destination from the active code remote.
+- Silently routing an address that names no declared tracker.
 - Any issue migration or synchronization between trackers.
