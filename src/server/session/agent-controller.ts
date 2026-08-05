@@ -20,7 +20,11 @@ import type { PermissionBroker } from "./permission-broker.js";
 import type { WorkerSSEEvent } from "./sse-broadcaster.js";
 import type { McpConfigController } from "./mcp-config-controller.js";
 import { getErrorMessage } from "../shared/utils.js";
-import { whenNodeRuntimeReady } from "./node-runtime.js";
+import {
+  formatNodeRuntimeNotice,
+  prefixPromptWithNotice,
+  whenNodeRuntimeReady,
+} from "./node-runtime.js";
 import {
   runAgentToCompletion,
   buildSubAgentRunParams,
@@ -89,6 +93,19 @@ export class AgentController {
   // `/agent/cancel` (or a primary-turn interrupt/kill) can SIGTERM them.
   private readonly spawnedAgents = new Map<string, SubAgentRunHandle>();
 
+  /**
+   * docs/248 req 8 — whether the "your Node pin isn't being honored" note has
+   * already ridden a turn's prompt.
+   *
+   * Scoped to this controller, i.e. to the container: the pin is resolved once
+   * at worker boot, so "the first turn" means the first turn *since that
+   * resolution*, not the first of the session. A long-lived session whose
+   * container is recreated re-resolves the pin and tells the agent again —
+   * which is right, because the answer may have changed and the new agent
+   * process never saw the old note.
+   */
+  private nodeNoticeDelivered = false;
+
   constructor(private readonly deps: AgentControllerDeps) {}
 
   /** The resident agent's id, if any — read by the permission endpoints. */
@@ -111,7 +128,15 @@ export class AgentController {
       // test runs) inherits this worker's PATH, so the pinned Node has to be on
       // it before the CLI spawns. Awaited outside the try: a provisioning
       // failure is already folded into a reported status and never throws.
-      await whenNodeRuntimeReady();
+      const nodeRuntime = await whenNodeRuntimeReady();
+
+      // req 8 — and when the pin could NOT be honored, say so on the first turn
+      // rather than leaving the agent to debug against a runtime it believes is
+      // the project's. Rides the prompt, not the system prompt: the latter is
+      // precomputed per (agentId, isOps) and must stay byte-stable for the
+      // prompt cache. Silent for every session whose pin is honored or absent.
+      const nodeNotice = this.nodeNoticeDelivered ? null : formatNodeRuntimeNotice(nodeRuntime);
+      if (nodeNotice) this.nodeNoticeDelivered = true;
 
       try {
         // docs/240 — mark the turn in flight BEFORE the adapter can emit
@@ -143,6 +168,7 @@ export class AgentController {
         this.withTemporaryEnv(mcpWrite.runtimeEnv ?? {}, () => {
           this.agent?.run({
             ...params,
+            ...(nodeNotice ? { prompt: prefixPromptWithNotice(params.prompt, nodeNotice) } : {}),
             cwd: this.deps.workspaceDir,
             mcpConfigPath: mcpWrite.mcpConfigPath,
           });

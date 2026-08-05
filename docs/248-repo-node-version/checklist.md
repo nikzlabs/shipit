@@ -35,6 +35,16 @@
         the agent CLIs)
   - [x] Requirement 5's Compose cross-check detected and reported
 
+## Requirement 8 — tell the agent (follow-up, PR 2)
+
+- [x] `requirements.md` updated from the human's answer, with a dated receipt
+- [x] `formatNodeRuntimeNotice` — the `<system>` note, keyed on `mismatch`
+- [x] `prefixPromptWithNotice` — prefixed, except a slash command stays first
+- [x] `agent-controller.ts` attaches it to the first turn since worker boot
+- [x] `agent-controller.test.ts` — silent when fine, fires when not, once per
+      container, slash-safe
+- [x] `shipit-docs/environment.md` tells the agent what the note means
+
 ## Known gaps
 
 - Requirement 5 is **partially** satisfied. A repo that pins Node only through

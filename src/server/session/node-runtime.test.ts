@@ -15,9 +15,11 @@ import {
   PATH_HANDOFF_FILE,
   distArch,
   findComposeNodeConflicts,
+  formatNodeRuntimeNotice,
   installDirName,
   isMountPoint,
   listCachedVersions,
+  prefixPromptWithNotice,
   provisionNodeRuntime,
   resetNodeRuntimeForTests,
   resolveNodeCacheDir,
@@ -340,6 +342,94 @@ describe("findComposeNodeConflicts", () => {
     expect(findComposeNodeConflicts(workspace, 24)).toEqual([]);
     writeCompose("services: [this is not: a map\n");
     expect(findComposeNodeConflicts(workspace, 24)).toEqual([]);
+  });
+});
+
+// docs/248 req 8 — the agent shouldn't have to ask. Before this, an un-honored
+// pin lived only in the diagnostics panel, which the agent cannot reach.
+describe("formatNodeRuntimeNotice", () => {
+  const base = {
+    pinSource: null,
+    pinRaw: null,
+    resolvedVersion: null,
+    activeVersion: "24.15.0",
+    imageVersion: "24.15.0",
+    reason: null,
+    mismatch: false,
+    composeNodeConflicts: [],
+  };
+
+  it("says nothing for the sessions that are fine — which is almost all of them", () => {
+    expect(formatNodeRuntimeNotice({ ...base, state: "no-pin" })).toBeNull();
+    expect(formatNodeRuntimeNotice({ ...base, state: "satisfied" })).toBeNull();
+    expect(
+      formatNodeRuntimeNotice({
+        ...base,
+        state: "provisioned",
+        activeVersion: "22.20.1",
+        resolvedVersion: "22.20.1",
+        pinRaw: "22",
+        pinSource: ".nvmrc",
+      }),
+    ).toBeNull();
+  });
+
+  it("fires on every un-honored state, not just a failed download", () => {
+    // `unsupported` and `below-floor` are the same thing from the agent's point
+    // of view: the repo asked for a Node it isn't getting.
+    for (const state of ["failed", "unsupported", "below-floor"] as const) {
+      const notice = formatNodeRuntimeNotice({
+        ...base,
+        state,
+        mismatch: true,
+        pinRaw: "22",
+        pinSource: ".nvmrc",
+      });
+      expect(notice, state).not.toBeNull();
+    }
+  });
+
+  it("carries what the agent needs to act on", () => {
+    const notice = formatNodeRuntimeNotice({
+      ...base,
+      state: "failed",
+      mismatch: true,
+      pinSource: ".nvmrc",
+      pinRaw: "22",
+      resolvedVersion: "22.20.1",
+      reason: "getaddrinfo EAI_AGAIN nodejs.org",
+    })!;
+    expect(notice.startsWith("<system>")).toBe(true);
+    expect(notice.trimEnd().endsWith("</system>")).toBe(true);
+    expect(notice).toContain("24.15.0");
+    expect(notice).toContain("22 (.nvmrc)");
+    expect(notice).toContain("22.20.1");
+    expect(notice).toContain("EAI_AGAIN");
+  });
+
+  it("omits the rows it has no value for", () => {
+    const notice = formatNodeRuntimeNotice({ ...base, state: "failed", mismatch: true })!;
+    expect(notice).not.toContain("repo pin:");
+    expect(notice).not.toContain("wanted:");
+    expect(notice).not.toContain("reason:");
+  });
+});
+
+describe("prefixPromptWithNotice", () => {
+  const notice = "<system>\nheads up\n</system>";
+
+  it("leads with the notice so the agent reads it before the request", () => {
+    expect(prefixPromptWithNotice("fix the build", notice)).toBe(`${notice}\n\nfix the build`);
+  });
+
+  it("keeps a slash command at position 0 or the CLI stops parsing it", () => {
+    expect(prefixPromptWithNotice("/compact", notice)).toBe(`/compact\n\n${notice}`);
+    expect(prefixPromptWithNotice("  /code-review now", notice))
+      .toBe(`  /code-review now\n\n${notice}`);
+  });
+
+  it("does not mistake a path or division for a slash command", () => {
+    expect(prefixPromptWithNotice("/ is the root", notice).startsWith(notice)).toBe(true);
   });
 });
 

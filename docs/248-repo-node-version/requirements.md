@@ -53,12 +53,13 @@ image's baked Node major (`docker/Dockerfile.session-worker.prod` is
    diagnostics. The discrepancy must be visible rather than silently assumed
    correct. This is the floor, not the goal: requirement 1 is the goal.
 
-8. The agent running in the session can find out how the repo's Node pin was
-   resolved — the Node it is actually running, what the repo asked for, and, when
-   the pin is not being honored, why — so it can take that into account when
-   deciding what to do. Today this information exists only in the diagnostics
-   panel, which is a human surface: the agent has no way to reach it and no
-   signal that it should look.
+8. When the repo's Node pin could not be honored, the agent is told so on its
+   first turn, as a system note ahead of the user's message — without the agent
+   having to ask, and without the note appearing as part of what the user said.
+   It can then decide what to do with that (warn, work around it, distrust a
+   repro), rather than debugging against a runtime it believes is correct.
+   Previously this existed only in the diagnostics panel, which is a human
+   surface: the agent had no way to reach it and no signal that it should look.
 
 ## Explicitly out of scope
 
@@ -70,16 +71,31 @@ image's baked Node major (`docker/Dockerfile.session-worker.prod` is
 
 ## Open questions
 
-- **How proactive should requirement 8 be?** Making the information *reachable*
-  is easy; making the agent *notice* is the real question, and it trades
-  usefulness against noise. A command the agent runs on demand costs nothing but
-  relies on it thinking to ask — which is the same discoverability problem the
-  diagnostics panel already has. Volunteering the information on every turn would
-  reach an agent that wasn't looking, but almost every repo either pins nothing or
-  pins something the container already satisfies, so it would be noise nearly all
-  of the time.
+_None._
 
 ## Resolved questions
+
+### 2026-08-05 — tell the agent in a system prefix on the first user message
+
+Asked how proactive requirement 8 should be, offering an on-demand command, an
+annotation on install failure, or a chat card. **Answer: when the pin
+installation failed, notify the agent in the "system" prefix of the first user
+message.** Chosen over all three offered options; requirement 8 is written from
+that answer.
+
+Two consequences worth recording, because they are why this is the right channel
+and not merely one of several:
+
+- It must NOT go in the system prompt. That is precomputed per
+  `(agentId, isOps)` at module load and kept byte-stable so the prompt cache
+  stays warm (`CLAUDE.md` → Prompts); per-session text there would cost every
+  turn in the fleet. The user message carries no such contract.
+- The note is not part of what the user said. The transcript keeps the user's own
+  text; only the prompt handed to the CLI carries the prefix — the same split
+  `assembleAgentPrompt` already makes for file and image context.
+
+No on-demand command was added: `node -v` already answers "what am I running",
+and the push covers the case where the answer is surprising.
 
 ### 2026-08-04 — provision, with diagnostics as the fallback
 
