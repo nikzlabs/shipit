@@ -814,13 +814,33 @@ export async function undoIssueWrite(
   fetchImpl?: FetchImpl,
   github?: GitHubTrackerContext,
 ): Promise<void> {
-  // docs/248 req 11's carve-out — an Undo resolves against the destination
-  // recorded on the card even when the repository no longer declares it, and
-  // through the recorded NAME first so a re-pointed name re-targets the undo
-  // (req 16). This is the one path that does NOT go through the narrowed
-  // `get()`; see `TrackerRegistry.getRecorded`.
+  // docs/248 req 11's carve-out — an Undo acts on the destination recorded on
+  // the card, even when the repository no longer declares it. This is the one
+  // path that does NOT go through the narrowed `get()`; see
+  // `TrackerRegistry.getRecorded`.
   const registry = buildTrackerRegistry(credentialStore, fetchImpl, github);
-  const tracker = registry.getRecorded(card.tracker, card.trackerName);
+
+  // req 16's exception. Undo is not re-targeted by a re-pointed name: the write
+  // happened to a specific issue, and the snapshot being restored is that
+  // issue's. Following the name would apply it to a different issue of the same
+  // number that never had it — on Linear the team guard would catch the attempt,
+  // but on GitHub nothing would, so the wrong repository's issue would silently
+  // be rewritten. Undo is for reversing something done minutes ago; once the
+  // declaration has moved under it, refusing is the honest answer.
+  if (card.trackerName) {
+    const now = registry.destinationForName(card.trackerName);
+    if (now && now.id !== card.tracker) {
+      throw new ServiceError(
+        409,
+        `\`${card.trackerName}\` now points at \`${now.id}\`, but this write was made against ` +
+          `\`${card.tracker}\`. ShipIt will not undo it against a different destination — the ` +
+          `snapshot belongs to the issue that was actually changed. Undo it before re-pointing ` +
+          `the declaration, or reverse the change by hand.`,
+      );
+    }
+  }
+
+  const tracker = registry.getRecorded(card.tracker);
   if (!tracker) throw new ServiceError(404, undeclaredTrackerMessage(card.tracker, registry));
   if (!tracker.isConfigured()) {
     throw new ServiceError(409, `${tracker.label} is not connected. Connect it in Settings → Issues.`);

@@ -76,6 +76,12 @@ off Linear — is a separate feature
     its write reached, and reversing it stays available even after that destination
     stops being declared. Reversing a write grants no access the write did not
     already have.
+
+    An undo acts on the destination it recorded, and is **not** re-targeted by a
+    re-pointed name (the exception to requirement 16). If the name it was written
+    with now points somewhere else, the undo fails rather than acting: the change
+    being reversed belongs to the issue that was actually changed, and applying it
+    to a different issue of the same number would write data that issue never had.
 12. An operation that acts on an existing issue names its tracker by `name`. The
     single exception is the session's own repository's GitHub Issues, which needs
     no declaration and no name — though a repository may declare its own
@@ -146,17 +152,7 @@ off Linear — is a separate feature
 
 ## Open questions
 
-- **Should undoing a recorded write follow a re-point across Linear teams?**
-  Requirement 16's "the name is authoritative" now re-targets *references*. Undo
-  is deliberately excluded above, because a recorded undo carries a snapshot of a
-  specific issue — restoring `SHI-304`'s previous title onto `OPS-304` would write
-  data that issue never had. Today such an undo fails closed (the adapter refuses
-  an issue outside its declared team), which is safe but means the re-point
-  silently costs the user their Undo. The alternative is to let Undo keep reaching
-  the *original* team even after the name moves, which req 11's carve-out already
-  permits for an undeclared destination. Raised because the two decisions of
-  2026-08-05 (undo re-targets by name; the name is authoritative) combine into a
-  case neither considered.
+None.
 
 ## Resolved questions
 
@@ -164,6 +160,22 @@ Receipts are carried forward from the superseded `247-private-github-issue-track
 doc, which held these requirements before the split; its full deliberation history
 remains in git.
 
+- 2026-08-05 — Asked whether undoing a recorded write should follow a re-pointed
+  name, the user chose that **the undo fails**, reasoning that "the purpose of
+  undo is to fix something the agent did a few minutes ago, not in a few months".
+  Recorded in requirement 11 as the exception to requirement 16. Letting Undo keep
+  reaching the original destination was rejected on that same reasoning: a write
+  old enough to have outlived its declaration is not what Undo is for. Acting on
+  the new destination was never viable — it would apply one issue's snapshot to
+  another issue of the same number.
+
+  This question was raised because two earlier decisions combined into a case
+  neither considered, and answering it turned out to close a real defect rather
+  than only settle wording: Undo previously preferred the recorded *name*, so a
+  re-pointed `planning` sent the undo to a different **repository's** issue of the
+  same number. Linear's team guard would have refused the equivalent attempt;
+  GitHub had no such guard, so the wrong repository was silently rewritten — and
+  a test asserted that behavior as correct.
 - 2026-08-05 — Asked whether two declarations may name the same destination, the
   user chose to **refuse it**: a second entry pointing at a repository or team
   another entry already names is warned and skipped (req 6). Supporting aliases

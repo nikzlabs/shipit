@@ -154,22 +154,33 @@ describe("buildTrackerRegistry — getRecorded() is the Undo carve-out (req 11)"
     expect(tracker!.id).toBe("linear:SHI");
   });
 
-  // req 16 — re-pointing a name re-targets every reference written against it,
-  // recorded ones included. The card carries the NAME as well as the destination
-  // precisely so this works.
-  it("follows the recorded NAME when it has been re-pointed at a new destination", () => {
+  // req 16's exception — Undo is NOT re-targeted by a re-pointed name. It acts on
+  // the destination the write actually reached, because the snapshot it restores
+  // belongs to that issue. `undoIssueWrite` uses `destinationForName` to detect
+  // the re-point and refuse; the registry itself simply never follows the name.
+  it("resolves the recorded destination, not wherever the name points now", () => {
     const registry = build({
       repo: { owner: "acme", repo: "app" },
       declared: [gh("acme/new-planning", "planning")],
     });
-    const tracker = registry.getRecorded("github:acme/old-planning", "planning");
-    expect(tracker!.id).toBe("github:acme/new-planning");
+    const tracker = registry.getRecorded("github:acme/old-planning");
+    expect(tracker!.id).toBe("github:acme/old-planning");
   });
 
-  it("falls back to the recorded destination when the name no longer resolves", () => {
+  it("resolves the recorded destination when the name no longer resolves at all", () => {
     const registry = build({ repo: { owner: "acme", repo: "app" } });
-    const tracker = registry.getRecorded("github:acme/old-planning", "planning");
+    const tracker = registry.getRecorded("github:acme/old-planning");
     expect(tracker!.id).toBe("github:acme/old-planning");
+  });
+
+  it("reports where a declared name points today, for the re-point check", () => {
+    const registry = build({
+      repo: { owner: "acme", repo: "app" },
+      declared: [gh("acme/new-planning", "planning")],
+    });
+    expect(registry.destinationForName("planning")?.id).toBe("github:acme/new-planning");
+    expect(registry.destinationForName("PLANNING")?.id).toBe("github:acme/new-planning");
+    expect(registry.destinationForName("gone")).toBeUndefined();
   });
 
   it("cannot resolve the retired bare `linear` id even on the undo path", () => {

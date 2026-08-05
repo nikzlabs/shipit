@@ -96,7 +96,7 @@ pointer-derived destinations, `seedFromIssueRef`'s pointer-only branch names
 - [x] **Merge-time resolution and reachability failures reach the transcript** (req 19) instead of only `console.warn`. Fire-once, so a re-fire on reconnect doesn't append a fresh copy.
 - [x] **A bare Linear key declared by two trackers renders as plain text** rather than opening the first match — the client badge bypassed the resolver's ambiguity rule.
 
-## Settled by the user after the review (reqs 6, 16)
+## Settled by the user after the review (reqs 6, 11, 16)
 
 - [x] **A destination is declared at most once.** Two names for one repository or
   team are refused — warn and skip, like any other malformed entry. Aliasing was
@@ -120,12 +120,12 @@ Filed; the tracker holds its status from here.
   session change and on Issues-tab activation, so editing `shipit.yaml` with the
   tab already open doesn't re-resolve names until one of those happens. The
   server reads the file per request, so only the client is affected.
-- [ ] **Whether Undo should follow a re-point across Linear teams** is now the
-  one open question in `requirements.md`. Req 16 re-targets *references*, but a
-  recorded undo carries a snapshot of a specific issue — restoring `SHI-304`'s
-  previous title onto `OPS-304` would write data that issue never had. Today it
-  fails closed, which is safe but costs the user their Undo. Not implemented
-  either way pending an answer.
+- [x] **Undo does not follow a re-pointed name** — it acts on the destination it
+  recorded, and refuses if that name now points elsewhere (req 11). Settled by the
+  user: "undo is to fix something the agent did a few minutes ago, not in a few
+  months." This closed a live defect, not just a wording gap — Undo preferred the
+  recorded *name*, so a re-pointed `planning` rewrote a **different repository's**
+  issue of the same number, with a test asserting that as correct.
 
 ## Follow-on
 

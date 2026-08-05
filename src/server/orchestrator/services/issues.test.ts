@@ -714,10 +714,39 @@ describe("issue write services (docs/177)", () => {
     expect(patch[0]).toContain("/repos/acme/planning/issues/42");
   });
 
-  // req 16 — re-pointing a name re-targets every reference written against it,
-  // recorded ones included. The card carries the NAME as well as the
-  // destination precisely so an Undo follows the re-point.
-  it("undo: follows the recorded NAME to its new destination after a re-point", async () => {
+  // req 16's exception — Undo is NOT re-targeted by a re-pointed name. This test
+  // previously asserted the opposite, and asserting it is what made the defect
+  // legible: it expected the undo to PATCH `acme/new-planning#42`, a DIFFERENT
+  // repository's issue 42, using a snapshot taken from `acme/old-planning#42`.
+  // Linear's team guard would have caught the equivalent attempt; GitHub has no
+  // such guard, so the wrong repository was silently rewritten.
+  it("undo: refuses rather than following a name that has been re-pointed", async () => {
+    const fetchImpl = ghFetch();
+    await expect(
+      undoIssueWrite(
+        store,
+        {
+          tracker: "github:acme/old-planning",
+          trackerName: "planning",
+          issueId: "42",
+          undo: { kind: "create" },
+        },
+        fetchImpl,
+        {
+          token: "ghp_test",
+          repo: { owner: "octocat", repo: "hello-world" },
+          declared: [{ kind: "github", name: "planning", owner: "acme", repo: "new-planning" }],
+        },
+      ),
+    ).rejects.toThrow(/now points at .*new-planning.*but this write was made against/s);
+    // Nothing was written anywhere — not the new destination, not the old one.
+    expect(fetchImpl.mock.calls.some(([, i]) => i?.method === "PATCH")).toBe(false);
+  });
+
+  // The name is gone from shipit.yaml entirely — req 11's carve-out still applies,
+  // so the undo reaches the destination it recorded. Only a name pointing
+  // SOMEWHERE ELSE is refused; a name pointing nowhere is not a conflict.
+  it("undo: still reaches the recorded destination when the name is undeclared", async () => {
     const fetchImpl = ghFetch();
     await undoIssueWrite(
       store,
@@ -728,15 +757,34 @@ describe("issue write services (docs/177)", () => {
         undo: { kind: "create" },
       },
       fetchImpl,
+      { token: "ghp_test", repo: { owner: "octocat", repo: "hello-world" }, declared: [] },
+    );
+    const patch = fetchImpl.mock.calls.find(([, i]) => i?.method === "PATCH")!;
+    expect(patch[0]).toContain("/repos/acme/old-planning/issues/42");
+  });
+
+  // The declaration still points where the write went — the ordinary case, which
+  // must keep working: the re-point check is an equality test, not a ban on
+  // cards that carry a name.
+  it("undo: proceeds when the name still points at the recorded destination", async () => {
+    const fetchImpl = ghFetch();
+    await undoIssueWrite(
+      store,
+      {
+        tracker: "github:acme/planning",
+        trackerName: "planning",
+        issueId: "42",
+        undo: { kind: "create" },
+      },
+      fetchImpl,
       {
         token: "ghp_test",
         repo: { owner: "octocat", repo: "hello-world" },
-        declared: [{ kind: "github", name: "planning", owner: "acme", repo: "new-planning" }],
+        declared: [{ kind: "github", name: "planning", owner: "acme", repo: "planning" }],
       },
     );
     const patch = fetchImpl.mock.calls.find(([, i]) => i?.method === "PATCH")!;
-    expect(patch[0]).toContain("/repos/acme/new-planning/issues/42");
-    expect(fetchImpl.mock.calls.some(([u]) => typeof u === "string" && u.includes("old-planning"))).toBe(false);
+    expect(patch[0]).toContain("/repos/acme/planning/issues/42");
   });
 
   it("undo: create → cancels the issue (close as not_planned)", async () => {

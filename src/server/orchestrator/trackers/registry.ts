@@ -36,13 +36,18 @@
  *
  * Undoing a *recorded* write is requirement 11's single exception, and it needs
  * its own resolution rather than the narrowed `get()`. A provenance card records
- * both the name it was written with and the destination it reached; Undo prefers
- * the name while it still resolves (req 16 — re-pointing a name re-targets
- * recorded references too) and falls back to the recorded destination when it
- * does not (req 11 — an undeclared destination stays undoable). Reversing a
- * write grants no access the write did not already have: the card could only
- * exist if the destination was declared when it was written. Failing closed here
- * instead would strand every recorded action behind a config edit.
+ * the destination it reached, and Undo acts on **that** destination — even after
+ * it stops being declared (req 11: an undeclared destination stays undoable).
+ * Reversing a write grants no access the write did not already have, since the
+ * card could only exist if the destination was declared when it was written;
+ * failing closed here instead would strand every recorded action behind a config
+ * edit.
+ *
+ * Undo is NOT re-targeted by a re-pointed name (req 16's exception). Undo means
+ * "reverse what I did", and what was done was done to the recorded issue — so
+ * following the name would apply one issue's snapshot to a different issue that
+ * never had it. `undoIssueWrite` detects that case via {@link
+ * TrackerRegistry.destinationForName} and refuses rather than acting.
  */
 
 import type { CredentialStore } from "../credential-store.js";
@@ -134,14 +139,19 @@ export class TrackerRegistry {
    * rebuilds an adapter for the recorded id, which is what keeps an Undo working
    * after the repository stops declaring that destination.
    */
-  getRecorded(id: TrackerId, trackerName?: string): Tracker | undefined {
-    if (trackerName) {
-      const byName = this.entries.find(
-        (e) => e.destination.name?.toLowerCase() === trackerName.toLowerCase(),
-      );
-      if (byName) return byName.tracker;
-    }
+  getRecorded(id: TrackerId): Tracker | undefined {
     return this.get(id) ?? this.makeRecorded(id);
+  }
+
+  /**
+   * Where a declared name points **today**, or undefined if nothing declares it.
+   * Undo uses this to detect that a recorded name has been re-pointed since the
+   * write; it is deliberately not a resolution path of its own.
+   */
+  destinationForName(trackerName: string): TrackerDestination | undefined {
+    return this.entries.find(
+      (e) => e.destination.name?.toLowerCase() === trackerName.toLowerCase(),
+    )?.destination;
   }
 }
 

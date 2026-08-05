@@ -136,10 +136,19 @@ and together settle the schema:
   also remember the **resolved destination**, or it would have nothing to fall
   back to.
 
-So a card records both, and Undo prefers the name when it still resolves and falls
-back to the recorded destination when it does not. A card written from a canonical
-address has no name and simply uses the destination. This is the one part of the
-rework that touches the persisted card schema.
+So a card records both. A card written from a canonical address has no name and
+simply uses the destination.
+
+**Undo, however, uses the destination — not the name.** An earlier reading had
+Undo prefer the name so that req 16's re-point would re-target it too; that turned
+out to be wrong, and dangerous. The snapshot an undo restores belongs to the issue
+that was actually changed, so following a re-pointed name applies it to a
+different issue of the same number. On Linear the team guard refuses the attempt;
+on GitHub nothing did, and the wrong repository's issue was silently rewritten.
+Undo therefore acts on `card.tracker`, and **refuses** when `card.trackerName`
+now points somewhere else — "undo is for fixing something done minutes ago, not
+months ago" (req 11). A name that no longer resolves at all is not a conflict:
+that is req 11's original carve-out and the undo proceeds.
 
 ### 3. References resolve through the declarations (reqs 10, 11, 15, 16)
 
@@ -187,10 +196,14 @@ which form to write (req 15), which is an `agent-instructions` change, not a cod
 path.
 
 **Resolution happens at use (req 16).** Nothing pins a name to what it resolved to
-when written, including persisted Undo targets: `resolveIssueRef` consults only
-the declarations as they are *now*. A card therefore records `trackerName`
-alongside `tracker`, and `TrackerRegistry.getRecorded(id, name)` prefers the name
-while it still resolves.
+when written: `resolveIssueRef` consults only the declarations as they are *now*,
+so a chip, a `Closes` line or a read card written months ago opens whatever its
+name means today. A card records `trackerName` alongside `tracker` to make that
+possible.
+
+The exception is the **Undo target**, which is not a reference but a reverse-write
+against a specific issue: `getRecorded(id)` uses the recorded destination, and
+`undoIssueWrite` refuses when the recorded name has since moved (req 11).
 
 *Divergence from the design:* this was expected to need a database migration. It
 does not. `IssueWriteCard` is persisted as a JSON blob in the existing
@@ -384,11 +397,11 @@ reading the callers rather than the rule. Three findings were reported that are
 name a destination, which a qualified id does), and two the checklist already
 recorded as open.
 
-### Three precedence rules the review forced into the open
+### Four precedence rules the review forced into the open
 
 The review's remaining findings were not defects but *unstated* rules — cases
 where two requirements were each satisfiable alone and silently disagreed
-together. The user settled all three; they are now requirements 6 and 16.
+together. The user settled all four; they are now requirements 6, 11 and 16.
 
 - **A destination is declared at most once.** `TrackerId` *is* the destination,
   so two names for one repository collapse onto one id no matter what the UI
@@ -413,6 +426,15 @@ together. The user settled all three; they are now requirements 6 and 16.
   re-resolves on click, matching the write card. It rides the existing
   `issue_ref` JSON blob, so — like the write card's `trackerName` — the "schema
   change" the design anticipated turned out to be no schema change at all.
+
+- **Undo does not follow a re-pointed name.** It acts on the destination it
+  recorded and refuses if the name has moved (`undoIssueWrite`, via the registry's
+  new `destinationForName`). Asking this question is what exposed the sharpest
+  defect of the round: `getRecorded` preferred the recorded *name*, so re-pointing
+  `planning` made an Undo rewrite a **different repository's** issue of the same
+  number. Linear's team guard would have refused the equivalent attempt — GitHub
+  had none, and `issues.test.ts` asserted the wrong-repository PATCH as the
+  expected behavior. The question was raised as a wording gap and closed as a bug.
 
 The pattern behind all three: `TrackerId` being the *physical destination* is what
 made this feature cheap (one id round-trips through every surface), and it is also

@@ -241,12 +241,13 @@ export interface IssueWriteCard {
   tracker: TrackerId;
   /**
    * docs/248 — the tracker **name** the write was addressed by, when it had one.
-   * Recorded alongside `tracker` because the two serve different requirements
-   * and pull in opposite directions: req 16 says re-pointing a name re-targets
-   * every reference written against it, recorded ones included, so Undo must
-   * prefer the name while it still resolves; req 11 says an undeclared
-   * destination stays undoable, so `tracker` is the fallback. A write addressed
-   * by a canonical address has no name and simply uses `tracker`.
+   *
+   * NOT the undo target: `tracker` is. Undo reverses a change made to a specific
+   * issue, so following a re-pointed name would apply this card's snapshot to a
+   * different issue of the same number (req 11). `trackerName` is recorded so
+   * `undoIssueWrite` can DETECT that the name has moved and refuse, and so the
+   * card renders and links in the name form (req 15). A write addressed by a
+   * canonical address has no name and simply uses `tracker`.
    */
   trackerName?: string;
   /** Tracker-native id the undo reverse-write targets (number / key). */
