@@ -356,6 +356,36 @@ Added for the rework, and passing:
 | ShipIt-emitted references carrying the name form | `issues-declared-trackers.test.ts`, `issues-routes.test.ts`, `issues.test.ts` |
 | Declaration warnings and resolution failures in CLI output | `agent-issue-access.test.ts`, `issues-declared-trackers.test.ts` |
 
+### Live run against two real repositories
+
+Run against the dogfood inner ShipIt (`docs/118`), which serves this branch's
+orchestrator, with a session on `nicolasalt-shipit/todo-list` declaring
+`nicolasalt-shipit/template-nextjs` as `planning`. Both are real GitHub
+repositories reached with the inner deployment's own token; each declaration
+change below was a `shipit.yaml` edit with no restart.
+
+| Confirmed live | Observed |
+|---|---|
+| A declared tracker resolves and reads the **other** repository | `shipit issue list --tracker planning` returned `template-nextjs`, not the session's own repo |
+| The routing invariant, at the wire | Declared forms → `tracker=github:nicolasalt-shipit/template-nextjs`; a bare `#2` → `tracker=github` (todo-list) |
+| Req 13 — `create` must name its destination | Bare `create` refused with exit 2 and the declared names listed; `--tracker planning` filed into `template-nextjs` |
+| Req 15 — emitted references carry the name form | The create reported `planning#2`; a *canonical* address (`nicolasalt-shipit/template-nextjs#2`) also rendered back as `planning#2` |
+| Req 11 — fail-closed | An undeclared address, an unknown name, and a mismatched suffix (`planning#SHI-3`) each failed with the declared names, never a guess |
+| Req 11 — ambiguity | Declaring the same repository under two names made the canonical address fail naming both, while each name still resolved |
+| Req 12 — self-declaration | Declaring the session's own repository produced one tab under its name, not a duplicate |
+| Case-insensitive destination identity | A declaration written `nicolasalt-shipit/Template-NextJS` matched the lowercase address |
+| Cards record both name and destination | Persisted `issue_write` rows carried `trackerName: planning` **and** `tracker: github:nicolasalt-shipit/template-nextjs` |
+| Req 11's Undo carve-out | With the declaration **deleted** — so every new operation on `planning#2` failed closed — Undo of a recorded comment still reached GitHub and removed it |
+| Req 8 — warnings | Four malformed entries (missing `name`, Linear without `team`, `kind: jira`, a bad repo slug) each warned, were skipped, and left the valid entry working |
+
+**The `shipit` shim could not be driven through the inner agent.** The dogfood
+image deliberately installs only the `gh` shim, and `local-agent-ops.ts`'s
+allowlist maps no `issue/*` paths — a documented limitation tracked as SHI-303,
+not a defect of this branch. The runs above therefore invoked this branch's shim
+binary directly against this branch's orchestrator through a relay reproducing
+the worker's 1:1 `/agent-ops/issue/*` mapping. The one link not exercised is the
+worker's own router, which is a pure pass-through with its own unit coverage.
+
 **Not covered live.** `kind: linear` is exercised only against a stubbed Linear
 GraphQL API. The deployment that runs the dogfood loop has a GitHub token and no
 Linear credential, so no end-to-end Linear run was possible; requirements 3–5 rest

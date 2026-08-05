@@ -60,6 +60,7 @@ each item is where it is.
 - [x] ShipIt-emitted references carry the name form (req 15).
 - [x] Declaration warnings and resolution failures appear in CLI output (reqs 8, 19).
 - [x] The shipped two-repository `#42` fixture still passes — the regression guard for the routing invariant that carries over.
+- [x] Live run against two real GitHub repositories through the dogfood inner ShipIt — routing, req 13, req 15, fail-closed, ambiguity, self-declaration, the Undo carve-out and declaration warnings all confirmed end to end. Linear stays fake-only. See plan.md → *Live run against two real repositories*.
 
 ## Carries over unchanged
 
@@ -79,7 +80,9 @@ failing a session (req 7).
 
 ## Open — found during implementation, not closed here
 
-- [ ] **Requirement 22 is not held on the in-app path.** The Issues tab's "Start
+Each is filed; the tracker holds their status from here.
+
+- [ ] **Requirement 22 is not held on the in-app path.** ([SHI-320](https://linear.app/shipit-ai/issue/SHI-320)) The Issues tab's "Start
   session" pre-fills the chat instead of calling `seedFromIssueRef`, so the
   session's first message carries the issue **title** and the AI branch-namer
   derives the pushed branch from it. Pre-existing (docs/236 reshaped that flow);
@@ -88,8 +91,10 @@ failing a session (req 7).
   held on the in-app path*.
 - [ ] **The seed-time → started transition does not fire from the Issues tab**
   either, for the same root cause: the session carries no `issueRef`.
-  `shipit-docs/issues.md` still promises it.
-- [ ] **The browser's declaration view can go stale.** `fetchTrackers` runs on
+  `shipit-docs/issues.md` still promises it. (Same root cause, filed with the
+  above as [SHI-320](https://linear.app/shipit-ai/issue/SHI-320).)
+- [ ] **The browser's declaration view can go stale.**
+  ([SHI-321](https://linear.app/shipit-ai/issue/SHI-321)) `fetchTrackers` runs on
   session change and on Issues-tab activation, so editing `shipit.yaml` with the
   tab already open doesn't re-resolve names until one of those happens. The
   server reads the file per request, so only the client is affected.
