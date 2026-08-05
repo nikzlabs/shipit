@@ -111,12 +111,8 @@ Connect more than one account per provider — and the agent harness is pluggabl
 - [Codex CLI](https://github.com/openai/codex) — ChatGPT subscription or an OpenAI API key
 - More to come — the backend is agent-agnostic by design, so new runtimes can slot in
 
-**Quota failover across accounts.** Accounts form a prioritized list per provider, and each usage
-window (the short one and the weekly cap) has a cutoff you set — 90% by default. Reaching either
-cutoff moves the next turn to the next eligible account; an account that hits a hard limit is
-benched until it resets, and a turn that runs out mid-flight retries once on the next account.
-Failover applies to sessions already in progress, with chat history and workspace preserved, and the
-usage pills name the account they belong to.
+**Smooth support for multiple subscriptions.** ShipIt moves to your next account before a usage limit
+stops you, without interrupting sessions already in flight.
 
 ## Features
 
@@ -130,9 +126,6 @@ usage pills name the account they belong to.
 - **Agent-controlled services** — the agent starts, stops, restarts, and tails any Compose service
   the project declares, including the manual ones it needs on demand (a database to migrate, a cache
   to flush, an emulator to drive), so a debug dependency never waits on a click from you
-- **Always-on previews** — pin a session with **Keep preview running** and its container and
-  auto-preview services stay up with no viewer attached and no turn in flight, so an early-stage app
-  stays reachable without a separate deployment
 - **Android build, test & preview** — the session image bakes a JDK, the Android SDK, and Gradle, so
   the agent builds Gradle projects (including web/Android monorepos), runs JVM and Paparazzi snapshot
   tests, and reads the PNG diffs; declare an emulator as a Compose service and the running app shows
@@ -140,9 +133,6 @@ usage pills name the account they belong to.
 - **Git LFS support** — LFS-tracked assets are materialized during provisioning instead of checked
   out as pointer stubs, objects are shared across every session on the host rather than downloaded
   per session, and LFS images render as images in the diff viewer
-- **Dependency auto-reinstall** — a rebase, rollback, or pull that changes a lockfile or manifest
-  re-runs the install and restarts the services that depend on it, so the preview doesn't break on a
-  module the agent never installed
 - **Project templates** — quick-start scaffolding for React, Vue, Next.js, Svelte, and more
 - **File upload & image input** — drop files into the chat; the agent reads them as context
 - **Interactive terminal** — a full terminal inside each session container for ad-hoc debugging
