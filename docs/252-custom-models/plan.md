@@ -34,6 +34,23 @@ A custom model keeps the first, replaces the second, and extends the third. Ther
 no way to say that today, and every awkwardness below is a symptom of that single
 gap. Resolving it is the real work; DeepSeek is just the first case that forces it.
 
+**The split the requirements settle on is three-way, not two-way** (reqs 8–10):
+
+| Concept | Is | Identified by |
+|---|---|---|
+| **Harness** | a CLI to spawn, speaking exactly one API style | `claude`, `codex` |
+| **Service** | a credential + endpoint, speaking one or more API styles | its API key |
+| **Model** | a model id a service offers | `deepseek-v4-flash` |
+
+Compatibility is then **derived, not declared**: a service's models are offered on
+every harness whose API style that service speaks. Nothing has to enumerate
+harness×service pairs, which is what makes req 10 fall out for free — a harness added
+later immediately picks up every already-configured service that speaks its style.
+
+This is also why "should we support OpenAI-compatible providers?" was the wrong
+question. It is not a scope boundary; it is a property of each service, and it decides
+which harnesses that service appears under rather than whether it is supported at all.
+
 ## Findings from the spike
 
 All verified against the code on this branch, not inferred.
@@ -71,14 +88,19 @@ dogfood run: the log line was `[streaming-claude] spawning:`.
 Any env-shaping for custom models must be applied at both, and **after** the scrub —
 ordering is load-bearing, and is pinned by a test.
 
-### Providers: compatibility, not availability, is the constraint
+### API style is a property of the service, and services differ
 
 DeepSeek V4 Flash is served by DeepSeek, DeepInfra, Parasail, Fireworks and
-SiliconFlow, aggregated by OpenRouter, plus open weights for self-hosting. But only
-DeepSeek's own `/anthropic` surface is **Anthropic-compatible**; the rest are
-OpenAI-compatible, so pointing the Claude Code CLI at them fails at the wire format,
-not at auth. Switching provider is therefore not a URL swap — it needs a translating
-gateway. This is the substance of the first open question.
+SiliconFlow, aggregated by OpenRouter, plus open weights for self-hosting. Only
+DeepSeek's own surface is Anthropic-style (`/anthropic`); the others are OpenAI-style,
+so pointing the Claude Code CLI at them fails at the **wire format**, not at auth —
+a failure that looks nothing like a bad key.
+
+DeepSeek itself speaks **both** — the `/anthropic` endpoint and, per its own docs, the
+OpenAI Responses API with a Codex adaptation. So one DeepSeek key should surface its
+models under both harnesses (req 9), while an OpenAI-style-only service surfaces under
+Codex alone. This concrete asymmetry is the evidence for modelling API style per
+service rather than treating it as a global scope decision.
 
 ### Three things break, all from the same root
 
@@ -119,18 +141,37 @@ spike is scaffolding.
 
 ## Design
 
-_Deferred._ The shape depends on all five open questions — in particular whether custom
-models are user-configured or code-listed, which decides whether this is a data model
-plus settings surface or a registry widening. Writing it now would make the design a
-second, hidden source of requirements.
+_Partly deferred_ — the usage-indicator question is still open, so the pill's behavior
+is unwritten. The rest of the shape is settled by the 2026-08-05 answers.
 
-What is already known to be in scope regardless:
+**Data model.** A user-owned list of **services** (req 11), each carrying a display
+name, a credential, a base URL, the API style(s) it speaks, and the model ids it
+offers. `AgentId` keeps meaning *harness* only, and gains a declared API style. The
+picker's model list becomes derived — for the active harness, every model from every
+configured service whose style set includes that harness's style (reqs 8–10, 12).
 
-- A way to express "this model runs on this harness with this credential and endpoint",
-  replacing the `AgentId`-as-provider assumption.
-- Model-level (not provider-level) route eligibility.
-- Credential delivery via the existing `ALLOWED_ENV_KEYS` pipe.
-- Env shaping at both spawn sites, after the scrub.
+**Eligibility** (req 12) moves from `hasAnyAuthForProvider(provider)` to a per-model
+question: *is there a configured service offering this model for this harness?* The
+backend's own account becomes one service among several rather than a special case, so
+"Claude with no account connected" and "DeepSeek with no key" are the same condition,
+answered by the same code. This retires the spike's overstatement rather than patching
+it, and is what makes the picker honest generally.
+
+**Credential delivery** reuses the existing pipe: a per-service key name in
+`ALLOWED_ENV_KEYS`, carried to a container by `selectAgentEnvForPush` and to local mode
+by `app-di.ts`'s startup load. No new transport.
+
+**Spawn shaping** sets the base URL and credential at both spawn sites, after the
+scrub, from the *selected model's* service rather than from a model-id prefix.
+
+**Non-turn work** (req 13) — session naming and PR descriptions must resolve the same
+service as the turn path, instead of spawning with ambient credentials. This is the one
+place the current code has no seam at all; it is the largest single piece of work here.
+
+**The three known-wrong behaviors** are then not three fixes: eligibility subsumes the
+auth-flow misfire (a 401 from a service should re-prompt for *that service's*
+credential), req 13 subsumes the non-turn failures, and only the usage pill remains,
+pending the open question.
 
 ## Key files
 

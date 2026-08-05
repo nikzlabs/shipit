@@ -2,9 +2,9 @@
 
 The design that implements these requirements is in [`plan.md`](./plan.md).
 
-**Status: open questions below block implementation.** The experimental spike on
-this branch (PR #1997) predates this document and is not an implementation of it —
-see `plan.md` § "Relationship to the spike".
+**Status: one open question below still blocks implementation.** The experimental
+spike on this branch (PR #1997) predates this document and is not an implementation
+of it — see `plan.md` § "Relationship to the spike".
 
 ## Requirements
 
@@ -32,65 +32,85 @@ see `plan.md` § "Relationship to the spike".
 7. A user can try a model this way cheaply — without ShipIt shipping support for
    it first, and without merging anything.
 
+8. The thing a user adds is a **service**, identified by its API key — not a
+   model, and not a harness. Adding a DeepSeek key adds DeepSeek.
+
+9. A service may speak more than one API style, and a harness speaks one. A
+   service's models are usable in **every** harness whose API style that service
+   speaks. A service that speaks both is usable in both Claude Code and Codex; a
+   service that only speaks the OpenAI style is usable in Codex only.
+
+10. When a new harness is added to ShipIt later, every already-configured service
+    that speaks its API style becomes usable with it, with no further work by the
+    user.
+
+11. A user adds and manages their own services, in their own Settings. Trying a new
+    service or model does not require an administrator, a code change, or a release.
+
+12. ShipIt only offers models it can actually run. A model whose service has no
+    configured credential is not selectable, including the agent backend's own
+    models when no account for that backend is connected.
+
+13. The work ShipIt does outside a turn — naming a session, writing a pull-request
+    description — runs on the user's selected model too, so an install configured
+    only with a custom service is fully functional.
+
 ## Open questions
 
-- **How far does "any custom model" reach?** The spike works because DeepSeek
-  serves an Anthropic-compatible API, so the existing CLI can talk to it unchanged.
-  Most other providers (OpenRouter, DeepInfra, Fireworks, Together, SiliconFlow,
-  self-hosted vLLM) are OpenAI-compatible instead, and would need a translating
-  gateway in between. Options: (a) only providers that already serve a
-  harness-compatible API; (b) also OpenAI-compatible providers, with the user
-  supplying a gateway URL; (c) ShipIt runs a translation layer itself.
-  *Recommendation: (a) first, (b) as a documented escape hatch, never (c).*
-
-- **Who decides which custom models exist?** Options: (a) each user adds them in
-  their own Settings; (b) the deployment's administrator defines the list and users
-  pick from it; (c) they stay listed in the repo's source, as the spike does.
-  *Recommendation: (a).*
-
-- **What should happen to the backend's own models when only a custom credential
-  is configured?** Today the spike reports the whole provider as authenticated, so
-  the picker still offers `claude-*` models and those turns fail at the API with no
-  sign-in prompt. Options: (a) model-level eligibility, so unusable models are
-  hidden or disabled; (b) leave them selectable and let them fail; (c) require a
-  real backend account in addition to the custom credential.
-  *Recommendation: (a).*
-
-- **Should the work ShipIt does outside a turn use the custom model?** Session
-  naming and PR-description generation spawn the CLI outside the turn path and so
-  get no custom-model routing — on a custom-model-only install they fail, and
-  sessions fall back to a truncated-prompt title. Options: (a) route them through
-  the custom model too; (b) leave them unrouted and degrade quietly; (c) require a
-  backend credential for them specifically. *Recommendation: (a).*
-
 - **What should the usage indicator show for a custom model?** The subscription
-  pill is fed by rate-limit events the backend's own API emits and a custom
-  provider does not. Options: (a) hide it for custom models; (b) show token spend
-  instead; (c) leave it blank. *Recommendation: (a).*
+  pill is fed by rate-limit events the backend's own API emits, which a custom
+  service does not send. Options: (a) hide it for custom-service sessions; (b) show
+  token spend instead; (c) leave it blank. *Recommendation: (a) — a blank pill reads
+  as a bug, and token spend is a bigger feature than it looks.*
 
 ## Resolved questions
 
-_None yet._
+- 2026-08-05 — How far should "any custom model" reach: only providers already
+  serving a harness-compatible API, or also OpenAI-compatible ones through a
+  gateway? **Chosen: neither — the framing was wrong.** The primitive is the
+  *service*, defined by its API key. A service may support several API styles, and
+  therefore several harnesses; compatibility is derived from that overlap rather than
+  being a scope decision. A DeepSeek key yields DeepSeek models in both Claude Code
+  and Codex; a service speaking only the OpenAI style yields Codex only; a harness
+  added later automatically picks up the services that speak its style. Requirements
+  8, 9 and 10 were added; the gateway question is no longer the axis and is dropped.
+
+- 2026-08-05 — Who decides which custom models exist? Chosen: each user, in their own
+  Settings — not an admin-curated list and not the source tree, both of which
+  contradict requirement 7. Requirement 11 was added.
+
+- 2026-08-05 — When only a custom credential is configured, what happens to the
+  backend's own models? Chosen: model-level eligibility, so models with no usable
+  credential are not selectable. Requirement 12 was added.
+
+- 2026-08-05 — Should non-turn work (session naming, PR descriptions) run on the
+  custom model? Chosen: yes, route it through the same model. Requirement 13 was
+  added.
 
 ## Requirement provenance
 
-Recorded because the generalization from "DeepSeek Flash" to "any custom model"
-came from the human, but most of the mechanism did not. What the human actually
-said, in order:
+Recorded because the generalization from "DeepSeek Flash" to "any custom model" came
+from the human, but most of the mechanism did not. What the human actually said, in
+order:
 
 - "DeepSeek Flash … what harness is the best for it, and how hard would it be to
   integrate it into ShipIt?" → the feature exists at all.
 - "Now I'm considering to play with a new model, from inside ShipIt." → req 7.
 - "so I can test whether it works at all, before merging" → req 7.
 - "supporting DeepSeek Flash in Claude Code, essentially supporting any custom
-  model" → reqs 1, 2, 3. The generalization beyond DeepSeek is the human's, not
-  the agent's.
+  model" → reqs 1, 2, 3. The generalization beyond DeepSeek is the human's.
+- "start from the service, which is defined by the API key … every service may
+  support various APIs and thus harnesses … if we add another harness in the future,
+  it would be also supported for some of the API keys" → reqs 8, 9, 10. This
+  replaced the agent's own framing, which had treated API compatibility as a scope
+  boundary rather than as a property of each service.
+- Answers of 2026-08-05 → reqs 11, 12, 13.
 
 Reqs 4, 5 and 6 are the agent's reading of "works like any other session" and of
-ShipIt's existing product principles. They are stated as requirements rather than
-open questions because they restate expectations ShipIt already meets everywhere
-else — but they were not said out loud, and should be struck if wrong.
+ShipIt's existing product principles. They are stated as requirements rather than open
+questions because they restate expectations ShipIt already meets everywhere else — but
+they were not said out loud, and should be struck if wrong.
 
-Everything else the agent learned while spiking — the harness/provider split, route
-eligibility, which environment variables carry the credential, spawn-site ordering —
-is design, and lives in `plan.md`.
+Everything the agent learned while spiking — the harness/provider split, spawn-site
+ordering, which environment variables carry a credential — is design, and lives in
+`plan.md`.
