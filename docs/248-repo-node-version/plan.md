@@ -196,6 +196,54 @@ error. **This is a partial satisfaction of req 5 and is called out as such**; if
 the Compose image should become a real pin source, that is a new question for the
 requirements doc, not an inference to make here.
 
+## Telling the agent (req 8)
+
+The diagnostics panel is a *human* surface. The agent cannot reach it and has no
+reason to look, so an agent in a session whose pin failed would debug a broken
+native build against a runtime it believed was the project's — the original bug,
+one layer along.
+
+So when the pin could not be honored, the note rides the **first turn's prompt**:
+
+```
+<system>
+ShipIt could not run this session on the Node version the repository asks for.
+
+  running:  Node 24.15.0
+  repo pin: 22 (.nvmrc)
+  reason:   could not provision Node for `22`: getaddrinfo EAI_AGAIN nodejs.org
+
+Take this into account before trusting anything version-sensitive: …
+</system>
+
+why does the native module not build?
+```
+
+Four decisions:
+
+- **The user message, not the system prompt.** `PRECOMPUTED_INSTRUCTIONS` is
+  rendered once per `(agentId, isOps)` at module load and must stay byte-stable
+  or the prompt cache goes cold on every turn in the fleet (`CLAUDE.md` →
+  Prompts). The prompt text carries no such contract, and `assembleAgentPrompt`
+  already establishes that prompt ≠ displayed text by folding in file and image
+  context. The transcript keeps the user's own words; only the CLI's copy has
+  the prefix, so the note never reads as something the user said.
+- **Prefixed, except for slash commands.** A `/command` must stay at position 0
+  or the CLI stops parsing it; the note then follows. Same rule and same reason
+  as `assembleAgentPrompt`, restated in `node-runtime.ts` because session code
+  may not import from `orchestrator/`.
+- **Once per container, not per session.** The pin is resolved at worker boot, so
+  "first turn" means first since that resolution. A session whose container is
+  recreated re-resolves and tells the *new* agent process, which never saw the
+  old note.
+- **Keyed on `mismatch`, not the literal `failed` state.** `unsupported`
+  (`lts/jod`) and `below-floor` are the same situation from the agent's point of
+  view — the repo asked for a Node it isn't getting. `provisioned` and
+  `satisfied` say nothing, which is almost every session.
+
+Sub-agent spawns (`/agent/spawn`) deliberately don't carry the note: they are
+scoped one-shot tasks launched *by* an agent that already received it.
+
 ## Diagnostics (req 6)
 
 `GET /node-runtime` on the worker returns the resolved `NodeRuntimeStatus`. The
@@ -219,6 +267,8 @@ so this section exists to make the discrepancy legible even on the happy path.
 | `session/install-runtime.ts` | `runtimeKey()` appends the pinned version |
 | `orchestrator/services/diagnostics.ts` | Probes the worker, adds `nodeRuntime` to the payload |
 | `client/components/SessionDiagnosticsPanel.tsx` | "Node runtime" section |
+| `session/node-runtime.ts` (`formatNodeRuntimeNotice`, `prefixPromptWithNotice`) | Req 8's system note + where it lands in the prompt |
+| `session/agent-controller.ts` | Attaches the note to the first turn since boot |
 | `session/node-runtime.ts` (`findComposeNodeConflicts`) | Req 5's Compose cross-check |
 | `orchestrator/overlay-session.ts` | `overlayPinSegment` splits the base scope on the pin |
 | `orchestrator/container-overlay-provisioner.ts`, `session-container.ts`, `app-lifecycle.ts` | Resolve + publish the worker image's own Node version |
@@ -238,6 +288,10 @@ so this section exists to make the discrepancy legible even on the happy path.
   is not mistaken for the shared cache mount.
 - `orchestrator/overlay-session.test.ts` — the pin segment is empty for every
   case that doesn't move the runtime, splits when it does, and differs per pin.
+- `session/agent-controller.test.ts` — req 8 through the real `/agent/start`
+  route with a fake agent: silent with no pin and with an honored pin, leads the
+  prompt when the pin failed, fires once per container, and keeps a slash command
+  at position 0.
 - `session/install-runtime.test.ts` — the key is byte-identical without a pin,
   and changes when the pin changes.
 - `orchestrator/services/diagnostics.test.ts` — probe against a real stand-in

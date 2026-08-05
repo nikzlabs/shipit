@@ -91,9 +91,16 @@ agent CLIs resolve `node` through the same `PATH` and require 20+.
 
 When a pin can't be honored — an unsupported form like `lts/*`, a version below
 that floor, or a failed download — the session keeps running on the container's
-Node and the mismatch is reported in **session diagnostics** (the panel behind
-the session health strip), under "Node runtime". It is never silently ignored.
-If `node -v` surprises you, that panel says why.
+Node and **you are told on your first turn**, in a `<system>` block ahead of the
+user's message, naming the version you're running, what the repo asked for, and
+why it couldn't be provisioned. Treat that as real: native addons you build
+target the wrong ABI, tooling behaviour may differ from CI, and a failure you do
+or don't reproduce may not reflect the project's target runtime. Say so if it
+turns out to matter for the task rather than silently working around it.
+
+The same information is in **session diagnostics** (the panel behind the session
+health strip) under "Node runtime", which is where the user can see it too. It is
+never silently ignored — if `node -v` surprises you, that panel says why.
 
 Changing `.nvmrc` mid-session does not re-provision; the pin is resolved once at
 container start. Restart the container to pick up a new pin.

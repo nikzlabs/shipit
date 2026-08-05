@@ -590,6 +590,71 @@ function activateNodeDir(binDir: string, version: NodeVersion, stateDir?: string
 }
 
 // ---------------------------------------------------------------------------
+// Telling the agent (requirement 8)
+// ---------------------------------------------------------------------------
+
+/**
+ * The system note handed to the agent when the repo's Node pin could not be
+ * honored, or `null` when there is nothing to say.
+ *
+ * Requirement 8: the agent should not have to ask. Until now this state existed
+ * only in the diagnostics panel — a human surface the agent cannot reach and has
+ * no reason to check — so an agent would happily debug a failing build against a
+ * runtime it believed was the project's.
+ *
+ * Fires on `mismatch`, not on the literal `failed` state: `unsupported`
+ * (`lts/jod`) and `below-floor` are the same situation from the agent's point of
+ * view — the repo asked for a Node it isn't getting — and `mismatch` is already
+ * exactly that predicate. A `provisioned` or `satisfied` session says nothing,
+ * which is almost every session.
+ */
+export function formatNodeRuntimeNotice(status: NodeRuntimeStatus): string | null {
+  if (!status.mismatch) return null;
+
+  const lines = [
+    "<system>",
+    "ShipIt could not run this session on the Node version the repository asks for.",
+    "",
+    `  running:  Node ${status.activeVersion}`,
+  ];
+  if (status.pinRaw && status.pinSource) {
+    lines.push(`  repo pin: ${status.pinRaw} (${status.pinSource})`);
+  }
+  if (status.resolvedVersion && status.resolvedVersion !== status.activeVersion) {
+    lines.push(`  wanted:   Node ${status.resolvedVersion}`);
+  }
+  if (status.reason) lines.push(`  reason:   ${status.reason}`);
+  lines.push(
+    "",
+    "Take this into account before trusting anything version-sensitive: native",
+    "addons you build here target the wrong ABI, tooling behaviour may differ from",
+    "CI, and a failure you do or don't reproduce may not reflect the project's real",
+    "target runtime. Say so if it turns out to matter for the task; don't silently",
+    "work around it.",
+    "</system>",
+  );
+  return lines.join("\n");
+}
+
+/**
+ * Attach a system note to a turn's prompt.
+ *
+ * Prefixed, so the agent reads it before the request it is about to act on —
+ * EXCEPT for a slash invocation, which must stay at position 0 or the CLI stops
+ * parsing it as a command. That is the same rule (and the same reason)
+ * `assembleAgentPrompt` applies to file and image context in the orchestrator;
+ * it is restated here rather than imported because session code may not import
+ * from `orchestrator/`.
+ *
+ * This only touches the string handed to the CLI. The transcript keeps the
+ * user's own text, so the note never reads as something the user said.
+ */
+export function prefixPromptWithNotice(prompt: string, notice: string): string {
+  const isSlashInvocation = /^\/[a-zA-Z0-9._-]+/.test(prompt.trimStart());
+  return isSlashInvocation ? `${prompt}\n\n${notice}` : `${notice}\n\n${prompt}`;
+}
+
+// ---------------------------------------------------------------------------
 // Worker-lifetime singleton
 // ---------------------------------------------------------------------------
 
