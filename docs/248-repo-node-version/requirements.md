@@ -8,7 +8,7 @@ description: The agent container runs its baked Node major regardless of the rep
 
 Source: [nikzlabs/shipit#1728](https://github.com/nikzlabs/shipit/issues/1728), filed from a session.
 
-Design: see [plan.md](./plan.md) (not written yet — blocked on the open questions below).
+Design: see [plan.md](./plan.md).
 
 ## Context (reported behavior)
 
@@ -53,6 +53,13 @@ image's baked Node major (`docker/Dockerfile.session-worker.prod` is
    diagnostics. The discrepancy must be visible rather than silently assumed
    correct. This is the floor, not the goal: requirement 1 is the goal.
 
+8. The agent running in the session can find out how the repo's Node pin was
+   resolved — the Node it is actually running, what the repo asked for, and, when
+   the pin is not being honored, why — so it can take that into account when
+   deciding what to do. Today this information exists only in the diagnostics
+   panel, which is a human surface: the agent has no way to reach it and no
+   signal that it should look.
+
 ## Explicitly out of scope
 
 7. Native-module build failures caused by upstream incompatibility are not part
@@ -63,7 +70,14 @@ image's baked Node major (`docker/Dockerfile.session-worker.prod` is
 
 ## Open questions
 
-_None._
+- **How proactive should requirement 8 be?** Making the information *reachable*
+  is easy; making the agent *notice* is the real question, and it trades
+  usefulness against noise. A command the agent runs on demand costs nothing but
+  relies on it thinking to ask — which is the same discoverability problem the
+  diagnostics panel already has. Volunteering the information on every turn would
+  reach an agent that wasn't looking, but almost every repo either pins nothing or
+  pins something the container already satisfies, so it would be noise nearly all
+  of the time.
 
 ## Resolved questions
 
