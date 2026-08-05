@@ -28,7 +28,7 @@ The current requirements changed three things that invalidate parts of it:
 - **Destinations are named, and the name is mandatory** (req 6, 11). `--repo
   owner/name` is replaced by the tracker's declared name, which also retires the
   shipped rule that `--repo` may reach any repository the credential can see.
-- **References resolve at use** (req 14), removing the shipped guarantee that a
+- **References resolve at use** (req 15), removing the shipped guarantee that a
   recorded destination stays pinned to what it resolved to when written.
 - **Three reference forms are recognized** (req 10), including an unqualified
   backend id resolved through the declaration whose identity matches it — which is
@@ -79,7 +79,7 @@ later. The resolver's rules:
 1. An operation that names a repository — `--repo owner/name`, or a qualified
    `owner/repo#number` pointer — uses **that** repository, verbatim. ShipIt does
    not check it against a known set: any repository the credential can reach is
-   reachable, and GitHub authorization is the only gate (superseded: req 11 replaces `--repo` with a declared name, so reachability is now what the repository declared). A repository the
+   reachable, and GitHub authorization is the only gate (superseded: req 12 replaces `--repo` with a declared name, so reachability is now what the repository declared). A repository the
    credential cannot see fails closed with an inline access error naming both
    possibilities (missing or inaccessible).
 2. An operation that names none keeps its current meaning: the active session's
@@ -106,7 +106,7 @@ a display identifier while downstream services received a bare issue number and
 reconstructed context from the code remote — so a pointer such as
 `other-owner/other-repo#42` could mutate code-repository issue `#42`.
 
-### Branch names (req 19)
+### Branch names (req 20)
 
 Sessions seeded from an issue keep the title in ShipIt — it is still the session
 title and still opens the seed prompt — but the **pushed branch name is the
@@ -150,7 +150,7 @@ user operates. It buys three things at once:
 
 **There is no new fixed tracker identity either.** On the CLI the destination is a
 *repository*, named on the operation: `shipit issue … --tracker github --repo
-owner/name` (superseded by req 11). An operation naming no repository still resolves the active
+owner/name` (superseded by req 12). An operation naming no repository still resolves the active
 session's code remote, so neither a declaration nor a setting can silently change
 where an existing command writes. `--repo` accepts any repository the credential
 can reach, so it is not limited to what `shipit.yaml` declares; declarations drive
@@ -171,7 +171,7 @@ Tracker calls use the same contextual GitHub credential as ShipIt's other GitHub
 operations: the deployment credential initially, the owning Project's credential
 after Projects phase 1c. There is no second tracker credential, no tracker ACL,
 and no per-viewer GitHub-membership check — GitHub authorizes the credential, not
-the viewer (req 21). For GitHub App authentication the installation must include
+the viewer (req 22). For GitHub App authentication the installation must include
 the repository; for a user token, that token must grant Issues access there.
 
 Note the credential is the **account-wide** token (`githubAuthManager.getToken()`),
@@ -206,18 +206,18 @@ work.
 
 Three consequences to design against, each following from a requirement:
 
-- **ShipIt emits the name everywhere** (req 13). Every site that today
+- **ShipIt emits the name everywhere** (req 14). Every site that today
   formats a qualified pointer — the PR-body `Closes`/`Refs` writer, provenance and
   read cards, `shipit issue` output, doc `issue:` frontmatter written by the agent
   — must render the name when the target tracker has one. This is the bulk of the
   work and it is spread across surfaces that currently format independently, so it
   wants a single formatter rather than N call sites learning about names.
-- **A self-declaration must be honored** (req 11). `buildTrackerRegistry` currently
+- **A self-declaration must be honored** (req 12). `buildTrackerRegistry` currently
   *skips* a declaration whose `owner/repo` case-insensitively matches the
   session's own repo, on the reasoning that it duplicates the bare `github`
   tracker. That skip has to go: a self-declaration is how a code repository gets
   a name. The resulting entry must not produce a duplicate tab.
-- **Resolution happens at use, not at write** (req 14). Nothing pins a name to
+- **Resolution happens at use, not at write** (req 15). Nothing pins a name to
   the repository it resolved to when written — including persisted Undo card
   targets. Re-pointing a name re-targets history written against it, and the UI
   shows the repository it now resolves to. This *removes* a guarantee the shipped
@@ -260,7 +260,7 @@ closed and stay legible, not silently degrade to a broken link).
 - `src/server/session/agent-shim/shipit-issue.ts` — `--repo` on every verb, via
   `resolveTrackerFlag` / `resolveIssuePointer`.
 - `src/server/orchestrator/services/headless-sessions.ts` — `seedFromIssueRef`
-  builds the branch from the identifier alone (req 19).
+  builds the branch from the identifier alone (req 20).
 - Agent-facing docs: `src/server/shipit-docs/issues.md` (repository-resolution
   rules) and `shipit-docs/shipit-yaml.md` (the `issues:` block).
 
@@ -281,14 +281,14 @@ the requirements say it should.
 
 Name coverage is not written yet. It needs, at minimum: a name pointer
 resolving to its declared repository; a name re-pointed to a second repository
-re-targeting an existing recorded card (req 14); a self-declaration producing an
+re-targeting an existing recorded card (req 15); a self-declaration producing an
 name without a duplicate tab; ShipIt-generated PR bodies containing the name
-form rather than the qualified slug (req 13); and an unresolvable name failing
+form rather than the qualified slug (req 14); and an unresolvable name failing
 closed.
 
 ## Known GitHub feature differences
 
-Accepted without a parity gate (req 23), represented honestly rather than
+Accepted without a parity gate (req 24), represented honestly rather than
 emulated:
 
 - workflow beyond Open/Closed needs an explicit status convention;

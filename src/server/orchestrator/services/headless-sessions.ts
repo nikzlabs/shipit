@@ -45,7 +45,7 @@ export function seedFromIssueRef(issueRef: IssueRef): {
   // Branch: the issue's **pointer only**, lowercased and kebabbed so it stays a
   // valid git ref (assertValidBranchName rejects spaces/specials).
   //
-  // docs/248 req 16 — the issue title is deliberately NOT in the branch name. A
+  // docs/248 req 20 — the issue title is deliberately NOT in the branch name. A
   // branch gets pushed to a public remote, so a title from a private planning
   // issue would be published there. The rule is unconditional rather than scoped
   // to "private" issues because ShipIt has no signal for which repositories are
