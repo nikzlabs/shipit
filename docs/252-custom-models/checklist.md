@@ -12,8 +12,9 @@
 - [ ] Replace `hasAnyAuthForProvider` with per-model eligibility (req 11).
 - [ ] Settings surface for adding, editing, and removing services (req 10).
 - [ ] Mid-session model switching on one harness, including across services
-      (req 5) — first establish whether the resident streaming process can change
-      model without a respawn.
+      (req 5) — first establish, by reading `StreamingClaudeProcess`, whether a
+      resident process can change model without a respawn or must be forced to
+      restart.
 - [ ] Per-service credential name through `ALLOWED_ENV_KEYS`; verify both the container
       push and the local-mode startup load.
 - [ ] Spawn shaping at both spawn sites, after the scrub, resolved from the selected

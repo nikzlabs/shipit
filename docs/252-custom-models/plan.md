@@ -101,26 +101,30 @@ models under both harnesses (req 8), while an OpenAI-style-only service surfaces
 Codex alone. This concrete asymmetry is the evidence for modelling API style per
 service rather than treating it as a global scope decision.
 
-### Three things break, all from the same root
+### Two things break — and a third that only looked broken
 
-1. **The usage pill is empty.** `ClaudeLimitsProvider` is event-fed from
-   `agent_rate_limits`, which a non-Anthropic service does not emit.
-2. **A 401 triggers the wrong recovery.** `AUTH_ERROR_PATTERNS` (`process.ts:43`)
+1. **A 401 triggers the wrong recovery.** `AUTH_ERROR_PATTERNS` (`process.ts:43`)
    matches `"unauthorized"` / `"authentication_error"`, so a bad custom key kicks the
-   session into the *backend vendor's* OAuth re-auth flow, which cannot fix it.
-3. **Non-turn CLI spawns fail.** Session naming and PR-description generation spawn
-   the CLI outside the turn path, so they get no custom routing and no backend
+   session into the *harness vendor's* OAuth re-auth flow, which cannot fix it.
+2. **Non-turn CLI spawns fail.** Session naming and PR-description generation spawn
+   the CLI outside the turn path, so they get no custom routing and no vendor
    credential. Observed as `[session-namer] claude CLI failed`; sessions fall back to a
    truncated-prompt title.
 
-Each is code that assumes a service identity the type system cannot express — the
-same gap as above, surfacing three times. None should be patched individually.
+Both are code that assumes a service identity the type system cannot express — the
+same gap as above, surfacing twice. Neither should be patched individually.
+
+The third symptom, an **empty usage pill** (`ClaudeLimitsProvider` is event-fed from
+`agent_rate_limits`, which a non-Anthropic service does not emit), was originally
+recorded here as a bug. It is not one: once the indicator is per-service, a service
+with no quota *should* show nothing (req 13). Kept in this list because the mistake is
+easy to repeat — the correct behavior is indistinguishable from the bug by inspection.
 
 ### Prompt caching is not portable
 
 `PRECOMPUTED_INSTRUCTIONS` renders every prompt variant once at module load
-specifically to keep the CLI string byte-stable for Anthropic's prompt cache. A custom
-provider has its own cache semantics, so cost and latency on a custom model are not
+specifically to keep the CLI string byte-stable for Anthropic's prompt cache. Another
+service has its own cache semantics, so cost and latency on its models are not
 comparable to the tuned path, in either direction.
 
 ## Relationship to the spike
@@ -130,7 +134,7 @@ answer "does this work at all". It is not an implementation of these requirement
 should not be treated as one. It hardcodes a single model id in
 `CLAUDE_MODELS`, hardcodes DeepSeek's endpoint, and makes
 `hasAnyAuthForProvider`/`reservedRouteFor` treat a DeepSeek key as a Claude-provider
-route — deliberately accepting the overstatement in the third open question.
+route — an overstatement it accepted deliberately, and which req 11 now rules out.
 
 **It did establish that the approach works.** A full session ran on DeepSeek V4 Flash
 through the unmodified Claude Code harness: multi-step tool use, correct output, a
@@ -140,7 +144,8 @@ spike is scaffolding.
 
 ## Design
 
-Settled by the 2026-08-05 answers; no part of this is deferred.
+Settled by the 2026-08-05 answers. No design decision is deferred; one implementation
+unknown is flagged inline under mid-session switching.
 
 **Data model.** A user-owned list of **services** (req 10), each carrying a display
 name, a credential (key *or* subscription), a base URL, the API style(s) it speaks, and
@@ -164,9 +169,13 @@ overstatement rather than patching it.
 **Mid-session model switching** (req 5) is a capability question per harness, not a new
 mechanism: the model is already a per-turn spawn argument, and `AgentCapabilities`
 already carries per-harness flags. A switch that crosses *services* additionally
-re-resolves the credential and base URL for the next spawn. What needs checking before
-design is settled is whether a resident streaming process can change model without a
-respawn, or whether the switch has to force one.
+re-resolves the credential and base URL for the next spawn.
+
+One implementation unknown, to settle by reading the code rather than by deciding:
+whether a resident `StreamingClaudeProcess` can change model mid-session without a
+respawn, or whether a switch must force one. This affects the mechanism, not the
+requirement — req 5 is satisfied either way, and "as far as the harness supports it"
+is what makes a forced respawn acceptable.
 
 **Credential delivery** reuses the existing pipe: a per-service key name in
 `ALLOWED_ENV_KEYS`, carried to a container by `selectAgentEnvForPush` and to local mode
@@ -220,6 +229,10 @@ with no quota should show nothing. Only the first two are work.
 | `orchestrator/local-agent-home.ts` | `resolveLocalAgentHome` — why reserved routes are unscoped |
 | `shared/model-windows.ts` | First-frame context window |
 | `client/components/ModelAgentSelector.tsx` | Picker, `METERED_MODELS` |
+| `shared/types/usage-limits-types.ts` | `SubscriptionLimits` — already keyed by `routeId` |
+| `orchestrator/agents/*/limits-provider.ts` | Per-`AgentId` today; becomes per service (req 13) |
+| `orchestrator/usage.ts` | `RecordedTurn` — token/cost accounting, distinct from quota |
+| `orchestrator/session-namer.ts` | Non-turn spawn with no service seam (req 12) |
 
 ## Verifying a service in dogfood
 
