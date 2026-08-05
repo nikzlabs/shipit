@@ -12,6 +12,7 @@ import { useState, useCallback, useMemo } from "react";
 import { usePrStore } from "../../stores/pr-store.js";
 import { collectPrCardIssueRefs } from "../../utils/pr-card-issue-refs.js";
 import { useSessionStore } from "../../stores/session-store.js";
+import { useIssuesStore } from "../../stores/issues-store.js";
 import { useIsMobile } from "../../hooks/useMediaQuery.js";
 import { PrActionsMenu } from "../PrActionsMenu.js";
 import { Button } from "../ui/button.js";
@@ -109,9 +110,24 @@ export function PrLifecycleCard({
   const repoDefaultBranch = useSessionDefaultBranch(sessionId);
   const prBody = usePrStore((s) => s.statusBySession[sessionId]?.prBody) ?? card?.pr?.body;
   const firstUserText = useSessionStore((s) => s.messages.find((m) => m.role === "user")?.text);
+  // docs/248 — resolve the PR body's references against the destinations this
+  // session declares, so a chip only becomes an inline link when there is a
+  // declared tracker behind it. Subscribed (not `getState()`) so the chips
+  // re-resolve when the tracker list lands or a declaration changes.
+  const trackers = useIssuesStore((s) => s.trackers);
   const issueRefs = useMemo(
-    () => collectPrCardIssueRefs({ prBody, firstUserMessage: firstUserText }),
-    [prBody, firstUserText],
+    () =>
+      collectPrCardIssueRefs({
+        prBody,
+        firstUserMessage: firstUserText,
+        destinations: trackers.map((t) => ({
+          id: t.id,
+          kind: t.kind,
+          ...(t.name ? { name: t.name } : {}),
+          ...(t.binding?.key ? { key: t.binding.key } : {}),
+        })),
+      }),
+    [prBody, firstUserText, trackers],
   );
 
   // The panel (and its header toggle) appears when there's anything to show in

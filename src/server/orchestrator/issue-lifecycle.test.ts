@@ -34,7 +34,13 @@ interface Call {
  * echoes the requested `state`; POST comments returns a comment node. Records
  * every call for assertions.
  */
-function makeHarness(initialState: "open" | "closed" = "open", archived = false) {
+function makeHarness(initialState: "open" | "closed" = "open", archived = false, declarations?: string) {
+  // docs/248 — declarations come from the session workspace's shipit.yaml, so a
+  // test that needs more than the session's own repository writes one.
+  const workspaceDir = declarations ? fs.mkdtempSync(path.join(os.tmpdir(), "lc-ws-")) : undefined;
+  if (workspaceDir && declarations) {
+    fs.writeFileSync(path.join(workspaceDir, "shipit.yaml"), declarations);
+  }
   const calls: Call[] = [];
   const fetchImpl = (async (url: string, init?: { method?: string; body?: string }) => {
     const method = init?.method ?? "GET";
@@ -81,7 +87,7 @@ function makeHarness(initialState: "open" | "closed" = "open", archived = false)
     trackerFetchImpl: fetchImpl,
     githubAuthManager: { getToken: () => "ghp_test" } as unknown as GitHubAuthManager,
     sessionManager: {
-      get: () => ({ remoteUrl: REMOTE, archived, userArchived: archived }),
+      get: () => ({ remoteUrl: REMOTE, archived, userArchived: archived, workspaceDir }),
       hasAppliedMergeIssueEffect: (id: string, key: string) => appliedEffects.get(id)?.has(key) ?? false,
       markAppliedMergeIssueEffect: (id: string, key: string) => {
         const set = appliedEffects.get(id) ?? new Set<string>();
@@ -126,6 +132,58 @@ describe("applyMergedPrIssueRefs — completed on merge", () => {
     const cards = appended.filter((m) => m.issueWrite);
     expect(cards).toHaveLength(1);
     expect(cards[0].issueWrite).toMatchObject({ verb: "status", undoState: "available" });
+  });
+
+  // docs/248 — the fire-once key and the deterministic card id both carry the
+  // DESTINATION. Keyed on the issue number alone, `Closes beta#42` looks like an
+  // already-applied `Closes alpha#42` and is skipped, so one of the two issues
+  // silently never closes.
+  it("completes both destinations when two declared trackers share an issue number", async () => {
+    const { deps, calls, appended } = makeHarness(
+      "open",
+      false,
+      `version: 1
+issues:
+  trackers:
+    - kind: github
+      repo: octocat/alpha
+      name: alpha
+    - kind: github
+      repo: octocat/beta
+      name: beta
+`,
+    );
+    await applyMergedPrIssueRefs(deps, mergedPr("Closes alpha#42\nCloses beta#42"));
+
+    const patched = calls.filter((c) => c.method === "PATCH").map((c) => c.url);
+    expect(patched.some((u) => u.includes("octocat/alpha/issues/42"))).toBe(true);
+    expect(patched.some((u) => u.includes("octocat/beta/issues/42"))).toBe(true);
+
+    const cards = appended.filter((m) => m.issueWrite).map((m) => m.issueWrite!);
+    expect(cards).toHaveLength(2);
+    expect(new Set(cards.map((c) => c.cardId)).size).toBe(2);
+    expect(new Set(cards.map((c) => c.trackerName))).toEqual(new Set(["alpha", "beta"]));
+  });
+
+  // req 19 — a reference that resolves to nothing is dropped permanently, so a
+  // server log alone would mean the PR merges, the issue stays open, and nothing
+  // the user can see says why.
+  it("records an unresolvable reference in the transcript instead of dropping it silently", async () => {
+    const { deps, calls, appended } = makeHarness("open");
+    await applyMergedPrIssueRefs(deps, mergedPr("Closes planning#42"));
+
+    expect(calls.some((c) => c.method === "PATCH")).toBe(false);
+    const note = appended.find((m) => !m.issueWrite && m.text.includes("planning#42"));
+    expect(note?.text).toContain("could not act on it");
+  });
+
+  // Same failure re-derives from the same PR body on every reconnect re-fire, so
+  // the note is fire-once rather than one copy per reopen.
+  it("records an unresolvable reference only once across re-fires", async () => {
+    const { deps, appended } = makeHarness("open");
+    await applyMergedPrIssueRefs(deps, mergedPr("Closes planning#42"));
+    await applyMergedPrIssueRefs(deps, mergedPr("Closes planning#42"));
+    expect(appended.filter((m) => m.text.includes("planning#42"))).toHaveLength(1);
   });
 
   it("posts a progress comment only (no status change) for a Refs pointer", async () => {
@@ -190,13 +248,15 @@ describe("applyMergedPrIssueRefs — completed on merge", () => {
   });
 
   // docs/194 Layer 2 — even if the guard regressed, the card id is deterministic
-  // (keyed by session + PR + issue + verb) so the client's idempotent-by-cardId
-  // store collapses a re-fire instead of rendering a duplicate.
+  // (keyed by session + PR + tracker + issue + verb) so the client's
+  // idempotent-by-cardId store collapses a re-fire instead of rendering a
+  // duplicate. The TRACKER is in the key (docs/248) so two destinations' `#42`
+  // don't collapse into one card.
   it("mints a deterministic card id for the merge-completed card", async () => {
     const { deps, appended } = makeHarness("open");
     await applyMergedPrIssueRefs(deps, mergedPr("Closes octocat/hello-world#42"));
     const card = appended.find((m) => m.issueWrite)?.issueWrite;
-    expect(card?.cardId).toBe("issue-write-s1-7-42-completed");
+    expect(card?.cardId).toBe("issue-write-s1-7-github-42-completed");
   });
 
   // Archived-receives-nothing invariant: the outward tracker write (closing the

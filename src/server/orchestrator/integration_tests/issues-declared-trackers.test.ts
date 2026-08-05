@@ -56,6 +56,13 @@ function ghIssue(owner: string, repo: string, number: number, title: string) {
   };
 }
 
+/** The canonical single declaration used across these tests. */
+const DECLARE_PLANNING =
+  "issues:\n  trackers:\n    - kind: github\n      repo: planning-owner/planning\n      name: planning\n";
+
+const destinationsIds = (d: { destinations: { id: string }[] }): string[] =>
+  d.destinations.map((x) => x.id);
+
 describe("Integration: declared issue trackers (docs/248)", () => {
   let app: FastifyInstance;
   let tmpDir: string;
@@ -143,14 +150,24 @@ describe("Integration: declared issue trackers (docs/248)", () => {
     return (res.json() as { trackers: TrackerInfo[] }).trackers;
   };
 
-  // -- Declaration → tab ----------------------------------------------------
+  const destinations = async (): Promise<{
+    destinations: { id: string; name?: string; kind: string }[];
+    warnings: string[];
+  }> => {
+    const res = await app.inject({ method: "GET", url: "/api/sessions/sess/issue/trackers" });
+    expect(res.statusCode).toBe(200);
+    return res.json() as { destinations: { id: string; name?: string; kind: string }[]; warnings: string[] };
+  };
+
+  // -- Declaration → tab (reqs 1, 9) ----------------------------------------
 
   it("renders a declared repository as its own tab", async () => {
-    writeConfig("issues:\n  trackers:\n    - kind: github\n      repo: planning-owner/planning\n      label: Planning\n");
+    writeConfig(DECLARE_PLANNING);
     const list = await trackers();
-    expect(list.map((t) => t.id)).toEqual(["linear", "github", "github:planning-owner/planning"]);
+    expect(list.map((t) => t.id)).toEqual(["github", "github:planning-owner/planning"]);
     const planning = list.find((t) => t.id === "github:planning-owner/planning")!;
-    expect(planning.label).toBe("Planning");
+    expect(planning.label).toBe("planning");
+    expect(planning.name).toBe("planning");
     expect(planning.configured).toBe(true);
     expect(planning.binding).toEqual({
       key: "planning-owner/planning",
@@ -158,33 +175,101 @@ describe("Integration: declared issue trackers (docs/248)", () => {
     });
   });
 
-  it("shows no extra tab when the repository declares none", async () => {
-    expect((await trackers()).map((t) => t.id)).toEqual(["linear", "github"]);
+  // req 1's clean break: a deployment with a stored Linear credential gets no
+  // Linear tab until a repository declares one. No migration, no warning — the
+  // absence of the tab is the only signal, by decision.
+  it("shows no Linear tab for a repository that declares none, even with a credential", async () => {
+    credentialStore.setLinearToken("lin_api_x");
+    expect((await trackers()).map((t) => t.id)).toEqual(["github"]);
+  });
+
+  it("renders a declared linear team as its own tab (reqs 3–5)", async () => {
+    credentialStore.setLinearToken("lin_api_x");
+    writeConfig(
+      "issues:\n  trackers:\n    - kind: linear\n      team: SHI\n      name: roadmap\n",
+    );
+    const list = await trackers();
+    expect(list.map((t) => t.id)).toEqual(["github", "linear:SHI"]);
+    const roadmap = list.find((t) => t.id === "linear:SHI")!;
+    expect(roadmap).toMatchObject({ name: "roadmap", kind: "linear", configured: true });
+  });
+
+  it("renders two linear teams declared at once", async () => {
+    credentialStore.setLinearToken("lin_api_x");
+    writeConfig(
+      "issues:\n  trackers:\n" +
+        "    - kind: linear\n      team: SHI\n      name: roadmap\n" +
+        "    - kind: linear\n      team: OPS\n      name: ops\n",
+    );
+    expect((await trackers()).map((t) => t.id)).toEqual(["github", "linear:SHI", "linear:OPS"]);
+  });
+
+  // req 12 — a repository may declare its OWN repository to give it a name. The
+  // shipped registry discarded such a declaration; now it replaces the unnamed
+  // tab rather than adding a second one for the same issues.
+  it("names the session's own repository without minting a duplicate tab", async () => {
+    writeConfig("issues:\n  trackers:\n    - kind: github\n      repo: code-owner/app\n      name: code\n");
+    const list = await trackers();
+    expect(list.map((t) => t.id)).toEqual(["github:code-owner/app"]);
+    expect(list[0].name).toBe("code");
+    // Still reachable unnamed — req 12's exception survives the self-declaration.
+    expect(destinationsIds(await destinations())).toContain("github");
+  });
+
+  it("shows only the session's own repository when nothing is declared", async () => {
+    expect((await trackers()).map((t) => t.id)).toEqual(["github"]);
   });
 
   it("reflects an edited shipit.yaml on the next request, with no restart", async () => {
-    writeConfig("issues:\n  trackers:\n    - kind: github\n      repo: planning-owner/planning\n");
+    writeConfig(DECLARE_PLANNING);
     expect((await trackers()).map((t) => t.id)).toContain("github:planning-owner/planning");
     writeConfig("issues:\n  trackers: []\n");
-    expect((await trackers()).map((t) => t.id)).toEqual(["linear", "github"]);
+    expect((await trackers()).map((t) => t.id)).toEqual(["github"]);
   });
 
   it("ignores an unrecognized tracker kind instead of failing the tab list", async () => {
-    // Forward compatibility (req 5): a config written for a newer ShipIt must
+    // Forward compatibility (req 7): a config written for a newer ShipIt must
     // degrade to a missing tab, never to a broken Issues panel.
-    writeConfig("issues:\n  trackers:\n    - kind: some-future-tracker\n      handle: x\n");
-    expect((await trackers()).map((t) => t.id)).toEqual(["linear", "github"]);
+    writeConfig("issues:\n  trackers:\n    - kind: some-future-tracker\n      handle: x\n      name: future\n");
+    expect((await trackers()).map((t) => t.id)).toEqual(["github"]);
   });
 
   it("degrades to no declared trackers when shipit.yaml is unparseable", async () => {
     writeConfig("issues:\n  trackers:\n  - kind: github\n   repo: broken indent\n");
-    expect((await trackers()).map((t) => t.id)).toEqual(["linear", "github"]);
+    expect((await trackers()).map((t) => t.id)).toEqual(["github"]);
   });
 
-  // -- Same-numbered issues in two repositories -----------------------------
+  // -- Declaration warnings reach the agent (req 8) --------------------------
+
+  it("surfaces declaration warnings on the destinations route the shim reads", async () => {
+    writeConfig(
+      "issues:\n  trackers:\n" +
+        "    - kind: github\n      repo: planning-owner/planning\n      name: planning\n" +
+        "    - kind: github\n      repo: other/other\n      name: planning\n" +
+        "    - kind: jira\n      project: X\n      name: jira\n",
+    );
+    const { destinations: dests, warnings } = await destinations();
+    // The duplicate name and the unknown kind are both dropped...
+    expect(dests.map((d) => d.id)).toEqual(["github", "github:planning-owner/planning"]);
+    // ...and both are reported, so the agent can repair the declaration.
+    expect(warnings.some((w) => w.includes("duplicate tracker name"))).toBe(true);
+    expect(warnings.some((w) => w.includes("jira"))).toBe(true);
+  });
+
+  it("says so when shipit.yaml could not be parsed at all", async () => {
+    writeConfig("issues:\n  trackers:\n  - kind: github\n   repo: broken indent\n");
+    const { warnings } = await destinations();
+    expect(warnings.some((w) => w.includes("could not be parsed"))).toBe(true);
+  });
+
+  // -- Same-numbered issues in two repositories ------------------------------
+  //
+  // The shipped regression guard for the routing invariant, unchanged in intent:
+  // every assertion naming a URL is really asserting the wrong repository was
+  // not touched.
 
   it("reads #42 from the declared repository, not the code repository", async () => {
-    writeConfig("issues:\n  trackers:\n    - kind: github\n      repo: planning-owner/planning\n");
+    writeConfig(DECLARE_PLANNING);
     const res = await app.inject({
       method: "GET",
       url: "/api/issue?tracker=github%3Aplanning-owner%2Fplanning&id=42&sessionId=sess",
@@ -192,23 +277,27 @@ describe("Integration: declared issue trackers (docs/248)", () => {
     expect(res.statusCode).toBe(200);
     const body = res.json() as { issue: TrackerIssue };
     expect(body.issue.title).toBe("Planning issue");
-    expect(body.issue.identifier).toBe("planning-owner/planning#42");
+    // req 15 — ShipIt-emitted references carry the declared name form.
+    expect(body.issue.identifier).toBe("planning#42");
     expect(requestedUrls.some((u) => u.includes("/repos/code-owner/app/"))).toBe(false);
   });
 
   it("still reads #42 from the code repository for the bare `github` tracker", async () => {
-    writeConfig("issues:\n  trackers:\n    - kind: github\n      repo: planning-owner/planning\n");
+    writeConfig(DECLARE_PLANNING);
     const res = await app.inject({
       method: "GET",
       url: "/api/issue?tracker=github&id=42&sessionId=sess",
     });
     expect(res.statusCode).toBe(200);
-    expect((res.json() as { issue: TrackerIssue }).issue.title).toBe("Code repo issue");
+    const issue = (res.json() as { issue: TrackerIssue }).issue;
+    expect(issue.title).toBe("Code repo issue");
+    // Unnamed destination → the backend's own address form.
+    expect(issue.identifier).toBe("code-owner/app#42");
     expect(requestedUrls.some((u) => u.includes("/repos/planning-owner/"))).toBe(false);
   });
 
   it("lists each destination independently", async () => {
-    writeConfig("issues:\n  trackers:\n    - kind: github\n      repo: planning-owner/planning\n");
+    writeConfig(DECLARE_PLANNING);
     const code = await app.inject({ method: "GET", url: "/api/issues?tracker=github&sessionId=sess" });
     const planning = await app.inject({
       method: "GET",
@@ -218,27 +307,27 @@ describe("Integration: declared issue trackers (docs/248)", () => {
     expect((planning.json() as { issues: TrackerIssue[] }).issues[0].title).toBe("Planning issue");
   });
 
-  // -- `--repo` reaches any repository the credential can reach --------------
+  // -- Fail closed on an undeclared destination (req 11) ---------------------
 
-  it("resolves an UNDECLARED repository named on the operation", async () => {
-    // req 3 — declarations drive tabs, not reachability. `--repo` accepts any
-    // repository the credential can reach, with GitHub authorization as the only
-    // gate, so this must work with an empty `issues:` block.
+  it("refuses an UNDECLARED repository named on the operation", async () => {
+    // The shipped registry synthesized a tracker for any well-formed id, so
+    // `--repo` reached anything the credential could see. Requirement 11 removed
+    // that: req 1 leaves no destination outside the declarations, so this has
+    // nowhere to go — and it must not silently become the code repository.
     const res = await app.inject({
       method: "GET",
       url: "/api/issues?tracker=github%3Aprivate-owner%2Fnotes&sessionId=sess",
     });
-    expect(res.statusCode).toBe(200);
-    const body = res.json() as { tracker: TrackerInfo; issues: TrackerIssue[] };
-    expect(body.issues[0].title).toBe("Undeclared but reachable");
-    // ...and it stays off the tab list.
-    expect((await trackers()).map((t) => t.id)).not.toContain("github:private-owner/notes");
+    expect(res.statusCode).toBe(404);
+    expect(JSON.stringify(res.json())).toMatch(/not a tracker this repository declares/i);
+    expect(requestedUrls.some((u) => u.includes("/repos/"))).toBe(false);
   });
 
-  it("fails closed on an unreachable repository, naming both possibilities", async () => {
+  it("fails closed on an unreachable DECLARED repository, naming both possibilities", async () => {
     // GitHub returns 404 for a private repo the credential cannot see, so the
     // error must not claim the repository is missing — the two are genuinely
     // indistinguishable and send the user to different fixes.
+    writeConfig("issues:\n  trackers:\n    - kind: github\n      repo: missing-owner/nope\n      name: gone\n");
     const res = await app.inject({
       method: "GET",
       url: "/api/issues?tracker=github%3Amissing-owner%2Fnope&sessionId=sess",
@@ -259,5 +348,85 @@ describe("Integration: declared issue trackers (docs/248)", () => {
     });
     expect(res.statusCode).toBe(404);
     expect(requestedUrls.some((u) => u.includes("/repos/"))).toBe(false);
+  });
+
+  // req 13 — a create ALWAYS names its destination. The shim enforces it, but
+  // `/agent-ops/issue/*` is reachable from the session container by anything the
+  // agent runs, so a `curl` bypasses the shim entirely. Without a server-side
+  // backstop the rule would be a convention, not a guarantee — and the thing it
+  // guards against is filing a planning issue into a PUBLIC code repository.
+  it("refuses a create addressed at the unnamed own repository", async () => {
+    writeConfig(DECLARE_PLANNING);
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/sessions/sess/issue/create",
+      payload: { tracker: "github", title: "Private planning item" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.stringify(res.json())).toMatch(/must name the tracker it files into/i);
+    // Nothing reached GitHub — the issue was never created anywhere.
+    expect(requestedUrls.some((u) => u.includes("/repos/"))).toBe(false);
+  });
+
+  it("refuses a label create addressed at the unnamed own repository", async () => {
+    writeConfig(DECLARE_PLANNING);
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/sessions/sess/issue/label/create",
+      payload: { tracker: "github", name: "internal" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(requestedUrls.some((u) => u.includes("/repos/"))).toBe(false);
+  });
+
+  // The write body carries `tracker` (where the write goes) and `trackerName`
+  // (the name it was addressed through) as independent caller-supplied fields.
+  // Undo re-resolves through the NAME first (req 16), so an incoherent pair
+  // writes to one destination and, on Undo, applies that snapshot to another —
+  // the wrong-target bug this feature exists to prevent. The shim always derives
+  // both from one resolution, but this endpoint is container-accessible.
+  it("refuses a write whose trackerName names a different destination than its tracker", async () => {
+    writeConfig(DECLARE_PLANNING);
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/sessions/sess/issue/comment",
+      payload: { tracker: "github:code-owner/app", trackerName: "planning", id: "42", body: "hi" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.stringify(res.json())).toMatch(/other than the one it was addressed through/i);
+    expect(requestedUrls.some((u) => u.includes("/repos/"))).toBe(false);
+  });
+
+  it("refuses a write naming a trackerName this repository does not declare", async () => {
+    writeConfig(DECLARE_PLANNING);
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/sessions/sess/issue/comment",
+      payload: { tracker: "github:planning-owner/planning", trackerName: "roadmap", id: "42", body: "hi" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(requestedUrls.some((u) => u.includes("/repos/"))).toBe(false);
+  });
+
+  // The mirror of the two above: a COHERENT pair must get past the check. This
+  // harness has no attached runner, so the write then stops at the 409 that
+  // guards card emission — which is precisely the evidence wanted here, since a
+  // rejected pair never reaches it. The completed write is covered in
+  // `agent-issue-access.test.ts`, which runs with a runner.
+  it("lets a write whose trackerName and tracker agree past the coherence check", async () => {
+    writeConfig(DECLARE_PLANNING);
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/sessions/sess/issue/comment",
+      payload: { tracker: "github:planning-owner/planning", trackerName: "planning", id: "42", body: "hi" },
+    });
+    expect(res.statusCode).toBe(409);
+    expect(JSON.stringify(res.json())).not.toMatch(/addressed through/i);
+  });
+
+  it("rejects the retired bare `linear` id rather than reading a stored team", async () => {
+    credentialStore.setLinearToken("lin_api_x");
+    const res = await app.inject({ method: "GET", url: "/api/issues?tracker=linear&sessionId=sess" });
+    expect(res.statusCode).toBe(404);
   });
 });

@@ -19,7 +19,7 @@ const SELECTION: IssueSelection = {
   url: "https://linear.app/x/issue/SHI-1",
 };
 
-const INFO: TrackerInfo = { id: "linear", label: "Linear", configured: true };
+const INFO: TrackerInfo = { id: "linear", kind: "linear" as const, label: "Linear", configured: true };
 
 function makeIssue(over: Partial<TrackerIssue> = {}): TrackerIssue {
   return {

@@ -19,13 +19,13 @@ const mockNarrow = vi.hoisted(() => ({ value: false }));
 vi.mock("../hooks/useNarrowContainer.js", () => ({ useNarrowContainer: () => mockNarrow.value }));
 
 const LINEAR_CONFIGURED: TrackerInfo = {
-  id: "linear",
+  id: "linear", kind: "linear" as const,
   label: "Linear",
   configured: true,
   binding: { key: "SHI", name: "ShipIt" },
 };
 
-const LINEAR_UNCONFIGURED: TrackerInfo = { id: "linear", label: "Linear", configured: false };
+const LINEAR_UNCONFIGURED: TrackerInfo = { id: "linear", kind: "linear" as const, label: "Linear", configured: false };
 
 function makeIssue(overrides?: Partial<TrackerIssue>): TrackerIssue {
   return {

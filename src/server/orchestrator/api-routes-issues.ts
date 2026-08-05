@@ -1,13 +1,15 @@
 /**
  * Issue tracker routes (docs/170 — inline tracker Issues tab; SHI-80).
  *
- * These are global `/api/...` routes, not `/api/sessions/:id/...`, because
- * Linear is deployment-wide. GitHub Issues, however, are **per-repo**, so the
- * read routes accept an optional `?sessionId` and resolve that session's GitHub
- * remote + token into a `GitHubTrackerContext` for the registry. Linear ignores
- * the session entirely (its binding is the workspace team). Read-only +
- * connect/bind for Linear; write-back and the GitHub `/shipit` push trigger
- * remain out of scope (SHI-43 / docs/156).
+ * These are global `/api/...` routes, not `/api/sessions/:id/...`, because they
+ * predate per-session tracker scoping. Since docs/248 that scoping is what they
+ * actually need: **every** tracker is declared in the session repository's
+ * `shipit.yaml`, so the read routes take an optional `?sessionId` and resolve
+ * that session's remote, token and declarations into a `GitHubTrackerContext`
+ * for the registry — Linear included, since a Linear tracker is a declaration
+ * now and not a deployment-wide binding. A request with no `sessionId` therefore
+ * sees no declarations at all, which is correct rather than degraded: with no
+ * session there is no repository to have declared anything.
  */
 
 import { randomUUID, createHash } from "node:crypto";
@@ -32,8 +34,8 @@ import {
   setIssueAssigneeForTracker,
   connectLinear,
   getLinearTeams,
-  setLinearTeam,
   disconnectLinear,
+  listTrackerDestinations,
   ServiceError,
   type IssueWriteOutcome,
   type LabelCreation,
@@ -45,6 +47,7 @@ import type { TrackerId, TrackerIssue, IssueWriteCard, IssueRefCard } from "../s
 import { parseGitHubRemote } from "./git-utils.js";
 import { resolveShipitConfig, type DeclaredTracker } from "../shared/shipit-config.js";
 import { isGitHubTracker } from "../shared/tracker-id.js";
+import { resolveDestinationByName } from "../shared/issue-ref-resolution.js";
 import { getErrorMessage } from "./validation.js";
 import { emitChatCard } from "./chat-card-persistence.js";
 
@@ -64,10 +67,12 @@ export function resolveGitHubTrackerContext(
   const token = githubAuthManager.getToken();
   const session = sessionId ? sessionManager.get(sessionId) : undefined;
   const parsed = session?.remoteUrl ? parseGitHubRemote(session.remoteUrl) : null;
+  const { trackers, warnings } = readDeclaredTrackers(session?.workspaceDir);
   return {
     token,
     repo: parsed ? { owner: parsed.owner, repo: parsed.repo } : null,
-    declared: readDeclaredTrackers(session?.workspaceDir),
+    declared: trackers,
+    warnings,
   };
 }
 
@@ -85,12 +90,27 @@ export function resolveGitHubTrackerContext(
  * here would break the Issues tab for a repo whose problem is elsewhere in the
  * file, so a parse failure degrades to "no declared trackers".
  */
-function readDeclaredTrackers(workspaceDir: string | undefined): DeclaredTracker[] {
-  if (!workspaceDir) return [];
+function readDeclaredTrackers(
+  workspaceDir: string | undefined,
+): { trackers: DeclaredTracker[]; warnings: string[] } {
+  if (!workspaceDir) return { trackers: [], warnings: [] };
   try {
-    return resolveShipitConfig(workspaceDir).issues.trackers;
-  } catch {
-    return [];
+    const config = resolveShipitConfig(workspaceDir);
+    // Only the declaration-shaped warnings are carried forward (req 8) — the
+    // agent asked about trackers, not about a stale `agent.memory` key.
+    return {
+      trackers: config.issues.trackers,
+      warnings: config.warnings.filter((w) => w.includes("issues.")),
+    };
+  } catch (err) {
+    // A malformed *document* (bad YAML, a bad `release` block) degrades to "no
+    // declared trackers" rather than breaking the Issues tab for a problem
+    // elsewhere in the file — but say so, so the agent isn't left thinking the
+    // repository simply declares nothing.
+    return {
+      trackers: [],
+      warnings: [`shipit.yaml could not be parsed, so no tracker declarations were read: ${getErrorMessage(err)}`],
+    };
   }
 }
 
@@ -137,9 +157,16 @@ export async function registerIssueRoutes(
         c.message.issueRef?.identifier === issue.identifier,
     );
     if (carded) return;
+    // req 16 — record the declared NAME alongside the destination, so clicking
+    // the card later re-resolves through whatever that name points at now. The
+    // name is derived here rather than passed in because every caller (shim and
+    // UI alike) already addressed a destination this session can reach, and req 6
+    // makes the id → name mapping unique.
+    const trackerName = declaredNameFor(sessionId, trackerId);
     const card: IssueRefCard = {
       cardId: `issue-ref-${randomUUID()}`,
       tracker: trackerId as TrackerId,
+      ...(trackerName ? { trackerName } : {}),
       identifier: issue.identifier,
       title: issue.title,
       ...(issue.url ? { url: issue.url } : {}),
@@ -168,7 +195,7 @@ export async function registerIssueRoutes(
   app.get<{ Querystring: { tracker?: string; includeDone?: string; sessionId?: string } }>(
     "/api/issues",
     async (request, reply) => {
-      const trackerId = request.query.tracker ?? "linear";
+      const trackerId = request.query.tracker ?? "github";
       const includeDone = request.query.includeDone === "true";
       const github = resolveGitHubContext(request.query.sessionId);
       try {
@@ -193,7 +220,7 @@ export async function registerIssueRoutes(
   app.get<{ Querystring: { tracker?: string; sessionId?: string } }>(
     "/api/issue/labels",
     async (request, reply) => {
-      const trackerId = request.query.tracker ?? "linear";
+      const trackerId = request.query.tracker ?? "github";
       const github = resolveGitHubContext(request.query.sessionId);
       try {
         return await listLabelsForTracker(credentialStore, trackerId, trackerFetchImpl, github);
@@ -216,7 +243,7 @@ export async function registerIssueRoutes(
   app.get<{ Querystring: { tracker?: string; id?: string; sessionId?: string } }>(
     "/api/issue",
     async (request, reply) => {
-      const trackerId = request.query.tracker ?? "linear";
+      const trackerId = request.query.tracker ?? "github";
       const github = resolveGitHubContext(request.query.sessionId);
       try {
         return await getIssueForTracker(
@@ -243,7 +270,7 @@ export async function registerIssueRoutes(
   app.get<{ Querystring: { tracker?: string; id?: string; sessionId?: string } }>(
     "/api/issue/comments",
     async (request, reply) => {
-      const trackerId = request.query.tracker ?? "linear";
+      const trackerId = request.query.tracker ?? "github";
       const github = resolveGitHubContext(request.query.sessionId);
       try {
         return await listIssueCommentsForTracker(
@@ -378,6 +405,26 @@ export async function registerIssueRoutes(
   // is no write route here. Tracker tokens stay in the orchestrator's
   // CredentialStore and never enter the container.
   // ---------------------------------------------------------------------------
+
+  // GET /api/sessions/:id/issue/trackers — the destinations this session can
+  // reach plus the declaration warnings its shipit.yaml produced (docs/248
+  // reqs 8, 10). The `shipit issue` shim calls this first and resolves a
+  // reference (`planning#42`, `SHI-304`, `owner/repo#42`) against exactly the
+  // set the orchestrator would, so a resolution failure is reported in CLI
+  // output with the declared names in hand (req 19) instead of coming back as
+  // an opaque 404 from a write it should never have attempted.
+  app.get<{ Params: { id: string } }>(
+    "/api/sessions/:id/issue/trackers",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      if (!sessionManager.get(request.params.id)) {
+        reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      const github = resolveGitHubContext(request.params.id);
+      return listTrackerDestinations(credentialStore, trackerFetchImpl, github);
+    },
+  );
 
   // GET /api/sessions/:id/issue/view?tracker=&id= — fetch a single issue.
   app.get<{ Params: { id: string }; Querystring: { tracker?: string; id?: string } }>(
@@ -553,7 +600,9 @@ export async function registerIssueRoutes(
     }
   });
 
-  // GET /api/trackers/linear/teams — list workspace teams for the team picker.
+  // GET /api/trackers/linear/teams — the team keys this credential can reach, so
+  // Settings can show what a `kind: linear` declaration may name. docs/248 req 4:
+  // a lookup for writing a declaration, not a picker that binds anything.
   app.get("/api/trackers/linear/teams", async (_request, reply) => {
     try {
       return { teams: await getLinearTeams(credentialStore, trackerFetchImpl) };
@@ -566,23 +615,7 @@ export async function registerIssueRoutes(
     }
   });
 
-  // POST /api/trackers/linear/team — bind the Issues tab to a team.
-  app.post<{ Body: { id?: string; key?: string; name?: string } }>(
-    "/api/trackers/linear/team",
-    async (request, reply) => {
-      try {
-        return { tracker: setLinearTeam(credentialStore, request.body) };
-      } catch (err) {
-        if (err instanceof ServiceError) {
-          reply.code(err.statusCode).send({ error: err.message });
-          return;
-        }
-        reply.code(500).send({ error: `Failed to bind Linear team: ${getErrorMessage(err)}` });
-      }
-    },
-  );
-
-  // POST /api/trackers/linear/disconnect — clear token + team binding.
+  // POST /api/trackers/linear/disconnect — clear the stored credential.
   app.post("/api/trackers/linear/disconnect", async () => {
     disconnectLinear(credentialStore);
     return { ok: true };
@@ -596,6 +629,74 @@ export async function registerIssueRoutes(
   // injects the trusted SESSION_ID; GitHub resolves to the session's own repo,
   // Linear is workspace-wide. Tokens stay in `CredentialStore`; only the result
   // (and the undo snapshot, on the persisted card) returns to the container.
+
+  /**
+   * docs/248 req 13 — a create ALWAYS names its destination. The shim enforces
+   * this by requiring `--tracker <name>`, but `/agent-ops/issue/*` is reachable
+   * from the session container by anything the agent runs (a `curl` bypasses the
+   * shim entirely), so the rule needs a server-side backstop or it is only a
+   * convention. The bare `"github"` id is precisely "the destination nobody
+   * named": for a public code repository that is the *public* repo, which is the
+   * disclosure this requirement exists to make impossible.
+   *
+   * Returns an error message when the create must be refused, or null to proceed.
+   * Mirrors the same shim-plus-backstop pattern `--priority` and `--parent` use.
+   */
+  function rejectUnnamedCreateDestination(trackerId: string): string | null {
+    if (trackerId !== "github") return null;
+    return (
+      "A create must name the tracker it files into: `github` is this session's own repository, " +
+      "which it reaches without being named. Pass a declared tracker's name instead — for a public " +
+      "code repository the unnamed destination is the public repo. Declare one in shipit.yaml under " +
+      "`issues.trackers` if none fits."
+    );
+  }
+
+  /**
+   * The write body carries `tracker` (the destination the write executes
+   * against) and `trackerName` (the declared name it was addressed through).
+   * The shim derives both from ONE resolution, so they always agree — but this
+   * endpoint is container-accessible and the two fields arrive as independent,
+   * caller-supplied strings.
+   *
+   * They must be checked against each other, because they are consumed by
+   * different operations at different times: the write goes to `tracker`, while
+   * `undoIssueWrite` resolves through the recorded `trackerName` FIRST so that a
+   * re-pointed name re-targets the undo (req 16). A body pairing
+   * `tracker: github:acme/a` with `trackerName: beta` (declared as `acme/b`)
+   * therefore writes to A and, on Undo, applies A's recorded snapshot to B's
+   * issue of the same number — an operation touching a destination the caller
+   * never named, which is the one thing this feature exists to prevent.
+   *
+   * Checked at WRITE time only. At undo time the pair is deliberately allowed to
+   * have drifted apart: that drift IS req 16's re-point.
+   */
+  /** The declared name of a destination this session can reach, if it has one. */
+  function declaredNameFor(sessionId: string, trackerId: string): string | undefined {
+    const github = resolveGitHubContext(sessionId);
+    const { destinations } = listTrackerDestinations(credentialStore, trackerFetchImpl, github);
+    return destinations.find((d) => d.id === trackerId)?.name;
+  }
+
+  function rejectMismatchedTrackerName(
+    sessionId: string,
+    trackerId: string,
+    trackerName: string | undefined,
+  ): string | null {
+    if (!trackerName) return null;
+    const github = resolveGitHubContext(sessionId);
+    const { destinations } = listTrackerDestinations(credentialStore, trackerFetchImpl, github);
+    const found = resolveDestinationByName(destinations, trackerName);
+    if (!found.ok) return found.message;
+    if (found.destination.id !== trackerId) {
+      return (
+        `\`${trackerName}\` is declared as \`${found.destination.id}\`, but this write names ` +
+        `\`${trackerId}\`. ShipIt does not record a write against a destination other than the ` +
+        `one it was addressed through.`
+      );
+    }
+    return null;
+  }
 
   function sendServiceError(reply: FastifyReply, err: unknown, fallback: string): void {
     if (err instanceof ServiceError) {
@@ -655,10 +756,12 @@ export async function registerIssueRoutes(
     sessionId: string,
     trackerId: string,
     creation: LabelCreation,
+    trackerName?: string,
   ): IssueWriteCard {
     const card: IssueWriteCard = {
       cardId: `issue-write-${randomUUID()}`,
       tracker: trackerId as TrackerId,
+      ...(trackerName ? { trackerName } : {}),
       issueId: "",
       identifier: creation.label.name,
       title: "",
@@ -690,12 +793,22 @@ export async function registerIssueRoutes(
   async function handleWrite(
     sessionId: string,
     trackerId: string,
+    trackerName: string | undefined,
     issueId: string,
     reply: FastifyReply,
     fallback: string,
     dedup: { verb: string; content: string },
     run: (github: GitHubTrackerContext) => Promise<IssueWriteOutcome>,
   ): Promise<unknown> {
+    // Coherence of the request body first: an incoherent pair is a malformed
+    // request whatever the session's runner state, and rejecting it here means a
+    // bad write never even reaches the runner lookup. Same position as
+    // `rejectUnnamedCreateDestination`, which its routes apply before this call.
+    const mismatch = rejectMismatchedTrackerName(sessionId, trackerId, trackerName);
+    if (mismatch) {
+      reply.code(400).send({ error: mismatch });
+      return;
+    }
     const runner = deps.runnerRegistry.get(sessionId);
     if (!runner) {
       reply.code(409).send({ error: "Session is not active — open it to record the write." });
@@ -725,13 +838,18 @@ export async function registerIssueRoutes(
     // Labels minted by --create-missing-labels each get their own card, BEFORE
     // the main write card — the creation happened first (SHI-230).
     for (const creation of outcome.labelCreations ?? []) {
-      emitLabelCreationCard(runner, sessionId, trackerId, creation);
+      emitLabelCreationCard(runner, sessionId, trackerId, creation, trackerName);
     }
     // For a create the issue id isn't known until the tracker assigns it, so
     // fall back to the created issue's id (the undo target).
     const card: IssueWriteCard = {
       cardId: `issue-write-${randomUUID()}`,
       tracker: trackerId as TrackerId,
+      // docs/248 — record the NAME the write was addressed by alongside the
+      // destination it reached. Undo prefers the name so a re-point re-targets
+      // it (req 16) and falls back to the destination so an undeclared target
+      // stays undoable (req 11).
+      ...(trackerName ? { trackerName } : {}),
       issueId: issueId || outcome.issue.id,
       identifier: outcome.issue.identifier,
       title: outcome.issue.title,
@@ -781,14 +899,19 @@ export async function registerIssueRoutes(
   //   { tracker, title, body, labels?, priority?, createMissingLabels? } (docs/187, SHI-92, SHI-230)
   app.post<{
     Params: { sessionId: string };
-    Body: { tracker?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null; createMissingLabels?: boolean };
+    Body: { tracker?: string; trackerName?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null; createMissingLabels?: boolean };
   }>(
     "/api/sessions/:sessionId/issue/create",
     { config: { containerAccessible: true } },
     async (request, reply) => {
-      const { tracker, title, body, labels, priority, parent, createMissingLabels } = request.body ?? {};
+      const { tracker, trackerName, title, body, labels, priority, parent, createMissingLabels } = request.body ?? {};
       if (!tracker || !title?.trim()) {
         reply.code(400).send({ error: "tracker and title are required" });
+        return;
+      }
+      const unnamed = rejectUnnamedCreateDestination(tracker);
+      if (unnamed) {
+        reply.code(400).send({ error: unnamed });
         return;
       }
       // Create can only SET a parent (a new issue has no prior relation to
@@ -797,7 +920,7 @@ export async function registerIssueRoutes(
       // The issue id is assigned by the tracker, so pass "" and let handleWrite
       // stamp the card's issueId from the created issue.
       const dedup = { verb: "create", content: JSON.stringify({ title, body: body ?? "", labels: labels ?? [], priority: priority ?? null, parent: parentToSet ?? null, createMissingLabels: createMissingLabels === true }) };
-      return handleWrite(request.params.sessionId, tracker, "", reply, "Failed to create issue", dedup, (github) =>
+      return handleWrite(request.params.sessionId, tracker, trackerName, "", reply, "Failed to create issue", dedup, (github) =>
         createIssueForTracker(credentialStore, tracker, title, body ?? "", { labels, priority, parent: parentToSet, createMissingLabels: createMissingLabels === true }, trackerFetchImpl, github),
       );
     },
@@ -811,14 +934,28 @@ export async function registerIssueRoutes(
   //   TrackerIssue in the outcome) but shares its runner/dedup/card machinery.
   app.post<{
     Params: { sessionId: string };
-    Body: { tracker?: string; name?: string; color?: string; description?: string };
+    Body: { tracker?: string; trackerName?: string; name?: string; color?: string; description?: string };
   }>(
     "/api/sessions/:sessionId/issue/label/create",
     { config: { containerAccessible: true } },
     async (request, reply) => {
-      const { tracker, name, color, description } = request.body ?? {};
+      const { tracker, trackerName, name, color, description } = request.body ?? {};
       if (!tracker || !name?.trim()) {
         reply.code(400).send({ error: "tracker and name are required" });
+        return;
+      }
+      // Same name/destination coherence check `handleWrite` applies — this route
+      // mints its own card (with its own Undo) without going through it.
+      const labelMismatch = rejectMismatchedTrackerName(request.params.sessionId, tracker, trackerName);
+      if (labelMismatch) {
+        reply.code(400).send({ error: labelMismatch });
+        return;
+      }
+      // Creating a label mutates a tracker's configuration, so req 13's rule
+      // applies to it too — same backstop, same reasoning.
+      const unnamedLabel = rejectUnnamedCreateDestination(tracker);
+      if (unnamedLabel) {
+        reply.code(400).send({ error: unnamedLabel });
         return;
       }
       const sessionId = request.params.sessionId;
@@ -852,7 +989,7 @@ export async function registerIssueRoutes(
         sendServiceError(reply, err, "Failed to create label");
         return;
       }
-      const card = emitLabelCreationCard(runner, sessionId, tracker, creation);
+      const card = emitLabelCreationCard(runner, sessionId, tracker, creation, trackerName);
       const result = {
         ok: true,
         cardId: card.cardId,
@@ -865,16 +1002,16 @@ export async function registerIssueRoutes(
   );
 
   // POST /api/sessions/:sessionId/issue/comment { tracker, id, body }
-  app.post<{ Params: { sessionId: string }; Body: { tracker?: string; id?: string; body?: string } }>(
+  app.post<{ Params: { sessionId: string }; Body: { tracker?: string; trackerName?: string; id?: string; body?: string } }>(
     "/api/sessions/:sessionId/issue/comment",
     { config: { containerAccessible: true } },
     async (request, reply) => {
-      const { tracker, id, body } = request.body ?? {};
+      const { tracker, trackerName, id, body } = request.body ?? {};
       if (!tracker || !id || !body?.trim()) {
         reply.code(400).send({ error: "tracker, id and body are required" });
         return;
       }
-      return handleWrite(request.params.sessionId, tracker, id, reply, "Failed to comment", { verb: "comment", content: body }, (github) =>
+      return handleWrite(request.params.sessionId, tracker, trackerName, id, reply, "Failed to comment", { verb: "comment", content: body }, (github) =>
         commentOnIssueForTracker(credentialStore, tracker, id, body, trackerFetchImpl, github),
       );
     },
@@ -884,12 +1021,12 @@ export async function registerIssueRoutes(
   //   { tracker, id, title?, body?, labels?, priority?, createMissingLabels? } (SHI-92, SHI-230)
   app.post<{
     Params: { sessionId: string };
-    Body: { tracker?: string; id?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null; createMissingLabels?: boolean };
+    Body: { tracker?: string; trackerName?: string; id?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null; createMissingLabels?: boolean };
   }>(
     "/api/sessions/:sessionId/issue/edit",
     { config: { containerAccessible: true } },
     async (request, reply) => {
-      const { tracker, id, title, body, labels, priority, parent, createMissingLabels } = request.body ?? {};
+      const { tracker, trackerName, id, title, body, labels, priority, parent, createMissingLabels } = request.body ?? {};
       const hasLabels = labels !== undefined && labels.length > 0;
       if (!tracker || !id || (title === undefined && body === undefined && !hasLabels && priority === undefined && parent === undefined)) {
         reply.code(400).send({ error: "tracker, id and at least one of title/body/label/priority/parent are required" });
@@ -904,7 +1041,7 @@ export async function registerIssueRoutes(
         ...(parent !== undefined ? { parent } : {}),
       };
       const dedupContent = JSON.stringify({ ...patch, createMissingLabels: createMissingLabels === true });
-      return handleWrite(request.params.sessionId, tracker, id, reply, "Failed to edit issue", { verb: "edit", content: dedupContent }, (github) =>
+      return handleWrite(request.params.sessionId, tracker, trackerName, id, reply, "Failed to edit issue", { verb: "edit", content: dedupContent }, (github) =>
         updateIssueForTracker(credentialStore, tracker, id, patch, trackerFetchImpl, github, {
           createMissingLabels: createMissingLabels === true,
         }),
@@ -913,34 +1050,34 @@ export async function registerIssueRoutes(
   );
 
   // POST /api/sessions/:sessionId/issue/status { tracker, id, status }
-  app.post<{ Params: { sessionId: string }; Body: { tracker?: string; id?: string; status?: string } }>(
+  app.post<{ Params: { sessionId: string }; Body: { tracker?: string; trackerName?: string; id?: string; status?: string } }>(
     "/api/sessions/:sessionId/issue/status",
     { config: { containerAccessible: true } },
     async (request, reply) => {
-      const { tracker, id, status } = request.body ?? {};
+      const { tracker, trackerName, id, status } = request.body ?? {};
       if (!tracker || !id || !status?.trim()) {
         reply.code(400).send({ error: "tracker, id and status are required" });
         return;
       }
-      return handleWrite(request.params.sessionId, tracker, id, reply, "Failed to set status", { verb: "status", content: status }, (github) =>
+      return handleWrite(request.params.sessionId, tracker, trackerName, id, reply, "Failed to set status", { verb: "status", content: status }, (github) =>
         setIssueStatusForTracker(credentialStore, tracker, id, status, trackerFetchImpl, github),
       );
     },
   );
 
   // POST /api/sessions/:sessionId/issue/assign { tracker, id, assignee | null }
-  app.post<{ Params: { sessionId: string }; Body: { tracker?: string; id?: string; assignee?: string | null } }>(
+  app.post<{ Params: { sessionId: string }; Body: { tracker?: string; trackerName?: string; id?: string; assignee?: string | null } }>(
     "/api/sessions/:sessionId/issue/assign",
     { config: { containerAccessible: true } },
     async (request, reply) => {
-      const { tracker, id } = request.body ?? {};
+      const { tracker, trackerName, id } = request.body ?? {};
       // `assignee: null` is meaningful (--none → unassign); only undefined is missing.
       const assignee = request.body?.assignee ?? null;
       if (!tracker || !id) {
         reply.code(400).send({ error: "tracker and id are required" });
         return;
       }
-      return handleWrite(request.params.sessionId, tracker, id, reply, "Failed to set assignee", { verb: "assign", content: String(assignee) }, (github) =>
+      return handleWrite(request.params.sessionId, tracker, trackerName, id, reply, "Failed to set assignee", { verb: "assign", content: String(assignee) }, (github) =>
         setIssueAssigneeForTracker(credentialStore, tracker, id, assignee, trackerFetchImpl, github),
       );
     },

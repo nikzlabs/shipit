@@ -299,6 +299,12 @@ export function registerAgentOpsRoutes(
   // the created issue. (ShipIt *bug* filing stays human-gated; that's docs/164.)
   // ---------------------------------------------------------------------------
 
+  // GET /agent-ops/issue/trackers — the destinations this session can reach plus
+  // its shipit.yaml declaration warnings (docs/248 reqs 8, 10). The shim calls
+  // this before resolving a reference, so names resolve against exactly the set
+  // the orchestrator holds.
+  app.get("/agent-ops/issue/trackers", async (_request, reply) => relay("GET", "/issue/trackers", undefined, reply));
+
   // GET /agent-ops/issue/view?tracker=&id= — single issue (read)
   app.get<{ Querystring: { tracker?: string; id?: string } }>(
     "/agent-ops/issue/view",
@@ -354,37 +360,37 @@ export function registerAgentOpsRoutes(
   );
 
   // POST /agent-ops/issue/create { tracker, title, body, labels?, priority?, parent?, createMissingLabels? } (docs/187, SHI-92, SHI-206, SHI-230)
-  app.post<{ Body: { tracker?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null; createMissingLabels?: boolean } }>(
+  app.post<{ Body: { tracker?: string; trackerName?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null; createMissingLabels?: boolean } }>(
     "/agent-ops/issue/create",
     async (request, reply) => relay("POST", "/issue/create", request.body ?? {}, reply),
   );
 
   // POST /agent-ops/issue/label/create { tracker, name, color?, description? } (SHI-230)
-  app.post<{ Body: { tracker?: string; name?: string; color?: string; description?: string } }>(
+  app.post<{ Body: { tracker?: string; trackerName?: string; name?: string; color?: string; description?: string } }>(
     "/agent-ops/issue/label/create",
     async (request, reply) => relay("POST", "/issue/label/create", request.body ?? {}, reply),
   );
 
   // POST /agent-ops/issue/comment { tracker, id, body }
-  app.post<{ Body: { tracker?: string; id?: string; body?: string } }>(
+  app.post<{ Body: { tracker?: string; trackerName?: string; id?: string; body?: string } }>(
     "/agent-ops/issue/comment",
     async (request, reply) => relay("POST", "/issue/comment", request.body ?? {}, reply),
   );
 
   // POST /agent-ops/issue/edit { tracker, id, title?, body?, labels?, priority?, parent?, createMissingLabels? } (SHI-92, SHI-206, SHI-230)
-  app.post<{ Body: { tracker?: string; id?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null; createMissingLabels?: boolean } }>(
+  app.post<{ Body: { tracker?: string; trackerName?: string; id?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null; createMissingLabels?: boolean } }>(
     "/agent-ops/issue/edit",
     async (request, reply) => relay("POST", "/issue/edit", request.body ?? {}, reply),
   );
 
   // POST /agent-ops/issue/status { tracker, id, status }
-  app.post<{ Body: { tracker?: string; id?: string; status?: string } }>(
+  app.post<{ Body: { tracker?: string; trackerName?: string; id?: string; status?: string } }>(
     "/agent-ops/issue/status",
     async (request, reply) => relay("POST", "/issue/status", request.body ?? {}, reply),
   );
 
   // POST /agent-ops/issue/assign { tracker, id, assignee | null }
-  app.post<{ Body: { tracker?: string; id?: string; assignee?: string | null } }>(
+  app.post<{ Body: { tracker?: string; trackerName?: string; id?: string; assignee?: string | null } }>(
     "/agent-ops/issue/assign",
     async (request, reply) => relay("POST", "/issue/assign", request.body ?? {}, reply),
   );

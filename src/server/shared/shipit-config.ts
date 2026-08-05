@@ -10,10 +10,14 @@
  *     dep-dirs:         # dependency dirs eligible for the overlay store (docs/183)
  *       - node_modules
  *   compose: docker-compose.yml   # string or object form
- *   issues:             # additional issue trackers, as Issues tabs (docs/248)
+ *   issues:             # the issue trackers this repository uses (docs/248)
  *     trackers:
  *       - kind: github
  *         repo: owner/planning
+ *         name: planning
+ *       - kind: linear
+ *         team: SHI
+ *         name: roadmap
  *
  * Old-format keys (preview, resources, capabilities, services) emit warnings
  * with migration hints. The `agent.memory` / `agent.cpu` / `agent.pids`
@@ -26,7 +30,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import type { ReleaseMechanism } from "./types/release-types.js";
-import { defaultTrackerLabel, parseOwnerRepo } from "./tracker-id.js";
+import { normalizeLinearTeamKey, parseOwnerRepo } from "./tracker-id.js";
+import type { DeclaredTracker } from "./declared-tracker.js";
+import { declaredTrackerKey } from "./declared-tracker.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -138,30 +144,19 @@ export interface HostMount {
 }
 
 /**
- * docs/248 — one entry of the `issues.trackers` list: an additional issue
- * tracker the repository declares, rendered as its own tab in the Issues UI.
- *
- * A **tagged union discriminated on `kind`** (the discriminator name the issue
- * domain types already use for `IssueWriteUndo`), not a bare list of
- * repositories. The identifying fields belong to the kind — `repo` is GitHub's —
- * so a tracker identified by something other than an `owner/repo` can be added
- * later without reshaping the block or migrating existing configs. This feature
- * defines only `github`.
+ * docs/248 — the declared-tracker types live in `declared-tracker.ts` (which is
+ * filesystem-free, so the browser and the reference resolver can import them)
+ * and are re-exported here, where the parser that produces them lives.
  */
-export interface DeclaredGitHubTracker {
-  kind: "github";
-  owner: string;
-  repo: string;
-  /** Sub-tab label. Defaults to the repository name when `label` is absent. */
-  label: string;
-}
-
-/** docs/248 — a declared additional tracker. Only `github` is defined today. */
-export type DeclaredTracker = DeclaredGitHubTracker;
+export type {
+  DeclaredTracker,
+  DeclaredGitHubTracker,
+  DeclaredLinearTracker,
+} from "./declared-tracker.js";
 
 /** docs/248 — the optional `issues:` block. */
 export interface IssuesConfig {
-  /** Declared additional trackers, in declaration order (drives tab order). */
+  /** Declared trackers, in declaration order (drives tab order, req 9). */
   trackers: DeclaredTracker[];
 }
 
@@ -322,7 +317,15 @@ export function parseShipitConfig(doc: unknown): ShipitConfig {
 }
 
 const KNOWN_ISSUES_KEYS = new Set(["trackers"]);
-const KNOWN_GITHUB_TRACKER_KEYS = new Set(["kind", "repo", "label"]);
+const KNOWN_GITHUB_TRACKER_KEYS = new Set(["kind", "name", "repo"]);
+const KNOWN_LINEAR_TRACKER_KEYS = new Set(["kind", "name", "team"]);
+
+/**
+ * A tracker `name` (docs/248 req 2). The same character set the name form of a
+ * reference accepts (`planning#42`), so a declared name is always writable as a
+ * reference — a name with a `#`, a slash or whitespace would be unaddressable.
+ */
+const TRACKER_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 /**
  * docs/248 — parse the `issues:` block.
@@ -330,19 +333,27 @@ const KNOWN_GITHUB_TRACKER_KEYS = new Set(["kind", "repo", "label"]);
  * ```yaml
  * issues:
  *   trackers:
- *     - kind: github           # which tracker backs this tab
+ *     - kind: github           # which backend backs this tracker
  *       repo: owner/planning   # GitHub Issues: `owner/name`
- *       label: Planning        # optional; defaults to the repository name
+ *       name: planning         # how everything else addresses it
+ *     - kind: linear
+ *       team: SHI              # Linear binds a tracker to one team
+ *       name: roadmap
  * ```
  *
+ * Every tracker a repository uses is declared here (req 1): ShipIt has no
+ * built-in tracker and no implicit fallback, so the trackers available to a
+ * session are exactly these plus the session's own GitHub Issues (req 12).
+ *
  * **Nothing here is fatal.** Every malformed shape — a non-list `trackers`, a
- * non-mapping entry, a `github` entry with a missing or unparseable `repo`, and
- * an entry whose `kind` this version does not recognize — warns and skips that
- * entry rather than throwing. That is the forward-compatibility path req 5
- * requires: a `shipit.yaml` written against a newer ShipIt that declares a
- * tracker kind this build has never heard of must degrade to "that tab doesn't
- * appear", not "the session fails to start". The other blocks throw on bad
- * input because they gate the container; a tracker declaration gates one tab.
+ * non-mapping entry, a missing or unusable identifying field, a missing or
+ * duplicate `name`, and an entry whose `kind` this version does not recognize —
+ * warns and skips that entry rather than throwing (reqs 7, 8). That is the
+ * forward-compatibility path requirement 7 demands: a `shipit.yaml` written
+ * against a newer ShipIt that declares a tracker kind this build has never heard
+ * of must degrade to "that tab doesn't appear", not "the session fails to
+ * start". The other blocks throw on bad input because they gate the container; a
+ * tracker declaration gates one tab.
  */
 function parseIssuesConfig(raw: unknown, warnings: string[]): IssuesConfig {
   if (raw === undefined || raw === null) return { trackers: [] };
@@ -367,18 +378,38 @@ function parseIssuesConfig(raw: unknown, warnings: string[]): IssuesConfig {
   }
 
   const trackers: DeclaredTracker[] = [];
-  const seen = new Set<string>();
+  const seenNames = new Set<string>();
+  const seenDestinations = new Map<string, string>();
   for (let i = 0; i < rawTrackers.length; i++) {
     const entry = parseDeclaredTracker(rawTrackers[i], i, warnings);
     if (!entry) continue;
-    // De-duplicate on the tracker's identity, so a repeated declaration doesn't
-    // mint two tabs with the same id (which would make `get()` ambiguous).
-    const key = `${entry.kind}:${entry.owner}/${entry.repo}`.toLowerCase();
-    if (seen.has(key)) {
-      warnings.push(`Ignoring \`issues.trackers[${i}]\`: duplicate declaration of \`${entry.owner}/${entry.repo}\`.`);
+    // req 6 — `name` is unique within a repository. A duplicate is dropped
+    // rather than silently shadowing, because a name that resolves to two
+    // destinations is exactly the ambiguity req 11 makes fail closed.
+    const nameKey = entry.name.toLowerCase();
+    if (seenNames.has(nameKey)) {
+      warnings.push(
+        `Ignoring \`issues.trackers[${i}]\`: duplicate tracker name \`${entry.name}\` — names must be unique within a repository.`,
+      );
       continue;
     }
-    seen.add(key);
+    // req 6, the other direction — a DESTINATION is declared at most once. Two
+    // names for one repository or team are not an alias: `TrackerId` is the
+    // destination, so both entries would collapse onto one id, one tab would
+    // shadow the other, and the shadowed name's operations would emit the
+    // survivor's reference form. Refusing the second is what the user chose over
+    // making a declaration (rather than its destination) the thing ShipIt
+    // identifies.
+    const destinationKey = declaredTrackerKey(entry).toLowerCase();
+    const claimedBy = seenDestinations.get(destinationKey);
+    if (claimedBy) {
+      warnings.push(
+        `Ignoring \`issues.trackers[${i}]\`: \`${declaredTrackerKey(entry)}\` is already declared as \`${claimedBy}\` — a destination may only be declared once.`,
+      );
+      continue;
+    }
+    seenNames.add(nameKey);
+    seenDestinations.set(destinationKey, entry.name);
     trackers.push(entry);
   }
   return { trackers };
@@ -395,41 +426,64 @@ function parseDeclaredTracker(entry: unknown, index: number, warnings: string[])
     return drop("each entry must be a mapping with a `kind`");
   }
   const obj = entry as Record<string, unknown>;
-  const kind = obj.kind;
-  if (typeof kind !== "string" || !kind.trim()) {
+  const rawKind = obj.kind;
+  if (typeof rawKind !== "string" || !rawKind.trim()) {
     return drop("each entry must state its tracker `kind` (e.g. `kind: github`)");
   }
-
-  if (kind.trim().toLowerCase() !== "github") {
-    // Forward compatibility: a kind from a newer ShipIt, not a user error.
-    return drop(`unrecognized tracker \`kind: ${kind}\` — this version of ShipIt only supports \`github\``);
+  const kind = rawKind.trim().toLowerCase();
+  if (kind !== "github" && kind !== "linear") {
+    // Forward compatibility (req 7): a kind from a newer ShipIt, not a user error.
+    return drop(
+      `unrecognized tracker \`kind: ${rawKind}\` — this version of ShipIt supports \`github\` and \`linear\``,
+    );
   }
 
+  const knownKeys = kind === "github" ? KNOWN_GITHUB_TRACKER_KEYS : KNOWN_LINEAR_TRACKER_KEYS;
   for (const key of Object.keys(obj)) {
-    if (!KNOWN_GITHUB_TRACKER_KEYS.has(key)) {
+    if (!knownKeys.has(key)) {
       warnings.push(`Unknown key \`issues.trackers[${index}].${key}\` in shipit.yaml.`);
     }
   }
 
-  const repoSlug = obj.repo;
-  if (typeof repoSlug !== "string" || !repoSlug.trim()) {
-    return drop("a `github` tracker needs `repo: owner/name`");
+  // req 6 — `name` is required. There is no derived default: a name is how every
+  // reference and operation addresses this tracker, so inferring one (from the
+  // repository name, say) would silently mint an addressable destination the
+  // author never wrote down.
+  const rawName = obj.name;
+  if (typeof rawName !== "string" || !rawName.trim()) {
+    return drop("each entry needs a `name:` — it is how references and operations address this tracker");
   }
-  const ref = parseOwnerRepo(repoSlug);
-  if (!ref) {
-    return drop(`\`repo: ${repoSlug}\` must be an \`owner/name\` slug`);
-  }
-
-  const rawLabel = obj.label;
-  if (rawLabel !== undefined && (typeof rawLabel !== "string" || !rawLabel.trim())) {
-    warnings.push(
-      `Ignoring \`issues.trackers[${index}].label\`: must be a non-empty string; using the repository name.`,
+  const name = rawName.trim();
+  if (!TRACKER_NAME_RE.test(name)) {
+    return drop(
+      `\`name: ${name}\` must be letters, digits, \`.\`, \`_\` or \`-\` (it has to be writable as \`${name}#42\`)`,
     );
   }
-  const label =
-    typeof rawLabel === "string" && rawLabel.trim() ? rawLabel.trim() : defaultTrackerLabel(ref);
 
-  return { kind: "github", owner: ref.owner, repo: ref.repo, label };
+  if (kind === "github") {
+    const repoSlug = obj.repo;
+    if (typeof repoSlug !== "string" || !repoSlug.trim()) {
+      return drop("a `github` tracker needs `repo: owner/name`");
+    }
+    const ref = parseOwnerRepo(repoSlug);
+    if (!ref) {
+      return drop(`\`repo: ${repoSlug}\` must be an \`owner/name\` slug`);
+    }
+    return { kind: "github", name, owner: ref.owner, repo: ref.repo };
+  }
+
+  // req 5 — a Linear declaration states the team's key, which is also the prefix
+  // its issue keys carry. That is what lets a bare `SHI-304` resolve to this
+  // declaration. The *workspace* comes from the credential (req 23), never here.
+  const rawTeam = obj.team;
+  if (typeof rawTeam !== "string" || !rawTeam.trim()) {
+    return drop("a `linear` tracker needs `team: KEY` (the team key its issue keys are prefixed with)");
+  }
+  const team = normalizeLinearTeamKey(rawTeam);
+  if (!team) {
+    return drop(`\`team: ${rawTeam}\` must be a Linear team key like \`SHI\``);
+  }
+  return { kind: "linear", name, team };
 }
 
 /**

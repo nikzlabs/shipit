@@ -38,7 +38,10 @@ off Linear — is a separate feature
 5. A `linear` declaration states the team's key (`SHI`), which is also the prefix
    its issue keys carry. That is what lets a bare `SHI-304` resolve to this
    declaration (req 10).
-6. `name` is required, and unique within a repository.
+6. `name` is required, and unique within a repository. A destination is declared
+   at most once: an entry naming a destination another entry already names is
+   ignored with a warning (req 8), the same as any other malformed entry. Two
+   names for one repository or team are not an alias — they are a mistake.
 7. An entry whose `kind` this version of ShipIt does not recognize is ignored with
    a warning, rather than failing the session.
 8. Declaration warnings — an unrecognized `kind`, a malformed entry, a duplicate
@@ -73,6 +76,12 @@ off Linear — is a separate feature
     its write reached, and reversing it stays available even after that destination
     stops being declared. Reversing a write grants no access the write did not
     already have.
+
+    An undo acts on the destination it recorded, and is **not** re-targeted by a
+    re-pointed name (the exception to requirement 16). If the name it was written
+    with now points somewhere else, the undo fails rather than acting: the change
+    being reversed belongs to the issue that was actually changed, and applying it
+    to a different issue of the same number would write data that issue never had.
 12. An operation that acts on an existing issue names its tracker by `name`. The
     single exception is the session's own repository's GitHub Issues, which needs
     no declaration and no name — though a repository may declare its own
@@ -89,7 +98,15 @@ off Linear — is a separate feature
     references consistent, not a restriction enforced on the agent's text.
 16. A reference resolves when it is used, not when it is written. Re-pointing a
     name at a different destination re-targets every reference written against it,
-    recorded ones included, and the UI shows what it now resolves to.
+    recorded ones included — both the cards that record a write and the cards a
+    lookup leaves in the transcript — and the UI shows what it now resolves to.
+
+    In a name form that also carries a backend id (`roadmap#SHI-304`), **the name
+    is authoritative and the embedded id is advisory**: after a re-point, the
+    reference resolves through the name's current destination rather than failing
+    on the now-mismatched id. This is what makes requirement 15's emitted form
+    survive a re-point. It applies to resolving a *reference*; reversing a
+    recorded write still acts on the issue that write actually touched (req 11).
 
 ## Routing safety
 
@@ -142,6 +159,46 @@ None.
 Receipts are carried forward from the superseded `247-private-github-issue-tracker`
 doc, which held these requirements before the split; its full deliberation history
 remains in git.
+
+- 2026-08-05 — Asked whether undoing a recorded write should follow a re-pointed
+  name, the user chose that **the undo fails**, reasoning that "the purpose of
+  undo is to fix something the agent did a few minutes ago, not in a few months".
+  Recorded in requirement 11 as the exception to requirement 16. Letting Undo keep
+  reaching the original destination was rejected on that same reasoning: a write
+  old enough to have outlived its declaration is not what Undo is for. Acting on
+  the new destination was never viable — it would apply one issue's snapshot to
+  another issue of the same number.
+
+  This question was raised because two earlier decisions combined into a case
+  neither considered, and answering it turned out to close a real defect rather
+  than only settle wording: Undo previously preferred the recorded *name*, so a
+  re-pointed `planning` sent the undo to a different **repository's** issue of the
+  same number. Linear's team guard would have refused the equivalent attempt;
+  GitHub had no such guard, so the wrong repository was silently rewritten — and
+  a test asserted that behavior as correct.
+- 2026-08-05 — Asked whether two declarations may name the same destination, the
+  user chose to **refuse it**: a second entry pointing at a repository or team
+  another entry already names is warned and skipped (req 6). Supporting aliases
+  was rejected — it would mean identifying a *declaration* rather than the
+  destination it points at, threading a new id through tabs, cards, routes and
+  persisted rows, for a configuration nobody named a use for. Leaving it
+  unspecified was rejected too: nothing would reject the config and the UI would
+  stay visibly confused inside it.
+- 2026-08-05 — Asked whether a Linear reference ShipIt wrote should survive
+  re-pointing the name to another team, the user chose to **keep emitting
+  `roadmap#SHI-304` and let the name win** (req 16): the embedded team key is
+  advisory, so the reference re-targets instead of failing on the mismatch.
+  Emitting `roadmap#304` instead — which would re-point cleanly with no
+  precedence rule — was rejected in favour of keeping the form a Linear user
+  recognizes. The accepted cost is that ShipIt now resolves past a reference whose
+  two halves disagree, which is a deliberate exception to the fail-closed posture
+  of requirements 11 and 17 rather than a hole in it. Accepting that Linear
+  references simply do not re-point was also rejected.
+- 2026-08-05 — Asked whether a recorded *read* card is a reference for
+  requirement 16's purposes, the user chose **yes**: the jump-to-issue card
+  records the name it was addressed through and re-resolves when clicked, exactly
+  as a write card does. Exempting read cards as navigation aids was rejected —
+  two cards for the same issue would then behave differently after a re-point.
 
 - 2026-08-05 — Asked where a bare `shipit issue create` should file once there is
   no implicit fallback, the user chose to **require an explicit destination**

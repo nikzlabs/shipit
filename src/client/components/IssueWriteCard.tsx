@@ -47,6 +47,7 @@ import {
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import { useIssueWriteStore } from "../stores/issue-write-store.js";
+import { useIssuesStore } from "../stores/issues-store.js";
 import type { TrackerId, IssueWriteVerb } from "../../server/shared/types.js";
 
 export interface IssueWriteCardProps {
@@ -167,14 +168,25 @@ export function IssueWriteCard({ cardId, onUndo, onOpen }: IssueWriteCardProps) 
   // The whole card opens the issue inline. Derive the lookup id from the
   // display identifier (uniform across trackers) rather than `card.issueId`,
   // which for GitHub is the undo target, not a valid `getIssue` key.
-  const openIssue = () =>
+  //
+  // docs/248 req 16 — "the UI shows what it now resolves to". A card written
+  // against a NAME must open wherever that name points today, not the
+  // destination frozen on the card, or the recorded reference would silently
+  // disagree with the Undo beside it (which does follow the name). When the name
+  // no longer resolves, the recorded destination is the fallback — the same
+  // carve-out req 11 grants Undo, for the same reason.
+  const openIssue = () => {
+    const repointed = card.trackerName
+      ? useIssuesStore.getState().trackers.find((t) => t.name === card.trackerName)
+      : undefined;
     onOpen?.({
-      tracker: card.tracker,
+      tracker: repointed?.id ?? card.tracker,
       identifier: card.identifier,
       ...(card.title ? { title: card.title } : {}),
       ...(card.url ? { url: card.url } : {}),
       ...(anchorCommentId ? { anchorCommentId } : {}),
     });
+  };
 
   return (
     <div

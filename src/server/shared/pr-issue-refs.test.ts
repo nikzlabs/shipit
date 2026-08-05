@@ -23,7 +23,7 @@ describe("parsePrBodyIssueRefs", () => {
     const { closes, refs } = parsePrBodyIssueRefs("## Summary\nDoes the thing.\n\nCloses SHI-43");
     expect(refs).toEqual([]);
     expect(closes).toHaveLength(1);
-    expect(closes[0]).toMatchObject({ tracker: "linear", identifier: "SHI-43", issueId: "SHI-43" });
+    expect(closes[0]).toMatchObject({ tracker: "linear:SHI", identifier: "SHI-43", issueId: "SHI-43" });
   });
 
   it("accepts Fixes / Resolves synonyms and all case/tense forms", () => {
@@ -46,7 +46,7 @@ describe("parsePrBodyIssueRefs", () => {
 
   it("parses a full issue URL after the keyword", () => {
     const linear = parsePrBodyIssueRefs("Resolves https://linear.app/acme/issue/SHI-9");
-    expect(linear.closes[0]).toMatchObject({ tracker: "linear", issueId: "SHI-9" });
+    expect(linear.closes[0]).toMatchObject({ tracker: "linear:SHI", issueId: "SHI-9" });
 
     const gh = parsePrBodyIssueRefs("Closes https://github.com/octocat/hello-world/issues/7");
     expect(gh.closes[0]).toMatchObject({ tracker: "github:octocat/hello-world", issueId: "7" });
@@ -90,5 +90,37 @@ describe("parsePrBodyIssueRefs", () => {
     // "disclose" / "prefixes" must not trip the close/fix matchers.
     const { closes } = parsePrBodyIssueRefs("This discloses SHI-1 prefixes SHI-2");
     expect(closes).toEqual([]);
+  });
+});
+
+describe("parsePrBodyIssueRefs — docs/248 name forms", () => {
+  // The regression the resolver split nearly introduced: a name form parses with
+  // NO tracker (only the declarations can resolve one), so a parser that filtered
+  // on `tracker` would drop every `Closes planning#42` before anything could
+  // resolve it — silently disabling the headline reference form on merge.
+  it("keeps a `name#number` reference for the caller to resolve", () => {
+    const { closes } = parsePrBodyIssueRefs("Closes planning#42");
+    expect(closes).toHaveLength(1);
+    expect(closes[0]).toMatchObject({ trackerName: "planning", issueId: "42", identifier: "planning#42" });
+  });
+
+  it("keeps a `name#KEY` reference", () => {
+    const { refs } = parsePrBodyIssueRefs("Refs roadmap#SHI-304");
+    expect(refs[0]).toMatchObject({ trackerName: "roadmap", issueId: "SHI-304" });
+  });
+
+  it("dedupes two name references to the same issue, closing intent winning", () => {
+    const { closes, refs } = parsePrBodyIssueRefs("Closes planning#42\nRefs planning#42");
+    expect(closes).toHaveLength(1);
+    expect(refs).toHaveLength(0);
+  });
+
+  it("keeps a name reference and a canonical address as two distinct references", () => {
+    const { closes } = parsePrBodyIssueRefs("Closes planning#42\nCloses acme/other#42");
+    expect(closes).toHaveLength(2);
+  });
+
+  it("still drops a token that is not a reference shape at all", () => {
+    expect(parsePrBodyIssueRefs("Closes the loop").closes).toEqual([]);
   });
 });

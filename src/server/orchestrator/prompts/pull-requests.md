@@ -19,7 +19,7 @@ If this PR is the work for a tracked issue, link it in the body so the issue's s
 
 - The PR **fully finishes** the issue → add a `Closes <pointer>` line (synonyms `Fixes`/`Resolves`). On merge ShipIt flips the issue to **completed** and posts a resolved-by comment.
 - The PR is **part** of the work, more PRs to come → add a non-closing `Refs <pointer>` line instead. On merge ShipIt posts a progress comment and leaves the issue open. **Omitting** `Closes` is how you say "not done yet."
-- The `<pointer>` is the same tracker-neutral form `shipit issue` takes (`SHI-43`, `owner/repo#42`, or a full issue URL). A PR that names no pointer gets no automatic issue activity.
+- The `<pointer>` is the same reference form `shipit issue` takes. Write the declared tracker's `name#id` form (`planning#42`, `roadmap#SHI-304`); a backend address (`SHI-43`, `owner/repo#42`, a full issue URL) also resolves. A pointer that names no declared tracker is ignored on merge, and a PR that names no pointer gets no automatic issue activity.
 
 Set one primary `--label` on `gh pr create` that matches the change's intent (e.g. `feature`, `enhancement`, `bug`, `fix`, `documentation`, `chore`, `refactor`, `ci`, `test`, `dependencies`) so release notes group it correctly: `gh pr create -t "<title>" --label feature --body-file - <<'EOF' … EOF`. Pick the single best-fitting label, not several. Labeling is best-effort — the repo's label set varies, so an unknown label name is skipped without blocking the PR, and a server-side path labeler still runs as a fallback. To correct a label after the PR exists, run `gh pr edit --add-label <new> --remove-label <old>` (both repeatable / comma-separated, best-effort).
 
