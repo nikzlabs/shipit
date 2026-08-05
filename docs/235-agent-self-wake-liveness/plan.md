@@ -60,7 +60,8 @@ opposite, and the real defects are these two:
    first-wins flags scoped to one `runTurn` invocation (`streamingPostTurnFired`,
    `drainFired`, `tokenSyncFired`), so the wake turn's `agent_result` returns
    early. A self-woken turn that edits files therefore gets **no auto-commit, no
-   push, and no PR card** until the next user turn. Not fixed here — see §6.
+   push, and no PR card** until the next user turn. Split out of this doc's PR
+   and fixed under SHI-247 — see §6.
 
 `capturedSessionId` is *not* stale, which is why persistence still lands in the
 right session: it is the ShipIt session id, constant for the runner's lifetime.
@@ -413,14 +414,50 @@ turn's opening was gone from the DB for good — a reload or session switch show
 the turn missing its first half, permanently. Regression test:
 `integration_tests/self-wake-midturn.test.ts`.
 
-**Deliberately deferred:** re-arming the post-turn flow (defect 2 in "The second,
-quieter bug" above) so a self-woken turn's file changes get committed, pushed and
-surfaced on the PR card. That means resetting `turn-executor`'s first-wins guards
-for a resident streaming process, which touches auto-commit and PR creation —
-outward-facing behavior that deserves its own change and its own tests rather
-than riding along with a liveness fix. Tracked separately; until it lands, a
-self-woken turn's edits are picked up by the *next* user turn's commit (the work
-is not lost, only its timing changes).
+### 7. Give the self-woken turn its own post-turn flow (SHI-247)
+
+Defect 2 in "The second, quieter bug" above — split out of this doc's PR because
+it touches auto-commit and PR creation, and landed separately. Production hit it
+twice in one hour on the same host, both times via a backgrounded
+`shipit agent run --agent codex` consult: the consult ends the parent turn when
+backgrounded and self-wakes the CLI ~15 minutes later, so the wake path is the
+*normal* case for cross-agent review rather than a corner case. Both sessions
+were left with a dirty working tree and no commit.
+
+`turn-executor`'s post-turn guards (`tokenSyncFired`, `drainFired`,
+`streamingPostTurnFired`) and its memoized `commitPromise` / `commitAndPrPromise`
+are first-wins and scoped to one `executeAgentTurn` call. For a resident
+streaming process the wake turn runs through the *previous* turn's still-attached
+listener closure, so all of them were already tripped and its `agent_result`
+returned early. The executor now listens for `agent_self_wake` itself and hands
+that closure a fresh set — `rearmForSelfWokenTurn`.
+
+Three gates make the re-arm safe, and each is pinned by a test in
+`turn-self-wake-commit.test.ts` that fails without it:
+
+- **Streaming only.** A one-shot PTY reaps its background tasks at turn end
+  (probe A above), so there is nothing to wake. It also drains at `agent_result`
+  and commits later in `done`, so clearing `drainFired` between the two would
+  drain the queue twice.
+- **Only once this turn's own post-turn flow has fired.** `agent_self_wake` rides
+  `task_notification`, which also fires for a job started earlier in the *current*
+  turn (the docs/237 trap). `agent-listeners` gates on `!runner.running`; the
+  executor cannot reuse that test because `agent-listeners` is wired first and has
+  already flipped the flag by the time this listener runs. `streamingPostTurnFired`
+  is the executor-local equivalent.
+- **After the in-flight sequence settles.** A wake can land between
+  `streamingPostTurnFired = true` and the finished turn's `runCommitAndPr` — a job
+  backgrounded just before the turn ended is exactly that shape. Nulling the memos
+  there would let the resumed sequence re-memoize them, and the wake turn would
+  get an already-settled flow back and commit nothing. The sequence is therefore
+  published as `streamingPostTurn` in the same synchronous block that sets the
+  flag, and the re-arm awaits it.
+
+`receivedResult` and `turnCompleteFired` are deliberately **not** reset. They
+describe the turn this executor was invoked for: clearing the first would arm the
+`done` no-result paths (including dispatch's `onNoResultExit`, which would re-run
+the user's original prompt) if the wake turn's process later died, and clearing
+the second would settle a dispatch handle twice.
 
 ## Bounds — what this does not do
 
@@ -433,6 +470,9 @@ shell work a supported persistence primitive.
 
 ## Key files
 
+- `src/server/orchestrator/turn-executor.ts` — `rearmForSelfWokenTurn` (§7) and
+  the post-turn guards it re-arms
+- `src/server/orchestrator/turn-self-wake-commit.test.ts` — §7's regression tests
 - `src/server/orchestrator/idle-enforcer.ts` — count-based idle eviction
 - `src/server/orchestrator/tier-escalation.ts` — 24h/2d/14d disk ladder
 - `src/server/session/agents/claude/process.ts` — `StreamingClaudeProcess`
