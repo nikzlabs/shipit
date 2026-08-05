@@ -103,7 +103,7 @@ rather than a side effect — and why step 5 cannot start until step 4 completes
 ### Tracker names make this a one-time cost
 
 The reference rewrite is expensive enough to be worth paying only once. Writing
-the rewritten references in the **name** form (`planning#123`, requirements 8–9 of
+the rewritten references in the **name** form (`planning#123`, requirements 11–12 of
 [248](../248-declared-issue-trackers/plan.md)) means a later rename of the planning
 repository is a one-line `shipit.yaml` edit rather than a second sweep of ~2,400
 mentions. Name support is therefore a hard prerequisite for step 5, not an
@@ -117,7 +117,7 @@ the repository and the whole sweep has to be repeated on the first rename.
 bare `create` filing into a retired tracker. An earlier version of this plan
 proposed an `issues.default` key to fix it. That is no longer needed:
 [248](../248-declared-issue-trackers/requirements.md) req 1 removes implicit
-destinations altogether and req 8 makes every operation name its tracker, so there
+destinations altogether and req 11 makes every operation name its tracker, so there
 is no fallback left to point anywhere. The dependency is on 248 landing, not on a
 separate feature.
 
