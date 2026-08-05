@@ -1739,14 +1739,40 @@ describe("PrLifecycleCard — related-issue chips", () => {
     expect(screen.getByText("SHI-201")).toBeInTheDocument();
   });
 
+  // docs/248 — a chip only becomes an in-app link when the reference resolves to
+  // a destination this repository declares, so the store has to hold one.
   it("opens the inline issue detail when a chip is clicked", () => {
     const openIssue = vi.fn();
-    useIssuesStore.setState({ openIssue });
+    useIssuesStore.setState({
+      openIssue,
+      trackers: [
+        {
+          id: "linear:SHI",
+          kind: "linear",
+          label: "roadmap",
+          name: "roadmap",
+          configured: true,
+          binding: { key: "SHI", name: "SHI" },
+        },
+      ],
+    });
     setCard("s1", { ...openPrCard, pr: { ...openPrCard.pr!, body: "Closes SHI-90" } });
     render(<PrLifecycleCard sessionId="s1" />);
-    fireEvent.click(screen.getByText("SHI-90"));
+    fireEvent.click(screen.getByText("roadmap#SHI-90"));
     expect(openIssue).toHaveBeenCalledWith(
-      expect.objectContaining({ tracker: "linear", identifier: "SHI-90", id: "SHI-90" }),
+      expect.objectContaining({ tracker: "linear:SHI", identifier: "roadmap#SHI-90", id: "SHI-90" }),
     );
+  });
+
+  // req 11 — a reference naming nothing declared still renders (it is what the
+  // PR body says) but stays a legible badge rather than a link into nothing.
+  it("renders a chip for an undeclared reference without making it clickable", () => {
+    const openIssue = vi.fn();
+    useIssuesStore.setState({ openIssue, trackers: [] });
+    setCard("s1", { ...openPrCard, pr: { ...openPrCard.pr!, body: "Closes SHI-90" } });
+    render(<PrLifecycleCard sessionId="s1" />);
+    const chip = screen.getByText("SHI-90");
+    expect(chip.closest("button")).toBeNull();
+    expect(openIssue).not.toHaveBeenCalled();
   });
 });

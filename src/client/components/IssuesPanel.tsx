@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { isLinearTracker } from "../../server/shared/tracker-id.js";
 import { IssuesViewer } from "./IssuesViewer.js";
 import { IssueDetail } from "./IssueDetail.js";
 import {
@@ -181,7 +182,7 @@ export function IssuesPanel({
         onAnchorConsumed={() => useIssuesStore.getState().clearAnchorComment()}
         availableStatuses={availableStatuses}
         availableLabels={availableLabels}
-        canEditPriority={detailTracker === "linear"}
+        canEditPriority={isLinearTracker(detailTracker)}
         canEditLabels
         onFetchLabels={() => void useIssuesStore.getState().fetchLabels(detailTracker)}
         onSetLabels={(names) => {
@@ -235,7 +236,7 @@ export function IssuesPanel({
       {...(effectiveRepoUrl ? { targetRepoUrl: effectiveRepoUrl } : {})}
       includeDone={includeDone}
       availableStatuses={availableStatuses}
-      canEditPriority={activeTracker === "linear"}
+      canEditPriority={isLinearTracker(activeTracker)}
       onSelectTracker={handleSelectTracker}
       onRefresh={() => void useIssuesStore.getState().fetchIssues()}
       onToggleIncludeDone={() => useIssuesStore.getState().toggleIncludeDone()}

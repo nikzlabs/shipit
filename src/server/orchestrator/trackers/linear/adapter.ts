@@ -11,9 +11,19 @@
  * Built against Linear's GraphQL API as documented 2026-06. Personal API keys
  * authenticate with the raw key in the `Authorization` header (no `Bearer`
  * prefix — that form is for OAuth access tokens).
+ *
+ * docs/248 — the **team comes from the repository's declaration**, not from
+ * `CredentialStore`. A `kind: linear` entry states its team key (req 5), so a
+ * repository may declare two Linear trackers on different teams and each gets
+ * its own adapter instance, its own `linear:<TEAM>` id, and its own tab. The
+ * credential still defines the *workspace* (req 23) — which is exactly why a
+ * declaration identifies a team and not a workspace. The team key is resolved to
+ * Linear's internal team id lazily, on the first call that needs it, so building
+ * a registry stays synchronous and free.
  */
 
 import type {
+  TrackerId,
   TrackerInfo,
   TrackerIssue,
   TrackerComment,
@@ -21,6 +31,8 @@ import type {
   IssuePriority,
   IssuePriorityLevel,
 } from "../../../shared/types.js";
+import { formatIssueReference } from "../../../shared/issue-ref.js";
+import { linearTrackerId } from "../../../shared/tracker-id.js";
 import {
   TrackerResolutionError,
   type ListIssuesOptions,
@@ -66,7 +78,16 @@ export function stripLinearUrlSlug(url: string): string {
 
 export interface LinearTrackerConfig {
   token: string | null;
-  team: { id: string; key: string; name: string } | null;
+  /**
+   * docs/248 req 5 — the declared team key (`SHI`), which is also the prefix its
+   * issue keys carry. Null when the declaration was unusable; the tracker then
+   * reports unconfigured rather than guessing a team.
+   */
+  teamKey: string | null;
+  /** The declared `name` this tracker is addressed by (req 2). */
+  name?: string;
+  /** Sub-tab label. Defaults to the declared name, then to "Linear". */
+  label?: string;
   /** Injectable for tests; defaults to the global `fetch`. */
   fetchImpl?: FetchImpl;
 }
@@ -119,7 +140,14 @@ interface LinearIssueNode {
   team?: { states?: { nodes: LinearStateNode[] } | null } | null;
 }
 
-function toTrackerIssue(node: LinearIssueNode): TrackerIssue {
+/**
+ * `formatRef` renders a Linear issue key in the destination's reference form
+ * (docs/248 req 15): `roadmap#SHI-304` when the tracker was declared under a
+ * name, the bare `SHI-304` otherwise. Threaded in rather than applied at the
+ * call sites so every identifier this adapter produces — including a sub-issue's
+ * `parentIdentifier` — goes through the one formatter.
+ */
+function toTrackerIssue(node: LinearIssueNode, formatRef: (key: string) => string): TrackerIssue {
   const assigneeName = node.assignee?.displayName ?? node.assignee?.name ?? undefined;
   const labels: IssueLabel[] = (node.labels?.nodes ?? [])
     .filter((l) => Boolean(l.name))
@@ -130,11 +158,11 @@ function toTrackerIssue(node: LinearIssueNode): TrackerIssue {
     .map((s) => ({ name: s.name, ...(s.type ? { type: s.type } : {}), ...(s.color ? { color: s.color } : {}) }));
   return {
     id: node.id,
-    identifier: node.identifier,
+    identifier: formatRef(node.identifier),
     title: node.title,
     url: stripLinearUrlSlug(node.url),
     ...(node.description ? { description: node.description } : {}),
-    ...(node.parent ? { parentId: node.parent.id, parentIdentifier: node.parent.identifier } : {}),
+    ...(node.parent ? { parentId: node.parent.id, parentIdentifier: formatRef(node.parent.identifier) } : {}),
     ...(node.updatedAt ? { updatedAt: node.updatedAt } : {}),
     priority: mapLinearPriority(node.priority, node.priorityLabel ?? undefined),
     ...(labels.length > 0 ? { labels } : {}),
@@ -261,21 +289,35 @@ export async function listLinearTeams(
 }
 
 export class LinearTracker implements Tracker {
-  readonly id = "linear" as const;
-  readonly label = "Linear";
+  readonly id: TrackerId;
+  readonly label: string;
 
   private token: string | null;
-  private team: { id: string; key: string; name: string } | null;
+  /** The declared team key (docs/248 req 5), upper-cased. */
+  private teamKey: string | null;
+  /** The declared `name` this tracker is addressed by, when it has one. */
+  private refName: string | undefined;
   private fetchImpl: FetchImpl;
+  /**
+   * Linear's internal team id, resolved from {@link teamKey} on first use and
+   * cached for this adapter's lifetime. A registry is rebuilt per request, so
+   * "cached for this adapter's lifetime" means "resolved at most once per
+   * request that actually talks to Linear" — a fresh declaration is always
+   * re-resolved, and nothing goes stale across a config edit.
+   */
+  private teamId: string | null = null;
 
   constructor(config: LinearTrackerConfig) {
     this.token = config.token;
-    this.team = config.team;
+    this.teamKey = config.teamKey ? config.teamKey.toUpperCase() : null;
+    this.refName = config.name;
+    this.id = this.teamKey ? linearTrackerId(this.teamKey) : "linear";
+    this.label = config.label ?? config.name ?? "Linear";
     this.fetchImpl = config.fetchImpl ?? fetch;
   }
 
   isConfigured(): boolean {
-    return Boolean(this.token && this.team);
+    return Boolean(this.token && this.teamKey);
   }
 
   info(): TrackerInfo {
@@ -283,14 +325,57 @@ export class LinearTracker implements Tracker {
       id: this.id,
       label: this.label,
       configured: this.isConfigured(),
-      ...(this.team ? { binding: { key: this.team.key, name: this.team.name } } : {}),
+      kind: "linear",
+      ...(this.refName ? { name: this.refName } : {}),
+      ...(this.teamKey ? { binding: { key: this.teamKey, name: this.teamKey } } : {}),
     };
   }
 
-  async listIssues(options?: ListIssuesOptions): Promise<TrackerIssue[]> {
-    if (!this.token || !this.team) {
-      throw new Error("Linear is not configured (missing token or team binding)");
+  /** Render an issue key in this destination's reference form (req 15). */
+  private formatRef = (key: string): string =>
+    formatIssueReference({
+      trackerName: this.refName,
+      kind: "linear",
+      ...(this.teamKey ? { key: this.teamKey } : {}),
+      issueId: key,
+    });
+
+  /**
+   * Resolve the declared team **key** to Linear's internal team id.
+   *
+   * The declaration carries the key because that is what a human writes and what
+   * a `SHI-304` reference is matched against (req 5); Linear's own queries want
+   * the UUID. A key the credential's workspace doesn't expose fails closed with
+   * a message naming both possibilities, the same way GitHub's access error does
+   * — the workspace comes from the credential (req 23), so "no such team" and
+   * "this token can't see that team" are indistinguishable from here.
+   */
+  private async resolveTeamId(): Promise<string> {
+    if (this.teamId) return this.teamId;
+    if (!this.token || !this.teamKey) {
+      throw new Error("Linear is not configured (missing token or declared team)");
     }
+    const data = await this.gql<{ teams: { nodes: { id: string; key: string }[] } }>(
+      `query TeamByKey($key: String!) { teams(filter: { key: { eq: $key } }, first: 2) { nodes { id key } } }`,
+      { key: this.teamKey },
+    );
+    const match = data.teams.nodes.find((t) => t.key.toUpperCase() === this.teamKey);
+    if (!match) {
+      throw new Error(
+        `Linear has no team \`${this.teamKey}\` reachable with the connected credential — the team ` +
+          `either does not exist or is outside the token's workspace. Check the \`team:\` in this ` +
+          `repository's shipit.yaml and the Linear token in ShipIt settings.`,
+      );
+    }
+    this.teamId = match.id;
+    return match.id;
+  }
+
+  async listIssues(options?: ListIssuesOptions): Promise<TrackerIssue[]> {
+    if (!this.token || !this.teamKey) {
+      throw new Error("Linear is not configured (missing token or declared team)");
+    }
+    const teamId = await this.resolveTeamId();
     // Open working set by default (drop completed + canceled). When the caller
     // opts into done issues we keep only "canceled" excluded — "done" means
     // finished, not abandoned. Ordered by `updatedAt` so the `first: 100` window
@@ -310,12 +395,12 @@ export class LinearTracker implements Tracker {
           }
         }
       }`,
-      { teamId: this.team.id, excludedTypes },
+      { teamId, excludedTypes },
       this.fetchImpl,
     );
     const nodes = data.team?.issues.nodes ?? [];
     return nodes
-      .map(toTrackerIssue)
+      .map((n) => toTrackerIssue(n, this.formatRef))
       .sort((a, b) => a.priority.sortOrder - b.priority.sortOrder || a.identifier.localeCompare(b.identifier));
   }
 
@@ -329,20 +414,21 @@ export class LinearTracker implements Tracker {
       { id },
       this.fetchImpl,
     );
-    return data.issue ? toTrackerIssue(data.issue) : null;
+    return data.issue ? toTrackerIssue(data.issue, this.formatRef) : null;
   }
 
   async listStatuses(): Promise<{ name: string; type?: string; color?: string }[]> {
-    if (!this.token || !this.team) {
-      throw new Error("Linear is not configured (missing token or team binding)");
+    if (!this.token || !this.teamKey) {
+      throw new Error("Linear is not configured (missing token or declared team)");
     }
+    const teamId = await this.resolveTeamId();
     // The bound team's workflow states, in board order — the same set
     // `getIssue` attaches per-issue, fetched once here for the list editor.
     const data = await this.gql<{ team: { states: { nodes: LinearStateNode[] } } | null }>(
       `query TeamStates($teamId: String!) {
         team(id: $teamId) { states(first: 100) { nodes { id name type position color } } }
       }`,
-      { teamId: this.team.id },
+      { teamId },
     );
     return (data.team?.states.nodes ?? [])
       .slice()
@@ -401,11 +487,11 @@ export class LinearTracker implements Tracker {
     priority?: string;
     parent?: string;
   }): Promise<TrackerIssue> {
-    if (!this.team) {
-      throw new Error("Linear is not configured (missing team binding)");
+    if (!this.teamKey) {
+      throw new Error("Linear is not configured (missing declared team)");
     }
     const createInput: Record<string, unknown> = {
-      teamId: this.team.id,
+      teamId: await this.resolveTeamId(),
       title: input.title,
       description: input.body,
     };
@@ -435,17 +521,17 @@ export class LinearTracker implements Tracker {
     if (!data.issueCreate.success || !data.issueCreate.issue) {
       throw new Error("Linear rejected the issue create");
     }
-    return toTrackerIssue(data.issueCreate.issue);
+    return toTrackerIssue(data.issueCreate.issue, this.formatRef);
   }
 
   async createLabel(input: { name: string; color?: string; description?: string }): Promise<IssueLabel & { id: string }> {
-    if (!this.team) {
-      throw new Error("Linear is not configured (missing team binding)");
+    if (!this.teamKey) {
+      throw new Error("Linear is not configured (missing declared team)");
     }
     // Team-scoped, matching the adapter's binding — the created label shows up in
     // the same `issueLabels` set `resolveLabelIds` matches `--label` against.
     // Linear wants a `#rrggbb` color; tolerate a bare hex from the caller.
-    const labelInput: Record<string, unknown> = { teamId: this.team.id, name: input.name };
+    const labelInput: Record<string, unknown> = { teamId: await this.resolveTeamId(), name: input.name };
     if (input.color) labelInput.color = input.color.startsWith("#") ? input.color : `#${input.color}`;
     if (input.description) labelInput.description = input.description;
     const data = await this.gql<{ issueLabelCreate: { success: boolean; issueLabel: { id: string; name: string; color?: string | null } | null } }>(
@@ -579,7 +665,7 @@ export class LinearTracker implements Tracker {
     if (!data.issueUpdate.success || !data.issueUpdate.issue) {
       throw new Error("Linear rejected the issue update");
     }
-    return toTrackerIssue(data.issueUpdate.issue);
+    return toTrackerIssue(data.issueUpdate.issue, this.formatRef);
   }
 
   /**

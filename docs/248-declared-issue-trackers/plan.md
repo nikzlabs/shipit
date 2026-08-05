@@ -12,9 +12,11 @@ the [evaluation](../246-native-issue-tracker-evaluation/plan.md).
 
 ## Status
 
-A first version shipped, built when this was an additive GitHub-only feature.
-The requirements have since become general and non-additive, so the work now is a
-**rework of the shipped mechanism**, not a greenfield build.
+**Implemented.** A first version shipped as an additive GitHub-only feature; the
+requirements then became general and non-additive, and this document describes
+the reworked mechanism as built. Everything below is the state of the code, not a
+plan — where the implementation diverged from the design that led to it, the
+divergence is called out inline.
 
 One part of the shipped design survives unchanged and carries the rest: the
 destination lives in the tracker id. Everything else — how trackers come into
@@ -185,12 +187,18 @@ which form to write (req 15), which is an `agent-instructions` change, not a cod
 path.
 
 **Resolution happens at use (req 16).** Nothing pins a name to what it resolved to
-when written, including persisted Undo targets. Since a card stores a tracker id
-and not a name, this needs care: storing the *resolved id* freezes the
-destination, which is what req 16 forbids for a name-written reference. The design
-question is whether a card records the name it was written with alongside the
-resolved id. That is a persisted-field change, so it is the one place this rework
-touches the database.
+when written, including persisted Undo targets: `resolveIssueRef` consults only
+the declarations as they are *now*. A card therefore records `trackerName`
+alongside `tracker`, and `TrackerRegistry.getRecorded(id, name)` prefers the name
+while it still resolves.
+
+*Divergence from the design:* this was expected to need a database migration. It
+does not. `IssueWriteCard` is persisted as a JSON blob in the existing
+`issue_write` column (`chat-history.ts` `toRow`/`fromRow`), so a new optional
+field round-trips with no column and no migration — and, because no new
+`PersistedMessage` field was added, none of the `CARD_MESSAGE_FIELDS` /
+`EVERY_OPTIONAL_FIELD_MESSAGE` guards apply either. The rework touches no
+database schema at all.
 
 ### 4. Failures surface where the operation started (reqs 8, 19)
 
@@ -248,27 +256,47 @@ authentication failure may. There is no poller and no periodic visibility check.
 
 Mechanism choices, not requirements questions:
 
-- Duplicate or conflicting names across declarations — req 6 makes `name` unique
-  per repository, so this is a validation-and-warning shape, not a resolution rule.
-- Whether a name may collide with a GitHub owner name, given `owner/repo#42` and
-  `name#123` are distinguished by the slash.
-- How an unresolvable name renders: it must fail closed and stay legible rather
-  than degrade to a broken link.
-- Whether a persisted card records the name alongside the resolved id (see §3).
+All four are now settled; recorded here with the reasoning that settled them.
+
+- **Duplicate names** — the parser drops the second entry with a warning and keeps
+  the first, so a duplicate never mints two destinations under one name. The
+  resolver *also* fails closed on a duplicate it is somehow handed, because the
+  parser is not the only way a destination list can be built (the browser builds
+  one from `TrackerInfo[]`).
+- **A name colliding with a GitHub owner name** — allowed, with no warning.
+  `acme#3` and `acme/planning#3` are distinguished by the slash and can never
+  collide in the grammar, so a warning would only be noise; and ShipIt has no way
+  to know GitHub's owner namespace to check against.
+- **How an unresolvable reference renders** — it stays exactly what it already
+  was, and never becomes an in-app link. A markdown href keeps its ordinary
+  external link (`tracker-link.ts` returns `null`); a doc's `issue:` chip and a
+  PR card's related-issue chip render a static badge; a bare Linear key in prose
+  stays plain text. The CLI reports the failure with the declared names listed.
+- **Whether a card records the name** — yes, `trackerName`; see §3.
 
 ## Key files
 
 Current state; each is a rework site unless noted.
 
 - `src/server/shared/tracker-id.ts` — qualified-id vocabulary. **Carries over.**
-- `src/server/shared/shipit-config.ts` — `parseIssuesConfig` / `DeclaredTracker`.
-  Gains `name`, `kind: linear`, and the team field. Nothing here throws: a
+- `src/server/shared/declared-tracker.ts` — **new.** The `DeclaredTracker` union,
+  `TrackerDestination`, and the pure declaration→destination helpers. Split out of
+  `shipit-config.ts` because that module imports `node:fs`, and both the resolver
+  and the browser need the shape without it.
+- `src/server/shared/shipit-config.ts` — `parseIssuesConfig`. Gains `name`,
+  `kind: linear`, and the team field; re-exports the types. Nothing here throws: a
   declaration gates a tab, not the container.
-- `src/server/shared/issue-ref.ts` — stays pure and context-free; a resolver layer
-  goes above it.
-- `src/server/shared/pr-issue-refs.ts` — inherits whatever the resolver returns.
-- `src/server/orchestrator/trackers/registry.ts` — the largest change: build from
-  declarations, drop the self-declaration skip, delete the `get()` synthesizer.
+- `src/server/shared/issue-ref.ts` — stays pure and context-free. Gains the two
+  name forms and `formatIssueReference`, the single reference producer (req 15).
+- `src/server/shared/issue-ref-resolution.ts` — **new.** The resolver layer:
+  `resolveIssueRef`, `resolveParsedIssueRef`, `resolveDestinationByName`, and
+  requirement 11's fail-closed/ambiguity rules.
+- `src/server/shared/pr-issue-refs.ts` — unchanged; `issue-lifecycle.ts` resolves
+  the references it finds.
+- `src/server/orchestrator/trackers/registry.ts` — the largest change: built from
+  declarations, the self-declaration skip is gone (it now *replaces* the unnamed
+  tab), the `get()` synthesizer is deleted, and `getRecorded()` is the Undo
+  carve-out. `destinations()` is the resolution context every caller reads.
 - `src/server/orchestrator/trackers/linear/adapter.ts` — team from declaration
   rather than `CredentialStore`.
 - `src/server/orchestrator/trackers/github/adapter.ts` — `accessError()` carries
@@ -283,33 +311,53 @@ Current state; each is a rework site unless noted.
   pointer, which is what lets a `Closes` line target a different repository than
   the PR's own (GitHub never closes cross-repository itself). **Carries over**,
   with resolution routed through the new layer.
-- `src/server/session/agent-shim/shipit-issue.ts` — `--repo` and the `"linear"`
-  fallback in `resolveTrackerFlag` both go; verbs take a tracker name.
+- `src/server/session/agent-shim/shipit-issue.ts` — `--repo` and the
+  `github|linear` `--tracker` vocabulary are gone; `--tracker` names a declared
+  tracker. The shim fetches the destinations from a new
+  `GET /api/sessions/:id/issue/trackers` (relayed as `/agent-ops/issue/trackers`)
+  and resolves references **locally** against them, which is what lets a routing
+  failure be reported in CLI output with the declared names in hand (reqs 8, 19)
+  instead of arriving as an opaque 404 from a write that should never have run.
 - `src/server/orchestrator/services/headless-sessions.ts` — `seedFromIssueRef`
   builds the branch from the identifier alone (req 22). **Carries over.**
+- `src/client/stores/issues-store.ts` — `trackerDestinations()` /
+  `resolveUiIssueRef()` build the browser's resolution context from the
+  `TrackerInfo[]` it already fetched for the tabs, rather than a second fetch.
+  `TrackerInfo` gains `name` and `kind` to carry what the resolver matches on.
 - Agent-facing docs: `src/server/shipit-docs/issues.md`,
-  `shipit-docs/shipit-yaml.md`, and `agent-instructions` for the reference form.
+  `shipit-docs/shipit-yaml.md`, `shipit-docs/design-docs.md`, and the
+  `prompts/skeleton.md` / `prompts/pull-requests.md` fragments for the reference
+  form (req 15).
+- `shipit.yaml` — ShipIt's own repository declares its Linear team, because
+  requirement 1 means it would otherwise lose the tab this repository's workflow
+  depends on.
 
 ## Validation
 
-Shipped and still valid: the two-repository fixture where both hold issue `#42`,
-asserting every operation touches only the one it named — across list, detail,
-create, edit, status, labels, assignees, comments, agent writes and Undo,
-session-start, `Refs` comments and merged `Closes` effects, dedup and effect-guard
-keys, reload/session-switch mid-effect, and the fail-closed cases.
+The shipped two-repository fixture — both repositories holding issue `#42`, every
+operation asserted to touch only the one it named — carries over as the
+regression guard for the routing invariant
+(`integration_tests/issues-declared-trackers.test.ts`).
 
-The rework needs:
+Added for the rework, and passing:
 
-- a repository declaring nothing — only its own GitHub Issues, no Linear tab;
-- `kind: linear` declared, including two teams declared at once;
-- each of the three reference forms resolving, in the UI highlight and the CLI;
-- a canonical address naming an undeclared destination failing closed;
-- an ambiguous reference failing rather than resolving to one match;
-- a self-declaration producing a name without a duplicate tab;
-- a name re-pointed at a different destination re-targeting an existing recorded
-  card (req 16);
-- ShipIt-emitted references carrying the name form (req 15);
-- declaration warnings and resolution failures appearing in CLI output (reqs 8, 19).
+| Case | Where |
+|---|---|
+| A repository declaring nothing has only its own GitHub Issues — no Linear tab, even with a stored credential | `issues-declared-trackers.test.ts` |
+| `kind: linear` declared, including two teams at once | `issues-declared-trackers.test.ts`, `registry.test.ts`, `shipit-config.test.ts` |
+| Each of the three reference forms resolving, in the resolver, the client chip and the CLI | `issue-ref-resolution.test.ts`, `tracker-link.test.ts`, `agent-issue-access.test.ts` |
+| A canonical address naming an undeclared destination failing closed | `issue-ref-resolution.test.ts`, `issues-declared-trackers.test.ts`, `agent-issue-access.test.ts` |
+| An ambiguous reference failing rather than resolving to one match | `issue-ref-resolution.test.ts`, `agent-issue-access.test.ts` |
+| A self-declaration producing a name without a duplicate tab | `registry.test.ts`, `issues-declared-trackers.test.ts` |
+| A bare `create` rejected rather than filing into the session's own repository | `agent-issue-access.test.ts`, `shipit.test.ts` |
+| Undo working against an undeclared destination, and following a re-pointed name | `registry.test.ts`, `issues.test.ts` |
+| ShipIt-emitted references carrying the name form | `issues-declared-trackers.test.ts`, `issues-routes.test.ts`, `issues.test.ts` |
+| Declaration warnings and resolution failures in CLI output | `agent-issue-access.test.ts`, `issues-declared-trackers.test.ts` |
+
+**Not covered live.** `kind: linear` is exercised only against a stubbed Linear
+GraphQL API. The deployment that runs the dogfood loop has a GitHub token and no
+Linear credential, so no end-to-end Linear run was possible; requirements 3–5 rest
+on unit and integration coverage with fakes.
 
 ## Out of scope
 

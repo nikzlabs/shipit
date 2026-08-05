@@ -13,8 +13,18 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-const LINEAR_CONNECTED: TrackerInfo = { id: "linear", label: "Linear", configured: true };
-const LINEAR_DISCONNECTED: TrackerInfo = { id: "linear", label: "Linear", configured: false };
+// docs/248 — Linear is a declared tracker bound to a team, so the destination id
+// carries the team key and the declaration carries the name every reference
+// resolves through.
+const LINEAR_CONNECTED: TrackerInfo = {
+  id: "linear:SHI",
+  kind: "linear",
+  label: "roadmap",
+  name: "roadmap",
+  configured: true,
+  binding: { key: "SHI", name: "SHI" },
+};
+const LINEAR_DISCONNECTED: TrackerInfo = { ...LINEAR_CONNECTED, configured: false };
 
 describe("MarkdownContent links", () => {
   it("opens the file preview when a repo-path link is clicked", async () => {
@@ -108,9 +118,10 @@ describe("MarkdownContent tracker-issue links", () => {
     await userEvent.click(link);
 
     expect(openIssue).toHaveBeenCalledWith({
-      tracker: "linear",
+      tracker: "linear:SHI",
       id: "SHI-137",
-      identifier: "SHI-137",
+      // req 15 — the destination's name form.
+      identifier: "roadmap#SHI-137",
       url: "https://linear.app/shipit-ai/issue/SHI-137",
     });
     expect(setRightTab).toHaveBeenCalledWith("issues");
@@ -137,7 +148,7 @@ describe("MarkdownContent tracker-issue links", () => {
   it("never intercepts a GitHub PR URL, even with the tracker connected", async () => {
     const openIssue = vi.fn().mockResolvedValue(undefined);
     useIssuesStore.setState({
-      trackers: [{ id: "github", label: "GitHub", configured: true }],
+      trackers: [{ id: "github", kind: "github" as const, label: "GitHub", configured: true }],
       openIssue,
     });
 

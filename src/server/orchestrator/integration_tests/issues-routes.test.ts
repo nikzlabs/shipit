@@ -47,6 +47,7 @@ describe("Integration: Issues tab routes (docs/170)", () => {
   let githubAuthManager: StubGitHubAuthManager;
   /** Routes each GraphQL operation to a canned response by query content. */
   let trackerFetch: ReturnType<typeof vi.fn>;
+  let linearWorkspace: string;
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
@@ -196,6 +197,16 @@ describe("Integration: Issues tab routes (docs/170)", () => {
 
     sessionManager = new SessionManager(dbManager);
     githubAuthManager = new StubGitHubAuthManager();
+    // docs/248 — Linear is a declared tracker like any other, so these route
+    // tests need a session whose workspace declares one. `lin-sess` is that
+    // session; requests that omit `sessionId` see no declarations at all, which
+    // is itself part of the contract (req 1: no built-in tracker).
+    linearWorkspace = path.join(tmpDir, "linear-workspace");
+    fs.mkdirSync(linearWorkspace, { recursive: true });
+    fs.writeFileSync(
+      path.join(linearWorkspace, "shipit.yaml"),
+      "issues:\n  trackers:\n    - kind: linear\n      team: SHI\n      name: roadmap\n",
+    );
     app = await buildApp({
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
@@ -207,6 +218,7 @@ describe("Integration: Issues tab routes (docs/170)", () => {
       serveStatic: false,
       trackerFetchImpl: trackerFetch as unknown as typeof fetch,
     });
+    sessionManager.track("lin-sess", "Linear session", linearWorkspace);
   });
 
   afterEach(async () => {
@@ -226,10 +238,10 @@ describe("Integration: Issues tab routes (docs/170)", () => {
     const body = res.json() as { trackers: TrackerInfo[] };
     // GitHub is registered alongside Linear (SHI-80); both unconfigured with no
     // token and no active-session repo binding.
-    expect(body.trackers).toEqual([
-      { id: "linear", label: "Linear", configured: false },
-      { id: "github", label: "GitHub", configured: false },
-    ]);
+    // docs/248 req 1 — with no session (so no declarations) the only destination
+    // is the session's own repository, which is itself unconfigured here. Linear
+    // is NOT present: it is a declared tracker now, not a built-in.
+    expect(body.trackers).toEqual([{ id: "github", label: "GitHub", kind: "github", configured: false }]);
   });
 
   it("GitHub tracker auto-configures from the active session's GitHub remote", async () => {
@@ -280,7 +292,7 @@ describe("Integration: Issues tab routes (docs/170)", () => {
   });
 
   it("GET /api/issues returns an empty list with tracker info when unconfigured", async () => {
-    const res = await app.inject({ method: "GET", url: "/api/issues?tracker=linear" });
+    const res = await app.inject({ method: "GET", url: "/api/issues?tracker=linear%3ASHI&sessionId=lin-sess" });
     expect(res.statusCode).toBe(200);
     const body = res.json() as { tracker: TrackerInfo; issues: TrackerIssue[] };
     expect(body.tracker.configured).toBe(false);
@@ -289,8 +301,10 @@ describe("Integration: Issues tab routes (docs/170)", () => {
     expect(trackerFetch).not.toHaveBeenCalled();
   });
 
-  it("connects + binds a team, then lists priority-sorted issues", async () => {
-    // Connect: validates the token by listing teams.
+  it("connects the credential, then lists the declared team's issues priority-sorted", async () => {
+    // docs/248 req 4 — connecting stores the credential and returns the teams it
+    // can reach as a LOOKUP for writing a declaration. It binds nothing: the
+    // team lives in the repository's `shipit.yaml`, which `lin-sess` carries.
     const connect = await app.inject({
       method: "POST",
       url: "/api/trackers/linear/token",
@@ -299,26 +313,13 @@ describe("Integration: Issues tab routes (docs/170)", () => {
     expect(connect.statusCode).toBe(200);
     expect((connect.json() as { teams: typeof TEAM[] }).teams).toEqual([TEAM]);
 
-    // Bind the team.
-    const bind = await app.inject({
-      method: "POST",
-      url: "/api/trackers/linear/team",
-      payload: TEAM,
-    });
-    expect(bind.statusCode).toBe(200);
-    expect((bind.json() as { tracker: TrackerInfo }).tracker).toEqual({
-      id: "linear",
-      label: "Linear",
-      configured: true,
-      binding: { key: "SHI", name: "ShipIt" },
-    });
-
     // List: urgent first.
-    const list = await app.inject({ method: "GET", url: "/api/issues?tracker=linear" });
+    const list = await app.inject({ method: "GET", url: "/api/issues?tracker=linear%3ASHI&sessionId=lin-sess" });
     expect(list.statusCode).toBe(200);
     const body = list.json() as { tracker: TrackerInfo; issues: TrackerIssue[] };
     expect(body.tracker.configured).toBe(true);
-    expect(body.issues.map((i) => i.identifier)).toEqual(["SHI-1", "SHI-2"]);
+    // req 15 — identifiers render in the declared name's form.
+    expect(body.issues.map((i) => i.identifier)).toEqual(["roadmap#SHI-1", "roadmap#SHI-2"]);
     expect(body.issues[0].priority.level).toBe("urgent");
     expect(body.issues[1].assignee).toBeUndefined();
     expect(body.issues[0].status).toEqual({ name: "In Progress" });
@@ -326,7 +327,6 @@ describe("Integration: Issues tab routes (docs/170)", () => {
 
   it("passes includeDone through to the tracker's excluded-state filter", async () => {
     await app.inject({ method: "POST", url: "/api/trackers/linear/token", payload: { token: "t" } });
-    await app.inject({ method: "POST", url: "/api/trackers/linear/team", payload: TEAM });
 
     // listIssuesForTracker now fires the TeamIssues query AND a TeamStates query
     // in parallel (docs/191 — statuses for the inline editor), so scan back for
@@ -344,11 +344,11 @@ describe("Integration: Issues tab routes (docs/170)", () => {
     };
 
     // Default: open working set — completed + canceled excluded.
-    await app.inject({ method: "GET", url: "/api/issues?tracker=linear" });
+    await app.inject({ method: "GET", url: "/api/issues?tracker=linear%3ASHI&sessionId=lin-sess" });
     expect(lastIssuesVariables().excludedTypes).toEqual(["completed", "canceled"]);
 
     // includeDone=true: only canceled stays excluded.
-    await app.inject({ method: "GET", url: "/api/issues?tracker=linear&includeDone=true" });
+    await app.inject({ method: "GET", url: "/api/issues?tracker=linear%3ASHI&sessionId=lin-sess&includeDone=true" });
     expect(lastIssuesVariables().excludedTypes).toEqual(["canceled"]);
   });
 
@@ -360,12 +360,11 @@ describe("Integration: Issues tab routes (docs/170)", () => {
   // docs/189 — the inline single-issue detail view's own read path.
   it("GET /api/issue returns one fully-hydrated Linear issue", async () => {
     await app.inject({ method: "POST", url: "/api/trackers/linear/token", payload: { token: "t" } });
-    await app.inject({ method: "POST", url: "/api/trackers/linear/team", payload: TEAM });
 
-    const res = await app.inject({ method: "GET", url: "/api/issue?tracker=linear&id=SHI-1" });
+    const res = await app.inject({ method: "GET", url: "/api/issue?tracker=linear%3ASHI&sessionId=lin-sess&id=SHI-1" });
     expect(res.statusCode).toBe(200);
     const body = res.json() as { tracker: TrackerInfo; issue: TrackerIssue };
-    expect(body.issue.identifier).toBe("SHI-1");
+    expect(body.issue.identifier).toBe("roadmap#SHI-1");
     expect(body.issue.description).toBe("The body of the issue.");
     expect(body.issue.status).toEqual({ name: "In Progress", type: "started" });
     // `getIssue` hydrates the team's workflow states for the status picker.
@@ -373,7 +372,7 @@ describe("Integration: Issues tab routes (docs/170)", () => {
   });
 
   it("GET /api/issue 400s when the tracker is unconfigured", async () => {
-    const res = await app.inject({ method: "GET", url: "/api/issue?tracker=linear&id=SHI-1" });
+    const res = await app.inject({ method: "GET", url: "/api/issue?tracker=linear%3ASHI&sessionId=lin-sess&id=SHI-1" });
     expect(res.statusCode).toBe(400);
     // No GraphQL call fires for an unconfigured tracker.
     expect(trackerFetch).not.toHaveBeenCalled();
@@ -381,9 +380,8 @@ describe("Integration: Issues tab routes (docs/170)", () => {
 
   it("GET /api/issue/comments returns the Linear comment thread", async () => {
     await app.inject({ method: "POST", url: "/api/trackers/linear/token", payload: { token: "t" } });
-    await app.inject({ method: "POST", url: "/api/trackers/linear/team", payload: TEAM });
 
-    const res = await app.inject({ method: "GET", url: "/api/issue/comments?tracker=linear&id=SHI-1" });
+    const res = await app.inject({ method: "GET", url: "/api/issue/comments?tracker=linear%3ASHI&sessionId=lin-sess&id=SHI-1" });
     expect(res.statusCode).toBe(200);
     const body = res.json() as { comments: { id: string; body: string; author?: { name: string } }[] };
     expect(body.comments).toEqual([
@@ -398,19 +396,18 @@ describe("Integration: Issues tab routes (docs/170)", () => {
   });
 
   it("GET /api/issue/comments 400s when the tracker is unconfigured", async () => {
-    const res = await app.inject({ method: "GET", url: "/api/issue/comments?tracker=linear&id=SHI-1" });
+    const res = await app.inject({ method: "GET", url: "/api/issue/comments?tracker=linear%3ASHI&sessionId=lin-sess&id=SHI-1" });
     expect(res.statusCode).toBe(400);
     expect(trackerFetch).not.toHaveBeenCalled();
   });
 
   it("POST /api/issue/comments posts a user comment and returns it (no provenance card)", async () => {
     await app.inject({ method: "POST", url: "/api/trackers/linear/token", payload: { token: "t" } });
-    await app.inject({ method: "POST", url: "/api/trackers/linear/team", payload: TEAM });
 
     const res = await app.inject({
       method: "POST",
       url: "/api/issue/comments",
-      payload: { tracker: "linear", id: "SHI-1", body: "Posted from the UI" },
+      payload: { tracker: "linear:SHI", sessionId: "lin-sess", id: "SHI-1", body: "Posted from the UI" },
     });
     expect(res.statusCode).toBe(200);
     const body = res.json() as { comment: { id: string; body: string; author?: { name: string } } };
@@ -421,12 +418,11 @@ describe("Integration: Issues tab routes (docs/170)", () => {
 
   it("POST /api/issue/comments 400s without a body", async () => {
     await app.inject({ method: "POST", url: "/api/trackers/linear/token", payload: { token: "t" } });
-    await app.inject({ method: "POST", url: "/api/trackers/linear/team", payload: TEAM });
 
     const res = await app.inject({
       method: "POST",
       url: "/api/issue/comments",
-      payload: { tracker: "linear", id: "SHI-1", body: "   " },
+      payload: { tracker: "linear:SHI", sessionId: "lin-sess", id: "SHI-1", body: "   " },
     });
     expect(res.statusCode).toBe(400);
   });
@@ -434,9 +430,8 @@ describe("Integration: Issues tab routes (docs/170)", () => {
   // docs/191 — user-initiated inline status / priority writes.
   it("GET /api/issues includes the tracker's availableStatuses (docs/191)", async () => {
     await app.inject({ method: "POST", url: "/api/trackers/linear/token", payload: { token: "t" } });
-    await app.inject({ method: "POST", url: "/api/trackers/linear/team", payload: TEAM });
 
-    const res = await app.inject({ method: "GET", url: "/api/issues?tracker=linear" });
+    const res = await app.inject({ method: "GET", url: "/api/issues?tracker=linear%3ASHI&sessionId=lin-sess" });
     expect(res.statusCode).toBe(200);
     const body = res.json() as { availableStatuses?: { name: string }[] };
     expect(body.availableStatuses?.map((s) => s.name)).toEqual(["Todo", "In Progress", "Done"]);
@@ -444,7 +439,6 @@ describe("Integration: Issues tab routes (docs/170)", () => {
 
   it("GET /api/issue/labels returns the tracker's labels with colors (SHI-92 foundation)", async () => {
     await app.inject({ method: "POST", url: "/api/trackers/linear/token", payload: { token: "t" } });
-    await app.inject({ method: "POST", url: "/api/trackers/linear/team", payload: TEAM });
 
     // The next tracker fetch is the `IssueLabels` query (`listLabels`).
     trackerFetch.mockImplementationOnce(async () =>
@@ -460,7 +454,7 @@ describe("Integration: Issues tab routes (docs/170)", () => {
       }),
     );
 
-    const res = await app.inject({ method: "GET", url: "/api/issue/labels?tracker=linear" });
+    const res = await app.inject({ method: "GET", url: "/api/issue/labels?tracker=linear%3ASHI&sessionId=lin-sess" });
     expect(res.statusCode).toBe(200);
     const body = res.json() as { labels: { name: string; color?: string }[] };
     expect(body.labels).toEqual([
@@ -470,45 +464,42 @@ describe("Integration: Issues tab routes (docs/170)", () => {
   });
 
   it("GET /api/issue/labels returns an empty set when the tracker is unconfigured", async () => {
-    const res = await app.inject({ method: "GET", url: "/api/issue/labels?tracker=linear" });
+    const res = await app.inject({ method: "GET", url: "/api/issue/labels?tracker=linear%3ASHI&sessionId=lin-sess" });
     expect(res.statusCode).toBe(200);
     expect((res.json() as { labels: unknown[] }).labels).toEqual([]);
   });
 
   it("POST /api/issue/status sets the status and returns the issue (no card)", async () => {
     await app.inject({ method: "POST", url: "/api/trackers/linear/token", payload: { token: "t" } });
-    await app.inject({ method: "POST", url: "/api/trackers/linear/team", payload: TEAM });
 
     const res = await app.inject({
       method: "POST",
       url: "/api/issue/status",
-      payload: { tracker: "linear", id: "SHI-1", status: "Done" },
+      payload: { tracker: "linear:SHI", sessionId: "lin-sess", id: "SHI-1", status: "Done" },
     });
     expect(res.statusCode).toBe(200);
     const body = res.json() as { issue: { identifier: string; status?: { name: string } } };
-    expect(body.issue.identifier).toBe("SHI-1");
+    expect(body.issue.identifier).toBe("roadmap#SHI-1");
     expect(body.issue.status?.name).toBe("Done");
   });
 
   it("POST /api/issue/status 400s without a status", async () => {
     await app.inject({ method: "POST", url: "/api/trackers/linear/token", payload: { token: "t" } });
-    await app.inject({ method: "POST", url: "/api/trackers/linear/team", payload: TEAM });
     const res = await app.inject({
       method: "POST",
       url: "/api/issue/status",
-      payload: { tracker: "linear", id: "SHI-1", status: "  " },
+      payload: { tracker: "linear:SHI", sessionId: "lin-sess", id: "SHI-1", status: "  " },
     });
     expect(res.statusCode).toBe(400);
   });
 
   it("POST /api/issue/priority sets Linear priority and returns the issue", async () => {
     await app.inject({ method: "POST", url: "/api/trackers/linear/token", payload: { token: "t" } });
-    await app.inject({ method: "POST", url: "/api/trackers/linear/team", payload: TEAM });
 
     const res = await app.inject({
       method: "POST",
       url: "/api/issue/priority",
-      payload: { tracker: "linear", id: "SHI-1", priority: "high" },
+      payload: { tracker: "linear:SHI", sessionId: "lin-sess", id: "SHI-1", priority: "high" },
     });
     expect(res.statusCode).toBe(200);
     const body = res.json() as { issue: { priority: { level: string } } };
@@ -559,21 +550,23 @@ describe("Integration: Issues tab routes (docs/170)", () => {
 
   it("never echoes the stored token back to the client", async () => {
     await app.inject({ method: "POST", url: "/api/trackers/linear/token", payload: { token: "secret-token" } });
-    await app.inject({ method: "POST", url: "/api/trackers/linear/team", payload: TEAM });
     const trackers = await app.inject({ method: "GET", url: "/api/trackers" });
-    const issues = await app.inject({ method: "GET", url: "/api/issues?tracker=linear" });
+    const issues = await app.inject({ method: "GET", url: "/api/issues?tracker=linear%3ASHI&sessionId=lin-sess" });
     expect(trackers.body).not.toContain("secret-token");
     expect(issues.body).not.toContain("secret-token");
     // But it is persisted server-side.
     expect(credentialStore.getLinearToken()).toBe("secret-token");
   });
 
-  it("disconnects, clearing the token + team binding", async () => {
+  it("disconnects, clearing the stored credential", async () => {
     await app.inject({ method: "POST", url: "/api/trackers/linear/token", payload: { token: "t" } });
-    await app.inject({ method: "POST", url: "/api/trackers/linear/team", payload: TEAM });
     const res = await app.inject({ method: "POST", url: "/api/trackers/linear/disconnect" });
     expect(res.statusCode).toBe(200);
     expect(credentialStore.getLinearToken()).toBeNull();
-    expect(credentialStore.getLinearTeam()).toBeNull();
+  });
+
+  it("has no team-binding route — the team is declared, not stored (req 4)", async () => {
+    const res = await app.inject({ method: "POST", url: "/api/trackers/linear/team", payload: TEAM });
+    expect(res.statusCode).toBe(404);
   });
 });

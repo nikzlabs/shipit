@@ -33,7 +33,7 @@ Frontmatter is optional. A doc with no frontmatter still appears in the list. Th
 
 ```markdown
 ---
-issue: https://linear.app/your-workspace/issue/TRACKER-28/decouple-priorities
+issue: roadmap#TRACKER-28
 description: One-line summary of the feature.
 ---
 
@@ -44,14 +44,14 @@ Description of the feature...
 
 ### The `issue:` pointer
 
-`issue:` points at the work item that tracks this doc. The tracker is inferred from the pointer's shape — there is no separate `tracker:` field.
+`issue:` points at the work item that tracks this doc. It is resolved against the trackers this repository declares in its `shipit.yaml` — there is no separate `tracker:` field.
 
-| Tracker | Accepted form | Example |
-|---------|---------------|---------|
-| Linear | **Full URL only** | `https://linear.app/your-workspace/issue/TRACKER-28/slug` |
-| GitHub | `owner/repo#N` or a full issue URL | `octocat/hello-world#42` |
+| Form | Example |
+|------|---------|
+| **Preferred** — the declared tracker's name plus the backend id | `planning#42`, `roadmap#SHI-304` |
+| The backend's own address | `octocat/hello-world#42`, a GitHub issue URL, a full Linear issue URL |
 
-A Linear pointer **must** be a full URL — a bare `TRACKER-28` is not accepted, so the pointer stays unambiguous if a deployment wires up more than one Linear workspace. A doc with **no** `issue:` is pure reference: it still shows up, just without a jump-to-issue chip.
+Write the **name form**: it keeps working when the declaration is re-pointed at a different repository or team, and it is the form ShipIt itself emits. A backend address also resolves, as long as it identifies a tracker this repository declares; one that identifies none stays a legible badge rather than a chip that opens nothing. A Linear **URL** should have no title slug. A doc with **no** `issue:` is pure reference: it still shows up, just without a jump-to-issue chip.
 
 ### `title` and `description`
 
@@ -70,7 +70,7 @@ description: A short summary of what this feature is about.
 
 ```markdown
 ---
-issue: https://linear.app/your-workspace/issue/TRACKER-28/slug
+issue: roadmap#TRACKER-28
 description: One-line summary.
 ---
 
@@ -134,7 +134,7 @@ The `present` tool renders a mock in the Present tab, but that artifact never to
 
 ## Common mistakes
 
-- **Bare Linear ID in `issue:`**: Linear pointers must be full URLs (`https://linear.app/.../issue/TRACKER-28/...`), not bare identifiers like `TRACKER-28`.
+- **Naming an undeclared tracker in `issue:`**: the pointer resolves against `issues.trackers` in `shipit.yaml`. A name nobody declared — or a `owner/repo#N` for a repository this one doesn't declare — renders as a plain badge instead of a jump-to-issue chip. Add the declaration, or use one that exists.
 - **Missing frontmatter delimiters**: The `---` lines are required. Don't use a ` ```yaml ` fence.
 - **Frontmatter not at file start**: The `---` block must be the very first thing in the file — no blank lines or content before it.
 - **Not a `.md` file**: Only files ending in `.md` are scanned. Other formats (`.txt`, `.rst`) won't appear in the list.

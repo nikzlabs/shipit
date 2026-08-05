@@ -64,15 +64,22 @@ Reference documentation about the ShipIt platform is at /shipit-docs/. Consult t
 
 ## Issue Trackers
 
-Use `shipit issue` for issue tracker operations. It is the sanctioned, tracker-neutral interface for both Linear and GitHub Issues, and it brokers credentials through ShipIt so tracker tokens never enter the session container. Do not conclude you lack Linear access just because no Linear MCP/tool is exposed; run `shipit issue --help` or read /shipit-docs/issues.md.
+Use `shipit issue` for issue tracker operations. It is the sanctioned, tracker-neutral interface for every backend, and it brokers credentials through ShipIt so tracker tokens never enter the session container. Do not conclude you lack Linear access just because no Linear MCP/tool is exposed; run `shipit issue --help` or read /shipit-docs/issues.md.
+
+**Every tracker this repository uses is declared in its `shipit.yaml`**, and each declaration has a `name`. There is no built-in tracker and no implicit fallback: the trackers you can reach are the declared ones, plus this session's own repository's GitHub Issues. `shipit issue list` with no `--tracker` means that own repository; `--tracker <name>` selects a declared one. If you don't know what's declared, run `shipit issue list --tracker nope` — the error names every declared tracker.
 
 Common commands:
-- Read: `shipit issue view <pointer> [--json]`
-- Comment: `shipit issue comment <pointer> --body-file -`
-- Edit fields: `shipit issue edit <pointer> ...`
-- Set status: `shipit issue status <pointer> completed`
+- Read: `shipit issue view <reference> [--json]`
+- Comment: `shipit issue comment <reference> --body-file -`
+- Edit fields: `shipit issue edit <reference> ...`
+- Set status: `shipit issue status <reference> completed`
+- Create: `shipit issue create --tracker <name> --title "..." --body-file -`
 
-Pass the pointer the user gave you, such as `TRACKER-123` or `https://linear.app/.../issue/TRACKER-123`; the tracker is inferred from its shape. Use this before reaching for GitHub issue commands, external Linear MCP tools, or WebFetch on issue URLs.
+Three reference forms all work: the tracker name plus the backend's id (`planning#123`, `roadmap#SHI-304`), the tracker name plus a number (`roadmap#304`), and the backend's own address (`SHI-304`, `owner/repo#42`, an issue URL). **When you write a reference yourself — in doc frontmatter, a PR body or comment, or chat prose — use the `name#id` form** (`planning#42`, `roadmap#SHI-304`). It keeps working when the declaration is re-pointed at a different repository or team, and it is the form ShipIt itself emits. The other forms still resolve; this is about keeping what you write consistent, not a restriction on it.
+
+A reference that names no declared tracker fails with an error listing what *is* declared — fix the reference or the declaration; do not retry against a different tracker. `shipit issue create` **always** needs `--tracker <name>`: there is no default, so a forgotten flag can never file into this session's own (possibly public) repository.
+
+Use this before reaching for GitHub issue commands, external Linear MCP tools, or WebFetch on issue URLs.
 
 When you start implementing a tracked issue that ShipIt didn't already start for you (e.g. the user pasted a pointer in chat rather than launching the session from the Issues tab), mark it in progress: `shipit issue status <pointer> started`. Sessions launched *from* an issue are moved to **started** automatically at creation, so don't repeat it there. To close the loop on merge, declare the finishing PR with a `Closes <pointer>` line in its body (see the PR section above) — that, not a manual `status completed`, is how a tracked issue should reach **completed**.
 
@@ -82,7 +89,7 @@ When you start implementing a tracked issue that ShipIt didn't already start for
 
 Workspace `.md` files (typically under `docs/NNN-feature/plan.md`) show up in ShipIt's feature list. Docs are **reference material** — what a feature is, why, and how. The recognized frontmatter fields are all optional: `issue`, `title`, and `description`. A doc with no frontmatter still appears in the list. Work tracking — what's planned, in progress, or done — lives in the issue tracker (Linear / GitHub Issues), which a doc links to via its `issue:` pointer.
 
-`issue:` points at the work item that tracks the doc, and ShipIt renders a jump-to-issue chip from it. Linear pointers must be a full URL (`https://linear.app/<workspace>/issue/TRACKER-123/...`) — a bare `TRACKER-123` is not accepted; GitHub is `owner/repo#123` or a full issue URL. `description` is a single-line summary shown under the title. See /shipit-docs/design-docs.md for the full schema (issue pointer, title, description, common mistakes).
+`issue:` points at the work item that tracks the doc, and ShipIt renders a jump-to-issue chip from it. Write it in the `name#id` form of a declared tracker (`planning#42`, `roadmap#SHI-304`). A backend address also resolves — a full Linear URL (`https://linear.app/<workspace>/issue/TRACKER-123/...`, without the title slug), `owner/repo#123`, or a GitHub issue URL — as long as it identifies a tracker this repository declares. `description` is a single-line summary shown under the title. See /shipit-docs/design-docs.md for the full schema (issue pointer, title, description, common mistakes).
 
 Track remaining work in a sibling `checklist.md` file next to `plan.md` (e.g. `docs/NNN-feature/checklist.md`) — not as a `## Checklist` section inside `plan.md`. Mark items complete with `[x]`. The checklist drives the docs list's Active/Done grouping: when every item is checked, the doc folds into the collapsed Done group, so check them all off when the work is finished.
 

@@ -23,7 +23,7 @@ describe("parsePrBodyIssueRefs", () => {
     const { closes, refs } = parsePrBodyIssueRefs("## Summary\nDoes the thing.\n\nCloses SHI-43");
     expect(refs).toEqual([]);
     expect(closes).toHaveLength(1);
-    expect(closes[0]).toMatchObject({ tracker: "linear", identifier: "SHI-43", issueId: "SHI-43" });
+    expect(closes[0]).toMatchObject({ tracker: "linear:SHI", identifier: "SHI-43", issueId: "SHI-43" });
   });
 
   it("accepts Fixes / Resolves synonyms and all case/tense forms", () => {
@@ -46,7 +46,7 @@ describe("parsePrBodyIssueRefs", () => {
 
   it("parses a full issue URL after the keyword", () => {
     const linear = parsePrBodyIssueRefs("Resolves https://linear.app/acme/issue/SHI-9");
-    expect(linear.closes[0]).toMatchObject({ tracker: "linear", issueId: "SHI-9" });
+    expect(linear.closes[0]).toMatchObject({ tracker: "linear:SHI", issueId: "SHI-9" });
 
     const gh = parsePrBodyIssueRefs("Closes https://github.com/octocat/hello-world/issues/7");
     expect(gh.closes[0]).toMatchObject({ tracker: "github:octocat/hello-world", issueId: "7" });

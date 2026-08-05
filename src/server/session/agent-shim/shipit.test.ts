@@ -47,6 +47,23 @@ interface MockResponse {
   body: Record<string, unknown>;
 }
 
+/**
+ * docs/248 — the destinations the shim resolves references against in these
+ * tests: the session's own repository (unnamed, req 12's exception) plus three
+ * declarations. `hello` exists so `octocat/hello#42` resolves to a destination
+ * that is NOT the session's own repo, which is the wrong-target case the whole
+ * feature exists to prevent.
+ */
+const DEFAULT_TRACKERS = {
+  destinations: [
+    { id: "github", kind: "github", key: "session/repo" },
+    { id: "github:octocat/hello", kind: "github", key: "octocat/hello", name: "hello" },
+    { id: "github:acme/planning", kind: "github", key: "acme/planning", name: "planning" },
+    { id: "linear:SHI", kind: "linear", key: "SHI", name: "roadmap" },
+  ],
+  warnings: [],
+};
+
 function makeRunner() {
   let stdout = "";
   let stderr = "";
@@ -72,8 +89,17 @@ function makeRunner() {
     calls.length = 0;
 
     const fakeCall = async (method: "GET" | "POST" | "PATCH", path: string, body: unknown) => {
-      calls.push({ method, path, body });
       const key = `${method} ${path.split("?")[0]}`;
+      // docs/248 — every `shipit issue` command first asks the orchestrator which
+      // trackers this repository declares, so it can resolve a reference locally
+      // and report a routing failure in CLI output. That lookup is plumbing, not
+      // the operation under test, so it is answered here and deliberately kept
+      // OUT of `calls`: an assertion that "no broker call fired" still means "no
+      // issue operation fired", and `calls[0]` is still the operation.
+      if (key === "GET /agent-ops/issue/trackers") {
+        return responses[key] ?? { status: 200, body: DEFAULT_TRACKERS };
+      }
+      calls.push({ method, path, body });
       const matching = responses[key];
       if (matching) return { status: matching.status, body: matching.body };
       // Default: 200 with empty body so handlers fall through to "not found" cases
@@ -1698,7 +1724,7 @@ describe("shipit issue", () => {
 
   it("view --repo qualifies a bare issue number", async () => {
     const { run } = makeRunner();
-    const out = await run(["issue", "view", "42", "--repo", "acme/planning"], {
+    const out = await run(["issue", "view", "42", "--tracker", "planning"], {
       "GET /agent-ops/issue/view": { status: 200, body: issuePayload },
     });
     expect(out.calls[0].path).toContain(`tracker=${encodeURIComponent("github:acme/planning")}`);
@@ -1707,62 +1733,57 @@ describe("shipit issue", () => {
 
   it("list --repo targets a repository the session doesn't own", async () => {
     const { run } = makeRunner();
-    const out = await run(["issue", "list", "--repo", "acme/planning"], {
+    const out = await run(["issue", "list", "--tracker", "planning"], {
       "GET /agent-ops/issue/list": { status: 200, body: { tracker: { id: "github:acme/planning" }, issues: [] } },
     });
     expect(out.calls[0].path).toContain(`tracker=${encodeURIComponent("github:acme/planning")}`);
   });
 
-  it("list without --repo still means the session's own repo", async () => {
-    // Backward compatibility (req 3 rule 2): no existing command changes
-    // destination, so a bare `--tracker github` stays the bare `github` id.
+  it("list without --tracker means the session's own repo", async () => {
+    // req 12 — the session's own repository is the one destination an operation
+    // may reach without naming it, and it keeps the bare `github` id.
     const { run } = makeRunner();
-    const out = await run(["issue", "list", "--tracker", "github"], {
+    const out = await run(["issue", "list"], {
       "GET /agent-ops/issue/list": { status: 200, body: { tracker: { id: "github" }, issues: [] } },
     });
     expect(out.calls[0].path).toMatch(/tracker=github(&|$)/);
   });
 
-  it("rejects a --repo that isn't an owner/name slug", async () => {
+  // req 11 — a name nobody declared fails closed, with the declared set named so
+  // the agent can correct itself rather than retry against another tracker.
+  it("rejects a tracker name nobody declared", async () => {
     const { run } = makeRunner();
-    const out = await run(["issue", "list", "--repo", "planning"]);
+    const out = await run(["issue", "list", "--tracker", "nope"]);
     expect(out.exitCode).not.toBe(0);
-    expect(out.stderr).toContain("owner/name");
+    expect(out.stderr).toContain("No issue tracker named `nope`");
+    expect(out.stderr).toContain("planning");
     expect(out.calls).toHaveLength(0);
   });
 
-  it("rejects --repo combined with --tracker linear", async () => {
-    const { run } = makeRunner();
-    const out = await run(["issue", "list", "--tracker", "linear", "--repo", "acme/planning"]);
-    expect(out.exitCode).not.toBe(0);
-    expect(out.stderr).toContain("cannot be combined");
-    expect(out.calls).toHaveLength(0);
-  });
-
-  it("rejects --repo that contradicts the repository in the pointer", async () => {
-    // Naming two different repositories is a mistake, not a precedence
+  it("rejects --tracker that contradicts the tracker named in the reference", async () => {
+    // Naming two different destinations is a mistake, not a precedence
     // question — silently preferring either one would be the substitution
-    // requirement 3 forbids.
+    // requirement 17 forbids.
     const { run } = makeRunner();
-    const out = await run(["issue", "view", "octocat/hello#42", "--repo", "acme/planning"]);
+    const out = await run(["issue", "view", "octocat/hello#42", "--tracker", "planning"]);
     expect(out.exitCode).not.toBe(0);
     expect(out.stderr).toContain("contradicts");
     expect(out.calls).toHaveLength(0);
   });
 
-  it("accepts --repo that agrees with the pointer", async () => {
+  it("accepts a --tracker that agrees with the reference", async () => {
     const { run } = makeRunner();
-    const out = await run(["issue", "view", "octocat/hello#42", "--repo", "octocat/hello"], {
+    const out = await run(["issue", "view", "octocat/hello#42", "--tracker", "hello"], {
       "GET /agent-ops/issue/view": { status: 200, body: issuePayload },
     });
     expect(out.exitCode).toBe(0);
     expect(out.calls[0].path).toContain(`tracker=${encodeURIComponent("github:octocat/hello")}`);
   });
 
-  it("comment --repo routes the write to the named repository", async () => {
+  it("comment routes the write to the destination the reference named", async () => {
     const { run } = makeRunner();
     const out = await run(
-      ["issue", "comment", "42", "--repo", "acme/planning", "--body", "hi"],
+      ["issue", "comment", "42", "--tracker", "planning", "--body", "hi"],
       { "POST /agent-ops/issue/comment": { status: 200, body: { issue: { identifier: "acme/planning#42" } } } },
     );
     expect(out.calls[0].body).toMatchObject({ tracker: "github:acme/planning", id: "42" });
@@ -1774,26 +1795,36 @@ describe("shipit issue", () => {
     // for both destinations at once).
     const { run } = makeRunner();
     const out = await run([
-      "issue", "create", "--repo", "acme/planning", "--title", "T", "--body", "B", "--priority", "high",
+      "issue", "create", "--tracker", "planning", "--title", "T", "--body", "B", "--priority", "high",
     ]);
     expect(out.exitCode).not.toBe(0);
     expect(out.stderr).toContain("--priority is not supported on GitHub");
   });
 
-  it("view fails on an unknown pointer without --tracker", async () => {
+  it("view fails on an unrecognized reference", async () => {
     const { run } = makeRunner();
     const out = await run(["issue", "view", "just-text"]);
     expect(out.exitCode).not.toBe(0);
-    expect(out.stderr).toContain("could not infer the tracker");
     expect(out.calls).toHaveLength(0);
   });
 
-  it("view honors a --tracker override for an unknown shape", async () => {
+  // req 12 — a bare id with no `--tracker` means the session's own repository,
+  // the one destination that needs no name.
+  it("view resolves a bare number against the session's own repository", async () => {
     const { run } = makeRunner();
-    const out = await run(["issue", "view", "42", "--tracker", "github"], {
+    const out = await run(["issue", "view", "42"], {
       "GET /agent-ops/issue/view": { status: 200, body: issuePayload },
     });
-    expect(out.calls[0].path).toContain("tracker=github");
+    expect(out.calls[0].path).toMatch(/tracker=github&/);
+    expect(out.calls[0].path).toContain("id=42");
+  });
+
+  it("view resolves a bare number against a NAMED tracker with --tracker", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "view", "42", "--tracker", "planning"], {
+      "GET /agent-ops/issue/view": { status: 200, body: issuePayload },
+    });
+    expect(out.calls[0].path).toContain(`tracker=${encodeURIComponent("github:acme/planning")}`);
     expect(out.calls[0].path).toContain("id=42");
   });
 
@@ -1957,7 +1988,7 @@ describe("shipit issue", () => {
 
   it("list wraps issue titles in the untrusted-input envelope", async () => {
     const { run } = makeRunner();
-    const out = await run(["issue", "list", "--tracker", "github"], {
+    const out = await run(["issue", "list"], {
       "GET /agent-ops/issue/list": {
         status: 200,
         body: { issues: [{ identifier: "octocat/hello#1", title: "do the thing", priority: { label: "High" } }] },
@@ -1992,7 +2023,7 @@ describe("shipit issue", () => {
     expect(out.calls[0]).toMatchObject({
       method: "POST",
       path: "/agent-ops/issue/comment",
-      body: { tracker: "linear", id: "SHI-1", body: "noted" },
+      body: { tracker: "linear:SHI", trackerName: "roadmap", id: "SHI-1", body: "noted" },
     });
     expect(out.stdout).toContain("commented on SHI-1");
   });
@@ -2010,7 +2041,7 @@ describe("shipit issue", () => {
     const out = await run(["issue", "status", "SHI-1", "completed"], {
       "POST /agent-ops/issue/status": { status: 200, body: { ok: true, summary: "set SHI-1 → Done" } },
     });
-    expect(out.calls[0].body).toMatchObject({ tracker: "linear", id: "SHI-1", status: "completed" });
+    expect(out.calls[0].body).toMatchObject({ tracker: "linear:SHI", trackerName: "roadmap", id: "SHI-1", status: "completed" });
   });
 
   it("assign sends the assignee handle", async () => {
@@ -2018,7 +2049,7 @@ describe("shipit issue", () => {
     const out = await run(["issue", "assign", "SHI-1", "me"], {
       "POST /agent-ops/issue/assign": { status: 200, body: { ok: true, summary: "assigned SHI-1 → me" } },
     });
-    expect(out.calls[0].body).toMatchObject({ tracker: "linear", id: "SHI-1", assignee: "me" });
+    expect(out.calls[0].body).toMatchObject({ tracker: "linear:SHI", trackerName: "roadmap", id: "SHI-1", assignee: "me" });
   });
 
   it("assign --none unassigns (null)", async () => {
@@ -2026,12 +2057,12 @@ describe("shipit issue", () => {
     const out = await run(["issue", "assign", "SHI-1", "--none"], {
       "POST /agent-ops/issue/assign": { status: 200, body: { ok: true, summary: "unassigned SHI-1" } },
     });
-    expect(out.calls[0].body).toMatchObject({ tracker: "linear", id: "SHI-1", assignee: null });
+    expect(out.calls[0].body).toMatchObject({ tracker: "linear:SHI", trackerName: "roadmap", id: "SHI-1", assignee: null });
   });
 
-  it("create defaults to Linear and posts title/body, reporting the write result", async () => {
+  it("create names its destination and posts title/body, reporting the write result", async () => {
     const { run } = makeRunner();
-    const out = await run(["issue", "create", "--title", "New doc", "-b", "tracks docs/187"], {
+    const out = await run(["issue", "create", "--tracker", "roadmap", "--title", "New doc", "-b", "tracks docs/187"], {
       "POST /agent-ops/issue/create": {
         status: 200,
         body: { ok: true, summary: "created SHI-9", identifier: "SHI-9", url: "https://linear.app/x/SHI-9" },
@@ -2041,18 +2072,35 @@ describe("shipit issue", () => {
     expect(out.calls[0]).toMatchObject({
       method: "POST",
       path: "/agent-ops/issue/create",
-      body: { tracker: "linear", title: "New doc", body: "tracks docs/187" },
+      body: { tracker: "linear:SHI", trackerName: "roadmap", title: "New doc", body: "tracks docs/187" },
     });
     expect(out.stdout).toContain("created SHI-9");
     expect(out.stdout).toContain("https://linear.app/x/SHI-9");
   });
 
-  it("create honors --tracker github", async () => {
+  it("create files into the GitHub tracker its --tracker names", async () => {
     const { run } = makeRunner();
-    const out = await run(["issue", "create", "--title", "x", "--tracker", "github"], {
-      "POST /agent-ops/issue/create": { status: 200, body: { ok: true, summary: "created octocat/hello#7" } },
+    const out = await run(["issue", "create", "--tracker", "hello", "--title", "x"], {
+      "POST /agent-ops/issue/create": { status: 200, body: { ok: true, summary: "created hello#7" } },
     });
-    expect(out.calls[0].body).toMatchObject({ tracker: "github", title: "x" });
+    expect(out.calls[0].body).toMatchObject({
+      tracker: "github:octocat/hello",
+      trackerName: "hello",
+      title: "x",
+    });
+  });
+
+  // req 13 — a create ALWAYS names its destination: no default, and no unnamed
+  // fallback to the session's own repository, which for a public code repo would
+  // mean a forgotten flag files a planning issue publicly.
+  it("create refuses to run without --tracker", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "create", "--title", "x"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("--tracker <name> is required");
+    // The declared names are listed, so the agent can pick one.
+    expect(out.stderr).toContain("planning");
+    expect(out.calls).toHaveLength(0);
   });
 
   it("create requires a title", async () => {
@@ -2066,12 +2114,12 @@ describe("shipit issue", () => {
   it("create forwards repeated + comma-separated labels and a priority (SHI-92)", async () => {
     const { run } = makeRunner();
     const out = await run(
-      ["issue", "create", "--title", "Backlog", "--label", "security", "--label", "infra,backend", "--priority", "high"],
+      ["issue", "create", "--tracker", "roadmap", "--title", "Backlog", "--label", "security", "--label", "infra,backend", "--priority", "high"],
       { "POST /agent-ops/issue/create": { status: 200, body: { ok: true, summary: "created SHI-9", identifier: "SHI-9" } } },
     );
     expect(out.exitCode).toBe(0);
     expect(out.calls[0].body).toMatchObject({
-      tracker: "linear",
+      tracker: "linear:SHI",
       title: "Backlog",
       labels: ["security", "infra", "backend"],
       priority: "high",
@@ -2080,7 +2128,7 @@ describe("shipit issue", () => {
 
   it("create rejects --priority on GitHub before any broker call (SHI-92)", async () => {
     const { run } = makeRunner();
-    const out = await run(["issue", "create", "--title", "x", "--tracker", "github", "--priority", "high"]);
+    const out = await run(["issue", "create", "--tracker", "hello", "--title", "x", "--priority", "high"]);
     expect(out.exitCode).not.toBe(0);
     expect(out.stderr).toContain("not supported on GitHub");
     expect(out.calls).toHaveLength(0);
@@ -2088,7 +2136,7 @@ describe("shipit issue", () => {
 
   it("create rejects an invalid --priority value (SHI-92)", async () => {
     const { run } = makeRunner();
-    const out = await run(["issue", "create", "--title", "x", "--priority", "sometimes"]);
+    const out = await run(["issue", "create", "--tracker", "roadmap", "--title", "x", "--priority", "sometimes"]);
     expect(out.exitCode).not.toBe(0);
     expect(out.stderr).toContain("urgent|high|medium|low|none");
     expect(out.calls).toHaveLength(0);
@@ -2096,7 +2144,7 @@ describe("shipit issue", () => {
 
   it("create --json reflects the resolved labels and priority (SHI-92)", async () => {
     const { run } = makeRunner();
-    const out = await run(["issue", "create", "--title", "x", "--label", "security", "--json"], {
+    const out = await run(["issue", "create", "--tracker", "roadmap", "--title", "x", "--label", "security", "--json"], {
       "POST /agent-ops/issue/create": {
         status: 200,
         body: { ok: true, summary: "created SHI-9", identifier: "SHI-9", labels: ["security"], priority: "High" },
@@ -2112,7 +2160,7 @@ describe("shipit issue", () => {
       "POST /agent-ops/issue/edit": { status: 200, body: { ok: true, summary: "edited labels & priority on SHI-1" } },
     });
     expect(out.exitCode).toBe(0);
-    expect(out.calls[0].body).toMatchObject({ tracker: "linear", id: "SHI-1", labels: ["backend"], priority: "low" });
+    expect(out.calls[0].body).toMatchObject({ tracker: "linear:SHI", id: "SHI-1", labels: ["backend"], priority: "low" });
   });
 
   it("edit allows a labels-only change (no title/body) (SHI-92)", async () => {
@@ -2128,17 +2176,17 @@ describe("shipit issue", () => {
 
   it("create forwards a resolved --parent key", async () => {
     const { run } = makeRunner();
-    const out = await run(["issue", "create", "--title", "Child", "--parent", "SHI-204"], {
+    const out = await run(["issue", "create", "--tracker", "roadmap", "--title", "Child", "--parent", "SHI-204"], {
       "POST /agent-ops/issue/create": { status: 200, body: { ok: true, summary: "created SHI-9", identifier: "SHI-9" } },
     });
     expect(out.exitCode).toBe(0);
-    expect(out.calls[0].body).toMatchObject({ tracker: "linear", title: "Child", parent: "SHI-204" });
+    expect(out.calls[0].body).toMatchObject({ tracker: "linear:SHI", title: "Child", parent: "SHI-204" });
   });
 
   it("create resolves a --parent Linear URL to the bare key", async () => {
     const { run } = makeRunner();
     const out = await run(
-      ["issue", "create", "--title", "Child", "--parent", "https://linear.app/shipit-ai/issue/SHI-204/android-umbrella"],
+      ["issue", "create", "--tracker", "roadmap", "--title", "Child", "--parent", "https://linear.app/shipit-ai/issue/SHI-204/android-umbrella"],
       { "POST /agent-ops/issue/create": { status: 200, body: { ok: true, summary: "created SHI-9", identifier: "SHI-9" } } },
     );
     expect(out.exitCode).toBe(0);
@@ -2147,23 +2195,34 @@ describe("shipit issue", () => {
 
   it("create rejects --parent on GitHub before any broker call", async () => {
     const { run } = makeRunner();
-    const out = await run(["issue", "create", "--title", "x", "--tracker", "github", "--parent", "octo/repo#1"]);
+    const out = await run(["issue", "create", "--tracker", "hello", "--title", "x", "--parent", "hello#1"]);
     expect(out.exitCode).not.toBe(0);
     expect(out.stderr).toContain("not supported on GitHub");
     expect(out.calls).toHaveLength(0);
   });
 
-  it("create rejects a non-Linear --parent pointer", async () => {
+  it("create rejects an unresolvable --parent reference", async () => {
     const { run } = makeRunner();
-    const out = await run(["issue", "create", "--title", "x", "--parent", "not-an-issue"]);
+    const out = await run(["issue", "create", "--tracker", "roadmap", "--title", "x", "--parent", "not-an-issue"]);
     expect(out.exitCode).not.toBe(0);
-    expect(out.stderr).toContain("must be a Linear issue");
+    expect(out.stderr).toContain("not a recognized issue reference");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  // docs/248 — a parent resolves through the declarations too, and must land on
+  // the SAME destination: Linear nests only within a team, so silently
+  // reparenting across teams would be the substitution req 17 forbids.
+  it("create rejects a --parent on a different tracker than the issue", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "create", "--tracker", "roadmap", "--title", "x", "--parent", "planning#1"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("different tracker");
     expect(out.calls).toHaveLength(0);
   });
 
   it("create does NOT forward --parent none (no prior parent to detach)", async () => {
     const { run } = makeRunner();
-    const out = await run(["issue", "create", "--title", "x", "--parent", "none"], {
+    const out = await run(["issue", "create", "--tracker", "roadmap", "--title", "x", "--parent", "none"], {
       "POST /agent-ops/issue/create": { status: 200, body: { ok: true, summary: "created SHI-9", identifier: "SHI-9" } },
     });
     expect(out.exitCode).toBe(0);
@@ -2176,7 +2235,7 @@ describe("shipit issue", () => {
       "POST /agent-ops/issue/edit": { status: 200, body: { ok: true, summary: "edited parent on SHI-1" } },
     });
     expect(out.exitCode).toBe(0);
-    expect(out.calls[0].body).toMatchObject({ tracker: "linear", id: "SHI-1", parent: "SHI-204" });
+    expect(out.calls[0].body).toMatchObject({ tracker: "linear:SHI", id: "SHI-1", parent: "SHI-204" });
   });
 
   it("edit --parent none detaches (forwards null)", async () => {
@@ -2209,7 +2268,7 @@ describe("shipit issue", () => {
 
   it("list --json drops each issue's body by default (token economy)", async () => {
     const { run } = makeRunner();
-    const out = await run(["issue", "list", "--tracker", "github", "--json"], {
+    const out = await run(["issue", "list", "--json"], {
       "GET /agent-ops/issue/list": {
         status: 200,
         body: {
@@ -2231,7 +2290,7 @@ describe("shipit issue", () => {
 
   it("list --json --full keeps each issue's body", async () => {
     const { run } = makeRunner();
-    const out = await run(["issue", "list", "--tracker", "github", "--json", "--full"], {
+    const out = await run(["issue", "list", "--json", "--full"], {
       "GET /agent-ops/issue/list": {
         status: 200,
         body: { issues: [{ identifier: "octocat/hello#1", title: "t", description: "the full body" }] },
@@ -2246,7 +2305,7 @@ describe("shipit issue", () => {
 
   it("labels lists the tracker's pickable label names (one per line)", async () => {
     const { run } = makeRunner();
-    const out = await run(["issue", "labels", "--tracker", "github"], {
+    const out = await run(["issue", "labels"], {
       "GET /agent-ops/issue/labels": {
         status: 200,
         body: { labels: [{ name: "bug", color: "#d73a4a" }, { name: "design", color: "#a2eeef" }] },
@@ -2272,7 +2331,7 @@ describe("shipit issue", () => {
 
   it("labels --json emits the raw label array with colors", async () => {
     const { run } = makeRunner();
-    const out = await run(["issue", "labels", "--tracker", "linear", "--json"], {
+    const out = await run(["issue", "labels", "--tracker", "roadmap", "--json"], {
       "GET /agent-ops/issue/labels": { status: 200, body: { labels: [{ name: "security", color: "#d73a4a" }] } },
     });
     expect(out.exitCode).toBe(0);
@@ -2282,7 +2341,7 @@ describe("shipit issue", () => {
 
   it("statuses lists assignable statuses as name (type)", async () => {
     const { run } = makeRunner();
-    const out = await run(["issue", "statuses", "--tracker", "github"], {
+    const out = await run(["issue", "statuses"], {
       "GET /agent-ops/issue/statuses": {
         status: 200,
         body: { statuses: [{ name: "Open", type: "started" }, { name: "Closed", type: "completed" }] },
@@ -2295,18 +2354,18 @@ describe("shipit issue", () => {
 
   it("statuses surfaces an upstream failure as exit 1", async () => {
     const { run } = makeRunner();
-    const out = await run(["issue", "statuses", "--tracker", "linear"], {
+    const out = await run(["issue", "statuses", "--tracker", "roadmap"], {
       "GET /agent-ops/issue/statuses": { status: 502, body: { error: "tracker hiccup" } },
     });
     expect(out.exitCode).toBe(1);
     expect(out.stderr).toContain("tracker hiccup");
   });
 
-  it("labels rejects an invalid --tracker before any broker call", async () => {
+  it("labels fails closed on an undeclared --tracker before any broker call", async () => {
     const { run } = makeRunner();
     const out = await run(["issue", "labels", "--tracker", "jira"]);
     expect(out.exitCode).not.toBe(0);
-    expect(out.stderr).toContain("--tracker must be 'github' or 'linear'");
+    expect(out.stderr).toContain("No issue tracker named `jira`");
     expect(out.calls).toHaveLength(0);
   });
 
@@ -2336,7 +2395,7 @@ describe("shipit issue", () => {
   it("label create posts to the broker and reports the summary", async () => {
     const { run } = makeRunner();
     const out = await run(
-      ["issue", "label", "create", "--name", "t3code", "--color", "#0ea5e9", "--description", "T3 code area"],
+      ["issue", "label", "create", "--tracker", "roadmap", "--name", "t3code", "--color", "#0ea5e9", "--description", "T3 code area"],
       {
         "POST /agent-ops/issue/label/create": {
           status: 200,
@@ -2349,18 +2408,28 @@ describe("shipit issue", () => {
       method: "POST",
       path: "/agent-ops/issue/label/create",
       // Defaults to Linear — no pointer to infer a tracker from.
-      body: { tracker: "linear", name: "t3code", color: "#0ea5e9", description: "T3 code area" },
+      body: { tracker: "linear:SHI", name: "t3code", color: "#0ea5e9", description: "T3 code area" },
     });
     expect(out.stdout).toContain('created label "t3code"');
   });
 
-  it("label create --tracker github targets the session repo", async () => {
+  it("label create targets the GitHub tracker its --tracker names", async () => {
     const { run } = makeRunner();
-    const out = await run(["issue", "label", "create", "--name", "t3code", "--tracker", "github"], {
+    const out = await run(["issue", "label", "create", "--tracker", "hello", "--name", "t3code"], {
       "POST /agent-ops/issue/label/create": { status: 200, body: { ok: true, summary: 'created label "t3code"' } },
     });
     expect(out.exitCode).toBe(0);
-    expect((out.calls[0].body as Record<string, unknown>).tracker).toBe("github");
+    expect((out.calls[0].body as Record<string, unknown>).tracker).toBe("github:octocat/hello");
+  });
+
+  // req 13's reasoning applies to label creation too: it mutates a tracker's
+  // configuration, so it names which one.
+  it("label create refuses to run without --tracker", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "label", "create", "--name", "t3code"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("--tracker <name> is required");
+    expect(out.calls).toHaveLength(0);
   });
 
   it("label create requires --name and rejects a malformed --color before any call", async () => {
@@ -2370,7 +2439,7 @@ describe("shipit issue", () => {
     expect(missing.stderr).toContain("--name is required");
     expect(missing.calls).toHaveLength(0);
 
-    const badColor = await run(["issue", "label", "create", "--name", "x", "--color", "blue"]);
+    const badColor = await run(["issue", "label", "create", "--tracker", "roadmap", "--name", "x", "--color", "blue"]);
     expect(badColor.exitCode).not.toBe(0);
     expect(badColor.stderr).toContain("--color must be a 6-digit hex");
     expect(badColor.calls).toHaveLength(0);
@@ -2386,7 +2455,7 @@ describe("shipit issue", () => {
 
   it("label create surfaces a duplicate (409) as exit 1", async () => {
     const { run } = makeRunner();
-    const out = await run(["issue", "label", "create", "--name", "security"], {
+    const out = await run(["issue", "label", "create", "--tracker", "roadmap", "--name", "security"], {
       "POST /agent-ops/issue/label/create": { status: 409, body: { error: 'Label "security" already exists on Linear — nothing to create.' } },
     });
     expect(out.exitCode).toBe(1);
@@ -2396,7 +2465,7 @@ describe("shipit issue", () => {
   it("create forwards --create-missing-labels (SHI-230)", async () => {
     const { run } = makeRunner();
     const out = await run(
-      ["issue", "create", "--title", "T", "--label", "t3code", "--create-missing-labels"],
+      ["issue", "create", "--tracker", "roadmap", "--title", "T", "--label", "t3code", "--create-missing-labels"],
       {
         "POST /agent-ops/issue/create": { status: 200, body: { ok: true, summary: "created SHI-9", identifier: "SHI-9" } },
       },
@@ -2407,7 +2476,7 @@ describe("shipit issue", () => {
 
   it("create omits createMissingLabels without the flag", async () => {
     const { run } = makeRunner();
-    const out = await run(["issue", "create", "--title", "T", "--label", "t3code"], {
+    const out = await run(["issue", "create", "--tracker", "roadmap", "--title", "T", "--label", "t3code"], {
       "POST /agent-ops/issue/create": { status: 200, body: { ok: true, summary: "created SHI-9" } },
     });
     expect(out.exitCode).toBe(0);

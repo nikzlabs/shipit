@@ -52,9 +52,9 @@ describe("IssuesPanel", () => {
 
   it("renders when the active tracker has no issues entry yet", () => {
     useIssuesStore.setState({
-      trackers: [{ id: "linear", label: "Linear", configured: true }],
+      trackers: [{ id: "linear", kind: "linear" as const, label: "Linear", configured: true }],
       activeTracker: "linear",
-      infoByTracker: { linear: { id: "linear", label: "Linear", configured: true } },
+      infoByTracker: { linear: { id: "linear", kind: "linear" as const, label: "Linear", configured: true } },
     });
     expect(() =>
       render(
@@ -70,9 +70,9 @@ describe("IssuesPanel", () => {
   // computed each render, or the panel loops into React #185.
   it("renders without a loop when filters are active", () => {
     useIssuesStore.setState({
-      trackers: [{ id: "linear", label: "Linear", configured: true }],
+      trackers: [{ id: "linear", kind: "linear" as const, label: "Linear", configured: true }],
       activeTracker: "linear",
-      infoByTracker: { linear: { id: "linear", label: "Linear", configured: true } },
+      infoByTracker: { linear: { id: "linear", kind: "linear" as const, label: "Linear", configured: true } },
       issuesByTracker: {
         linear: [makeIssue({ id: "SHI-1", title: "Auth bug", status: { name: "Todo" } })],
       },
@@ -100,9 +100,9 @@ describe("IssuesPanel repo picker (docs/236)", () => {
   function renderWithRepos(repos: RepoInfo[], activeRepoUrl?: string) {
     useRepoStore.setState({ repos, ...(activeRepoUrl ? { activeRepoUrl } : {}) });
     useIssuesStore.setState({
-      trackers: [{ id: "linear", label: "Linear", configured: true }],
+      trackers: [{ id: "linear", kind: "linear" as const, label: "Linear", configured: true }],
       activeTracker: "linear",
-      infoByTracker: { linear: { id: "linear", label: "Linear", configured: true } },
+      infoByTracker: { linear: { id: "linear", kind: "linear" as const, label: "Linear", configured: true } },
       issuesByTracker: { linear: [makeIssue({ id: "SHI-1", title: "Auth bug" })] },
     });
     const onStartSession = vi.fn();

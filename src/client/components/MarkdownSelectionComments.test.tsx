@@ -9,6 +9,21 @@ import { useUiStore } from "../stores/ui-store.js";
 
 afterEach(cleanup);
 
+/**
+ * docs/248 — the doc's `issue:` pointer resolves against the trackers this
+ * repository declares, and the browser's view of those is the Issues store's
+ * tracker list. Declaring one is what makes the chip an in-app jump rather than
+ * a legible badge.
+ */
+const DECLARED_LINEAR = {
+  id: "linear:TRACKER" as const,
+  kind: "linear" as const,
+  label: "roadmap",
+  name: "roadmap",
+  configured: true,
+  binding: { key: "TRACKER", name: "TRACKER" },
+};
+
 const SAMPLE_DOC = `Intro paragraph.
 
 ## Architecture
@@ -100,12 +115,14 @@ description: Align spawned sessions with the user path.
 
 Context body.
 `;
+      useIssuesStore.setState({ trackers: [DECLARED_LINEAR] });
       render(<MarkdownSelectionComments {...makeProps({ content })} />);
-      // The issue pointer renders as a jump-to-issue chip. A known tracker
-      // opens the inline Issues view, so it must NOT be an external link.
-      const chip = screen.getByText("TRACKER-28");
+      // The issue pointer renders as a jump-to-issue chip in the destination's
+      // name form (req 15). A declared tracker opens the inline Issues view, so
+      // it must NOT be an external link.
+      const chip = screen.getByText("roadmap#TRACKER-28");
       expect(chip.closest("a")).toBeNull();
-      expect(chip.closest("button")).toHaveAttribute("title", "Open TRACKER-28 in ShipIt");
+      expect(chip.closest("button")).toHaveAttribute("title", "Open roadmap#TRACKER-28 in ShipIt");
       expect(
         screen.getByText("Align spawned sessions with the user path."),
       ).toBeInTheDocument();
@@ -114,7 +131,7 @@ Context body.
 
     it("opens the frontmatter issue pointer inline (Issues tab), not in a new tab", () => {
       const openIssue = vi.fn();
-      useIssuesStore.setState({ openIssue });
+      useIssuesStore.setState({ openIssue, trackers: [DECLARED_LINEAR] });
       const closePreview = vi.fn();
       useFileStore.setState({ closePreview });
       const content = `---
@@ -124,11 +141,11 @@ issue: https://linear.app/example/issue/TRACKER-28/decouple
 # Title
 `;
       render(<MarkdownSelectionComments {...makeProps({ content })} />);
-      fireEvent.click(screen.getByText("TRACKER-28"));
+      fireEvent.click(screen.getByText("roadmap#TRACKER-28"));
       expect(openIssue).toHaveBeenCalledWith(
         expect.objectContaining({
-          tracker: "linear",
-          identifier: "TRACKER-28",
+          tracker: "linear:TRACKER",
+          identifier: "roadmap#TRACKER-28",
           id: "TRACKER-28",
           url: "https://linear.app/example/issue/TRACKER-28/decouple",
         }),

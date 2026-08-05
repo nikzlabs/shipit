@@ -24,7 +24,10 @@ issues:
   trackers:
     - kind: github
       repo: owner/planning
-      label: Planning
+      name: planning
+    - kind: linear
+      team: SHI
+      name: roadmap
 ```
 
 ## Sections
@@ -226,43 +229,74 @@ inside ShipIt). Other security policies still apply.
 
 ### `issues` (optional)
 
-Additional issue trackers this repository works with, each rendered as its own
-tab in ShipIt's Issues panel alongside Linear and the repository's own GitHub
-Issues.
+**Every issue tracker this repository uses is declared here.** ShipIt has no
+built-in tracker and no implicit fallback: the trackers a session can reach are
+the ones declared in this block, plus the session's own repository's GitHub
+Issues. Each declaration renders as its own tab in the Issues panel, in
+declaration order.
 
 ```yaml
 issues:
   trackers:
-    - kind: github           # which tracker backs this tab
+    - kind: github           # which backend backs this tracker
       repo: owner/planning   # GitHub Issues: `owner/name`
-      label: Planning        # optional; defaults to the repository name
+      name: planning         # how references and operations address it
+    - kind: linear
+      team: SHI              # Linear binds a tracker to one team
+      name: roadmap
 ```
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `kind` | string | required | Which tracker backs the tab. `github` is the only kind supported today. |
-| `repo` | string | required for `github` | The `owner/name` slug of the GitHub repository. |
-| `label` | string | the repository name | Tab label. |
+| Field | Type | Applies to | Description |
+|-------|------|-----------|-------------|
+| `kind` | string | required | Which backend: `github` or `linear`. |
+| `name` | string | required | How every reference and operation addresses this tracker. Unique within the repository. Letters, digits, `.`, `_`, `-` — it has to be writable as `name#42`. |
+| `repo` | string | `github` | The `owner/name` slug of the GitHub repository. |
+| `team` | string | `linear` | The Linear team key (`SHI`) — also the prefix its issue keys carry, which is what lets a bare `SHI-304` resolve to this declaration. |
+
+The *workspace* a `linear` declaration reads comes from the Linear credential
+configured in ShipIt's settings, not from the declaration — which is why a Linear
+tracker identifies itself by team. A credential names a destination nowhere; it
+only authorizes reaching one.
 
 Entries are a tagged union on `kind`: the identifying fields belong to the kind,
-so a tracker identified by something other than a repository can be added later
-without reshaping the block. An entry whose `kind` this version of ShipIt does
-not recognize is **ignored with a warning** rather than failing the session, so a
-config written against a newer ShipIt degrades gracefully. The same is true of a
-`github` entry with a missing or malformed `repo`, and of a duplicate
+so a backend identified by something other than a repository needs no reshaping
+of the block. An entry whose `kind` this version of ShipIt does not recognize is
+**ignored with a warning** rather than failing the session, so a config written
+against a newer ShipIt degrades gracefully. The same is true of a missing or
+malformed identifying field, a missing `name`, and a duplicate `name`. Those
+warnings are printed by `shipit issue` commands, so the agent can repair a broken
 declaration.
 
-Declaring a repository controls **which tabs appear** — it is not an access
-grant and not an allow-list. Tracker requests use the same GitHub credential as
-ShipIt's other GitHub operations, and GitHub authorizes that credential against
-the repository; a repository it cannot reach shows an inline error on its tab.
-The agent's `shipit issue --repo owner/name` can already target any repository
-the credential reaches, declared or not.
+**Addressing a tracker.** Three reference forms all resolve to the same issue:
 
-ShipIt performs no check that a declared repository exists, is private, or has
+| Form | Example |
+|---|---|
+| tracker name + backend id | `roadmap#SHI-304`, `planning#123` |
+| tracker name + number | `roadmap#304` |
+| the backend's canonical address | `SHI-304`, `owner/repo#42`, an issue URL |
+
+A canonical address resolves through the declaration it identifies — a Linear key
+by its team prefix, a GitHub address by its `owner/repo`. One that identifies no
+declared tracker **fails closed**: ShipIt never substitutes another tracker for
+it. A reference is resolved when it is *used*, so re-pointing a name at a
+different repository or team re-targets every reference written against it.
+
+A repository may declare **its own** repository, which gives it a name. Doing so
+replaces the unnamed tab rather than adding a second one. Without a
+self-declaration, the session's own GitHub Issues is still reachable — it is the
+one destination an operation may address without naming it — but
+`shipit issue create` will not file there, because a create always names its
+destination.
+
+Declaring a tracker controls **which trackers exist** — it is not an access
+grant. Requests use the same credential as ShipIt's other operations against that
+backend, and the backend authorizes the credential; a destination it cannot reach
+shows an inline error on its tab.
+
+ShipIt performs no check that a declared destination exists, is private, or has
 Issues enabled — there is no connect step at which to check. Note that on a
-**public** code repository, a declaration discloses the declared repository's
-slug in a committed file.
+**public** code repository, a declaration discloses what it declares in a
+committed file.
 
 ## Config resolution
 

@@ -1,6 +1,7 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import { DocsViewer } from "./DocsViewer.js";
+import { useIssuesStore } from "../stores/issues-store.js";
 import type { DocEntry } from "../../server/shared/types.js";
 
 function makeDoc(overrides?: Partial<DocEntry>): DocEntry {
@@ -18,6 +19,25 @@ describe("DocsViewer", () => {
     files: [] as DocEntry[],
     onFileClick: vi.fn(),
     onRefresh: vi.fn(),
+  });
+
+  // docs/248 — an `issue:` pointer resolves against the trackers this
+  // repository declares, and the browser's view of those declarations is the
+  // tracker list the Issues store already holds. A pointer that resolves to
+  // nothing renders as a legible badge, so a chip test has to declare one.
+  beforeEach(() => {
+    useIssuesStore.setState({
+      trackers: [
+        {
+          id: "linear:TRACKER",
+          kind: "linear",
+          label: "roadmap",
+          name: "roadmap",
+          configured: true,
+          binding: { key: "TRACKER", name: "TRACKER" },
+        },
+      ],
+    });
   });
 
   afterEach(cleanup);
@@ -81,7 +101,8 @@ describe("DocsViewer", () => {
         makeDoc({ path: "docs/001-auth/plan.md", title: "Auth", issue: LINEAR_URL }),
       ];
       render(<DocsViewer {...props} />);
-      const chip = screen.getByText("TRACKER-28");
+      // req 15 — the chip renders the destination's name form.
+      const chip = screen.getByText("roadmap#TRACKER-28");
       expect(chip).toBeInTheDocument();
       const link = chip.closest("a");
       expect(link).not.toBeNull();
@@ -96,15 +117,16 @@ describe("DocsViewer", () => {
         makeDoc({ path: "docs/001-auth/plan.md", title: "Auth", issue: LINEAR_URL }),
       ];
       render(<DocsViewer {...props} />);
-      const chip = screen.getByText("TRACKER-28");
+      // req 15 — the chip renders the destination's name form.
+      const chip = screen.getByText("roadmap#TRACKER-28");
       // No external link — it's a button that opens the inline view.
       expect(chip.closest("a")).toBeNull();
       const button = chip.closest("button");
       expect(button).not.toBeNull();
       fireEvent.click(button!);
       expect(onOpenIssue).toHaveBeenCalledWith({
-        tracker: "linear",
-        identifier: "TRACKER-28",
+        tracker: "linear:TRACKER",
+        identifier: "roadmap#TRACKER-28",
         id: "TRACKER-28",
         url: LINEAR_URL,
       });
@@ -117,7 +139,7 @@ describe("DocsViewer", () => {
         makeDoc({ path: "docs/001-auth/plan.md", title: "Auth", issue: LINEAR_URL }),
       ];
       render(<DocsViewer {...props} />);
-      fireEvent.click(screen.getByText("TRACKER-28").closest("button")!);
+      fireEvent.click(screen.getByText("roadmap#TRACKER-28").closest("button")!);
       expect(onOpenIssue).toHaveBeenCalledTimes(1);
       expect(props.onFileClick).not.toHaveBeenCalled();
     });
@@ -414,7 +436,7 @@ describe("DocsViewer", () => {
       // Only the tracked plan renders — exactly one row, not two.
       expect(screen.getAllByText("Feature")).toHaveLength(1);
       // The plan's issue chip should still be present.
-      expect(screen.getByText("TRACKER-28")).toBeInTheDocument();
+      expect(screen.getByText("roadmap#TRACKER-28")).toBeInTheDocument();
     });
   });
 

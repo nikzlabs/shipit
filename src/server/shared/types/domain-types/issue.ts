@@ -1,23 +1,29 @@
 // ---- Issue tracker types (docs/170 — inline tracker Issues tab) ----
 
 /**
- * Identifier for a configured issue tracker. Drives the Issues tab's sub-tab
- * switcher and the `?tracker=` query.
+ * Identifier for an issue tracker **destination**. Drives the Issues tab's
+ * sub-tab switcher and the `?tracker=` query.
  *
- * Not a closed union (docs/248): `"github"` keeps its historical meaning — the
- * active session's own code repository — but a GitHub destination may also be
- * named explicitly as `` `github:${owner}/${repo}` ``. Those come from
- * `issues.trackers` declarations in a repository's `shipit.yaml` and from an
- * operation's `--repo owner/name`, neither of which is drawn from a fixed set,
- * so the id has to stay open-ended. The template-literal member keeps that open
- * end typed rather than degrading the whole union to `string`.
+ * Not a closed union (docs/248): a destination comes from an `issues.trackers`
+ * declaration in a repository's `shipit.yaml`, which is not drawn from a fixed
+ * set, so the id has to stay open-ended. The template-literal members keep that
+ * open end typed rather than degrading the whole union to `string`.
+ *
+ *  - `` `github:${owner}/${repo}` `` — a GitHub repository.
+ *  - `` `linear:${TEAM}` `` — a Linear team (req 5).
+ *  - `"github"` — the active session's own code repository, the single
+ *    destination requirement 12 lets an operation reach without naming it.
+ *  - `"linear"` — the retired deployment-wide Linear binding. Requirement 1
+ *    removed it, so nothing produces it any more; the member survives only so
+ *    persisted cards written before the rework still typecheck (they fail closed
+ *    on resolution, which is what requirement 20 permits).
  *
  * Build and inspect qualified ids with the helpers in `shared/tracker-id.ts`
- * (`githubTrackerId`, `parseGitHubTrackerId`, `isGitHubTracker`) — never by
- * comparing against the bare literal `"github"`, which silently drops the
- * repository and re-targets the session's code repo.
+ * (`githubTrackerId`, `linearTrackerId`, `parseGitHubTrackerId`,
+ * `isGitHubTracker`) — never by comparing against a bare literal, which silently
+ * drops the destination.
  */
-export type TrackerId = "linear" | "github" | `github:${string}`;
+export type TrackerId = "linear" | "github" | `github:${string}` | `linear:${string}`;
 
 /**
  * Normalized priority bucket, tracker-agnostic. Linear maps its 0–4 priority
@@ -224,7 +230,25 @@ export type IssueWriteUndoState = "available" | "undoing" | "undone" | "failed";
 export interface IssueWriteCard {
   /** Stable id — used to patch the card in place across its undo lifecycle. */
   cardId: string;
+  /**
+   * The destination the write actually reached. Undo falls back to this when
+   * `trackerName` no longer resolves, which is req 11's one carve-out: reversing
+   * a write grants no access the write did not already have (the card could only
+   * exist if the destination was declared when it was written), so an Undo must
+   * survive the destination being un-declared rather than stranding behind a
+   * config edit.
+   */
   tracker: TrackerId;
+  /**
+   * docs/248 — the tracker **name** the write was addressed by, when it had one.
+   * Recorded alongside `tracker` because the two serve different requirements
+   * and pull in opposite directions: req 16 says re-pointing a name re-targets
+   * every reference written against it, recorded ones included, so Undo must
+   * prefer the name while it still resolves; req 11 says an undeclared
+   * destination stays undoable, so `tracker` is the fallback. A write addressed
+   * by a canonical address has no name and simply uses `tracker`.
+   */
+  trackerName?: string;
   /** Tracker-native id the undo reverse-write targets (number / key). */
   issueId: string;
   /** Display identifier, e.g. "SHI-28" or "owner/repo#42". */
@@ -298,8 +322,20 @@ export interface TrackerInfo {
   id: TrackerId;
   label: string;
   configured: boolean;
-  /** Bound workspace/team context, when configured (Linear team key/name). */
+  /**
+   * docs/248 req 2 — the `name` this tracker was declared under, and how every
+   * reference and operation addresses it. Absent for the session's own code
+   * repository, the one destination that needs no declaration (req 12).
+   *
+   * The browser builds its reference-resolution context out of this list rather
+   * than fetching the declarations separately, so this field (plus `id` and
+   * `binding.key`) is what makes `planning#42` resolvable in a chip.
+   */
+  name?: string;
+  /** The backend's own identity: GitHub `owner/repo`, Linear team key. */
   binding?: { key: string; name: string };
+  /** docs/248 — which backend this destination is on. */
+  kind: "github" | "linear";
 }
 
 /** Response shape for `GET /api/issues?tracker=...`. */

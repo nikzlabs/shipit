@@ -254,6 +254,7 @@ const GOLDEN_CONTAINER_ROUTES = [
   "GET /api/sessions/:id/issue/list",
   "GET /api/sessions/:id/issue/labels",
   "GET /api/sessions/:id/issue/statuses",
+  "GET /api/sessions/:id/issue/trackers",
   "GET /api/sessions/:id/issue/comments",
   "POST /api/sessions/:sessionId/issue/create",
   "POST /api/sessions/:sessionId/issue/comment",

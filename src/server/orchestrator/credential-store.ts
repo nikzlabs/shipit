@@ -14,15 +14,21 @@ import type { VoiceDeliveryMode } from "../shared/types/voice-note-types.js";
 import { DEFAULT_VOICE_DELIVERY_MODE } from "../shared/types/voice-note-types.js";
 
 /**
- * docs/170 — Linear issue-tracker binding. `token` is a read-only Linear API
- * key (personal API key); `team` is the workspace/team the Issues tab queries.
- * Server-side only — the token is never echoed back to the browser (status
- * reports configured-or-not). A Linear workspace is deployment-wide, so this
- * lives here rather than as a per-repo fact (see docs/170 repo→tracker mapping).
+ * docs/170 — the Linear **credential**, and nothing that identifies a
+ * destination. `token` is a personal API key; the workspace it can reach is a
+ * property of the key. Server-side only — the token is never echoed back to the
+ * browser (status reports configured-or-not).
+ *
+ * docs/248 req 4 — the stored `team` binding is gone. A Linear tracker's team is
+ * part of the repository's declaration (`kind: linear`, `team: SHI`), so ShipIt's
+ * settings surface holds the credential and nothing else. Deployments that had a
+ * team stored lose their Linear tab until a repository declares one; that is a
+ * clean break by decision — no migration warning, and ShipIt does not write a
+ * declaration into anyone's `shipit.yaml`. The stale `team` key simply stops
+ * being read.
  */
 interface LinearTrackerConfig {
   token?: string;
-  team?: { id: string; key: string; name: string };
 }
 
 interface CredentialData {
@@ -458,7 +464,7 @@ export class CredentialStore {
     this.save();
   }
 
-  // ---- Linear issue tracker (docs/170) ----
+  // ---- Linear credential (docs/170; team binding retired by docs/248 req 4) ----
 
   /** The stored Linear API token, or null when none is set. */
   getLinearToken(): string | null {
@@ -475,22 +481,7 @@ export class CredentialStore {
     this.save();
   }
 
-  /** The bound Linear team, or null when none is set. */
-  getLinearTeam(): { id: string; key: string; name: string } | null {
-    const team = this.data.linear?.team;
-    if (team && typeof team.id === "string" && team.id.trim()) {
-      return { ...team };
-    }
-    return null;
-  }
-
-  setLinearTeam(team: { id: string; key: string; name: string }): void {
-    this.data.linear ??= {};
-    this.data.linear.team = team;
-    this.save();
-  }
-
-  /** Clear the Linear token and team binding ("Disconnect Linear"). */
+  /** Clear the Linear credential ("Disconnect Linear"). */
   clearLinear(): void {
     if (this.data.linear) {
       delete this.data.linear;

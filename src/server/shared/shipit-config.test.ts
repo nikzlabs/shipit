@@ -592,23 +592,55 @@ describe("issues.trackers", () => {
     expect(parse("version: 1\n").issues.trackers).toEqual([]);
   });
 
-  it("parses a github declaration into an owner/repo pair", () => {
+  it("parses a github declaration into a named owner/repo destination", () => {
     const config = parse(`
 issues:
   trackers:
     - kind: github
       repo: acme/planning
-      label: Planning
+      name: planning
 `);
     expect(config.issues.trackers).toEqual([
-      { kind: "github", owner: "acme", repo: "planning", label: "Planning" },
+      { kind: "github", name: "planning", owner: "acme", repo: "planning" },
     ]);
     expect(config.warnings).toEqual([]);
   });
 
-  it("defaults the label to the repository name", () => {
-    const config = parse("issues:\n  trackers:\n    - kind: github\n      repo: acme/planning\n");
-    expect(config.issues.trackers[0].label).toBe("planning");
+  // req 3 — both kinds are declared the same way; req 5 — a linear declaration
+  // states the team key, which is also the prefix its issue keys carry.
+  it("parses a linear declaration into a named team destination", () => {
+    const config = parse(`
+issues:
+  trackers:
+    - kind: linear
+      team: SHI
+      name: roadmap
+`);
+    expect(config.issues.trackers).toEqual([{ kind: "linear", name: "roadmap", team: "SHI" }]);
+    expect(config.warnings).toEqual([]);
+  });
+
+  it("normalizes a lower-case linear team key so `SHI-304` still matches it", () => {
+    const config = parse("issues:\n  trackers:\n    - kind: linear\n      team: shi\n      name: roadmap\n");
+    expect(config.issues.trackers[0]).toMatchObject({ team: "SHI" });
+  });
+
+  // req 3 — a repository may declare two Linear trackers on different teams.
+  it("accepts two linear declarations on different teams", () => {
+    const config = parse(`
+issues:
+  trackers:
+    - kind: linear
+      team: SHI
+      name: roadmap
+    - kind: linear
+      team: OPS
+      name: ops
+`);
+    expect(config.issues.trackers).toEqual([
+      { kind: "linear", name: "roadmap", team: "SHI" },
+      { kind: "linear", name: "ops", team: "OPS" },
+    ]);
   });
 
   it("preserves declaration order (it drives tab order)", () => {
@@ -617,22 +649,28 @@ issues:
   trackers:
     - kind: github
       repo: acme/first
+      name: first
     - kind: github
       repo: acme/second
+      name: second
 `);
-    expect(config.issues.trackers.map((t) => t.repo)).toEqual(["first", "second"]);
+    expect(config.issues.trackers.map((t) => t.name)).toEqual(["first", "second"]);
   });
 
-  // The forward-compatibility contract in req 5: a config written against a
+  // The forward-compatibility contract in req 7: a config written against a
   // NEWER ShipIt that declares a tracker kind this build has never heard of must
   // degrade to "that tab doesn't appear", never to a failed session. Same for
   // every other malformed shape — a tracker declaration gates one tab, not the
   // container, so nothing here is allowed to throw.
   it.each([
-    ["an unrecognized kind", "issues:\n  trackers:\n    - kind: linear\n      team: SHI\n"],
-    ["a missing kind", "issues:\n  trackers:\n    - repo: acme/planning\n"],
-    ["a github entry with no repo", "issues:\n  trackers:\n    - kind: github\n"],
-    ["a repo that isn't a slug", "issues:\n  trackers:\n    - kind: github\n      repo: planning\n"],
+    ["an unrecognized kind", "issues:\n  trackers:\n    - kind: jira\n      project: SHI\n      name: jira\n"],
+    ["a missing kind", "issues:\n  trackers:\n    - repo: acme/planning\n      name: planning\n"],
+    ["a github entry with no repo", "issues:\n  trackers:\n    - kind: github\n      name: planning\n"],
+    ["a repo that isn't a slug", "issues:\n  trackers:\n    - kind: github\n      repo: planning\n      name: planning\n"],
+    ["a linear entry with no team", "issues:\n  trackers:\n    - kind: linear\n      name: roadmap\n"],
+    ["a linear team that isn't a key", "issues:\n  trackers:\n    - kind: linear\n      team: 'a b'\n      name: roadmap\n"],
+    ["an entry with no name", "issues:\n  trackers:\n    - kind: github\n      repo: acme/planning\n"],
+    ["a name that isn't writable as a reference", "issues:\n  trackers:\n    - kind: github\n      repo: acme/planning\n      name: 'my planning'\n"],
     ["a non-mapping entry", "issues:\n  trackers:\n    - acme/planning\n"],
     ["a non-list trackers", "issues:\n  trackers: acme/planning\n"],
     ["a non-mapping issues block", "issues: acme/planning\n"],
@@ -648,31 +686,54 @@ issues:
   trackers:
     - kind: some-future-tracker
       handle: whatever
+      name: future
     - kind: github
       repo: acme/planning
+      name: planning
 `);
     expect(config.issues.trackers).toEqual([
-      { kind: "github", owner: "acme", repo: "planning", label: "planning" },
+      { kind: "github", name: "planning", owner: "acme", repo: "planning" },
     ]);
     expect(config.warnings.length).toBe(1);
   });
 
-  it("drops a duplicate declaration of the same repository", () => {
+  // req 6 — `name` is unique within a repository. A duplicate is dropped rather
+  // than shadowing, because a name resolving to two destinations is exactly the
+  // ambiguity req 11 makes fail closed.
+  it("drops a duplicate tracker name", () => {
     const config = parse(`
 issues:
   trackers:
     - kind: github
       repo: acme/planning
+      name: planning
     - kind: github
-      repo: acme/planning
-      label: Second
+      repo: acme/other
+      name: Planning
 `);
     expect(config.issues.trackers).toHaveLength(1);
-    expect(config.warnings.some((w) => w.includes("duplicate"))).toBe(true);
+    expect(config.issues.trackers[0]).toMatchObject({ repo: "planning" });
+    expect(config.warnings.some((w) => w.includes("duplicate tracker name"))).toBe(true);
+  });
+
+  it("allows the same repository under two different names", () => {
+    const config = parse(`
+issues:
+  trackers:
+    - kind: github
+      repo: acme/planning
+      name: planning
+    - kind: github
+      repo: acme/planning
+      name: alias
+`);
+    expect(config.issues.trackers).toHaveLength(2);
   });
 
   it("warns about unknown keys inside an entry without dropping it", () => {
-    const config = parse("issues:\n  trackers:\n    - kind: github\n      repo: acme/planning\n      colour: red\n");
+    const config = parse(
+      "issues:\n  trackers:\n    - kind: github\n      repo: acme/planning\n      name: planning\n      colour: red\n",
+    );
     expect(config.issues.trackers).toHaveLength(1);
     expect(config.warnings.some((w) => w.includes("colour"))).toBe(true);
   });
